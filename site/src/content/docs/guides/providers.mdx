@@ -82,16 +82,17 @@ The `antigravity-cli` path runs one CLI subprocess per request in agentic mode. 
 full agent with its own tools, so it resolves its own tool calls and returns finished
 work — file edits included. Four consequences follow:
 
-- **Tools are `agy`'s, not the caller's, and a request carrying them is refused.** This
-  adapter can never emit a `tool_use` block, so a `tools` array or a `tool_choice` on the
-  Messages request is rejected with a `400 invalid_request_error` naming the limitation.
-  It used to be dropped silently, which returned a text-only `200` with
-  `stop_reason: "end_turn"` — a response an agentic caller cannot act on, and a direct
-  violation of `tool_choice: {"type": "any"}` while still reporting success. The one
-  exemption is `tool_choice: {"type": "none"}`: the caller has declared it wants no tool
-  calls, so a text-only answer is what it asked for. Clients that drive the tool loop
-  themselves should use the `antigravity` or `gemini` provider, both of which forward
-  tools.
+- **Tools are `agy`'s, not the caller's, and a request asking for one is refused.** This
+  adapter can never emit a `tool_use` block, so a non-empty `tools` array, or a
+  `tool_choice` of `any` or `tool`, is rejected with a `400 invalid_request_error` naming
+  the limitation. Such requests used to be dropped silently, returning a text-only `200`
+  with `stop_reason: "end_turn"` — a response an agentic caller cannot act on, and a
+  direct violation of `tool_choice: {"type": "any"}` while still reporting success. Two
+  shapes stay exempt, because neither obliges a tool call: `tool_choice: {"type": "none"}`
+  even alongside `tools`, and `tool_choice: {"type": "auto"}` with no tools, which is the
+  Anthropic SDK default that many clients serialize on every request. An empty
+  `tools: []` is likewise not a tool request. Clients that drive the tool loop themselves
+  should use the `antigravity` or `gemini` provider, both of which forward tools.
 - **It runs with `--dangerously-skip-permissions` and, by default, `--sandbox`,**
   because a non-interactive run has no channel to approve a permission prompt. See
   [Workspace and sandboxing](#workspace-and-sandboxing) — this provider executes code.
