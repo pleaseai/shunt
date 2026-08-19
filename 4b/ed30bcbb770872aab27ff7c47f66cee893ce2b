@@ -1,0 +1,63 @@
+site/src/content/docs/guides/codex.mdx
+  s_55f424ce824b24::t_4a205ed918dd0a 328-332
+  s_55f424ce824b24::t_76d35bafeff0a0 155
+site/src/content/docs/zh-cn/guides/effort-and-context.mdx
+  s_55f424ce824b24::t_b955fac84520d3 46
+src/adapters/responses/websocket.rs
+  s_55f424ce824b24::t_48c1697a2a5437 538-539,581,596-602,616-622
+  s_55f424ce824b24::t_f9043387fb13d3 308-311
+  s_55f424ce824b24::t_420877d19cb5d9 23,59,109-115,230,337
+  s_55f424ce824b24::t_4c446bfb0b0a46 549-550,554-573,584,607
+site/src/content/docs/ja/guides/effort-and-context.mdx
+  s_55f424ce824b24::t_b955fac84520d3 46
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_55f424ce824b24::t_76d35bafeff0a0 150
+site/src/content/docs/ja/guides/codex.mdx
+  s_55f424ce824b24::t_76d35bafeff0a0 126
+docs/m11-inbound-codex-endpoint.md
+  s_55f424ce824b24::t_8d10cc4ecb10dd 115
+src/adapters/responses/request.rs
+  s_55f424ce824b24::t_99106c5efbd614 29-48
+  s_55f424ce824b24::t_2919be84520043 223-227,240-306
+  s_55f424ce824b24::t_8d10cc4ecb10dd 19
+  s_55f424ce824b24::t_76d35bafeff0a0 6,18
+  s_55f424ce824b24::t_6f8ffb5c0852b7 82-83
+  s_55f424ce824b24::t_b3309c5a88934c 307
+src/model/responses.rs
+  s_55f424ce824b24::t_badb19f8e949f6 815
+  s_55f424ce824b24::t_be0319dd0beceb 842
+  s_55f424ce824b24::t_4838e05d651d40 42-48,121,795-797,830-834,839-841,845-849
+  s_55f424ce824b24::t_f9043387fb13d3 1054-1135
+site/src/content/docs/ko/guides/codex.mdx
+  s_55f424ce824b24::t_76d35bafeff0a0 122
+docs/running.md
+  s_55f424ce824b24::t_76d35bafeff0a0 661
+docs/codex-configuration.md
+  s_55f424ce824b24::t_08c09d93e7c683 188-191
+  s_55f424ce824b24::t_e40eff19d091ca 533-539
+  s_55f424ce824b24::t_97a8406d866109 197-201
+  s_55f424ce824b24::t_cf2310870adabc 179,192-196
+  s_55f424ce824b24::t_76d35bafeff0a0 177,184
+  s_55f424ce824b24::t_8d10cc4ecb10dd 178,796
+  s_55f424ce824b24::t_7f60a1d3d92e92 202
+site/src/content/docs/ko/guides/effort-and-context.mdx
+  s_55f424ce824b24::t_b955fac84520d3 46
+site/src/content/docs/guides/effort-and-context.mdx
+  s_55f424ce824b24::t_b955fac84520d3 48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "4bed30bcbb770872aab27ff7c47f66cee893ce2b",
+  "prompts": {},
+  "sessions": {
+    "s_55f424ce824b24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd6d7497-b259-485d-95e1-ff619b491f07",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
