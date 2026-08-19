@@ -125,26 +125,38 @@ pub(crate) async fn run_bounded(
         "and confirm the code: {}\n(waiting for approval — this window will update automatically)",
         sanitize_for_terminal(&device.user_code)
     );
-    if !manual {
+    // `browser_open_refusal` is pure, so it stays synchronous: the refusal and
+    // its message are settled here, before anything is run concurrently.
+    let open_target = if manual {
+        // `--manual` opens nothing at all.
+        None
+    } else {
         match browser_open_refusal(&prompt_url) {
-            Some(reason) => eprintln!(
-                "Not opening this URL automatically: {reason}. It was chosen by the gateway, not \
-                 by shunt — open it yourself only if it looks like the deployment's own sign-in \
-                 page."
-            ),
-            None => {
-                if let Err(error) =
-                    crate::auth::shared::open_url_async("gateway login", &prompt_url).await
-                {
-                    eprintln!("Could not open a browser ({error}); open the URL above manually.");
-                }
+            Some(reason) => {
+                eprintln!(
+                    "Not opening this URL automatically: {reason}. It was chosen by the gateway, \
+                     not by shunt — open it yourself only if it looks like the deployment's own \
+                     sign-in page."
+                );
+                None
+            }
+            None => Some(prompt_url.clone()),
+        }
+    };
+    let open_browser = async {
+        if let Some(url) = open_target {
+            if let Err(error) = crate::auth::shared::open_url_async("gateway login", &url).await {
+                eprintln!("Could not open a browser ({error}); open the URL above manually.");
             }
         }
-    }
+    };
 
-    let tokens = poll_for_tokens(&client, &device, &discovery.token_endpoint, network_timeout)
-        .await
-        .context("gateway device authorization failed")?;
+    let tokens = poll_while_opening_browser(
+        open_browser,
+        poll_for_tokens(&client, &device, &discovery.token_endpoint, network_timeout),
+    )
+    .await
+    .context("gateway device authorization failed")?;
 
     // Vetted before anything is stored, mirroring what `auth::refresh_session`
     // does with a rotated token. A gateway answering with a token the helper
@@ -240,6 +252,45 @@ fn browser_open_refusal(raw: &str) -> Option<String> {
             "the gateway's verification URL uses the {scheme:?} scheme, and shunt only opens http \
              and https"
         )),
+    }
+}
+
+/// Run the browser open *alongside* the approval poll instead of before it.
+///
+/// The opener is not a quick handoff: [`crate::auth::shared::open_url`] runs
+/// `open` / `rundll32` / `xdg-open` with `.status()`, which waits for that child
+/// to exit. A desktop handler that never returns — the `xdg-open` case — would
+/// otherwise stall the whole login *after* the user has already been shown the
+/// URL and told shunt is waiting for approval: they approve in the browser and
+/// shunt never redeems the device code, never reaches the device-code deadline,
+/// and leaves Ctrl-C as the only way out. This is the one step in a command
+/// that bounds everything else — discovery, the device-code request, the
+/// refresh, the lock — that had no bound at all.
+///
+/// Concurrency rather than a timeout, deliberately. A `timeout` here could not
+/// cancel the blocking child wait anyway (a dropped `spawn_blocking` keeps
+/// running), so it would buy a bounded wait and still leak the thread, at the
+/// cost of a duration nobody can justify. Running the two together returns as
+/// soon as the poll does and needs no such number.
+///
+/// `open` is still *driven* — dropping it unpolled would silently delete the
+/// browser open, and its failure message is what tells a user with no working
+/// handler to follow the URL themselves.
+async fn poll_while_opening_browser<Open, Poll>(open: Open, poll: Poll) -> Poll::Output
+where
+    Open: std::future::Future<Output = ()>,
+    Poll: std::future::Future,
+{
+    tokio::pin!(open, poll);
+    let mut opened = false;
+    loop {
+        tokio::select! {
+            // The poll's completion is the only thing that ends this: once the
+            // gateway has answered, an opener still waiting on its child has
+            // nothing left to contribute.
+            tokens = &mut poll => return tokens,
+            () = &mut open, if !opened => opened = true,
+        }
     }
 }
 

@@ -886,3 +886,53 @@ async fn a_login_token_claude_code_would_reject_fails_and_stores_no_session() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The approval poll must not be gated on the browser opener.
+///
+/// `open_url` waits for the `open`/`xdg-open` child to exit, so a desktop
+/// handler that never returns used to stall the login after the user had
+/// already been told shunt was waiting for approval. A never-resolving future
+/// stands in for that handler; the poll must still deliver its result.
+///
+/// The clock is paused so the guard timeout fires the instant nothing can
+/// progress: with the two awaited in sequence this test would otherwise *hang*
+/// rather than fail, and a hang is not a red — it wedges the suite.
+#[tokio::test(start_paused = true)]
+async fn the_approval_poll_is_not_gated_on_the_browser_open() {
+    let composed =
+        poll_while_opening_browser(std::future::pending::<()>(), std::future::ready("tokens"));
+
+    let tokens = tokio::time::timeout(Duration::from_secs(30), composed)
+        .await
+        .expect("the poll must complete even though the browser open never returns");
+
+    assert_eq!(tokens, "tokens");
+}
+
+/// ...and the opener must still actually run.
+///
+/// Without this, "never gate on the open" could be satisfied by dropping the
+/// open future unpolled — which would delete the browser open outright, and
+/// with it the failure message that tells a user with no working handler to
+/// follow the URL themselves. Here the poll waits, so a driven opener has time
+/// to complete and set the flag.
+#[tokio::test(start_paused = true)]
+async fn the_browser_open_still_runs_while_the_poll_waits() {
+    let opened = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = std::sync::Arc::clone(&opened);
+
+    poll_while_opening_browser(
+        async move {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        },
+        async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        },
+    )
+    .await;
+
+    assert!(
+        opened.load(std::sync::atomic::Ordering::SeqCst),
+        "the browser opener was never polled, so the login would silently stop opening a browser"
+    );
+}
