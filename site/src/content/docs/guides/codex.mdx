@@ -152,7 +152,7 @@ earlier ones (a free account has resolved to `gpt-5.5`). shunt surfaces the back
 Some slugs carry a `minimal_client_version` (e.g. `gpt-5.6-luna` needs ≥ 0.144.0). When the
 request's client identity is missing or too old the backend answers `Model not found <slug>`.
 shunt avoids this by sending the pinned Codex CLI identity headers (`originator: codex_cli_rs`,
-`user-agent`, `version`), pinned to **openai/codex rust-v0.144.4**. See
+`user-agent`, `version`), pinned to **openai/codex rust-v0.148.0**. See
 [openai/codex#31967](https://github.com/openai/codex/issues/31967).
 
 </Aside>
@@ -324,6 +324,11 @@ explicitly configured; a route-level value wins over the provider-level default,
 including a route explicitly set to `default`, which opts that route **out** of a provider-level
 `priority`/`flex` tier instead of inheriting it. Full key reference:
 [Configuration](/reference/configuration/#providersname).
+
+Whatever tier ends up on the wire is also echoed to the backend in the Codex CLI's
+`x-codex-routing-hint` header, as `model=<upstream model>;tier=<tier>` (just `model=<upstream model>`
+when no tier is sent). shunt sends that header only on the ChatGPT OAuth path, exactly as the Codex
+CLI does — over HTTP on every request, and on the WebSocket transport as a handshake header.
 
 ## 6. Context window
 

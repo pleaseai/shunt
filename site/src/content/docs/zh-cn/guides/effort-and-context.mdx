@@ -43,7 +43,7 @@ shunt 中的优先级:配置中的 `route.effort` / `[providers.*].effort` 覆�
 
 Claude Code 从助手消息的 token `usage` 除以模型的上下文窗口大小,在本地计算上下文指示器。对于路由到 `responses` 提供方的模型:
 
-- **Token 计数(分子)是准确的。** shunt 从 Responses 的 `usage` 中读取 `input_tokens`(以及缓存 token)并在 Anthropic 的 `message_delta` 中转发它们,将缓存部分剥离到 `cache_read_input_tokens`。
+- **Token 计数(分子)是准确的。** shunt 从 Responses 的 `usage` 中读取 `input_tokens` 和 `input_tokens_details` 并在 Anthropic 的 `message_delta` 中转发它们,将 `cached_tokens` 剥离到 `cache_read_input_tokens`、`cache_write_tokens` 剥离到 `cache_creation_input_tokens`,使这三个字段之和仍等于 prompt 总量(未上报 `cache_write_tokens` 的上游会让 `cache_creation_input_tokens` 保持为 `0`)。
 - **窗口(分母)对未识别的 id 默认为固定的 200k。** 一个真实窗口更大的模型(例如 372k 的 `gpt-5.6-sol`)会显示一个保守的、偏高的百分比 —— 这只会让自动压缩稍微提前触发。
 
 200k 默认值可以在客户端用 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 覆盖(Claude Code 2.1.205+);它适用于任何**不**以 `claude-` 开头的模型 id:

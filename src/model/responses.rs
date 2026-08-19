@@ -39,6 +39,13 @@ pub struct AnthropicSseMachine {
     thinking_enabled: bool,
     input_tokens: u64,
     cache_read_tokens: u64,
+    /// Prompt tokens the upstream *wrote* into its cache this turn, read from
+    /// `usage.input_tokens_details.cache_write_tokens` (openai/codex
+    /// codex-rs/codex-api/src/sse/responses.rs). Absent on every upstream that
+    /// has not shipped the field yet — upstream itself reads it with
+    /// `#[serde(default)]` — in which case this stays `0` and the emitted usage
+    /// is byte-identical to before the field existed.
+    cache_creation_tokens: u64,
     output_tokens: u64,
     /// Prompt-size estimate (local tiktoken) surfaced in the `message_start`
     /// `usage.input_tokens`. The Responses API only reports real usage at
@@ -111,6 +118,7 @@ impl AnthropicSseMachine {
             thinking_enabled,
             input_tokens: 0,
             cache_read_tokens: 0,
+            cache_creation_tokens: 0,
             output_tokens: 0,
             input_tokens_estimate: 0,
             usage_observed: false,
@@ -784,8 +792,9 @@ impl AnthropicSseMachine {
 
     /// Anthropic-shaped usage. Claude Code's context indicator sums
     /// input_tokens + cache_read + cache_creation, so the split must preserve the
-    /// total. OpenAI's `input_tokens` already includes cached tokens, so
-    /// cache_read is peeled off and input_tokens holds the uncached remainder.
+    /// total. OpenAI's `input_tokens` already includes both the cached-read and
+    /// the cache-write portions, so each is peeled off and input_tokens holds the
+    /// remainder.
     fn usage_value(&self) -> Value {
         // Fall back to the message_start estimate only when real usage was never
         // observed — i.e. the stream ended before response.completed, so
@@ -803,7 +812,7 @@ impl AnthropicSseMachine {
         json!({
             "input_tokens": input_tokens,
             "cache_read_input_tokens": self.cache_read_tokens,
-            "cache_creation_input_tokens": 0,
+            "cache_creation_input_tokens": self.cache_creation_tokens,
             "output_tokens": self.output_tokens,
         })
     }
@@ -818,16 +827,26 @@ impl AnthropicSseMachine {
         if let Some(tokens) = usage.get("output_tokens").and_then(Value::as_u64) {
             self.output_tokens = tokens;
         }
-        // OpenAI `input_tokens` counts total prompt tokens including cached ones;
-        // peel the cached portion into cache_read so the sum still equals the
-        // prompt size Claude Code charts against the context window.
+        // OpenAI `input_tokens` counts total prompt tokens including both the
+        // cached-read and the cache-write portions; peel each off so the three
+        // Anthropic fields still sum to the prompt size Claude Code charts
+        // against the context window. Clamped and saturating throughout: a
+        // malformed payload whose details exceed the total must not underflow.
         let cached = usage
             .pointer("/input_tokens_details/cached_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(0);
+        let cache_write = usage
+            .pointer("/input_tokens_details/cache_write_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         if let Some(total_input) = usage.get("input_tokens").and_then(Value::as_u64) {
             self.cache_read_tokens = cached.min(total_input);
-            self.input_tokens = total_input - self.cache_read_tokens;
+            self.cache_creation_tokens =
+                cache_write.min(total_input.saturating_sub(self.cache_read_tokens));
+            self.input_tokens = total_input
+                .saturating_sub(self.cache_read_tokens)
+                .saturating_sub(self.cache_creation_tokens);
             self.usage_observed = true;
         }
     }
@@ -1030,6 +1049,88 @@ mod tests {
             event: Some(name.to_string()),
             data,
         }
+    }
+
+    /// Drive a machine to `response.completed` with the given upstream `usage`
+    /// and return the Anthropic `usage` object from the terminal `message_delta`.
+    fn completed_usage(usage: Value) -> Value {
+        let mut machine = AnthropicSseMachine::new("test", false, false);
+        let frames = machine.apply(event("response.completed", json!({"usage": usage})));
+        let delta = frames
+            .iter()
+            .find(|frame| frame.contains("message_delta"))
+            .expect("a completed response emits message_delta");
+        let data = delta
+            .split_once("data: ")
+            .expect("the sse frame carries a data line")
+            .1;
+        serde_json::from_str::<Value>(data.trim()).expect("message_delta data is json")["usage"]
+            .clone()
+    }
+
+    #[test]
+    fn usage_without_cache_write_tokens_is_unchanged() {
+        // Regression guard for the absent-field path: every upstream that has not
+        // shipped `cache_write_tokens` must produce exactly the previous shape —
+        // the cached portion peeled into cache_read, cache_creation at 0.
+        let usage = completed_usage(json!({
+            "input_tokens": 1200,
+            "input_tokens_details": {"cached_tokens": 800},
+            "output_tokens": 9,
+        }));
+        assert_eq!(
+            usage,
+            json!({
+                "input_tokens": 400,
+                "cache_read_input_tokens": 800,
+                "cache_creation_input_tokens": 0,
+                "output_tokens": 9,
+            })
+        );
+    }
+
+    #[test]
+    fn usage_peels_cache_write_tokens_into_cache_creation() {
+        // Both detail fields are peeled off the total, and the three input fields
+        // still sum to the upstream `input_tokens`.
+        let usage = completed_usage(json!({
+            "input_tokens": 1200,
+            "input_tokens_details": {"cached_tokens": 800, "cache_write_tokens": 150},
+            "output_tokens": 9,
+        }));
+        assert_eq!(
+            usage,
+            json!({
+                "input_tokens": 250,
+                "cache_read_input_tokens": 800,
+                "cache_creation_input_tokens": 150,
+                "output_tokens": 9,
+            })
+        );
+        let sum = usage["input_tokens"].as_u64().unwrap()
+            + usage["cache_read_input_tokens"].as_u64().unwrap()
+            + usage["cache_creation_input_tokens"].as_u64().unwrap();
+        assert_eq!(sum, 1200);
+    }
+
+    #[test]
+    fn usage_clamps_details_that_exceed_the_reported_input_tokens() {
+        // A pathological payload (details summing past the total) must not panic
+        // or underflow; the three fields still sum to `input_tokens`.
+        let usage = completed_usage(json!({
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 90, "cache_write_tokens": 500},
+            "output_tokens": 1,
+        }));
+        assert_eq!(
+            usage,
+            json!({
+                "input_tokens": 0,
+                "cache_read_input_tokens": 90,
+                "cache_creation_input_tokens": 10,
+                "output_tokens": 1,
+            })
+        );
     }
 
     #[test]

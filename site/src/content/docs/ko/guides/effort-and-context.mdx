@@ -43,7 +43,7 @@ shunt에서의 우선순위: 구성의 `route.effort` / `[providers.*].effort` �
 
 Claude Code는 어시스턴트 메시지의 토큰 `usage`를 모델의 컨텍스트 윈도우 크기로 나누어 로컬에서 컨텍스트 표시기를 계산합니다. `responses` 프로바이더로 라우팅된 모델의 경우:
 
-- **토큰 카운트(분자)는 정확합니다.** shunt는 Responses `usage`에서 `input_tokens`(및 캐시된 토큰)를 읽어 Anthropic `message_delta`로 전달하며, 캐시된 부분을 `cache_read_input_tokens`로 분리합니다.
+- **토큰 카운트(분자)는 정확합니다.** shunt는 Responses `usage`에서 `input_tokens`와 `input_tokens_details`를 읽어 Anthropic `message_delta`로 전달하며, `cached_tokens`는 `cache_read_input_tokens`로, `cache_write_tokens`는 `cache_creation_input_tokens`로 분리해 세 필드의 합이 프롬프트 총량과 일치하도록 유지합니다(`cache_write_tokens`를 보고하지 않는 업스트림에서는 `cache_creation_input_tokens`가 `0`으로 남습니다).
 - **윈도우(분모)는 인식되지 않는 id에 대해 고정된 200k로 기본 설정됩니다.** 더 큰 실제 윈도우를 가진 모델(예: 372k의 `gpt-5.6-sol`)은 보수적으로 과다 보고된 백분율을 표시합니다 — 이는 자동 압축이 약간 일찍 발동하게 할 뿐입니다.
 
 200k 기본값은 클라이언트 측에서 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`로 오버라이드할 수 있으며(Claude Code 2.1.205+), `claude-`로 시작하지 **않는** 모든 모델 id에 적용됩니다:

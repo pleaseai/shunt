@@ -3,7 +3,7 @@
 
 use crate::{auth::Credential, routing::Route, server::AppState};
 
-/// Codex CLI client identity, mirrored from openai/codex rust-v0.144.4.
+/// Codex CLI client identity, mirrored from openai/codex rust-v0.148.0.
 ///
 /// The ChatGPT backend routes newer model slugs (e.g. gpt-5.6-luna, which has
 /// `minimal_client_version: 0.144.0`) by client identity and answers
@@ -15,8 +15,8 @@ use crate::{auth::Credential, routing::Route, server::AppState};
 /// (codex-rs/login/src/auth/default_client.rs) and sends the bare CLI
 /// version in a `version` header (codex-rs/model-provider-info/src/lib.rs).
 /// Bump both together when a new slug requires a newer client version.
-pub(super) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.144.4";
-pub(super) const CODEX_CLIENT_VERSION: &str = "0.144.4";
+pub(super) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.148.0";
+pub(super) const CODEX_CLIENT_VERSION: &str = "0.148.0";
 
 /// Grok CLI identity, mirrored from the official Grok CLI (via
 /// raine/claude-code-proxy `src/providers/grok/client.rs`). The subscription
@@ -25,6 +25,26 @@ pub(super) const CODEX_CLIENT_VERSION: &str = "0.144.4";
 /// `XaiOauth` (subscription bearer) credential.
 const GROK_CLIENT_IDENTIFIER: &str = "grok-shell";
 const GROK_CLIENT_VERSION: &str = "0.2.93";
+
+/// Build the `x-codex-routing-hint` value the Codex CLI sends on the ChatGPT
+/// backend (`X_CODEX_ROUTING_HINT_HEADER` / `build_routing_hint_header`,
+/// codex-rs/core/src/client.rs): the upstream model slug, plus `;tier=<tier>`
+/// when a service tier is actually on the wire.
+///
+/// The tier predicate mirrors the request body's exactly (see
+/// `model/responses_request.rs`): `"default"` is a client-only sentinel that is
+/// stripped before the body is serialized, so the hint must strip it too and
+/// never advertise a tier the body did not send.
+pub(super) fn routing_hint(route: &Route) -> String {
+    match route
+        .service_tier
+        .as_deref()
+        .filter(|tier| *tier != "default")
+    {
+        Some(tier) => format!("model={};tier={tier}", route.upstream_model),
+        None => format!("model={}", route.upstream_model),
+    }
+}
 
 pub(super) fn request_builder(
     state: &AppState,
@@ -59,7 +79,8 @@ pub(super) fn request_builder(
                 .header("chatgpt-account-id", account_id)
                 .header("originator", "codex_cli_rs")
                 .header("user-agent", CODEX_USER_AGENT)
-                .header("version", CODEX_CLIENT_VERSION);
+                .header("version", CODEX_CLIENT_VERSION)
+                .header("x-codex-routing-hint", routing_hint(route));
             // Session/identity headers the real Codex CLI sends alongside the
             // client identity above (raine/claude-code-proxy build_codex_headers,
             // cross-checked against codex-rs/login/src/auth/default_client.rs).
@@ -199,6 +220,11 @@ mod tests {
             request.headers().get("version").unwrap(),
             super::CODEX_CLIENT_VERSION
         );
+        // No service tier on the route ⇒ the routing hint carries the model alone.
+        assert_eq!(
+            request.headers().get("x-codex-routing-hint").unwrap(),
+            "model=gpt-5.2-codex"
+        );
         assert_eq!(
             request.headers().get("OpenAI-Beta").unwrap(),
             "responses=experimental"
@@ -209,6 +235,74 @@ mod tests {
         assert!(request.headers().get("x-client-request-id").is_none());
         assert!(request.headers().get("x-codex-window-id").is_none());
         assert!(request.headers().get("accept").is_none());
+    }
+
+    #[test]
+    fn routing_hint_appends_a_configured_service_tier() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+        let route = Route {
+            service_tier: Some("priority".to_string()),
+            ..codex_route()
+        };
+
+        let request = build_test_request(
+            &state,
+            &route,
+            Credential::ChatGptOAuth {
+                access_token: "access-token".to_string(),
+                account_id: "account-id".to_string(),
+            },
+            None,
+        );
+
+        assert_eq!(
+            request.headers().get("x-codex-routing-hint").unwrap(),
+            "model=gpt-5.2-codex;tier=priority"
+        );
+    }
+
+    #[test]
+    fn routing_hint_omits_the_default_service_tier_sentinel() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+        let route = Route {
+            service_tier: Some("default".to_string()),
+            ..codex_route()
+        };
+
+        let request = build_test_request(
+            &state,
+            &route,
+            Credential::ChatGptOAuth {
+                access_token: "access-token".to_string(),
+                account_id: "account-id".to_string(),
+            },
+            None,
+        );
+
+        // `"default"` is stripped from the request body, so the hint must not
+        // advertise a tier the body never sent.
+        assert_eq!(
+            request.headers().get("x-codex-routing-hint").unwrap(),
+            "model=gpt-5.2-codex"
+        );
+    }
+
+    #[test]
+    fn routing_hint_is_absent_for_an_api_key_credential() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        let request = build_test_request(
+            &state,
+            &codex_route(),
+            Credential::ApiKey {
+                value: "api-key".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            },
+            None,
+        );
+
+        // Upstream suppresses the hint for api-key/bearer/aws providers.
+        assert!(request.headers().get("x-codex-routing-hint").is_none());
     }
 
     #[test]

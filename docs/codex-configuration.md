@@ -174,15 +174,31 @@ For a Codex request shunt sends the Codex-CLI identity so client-version gating 
 | `authorization` | `Bearer <access_token>` |
 | `chatgpt-account-id` | `<account_id>` |
 | `originator` | `codex_cli_rs` |
-| `user-agent` | `codex_cli_rs/0.144.4` (`CODEX_USER_AGENT`) |
-| `version` | `0.144.4` (`CODEX_CLIENT_VERSION`) |
+| `user-agent` | `codex_cli_rs/0.148.0` (`CODEX_USER_AGENT`) |
+| `version` | `0.148.0` (`CODEX_CLIENT_VERSION`) |
+| `x-codex-routing-hint` | `model=<upstream_model>`, or `model=<upstream_model>;tier=<service_tier>` when a tier is set |
 | `OpenAI-Beta` | `responses=experimental` |
 | `content-type` | `application/json` |
 | `content-encoding` | `zstd` — only when the request body was compressed (see §4.5) |
 
-The `user-agent` / `version` are **pinned to openai/codex rust-v0.144.4**. If a future slug
+The `user-agent` / `version` are **pinned to openai/codex rust-v0.148.0**. If a future slug
 demands a newer client, bump `CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION` in
 `src/adapters/responses/request.rs`.
+
+The identity headers — `chatgpt-account-id`, `originator`, `user-agent`, `version`, and
+`x-codex-routing-hint` — are sent **only** on the ChatGPT OAuth arm; an API-key (or any other)
+credential on a `responses` provider gets the bearer alone. `OpenAI-Beta` is gated on the provider
+flavor instead (withheld for xAI/Grok, sent otherwise), and `content-type` is always sent.
+
+`x-codex-routing-hint` mirrors openai/codex's `X_CODEX_ROUTING_HINT_HEADER`
+(`build_routing_hint_header`, codex-rs/core/src/client.rs), which upstream likewise suppresses for
+api-key/bearer/aws providers. The `;tier=` segment appears only when the same predicate that
+governs the request body's `service_tier` holds — a tier is configured and it isn't the
+client-only `"default"` sentinel (§9) — so the hint can never advertise a tier the body did not
+send. The websocket transport (`m7-codex-websocket.md`) sends it too, as a handshake header;
+because shunt pools and reuses those connections, a reused socket carries the hint of the turn
+that opened it. That matches upstream, which also builds the header only at connection time — and
+it is a routing *hint*, not a routing decision.
 
 ### 4.5 Request-body compression
 
@@ -514,9 +530,13 @@ request-shaping rules (§6 of [`m6-xai-provider.md`](m6-xai-provider.md)).
 
 Claude Code computes the context indicator **locally**: `usage` tokens ÷ the model's window size.
 
-- **Numerator is accurate.** shunt forwards the Responses `usage` (`input_tokens`, peeling the
-  cached part into `cache_read_input_tokens`), so the bar fills correctly as the conversation
-  grows.
+- **Numerator is accurate.** shunt forwards the Responses `usage`, peeling
+  `input_tokens_details.cached_tokens` into `cache_read_input_tokens` and
+  `input_tokens_details.cache_write_tokens` into `cache_creation_input_tokens` and leaving the
+  remainder in `input_tokens` — the Responses `input_tokens` is the whole prompt, and Claude Code
+  sums all three, so the split preserves the total. The bar therefore fills correctly as the
+  conversation grows. An upstream that doesn't report `cache_write_tokens` leaves
+  `cache_creation_input_tokens` at `0`.
 - **Denominator defaults to 200k for mapped ids.** Claude Code's `getContextWindowForModel`
   returns `200_000` for any id it doesn't recognize (its accurate per-model lookup only runs when
   the base URL is `api.anthropic.com`). A larger real window (e.g. `gpt-5.6-sol` at 372k) shows a
@@ -773,7 +793,7 @@ auto-discovered accounts, so imported store logins still get pooling.)
 - No model-based routing — every inbound request goes to the one configured provider, regardless
   of the `model` field in the body.
 - **Verbatim header passthrough.** The outbound path *synthesizes* the Codex identity headers of
-  §4.4 (pinned `originator`/`user-agent=codex_cli_rs/0.144.4`/`version=0.144.4`, `OpenAI-Beta`, session
+  §4.4 (pinned `originator`/`user-agent=codex_cli_rs/0.148.0`/`version=0.148.0`, `OpenAI-Beta`, session
   headers). The inbound endpoint does **not** — the client already *is* a Codex CLI, so its own
   request headers (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) are forwarded unchanged
   and shunt swaps in **only** the pool account's `Authorization` + `chatgpt-account-id` (and strips
