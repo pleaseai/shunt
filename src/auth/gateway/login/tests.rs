@@ -646,12 +646,32 @@ fn poll_deadline_saturates_instead_of_panicking() {
 /// Drives the whole command rather than the store helper, so deleting the lock
 /// from `run_bounded`'s write is what turns this red.
 ///
-/// The refresher is released *causally* — by watching for the token POST to
-/// reach the mock gateway — rather than after a fixed sleep. A wall-clock wait
-/// fails in the dangerous direction: on a loaded runner the login's three
-/// round-trips can outlast it, so even an unlocked login would write last and
-/// the test would go green with the defect present. Waiting on the POST pins
-/// the login to the instant its network work is done.
+/// The refresher is released only after the login is observed to have reached
+/// its write, in two stages, and the order of the two is the whole point.
+///
+/// First `await_token_post` waits *causally* for the device flow's last
+/// round-trip, with a deadline generous enough to be unreachable in practice.
+/// That takes discovery and the two POSTs out of the bounded window entirely —
+/// they are waited for, never budgeted for. Then `await_stored_gateway` polls
+/// the session file on a short deadline, and by then the only work left is
+/// "read the response, build the session, write the file". Collapsing the two
+/// into a single short poll would put three network round-trips back inside a
+/// budget sized for a microseconds-scale step, and a loaded runner that
+/// overran it would flip a defective build green — the exact failure this
+/// staging exists to remove.
+///
+/// The main task therefore never *times* the login's write, it **observes**
+/// it: when the lock is missing, the refresher's write is ordered after the
+/// login's by construction, and the stale value it restores is what the
+/// assertion catches. That holds no matter how slow the runner is.
+///
+/// The write poll's deadline is the one duration left, and it is deliberately
+/// *expected to expire* on a correct build: a login that takes the lock cannot
+/// write while the refresher holds it, so the poll must time out. That is the
+/// lock doing its job, not a fallback — which is why it cannot be "simplified"
+/// back into a sleep. A sleep would make the two builds indistinguishable
+/// again, and expiring early would then silently flip a defective build green.
+/// Here, expiring early only ends the test sooner.
 ///
 /// Unix only, like the logout counterpart in `store`: off Unix there is no
 /// advisory lock to serialize on.
@@ -677,12 +697,6 @@ async fn login_waits_for_an_in_flight_refresh_before_storing_the_session() {
             .expect("the refresher takes the lock first");
         held_tx.send(()).expect("signal that the lock is held");
         release_rx.await.expect("the release signal");
-        // Belt and braces on top of the causal wait, not a substitute for it:
-        // the gateway records the POST a hair before the login returns from
-        // `send`, so this covers the sub-millisecond gap between "the request
-        // was logged" and "the login reaches its write". Do not delete it as
-        // redundant — and do not grow it back into the coordination itself.
-        tokio::time::sleep(Duration::from_millis(50)).await;
         store::write_session(
             &refresher_path,
             &store::test_session("https://old.example", 1),
@@ -697,9 +711,14 @@ async fn login_waits_for_an_in_flight_refresh_before_storing_the_session() {
         async move { run_bounded(&gateway_url, true, Duration::from_secs(5)).await }
     });
 
-    // The login has now finished every round-trip it makes and is at — or
-    // blocked on — the session write.
+    // Stage 1, causal and effectively unbounded: the login's network work is
+    // done. Reached on both paths — `run_bounded` takes the session lock only
+    // after the token poll returns — so a timeout here is a real failure.
     await_token_post(&server).await;
+    // Stage 2, short and bounded: only the write is left. Without the lock the
+    // login has written by now and this observes it; with the lock it cannot
+    // have, and this necessarily times out — see the doc comment.
+    await_stored_gateway(&path, &server.uri()).await;
     release_tx.send(()).expect("release the refresher");
 
     login
@@ -723,10 +742,14 @@ async fn login_waits_for_an_in_flight_refresh_before_storing_the_session() {
 
 /// Block until the gateway has received the device-flow token POST, so a
 /// caller can order itself against the login's last network call instead of
-/// against the clock.
+/// budgeting for it.
 ///
-/// Bounded so a login that never gets there fails the test with this message
-/// rather than hanging the suite until the harness timeout.
+/// Stage 1 of the two-stage wait in the race test. The deadline is deliberately
+/// far larger than the work: it is not a budget the login races, it is a bound
+/// so a login that never posts fails with this message instead of hanging the
+/// suite. Both a locked and an unlocked login reach the POST — the session lock
+/// is taken only after the poll returns — so reaching it is not evidence about
+/// the lock, and a timeout here is a genuine failure worth panicking on.
 #[cfg(unix)]
 async fn await_token_post(server: &MockServer) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -746,6 +769,36 @@ async fn await_token_post(server: &MockServer) {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     panic!("the login never posted to the token endpoint");
+}
+
+/// Block until the session file on disk names `gateway_url`, so a caller can
+/// order itself against the login's *write* rather than against the clock.
+///
+/// Stage 2, and it only ever covers the write, because `await_token_post` has
+/// already absorbed the network round-trips. That is what lets the deadline be
+/// this short without racing anything.
+///
+/// Reads through `store::read_session` rather than the raw bytes: the store
+/// writes atomically, and going through the same reader means a torn or
+/// half-written file can never be mistaken for a completed write.
+///
+/// Returns quietly when the deadline passes instead of panicking, because the
+/// caller's correct path *expects* it to pass — a login blocked on the session
+/// lock has not written and must not. The value it was waiting for is asserted
+/// by the caller afterwards, so a genuinely missing write still fails there.
+///
+/// The deadline is the test's floor cost on a correct build. Keep it short.
+#[cfg(unix)]
+async fn await_stored_gateway(path: &std::path::Path, gateway_url: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some(session)) = store::read_session(path) {
+            if session.gateway_url == gateway_url {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
 }
 
 /// Mount the three endpoints a whole `run_bounded` login walks — discovery,
