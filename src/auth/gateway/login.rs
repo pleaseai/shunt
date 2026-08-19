@@ -182,6 +182,15 @@ pub(crate) async fn run_bounded(
     // its own writeback *after* the login's — resurrecting the signed-out
     // gateway URL and token pair over the session this command is about to
     // report as saved. Same sibling `.lock` inode, so the three serialize.
+    //
+    // Login-versus-login and login-versus-logout are deliberately
+    // last-approval-wins, and the write is unconditional on purpose: it
+    // completes an approval the user gave in the browser *after* the other
+    // command ran, so the finishing login is the newer intent rather than a
+    // stale one. Unlike the refresh writeback above — which runs invisibly
+    // inside `shunt gateway token` behind Claude Code — this one is a
+    // foreground command that reports the result on the next line, so an
+    // abort-if-changed check would only fail a user who had just approved.
     let _lock = store::lock_session(&path).await?;
     store::write_session(&path, &session)?;
 
@@ -268,10 +277,16 @@ fn browser_open_refusal(raw: &str) -> Option<String> {
 /// refresh, the lock — that had no bound at all.
 ///
 /// Concurrency rather than a timeout, deliberately. A `timeout` here could not
-/// cancel the blocking child wait anyway (a dropped `spawn_blocking` keeps
-/// running), so it would buy a bounded wait and still leak the thread, at the
-/// cost of a duration nobody can justify. Running the two together returns as
-/// soon as the poll does and needs no such number.
+/// end the opener's wait any sooner than dropping it does, at the cost of a
+/// duration nobody can justify. Running the two together returns as soon as the
+/// poll does and needs no such number.
+///
+/// This is half of the fix and does not stand alone. It stops the opener
+/// *gating* the poll; [`crate::auth::shared::open_url_async`] waiting
+/// asynchronously is what stops the dropped opener holding runtime shutdown
+/// afterwards. With only this half the login would print its success line and
+/// then hang at exit; with only that half the poll would still not start until
+/// the opener returned. Do not delete either as redundant.
 ///
 /// `open` is still *driven* — dropping it unpolled would silently delete the
 /// browser open, and its failure message is what tells a user with no working

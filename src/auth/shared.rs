@@ -790,20 +790,68 @@ pub(crate) fn open_url(url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Launch the browser without blocking the async runtime: [`open_url`] spawns a
-/// child process and waits on it, so it runs on `spawn_blocking`'s dedicated
-/// pool rather than on a Tokio worker thread.
+/// Launch the browser and wait for the opener **asynchronously**, so the wait
+/// can be dropped.
+///
+/// Not [`open_url`] on `spawn_blocking`, which is what this used to be. The
+/// opener is not a quick handoff — `open` / `rundll32` / `xdg-open` are waited
+/// on, and a desktop handler that never exits makes that wait unbounded. A
+/// blocking-pool task cannot be cancelled once it has started, so dropping the
+/// future left the wait running, and dropping the *runtime* then waits for it:
+/// `main` runs every CLI action as `runtime()?.block_on(...)` on a temporary
+/// runtime, so the process would hang at exit with the work already finished
+/// and the success line already printed. An async wait is droppable, so neither
+/// the future nor runtime shutdown is held.
+///
+/// `kill_on_drop` is deliberately **not** set. `xdg-open` commonly execs into
+/// the handler, so killing the child can kill the browser the user is in the
+/// middle of approving in. Tokio leaves a dropped child running by default,
+/// which orphans it — correct for a CLI that is exiting anyway, and it holds
+/// nothing.
 ///
 /// `flow` names the login flow in the error — "Claude OAuth", "gateway login".
 /// A shared body must not mean a shared diagnostic: several flows can open a
-/// browser in one session, and a bare "browser open task failed" leaves the
-/// user unable to tell which one broke.
+/// browser in one session, and a bare "browser open failed" leaves the user
+/// unable to tell which one broke. It wraps *every* failure here — the spawn
+/// and a non-zero exit alike — where the `spawn_blocking` version could only
+/// name the flow on a join failure and let the rest propagate unattributed.
 pub(crate) async fn open_url_async(flow: &str, url: &str) -> anyhow::Result<()> {
-    let url = url.to_string();
-    let flow = flow.to_string();
-    tokio::task::spawn_blocking(move || open_url(&url))
+    wait_for_browser_open(browser_open_command(url))
         .await
-        .with_context(|| format!("{flow} browser open task failed"))?
+        .with_context(|| format!("{flow} browser open failed"))
+}
+
+/// The per-platform opener, built but not spawned — split out so
+/// [`wait_for_browser_open`] can be driven by a test with a command of its own.
+///
+/// Windows goes through `rundll32 url.dll,FileProtocolHandler` for the same
+/// reason as [`open_url`]: `cmd /c start` truncates a URL at its first `&`.
+fn browser_open_command(url: &str) -> tokio::process::Command {
+    let mut command = if cfg!(target_os = "macos") {
+        tokio::process::Command::new("open")
+    } else if cfg!(target_os = "windows") {
+        tokio::process::Command::new("rundll32")
+    } else {
+        tokio::process::Command::new("xdg-open")
+    };
+    if cfg!(target_os = "windows") {
+        command.args(["url.dll,FileProtocolHandler", url]);
+    } else {
+        command.arg(url);
+    }
+    command
+}
+
+/// Spawn `command` and await its exit.
+///
+/// The seam the drop-safety test drives: everything here is `.await`, so a
+/// caller that drops this future drops the wait with it.
+async fn wait_for_browser_open(mut command: tokio::process::Command) -> anyhow::Result<()> {
+    let status = command.status().await?;
+    if !status.success() {
+        anyhow::bail!("browser open command exited with {status}");
+    }
+    Ok(())
 }
 
 /// Test-only RAII guard that sets an environment variable on construction and
@@ -1654,5 +1702,59 @@ mod tests {
             );
         }
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Dropping the browser-open wait must not delay runtime shutdown.
+    ///
+    /// This is the failure the async wait exists to remove. On `spawn_blocking`
+    /// the wait could not be cancelled once started, so dropping the future
+    /// left it running and dropping the runtime then blocked on it — and every
+    /// CLI action in `main` runs as `runtime()?.block_on(...)` on a temporary
+    /// runtime, so the process hung at exit with its work already done.
+    ///
+    /// `sleep 60` stands in for a desktop handler that never returns. The
+    /// assertion is on real wall-clock, deliberately: what is under test is
+    /// whether an OS-level wait is still held, and a paused clock cannot
+    /// observe that. The bound is far below the sleep and far above any
+    /// legitimate teardown, so a slow runner yields a visible false red rather
+    /// than a silent pass.
+    ///
+    /// Unix only — `sleep` is not a Windows command.
+    #[cfg(unix)]
+    #[test]
+    fn dropping_the_browser_open_wait_does_not_delay_runtime_shutdown() {
+        let started = std::time::Instant::now();
+        {
+            // Current-thread, not multi-thread: the property under test is that
+            // runtime drop waits for blocking-pool work, which both flavours
+            // have. Spawning one worker instead of one per CPU keeps this test
+            // from perturbing the rest of the suite, which runs in parallel.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            runtime.block_on(async {
+                let mut command = tokio::process::Command::new("sleep");
+                command.arg("60");
+                let wait = wait_for_browser_open(command);
+                tokio::pin!(wait);
+                // Long enough that the child is really spawned and being
+                // waited on, so the drop below has something to drop.
+                tokio::select! {
+                    _ = &mut wait => panic!("`sleep 60` cannot have finished already"),
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                }
+                // `wait` is dropped here, with the child still running.
+            });
+            // ...and the runtime is dropped here, which is where a blocking
+            // wait would have parked until the child exited.
+        }
+
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "dropping the wait and the runtime took {elapsed:?}, so the browser open is still \
+             holding shutdown; `sleep 60` should have been orphaned, not waited on"
+        );
     }
 }
