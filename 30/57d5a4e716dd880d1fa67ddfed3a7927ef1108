@@ -1,0 +1,49 @@
+src/adapters/responses/websocket.rs
+  s_55f424ce824b24::t_dfcd4bcbf4fa4f 604-614
+  s_55f424ce824b24::t_819c8c29eec13f 595,602,615-616
+  s_55f424ce824b24::t_fc5c231a213042 372,415-420,555,644,653,673,693
+  s_55f424ce824b24::t_c9795e3d4a9bfd 582-584
+  s_55f424ce824b24::t_1c40002078c5b6 314-315,340-345,370-371
+  s_55f424ce824b24::t_b8f5e545ca4fec 109-116,231,311
+  s_55f424ce824b24::t_a8c27ccccdf7f9 594,596-601,603,619-643
+  s_55f424ce824b24::t_281f3f57e01b85 617-618
+  s_55f424ce824b24::t_141a11a24df469 593,645
+docs/codex-configuration.md
+  s_55f424ce824b24::t_c58dccd777f48d 179
+  s_55f424ce824b24::t_c0eba467e955a4 197-204
+  s_55f424ce824b24::t_c41aeebb65e836 205-219
+docs/m7-codex-websocket.md
+  s_55f424ce824b24::t_c0eba467e955a4 75-76
+src/adapters/responses/request.rs
+  s_55f424ce824b24::t_9059702fb0e17b 31-37,40-64,66-68,81-88,94-102,113-121
+  s_55f424ce824b24::t_819c8c29eec13f 38
+  s_55f424ce824b24::t_a467ae72e4307a 39,72-75,77-80,89-93,103-105,110-112
+  s_55f424ce824b24::t_ec6b25ef4ef291 410-426,434
+  s_55f424ce824b24::t_0e1bc1253b4c49 4-5
+  s_55f424ce824b24::t_1c10754a0070f8 250,388-406,408-409,443,453-501
+  s_55f424ce824b24::t_c1e54e0c6650bc 407,427-433,435-442,444-452
+  s_55f424ce824b24::t_102bd20054a3f4 65
+  s_55f424ce824b24::t_90434d7f634e94 158-163
+  s_55f424ce824b24::t_58b1949fd90d89 502
+tests/responses_translate.rs
+  s_55f424ce824b24::t_3373c88c39ba01 1175-1207
+  s_55f424ce824b24::t_d8883366e8603a 1174,1208-1209
+site/src/content/docs/guides/codex.mdx
+  s_55f424ce824b24::t_208cf4690eaee9 331-335
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "3057d5a4e716dd880d1fa67ddfed3a7927ef1108",
+  "prompts": {},
+  "sessions": {
+    "s_55f424ce824b24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd6d7497-b259-485d-95e1-ff619b491f07",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
