@@ -98,7 +98,7 @@ pub(crate) async fn run_bounded(
     // connection and never answers would otherwise leave the terminal waiting
     // indefinitely with nothing to read and only Ctrl-C to end it. The poll
     // loop below is deliberately *not* wrapped: it is supposed to wait, and it
-    // has `poll_deadline` plus its own per-attempt transport retry.
+    // has `poll_deadline` plus its own per-attempt bound and transport retry.
     let discovery = bounded(
         network_timeout,
         discover(&client, &gateway_url),
@@ -142,7 +142,7 @@ pub(crate) async fn run_bounded(
         }
     }
 
-    let tokens = poll_for_tokens(&client, &device, &discovery.token_endpoint)
+    let tokens = poll_for_tokens(&client, &device, &discovery.token_endpoint, network_timeout)
         .await
         .context("gateway device authorization failed")?;
 
@@ -161,9 +161,12 @@ pub(crate) async fn run_bounded(
 }
 
 /// `shunt gateway logout` — drop the stored session. Idempotent.
-pub fn logout() -> anyhow::Result<()> {
+///
+/// Async because the removal happens under the session lock, so a logout that
+/// overlaps an in-flight refresh cannot be undone by that refresh's writeback.
+pub async fn logout() -> anyhow::Result<()> {
     let path = store::session_path();
-    if store::remove_session(&path)? {
+    if store::remove_session(&path).await? {
         println!("Removed the gateway session at {}", path.display());
     } else {
         println!("No gateway session at {}; nothing to do", path.display());
@@ -298,10 +301,49 @@ fn poll_deadline(now: Instant, expires_in: u64) -> Instant {
         .unwrap_or(now)
 }
 
+/// One poll attempt, already reduced to what the loop needs: the response, or
+/// a printable reason the attempt produced none.
+///
+/// The reason is a `String` rather than the `reqwest::Error` because a timeout
+/// is not one, and because the error is stripped of its URL before it gets
+/// here (see [`poll_attempt`]).
+type PollAttempt = Result<(reqwest::StatusCode, String), String>;
+
+/// Send one poll and read its body, bounded by `attempt_timeout`.
+///
+/// The bound is the point: the shared refresh client sets no request timeout,
+/// so a gateway that accepts the connection and never finishes the response
+/// leaves this awaiting forever — and the loop's `deadline` check only runs
+/// *between* attempts, so it would never be reached. A timed-out attempt is
+/// reported as a transport failure so it retries on the same path a failed
+/// connect does, with the device-code deadline still governing the whole loop.
+///
+/// A connection reset partway through the *body* is the same class of blip as
+/// a failed connect, so the two are collapsed into one outcome here rather than
+/// only the send being bounded and retried.
+async fn poll_attempt(request: reqwest::RequestBuilder, attempt_timeout: Duration) -> PollAttempt {
+    let attempt = async {
+        let response = request.send().await?;
+        let status = response.status();
+        let text = response.text().await?;
+        Ok::<_, reqwest::Error>((status, text))
+    };
+    match tokio::time::timeout(attempt_timeout, attempt).await {
+        Ok(Ok(response)) => Ok(response),
+        // `without_url`, deliberately: reqwest's `Display` appends the URL it
+        // was talking to, and that is the discovered token endpoint. This
+        // string is logged and then reported in the timeout diagnostic, so
+        // keeping the URL out of it keeps the endpoint out of both.
+        Ok(Err(error)) => Err(error.without_url().to_string()),
+        Err(_) => Err(format!("no response within {attempt_timeout:?}")),
+    }
+}
+
 async fn poll_for_tokens(
     client: &reqwest::Client,
     device: &DeviceCode,
     token_endpoint: &str,
+    attempt_timeout: Duration,
 ) -> anyhow::Result<super::auth::TokenResponse> {
     let deadline = poll_deadline(Instant::now(), device.expires_in);
     let mut interval = device.interval.max(MIN_INTERVAL_SECS);
@@ -316,17 +358,11 @@ async fn poll_for_tokens(
                 ("client_id", CLIENT_ID),
                 ("device_code", device.device_code.as_str()),
             ]);
-        // A connection reset partway through the *body* is the same class of
-        // blip as a failed connect, so the two are collapsed into one outcome
-        // here rather than only the send being retried. Reading the body inside
-        // this match is what puts it on the retry path below.
-        let attempt = match request.send().await {
-            Ok(response) => {
-                let status = response.status();
-                response.text().await.map(|text| (status, text))
-            }
-            Err(error) => Err(error),
-        };
+        // Never wait past the device-code deadline on a single attempt either:
+        // a zero remainder times the attempt out immediately and falls through
+        // to the loop's own deadline break, rather than adding a second exit.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let attempt = poll_attempt(request, attempt_timeout.min(remaining)).await;
         // A single DNS/TLS/connect/read blip must not abort the login: remember
         // the error and fall through to the deadline-bounded sleep, then retry.
         // A permanently unreachable endpoint still fails fast via the
@@ -335,7 +371,7 @@ async fn poll_for_tokens(
             Ok(response) => response,
             Err(error) => {
                 tracing::warn!("gateway token poll request failed, will retry: {error}");
-                last_transport_error = Some(error.to_string());
+                last_transport_error = Some(error.clone());
                 consecutive_transport_failures += 1;
                 if consecutive_transport_failures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES {
                     bail!(
@@ -403,7 +439,12 @@ async fn poll_for_tokens(
 /// Apply the RFC 8628 `slow_down` backoff: bump the interval by
 /// [`SLOW_DOWN_INCREMENT_SECS`], capped at [`MAX_INTERVAL_SECS`].
 fn next_interval(current: u64) -> u64 {
-    (current + SLOW_DOWN_INCREMENT_SECS).min(MAX_INTERVAL_SECS)
+    // Saturating, not plain `+`: `current` starts from a gateway-supplied
+    // `interval`, so a near-`u64::MAX` value followed by `slow_down` would
+    // panic in debug and wrap to a tiny interval in release.
+    current
+        .saturating_add(SLOW_DOWN_INCREMENT_SECS)
+        .min(MAX_INTERVAL_SECS)
 }
 
 /// `raw` is the response body the JSON came from: the unrecognized-shape arm

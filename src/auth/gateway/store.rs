@@ -130,7 +130,13 @@ pub fn write_session(path: &Path, session: &GatewaySession) -> anyhow::Result<()
 
 /// Remove the session file. `Ok(false)` means there was nothing to remove, so
 /// `shunt gateway logout` is idempotent.
-pub fn remove_session(path: &Path) -> anyhow::Result<bool> {
+///
+/// Under the same lock [`super::auth::resolve_token_bounded`] takes, because
+/// logout and refresh contend for the same file: an unlocked unlink can land
+/// *between* a refresher's token POST and its writeback, and the writeback then
+/// resurrects a session the user just signed out of.
+pub async fn remove_session(path: &Path) -> anyhow::Result<bool> {
+    let _lock = lock_session(path).await?;
     let removed = match fs::remove_file(path) {
         Ok(()) => true,
         Err(error) if error.kind() == io::ErrorKind::NotFound => false,
@@ -138,13 +144,12 @@ pub fn remove_session(path: &Path) -> anyhow::Result<bool> {
             return Err(error).with_context(|| format!("failed to remove {}", path.display()))
         }
     };
-    // Best-effort, and deliberately not an error: the lock file carries no
-    // state, so failing the logout over a leftover empty file would be worse
-    // than leaving it. Unlinking it while another process holds the lock is
-    // safe here precisely because the session is gone too — that process's
-    // refresh has nothing left to write, and a later `login` creates a fresh
-    // lock inode for the fresh session.
-    let _ = fs::remove_file(lock_path(path));
+    // The lock file is deliberately left behind. It holds no state — it is
+    // empty, and only its inode matters — and a stable inode is exactly what
+    // keeps logout, login, and refresh serialized against each other: unlinking
+    // it would let an in-flight holder keep a lock on the old inode while the
+    // next process locks a freshly created one, so the two would no longer
+    // exclude each other at all.
     Ok(removed)
 }
 
@@ -418,16 +423,19 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn remove_session_is_idempotent() {
+    #[tokio::test]
+    async fn remove_session_is_idempotent() {
         let dir = temp_dir("logout");
         let path = dir.join("session.json");
         write_session(&path, &test_session("https://gateway.example", 0)).unwrap();
 
-        assert!(remove_session(&path).unwrap(), "first removal deletes it");
+        assert!(
+            remove_session(&path).await.unwrap(),
+            "first removal deletes it"
+        );
         assert!(!path.exists());
         assert!(
-            !remove_session(&path).unwrap(),
+            !remove_session(&path).await.unwrap(),
             "removing an absent session must succeed and report nothing removed"
         );
 
@@ -515,8 +523,11 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// The lock file outlives the session on purpose: it is the inode logout,
+    /// login, and refresh serialize on, so unlinking it would let a holder of
+    /// the old inode run alongside a process that locked a new one.
     #[tokio::test]
-    async fn logout_removes_the_lock_file_alongside_the_session() {
+    async fn logout_keeps_the_lock_file_so_later_runs_still_serialize() {
         let dir = temp_dir("logout-lock");
         let path = dir.join("session.json");
         write_session(&path, &test_session("https://gateway.example", 0)).unwrap();
@@ -524,11 +535,49 @@ mod tests {
         drop(lock_session(&path).await.unwrap());
         assert!(lock_path(&path).exists(), "the lock file should exist now");
 
-        assert!(remove_session(&path).unwrap());
+        assert!(remove_session(&path).await.unwrap());
         assert!(!path.exists());
         assert!(
-            !lock_path(&path).exists(),
-            "logout must not leave the lock file behind"
+            lock_path(&path).exists(),
+            "logout must leave the lock inode in place, or the next login and an in-flight \
+             refresh lock different inodes and stop excluding each other"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The race logout used to lose: an unlocked unlink lands while a refresh
+    /// holds the lock, and the refresh's writeback then puts the session back
+    /// after logout already reported success.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn logout_waits_for_an_in_flight_refresh_instead_of_racing_it() {
+        let dir = temp_dir("logout-race");
+        let path = dir.join("session.json");
+        write_session(&path, &test_session("https://gateway.example", 0)).unwrap();
+
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let refresher_path = path.clone();
+        let refresher = tokio::spawn(async move {
+            let lock = lock_session(&refresher_path)
+                .await
+                .expect("the refresher takes the lock first");
+            held_tx.send(()).expect("signal that the lock is held");
+            // Wide enough that a logout which does not take the lock is
+            // guaranteed to unlink before this writeback, rather than usually.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            write_session(&refresher_path, &test_session("https://gateway.example", 1)).unwrap();
+            drop(lock);
+        });
+
+        held_rx.await.expect("the refresher must acquire the lock");
+        remove_session(&path).await.unwrap();
+        refresher.await.expect("refresher task");
+
+        assert!(
+            !path.exists(),
+            "logout unlinked the session while a refresh held the lock, and the refresh then \
+             wrote it straight back"
         );
 
         let _ = fs::remove_dir_all(dir);

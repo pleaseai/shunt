@@ -519,15 +519,16 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
         .context("failed to start tokio runtime")
 }
 
-/// `shunt gateway <action>`. Logout is plain filesystem work; the other two
-/// talk to the gateway and need a runtime.
+/// `shunt gateway <action>`. Only the launcher runs without a runtime: it reads
+/// the cached session and execs, while login, token, and logout all need one —
+/// logout because it removes the session under the async session lock.
 fn gateway(action: GatewayAction, global_config: Option<&std::path::Path>) -> anyhow::Result<()> {
     match action {
         GatewayAction::Login { url, manual } => {
             runtime()?.block_on(shunt::auth::gateway::login::run(&url, manual))
         }
         GatewayAction::Token => runtime()?.block_on(gateway_token()),
-        GatewayAction::Logout => shunt::auth::gateway::login::logout(),
+        GatewayAction::Logout => runtime()?.block_on(shunt::auth::gateway::login::logout()),
         GatewayAction::Claude { args } => {
             reject_swallowed_config(global_config)?;
             // No runtime: the launcher only reads the cached session and execs.

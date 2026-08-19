@@ -9,7 +9,7 @@ description: OAuth device flow, 로컬 승인 사용자, 또는 Google 같은 OI
 
 <Aside type="caution" title="관리형 다중 사용자 접근에만 선택하세요">
 
-게이트웨이 로그인 세션에는 Claude 앱 게이트웨이의 기능 트레이드오프가 따릅니다: WebSearch가 비활성화되고, 퍼스트파티 전용 beta 헤더와 1시간 cache-TTL beta가 생략되며, 로그인에 브라우저가 필요합니다. 개인용이나 단일 사용자 설정이라면 [`ANTHROPIC_BASE_URL`](/ko/guides/connect-claude-code/)과 선택적 [`[server.auth]`](/ko/guides/shared-gateway/)를 계속 사용하세요.
+게이트웨이 로그인 세션에는 Claude 앱 게이트웨이의 [기능 트레이드오프](/guides/gateway-login/#feature-trade-offs)가 따릅니다: WebSearch가 비활성화되고, 퍼스트파티 전용 beta 헤더와 1시간 cache-TTL beta가 생략되며, 로그인에 브라우저가 필요합니다. 개인용이나 단일 사용자 설정이라면 [`ANTHROPIC_BASE_URL`](/ko/guides/connect-claude-code/)과 선택적 [`[server.auth]`](/ko/guides/shared-gateway/)를 계속 사용하세요.
 
 </Aside>
 
@@ -125,9 +125,9 @@ shunt gateway claude                              # 게이트웨이에 연결된
 | :-- | :-- | :-- |
 | 브라우저 승인 | 필요 | 필요 — 동일한 `/device` 페이지, 동일한 same-origin 보호 |
 | 게이트웨이에서의 사용자별 신원 | 있음 | 있음, 동일한 device flow 세션 |
-| 클라이언트 측 기능 트레이드오프 | 적용됨 | 적용되지 않음 — 자격 증명이 `apiKeyHelper`로 도착해 클라이언트가 일반적인 first-party 모드로 유지됨 |
+| 클라이언트 측 [기능 트레이드오프](/guides/gateway-login/#feature-trade-offs) | 적용됨 | 적용되지 않음 — 자격 증명이 `apiKeyHelper`로 도착해 클라이언트가 일반적인 first-party 모드로 유지됨 |
 | 모델 별칭 | 게이트웨이 세션은 `opus`/`sonnet`을 구형 id로 고정 | 일반 세션과 동일 |
-| 자격 증명 종류 게이트 | 적용됨 | **여기서도 적용됨** — `apiKeyHelper`를 제공하는 것 자체가 트리거이며, 세션 게이트와는 별개입니다(프롬프트 캐시 TTL 기본값, Remote Control, 음성 받아쓰기, 아티팩트 게시) |
+| [자격 증명 종류 게이트](/ko/reference/client-environment/#which-gateway-restrictions-apply-to-you) | 적용됨 | **여기서도 적용됨** — `apiKeyHelper`를 제공하는 것 자체가 트리거이며, 세션 게이트와는 별개입니다(프롬프트 캐시 TTL 기본값, Remote Control, 음성 받아쓰기, 아티팩트 게시) |
 | `GET /managed/settings`의 사용자별 정책 | 전달됨 | 요청하는 것이 관측되지 않음 — 클라이언트가 정책을 강제해야 한다면 `forceLoginMethod: "gateway"`를 사용 |
 
 토큰이 어느 자격 증명 슬롯에 도착하는지가 클라이언트의 프로바이더 모드를 결정합니다. 위 표는 Claude Code 2.1.234 기준 실측이며 클라이언트 릴리스에 따라 달라질 수 있습니다.

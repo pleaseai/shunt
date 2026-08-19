@@ -185,9 +185,21 @@ fn a_config_after_the_subcommand_is_forwarded_rather_than_refused() {
     );
 }
 
-/// `.invalid` is reserved and never resolves, so the refresh fails fast — but
-/// only *after* the plaintext warning, which is the point.
-const PLAINTEXT_GATEWAY: &str = "http://internal.invalid";
+/// A non-loopback plain-http gateway whose refresh fails fast — but only
+/// *after* the plaintext warning, which is the point.
+///
+/// `0.0.0.0` rather than a loopback address, and that is load-bearing:
+/// `Ipv4Addr::is_loopback` covers only 127.0.0.0/8, so `is_plaintext_gateway`
+/// returns true here and the warning path under test is actually reached. A
+/// `127.0.0.1` fixture would silently stop exercising it.
+///
+/// `0.0.0.0` rather than a reserved name such as `internal.invalid`, because a
+/// name consults the resolver: `.invalid` never resolves, but RFC 6761 only
+/// says resolvers *should* answer it locally, so an offline or sandboxed host
+/// with no reachable resolver can stall until `NETWORK_TIMEOUT` instead of
+/// failing fast. A connect to `0.0.0.0` is routed to localhost and port 1 is
+/// never bound, so it is refused immediately with no name lookup at all.
+const PLAINTEXT_GATEWAY: &str = "http://0.0.0.0:1";
 
 #[test]
 fn a_plaintext_refresh_warns_on_stderr_and_keeps_stdout_empty() {

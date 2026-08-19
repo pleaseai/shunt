@@ -9,7 +9,7 @@ description: OAuth デバイスフロー、ローカルの承認ユーザー、�
 
 <Aside type="caution" title="管理された複数ユーザー向けアクセスにのみ選ぶ">
 
-ゲートウェイログインのセッションには、Claude apps ゲートウェイ機能のトレードオフがあります。WebSearch は無効になり、ファーストパーティ専用のベータヘッダーと 1 時間の cache-TTL ベータは省かれ、サインインにはブラウザーが必要です。個人用または単一ユーザーのセットアップでは、代わりに [`ANTHROPIC_BASE_URL`](/ja/guides/connect-claude-code/) とオプションの [`[server.auth]`](/ja/guides/shared-gateway/) を引き続き使ってください。
+ゲートウェイログインのセッションには、Claude apps ゲートウェイ[機能のトレードオフ](/guides/gateway-login/#feature-trade-offs)があります。WebSearch は無効になり、ファーストパーティ専用のベータヘッダーと 1 時間の cache-TTL ベータは省かれ、サインインにはブラウザーが必要です。個人用または単一ユーザーのセットアップでは、代わりに [`ANTHROPIC_BASE_URL`](/ja/guides/connect-claude-code/) とオプションの [`[server.auth]`](/ja/guides/shared-gateway/) を引き続き使ってください。
 
 </Aside>
 
@@ -125,9 +125,9 @@ shunt gateway claude                              # ゲートウェイに接続�
 | :-- | :-- | :-- |
 | ブラウザでの承認 | 必要 | 必要 — 同じ `/device` ページ、同じ same-origin 保護 |
 | ゲートウェイ側でのユーザー識別 | あり | あり、同じ device flow のセッション |
-| クライアント側の機能トレードオフ | 適用される | 適用されない — 認証情報が `apiKeyHelper` で届くため、クライアントは通常のファーストパーティモードのまま |
+| クライアント側の[機能トレードオフ](/guides/gateway-login/#feature-trade-offs) | 適用される | 適用されない — 認証情報が `apiKeyHelper` で届くため、クライアントは通常のファーストパーティモードのまま |
 | モデルエイリアス | ゲートウェイセッションは `opus`/`sonnet` を旧 id に固定 | 通常のセッションと同じ |
-| 認証情報の種類によるゲート | 適用される | **こちらでも適用される** — `apiKeyHelper` を渡すこと自体がトリガーで、セッションのゲートとは独立です（プロンプトキャッシュ TTL の既定値、Remote Control、音声入力、アーティファクトの公開） |
+| [認証情報の種類によるゲート](/ja/reference/client-environment/#which-gateway-restrictions-apply-to-you) | 適用される | **こちらでも適用される** — `apiKeyHelper` を渡すこと自体がトリガーで、セッションのゲートとは独立です（プロンプトキャッシュ TTL の既定値、Remote Control、音声入力、アーティファクトの公開） |
 | `GET /managed/settings` によるユーザー別ポリシー | 配信される | 取得しに行く動作は観測されず — クライアントにポリシーを強制させたい場合は `forceLoginMethod: "gateway"` を使用 |
 
 トークンがどの認証情報スロットに届くかがクライアントのプロバイダーモードを決めます。上の表は Claude Code 2.1.234 で実測したもので、クライアントのリリースによって変わり得ます。

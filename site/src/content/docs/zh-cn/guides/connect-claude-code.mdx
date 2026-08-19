@@ -116,7 +116,9 @@ shunt gateway claude
 shunt gateway claude -p 'summarize this repo' --model opus
 ```
 
-它在启动 Claude Code 时附带一个同时包含网关 base URL 和 `apiKeyHelper` 的内联 `--settings` 文档，只作用于这次调用 —— 你的设置文件不受影响，而且该文档的优先级高于 shell 中已经 export 的 `ANTHROPIC_BASE_URL`（针对 Claude Code 2.1.234 实测）。`claude` 之后的参数会原样转发；`--config` 会被拒绝而不是被悄悄吞掉，因此 shunt 自己的标志请放在 `--` 之后。参见 [`shunt gateway claude`](/zh-cn/reference/cli/#shunt-gateway-claude)。
+它在启动 Claude Code 时附带一个同时包含网关 base URL 和 `apiKeyHelper` 的内联 `--settings` 文档，只作用于这次调用 —— 你的设置文件不受影响，而且该文档的优先级高于 shell 中已经 export 的 `ANTHROPIC_BASE_URL`（针对 Claude Code 2.1.234 实测）。`claude` 之后的参数会原样转发；只有位于最前面的 `--help` 和 `--config` 会被 shunt 接管（`--config` 会被拒绝而不是被悄悄吞掉），因此 `claude` 自己的 `--help` 或 `--config` 请放在 `--` 之后。参见 [`shunt gateway claude`](/zh-cn/reference/cli/#shunt-gateway-claude)。
+
+它还会从被启动的进程中移除 34 个凭据与 provider 模式相关的变量，以及 `CLAUDE_CODE_HOST_AUTH_ENV_VAR` 所指向的那个变量。否则，一个已 export 的 `ANTHROPIC_AUTH_TOKEN` 会直接压过 `apiKeyHelper`，而 `CLAUDE_CODE_USE_GATEWAY` 会把客户端切换到网关 provider 模式 —— 那条路径根本不会调用 helper；任何一个都会悄悄让这套接线失效。`ANTHROPIC_BASE_URL` 会被保留，因为它由 settings 文档注入。这样关闭的只是环境变量这一条通道：settings 文件的 `env` 块、你自己设置里已有的 `apiKeyHelper`、已保存的登录，或者 file-descriptor 读取器的 well-known 路径回退，都仍然可以向被启动的客户端提供凭据。
 
 
 

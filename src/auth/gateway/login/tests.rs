@@ -1,8 +1,7 @@
 //! Tests for [`super`]: the device-authorization flow and its poll loop.
 //!
 //! In a sibling file rather than inline, matching the convention already used
-//! by `src/auth/slots.rs`. A pure move — no test was added, removed, or
-//! rewritten here.
+//! by `src/auth/slots.rs`.
 
 use super::*;
 use serde_json::json;
@@ -18,6 +17,16 @@ fn test_device(interval: u64, expires_in: u64) -> DeviceCode {
         expires_in,
         interval,
     }
+}
+
+/// The existing call sites all want the production per-attempt bound; only the
+/// stalled-gateway test below drives it explicitly.
+async fn poll(
+    client: &reqwest::Client,
+    device: &DeviceCode,
+    token_endpoint: &str,
+) -> anyhow::Result<super::super::auth::TokenResponse> {
+    poll_for_tokens(client, device, token_endpoint, NETWORK_TIMEOUT).await
 }
 
 fn pending() -> ResponseTemplate {
@@ -120,7 +129,7 @@ async fn poll_continues_through_a_400_authorization_pending() {
         .await;
 
     let token_endpoint = format!("{}/oauth/token", server.uri());
-    let tokens = poll_for_tokens(
+    let tokens = poll(
         &reqwest::Client::new(),
         &test_device(1, 60),
         &token_endpoint,
@@ -154,7 +163,7 @@ async fn slow_down_widens_the_interval_before_the_next_poll() {
 
     let token_endpoint = format!("{}/oauth/token", server.uri());
     let started = std::time::Instant::now();
-    let tokens = poll_for_tokens(
+    let tokens = poll(
         &reqwest::Client::new(),
         &test_device(1, 600),
         &token_endpoint,
@@ -185,7 +194,7 @@ async fn expired_token_and_access_denied_are_each_fatal_and_distinct() {
             .await;
 
         let token_endpoint = format!("{}/oauth/token", server.uri());
-        let failure = poll_for_tokens(
+        let failure = poll(
             &reqwest::Client::new(),
             &test_device(1, 600),
             &token_endpoint,
@@ -213,7 +222,7 @@ async fn poll_stops_at_the_device_code_deadline() {
     let token_endpoint = format!("{}/oauth/token", server.uri());
     // interval 1s, expires_in 1s: one poll, one sleep past the deadline,
     // then the loop condition ends it rather than polling forever.
-    let error = poll_for_tokens(&reqwest::Client::new(), &test_device(1, 1), &token_endpoint)
+    let error = poll(&reqwest::Client::new(), &test_device(1, 1), &token_endpoint)
         .await
         .expect_err("an unapproved device code must eventually give up");
     let message = error.to_string();
@@ -233,7 +242,7 @@ async fn poll_gives_up_after_consecutive_transport_failures() {
     // `expires_in` is long: if the cap regressed to unbounded retry this
     // would run toward the deadline instead, so the deadline is not what
     // ends this test.
-    let error = poll_for_tokens(
+    let error = poll(
         &reqwest::Client::new(),
         &test_device(1, 600),
         "http://127.0.0.1:1/oauth/token",
@@ -243,6 +252,13 @@ async fn poll_gives_up_after_consecutive_transport_failures() {
     let message = error.to_string();
     assert!(message.contains("3 times in a row"), "got: {message}");
     assert!(!message.contains("timed out"), "got: {message}");
+    // The reported transport error must not carry the endpoint it was talking
+    // to: reqwest's `Display` appends it, and this string is both logged and
+    // repeated in the timeout diagnostic.
+    assert!(
+        !message.contains("127.0.0.1:1"),
+        "the discovered token endpoint must be stripped from the diagnostic: {message}"
+    );
 }
 
 /// A raw listener that answers the first `truncated` requests with headers
@@ -303,7 +319,7 @@ async fn a_body_read_that_dies_after_the_headers_is_retried_not_fatal() {
     // the body outside the retry path turns the first one into an immediate
     // "invalid gateway token response" and aborts a ten-minute login over a
     // local read failure.
-    let tokens = poll_for_tokens(&reqwest::Client::new(), &test_device(1, 600), &endpoint)
+    let tokens = poll(&reqwest::Client::new(), &test_device(1, 600), &endpoint)
         .await
         .expect("a truncated body is a transport blip, not a malformed response");
     assert_eq!(tokens.access_token, "access-1");
@@ -317,7 +333,7 @@ async fn repeated_body_read_failures_still_trip_the_consecutive_cap() {
     // completes has to fail fast on the same counter a failed connect does.
     let (endpoint, server) = truncating_token_endpoint(usize::MAX).await;
 
-    let error = poll_for_tokens(&reqwest::Client::new(), &test_device(1, 600), &endpoint)
+    let error = poll(&reqwest::Client::new(), &test_device(1, 600), &endpoint)
         .await
         .expect_err("a body that never completes must eventually give up");
     let message = error.to_string();
@@ -520,6 +536,70 @@ fn next_interval_bumps_by_five_and_caps_at_thirty() {
         interval = next_interval(interval);
         assert_eq!(interval, expected);
     }
+}
+
+#[test]
+fn next_interval_saturates_on_a_hostile_interval() {
+    // `interval` is server-supplied and RFC 8628 puts no ceiling on it, so a
+    // near-`u64::MAX` value followed by `slow_down` reaches this: a plain `+`
+    // panics in debug and wraps to a busy-spin interval in release.
+    assert_eq!(next_interval(u64::MAX), MAX_INTERVAL_SECS);
+    assert_eq!(
+        next_interval(u64::MAX - SLOW_DOWN_INCREMENT_SECS),
+        MAX_INTERVAL_SECS
+    );
+}
+
+/// The stall a per-attempt bound is the only thing that catches: the socket is
+/// accepted and then nothing is ever written back. The loop's `deadline` check
+/// runs only *between* attempts, so without the bound the very first poll
+/// awaits forever — after the verification URL has already been printed, which
+/// makes it look like a login merely waiting for approval.
+#[tokio::test]
+async fn a_stalled_poll_attempt_still_reaches_the_device_code_deadline() {
+    let (silent_url, silent) = silent_listener().await;
+    let server = MockServer::start().await;
+    // Discovery and the device-code request answer normally; only the token
+    // endpoint stalls, so the login gets all the way past the printed
+    // verification URL before it hits the socket that never replies.
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-authorization-server"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_authorization_endpoint": format!("{}/oauth/device_authorization", server.uri()),
+            "token_endpoint": format!("{silent_url}/oauth/token")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/device_authorization"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_code": "device-code-1",
+            "user_code": "BCDF-GHJK",
+            "verification_uri": "https://gateway.example/device",
+            // Short, so the deadline — not the consecutive-failure cap — is
+            // what this test observes.
+            "expires_in": 2,
+            "interval": 1
+        })))
+        .mount(&server)
+        .await;
+
+    let started = std::time::Instant::now();
+    let error = run_bounded(&server.uri(), true, Duration::from_secs(1))
+        .await
+        .expect_err("a token endpoint that never answers must not hang the login");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("timed out"),
+        "the device-code deadline must be what ends it: {message}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "the poll must be bounded per attempt: waited {:?}",
+        started.elapsed()
+    );
+
+    silent.abort();
 }
 
 #[test]

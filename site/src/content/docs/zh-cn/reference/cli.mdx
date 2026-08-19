@@ -89,9 +89,9 @@ shunt gateway login https://gateway.example.com
 shunt gateway login https://gateway.example.com --manual   # 只打印 URL，不打开浏览器
 ```
 
-shunt 会读取该部署的 `/.well-known/oauth-authorization-server` 文档并使用其中公布的端点，打印一个验证 URL 和一个短用户码，打开浏览器，然后轮询直到你在网关的 `/device` 页面上批准。discovery 返回 `404` 通常意味着该部署没有 `[server.gateway]` 配置段。discovery 和 device code 请求各自都有上限，因此只接受连接却从不应答的部署会以超时形式报告，而不会让终端无限期等待；随后的批准轮询则刻意不作同样限制，因为等待正是它的职责。非回环的明文 `http://` URL 也会被接受，但会给出警告 —— device code 和 refresh token 会以未加密的形式传输，而且不只是这一次登录：之后的每一次令牌刷新都走同一条链路，并且 `shunt gateway token` 每次真正执行刷新时都会重复该警告（直接返回缓存 token、不发起网络调用时则不会）。
+shunt 会读取该部署的 `/.well-known/oauth-authorization-server` 文档并使用其中公布的端点，打印一个验证 URL 和一个短用户码，打开浏览器，然后轮询直到你在网关的 `/device` 页面上批准。discovery 返回 `404` 通常意味着该部署没有 `[server.gateway]` 配置段。discovery 和 device code 请求各自都有上限，因此只接受连接却从不应答的部署会以超时形式报告，而不会让终端无限期等待；随后的批准轮询则刻意不作同样限制，因为等待正是它的职责。非回环的明文 `http://` URL 也会被接受，但会给出警告 —— device code 和 refresh token 会以未加密的形式传输，而且不只是这一次登录：之后的每一次令牌刷新都走同一条链路，并且 `shunt gateway token` 每次真正执行刷新时都会重复该警告（直接返回缓存 token、不发起网络调用时则不会）。而这样的登录会一直走完：明文 `http` 网关可以公布明文端点，但只能是**它自己的 origin** —— scheme、主机和端口都必须与你输入的 URL 一致。位于其他 origin 的明文端点会被拒绝；如果网关本身是通过 `https` 访问的，那么任何明文端点都会被拒绝。
 
-对该部署返回的内容还有两条底线。shunt 只会把 device code 和 refresh token POST 到 discovery 文档以 `https` 公布、或以 `http` 指向回环地址的端点；其他端点不会收到凭据，而是让 discovery 指名失败。验证 URL 也只在其为 `http` 或 `https` 时才自动打开 —— 该字符串由网关而非 shunt 选择，因此其他协议只会打印出来并说明未打开的原因，由你自己决定是否访问。
+对该部署返回的内容还有两条底线。shunt 只会把 device code 和 refresh token POST 到 discovery 文档以 `https` 公布、以 `http` 指向回环地址、或者 —— 当你提供的网关 URL 本身就是明文 `http` 时 —— 以 `http` 指向该网关自身 origin 的端点；其他端点不会收到凭据，而是让 discovery 指名失败。最后这条放宽是依据你输入的 URL 计算的，而不是依据文档，因此一份被伪造或被中间人篡改的 discovery 文档无法指定第三方明文主机、把你的 refresh token POST 过去。验证 URL 也只在其为 `http` 或 `https` 时才自动打开 —— 该字符串由网关而非 shunt 选择，因此其他协议只会打印出来并说明未打开的原因，由你自己决定是否访问。
 
 会话保存在 `~/.shunt/gateway/session.json`（可用 `SHUNT_GATEWAY_SESSION_FILE` 覆盖），以仅属主可读写的方式写入：`0700` 目录中的 `0600` 文件。
 
@@ -124,6 +124,10 @@ shunt gateway claude -p 'summarize this repo' --model opus
 ```
 
 它在运行 `claude` 时附带一个内联 `--settings` 文档，把 `ANTHROPIC_BASE_URL` 指向已保存会话中的网关，并把 `apiKeyHelper` 设为本二进制的绝对路径加 `gateway token`。该文档只作用于这一个进程：`~/.claude/settings.json` 完全不会被修改，并且它的优先级高于 shell 中已经 export 的 `ANTHROPIC_BASE_URL`（针对 Claude Code 2.1.234 实测）。
+
+被启动的进程还会从环境中移除 34 个凭据与 provider 模式相关的变量：Anthropic、AWS 和 Foundry 的凭据变量，`CLAUDE_CODE_USE_*` provider 选择器及其区域、项目等同族变量，`CLAUDE_CODE_SKIP_*_AUTH` 修饰符，宿主托管的间接变量，`ANTHROPIC_CUSTOM_HEADERS`，以及两个 `*_FILE_DESCRIPTOR` 读取器 —— 此外还会在启动时解析并移除 `CLAUDE_CODE_HOST_AUTH_ENV_VAR` 所指向的那个变量，因为它保存的是任意名称，任何固定列表都无法表达。正是这一步让 `apiKeyHelper` 真正可达：settings 的 `env` 块是叠加在继承来的环境之上的，否则一个已 export 的 `ANTHROPIC_AUTH_TOKEN` 会直接压过 helper（helper 只在该变量缺席时才会被调用），而 `CLAUDE_CODE_USE_GATEWAY` 会把会话切换到网关 provider 模式 —— 那条路径根本不会调用 helper。`ANTHROPIC_BASE_URL` 被刻意保留 —— 它由 settings 文档注入。
+
+这样关闭的只是**环境变量**这一条通道。凭据仍然可能通过 settings 文件的 `env` 块（Claude Code 在启动后会重新应用）、你自己设置里已有的 `apiKeyHelper`、凭据存储中已保存的登录，或者两个 file-descriptor 读取器在没有任何变量时也会查阅的 well-known 路径回退，抵达被启动的客户端。仅凭这一点并不能保证会话运行在 first-party 模式下。
 
 `claude` 之后的参数都会原样转发。只有当它们出现在参数列表最前面时才有两个例外：`--help` 会打印 shunt 的帮助，而 `--config` 会被明确报错拒绝，而不是被 shunt 的全局选项悄悄吞掉。要把它们交给 `claude`，请放在 `--` 之后：
 

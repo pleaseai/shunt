@@ -694,7 +694,16 @@ fn warn_scan_identity_collisions(provider: &str, dir: &Path, accounts: &[Account
 /// (no chmod-after-create window on a multi-user host), then atomically write
 /// `value` via [`write_auth_file_atomic`]. Both stores import credentials this way.
 pub(crate) fn write_account_file(path: &Path, value: &Value) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
+    // A bare relative filename ("session.json") yields `Some("")` here, and an
+    // empty parent names no directory to create: the file lands in the current
+    // directory, which already exists. Skipped explicitly, matching
+    // `gateway::store::lock_blocking` — today `create_dir_all` happens to
+    // short-circuit on the empty path, but that is an implementation detail of
+    // `std` to lean on rather than the guarantee this path needs.
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         create_private_dir(parent)?;
     }
     write_auth_file_atomic(path, value)?;
@@ -840,6 +849,34 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    /// A `SHUNT_GATEWAY_SESSION_FILE` (or any account path) naming a file in
+    /// the current directory has `Some("")` as its parent, which names no
+    /// directory to create. This pins the writability of that path so the
+    /// empty-parent handling cannot regress into a failed login.
+    #[test]
+    fn a_bare_relative_filename_has_no_parent_to_create() {
+        let name = format!(
+            "shunt-bare-relative-{}-{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = Path::new(&name);
+        assert_eq!(
+            path.parent().map(Path::to_path_buf),
+            Some(PathBuf::new()),
+            "the case under test is the empty parent, not an absent one"
+        );
+
+        write_account_file(path, &serde_json::json!({"probe": true}))
+            .expect("a file in the current directory must be writable");
+        assert!(path.exists());
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]

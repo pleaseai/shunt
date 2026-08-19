@@ -9,7 +9,7 @@ description: 让 Claude Code 通过 OAuth 设备流程、本地批准用户,或 
 
 <Aside type="caution" title="仅在受管的多用户访问场景下选择它">
 
-网关登录会话带有 Claude apps 网关的功能取舍:WebSearch 被禁用,仅限第一方的 beta 头部和一小时 cache-TTL beta 会被省略,而且登录需要浏览器。对于个人或单用户的部署,请继续使用 [`ANTHROPIC_BASE_URL`](/zh-cn/guides/connect-claude-code/) 以及可选的 [`[server.auth]`](/zh-cn/guides/shared-gateway/)。
+网关登录会话带有 Claude apps 网关的[功能取舍](/guides/gateway-login/#feature-trade-offs):WebSearch 被禁用,仅限第一方的 beta 头部和一小时 cache-TTL beta 会被省略,而且登录需要浏览器。对于个人或单用户的部署,请继续使用 [`ANTHROPIC_BASE_URL`](/zh-cn/guides/connect-claude-code/) 以及可选的 [`[server.auth]`](/zh-cn/guides/shared-gateway/)。
 
 </Aside>
 
@@ -119,9 +119,9 @@ shunt gateway claude                              # 启动已连接网关的 Cla
 | :-- | :-- | :-- |
 | 浏览器批准 | 需要 | 需要 —— 同一个 `/device` 页面，同样的 same-origin 保护 |
 | 网关侧的按用户身份 | 有 | 有，同一个 device flow 会话 |
-| 客户端侧的功能取舍 | 会被套用 | 不会 —— 凭据经由 `apiKeyHelper` 到达，客户端保持通常的 first-party 模式 |
+| 客户端侧的[功能取舍](/guides/gateway-login/#feature-trade-offs) | 会被套用 | 不会 —— 凭据经由 `apiKeyHelper` 到达，客户端保持通常的 first-party 模式 |
 | 模型别名 | 网关会话把 `opus`/`sonnet` 固定为较旧的 id | 与普通会话相同 |
-| 凭据类型闸门 | 会触发 | **同样会触发** —— 提供 `apiKeyHelper` 本身就是触发条件，与会话闸门相互独立（提示缓存 TTL 默认值、Remote Control、语音听写、发布 artifact） |
+| [凭据类型闸门](/zh-cn/reference/client-environment/#which-gateway-restrictions-apply-to-you) | 会触发 | **同样会触发** —— 提供 `apiKeyHelper` 本身就是触发条件，与会话闸门相互独立（提示缓存 TTL 默认值、Remote Control、语音听写、发布 artifact） |
 | 来自 `GET /managed/settings` 的按用户策略 | 会下发 | 未观测到客户端去请求 —— 需要客户端强制执行策略时请用 `forceLoginMethod: "gateway"` |
 
 token 落在哪个凭据槽位决定了客户端的 provider 模式。上表针对 Claude Code 2.1.234 实测，可能随客户端版本变化。

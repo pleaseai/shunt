@@ -1,8 +1,7 @@
 //! Tests for [`super`]: discovery, refresh, expiry, and token resolution.
 //!
 //! In a sibling file rather than inline, matching the convention already used
-//! by `src/auth/slots.rs`. A pure move — no test was added, removed, or
-//! rewritten here.
+//! by `src/auth/slots.rs`.
 
 use super::*;
 use crate::auth::gateway::store::{temp_dir, test_session};
@@ -115,6 +114,66 @@ async fn a_discovery_document_naming_a_plaintext_endpoint_is_refused() {
         assert!(
             message.contains("loopback"),
             "the message must say what the floor is: {message}"
+        );
+    }
+}
+
+/// A plain-http gateway is a supported setup — `normalize_gateway_url` warns
+/// and proceeds — so the endpoints it advertises for *itself* have to be
+/// usable, or the login fails three steps after that promise.
+#[test]
+fn a_plaintext_gateway_may_name_its_own_origin() {
+    let discovery = parse_discovery(
+        &json!({
+            "device_authorization_endpoint": "http://10.0.0.5:8080/oauth/device_authorization",
+            "token_endpoint": "http://10.0.0.5:8080/oauth/token"
+        }),
+        "http://10.0.0.5:8080",
+    )
+    .unwrap_or_else(|_| panic!("a plaintext gateway must be able to name its own endpoints"));
+    assert_eq!(discovery.token_endpoint, "http://10.0.0.5:8080/oauth/token");
+    assert_eq!(
+        discovery.device_authorization_endpoint,
+        "http://10.0.0.5:8080/oauth/device_authorization"
+    );
+}
+
+/// The allowance is same-origin and nothing more. Each case below is a
+/// separate way to widen it by accident, and each must stay refused.
+#[test]
+fn the_plaintext_allowance_does_not_reach_past_the_gateways_own_origin() {
+    for (gateway_url, endpoint, why) in [
+        (
+            "https://gateway.example",
+            "http://gateway.example/oauth/token",
+            "a TLS deployment gains nothing from a plaintext endpoint",
+        ),
+        (
+            "http://10.0.0.5:8080",
+            "http://evil.example/oauth/token",
+            "a hostile document must not redirect the refresh token to a third-party host",
+        ),
+        (
+            "http://10.0.0.5:8080",
+            "http://10.0.0.5:9090/oauth/token",
+            "a different port is a different origin",
+        ),
+    ] {
+        let problem = parse_discovery(
+            &json!({
+                "device_authorization_endpoint": "https://gateway.example/oauth/device_authorization",
+                "token_endpoint": endpoint
+            }),
+            gateway_url,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{gateway_url} + {endpoint}: {why}"));
+        let DiscoveryProblem::Unsafe(named) = problem else {
+            panic!("{gateway_url} + {endpoint} must be refused as unsafe, not as absent");
+        };
+        assert!(
+            named.contains("token_endpoint"),
+            "the offending field must be named: {named}"
         );
     }
 }
@@ -648,6 +707,140 @@ async fn a_blip_inside_the_expiry_buffer_serves_the_still_valid_cached_token() {
         .await
         .expect("a failed refresh must not discard a token that is still valid");
     assert_eq!(token, "access-1");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The cached-token fallback is for *pre-rotation* failures only. Once the
+/// gateway has answered the token POST the stored refresh token is spent, so
+/// serving the cached token from there would swallow the re-login instruction
+/// and leave the next helper run to replay a spent token — which revokes the
+/// whole family.
+// Unix only: a read-only directory is how the writeback is made to fail, and
+// `PermissionsExt` is the only portable-in-this-repo way to produce one.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_write_failure_after_rotation_propagates_instead_of_serving_the_cache() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let server = MockServer::start().await;
+    mount_discovery(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "access-2",
+            "refresh_token": "refresh-2",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = temp_dir("rotated-write-failure");
+    let session_path = dir.join("session.json");
+    let mut session = test_session(&server.uri(), 0);
+    // Inside the refresh buffer but not expired: exactly the state in which the
+    // fallback would otherwise hide this.
+    session.expires_at_ms = now_plus_ms(60);
+    store::write_session(&session_path, &session).unwrap();
+    // Create the lock file first: the resolver opens it before it refreshes,
+    // and the read-only directory below would otherwise fail that open instead
+    // of the writeback under test.
+    drop(store::lock_session(&session_path).await.unwrap());
+    // The atomic write stages a temp file next to the session, so a directory
+    // it cannot create in is what makes the writeback — and only the
+    // writeback — fail.
+    let read_only = std::fs::Permissions::from_mode(0o500);
+    std::fs::set_permissions(&dir, read_only).unwrap();
+
+    let error = resolve_token_at(&session_path)
+        .await
+        .expect_err("a post-rotation write failure must not be served as a cached-token success");
+    let message = format!("{error:#}");
+
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        message.contains("shunt gateway login"),
+        "the instruction that recovers the session must survive: {message}"
+    );
+    assert!(
+        message.contains("now spent"),
+        "the diagnostic must say the refresh token is gone: {message}"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `invalid_grant` is terminal: the family is already dead, so a retry is
+/// pointless and the cached token only postpones the same re-login.
+#[tokio::test]
+async fn a_terminal_invalid_grant_propagates_even_inside_the_expiry_buffer() {
+    let server = MockServer::start().await;
+    mount_discovery(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error": "invalid_grant"})))
+        .mount(&server)
+        .await;
+
+    let dir = temp_dir("invalid-grant-buffered");
+    let session_path = dir.join("session.json");
+    let mut session = test_session(&server.uri(), 0);
+    // Still usable by the wire clock, so only the failure's *class* can be what
+    // keeps this from falling back to `access-1`.
+    session.expires_at_ms = now_plus_ms(60);
+    store::write_session(&session_path, &session).unwrap();
+
+    let error = resolve_token_at(&session_path)
+        .await
+        .expect_err("a dead rotation family must not be papered over with the cached token");
+    let message = error.to_string();
+    assert!(message.contains("invalid_grant"), "got: {message}");
+    assert!(message.contains("shunt gateway login"), "got: {message}");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A refreshed access token is vetted before it is stored. Persisting one the
+/// helper contract rejects bricks the session: every later call takes the fast
+/// path and fails the same validation, with no way out but a fresh login.
+#[tokio::test]
+async fn an_unsafe_refreshed_access_token_is_never_persisted() {
+    let server = MockServer::start().await;
+    mount_discovery(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            // An embedded newline is the realistic case: Claude Code trims
+            // stdout and then rejects the value outright.
+            "access_token": "access-2\nextra",
+            "refresh_token": "refresh-2",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = temp_dir("unsafe-refreshed-token");
+    let session_path = dir.join("session.json");
+    let mut session = test_session(&server.uri(), 0);
+    session.expires_at_ms = now_plus_ms(-1);
+    store::write_session(&session_path, &session).unwrap();
+
+    let error = resolve_token_at(&session_path)
+        .await
+        .expect_err("a token Claude Code would reject must not resolve");
+    assert!(
+        format!("{error:#}").contains("printable ASCII"),
+        "got: {error:#}"
+    );
+
+    let stored = store::read_session(&session_path).unwrap().unwrap();
+    assert_eq!(
+        stored.access_token, "access-1",
+        "the unusable token must not have been written over the stored session"
+    );
+    assert_eq!(stored.refresh_token, "refresh-1");
 
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -115,7 +115,7 @@ pub(crate) async fn discover(
         .await
         .with_context(|| format!("failed to read the discovery response from {url}"))?;
     let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-    match parse_discovery(&value) {
+    match parse_discovery(&value, gateway_url) {
         Ok(discovery) => {
             warn_on_unknown_protocol_version(&value);
             return Ok(discovery);
@@ -153,7 +153,24 @@ enum DiscoveryProblem {
     Unsafe(String),
 }
 
-fn parse_discovery(value: &Value) -> Result<Discovery, DiscoveryProblem> {
+fn parse_discovery(value: &Value, gateway_url: &str) -> Result<Discovery, DiscoveryProblem> {
+    // A plain-http deployment may name its *own* origin, and only its own.
+    //
+    // `login::normalize_gateway_url` accepts `http://10.0.0.5:8080` with a
+    // warning, and `refresh_session` repeats that warning on every refresh —
+    // so a plaintext gateway is a supported (if discouraged) setup, and
+    // rejecting the endpoints it advertises would make the login fail three
+    // steps after promising to proceed. `discover` is shared by login and
+    // refresh, and the stored `gateway_url` is that same origin, so the same
+    // allowance applies on both paths.
+    //
+    // Computed from the *operator-supplied* base URL, never from the document.
+    // `None` for every other gateway, including an https one: nothing about a
+    // TLS deployment justifies plaintext endpoints.
+    let plaintext_gateway_origin = is_plaintext_gateway(gateway_url)
+        .then(|| gateway_url.parse::<reqwest::Url>().ok())
+        .flatten()
+        .map(|url| url.origin());
     let endpoint = |name: &str| -> Result<String, DiscoveryProblem> {
         let raw = value
             .get(name)
@@ -165,11 +182,23 @@ fn parse_discovery(value: &Value) -> Result<Discovery, DiscoveryProblem> {
         // network. `token_refresh_client()`'s hardened policy only inspects
         // *redirect* targets, so with no redirect in play it never fires and
         // this is the only place the transport floor can be applied at all.
-        // Same predicate as that policy, not a second copy of it.
-        if !raw
-            .parse::<reqwest::Url>()
-            .is_ok_and(|url| crate::auth::shared::is_safe_refresh_url(&url))
-        {
+        // Same predicate as that policy, not a second copy of it — widened
+        // only by the same-origin allowance above.
+        //
+        // Same-origin is what keeps that allowance narrow: a hostile or MITM'd
+        // discovery document must not be able to name a *third-party*
+        // plaintext host and have the refresh token POSTed there. Talking to
+        // the operator's own plaintext gateway is an exposure they were warned
+        // about and chose; shipping the token somewhere else is not. Origins
+        // are compared with `Url::origin`, so scheme, host, and port must all
+        // match and a non-tuple (opaque) origin never compares equal.
+        let accepted = raw.parse::<reqwest::Url>().is_ok_and(|url| {
+            crate::auth::shared::is_safe_refresh_url(&url)
+                || plaintext_gateway_origin
+                    .as_ref()
+                    .is_some_and(|origin| url.origin() == *origin)
+        });
+        if !accepted {
             // `{:?}` rather than `sanitize_for_error`: Debug already escapes
             // control characters, and it quotes the endpoint so an empty or
             // whitespace value is still visible in the message.
@@ -194,9 +223,13 @@ fn warn_on_unknown_protocol_version(value: &Value) {
         .and_then(Value::as_u64)
     {
         if version != SUPPORTED_PROTOCOL_VERSION {
-            eprintln!(
-                "Note: this gateway speaks protocol version {version}; shunt was built against \
-                 version {SUPPORTED_PROTOCOL_VERSION}. Upgrade shunt if the login misbehaves."
+            // `tracing`, unlike the security warnings in this module: this one
+            // is a compatibility note, so it belongs on the log surface where
+            // `RUST_LOG` governs it. The default `shunt=info` filter still puts
+            // it on stderr.
+            tracing::warn!(
+                "this gateway speaks protocol version {version}; shunt was built against version \
+                 {SUPPORTED_PROTOCOL_VERSION}. Upgrade shunt if the login misbehaves."
             );
         }
     }
@@ -215,6 +248,51 @@ pub(crate) fn parse_token_response(value: &Value) -> Option<TokenResponse> {
         refresh_token: field("refresh_token")?,
         expires_in: value.get("expires_in").and_then(Value::as_i64),
     })
+}
+
+/// Marker attached to a refresh the gateway will never accept a retry of: the
+/// rotation family is dead, so the only cure is a fresh login.
+///
+/// A type rather than a string match, because `refresh_session` has to
+/// classify this failure and matching on the message would break silently the
+/// first time that message is reworded.
+#[derive(Debug)]
+struct InvalidGrant;
+
+impl std::fmt::Display for InvalidGrant {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("invalid_grant")
+    }
+}
+
+impl std::error::Error for InvalidGrant {}
+
+/// Why a refresh failed, from the caller's point of view.
+///
+/// The distinction decides whether the cached access token may still be served.
+/// The gateway rotates the refresh token on every grant and the old one is
+/// single-use, so once the token POST has been answered the stored refresh
+/// token is spent: falling back to the cached token from there hides the only
+/// instruction that recovers the session, and leaves the spent token on disk
+/// for the next helper run to replay — which revokes the whole family.
+enum RefreshFailure {
+    /// The refresh token was never presented, or the round-trip never
+    /// completed: discovery failed, the connection failed, the call timed out.
+    /// Nothing was rotated, so an unexpired cached token is still a safe answer
+    /// and a later attempt can still succeed.
+    PreRotation(anyhow::Error),
+    /// The stored refresh token is spent or the family is already dead. Serving
+    /// the cached token would only delay a failure a fresh login is the sole
+    /// cure for, so this propagates with its original message intact.
+    Terminal(anyhow::Error),
+}
+
+impl RefreshFailure {
+    fn into_error(self) -> anyhow::Error {
+        match self {
+            Self::PreRotation(error) | Self::Terminal(error) => error,
+        }
+    }
 }
 
 /// Exchange the stored refresh token for a fresh pair.
@@ -249,11 +327,13 @@ async fn refresh(
         return Ok(tokens);
     }
     match value.get("error").and_then(Value::as_str) {
-        Some("invalid_grant") => bail!(
+        // Carries [`InvalidGrant`] so `refresh_session` can tell this apart
+        // from a transient failure without matching on the message text.
+        Some("invalid_grant") => Err(anyhow::Error::new(InvalidGrant).context(
             "the gateway rejected the stored refresh token (invalid_grant). It expired, or \
              another session already used it — refresh tokens are single-use. Run \
-             `shunt gateway login <url>` to sign in again"
-        ),
+             `shunt gateway login <url>` to sign in again",
+        )),
         Some(error) => bail!(
             "gateway token refresh failed ({})",
             sanitize_for_error(error)
@@ -430,14 +510,20 @@ pub(crate) async fn resolve_token_bounded(
         // user-visible auth failure. Once the token has genuinely expired this
         // still fails hard — a dead token returned as a success would only move
         // the error somewhere less legible.
-        Err(error) if is_unexpired_at(&session, SystemTime::now()) => {
+        //
+        // Restricted to pre-rotation failures, deliberately. A post-rotation or
+        // terminal failure leaves a *spent* refresh token on disk, so serving
+        // the cached token here would swallow the re-login instruction and let
+        // the next helper run replay that spent token — the family-wide logout
+        // this whole path exists to avoid.
+        Err(RefreshFailure::PreRotation(error)) if is_unexpired_at(&session, SystemTime::now()) => {
             eprintln!(
                 "Warning: could not refresh the gateway token ({error}); serving the cached one, \
                  which is still valid but expires shortly. This will fail once it does."
             );
             helper_safe_token(session.access_token, &session.gateway_url)
         }
-        Err(error) => Err(error),
+        Err(failure) => Err(failure.into_error()),
     }
 }
 
@@ -457,7 +543,7 @@ async fn refresh_session(
     path: &Path,
     session: &GatewaySession,
     network_timeout: Duration,
-) -> anyhow::Result<String> {
+) -> Result<String, RefreshFailure> {
     // The login-time warning promises this exposure continues "on every token
     // refresh for as long as the session lives" — so it has to be said on the
     // refreshes too, or the docs describe a behavior the code does not have.
@@ -476,33 +562,58 @@ async fn refresh_session(
         );
     }
     let client = crate::auth::shared::token_refresh_client();
+    // Nothing has been presented yet, so every failure up to and including a
+    // timed-out token POST leaves the stored refresh token untouched.
     let discovery = bounded(
         network_timeout,
         discover(&client, &session.gateway_url),
         "discovery",
         &session.gateway_url,
     )
-    .await?;
-    let tokens = bounded(
+    .await
+    .map_err(RefreshFailure::PreRotation)?;
+    let tokens = match bounded(
         network_timeout,
         refresh(&client, &discovery.token_endpoint, &session.refresh_token),
         "token refresh",
         &discovery.token_endpoint,
     )
-    .await?;
+    .await
+    {
+        Ok(tokens) => tokens,
+        // The family is dead; a retry cannot revive it and the cached token
+        // would only postpone the same re-login.
+        Err(error) if error.downcast_ref::<InvalidGrant>().is_some() => {
+            return Err(RefreshFailure::Terminal(error))
+        }
+        Err(error) => return Err(RefreshFailure::PreRotation(error)),
+    };
+    // Validated *before* it is persisted. A gateway answering with a token the
+    // helper contract rejects (an embedded newline is the realistic case) would
+    // otherwise have it written to disk, and every later call would then take
+    // the fast path and fail the same validation — a session bricked until
+    // expiry with no way out but a fresh login.
+    let access_token = helper_safe_token(tokens.access_token, &session.gateway_url)
+        .context(
+            "the previous refresh token is now spent, so run `shunt gateway login <url>` to sign \
+             in again",
+        )
+        .map_err(RefreshFailure::Terminal)?;
     let refreshed = GatewaySession {
         gateway_url: session.gateway_url.clone(),
-        access_token: tokens.access_token,
+        access_token,
         refresh_token: tokens.refresh_token,
         expires_at_ms: expires_at_ms(tokens.expires_in, SystemTime::now()),
     };
     // Hard failure, deliberately: the refresh token just presented is already
     // burned, so returning the access token while losing its replacement would
     // strand the user at the next refresh with no way back but a fresh login.
-    store::write_session(path, &refreshed).context(
-        "the gateway issued a new token pair but it could not be saved; the previous refresh \
-         token is now spent, so run `shunt gateway login <url>` to sign in again",
-    )?;
+    store::write_session(path, &refreshed)
+        .context(
+            "the gateway issued a new token pair but it could not be saved; the previous refresh \
+             token is now spent, so run `shunt gateway login <url>` to sign in again",
+        )
+        .map_err(RefreshFailure::Terminal)?;
     Ok(refreshed.access_token)
 }
 

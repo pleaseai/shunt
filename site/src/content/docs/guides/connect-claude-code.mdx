@@ -116,7 +116,9 @@ shunt gateway claude
 shunt gateway claude -p 'summarize this repo' --model opus
 ```
 
-It launches Claude Code with an inline `--settings` document carrying both the gateway base URL and the `apiKeyHelper`, scoped to that invocation — your settings file is untouched, and the document wins over an `ANTHROPIC_BASE_URL` already exported in the shell (measured against Claude Code 2.1.234). Arguments after `claude` are forwarded verbatim; `--config` is rejected rather than silently swallowed, so pass shunt-owned flags after `--`. See [`shunt gateway claude`](/reference/cli/#shunt-gateway-claude).
+It launches Claude Code with an inline `--settings` document carrying both the gateway base URL and the `apiKeyHelper`, scoped to that invocation — your settings file is untouched, and the document wins over an `ANTHROPIC_BASE_URL` already exported in the shell (measured against Claude Code 2.1.234). Arguments after `claude` are forwarded verbatim; a leading `--help` or `--config` is taken by shunt instead (`--config` is rejected rather than silently swallowed), so pass `claude`'s own `--help` or `--config` after `--`. See [`shunt gateway claude`](/reference/cli/#shunt-gateway-claude).
+
+It also strips 34 credential and provider-mode variables from the launched process, plus whatever variable `CLAUDE_CODE_HOST_AUTH_ENV_VAR` names. Without that, an exported `ANTHROPIC_AUTH_TOKEN` would beat the `apiKeyHelper` outright, and `CLAUDE_CODE_USE_GATEWAY` would flip the client into gateway provider mode, where the helper is never consulted at all — either one silently defeats the wiring. `ANTHROPIC_BASE_URL` is left in place, since the settings document injects it. This closes the ambient-environment channel and nothing more: a settings-file `env` block, an `apiKeyHelper` already in your own settings, an existing saved login, or the file-descriptor readers' well-known-path fallback can all still supply a credential to the launched client.
 
 
 
