@@ -907,12 +907,13 @@ async fn an_unparseable_token_response_is_terminal_even_inside_the_expiry_buffer
 /// a safe answer and a momentary outage must not force a re-login.
 #[tokio::test]
 async fn a_token_endpoint_that_refuses_the_connection_still_serves_the_cached_token() {
-    // Bound and immediately release an ephemeral port: nothing is listening on
-    // it, so the POST fails in `connect` rather than hanging on a firewall
-    // drop the way a fixed port might.
-    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let closed_address = closed.local_addr().unwrap();
-    drop(closed);
+    // Port 1 rather than a bound-then-dropped ephemeral port: the kernel can
+    // hand a released ephemeral port to a sibling test in the same parallel
+    // run, and the connection would then *succeed* — a flake in the
+    // false-negative direction. Nothing binds port 1, and loopback refuses
+    // immediately rather than hanging (`PLAINTEXT_GATEWAY` in
+    // `tests/gateway_cli.rs` uses the same idiom).
+    const CLOSED: &str = "127.0.0.1:1";
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -920,8 +921,8 @@ async fn a_token_endpoint_that_refuses_the_connection_still_serves_the_cached_to
         // Loopback plain http clears the transport floor, so the refusal below
         // is what the refresh trips on rather than discovery.
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "device_authorization_endpoint": format!("http://{closed_address}/oauth/device_authorization"),
-            "token_endpoint": format!("http://{closed_address}/oauth/token")
+            "device_authorization_endpoint": format!("http://{CLOSED}/oauth/device_authorization"),
+            "token_endpoint": format!("http://{CLOSED}/oauth/token")
         })))
         .mount(&server)
         .await;
@@ -940,6 +941,57 @@ async fn a_token_endpoint_that_refuses_the_connection_still_serves_the_cached_to
     // and a later attempt can still succeed.
     let stored = store::read_session(&session_path).unwrap().unwrap();
     assert_eq!(stored.refresh_token, "refresh-1");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A token endpoint that 3xxs must never be classified as "never sent".
+///
+/// This pins the *client choice*, not the classification. `refresh` posts
+/// through `no_redirect_refresh_client`, so the 307 below comes back as a
+/// response and the refresh fails as a bad token response — terminal, and the
+/// cached token is withheld. Put the refresh back on the shared
+/// `token_refresh_client` and it follows the hop to a dead host instead, the
+/// failure becomes `is_connect()`, `ConnectFailed` fires, and the cached token
+/// is served as though the refresh token had never left the process — after
+/// hop 1 already delivered it. `reqwest` cannot distinguish those two connect
+/// failures: `is_redirect()` is false and `Error::url()` reports the original
+/// URL, so no guard on the error can recover what the client choice decides.
+#[tokio::test]
+async fn a_refresh_redirected_to_a_dead_host_is_not_treated_as_never_sent() {
+    // Loopback plain http, so the redirect target clears `is_safe_refresh_url`
+    // and the shared client *would* follow it — the mutation has to fail on
+    // the dead host, not on the transport floor. Port 1 refuses immediately;
+    // see `a_token_endpoint_that_refuses_the_connection_still_serves_the_cached_token`.
+    const DEAD: &str = "http://127.0.0.1:1/oauth/token";
+
+    let server = MockServer::start().await;
+    mount_discovery(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(307).insert_header("location", DEAD))
+        .mount(&server)
+        .await;
+
+    let dir = temp_dir("redirected-refresh");
+    let session_path = dir.join("session.json");
+    let mut session = test_session(&server.uri(), 0);
+    session.expires_at_ms = now_plus_ms(60);
+    store::write_session(&session_path, &session).unwrap();
+
+    let error = resolve_token_at(&session_path)
+        .await
+        .expect_err("a refresh whose POST was answered must not serve the cached token");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("invalid gateway token response"),
+        "the redirect must surface as the gateway's own bad response: {message}"
+    );
+    assert!(
+        message.contains("307"),
+        "the status is the whole diagnosis for an operator who 3xxs their token endpoint: \
+         {message}"
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }

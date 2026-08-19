@@ -615,7 +615,10 @@ otherwise cache a dead token as valid for weeks, with no recovery but deleting `
 hand. Clamping is safe even when it is wrong, since a too-short cached expiry only triggers an
 earlier refresh. Finally, a token that would fail Claude Code's `apiKeyHelper` validator
 (1..=16384 characters of printable ASCII, no whitespace) is refused with a diagnostic naming the
-gateway rather than printed to fail authentication silently.
+gateway rather than printed to fail authentication silently — and `shunt gateway login` puts the
+token it is issued through that same gate before storing anything, so a deployment that cannot
+produce a conforming one fails the login instead of saving a session that reports success and can
+never be used.
 
 `shunt gateway logout` removes the session but deliberately leaves the empty sibling `.lock` file
 in place: that inode is what logout, login, and refresh serialize on, and unlinking it would let an

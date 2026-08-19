@@ -17,7 +17,7 @@ use serde_json::Value;
 use tokio::time::{sleep, Instant};
 
 use super::auth::{
-    bounded, discover, expires_at_ms, parse_token_response, sanitize_for_error,
+    bounded, discover, expires_at_ms, helper_safe_token, parse_token_response, sanitize_for_error,
     sanitize_for_terminal, CLIENT_ID, DEVICE_CODE_GRANT_TYPE, NETWORK_TIMEOUT,
 };
 use super::store::{self, GatewaySession};
@@ -146,9 +146,21 @@ pub(crate) async fn run_bounded(
         .await
         .context("gateway device authorization failed")?;
 
+    // Vetted before anything is stored, mirroring what `auth::refresh_session`
+    // does with a rotated token. A gateway answering with a token the helper
+    // contract rejects would otherwise be written to disk under a "Login
+    // successful" banner — and since the stored expiry normally sits outside
+    // the refresh buffer, every later `shunt gateway token` would take the
+    // cached path and fail this same check until the token expired. A session
+    // that reports success and can never be used is worse than a failed login.
+    let access_token = helper_safe_token(tokens.access_token, &gateway_url).context(
+        "the device authorization succeeded, but no session was saved: this deployment cannot be \
+         used from Claude Code until it issues a conforming access token",
+    )?;
+
     let session = GatewaySession {
         gateway_url,
-        access_token: tokens.access_token,
+        access_token,
         refresh_token: tokens.refresh_token,
         expires_at_ms: expires_at_ms(tokens.expires_in, std::time::SystemTime::now()),
     };

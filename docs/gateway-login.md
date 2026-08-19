@@ -242,7 +242,10 @@ managed identity should continue to use `ANTHROPIC_BASE_URL` and, when needed,
 
 A client-side CLI route trades that feature set differently. `shunt gateway
 login <url>` runs the same device flow from the terminal and stores the issued
-session locally; `shunt gateway token` prints the access token for Claude Code's
+session locally, but only once the access token clears the same `apiKeyHelper`
+gate `shunt gateway token` applies — a deployment that cannot issue a conforming
+token fails the login rather than storing a session that reports success and can
+never be used; `shunt gateway token` prints the access token for Claude Code's
 `apiKeyHelper`, and `shunt gateway claude` launches Claude Code with that wiring
 applied to a single process. **This does not change the browser requirement
 above** — approval still happens on the `/device` page, `POST /device` is still

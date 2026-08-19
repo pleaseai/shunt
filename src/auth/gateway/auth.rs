@@ -17,6 +17,7 @@
 use std::{
     borrow::Cow,
     path::Path,
+    sync::OnceLock,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -276,6 +277,15 @@ impl std::error::Error for InvalidGrant {}
 /// unreadable body, a body that does not parse — says nothing about whether
 /// the gateway received the token and rotated it.
 ///
+/// *** This inference holds only because [`refresh`] posts through
+/// [`no_redirect_refresh_client`]. On a redirect-following client a connect
+/// failure can belong to hop *N*, after hop 1 already carried the refresh token
+/// to a gateway that rotated it — and `reqwest` cannot tell the two apart from
+/// the error: `is_redirect()` is false and `Error::url()` reports the
+/// **original** URL, because `if_no_url` only fills in the URL the client last
+/// got a *response* from. Moving this call back onto the shared client silently
+/// turns this marker into a lie. See [`no_redirect_refresh_client`].
+///
 /// A type rather than a string match, for the same reason as [`InvalidGrant`].
 #[derive(Debug)]
 struct ConnectFailed;
@@ -319,6 +329,41 @@ impl RefreshFailure {
     }
 }
 
+/// Client for the refresh POST alone: it follows no redirect at all.
+///
+/// Required *here specifically*, and nowhere else in this module, because this
+/// is the only call whose failure classification depends on the request having
+/// taken a single hop. [`ConnectFailed`] reads `is_connect()` as "the refresh
+/// token was never sent", and that is only sound when there was nothing after
+/// the first connect: on a redirect-following client the same error can mean
+/// hop 1 delivered the token and hop 2 failed to connect, which would rotate
+/// the token and then serve the stale cached one anyway.
+///
+/// Discovery and the device-code poll draw no such inference, so they keep
+/// using the shared [`crate::auth::shared::token_refresh_client`]. That
+/// difference is deliberate, not an oversight.
+///
+/// Refusing every redirect is strictly *stricter* than the shared policy, which
+/// vets each hop with `is_safe_refresh_url` — this is a tightening, never a
+/// loosening. What it gives up is a gateway that legitimately 3xxs its own
+/// token endpoint; that deployment now fails loudly and diagnosably as an
+/// unparseable token response naming the status, rather than silently.
+///
+/// Built once and cloned, matching the shared client it sits beside: a
+/// `reqwest::Client` owns a connection pool, so one per refresh would throw the
+/// pool away on every call.
+fn no_redirect_refresh_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("build no-redirect gateway token refresh client")
+        })
+        .clone()
+}
+
 /// Exchange the stored refresh token for a fresh pair.
 async fn refresh(
     client: &reqwest::Client,
@@ -339,7 +384,9 @@ async fn refresh(
             // Classified here, where the `reqwest::Error` still exists: this is
             // the only point on this path where a failure proves the refresh
             // token was never handed to the network. `is_connect()` covers the
-            // DNS/TCP/TLS setup that precedes the request bytes.
+            // DNS/TCP/TLS setup that precedes the request bytes, and means
+            // "never sent" only because `client` follows no redirects — see
+            // `no_redirect_refresh_client`.
             let never_sent = error.is_connect();
             let reported = anyhow::Error::new(error);
             let reported = if never_sent {
@@ -410,7 +457,11 @@ pub fn is_helper_safe(value: &str) -> bool {
 }
 
 /// Gate a token on [`is_helper_safe`], naming the gateway that issued it.
-fn helper_safe_token(token: String, gateway_url: &str) -> anyhow::Result<String> {
+///
+/// `pub(super)` for [`super::login`], which has to apply the same gate to the
+/// token a *login* is issued. A second copy of the predicate there is exactly
+/// how the two would drift apart.
+pub(super) fn helper_safe_token(token: String, gateway_url: &str) -> anyhow::Result<String> {
     if is_helper_safe(&token) {
         return Ok(token);
     }
@@ -613,7 +664,13 @@ async fn refresh_session(
     .map_err(RefreshFailure::PreRotation)?;
     let tokens = match bounded(
         network_timeout,
-        refresh(&client, &discovery.token_endpoint, &session.refresh_token),
+        // Not `client`: the refresh POST is the one call whose `is_connect()`
+        // failure is read as "never sent", which only holds without redirects.
+        refresh(
+            &no_redirect_refresh_client(),
+            &discovery.token_endpoint,
+            &session.refresh_token,
+        ),
         "token refresh",
         &discovery.token_endpoint,
     )

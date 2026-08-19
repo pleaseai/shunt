@@ -646,37 +646,20 @@ fn poll_deadline_saturates_instead_of_panicking() {
 /// Drives the whole command rather than the store helper, so deleting the lock
 /// from `run_bounded`'s write is what turns this red.
 ///
+/// The refresher is released *causally* — by watching for the token POST to
+/// reach the mock gateway — rather than after a fixed sleep. A wall-clock wait
+/// fails in the dangerous direction: on a loaded runner the login's three
+/// round-trips can outlast it, so even an unlocked login would write last and
+/// the test would go green with the defect present. Waiting on the POST pins
+/// the login to the instant its network work is done.
+///
 /// Unix only, like the logout counterpart in `store`: off Unix there is no
 /// advisory lock to serialize on.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn login_waits_for_an_in_flight_refresh_before_storing_the_session() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/.well-known/oauth-authorization-server"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "device_authorization_endpoint": format!("{}/oauth/device_authorization", server.uri()),
-            "token_endpoint": format!("{}/oauth/token", server.uri())
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/oauth/device_authorization"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "device_code": "device-code-1",
-            "user_code": "BCDF-GHJK",
-            "verification_uri": format!("{}/device", server.uri()),
-            "expires_in": 600,
-            "interval": 1
-        })))
-        .mount(&server)
-        .await;
-    // Approved on the first poll: the loop must not be what this test waits on.
-    Mock::given(method("POST"))
-        .and(path("/oauth/token"))
-        .respond_with(granted())
-        .mount(&server)
-        .await;
+    mount_device_flow(&server, granted()).await;
 
     let _env = store::TEST_ENV_LOCK.lock().await;
     let dir = store::temp_dir("login-race");
@@ -686,15 +669,20 @@ async fn login_waits_for_an_in_flight_refresh_before_storing_the_session() {
     store::write_session(&path, &store::test_session("https://old.example", 0)).unwrap();
 
     let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let refresher_path = path.clone();
     let refresher = tokio::spawn(async move {
         let lock = store::lock_session(&refresher_path)
             .await
             .expect("the refresher takes the lock first");
         held_tx.send(()).expect("signal that the lock is held");
-        // Wide enough that a login which does not take the lock is guaranteed
-        // to have written by now, rather than merely usually.
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        release_rx.await.expect("the release signal");
+        // Belt and braces on top of the causal wait, not a substitute for it:
+        // the gateway records the POST a hair before the login returns from
+        // `send`, so this covers the sub-millisecond gap between "the request
+        // was logged" and "the login reaches its write". Do not delete it as
+        // redundant — and do not grow it back into the coordination itself.
+        tokio::time::sleep(Duration::from_millis(50)).await;
         store::write_session(
             &refresher_path,
             &store::test_session("https://old.example", 1),
@@ -704,8 +692,19 @@ async fn login_waits_for_an_in_flight_refresh_before_storing_the_session() {
     });
 
     held_rx.await.expect("the refresher must acquire the lock");
-    run_bounded(&server.uri(), true, Duration::from_secs(5))
+    let login = tokio::spawn({
+        let gateway_url = server.uri();
+        async move { run_bounded(&gateway_url, true, Duration::from_secs(5)).await }
+    });
+
+    // The login has now finished every round-trip it makes and is at — or
+    // blocked on — the session write.
+    await_token_post(&server).await;
+    release_tx.send(()).expect("release the refresher");
+
+    login
         .await
+        .expect("login task")
         .expect("the login itself must succeed");
     refresher.await.expect("refresher task");
 
@@ -717,6 +716,119 @@ async fn login_waits_for_an_in_flight_refresh_before_storing_the_session() {
         server.uri(),
         "the login stored its session before the refresh's writeback, so the refresh put the old \
          gateway back over a session the command already reported as saved"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Block until the gateway has received the device-flow token POST, so a
+/// caller can order itself against the login's last network call instead of
+/// against the clock.
+///
+/// Bounded so a login that never gets there fails the test with this message
+/// rather than hanging the suite until the harness timeout.
+#[cfg(unix)]
+async fn await_token_post(server: &MockServer) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        let received = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .any(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/oauth/token"
+            });
+        if received {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("the login never posted to the token endpoint");
+}
+
+/// Mount the three endpoints a whole `run_bounded` login walks — discovery,
+/// the device-code POST, and the token poll answered by `token_response`.
+///
+/// Factored out rather than copied into each caller: the scaffolding is most
+/// of the body of every end-to-end login test, and a copy per case is how the
+/// device-flow fixture drifts between them.
+async fn mount_device_flow(server: &MockServer, token_response: ResponseTemplate) {
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-authorization-server"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_authorization_endpoint": format!("{}/oauth/device_authorization", server.uri()),
+            "token_endpoint": format!("{}/oauth/token", server.uri())
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/device_authorization"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_code": "device-code-1",
+            "user_code": "BCDF-GHJK",
+            "verification_uri": format!("{}/device", server.uri()),
+            "expires_in": 600,
+            "interval": 1
+        })))
+        .mount(server)
+        .await;
+    // Approved on the first poll: the poll loop is not what these tests drive.
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(token_response)
+        .mount(server)
+        .await;
+}
+
+/// A login must not report success for a token Claude Code cannot use.
+///
+/// The refresh path has always vetted the token it persists; login did not, and
+/// the gap is not self-correcting: the stored expiry normally sits outside the
+/// refresh buffer, so the next `shunt gateway token` takes the *cached* path,
+/// fails the same validation, and keeps failing until the token expires. The
+/// user is left with a session that reported success and can never be used.
+#[tokio::test]
+async fn a_login_token_claude_code_would_reject_fails_and_stores_no_session() {
+    let server = MockServer::start().await;
+    mount_device_flow(
+        &server,
+        // An embedded newline is the realistic case: Claude Code trims
+        // `apiKeyHelper` stdout and then rejects the value outright.
+        ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "access-1\nextra",
+            "refresh_token": "refresh-1",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        })),
+    )
+    .await;
+
+    let _env = store::TEST_ENV_LOCK.lock().await;
+    let dir = store::temp_dir("login-unsafe-token");
+    let path = dir.join("session.json");
+    let _session_file =
+        crate::auth::shared::EnvVarGuard::set("SHUNT_GATEWAY_SESSION_FILE", path.as_os_str());
+
+    let error = run_bounded(&server.uri(), true, Duration::from_secs(5))
+        .await
+        .expect_err("a token Claude Code would reject must not complete the login");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("printable ASCII"),
+        "the diagnostic must say what the contract is: {message}"
+    );
+    assert!(
+        message.contains("no session was saved"),
+        "the user must be told the login did not take effect: {message}"
+    );
+    // The failure mode worth pinning: a half-completed login that leaves an
+    // unusable session behind is what the next command would then trip over.
+    assert!(
+        !path.exists(),
+        "the login failed, so it must not have written a session to {}",
+        path.display()
     );
 
     let _ = std::fs::remove_dir_all(dir);
