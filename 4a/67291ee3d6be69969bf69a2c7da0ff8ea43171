@@ -1,0 +1,113 @@
+site/src/content/docs/ko/guides/connect-claude-code.mdx
+  s_e6a8029daf2f59::t_d8d5a6d2518eb9 119
+  s_e6a8029daf2f59::t_dc0c98bf6ad99f 121
+  s_d65b17ddadbcb8::t_a76748cf18571d 120
+src/auth/shared.rs
+  s_e6a8029daf2f59::t_c0128ec00dd2c4 854,858-879
+  s_e6a8029daf2f59::t_b51c3b7bf11ee3 697-706,855-857
+  s_e6a8029daf2f59::t_dbb362b1898e07 880-881
+src/auth/gateway/launch.rs
+  s_e6a8029daf2f59::t_6cca7adf214c2b 26,258
+  s_e6a8029daf2f59::t_02f74f8d847bad 35-118,191-222,230,238
+  s_e6a8029daf2f59::t_4e4be94a679b5e 357-476
+src/auth/gateway/store.rs
+  s_e6a8029daf2f59::t_0d06db6277cb5c 139
+  s_e6a8029daf2f59::t_4c7d997e894667 133-138,147-152,426-427,432-435,438,526-528,530,538,541-580
+src/auth/gateway/login.rs
+  s_e6a8029daf2f59::t_df4b0cf35b1cda 164-167,169
+  s_e6a8029daf2f59::t_b51c3b7bf11ee3 445-447
+  s_e6a8029daf2f59::t_dd2f114dc1965b 331,337
+  s_e6a8029daf2f59::t_e9c4d80a1e950d 101,145,304-330,332-336,338-341,346,361-365,374,442-444
+site/src/content/docs/guides/connect-claude-code.mdx
+  s_e6a8029daf2f59::t_44f93bd1364c8b 121
+  s_e6a8029daf2f59::t_d8d5a6d2518eb9 119
+  s_9a45f675eb506e::t_bc163517edaa84 120
+src/auth/gateway/auth/tests.rs
+  s_e6a8029daf2f59::t_6794a743a87859 714-718,722-723,726-745,750-843
+  s_e6a8029daf2f59::t_873c1688d8e1ff 746-749
+  s_e6a8029daf2f59::t_35f8491f5e04fa 121-180
+  s_e6a8029daf2f59::t_f29efa21a45b35 844-847
+  s_e6a8029daf2f59::t_3e629a5356c410 719-721,724-725
+  s_e6a8029daf2f59::t_9eadfeb9dd28ba 4
+docs/gateway-login.md
+  s_e6a8029daf2f59::t_416fa79d7c0f97 272-303
+  s_e6a8029daf2f59::t_9e21af859c35c1 256-263
+site/src/content/docs/ja/reference/cli.mdx
+  s_e6a8029daf2f59::t_e4d5e66439e8f2 92,94
+  s_e6a8029daf2f59::t_1d2772d52fe9e6 128-131
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_e6a8029daf2f59::t_ede9e10e5e7c9f 92,94
+  s_e6a8029daf2f59::t_fe68284f7ed622 128-131
+src/auth/gateway/login/tests.rs
+  s_e6a8029daf2f59::t_f0e796bb68eddd 562-564,568,573-585,588,597
+  s_e6a8029daf2f59::t_4b582275b6091b 22-31,132,166,197,225,245,255-261,322,336,541-561,565-567,569-572,586-587,589-596,598-603
+  s_e6a8029daf2f59::t_c6eb61907c695a 4,604
+site/src/content/docs/zh-cn/guides/gateway-login.mdx
+  s_e6a8029daf2f59::t_2957d0a857ddc1 12
+  s_e6a8029daf2f59::t_50de0c4e6413b1 122,124
+tests/gateway_cli.rs
+  s_e6a8029daf2f59::t_f3a90e1549257c 188-202
+src/main.rs
+  s_e6a8029daf2f59::t_df4b0cf35b1cda 522-524,531
+site/src/content/docs/ko/guides/gateway-login.mdx
+  s_e6a8029daf2f59::t_50de0c4e6413b1 128,130
+  s_e6a8029daf2f59::t_2957d0a857ddc1 12
+site/src/content/docs/zh-cn/guides/connect-claude-code.mdx
+  s_e6a8029daf2f59::t_997fdd43b003d7 121
+  s_e6a8029daf2f59::t_d8d5a6d2518eb9 119
+  s_e6a8029daf2f59::t_999e82133e7dd3 120
+site/src/content/docs/ja/guides/gateway-login.mdx
+  s_e6a8029daf2f59::t_2957d0a857ddc1 12
+  s_e6a8029daf2f59::t_50de0c4e6413b1 130
+  s_e6a8029daf2f59::t_f8ba25d876979b 128
+AGENTS.md
+  s_e6a8029daf2f59::t_50a8025b98b49e 55-59
+  s_e6a8029daf2f59::t_68913b429fe758 36-37
+src/auth/gateway/auth.rs
+  s_e6a8029daf2f59::t_237fb5e3f02af7 197-199
+  s_e6a8029daf2f59::t_b51c3b7bf11ee3 519,596-601,604
+  s_e6a8029daf2f59::t_c500cfbff42aac 118,156-173,185-196,200-201
+  s_e6a8029daf2f59::t_a68bb66bf3ff88 226-232,253-297,330-332,335-336,513-518,526,546,565-566,573-575,581-595,611-616
+site/src/content/docs/ko/reference/cli.mdx
+  s_e6a8029daf2f59::t_9d184f2e134bc3 128-131
+  s_e6a8029daf2f59::t_681f1d84380f7f 92,94
+site/src/content/docs/ja/guides/connect-claude-code.mdx
+  s_e6a8029daf2f59::t_d8d5a6d2518eb9 119
+  s_e6a8029daf2f59::t_ae8f41d82b398c 121
+  s_e6a8029daf2f59::t_b5048d84ca7966 120
+site/src/content/docs/reference/cli.mdx
+  s_e6a8029daf2f59::t_01502df9abf4e8 104,106
+  s_e6a8029daf2f59::t_692b14088711d4 140-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "4a67291ee3d6be69969bf69a2c7da0ff8ea43171",
+  "prompts": {},
+  "sessions": {
+    "s_9a45f675eb506e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4918adaf-e0ca-49ce-a1db-20fea0b6c4c2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_d65b17ddadbcb8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a2a5c079-2e0f-4230-b09e-9203d1f256c0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e6a8029daf2f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb8ae398-3f69-419a-afa1-44307e44678e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
