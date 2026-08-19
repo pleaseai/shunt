@@ -263,6 +263,13 @@ fn lock_blocking(lock_path: &Path, timeout: Duration) -> anyhow::Result<SessionL
     // on disk — but waiting *without bound* means a wedged holder hangs every
     // other session with no output to explain it.
     let deadline = std::time::Instant::now() + timeout;
+    // Test-only, and only ever `Some` once the lock is genuinely contended:
+    // registering on the fast path would report a waiter that never waited.
+    // Held to the end of this function, so `Drop` is what deregisters — the
+    // acquire, the hard-error return, and the deadline bail all exit through
+    // it without any of them naming it.
+    #[cfg(test)]
+    let mut blocked: Option<BlockedWaiter> = None;
     loop {
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
             return Ok(SessionLock { file });
@@ -274,6 +281,10 @@ fn lock_blocking(lock_path: &Path, timeout: Duration) -> anyhow::Result<SessionL
         if error.kind() != io::ErrorKind::WouldBlock {
             return Err(error).with_context(|| format!("failed to lock {}", lock_path.display()));
         }
+        // Past the `WouldBlock` check, so this caller is about to wait for a
+        // holder rather than to fail.
+        #[cfg(test)]
+        blocked.get_or_insert_with(|| BlockedWaiter::register(lock_path));
         if std::time::Instant::now() >= deadline {
             anyhow::bail!(
                 "timed out after {:?} waiting for the gateway session lock at {}. Another \
@@ -312,6 +323,72 @@ fn lock_blocking(_lock_path: &Path, _timeout: Duration) -> anyhow::Result<Sessio
 
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Test-only registry of callers currently parked on a session lock.
+///
+/// Exists because "blocked on `flock`" is otherwise invisible from outside the
+/// process, which forces a test that cares about it to guess with a timeout —
+/// and any finite guess loses to a slow enough runner. Counting the waiters
+/// turns that guess into an observation.
+///
+/// Keyed by lock path, never a single global count: sibling tests take session
+/// locks of their own, in parallel, and a global counter would let one of them
+/// satisfy another's wait.
+#[cfg(test)]
+fn blocked_waiters() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, usize>> {
+    static WAITERS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>,
+    > = std::sync::OnceLock::new();
+    WAITERS.get_or_init(Default::default)
+}
+
+/// RAII registration in [`blocked_waiters`]. A guard rather than paired
+/// register/deregister calls because [`lock_blocking`] leaves by four different
+/// paths, and one of them forgetting to deregister would leave a phantom waiter
+/// that makes a later test observe a block that already ended.
+#[cfg(test)]
+struct BlockedWaiter(PathBuf);
+
+#[cfg(test)]
+impl BlockedWaiter {
+    fn register(lock_path: &Path) -> Self {
+        *blocked_waiters()
+            .lock()
+            .expect("waiter registry")
+            .entry(lock_path.to_path_buf())
+            .or_insert(0) += 1;
+        Self(lock_path.to_path_buf())
+    }
+}
+
+#[cfg(test)]
+impl Drop for BlockedWaiter {
+    fn drop(&mut self) {
+        let mut waiters = blocked_waiters().lock().expect("waiter registry");
+        // Removed at zero rather than left as a 0 entry, so `waiters_blocked_on`
+        // and a map lookup agree on "nobody is waiting".
+        if let Some(count) = waiters.get_mut(&self.0) {
+            *count -= 1;
+            if *count == 0 {
+                waiters.remove(&self.0);
+            }
+        }
+    }
+}
+
+/// How many callers are parked waiting for `path`'s session lock right now.
+///
+/// Takes the *session* path, not the lock path, so callers cannot disagree with
+/// [`lock_path`] about which file the count is keyed by.
+#[cfg(test)]
+pub(crate) fn waiters_blocked_on(path: &Path) -> usize {
+    blocked_waiters()
+        .lock()
+        .expect("waiter registry")
+        .get(&lock_path(path))
+        .copied()
+        .unwrap_or(0)
+}
 
 #[cfg(test)]
 pub(crate) fn temp_dir(tag: &str) -> PathBuf {
@@ -588,6 +665,78 @@ mod tests {
             !path.exists(),
             "logout unlinked the session while a refresh held the lock, and the refresh then \
              wrote it straight back"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The waiter registry must count a caller that is genuinely parked, and
+    /// nothing else. `login_waits_for_an_in_flight_refresh_before_storing_the_session`
+    /// reads a zero here as "the login is not blocked", so a registry that
+    /// over- or under-counts would quietly change what that test proves.
+    ///
+    /// Pins all three properties that matter: the uncontended acquire registers
+    /// nobody, a contended one registers exactly one waiter, and the count is
+    /// scoped to its own lock path rather than shared with a sibling.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_waiter_registry_counts_only_callers_parked_on_that_lock() {
+        use std::time::Duration;
+
+        let dir = temp_dir("waiter-registry");
+        let path = dir.join("session.json");
+        // A second session in the same directory, so a registry keyed by
+        // something coarser than the lock path (a global count, or the parent
+        // directory) fails this test rather than passing it by luck.
+        let sibling = dir.join("other-session.json");
+
+        let held = lock_session(&path).await.expect("first acquisition");
+        assert_eq!(
+            waiters_blocked_on(&path),
+            0,
+            "an uncontended acquisition never waited, so it must register no waiter"
+        );
+
+        let waiter_path = path.clone();
+        let waiter =
+            tokio::spawn(
+                async move { lock_session_for(&waiter_path, Duration::from_secs(10)).await },
+            );
+
+        // Polled rather than slept on: the waiter registers as soon as its
+        // first non-blocking acquire fails, and this test should not encode a
+        // guess about when that is.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while waiters_blocked_on(&path) == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a caller blocked on a held lock was never registered as a waiter"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            waiters_blocked_on(&path),
+            1,
+            "one caller is blocked, so the count must be exactly one"
+        );
+        assert_eq!(
+            waiters_blocked_on(&sibling),
+            0,
+            "the waiter is parked on {}, so a different session's lock must show none",
+            path.display()
+        );
+
+        drop(held);
+        waiter
+            .await
+            .expect("waiter task")
+            .expect("the waiter acquires once the holder releases");
+        // Deregistration is the half a paired register/unregister would drop:
+        // a phantom waiter here would make a later test read a stale block.
+        assert_eq!(
+            waiters_blocked_on(&path),
+            0,
+            "the waiter acquired the lock, so it is no longer waiting"
         );
 
         let _ = fs::remove_dir_all(dir);

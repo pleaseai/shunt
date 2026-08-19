@@ -565,13 +565,20 @@ deliberately excluded: waiting is its job, and it already has its own deadline p
 transport retry.
 
 The discovery document is remote input, so two floors apply to what it can direct shunt to do. The
-device code and refresh token are POSTed only to an endpoint advertised over `https`, or over
-`http` to a loopback address — anything else fails discovery naming the offending endpoint, rather
-than receiving the credential. (The redirect-hardened refresh client enforces the same rule, but
-only on redirect *targets*; with no redirect in play it never fires, so the check has to happen
-here.) The verification URL is likewise handed to the OS handler only when it is `http` or
-`https`: the gateway picks that string, and a `file://` or `smb://` value would otherwise be acted
-on with no confirmation. It is printed either way.
+device code and refresh token are POSTed only to an endpoint advertised over `https`, or over `http`
+to a loopback address — anything else fails discovery naming the offending endpoint, rather than
+receiving the credential. That floor has one narrow widening, for the private-network and VPN
+deployments that have no certificate to present: a gateway reached over plain `http`, accepted with
+the unencrypted-traffic warning that repeats on every refresh, may advertise plaintext endpoints on
+its **own origin** — scheme, host, and port all matching the operator-supplied base URL. The origin
+is computed from that base URL and never from the document, so a hostile document cannot nominate
+its own. Any other plaintext endpoint is refused unless its host is loopback — that carve-out is
+independent of this widening and holds for every gateway, an `https` one included. (The check has to
+happen here rather than falling out of the HTTP clients: the refresh POST follows no redirects at
+all, and the redirect-hardened client that discovery uses vets only redirect *targets*, which a
+document naming a bad endpoint outright never produces.) The verification URL is likewise handed to
+the OS handler only when it is `http` or `https`: the gateway picks that string, and a `file://` or
+`smb://` value would otherwise be acted on with no confirmation. It is printed either way.
 
 The session lands in `~/.shunt/gateway/session.json` (override with `SHUNT_GATEWAY_SESSION_FILE`),
 written owner-only — file `0600` inside a `0700` directory. Note that the similarly named
