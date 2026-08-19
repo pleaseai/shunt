@@ -89,7 +89,7 @@ shunt gateway login https://gateway.example.com
 shunt gateway login https://gateway.example.com --manual   # 只打印 URL，不打开浏览器
 ```
 
-shunt 会读取该部署的 `/.well-known/oauth-authorization-server` 文档并使用其中公布的端点，打印一个验证 URL 和一个短用户码，打开浏览器，然后轮询直到你在网关的 `/device` 页面上批准。discovery 返回 `404` 通常意味着该部署没有 `[server.gateway]` 配置段。discovery 和 device code 请求各自都有上限，因此只接受连接却从不应答的部署会以超时形式报告，而不会让终端无限期等待；随后的批准轮询则刻意不作同样限制，因为等待正是它的职责。非回环的明文 `http://` URL 也会被接受，但会给出警告 —— device code 和 refresh token 会以未加密的形式传输，而且不只是这一次登录：之后的每一次令牌刷新都走同一条链路，并且 `shunt gateway token` 每次真正执行刷新时都会重复该警告（直接返回缓存 token、不发起网络调用时则不会）。而这样的登录会一直走完：明文 `http` 网关可以公布明文端点，但只能是**它自己的 origin** —— scheme、主机和端口都必须与你输入的 URL 一致。位于其他 origin 的明文端点会被拒绝；如果网关本身是通过 `https` 访问的，那么任何明文端点都会被拒绝。
+shunt 会读取该部署的 `/.well-known/oauth-authorization-server` 文档并使用其中公布的端点，打印一个验证 URL 和一个短用户码，打开浏览器，然后轮询直到你在网关的 `/device` 页面上批准。discovery 返回 `404` 通常意味着该部署没有 `[server.gateway]` 配置段。discovery 和 device code 请求各自都有上限，因此只接受连接却从不应答的部署会以超时形式报告，而不会让终端无限期等待；随后的批准轮询则刻意不作同样限制，因为等待正是它的职责。非回环的明文 `http://` URL 也会被接受，但会给出警告 —— device code 和 refresh token 会以未加密的形式传输，而且不只是这一次登录：之后的每一次令牌刷新都走同一条链路，并且 `shunt gateway token` 每次真正执行刷新时都会重复该警告（直接返回缓存 token、不发起网络调用时则不会）。而这样的登录会一直走完：明文 `http` 网关可以公布明文端点，但只能是**它自己的 origin** —— scheme、主机和端口都必须与你输入的 URL 一致。位于其他 origin 的明文端点会被拒绝 —— 只有一个例外，而且它对所有网关都成立，包括通过 `https` 访问的网关：指向回环地址的端点从不离开本机，因此始终被接受。
 
 对该部署返回的内容还有两条底线。shunt 只会把 device code 和 refresh token POST 到 discovery 文档以 `https` 公布、以 `http` 指向回环地址、或者 —— 当你提供的网关 URL 本身就是明文 `http` 时 —— 以 `http` 指向该网关自身 origin 的端点；其他端点不会收到凭据，而是让 discovery 指名失败。最后这条放宽是依据你输入的 URL 计算的，而不是依据文档，因此一份被伪造或被中间人篡改的 discovery 文档无法指定第三方明文主机、把你的 refresh token POST 过去。验证 URL 也只在其为 `http` 或 `https` 时才自动打开 —— 该字符串由网关而非 shunt 选择，因此其他协议只会打印出来并说明未打开的原因，由你自己决定是否访问。
 
@@ -108,11 +108,11 @@ shunt 会读取该部署的 `/.well-known/oauth-authorization-server` 文档并�
 
 它与打印上游 Claude 订阅 token 的 [`shunt token`](#shunt-token) 是**两个不同的 helper**。两者不会读取对方的存储，而名字相近的 `SHUNT_GATEWAY_TOKEN` 变量属于 `shunt token`，不属于本命令。
 
-已保存的 token 会一直使用到距离过期不足 5 分钟，然后才刷新。网关的 refresh token 会轮换且只能使用一次，因此刷新在独占文件锁下执行，并在拿到锁之后重新读取会话：多个 Claude Code 会话同时调用 helper 也只会发生一次刷新，不会因重放而使整个轮换家族失效。
+已保存的 token 会一直使用到距离过期不足 5 分钟，然后才刷新。网关的 refresh token 会轮换且只能使用一次，因此刷新在独占文件锁下执行，并在拿到锁之后重新读取会话：多个 Claude Code 会话同时调用 helper 也只会发生一次刷新，不会因重放而使整个轮换家族失效。`shunt gateway login` 和 `shunt gateway logout` 也会获取同一把锁，并在各自写入完成前一直持有，因此进行中的刷新不会因为写回晚到而覆盖掉它们的结果。
 
 锁和刷新都不会无限期等待。与网关的每次往返有上限，等待锁也有上限 —— 否则一个只接受连接却从不应答的部署会一直握着锁，让该机器上其他所有 `apiKeyHelper` 毫无提示地卡住。超出上限时命令会失败，并指出锁文件的路径。
 
-进入 5 分钟缓冲期意味着**该刷新了**，而不是**必须刷新**。如果刷新失败而缓存的 token 仍然真正有效，shunt 会在 stderr 上给出警告并继续提供该 token，而不是把一次短暂的网络抖动变成认证失败。等它真正过期之后，命令才会失败。凡是 Claude Code 的 helper 校验器会拒绝的 token —— 不是 1~16384 个不含空白的可打印 ASCII 字符 —— 都会在这里被拒绝并给出指明网关的诊断，而不是被打印出去、导致认证失败却没有任何说明。`shunt gateway logout` 会连同会话一起删除锁文件。
+进入 5 分钟缓冲期意味着**该刷新了**，而不是**必须刷新**。如果刷新失败而缓存的 token 仍然真正有效，shunt 会在 stderr 上给出警告并继续提供该 token，而不是把一次短暂的网络抖动变成认证失败。等它真正过期之后，命令才会失败。这条回退需要有证据表明什么都没有被轮换，因此它只覆盖两种可以确定从未出示过 refresh token 的失败：discovery 失败，以及连连接都没能建立的 token 请求。从请求发出的那一刻起，网关就可能已经轮换了 token，所以超时、读不出或解析不了的响应，以及网关指明的任何错误，都会让命令失败：在那种情况下继续提供缓存 token，会把一个已经用掉的 refresh token 留在磁盘上，等着下一次运行重放。凡是 Claude Code 的 helper 校验器会拒绝的 token —— 不是 1~16384 个不含空白的可打印 ASCII 字符 —— 都会在这里被拒绝并给出指明网关的诊断，而不是被打印出去、导致认证失败却没有任何说明。`shunt gateway logout` 会删除会话，但会刻意保留那个空的同名 `.lock` 文件：logout、login 和刷新正是靠这个 inode 相互串行化的，删掉它会让进行中的持有者继续锁着旧 inode，而下一个进程锁的是新建的 inode，两者就不再互斥了。
 
 ## `shunt gateway claude`
 

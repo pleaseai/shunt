@@ -295,8 +295,10 @@ gateway — `shunt gateway login http://10.0.0.5:8080`, accepted with the
 unencrypted-traffic warning that also repeats on every refresh — may advertise
 plaintext endpoints on its **own origin** (scheme, host, and port all matching
 the operator-supplied base URL), and the login completes. A plaintext endpoint
-on any other origin is refused, as is any plaintext endpoint at all when the
-gateway itself is reached over https. The allowance is computed from the
+on any other origin is refused — with one carve-out that is independent of this
+allowance and applies to every gateway, including an https one: a loopback
+endpoint never leaves the machine, so the shared `is_safe_refresh_url` floor
+accepts it outright. The same-origin allowance is computed from the
 operator-supplied base URL and never from the discovery document, so a hostile
 or MITM'd document cannot name a third-party plaintext host and have the
 refresh token POSTed there.

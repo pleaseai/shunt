@@ -589,6 +589,8 @@ gateway's refresh tokens rotate and are single-use, so the refresh runs under an
 lock and re-reads the session after acquiring it: several Claude Code sessions can call the helper
 at the same moment and only one refresh happens. Without that, the losing caller would replay a
 spent refresh token, which revokes the whole rotation family and signs the user out everywhere.
+`shunt gateway login` and `shunt gateway logout` take the same lock and hold it across their own
+write, so neither can be undone by an in-flight refresh's writeback landing after it.
 
 Neither the lock wait nor the refresh itself is unbounded. Each gateway round-trip is wrapped in a
 timeout, and the lock is acquired non-blocking on a deadline rather than with a bare `LOCK_EX`. The
@@ -602,13 +604,23 @@ response body (streaming paths must never set it).
 Crossing the 5-minute buffer makes a refresh *due*, not mandatory. If the refresh fails while the
 cached token is still genuinely unexpired, that token is served with a warning on stderr, so a
 brief network blip four minutes before real expiry does not become a user-visible auth failure;
-once the token has actually expired the command fails hard. `expires_in` is clamped on the way in —
-a gateway reporting it in milliseconds would otherwise cache a dead token as valid for weeks, with
-no recovery but deleting `session.json` by hand. Clamping is safe even when it is wrong, since a
-too-short cached expiry only triggers an earlier refresh. Finally, a token that would fail Claude
-Code's `apiKeyHelper` validator (1..=16384 characters of printable ASCII, no whitespace) is refused
-with a diagnostic naming the gateway rather than printed to fail authentication silently, and
-`shunt gateway logout` removes the sibling lock file along with the session.
+once the token has actually expired the command fails hard. That fallback needs proof that nothing
+was rotated, so it is restricted to the two failures that provably never presented the refresh
+token: discovery, which never carries it, and a token POST that could not open a connection. From
+the moment the POST is sent the gateway may already have rotated the token, so the bound expiring,
+an unreadable or unparseable body, and any error the gateway names all fail the command instead —
+serving the cached token there would leave a spent refresh token on disk for the next helper run
+to replay. `expires_in` is clamped on the way in — a gateway reporting it in milliseconds would
+otherwise cache a dead token as valid for weeks, with no recovery but deleting `session.json` by
+hand. Clamping is safe even when it is wrong, since a too-short cached expiry only triggers an
+earlier refresh. Finally, a token that would fail Claude Code's `apiKeyHelper` validator
+(1..=16384 characters of printable ASCII, no whitespace) is refused with a diagnostic naming the
+gateway rather than printed to fail authentication silently.
+
+`shunt gateway logout` removes the session but deliberately leaves the empty sibling `.lock` file
+in place: that inode is what logout, login, and refresh serialize on, and unlinking it would let an
+in-flight holder keep a lock on the old inode while the next process locks a freshly created one,
+so the two would stop excluding each other.
 
 #### Launching Claude Code with `shunt gateway claude`
 

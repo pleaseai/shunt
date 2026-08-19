@@ -267,23 +267,47 @@ impl std::fmt::Display for InvalidGrant {
 
 impl std::error::Error for InvalidGrant {}
 
+/// Marker attached to a token POST that never reached the gateway: the
+/// connection itself could not be established, so the refresh token provably
+/// never left this process and nothing can have been rotated.
+///
+/// The only such point on the refresh path. Once `send()` has handed the
+/// request bytes off, a failure anywhere after it — the bound expiring, an
+/// unreadable body, a body that does not parse — says nothing about whether
+/// the gateway received the token and rotated it.
+///
+/// A type rather than a string match, for the same reason as [`InvalidGrant`].
+#[derive(Debug)]
+struct ConnectFailed;
+
+impl std::fmt::Display for ConnectFailed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the connection was never established")
+    }
+}
+
+impl std::error::Error for ConnectFailed {}
+
 /// Why a refresh failed, from the caller's point of view.
 ///
 /// The distinction decides whether the cached access token may still be served.
 /// The gateway rotates the refresh token on every grant and the old one is
-/// single-use, so once the token POST has been answered the stored refresh
-/// token is spent: falling back to the cached token from there hides the only
-/// instruction that recovers the session, and leaves the spent token on disk
-/// for the next helper run to replay — which revokes the whole family.
+/// single-use, so once the token POST has been *sent* the stored refresh token
+/// may already be spent: falling back to the cached token from there hides the
+/// only instruction that recovers the session, and leaves the spent token on
+/// disk for the next helper run to replay — which revokes the whole family.
 enum RefreshFailure {
-    /// The refresh token was never presented, or the round-trip never
-    /// completed: discovery failed, the connection failed, the call timed out.
-    /// Nothing was rotated, so an unexpired cached token is still a safe answer
-    /// and a later attempt can still succeed.
+    /// The refresh token was provably never presented: discovery failed (it
+    /// never carries the token), or the token POST could not open a connection
+    /// at all. Nothing was rotated, so an unexpired cached token is still a
+    /// safe answer and a later attempt can still succeed.
     PreRotation(anyhow::Error),
-    /// The stored refresh token is spent or the family is already dead. Serving
-    /// the cached token would only delay a failure a fresh login is the sole
-    /// cure for, so this propagates with its original message intact.
+    /// The stored refresh token may be spent, or the family is already dead.
+    /// Everything that is not provably pre-send lands here — a timed-out POST,
+    /// an unreadable or unparseable body, any error the gateway named, any
+    /// status. Serving the cached token would only delay a failure a fresh
+    /// login is the sole cure for, so this propagates with its original message
+    /// intact.
     Terminal(anyhow::Error),
 }
 
@@ -311,7 +335,20 @@ async fn refresh(
         ])
         .send()
         .await
-        .with_context(|| format!("failed to reach {token_endpoint}"))?;
+        .map_err(|error| {
+            // Classified here, where the `reqwest::Error` still exists: this is
+            // the only point on this path where a failure proves the refresh
+            // token was never handed to the network. `is_connect()` covers the
+            // DNS/TCP/TLS setup that precedes the request bytes.
+            let never_sent = error.is_connect();
+            let reported = anyhow::Error::new(error);
+            let reported = if never_sent {
+                reported.context(ConnectFailed)
+            } else {
+                reported
+            };
+            reported.context(format!("failed to reach {token_endpoint}"))
+        })?;
     let status = response.status();
     // Propagate rather than defaulting to "": an unreadable body is a local
     // read failure, not a malformed token response, and the two have different
@@ -511,11 +548,11 @@ pub(crate) async fn resolve_token_bounded(
         // still fails hard — a dead token returned as a success would only move
         // the error somewhere less legible.
         //
-        // Restricted to pre-rotation failures, deliberately. A post-rotation or
-        // terminal failure leaves a *spent* refresh token on disk, so serving
-        // the cached token here would swallow the re-login instruction and let
-        // the next helper run replay that spent token — the family-wide logout
-        // this whole path exists to avoid.
+        // Restricted to pre-rotation failures, deliberately. Any failure that
+        // is not provably pre-send may have left a *spent* refresh token on
+        // disk, so serving the cached token here would swallow the re-login
+        // instruction and let the next helper run replay that spent token —
+        // the family-wide logout this whole path exists to avoid.
         Err(RefreshFailure::PreRotation(error)) if is_unexpired_at(&session, SystemTime::now()) => {
             eprintln!(
                 "Warning: could not refresh the gateway token ({error}); serving the cached one, \
@@ -562,8 +599,10 @@ async fn refresh_session(
         );
     }
     let client = crate::auth::shared::token_refresh_client();
-    // Nothing has been presented yet, so every failure up to and including a
-    // timed-out token POST leaves the stored refresh token untouched.
+    // Discovery never carries the refresh token, so every failure of this step
+    // — including its bound expiring — leaves the stored token untouched. It is
+    // the one whole step that is provably pre-rotation; on the POST below only
+    // a failure to connect is.
     let discovery = bounded(
         network_timeout,
         discover(&client, &session.gateway_url),
@@ -586,7 +625,19 @@ async fn refresh_session(
         Err(error) if error.downcast_ref::<InvalidGrant>().is_some() => {
             return Err(RefreshFailure::Terminal(error))
         }
-        Err(error) => return Err(RefreshFailure::PreRotation(error)),
+        // The connection was never established, so the token cannot have been
+        // received: the only failure on this call that is safe to fall back
+        // from.
+        Err(error) if error.downcast_ref::<ConnectFailed>().is_some() => {
+            return Err(RefreshFailure::PreRotation(error))
+        }
+        // Everything else — the bound expiring (which replaces the inner error
+        // outright), a body that could not be read or parsed, an unrecognized
+        // `error` field, any status — leaves it unknown whether the gateway
+        // received the token and rotated it. Treating "unknown" as
+        // pre-rotation is what leaves a spent token on disk for the next
+        // helper run to replay.
+        Err(error) => return Err(RefreshFailure::Terminal(error)),
     };
     // Validated *before* it is persisted. A gateway answering with a token the
     // helper contract rejects (an embedded newline is the realistic case) would

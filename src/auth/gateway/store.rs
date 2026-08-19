@@ -131,10 +131,11 @@ pub fn write_session(path: &Path, session: &GatewaySession) -> anyhow::Result<()
 /// Remove the session file. `Ok(false)` means there was nothing to remove, so
 /// `shunt gateway logout` is idempotent.
 ///
-/// Under the same lock [`super::auth::resolve_token_bounded`] takes, because
-/// logout and refresh contend for the same file: an unlocked unlink can land
-/// *between* a refresher's token POST and its writeback, and the writeback then
-/// resurrects a session the user just signed out of.
+/// Under the same lock [`super::auth::resolve_token_bounded`] and
+/// [`super::login::run`] take, because logout, login, and refresh all contend
+/// for the same file: an unlocked unlink can land *between* a refresher's token
+/// POST and its writeback, and the writeback then resurrects a session the user
+/// just signed out of.
 pub async fn remove_session(path: &Path) -> anyhow::Result<bool> {
     let _lock = lock_session(path).await?;
     let removed = match fs::remove_file(path) {
@@ -187,6 +188,11 @@ impl Drop for SessionLock {
 /// The lock is taken on a sibling `.lock` file rather than on the session
 /// itself: writeback renames a temp file over the session, so its inode
 /// changes and a lock held on the old inode would guard nothing.
+///
+/// Three operations serialize on it — logout, login, and refresh — because all
+/// three replace or remove the same file. A login that stored its new session
+/// without the lock would be undone by an in-flight refresh's writeback landing
+/// after it, exactly as an unlocked logout would be.
 ///
 /// Acquisition is bounded (`LOCK_TIMEOUT`) rather than an unconditional
 /// `LOCK_EX`. A holder blocked on a gateway that accepts the connection and
@@ -526,6 +532,10 @@ mod tests {
     /// The lock file outlives the session on purpose: it is the inode logout,
     /// login, and refresh serialize on, so unlinking it would let a holder of
     /// the old inode run alongside a process that locked a new one.
+    ///
+    /// Unix only: off Unix `lock_blocking` is a documented no-op that creates
+    /// no file at all, so there is no inode for these assertions to find.
+    #[cfg(unix)]
     #[tokio::test]
     async fn logout_keeps_the_lock_file_so_later_runs_still_serialize() {
         let dir = temp_dir("logout-lock");

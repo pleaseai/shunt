@@ -153,6 +153,12 @@ pub(crate) async fn run_bounded(
         expires_at_ms: expires_at_ms(tokens.expires_in, std::time::SystemTime::now()),
     };
     let path = store::session_path();
+    // Under the same lock logout and the refresh writeback take, and held
+    // across the write. A refresh that acquired it before this login finishes
+    // its own writeback *after* the login's — resurrecting the signed-out
+    // gateway URL and token pair over the session this command is about to
+    // report as saved. Same sibling `.lock` inode, so the three serialize.
+    let _lock = store::lock_session(&path).await?;
     store::write_session(&path, &session)?;
 
     println!("\nLogin successful. Session saved to {}", path.display());

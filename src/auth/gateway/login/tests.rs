@@ -637,3 +637,87 @@ fn poll_deadline_saturates_instead_of_panicking() {
     );
     assert_eq!(poll_deadline(now, 300), now + Duration::from_secs(300));
 }
+
+/// The race a login without the session lock loses: the login stores its new
+/// session first, an in-flight refresh's writeback lands after it, and the
+/// gateway URL and token pair the user just replaced are back on disk while
+/// the command has already printed "Login successful".
+///
+/// Drives the whole command rather than the store helper, so deleting the lock
+/// from `run_bounded`'s write is what turns this red.
+///
+/// Unix only, like the logout counterpart in `store`: off Unix there is no
+/// advisory lock to serialize on.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn login_waits_for_an_in_flight_refresh_before_storing_the_session() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-authorization-server"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_authorization_endpoint": format!("{}/oauth/device_authorization", server.uri()),
+            "token_endpoint": format!("{}/oauth/token", server.uri())
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/device_authorization"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_code": "device-code-1",
+            "user_code": "BCDF-GHJK",
+            "verification_uri": format!("{}/device", server.uri()),
+            "expires_in": 600,
+            "interval": 1
+        })))
+        .mount(&server)
+        .await;
+    // Approved on the first poll: the loop must not be what this test waits on.
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(granted())
+        .mount(&server)
+        .await;
+
+    let _env = store::TEST_ENV_LOCK.lock().await;
+    let dir = store::temp_dir("login-race");
+    let path = dir.join("session.json");
+    let _session_file =
+        crate::auth::shared::EnvVarGuard::set("SHUNT_GATEWAY_SESSION_FILE", path.as_os_str());
+    store::write_session(&path, &store::test_session("https://old.example", 0)).unwrap();
+
+    let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+    let refresher_path = path.clone();
+    let refresher = tokio::spawn(async move {
+        let lock = store::lock_session(&refresher_path)
+            .await
+            .expect("the refresher takes the lock first");
+        held_tx.send(()).expect("signal that the lock is held");
+        // Wide enough that a login which does not take the lock is guaranteed
+        // to have written by now, rather than merely usually.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        store::write_session(
+            &refresher_path,
+            &store::test_session("https://old.example", 1),
+        )
+        .unwrap();
+        drop(lock);
+    });
+
+    held_rx.await.expect("the refresher must acquire the lock");
+    run_bounded(&server.uri(), true, Duration::from_secs(5))
+        .await
+        .expect("the login itself must succeed");
+    refresher.await.expect("refresher task");
+
+    let stored = store::read_session(&path)
+        .unwrap()
+        .expect("the login must have stored a session");
+    assert_eq!(
+        stored.gateway_url,
+        server.uri(),
+        "the login stored its session before the refresh's writeback, so the refresh put the old \
+         gateway back over a session the command already reported as saved"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}

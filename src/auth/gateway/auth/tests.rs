@@ -864,3 +864,82 @@ async fn a_failed_refresh_on_a_genuinely_expired_token_still_fails() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The cached-token fallback needs proof that nothing was rotated, and an
+/// unreadable answer is not proof: the POST left this process, so the gateway
+/// may have received it, rotated the family, and only then failed to answer in
+/// a shape shunt understands. Serving `access-1` here would leave a spent
+/// refresh token on disk for the next helper run to replay.
+#[tokio::test]
+async fn an_unparseable_token_response_is_terminal_even_inside_the_expiry_buffer() {
+    let server = MockServer::start().await;
+    mount_discovery(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        // A 200 with a body that is not a token and not an OAuth error: the
+        // shape a proxy or a captive portal answers with.
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
+        .mount(&server)
+        .await;
+
+    let dir = temp_dir("unparseable-refresh");
+    let session_path = dir.join("session.json");
+    let mut session = test_session(&server.uri(), 0);
+    // Still usable by the wire clock, so only the failure's *class* can be what
+    // keeps this from falling back to `access-1`.
+    session.expires_at_ms = now_plus_ms(60);
+    store::write_session(&session_path, &session).unwrap();
+
+    let error = resolve_token_at(&session_path)
+        .await
+        .expect_err("a refresh whose POST may have been received must not serve the cached token");
+    let message = error.to_string();
+    assert!(
+        message.contains("invalid gateway token response"),
+        "the gateway's own failure must survive rather than being swallowed: {message}"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The other side of the same rule: a token endpoint that refuses the
+/// connection never saw the refresh token, so the still-valid cached token is
+/// a safe answer and a momentary outage must not force a re-login.
+#[tokio::test]
+async fn a_token_endpoint_that_refuses_the_connection_still_serves_the_cached_token() {
+    // Bound and immediately release an ephemeral port: nothing is listening on
+    // it, so the POST fails in `connect` rather than hanging on a firewall
+    // drop the way a fixed port might.
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let closed_address = closed.local_addr().unwrap();
+    drop(closed);
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(DISCOVERY_PATH))
+        // Loopback plain http clears the transport floor, so the refusal below
+        // is what the refresh trips on rather than discovery.
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_authorization_endpoint": format!("http://{closed_address}/oauth/device_authorization"),
+            "token_endpoint": format!("http://{closed_address}/oauth/token")
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = temp_dir("refused-refresh");
+    let session_path = dir.join("session.json");
+    let mut session = test_session(&server.uri(), 0);
+    session.expires_at_ms = now_plus_ms(60);
+    store::write_session(&session_path, &session).unwrap();
+
+    let token = resolve_token_at(&session_path)
+        .await
+        .expect("a refresh that never reached the gateway must not discard a valid token");
+    assert_eq!(token, "access-1");
+    // Nothing was presented, so nothing rotated: the stored pair is untouched
+    // and a later attempt can still succeed.
+    let stored = store::read_session(&session_path).unwrap().unwrap();
+    assert_eq!(stored.refresh_token, "refresh-1");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
