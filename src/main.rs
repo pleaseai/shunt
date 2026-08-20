@@ -1401,11 +1401,21 @@ mod tests {
         }
     }
 
-    /// Serializes every test in this binary that writes
-    /// `SHUNT_ANTIGRAVITY_AUTH_FILE`. The environment is per-process and
-    /// `cargo test` runs this file's tests on parallel threads, so without it
-    /// one test's guard could restore the variable while another is mid-assert.
-    static ANTIGRAVITY_AUTH_FILE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Serializes every test in this binary that **reads or writes** the
+    /// process environment — not just the writers.
+    ///
+    /// A writers-only lock does not exclude anything: the environment is
+    /// per-process, `cargo test` runs these tests on parallel threads, and the
+    /// hazard is a `set_var` racing another thread's *read*, which is why
+    /// `std::env::set_var` is `unsafe` from edition 2024 on.
+    /// `run_surfaces_serve_errors` reaches `Config::load` (`run`, above), whose
+    /// figment layers read the whole environment, so it takes this lock too.
+    ///
+    /// The library side learned this the expensive way: the note on
+    /// `ANTIGRAVITY_AUTH_FILE_ENV_LOCK` in `auth::antigravity` records a ~40%
+    /// flake rate caused by guarding the same environment with two independent
+    /// mutexes, which by construction do not exclude each other.
+    static PROCESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn serve_refuses_a_routed_antigravity_provider_without_a_credential() {
@@ -1415,7 +1425,7 @@ mod tests {
         // only its own call site. Measured: deleting the guard from `serve()`
         // alone left the entire workspace suite green, so without this test the
         // claim that `shunt run` still refuses rested on reading the code.
-        let _lock = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+        let _lock = PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // A path that is never created — the guard probes existence only, so
@@ -1457,6 +1467,11 @@ mod tests {
 
     #[test]
     fn run_surfaces_serve_errors() {
+        // Reads the process environment through `Config::load`'s figment
+        // layers, so it shares the writers' lock — see `PROCESS_ENV_LOCK`.
+        let _lock = PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Hold a loopback port so `serve` deterministically fails to bind it.
         let listener =
             std::net::TcpListener::bind("127.0.0.1:0").expect("reserve test bind address");

@@ -61,8 +61,13 @@ impl Drop for TempDir {
 }
 
 fn check(config: &Path, credential: &Path) -> Output {
+    // `Path` is passed straight through: `Command::arg` takes `AsRef<OsStr>`,
+    // so converting to `&str` first would only add a panic on a non-UTF-8
+    // temp path without buying anything.
     Command::new(env!("CARGO_BIN_EXE_shunt"))
-        .args(["check", "--config", config.to_str().expect("UTF-8 path")])
+        .arg("check")
+        .arg("--config")
+        .arg(config)
         .env("SHUNT_ANTIGRAVITY_AUTH_FILE", credential)
         .output()
         .expect("shunt binary should run")
