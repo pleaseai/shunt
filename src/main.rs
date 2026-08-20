@@ -634,7 +634,8 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // that still means the old thing must fail loudly here rather than resolve
     // quietly to a different transport, with different credentials, egress, and
     // failure modes, behind a green startup. `check` runs this same predicate,
-    // so a config that boots here is one `shunt check` already accepted.
+    // so the two commands cannot disagree about a given config and credential
+    // state — not that `check` necessarily ran first.
     if let Some(message) = routed_antigravity_credential_error(&config) {
         anyhow::bail!(message);
     }
@@ -687,12 +688,17 @@ fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     let config = Config::load(config_path.as_deref())
         .and_then(|config| config.validate())
         .context("config check failed")?;
-    // `Config::validate` only sees the config file. The routed-Antigravity
-    // credential guard also needs the credential store, so `check` has to run
-    // it explicitly or a migrated config that `serve()` refuses to boot still
-    // reports `config ok` — precisely to the CI and deploy scripts that gate a
-    // rollout on this command (issue #382). Offline like the rest of `check`:
-    // routing plus a credential-existence probe, never a refresh.
+    // `Config::validate` never looks at the Antigravity credential store, so
+    // the routed-Antigravity guard is the one check `check` has to add
+    // explicitly — otherwise a migrated config that `serve()` refuses to boot
+    // still reports `config ok`, precisely to the CI and deploy scripts that
+    // gate a rollout on this command (issue #382). Offline like the rest of
+    // `check`: routing plus a credential-existence probe, never a refresh.
+    //
+    // Existence is the whole test. A present-but-empty or malformed credential
+    // satisfies it and fails later on the request path; parsing it here would
+    // change what `shunt run` accepts, which this command deliberately mirrors
+    // rather than tightens.
     if let Some(message) = routed_antigravity_credential_error(&config) {
         anyhow::bail!(message);
     }
@@ -1366,6 +1372,87 @@ mod tests {
             .block_on(serve(config, None))
             .expect_err("invalid bind must fail");
         assert!(error.to_string().contains("invalid server bind address"));
+    }
+
+    /// Restores the prior value on drop rather than removing the variable, so a
+    /// developer or CI environment that already sets it is handed back exactly
+    /// what it had. Mirrors `reload.rs`'s guard of the same name; duplicated
+    /// because that one is `#[cfg(test)]` inside the library crate and the
+    /// binary's tests link against the library's non-test build.
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    /// Serializes every test in this binary that writes
+    /// `SHUNT_ANTIGRAVITY_AUTH_FILE`. The environment is per-process and
+    /// `cargo test` runs this file's tests on parallel threads, so without it
+    /// one test's guard could restore the variable while another is mid-assert.
+    static ANTIGRAVITY_AUTH_FILE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn serve_refuses_a_routed_antigravity_provider_without_a_credential() {
+        // The `run` half of the check/run parity this PR exists to create.
+        // `tests/check_cli.rs` drives the `check` entry point and the
+        // `reload_routing_to_antigravity_*` tests drive `reload`; each proves
+        // only its own call site. Measured: deleting the guard from `serve()`
+        // alone left the entire workspace suite green, so without this test the
+        // claim that `shunt run` still refuses rested on reading the code.
+        let _lock = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A path that is never created — the guard probes existence only, so
+        // nothing has to be written or cleaned up.
+        let credential = std::env::temp_dir().join(format!(
+            "shunt-serve-antigravity-absent-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        assert!(
+            !credential.exists(),
+            "the probed credential must be absent for this test to mean anything"
+        );
+        let _env = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential);
+
+        let mut config = Config::default();
+        // `serve` binds before it reaches the guard, so give it a bindable
+        // ephemeral port; otherwise this would fail on the bind and pass for
+        // the wrong reason.
+        config.server.bind = "127.0.0.1:0".to_string();
+        config.server.default_provider = "antigravity".to_string();
+
+        let error = runtime()
+            .expect("runtime builds")
+            .block_on(serve(config, None))
+            .expect_err("a routed antigravity provider with no credential must refuse to boot");
+        let message = error.to_string();
+        // Assert on the guard's own wording, not merely on failure: a bind or
+        // router error would otherwise satisfy `expect_err` above.
+        assert!(
+            message.contains("provider `antigravity` is routed but has no credential"),
+            "{message}"
+        );
+        assert!(message.contains("shunt login antigravity"), "{message}");
     }
 
     #[test]

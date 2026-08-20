@@ -74,10 +74,12 @@ impl RuntimeState {
 pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<(), ConfigError> {
     // Load + validate the candidate before touching the live state.
     let new_config = Config::load(path)?;
-    // Mirror `main.rs`'s boot guard: a reload that newly routes to the native
-    // `antigravity` upstream without a credential must be refused here too, not
-    // just at startup — otherwise editing a running config could silently swap
-    // credentials, egress, and failure modes underneath a live provider.
+    // The same guard `main.rs`'s boot path runs — both call
+    // `routed_antigravity_credential_error`, rather than each keeping a copy.
+    // A reload that newly routes to the native `antigravity` upstream without a
+    // credential must be refused here too, not just at startup: otherwise
+    // editing a running config could silently swap credentials, egress, and
+    // failure modes underneath a live provider.
     if let Some(message) =
         crate::auth::antigravity::routed_antigravity_credential_error(&new_config)
     {

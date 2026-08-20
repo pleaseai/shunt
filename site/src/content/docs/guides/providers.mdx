@@ -69,7 +69,8 @@ upstream_model = "gemini-3.6-flash"
 `kind = "antigravity_cli"` (built-in provider `antigravity-cli`), which is deprecated. A config still carrying the old meaning is
 refused by name rather than retargeted, and a routed `antigravity` provider with no credential refuses to start — changing transport,
 credentials, and egress underneath a green startup would be worse than failing. [`shunt check`](/reference/cli/#shunt-check) runs that
-same credential guard offline, so CI catches a half-migrated config before a rollout rather than at startup. Run
+same credential guard offline, so CI catches a route to `antigravity` with no credential stored before a rollout rather than at
+startup — presence only, so an empty or stale credential still passes and fails later on the request path. Run
 `shunt login antigravity`, or point the route at `antigravity-cli`. Startup also logs a warning whenever a route still resolves to the deprecated `antigravity_cli` kind, so operators
 can catch a stale config without waiting for a request.
 

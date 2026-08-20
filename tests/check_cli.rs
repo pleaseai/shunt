@@ -125,6 +125,32 @@ fn check_accepts_a_routed_antigravity_provider_with_a_credential() {
 }
 
 #[test]
+fn check_accepts_an_empty_credential_because_the_probe_is_presence_only() {
+    // Pins a deliberate limit rather than a bug. The guard asks whether the
+    // credential file exists, never what is in it, so an empty (or stale, or
+    // malformed) file passes `check` and fails later on the request path.
+    //
+    // This test exists because the docs make that claim in prose
+    // (README.md, site guides/providers.mdx). Without it the claim is
+    // unfalsifiable, and a future change that started parsing the credential
+    // here would silently tighten what `shunt check` accepts relative to
+    // `shunt run` — reopening the divergence issue #382 closed.
+    let dir = TempDir::new("empty-credential");
+    let config = dir.config("[server]\ndefault_provider = \"antigravity\"\n");
+    let credential = dir.credential_path();
+    std::fs::write(&credential, "").expect("write empty credential");
+
+    let output = check(&config, &credential);
+
+    assert!(
+        output.status.success(),
+        "presence-only means a zero-byte credential satisfies the guard; stderr: {}",
+        stderr(&output)
+    );
+    assert!(stdout(&output).contains("config ok"), "{}", stdout(&output));
+}
+
+#[test]
 fn check_accepts_the_built_in_antigravity_provider_when_nothing_routes_to_it() {
     // Every default config seeds a built-in `antigravity` provider, so a guard
     // keyed on the provider merely *existing* would fail this — that is, every
