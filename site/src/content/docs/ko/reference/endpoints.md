@@ -25,7 +25,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/admin/logout` | 브라우저 세션 삭제 |
 | `GET` | `/admin/accounts` | Claude 계정 스토어 메타데이터: 이름, 종류, 만료, UUID; 토큰 자체는 절대 반환하지 않음 |
 | `GET` | `/admin/accounts/codex` | Codex 계정 스토어 메타데이터: 이름, 만료, ChatGPT 계정 ID; 토큰 자체는 절대 반환하지 않음 |
-| `GET` | `/admin/pool` | `claude_oauth` 및 `chatgpt_oauth` 프로바이더별 풀 상태; Codex는 쿼터 헤더가 없어 사용률 필드가 비어 있음 |
+| `GET` | `/admin/pool` | `claude_oauth`, `chatgpt_oauth`, `kimi_oauth` 프로바이더별 풀 상태; 각 account 객체에는 선택적인 `plan` 문자열이 포함될 수 있으며, Codex는 쿼터 헤더가 없어 사용률 필드가 비어 있음 |
 | `POST` | `/admin/accounts/claude` | `{name, mode}`로 Claude 브라우저 프로비저닝 시작. `mode`는 `oauth` 또는 `setup_token`이며, 생략하면 `setup_token`; `{authorize_url}` 반환 |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `<code>#<state>`가 담긴 `{code}`로 Claude 프로비저닝 완료; 계정을 저장하고 실제 사용 여부(live)를 보고 |
 | `DELETE` | `/admin/accounts/claude/{name}` | 해당 이름 Claude 계정의 스토어 파일 제거 |

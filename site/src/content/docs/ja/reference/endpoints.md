@@ -25,7 +25,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/admin/logout` | ブラウザーセッションの破棄 |
 | `GET` | `/admin/accounts` | Claude アカウントストアのメタデータ: 名前、種類、有効期限、UUID。トークン本体は決して返さない |
 | `GET` | `/admin/accounts/codex` | Codex アカウントストアのメタデータ: 名前、有効期限、ChatGPT アカウント ID。トークン本体は決して返さない |
-| `GET` | `/admin/pool` | `claude_oauth` / `chatgpt_oauth` provider ごとのプール状態。Codex はクォータヘッダーを送らないため使用率フィールドは空 |
+| `GET` | `/admin/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider ごとのプール状態。各 account オブジェクトには任意の `plan` 文字列が含まれることがあり、Codex はクォータヘッダーを送らないため使用率フィールドは空 |
 | `POST` | `/admin/accounts/claude` | `{name, mode}` で Claude のブラウザープロビジョニングを開始。`mode` は `oauth` または `setup_token` で、省略時は `setup_token`。`{authorize_url}` を返す |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `<code>#<state>` を含む `{code}` で Claude プロビジョニングを完了。アカウントを保存し、有効（live）かどうかを報告 |
 | `DELETE` | `/admin/accounts/claude/{name}` | 指定した Claude アカウントのストアファイルを削除 |

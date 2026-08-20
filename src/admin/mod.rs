@@ -21,6 +21,7 @@ pub mod session;
 mod codex;
 mod html;
 mod oidc;
+mod plan;
 mod script;
 
 use std::{collections::HashSet, io, sync::Arc, time::Duration};
@@ -46,6 +47,7 @@ use crate::{
     server::AppState,
 };
 
+pub use plan::reset_profile_cache;
 pub use session::AdminStores;
 
 use session::{PendingAttempt, PendingKind};
@@ -948,6 +950,13 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if authenticate(&state, &headers).is_none() {
         return unauthorized();
     }
+    // Computed once, before the per-provider loop, and shared by every
+    // provider processed in this one request -- a stalled Claude account in
+    // an earlier provider must not let a later provider spend its own
+    // separate time budget on top. Only the production default is ever used
+    // on this path; a shrunk budget exists solely for tests.
+    let budgets = plan::BackfillBudgets::default();
+    let deadline = tokio::time::Instant::now() + budgets.total;
     let mut providers = Vec::new();
     for (name, provider) in &state.config.providers {
         if !matches!(
@@ -1003,6 +1012,32 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
             state
                 .accounts
                 .snapshot(name, &resolved, None, state.config.server.pool.as_ref());
+        // Subscription plan (Claude "max"/"max 20x", ChatGPT "team"/"plus") is
+        // purely informational display data for the dashboard -- it never
+        // touches `AccountSnapshot` or the request-routing path. Resolved
+        // separately and merged into the JSON view only, keyed by account
+        // name (unique within one provider's resolved list).
+        let plans = plan::plans_for_accounts(
+            provider.auth,
+            name,
+            &provider.base_url,
+            &state.http_client,
+            &resolved,
+            &budgets,
+            deadline,
+        )
+        .await;
+        let accounts: Vec<Value> = snapshots
+            .into_iter()
+            .zip(&resolved)
+            .map(|(snapshot, account)| {
+                let mut value = serde_json::to_value(&snapshot).unwrap_or(Value::Null);
+                if let (Value::Object(map), Some(plan)) = (&mut value, plans.get(&account.name)) {
+                    map.insert("plan".to_string(), Value::String(plan.clone()));
+                }
+                value
+            })
+            .collect();
         // `auth` carries the account's actual auth kind (claude_oauth /
         // chatgpt_oauth), distinct from `provider`, which is the operator's
         // config-table name and therefore free-form. The dashboard needs the
@@ -1010,7 +1045,7 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
         // an account -- a provider named "claude" is not necessarily a
         // claude_oauth provider, and a claude_oauth provider need not be
         // named "claude".
-        providers.push(json!({ "provider": name, "auth": provider.auth, "accounts": snapshots }));
+        providers.push(json!({ "provider": name, "auth": provider.auth, "accounts": accounts }));
     }
     json_secure(json!({ "providers": providers }))
 }

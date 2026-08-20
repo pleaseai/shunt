@@ -167,7 +167,12 @@ async fn poll_account(
 /// kind the usage API accepts. `token_env` credentials are treated as static.
 /// The credential file (an explicit `credentials` path, or the store path for a
 /// name-only account) is read on the blocking pool.
-async fn account_is_refreshable(account: &AccountConfig) -> bool {
+///
+/// `pub(crate)` so [`crate::admin::plan`] can reuse this exact eligibility
+/// check before spending a live `/api/oauth/profile` call backfilling a pool
+/// account's subscription plan — the same "imported login only" rule applies
+/// there, and a second copy would be free to drift from this one.
+pub(crate) async fn account_is_refreshable(account: &AccountConfig) -> bool {
     if account.token_env.is_some() {
         return false;
     }
