@@ -55,10 +55,14 @@ and `[providers.*]` in one file.
 
 ## 3. Model ids and agent modes
 
-The prefix selects Cursor's agent mode (Agent / Plan / Ask) and the suffix is the Cursor model
-id. Use the **wire** id, not the display name from `cursor-agent models`: Auto is `default`
+The prefix selects Cursor's agent mode (Agent / Plan / Ask) and the suffix is normally the Cursor
+model id. Use the **wire** id, not the display name from `cursor-agent models`: Auto is `default`
 (routing `cursor:auto` fails with `Unknown model ID: auto`). Named models (e.g. `cursor:gpt-5.2`)
 require a paid plan that entitles them; free plans are limited to `cursor:default`.
+
+Cursor's `composer-2.5-fast` picker entry is a parameterized alias rather than a wire id. Route
+`cursor:composer-2.5-fast` (or `cursor:composer-2.5[fast=true]`) and shunt sends the
+`composer-2.5` wire id with `fast=true` model metadata, matching the official CLI.
 
 | Form | Agent mode | Example |
 | :-- | :-- | :-- |
@@ -132,5 +136,4 @@ Reusing a Cursor subscription from an unofficial client is your own call — it 
 Cursor's terms or account enforcement. Use at your own risk.
 
 </Aside>
-
 

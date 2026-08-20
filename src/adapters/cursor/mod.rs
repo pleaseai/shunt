@@ -111,6 +111,7 @@ async fn forward(
     let params = agent::AgentRunParams {
         prompt,
         model_id: resolved.model_id,
+        fast: resolved.fast,
         cwd: cwd.to_string(),
         mode: resolved.mode.wire_enum(),
         images,
@@ -860,6 +861,7 @@ mod tests {
         let params = agent::AgentRunParams {
             prompt: "TEXT_MARKER".into(),
             model_id: "MODEL_MARKER".into(),
+            fast: false,
             cwd: "/tmp".into(),
             mode: 1,
             images: Vec::new(),
@@ -901,6 +903,7 @@ mod tests {
         let params = agent::AgentRunParams {
             prompt: "TEXT_MARKER".into(),
             model_id: "MODEL_MARKER".into(),
+            fast: false,
             cwd: "/tmp".into(),
             mode: 1,
             images: Vec::new(),
