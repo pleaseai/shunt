@@ -78,12 +78,12 @@ pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<()
     // `antigravity` upstream without a credential must be refused here too, not
     // just at startup — otherwise editing a running config could silently swap
     // credentials, egress, and failure modes underneath a live provider.
+    if let Some(message) =
+        crate::auth::antigravity::routed_antigravity_credential_error(&new_config)
+    {
+        return Err(ConfigError::AntigravityMigrationRequired(message));
+    }
     if crate::auth::antigravity::routes_to_antigravity(&new_config) {
-        if let Some(message) = crate::auth::antigravity::antigravity_migration_error(
-            crate::auth::antigravity::default_antigravity_auth_path().exists(),
-        ) {
-            return Err(ConfigError::AntigravityMigrationRequired(message));
-        }
         // Mirror `main.rs`'s boot sequence here too: a config that starts with no
         // route to `antigravity` never starts the version refresher, so a reload
         // that later adds one is the only remaining place to start it. Without

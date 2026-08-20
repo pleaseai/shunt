@@ -88,13 +88,14 @@ pub fn warn_if_routes_to_antigravity_cli(config: &Config) {
     }
 }
 
-/// The boot/reload refusal for a routed native Antigravity provider with no
+/// The refusal message for a routed native Antigravity provider with no
 /// credential. Split from the filesystem probe so the message is testable
 /// without depending on what happens to exist in the test environment's home
-/// directory. Shared by `main.rs`'s `serve()` boot guard and
-/// `reload::reload`'s hot-reload guard, so a config edit that would silently
-/// swap credentials, egress, and failure modes underneath a running provider
-/// is refused in both places, not just at startup.
+/// directory. Callers go through
+/// [`routed_antigravity_credential_error`], which pairs it with the routing
+/// predicate and the probe — so a config edit that would silently swap
+/// credentials, egress, and failure modes underneath a running provider is
+/// refused wherever a config is accepted: `check`, boot, and hot reload.
 pub fn antigravity_migration_error(credential_exists: bool) -> Option<String> {
     (!credential_exists).then(|| {
         "provider `antigravity` is routed but has no credential. It is now the native HTTP \
@@ -102,6 +103,25 @@ pub fn antigravity_migration_error(credential_exists: bool) -> Option<String> {
          or route to `antigravity-cli` to stay on the deprecated subprocess transport."
             .to_string()
     })
+}
+
+/// The routed-Antigravity credential guard as one predicate over a whole
+/// config: `Some(message)` when `config` can send a request to a native
+/// `antigravity` upstream and no credential exists to serve it with.
+///
+/// This is the single implementation every entry point runs — `shunt check`,
+/// `main.rs`'s `serve()` boot path, and `reload::reload` — so a config that
+/// `run` refuses to boot cannot pass `check` (issue #382).
+///
+/// Offline by construction: routing is read off the already-loaded config and
+/// the credential is probed by existence alone. No token refresh, no project
+/// discovery, no write to the credential file. That is what lets `shunt check`
+/// run it while staying a static, network-free validation command.
+pub fn routed_antigravity_credential_error(config: &Config) -> Option<String> {
+    if !routes_to_antigravity(config) {
+        return None;
+    }
+    antigravity_migration_error(default_antigravity_auth_path().exists())
 }
 
 /// The Code Assist host `shunt login antigravity` runs project discovery

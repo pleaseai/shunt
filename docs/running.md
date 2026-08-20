@@ -332,6 +332,15 @@ cargo run -- check            # or: shunt check   /   shunt --check
 # -> prints "config ok", or a specific error (bad bind address, unknown provider, …)
 ```
 
+Beyond config validation, `check` runs the boot path's routed-Antigravity
+credential guard (issue #382): a config that routes to the native `antigravity`
+upstream with no credential in `~/.shunt/antigravity-auth.json` fails here, with
+the same message `shunt run` refuses to start with, rather than passing the
+check and dying at startup. The guard is keyed on the config being able to route
+to such a provider — not on the built-in `antigravity` table merely existing,
+which every default config has — and is offline: it probes the credential file's
+existence and never refreshes a token or writes to it.
+
 ---
 
 ## 4. Run

@@ -6,7 +6,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use shunt::{
     auth::antigravity::{
-        antigravity_migration_error, routes_to_antigravity, routes_to_antigravity_cli,
+        routed_antigravity_credential_error, routes_to_antigravity, routes_to_antigravity_cli,
         warn_if_routes_to_antigravity_cli,
     },
     blueprints::{self, AddKind},
@@ -629,17 +629,16 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // The refresher is bounded, off the request path, and falls back to the
     // compiled-in version, so a manifest outage degrades the fingerprint
     // rather than the provider.
+    // `antigravity` changed meaning: it used to run the local `agy` binary, and
+    // now reaches the same service over HTTP under its own credential. A config
+    // that still means the old thing must fail loudly here rather than resolve
+    // quietly to a different transport, with different credentials, egress, and
+    // failure modes, behind a green startup. `check` runs this same predicate,
+    // so a config that boots here is one `shunt check` already accepted.
+    if let Some(message) = routed_antigravity_credential_error(&config) {
+        anyhow::bail!(message);
+    }
     if routes_to_antigravity(&config) {
-        // `antigravity` changed meaning: it used to run the local `agy` binary,
-        // and now reaches the same service over HTTP under its own credential.
-        // A config that still means the old thing must fail loudly here rather
-        // than resolve quietly to a different transport, with different
-        // credentials, egress, and failure modes, behind a green startup.
-        if let Some(message) = antigravity_migration_error(
-            shunt::auth::antigravity::default_antigravity_auth_path().exists(),
-        ) {
-            anyhow::bail!(message);
-        }
         shunt::auth::antigravity::version::spawn_refresher(reqwest::Client::new());
     }
     let (router, shared, state) =
@@ -685,9 +684,18 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
 }
 
 fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
-    Config::load(config_path.as_deref())
+    let config = Config::load(config_path.as_deref())
         .and_then(|config| config.validate())
         .context("config check failed")?;
+    // `Config::validate` only sees the config file. The routed-Antigravity
+    // credential guard also needs the credential store, so `check` has to run
+    // it explicitly or a migrated config that `serve()` refuses to boot still
+    // reports `config ok` — precisely to the CI and deploy scripts that gate a
+    // rollout on this command (issue #382). Offline like the rest of `check`:
+    // routing plus a credential-existence probe, never a refresh.
+    if let Some(message) = routed_antigravity_credential_error(&config) {
+        anyhow::bail!(message);
+    }
     println!("config ok");
     Ok(())
 }
