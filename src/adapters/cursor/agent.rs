@@ -141,6 +141,7 @@ pub struct AgentTool {
 pub struct AgentRunParams {
     pub prompt: String,
     pub model_id: String,
+    pub fast: bool,
     pub cwd: String,
     /// `AgentMode` enum (`UserMessage.mode`): AGENT=1, ASK=2, PLAN=3.
     pub mode: u64,
@@ -584,6 +585,7 @@ pub fn build_run_frames(params: &AgentRunParams) -> Vec<Bytes> {
     let AgentRunParams {
         prompt,
         model_id: model,
+        fast,
         cwd,
         mode,
         images,
@@ -611,14 +613,14 @@ pub fn build_run_frames(params: &AgentRunParams) -> Vec<Bytes> {
     // the text-only placeholder.
     req.extend(field_ld(4, &encode_mcp_tools(tools)));
     req.extend(field_str(5, &conv));
-    req.extend(field_ld(9, &encode_model_meta(model, false)));
+    req.extend(field_ld(9, &encode_model_meta(model, *fast)));
     // f12 is a workspace-context flag on the current wire (setting it to 1 makes
     // the server reject with "workspace context exclusion is not allowed"), so
     // keep it 0. Inline images ride in `selected_context` (f3) alone.
     req.extend(field_varint(12, 0));
     // minimal catalog: a "default" entry plus the target model.
     req.extend(field_ld(14, &field_str(1, "default")));
-    req.extend(field_ld(14, &encode_model_meta(model, false)));
+    req.extend(field_ld(14, &encode_model_meta(model, *fast)));
     req.extend(field_str(16, &conv));
     let frame0 = connect_frame(&field_ld(1, &req));
 
@@ -935,6 +937,7 @@ mod tests {
         AgentRunParams {
             prompt: prompt.to_string(),
             model_id: model.to_string(),
+            fast: false,
             cwd: cwd.to_string(),
             mode: 1,
             images: Vec::new(),
@@ -982,6 +985,7 @@ mod tests {
             AgentRunParams {
                 prompt: "IMAGE_PROMPT_MARKER".into(),
                 model_id: "MODEL_MARKER".into(),
+                fast: false,
                 cwd: "/tmp".into(),
                 mode: 1,
                 images: vec![AgentImage {
@@ -1077,12 +1081,28 @@ mod tests {
     }
 
     #[test]
+    fn fast_metadata_is_encoded_for_selected_and_catalog_models() {
+        let mut params = text_params("x", "composer-2.5", "/tmp");
+        for fast in [false, true] {
+            params.fast = fast;
+            let frames = build_run_frames(&params);
+            let expected = encode_model_meta("composer-2.5", fast);
+            let occurrences = frames[0][5..]
+                .windows(expected.len())
+                .filter(|window| *window == expected.as_slice())
+                .count();
+            assert_eq!(occurrences, 2, "fast={fast}");
+        }
+    }
+
+    #[test]
     fn mode_enum_is_encoded_in_user_message() {
         // f4 (mode) inside the user message carries the AgentMode enum. A Plan
         // turn (3) must differ from an Agent turn (1) in the frame-0 bytes.
         let agent = build_run_frames(&AgentRunParams {
             prompt: "x".into(),
             model_id: "m".into(),
+            fast: false,
             cwd: "/tmp".into(),
             mode: 1,
             images: Vec::new(),
@@ -1091,6 +1111,7 @@ mod tests {
         let plan = build_run_frames(&AgentRunParams {
             prompt: "x".into(),
             model_id: "m".into(),
+            fast: false,
             cwd: "/tmp".into(),
             mode: 3,
             images: Vec::new(),
@@ -1110,6 +1131,7 @@ mod tests {
         let frames = build_run_frames(&AgentRunParams {
             prompt: "look".into(),
             model_id: "m".into(),
+            fast: false,
             cwd: "/tmp".into(),
             mode: 1,
             images: vec![image],
@@ -1172,6 +1194,7 @@ mod tests {
         let frames = build_run_frames(&AgentRunParams {
             prompt: "x".into(),
             model_id: "m".into(),
+            fast: false,
             cwd: "/tmp".into(),
             mode: 1,
             images: Vec::new(),

@@ -146,7 +146,7 @@ model = "cursor:gpt-5.5"                             # cursor-plan:<id> / cursor
 provider = "cursor"
 ```
 
-`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 프리픽스는 Cursor의 에이전트 모드를 선택하며, 접미사는 Cursor 모델 id입니다. 자세한 내용은 [프로바이더 → Cursor](https://shunt.dev/ko/providers/cursor/)를 참고하세요.
+`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 프리픽스는 Cursor의 에이전트 모드를 선택하며, 접미사는 일반적으로 Cursor의 wire 모델 id입니다. 단, Cursor의 `composer-2.5-fast` 선택기 별칭은 예외로, shunt는 `composer-2.5` wire id와 `fast=true` 모델 메타데이터를 전송합니다. 자세한 내용은 [프로바이더 → Cursor](https://shunt.dev/ko/providers/cursor/)를 참고하세요.
 
 **Anthropic 호환 백엔드**라면 무엇이든 테이블 하나만 추가하면 됩니다. 코드 변경은 없습니다.
 

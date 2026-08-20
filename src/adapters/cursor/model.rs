@@ -19,6 +19,32 @@ pub const CURSOR_LEGACY_MODELS: &[&str] = &[
     "composer-2.5-fast",
 ];
 
+struct CursorModelAlias {
+    name: &'static str,
+    wire_id: &'static str,
+    fast: bool,
+}
+
+/// Cursor's picker exposes these names, but the AgentService wire carries the
+/// base model id and `fast` as separate model metadata.
+const CURSOR_MODEL_ALIASES: &[CursorModelAlias] = &[
+    CursorModelAlias {
+        name: "composer-2.5-fast",
+        wire_id: "composer-2.5",
+        fast: true,
+    },
+    CursorModelAlias {
+        name: "composer-2.5[fast=true]",
+        wire_id: "composer-2.5",
+        fast: true,
+    },
+    CursorModelAlias {
+        name: "composer-2.5[fast=false]",
+        wire_id: "composer-2.5",
+        fast: false,
+    },
+];
+
 /// Agent mode derived from model prefix or name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorAgentMode {
@@ -70,32 +96,42 @@ pub fn resolve_cursor_model(model: &str) -> Result<CursorModelResolution, String
                     "unknown cursor model: {model}. Supported: cursor:<id>, cursor-plan:<id>, cursor-ask:<id>, cursor-agent"
                 ));
             }
-            return Ok(CursorModelResolution {
-                model_id: rest.to_string(),
-                mode,
-            });
+            return Ok(resolve_model_alias(rest, mode));
         }
     }
 
     // Legacy exact names
     match model {
         "cursor" | "cursor-agent" | "cursor-composer" | "cursor-composer-fast" => {
-            Ok(CursorModelResolution {
-                model_id: model.to_string(),
-                mode: CursorAgentMode::Agent,
-            })
+            Ok(resolve_model_alias(model, CursorAgentMode::Agent))
         }
-        "cursor-plan" | "composer-2.5" => Ok(CursorModelResolution {
-            model_id: model.to_string(),
-            mode: CursorAgentMode::Plan,
-        }),
-        "cursor-ask" | "composer-2.5-fast" => Ok(CursorModelResolution {
-            model_id: model.to_string(),
-            mode: CursorAgentMode::Ask,
-        }),
+        "cursor-plan" | "composer-2.5" => {
+            Ok(resolve_model_alias(model, CursorAgentMode::Plan))
+        }
+        "cursor-ask" | "composer-2.5-fast" => {
+            Ok(resolve_model_alias(model, CursorAgentMode::Ask))
+        }
         _ => Err(format!(
             "unknown cursor model: {model}. Supported: cursor:<id>, cursor-plan:<id>, cursor-ask:<id>, cursor-agent"
         )),
+    }
+}
+
+fn resolve_model_alias(model: &str, mode: CursorAgentMode) -> CursorModelResolution {
+    if let Some(alias) = CURSOR_MODEL_ALIASES
+        .iter()
+        .find(|alias| alias.name == model)
+    {
+        return CursorModelResolution {
+            model_id: alias.wire_id.to_string(),
+            mode,
+            fast: alias.fast,
+        };
+    }
+    CursorModelResolution {
+        model_id: model.to_string(),
+        mode,
+        fast: false,
     }
 }
 
@@ -103,6 +139,7 @@ pub fn resolve_cursor_model(model: &str) -> Result<CursorModelResolution, String
 pub struct CursorModelResolution {
     pub model_id: String,
     pub mode: CursorAgentMode,
+    pub fast: bool,
 }
 
 /// Build the list of supported Cursor model names.
@@ -173,6 +210,27 @@ mod tests {
     }
 
     #[test]
+    fn resolve_prefixed_composer_fast_uses_wire_model_id() {
+        let r = resolve_cursor_model("cursor:composer-2.5-fast").unwrap();
+        assert_eq!(r.model_id, "composer-2.5");
+        assert_eq!(r.mode, CursorAgentMode::Agent);
+        assert!(r.fast);
+    }
+
+    #[test]
+    fn resolve_prefixed_composer_fast_parameter_uses_wire_metadata() {
+        let r = resolve_cursor_model("cursor:composer-2.5[fast=true]").unwrap();
+        assert_eq!(r.model_id, "composer-2.5");
+        assert_eq!(r.mode, CursorAgentMode::Agent);
+        assert!(r.fast);
+
+        let r = resolve_cursor_model("cursor:composer-2.5[fast=false]").unwrap();
+        assert_eq!(r.model_id, "composer-2.5");
+        assert_eq!(r.mode, CursorAgentMode::Agent);
+        assert!(!r.fast);
+    }
+
+    #[test]
     fn resolve_unknown_model_errors() {
         let r = resolve_cursor_model("unknown-model");
         assert!(r.is_err());
@@ -200,9 +258,12 @@ mod tests {
     fn resolve_composer_models() {
         let r = resolve_cursor_model("composer-2.5").unwrap();
         assert_eq!(r.mode, CursorAgentMode::Plan);
+        assert!(!r.fast);
 
         let r = resolve_cursor_model("composer-2.5-fast").unwrap();
         assert_eq!(r.mode, CursorAgentMode::Ask);
+        assert_eq!(r.model_id, "composer-2.5");
+        assert!(r.fast);
     }
 
     #[test]
