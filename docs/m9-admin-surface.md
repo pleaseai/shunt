@@ -260,7 +260,7 @@ process-lifetime state:
 | `GET` | `/admin/accounts` | JSON: Claude store metadata (name, kind, expiry, UUID — never the token) |
 | `GET` | `/admin/accounts/codex` | JSON: Codex store metadata (name, expiry, account ID — never the token) |
 | `GET` | `/admin/observed` | JSON: read-only observed Claude, Codex, Gemini, Kimi, Grok, and Cursor identity, state, and provider-native usage — never token material |
-| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state |
+| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state; account objects may include an optional `plan` string |
 | `POST` | `/admin/accounts/claude` | `{name, mode}` → start Claude provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the Claude account |
 | `DELETE` | `/admin/accounts/claude/{name}` | Remove the Claude account's store file |
@@ -416,6 +416,18 @@ scan for an empty list — the same resolution the adapters use). Codex successf
 responses now populate the 5h/7d fields from `x-codex-*` rate-limit headers;
 unsupported windows are ignored and `7d_oi` remains `None` because Codex has no
 analog. Since issue #195 this recorded state also feeds Codex account selection (see `m10-codex-multi-account.md`), in addition to the dashboard display.
+
+The optional `plan` field is derived from credential data already held by
+shunt: Claude reads `claudeAiOauth.subscriptionType`, and Codex reads the
+`chatgpt_plan_type` claim from its stored JWT. When an imported, refreshable
+Claude credential has no stored subscription type, the request makes a bounded
+`GET /api/oauth/profile` backfill and caches the result. Setup-token and
+`token_env` accounts are not backfilled. A missing, failed, or unrecognized
+lookup omits `plan` for that account and does not affect routing or quota state.
+Because the backfill reuses the normal Claude account resolver, reading this
+endpoint may rotate and write back an expired OAuth credential; operators that
+need a strictly non-writing read should avoid relying on that path until the
+credential is already valid.
 
 ## Shared foundations with gateway login
 

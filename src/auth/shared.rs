@@ -70,6 +70,48 @@ pub fn is_token_valid_at(token: &str, now: SystemTime) -> bool {
         .is_some_and(|refresh_at| now < refresh_at)
 }
 
+/// Extract a Claude subscription plan (e.g. `"max"`) from a parsed Claude
+/// credentials blob — `~/.claude/.credentials.json`, the shunt store's copy of
+/// it, or the macOS Keychain entry, all of which share this shape. Source:
+/// `claudeAiOauth.subscriptionType`, the same field `claude`/Claude Code itself
+/// writes on login. Trimmed and returned verbatim (no casing applied here) so
+/// both call sites can apply their own display treatment: [`crate::auth::observation::parse_claude`]
+/// title-cases it for the local-login observation view, while
+/// [`crate::admin::plan`] does the same for the admin pool dashboard.
+pub(crate) fn claude_plan_from_credentials(value: &Value) -> Option<String> {
+    let raw = value.pointer("/claudeAiOauth/subscriptionType")?.as_str()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Extract a ChatGPT/Codex subscription plan (e.g. `"team"`) from a parsed
+/// Codex credentials blob — `~/.codex/auth.json` or the shunt store's copy of
+/// it. The primary source is the `tokens.id_token` JWT's
+/// `https://api.openai.com/auth.chatgpt_plan_type` claim; when `id_token` is
+/// absent (a token refresh can omit it — see `auth::codex::auth`'s refresh
+/// tests), falls back to the same claim on `tokens.access_token`. This mirrors
+/// [`crate::auth::observation::parse_codex`]'s pre-existing `identity_claims`
+/// resolution (id_token, else access_token) so refactoring that parser onto
+/// this shared extractor changes no observed behavior.
+pub(crate) fn codex_plan_from_credentials(value: &Value) -> Option<String> {
+    let tokens = value.get("tokens")?;
+    let claims = tokens
+        .get("id_token")
+        .and_then(Value::as_str)
+        .and_then(jwt_claims)
+        .or_else(|| {
+            tokens
+                .get("access_token")
+                .and_then(Value::as_str)
+                .and_then(jwt_claims)
+        })?;
+    let raw = claims
+        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type")?
+        .as_str()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 /// Whether the long-lived `refresh_token` may be POSTed to `url`: HTTPS anywhere,
 /// or plain `http://` only to loopback. Vets the initial URL and each redirect hop.
 ///
@@ -897,6 +939,78 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn jwt(claims: Value) -> String {
+        format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+        )
+    }
+
+    #[test]
+    fn claude_plan_from_credentials_reads_subscription_type() {
+        let value = serde_json::json!({"claudeAiOauth": {"subscriptionType": "max"}});
+        assert_eq!(claude_plan_from_credentials(&value).as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn claude_plan_from_credentials_trims_and_rejects_blank() {
+        let padded = serde_json::json!({"claudeAiOauth": {"subscriptionType": "  max  "}});
+        assert_eq!(
+            claude_plan_from_credentials(&padded).as_deref(),
+            Some("max")
+        );
+
+        let blank = serde_json::json!({"claudeAiOauth": {"subscriptionType": "   "}});
+        assert_eq!(claude_plan_from_credentials(&blank), None);
+    }
+
+    #[test]
+    fn claude_plan_from_credentials_absent_field_is_none() {
+        let no_field = serde_json::json!({"claudeAiOauth": {"accessToken": "x"}});
+        assert_eq!(claude_plan_from_credentials(&no_field), None);
+
+        let no_oauth = serde_json::json!({});
+        assert_eq!(claude_plan_from_credentials(&no_oauth), None);
+    }
+
+    #[test]
+    fn codex_plan_from_credentials_reads_id_token_claim() {
+        let id_token = jwt(serde_json::json!({
+            "https://api.openai.com/auth": {"chatgpt_plan_type": "team"}
+        }));
+        let value = serde_json::json!({"tokens": {"id_token": id_token}});
+        assert_eq!(codex_plan_from_credentials(&value).as_deref(), Some("team"));
+    }
+
+    #[test]
+    fn codex_plan_from_credentials_falls_back_to_access_token_without_id_token() {
+        // A token refresh can omit id_token (see auth::codex::auth's refresh
+        // tests); the plan claim must still resolve from access_token so this
+        // mirrors observation::parse_codex's pre-existing identity_claims
+        // fallback exactly.
+        let access_token = jwt(serde_json::json!({
+            "https://api.openai.com/auth": {"chatgpt_plan_type": "plus"}
+        }));
+        let value = serde_json::json!({"tokens": {"access_token": access_token}});
+        assert_eq!(codex_plan_from_credentials(&value).as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn codex_plan_from_credentials_absent_or_blank_is_none() {
+        let no_tokens = serde_json::json!({});
+        assert_eq!(codex_plan_from_credentials(&no_tokens), None);
+
+        let no_claim = jwt(serde_json::json!({"email": "a@example.com"}));
+        let value = serde_json::json!({"tokens": {"id_token": no_claim}});
+        assert_eq!(codex_plan_from_credentials(&value), None);
+
+        let blank = jwt(serde_json::json!({
+            "https://api.openai.com/auth": {"chatgpt_plan_type": "  "}
+        }));
+        let value = serde_json::json!({"tokens": {"id_token": blank}});
+        assert_eq!(codex_plan_from_credentials(&value), None);
     }
 
     /// A `SHUNT_GATEWAY_SESSION_FILE` (or any account path) naming a file in
