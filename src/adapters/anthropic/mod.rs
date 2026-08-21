@@ -22,6 +22,7 @@ use crate::{
 };
 
 mod auto_mode_classifier;
+mod deferral;
 mod model_rewrite;
 
 pub struct AnthropicAdapter;
@@ -61,11 +62,14 @@ async fn forward(
     let request_headers = outbound_headers(headers, &credential);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
     // Only a subscription-OAuth bearer faces the client-shape gate; an API-key
-    // Anthropic-compatible provider keeps byte-for-byte passthrough.
+    // Anthropic-compatible provider keeps byte-for-byte passthrough except for
+    // deferred-tool fields that the upstream model cannot accept (OpenRouter
+    // stealth slugs, Kimi, …).
     if oauth_client {
         auto_mode_classifier::restore_claude_code_identity(&mut body);
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
+    deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
     let body = body.into_raw();
     // Bounded transient retry (issue #48) for this single-credential path. Kept
     // off `count_tokens`, which passes through here for Anthropic-kind providers
@@ -171,6 +175,7 @@ async fn forward_claude_oauth(
     );
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
+    deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
@@ -647,6 +652,7 @@ async fn forward_kimi_oauth(
     );
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
+    deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
