@@ -428,8 +428,11 @@ impl ReadState {
                 self.finished = true;
                 self.pending.push_back(Err(CursorError::new(
                     502,
-                    "cursor used one of its own built-in tools instead of a caller-supplied tool, \
-                     which shunt cannot bridge; retry, or send a request with no tools",
+                    concat!(
+                        "cursor used one of its own built-in tools instead of a ",
+                        "caller-supplied tool, which shunt cannot bridge; retry, ",
+                        "or send a request with no tools"
+                    ),
                     Some(format!("unbridged ExecServerMessage field {field}")),
                 )));
                 return;
@@ -825,6 +828,15 @@ fn extract_tool_call(payload: &[u8]) -> Option<(String, String)> {
 /// The `tool_` call-id prefix is the discriminator: across captured turns only
 /// fields 7 and 11 ever carry one, so a `tool_*` id outside field 11 identifies
 /// an unbridged built-in call without enumerating Cursor's built-in catalog.
+///
+/// The scan stays deliberately wide. Two narrower variants were built and
+/// measured against the live upstream on an identical request: pinning
+/// detection to the field position where the id was captured leaked silent
+/// turns (2 of 22), and additionally requiring the id body to be uuid-shaped
+/// leaked badly (8 of 16) -- even though every captured id satisfies that
+/// shape. The wide scan showed no silent turn in 38. A false positive fails a
+/// working turn and a miss restores the original silent truncation, so neither
+/// is free; the wide form is what the measurements support.
 fn extract_unbridged_builtin_tool_call(payload: &[u8]) -> Option<u64> {
     for esm in iter_fields(payload) {
         // AgentServerMessage.exec_server_message = field 2.
