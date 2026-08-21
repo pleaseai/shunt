@@ -74,6 +74,23 @@ static DISCOVERING: AtomicBool = AtomicBool::new(false);
 /// subprocess (measured, pleaseai/shunt#337), so a minute is cheap either way.
 const UNKNOWN_MODEL_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Floor on the gap between cold-cache discoveries *after one has failed*.
+///
+/// [`DISCOVERING`] collapses a concurrent burst, but [`refresh`] clears it on
+/// failure so the next turn may try again — which is what keeps a transient
+/// failure from latching. The cost is that a persistently failing `agy` can be
+/// re-forked once per turn while the cache is still empty (cubic review on
+/// pleaseai/shunt#370).
+///
+/// This is deliberately much shorter than [`UNKNOWN_MODEL_REFRESH_INTERVAL`].
+/// A cold cache is not a steady state: every effort-taking model requires the
+/// flag, so routes that pin no effort hard-fail until discovery lands. A minute
+/// of that would turn a blip into an outage, whereas an unknown model is merely
+/// absent from an otherwise usable matrix. A few multiples of the measured
+/// ~1.3-1.9s discovery cost bounds the forking without meaningfully extending
+/// the cold window.
+const FAILED_DISCOVERY_BACKOFF: Duration = Duration::from_secs(10);
+
 /// Monotonic origin, so refresh attempts can be stamped as a plain integer.
 /// `Instant::now()` is not const, so the first caller seeds it.
 static EPOCH: OnceLock<Instant> = OnceLock::new();
@@ -81,6 +98,17 @@ static EPOCH: OnceLock<Instant> = OnceLock::new();
 /// Milliseconds since [`EPOCH`] of the last discovery triggered by an
 /// unrecognized model. Zero means never, which is why stamps are floored to 1.
 static LAST_UNKNOWN_MODEL_REFRESH: AtomicU64 = AtomicU64::new(0);
+
+/// Milliseconds since [`EPOCH`] of the last discovery that *failed*. Zero means
+/// none has, which is why stamps are floored to 1.
+///
+/// The failure is stamped, not the attempt. Stamping the attempt would let a
+/// turn arriving during [`warm`]'s boot discovery claim the slot and then
+/// no-op — [`spawn_refresh`] returns early because `DISCOVERING` is held — so a
+/// failing boot discovery would leave the process cold *and* throttled on a
+/// claim that never ran a discovery. Boot is exactly when `warm` and the first
+/// turns race, so that is the common path, not a corner.
+static LAST_FAILED_DISCOVERY: AtomicU64 = AtomicU64::new(0);
 
 /// Model/effort capabilities for the turn's `model`, discovered from
 /// `agy models` and cached.
@@ -103,13 +131,26 @@ static LAST_UNKNOWN_MODEL_REFRESH: AtomicU64 = AtomicU64::new(0);
 /// model becomes unknown *once* rather than forever.
 pub async fn effort_matrix(agy_bin: &Path, model: &str) -> EffortMatrix {
     let Some(matrix) = cached() else {
-        spawn_refresh(agy_bin);
+        if cold_discovery_is_due() {
+            spawn_refresh(agy_bin);
+        }
         return EffortMatrix::new();
     };
     if !matrix.contains_key(model) && claim_unknown_model_refresh() {
         spawn_refresh(agy_bin);
     }
     matrix
+}
+
+/// Whether a cold-cache discovery may be spawned.
+///
+/// A plain read, with no claim taken: the backoff is driven by observed
+/// failures, so an attempt that never fails never throttles the next turn. That
+/// is what makes this safe to consult while [`warm`] holds `DISCOVERING`.
+fn cold_discovery_is_due() -> bool {
+    let now = EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64;
+    let last = LAST_FAILED_DISCOVERY.load(Ordering::Acquire);
+    refresh_is_due(last, now, FAILED_DISCOVERY_BACKOFF)
 }
 
 /// Take the rate-limit slot for an unknown-model refresh, if it is free.
@@ -161,10 +202,22 @@ fn spawn_refresh(agy_bin: &Path) {
 /// failed attempt is retried by the next turn rather than latched forever.
 async fn refresh(agy_bin: &Path) {
     let discovered = discover(agy_bin).await;
-    if let Some(matrix) = discovered {
-        *MATRIX.lock().unwrap_or_else(PoisonError::into_inner) = Some(matrix);
+    match discovered {
+        Some(matrix) => {
+            *MATRIX.lock().unwrap_or_else(PoisonError::into_inner) = Some(matrix);
+        }
+        // No matching reset on success: `MATRIX` is only ever assigned, never
+        // cleared, so a success makes the cold-cache path unreachable for the
+        // life of the process and the stamp can never be read again.
+        None => stamp_failed_discovery(),
     }
     DISCOVERING.store(false, Ordering::Release);
+}
+
+/// Record that a discovery failed, starting the [`FAILED_DISCOVERY_BACKOFF`].
+fn stamp_failed_discovery() {
+    let now = EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64;
+    LAST_FAILED_DISCOVERY.store(now.max(1), Ordering::Release);
 }
 
 /// Run `agy models` once, returning `None` when it cannot be trusted.
@@ -368,7 +421,9 @@ fn clamp(supported: &BTreeSet<String>, requested: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        claim_unknown_model_refresh, refresh_is_due, resolve_effort, EffortChoice, EffortMatrix,
+        claim_unknown_model_refresh, cold_discovery_is_due, refresh_is_due, resolve_effort,
+        stamp_failed_discovery, EffortChoice, EffortMatrix, FAILED_DISCOVERY_BACKOFF,
+        UNKNOWN_MODEL_REFRESH_INTERVAL,
     };
     use std::time::Duration;
 
@@ -404,6 +459,47 @@ mod tests {
         // process-global slot, so it does not race its neighbours.
         assert!(claim_unknown_model_refresh());
         assert!(!claim_unknown_model_refresh());
+    }
+
+    /// `LAST_FAILED_DISCOVERY` is process-wide and the test harness runs
+    /// threads in parallel, so the whole open-then-closed sequence lives in one
+    /// test rather than three that would race each other's stamp.
+    ///
+    /// Two properties, in order. The gate starts open, and *stays* open when
+    /// merely consulted — it is a read, not a claim, which is what lets a turn
+    /// arriving during `warm`'s boot discovery check it without throttling the
+    /// next turn on an attempt that never ran. Only an observed failure closes
+    /// it.
+    #[test]
+    fn only_an_observed_failure_closes_the_cold_gate() {
+        assert!(cold_discovery_is_due(), "a cold cache must start discoverable");
+        assert!(
+            cold_discovery_is_due(),
+            "consulting the gate must not consume it"
+        );
+
+        stamp_failed_discovery();
+
+        assert!(
+            !cold_discovery_is_due(),
+            "a turn immediately after a failure must not re-fork `agy`"
+        );
+    }
+
+    /// The cold-cache backoff has to be far shorter than the unknown-model
+    /// interval: a cold matrix hard-fails effort-taking routes, while an
+    /// unknown model is merely missing from an otherwise usable matrix.
+    #[test]
+    fn the_cold_backoff_is_shorter_than_the_unknown_model_interval() {
+        assert!(FAILED_DISCOVERY_BACKOFF < UNKNOWN_MODEL_REFRESH_INTERVAL);
+    }
+
+    /// The backoff expires rather than latching the process cold forever.
+    #[test]
+    fn the_cold_backoff_expires() {
+        let backoff = FAILED_DISCOVERY_BACKOFF.as_millis() as u64;
+        assert!(!refresh_is_due(1_000, 1_000 + backoff - 1, FAILED_DISCOVERY_BACKOFF));
+        assert!(refresh_is_due(1_000, 1_000 + backoff, FAILED_DISCOVERY_BACKOFF));
     }
 
     #[test]
