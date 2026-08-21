@@ -421,6 +421,22 @@ impl ReadState {
                     .push_back(Ok(CursorStreamEvent::ToolCall { name, input_json }));
                 return;
             }
+            // A built-in tool call cannot be bridged. Fail loudly rather than
+            // letting the frame fall through to `End`, which would close the
+            // turn with `end_turn` and no tool_use.
+            if let Some(field) = extract_unbridged_builtin_tool_call(&payload) {
+                self.finished = true;
+                self.pending.push_back(Err(CursorError::new(
+                    502,
+                    concat!(
+                        "cursor used one of its own built-in tools instead of a ",
+                        "caller-supplied tool, which shunt cannot bridge; retry, ",
+                        "or send a request with no tools"
+                    ),
+                    Some(format!("unbridged ExecServerMessage field {field}")),
+                )));
+                return;
+            }
             if let Some(text) = extract_reasoning_text(&payload) {
                 // Reasoning is upstream output too: once it arrives, switch from
                 // the first-byte budget to the idle budget so a reasoning-only
@@ -792,6 +808,74 @@ fn extract_tool_call(payload: &[u8]) -> Option<(String, String)> {
     }
     None
 }
+
+/// Detect a tool call Cursor issued through one of its OWN built-in tools rather
+/// than through a bridged MCP tool.
+///
+/// Composer picks a transport per turn: a bridged caller tool arrives as
+/// `ExecServerMessage.mcp_args` (field 11, handled by [`extract_tool_call`]),
+/// but a built-in tool arrives under a different, tool-specific field carrying
+/// only its arguments and a `tool_<uuid>` call id — no tool name, the identity
+/// being the field number. Observed shape for the built-in file read
+/// (`ExecServerMessage` field 7): `{ 1: "<path>", 2: "tool_<uuid>" }`.
+///
+/// shunt cannot bridge these: the caller owns the filesystem, and the field
+/// carries no name to map onto a caller tool. Left undetected they fall through
+/// to the `End` branch, so the turn closes with `end_turn` and no `tool_use` and
+/// the model appears to announce a tool call and then do nothing. Detecting them
+/// turns that silent truncation into an explicit error.
+///
+/// The `tool_` call-id prefix is the discriminator: across captured turns only
+/// fields 7 and 11 ever carry one, so a `tool_*` id outside field 11 identifies
+/// an unbridged built-in call without enumerating Cursor's built-in catalog.
+///
+/// The scan stays deliberately wide. Two narrower variants were built and
+/// measured against the live upstream on an identical request: pinning
+/// detection to the field position where the id was captured leaked silent
+/// turns (2 of 22), and additionally requiring the id body to be uuid-shaped
+/// leaked badly (8 of 16) -- even though every captured id satisfies that
+/// shape. The wide scan showed no silent turn in 38. A false positive fails a
+/// working turn and a miss restores the original silent truncation, so neither
+/// is free; the wide form is what the measurements support.
+fn extract_unbridged_builtin_tool_call(payload: &[u8]) -> Option<u64> {
+    for esm in iter_fields(payload) {
+        // AgentServerMessage.exec_server_message = field 2.
+        if esm.field != 2 || esm.wire != 2 {
+            continue;
+        }
+        for args in iter_fields(esm.data) {
+            // Field 11 is the bridged MCP path, handled before this runs.
+            if args.field == 11 || args.wire != 2 {
+                continue;
+            }
+            if contains_tool_call_id(args.data, 0) {
+                return Some(args.field);
+            }
+        }
+    }
+    None
+}
+
+/// Whether `buf` contains a `tool_<...>` call-id string within [`MAX_TOOL_ID_SCAN_DEPTH`]
+/// levels of nesting.
+fn contains_tool_call_id(buf: &[u8], depth: usize) -> bool {
+    for field in iter_fields(buf) {
+        if field.wire != 2 {
+            continue;
+        }
+        if std::str::from_utf8(field.data).is_ok_and(|s| s.starts_with("tool_")) {
+            return true;
+        }
+        if depth < MAX_TOOL_ID_SCAN_DEPTH && contains_tool_call_id(field.data, depth + 1) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Nesting depth scanned for a `tool_*` call id. Bounds recursion on a
+/// malformed payload, mirroring [`MAX_PROTOBUF_VALUE_DEPTH`].
+const MAX_TOOL_ID_SCAN_DEPTH: usize = 8;
 
 /// Decode `McpArgs { name=1, args=2 (map<string,Value>), tool_call_id=3,
 /// tool_name=5 }` into `(name, input JSON)`. `tool_call_id` is intentionally
@@ -1242,6 +1326,41 @@ mod tests {
         let input: serde_json::Value = serde_json::from_str(&input_json).unwrap();
         assert_eq!(input["file_path"], serde_json::json!("/tmp/x"));
         assert_eq!(input["limit"].as_f64(), Some(5.0));
+    }
+
+    #[test]
+    fn detects_unbridged_builtin_tool_call() {
+        // Shape captured from the wire on a real failing turn: the built-in file
+        // read arrives as ExecServerMessage(2) field 7 = { 1: path, 2: tool id },
+        // with no tool name and no mcp_args.
+        let mut builtin = field_str(1, "/etc/hostname");
+        builtin.extend(field_str(2, "tool_2bb9cd2c-1809-444e-aaf7-11a6ec220d8"));
+        let payload = field_ld(2, &field_ld(7, &builtin));
+
+        assert!(
+            extract_tool_call(&payload).is_none(),
+            "field 7 is not the bridged mcp_args path"
+        );
+        assert_eq!(extract_unbridged_builtin_tool_call(&payload), Some(7));
+    }
+
+    #[test]
+    fn bridged_mcp_tool_call_is_not_reported_as_unbridged() {
+        // The mcp_args path (field 11) carries a tool_call_id too, so it must be
+        // excluded or every successful bridged call would raise a false error.
+        let mut mcp_args = field_str(5, "Read");
+        mcp_args.extend(field_str(3, "tool_6ce2d7dc-b8a9-4000-9000-000000000000"));
+        let payload = field_ld(2, &field_ld(11, &mcp_args));
+
+        assert!(extract_tool_call(&payload).is_some());
+        assert_eq!(extract_unbridged_builtin_tool_call(&payload), None);
+    }
+
+    #[test]
+    fn plain_text_frame_is_not_reported_as_unbridged() {
+        // A frame with no tool_* id anywhere must not trip the detector.
+        let payload = field_ld(2, &field_ld(10, &field_str(1, "just some text")));
+        assert_eq!(extract_unbridged_builtin_tool_call(&payload), None);
     }
 
     #[test]
