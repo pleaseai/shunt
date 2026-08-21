@@ -472,7 +472,10 @@ mod tests {
     /// it.
     #[test]
     fn only_an_observed_failure_closes_the_cold_gate() {
-        assert!(cold_discovery_is_due(), "a cold cache must start discoverable");
+        assert!(
+            cold_discovery_is_due(),
+            "a cold cache must start discoverable"
+        );
         assert!(
             cold_discovery_is_due(),
             "consulting the gate must not consume it"
@@ -498,8 +501,16 @@ mod tests {
     #[test]
     fn the_cold_backoff_expires() {
         let backoff = FAILED_DISCOVERY_BACKOFF.as_millis() as u64;
-        assert!(!refresh_is_due(1_000, 1_000 + backoff - 1, FAILED_DISCOVERY_BACKOFF));
-        assert!(refresh_is_due(1_000, 1_000 + backoff, FAILED_DISCOVERY_BACKOFF));
+        assert!(!refresh_is_due(
+            1_000,
+            1_000 + backoff - 1,
+            FAILED_DISCOVERY_BACKOFF
+        ));
+        assert!(refresh_is_due(
+            1_000,
+            1_000 + backoff,
+            FAILED_DISCOVERY_BACKOFF
+        ));
     }
 
     #[test]
