@@ -4,9 +4,12 @@ description: Route mapped models to OpenRouter's Anthropic-compatible endpoint �
 ---
 
 **OpenRouter** aggregates many model vendors behind one API key, and exposes an
-**Anthropic-compatible** endpoint — shunt forwards Claude Code's Messages request as-is and
-injects the OpenRouter key. There is no built-in preset, so the upstream declares `kind` and
-`base_url` explicitly.
+**Anthropic-compatible** endpoint — shunt injects the OpenRouter key and forwards
+Claude Code's Messages request. For non-Anthropic slugs (`stealth/ox-alpha`, …)
+it strips deferred-tool fields (`defer_loading`, `tool_search_tool_*`) that
+OpenRouter's skin otherwise rejects with HTTP 400; Anthropic ids (`claude*`,
+`anthropic/*`) keep those fields. There is no built-in preset, so the upstream
+declares `kind` and `base_url` explicitly.
 
 ## Quick start
 

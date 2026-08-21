@@ -224,7 +224,11 @@ a brand-new table adds a provider. Every provider takes these keys:
 
 Most third-party "use Claude Code with X" gateways are **Anthropic-Messages-compatible**: they are
 `kind = "anthropic"` with `auth = "api_key"`, differing only in `base_url` and the key env var.
-shunt injects the key and forwards the request. Ready-to-use entries (uncomment in
+shunt injects the key and forwards the request. When the routed upstream model is not an
+Anthropic id (`claude*` / `anthropic/*`), it also strips Claude Code's deferred-tool protocol
+(`defer_loading`, `tool_search_tool_*`) — OpenRouter's skin (and similar hosts) reject that
+protocol on stealth and other non-Anthropic slugs with HTTP 400. Anthropic models keep the
+fields. Ready-to-use entries (uncomment in
 `shunt.toml.example`, set the env var, add a `[[routes]]` line):
 
 | Provider | `base_url` | Example model IDs |

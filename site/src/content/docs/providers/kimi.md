@@ -4,7 +4,8 @@ description: Route mapped models to Moonshot's Anthropic-compatible Kimi endpoin
 ---
 
 **Kimi** is Moonshot AI's model family, served over an **Anthropic-compatible** endpoint —
-shunt forwards Claude Code's Messages request as-is and injects the Moonshot API key. The
+shunt injects the Moonshot API key and forwards Claude Code's Messages request. Non-Anthropic
+upstream ids have deferred-tool fields stripped (same rule as OpenRouter stealth slugs). The
 `kimi` preset is built in, so configuration is one upstream entry plus routes.
 
 This page covers two separate Kimi services with separate credentials: the metered Moonshot
