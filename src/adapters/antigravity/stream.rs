@@ -81,7 +81,7 @@ fn is_undelivered_handoff(message: &str) -> bool {
         return false;
     };
     rest.split_once('"')
-        .is_some_and(|(_, tail)| tail.starts_with(" not found"))
+        .is_some_and(|(_, tail)| tail.trim_start().starts_with("not found"))
 }
 
 /// Incremental `agy` stream-json → Anthropic SSE translator.

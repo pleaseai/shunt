@@ -253,20 +253,26 @@ fn test_translator_reports_failed_runs() {
 /// must end as a normal turn rather than an SSE error.
 #[test]
 fn test_undelivered_handoff_after_a_full_reply_ends_the_turn() {
-    let mut t = Translator::new("gemini", "msg_test");
-    t.on_line(
-        r#"{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"the whole answer"}}"#,
-    );
-    t.on_line(
-        r#"{"event":"result","result":{"status":"ERROR","response":"","error":"error executing cascade step: CORTEX_STEP_TYPE_GENERIC: recipient \"main\" not found"}}"#,
-    );
+    for error in [
+        r#"recipient \"main\" not found"#,
+        r#"recipient \"main\"not found"#,
+        r#"recipient \"main\"   not found"#,
+    ] {
+        let mut t = Translator::new("gemini", "msg_test");
+        t.on_line(
+            r#"{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"the whole answer"}}"#,
+        );
+        t.on_line(&format!(
+            r#"{{"event":"result","result":{{"status":"ERROR","response":"","error":"error executing cascade step: CORTEX_STEP_TYPE_GENERIC: {error}"}}}}"#,
+        ));
 
-    assert_eq!(t.end(), Some(&AgyEnd::Success));
-    assert_eq!(t.text(), "the whole answer", "no error text is appended");
+        assert_eq!(t.end(), Some(&AgyEnd::Success), "error: {error}");
+        assert_eq!(t.text(), "the whole answer", "error: {error}");
 
-    let out = t.finish();
-    assert!(out.contains("end_turn"));
-    assert!(!out.contains("event: error"));
+        let out = t.finish();
+        assert!(out.contains("end_turn"), "error: {error}");
+        assert!(!out.contains("event: error"), "error: {error}");
+    }
 }
 
 /// Only the handoff itself is forgiven. Any other late failure leaves a
