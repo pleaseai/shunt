@@ -119,6 +119,45 @@ const CREDENTIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// In-process single-flight for the refresh path, mirroring the other stores.
 static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Cross-process exclusion over the credential file itself (issue #384).
+///
+/// [`REFRESH_LOCK`] cannot cover this: the competing writer is a *different
+/// process*. `shunt login antigravity` (see [`super::login::run`]) rewrites the
+/// same file while the gateway is serving requests, so the project-id merge's
+/// re-read/write pair has to serialize against it on the filesystem.
+///
+/// **Lock ordering.** `REFRESH_LOCK` is only ever taken *before* this lock,
+/// never after, and this lock is never held across a network call — so the two
+/// cannot deadlock, and holding this one costs at most two file operations of
+/// contention.
+static CREDENTIAL_FILE_LOCK: crate::auth::shared::file_lock::FileLockKind =
+    crate::auth::shared::file_lock::FileLockKind {
+        lock_name: "Antigravity credential lock",
+        contention_hint: "Another shunt process is writing the credential file \
+                          (`shunt login antigravity`, or a token refresh). If no such process is \
+                          running, remove that file",
+        task_context: "Antigravity credential lock task failed",
+        unsupported_warning: "Warning: this platform has no advisory file lock, so a `shunt login \
+                              antigravity` running alongside the gateway is not serialized against \
+                              its credential writeback. A rotated refresh token can be lost that \
+                              way; run `shunt login antigravity` again if that happens.",
+        #[cfg(not(unix))]
+        warned: std::sync::Once::new(),
+    };
+
+/// How long a writer waits for [`CREDENTIAL_FILE_LOCK`].
+///
+/// Derived from what the lock actually covers, not from a network budget: the
+/// longest legitimate critical section is one `read` plus one atomic write of a
+/// sub-kilobyte JSON file — two `spawn_blocking` round trips, sub-millisecond
+/// of real I/O. No network call ever happens under this lock (`discover_project`
+/// completes before the merge section opens), so seconds of headroom is already
+/// four orders of magnitude over the worst case. Five seconds absorbs a loaded
+/// blocking pool and a slow filesystem while still failing fast against a
+/// genuinely wedged holder, well inside the 120s `ANTIGRAVITY_CREDENTIAL_TIMEOUT`
+/// that bounds request-path credential resolution (`src/auth/mod.rs`).
+const CREDENTIAL_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AntigravityCred {
     pub access_token: String,
@@ -165,6 +204,33 @@ pub struct AntigravityAuthStore {
     /// that much headroom between polls, but a test against a local mock
     /// server does not, and `ONBOARD_POLL_INTERVAL` is 5s.
     onboard_poll_interval: Duration,
+    /// Fires inside [`AntigravityAuthStore::project_id`]'s merge critical
+    /// section, after the re-read and before the write, while
+    /// [`CREDENTIAL_FILE_LOCK`] is held. See [`MergeHook`].
+    #[cfg(test)]
+    between_merge_read_and_write: Option<MergeHook>,
+}
+
+/// Test-only seam for the project-id compare-and-swap.
+///
+/// A newtype rather than a bare `Option<Arc<dyn Fn()>>` so
+/// [`AntigravityAuthStore`] can keep its derived `Debug`.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct MergeHook(Arc<dyn Fn() + Send + Sync>);
+
+#[cfg(test)]
+impl MergeHook {
+    fn run(&self) {
+        (self.0)();
+    }
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for MergeHook {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("MergeHook")
+    }
 }
 
 impl AntigravityAuthStore {
@@ -204,6 +270,8 @@ impl AntigravityAuthStore {
             project_cache: Arc::new(RwLock::new(None)),
             request_timeout: CREDENTIAL_REQUEST_TIMEOUT,
             onboard_poll_interval: ONBOARD_POLL_INTERVAL,
+            #[cfg(test)]
+            between_merge_read_and_write: None,
         }
     }
 
@@ -224,6 +292,8 @@ impl AntigravityAuthStore {
             project_cache: Arc::new(RwLock::new(None)),
             request_timeout: CREDENTIAL_REQUEST_TIMEOUT,
             onboard_poll_interval: ONBOARD_POLL_INTERVAL,
+            #[cfg(test)]
+            between_merge_read_and_write: None,
         }
     }
 
@@ -240,6 +310,15 @@ impl AntigravityAuthStore {
     #[cfg(test)]
     pub(crate) fn with_onboard_poll_interval(mut self, interval: Duration) -> Self {
         self.onboard_poll_interval = interval;
+        self
+    }
+
+    /// Test-only seam: run `hook` inside [`project_id`](Self::project_id)'s
+    /// merge critical section, after the re-read and before the write, with
+    /// [`CREDENTIAL_FILE_LOCK`] held.
+    #[cfg(test)]
+    pub(crate) fn with_merge_hook(mut self, hook: impl Fn() + Send + Sync + 'static) -> Self {
+        self.between_merge_read_and_write = Some(MergeHook(Arc::new(hook)));
         self
     }
 
@@ -308,6 +387,15 @@ impl AntigravityAuthStore {
         })
     }
 
+    /// Read the credential file.
+    ///
+    /// Deliberately **unlocked**. Every writer replaces the file by atomic
+    /// rename, so a reader always sees one complete record — never a torn one —
+    /// and taking [`CREDENTIAL_FILE_LOCK`] here would add contention and a
+    /// timeout failure mode without adding any exclusion. The one place a read
+    /// *does* need the lock is the read half of the project-id compare-and-swap
+    /// in [`project_id`](Self::project_id), and that site takes the guard
+    /// itself and calls this method inside it.
     async fn read(&self) -> Result<StoredAuth, AdapterError> {
         let path = self.path.clone();
         let content = tokio::task::spawn_blocking(move || fs::read_to_string(&path))
@@ -335,20 +423,74 @@ impl AntigravityAuthStore {
         })
     }
 
+    /// Take [`CREDENTIAL_FILE_LOCK`] for this store's credential file.
+    ///
+    /// Held across `.await` points, which is why this is the async entry point:
+    /// the project-id merge's critical section spans two `spawn_blocking` file
+    /// operations.
+    async fn lock_credential_file(
+        &self,
+    ) -> Result<crate::auth::shared::file_lock::FileLock, AdapterError> {
+        crate::auth::shared::file_lock::lock_file(
+            &self.path,
+            &CREDENTIAL_FILE_LOCK,
+            CREDENTIAL_LOCK_TIMEOUT,
+        )
+        .await
+        .map_err(|error| {
+            auth_error(format!(
+                "failed to lock the Antigravity credential file {}: {error:#}",
+                self.path.display()
+            ))
+        })
+    }
+
+    /// Replace the credential file, taking [`CREDENTIAL_FILE_LOCK`] first.
+    ///
+    /// Every writer of this file goes through a locked path; a caller that is
+    /// already inside a critical section hands its own guard to
+    /// [`write_holding_lock`](Self::write_holding_lock) instead. It must never
+    /// call this one — `flock` on a second descriptor to the same file blocks
+    /// even within one process, so that would deadlock against itself.
     async fn write(&self, stored: &StoredAuth) -> Result<(), AdapterError> {
+        let guard = self.lock_credential_file().await?;
+        self.write_holding_lock(guard, stored).await
+    }
+
+    /// The atomic write, **consuming** the caller's credential-file guard.
+    ///
+    /// The guard is moved *into* the blocking task rather than left as a local
+    /// of the awaiting future, so the lock is released only once the write has
+    /// actually landed. That ordering is load-bearing under cancellation: a
+    /// dropped future releases its locals immediately, while `spawn_blocking`
+    /// runs its closure to completion regardless — so a guard held out here
+    /// would let another writer acquire the lock and race a rename that is
+    /// still in flight, which is exactly the compare-and-swap this lock
+    /// exists to provide.
+    async fn write_holding_lock(
+        &self,
+        guard: crate::auth::shared::file_lock::FileLock,
+        stored: &StoredAuth,
+    ) -> Result<(), AdapterError> {
         let path = self.path.clone();
         let value = serde_json::to_value(stored).map_err(|error| {
             auth_error(format!("failed to encode Antigravity credentials: {error}"))
         })?;
-        tokio::task::spawn_blocking(move || write_auth_file_atomic(&path, &value))
-            .await
-            .map_err(|_| auth_error("Antigravity credential write task failed"))?
-            .map_err(|error| {
-                auth_error(format!(
-                    "failed to write Antigravity credential file {}: {error}",
-                    self.path.display()
-                ))
-            })
+        tokio::task::spawn_blocking(move || {
+            let result = write_auth_file_atomic(&path, &value);
+            // Explicit, and after the write: the release must be ordered by
+            // the write completing, not by the closure's scope ending.
+            drop(guard);
+            result
+        })
+        .await
+        .map_err(|_| auth_error("Antigravity credential write task failed"))?
+        .map_err(|error| {
+            auth_error(format!(
+                "failed to write Antigravity credential file {}: {error}",
+                self.path.display()
+            ))
+        })
     }
 
     async fn refresh_call(&self, refresh_token: &str) -> Result<TokenResponse, AdapterError> {
@@ -450,11 +592,42 @@ impl AntigravityAuthStore {
         // narrow the write to the case where it still is, and where nobody
         // else has already resolved a project id.
         //
+        // Re-reading is not enough on its own either: a refresh or a
+        // `shunt login antigravity` landing *between* the re-read and the
+        // write is still lost, because atomic rename makes each individual
+        // write all-or-nothing without making this read/merge/write a
+        // transaction (issue #384). So the whole section below runs under
+        // `CREDENTIAL_FILE_LOCK`, making it a genuine compare-and-swap: the
+        // guard is taken before the re-read and released after the write, and
+        // every other writer of this file takes the same guard. The guards
+        // still matter under it — the lock excludes a *concurrent* writer, but
+        // one that already landed before the guard was taken still has to be
+        // detected.
+        //
         // This re-read/write pair does not touch `REFRESH_LOCK` — `read` and
-        // `write` are plain file I/O with no locking of their own — so it is
-        // safe to call `project_id` regardless of whether the caller already
-        // holds that lock (it does on two of its three call sites in
-        // `get_valid`, but not on the fast, already-valid path).
+        // `write_holding_lock` are plain file I/O, and the file lock is a
+        // different, finer-grained lock — so it is still safe to call
+        // `project_id` regardless of whether the caller already holds
+        // `REFRESH_LOCK` (it does on two of its three call sites in
+        // `get_valid`, but not on the fast, already-valid path). The two
+        // cannot deadlock: `REFRESH_LOCK` is only ever taken *before* the file
+        // lock, never after, and the file lock is never held across a network
+        // call — `discover_project` has already returned by the time this
+        // section opens.
+        //
+        // Failing to acquire is best-effort, like the write itself: warn and
+        // skip the persist rather than fail a request that already has a
+        // working access token and project id in hand.
+        let guard = match self.lock_credential_file().await {
+            Ok(guard) => guard,
+            Err(error) => {
+                tracing::warn!(
+                    "skipped persisting discovered Antigravity project id: {}",
+                    error.message
+                );
+                return Ok(project);
+            }
+        };
         match self.read().await {
             Ok(mut fresh) => {
                 // A project id belongs to the identity discovery ran against,
@@ -490,12 +663,28 @@ impl AntigravityAuthStore {
                     );
                 } else {
                     fresh.project_id = Some(project.clone());
-                    if let Err(error) = self.write(&fresh).await {
+                    // Test seam: a race between the re-read and the write is
+                    // exactly what this lock exists to close, and a test that
+                    // does not control that interleaving would pass against
+                    // the unlocked code and prove nothing. Fires while the
+                    // guard is held.
+                    #[cfg(test)]
+                    if let Some(hook) = self.between_merge_read_and_write.clone() {
+                        hook.run();
+                    }
+                    // `write_holding_lock`, never `write`: the guard above is
+                    // already held, and `flock` on a second descriptor to the
+                    // same file blocks even within one process. Handing the
+                    // guard over rather than keeping it here is what keeps the
+                    // lock held until the write has actually landed, even if
+                    // this future is cancelled mid-write.
+                    if let Err(error) = self.write_holding_lock(guard, &fresh).await {
                         tracing::warn!(
                             "failed to persist discovered Antigravity project id: {}",
                             error.message
                         );
                     }
+                    return Ok(project);
                 }
             }
             Err(error) => {
@@ -512,6 +701,11 @@ impl AntigravityAuthStore {
                 );
             }
         }
+        // Only the paths that did *not* write reach here; the writing path
+        // handed its guard to `write_holding_lock` and returned. Explicit
+        // rather than left to the end of the function, so the release is
+        // visibly ordered with the section rather than with the `Ok`.
+        drop(guard);
 
         Ok(project)
     }
@@ -978,12 +1172,33 @@ fn is_stored_valid(stored: &StoredAuth, now: SystemTime) -> bool {
 
 /// Write a freshly minted credential. Creates the parent directory; the atomic
 /// writer itself deliberately refuses to.
+///
+/// Takes [`CREDENTIAL_FILE_LOCK`] — the *blocking* entry point, because every
+/// caller is already inside a `tokio::task::spawn_blocking` (the login flow at
+/// `super::login::run`, plus the test helpers). This is the separate-process
+/// writer the lock exists for: `shunt login antigravity` runs while the gateway
+/// is serving requests, and without this the project-id compare-and-swap would
+/// have nothing to compare against.
+///
+/// The directory is created *before* the lock is taken, deliberately: the lock
+/// file is a sibling of `path`, so its parent has to exist first.
 pub(crate) fn write_stored(path: &Path, stored: &StoredAuth) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)?;
         }
     }
+    let _guard = crate::auth::shared::file_lock::lock_file_blocking(
+        path,
+        &CREDENTIAL_FILE_LOCK,
+        CREDENTIAL_LOCK_TIMEOUT,
+    )
+    .map_err(|error| {
+        io::Error::other(format!(
+            "failed to lock the Antigravity credential file {}: {error:#}",
+            path.display()
+        ))
+    })?;
     let value = serde_json::to_value(stored)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     write_auth_file_atomic(path, &value)
@@ -1831,6 +2046,129 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&path_buf).unwrap()).unwrap();
         assert_eq!(written.refresh_token, "b-refresh");
         assert_eq!(written.project_id, None);
+    }
+
+    /// The compare-and-swap itself (issue #384). Re-reading before the write
+    /// narrows the window; it does not close it. A `shunt login antigravity`
+    /// landing *between* the re-read and the write was still lost — and losing
+    /// a rotated refresh token costs the operator a full re-login.
+    ///
+    /// The interleaving is forced rather than hoped for: a test that does not
+    /// control it passes against the unlocked code and proves nothing. The
+    /// merge hook fires while the credential lock is held, releases a
+    /// competing writer, and then waits in two stages so the test is
+    /// deterministic in both directions — it returns the instant the writer is
+    /// observed parked on the lock (the fixed behavior), or the instant the
+    /// writer's record appears on disk (the unfixed behavior). Reaching the
+    /// outer deadline means neither was observed, which proves nothing, so it
+    /// fails loudly rather than falling through — a silent fallthrough would
+    /// let the unlocked code pass.
+    ///
+    /// Unix only: off Unix the lock is a documented no-op, so there is nothing
+    /// for a waiter to park on.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn project_id_writeback_serializes_against_a_concurrent_relogin() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"cloudaicompanionProject": "proj-discovered"})),
+            )
+            .mount(&server)
+            .await;
+
+        let path_buf = temp_auth_file("writeback_cas");
+        let snapshot = StoredAuth {
+            access_token: "old-access".to_string(),
+            refresh_token: "old-refresh".to_string(),
+            expiry_date: Some(future_millis(3600)),
+            email: Some("a@example.com".to_string()),
+            project_id: None,
+        };
+        write(&path_buf, &snapshot);
+        let baseline = fs::read_to_string(&path_buf).unwrap();
+
+        // Released by the hook, so the replacement is guaranteed to land after
+        // the merge's re-read. Starting it earlier would let it be the record
+        // the merge re-read, which is a different (already-covered) case.
+        let go = Arc::new(AtomicBool::new(false));
+        let writer_go = go.clone();
+        let writer_path = path_buf.clone();
+        let writer = std::thread::spawn(move || {
+            while !writer_go.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // A completed `shunt login antigravity`, from its own process in
+            // production. Same email as the snapshot, deliberately: a
+            // different one would be held back by `same_identity` and mask
+            // the race this test exists for.
+            write_stored(
+                &writer_path,
+                &StoredAuth {
+                    access_token: "relogin-access".to_string(),
+                    refresh_token: "relogin-refresh".to_string(),
+                    expiry_date: Some(future_millis(7200)),
+                    email: Some("a@example.com".to_string()),
+                    project_id: None,
+                },
+            )
+            .unwrap();
+        });
+
+        let hook_path = path_buf.clone();
+        let store = store_at(path_buf.clone(), &server).with_merge_hook(move || {
+            go.store(true, Ordering::SeqCst);
+            // A bound on a wedged environment, NOT a window the unlocked code
+            // has to lose: both exits below fire within milliseconds in their
+            // respective worlds, so a run that reaches this deadline observed
+            // neither outcome and has proved nothing. It panics rather than
+            // returning, because silently falling through here would let the
+            // unlocked code pass — the merge would write first and the delayed
+            // writer would land last, leaving exactly the record the
+            // assertions want to see.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                // Parked on the very lock this section holds: the writer is
+                // excluded, so the merge write cannot lose it.
+                if crate::auth::shared::file_lock::waiters_blocked_on(&hook_path) > 0 {
+                    return;
+                }
+                // Nothing excluded it, and its record is already on disk — the
+                // merge write below is about to clobber it.
+                if fs::read_to_string(&hook_path).unwrap() != baseline {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the competing writer neither parked on the credential lock nor wrote \
+                     within 10s, so this run cannot distinguish a working lock from an \
+                     absent one"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        });
+
+        assert_eq!(
+            store.project_id(&snapshot).await.unwrap(),
+            "proj-discovered"
+        );
+        writer.join().expect("the competing writer thread");
+
+        let written: StoredAuth =
+            serde_json::from_str(&fs::read_to_string(&path_buf).unwrap()).unwrap();
+        assert_eq!(
+            written.refresh_token, "relogin-refresh",
+            "the re-login's rotated refresh token was lost, so the merge is not a \
+             compare-and-swap"
+        );
+        assert_eq!(
+            written.access_token, "relogin-access",
+            "the re-login's access token was lost, so the merge is not a compare-and-swap"
+        );
     }
 
     #[tokio::test]

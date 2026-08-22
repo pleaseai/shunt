@@ -230,6 +230,16 @@ Antigravity requests two scopes a Gemini CLI login never carries (`cclog`,
 `experimentsandconfigs`), so this credential and the `gemini` provider's `~/.gemini/oauth_creds.json`
 are **not** interchangeable in either direction.
 
+On Unix, a login run while a shunt process is serving Antigravity requests serializes its credential
+write against that process's writeback through an advisory lock on an empty sibling
+`antigravity-auth.json.lock` file, so the login cannot land inside the running process's
+read-modify-write of the project id and be discarded by it. That is narrower than making the two
+processes atomic: a login that completes while a token refresh is already in flight upstream can
+still be superseded by that refresh's writeback. Off Unix there is no advisory file lock at all —
+nothing is serialized, a rotated refresh token can be lost either way, and shunt warns once on
+stderr when it reaches that path. The lock file holds no state and is deliberately left in place:
+that inode is what the two serialize on.
+
 The login also resolves the Code Assist project, provisioning one for a first-time account, and
 stores it alongside the tokens so no discovery runs in front of a request. If that step fails the
 credential is still saved and discovery is retried on the first request. Discovery addresses the
