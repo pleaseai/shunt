@@ -340,9 +340,13 @@ const ANTIGRAVITY_CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Wrap a credential-resolution future with a timeout, mapping expiry to a
 /// clear auth error. A dropped future here does not tear a credential file
-/// mid-write: writeback (see `AntigravityAuthStore::write`) goes through
-/// `tokio::task::spawn_blocking`, which runs the write to completion on the
-/// blocking pool even once the awaiting future is cancelled.
+/// mid-write: writeback (see `AntigravityAuthStore::write_unlocked`) goes
+/// through `tokio::task::spawn_blocking`, which runs the write to completion on
+/// the blocking pool even once the awaiting future is cancelled. Cancellation
+/// does release the `CREDENTIAL_FILE_LOCK` guard early, so another writer can
+/// acquire while that write is still in flight — but both writes land by atomic
+/// rename, so the file is still never torn; the loser is simply overwritten,
+/// exactly as it would be without the lock.
 async fn with_credential_timeout<T>(
     duration: Duration,
     future: impl std::future::Future<Output = Result<T, AdapterError>>,
