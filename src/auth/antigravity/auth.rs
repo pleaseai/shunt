@@ -447,34 +447,50 @@ impl AntigravityAuthStore {
 
     /// Replace the credential file, taking [`CREDENTIAL_FILE_LOCK`] first.
     ///
-    /// Every writer of this file must go through a locked path; see
-    /// [`write_unlocked`](Self::write_unlocked) for the one that assumes the
-    /// caller already holds it.
+    /// Every writer of this file goes through a locked path; a caller that is
+    /// already inside a critical section hands its own guard to
+    /// [`write_holding_lock`](Self::write_holding_lock) instead. It must never
+    /// call this one — `flock` on a second descriptor to the same file blocks
+    /// even within one process, so that would deadlock against itself.
     async fn write(&self, stored: &StoredAuth) -> Result<(), AdapterError> {
-        let _guard = self.lock_credential_file().await?;
-        self.write_unlocked(stored).await
+        let guard = self.lock_credential_file().await?;
+        self.write_holding_lock(guard, stored).await
     }
 
-    /// The raw atomic write, with no locking of its own.
+    /// The atomic write, **consuming** the caller's credential-file guard.
     ///
-    /// **The caller must already hold [`CREDENTIAL_FILE_LOCK`].** Calling the
-    /// locking [`write`](Self::write) from inside a critical section would
-    /// deadlock against this very process: `flock` on a second descriptor to
-    /// the same file blocks even within one process.
-    async fn write_unlocked(&self, stored: &StoredAuth) -> Result<(), AdapterError> {
+    /// The guard is moved *into* the blocking task rather than left as a local
+    /// of the awaiting future, so the lock is released only once the write has
+    /// actually landed. That ordering is load-bearing under cancellation: a
+    /// dropped future releases its locals immediately, while `spawn_blocking`
+    /// runs its closure to completion regardless — so a guard held out here
+    /// would let another writer acquire the lock and race a rename that is
+    /// still in flight, which is exactly the compare-and-swap this lock
+    /// exists to provide.
+    async fn write_holding_lock(
+        &self,
+        guard: crate::auth::shared::file_lock::FileLock,
+        stored: &StoredAuth,
+    ) -> Result<(), AdapterError> {
         let path = self.path.clone();
         let value = serde_json::to_value(stored).map_err(|error| {
             auth_error(format!("failed to encode Antigravity credentials: {error}"))
         })?;
-        tokio::task::spawn_blocking(move || write_auth_file_atomic(&path, &value))
-            .await
-            .map_err(|_| auth_error("Antigravity credential write task failed"))?
-            .map_err(|error| {
-                auth_error(format!(
-                    "failed to write Antigravity credential file {}: {error}",
-                    self.path.display()
-                ))
-            })
+        tokio::task::spawn_blocking(move || {
+            let result = write_auth_file_atomic(&path, &value);
+            // Explicit, and after the write: the release must be ordered by
+            // the write completing, not by the closure's scope ending.
+            drop(guard);
+            result
+        })
+        .await
+        .map_err(|_| auth_error("Antigravity credential write task failed"))?
+        .map_err(|error| {
+            auth_error(format!(
+                "failed to write Antigravity credential file {}: {error}",
+                self.path.display()
+            ))
+        })
     }
 
     async fn refresh_call(&self, refresh_token: &str) -> Result<TokenResponse, AdapterError> {
@@ -589,7 +605,7 @@ impl AntigravityAuthStore {
         // detected.
         //
         // This re-read/write pair does not touch `REFRESH_LOCK` — `read` and
-        // `write_unlocked` are plain file I/O, and the file lock is a
+        // `write_holding_lock` are plain file I/O, and the file lock is a
         // different, finer-grained lock — so it is still safe to call
         // `project_id` regardless of whether the caller already holds
         // `REFRESH_LOCK` (it does on two of its three call sites in
@@ -656,15 +672,19 @@ impl AntigravityAuthStore {
                     if let Some(hook) = self.between_merge_read_and_write.clone() {
                         hook.run();
                     }
-                    // `write_unlocked`, never `write`: the guard above is
+                    // `write_holding_lock`, never `write`: the guard above is
                     // already held, and `flock` on a second descriptor to the
-                    // same file blocks even within one process.
-                    if let Err(error) = self.write_unlocked(&fresh).await {
+                    // same file blocks even within one process. Handing the
+                    // guard over rather than keeping it here is what keeps the
+                    // lock held until the write has actually landed, even if
+                    // this future is cancelled mid-write.
+                    if let Err(error) = self.write_holding_lock(guard, &fresh).await {
                         tracing::warn!(
                             "failed to persist discovered Antigravity project id: {}",
                             error.message
                         );
                     }
+                    return Ok(project);
                 }
             }
             Err(error) => {
@@ -681,8 +701,10 @@ impl AntigravityAuthStore {
                 );
             }
         }
-        // Explicit rather than left to the end of the function, so the release
-        // is visibly ordered after the write rather than after the `Ok`.
+        // Only the paths that did *not* write reach here; the writing path
+        // handed its guard to `write_holding_lock` and returned. Explicit
+        // rather than left to the end of the function, so the release is
+        // visibly ordered with the section rather than with the `Ok`.
         drop(guard);
 
         Ok(project)
@@ -2037,8 +2059,10 @@ mod tests {
     /// competing writer, and then waits in two stages so the test is
     /// deterministic in both directions — it returns the instant the writer is
     /// observed parked on the lock (the fixed behavior), or the instant the
-    /// writer's record appears on disk (the unfixed behavior). The bounded
-    /// grace is a cost the passing case never pays.
+    /// writer's record appears on disk (the unfixed behavior). Reaching the
+    /// outer deadline means neither was observed, which proves nothing, so it
+    /// fails loudly rather than falling through — a silent fallthrough would
+    /// let the unlocked code pass.
     ///
     /// Unix only: off Unix the lock is a documented no-op, so there is nothing
     /// for a waiter to park on.
@@ -2098,7 +2122,15 @@ mod tests {
         let hook_path = path_buf.clone();
         let store = store_at(path_buf.clone(), &server).with_merge_hook(move || {
             go.store(true, Ordering::SeqCst);
-            let grace = std::time::Instant::now() + Duration::from_millis(500);
+            // A bound on a wedged environment, NOT a window the unlocked code
+            // has to lose: both exits below fire within milliseconds in their
+            // respective worlds, so a run that reaches this deadline observed
+            // neither outcome and has proved nothing. It panics rather than
+            // returning, because silently falling through here would let the
+            // unlocked code pass — the merge would write first and the delayed
+            // writer would land last, leaving exactly the record the
+            // assertions want to see.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
             loop {
                 // Parked on the very lock this section holds: the writer is
                 // excluded, so the merge write cannot lose it.
@@ -2110,9 +2142,12 @@ mod tests {
                 if fs::read_to_string(&hook_path).unwrap() != baseline {
                     return;
                 }
-                if std::time::Instant::now() >= grace {
-                    return;
-                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the competing writer neither parked on the credential lock nor wrote \
+                     within 10s, so this run cannot distinguish a working lock from an \
+                     absent one"
+                );
                 std::thread::sleep(Duration::from_millis(2));
             }
         });
