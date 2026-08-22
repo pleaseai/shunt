@@ -248,16 +248,16 @@ async fn forward(
     headers: HeaderMap,
     body: Body,
     started_at: Instant,
-) -> Result<(StatusCode, axum::response::Response), ForwardError> {
+) -> Result<(StatusCode, axum::response::Response), Box<ForwardError>> {
     // The routes are only registered when `[server.codex_endpoint]` is set, but
     // read the snapshot defensively; config validation guarantees the named
     // provider exists and uses `chatgpt_oauth`.
     let Some(codex_endpoint) = &state.config.server.codex_endpoint else {
-        return Err(ForwardError {
+        return Err(Box::new(ForwardError {
             message: "codex endpoint is not configured".to_string(),
             response: ShuntError::bad_gateway("codex endpoint is not configured".to_string())
                 .into_response(),
-        });
+        }));
     };
     let provider = codex_endpoint.provider.clone();
 
@@ -287,7 +287,7 @@ async fn forward(
                     "missing or invalid client token for the inbound codex endpoint: provide it via the `{}` header or `Authorization: Bearer <token>` (e.g. OPENAI_API_KEY); ask the operator for one",
                     auth.header()
                 );
-                return Err(ForwardError {
+                return Err(Box::new(ForwardError {
                     message: "inbound authentication failed".to_string(),
                     response: ShuntError::new(
                         StatusCode::UNAUTHORIZED,
@@ -295,7 +295,7 @@ async fn forward(
                         message,
                     )
                     .into_response(),
-                });
+                }));
             }
         }
     } else {
@@ -304,21 +304,23 @@ async fn forward(
 
     let max_request_bytes = state.config.server.limits.max_request_bytes;
     if crate::http_tuning::content_length_exceeds(&headers, max_request_bytes) {
-        return Err(ForwardError {
+        return Err(Box::new(ForwardError {
             message: "request body exceeds the configured limit".to_string(),
             response: crate::http_tuning::request_too_large(true).await,
-        });
+        }));
     }
     let body = crate::http_tuning::read_body(body, max_request_bytes, true)
         .await
-        .map_err(|response| ForwardError {
-            message: if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                "request body exceeds the configured limit"
-            } else {
-                "failed to read request body"
-            }
-            .to_string(),
-            response,
+        .map_err(|response| {
+            Box::new(ForwardError {
+                message: if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                    "request body exceeds the configured limit"
+                } else {
+                    "failed to read request body"
+                }
+                .to_string(),
+                response: *response,
+            })
         })?;
 
     // Read the model for metrics/logging only; the body forwards verbatim.
@@ -371,7 +373,7 @@ async fn forward(
             );
             (status, response)
         })
-        .map_err(ForwardError::from)
+        .map_err(|error| Box::new(ForwardError::from(error)))
 }
 
 /// The label used when the request's model cannot be read (see [`model_label`]).

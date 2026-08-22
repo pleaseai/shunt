@@ -27,38 +27,42 @@ pub(super) async fn forward(
     headers: &HeaderMap,
     body: Body,
     started_at: Instant,
-) -> Result<(StatusCode, axum::response::Response), ForwardError> {
+) -> Result<(StatusCode, axum::response::Response), Box<ForwardError>> {
     let max_request_bytes = state.config.server.limits.max_request_bytes;
     if crate::http_tuning::content_length_exceeds(headers, max_request_bytes) {
-        return Err(ForwardError {
+        return Err(Box::new(ForwardError {
             message: "request body exceeds the configured limit".to_string(),
             response: crate::http_tuning::request_too_large(false).await,
-        });
+        }));
     }
     let body = crate::http_tuning::read_body(body, max_request_bytes, false)
         .await
-        .map_err(|response| ForwardError {
-            message: if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                "request body exceeds the configured limit"
-            } else {
-                "failed to read request body"
-            }
-            .to_string(),
-            response,
+        .map_err(|response| {
+            Box::new(ForwardError {
+                message: if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                    "request body exceeds the configured limit"
+                } else {
+                    "failed to read request body"
+                }
+                .to_string(),
+                response: *response,
+            })
         })?;
     let mut body = crate::request::RequestBody::parse(body.to_vec())
         .map_err(routing::invalid_routing_request)
-        .map_err(|error| ForwardError {
-            message: "failed to route request".to_string(),
-            response: error.into_response(),
+        .map_err(|error| {
+            Box::new(ForwardError {
+                message: "failed to route request".to_string(),
+                response: error.into_response(),
+            })
         })?;
     normalize_request_body(&mut body);
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json()).map_err(|error| {
-            ForwardError {
+            Box::new(ForwardError {
                 message: "failed to route request".to_string(),
                 response: error.into_response(),
-            }
+            })
         })?;
     crate::observability::record_requested_model(&requested_model);
     // Records the request's final outcome exactly once, at whichever terminal
@@ -77,10 +81,8 @@ pub(super) async fn forward(
         // count_tokens request.
         routes.truncate(1);
     }
-    let (base_headers, inbound) =
-        check_inbound_auth(&state, &routes, headers).map_err(|error| *error)?;
-    enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)
-        .map_err(|error| *error)?;
+    let (base_headers, inbound) = check_inbound_auth(&state, &routes, headers)?;
+    enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)?;
 
     let first_route = routes
         .first()
@@ -216,10 +218,10 @@ pub(super) async fn forward(
                     }
                     _ => {
                         finish(&provider, response.status());
-                        return Err(ForwardError {
+                        return Err(Box::new(ForwardError {
                             message,
                             response: *response,
-                        });
+                        }));
                     }
                 }
             }
@@ -246,10 +248,10 @@ pub(super) async fn forward(
             }
             FinalResponse::MappedError { message, response } => {
                 finish(&failure.provider, response.status());
-                Err(ForwardError {
+                Err(Box::new(ForwardError {
                     message,
                     response: *response,
-                })
+                }))
             }
         };
     }
@@ -264,7 +266,7 @@ pub(super) async fn forward(
         &last_route.upstream_model,
     );
     finish(&last_route.provider, StatusCode::BAD_GATEWAY);
-    Err(ForwardError { message, response })
+    Err(Box::new(ForwardError { message, response }))
 }
 
 async fn count_tokens_response(
@@ -275,7 +277,7 @@ async fn count_tokens_response(
     inbound: &InboundContext,
     body: crate::request::RequestBody,
     requested_model: &str,
-) -> Result<(StatusCode, axum::response::Response), ForwardError> {
+) -> Result<(StatusCode, axum::response::Response), Box<ForwardError>> {
     let provider = route.provider.clone();
     let upstream_model = route.upstream_model.clone();
     let result = if matches!(
@@ -331,10 +333,10 @@ async fn count_tokens_response(
             let status = response.status();
             crate::observability::record_span_outcome(&provider, status);
             crate::observability::capture_upstream_outcome(&provider, requested_model, status);
-            Err(ForwardError {
+            Err(Box::new(ForwardError {
                 message: error.message,
                 response,
-            })
+            }))
         }
     }
 }
