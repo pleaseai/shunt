@@ -319,7 +319,7 @@ async fn forward(
                     "failed to read request body"
                 }
                 .to_string(),
-                response,
+                response: *response,
             })
         })?;
 

@@ -45,7 +45,7 @@ pub(super) async fn forward(
                     "failed to read request body"
                 }
                 .to_string(),
-                response,
+                response: *response,
             })
         })?;
     let mut body = crate::request::RequestBody::parse(body.to_vec())
