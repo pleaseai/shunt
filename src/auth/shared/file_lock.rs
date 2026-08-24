@@ -172,7 +172,12 @@ fn lock_blocking_at(
                 kind.contention_hint
             );
         }
-        std::thread::sleep(LOCK_RETRY_INTERVAL.min(timeout));
+        // Clamped to what is left of the budget, not to the whole of it:
+        // `timeout` never shrinks, so retrying on it would let the last sleep
+        // run past `deadline` and report the timeout up to one retry interval
+        // late.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        std::thread::sleep(remaining.min(LOCK_RETRY_INTERVAL));
     }
 }
 
