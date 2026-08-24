@@ -32,7 +32,7 @@ pub(super) async fn forward(
     if crate::http_tuning::content_length_exceeds(headers, max_request_bytes) {
         return Err(ForwardError {
             message: "request body exceeds the configured limit".to_string(),
-            response: crate::http_tuning::request_too_large(false).await,
+            response: Box::new(crate::http_tuning::request_too_large(false).await),
         });
     }
     let body = crate::http_tuning::read_body(body, max_request_bytes, false)
@@ -50,14 +50,14 @@ pub(super) async fn forward(
         .map_err(routing::invalid_routing_request)
         .map_err(|error| ForwardError {
             message: "failed to route request".to_string(),
-            response: error.into_response(),
+            response: Box::new(error.into_response()),
         })?;
     normalize_request_body(&mut body);
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json()).map_err(|error| {
             ForwardError {
                 message: "failed to route request".to_string(),
-                response: error.into_response(),
+                response: Box::new(error.into_response()),
             }
         })?;
     crate::observability::record_requested_model(&requested_model);
@@ -216,10 +216,7 @@ pub(super) async fn forward(
                     }
                     _ => {
                         finish(&provider, response.status());
-                        return Err(ForwardError {
-                            message,
-                            response: *response,
-                        });
+                        return Err(ForwardError { message, response });
                     }
                 }
             }
@@ -246,10 +243,7 @@ pub(super) async fn forward(
             }
             FinalResponse::MappedError { message, response } => {
                 finish(&failure.provider, response.status());
-                Err(ForwardError {
-                    message,
-                    response: *response,
-                })
+                Err(ForwardError { message, response })
             }
         };
     }
@@ -264,7 +258,10 @@ pub(super) async fn forward(
         &last_route.upstream_model,
     );
     finish(&last_route.provider, StatusCode::BAD_GATEWAY);
-    Err(ForwardError { message, response })
+    Err(ForwardError {
+        message,
+        response: Box::new(response),
+    })
 }
 
 async fn count_tokens_response(
@@ -326,7 +323,7 @@ async fn count_tokens_response(
             Ok((status, response))
         }
         Err(error) => {
-            let mut response = *error.response;
+            let mut response = error.response;
             stamp_gateway_headers(&mut response, &provider, requested_model, &upstream_model);
             let status = response.status();
             crate::observability::record_span_outcome(&provider, status);
@@ -473,8 +470,10 @@ fn enforce_managed_model_policy(
         format!("model \"{requested_model}\" is not permitted by this gateway's managed policy");
     Err(Box::new(ForwardError {
         message: message.clone(),
-        response: ShuntError::new(StatusCode::BAD_REQUEST, "invalid_request_error", message)
-            .into_response(),
+        response: Box::new(
+            ShuntError::new(StatusCode::BAD_REQUEST, "invalid_request_error", message)
+                .into_response(),
+        ),
     }))
 }
 
@@ -559,8 +558,10 @@ pub(crate) fn check_inbound_auth(
     };
     Err(Box::new(ForwardError {
         message: "inbound authentication failed".to_string(),
-        response: ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-            .into_response(),
+        response: Box::new(
+            ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+                .into_response(),
+        ),
     }))
 }
 
