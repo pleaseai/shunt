@@ -43,6 +43,12 @@ pub struct FileLockKind {
     pub lock_name: &'static str,
     /// Sentence appended after the timeout message names the lock file: who is
     /// most likely holding it and what to do about it.
+    ///
+    /// Never advise removing the lock file. `flock(2)` releases on holder exit,
+    /// so a "stale" lock is never actually held and deleting it fixes nothing —
+    /// but deleting one that *is* held lets the next writer lock a fresh inode
+    /// and exclude no one, which is the failure this module exists to prevent
+    /// (see the module docs on why the `.lock` inode must stay stable).
     pub contention_hint: &'static str,
     /// Context for a `spawn_blocking` join failure.
     pub task_context: &'static str,

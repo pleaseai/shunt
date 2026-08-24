@@ -134,8 +134,10 @@ static CREDENTIAL_FILE_LOCK: crate::auth::shared::file_lock::FileLockKind =
     crate::auth::shared::file_lock::FileLockKind {
         lock_name: "Antigravity credential lock",
         contention_hint: "Another shunt process is writing the credential file \
-                          (`shunt login antigravity`, or a token refresh). If no such process is \
-                          running, remove that file",
+                          (`shunt login antigravity`, or a token refresh). The lock releases when \
+                          that process exits, so wait for it and retry. Do not delete the lock \
+                          file: removing it while a writer holds it lets the next writer lock a \
+                          new inode and serialize against nothing",
         task_context: "Antigravity credential lock task failed",
         unsupported_warning: "Warning: this platform has no advisory file lock, so a `shunt login \
                               antigravity` running alongside the gateway is not serialized against \

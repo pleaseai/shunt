@@ -168,8 +168,10 @@ pub type SessionLock = shared::file_lock::FileLock;
 static GATEWAY_SESSION_LOCK: shared::file_lock::FileLockKind = shared::file_lock::FileLockKind {
     lock_name: "gateway session lock",
     contention_hint: "Another `shunt gateway token` is holding it — most likely one whose gateway \
-                      accepted the connection and never answered. If no such process is running, \
-                      remove that file",
+                      accepted the connection and never answered. The lock releases when that \
+                      process exits, so wait for it and retry. Do not delete the lock file: \
+                      removing it while a writer holds it lets the next writer lock a new inode \
+                      and serialize against nothing",
     task_context: "gateway session lock task failed",
     unsupported_warning: "Warning: this platform has no advisory file lock, so concurrent `shunt \
                           gateway token` runs are not serialized. If two run at once they can \
