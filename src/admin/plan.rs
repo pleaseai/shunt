@@ -192,6 +192,43 @@ pub(crate) async fn plans_for_accounts(
     budgets: &BackfillBudgets,
     deadline: tokio::time::Instant,
 ) -> Vec<Option<String>> {
+    plans_for_accounts_under(
+        file_read_lock(),
+        auth,
+        upstream,
+        base_url,
+        client,
+        accounts,
+        budgets,
+        deadline,
+    )
+    .await
+}
+
+/// [`plans_for_accounts`] against a caller-supplied single-flight lock, for
+/// the same reason as [`file_derived_plans`] — and additionally so a
+/// test can make the file phase time out *deterministically*.
+///
+/// [`acquire_read_permit`] is `timeout_at(file_deadline, lock.lock_owned())`,
+/// so a test that holds its own lock across the call leaves `lock_owned()`
+/// pending on the first poll and an already-expired deadline then fires with
+/// certainty. Inducing the same timeout by racing an oversized credential
+/// file against that deadline does not: `timeout_at` polls its inner future
+/// once and tokio rounds the timer up to the next millisecond tick, so
+/// whether the read finishes inside that window depends on the machine. Two
+/// tests here previously took that route and failed in CI while passing
+/// locally.
+#[allow(clippy::too_many_arguments)]
+async fn plans_for_accounts_under(
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    auth: AuthMode,
+    upstream: &str,
+    base_url: &str,
+    client: &reqwest::Client,
+    accounts: &[AccountConfig],
+    budgets: &BackfillBudgets,
+    deadline: tokio::time::Instant,
+) -> Vec<Option<String>> {
     // The file phase carries its own `min_slice` floor above `deadline` (see
     // `file_derived_plans`), so it only returns `None` in the pathological
     // case where even that floor is not enough. Fall through to an all-absent
@@ -200,7 +237,7 @@ pub(crate) async fn plans_for_accounts(
     // candidates and never touch the network, but its cache-harvest step
     // (which runs before any token check) still surfaces whatever plan is
     // already cached for these accounts.
-    let read = file_derived_plans(auth, accounts, budgets, deadline).await;
+    let read = file_derived_plans(lock, auth, accounts, budgets, deadline).await;
     // Distinct from "read fine, no uuid in the file": only a phase that never
     // produced a result may fall back to the remembered identity.
     let file_phase_timed_out = read.is_none();
@@ -318,23 +355,15 @@ impl FileDerivedPlans {
 /// forever, and every later request fails to acquire it and returns `None`
 /// without spawning anything — bounding the leak at one thread process-wide
 /// instead of one per request.
-async fn file_derived_plans(
-    auth: AuthMode,
-    accounts: &[AccountConfig],
-    budgets: &BackfillBudgets,
-    deadline: tokio::time::Instant,
-) -> Option<FileDerivedPlans> {
-    file_derived_plans_under(file_read_lock(), auth, accounts, budgets, deadline).await
-}
-
-/// [`file_derived_plans`] against a caller-supplied single-flight lock.
 ///
-/// Production always passes [`file_read_lock`]. The seam exists so a test can
-/// assert the permit is handed back after a completed read without touching
-/// the process-wide lock: asserting on that one is order-dependent, since a
-/// concurrently running test may legitimately be holding it, which fails the
-/// assertion for a reason unrelated to release behaviour.
-async fn file_derived_plans_under(
+/// `lock` is the single-flight lock to read under. Production always passes
+/// [`file_read_lock`] (via [`plans_for_accounts`]); the parameter exists so a
+/// test can supply its own. Two things need that: asserting the permit is
+/// handed back after a completed read is order-dependent against the
+/// process-wide lock, since a concurrently running test may legitimately be
+/// holding it; and holding a private lock is how a test makes this function
+/// return `None` deterministically (see [`plans_for_accounts_under`]).
+async fn file_derived_plans(
     lock: &Arc<tokio::sync::Mutex<()>>,
     auth: AuthMode,
     accounts: &[AccountConfig],
@@ -657,6 +686,12 @@ fn store_profile_plan(key: AccountKey, exact_identity: bool, resolved: Option<(S
 /// every test in one test binary process; a test that exercises the backfill
 /// path must call this at its own start rather than risk inheriting an entry
 /// a different test's account happened to leave behind.
+///
+/// Calling it at the start is necessary but **not sufficient**: `cargo test`
+/// runs this module's tests concurrently in that one process, so a neighbour
+/// calling this mid-test wipes an entry the running test just cached. Tests
+/// therefore take it through `tests::exclusive_profile_cache`, which holds a
+/// guard for the whole test rather than only clearing at the start.
 #[doc(hidden)]
 pub fn reset_profile_cache() {
     profile_cache()
@@ -985,6 +1020,43 @@ async fn fetch_claude_profile_plan(
 
 #[cfg(test)]
 mod tests {
+
+    /// Serializes every test that touches process-wide backfill state, and
+    /// clears the profile cache once the guard is held.
+    ///
+    /// Two statics are shared by the whole test binary: the profile cache
+    /// behind [`reset_profile_cache`], and `BACKFILL_LOCK`. `cargo test` runs
+    /// this module's tests concurrently in one process, so without this guard
+    /// a neighbour's `reset_profile_cache()` wipes the entry a test just
+    /// cached (the test then reads `None` where it expects a cache hit), and
+    /// a neighbour holding `BACKFILL_LOCK` can starve a test's budget until
+    /// it skips its own probe (the test then counts fewer requests than it
+    /// expects). Both surface as assertion failures unrelated to the
+    /// behaviour under test.
+    ///
+    /// `tokio::sync::Mutex` is not poisoned by a panicking holder, so one
+    /// failing test does not cascade into every later one.
+    static PROFILE_CACHE_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn exclusive_profile_cache() -> tokio::sync::MutexGuard<'static, ()> {
+        let guard = PROFILE_CACHE_GUARD.lock().await;
+        reset_profile_cache();
+        guard
+    }
+
+    /// A single-flight lock private to one test.
+    ///
+    /// Tests must not share the production [`file_read_lock`]: it serializes
+    /// every credential read process-wide, so a test whose assertion depends
+    /// on its own file phase completing can be starved past its deadline by
+    /// whatever else is running concurrently. A starved phase then falls back
+    /// to the remembered identity exactly as designed -- which inverts the
+    /// assertion under test and reads as a flake. A test that *wants* the
+    /// timeout takes the opposite route and holds its own lock across the
+    /// call (see [`plans_for_accounts_under`]).
+    fn fresh_file_lock() -> Arc<tokio::sync::Mutex<()>> {
+        Arc::new(tokio::sync::Mutex::new(()))
+    }
     use super::*;
 
     #[test]
@@ -1076,6 +1148,7 @@ mod tests {
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let result = file_derived_plans(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             &accounts,
             &BackfillBudgets::default(),
@@ -1131,6 +1204,7 @@ mod tests {
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let result = file_derived_plans(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             &accounts,
             &BackfillBudgets::default(),
@@ -1162,6 +1236,7 @@ mod tests {
         }];
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let result = file_derived_plans(
+            &fresh_file_lock(),
             AuthMode::KimiOauth,
             &accounts,
             &BackfillBudgets::default(),
@@ -1245,7 +1320,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("stall");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = write_refreshable_fixture(&dir, "stalled-account", None);
@@ -1278,7 +1353,8 @@ mod tests {
         let client = reqwest::Client::new();
 
         let started = Instant::now();
-        let plans = plans_for_accounts(
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "stall-test-upstream",
             &server.uri(),
@@ -1311,7 +1387,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("starved");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = write_refreshable_fixture(&dir, "starved-account", None);
@@ -1340,7 +1416,8 @@ mod tests {
             min_slice: Duration::from_secs(2),
         };
         let deadline = tokio::time::Instant::now() + starved_budgets.total;
-        let plans = plans_for_accounts(
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "starved-test-upstream",
             &server.uri(),
@@ -1364,7 +1441,8 @@ mod tests {
         // would fail.
         let normal_budgets = BackfillBudgets::default();
         let deadline = tokio::time::Instant::now() + normal_budgets.total;
-        let plans = plans_for_accounts(
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "starved-test-upstream",
             &server.uri(),
@@ -1388,7 +1466,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("concurrent");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = write_refreshable_fixture(&dir, "concurrent-account", None);
@@ -1417,8 +1495,13 @@ mod tests {
         let client = reqwest::Client::new();
         let server_uri = server.uri();
 
+        // One lock shared by both concurrent calls -- still private to this
+        // test, and the file read releases it long before the profile fetch
+        // this test is actually single-flighting.
+        let lock = fresh_file_lock();
         let (a, b) = tokio::join!(
-            plans_for_accounts(
+            plans_for_accounts_under(
+                &lock,
                 AuthMode::ClaudeOauth,
                 "concurrent-test-upstream",
                 &server_uri,
@@ -1427,7 +1510,8 @@ mod tests {
                 &budgets,
                 deadline,
             ),
-            plans_for_accounts(
+            plans_for_accounts_under(
+                &lock,
                 AuthMode::ClaudeOauth,
                 "concurrent-test-upstream",
                 &server_uri,
@@ -1453,7 +1537,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("refine-tier");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = write_refreshable_fixture(&dir, "refine-tier-account", Some("max"));
@@ -1476,7 +1560,8 @@ mod tests {
         let budgets = BackfillBudgets::default();
         let deadline = tokio::time::Instant::now() + budgets.total;
         let client = reqwest::Client::new();
-        let plans = plans_for_accounts(
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "refine-tier-test-upstream",
             &server.uri(),
@@ -1506,7 +1591,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("refine-no-downgrade");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = write_refreshable_fixture(&dir, "refine-guard-account", Some("max"));
@@ -1529,7 +1614,8 @@ mod tests {
         let budgets = BackfillBudgets::default();
         let deadline = tokio::time::Instant::now() + budgets.total;
         let client = reqwest::Client::new();
-        let plans = plans_for_accounts(
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "refine-guard-test-upstream",
             &server.uri(),
@@ -1556,7 +1642,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_derived_plans_floors_its_own_deadline_at_min_slice() {
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("floor");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = dir.join("floor-account.json");
@@ -1595,6 +1681,7 @@ mod tests {
         let deadline = tokio::time::Instant::now() - Duration::from_secs(1);
 
         let result = file_derived_plans(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             std::slice::from_ref(&account),
             &budgets,
@@ -1616,7 +1703,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
 
         // One deadline, computed once (below, right after the mock server is
         // mounted and right before the first call) and reused for both calls
@@ -1683,7 +1770,8 @@ mod tests {
         let deadline = tokio::time::Instant::now() + budgets.total;
         let client = reqwest::Client::new();
 
-        let _first_plans = plans_for_accounts(
+        let _first_plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "mmp-first-provider-upstream",
             &server.uri(),
@@ -1731,7 +1819,8 @@ mod tests {
             ..Default::default()
         };
 
-        let second_plans = plans_for_accounts(
+        let second_plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "mmp-second-provider-upstream",
             &server.uri(),
@@ -1759,32 +1848,14 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("cache-harvest");
         std::fs::create_dir_all(&dir).unwrap();
-        // Oversized on purpose. `tokio::time::timeout_at` polls its inner future
-        // before the delay, and tokio rounds a timer deadline up to the next
-        // millisecond tick -- so an already-expired deadline still grants the
-        // `spawn_blocking` read up to ~1ms of slack, and a few-hundred-byte
-        // credential file finishes well inside it. That would hand back `Ok` and
-        // silently skip the timeout branch this test exists to cover. A
-        // multi-megabyte `padding` sibling puts read+parse into the milliseconds,
-        // past that window by an order of magnitude, while staying far under the
-        // `min_slice` floor the normal path relies on. The key sits beside
-        // `claudeAiOauth`, which both extractors navigate into by name
-        // (`auth::shared::claude_plan_from_credentials`,
-        // `auth::claude::auth::refreshable_valid_access_token`), so it changes no
-        // extracted value. This mitigation is probabilistic rather than an
-        // absolute guarantee: padding widens the race window by orders of
-        // magnitude without proving it closed, and the escape-rate upper
-        // bound this relies on is tracked by mutation-repetition
-        // measurement, not by this padding size alone -- re-run that
-        // measurement before shrinking it. Do not "fix" a flake here with
-        // `start_paused`: virtual time auto-advances while a
-        // `spawn_blocking` is in flight and would fire the timeout on the
-        // normal path too.
-        let creds_path =
-            write_padded_refreshable_fixture(&dir, "cache-harvest-account", None, 2 * 1024 * 1024);
+        // The file phase is made to time out by holding `lock` across the
+        // second call, not by racing the read against the deadline -- see
+        // `plans_for_accounts_under`. So an ordinary fixture is enough here.
+        let creds_path = write_padded_refreshable_fixture(&dir, "cache-harvest-account", None, 0);
+        let lock: Arc<tokio::sync::Mutex<()>> = Arc::new(tokio::sync::Mutex::new(()));
         let account = AccountConfig {
             name: "cache-harvest-account".to_string(),
             uuid: Some("cache-harvest-account-uuid".to_string()),
@@ -1807,7 +1878,8 @@ mod tests {
         // account carries a uuid.
         let first_budgets = BackfillBudgets::default();
         let first_deadline = tokio::time::Instant::now() + first_budgets.total;
-        let first_plans = plans_for_accounts(
+        let first_plans = plans_for_accounts_under(
+            &lock,
             AuthMode::ClaudeOauth,
             "cache-harvest-upstream",
             &server.uri(),
@@ -1820,20 +1892,22 @@ mod tests {
         assert_eq!(first_plans[0].as_deref(), Some("max"));
 
         // Second call: same upstream and same uuid, so the same AccountKey
-        // hits the warm cache -- but min_slice is zeroed out (defeating the
-        // floor entirely) and the deadline is already expired, forcing the
-        // file phase's timeout_at to fire and unwrap_or_default() to an
-        // empty FileDerivedPlans. The cache-hit check inside
-        // backfill_claude_profile_plans runs before any token-eligibility
-        // check, so the plan must still surface purely from cache, with no
-        // additional network request.
+        // hits the warm cache -- but the single-flight permit is held here,
+        // min_slice is zeroed out (defeating the floor entirely) and the
+        // deadline is already expired, so `acquire_read_permit` cannot
+        // acquire and the file phase returns `None` with certainty. The
+        // cache-hit check inside backfill_claude_profile_plans runs before
+        // any token-eligibility check, so the plan must still surface purely
+        // from cache, with no additional network request.
+        let held = lock.clone().lock_owned().await;
         let second_budgets = BackfillBudgets {
             total: Duration::from_secs(8),
             per_account: Duration::from_secs(5),
             min_slice: Duration::ZERO,
         };
         let second_deadline = tokio::time::Instant::now() - Duration::from_secs(1);
-        let second_plans = plans_for_accounts(
+        let second_plans = plans_for_accounts_under(
+            &lock,
             AuthMode::ClaudeOauth,
             "cache-harvest-upstream",
             &server.uri(),
@@ -1854,16 +1928,9 @@ mod tests {
             1,
             "the second call must be a pure cache harvest with zero additional network requests"
         );
+        drop(held);
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-    /// Append a large top-level `padding` sibling so the read+parse lands in
-    /// the milliseconds. Sits beside `claudeAiOauth`, which every extractor
-    /// navigates into by name, so it changes no extracted value.
-    fn pad_fixture(path: &std::path::Path, padding_bytes: usize) {
-        let mut value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        value["padding"] = Value::String("p".repeat(padding_bytes));
-        std::fs::write(path, value.to_string()).unwrap();
     }
 
     /// A refreshable fixture with a caller-chosen access token and optional
@@ -1900,7 +1967,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("same-name-tokens");
         std::fs::create_dir_all(&dir).unwrap();
         let first_path = dir.join("first.json");
@@ -1938,7 +2005,8 @@ mod tests {
         let budgets = BackfillBudgets::default();
         let deadline = tokio::time::Instant::now() + budgets.total;
         let client = reqwest::Client::new();
-        let _plans = plans_for_accounts(
+        let _plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "same-name-token-upstream",
             &server.uri(),
@@ -1985,7 +2053,7 @@ mod tests {
         use wiremock::matchers::{header, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("reprovision");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = dir.join("reprovision.json");
@@ -2020,7 +2088,8 @@ mod tests {
 
         let budgets = BackfillBudgets::default();
         let client = reqwest::Client::new();
-        let first = plans_for_accounts(
+        let first = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "reprovision-upstream",
             &server.uri(),
@@ -2034,7 +2103,8 @@ mod tests {
 
         // Same name, same path -- a different account.
         write_identified_fixture(&creds_path, "token-after", Some("uuid-after"));
-        let second = plans_for_accounts(
+        let second = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "reprovision-upstream",
             &server.uri(),
@@ -2066,7 +2136,7 @@ mod tests {
         use wiremock::matchers::{header, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("stale-uuid");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = dir.join("stale-uuid.json");
@@ -2105,7 +2175,8 @@ mod tests {
 
         let budgets = BackfillBudgets::default();
         let client = reqwest::Client::new();
-        let first = plans_for_accounts(
+        let first = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "stale-upstream",
             &server.uri(),
@@ -2120,7 +2191,8 @@ mod tests {
         // The path is re-provisioned to a different account. `account.uuid`
         // does not move -- only the file does.
         write_identified_fixture(&creds_path, "token-after", Some("uuid-after"));
-        let second = plans_for_accounts(
+        let second = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "stale-upstream",
             &server.uri(),
@@ -2285,7 +2357,7 @@ mod tests {
         // process-wide one is order-dependent, since a concurrently running
         // test may legitimately be holding it.
         let lock = Arc::new(tokio::sync::Mutex::new(()));
-        let result = file_derived_plans_under(
+        let result = file_derived_plans(
             &lock,
             AuthMode::ClaudeOauth,
             &accounts,
@@ -2312,19 +2384,17 @@ mod tests {
         use wiremock::matchers::{method, path as path_matcher};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("timeout-harvest");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = dir.join("harvest.json");
-        // Padded for the same reason as
-        // `plans_for_accounts_harvests_cache_even_when_the_file_phase_times_out`:
-        // `timeout_at` polls its inner future once and tokio rounds the timer
-        // up to the next millisecond tick, so an already-expired deadline
-        // still lets a small credential file finish. Without the padding the
-        // read succeeds, the uuid is re-read, and this test silently stops
-        // exercising the timeout path it exists to cover.
         write_identified_fixture(&creds_path, "token-harvest", Some("uuid-harvest"));
-        pad_fixture(&creds_path, 2 * 1024 * 1024);
+        // The file phase is made to time out by holding `lock` across the
+        // second call rather than by racing the read against the deadline --
+        // see `plans_for_accounts_under`. Without that the read may well
+        // succeed, the uuid is re-read, and this test silently stops
+        // exercising the timeout path it exists to cover.
+        let lock: Arc<tokio::sync::Mutex<()>> = Arc::new(tokio::sync::Mutex::new(()));
 
         // No config uuid: the account's identity is only in the file.
         let account = AccountConfig {
@@ -2344,7 +2414,8 @@ mod tests {
 
         let budgets = BackfillBudgets::default();
         let client = reqwest::Client::new();
-        let first = plans_for_accounts(
+        let first = plans_for_accounts_under(
+            &lock,
             AuthMode::ClaudeOauth,
             "timeout-harvest-upstream",
             &server.uri(),
@@ -2356,15 +2427,18 @@ mod tests {
         .await;
         assert_eq!(first[0].as_deref(), Some("max 20x"));
 
-        // Force the file phase to time out: `min_slice` zeroed defeats the
-        // floor and the deadline is already expired, so no credential is read
-        // and no uuid reaches the backfill from this pass.
+        // Force the file phase to time out: the permit is held here,
+        // `min_slice` zeroed defeats the floor, and the deadline is already
+        // expired, so `acquire_read_permit` cannot acquire. No credential is
+        // read and no uuid reaches the backfill from this pass.
+        let held = lock.clone().lock_owned().await;
         let starved = BackfillBudgets {
             total: Duration::from_secs(8),
             per_account: Duration::from_secs(5),
             min_slice: Duration::ZERO,
         };
-        let second = plans_for_accounts(
+        let second = plans_for_accounts_under(
+            &lock,
             AuthMode::ClaudeOauth,
             "timeout-harvest-upstream",
             &server.uri(),
@@ -2386,6 +2460,7 @@ mod tests {
             1,
             "the cached plan must be harvested, not re-fetched"
         );
+        drop(held);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2399,7 +2474,7 @@ mod tests {
         use wiremock::matchers::{header, method, path as path_matcher};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("ambiguous-key");
         std::fs::create_dir_all(&dir).unwrap();
         let first_path = dir.join("first.json");
@@ -2439,7 +2514,8 @@ mod tests {
             .await;
 
         let budgets = BackfillBudgets::default();
-        let plans = plans_for_accounts(
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "ambiguous-upstream",
             &server.uri(),
@@ -2469,7 +2545,7 @@ mod tests {
         use wiremock::matchers::{header, method, path as path_matcher};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("memo-invalidate");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = dir.join("swapped.json");
@@ -2501,7 +2577,8 @@ mod tests {
 
         let budgets = BackfillBudgets::default();
         let client = reqwest::Client::new();
-        let first = plans_for_accounts(
+        let first = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "memo-invalidate-upstream",
             &server.uri(),
@@ -2516,7 +2593,8 @@ mod tests {
         // Same path, a different account -- and this one carries no
         // `shuntAccountUuid` at all.
         write_identified_fixture(&creds_path, "token-anonymous", None);
-        let second = plans_for_accounts(
+        let second = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "memo-invalidate-upstream",
             &server.uri(),
@@ -2553,7 +2631,7 @@ mod tests {
         use wiremock::matchers::{method, path as path_matcher};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("memo-unreadable");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = dir.join("corrupt.json");
@@ -2576,7 +2654,8 @@ mod tests {
 
         let budgets = BackfillBudgets::default();
         let client = reqwest::Client::new();
-        let first = plans_for_accounts(
+        let first = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "memo-unreadable-upstream",
             &server.uri(),
@@ -2591,7 +2670,8 @@ mod tests {
         // Not valid JSON: `read_json` returns `None` and the read loop skips
         // this path without recording or clearing anything for it.
         std::fs::write(&creds_path, b"}{ not json").unwrap();
-        let second = plans_for_accounts(
+        let second = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "memo-unreadable-upstream",
             &server.uri(),
