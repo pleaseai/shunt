@@ -136,8 +136,9 @@ shunt reads (and, on refresh, rewrites) this JSON, written by `codex login`:
 ```
 
 - **`auth_mode` spelling** — the Codex CLI serializes its `AuthMode` enum with
-  `rename_all = "lowercase"`, so a current `codex login` writes `"chatgpt"` and `codex login
-  --api-key` writes `"apikey"`. Older Codex versions wrote `"ChatGPT"` / `"ApiKey"`. shunt
+  `rename_all = "lowercase"`, so a current `codex login` writes `"chatgpt"` and an API-key
+  login (`printenv OPENAI_API_KEY | codex login --with-api-key`) writes `"apikey"`. Older Codex
+  versions wrote `"ChatGPT"` / `"ApiKey"`. shunt
   compares this field **case-insensitively** everywhere it reads it (`import_auth`,
   `read_openai_api_key`, credential observation), so either spelling is accepted.
 - **Account id** — shunt prefers `tokens.account_id`; if absent it decodes the `access_token`

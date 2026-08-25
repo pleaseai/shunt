@@ -273,7 +273,7 @@ struct OAuthTokenResponse {
 pub fn read_openai_api_key(path: &Path) -> Option<String> {
     let auth = read_auth_file(path).ok()?;
     // The Codex CLI serializes `AuthMode` with `rename_all = "lowercase"`, so a
-    // current `codex login --api-key` writes `"apikey"`; older files wrote
+    // current `codex login --with-api-key` writes `"apikey"`; older files wrote
     // `"ApiKey"`. Accept either spelling.
     if !auth
         .value
