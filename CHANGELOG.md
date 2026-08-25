@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.38.0](https://github.com/pleaseai/shunt/compare/v0.37.0...v0.38.0) (2026-08-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** a shared slot holding a shunt credential in any position is now removed entirely, so a genuine upstream credential sharing that slot is dropped with it. Only affects callers who send `authorization` or `x-api-key` more than once in a single request. The surgical alternative — rebuilding the slot from its surviving values — adds a second place deciding which values are shunt's, which is the drift `auth::slots` exists to remove.
+* **antigravity:** `kind = "antigravity"` is now the native HTTP upstream, and the local `agy` subprocess transport moves to `kind = "antigravity_cli"` (built-in provider `antigravity-cli`), which is deprecated. A config still carrying the old meaning is refused by name rather than retargeted, and a routed `antigravity` provider with no credential refuses to start — switching transport, credentials, and egress underneath a green startup would be worse than failing.
+
+### Features
+
+* **admin:** add read/write admin keys and move the spend surface to [server.spend] ([#389](https://github.com/pleaseai/shunt/issues/389)) ([910b90a](https://github.com/pleaseai/shunt/commit/910b90a67d2335700c45ecc23fa9a252edb29e64))
+* **admin:** expose account plans in pool ([#408](https://github.com/pleaseai/shunt/issues/408)) ([7e62d00](https://github.com/pleaseai/shunt/commit/7e62d00b69c2f069fcd976b78969bcd16af64298))
+* **antigravity:** reach Antigravity over HTTP instead of the local agy CLI ([#372](https://github.com/pleaseai/shunt/issues/372)) ([2708d5e](https://github.com/pleaseai/shunt/commit/2708d5eeda3805ccdc6cb6aca2237a9cb5bdaf5f))
+* **auth:** mint a dedicated shunt claim so the JWT shape check widens ([#367](https://github.com/pleaseai/shunt/issues/367)) ([8fbf77f](https://github.com/pleaseai/shunt/commit/8fbf77f982025ea5c5066c37ae35368daf53d297)), closes [#365](https://github.com/pleaseai/shunt/issues/365)
+* **cli:** add shunt gateway login, token helper, and Claude Code launcher ([#393](https://github.com/pleaseai/shunt/issues/393)) ([0c69989](https://github.com/pleaseai/shunt/commit/0c6998962f1217d7ee8adefad3c69720a511f4e1))
+* **codex:** sync the Codex client surface to openai/codex 0.148.0 ([#403](https://github.com/pleaseai/shunt/issues/403)) ([3fe027f](https://github.com/pleaseai/shunt/commit/3fe027fabeba9ac67f70fa685396d1567f256728))
+* **config:** add [server.gateway.session] JWT config block ([#359](https://github.com/pleaseai/shunt/issues/359)) ([c59f562](https://github.com/pleaseai/shunt/commit/c59f562aefd1857f1d3c6e161867f43930cc0db8))
+* **config:** resolve ${VAR}/${file:} references and redact Secret fields ([#348](https://github.com/pleaseai/shunt/issues/348)) ([4c477db](https://github.com/pleaseai/shunt/commit/4c477db75c659a8ab1c603d17a33feb4c56df368))
+* **gateway:** add spend-limit admin API (stage 1) ([#333](https://github.com/pleaseai/shunt/issues/333)) ([9c425e7](https://github.com/pleaseai/shunt/commit/9c425e703caa629fb89a03488c77337eb13bbc2e))
+* **kimi:** add Kimi Code OAuth as a first-class subscription upstream ([#376](https://github.com/pleaseai/shunt/issues/376)) ([3e7ae16](https://github.com/pleaseai/shunt/commit/3e7ae16ab8a6670b50979b1701547e080bb2de0f))
+
+
+### Bug Fixes
+
+* **antigravity:** honor a configured base_url during credential-path project discovery ([#390](https://github.com/pleaseai/shunt/issues/390)) ([437e0bc](https://github.com/pleaseai/shunt/commit/437e0bcb1cd5bcaa2b93701660a425e5e483f461))
+* **auth:** never forward a gateway JWT to an upstream in either credential slot ([#355](https://github.com/pleaseai/shunt/issues/355)) ([c065cc8](https://github.com/pleaseai/shunt/commit/c065cc89742552680926ff8ff59b7b3cd9ffd131))
+* **auth:** route every credential-slot forward site through one shared strip ([#391](https://github.com/pleaseai/shunt/issues/391)) ([9fe69f8](https://github.com/pleaseai/shunt/commit/9fe69f8880b1331635f1304cd75a968a3d3e1de5))
+* **auth:** strip a gateway JWT by shape, not just by whether it authenticates ([#364](https://github.com/pleaseai/shunt/issues/364)) ([c00b03b](https://github.com/pleaseai/shunt/commit/c00b03bebffcbadcbb10d4d8a8a2adeb7dc3b018))
+* **auth:** strip a static `[server.auth]` token on passthrough by value ([#361](https://github.com/pleaseai/shunt/issues/361)) ([178af03](https://github.com/pleaseai/shunt/commit/178af039ad6edc1996b9134be85342b38b1ca020))
+* **cli:** make `shunt check` run the routed-Antigravity credential guard ([#406](https://github.com/pleaseai/shunt/issues/406)) ([ecf5664](https://github.com/pleaseai/shunt/commit/ecf5664d6f4ce8f9add32e6293bdb7283dfd18ad)), closes [#382](https://github.com/pleaseai/shunt/issues/382)
+* **codex-endpoint:** strip inbound x-api-key on the Codex passthrough ([#362](https://github.com/pleaseai/shunt/issues/362)) ([73622f1](https://github.com/pleaseai/shunt/commit/73622f17d85cf586cbe489baf06abfdaa65cb91a))
+* **codex:** accept lowercase auth_mode in import_auth ([#409](https://github.com/pleaseai/shunt/issues/409)) ([e59d844](https://github.com/pleaseai/shunt/commit/e59d8449a1875372f23dba090a111b81a5d4dc9a))
+* **lint:** box oversized Err variants for clippy::result_large_err ([#418](https://github.com/pleaseai/shunt/issues/418)) ([960802f](https://github.com/pleaseai/shunt/commit/960802f0fb51badb3ca402ed506a053b979369c0))
+
 ## [0.37.0](https://github.com/pleaseai/shunt/compare/v0.36.0...v0.37.0) (2026-08-13)
 
 
