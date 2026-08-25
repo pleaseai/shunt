@@ -123,8 +123,8 @@ shunt reads (and, on refresh, rewrites) this JSON, written by `codex login`:
 
 ```jsonc
 {
-  "auth_mode": "ChatGPT",          // "ApiKey" routes to the openai provider instead
-  "OPENAI_API_KEY": null,          // a string only in ApiKey mode
+  "auth_mode": "chatgpt",          // "apikey" routes to the openai provider instead
+  "OPENAI_API_KEY": null,          // a string only in apikey mode
   "tokens": {
     "id_token":      "<JWT>",
     "access_token":  "<JWT>",      // bearer sent upstream; carries exp + account claim
@@ -135,6 +135,12 @@ shunt reads (and, on refresh, rewrites) this JSON, written by `codex login`:
 }
 ```
 
+- **`auth_mode` spelling** — the Codex CLI serializes its `AuthMode` enum with
+  `rename_all = "lowercase"`, so a current `codex login` writes `"chatgpt"` and an API-key
+  login (`printenv OPENAI_API_KEY | codex login --with-api-key`) writes `"apikey"`. Older Codex
+  versions wrote `"ChatGPT"` / `"ApiKey"`. shunt
+  compares this field **case-insensitively** everywhere it reads it (`import_auth`,
+  `read_openai_api_key`, credential observation), so either spelling is accepted.
 - **Account id** — shunt prefers `tokens.account_id`; if absent it decodes the `access_token`
   JWT payload and reads `["https://api.openai.com/auth"].chatgpt_account_id`. If neither exists
   the request fails with `ChatGPT account id missing; run codex login`.
@@ -671,7 +677,7 @@ cooldown/failover rules, and how this differs from the Anthropic (`claude_oauth`
 | Symptom | Likely cause / fix |
 | :-- | :-- |
 | `authentication_error: ChatGPT auth not found; run codex login` | No `~/.codex/auth.json` (or wrong `$CODEX_AUTH_FILE`). Run `codex login`. |
-| `ChatGPT auth tokens missing` / `refresh token missing` | Auth file is in `ApiKey` mode or truncated — that path is the `openai` provider, not `codex`. Re-`codex login` with a ChatGPT account. |
+| `ChatGPT auth tokens missing` / `refresh token missing` | Auth file is in API-key mode (`"auth_mode": "apikey"`) or truncated — that path is the `openai` provider, not `codex`. Re-`codex login` with a ChatGPT account. |
 | `400 … not supported when using Codex with a ChatGPT account` | You used a `gpt-*-codex` slug. Use an entitled non-`-codex` slug (§5). |
 | `Model not found <slug>` | Client-version gating or an unentitled slug — not a code error. Confirm the slug via `models.json`; shunt already sends the pinned CLI headers (§4.4). |
 | Effort slider seems ignored on a `gpt-*` id | A `route`/`provider` `effort` override is winning, or no effort level is set. `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` is not the fix — these ids already send effort (§8). |

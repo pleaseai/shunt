@@ -260,7 +260,7 @@ process-lifetime state:
 | `GET` | `/admin/accounts` | JSON: Claude store metadata (name, kind, expiry, UUID — never the token) |
 | `GET` | `/admin/accounts/codex` | JSON: Codex store metadata (name, expiry, account ID — never the token) |
 | `GET` | `/admin/observed` | JSON: read-only observed Claude, Codex, Gemini, Kimi, Grok, and Cursor identity, state, and provider-native usage — never token material |
-| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state |
+| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state; account objects may include an optional `plan` string |
 | `POST` | `/admin/accounts/claude` | `{name, mode}` → start Claude provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the Claude account |
 | `DELETE` | `/admin/accounts/claude/{name}` | Remove the Claude account's store file |
@@ -416,6 +416,30 @@ scan for an empty list — the same resolution the adapters use). Codex successf
 responses now populate the 5h/7d fields from `x-codex-*` rate-limit headers;
 unsupported windows are ignored and `7d_oi` remains `None` because Codex has no
 analog. Since issue #195 this recorded state also feeds Codex account selection (see `m10-codex-multi-account.md`), in addition to the dashboard display.
+
+The optional `plan` field is derived from credential data already held by
+shunt: Claude reads `claudeAiOauth.subscriptionType`, and Codex reads the
+`chatgpt_plan_type` claim from its stored JWT. Whenever an imported Claude
+credential's on-disk access token is still valid, the request also makes a
+bounded `GET /api/oauth/profile` backfill and caches the result — this runs
+even for an account whose file already carries a subscription type, since
+that value alone carries no multiplier detail and the profile lookup can
+refine it toward a more precise one, while never discarding it if the lookup
+is coarser or fails; this backfill only ever reads a token already on disk,
+it never refreshes and never writes back. An account whose on-disk token has
+already expired keeps whatever plan (or lack of one) it already had until a
+later view, once normal traffic elsewhere refreshes it; an idle account with
+no traffic and no usage polling can stay at that same value indefinitely
+while its on-disk token stays expired. Setup-token and `token_env` accounts
+are not backfilled. A missing, failed, or unrecognized lookup leaves the
+existing plan (or its absence) unaffected.
+
+Budget exhaustion never erases a file-derived plan: the file-read phase is
+guaranteed its own `min_slice` floor above the shared deadline, so an earlier
+provider's stalled backfill can never starve this cheap local read. Even in
+the pathological case where the file phase does not finish within that
+floor, any plan already cached from an earlier resolution still appears in
+the response.
 
 ## Shared foundations with gateway login
 

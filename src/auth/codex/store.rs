@@ -184,9 +184,13 @@ pub fn import_auth(name: &str, source: &Path) -> anyhow::Result<PathBuf> {
             format!("invalid Codex credentials JSON: {error}"),
         )
     })?;
-    if value.get("auth_mode").and_then(Value::as_str) != Some("ChatGPT") {
+    if !value
+        .get("auth_mode")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("chatgpt"))
+    {
         anyhow::bail!(
-            "{} is not a ChatGPT login (auth_mode != \"ChatGPT\"); run `codex login` first",
+            "{} is not a ChatGPT login (auth_mode is not \"chatgpt\"); run `codex login` first",
             source.display()
         );
     }
@@ -322,6 +326,30 @@ mod tests {
 
         let error = import_auth("ci", &source).unwrap_err();
         assert!(error.to_string().contains("auth_mode"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The codex CLI writes `"auth_mode": "chatgpt"` (lowercase enum variant
+    /// `AuthMode::Chatgpt`). Verify that `import_auth` accepts it — the
+    /// comparison must be case-insensitive.
+    #[tokio::test]
+    async fn import_accepts_lowercase_chatgpt_auth_mode() {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let dir = temp_dir("lowercase-chatgpt");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.json");
+        fs::write(
+            &source,
+            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"access","refresh_token":"refresh"}}"#,
+        )
+        .unwrap();
+        let accounts_dir = dir.join("accounts");
+        let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+
+        let path = import_auth("ci", &source).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["auth_mode"], "chatgpt");
 
         let _ = fs::remove_dir_all(dir);
     }

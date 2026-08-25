@@ -244,6 +244,24 @@ impl Tokens {
     }
 }
 
+/// The imported-login access token in `value`, when it is non-empty and
+/// still valid at `now` under the same EXPIRY_BUFFER `get_valid_access_token`
+/// applies — this additionally excludes an empty access token, which
+/// `get_valid_access_token` does not. Shared with [`crate::admin::plan`] so
+/// the admin read path can reuse a token already on disk without ever
+/// refreshing or writing it back.
+///
+/// Sibling gap, out of scope here: a file with a future `expiresAt` and an
+/// empty `accessToken` still lets the inference path's
+/// `get_valid_access_token` return `Ok("")` without refreshing, sending an
+/// empty bearer upstream; that self-corrects only after a 401 drives
+/// `force_refresh_if_access_token`.
+pub(crate) fn refreshable_valid_access_token(value: &Value, now: SystemTime) -> Option<String> {
+    let tokens = Tokens::from_value(value)?;
+    (!tokens.access_token.is_empty() && tokens.refresh_token.is_some() && tokens.is_valid_at(now))
+        .then_some(tokens.access_token)
+}
+
 struct Refreshed {
     access_token: String,
     refresh_token: String,

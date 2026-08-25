@@ -55,14 +55,41 @@ fn can_bind_loopback() -> bool {
     }
 }
 
-/// A config with `[server.admin]` enabled and the default `anthropic` provider
-/// flipped to `claude_oauth` with an empty accounts list, so `/admin/pool`
-/// enumerates the store and a completed add is "live now".
+/// A config with `[server.admin]` enabled: `anthropic` is flipped to
+/// `claude_oauth` with an empty accounts list, so `/admin/pool` enumerates
+/// the store and a completed add is "live now"; `codex` instead gets an
+/// explicit placeholder account (see [`nonexistent_credentials_path`]), so
+/// it does not scan the real store by default.
+///
+/// Rule: `anthropic` still defaults to an empty accounts list, so any test
+/// that calls `/admin/pool` against a config built from this function must
+/// itself choose one of: give the provider an explicit account, or isolate
+/// `SHUNT_CLAUDE_ACCOUNTS_DIR`/`SHUNT_CODEX_ACCOUNTS_DIR` before starting
+/// the gateway. A test that means to exercise the real store-scan path
+/// isolates the directory first, then empties that provider's `accounts`
+/// to opt in — and a non-empty `account_scope` forces a scan even past an
+/// explicit placeholder (`src/auth/shared.rs:367`).
+///
+/// WARNING: without either of the above, `resolve_pool_accounts`
+/// (`src/auth/shared.rs`) scans the *real* on-disk credential store instead
+/// of a fixture — on the machine running the test that store may hold live
+/// OAuth credentials. For Claude, a real credential file with no
+/// `subscriptionType` but a still-valid access token (eligible per
+/// `refreshable_valid_access_token`, `src/auth/claude/auth.rs`) lets a
+/// completed `/admin/pool` request's profile backfill read that on-disk
+/// token (never refreshing or writing it back) and send it to the real
+/// Claude API.
 fn admin_config(tokens_env: &str) -> Config {
     let mut config = Config::default();
     let anthropic = config.providers.get_mut("anthropic").unwrap();
     anthropic.auth = AuthMode::ClaudeOauth;
     anthropic.accounts = Vec::new();
+    let codex = config.providers.get_mut("codex").unwrap();
+    codex.accounts = vec![AccountConfig {
+        name: "codex-placeholder".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        ..Default::default()
+    }];
     config.server.admin = Some(AdminConfig {
         header: "x-shunt-admin-token".to_string(),
         tokens_env: tokens_env.to_string(),
@@ -142,6 +169,30 @@ fn unique_dir() -> PathBuf {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// A `credentials` path string that can never exist on disk -- unlike
+/// [`unique_dir`], this never calls `create_dir_all`, so not even the parent
+/// directory is real. Use it for a fixture account that only needs to be
+/// *present* (so `resolve_pool_accounts` uses the configured account instead
+/// of scanning the real on-disk store; see `src/auth/shared.rs`) but must
+/// never be treated as eligible for a plan backfill: `file_derived_plans`
+/// (`src/admin/plan.rs`) does a plain `std::fs::read` on this path (via
+/// `read_json`), which fails the same way (`NotFound`) whether or not the
+/// parent directory exists, so no still-valid access token is ever
+/// extracted and a live `/admin/pool` profile backfill never reaches the
+/// real Claude API.
+fn nonexistent_credentials_path() -> String {
+    let counter = UNIQUE_DIR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir()
+        .join(format!(
+            "shunt-admin-test-absent-{}-{}",
+            std::process::id(),
+            counter
+        ))
+        .join("absent.json")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn chatgpt_token(exp: u64, account_id: &str) -> String {
@@ -246,12 +297,21 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
         .await;
     std::env::set_var("SHUNT_TEST_ADMIN_OIDC_TOKENS", "ops:admin-secret");
     std::env::set_var("SHUNT_TEST_ADMIN_OIDC_SECRET", "client-secret");
-    let gateway = start_with_addr(admin_oidc_config(
+    let mut config = admin_oidc_config(
         "SHUNT_TEST_ADMIN_OIDC_TOKENS",
         "SHUNT_TEST_ADMIN_OIDC_SECRET",
         &idp,
-    ))
-    .await;
+    );
+    // An explicit, never-existing credentials path keeps the later
+    // `/admin/pool` request off the real on-disk store (see the
+    // `admin_config` doc comment).
+    config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
+        name: "oidc-flow".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        uuid: Some("oidc-flow-uuid".to_string()),
+        ..Default::default()
+    }];
+    let gateway = start_with_addr(config).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -508,6 +568,13 @@ async fn admin_pool_repeats_shared_physical_state_per_upstream() {
     let mut account = AccountConfig {
         name: "shared-account".to_string(),
         uuid: Some("shared-uuid".to_string()),
+        // Without an explicit credentials path, an account with neither
+        // `credentials` nor `token_env` falls back to the real default store
+        // path for its name (`credential_path`, src/admin/plan.rs). That
+        // path is very unlikely to exist for this made-up name, but pin it
+        // to one that definitely never exists rather than rely on that
+        // coincidence.
+        credentials: Some(nonexistent_credentials_path()),
         ..Default::default()
     };
     account.store_family = Some(shunt::accounts::StoreFamily::Claude);
@@ -549,6 +616,399 @@ async fn admin_pool_repeats_shared_physical_state_per_upstream() {
 }
 
 #[tokio::test]
+async fn admin_pool_never_refreshes_or_writes_back_an_expired_on_disk_token() {
+    // Regression pin for the review-response fix: the `/admin/pool` plan
+    // backfill path must never call the token-refresh endpoint or write
+    // back to the credential file, even when the on-disk access token has
+    // expired. Eligibility for a live profile-backfill attempt requires
+    // `refreshable_valid_access_token` (`src/auth/claude/auth.rs`) to
+    // return `Some`, which it never does once `expiresAt` has passed --
+    // so an account in this shape must never become a backfill candidate
+    // at all: no token-refresh request, no profile request, no on-disk
+    // rewrite, and no `plan` key in the response. The token-refresh mock
+    // below responds immediately (no delay) with a distinct, obviously
+    // wrong token pair, so a regression that reintroduced the old refresh
+    // path would both receive the request and visibly rewrite the
+    // credential file -- either assertion below would catch it.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    shunt::admin::reset_profile_cache();
+    let dir = unique_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("SHUNT_TEST_ADMIN_POOL_NO_REFRESH", "ops:no-refresh-secret");
+
+    let expired_at_ms = (SystemTime::now() - std::time::Duration::from_secs(3600))
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let credentials_path = dir.join("expired-account.json");
+    std::fs::write(
+        &credentials_path,
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "expired-access-token",
+                "refreshToken": "still-has-a-refresh-token",
+                "expiresAt": expired_at_ms
+            },
+            "shuntAccountUuid": "expired-account-uuid"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let original_bytes = std::fs::read(&credentials_path).unwrap();
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "REFRESHED-ACCESS-SHOULD-NEVER-BE-USED",
+            "refresh_token": "REFRESHED-REFRESH-SHOULD-NEVER-BE-USED",
+            "expires_in": 3600
+        })))
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let profile_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "organization": {"organization_type": "claude_max"}
+        })))
+        .mount(&profile_server)
+        .await;
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_POOL_NO_REFRESH");
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = profile_server.uri();
+    provider.accounts = vec![AccountConfig {
+        name: "expired-account".to_string(),
+        credentials: Some(credentials_path.to_string_lossy().into_owned()),
+        uuid: Some("expired-account-uuid".to_string()),
+        ..Default::default()
+    }];
+    let gateway = start(config).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "no-refresh-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+    let anthropic = providers
+        .iter()
+        .find(|provider| provider["provider"] == "anthropic")
+        .unwrap();
+    let accounts = anthropic["accounts"].as_array().unwrap();
+    let account = accounts
+        .iter()
+        .find(|account| account["name"] == "expired-account")
+        .unwrap();
+
+    assert!(
+        token_server.received_requests().await.unwrap().is_empty(),
+        "an expired on-disk token must never be sent to the token-refresh endpoint"
+    );
+    assert!(
+        profile_server.received_requests().await.unwrap().is_empty(),
+        "an expired on-disk token is never eligible, so the profile endpoint must never be attempted"
+    );
+    let bytes_after = std::fs::read(&credentials_path).unwrap();
+    assert_eq!(
+        original_bytes, bytes_after,
+        "the credential file must be byte-for-byte unchanged -- the backfill path must never write back"
+    );
+    assert!(
+        account.get("plan").is_none(),
+        "an account with only an expired on-disk token must carry no plan key, got {account:?}"
+    );
+
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_NO_REFRESH");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn admin_pool_reports_plan_when_credential_file_carries_one() {
+    // A file-derived plan (Claude `subscriptionType`) must surface as `"plan"`
+    // on the matching pool account; an account with no plan source at all (no
+    // credentials file, no store entry, no token_env credential to read) must
+    // carry no `plan` key -- the field is opt-in per account, not a required
+    // column with a placeholder value.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    shunt::admin::reset_profile_cache();
+    let dir = unique_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("SHUNT_TEST_ADMIN_POOL_PLAN", "ops:plan-secret");
+    let credentials_path = dir.join("with-plan.json");
+    std::fs::write(
+        &credentials_path,
+        serde_json::json!({"claudeAiOauth": {
+            "accessToken": "access",
+            "subscriptionType": "max"
+        }})
+        .to_string(),
+    )
+    .unwrap();
+
+    // Neither account should ever reach this: "with-plan"'s fixture has no
+    // `refreshToken`/`expiresAt`, so it was never a token-eligible candidate
+    // to begin with regardless of its file plan, and "no-plan" has no
+    // credential file to read at all. Asserted below via `received_requests`.
+    let profile_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "organization": {"organization_type": "claude_max"}
+        })))
+        .mount(&profile_server)
+        .await;
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_POOL_PLAN");
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = profile_server.uri();
+    provider.accounts = vec![
+        AccountConfig {
+            name: "with-plan".to_string(),
+            credentials: Some(credentials_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+        AccountConfig {
+            name: "no-plan".to_string(),
+            // An explicit missing file makes the account ineligible for live
+            // backfill without consulting the process-wide default store
+            // directory, so the no-network assertion is isolated from other
+            // integration tests.
+            credentials: Some(dir.join("no-plan.json").to_string_lossy().into_owned()),
+            uuid: Some("no-plan-uuid".to_string()),
+            ..Default::default()
+        },
+    ];
+    let gateway = start(config).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "plan-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+    let anthropic = providers
+        .iter()
+        .find(|provider| provider["provider"] == "anthropic")
+        .unwrap();
+    let accounts = anthropic["accounts"].as_array().unwrap();
+    let with_plan = accounts
+        .iter()
+        .find(|account| account["name"] == "with-plan")
+        .unwrap();
+    assert_eq!(with_plan["plan"], "max");
+    let no_plan = accounts
+        .iter()
+        .find(|account| account["name"] == "no-plan")
+        .unwrap();
+    assert!(
+        no_plan.get("plan").is_none(),
+        "an account with no plan source must carry no plan key, got {no_plan:?}"
+    );
+    assert!(
+        profile_server.received_requests().await.unwrap().is_empty(),
+        "neither account should ever attempt a live profile fetch here -- \
+         with-plan has no refreshable/valid token on disk (no refreshToken/ \
+         expiresAt in its fixture), no-plan has no credential file to read"
+    );
+
+    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_PLAN");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn admin_pool_reports_plan_for_a_name_only_account_via_its_store_path() {
+    // N2: a name-only account (no `credentials`, no `token_env`, no `uuid`)
+    // resolves its credential file through the store-path fallback in
+    // `credential_path` (`src/admin/plan.rs`), the same fallback a
+    // store-provisioned account uses in production -- exercise it end to
+    // end via `SHUNT_CLAUDE_ACCOUNTS_DIR` rather than an explicit
+    // `credentials` path.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    shunt::admin::reset_profile_cache();
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var("SHUNT_TEST_ADMIN_POOL_STORE_PLAN", "ops:store-plan-secret");
+
+    std::fs::write(
+        dir.join("store-only.json"),
+        serde_json::json!({"claudeAiOauth": {
+            "accessToken": "access",
+            "subscriptionType": "max 20x"
+        }})
+        .to_string(),
+    )
+    .unwrap();
+
+    // The fixture has no refreshToken/expiresAt, so store-only is never a
+    // backfill candidate; pin base_url to a mock anyway so a future fixture
+    // change that made it eligible could never reach a real endpoint.
+    let profile_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "organization": {"organization_type": "claude_max"}
+        })))
+        .mount(&profile_server)
+        .await;
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_POOL_STORE_PLAN");
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = profile_server.uri();
+    provider.accounts = vec![AccountConfig {
+        name: "store-only".to_string(),
+        ..Default::default()
+    }];
+    let gateway = start(config).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "store-plan-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+    let anthropic = providers
+        .iter()
+        .find(|provider| provider["provider"] == "anthropic")
+        .unwrap();
+    let accounts = anthropic["accounts"].as_array().unwrap();
+    let account = accounts
+        .iter()
+        .find(|account| account["name"] == "store-only")
+        .unwrap();
+    assert_eq!(account["plan"], "max 20x");
+    assert!(
+        profile_server.received_requests().await.unwrap().is_empty(),
+        "this test resolves purely via the file-derived plan and needs no \
+         profile request -- the fixture has no refreshToken/expiresAt in its \
+         claudeAiOauth block, so store-only is never a backfill candidate"
+    );
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_STORE_PLAN");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn admin_pool_bounds_profile_backfill_when_claude_endpoint_stalls() {
+    // D2 regression: the profile GET has no outer bound of its own, so a
+    // stalled Claude endpoint could hang `GET /admin/pool` indefinitely if
+    // the backfill step it's part of weren't itself time-boxed. The account
+    // fixture here deliberately satisfies every condition that makes it an
+    // eligible backfill candidate per `refreshable_valid_access_token`
+    // (`src/auth/claude/auth.rs`): a non-empty `refreshToken`, an
+    // `expiresAt` comfortably past `EXPIRY_BUFFER` (so the on-disk access
+    // token itself reads as still valid, with no token-endpoint round trip
+    // involved), and no `subscriptionType` (so the file-derived source
+    // yields nothing and the account becomes a backfill candidate).
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    shunt::admin::reset_profile_cache();
+    let dir = unique_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("SHUNT_TEST_ADMIN_POOL_STALL", "ops:stall-secret");
+
+    let expires_at_ms = (SystemTime::now() + std::time::Duration::from_secs(3600))
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let credentials_path = dir.join("stalled-account.json");
+    std::fs::write(
+        &credentials_path,
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "access-token",
+                "refreshToken": "refresh-token",
+                "expiresAt": expires_at_ms
+            },
+            "shuntAccountUuid": "stalled-account-uuid"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let profile_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/profile"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(30))
+                .set_body_json(serde_json::json!({
+                    "organization": {"organization_type": "claude_max"}
+                })),
+        )
+        .mount(&profile_server)
+        .await;
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_POOL_STALL");
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = profile_server.uri();
+    // Use an explicit credential path so this regression test exercises the
+    // profile backfill itself without sharing the process-wide
+    // `SHUNT_CLAUDE_ACCOUNTS_DIR` store-scan environment with other
+    // concurrently running integration tests.
+    provider.accounts = vec![AccountConfig {
+        name: "stalled-account".to_string(),
+        credentials: Some(credentials_path.to_string_lossy().into_owned()),
+        uuid: Some("stalled-account-uuid".to_string()),
+        ..Default::default()
+    }];
+    let gateway = start(config).await;
+
+    let started = std::time::Instant::now();
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "stall-secret")
+        .send()
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "GET /admin/pool took {elapsed:?}; the production BackfillBudgets \
+         default (8s total / 5s per_account) should bound this to roughly 5s \
+         against a profile endpoint that never responds within the budget"
+    );
+    assert!(
+        !profile_server.received_requests().await.unwrap().is_empty(),
+        "the stalled profile attempt must have actually happened, not been \
+         skipped for an unrelated reason"
+    );
+
+    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_STALL");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
     // Regression test: the dashboard's Claude-uuid coalescing must key on the
     // account's actual auth kind, not the provider table's free-form name.
@@ -568,13 +1028,31 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
     let chatgpt_oauth_template = config.providers["codex"].clone();
 
     let mut misnamed_chatgpt = chatgpt_oauth_template;
-    misnamed_chatgpt.accounts = Vec::new();
+    // An explicit, never-existing credentials path keeps this chatgpt_oauth
+    // provider (named "claude" here, deliberately) off the real on-disk
+    // Codex store when the later `/admin/pool` request runs — the same
+    // real-credential risk the `admin_config` doc comment describes for
+    // Claude, just against Codex's own store instead.
+    misnamed_chatgpt.accounts = vec![AccountConfig {
+        name: "renamed-chatgpt-placeholder".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        ..Default::default()
+    }];
     config
         .providers
         .insert("claude".to_string(), misnamed_chatgpt);
 
     let mut custom_named_claude = claude_oauth_template;
-    custom_named_claude.accounts = Vec::new();
+    // An explicit, never-existing credentials path keeps the later
+    // `/admin/pool` request off the real on-disk Claude store (see the
+    // `admin_config` doc comment) -- this provider is claude_oauth, so it is
+    // the one the live profile backfill would otherwise reach.
+    custom_named_claude.accounts = vec![AccountConfig {
+        name: "custom-claude".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        uuid: Some("custom-claude-uuid".to_string()),
+        ..Default::default()
+    }];
     config
         .providers
         .insert("enterprise-claude".to_string(), custom_named_claude);
@@ -796,7 +1274,17 @@ async fn admin_header_and_x_api_key_both_authenticate_every_credential_kind() {
     }
     let env = "SHUNT_TEST_ADMIN_TOKENS_SLOTS";
     std::env::set_var(env, "ops:secret-slots");
-    let gateway = start(admin_config_with_keys(env)).await;
+    let mut config = admin_config_with_keys(env);
+    // An explicit, never-existing credentials path keeps the `/admin/pool`
+    // requests below off the real on-disk store (see the `admin_config` doc
+    // comment).
+    config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
+        name: "header-slots".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        uuid: Some("header-slots-uuid".to_string()),
+        ..Default::default()
+    }];
+    let gateway = start(config).await;
     let client = reqwest::Client::new();
 
     for credential in ["secret-slots", ADMIN_WRITE_KEY, ADMIN_READ_KEY] {
@@ -825,9 +1313,22 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
     if !can_bind_loopback() {
         return;
     }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
     let env = "SHUNT_TEST_ADMIN_TOKENS_READONLY";
     std::env::set_var(env, "ops:secret-readonly");
-    let gateway = start(admin_config_with_keys(env)).await;
+    let mut config = admin_config_with_keys(env);
+    // An explicit, never-existing credentials path keeps the `/admin/pool`
+    // request below off the real on-disk store (see the `admin_config` doc
+    // comment).
+    config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
+        name: "read-key".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        uuid: Some("read-key-uuid".to_string()),
+        ..Default::default()
+    }];
+    let gateway = start(config).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -845,6 +1346,16 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
             StatusCode::OK,
             "read key must pass {route}"
         );
+        if route == "/admin/accounts" {
+            // A decisive gate for the isolation set up above: `/admin/accounts`
+            // scans a real on-disk store the same way `/admin/pool` did before
+            // the earlier fix, so an empty array here proves the isolated
+            // `SHUNT_CLAUDE_ACCOUNTS_DIR` actually took effect rather than the
+            // request silently falling back to a real, possibly non-empty
+            // store.
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["accounts"].as_array().unwrap().len(), 0);
+        }
     }
 
     // A mutation is refused for the read key but accepted (past auth) for the
@@ -893,6 +1404,7 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert!(response.headers().get("set-cookie").is_some());
     std::env::remove_var(env);
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
 }
 
 /// The merged slot acceptance is scoped to the admin (and spend) routers.
@@ -912,6 +1424,15 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
     });
+    // An explicit, never-existing credentials path keeps the `/admin/pool`
+    // requests below off the real on-disk store (see the `admin_config` doc
+    // comment).
+    config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
+        name: "inference-guard".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        uuid: Some("inference-guard-uuid".to_string()),
+        ..Default::default()
+    }];
     let gateway = start(config).await;
     let client = reqwest::Client::new();
 
@@ -2258,7 +2779,25 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
         format!("{}/token", token_server.uri()),
     );
 
-    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX")).await;
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX");
+    // Opt codex back into the store scan: the `/admin/pool` assertion below
+    // needs the scanned result, and `forget_pool_health_if_absent`'s
+    // `draws_from_store` check (`src/admin/mod.rs:344`) also needs an empty
+    // `accounts` list to treat this as a store-backed account. The
+    // `SHUNT_CODEX_ACCOUNTS_DIR` isolation above already scopes the scan to
+    // this test's own directory.
+    config.providers.get_mut("codex").unwrap().accounts = Vec::new();
+    // An explicit, never-existing credentials path on the untouched
+    // `anthropic` provider keeps the later `/admin/pool` request off the
+    // real on-disk Claude store (see the `admin_config` doc comment); this
+    // test only isolates `SHUNT_CODEX_ACCOUNTS_DIR` for its own Codex flow.
+    config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
+        name: "codex-flow".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        uuid: Some("codex-flow-uuid".to_string()),
+        ..Default::default()
+    }];
+    let gateway = start(config).await;
     let client = reqwest::Client::new();
     let auth = |request: reqwest::RequestBuilder| {
         request
@@ -2464,6 +3003,17 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX_REPROV");
     let codex = config.providers.get_mut("codex").unwrap();
     codex.auth = AuthMode::ChatgptOauth;
+    // An empty `accounts` list satisfies `forget_pool_health_if_absent`'s
+    // `draws_from_store` check (`src/admin/mod.rs:344`) so a reprovisioned
+    // or removed identity here is treated as store-backed. The pool-plan
+    // machinery in `src/admin/plan.rs` never runs in this test at all --
+    // this handler never calls `/admin/pool`. The store reads and writes
+    // this reprovision/remove handler does perform are safely isolated:
+    // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
+    // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
+    // because env vars are process-global, so directory isolation alone
+    // does not guarantee safety if another test runs concurrently and
+    // reassigns the same env var mid-test.
     codex.accounts = Vec::new();
     config.server.bind = "127.0.0.1:0".to_string();
     let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
@@ -2642,6 +3192,17 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX_BLANK_OLD");
     let codex = config.providers.get_mut("codex").unwrap();
     codex.auth = AuthMode::ChatgptOauth;
+    // An empty `accounts` list satisfies `forget_pool_health_if_absent`'s
+    // `draws_from_store` check (`src/admin/mod.rs:344`) so a reprovisioned
+    // or removed identity here is treated as store-backed. The pool-plan
+    // machinery in `src/admin/plan.rs` never runs in this test at all --
+    // this handler never calls `/admin/pool`. The store reads and writes
+    // this reprovision/remove handler does perform are safely isolated:
+    // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
+    // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
+    // because env vars are process-global, so directory isolation alone
+    // does not guarantee safety if another test runs concurrently and
+    // reassigns the same env var mid-test.
     codex.accounts = Vec::new();
     config.server.bind = "127.0.0.1:0".to_string();
     let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
@@ -2756,6 +3317,17 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
     let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX_REMOVE");
     let codex = config.providers.get_mut("codex").unwrap();
     codex.auth = AuthMode::ChatgptOauth;
+    // An empty `accounts` list satisfies `forget_pool_health_if_absent`'s
+    // `draws_from_store` check (`src/admin/mod.rs:344`) so a reprovisioned
+    // or removed identity here is treated as store-backed. The pool-plan
+    // machinery in `src/admin/plan.rs` never runs in this test at all --
+    // this handler never calls `/admin/pool`. The store reads and writes
+    // this reprovision/remove handler does perform are safely isolated:
+    // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
+    // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
+    // because env vars are process-global, so directory isolation alone
+    // does not guarantee safety if another test runs concurrently and
+    // reassigns the same env var mid-test.
     codex.accounts = Vec::new();
     config.server.bind = "127.0.0.1:0".to_string();
     let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())

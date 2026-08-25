@@ -10,7 +10,9 @@ use std::{fs, path::PathBuf, time::SystemTime};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::auth::shared::{is_token_valid_at, jwt_claims};
+use crate::auth::shared::{
+    claude_plan_from_credentials, codex_plan_from_credentials, is_token_valid_at, jwt_claims,
+};
 
 const GOOGLE_LOAD_CODE_ASSIST_URL: &str =
     "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
@@ -1157,11 +1159,7 @@ fn parse_claude(
         .as_millis()
         .try_into()
         .unwrap_or(i64::MAX);
-    let plan = oauth
-        .get("subscriptionType")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(title_case);
+    let plan = claude_plan_from_credentials(value).map(|plan| title_case(&plan));
     let identity = plan
         .as_deref()
         .map(|plan| format!("Claude Code · {plan}"))
@@ -1211,12 +1209,7 @@ fn parse_codex(value: &Value, now: SystemTime) -> Option<ObservedCredential> {
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(mask_email);
-    let plan = identity_claims
-        .as_ref()
-        .and_then(|claims| claims.pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(normalize_chatgpt_plan);
+    let plan = codex_plan_from_credentials(value).map(|plan| normalize_chatgpt_plan(&plan));
     let identity = plan
         .as_deref()
         .map(|plan| format!("ChatGPT · {plan}"))
