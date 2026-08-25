@@ -623,14 +623,10 @@ impl CachedProfilePlan {
 /// wins; `account.uuid` is the fallback for an account whose file could not
 /// be read or carries no uuid.
 ///
-/// `file_contradicts_account_uuid` is the same authority applied in reverse:
-/// when this pass tried to read the account's credential file and could not,
-/// that is evidence against whatever `account.uuid` still says, so the value
-/// is stripped back to the name-based identity and the stale entry is simply
-/// not found. Only a read *failure* counts — a file that parses and carries
-/// no `shuntAccountUuid` is a healthy hand-placed credential whose configured
-/// `uuid` is the legitimate identity, and a timed-out phase read nothing at
-/// all. See the caller for how the three are told apart.
+/// An account whose credential this pass tried to read and could not has no
+/// evidenced identity at all, so it does not get a key it can act on: the
+/// caller marks it non-cacheable rather than letting any key here reach the
+/// shared cache. See `read_failed`.
 ///
 /// Only when no uuid exists anywhere (a hand-placed credential file shunt
 /// never imported) does the name-based key survive, and
@@ -639,7 +635,6 @@ fn plan_cache_key(
     upstream: &str,
     account: &AccountConfig,
     credential_uuid: Option<&str>,
-    file_contradicts_account_uuid: bool,
 ) -> (AccountKey, bool) {
     let key = account_key(upstream, account);
     if let Some(uuid) = credential_uuid {
@@ -652,15 +647,6 @@ fn plan_cache_key(
             },
             true,
         );
-    }
-    if file_contradicts_account_uuid {
-        // Strip the unevidenced uuid back to this account's name-based
-        // identity rather than keeping a `Verified` key nothing supports.
-        // The stale entry then simply is not found, so `/admin/pool` omits
-        // the plan instead of showing the previous account's.
-        let mut unevidenced = account.clone();
-        unevidenced.uuid = None;
-        return (account_key(upstream, &unevidenced), false);
     }
     let exact = matches!(key.identity, AccountStateIdentity::Verified { .. });
     (key, exact)
@@ -860,28 +846,7 @@ async fn backfill_claude_profile_plans(
                 credential_path(AuthMode::ClaudeOauth, account)
                     .and_then(|path| recall_credential_uuid(&path))
             });
-            // The same authority, applied to `account.uuid`. For an inline
-            // account `resolve_pool_accounts` derives that field from this
-            // very file and memoizes it for the process lifetime, so a value
-            // still sitting there after the file itself became unreadable
-            // came from an *earlier* read -- of a file since removed,
-            // corrupted, or re-provisioned. Keying off it would serve the
-            // path's previous occupant's plan for the full exact-identity
-            // day.
-            //
-            // Only an actual read *failure* counts. A file that parses and
-            // simply carries no `shuntAccountUuid` is a healthy hand-placed
-            // credential, and an operator's `uuid` on it is the legitimate
-            // identity -- stripping that would lose the exact key for a valid
-            // configuration. A timed-out phase records no failure either, so
-            // its fallback also stands.
-            let file_contradicts_account_uuid = read_failed[index];
-            plan_cache_key(
-                upstream,
-                account,
-                uuid.as_deref(),
-                file_contradicts_account_uuid,
-            )
+            plan_cache_key(upstream, account, uuid.as_deref())
         })
         .collect();
     // A non-exact key is only a display name, so two accounts in this one
@@ -905,7 +870,17 @@ async fn backfill_claude_profile_plans(
     let mut refinement_candidates: Vec<Candidate> = Vec::new();
     for index in 0..accounts.len() {
         let (key, exact_identity) = keys[index].clone();
-        let cacheable = !ambiguous.contains(&key);
+        // A pass that tried to read this account's credential and could not
+        // has no evidence of its identity, so it must not touch the shared
+        // cache. Every key still available to it names a *previous* holder:
+        // `account.uuid` is filled from that same file by
+        // `resolve_pool_accounts` and memoized for the process lifetime, and
+        // the name fallback is stable but not unique over time. Reading
+        // either would show the previous account's subscription; there is
+        // nothing to write, since a failed read also yields no token. So the
+        // plan is omitted for this pass and reappears once the credential
+        // reads again.
+        let cacheable = !ambiguous.contains(&key) && !read_failed[index];
         if cacheable {
             if let Some(cached) = cached_profile_plan(&key) {
                 merge_profile_plan(plans, index, cached);
@@ -2280,7 +2255,7 @@ mod tests {
             uuid: Some("stale-uuid".to_string()),
             ..Default::default()
         };
-        let (key, exact) = plan_cache_key("upstream", &account, Some("credential-uuid"), false);
+        let (key, exact) = plan_cache_key("upstream", &account, Some("credential-uuid"));
         assert!(exact);
         assert_eq!(
             key.identity,
@@ -2294,41 +2269,20 @@ mod tests {
     }
 
     #[test]
-    fn plan_cache_key_keeps_an_account_uuid_the_file_did_not_contradict() {
+    fn plan_cache_key_falls_back_to_the_account_uuid_without_a_file_uuid() {
         let account = AccountConfig {
             name: "named".to_string(),
             uuid: Some("configured-uuid".to_string()),
             ..Default::default()
         };
-        let (key, exact) = plan_cache_key("upstream", &account, None, false);
-        assert!(exact, "a uuid is an identity when nothing contradicts it");
+        let (key, exact) = plan_cache_key("upstream", &account, None);
+        assert!(exact, "a uuid is an identity");
         assert_eq!(
             key.identity,
             AccountStateIdentity::Verified {
                 id: "configured-uuid".to_string()
             },
-            "with no uuid from the file -- because none was read, or none was expected -- the \
-             account's own is the best identity available"
-        );
-    }
-
-    #[test]
-    fn plan_cache_key_drops_an_account_uuid_the_file_contradicted() {
-        let account = AccountConfig {
-            name: "named".to_string(),
-            uuid: Some("memoized-uuid".to_string()),
-            ..Default::default()
-        };
-        let (key, exact) = plan_cache_key("upstream", &account, None, true);
-        assert!(!exact, "an unevidenced uuid is not an identity");
-        assert_eq!(
-            key.identity,
-            AccountStateIdentity::UpstreamInline {
-                upstream: "upstream".to_string(),
-                name: "named".to_string()
-            },
-            "a completed read that produced no uuid is evidence against the one still on the \
-             account -- keying off it would find the previous occupant's cached plan"
+            "with no uuid from the file the account's own is the best identity available"
         );
     }
 
@@ -2338,7 +2292,7 @@ mod tests {
             name: "named".to_string(),
             ..Default::default()
         };
-        let (name_keyed, exact_without) = plan_cache_key("upstream", &account, None, false);
+        let (name_keyed, exact_without) = plan_cache_key("upstream", &account, None);
         assert!(!exact_without, "a bare name is not an identity");
         assert_eq!(
             name_keyed.identity,
@@ -2348,8 +2302,7 @@ mod tests {
             }
         );
 
-        let (upgraded, exact_with) =
-            plan_cache_key("upstream", &account, Some("credential-uuid"), false);
+        let (upgraded, exact_with) = plan_cache_key("upstream", &account, Some("credential-uuid"));
         assert!(exact_with);
         assert_eq!(
             upgraded.identity,
@@ -2706,6 +2659,79 @@ mod tests {
     /// time out" gate stops the stale identity from being recalled. Without
     /// that gate the account's cache entry is served for a credential that
     /// can no longer be read at all.
+    /// A failed read must not reach the shared cache through the *name*
+    /// fallback either. An account with no uuid anywhere is keyed by name,
+    /// which is stable but not unique over time -- so an entry left under it
+    /// describes whoever held that name before, and a pass that cannot read
+    /// the credential has no evidence it is still the same account.
+    #[tokio::test]
+    async fn a_failed_read_does_not_harvest_the_name_keyed_entry() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("name-keyed-failed");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("nameless.json");
+        // No `shuntAccountUuid`, and no `uuid` on the config below: this
+        // account's only key is `UpstreamInline { upstream, name }`.
+        write_identified_fixture(&creds_path, "token-nameless", None);
+
+        let account = AccountConfig {
+            name: "nameless".to_string(),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let first = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "name-keyed-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(
+            first[0].as_deref(),
+            Some("max 20x"),
+            "the plan is now cached under the name key"
+        );
+
+        std::fs::remove_file(&creds_path).unwrap();
+        let second = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "name-keyed-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(
+            second[0], None,
+            "a pass that could not read the credential must not harvest the entry left under \
+             this account's name by whoever held it before"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The sibling hazard to `a_failed_read_clears_the_remembered_identity`,
     /// on the *other* memo. Clearing the path memo is not enough when
     /// `account.uuid` itself was filled from `resolve_pool_accounts`'"'"'s

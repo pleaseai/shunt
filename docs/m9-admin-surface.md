@@ -490,16 +490,19 @@ the name key and its 10-minute ceiling, while keeping a no-longer-evidenced
 uuid risks serving the path's previous occupant's plan for the full
 exact-identity day.
 
-A failed read is evidence against the `uuid` on the account itself, too, and
-not only against the path memo. For an inline account that field is filled by
-`resolve_pool_accounts` from the very file that just failed to read, and it is
-memoized for the process lifetime — so it outlives the credential it came
-from. When a pass tries to read an account's credential and cannot, that
-account's key is therefore stripped back to its name-based identity for this
-pass, and the plan is omitted rather than served from the previous occupant's
-entry. A file that parses and merely carries no `shuntAccountUuid` is not
-evidence of anything: that is an ordinary hand-placed credential, and an
-operator's configured `uuid` on it stays the account's identity.
+More than the path memo goes stale on a failed read, so such an account does
+not use the shared cache at all for that pass. Every identity still available
+to it names a *previous* holder: `account.uuid` is filled by
+`resolve_pool_accounts` from the very file that just failed to read and is
+memoized for the process lifetime, so it outlives that credential; and the
+name fallback is stable but not unique over time. There is nothing to write
+either, since a failed read yields no token. So the plan is omitted for that
+pass and reappears once the credential reads again — an honest gap rather
+than another account's subscription.
+
+A file that parses and merely carries no `shuntAccountUuid` is not a failed
+read and none of this applies to it: that is an ordinary hand-placed
+credential, keyed as it always was.
 
 The batched credential read is single-flight, process-wide. A read holds its
 permit until it genuinely finishes, not until the request waiting on it gives
