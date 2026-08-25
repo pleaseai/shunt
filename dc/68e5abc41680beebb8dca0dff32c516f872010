@@ -1,0 +1,25 @@
+src/admin/plan.rs
+  s_c0ba55af1760bc::t_57f1db1460db7e 240,243-247,257,329-349,397-401,405,415,431,433-434,452-458,478,495-505
+  s_c0ba55af1760bc::t_9e535f0be53a0e 2758-2767
+  s_c0ba55af1760bc::t_791efbb7856f56 2706-2757,2768-2782
+  s_c0ba55af1760bc::t_46012d080c564d 2783-2859
+  s_c0ba55af1760bc::t_f432237cee9f97 1234,1291,1324,1771,2444
+docs/m9-admin-surface.md
+  s_c0ba55af1760bc::t_5db20d271c880f 507-513
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "dc68e5abc41680beebb8dca0dff32c516f872010",
+  "prompts": {},
+  "sessions": {
+    "s_c0ba55af1760bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b757e74f-9bea-4f24-884b-ebede785b92c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
