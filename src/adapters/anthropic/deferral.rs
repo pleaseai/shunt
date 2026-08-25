@@ -25,8 +25,10 @@ pub(super) fn strip_unsupported_deferral(body: &mut RequestBody, upstream_model:
 
 fn is_anthropic_model(upstream_model: &str) -> bool {
     let model = upstream_model.trim_start_matches('~');
-    let model = model.strip_prefix("anthropic/").unwrap_or(model);
-    model.starts_with("claude")
+    // The `anthropic/` namespace is itself the marker the upstream gates
+    // deferral on, so it is preserved whatever the bare id spells — matching
+    // the `anthropic/*` rule this module documents.
+    model.starts_with("anthropic/") || model.starts_with("claude")
 }
 
 fn request_needs_strip(request: &Value) -> bool {
@@ -95,6 +97,16 @@ fn strip_deferral_fields(request: &mut Value) -> bool {
                 }
             }
         }
+    }
+    // A request whose whole `tools` array was search tools is now empty. Hosts
+    // on this path commonly enforce `minItems: 1`, so an empty array is a 400 —
+    // drop the key, and the `tool_choice` that has nothing left to choose from.
+    if tools.is_empty() {
+        if let Some(object) = request.as_object_mut() {
+            object.remove("tools");
+            object.remove("tool_choice");
+        }
+        changed = true;
     }
     changed
 }
@@ -255,5 +267,62 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(apply(&body, "stealth/ox-alpha"), body);
+    }
+
+    #[test]
+    fn anthropic_namespace_non_claude_id_is_preserved() {
+        assert!(is_anthropic_model("anthropic/ox-alpha"));
+        let body = serde_json::to_vec(&json!({
+            "model": "anthropic/ox-alpha",
+            "tools": [{
+                "name": "Bash",
+                "input_schema": {"type": "object"},
+                "defer_loading": true
+            }]
+        }))
+        .unwrap();
+        assert_eq!(apply(&body, "anthropic/ox-alpha"), body);
+    }
+
+    #[test]
+    fn all_search_tools_drops_tools_and_tool_choice() {
+        let body = serde_json::to_vec(&json!({
+            "model": "ox-alpha",
+            "tool_choice": {"type": "auto"},
+            "tools": [{
+                "type": "tool_search_tool_regex_20251119",
+                "name": "tool_search_tool_regex"
+            }]
+        }))
+        .unwrap();
+
+        let out = parsed(&apply(&body, "stealth/ox-alpha"));
+        assert!(out.get("tools").is_none());
+        assert!(out.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn surviving_tool_keeps_tool_choice() {
+        let body = serde_json::to_vec(&json!({
+            "model": "ox-alpha",
+            "tool_choice": {"type": "auto"},
+            "tools": [
+                {
+                    "type": "tool_search_tool_regex_20251119",
+                    "name": "tool_search_tool_regex"
+                },
+                {
+                    "name": "Bash",
+                    "input_schema": {"type": "object"},
+                    "defer_loading": true
+                }
+            ]
+        }))
+        .unwrap();
+
+        let out = parsed(&apply(&body, "stealth/ox-alpha"));
+        assert_eq!(out["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(out["tools"][0]["name"], "Bash");
+        assert_eq!(out["tool_choice"]["type"], "auto");
     }
 }
