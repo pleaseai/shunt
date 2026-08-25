@@ -1,0 +1,24 @@
+README.md
+  s_e2509b45e1d7f8::t_e983d75c4df205 295
+src/adapters/anthropic/deferral.rs
+  s_e2509b45e1d7f8::t_e3f51279b2aa0f 28-30
+  s_e2509b45e1d7f8::t_8031fddc940228 31,104-110
+  s_e2509b45e1d7f8::t_8d257a1d7b1b0d 101-103
+  s_e2509b45e1d7f8::t_494f11ee7958dc 271-327
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "697c1a7f5d7a9ccbfd3dd5ab8749bd8b6a5dd28d",
+  "prompts": {},
+  "sessions": {
+    "s_e2509b45e1d7f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e55380fd-bff9-4419-a478-229e22fc748b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
