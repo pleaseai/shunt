@@ -451,12 +451,20 @@ the same map supplies the bearer token — probe one account with the other's
 credential.
 
 The profile cache is keyed by the credential's own identity where one exists.
-An account carrying a `uuid` in config, or whose credential file carries the
-`shuntAccountUuid` shunt's import stamps in, is keyed by that value: it
-survives a token refresh and changes when the account is re-provisioned, so a
-resolved plan is held for 24 hours. Only when no uuid exists anywhere does the
-key fall back to the account's name, which is stable but not unique over time —
-the same name may later belong to a different account. Nothing in production
+An account whose credential file carries the `shuntAccountUuid` shunt's import
+stamps in is keyed by that value: it survives a token refresh and changes when
+the account is re-provisioned, so a resolved plan is held for 24 hours. The
+file's uuid outranks a `uuid` carried in config, because the cached value is
+the plan of whoever *that file's token* authenticates as, and the config field
+never selects the file — the credential path is derived from `credentials` or
+the account name. A config `uuid`, or the process-lifetime inline-identity memo
+that fills it in when config omits it, can therefore still name the previous
+occupant of a re-provisioned path; keying off it would file the new account's
+plan under the old account's identity and serve the old plan back for the full
+day. A config `uuid` is used only when the file yielded none. Only when no uuid
+exists anywhere does the key fall back to the account's name, which is stable
+but not unique over time — the same name may later belong to a different
+account. Nothing in production
 clears this cache, so that fallback caps its entries at 10 minutes instead,
 which is also the retry interval for a failed lookup.
 

@@ -558,24 +558,33 @@ impl CachedProfilePlan {
 /// `account_key` alone resolves a configured account carrying a `uuid` as
 /// `Verified`, a scanned store entry as `StoreEntry`, and a uuid-less
 /// name-only configured account as `UpstreamInline`. The latter two are
-/// names, not identities. When the credential file itself carries a
-/// `shuntAccountUuid` — harvested for free by [`file_derived_plans`] — this
-/// upgrades the key to `Verified`, which is both collision-free across
-/// re-provisioning and unchanged by a token refresh. Only when no uuid
-/// exists anywhere (a hand-placed credential file shunt never imported) does
-/// the name-based key survive, and [`CachedProfilePlan::ttl`] then bounds how
-/// long a hit off it is trusted.
+/// names, not identities.
+///
+/// The credential file's own `shuntAccountUuid` — harvested for free by
+/// [`file_derived_plans`] — outranks all three, because the value being
+/// cached is the plan of whoever *that file's token* authenticates as.
+/// `account.uuid` never selects the file ([`credential_path`] reads only
+/// `credentials`/`name`), so it is a label attached to the account, not a
+/// reading of the credential: an operator's stale `uuid = ` entry, or the
+/// process-lifetime inline-identity memo in `auth::shared`, can both still
+/// name the *previous* occupant of a re-provisioned path while the file
+/// itself already names the new one. Keying off the label there would file
+/// the new account's plan under the old account's identity and serve the old
+/// account's plan back for a full day. So a present `credential_uuid` always
+/// wins; `account.uuid` is the fallback for an account whose file could not
+/// be read or carries no uuid.
+///
+/// Only when no uuid exists anywhere (a hand-placed credential file shunt
+/// never imported) does the name-based key survive, and
+/// [`CachedProfilePlan::ttl`] then bounds how long a hit off it is trusted.
 fn plan_cache_key(
     upstream: &str,
     account: &AccountConfig,
     credential_uuid: Option<&str>,
 ) -> (AccountKey, bool) {
     let key = account_key(upstream, account);
-    if matches!(key.identity, AccountStateIdentity::Verified { .. }) {
-        return (key, true);
-    }
-    match credential_uuid {
-        Some(uuid) => (
+    if let Some(uuid) = credential_uuid {
+        return (
             AccountKey {
                 store_family: key.store_family,
                 identity: AccountStateIdentity::Verified {
@@ -583,17 +592,19 @@ fn plan_cache_key(
                 },
             },
             true,
-        ),
-        None => (key, false),
+        );
     }
+    let exact = matches!(key.identity, AccountStateIdentity::Verified { .. });
+    (key, exact)
 }
 
 /// Keyed by [`AccountKey`] — the pool's own stable-identity scheme, shared
 /// with `crate::accounts` and the pool health map — rather than by
 /// credential content, so a token refresh never invalidates the cache entry.
 /// [`plan_cache_key`], not `account_key`, builds the key used here: it
-/// prefers the credential file's own `shuntAccountUuid` so a uuid-less
-/// account still gets a `Verified` key whenever one can be derived.
+/// prefers the credential file's own `shuntAccountUuid` over `account.uuid`,
+/// so the entry is filed under the identity of the credential the plan was
+/// actually read from.
 ///
 /// A name-based key remains possible when no uuid exists anywhere. Such a key
 /// is *stable* — it never changes spuriously — but it is not *unique across
@@ -2050,11 +2061,90 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn a_stale_account_uuid_does_not_pin_the_cache_to_the_previous_occupant() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        reset_profile_cache();
+        let dir = unique_test_dir("stale-uuid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("stale-uuid.json");
+        write_identified_fixture(&creds_path, "token-before", Some("uuid-before"));
+
+        // `uuid` carries the *previous* occupant of this path. That is exactly
+        // what `resolve_pool_accounts` hands us after a re-provisioning with no
+        // config reload: its inline-identity memo is process-lifetime, so it
+        // keeps answering "uuid-before" while the file already says
+        // "uuid-after" (`auth::shared`). An operator's stale `uuid = ` entry
+        // reaches this code identically.
+        let account = AccountConfig {
+            name: "stale".to_string(),
+            uuid: Some("uuid-before".to_string()),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-before"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-after"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_pro_5x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let first = plans_for_accounts(
+            AuthMode::ClaudeOauth,
+            "stale-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // The path is re-provisioned to a different account. `account.uuid`
+        // does not move -- only the file does.
+        write_identified_fixture(&creds_path, "token-after", Some("uuid-after"));
+        let second = plans_for_accounts(
+            AuthMode::ClaudeOauth,
+            "stale-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(
+            second[0].as_deref(),
+            Some("pro 5x"),
+            "keying off the stale `account.uuid` would file the new account's plan under the old \
+             account's identity and keep serving `max 20x` for the 24h exact-identity TTL"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
-    fn plan_cache_key_prefers_the_configured_uuid() {
+    fn plan_cache_key_prefers_the_credential_file_uuid() {
         let account = AccountConfig {
             name: "named".to_string(),
-            uuid: Some("configured-uuid".to_string()),
+            uuid: Some("stale-uuid".to_string()),
             ..Default::default()
         };
         let (key, exact) = plan_cache_key("upstream", &account, Some("credential-uuid"));
@@ -2062,9 +2152,32 @@ mod tests {
         assert_eq!(
             key.identity,
             AccountStateIdentity::Verified {
+                id: "credential-uuid".to_string()
+            },
+            "the plan belongs to whoever the file's token authenticates as, so the file's own \
+             uuid outranks the label on the account -- which may be a stale operator entry or a \
+             stale inline-identity memo naming the path's previous occupant"
+        );
+    }
+
+    #[test]
+    fn plan_cache_key_falls_back_to_the_account_uuid_without_a_readable_file() {
+        let account = AccountConfig {
+            name: "named".to_string(),
+            uuid: Some("configured-uuid".to_string()),
+            ..Default::default()
+        };
+        let (key, exact) = plan_cache_key("upstream", &account, None);
+        assert!(
+            exact,
+            "a uuid is an identity even when no file could be read"
+        );
+        assert_eq!(
+            key.identity,
+            AccountStateIdentity::Verified {
                 id: "configured-uuid".to_string()
             },
-            "a config-carried uuid already identifies the account and must win"
+            "with no uuid from the file the account's own is the best identity available"
         );
     }
 
