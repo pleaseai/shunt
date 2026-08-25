@@ -1,0 +1,29 @@
+docs/m9-admin-surface.md
+  s_c0ba55af1760bc::t_d1751f03f582e1 463-473
+src/admin/plan.rs
+  s_c0ba55af1760bc::t_3fdeefa70e6f1c 1827-1835,2184-2190,2192,2224-2226,2228-2230,2239
+  s_c0ba55af1760bc::t_82d7bef9e9082f 2149-2154,2165
+  s_c0ba55af1760bc::t_c8cece0a0c86d9 2169-2183,2191,2193-2223,2227,2231-2238,2240-2324
+  s_c0ba55af1760bc::t_a980ab55912889 324-339,364
+  s_c0ba55af1760bc::t_82b0fc291574a2 383-387,421-452
+  s_c0ba55af1760bc::t_fa25af6220ab2e 751-754
+  s_c0ba55af1760bc::t_449c7e25de4647 46,743-750,755-774,777-778,780-784,791,821,828-832,854-856,865-867,876-878,916-919
+  s_c0ba55af1760bc::t_eba6dfdaa8c35a 779
+  s_c0ba55af1760bc::t_62a1163783b1f1 323,453
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b630f0272bdf107cdeb56cbd327fd0668e805459",
+  "prompts": {},
+  "sessions": {
+    "s_c0ba55af1760bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b757e74f-9bea-4f24-884b-ebede785b92c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
