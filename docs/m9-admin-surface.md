@@ -504,6 +504,13 @@ A file that parses and merely carries no `shuntAccountUuid` is not a failed
 read and none of this applies to it: that is an ordinary hand-placed
 credential, keyed as it always was.
 
+The batched read walks its candidates in order, so it can record one
+account's failure and then be abandoned mid-list when a later credential
+stalls past the deadline. The per-account failures are therefore tracked
+outside the result the timeout discards — a failure the read already observed
+is knowledge the request keeps, and dropping it would hand that account back
+the cache access this rule exists to withhold.
+
 The batched credential read is single-flight, process-wide. A read holds its
 permit until it genuinely finishes, not until the request waiting on it gives
 up, because a `spawn_blocking` task cannot be cancelled once started. A

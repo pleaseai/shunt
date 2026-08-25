@@ -237,11 +237,14 @@ async fn plans_for_accounts_under(
     // candidates and never touch the network, but its cache-harvest step
     // (which runs before any token check) still surfaces whatever plan is
     // already cached for these accounts.
-    let read = file_derived_plans(lock, auth, accounts, budgets, deadline).await;
+    let phase = file_derived_plans(lock, auth, accounts, budgets, deadline).await;
     // Distinct from "read fine, no uuid in the file": only a phase that never
     // produced a result may fall back to the remembered identity.
-    let file_phase_timed_out = read.is_none();
-    let file_derived = read.unwrap_or_else(|| FileDerivedPlans::empty(accounts.len()));
+    let file_phase_timed_out = phase.read.is_none();
+    let read_failed = phase.read_failed;
+    let file_derived = phase
+        .read
+        .unwrap_or_else(|| FileDerivedPlans::empty(accounts.len()));
     let mut plans = file_derived.plans;
     if matches!(auth, AuthMode::ClaudeOauth) {
         backfill_claude_profile_plans(
@@ -251,7 +254,7 @@ async fn plans_for_accounts_under(
             accounts,
             &file_derived.tokens,
             &file_derived.uuids,
-            &file_derived.read_failed,
+            &read_failed,
             file_phase_timed_out,
             budgets,
             deadline,
@@ -302,12 +305,6 @@ fn credential_path(auth: AuthMode, account: &AccountConfig) -> Option<PathBuf> {
 struct FileDerivedPlans {
     plans: Vec<Option<String>>,
     tokens: Vec<Option<String>>,
-    /// Per account, whether this pass tried to read its credential file and
-    /// could not — missing, unreadable, or unparsable. Distinct from a uuid
-    /// of `None`, which a perfectly healthy hand-placed credential also
-    /// produces: only an actual read failure is evidence *against* the
-    /// identity sitting on `AccountConfig::uuid`. See [`plan_cache_key`].
-    read_failed: Vec<bool>,
     /// `shuntAccountUuid` as written by shunt's own credential import,
     /// harvested from the same read that produced `plans`/`tokens` so it
     /// costs no extra I/O. Used only to strengthen the profile cache key —
@@ -325,9 +322,29 @@ impl FileDerivedPlans {
             plans: vec![None; len],
             tokens: vec![None; len],
             uuids: vec![None; len],
-            read_failed: vec![false; len],
         }
     }
+}
+
+/// One [`file_derived_plans`] pass: its result, plus the read failures it
+/// observed.
+///
+/// `read_failed` is deliberately **outside** `read`. The blocking read records
+/// a failure as it walks the candidate list and cannot be cancelled, so when a
+/// later account's credential stalls past the deadline the whole
+/// `FileDerivedPlans` is discarded — but a failure the task already saw is
+/// still knowledge this request has, and dropping it would let that account
+/// key the shared cache off an identity nothing evidences. Carrying the flags
+/// separately keeps them across the timeout.
+struct FilePhase {
+    /// `None` when the batched read did not finish in time.
+    read: Option<FileDerivedPlans>,
+    /// Per account, whether this pass tried to read its credential file and
+    /// could not — missing, unreadable, or unparsable. Distinct from a uuid
+    /// of `None`, which a perfectly healthy hand-placed credential also
+    /// produces: only an actual read failure is evidence *against* the
+    /// identity sitting on `AccountConfig::uuid`. See [`plan_cache_key`].
+    read_failed: Vec<bool>,
 }
 
 /// Read every resolvable credential file and extract a plan from each, in one
@@ -377,11 +394,15 @@ async fn file_derived_plans(
     accounts: &[AccountConfig],
     budgets: &BackfillBudgets,
     deadline: tokio::time::Instant,
-) -> Option<FileDerivedPlans> {
+) -> FilePhase {
+    let settled = |read: Option<FileDerivedPlans>| FilePhase {
+        read,
+        read_failed: vec![false; accounts.len()],
+    };
     let extractor: fn(&Value) -> Option<String> = match auth {
         AuthMode::ClaudeOauth => claude_plan_from_credentials,
         AuthMode::ChatgptOauth => codex_plan_from_credentials,
-        _ => return Some(FileDerivedPlans::empty(accounts.len())),
+        _ => return settled(Some(FileDerivedPlans::empty(accounts.len()))),
     };
     // `(index into accounts, path)` — never `(name, path)`; see
     // `FileDerivedPlans` for why the name is not a usable key here.
@@ -391,7 +412,7 @@ async fn file_derived_plans(
         .filter_map(|(index, account)| credential_path(auth, account).map(|path| (index, path)))
         .collect();
     if candidates.is_empty() {
-        return Some(FileDerivedPlans::empty(accounts.len()));
+        return settled(Some(FileDerivedPlans::empty(accounts.len())));
     }
     let candidate_count = candidates.len();
     let now = SystemTime::now();
@@ -407,8 +428,10 @@ async fn file_derived_plans(
             "admin pool: file-phase read permit wait timed out; an earlier credential read is \
              still blocked, so this request reads no credential files"
         );
-        return None;
+        return settled(None);
     };
+    let read_failed = std::sync::Arc::new(std::sync::Mutex::new(vec![false; account_count]));
+    let failures = std::sync::Arc::clone(&read_failed);
     let read = tokio::task::spawn_blocking(move || {
         // Released only when this blocking read genuinely completes.
         let _permit = permit;
@@ -426,7 +449,13 @@ async fn file_derived_plans(
                 // plan for the 24-hour exact-identity TTL. Ungated by family
                 // so the clear is never narrower than the record above.
                 forget_credential_uuid(&path);
-                result.read_failed[index] = true;
+                // Recorded through the shared handle so it survives this
+                // task outliving the request that spawned it (see
+                // `FilePhase`). Poisoning here would mean an earlier
+                // iteration panicked, which the `JoinError` arm reports.
+                if let Ok(mut failures) = failures.lock() {
+                    failures[index] = true;
+                }
                 continue;
             };
             result.plans[index] = extractor(&value);
@@ -446,7 +475,7 @@ async fn file_derived_plans(
         }
         result
     });
-    match tokio::time::timeout_at(file_deadline, read).await {
+    let outcome = match tokio::time::timeout_at(file_deadline, read).await {
         Ok(Ok(result)) => Some(result),
         Ok(Err(join_error)) => {
             tracing::debug!(
@@ -463,6 +492,17 @@ async fn file_derived_plans(
             );
             None
         }
+    };
+    // Snapshot whatever the task has recorded, including when it is still
+    // running: `into_inner` on a poisoned lock recovers the flags a panicking
+    // iteration left behind rather than discarding them.
+    let read_failed = match read_failed.lock() {
+        Ok(failures) => failures.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    FilePhase {
+        read: outcome,
+        read_failed,
     }
 }
 
@@ -1191,6 +1231,7 @@ mod tests {
             deadline,
         )
         .await
+        .read
         .expect("file phase must not time out against a 5s deadline");
         assert_eq!(result.plans[0].as_deref(), Some("max"));
         assert_eq!(result.plans[1], None);
@@ -1247,6 +1288,7 @@ mod tests {
             deadline,
         )
         .await
+        .read
         .expect("file phase must not time out against a 5s deadline");
 
         assert_eq!(
@@ -1279,6 +1321,7 @@ mod tests {
             deadline,
         )
         .await
+        .read
         .expect("unsupported family short-circuits before any timeout is possible");
         // Length-aligned to `accounts`, so "no results" is all-absent
         // rather than an empty vector.
@@ -1725,7 +1768,7 @@ mod tests {
         )
         .await;
 
-        let result = result.expect(
+        let result = result.read.expect(
             "the min_slice floor must give the file phase its own budget even past an \
              already-expired deadline",
         );
@@ -2398,6 +2441,7 @@ mod tests {
             tokio::time::Instant::now() + Duration::from_secs(5),
         )
         .await
+        .read
         .expect("a local file read must not time out against a 5s deadline");
         assert_eq!(result.plans[0].as_deref(), Some("max"));
 
@@ -2659,6 +2703,160 @@ mod tests {
     /// time out" gate stops the stale identity from being recalled. Without
     /// that gate the account's cache entry is served for a credential that
     /// can no longer be read at all.
+    /// The producer half of `a_failure_seen_before_the_timeout_still_blocks_the_cache`:
+    /// the flags must survive the discarded result, not ride along inside it.
+    ///
+    /// A FIFO with no writer blocks `std::fs::read` at `open`, which is the
+    /// only way to stall the batched read on demand rather than by racing a
+    /// large file against the deadline. The first candidate is a missing
+    /// file, so its failure is recorded microseconds in, and the deadline is
+    /// seconds out — not a race in any meaningful sense. The FIFO is opened
+    /// for writing the moment the call returns and **before** any assertion,
+    /// because dropping a runtime waits for its `spawn_blocking` tasks: a
+    /// panic with the read still blocked would hang teardown instead of
+    /// failing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_failures_survive_a_timed_out_file_phase() {
+        let dir = unique_test_dir("failure-survives");
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("missing.json");
+        let fifo = dir.join("stalls.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo must be available on unix");
+        assert!(status.success(), "mkfifo failed");
+
+        let accounts = vec![
+            AccountConfig {
+                name: "missing".to_string(),
+                credentials: Some(missing.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            AccountConfig {
+                name: "stalls".to_string(),
+                credentials: Some(fifo.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        ];
+
+        let budgets = BackfillBudgets {
+            total: Duration::from_secs(2),
+            per_account: Duration::from_secs(1),
+            min_slice: Duration::from_secs(2),
+        };
+        let phase = file_derived_plans(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            &accounts,
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+
+        // Unblock before asserting -- see the doc comment. Opened read+write
+        // rather than write-only: a write-only open on a FIFO blocks until a
+        // reader is present, so if the blocking task had not reached this
+        // path yet the test thread would deadlock against it. `O_RDWR` never
+        // blocks, and holding it open keeps the reader's own open satisfied
+        // whenever it arrives.
+        let writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&fifo);
+
+        assert!(
+            phase.read.is_none(),
+            "the stalled candidate must make this phase time out"
+        );
+        assert!(
+            phase.read_failed[0],
+            "the missing credential failed to read before the stall, and that is knowledge \
+             this pass keeps even though the result was discarded"
+        );
+
+        drop(writer);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A read failure observed before a *later* account's credential stalls
+    /// must still count. The batched read walks its candidates in order, so
+    /// it can record one account's failure and then be abandoned mid-list
+    /// when the deadline expires — `FilePhase` carries the flags outside the
+    /// discarded result precisely so this pass still knows.
+    #[tokio::test]
+    async fn a_failure_seen_before_the_timeout_still_blocks_the_cache() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("failure-before-timeout");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("abandoned.json");
+        write_identified_fixture(&creds_path, "token-abandoned", Some("uuid-abandoned"));
+
+        let account = AccountConfig {
+            name: "abandoned".to_string(),
+            uuid: Some("uuid-abandoned".to_string()),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let warm = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "abandoned-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(warm[0].as_deref(), Some("max 20x"));
+
+        // The state a timed-out phase hands over when the task had already
+        // read this account's credential and failed: no result at all
+        // (`file_phase_timed_out`), no token, no uuid -- but the failure is
+        // still known. Driving the backfill directly is what makes the
+        // ordering deterministic; inducing a real mid-list stall would put
+        // the assertion back on a race.
+        let mut plans = vec![None];
+        backfill_claude_profile_plans(
+            "abandoned-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &[None],
+            &[None],
+            &[true],
+            true,
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+            &mut plans,
+        )
+        .await;
+        assert_eq!(
+            plans[0], None,
+            "the abandoned read still evidences nothing about this account, so its cached \
+             entry must stay out of reach even though the phase timed out"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A failed read must not reach the shared cache through the *name*
     /// fallback either. An account with no uuid anywhere is keyed by name,
     /// which is stable but not unique over time -- so an entry left under it
