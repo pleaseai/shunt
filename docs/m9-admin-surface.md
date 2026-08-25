@@ -483,9 +483,12 @@ That memo is consulted **only** when the file phase produced no result at all.
 A completed read is authoritative even when it finds no uuid — the account
 holding that path today has no identity, whatever an earlier one had — and such
 a read also clears the remembered value, so a later timeout cannot resurrect
-it. The two rules cover different cases: an unreadable or unparsable
-credential file never reaches the clearing step, so only the first stops a
-replaced credential from inheriting the previous account's cached plan.
+it. Every way a read can fail to produce a uuid clears it, not just the
+parses-but-carries-none case: a missing, unreadable, or unparsable file drops
+the entry too. The bias is deliberate. Clearing costs at most a fallback to
+the name key and its 10-minute ceiling, while keeping a no-longer-evidenced
+uuid risks serving the path's previous occupant's plan for the full
+exact-identity day.
 
 The batched credential read is single-flight, process-wide. A read holds its
 permit until it genuinely finishes, not until the request waiting on it gives

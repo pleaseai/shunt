@@ -407,6 +407,17 @@ async fn file_derived_plans(
         let mut result = FileDerivedPlans::empty(account_count);
         for (index, path) in candidates {
             let Some(value) = read_json(&path) else {
+                // Missing, unreadable, or unparsable. Whatever identity this
+                // path once held is no longer evidenced by it, so drop the
+                // memo here too -- not only on the parses-but-carries-no-uuid
+                // branch below. Otherwise a later request whose file phase
+                // times out takes the recall path and keys the profile cache
+                // with that stale uuid. The bias is deliberate: clearing
+                // costs at most a fallback to the name key and its 10-minute
+                // TTL, while keeping it risks serving the previous occupant's
+                // plan for the 24-hour exact-identity TTL. Ungated by family
+                // so the clear is never narrower than the record above.
+                forget_credential_uuid(&path);
                 continue;
             };
             result.plans[index] = extractor(&value);
@@ -2626,6 +2637,102 @@ mod tests {
     /// time out" gate stops the stale identity from being recalled. Without
     /// that gate the account's cache entry is served for a credential that
     /// can no longer be read at all.
+    /// The sharper half of `an_unreadable_credential_does_not_recall_the_...`:
+    /// that one shows a *completed* read is not served the stale identity,
+    /// which the timeout gate alone achieves. This one shows the memo is
+    /// actually cleared, by making a *later* request time out -- the one path
+    /// that does consult it.
+    #[tokio::test]
+    async fn a_failed_read_clears_the_remembered_identity() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("memo-cleared");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("cleared.json");
+        write_identified_fixture(&creds_path, "token-readable", Some("uuid-readable"));
+
+        let account = AccountConfig {
+            name: "cleared".to_string(),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let lock = fresh_file_lock();
+
+        // Resolve once: the plan is cached under `Verified { uuid-readable }`
+        // and the path remembers that uuid.
+        let first = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "memo-cleared-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // A completed read that cannot parse the file. Nothing is recorded
+        // for this path -- and the memo entry must be dropped.
+        std::fs::remove_file(&creds_path).unwrap();
+        let _second = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "memo-cleared-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+
+        // Now force the recall path: holding the permit with an expired
+        // deadline makes the file phase time out with certainty, which is the
+        // only path that consults the memo.
+        let held = lock.clone().lock_owned().await;
+        let starved = BackfillBudgets {
+            total: Duration::from_secs(8),
+            per_account: Duration::from_secs(5),
+            min_slice: Duration::ZERO,
+        };
+        let third = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "memo-cleared-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &starved,
+            tokio::time::Instant::now() - Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(
+            third[0], None,
+            "the failed read must have cleared the memo -- otherwise this timed-out phase \
+             recalls `uuid-readable` and serves the plan cached under the identity this path \
+             no longer holds"
+        );
+        drop(held);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn an_unreadable_credential_does_not_recall_the_remembered_identity() {
         use wiremock::matchers::{method, path as path_matcher};
