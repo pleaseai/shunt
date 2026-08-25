@@ -44,7 +44,8 @@ Out of scope: any change to request/response translation (that is M1).
 
 **`openai` provider (API key):**
 1. `OPENAI_API_KEY` env, else
-2. `~/.codex/auth.json` `.OPENAI_API_KEY` when `auth_mode == "ApiKey"` and non-null, else
+2. `~/.codex/auth.json` `.OPENAI_API_KEY` when `auth_mode` is `"apikey"` (compared
+   case-insensitively — older Codex wrote `"ApiKey"`) and non-null, else
 3. `[providers.openai] api_key_env` indirection in config.
 → header `Authorization: Bearer <key>`.
 
@@ -58,8 +59,8 @@ Out of scope: any change to request/response translation (that is M1).
 
 ```jsonc
 {
-  "auth_mode": "ChatGPT",          // or "ApiKey"
-  "OPENAI_API_KEY": null,          // string when auth_mode == "ApiKey"
+  "auth_mode": "chatgpt",          // or "apikey"; matched case-insensitively
+  "OPENAI_API_KEY": null,          // string in apikey mode
   "tokens": {
     "id_token":      "<JWT>",
     "access_token":  "<JWT>",      // bearer sent upstream; carries exp + account claim

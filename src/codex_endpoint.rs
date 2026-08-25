@@ -215,7 +215,7 @@ pub async fn post(
                 // client) pointed here expects the OpenAI `{"error":{...}}` envelope,
                 // so re-shape at this single boundary (status preserved). Relayed
                 // upstream errors never reach here — they return verbatim as `Ok`.
-                crate::error::into_openai_error_shape(error.response).await
+                crate::error::into_openai_error_shape(*error.response).await
             }
         }
     }
@@ -230,14 +230,16 @@ pub async fn post(
 /// resolution/transport) surface here.
 struct ForwardError {
     message: String,
-    response: axum::response::Response,
+    /// Boxed to keep `Result<_, ForwardError>` small: an `axum` `Response` alone
+    /// is 128 bytes, which trips `clippy::result_large_err` on [`forward`].
+    response: Box<axum::response::Response>,
 }
 
 impl From<AdapterError> for ForwardError {
     fn from(error: AdapterError) -> Self {
         Self {
             message: error.message,
-            response: *error.response,
+            response: error.response,
         }
     }
 }
@@ -255,8 +257,10 @@ async fn forward(
     let Some(codex_endpoint) = &state.config.server.codex_endpoint else {
         return Err(ForwardError {
             message: "codex endpoint is not configured".to_string(),
-            response: ShuntError::bad_gateway("codex endpoint is not configured".to_string())
-                .into_response(),
+            response: Box::new(
+                ShuntError::bad_gateway("codex endpoint is not configured".to_string())
+                    .into_response(),
+            ),
         });
     };
     let provider = codex_endpoint.provider.clone();
@@ -289,12 +293,10 @@ async fn forward(
                 );
                 return Err(ForwardError {
                     message: "inbound authentication failed".to_string(),
-                    response: ShuntError::new(
-                        StatusCode::UNAUTHORIZED,
-                        "authentication_error",
-                        message,
-                    )
-                    .into_response(),
+                    response: Box::new(
+                        ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+                            .into_response(),
+                    ),
                 });
             }
         }
@@ -306,7 +308,7 @@ async fn forward(
     if crate::http_tuning::content_length_exceeds(&headers, max_request_bytes) {
         return Err(ForwardError {
             message: "request body exceeds the configured limit".to_string(),
-            response: crate::http_tuning::request_too_large(true).await,
+            response: Box::new(crate::http_tuning::request_too_large(true).await),
         });
     }
     let body = crate::http_tuning::read_body(body, max_request_bytes, true)

@@ -87,12 +87,14 @@ pub async fn post(
 
 pub(crate) struct ForwardError {
     message: String,
-    response: axum::response::Response,
+    /// Boxed to keep `Result<_, ForwardError>` small: an `axum` `Response` alone
+    /// is 128 bytes, which trips `clippy::result_large_err` on every `forward`.
+    response: Box<axum::response::Response>,
 }
 
 impl IntoResponse for ForwardError {
     fn into_response(self) -> axum::response::Response {
-        self.response
+        *self.response
     }
 }
 

@@ -108,11 +108,16 @@ pub(crate) async fn read_body(
     body: Body,
     limit: usize,
     codex_shape: bool,
-) -> Result<Bytes, Response> {
+) -> Result<Bytes, Box<Response>> {
+    // The error is boxed to keep this `Result` small: an `axum` `Response` is far
+    // larger than the `Bytes` success value, and every caller only moves the error
+    // into its own boxed error payload.
     match to_bytes(body, limit).await {
         Ok(body) => Ok(body),
-        Err(error) if body_limit_exceeded(&error) => Err(request_too_large(codex_shape).await),
-        Err(error) => Err(body_read_error(error, codex_shape).await),
+        Err(error) if body_limit_exceeded(&error) => {
+            Err(Box::new(request_too_large(codex_shape).await))
+        }
+        Err(error) => Err(Box::new(body_read_error(error, codex_shape).await)),
     }
 }
 
@@ -322,7 +327,7 @@ mod tests {
             .await
             .expect_err("six streamed bytes exceed the four-byte limit");
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        assert_eq!(body(response).await["error"]["type"], "request_too_large");
+        assert_eq!(body(*response).await["error"]["type"], "request_too_large");
     }
 
     #[tokio::test]
@@ -335,7 +340,7 @@ mod tests {
                 .await
                 .expect_err("the body source error should be preserved");
             assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-            let response = body(response).await;
+            let response = body(*response).await;
             if codex_shape {
                 assert!(response.get("type").is_none());
                 assert_eq!(response["error"]["type"], expected_type);

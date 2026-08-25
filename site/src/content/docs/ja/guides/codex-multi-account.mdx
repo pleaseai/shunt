@@ -68,6 +68,8 @@ name = "backup"
 
 `shunt login codex` に `--long-lived` フラグはありません — Codex に setup-token の概念はないため、ストア管理のアカウントはすべて、既存の `codex login` からインポートされたリフレッシュ可能な OAuth ログインです。
 
+インポートが受け付けるのは **ChatGPT** ログインだけです。現行の `codex login` は `$CODEX_AUTH_FILE`（または `~/.codex/auth.json`）に `"auth_mode": "chatgpt"` を書き込みます。shunt はこのフィールドを大文字小文字を区別せずに比較するため、古い Codex が残したファイル（`"ChatGPT"`）もそのままインポートできます。API キーのログイン（`"auth_mode": "apikey"`）は `is not a ChatGPT login (auth_mode is not "chatgpt")` として拒否されます — `codex login` をやり直して ChatGPT アカウントを選んでください。
+
 ## アカウントのフィールド
 
 | フィールド | 必須 | 意味 |

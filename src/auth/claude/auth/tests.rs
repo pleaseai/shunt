@@ -291,3 +291,63 @@ fn write_back_updates_tokens_and_preserves_other_fields() {
     assert_eq!(value["mcpOAuth"]["keep"], true);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+#[test]
+fn refreshable_valid_access_token_present_for_a_still_valid_imported_login() {
+    let now = UNIX_EPOCH + Duration::from_secs(1_000);
+    let value = json!({"claudeAiOauth": {
+        "accessToken": "sk-ant-oat-access",
+        "refreshToken": "sk-ant-ort-refresh",
+        "expiresAt": (1_000 + 3600) * 1000
+    }});
+    assert_eq!(
+        refreshable_valid_access_token(&value, now).as_deref(),
+        Some("sk-ant-oat-access")
+    );
+}
+
+#[test]
+fn refreshable_valid_access_token_none_when_expired() {
+    let now = UNIX_EPOCH + Duration::from_secs(1_000);
+    let value = json!({"claudeAiOauth": {
+        "accessToken": "sk-ant-oat-access",
+        "refreshToken": "sk-ant-ort-refresh",
+        "expiresAt": 1
+    }});
+    assert_eq!(refreshable_valid_access_token(&value, now), None);
+}
+
+#[test]
+fn refreshable_valid_access_token_none_for_setup_token_shape() {
+    // A `claude setup-token` credential carries no refreshToken at all.
+    let now = UNIX_EPOCH + Duration::from_secs(1_000);
+    let value = json!({"claudeAiOauth": {
+        "accessToken": "sk-ant-oat-access",
+        "expiresAt": (1_000 + 3600) * 1000
+    }});
+    assert_eq!(refreshable_valid_access_token(&value, now), None);
+}
+
+#[test]
+fn refreshable_valid_access_token_none_for_empty_access_token() {
+    // An empty accessToken with a non-empty refreshToken and a future
+    // expiresAt must still be rejected: `Tokens::from_value` only guards
+    // refreshToken emptiness, so this function carries its own guard.
+    let now = UNIX_EPOCH + Duration::from_secs(1_000);
+    let value = json!({"claudeAiOauth": {
+        "accessToken": "",
+        "refreshToken": "sk-ant-ort-refresh",
+        "expiresAt": (1_000 + 3600) * 1000
+    }});
+    assert_eq!(refreshable_valid_access_token(&value, now), None);
+}
+
+#[test]
+fn refreshable_valid_access_token_none_for_malformed_value() {
+    let now = UNIX_EPOCH + Duration::from_secs(1_000);
+    assert_eq!(refreshable_valid_access_token(&json!({}), now), None);
+    assert_eq!(
+        refreshable_valid_access_token(&json!({"claudeAiOauth": {}}), now),
+        None
+    );
+}
