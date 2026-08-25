@@ -460,6 +460,17 @@ the same name may later belong to a different account. Nothing in production
 clears this cache, so that fallback caps its entries at 10 minutes instead,
 which is also the retry interval for a failed lookup.
 
+Two further rules follow from that fallback being a name rather than an
+identity. A name key shared by two accounts *within one resolved list* is
+ambiguous, not merely imprecise: the shared cache cannot separate them, so
+neither account reads or writes it and both are resolved fresh. And because a
+uuid-less account's identity lives only in its credential file, the uuid last
+seen at each credential **path** is memoized, so a resolution whose file phase
+timed out can still reconstruct the key and serve an already-cached plan. That
+memo is keyed by path rather than name for the same reason as everything else
+on this path: two accounts a name cannot separate still have distinct paths,
+and when they share a path they are reading one file and so share one identity.
+
 The batched credential read is single-flight, process-wide. A read holds its
 permit until it genuinely finishes, not until the request waiting on it gives
 up, because a `spawn_blocking` task cannot be cancelled once started. A
