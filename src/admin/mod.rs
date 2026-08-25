@@ -1017,8 +1017,8 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
         // Subscription plan (Claude "max"/"max 20x", ChatGPT "team"/"plus") is
         // purely informational display data for the dashboard -- it never
         // touches `AccountSnapshot` or the request-routing path. Resolved
-        // separately and merged into the JSON view only, keyed by account
-        // name (unique within one provider's resolved list).
+        // separately and merged into the JSON view only, positionally
+        // aligned to `resolved`.
         let plans = plan::plans_for_accounts(
             provider.auth,
             name,
@@ -1029,13 +1029,18 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
             deadline,
         )
         .await;
+        // `plans` is positionally aligned to `resolved` (see
+        // `plan::plans_for_accounts`), so it is zipped, never looked up by
+        // account name: `resolve_pool_accounts` may return two distinct
+        // accounts sharing a display name, and a name lookup would show one
+        // account's subscription on the other.
         let accounts: Vec<Value> = snapshots
             .into_iter()
-            .zip(&resolved)
-            .map(|(snapshot, account)| {
+            .zip(plans)
+            .map(|(snapshot, plan)| {
                 let mut value = serde_json::to_value(&snapshot).unwrap_or(Value::Null);
-                if let (Value::Object(map), Some(plan)) = (&mut value, plans.get(&account.name)) {
-                    map.insert("plan".to_string(), Value::String(plan.clone()));
+                if let (Value::Object(map), Some(plan)) = (&mut value, plan) {
+                    map.insert("plan".to_string(), Value::String(plan));
                 }
                 value
             })

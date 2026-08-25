@@ -441,6 +441,32 @@ the pathological case where the file phase does not finish within that
 floor, any plan already cached from an earlier resolution still appears in
 the response.
 
+Plans, tokens, and credential identities are tracked **positionally** against
+the resolved account list, never keyed by display name.
+`resolve_pool_accounts` appends the configured accounts after any scoped store
+entries without deduplicating names, so one provider can legitimately resolve
+two distinct accounts that share a label; a name-keyed map collapses them,
+which would both show one account's subscription on the other and — because
+the same map supplies the bearer token — probe one account with the other's
+credential.
+
+The profile cache is keyed by the credential's own identity where one exists.
+An account carrying a `uuid` in config, or whose credential file carries the
+`shuntAccountUuid` shunt's import stamps in, is keyed by that value: it
+survives a token refresh and changes when the account is re-provisioned, so a
+resolved plan is held for 24 hours. Only when no uuid exists anywhere does the
+key fall back to the account's name, which is stable but not unique over time —
+the same name may later belong to a different account. Nothing in production
+clears this cache, so that fallback caps its entries at 10 minutes instead,
+which is also the retry interval for a failed lookup.
+
+The batched credential read is single-flight, process-wide. A read holds its
+permit until it genuinely finishes, not until the request waiting on it gives
+up, because a `spawn_blocking` task cannot be cancelled once started. A
+credential file on a hung network or FUSE mount therefore leaks one blocking
+worker rather than one per `/admin/pool` request: later requests fail to
+acquire the permit, skip the file phase, and fall back to their cached plans.
+
 ## Shared foundations with gateway login
 
 The gateway-login milestone (Claude Code `/login` against shunt) is inbound and
