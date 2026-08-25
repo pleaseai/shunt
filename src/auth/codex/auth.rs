@@ -272,7 +272,15 @@ struct OAuthTokenResponse {
 
 pub fn read_openai_api_key(path: &Path) -> Option<String> {
     let auth = read_auth_file(path).ok()?;
-    if auth.value.get("auth_mode").and_then(Value::as_str) != Some("ApiKey") {
+    // The Codex CLI serializes `AuthMode` with `rename_all = "lowercase"`, so a
+    // current `codex login --with-api-key` writes `"apikey"`; older files wrote
+    // `"ApiKey"`. Accept either spelling.
+    if !auth
+        .value
+        .get("auth_mode")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("apikey"))
+    {
         return None;
     }
     auth.value
@@ -541,6 +549,40 @@ mod tests {
         .unwrap();
 
         assert_eq!(read_openai_api_key(&path).as_deref(), Some("key-from-file"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The Codex CLI serializes `AuthMode` with `rename_all = "lowercase"`, so a
+    /// real API-key login writes `"apikey"`, not `"ApiKey"`.
+    #[test]
+    fn parses_auth_json_for_lowercase_api_key_mode() {
+        let dir = std::env::temp_dir().join("shunt-auth-json-lowercase-api-key");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        std::fs::write(
+            &path,
+            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"key-from-file","tokens":null}"#,
+        )
+        .unwrap();
+
+        assert_eq!(read_openai_api_key(&path).as_deref(), Some("key-from-file"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The relaxed comparison must stay a *spelling* relaxation: a ChatGPT-mode
+    /// file is still not an API-key login, even when it carries a stray key.
+    #[test]
+    fn read_openai_api_key_rejects_chatgpt_mode() {
+        let dir = std::env::temp_dir().join("shunt-auth-json-chatgpt-not-api-key");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        std::fs::write(
+            &path,
+            r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":"stray","tokens":null}"#,
+        )
+        .unwrap();
+
+        assert_eq!(read_openai_api_key(&path), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

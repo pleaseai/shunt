@@ -5,6 +5,10 @@ use std::sync::OnceLock;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use shunt::{
+    auth::antigravity::{
+        routed_antigravity_credential_error, routes_to_antigravity, routes_to_antigravity_cli,
+        warn_if_routes_to_antigravity_cli,
+    },
     blueprints::{self, AddKind},
     config::{Config, OtelConfig, SentryConfig},
     init, server,
@@ -85,12 +89,14 @@ enum Command {
         print: bool,
     },
     /// Log in to a subscription provider and save its credential for shunt to
-    /// inject. Supports `xai`, `cursor`, `claude`, and `codex`.
+    /// inject. Supports `xai`, `cursor`, `claude`, `codex`, `antigravity`, and
+    /// `kimi`.
     Login {
-        /// Provider to log in to (`xai`, `cursor`, `claude`, or `codex`).
+        /// Provider to log in to (`xai`, `cursor`, `claude`, `codex`,
+        /// `antigravity`, or `kimi`).
         provider: String,
-        /// Stable account name used by a name-only pool entry (`claude` and
-        /// `codex` only).
+        /// Stable account name used by a name-only pool entry (`claude`,
+        /// `codex`, and `kimi` only).
         #[arg(long)]
         name: Option<String>,
         /// Generate and store a one-year `claude setup-token` value (`claude`
@@ -111,6 +117,49 @@ enum Command {
     Dashboard {
         #[command(subcommand)]
         action: DashboardAction,
+    },
+    /// Log in to a self-hosted shunt gateway and print its access token. This
+    /// is the *client* side of `[server.gateway]` — unrelated to `shunt login`,
+    /// which authenticates shunt against an upstream provider.
+    Gateway {
+        #[command(subcommand)]
+        action: GatewayAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GatewayAction {
+    /// Approve this machine against a shunt gateway via its OAuth device flow.
+    Login {
+        /// Base URL of the gateway, e.g. `https://gateway.example.com`.
+        url: String,
+        /// Print the verification URL instead of opening a browser.
+        #[arg(long)]
+        manual: bool,
+    },
+    /// Print the gateway access token to stdout, refreshing it when stale, for
+    /// use as a Claude Code `apiKeyHelper`.
+    Token,
+    /// Remove the stored gateway session.
+    Logout,
+    /// Launch Claude Code against this gateway; everything after `claude` is
+    /// forwarded to it verbatim.
+    ///
+    /// The generated `--settings` document is scoped to that one `claude`
+    /// process: it does not modify `~/.claude/settings.json`, and it overrides
+    /// any `apiKeyHelper` or `ANTHROPIC_BASE_URL` already configured for that
+    /// invocation alone. That process scoping is the reason this subcommand
+    /// exists.
+    ///
+    /// Arguments are forwarded unchanged, with two exceptions when they lead
+    /// the list: shunt's own `--help` prints this text, and `--config` is
+    /// rejected with an error rather than silently consumed. Pass either after
+    /// a `--` separator (`shunt gateway claude -- --help`) to send it to
+    /// `claude` instead.
+    Claude {
+        /// Arguments passed straight through to `claude`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -158,6 +207,7 @@ fn main() -> anyhow::Result<()> {
             cli.config.as_deref(),
         ),
         Some(Command::Dashboard { action }) => dashboard(action, cli.config),
+        Some(Command::Gateway { action }) => gateway(action, cli.config.as_deref()),
         None if cli.check => check(cli.config),
         None => run(cli.config),
     }
@@ -367,15 +417,59 @@ fn login(
                 "--mode is not supported for `shunt login codex`; Codex OAuth tokens are always refreshable"
             )
         }
+        "antigravity" if name.is_none() && !long_lived && mode.is_none() => {
+            runtime()?.block_on(async {
+                // Logging in should not require a fully valid gateway config,
+                // so a config that will not load is not fatal here — but it
+                // must not silently drop a configured `base_url` either, or an
+                // operator debugging why their loopback backend never saw the
+                // discovery call has nothing to go on. Say so, then fall back.
+                // Which slot is trusted, and why the lookup is not by name
+                // alone, lives with `login_base_url`.
+                let config = match Config::load(config_path) {
+                    Ok(config) => Some(config),
+                    Err(error) => {
+                        eprintln!(
+                            "Could not read the config ({error}); signing in against the default \
+                             Antigravity endpoint. A configured base_url will not be used."
+                        );
+                        None
+                    }
+                };
+                let base_url = shunt::auth::antigravity::login_base_url(config.as_ref());
+                shunt::auth::antigravity::login::run(&base_url).await
+            })
+        }
+        "antigravity" => {
+            anyhow::bail!(
+                "--name, --long-lived, and --mode are only valid for `shunt login claude`"
+            )
+        }
         "codex" => {
             let name = name.ok_or_else(|| {
                 anyhow::anyhow!("`shunt login codex` requires --name <account-name>")
             })?;
             runtime()?.block_on(shunt::auth::codex::login::run(name))
         }
+        "kimi" if long_lived => {
+            anyhow::bail!(
+                "--long-lived is not supported for `shunt login kimi`; Kimi Code OAuth tokens are always refreshable"
+            )
+        }
+        "kimi" if mode.is_some() => {
+            anyhow::bail!(
+                "--mode is not supported for `shunt login kimi`; Kimi Code OAuth tokens are always refreshable"
+            )
+        }
+        "kimi" => {
+            let name = name.ok_or_else(|| {
+                anyhow::anyhow!("`shunt login kimi` requires --name <account-name>")
+            })?;
+            runtime()?.block_on(shunt::auth::kimi::login::run(name))
+        }
         _ => {
             anyhow::bail!(
-                "unknown login provider {provider:?}; supported: claude, codex, cursor, xai"
+                "unknown login provider {provider:?}; supported: antigravity, claude, codex, cursor, kimi, xai"
             )
         }
     }
@@ -425,6 +519,55 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
         .context("failed to start tokio runtime")
 }
 
+/// `shunt gateway <action>`. Only the launcher runs without a runtime: it reads
+/// the cached session and execs, while login, token, and logout all need one —
+/// logout because it removes the session under the async session lock.
+fn gateway(action: GatewayAction, global_config: Option<&std::path::Path>) -> anyhow::Result<()> {
+    match action {
+        GatewayAction::Login { url, manual } => {
+            runtime()?.block_on(shunt::auth::gateway::login::run(&url, manual))
+        }
+        GatewayAction::Token => runtime()?.block_on(gateway_token()),
+        GatewayAction::Logout => runtime()?.block_on(shunt::auth::gateway::login::logout()),
+        GatewayAction::Claude { args } => {
+            reject_swallowed_config(global_config)?;
+            // No runtime: the launcher only reads the cached session and execs.
+            shunt::auth::gateway::launch::run(&args)
+        }
+    }
+}
+
+/// `--config` is `global = true`, so clap consumes it before the launcher's
+/// trailing-var-arg list ever sees it — `shunt gateway claude --config foo`
+/// parses cleanly and forwards *nothing*, handing the user a `claude` session
+/// missing every argument they typed, with no indication why. The flag has no
+/// meaning here either (the launcher reads the cached session and
+/// `current_exe()`, never `shunt.toml`), so there is no intent to guess at:
+/// refuse the invocation and name the escape.
+fn reject_swallowed_config(global_config: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let Some(path) = global_config else {
+        return Ok(());
+    };
+    let path = path.display();
+    anyhow::bail!(
+        "`--config {path}` is not used by `shunt gateway claude`: this command reads the stored \
+         gateway session and its own executable path, never a shunt config file. shunt consumed \
+         the flag rather than forwarding it, so the invocation is refused instead of silently \
+         dropping it.\n\nDrop the flag to run against the stored session. If you meant \
+         `claude`'s own `--config`, pass it after `--`:\n\n    shunt gateway claude -- --config \
+         <claude's config>"
+    )
+}
+
+async fn gateway_token() -> anyhow::Result<()> {
+    // stdout carries only the token: Claude Code v2.1.227+ fails an
+    // `apiKeyHelper` whose output is anything else, so every message, warning,
+    // and hint on this path goes to stderr.
+    let token = shunt::auth::gateway::auth::resolve_token().await?;
+    println!("{token}");
+    Ok(())
+}
+
 async fn token() -> anyhow::Result<()> {
     let path = shunt::auth::claude::auth::default_credentials_path();
     let client = reqwest::Client::new();
@@ -470,12 +613,34 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // `Config::default()` seeds a built-in `antigravity` provider, so keying
     // off the provider map alone spawned the subprocess on every startup with
     // `agy` installed, including configs that route nowhere near it.
-    if routes_to_antigravity(&config) {
+    // Issue #368 Stage 1: `kind = "antigravity_cli"` shells out to the local
+    // `agy` binary; `kind = "antigravity"` reaches the same service natively
+    // over HTTP without the subprocess. Warn operators still routed to the CLI
+    // transport so they can migrate before it is removed.
+    warn_if_routes_to_antigravity_cli(&config);
+    if routes_to_antigravity_cli(&config) {
         if let Some(agy) = shunt::adapters::antigravity::find_agy_binary() {
             tokio::spawn(async move {
                 shunt::adapters::antigravity::models::warm(&agy).await;
             });
         }
+    }
+    // The native Antigravity upstream advertises the shipping client version.
+    // The refresher is bounded, off the request path, and falls back to the
+    // compiled-in version, so a manifest outage degrades the fingerprint
+    // rather than the provider.
+    // `antigravity` changed meaning: it used to run the local `agy` binary, and
+    // now reaches the same service over HTTP under its own credential. A config
+    // that still means the old thing must fail loudly here rather than resolve
+    // quietly to a different transport, with different credentials, egress, and
+    // failure modes, behind a green startup. `check` runs this same predicate,
+    // so the two commands cannot disagree about a given config and credential
+    // state — not that `check` necessarily ran first.
+    if let Some(message) = routed_antigravity_credential_error(&config) {
+        anyhow::bail!(message);
+    }
+    if routes_to_antigravity(&config) {
+        shunt::auth::antigravity::version::spawn_refresher(reqwest::Client::new());
     }
     let (router, shared, state) =
         server::build_router(config).context("failed to initialize gateway")?;
@@ -491,6 +656,12 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // sessions before serving; later mutations are written by the token
     // endpoint itself. A no-op when the key is unset.
     shunt::gateway::persist::restore(&state).await;
+    // Spend-limit caps and audit records share a versioned, atomic state file.
+    // Restore it before accepting admin mutations; memory-only configuration is
+    // a no-op.
+    shunt::gateway::spend::persist::restore(&state)
+        .await
+        .context("failed to restore gateway spend-limit state")?;
     // Opt-in `[server.status]`: poll provider Statuspage `summary.json`
     // endpoints in the background, sharing the router's status store.
     // Observation-only (see AGENTS.md) and a no-op when `sources` is empty.
@@ -514,9 +685,23 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
 }
 
 fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
-    Config::load(config_path.as_deref())
+    let config = Config::load(config_path.as_deref())
         .and_then(|config| config.validate())
         .context("config check failed")?;
+    // `Config::validate` never looks at the Antigravity credential store, so
+    // the routed-Antigravity guard is the one check `check` has to add
+    // explicitly — otherwise a migrated config that `serve()` refuses to boot
+    // still reports `config ok`, precisely to the CI and deploy scripts that
+    // gate a rollout on this command (issue #382). Offline like the rest of
+    // `check`: routing plus a credential-existence probe, never a refresh.
+    //
+    // Existence is the whole test. A present-but-empty or malformed credential
+    // satisfies it and fails later on the request path; parsing it here would
+    // change what `shunt run` accepts, which this command deliberately mirrors
+    // rather than tightens.
+    if let Some(message) = routed_antigravity_credential_error(&config) {
+        anyhow::bail!(message);
+    }
     println!("config ok");
     Ok(())
 }
@@ -677,40 +862,6 @@ fn init_telemetry(config: Option<&OtelConfig>) -> Option<TelemetryGuard> {
     }
 }
 
-/// Whether any routing surface can actually reach an Antigravity provider.
-///
-/// Presence in the provider map is not routing: `Config::default()` seeds a
-/// built-in `antigravity` entry, so a config whose traffic goes entirely to
-/// Anthropic still "has" one. Warming on that spawned a ~20s `agy models`
-/// subprocess on every startup with `agy` installed, for nothing.
-///
-/// Checks every way a request can select a provider: the default provider,
-/// exact routes, prefix routes, and a model's `upstream_model` map.
-fn routes_to_antigravity(config: &Config) -> bool {
-    let is_antigravity = |name: &str| {
-        config
-            .providers
-            .get(name)
-            .is_some_and(|provider| provider.kind == shunt::config::ProviderKind::Antigravity)
-    };
-
-    is_antigravity(&config.server.default_provider)
-        || config
-            .routes
-            .iter()
-            .any(|route| is_antigravity(&route.provider))
-        || config
-            .route_prefixes
-            .iter()
-            .any(|prefix| is_antigravity(&prefix.provider))
-        || config.models.iter().any(|model| {
-            model
-                .upstream_model
-                .as_ref()
-                .is_some_and(|map| map.keys().any(|provider| is_antigravity(provider)))
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use std::io;
@@ -727,6 +878,138 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    fn forwarded(argv: &[&str]) -> Vec<String> {
+        match Cli::try_parse_from(argv).map(|cli| cli.command) {
+            Ok(Some(Command::Gateway {
+                action: GatewayAction::Claude { args },
+            })) => args,
+            other => panic!("unexpected parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gateway_claude_forwards_arguments_verbatim() {
+        // The launcher must not interpret Claude Code's flags: `--model opus`
+        // in particular has to reach `claude`, not be swallowed here.
+        assert_eq!(
+            forwarded(&[
+                "shunt",
+                "gateway",
+                "claude",
+                "-p",
+                "hi",
+                "--model",
+                "opus",
+                "--verbose",
+            ]),
+            ["-p", "hi", "--model", "opus", "--verbose"]
+        );
+        assert_eq!(
+            forwarded(&["shunt", "gateway", "claude", "--model", "opus"]),
+            ["--model", "opus"]
+        );
+        // An unknown-to-shunt flag is data, not an error.
+        assert_eq!(
+            forwarded(&[
+                "shunt",
+                "gateway",
+                "claude",
+                "--dangerously-skip-permissions"
+            ]),
+            ["--dangerously-skip-permissions"]
+        );
+        assert!(forwarded(&["shunt", "gateway", "claude"]).is_empty());
+    }
+
+    #[test]
+    fn gateway_claude_needs_a_double_dash_for_shunt_owned_flags() {
+        // Measured clap behavior: shunt's own global `--config` and the
+        // generated `--help` win when they lead the argument list, so the
+        // subcommand's help documents `--` as the escape.
+        assert!(Cli::try_parse_from(["shunt", "gateway", "claude", "--help"]).is_err());
+        assert_eq!(
+            forwarded(&["shunt", "gateway", "claude", "--", "--help"]),
+            ["--help"]
+        );
+        assert_eq!(
+            forwarded(&["shunt", "gateway", "claude", "--", "--config", "foo"]),
+            ["--config", "foo"]
+        );
+        // A leading `--` is consumed by clap and never reaches `claude`.
+        assert_eq!(
+            forwarded(&["shunt", "gateway", "claude", "--", "--model", "opus"]),
+            ["--model", "opus"]
+        );
+        // Once any other argument leads, `--config` forwards untouched and the
+        // guard below stays out of the way.
+        assert_eq!(
+            forwarded(&["shunt", "gateway", "claude", "-p", "hi", "--config", "foo"]),
+            ["-p", "hi", "--config", "foo"]
+        );
+    }
+
+    #[test]
+    fn gateway_claude_refuses_a_config_flag_it_would_otherwise_swallow() {
+        // clap parses this *successfully* — the global `--config` is consumed
+        // and the forwarded list comes out empty — so the parser cannot be the
+        // place this is caught. Without the dispatcher guard the user gets a
+        // `claude` session missing every argument they typed and no error.
+        let cli =
+            Cli::try_parse_from(["shunt", "gateway", "claude", "--config", "foo", "-p", "hi"])
+                .expect("clap accepts it; that is the problem");
+        assert_eq!(cli.config, Some(PathBuf::from("foo")));
+
+        let error = gateway(
+            GatewayAction::Claude {
+                args: vec!["-p".to_string(), "hi".to_string()],
+            },
+            cli.config.as_deref(),
+        )
+        .expect_err("a swallowed --config must abort rather than launch claude without it");
+        let message = error.to_string();
+        assert!(
+            message.contains("--config foo"),
+            "the error must name the flag it refused: {message}"
+        );
+        assert!(
+            message.contains("never a shunt config file"),
+            "the error must say why the flag has no meaning here: {message}"
+        );
+        // The remedy must not be "forward shunt's config path to claude". That
+        // is what the first wording prescribed, and it answers a question the
+        // user did not ask: `-- --config foo` hands *shunt's* config to claude.
+        assert!(
+            !message.contains("-- --config foo"),
+            "the error must not prescribe forwarding shunt's own config path: {message}"
+        );
+
+        // Every other subcommand keeps `--config` working exactly as before,
+        // and the guard is scoped to the launcher.
+        assert!(reject_swallowed_config(None).is_ok());
+        assert_eq!(
+            Cli::try_parse_from(["shunt", "--config", "foo", "check"])
+                .unwrap()
+                .config,
+            Some(PathBuf::from("foo"))
+        );
+    }
+
+    #[test]
+    fn config_is_the_only_flag_shunt_takes_from_the_forwarded_list() {
+        // `--config` is the sole `global = true` argument on `Cli`; `--check`
+        // is declared without it, so it is not propagated into subcommands and
+        // forwards like any other Claude Code flag. There is no `--version`.
+        assert_eq!(
+            forwarded(&["shunt", "gateway", "claude", "--check"]),
+            ["--check"]
+        );
+        assert!(
+            Cli::try_parse_from(["shunt", "gateway", "claude", "--check"])
+                .is_ok_and(|cli| !cli.check)
+        );
+        assert!(Cli::try_parse_from(["shunt", "--version"]).is_err());
     }
 
     #[test]
@@ -866,6 +1149,7 @@ mod tests {
         assert!(ensure_manual_flag_valid("xai", Some(LoginMode::Oauth), true).is_err());
         assert!(ensure_manual_flag_valid("cursor", None, true).is_err());
         assert!(ensure_manual_flag_valid("codex", None, true).is_err());
+        assert!(ensure_manual_flag_valid("kimi", None, true).is_err());
     }
 
     #[test]
@@ -977,6 +1261,49 @@ mod tests {
     }
 
     #[test]
+    fn kimi_login_parses_name_and_rejects_missing_name_or_long_lived() {
+        assert!(Cli::try_parse_from(["shunt", "login", "kimi", "--name", "ci"]).is_ok());
+        let parsed = Cli::try_parse_from(["shunt", "login", "kimi", "--name", "ci"]).unwrap();
+        let Some(Command::Login {
+            provider,
+            name,
+            long_lived,
+            mode,
+            manual,
+        }) = parsed.command
+        else {
+            panic!("expected login command");
+        };
+        assert_eq!(provider, "kimi");
+        assert_eq!(name.as_deref(), Some("ci"));
+        assert!(!long_lived);
+        assert!(mode.is_none());
+        assert!(!manual);
+
+        // These error branches return before touching the network or runtime,
+        // so they are safe to exercise directly (mirrors the codex coverage
+        // above).
+        let error =
+            login("kimi", None, false, None, false, None).expect_err("missing --name must fail");
+        assert!(error.to_string().contains("requires --name"));
+
+        let error = login("kimi", Some("ci"), true, None, false, None)
+            .expect_err("--long-lived must be rejected for kimi");
+        assert!(error.to_string().contains("--long-lived is not supported"));
+
+        let error = login(
+            "kimi",
+            Some("ci"),
+            false,
+            Some(LoginMode::Oauth),
+            false,
+            None,
+        )
+        .expect_err("--mode must be rejected for kimi");
+        assert!(error.to_string().contains("--mode is not supported"));
+    }
+
+    #[test]
     fn login_rejects_unknown_provider() {
         let error = login("unknown", None, false, None, false, None)
             .expect_err("unknown provider must fail");
@@ -1047,8 +1374,104 @@ mod tests {
         assert!(error.to_string().contains("invalid server bind address"));
     }
 
+    /// Restores the prior value on drop rather than removing the variable, so a
+    /// developer or CI environment that already sets it is handed back exactly
+    /// what it had. Mirrors `reload.rs`'s guard of the same name; duplicated
+    /// because that one is `#[cfg(test)]` inside the library crate and the
+    /// binary's tests link against the library's non-test build.
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    /// Serializes every test in this binary that **reads or writes** the
+    /// process environment — not just the writers.
+    ///
+    /// A writers-only lock does not exclude anything: the environment is
+    /// per-process, `cargo test` runs these tests on parallel threads, and the
+    /// hazard is a `set_var` racing another thread's *read*, which is why
+    /// `std::env::set_var` is `unsafe` from edition 2024 on.
+    /// `run_surfaces_serve_errors` reaches `Config::load` (`run`, above), whose
+    /// figment layers read the whole environment, so it takes this lock too.
+    ///
+    /// The library side learned this the expensive way: the note on
+    /// `ANTIGRAVITY_AUTH_FILE_ENV_LOCK` in `auth::antigravity` records a ~40%
+    /// flake rate caused by guarding the same environment with two independent
+    /// mutexes, which by construction do not exclude each other.
+    static PROCESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn serve_refuses_a_routed_antigravity_provider_without_a_credential() {
+        // The `run` half of the check/run parity this PR exists to create.
+        // `tests/check_cli.rs` drives the `check` entry point and the
+        // `reload_routing_to_antigravity_*` tests drive `reload`; each proves
+        // only its own call site. Measured: deleting the guard from `serve()`
+        // alone left the entire workspace suite green, so without this test the
+        // claim that `shunt run` still refuses rested on reading the code.
+        let _lock = PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A path that is never created — the guard probes existence only, so
+        // nothing has to be written or cleaned up.
+        let credential = std::env::temp_dir().join(format!(
+            "shunt-serve-antigravity-absent-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        assert!(
+            !credential.exists(),
+            "the probed credential must be absent for this test to mean anything"
+        );
+        let _env = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential);
+
+        let mut config = Config::default();
+        // `serve` binds before it reaches the guard, so give it a bindable
+        // ephemeral port; otherwise this would fail on the bind and pass for
+        // the wrong reason.
+        config.server.bind = "127.0.0.1:0".to_string();
+        config.server.default_provider = "antigravity".to_string();
+
+        let error = runtime()
+            .expect("runtime builds")
+            .block_on(serve(config, None))
+            .expect_err("a routed antigravity provider with no credential must refuse to boot");
+        let message = error.to_string();
+        // Assert on the guard's own wording, not merely on failure: a bind or
+        // router error would otherwise satisfy `expect_err` above.
+        assert!(
+            message.contains("provider `antigravity` is routed but has no credential"),
+            "{message}"
+        );
+        assert!(message.contains("shunt login antigravity"), "{message}");
+    }
+
     #[test]
     fn run_surfaces_serve_errors() {
+        // Reads the process environment through `Config::load`'s figment
+        // layers, so it shares the writers' lock — see `PROCESS_ENV_LOCK`.
+        let _lock = PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Hold a loopback port so `serve` deterministically fails to bind it.
         let listener =
             std::net::TcpListener::bind("127.0.0.1:0").expect("reserve test bind address");
@@ -1162,92 +1585,5 @@ mod tests {
             .expect("serve returns before the test deadline")
             .expect("serve task join")
             .expect("graceful shutdown returns Ok once drained");
-    }
-}
-
-#[cfg(test)]
-mod warm_gate_tests {
-    use shunt::config::{Config, ModelConfig, ProviderKind, RouteConfig, RoutePrefixConfig};
-
-    use super::routes_to_antigravity;
-
-    /// Turn the built-in `antigravity` provider into the one under test without
-    /// hand-building a provider: `Config::default()` already seeds it.
-    fn base() -> Config {
-        let config = Config::default();
-        assert_eq!(
-            config
-                .providers
-                .get("antigravity")
-                .map(|provider| provider.kind),
-            Some(ProviderKind::Antigravity),
-            "this test rests on the default config seeding an antigravity provider"
-        );
-        config
-    }
-
-    #[test]
-    fn default_config_does_not_route_to_antigravity() {
-        // The provider exists but nothing selects it. This is the whole point:
-        // presence is not routing.
-        assert!(!routes_to_antigravity(&base()));
-    }
-
-    #[test]
-    fn default_provider_pointing_at_antigravity_counts() {
-        let mut config = base();
-        config.server.default_provider = "antigravity".to_string();
-        assert!(routes_to_antigravity(&config));
-    }
-
-    #[test]
-    fn an_exact_route_counts() {
-        let mut config = base();
-        config.routes.push(RouteConfig {
-            model: "gemini-3.1-pro".to_string(),
-            provider: "antigravity".to_string(),
-            upstream_model: None,
-            effort: None,
-            service_tier: None,
-        });
-        assert!(routes_to_antigravity(&config));
-    }
-
-    #[test]
-    fn a_prefix_route_counts() {
-        let mut config = base();
-        config.route_prefixes.push(RoutePrefixConfig {
-            prefix: "gemini-".to_string(),
-            provider: "antigravity".to_string(),
-        });
-        assert!(routes_to_antigravity(&config));
-    }
-
-    #[test]
-    fn a_model_upstream_map_counts() {
-        let mut config = base();
-        config.models.push(ModelConfig {
-            id: "claude-gemini-via-agy".to_string(),
-            display_name: None,
-            upstream_model: Some(
-                [("antigravity".to_string(), "gemini-3.1-pro".to_string())]
-                    .into_iter()
-                    .collect(),
-            ),
-        });
-        assert!(routes_to_antigravity(&config));
-    }
-
-    #[test]
-    fn routing_to_a_non_antigravity_provider_does_not_count() {
-        let mut config = base();
-        config.routes.push(RouteConfig {
-            model: "some-model".to_string(),
-            provider: "anthropic".to_string(),
-            upstream_model: None,
-            effort: None,
-            service_tier: None,
-        });
-        assert!(!routes_to_antigravity(&config));
     }
 }

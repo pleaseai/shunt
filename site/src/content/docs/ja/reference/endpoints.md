@@ -13,6 +13,10 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/v1/messages` | 推論 — リクエストの `model` id に従ってルーティング |
 | `POST` | `/v1/messages/count_tokens` | [トークンカウント](/ja/guides/effort-and-context/#token-counting-count_tokens) |
 | `GET` | `/managed/settings` | ゲートウェイ JWT ごとの Claude Code managed settings。`ETag`、`If-None-Match`、`304 Not Modified` に対応 |
+| `GET` | `/v1/organizations/spend_limits` | 保存された支出上限を方向付きカーソルページネーションで一覧表示 |
+| `POST` | `/v1/organizations/spend_limits` | 1 つの `(scope, period)` に対する支出上限を作成または置換 |
+| `GET` | `/v1/organizations/spend_limits/{id}` | 保存された支出上限を 1 件取得 |
+| `DELETE` | `/v1/organizations/spend_limits/{id}` | 保存された支出上限を 1 件削除 |
 | `POST` | `/v1/metrics` | 管理された Claude Code クライアントからのインバウンド OTLP/HTTP メトリクス — opt-in したゲートウェイテレメトリー宛先へ verbatim 中継 |
 | `POST` | `/v1/logs` | インバウンド OTLP/HTTP log record — `logs = true` の宛先にのみ中継 |
 | `POST` | `/v1/traces` | インバウンド OTLP/HTTP span — `traces = true` の宛先にのみ中継 |
@@ -21,7 +25,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/admin/logout` | ブラウザーセッションの破棄 |
 | `GET` | `/admin/accounts` | Claude アカウントストアのメタデータ: 名前、種類、有効期限、UUID。トークン本体は決して返さない |
 | `GET` | `/admin/accounts/codex` | Codex アカウントストアのメタデータ: 名前、有効期限、ChatGPT アカウント ID。トークン本体は決して返さない |
-| `GET` | `/admin/pool` | `claude_oauth` / `chatgpt_oauth` provider ごとのプール状態。Codex はクォータヘッダーを送らないため使用率フィールドは空 |
+| `GET` | `/admin/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider ごとのプール状態。各 account オブジェクトには任意の `plan` 文字列が含まれることがあり、ファイルから読んだ値は後の profile 照会でより精密な値に補正されることがあり、Codex の行には報告された 5h/7d 使用量が含まれる(`7d_oi` に対応する Codex の項目はない) |
 | `POST` | `/admin/accounts/claude` | `{name, mode}` で Claude のブラウザープロビジョニングを開始。`mode` は `oauth` または `setup_token` で、省略時は `setup_token`。`{authorize_url}` を返す |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `<code>#<state>` を含む `{code}` で Claude プロビジョニングを完了。アカウントを保存し、有効（live）かどうかを報告 |
 | `DELETE` | `/admin/accounts/claude/{name}` | 指定した Claude アカウントのストアファイルを削除 |
@@ -34,7 +38,9 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI analytics sink — 受理して破棄し、サニタイズ済みイベント名のカウンターのみ記録 |
 | `POST` | `/codex/analytics-events/events` | Codex CLI analytics sink — ルート形式の `chatgpt_base_url` |
 
-`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。
+`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作では `403` で、`POST /admin/login` では `401` で拒否されます。
+
+spend-limit ルートは、起動時に [`[server.spend]`](/ja/reference/configuration/#serverspendオプション) が設定されていた場合にのみ存在します。[`[server.admin]`](/ja/reference/configuration/#serveradminオプション) の認証情報で認証するため、`[server.gateway]` とは無関係です。その認証情報は設定された管理ヘッダー（デフォルトは `x-shunt-admin-token`）または `x-api-key` で送信します — どちらのスロットも受け付けます。write の認証情報（`write_keys` エントリー、または `tokens_env`/`tokens_file` のペア）はすべての操作を使用でき、`read_keys` の認証情報は GET のみ使用でき、変更操作では `403` を受け取ります。`POST` は `user` と `organization` の scope、`daily`／`weekly`／`monthly` の period、user scope では 1～256 バイトの `user_id`、1～19 桁の USD セント非負整数文字列または `null` の `amount` を受け付け、`(scope, period)` 単位で upsert します。一覧では `limit`（1～1000、デフォルト 20）、`after_id`、`before_id`、`scope_type` を使用でき、2 つのカーソルは同時に指定できません。すべてのレスポンスに `request-id` が含まれ、エラーは Anthropic のエラー形式です。上限と変更監査レコードは、設定したバージョン付き JSON 状態ファイルに一緒に保存され、各変更は `admin-key:<id>` または `admin-token:<name>` に帰属します — 両方のスロットが同じティアの異なる認証情報を保持している場合は、設定された管理ヘッダー側が帰属先になります。ステージ 1 は `/effective` と `/audit` を公開せず、推論リクエストに上限を適用しません。
 
 `GET /managed/settings` と `POST /v1/{metrics,logs,traces}` のテレメトリー受信ルートは、起動時に `[server.gateway]` が有効だった場合にのみ存在し、どちらも同じゲートウェイのベアラー JWT を要求します。受信ルートは、管理された Claude Code クライアントが export する OTLP/HTTP ペイロードを受け取り（[`[server.gateway.telemetry]`](/ja/reference/configuration/) がそれらの exporter をゲートウェイへ向けます）、リクエストのバイト列をその signal に opt-in したすべての宛先へそのまま中継します。インバウンドの `content-type` と `content-encoding` は保持され、宛先に設定された headers がその上に適用されます（設定されたキーは転送値を置き換え、ヘッダーを重複させません）。クライアントの `Authorization` ヘッダーが転送されることはなく、中継はリダイレクトに従いません。宛先は signal ごとに opt-in し（`metrics` はデフォルト on、`logs`／`traces` は off）、どの宛先も opt-in していない signal は受理後に破棄されます。中継はデタッチされているため、宛先の状態にかかわらずレスポンスは常に即座の `200` で、成功ボディは OTLP/HTTP に従いリクエストのプロトコルをミラーします（`application/json` には `{}`、それ以外には空の `application/x-protobuf` ボディ）。32 MiB の受信上限を超えるボディは `413` を返します。
 

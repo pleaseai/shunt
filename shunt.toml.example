@@ -27,14 +27,46 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # tokens_env = "SHUNT_CLIENT_TOKENS" # (default) env var with name:token pairs
 
 # --- Optional: admin web surface for browser account provisioning and pool health.
-# Separate from client auth: admin credentials live in the env, never here, as
-# SHUNT_ADMIN_TOKENS="ops:<token>,backup:<token>". Startup fails if this table
-# is present but the env var is unset or empty (never silently open).
+# Separate from client auth: admin credentials never live here as literals.
+# The name:token pairs come from the env as
+# SHUNT_ADMIN_TOKENS="ops:<token>,backup:<token>" and are the WRITE tier.
+# Startup fails if this table is present but all three credential sources
+# (tokens_env/tokens_file, write_keys, read_keys) are empty (never silently open).
 # [server.admin]
-# header = "x-shunt-admin-token"       # (default) header for API/curl calls
+# header = "x-shunt-admin-token"       # (default) header for API/curl calls;
+#                                      # x-api-key is accepted alongside it on
+#                                      # the admin and spend-limit routers only
 # tokens_env = "SHUNT_ADMIN_TOKENS"    # (default) env var with name:token pairs
 # session_ttl_secs = 3600              # (default) browser session lifetime
 # pending_ttl_secs = 600               # (default) provisioning-flow lifetime
+
+# Per-credential admin keys with an id the spend audit trail records. Keys must
+# be at least 32 characters and must come from ${VAR} / ${file:...} or a SHUNT_*
+# override — a literal here is rejected at load. read_keys pass every GET on the
+# admin and spend-limit surfaces and are refused on every mutation.
+# [[server.admin.write_keys]]
+# id = "terraform"
+# key = "${SHUNT_ADMIN_KEY_TERRAFORM}"
+# [[server.admin.read_keys]]
+# id = "reporting"
+# key = "${file:/run/secrets/shunt-reporting-key}"
+
+# --- Optional: spend-limit Admin API under /v1/organizations/spend_limits
+# (docs/gateway-spend-limits.md). Policy only — it holds no key material and
+# authenticates with the [server.admin] credential above, which it requires.
+# Independent of [server.gateway]. Stage 1 stores caps and an audit trail but
+# does not enforce them on inference traffic; every key below is parsed and
+# not yet acted on.
+# [server.spend]
+# blocked_message = "Request an increase from FinOps."
+# audit_retention_days = 365           # (default)
+# spend_retention_months = 13          # (default)
+# identity_retention_days = 90         # (default)
+# group_limit_mode = "min"             # (default) "min" or "max"
+# state_path = "/home/you/.shunt/gateway-spend.json"  # default is
+#                                      # ~/.shunt/gateway-spend.json; "" = memory-only
+# [server.spend.enforcement]
+# fail_closed_on_error = false         # (default)
 
 # --- Optional: quota-aware Claude pool tuning and usage reconciliation
 # (docs/m8-anthropic-multi-account.md). Absent, selection uses the built-in

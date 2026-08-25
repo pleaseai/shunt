@@ -10,7 +10,7 @@ use axum::{
 
 use crate::{
     adapters::AdapterError,
-    auth::{self, resolve_credential, Credential},
+    auth::{self, resolve_credential, slots::ShuntCredentials, Credential},
     config::AccountConfig,
     routing::Route,
     server::AppState,
@@ -41,14 +41,12 @@ pub(crate) async fn forward_codex_inbound(
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     // codex -> shunt -> codex is a byte-faithful passthrough: forward the Codex
     // CLI's own request headers verbatim and swap in only the pool account's
-    // credential (below). Strip just the shunt client-token header here so it
-    // never leaks upstream; credential + framing headers are handled in
-    // passthrough_request_headers / passthrough_send.
-    let token_header = state
-        .inbound_auth
-        .as_ref()
-        .map(|auth| auth.header().to_string());
-    let passthrough_headers = passthrough_request_headers(&client_headers, token_header.as_deref());
+    // credential (below). Every slot shunt reserves — the client-token header,
+    // the admin-token header, and the internal client label — is removed via
+    // the shared enumeration in `auth::slots`; credential + framing headers are
+    // handled in passthrough_request_headers / passthrough_send.
+    let passthrough_headers =
+        passthrough_request_headers(&client_headers, ShuntCredentials::from_state(&state));
 
     let provider = state
         .config
@@ -302,11 +300,17 @@ async fn forward_codex_passthrough(
 
 /// Inbound request headers never forwarded upstream on the Codex passthrough:
 /// credential headers (re-injected per pool account in [`passthrough_send`]),
-/// the default shunt client-token header and the internal `x-shunt-inbound-client`
-/// label (a client must never leak or spoof them — matches `proxy::check_inbound_auth`),
 /// framing headers the HTTP client recomputes, and `accept-encoding` (dropped so the
 /// upstream returns an uncompressed body that [`relay_passthrough`] streams through
 /// unchanged). Names compare lowercase — `http` normalizes them.
+///
+/// The slots shunt *reserves* — `x-shunt-token`, `x-shunt-admin-token`,
+/// `x-shunt-inbound-client`, and whatever `[server.auth]`/`[server.admin]` are
+/// configured to — are deliberately **not** listed here: they are owned by
+/// `auth::slots::ShuntCredentials::strip_reserved_slots`, which
+/// [`passthrough_request_headers`] applies after this list. One owner, or the
+/// two lists drift — which is exactly how the admin-token header came to be
+/// relayed to the ChatGPT backend.
 const PASSTHROUGH_STRIP_REQUEST_HEADERS: &[&str] = &[
     "host",
     "content-length",
@@ -323,16 +327,6 @@ const PASSTHROUGH_STRIP_REQUEST_HEADERS: &[&str] = &[
     // both `Authorization` and `x-api-key` with the same value) to a third party.
     "x-api-key",
     "accept-encoding",
-    // The default shunt client-token header (`config::default_auth_header`). Always
-    // stripped — even on an ungated endpoint (no `[server.auth]`), or one using a
-    // custom auth header — so the documented guarantee that the shunt token never
-    // reaches the Codex backend holds unconditionally. A non-default configured
-    // header is additionally stripped via the `token_header` argument below.
-    "x-shunt-token",
-    // shunt-internal client-identity label — never trust a client-supplied value
-    // (the main proxy path strips it in `check_inbound_auth` before re-inserting
-    // the authenticated client name).
-    "x-shunt-inbound-client",
     // hop-by-hop (RFC 7230 §6.1)
     "connection",
     "keep-alive",
@@ -372,24 +366,32 @@ const PASSTHROUGH_STRIP_RESPONSE_HEADERS: &[&str] = &[
 /// Build the upstream header set for a raw codex -> shunt -> codex passthrough:
 /// forward every inbound header the Codex CLI sent EXCEPT the ones shunt must own
 /// or strip. The credential headers (`authorization`, `chatgpt-account-id`) are
-/// re-injected per selected pool account in [`passthrough_send`]; the shunt
-/// client-token header (`token_header`) must never leak upstream; framing/hop-by-hop
+/// re-injected per selected pool account in [`passthrough_send`]; framing/hop-by-hop
 /// headers are recomputed by the HTTP client. Everything else — `originator`,
 /// `version`, `user-agent`, `OpenAI-Beta`, `session-id`, `thread-id`, `x-codex-*`,
 /// `content-type`, `accept` — passes through verbatim, so the Codex CLI's real
 /// client identity (its actual version, not a shunt-synthesized one) reaches the
 /// backend and model version gating behaves exactly as it would against ChatGPT.
-fn passthrough_request_headers(client: &HeaderMap, token_header: Option<&str>) -> HeaderMap {
+///
+/// This is forward site 3 of the enumeration in `auth::slots`: it relays the
+/// caller's headers verbatim, so the mirror invariant has to be enforced here
+/// explicitly rather than falling out of an allowlist. `strip_reserved_slots`
+/// runs last and clears every slot shunt reserves by name — including
+/// `x-shunt-admin-token` and any configured `[server.admin] header`, which this
+/// path used to relay to the ChatGPT backend even though the admin surface
+/// authenticates on it.
+pub(crate) fn passthrough_request_headers(
+    client: &HeaderMap,
+    credentials: ShuntCredentials<'_>,
+) -> HeaderMap {
     let mut out = HeaderMap::with_capacity(client.len());
     for (name, value) in client.iter() {
-        let name_str = name.as_str();
-        if PASSTHROUGH_STRIP_REQUEST_HEADERS.contains(&name_str)
-            || token_header.is_some_and(|header| header.eq_ignore_ascii_case(name_str))
-        {
+        if PASSTHROUGH_STRIP_REQUEST_HEADERS.contains(&name.as_str()) {
             continue;
         }
         out.append(name.clone(), value.clone());
     }
+    credentials.strip_reserved_slots(&mut out);
     out
 }
 
@@ -430,7 +432,15 @@ async fn passthrough_send(
         | Credential::GoogleOauth { access_token, .. } => {
             request = request.bearer_auth(access_token);
         }
-        Credential::CursorOauth { .. } | Credential::Passthrough => {}
+        // Send nothing rather than bearer an off-origin subscription token:
+        // neither an Antigravity nor a Kimi credential can legitimately reach a
+        // Responses upstream (validation pins them to `kind = "antigravity"`
+        // and `kind = "anthropic"` respectively), so the defensive arm fails
+        // closed.
+        Credential::CursorOauth { .. }
+        | Credential::KimiOauth { .. }
+        | Credential::AntigravityOauth { .. }
+        | Credential::Passthrough => {}
     }
     crate::upstream_timeout::wait(
         state.config.server.timeouts.upstream_ttfb_ms,
@@ -466,4 +476,64 @@ fn relay_passthrough(upstream: reqwest::Response) -> axum::response::Response {
         .body(Body::from_stream(upstream.bytes_stream()))
         .expect("response builder uses valid status and forwarded headers")
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::{config::Config, routing::AdapterKind};
+
+    use super::*;
+
+    fn codex_route() -> Route {
+        Route {
+            provider: "codex".to_string(),
+            adapter: AdapterKind::Responses,
+            model: "gpt-5.2-codex".to_string(),
+            upstream_model: "gpt-5.2-codex".to_string(),
+            effort: None,
+            service_tier: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn antigravity_oauth_sends_no_credential_on_the_passthrough_path() {
+        // Config validation pins `antigravity_oauth` to `kind = "antigravity"`,
+        // so this arm is unreachable in a valid config — but if it were ever
+        // reached, it must fail closed rather than bearer an off-origin
+        // subscription token onto the Codex passthrough upstream.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = server.uri();
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        passthrough_send(
+            &state,
+            &codex_route(),
+            Credential::AntigravityOauth {
+                access_token: "antigravity-token".to_string(),
+                project_id: "proj-1".to_string(),
+            },
+            &HeaderMap::new(),
+            &Bytes::from_static(b"{}"),
+        )
+        .await
+        .unwrap();
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("mock records requests");
+        assert_eq!(requests.len(), 1);
+        let headers = &requests[0].headers;
+        assert!(headers.get("authorization").is_none());
+        assert!(headers.get("x-api-key").is_none());
+    }
 }

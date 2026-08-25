@@ -14,12 +14,15 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use anyhow::Context as _;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{accounts::StoreFamily, config::AccountConfig};
+
+pub mod file_lock;
 
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 
@@ -69,9 +72,55 @@ pub fn is_token_valid_at(token: &str, now: SystemTime) -> bool {
         .is_some_and(|refresh_at| now < refresh_at)
 }
 
+/// Extract a Claude subscription plan (e.g. `"max"`) from a parsed Claude
+/// credentials blob — `~/.claude/.credentials.json`, the shunt store's copy of
+/// it, or the macOS Keychain entry, all of which share this shape. Source:
+/// `claudeAiOauth.subscriptionType`, the same field `claude`/Claude Code itself
+/// writes on login. Trimmed and returned verbatim (no casing applied here) so
+/// both call sites can apply their own display treatment: [`crate::auth::observation::parse_claude`]
+/// title-cases it for the local-login observation view, while
+/// [`crate::admin::plan`] does the same for the admin pool dashboard.
+pub(crate) fn claude_plan_from_credentials(value: &Value) -> Option<String> {
+    let raw = value.pointer("/claudeAiOauth/subscriptionType")?.as_str()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Extract a ChatGPT/Codex subscription plan (e.g. `"team"`) from a parsed
+/// Codex credentials blob — `~/.codex/auth.json` or the shunt store's copy of
+/// it. The primary source is the `tokens.id_token` JWT's
+/// `https://api.openai.com/auth.chatgpt_plan_type` claim; when `id_token` is
+/// absent (a token refresh can omit it — see `auth::codex::auth`'s refresh
+/// tests), falls back to the same claim on `tokens.access_token`. This mirrors
+/// [`crate::auth::observation::parse_codex`]'s pre-existing `identity_claims`
+/// resolution (id_token, else access_token) so refactoring that parser onto
+/// this shared extractor changes no observed behavior.
+pub(crate) fn codex_plan_from_credentials(value: &Value) -> Option<String> {
+    let tokens = value.get("tokens")?;
+    let claims = tokens
+        .get("id_token")
+        .and_then(Value::as_str)
+        .and_then(jwt_claims)
+        .or_else(|| {
+            tokens
+                .get("access_token")
+                .and_then(Value::as_str)
+                .and_then(jwt_claims)
+        })?;
+    let raw = claims
+        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type")?
+        .as_str()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 /// Whether the long-lived `refresh_token` may be POSTed to `url`: HTTPS anywhere,
 /// or plain `http://` only to loopback. Vets the initial URL and each redirect hop.
-fn is_safe_refresh_url(url: &reqwest::Url) -> bool {
+///
+/// The single definition of that floor. [`crate::auth::gateway::auth`] applies it
+/// to the endpoints a *discovery document* names, which no redirect policy can
+/// see — a second copy of this predicate would be free to drift from this one.
+pub(crate) fn is_safe_refresh_url(url: &reqwest::Url) -> bool {
     url.scheme() == "https"
         || (url.scheme() == "http"
             && crate::config::host_is_loopback(url.host_str().unwrap_or_default()))
@@ -162,22 +211,36 @@ pub fn validate_account_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve a provider store's accounts directory: `$<env_var>` when set, else
-/// `<home>/.shunt/accounts/<subdir>` (`HOME`, falling back to `USERPROFILE` on
-/// Windows where `HOME` is unset), else a working-directory-relative
-/// `.shunt/accounts/<subdir>`. `env_var`/`subdir` are the only things that differ
-/// between the Claude and Codex stores.
+/// Resolve a provider store's accounts directory: `$<env_var>` when set to a
+/// non-blank value, else `<home>/.shunt/accounts/<subdir>` (`HOME`, falling
+/// back to `USERPROFILE` on Windows where `HOME` is unset), else a
+/// working-directory-relative `.shunt/accounts/<subdir>`. `env_var`/`subdir`
+/// are the only things that differ between the Claude, Codex, and Kimi
+/// stores. An override that is set but empty or whitespace-only is treated as
+/// unset rather than resolving to a cwd-relative path.
 pub fn default_accounts_dir(env_var: &str, subdir: &str) -> PathBuf {
-    env::var_os(env_var)
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("HOME")
-                .filter(|home| !home.is_empty())
-                .or_else(|| env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
-                .map(PathBuf::from)
-                .map(|home| home.join(".shunt").join("accounts").join(subdir))
-        })
+    env_path_override(env_var)
+        .or_else(|| home_dir().map(|home| home.join(".shunt").join("accounts").join(subdir)))
         .unwrap_or_else(|| PathBuf::from(".shunt/accounts").join(subdir))
+}
+
+/// Read a path from `$<env_var>`, treating a value that is set but empty or
+/// whitespace-only as unset rather than as a working-directory-relative path.
+/// Shared by [`default_accounts_dir`] and the gateway session store
+/// ([`crate::auth::gateway::store`]) so that rule cannot drift between them.
+pub(crate) fn env_path_override(env_var: &str) -> Option<PathBuf> {
+    env::var_os(env_var)
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
+        .map(PathBuf::from)
+}
+
+/// The user's home directory: `HOME`, falling back to `USERPROFILE` on Windows
+/// where `HOME` is unset. An empty value is treated as unset.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .or_else(|| env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
+        .map(PathBuf::from)
 }
 
 fn account_files(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
@@ -544,6 +607,17 @@ fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -
             family: StoreFamily::Chatgpt,
             path,
         } => crate::auth::codex::store::credential_account_id(Path::new(path)),
+        InlineIdentityKey::Credentials {
+            family: StoreFamily::Kimi,
+            ..
+        } => {
+            // Unreachable by construction: `inline_identity_key` only builds a
+            // `Credentials` key for `Claude`/`Chatgpt` — Kimi has no verified
+            // identity source, so it never enters the inline-identity cache at
+            // all and always falls back to its account name (see
+            // `inline_identity_key` and `accounts::account_key`).
+            None
+        }
         InlineIdentityKey::TokenEnv { name } => env::var(name)
             .ok()
             .and_then(|token| crate::auth::codex::auth::jwt_account_id(&token)),
@@ -664,18 +738,33 @@ fn warn_scan_identity_collisions(provider: &str, dir: &Path, accounts: &[Account
 /// (no chmod-after-create window on a multi-user host), then atomically write
 /// `value` via [`write_auth_file_atomic`]. Both stores import credentials this way.
 pub(crate) fn write_account_file(path: &Path, value: &Value) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.create(parent)?;
+    // A bare relative filename ("session.json") yields `Some("")` here, and an
+    // empty parent names no directory to create: the file lands in the current
+    // directory, which already exists. Skipped explicitly, matching
+    // `gateway::store::lock_blocking` — today `create_dir_all` happens to
+    // short-circuit on the empty path, but that is an implementation detail of
+    // `std` to lean on rather than the guarantee this path needs.
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        create_private_dir(parent)?;
     }
     write_auth_file_atomic(path, value)?;
     Ok(())
+}
+
+/// Create `dir` and its ancestors owner-only (`0700` on Unix) — born private,
+/// with no chmod-after-create window on a multi-user host.
+pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
 }
 
 pub(crate) fn format_iso8601(time: SystemTime) -> String {
@@ -692,6 +781,21 @@ pub(crate) fn format_iso8601(time: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
+pub(crate) fn format_iso8601_millis(time: SystemTime) -> String {
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let seconds = duration.as_secs() as i64;
+    let days = seconds.div_euclid(86_400);
+    let day_seconds = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = day_seconds / 3_600;
+    let minute = (day_seconds % 3_600) / 60;
+    let second = day_seconds % 60;
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{:03}Z",
+        duration.subsec_millis()
+    )
+}
+
 fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let z = days_since_epoch + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -704,6 +808,94 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let m = mp + if mp < 10 { 3 } else { -9 };
     let y = y + if m <= 2 { 1 } else { 0 };
     (y, m, d)
+}
+
+/// Open `url` in the user's default browser. Every interactive login flow
+/// (Claude, Cursor, Antigravity, and the gateway device flow) hands the user
+/// off to a browser, so the OS dispatch lives here instead of being copied into
+/// each provider's login module.
+///
+/// Windows goes through `rundll32 url.dll,FileProtocolHandler` rather than
+/// `cmd /c start`: authorization URLs carry `&` query separators, which cmd.exe
+/// would treat as command separators and truncate the URL.
+pub(crate) fn open_url(url: &str) -> anyhow::Result<()> {
+    let status = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).status()?
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .status()?
+    } else {
+        std::process::Command::new("xdg-open").arg(url).status()?
+    };
+    if !status.success() {
+        anyhow::bail!("browser open command exited with {status}");
+    }
+    Ok(())
+}
+
+/// Launch the browser and wait for the opener **asynchronously**, so the wait
+/// can be dropped.
+///
+/// Not [`open_url`] on `spawn_blocking`, which is what this used to be. The
+/// opener is not a quick handoff — `open` / `rundll32` / `xdg-open` are waited
+/// on, and a desktop handler that never exits makes that wait unbounded. A
+/// blocking-pool task cannot be cancelled once it has started, so dropping the
+/// future left the wait running, and dropping the *runtime* then waits for it:
+/// `main` runs every CLI action as `runtime()?.block_on(...)` on a temporary
+/// runtime, so the process would hang at exit with the work already finished
+/// and the success line already printed. An async wait is droppable, so neither
+/// the future nor runtime shutdown is held.
+///
+/// `kill_on_drop` is deliberately **not** set. `xdg-open` commonly execs into
+/// the handler, so killing the child can kill the browser the user is in the
+/// middle of approving in. Tokio leaves a dropped child running by default,
+/// which orphans it — correct for a CLI that is exiting anyway, and it holds
+/// nothing.
+///
+/// `flow` names the login flow in the error — "Claude OAuth", "gateway login".
+/// A shared body must not mean a shared diagnostic: several flows can open a
+/// browser in one session, and a bare "browser open failed" leaves the user
+/// unable to tell which one broke. It wraps *every* failure here — the spawn
+/// and a non-zero exit alike — where the `spawn_blocking` version could only
+/// name the flow on a join failure and let the rest propagate unattributed.
+pub(crate) async fn open_url_async(flow: &str, url: &str) -> anyhow::Result<()> {
+    wait_for_browser_open(browser_open_command(url))
+        .await
+        .with_context(|| format!("{flow} browser open failed"))
+}
+
+/// The per-platform opener, built but not spawned — split out so
+/// [`wait_for_browser_open`] can be driven by a test with a command of its own.
+///
+/// Windows goes through `rundll32 url.dll,FileProtocolHandler` for the same
+/// reason as [`open_url`]: `cmd /c start` truncates a URL at its first `&`.
+fn browser_open_command(url: &str) -> tokio::process::Command {
+    let mut command = if cfg!(target_os = "macos") {
+        tokio::process::Command::new("open")
+    } else if cfg!(target_os = "windows") {
+        tokio::process::Command::new("rundll32")
+    } else {
+        tokio::process::Command::new("xdg-open")
+    };
+    if cfg!(target_os = "windows") {
+        command.args(["url.dll,FileProtocolHandler", url]);
+    } else {
+        command.arg(url);
+    }
+    command
+}
+
+/// Spawn `command` and await its exit.
+///
+/// The seam the drop-safety test drives: everything here is `.await`, so a
+/// caller that drops this future drops the wait with it.
+async fn wait_for_browser_open(mut command: tokio::process::Command) -> anyhow::Result<()> {
+    let status = command.status().await?;
+    if !status.success() {
+        anyhow::bail!("browser open command exited with {status}");
+    }
+    Ok(())
 }
 
 /// Test-only RAII guard that sets an environment variable on construction and
@@ -751,6 +943,119 @@ mod tests {
         ))
     }
 
+    fn jwt(claims: Value) -> String {
+        format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+        )
+    }
+
+    #[test]
+    fn claude_plan_from_credentials_reads_subscription_type() {
+        let value = serde_json::json!({"claudeAiOauth": {"subscriptionType": "max"}});
+        assert_eq!(claude_plan_from_credentials(&value).as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn claude_plan_from_credentials_trims_and_rejects_blank() {
+        let padded = serde_json::json!({"claudeAiOauth": {"subscriptionType": "  max  "}});
+        assert_eq!(
+            claude_plan_from_credentials(&padded).as_deref(),
+            Some("max")
+        );
+
+        let blank = serde_json::json!({"claudeAiOauth": {"subscriptionType": "   "}});
+        assert_eq!(claude_plan_from_credentials(&blank), None);
+    }
+
+    #[test]
+    fn claude_plan_from_credentials_absent_field_is_none() {
+        let no_field = serde_json::json!({"claudeAiOauth": {"accessToken": "x"}});
+        assert_eq!(claude_plan_from_credentials(&no_field), None);
+
+        let no_oauth = serde_json::json!({});
+        assert_eq!(claude_plan_from_credentials(&no_oauth), None);
+    }
+
+    #[test]
+    fn codex_plan_from_credentials_reads_id_token_claim() {
+        let id_token = jwt(serde_json::json!({
+            "https://api.openai.com/auth": {"chatgpt_plan_type": "team"}
+        }));
+        let value = serde_json::json!({"tokens": {"id_token": id_token}});
+        assert_eq!(codex_plan_from_credentials(&value).as_deref(), Some("team"));
+    }
+
+    #[test]
+    fn codex_plan_from_credentials_falls_back_to_access_token_without_id_token() {
+        // A token refresh can omit id_token (see auth::codex::auth's refresh
+        // tests); the plan claim must still resolve from access_token so this
+        // mirrors observation::parse_codex's pre-existing identity_claims
+        // fallback exactly.
+        let access_token = jwt(serde_json::json!({
+            "https://api.openai.com/auth": {"chatgpt_plan_type": "plus"}
+        }));
+        let value = serde_json::json!({"tokens": {"access_token": access_token}});
+        assert_eq!(codex_plan_from_credentials(&value).as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn codex_plan_from_credentials_absent_or_blank_is_none() {
+        let no_tokens = serde_json::json!({});
+        assert_eq!(codex_plan_from_credentials(&no_tokens), None);
+
+        let no_claim = jwt(serde_json::json!({"email": "a@example.com"}));
+        let value = serde_json::json!({"tokens": {"id_token": no_claim}});
+        assert_eq!(codex_plan_from_credentials(&value), None);
+
+        let blank = jwt(serde_json::json!({
+            "https://api.openai.com/auth": {"chatgpt_plan_type": "  "}
+        }));
+        let value = serde_json::json!({"tokens": {"id_token": blank}});
+        assert_eq!(codex_plan_from_credentials(&value), None);
+    }
+
+    /// A `SHUNT_GATEWAY_SESSION_FILE` (or any account path) naming a file in
+    /// the current directory has `Some("")` as its parent, which names no
+    /// directory to create. This pins the writability of that path so the
+    /// empty-parent handling cannot regress into a failed login.
+    #[test]
+    fn a_bare_relative_filename_has_no_parent_to_create() {
+        let name = format!(
+            "shunt-bare-relative-{}-{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = Path::new(&name);
+        assert_eq!(
+            path.parent().map(Path::to_path_buf),
+            Some(PathBuf::new()),
+            "the case under test is the empty parent, not an absent one"
+        );
+
+        write_account_file(path, &serde_json::json!({"probe": true}))
+            .expect("a file in the current directory must be writable");
+        assert!(path.exists());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn format_iso8601_millis_handles_boundaries_and_leap_day() {
+        for (seconds, millis, expected) in [
+            (0, 0, "1970-01-01T00:00:00.000Z"),
+            (1_704_067_199, 999, "2023-12-31T23:59:59.999Z"),
+            (1_704_067_200, 1, "2024-01-01T00:00:00.001Z"),
+            (1_709_164_800, 123, "2024-02-29T00:00:00.123Z"),
+        ] {
+            let time = UNIX_EPOCH + Duration::from_secs(seconds) + Duration::from_millis(millis);
+            assert_eq!(format_iso8601_millis(time), expected);
+        }
+    }
+
     #[test]
     fn generated_pkce_values_are_urlsafe_and_s256_linked() {
         use sha2::{Digest, Sha256};
@@ -790,6 +1095,25 @@ mod tests {
             default_accounts_dir(&env_name, "codex"),
             PathBuf::from("/tmp/shunt-shared-override")
         );
+        std::env::remove_var(&env_name);
+    }
+
+    #[test]
+    fn default_accounts_dir_treats_a_blank_env_override_as_unset() {
+        // An override set but empty (or whitespace-only) must not resolve to a
+        // cwd-relative path — it should fall through to the same HOME-based
+        // default as an unset override.
+        let env_name = format!("SHUNT_TEST_SHARED_DIR_BLANK_{}", std::process::id());
+        let unset = default_accounts_dir("SHUNT_TEST_SHARED_DIR_NEVER_SET", "codex");
+
+        for blank in ["", "   ", "\t"] {
+            std::env::set_var(&env_name, blank);
+            assert_eq!(
+                default_accounts_dir(&env_name, "codex"),
+                unset,
+                "blank override {blank:?} should be treated as unset"
+            );
+        }
         std::env::remove_var(&env_name);
     }
 
@@ -1494,5 +1818,59 @@ mod tests {
             );
         }
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Dropping the browser-open wait must not delay runtime shutdown.
+    ///
+    /// This is the failure the async wait exists to remove. On `spawn_blocking`
+    /// the wait could not be cancelled once started, so dropping the future
+    /// left it running and dropping the runtime then blocked on it — and every
+    /// CLI action in `main` runs as `runtime()?.block_on(...)` on a temporary
+    /// runtime, so the process hung at exit with its work already done.
+    ///
+    /// `sleep 60` stands in for a desktop handler that never returns. The
+    /// assertion is on real wall-clock, deliberately: what is under test is
+    /// whether an OS-level wait is still held, and a paused clock cannot
+    /// observe that. The bound is far below the sleep and far above any
+    /// legitimate teardown, so a slow runner yields a visible false red rather
+    /// than a silent pass.
+    ///
+    /// Unix only — `sleep` is not a Windows command.
+    #[cfg(unix)]
+    #[test]
+    fn dropping_the_browser_open_wait_does_not_delay_runtime_shutdown() {
+        let started = std::time::Instant::now();
+        {
+            // Current-thread, not multi-thread: the property under test is that
+            // runtime drop waits for blocking-pool work, which both flavours
+            // have. Spawning one worker instead of one per CPU keeps this test
+            // from perturbing the rest of the suite, which runs in parallel.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            runtime.block_on(async {
+                let mut command = tokio::process::Command::new("sleep");
+                command.arg("60");
+                let wait = wait_for_browser_open(command);
+                tokio::pin!(wait);
+                // Long enough that the child is really spawned and being
+                // waited on, so the drop below has something to drop.
+                tokio::select! {
+                    _ = &mut wait => panic!("`sleep 60` cannot have finished already"),
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                }
+                // `wait` is dropped here, with the child still running.
+            });
+            // ...and the runtime is dropped here, which is where a blocking
+            // wait would have parked until the child exited.
+        }
+
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "dropping the wait and the runtime took {elapsed:?}, so the browser open is still \
+             holding shutdown; `sleep 60` should have been orphaned, not waited on"
+        );
     }
 }

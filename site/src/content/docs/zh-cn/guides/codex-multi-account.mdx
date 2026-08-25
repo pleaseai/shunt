@@ -68,6 +68,8 @@ name = "backup"
 
 `shunt login codex` 没有 `--long-lived` 标志 —— Codex 没有 setup-token 这一概念,因此每个由存储管理的账户,都是从已有的 `codex login` 导入的可刷新 OAuth 登录。
 
+导入只接受 **ChatGPT** 登录。当前版本的 `codex login` 会向 `$CODEX_AUTH_FILE`(或 `~/.codex/auth.json`)写入 `"auth_mode": "chatgpt"`;shunt 比较该字段时忽略大小写,因此旧版 Codex 留下的文件(`"ChatGPT"`)也能原样导入。API 密钥登录(`"auth_mode": "apikey"`)会被拒绝,并报 `is not a ChatGPT login (auth_mode is not "chatgpt")` —— 请重新运行 `codex login` 并选择 ChatGPT 账户。
+
 ## 账户字段
 
 | 字段 | 必填 | 含义 |

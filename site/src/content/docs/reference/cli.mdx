@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: The shunt command line — run, check, init, add, token, and provider login.
+description: The shunt command line — run, check, init, add, token, gateway login, and provider login.
 ---
 
 ## `shunt run`
@@ -29,6 +29,8 @@ shunt check
 
 Reports specific errors: a bad bind address, an unknown provider in a route, a missing `api_key_env`, a bad `base_url`, a wrong adapter/auth combination.
 
+It also runs the same routed-Antigravity credential guard `shunt run` boots with: a config that routes to the native `antigravity` upstream with no credential stored fails the check and names [`shunt login antigravity`](#shunt-login-antigravity), instead of reporting `config ok` and then failing at startup. The check stays offline — it reads the routes and probes whether the credential file exists, never refreshing a token or contacting the backend. A config that merely declares the built-in `antigravity` provider without routing to it is unaffected, as is `kind = "antigravity_cli"` routing.
+
 ## `shunt init`
 
 Create a starter `shunt.toml` in an existing directory. The command only writes that file and never installs anything or accesses the network.
@@ -40,7 +42,7 @@ shunt init --root /path/to/project
 shunt init --force
 ```
 
-With no upstreams, the starter is fully commented and loads to shunt's passthrough defaults. Repeat `--upstream` to add preset entries in failover order; accepted names are `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, and `cursor`. Unmapped traffic remains on the default Anthropic passthrough because the starter does not set `server.default_provider`. When you request presets, a trailing `anthropic` passthrough upstream is appended automatically (unless you name `anthropic` yourself) so the generated file passes `shunt check` while keeping that fallback.
+With no upstreams, the starter is fully commented and loads to shunt's passthrough defaults. Repeat `--upstream` to add preset entries in failover order; accepted names are `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, `cursor`, and `kimi-code`. Unmapped traffic remains on the default Anthropic passthrough because the starter does not set `server.default_provider`. When you request presets, a trailing `anthropic` passthrough upstream is appended automatically (unless you name `anthropic` yourself) so the generated file passes `shunt check` while keeping that fallback.
 
 The root defaults to the current directory and must already exist. If `shunt.toml`, `shunt.yaml`, or `shunt.yml` exists there, init stops without writing unless `--force` is set. Forced init overwrites only `shunt.toml`; YAML variants stay untouched, and the new TOML file takes precedence during config discovery.
 
@@ -91,6 +93,71 @@ Print a Claude subscription OAuth token to **stdout** (logs go to stderr), desig
 ```
 
 See [Connect Claude Code](/guides/connect-claude-code/#2-choose-the-anthropic-credential) for when you need this.
+
+## `shunt gateway login`
+
+Sign this machine in to a shunt deployment that has [`[server.gateway]`](/guides/gateway-login/) enabled, using the same OAuth device flow Claude Code's own `/login` uses. This is the **client** side of the gateway; `shunt login <provider>` and `shunt token` are unchanged and still authenticate shunt itself against an upstream.
+
+```bash
+shunt gateway login https://gateway.example.com
+shunt gateway login https://gateway.example.com --manual   # print the URL, don't open a browser
+```
+
+shunt reads the deployment's `/.well-known/oauth-authorization-server` document and uses the endpoints it advertises, prints a verification URL and a short user code, opens your browser, and polls until you approve on the gateway's `/device` page. A `404` on discovery almost always means the deployment has no `[server.gateway]` section. Discovery and the device-code request are each bounded, so a deployment that accepts the connection and never answers reports a timeout rather than leaving the terminal waiting indefinitely; the approval poll that follows is deliberately not bounded that way, since waiting is its job. A plain `http://` URL that is not loopback is accepted but warns — the device code and refresh token would travel unencrypted, and not only during this login: every later token refresh uses the same transport, and `shunt gateway token` repeats the warning on each refresh it performs (not on a cached-token run, which makes no network call). Such a login then runs to completion: a plain-`http` gateway may advertise plaintext endpoints, but only on its **own origin** — scheme, host, and port all matching the URL you typed. A plaintext endpoint on any other origin is refused — with one carve-out that applies to every gateway, including one reached over `https`: a loopback endpoint, which never leaves the machine, is always accepted. The access token the gateway issues is put through the same `apiKeyHelper` gate `shunt gateway token` applies below, before any session is written: a deployment that cannot issue a conforming token fails the login outright rather than leaving behind a session that reported success and can never be used.
+
+Two floors apply to what the deployment sends back. shunt POSTs the device code and the refresh token only to an endpoint the discovery document advertises over `https`, over `http` to a loopback address, or — when the gateway URL you supplied is itself plain `http` — over `http` to that gateway's own origin; any other endpoint fails discovery by name instead of receiving the credential. That last allowance is computed from the URL you typed, never from the document, so a hostile or intercepted discovery document cannot name a third-party plaintext host and have your refresh token POSTed there. And the verification URL is opened automatically only when it is `http` or `https` — the gateway chooses that string, so any other scheme is printed with the reason it was not opened, and you decide whether to follow it.
+
+The session is stored at `~/.shunt/gateway/session.json` (override with `SHUNT_GATEWAY_SESSION_FILE`), written owner-only: file mode `0600` inside a `0700` directory.
+
+## `shunt gateway token`
+
+Print the gateway access token to **stdout** and nothing else — every message, warning, and hint goes to stderr — so it wires straight into Claude Code's `apiKeyHelper`:
+
+```json
+// ~/.claude/settings.json
+{
+  "apiKeyHelper": "/path/to/shunt gateway token"
+}
+```
+
+This is a **different helper from [`shunt token`](#shunt-token)**, which prints an upstream Claude subscription token. Neither reads the other's storage, and the similarly named `SHUNT_GATEWAY_TOKEN` variable belongs to `shunt token`, not to this command.
+
+The stored token is served until it is within 5 minutes of expiry, then refreshed. Gateway refresh tokens rotate and are single-use, so the refresh runs under an exclusive file lock and re-reads the session after taking it: concurrent Claude Code sessions calling the helper at the same moment produce one refresh, not a replay that would revoke the whole rotation family. `shunt gateway login` and `shunt gateway logout` take the same lock and hold it across their own write, so neither can be undone by an in-flight refresh's writeback landing after it.
+
+Neither the lock nor the refresh waits forever. Each gateway round-trip is bounded, and so is the wait for the lock — a deployment that accepts the connection and never answers would otherwise hold the lock and stall every other `apiKeyHelper` on the machine with nothing on stderr to explain it. On expiry the command fails and names the lock file.
+
+Crossing the 5-minute buffer makes a refresh due, not mandatory: if the refresh fails while the cached token is still genuinely valid, that token is served with a warning on stderr rather than turning a brief network blip into an auth failure. Once it has actually expired the command fails. That fallback needs proof that nothing was rotated, so it covers only the two failures that provably never presented the refresh token — discovery, and a token request that could not open a connection. From the moment the request is sent the gateway may already have rotated the token, so a timeout, an unreadable or unparseable answer, or any error it names fails the command instead: serving the cached token there would leave a spent refresh token on disk for the next run to replay. A token that Claude Code's helper validator would reject — anything but 1..=16384 characters of printable ASCII with no whitespace — is refused here, with a diagnostic naming the gateway, instead of being printed to fail authentication with no explanation. `shunt gateway logout` removes the session but deliberately leaves the empty sibling `.lock` file in place: that inode is what logout, login, and refresh serialize on, and unlinking it would let an in-flight holder keep a lock on the old inode while the next process locks a freshly created one, so the two would stop excluding each other.
+
+## `shunt gateway claude`
+
+Launch Claude Code against the gateway without editing any settings file:
+
+```bash
+shunt gateway claude
+shunt gateway claude -p 'summarize this repo' --model opus
+```
+
+It runs `claude` with an inline `--settings` document that points `ANTHROPIC_BASE_URL` at the gateway from the stored session and sets `apiKeyHelper` to this binary's absolute path plus `gateway token`. The document is scoped to that one process: `~/.claude/settings.json` is never modified, and it takes precedence over an `ANTHROPIC_BASE_URL` already exported in your shell (measured against Claude Code 2.1.234).
+
+The launched process also has 34 credential and provider-mode variables removed from its environment: the Anthropic, AWS, and Foundry credential variables, the `CLAUDE_CODE_USE_*` provider selectors together with their region and project siblings, the `CLAUDE_CODE_SKIP_*_AUTH` modifiers, the host-managed indirection variables, `ANTHROPIC_CUSTOM_HEADERS`, and both `*_FILE_DESCRIPTOR` readers — plus, resolved at launch, whatever variable `CLAUDE_CODE_HOST_AUTH_ENV_VAR` names, since that one points at an arbitrary name no fixed list can express. This is what makes the `apiKeyHelper` actually reachable: a settings `env` block is applied over the inherited environment, so an exported `ANTHROPIC_AUTH_TOKEN` would otherwise beat the helper outright (the helper is consulted only when that variable is absent), and `CLAUDE_CODE_USE_GATEWAY` would flip the session into gateway provider mode, a path that never consults the helper at all. `ANTHROPIC_BASE_URL` is deliberately left in place — the settings document injects it.
+
+That closes the **ambient-environment** channel, and only that. A credential can still reach the launched client through a settings-file `env` block (Claude Code re-applies those after launch), an `apiKeyHelper` you already set in your own settings, an existing saved login in the credential store, or the well-known-path fallback both file-descriptor readers consult with no variable set at all. It is not, on its own, a guarantee that the session runs in first-party mode.
+
+Everything after `claude` is forwarded verbatim. Two exceptions when they lead the argument list: `--help` prints shunt's help, and `--config` is rejected with an error rather than being silently consumed by shunt's global option. Pass either after `--` to send it to `claude`:
+
+```bash
+shunt gateway claude -- --config /path/to/claude/config
+```
+
+Because the credential arrives through `apiKeyHelper`, the session stays in Claude Code's ordinary first-party mode rather than becoming a signed-in gateway session — the credential slot the token lands in is what selects the mode. See [Gateway Login](/guides/gateway-login/#sign-in-from-the-terminal-instead) for what that trades away.
+
+## `shunt gateway logout`
+
+Discard the stored session. Idempotent — removing a session that is already gone succeeds.
+
+```bash
+shunt gateway logout
+```
 
 ## `shunt login claude`
 
@@ -146,6 +213,75 @@ Run xAI's device-code OAuth flow and save its refreshable credential:
 shunt login xai
 ```
 
+## `shunt login antigravity`
+
+Run Antigravity's Google authorization-code flow and save its refreshable credential to
+`~/.shunt/antigravity-auth.json` (override with `SHUNT_ANTIGRAVITY_AUTH_FILE`):
+
+```bash
+shunt login antigravity
+```
+
+The browser callback uses the fixed loopback port **51121**, because that is the redirect URI
+registered for Antigravity's OAuth client — unlike shunt's other loopback logins it cannot fall back
+to an ephemeral port, so free that port if the login reports it is in use.
+
+Antigravity requests two scopes a Gemini CLI login never carries (`cclog`,
+`experimentsandconfigs`), so this credential and the `gemini` provider's `~/.gemini/oauth_creds.json`
+are **not** interchangeable in either direction.
+
+On Unix, a login run while a shunt process is serving Antigravity requests serializes its credential
+write against that process's writeback through an advisory lock on an empty sibling
+`antigravity-auth.json.lock` file, so the login cannot land inside the running process's
+read-modify-write of the project id and be discarded by it. That is narrower than making the two
+processes atomic: a login that completes while a token refresh is already in flight upstream can
+still be superseded by that refresh's writeback. Off Unix there is no advisory file lock at all —
+nothing is serialized, a rotated refresh token can be lost either way, and shunt warns once on
+stderr when it reaches that path. The lock file holds no state and is deliberately left in place:
+that inode is what the two serialize on.
+
+The login also resolves the Code Assist project, provisioning one for a first-time account, and
+stores it alongside the tokens so no discovery runs in front of a request. If that step fails the
+credential is still saved and discovery is retried on the first request. Discovery addresses the
+`base_url` of the Antigravity upstream your config routes to — the same host the request path uses.
+Only a provider that really is that upstream counts (`kind = "antigravity"` with
+`auth = "antigravity_oauth"`), because config validation has pinned only such a `base_url` to the
+Code Assist host or loopback; the provider name itself does not matter, so an ordered
+`[[upstreams]]` entry or a `[providers.*]` table under your own name is honored as well. When no
+route selects one, the single Antigravity upstream you declared is used — the built-in
+`[providers.antigravity]` table still pointing at the production host counts as no declaration,
+since that host is the fallback anyway. An unreadable config, a table
+of some other kind parked under the `antigravity` name, and several routed Antigravity upstreams
+with no `antigravity`-named one among them all fall back to the default Code Assist backend rather
+than send the subscription token to a host you did not select.
+
+## `shunt login kimi`
+
+Run Kimi Code's device-authorization ([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)) OAuth flow and store a refreshable credential:
+
+```bash
+shunt login kimi --name <account-name>
+```
+
+`--name` is required; omitting it fails with `` `shunt login kimi` requires --name <account-name> ``. `--mode` and `--long-lived` are rejected, since Kimi Code OAuth tokens are always refreshable; `--manual` is claude-only.
+
+Login generates the account's `X-Msh-Device-Id` once and reuses it on every later refresh, so the account presents a stable device identity to Kimi. No Kimi login response has been observed to carry a stable upstream account identifier, so a scanned entry's pool identity is its own file name.
+
+The file is written atomically at `0600` on Unix; a store directory that shunt creates is made with `0700`. `SHUNT_KIMI_ACCOUNTS_DIR` overrides the store directory; reusing a name replaces its file.
+
+The result is consumed by a provider with `auth = "kimi_oauth"`, valid only with `kind = "anthropic"` and a `kimi.com` base URL. Reference it with a name-only pool entry:
+
+```toml
+[[providers.kimi-code.accounts]]
+name = "primary"
+```
+
+A config declares its providers with either `[[upstreams]]` or `[providers.*]`, never both, so in an `[[upstreams]]` config name the accounts in the auth map instead: `auth = { mode = "kimi_oauth", accounts = ["primary"] }`.
+
+Kimi rotates the refresh token on every refresh, and the access token it issues lasts only about 15 minutes, so refreshes are frequent. The one-owner-per-refreshable-login rule above therefore applies here with full force: two shunt processes sharing one Kimi account file will invalidate each other on the first refresh.
+
+See [Kimi](/providers/kimi/#kimi-code-oauth-subscription) for complete upstream configuration.
+
 ## Anthropic account-pool authentication
 
 For an Anthropic provider with `auth = "claude_oauth"`, an account can use a name-only store entry, `credentials = "~/.claude/.credentials.json"`, or `token_env = "YOUR_ENV_NAME"`. The store entry can come from full OAuth, an imported Claude Code login, or the setup-token flow described above. See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for complete configuration and failover rules.
@@ -158,7 +294,10 @@ For an Anthropic provider with `auth = "claude_oauth"`, an account can use a nam
 | `RUST_LOG` | Log filter, e.g. `shunt=debug` |
 | `SHUNT_CLIENT_TOKENS` | Client tokens for [`[server.auth]`](/guides/shared-gateway/) (name configurable via `tokens_env`) |
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | Static token for `shunt token` |
+| `SHUNT_GATEWAY_SESSION_FILE` | Alternate session file for the `shunt gateway` commands (default `~/.shunt/gateway/session.json`); unrelated to `SHUNT_GATEWAY_TOKEN` above |
 | `CLAUDE_CREDENTIALS` | Alternate credentials file path for `shunt token` and refreshable `shunt login claude` import |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | Alternate shunt-managed Claude account-store directory |
+| `SHUNT_KIMI_ACCOUNTS_DIR` | Alternate shunt-managed Kimi Code account-store directory |
+| `SHUNT_ANTIGRAVITY_AUTH_FILE` | Alternate credential file for `shunt login antigravity` (default `~/.shunt/antigravity-auth.json`) |
 | Account-specific variable named by `token_env` | Setup token for an Anthropic `claude_oauth` pool entry; used verbatim |
 | `OPENAI_API_KEY` | Default key env for the `openai` provider (per-provider via `api_key_env`) |

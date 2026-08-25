@@ -90,6 +90,38 @@ Claude Code 会在 **`x-api-key` 和 `Authorization: Bearer` 两者中**都发�
 
 
 
+### `shunt gateway token` helper
+
+如果 shunt 启用了 [`[server.gateway]`](/zh-cn/guides/gateway-login/)，每位用户就可以拥有自己的网关会话，而不是共用一个 token。先登录一次，然后使用第二个 helper：
+
+```bash
+shunt gateway login https://gateway.example.com
+```
+
+```json
+// ~/.claude/settings.json
+{
+  "apiKeyHelper": "/path/to/shunt gateway token"
+}
+```
+
+它与上面的 `shunt token` 是不同的凭据：那个打印上游 Claude 订阅 token，这个打印 shunt 部署签发给你的 token。helper 会在距离过期不足 5 分钟时刷新，并在文件锁下进行，以免并发的 Claude Code 会话重放只能用一次的 refresh token。用 `shunt gateway logout` 删除会话。
+
+### 跳过设置文件：`shunt gateway claude`
+
+如果完全不想改动 `~/.claude/settings.json`，可以让 shunt 只为一个进程完成接线：
+
+```bash
+shunt gateway claude
+shunt gateway claude -p 'summarize this repo' --model opus
+```
+
+它在启动 Claude Code 时附带一个同时包含网关 base URL 和 `apiKeyHelper` 的内联 `--settings` 文档，只作用于这次调用 —— 你的设置文件不受影响，而且该文档的优先级高于 shell 中已经 export 的 `ANTHROPIC_BASE_URL`（针对 Claude Code 2.1.234 实测）。`claude` 之后的参数会原样转发；只有位于最前面的 `--help` 和 `--config` 会被 shunt 接管（`--config` 会被拒绝而不是被悄悄吞掉），因此 `claude` 自己的 `--help` 或 `--config` 请放在 `--` 之后。参见 [`shunt gateway claude`](/zh-cn/reference/cli/#shunt-gateway-claude)。
+
+它还会从被启动的进程中移除 34 个凭据与 provider 模式相关的变量，以及 `CLAUDE_CODE_HOST_AUTH_ENV_VAR` 所指向的那个变量。否则，一个已 export 的 `ANTHROPIC_AUTH_TOKEN` 会直接压过 `apiKeyHelper`，而 `CLAUDE_CODE_USE_GATEWAY` 会把客户端切换到网关 provider 模式 —— 那条路径根本不会调用 helper；任何一个都会悄悄让这套接线失效。`ANTHROPIC_BASE_URL` 会被保留，因为它由 settings 文档注入。这样关闭的只是环境变量这一条通道：settings 文件的 `env` 块、你自己设置里已有的 `apiKeyHelper`、已保存的登录，或者 file-descriptor 读取器的 well-known 路径回退，都仍然可以向被启动的客户端提供凭据。
+
+
+
 ## 3. 提供映射提供方的凭据
 
 这些进入 **shunt 的环境**,而非 Claude Code 的:

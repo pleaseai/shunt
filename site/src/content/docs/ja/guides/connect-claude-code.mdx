@@ -90,6 +90,38 @@ Claude Code は `apiKeyHelper` の値を `x-api-key` と `Authorization: Bearer`
 
 
 
+### `shunt gateway token` ヘルパー
+
+shunt が [`[server.gateway]`](/ja/guides/gateway-login/) を運用しているなら、共有トークン 1 つではなくユーザーごとに自分のゲートウェイセッションを持てます。一度サインインしてから、2 つ目のヘルパーを使います:
+
+```bash
+shunt gateway login https://gateway.example.com
+```
+
+```json
+// ~/.claude/settings.json
+{
+  "apiKeyHelper": "/path/to/shunt gateway token"
+}
+```
+
+これは上の `shunt token` とは別の認証情報です: あちらはアップストリームの Claude サブスクリプショントークンを、こちらは shunt デプロイがあなたに発行したトークンを出力します。ヘルパーは有効期限の 5 分前にリフレッシュし、同時に動く Claude Code セッションが使い捨ての refresh token を再送しないようファイルロックの下で処理します。`shunt gateway logout` でセッションを破棄します。
+
+### 設定ファイルを使わない: `shunt gateway claude`
+
+`~/.claude/settings.json` に一切触れたくない場合は、プロセス 1 つ分だけ shunt に設定させます:
+
+```bash
+shunt gateway claude
+shunt gateway claude -p 'summarize this repo' --model opus
+```
+
+ゲートウェイの base URL と `apiKeyHelper` の両方を含むインラインの `--settings` ドキュメントを付けて Claude Code を起動し、その呼び出しにだけ適用します — 設定ファイルはそのままで、シェルで既に export 済みの `ANTHROPIC_BASE_URL` よりもこのドキュメントが優先されます（Claude Code 2.1.234 で実測）。`claude` 以降の引数はそのまま転送されますが、先頭に来た `--help` と `--config` だけは shunt が受け取ります（`--config` は黙って飲み込まれる代わりに拒否されます）。そのため `claude` 自身の `--help` や `--config` は `--` の後ろに置いてください。[`shunt gateway claude`](/ja/reference/cli/#shunt-gateway-claude) を参照してください。
+
+さらに、起動されるプロセスから資格情報とプロバイダーモードに関する 34 個の変数と、`CLAUDE_CODE_HOST_AUTH_ENV_VAR` が指す変数も取り除きます。そうしないと、export 済みの `ANTHROPIC_AUTH_TOKEN` が `apiKeyHelper` を完全に上回り、`CLAUDE_CODE_USE_GATEWAY` はクライアントをゲートウェイのプロバイダーモードへ切り替えてヘルパーを一切参照させなくなります — どちらか一方だけでもこの配線を黙って無効化します。`ANTHROPIC_BASE_URL` は settings ドキュメントが注入するため、そのまま残されます。これで閉じられるのはアンビエント環境の経路だけです。settings ファイルの `env` ブロック、利用者が自分の設定に既に置いている `apiKeyHelper`、既存の保存済みログイン、あるいは file-descriptor リーダーの well-known パスのフォールバックは、いずれも起動されたクライアントに資格情報を供給しえます。
+
+
+
 ## 3. マッピングされたプロバイダーの認証情報を用意する
 
 これらは Claude Code ではなく **shunt の環境**へ渡します。

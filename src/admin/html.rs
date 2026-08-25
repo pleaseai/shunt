@@ -215,8 +215,8 @@ pub fn dashboard_page(csrf: &str) -> String {
 <tbody id="codex-accounts"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody></table></div>
 
 <h2>Managed pool health</h2>
-<div class="card overflow"><table><thead><tr><th>Provider</th><th>Account</th><th>State</th><th>5h</th><th>7d</th><th>7d_oi</th><th>Status</th><th>Cooldown</th></tr></thead>
-<tbody id="pool"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody></table></div>
+<div class="card overflow"><table><thead><tr><th>Provider</th><th>Account</th><th>Plan</th><th>State</th><th>5h</th><th>7d</th><th>7d_oi</th><th>Status</th><th>Cooldown</th></tr></thead>
+<tbody id="pool"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody></table></div>
 </details>
 
 <script>

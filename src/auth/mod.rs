@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf};
+use std::{env, path::PathBuf, time::Duration};
 
 use axum::{http::StatusCode, response::IntoResponse};
 
@@ -9,13 +9,18 @@ use crate::{
     routing::Route,
 };
 
+pub mod antigravity;
+pub(crate) mod callback;
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod gateway;
 pub mod google;
 pub mod inbound;
+pub mod kimi;
 pub mod observation;
 pub mod shared;
+pub(crate) mod slots;
 pub mod xai;
 
 // TODO(M2): Add the optional `shunt login` PKCE loopback fallback. M2 currently
@@ -40,9 +45,22 @@ pub enum Credential {
         access_token: String,
         project_id: String,
     },
+    /// Antigravity OAuth bearer & Code Assist project ID. Distinct from
+    /// [`Credential::GoogleOauth`] because the tokens come from different OAuth
+    /// clients with different scopes and are not interchangeable.
+    AntigravityOauth {
+        access_token: String,
+        project_id: String,
+    },
     ClaudeOauth {
         access_token: String,
         account_uuid: Option<String>,
+    },
+    /// Kimi Code subscription OAuth: bearer plus the account's stable
+    /// `X-Msh-Device-Id` (sent as one of the required `X-Msh-*` headers).
+    KimiOauth {
+        access_token: String,
+        device_id: Option<String>,
     },
 }
 
@@ -97,6 +115,9 @@ pub async fn resolve_credential(
         AuthMode::ClaudeOauth => Err(auth_error(
             "claude_oauth is resolved per-account by the account pool, not resolve_credential",
         )),
+        AuthMode::KimiOauth => Err(auth_error(
+            "kimi_oauth is resolved per-account by the account pool, not resolve_credential",
+        )),
         AuthMode::GoogleOauth => {
             let store =
                 google::auth::GoogleAuthStore::new(default_google_auth_path(), client.clone());
@@ -107,6 +128,23 @@ pub async fn resolve_credential(
                     access_token: credential.access_token,
                     project_id: credential.project_id,
                 })
+        }
+        AuthMode::AntigravityOauth => {
+            let store = antigravity::auth::AntigravityAuthStore::new(
+                antigravity::default_antigravity_auth_path(),
+                client.clone(),
+                provider.base_url.clone(),
+            );
+            with_credential_timeout(
+                ANTIGRAVITY_CREDENTIAL_TIMEOUT,
+                store.get_valid(),
+                "Antigravity credential resolution timed out",
+            )
+            .await
+            .map(|credential| Credential::AntigravityOauth {
+                access_token: credential.access_token,
+                project_id: credential.project_id,
+            })
         }
         AuthMode::None => Ok(Credential::Passthrough),
     }
@@ -178,6 +216,54 @@ pub async fn resolve_claude_account(
         .map_err(|error| auth_error(error.to_string()))
 }
 
+/// Resolve one Kimi Code OAuth account for the account pool. Mirrors
+/// [`resolve_claude_account`]: `token_env` and an explicit `credentials` path
+/// override the default named-account file
+/// (`~/.shunt/accounts/kimi/<name>.json`). Both are operator-reachable today
+/// via `[[providers.*.accounts]]`/`account_scope` (`AuthMap::KimiOauth` in
+/// `config/upstreams.rs`), and this is the resolver the Kimi account pool
+/// calls per candidate during failover. A `token_env`-sourced token carries no
+/// device id (no account file to persist one in). Kimi requires
+/// `X-Msh-Device-Id` on every call, so it is never omitted: the anthropic
+/// adapter's outbound header injection substitutes `process_device_id()` for a
+/// `None` device id — such accounts fall back to that single process-wide
+/// value and so share one device identity with each other when presenting to
+/// Kimi, rather than a persisted per-account one.
+pub async fn resolve_kimi_account(
+    account: &crate::config::AccountConfig,
+    // Unlike `resolve_claude_account`/`resolve_chatgpt_account`, the store
+    // built below is not handed the caller's proxy client: its refresh POST
+    // carries the account's refresh_token, so it must always go through the
+    // redirect-hardened `token_refresh_client()` rather than a client that
+    // follows redirects freely.
+    _client: &reqwest::Client,
+) -> Result<Credential, AdapterError> {
+    if let Some(token_env) = account.token_env.as_deref() {
+        let access_token = env::var(token_env)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| auth_error(format!("{token_env} is not set")))?;
+        return Ok(Credential::KimiOauth {
+            access_token,
+            device_id: None,
+        });
+    }
+
+    let path = account
+        .credentials
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| kimi::store::account_path(&account.name));
+    let store = kimi::auth::KimiAuthStore::new(path, crate::auth::shared::token_refresh_client());
+    store
+        .get_valid()
+        .await
+        .map(|credential| Credential::KimiOauth {
+            access_token: credential.access_token,
+            device_id: credential.device_id,
+        })
+}
+
 /// Resolve one ChatGPT (Codex) OAuth account for the account pool. Unlike
 /// [`resolve_claude_account`], there is no account UUID to carry: the
 /// account id is embedded in the ChatGPT access token itself and is read back
@@ -245,6 +331,32 @@ fn resolve_api_key(name: &str, provider: &ProviderConfig) -> Result<String, Adap
     Err(auth_error(format!("{env_name} is not set")))
 }
 
+/// `AntigravityAuthStore::get_valid` documents a worst case of roughly 428s
+/// (~7 minutes) when it has to refresh and then onboard a projectless account
+/// while holding `REFRESH_LOCK` — acceptable for an interactive login, not
+/// for a proxied request. Bound resolution well under that so a stuck
+/// upstream fails the request instead of hanging it for the full 7 minutes.
+const ANTIGRAVITY_CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Wrap a credential-resolution future with a timeout, mapping expiry to a
+/// clear auth error. A dropped future here does not tear a credential file
+/// mid-write: writeback (see `AntigravityAuthStore::write_holding_lock`) goes
+/// through `tokio::task::spawn_blocking`, which runs the write to completion on
+/// the blocking pool even once the awaiting future is cancelled. The
+/// `CREDENTIAL_FILE_LOCK` guard travels *into* that blocking task rather than
+/// staying a local of the cancelled future, so the lock outlives the write
+/// too — cancellation cannot hand the file to another writer while a rename is
+/// still in flight.
+async fn with_credential_timeout<T>(
+    duration: Duration,
+    future: impl std::future::Future<Output = Result<T, AdapterError>>,
+    timeout_message: &str,
+) -> Result<T, AdapterError> {
+    tokio::time::timeout(duration, future)
+        .await
+        .map_err(|_| auth_error(timeout_message.to_string()))?
+}
+
 pub fn auth_error(message: impl Into<String>) -> AdapterError {
     let error = ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message);
     AdapterError {
@@ -310,9 +422,127 @@ pub fn default_xai_auth_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{AccountConfig, Config};
+    #![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 
-    use super::{resolve_api_key, resolve_chatgpt_account, resolve_claude_account, Credential};
+    use crate::config::{AccountConfig, Config};
+    use crate::routing::AdapterKind;
+
+    use super::{
+        resolve_api_key, resolve_chatgpt_account, resolve_claude_account, resolve_credential,
+        resolve_kimi_account, with_credential_timeout, Credential, Route,
+    };
+
+    #[tokio::test]
+    async fn credential_timeout_maps_a_stalled_future_to_a_clear_auth_error() {
+        use axum::body::to_bytes;
+        // Proves the AntigravityOauth arm's timeout wrapper, without waiting
+        // out the real ANTIGRAVITY_CREDENTIAL_TIMEOUT: a future that never
+        // resolves must still surface as a named auth error rather than
+        // hanging the request forever.
+        let error = with_credential_timeout(
+            std::time::Duration::from_millis(10),
+            std::future::pending::<Result<(), crate::adapters::AdapterError>>(),
+            "Antigravity credential resolution timed out",
+        )
+        .await
+        .unwrap_err();
+
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("Antigravity credential resolution timed out"),
+            "expected the timeout to surface its named message, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn antigravity_credential_resolution_discovers_against_the_provider_configured_base_url()
+    {
+        // A store-level test alone would not catch this arm regressing back
+        // to a hardcoded host: it only proves `AntigravityAuthStore::new`
+        // honors whatever base_url it is handed, not that `resolve_credential`
+        // still passes `provider.base_url` through. Prove the wiring
+        // end-to-end instead: a wiremock server as the provider's base_url,
+        // a stored credential with no cached project_id, and an assertion
+        // that discovery actually reached the mock.
+        use crate::auth::antigravity::{self, ANTIGRAVITY_AUTH_FILE_ENV_LOCK};
+        use crate::auth::shared::EnvVarGuard;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Declared before the env guard so it drops (and releases) last,
+        // after `_env_var_guard` has already removed the override — mirrors
+        // the pairing in src/reload.rs's antigravity-file-env tests.
+        let _lock = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "cloudaicompanionProject": "proj-wired"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-resolve-credential-antigravity-wiring-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let credential_path = dir.join("antigravity-auth.json");
+        let _env_var_guard = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+
+        let expiry = (std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        antigravity::auth::write_stored(
+            &credential_path,
+            &antigravity::auth::StoredAuth {
+                access_token: "valid-access-token".to_string(),
+                refresh_token: "refresh".to_string(),
+                expiry_date: Some(expiry),
+                email: None,
+                project_id: None,
+            },
+        )
+        .unwrap();
+
+        let config_path = dir.join("shunt.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "[providers.antigravity]\nauth = \"antigravity_oauth\"\nbase_url = \"{}\"\n",
+                server.uri()
+            ),
+        )
+        .unwrap();
+        let config = Config::load(Some(&config_path)).unwrap();
+
+        let route = Route {
+            provider: "antigravity".to_string(),
+            adapter: AdapterKind::Gemini,
+            model: "gemini-3-pro".to_string(),
+            upstream_model: "gemini-3-pro".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+
+        resolve_credential(&config, &route, &reqwest::Client::new())
+            .await
+            .expect("credential resolution must succeed against the mock backend");
+
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn resolves_claude_account_token_env_verbatim_with_uuid() {
@@ -403,6 +633,77 @@ mod tests {
             }
         );
         std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolves_kimi_account_token_env_verbatim() {
+        // Mirrors `resolves_claude_account_token_env_verbatim_with_uuid`: a
+        // `token_env`-sourced Kimi credential carries no device id (no
+        // account file to have persisted one in).
+        let env_name = format!("SHUNT_TEST_KIMI_TOKEN_{}", std::process::id());
+        std::env::set_var(&env_name, "  kimi-setup-token-verbatim  ");
+        let account = AccountConfig {
+            name: "ci".to_string(),
+            token_env: Some(env_name.clone()),
+            ..Default::default()
+        };
+
+        let credential = resolve_kimi_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            credential,
+            Credential::KimiOauth {
+                access_token: "  kimi-setup-token-verbatim  ".to_string(),
+                device_id: None,
+            }
+        );
+        std::env::remove_var(env_name);
+    }
+
+    #[tokio::test]
+    async fn name_only_kimi_account_resolves_store_token() {
+        // Mirrors `name_only_claude_account_resolves_store_token`: a
+        // name-only account resolves through the on-disk store, which does
+        // carry a device id.
+        let _guard = crate::auth::kimi::store::TEST_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-name-only-kimi-auth-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("SHUNT_KIMI_ACCOUNTS_DIR", &dir);
+        let far_future =
+            crate::auth::kimi::auth::expires_at_ms(Some(3600), std::time::SystemTime::now());
+        crate::auth::kimi::store::store_oauth_tokens(
+            "main",
+            "store-token",
+            "store-refresh",
+            far_future,
+            "device-abc-123",
+        )
+        .unwrap();
+        let account = AccountConfig {
+            name: "main".to_string(),
+            ..Default::default()
+        };
+
+        let credential = resolve_kimi_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            credential,
+            Credential::KimiOauth {
+                access_token: "store-token".to_string(),
+                device_id: Some("device-abc-123".to_string()),
+            }
+        );
+        std::env::remove_var("SHUNT_KIMI_ACCOUNTS_DIR");
         let _ = std::fs::remove_dir_all(dir);
     }
 

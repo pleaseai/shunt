@@ -8,13 +8,16 @@ use wiremock::{
 };
 
 use crate::{
-    auth::inbound::{is_consumed_by_shunt, InboundAuth},
-    config::{AccountConfig, ApiKeyHeader, AuthMode, ProviderKind},
+    auth::{
+        inbound::{is_consumed_by_shunt, InboundAuth},
+        slots::ShuntCredentials,
+    },
+    config::{AccountConfig, AdminKey, AdminKeyring, ApiKeyHeader, AuthMode, ProviderKind, Secret},
     gateway::{approval::Identity, jwt, GatewayAuth},
     server::AppState,
 };
 
-use super::{anthropic_provider, fetch, InboundCredentialContext};
+use super::{anthropic_provider, fetch};
 
 /// Point the default anthropic provider at `base_url` with the given auth.
 fn config_for(base_url: &str, auth: AuthMode) -> crate::config::Config {
@@ -85,7 +88,7 @@ fn passthrough_headers() -> HeaderMap {
 }
 
 async fn fetch_open(state: &AppState, inbound: &HeaderMap) -> Option<Vec<super::ModelEntry>> {
-    fetch(state, inbound, InboundCredentialContext::default()).await
+    fetch(state, inbound, ShuntCredentials::for_test(None, None, None)).await
 }
 
 fn inbound_auth(token: &str) -> InboundAuth {
@@ -151,10 +154,7 @@ async fn assert_genuine_api_key_forwarded_and_authorization_stripped(
     let models = fetch(
         state,
         &headers,
-        InboundCredentialContext {
-            static_auth: None,
-            gateway_auth: Some(gateway),
-        },
+        ShuntCredentials::for_test(Some(gateway), None, None),
     )
     .await;
 
@@ -231,10 +231,7 @@ async fn consumed_x_api_key_is_not_forwarded_to_passthrough_upstream() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: Some(&auth),
-            gateway_auth: None,
-        },
+        ShuntCredentials::for_test(None, Some(&auth), None),
     )
     .await;
 
@@ -263,10 +260,7 @@ async fn a_gateway_jwt_is_not_forwarded_in_the_api_key_slot() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: Some(&auth),
-            gateway_auth: Some(&gateway),
-        },
+        ShuntCredentials::for_test(Some(&gateway), Some(&auth), None),
     )
     .await;
 
@@ -296,10 +290,7 @@ async fn upstream_x_api_key_survives_when_inbound_auth_is_also_configured() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: Some(&auth),
-            gateway_auth: None,
-        },
+        ShuntCredentials::for_test(None, Some(&auth), None),
     )
     .await;
 
@@ -338,10 +329,7 @@ async fn a_gateway_jwt_present_only_in_the_api_key_slot_is_not_forwarded() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: None,
-            gateway_auth: Some(&gateway),
-        },
+        ShuntCredentials::for_test(Some(&gateway), None, None),
     )
     .await;
 
@@ -374,10 +362,7 @@ async fn a_static_token_configured_on_the_authorization_header_is_not_forwarded_
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: Some(&auth),
-            gateway_auth: None,
-        },
+        ShuntCredentials::for_test(None, Some(&auth), None),
     )
     .await;
 
@@ -398,6 +383,7 @@ fn non_utf8_value_is_not_consumed_by_shunt() {
     assert!(!is_consumed_by_shunt(
         non_utf8.as_bytes(),
         Some(&auth),
+        None,
         None
     ));
 }
@@ -407,7 +393,7 @@ fn garbage_three_segment_string_is_not_consumed_by_shunt() {
     // Malformed-input control: right segment count, no valid base64/JSON
     // payload — must not panic and must not be treated as shunt's own.
     let auth = gateway_auth();
-    assert!(!is_consumed_by_shunt(b"a.b.c", Some(&auth), None));
+    assert!(!is_consumed_by_shunt(b"a.b.c", Some(&auth), None, None));
 }
 
 /// A different secret than `gateway_auth()` verifies with — for minting a
@@ -445,10 +431,7 @@ async fn expired_gateway_jwt_in_x_api_key_is_not_forwarded() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: None,
-            gateway_auth: Some(&gateway),
-        },
+        ShuntCredentials::for_test(Some(&gateway), None, None),
     )
     .await;
 
@@ -495,10 +478,7 @@ async fn bad_signature_gateway_jwt_is_not_forwarded() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: None,
-            gateway_auth: Some(&gateway),
-        },
+        ShuntCredentials::for_test(Some(&gateway), None, None),
     )
     .await;
 
@@ -844,4 +824,80 @@ fn anthropic_default_provider_is_used() {
     let (name, _) = anthropic_provider(&config).unwrap();
 
     assert_eq!(name, config.server.default_provider);
+}
+
+// --- Admin credentials (#346) ------------------------------------------------
+
+const ADMIN_WRITE_KEY: &str = "admin-write-key-0123456789abcdef0";
+
+/// A resolved admin keyring holding one credential of each kind, so the
+/// discovery-path predicate is exercised against the same three sets the
+/// admin/spend routers authenticate against.
+fn admin_keyring() -> AdminKeyring {
+    AdminKeyring::new(
+        &[(
+            "ops".to_string(),
+            "admin-legacy-token-0123456789abcd".to_string(),
+        )],
+        &[AdminKey {
+            id: "writer".to_string(),
+            key: Secret::from(ADMIN_WRITE_KEY),
+        }],
+        &[AdminKey {
+            id: "reader".to_string(),
+            key: Secret::from("admin-read-key-0123456789abcdef01"),
+        }],
+    )
+}
+
+#[tokio::test]
+async fn an_admin_credential_is_not_forwarded_in_the_api_key_slot() {
+    // `AdminAuth::authenticate_credential` accepts `x-api-key`, so the
+    // discovery path — which relays the caller's headers to the passthrough
+    // upstream — has to strip it there too, or an admin key that can provision
+    // upstream accounts is handed to the provider verbatim.
+    let server = MockServer::start().await;
+    mount_models_ok(&server, single_model_page("claude-opus-5")).await;
+    let state = state_for(&server.uri(), AuthMode::Passthrough);
+    let keyring = admin_keyring();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", ADMIN_WRITE_KEY.parse().unwrap());
+
+    let models = fetch(
+        &state,
+        &headers,
+        ShuntCredentials::for_test(None, None, Some(&keyring)),
+    )
+    .await;
+
+    // The mock is mounted, so a forwarded credential would have produced a
+    // model; the control below proves an unrelated value still reaches it.
+    assert!(models.is_none());
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_non_admin_api_key_survives_when_admin_credentials_are_configured() {
+    // Non-vacuity control: configuring `[server.admin]` must not itself strip
+    // the slot — only a value that is actually one of the admin credentials.
+    let server = MockServer::start().await;
+    mount_models_ok_with_headers(
+        &server,
+        &[("x-api-key", "sk-ant-genuine-upstream-key")],
+        single_model_page("claude-opus-5"),
+    )
+    .await;
+    let state = state_for(&server.uri(), AuthMode::Passthrough);
+    let keyring = admin_keyring();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", "sk-ant-genuine-upstream-key".parse().unwrap());
+
+    let models = fetch(
+        &state,
+        &headers,
+        ShuntCredentials::for_test(None, None, Some(&keyring)),
+    )
+    .await;
+
+    assert_eq!(models.unwrap().len(), 1);
 }

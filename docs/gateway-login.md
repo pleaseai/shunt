@@ -240,6 +240,72 @@ Sign-in requires a browser. Personal single-user installations that do not need
 managed identity should continue to use `ANTHROPIC_BASE_URL` and, when needed,
 `[server.auth]`; that path trips a much smaller set of client restrictions.
 
+A client-side CLI route trades that feature set differently. `shunt gateway
+login <url>` runs the same device flow from the terminal and stores the issued
+session locally, but only once the access token clears the same `apiKeyHelper`
+gate `shunt gateway token` applies — a deployment that cannot issue a conforming
+token fails the login rather than storing a session that reports success and can
+never be used; `shunt gateway token` prints the access token for Claude Code's
+`apiKeyHelper`, and `shunt gateway claude` launches Claude Code with that wiring
+applied to a single process. **This does not change the browser requirement
+above** — approval still happens on the `/device` page, `POST /device` is still
+same-origin protected, and an OIDC-only deployment still renders no password
+form. What it changes is which credential slot the token arrives in on the
+client, and that slot is what selects Claude Code's provider mode: a
+helper-supplied credential leaves the session in the client's ordinary
+first-party mode, so the restrictions tabulated above — which apply to a
+signed-in gateway session — are not taken on, and the `opus`/`sonnet` aliases
+are not remapped to the older ids a gateway session pins (measured against
+Claude Code 2.1.234). One tier does not survive, and for a reason unrelated to
+the gateway session: the client gates Fable availability on an exact host match
+against `api.anthropic.com`, so pointing `ANTHROPIC_BASE_URL` at any other
+host — shunt included — hides Fable from the model picker and from the
+availability check automatic tier selection consults. `ANTHROPIC_DEFAULT_FABLE_MODEL`
+overrides that gate, being read ahead of the host check rather than acting only
+as an alias-to-id mapping, so a session that needs Fable can set it explicitly;
+`shunt gateway claude` does not set it for you. That is narrower than "no restrictions": supplying any
+credential, `apiKeyHelper` included, trips Claude Code's separate credential-type
+gate (prompt-cache TTL defaults, Remote Control, voice dictation, artifact
+publishing), which is independent of the signed-in session. The cost is symmetrical: a helper-credential session was
+not observed fetching `GET /managed/settings` (same measurement), so per-user
+policy enforcement in the client remains a `forceLoginMethod: "gateway"`
+property. Users are still individually identified at the gateway either way,
+because the token is the same per-user device-flow session.
+
+The launcher does not rely on the settings document alone to reach the helper.
+Claude Code applies a settings `env` block over the inherited environment, so
+every ambient variable the block does not name survives into the child: an
+exported `ANTHROPIC_AUTH_TOKEN` would beat `apiKeyHelper` outright (the helper
+is consulted only when that variable is absent), and `CLAUDE_CODE_USE_GATEWAY`
+would flip the session into gateway provider mode, a path that never consults
+the helper at all. `shunt gateway claude` therefore removes 34 credential and
+provider-mode variables from the launched process — the Anthropic/AWS/Foundry
+credential variables, the `CLAUDE_CODE_USE_*` provider selectors and their
+region/project siblings, the `CLAUDE_CODE_SKIP_*_AUTH` modifiers, the
+host-managed indirection variables, `ANTHROPIC_CUSTOM_HEADERS`, and both
+`*_FILE_DESCRIPTOR` readers — plus, resolved at launch, whatever variable
+`CLAUDE_CODE_HOST_AUTH_ENV_VAR` names, since that one points at an arbitrary
+name no fixed list can express. `ANTHROPIC_BASE_URL` is deliberately left in
+place; the settings document injects it. This closes the **ambient-environment**
+channel and only that: a settings-file `env` block is re-applied after launch, an
+`apiKeyHelper` may already be set in the user's own settings, an existing saved
+login lives in the credential store, and both file-descriptor readers fall back
+to a well-known path consulted with no variable set at all. It is not a
+guarantee that the session runs in first-party mode.
+
+The transport floor on that client route has one narrow widening. A plain-http
+gateway — `shunt gateway login http://10.0.0.5:8080`, accepted with the
+unencrypted-traffic warning that also repeats on every refresh — may advertise
+plaintext endpoints on its **own origin** (scheme, host, and port all matching
+the operator-supplied base URL), and the login completes. A plaintext endpoint
+on any other origin is refused — with one carve-out that is independent of this
+allowance and applies to every gateway, including an https one: a loopback
+endpoint never leaves the machine, so the shared `is_safe_refresh_url` floor
+accepts it outright. The same-origin allowance is computed from the
+operator-supplied base URL and never from the discovery document, so a hostile
+or MITM'd document cannot name a third-party plaintext host and have the
+refresh token POSTed there.
+
 For per-user policy after sign-in, shunt now serves authenticated
 `GET /managed/settings` with ordered email matching, `ETag`/`304`, telemetry
 environment push, and `availableModels` enforcement. See the

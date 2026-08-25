@@ -64,13 +64,24 @@ exist and authenticate every request.
 
 ```toml
 [server.admin]
-# header carrying the admin token for API/curl calls
+# header carrying the admin credential for API/curl calls; `x-api-key` is
+# accepted alongside it on the admin and spend-limit routers only
 header = "x-shunt-admin-token"
 # env var holding admin credentials as name:token pairs (SEPARATE from
-# [server.auth] client tokens)
+# [server.auth] client tokens). These are the WRITE tier
 tokens_env = "SHUNT_ADMIN_TOKENS"
 session_ttl_secs = 3600   # browser session lifetime after login
 pending_ttl_secs = 600    # time to open the authorize URL and paste the code back
+
+# Per-credential keys with an id the audit trail records. The key must come
+# from ${VAR} / ${file:...} / a SHUNT_* override — a literal is rejected at load
+[[server.admin.write_keys]]
+id = "terraform"
+key = "${SHUNT_ADMIN_KEY_TERRAFORM}"
+
+[[server.admin.read_keys]]
+id = "reporting"
+key = "${file:/run/secrets/shunt-reporting-key}"
 ```
 
 ```bash
@@ -80,10 +91,12 @@ export SHUNT_ADMIN_TOKENS="ops:3f9c…"   # comma-separated name:token pairs
 Admin credentials reuse the inbound-auth token format
 ([`m4-inbound-auth.md`](m4-inbound-auth.md)) and its constant-time compare, but
 are a **separate credential** from `[server.auth]`: client tokens are handed to
-devices; admin tokens add upstream accounts. Configuration validation is
-**fail-closed** — a present `[server.admin]` whose token source is unset, empty, or
-malformed is a startup error, never a silently-open admin surface (identical
-discipline to `[server.auth]`).
+devices; admin credentials add upstream accounts and administer spend limits.
+Configuration validation is **fail-closed** — a present `[server.admin]` whose
+three credential sources (`tokens_env`/`tokens_file`, `write_keys`, `read_keys`)
+are *all* unset, empty, or malformed is a startup error, never a silently-open
+admin surface (identical discipline to `[server.auth]`). An array-only
+deployment, with `tokens_env` unset, boots.
 
 The token source can be a **file** instead of the environment: `tokens_file` (a
 path, `~` expanded) holds the same `name:token` pairs, one per line or
@@ -96,6 +109,30 @@ credential writeback), records it as `[server.admin].tokens_file`, adds
 `[server.oauth_usage]`, and prints the dashboard URL. It is idempotent —
 re-running reuses the token and appends no duplicate block — and leaves any
 pre-existing `[server.admin]` untouched.
+
+### Two access tiers
+
+`read < write`, and `write` implies `read`:
+
+- **`write`** — full access. The `tokens_env`/`tokens_file` `name:token` pairs
+  are this tier (retained for compatibility; new deployments should prefer
+  `[[server.admin.write_keys]]`, which carries an `id`), as is every
+  `write_keys` entry.
+- **`read`** — passes every `GET` on the admin surface and on the spend-limit
+  API, and is refused with `403 permission_error` on every mutation. It also
+  cannot sign in: `POST /admin/login` rejects it with `401` through the login
+  form's own path, because a browser session carries full access and minting one
+  from a read key would silently escalate it.
+
+A credential's privilege is the **maximum** over every set it matches, not
+whichever set happened to be scanned last. Array `id`s must be non-blank and
+array keys at least 32 characters; ids *and* key values must each be unique
+across all three sets, and a collision names the colliding ids without logging a
+key value. A legacy `tokens_env` token shorter than 32 characters warns rather
+than failing, because those tokens predate the rule. Array keys are
+[`Secret`](config-secrets.md) values: a key written literally in the config file
+is rejected at load and must come from `${VAR}`, `${file:/abs/path}`, or a
+`SHUNT_*` override.
 
 ### Optional OIDC browser login
 
@@ -136,7 +173,8 @@ The split mirrors how M4/M8 already separate hot-reloadable config from
 process-lifetime state:
 
 - `RuntimeState.admin_auth: Option<Arc<AdminAuth>>` — re-resolved on every reload,
-  so admin token/header edits hot-apply just like `[server.auth]`.
+  so admin credential/header edits (including the key arrays) hot-apply just like
+  `[server.auth]`.
 - `AppState.admin_stores: Arc<AdminStores>` — the session, pending-login, and
   rate-limiter stores, created once in `build_router` (like `Arc<AccountPool>`)
   and threaded through the per-request snapshot so a reload never drops a live
@@ -151,15 +189,30 @@ process-lifetime state:
 
 - **Two credentials, never mixed.** Admin auth is the `[server.admin]` credential;
   it is never the `[server.auth]` client tokens.
-- **Browser:** sign in at `/admin/login` with an admin token → an opaque session
+- **Browser:** sign in at `/admin/login` with a **write-tier** admin credential →
+  an opaque session
   id in an in-memory `SessionStore`, set as cookie `shunt_admin_session`
   (`HttpOnly`, `SameSite=Strict`, `Path=/admin`). The cookie is marked `Secure`
   **unless the request host is loopback**, so local HTTP dev and tests work while
   any real deployment host gets a Secure cookie (reusing M8's `host_is_loopback`
-  loopback carve-out).
-- **API/curl:** send the admin token in the configured header
-  (`x-shunt-admin-token`). Header-token callers carry no ambient cookie and are
-  therefore **CSRF-exempt**.
+  loopback carve-out). A session therefore always carries write access.
+- **API/curl:** send the admin credential in the configured header
+  (`x-shunt-admin-token`) or in `x-api-key`; both slots are accepted, and the
+  resolved privilege is the maximum over whichever slots matched. When both
+  slots carry a *different* valid credential of the same tier, the configured
+  header supplies the audit actor, because it is checked first. This merged
+  acceptance is scoped to the admin and spend-limit routers — on inference routes
+  `x-api-key` is the caller's *own* Anthropic credential slot and an admin
+  credential never authenticates there. Whatever these routers accept,
+  `auth::inbound::consumed_by` strips from the same slot before any upstream
+  request, alongside the gateway JWT and the `[server.auth]` static token, so an
+  admin credential is never relayed to a provider. Header callers carry no
+  ambient cookie and are therefore **CSRF-exempt**.
+- **Tier check on mutations:** every account-provisioning mutation calls
+  `require_write` before the CSRF check; a read credential gets
+  `403 permission_error` ("read-only admin credential cannot perform this
+  action"). `POST /admin/logout` needs no credential at all — it only clears a
+  session — and is guarded by the same-origin check instead.
 - **CSRF** on every cookie-authenticated JSON mutation: a per-session synchronizer
   token, presented as `x-csrf-token`, plus a same-origin check (`Sec-Fetch-Site`,
   falling back to comparing `Origin`'s authority to `Host`). No CORS. `POST
@@ -187,8 +240,13 @@ process-lifetime state:
   the environment source (systemd unit, `.env`, …) and **restart the process**: the
   restart both loads the new token set and drops every session the old token
   minted. To disable the last admin credential, remove the `[server.admin]` block
-  before restarting (an empty `SHUNT_ADMIN_TOKENS` fails closed at startup).
-  Rejecting stale sessions on reload is tracked in #100.
+  before restarting (with no key arrays configured, an empty `SHUNT_ADMIN_TOKENS`
+  fails closed at startup).
+  Rejecting stale sessions on reload is tracked in #100. A `${file:...}`-backed
+  `[[server.admin.write_keys]]`/`read_keys` entry is the exception to the first
+  half of this: its value is re-read on every config load, so overwriting the
+  referenced file and triggering a reload does rotate that key without a
+  restart. Sessions already minted still survive until `session_ttl_secs`.
 
 ## Endpoints (registered only when `[server.admin]` is set)
 
@@ -202,7 +260,7 @@ process-lifetime state:
 | `GET` | `/admin/accounts` | JSON: Claude store metadata (name, kind, expiry, UUID — never the token) |
 | `GET` | `/admin/accounts/codex` | JSON: Codex store metadata (name, expiry, account ID — never the token) |
 | `GET` | `/admin/observed` | JSON: read-only observed Claude, Codex, Gemini, Kimi, Grok, and Cursor identity, state, and provider-native usage — never token material |
-| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state |
+| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state; account objects may include an optional `plan` string |
 | `POST` | `/admin/accounts/claude` | `{name, mode}` → start Claude provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the Claude account |
 | `DELETE` | `/admin/accounts/claude/{name}` | Remove the Claude account's store file |
@@ -212,6 +270,12 @@ process-lifetime state:
 
 Gateway-owned errors keep the Anthropic error shape (`ShuntError`); page routes
 render minimal server-side HTML with inline CSS/JS and no external requests.
+
+Every `GET` above is reachable with a **read** credential. `POST /admin/login`
+and the six account-provisioning routes (`POST`/`DELETE` under
+`/admin/accounts/...`) require **write**. `POST /admin/logout` and the two OIDC
+routes are login-flow plumbing and are guarded by the same-origin/state checks
+rather than by tier.
 
 ## Phase 1 — provisioning flow
 
@@ -352,6 +416,30 @@ scan for an empty list — the same resolution the adapters use). Codex successf
 responses now populate the 5h/7d fields from `x-codex-*` rate-limit headers;
 unsupported windows are ignored and `7d_oi` remains `None` because Codex has no
 analog. Since issue #195 this recorded state also feeds Codex account selection (see `m10-codex-multi-account.md`), in addition to the dashboard display.
+
+The optional `plan` field is derived from credential data already held by
+shunt: Claude reads `claudeAiOauth.subscriptionType`, and Codex reads the
+`chatgpt_plan_type` claim from its stored JWT. Whenever an imported Claude
+credential's on-disk access token is still valid, the request also makes a
+bounded `GET /api/oauth/profile` backfill and caches the result — this runs
+even for an account whose file already carries a subscription type, since
+that value alone carries no multiplier detail and the profile lookup can
+refine it toward a more precise one, while never discarding it if the lookup
+is coarser or fails; this backfill only ever reads a token already on disk,
+it never refreshes and never writes back. An account whose on-disk token has
+already expired keeps whatever plan (or lack of one) it already had until a
+later view, once normal traffic elsewhere refreshes it; an idle account with
+no traffic and no usage polling can stay at that same value indefinitely
+while its on-disk token stays expired. Setup-token and `token_env` accounts
+are not backfilled. A missing, failed, or unrecognized lookup leaves the
+existing plan (or its absence) unaffected.
+
+Budget exhaustion never erases a file-derived plan: the file-read phase is
+guaranteed its own `min_slice` floor above the shared deadline, so an earlier
+provider's stalled backfill can never starve this cheap local read. Even in
+the pathological case where the file phase does not finish within that
+floor, any plan already cached from an earlier resolution still appears in
+the response.
 
 ## Shared foundations with gateway login
 

@@ -9,7 +9,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 설정 파일의 문자열 값은 리터럴 대신 `${VAR}` 또는 `${file:/절대/경로}`로 쓸 수 있습니다. `${VAR}`는 환경 변수 `VAR`의 값으로 치환되며 `"Bearer ${TOKEN}"`처럼 더 긴 문자열 안에 포함될 수 있습니다(변수가 없으면 로드 실패). `${file:/절대/경로}`는 해당 파일의 내용(trim)으로 치환되며, 반드시 절대 경로여야 하고 필드의 값 전체여야 합니다 — 다른 문자열에 포함될 수 없습니다(파일을 읽을 수 없거나, 상대 경로이거나, 다른 문자열에 포함되어 있으면 로드 실패). `$${`는 리터럴 `${`로 이스케이프됩니다. 치환은 재귀적이지 않습니다 — 치환된 값은 다시 스캔되지 않습니다. 이 치환은 설정 파일에만 적용되며 `SHUNT_*` 환경 변수 오버라이드는 그대로 사용됩니다. 부팅, `shunt check`, [핫 리로드](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP과 파일 감시)를 포함해 매 설정 로드마다 다시 실행되므로, `${file:}`로 참조한 시크릿은 파일을 다시 쓰고 리로드를 트리거하는 것만으로 재시작 없이 교체할 수 있습니다. 다만 교체한 값이 실제로 적용되는지는 해당 필드 자신의 리로드 동작을 따릅니다. `[sentry]`와 `[otel]`은 시작 시 한 번만 초기화되므로, 이 두 섹션의 시크릿을 교체하면 설정은 갱신되지만 적용하려면 재시작이 필요합니다.
 
-`[sentry] dsn`, `[otel.headers]` 값, `[server.gateway.telemetry] forward_to[].headers` 값, `[server.gateway.session] jwt_secret` 네 필드는 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다. 이 필드에 리터럴 값을 적는 것은 이전과 완전히 동일하게 동작하며, secret 타입 필드가 리터럴을 담고 있으면 shunt는 부팅 시 해당 필드 경로만(값은 절대 포함하지 않음) 알리는 권고성 경고를 한 번 기록합니다.
+`[sentry] dsn`, `[otel.headers]` 값, `[server.gateway.telemetry] forward_to[].headers` 값, `[server.gateway.session] jwt_secret`, 그리고 `[[server.admin.write_keys]]`·`[[server.admin.read_keys]]` 각 항목의 `key` — 이 여섯 경로는 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다. 앞의 네 필드는 리터럴 값을 적어도 이전과 완전히 동일하게 동작하며, 리터럴을 담고 있으면 shunt는 부팅 시 해당 필드 경로만(값은 절대 포함하지 않음) 알리는 권고성 경고를 한 번 기록합니다. 관리자 key 배열 두 개는 예외로, 리터럴을 적으면 경고가 아니라 **설정 로드 자체가 실패**합니다.
 
 기존 `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`, `tokens_file` 필드는 이 변경의 영향을 받지 않으며 그대로 환경 변수(또는 `tokens_file`의 경우 파일 경로)를 가리킵니다(`jwt_secret_env`는 별도로 [`session.jwt_secret`](#servergatewaysession-선택)로 대체되어 deprecated됨).
 
@@ -49,20 +49,67 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 ## `[server.admin]` (선택)
 
-이 테이블의 존재가 브라우저 계정 프로비저닝과 계정 풀 상태를 위한 관리자 웹 화면을 활성화합니다([상세](/ko/guides/admin-remote-provisioning/)). 테이블이 없으면 `/admin*` 라우트는 하나도 등록되지 않습니다.
+이 테이블의 존재가 브라우저 계정 프로비저닝과 계정 풀 상태를 위한 관리자 웹 화면을 활성화합니다([상세](/ko/guides/admin-remote-provisioning/)). 테이블이 없으면 `/admin*` 라우트는 하나도 등록되지 않습니다. 같은 자격 증명이 [`[server.spend]`](#serverspend-선택) spend-limit API도 인증합니다.
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
-| `header` | `x-shunt-admin-token` | API/curl 호출용 관리자 토큰을 담는 헤더 |
-| `tokens_env` | `SHUNT_ADMIN_TOKENS` | 쉼표로 구분된 `name:token` 쌍을 담는 env 변수 |
+| `header` | `x-shunt-admin-token` | API/curl 호출용 관리자 자격 증명을 담는 헤더. 관리자·spend-limit 라우터에서는 `x-api-key`도 함께 허용됩니다 |
+| `tokens_env` | `SHUNT_ADMIN_TOKENS` | 쉼표로 구분된 `name:token` 쌍을 담는 env 변수. **쓰기(write)** 티어입니다 |
+| `tokens_file` | _(설정 안 함)_ | `name:token` 쌍을 담는 파일 경로(한 줄에 하나, 또는 쉼표로 구분). `tokens_env`가 설정되지 않았거나 비어 있을 때 사용합니다. 이것도 **쓰기(write)** 티어입니다 |
 | `session_ttl_secs` | `3600` | 로그인 후 브라우저 세션 수명(초) |
 | `pending_ttl_secs` | `600` | 시작된 프로비저닝 플로우를 끝낼 수 있는 시간(초) |
 
-지정된 환경 변수에는 하나 이상의 자격 증명이 있어야 합니다. 예: `SHUNT_ADMIN_TOKENS="ops:<token>"`. 테이블이 있는데 변수가 설정되지 않았거나, 비어 있거나, 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다.
+관리자 토큰은 환경 변수나 파일에서 가져올 수 있습니다. 지정된 환경 변수에는 하나 이상의 자격 증명이 있어야 합니다. 예: `SHUNT_ADMIN_TOKENS="ops:<token>"`. 또는 `tokens_file`에 경로(`~`는 확장됩니다)를 지정하고 그 파일에 쌍을 넣어도 됩니다 — `shunt dashboard setup`이 `~/.shunt/admin-token`에 쓰는 것이 바로 이 파일이므로, 실행 환경에 비밀 값을 두지 않아도 됩니다. 둘 다 설정되면 비어 있지 않은 `tokens_env`가 우선합니다. 테이블이 있는데 세 자격 증명 소스(`tokens_env`/`tokens_file`, `write_keys`, `read_keys`)가 **모두** 비어 있거나 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다. `tokens_env`를 설정하지 않고 key 배열만 쓰는 구성은 정상적으로 부팅됩니다.
 
-관리자 토큰은 `[server.auth]` 아래에 구성되는 클라이언트 토큰과 별개의 자격 증명입니다; 하나의 자격 증명을 두 표면에 재사용하지 마세요.
+관리자 자격 증명은 `[server.auth]` 아래에 구성되는 클라이언트 토큰과 별개의 자격 증명입니다; 하나의 자격 증명을 두 표면에 재사용하지 마세요. 관리자 자격 증명은 `/admin*`과 spend-limit 라우트만 인증하며 추론 라우트는 절대 인증하지 않습니다 — 그곳의 `x-api-key`는 호출자 자신의 Anthropic 자격 증명 슬롯입니다. 또한 이들 라우터가 어떤 슬롯에서 받아들인 값이든 업스트림 요청 전에 그 슬롯에서 제거되므로, 관리자 자격 증명이 provider로 전달되는 일은 없습니다.
 
-`[server.auth]`의 `tokens_env`와 마찬가지로, 이 `tokens_env`의 값도 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고).
+`[server.auth]`의 `tokens_env`와 마찬가지로, 이 `tokens_env`와 `tokens_file`의 값도 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고).
+
+### `[[server.admin.write_keys]]` / `[[server.admin.read_keys]]` (선택)
+
+`{ id, key }` 테이블을 원소로 갖는 두 개의 key 배열입니다. `id`는 로그에 남겨도 안전하며 spend-limit 감사 기록에 `admin-key:<id>`로 기록됩니다. `tokens_env`/`tokens_file` 쌍은 대신 `admin-token:<name>`으로 기록됩니다.
+
+```toml
+[[server.admin.write_keys]]
+id = "terraform"
+key = "${SHUNT_ADMIN_KEY_TERRAFORM}"
+
+[[server.admin.read_keys]]
+id = "reporting"
+key = "${file:/run/secrets/shunt-reporting-key}"
+```
+
+| 배열 | 접근 권한 | 의미 |
+| :-- | :-- | :-- |
+| `write_keys` | `write` | 전체 접근. `write`는 `read`를 포함합니다. `tokens_env`/`tokens_file`과 같은 티어입니다 |
+| `read_keys` | `read` | 관리자 화면과 spend-limit API의 모든 `GET`을 통과하며, 모든 변경 작업에서는 `403 permission_error`로 거부됩니다. 로그인도 할 수 없습니다: `POST /admin/login`은 `401`로 거부합니다(브라우저 세션은 전체 접근 권한을 갖기 때문에, read key로 세션을 발급하면 권한이 승격됩니다) |
+
+자격 증명의 권한은 매칭된 모든 집합에 대한 **최댓값**이므로, 집합을 검사하는 순서가 권한을 바꿀 수 없습니다. 각 `id`는 공백이 아니어야 하고 각 key는 32자 이상이어야 합니다. id와 key 값은 각각 세 자격 증명 집합(`tokens_env`/`tokens_file`, `write_keys`, `read_keys`) 전체에서 고유해야 하며, 충돌하면 key 값을 로그에 남기지 않고 충돌한 id만 알립니다. 32자보다 짧은 기존 `tokens_env` 토큰은 이 규칙보다 먼저 존재했기 때문에 실패가 아니라 경고로 처리됩니다.
+
+각 `key`는 redacting secret이며([Secret 참조](#secret-참조) 참고), 리터럴이 경고가 아니라 **설정 로드 실패**로 이어지는 유일한 필드입니다. `${VAR}`, `${file:/절대/경로}`, 또는 `SHUNT_*` 환경 변수 오버라이드로 공급하세요.
+
+## `[server.spend]` (선택)
+
+이 테이블의 존재가 `/v1/organizations/spend_limits` 아래의 spend-limit Admin API를 등록합니다. **정책만** 담는 최상위 섹션으로 key 자료는 전혀 갖지 않습니다: 라우트는 [`[server.admin]`](#serveradmin-선택) 자격 증명으로 인증하므로 spend limit을 켜는 데 gateway 로그인 표면이 필요하지 않습니다. `[server.admin]` 없이 `[server.spend]`만 두면 설정 검증에 실패합니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `blocked_message` | 미설정 | 향후 제한 오류에 사용할 메시지. stage 1은 사용하지 않음 |
+| `audit_retention_days` | `365` | 향후 감사 레코드 보존 일수 |
+| `spend_retention_months` | `13` | 향후 지출 데이터 보존 개월 수 |
+| `identity_retention_days` | `90` | 향후 아이덴티티 보존 일수 |
+| `group_limit_mode` | `min` | 향후 그룹 제한 결정 모드. `min` 또는 `max` |
+| `state_path` | `~/.shunt/gateway-spend.json` | 제한과 감사 레코드를 저장하는 버전이 있는 JSON. `""`은 메모리 전용 |
+
+관리자 자격 증명은 구성된 `[server.admin] header` 또는 `x-api-key`로 보냅니다. `read_keys` 자격 증명은 `GET`만 사용할 수 있습니다. 상태 파일은 변경할 때마다 비공개 임시 파일로 원자적으로 교체됩니다. 홈 디렉터리를 확인할 수 없으면 기본값은 메모리 전용입니다. 테이블의 추가·제거와 상태 경로는 모두 부팅 시 고정되며, 구성 리로드는 적용 대신 경고를 기록합니다.
+
+### `[server.spend.enforcement]` (선택)
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | 향후 제한 단계용 설정. stage 1은 읽지 않음 |
+
+stage 1은 이 보존 설정, `blocked_message`, `group_limit_mode`, `fail_closed_on_error`를 받지만 추론 제한, 사용량 계측, `/effective`, `/audit`, 보존 sweep, group scope는 아직 구현하지 않습니다.
 
 ## `[server.gateway]` (선택)
 
@@ -225,7 +272,7 @@ codex-fallback = "gpt-5.2"
 | :-- | :-- | :-- |
 | `name` | 예 | 비어 있지 않은 고유 업스트림 이름. 라우트, 모델 맵, `server.default_provider`, 메트릭, 관리자 화면에서 사용합니다. |
 | `provider` | `kind`와 `base_url`을 직접 설정하지 않은 경우 | 내장 preset. `kind`, `base_url`, 기본 auth를 제공합니다. 명시한 필드가 preset 값을 덮어씁니다. |
-| `kind` | preset이 없는 경우 | `anthropic`, `responses`, `cursor`, `gemini`, `antigravity` 중 하나. 뒤의 두 종류는 아래 preset 표에 항목이 없으므로 — 같은 이름의 내장 `[providers.*]` 테이블은 preset이 아니라 별개의 레거시 방식입니다 — 정렬 업스트림에서 `kind`를 직접 지정해야 합니다. |
+| `kind` | preset이 없는 경우 | `anthropic`, `responses`, `cursor`, `gemini`, `antigravity`, `antigravity_cli` 중 하나. 뒤의 세 종류는 아래 preset 표에 항목이 없으므로 — 내장 `[providers.gemini]`, `[providers.antigravity]`, `[providers.antigravity-cli]` 테이블은 preset이 아니라 별개의 레거시 방식입니다 — 정렬 업스트림에서 `kind`를 직접 지정해야 합니다. CLI provider의 테이블 이름은 하이픈을 쓰는 `antigravity-cli`이지만, `kind` 값은 밑줄을 쓰는 `antigravity_cli`입니다. |
 | `base_url` | preset이 없는 경우 | 업스트림 base URL. `kind = "cursor"`에서는 로그인/토큰 갱신 엔드포인트에만 사용됩니다. 추론은 고정 에이전트 호스트인 `https://agentn.global.api5.cursor.sh`를 사용하며, `SHUNT_CURSOR_AGENT_BASE_URL`로만 재정의할 수 있습니다. |
 | `auth` | 아니요 | auth mode 문자열 또는 mode별 맵. 기본값은 preset의 auth이며, preset도 없으면 `passthrough`입니다. |
 | `effort`, `count_tokens`, `websocket`, `tool_search`, `request_compression`, `retry` | 아니요 | 레거시 provider에 설명된 것과 같은 업스트림별 설정. preset은 `count_tokens`를 덮어쓰지 않습니다. Cursor 업스트림에서도 `retry`는 정규화되지만 Cursor 스트리밍 턴에는 적용되지 않습니다. |
@@ -242,7 +289,7 @@ codex-fallback = "gpt-5.2"
 | `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
 
-`auth = "claude_oauth"` 같은 문자열은 `auth = { mode = "claude_oauth" }`의 축약형입니다. `api_key` 맵은 `env`(preset이 제공하지 않으면 필수)와 `header`(기본 `bearer`, 또는 `x_api_key`)를 받습니다. `claude_oauth`와 `chatgpt_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 범위를 좁힐 수 있지만 둘을 함께 쓸 수는 없습니다. `accounts`에는 스토어 항목 이름 문자열과 전체 계정 테이블을 넣을 수 있습니다. 명시적인 `accounts = []`는 거부되며, 두 범위 필드를 모두 생략하면 전체 스토어를 스캔합니다. ChatGPT 스토어가 비어 있으면 `chatgpt_oauth`는 기존 `~/.codex/auth.json` fallback을 유지합니다. `passthrough`, `xai_oauth`, `cursor_oauth` 맵에는 `mode`만 사용할 수 있으며, mode별로 알 수 없는 키는 오류입니다.
+`auth = "claude_oauth"` 같은 문자열은 `auth = { mode = "claude_oauth" }`의 축약형입니다. `api_key` 맵은 `env`(preset이 제공하지 않으면 필수)와 `header`(기본 `bearer`, 또는 `x_api_key`)를 받습니다. `claude_oauth`와 `chatgpt_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 범위를 좁힐 수 있지만 둘을 함께 쓸 수는 없습니다. `accounts`에는 스토어 항목 이름 문자열과 전체 계정 테이블을 넣을 수 있습니다. 명시적인 `accounts = []`는 거부되며, 두 범위 필드를 모두 생략하면 전체 스토어를 스캔합니다. ChatGPT 스토어가 비어 있으면 `chatgpt_oauth`는 기존 `~/.codex/auth.json` fallback을 유지합니다. `passthrough`, `xai_oauth`, `cursor_oauth`, `antigravity_oauth` 맵에는 `mode`만 사용할 수 있으며, mode별로 알 수 없는 키는 오류입니다.
 
 구성 파일에서 `[[upstreams]]`와 `[providers.*]`를 함께 선언하지 마세요. 파일 계층에 두 선언 형식이 모두 있으면 시작에 실패합니다. 환경 변수는 어느 형식에서든 정규화된 업스트림/provider 이름을 기준으로 `SHUNT_PROVIDERS__<name>__<field>`를 사용해 개별 필드를 재정의할 수 있습니다. 순서가 있는 `[[upstreams]]` 배열 자체는 하나의 환경 변수로 합성하려 하지 말고 구성 파일에 선언하세요. 레거시 `[providers.<name>]`는 계속 지원되며 이름순의 암시적 업스트림으로 정규화됩니다. 이 형식은 페일오버 순서를 선언하지 않으므로 모델 맵은 항목이 없거나 하나만 있어야 합니다. 모델 맵에 여러 항목을 추가하기 전에 `[[upstreams]]`로 전환하세요.
 
@@ -254,7 +301,7 @@ codex-fallback = "gpt-5.2"
 
 `passthrough` 업스트림에서는 클라이언트 자신의 `authorization` / `x-api-key`가 페일오버 시도에서 전달되는 것은 **기본(primary)** 라우트 자체가 `passthrough`이고 해당 시도의 대상 origin이 그 기본 라우트와 일치하는 경우에 한합니다. 이때 자격 증명은 기본 라우트에 origin 전용인 클라이언트 자신의 업스트림 자격 증명이므로, **다른** origin으로의 `passthrough` 페일오버 시도는 이를 제거하고 페일클로즈(fail closed)하여 호스트 전용 토큰을 다른 출처로 재전송하지 않습니다. 동일 origin 폴백(예: 한 호스트의 passthrough 항목 2개)은 계속 자격 증명을 유지합니다. 기본 라우트가 대신 자체 자격 증명을 주입하는 경우, 클라이언트 헤더는 업스트림 자격 증명이 아니라 게이트웨이/클라이언트 시크릿이므로 모든 `passthrough` 폴백은 origin과 무관하게 이를 제거합니다. `api_key`/OAuth 업스트림은 위치와 무관하게 자체 서버 측 자격 증명을 주입합니다.
 
-origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 있는 값으로도 검사됩니다. `authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체가 발급한 JWT와 **모양이 같거나** — `aud` 클레임이 `"shunt"`이거나 `iss` 클레임이 이 게이트웨이의 아이덴티티인 세 세그먼트 구조 — 설정된 `[server.auth]` 클라이언트 토큰과 일치할 때에만 제거됩니다. JWT 검사는 의도적으로 "지금 이 토큰이 인증되는가"가 아니라 "모양이 같은가"로 판단합니다: 만료된 토큰, 다른 `public_url`을 쓰는 형제 인스턴스가 발급한 토큰, `jwt_secret` 로테이션 이후 더 이상 검증되지 않는 토큰도 여전히 shunt 자신의 크리덴셜이므로 여전히 제거됩니다. `apiKeyHelper`는 두 슬롯을 같은 값으로 채우므로 어느 크리덴셜이든 한쪽 또는 양쪽 슬롯에 들어올 수 있습니다. 다른 슬롯이 게이트웨이 JWT나 정적 클라이언트 토큰을 담고 있어도, 진짜 업스트림 크리덴셜을 담은 슬롯은 그대로 전달됩니다. 게이트 크리덴셜을 담은 슬롯만 제거됩니다. `[server.auth] header`에는 `authorization` 자신을 포함해 어떤 헤더 이름이든 지정할 수 있으며, 그렇게 설정하면 클라이언트는 접두사 없는 `Authorization: <token>` 형태로 인증합니다. 따라서 이 슬롯은 `Bearer` 페이로드뿐 아니라 값 전체로도 검사되며, 그런 토큰은 업스트림으로 전달되지 않습니다. 이 설정에는 한 가지 유의점이 있습니다: 추론 요청에서 shunt는 라우팅 전에 설정된 헤더를 조건 없이 제거하므로, 그 슬롯은 업스트림으로 아무것도 싣지 않습니다 — 게이트 토큰뿐 아니라 호출자 자신의 크리덴셜도 함께 사라집니다. `header`를 기본값인 전용 `x-shunt-token`으로 두면 이 충돌을 피할 수 있습니다.
+origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 있는 값으로도 검사됩니다. `authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체가 발급한 JWT와 **모양이 같거나** — `aud` 클레임이 `"shunt"`이거나, `iss` 클레임이 이 게이트웨이의 아이덴티티이거나, `shunt_token_use` 클레임이 `"gateway-session"`(shunt만 발급하는 전용 마커)인 세 세그먼트 구조 — 설정된 `[server.auth]` 클라이언트 토큰과 일치할 때에만 제거됩니다. JWT 검사는 의도적으로 "지금 이 토큰이 인증되는가"가 아니라 "모양이 같은가"로 판단합니다: 만료된 토큰, 다른 `public_url`을 쓰는 형제 인스턴스가 발급한 토큰, `jwt_secret` 로테이션 이후 더 이상 검증되지 않는 토큰도 여전히 shunt 자신의 크리덴셜이므로 여전히 제거됩니다. 이 마커는 모양 검사에 추가된 분기일 뿐 필수 조건이 아닙니다: 마커가 존재하기 전에 발급된 토큰도 `aud`/`iss`로 여전히 일치하며, `verify` 자체도 마커를 요구하지 않으므로 이전 버전의 shunt가 발급한 토큰은 TTL 내에 있는 한 계속 인증됩니다. `apiKeyHelper`는 두 슬롯을 같은 값으로 채우므로 어느 크리덴셜이든 한쪽 또는 양쪽 슬롯에 들어올 수 있습니다. 다른 슬롯이 게이트웨이 JWT나 정적 클라이언트 토큰을 담고 있어도, 진짜 업스트림 크리덴셜을 담은 슬롯은 그대로 전달됩니다. 게이트 크리덴셜을 담은 슬롯만 제거됩니다. `[server.auth] header`에는 `authorization` 자신을 포함해 어떤 헤더 이름이든 지정할 수 있으며, 그렇게 설정하면 클라이언트는 접두사 없는 `Authorization: <token>` 형태로 인증합니다. 따라서 이 슬롯은 `Bearer` 페이로드뿐 아니라 값 전체로도 검사되며, 그런 토큰은 업스트림으로 전달되지 않습니다. 이 설정에는 한 가지 유의점이 있습니다: 추론 요청에서 shunt는 라우팅 전에 설정된 헤더를 조건 없이 제거하므로, 그 슬롯은 업스트림으로 아무것도 싣지 않습니다 — 게이트 토큰뿐 아니라 호출자 자신의 크리덴셜도 함께 사라집니다. `header`를 기본값인 전용 `x-shunt-token`으로 두면 이 충돌을 피할 수 있습니다.
 
 프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다. `count_tokens`는 체인의 첫 항목만 사용하며 페일오버하지 않습니다. `[server.codex_endpoint]`는 설정된 업스트림 하나에 고정되며 이 체인에 참여하지 않습니다.
 
@@ -272,13 +319,13 @@ origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 �
 
 ## `[providers.<name>]` (레거시)
 
-각 프로바이더는 원하는 이름의 테이블입니다. 내장(`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`, `gemini`, `antigravity`)은 부분 오버라이드할 수 있습니다 — 구성 맵은 깊은 병합됩니다.
+각 프로바이더는 원하는 이름의 테이블입니다. 내장(`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`, `gemini`, `antigravity`, `antigravity-cli`)은 부분 오버라이드할 수 있습니다 — 구성 맵은 깊은 병합됩니다.
 
 | 키 | 값 | 의미 |
 | :-- | :-- | :-- |
-| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` | 업스트림 프로토콜 / 어댑터. `anthropic` = Messages API(패스스루, 선택적으로 키 재설정); `responses` = Anthropic Messages를 OpenAI Responses API로 변환; `cursor` = 네이티브 Cursor ConnectRPC/protobuf AgentService 어댑터; `gemini` = Anthropic Messages를 Google Code Assist 백엔드의 Gemini `generateContent`/`streamGenerateContent`로 변환; `antigravity` = 업스트림 없이 로컬 Antigravity CLI 바이너리(`agy`)를 서브프로세스로 실행. |
+| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` \| `antigravity_cli` | 업스트림 프로토콜 / 어댑터. `anthropic` = Messages API(패스스루, 선택적으로 키 재설정); `responses` = Anthropic Messages를 OpenAI Responses API로 변환; `cursor` = 네이티브 Cursor ConnectRPC/protobuf AgentService 어댑터; `gemini` = Anthropic Messages를 Google Code Assist 백엔드의 Gemini `generateContent`/`streamGenerateContent`로 변환; `antigravity` = Google Antigravity 백엔드에 HTTP로 접속하며, `gemini`와 동일한 Code Assist 프로토콜을 사용하되 Antigravity 구독 토큰으로 인증하고 프로젝트 디스커버리에서 `ideType: ANTIGRAVITY`로 자신을 식별; `antigravity_cli` = **더 이상 사용되지 않음** — 업스트림 없이 로컬 Antigravity CLI 바이너리(`agy`)를 서브프로세스로 실행. |
 | `base_url` | URL | 업스트림 base; shunt가 엔드포인트 경로를 붙입니다. `kind = "cursor"`에서는 로그인/토큰 갱신 엔드포인트에만 사용되며 에이전트/추론 호스트를 선택하지 않습니다. |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `none` | `passthrough`는 클라이언트 본인의 credential을 전달; `api_key`는 `api_key_env`의 키를 주입; `chatgpt_oauth`는 `~/.codex/auth.json`을 재사용; `claude_oauth`는 명시적 Anthropic 계정에서 선택; `xai_oauth`는 `shunt login xai`의 `~/.shunt/xai-auth.json`을 재사용(HTTPS를 통한 x.ai/grok.com 호스트에만 전송); `cursor_oauth`는 `~/.shunt/cursor-auth.json`을 재사용(`shunt login cursor`); `google_oauth`는 gemini CLI 로그인의 `~/.gemini/oauth_creds.json`을 재사용하며 `kind = "gemini"`에서만 유효; `none`은 인증할 업스트림이 없는 어댑터(`kind = "antigravity"`)를 위해 크리덴셜을 전혀 보내지 않습니다. |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough`는 클라이언트 본인의 credential을 전달; `api_key`는 `api_key_env`의 키를 주입; `chatgpt_oauth`는 `~/.codex/auth.json`을 재사용; `claude_oauth`는 명시적 Anthropic 계정에서 선택; `xai_oauth`는 `shunt login xai`의 `~/.shunt/xai-auth.json`을 재사용(HTTPS를 통한 x.ai/grok.com 호스트에만 전송); `cursor_oauth`는 `~/.shunt/cursor-auth.json`을 재사용(`shunt login cursor`); `google_oauth`는 gemini CLI 로그인의 `~/.gemini/oauth_creds.json`을 재사용하며 `kind = "gemini"`에서만 유효; `antigravity_oauth`는 `shunt login antigravity`의 `~/.shunt/antigravity-auth.json`을 재사용하며 `kind = "antigravity"`에서만 유효하고, `google_oauth`와 **호환되지 않습니다** — Antigravity는 Gemini CLI 토큰에 없는 두 스코프(`cclog`, `experimentsandconfigs`)를 요청합니다; `none`은 인증할 업스트림이 없는 어댑터(`kind = "antigravity_cli"`)를 위해 크리덴셜을 전혀 보내지 않습니다. |
 | `api_key_env` | env 변수 이름 | `auth = "api_key"`일 때 키를 읽어오는 곳. 이 값 자신도 `${VAR}` / `${file:...}`로 쓸 수 있음([Secret 참조](#secret-참조) 참고). |
 | `api_key_header` | `bearer`(기본) \| `x_api_key` | 주입된 키가 전송되는 헤더. |
 | `accounts` | 계정 테이블 배열 | Anthropic OAuth 계정 풀. `kind = "anthropic"`이고 `auth = "claude_oauth"`일 때만 유효; 아래 참고. |

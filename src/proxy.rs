@@ -11,7 +11,7 @@ use tracing::Instrument;
 
 use crate::{error::ShuntError, model::responses::anthropic_error_type, server::AppState};
 
-mod failover;
+pub(crate) mod failover;
 
 pub async fn post(
     State(state): State<AppState>,
@@ -85,14 +85,16 @@ pub async fn post(
     .await
 }
 
-struct ForwardError {
+pub(crate) struct ForwardError {
     message: String,
-    response: axum::response::Response,
+    /// Boxed to keep `Result<_, ForwardError>` small: an `axum` `Response` alone
+    /// is 128 bytes, which trips `clippy::result_large_err` on every `forward`.
+    response: Box<axum::response::Response>,
 }
 
 impl IntoResponse for ForwardError {
     fn into_response(self) -> axum::response::Response {
-        self.response
+        *self.response
     }
 }
 

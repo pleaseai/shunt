@@ -11,7 +11,7 @@ use crate::{
         anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
         AdapterError, AdapterFailure,
     },
-    auth::inbound::{authorization_consumed_by, consumed_by, ConsumedBy},
+    auth::{inbound::ConsumedBy, slots::ShuntCredentials},
     config::{AuthMode, CountTokens, ProviderKind},
     count_tokens,
     error::ShuntError,
@@ -32,7 +32,7 @@ pub(super) async fn forward(
     if crate::http_tuning::content_length_exceeds(headers, max_request_bytes) {
         return Err(ForwardError {
             message: "request body exceeds the configured limit".to_string(),
-            response: crate::http_tuning::request_too_large(false).await,
+            response: Box::new(crate::http_tuning::request_too_large(false).await),
         });
     }
     let body = crate::http_tuning::read_body(body, max_request_bytes, false)
@@ -50,14 +50,14 @@ pub(super) async fn forward(
         .map_err(routing::invalid_routing_request)
         .map_err(|error| ForwardError {
             message: "failed to route request".to_string(),
-            response: error.into_response(),
+            response: Box::new(error.into_response()),
         })?;
     normalize_request_body(&mut body);
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json()).map_err(|error| {
             ForwardError {
                 message: "failed to route request".to_string(),
-                response: error.into_response(),
+                response: Box::new(error.into_response()),
             }
         })?;
     crate::observability::record_requested_model(&requested_model);
@@ -216,10 +216,7 @@ pub(super) async fn forward(
                     }
                     _ => {
                         finish(&provider, response.status());
-                        return Err(ForwardError {
-                            message,
-                            response: *response,
-                        });
+                        return Err(ForwardError { message, response });
                     }
                 }
             }
@@ -246,10 +243,7 @@ pub(super) async fn forward(
             }
             FinalResponse::MappedError { message, response } => {
                 finish(&failure.provider, response.status());
-                Err(ForwardError {
-                    message,
-                    response: *response,
-                })
+                Err(ForwardError { message, response })
             }
         };
     }
@@ -264,7 +258,10 @@ pub(super) async fn forward(
         &last_route.upstream_model,
     );
     finish(&last_route.provider, StatusCode::BAD_GATEWAY);
-    Err(ForwardError { message, response })
+    Err(ForwardError {
+        message,
+        response: Box::new(response),
+    })
 }
 
 async fn count_tokens_response(
@@ -283,7 +280,7 @@ async fn count_tokens_response(
         AdapterKind::Responses
             | AdapterKind::Cursor
             | AdapterKind::Gemini
-            | AdapterKind::Antigravity
+            | AdapterKind::AntigravityCli
     ) {
         let mode = state
             .config
@@ -326,7 +323,7 @@ async fn count_tokens_response(
             Ok((status, response))
         }
         Err(error) => {
-            let mut response = *error.response;
+            let mut response = error.response;
             stamp_gateway_headers(&mut response, &provider, requested_model, &upstream_model);
             let status = response.status();
             crate::observability::record_span_outcome(&provider, status);
@@ -367,7 +364,7 @@ async fn dispatch(
                 .forward(state, route, uri, headers, body)
                 .await
         }
-        AdapterKind::Antigravity => {
+        AdapterKind::AntigravityCli => {
             crate::adapters::antigravity::AntigravityAdapter
                 .forward(state, route, uri, headers, body)
                 .await
@@ -473,12 +470,14 @@ fn enforce_managed_model_policy(
         format!("model \"{requested_model}\" is not permitted by this gateway's managed policy");
     Err(Box::new(ForwardError {
         message: message.clone(),
-        response: ShuntError::new(StatusCode::BAD_REQUEST, "invalid_request_error", message)
-            .into_response(),
+        response: Box::new(
+            ShuntError::new(StatusCode::BAD_REQUEST, "invalid_request_error", message)
+                .into_response(),
+        ),
     }))
 }
 
-struct InboundContext {
+pub(crate) struct InboundContext {
     gateway_claims: Option<crate::gateway::jwt::Claims>,
     client: Option<String>,
     static_client: bool,
@@ -490,16 +489,20 @@ struct InboundContext {
 /// it. On failover, a passthrough attempt keeps the credential only while its
 /// origin matches the primary upstream's, so a host-specific token is never
 /// replayed to a different origin (a same-origin fallback still carries it).
-fn check_inbound_auth(
+pub(crate) fn check_inbound_auth(
     state: &AppState,
     routes: &[routing::Route],
     headers: &HeaderMap,
 ) -> Result<(HeaderMap, InboundContext), Box<ForwardError>> {
     let mut forwarded = headers.clone();
-    forwarded.remove("x-shunt-inbound-client");
-    if let Some(auth) = &state.inbound_auth {
-        forwarded.remove(auth.header());
-    }
+    // Every slot shunt reserves by *name* — the fixed `x-shunt-*` names plus
+    // whatever `[server.auth]`/`[server.admin]` are configured to — goes here,
+    // once, through the shared enumeration in `auth::slots`. That module owns
+    // why the two configured headers are treated asymmetrically (the static
+    // header is removed even when it names a shared slot; the admin header is
+    // not, because the shared slots carry the caller's own upstream credential
+    // and are cleared by value in `headers_for_route` instead).
+    ShuntCredentials::from_state(state).strip_reserved_slots(&mut forwarded);
 
     let gateway_claims = state
         .gateway_auth
@@ -555,12 +558,14 @@ fn check_inbound_auth(
     };
     Err(Box::new(ForwardError {
         message: "inbound authentication failed".to_string(),
-        response: ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-            .into_response(),
+        response: Box::new(
+            ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+                .into_response(),
+        ),
     }))
 }
 
-fn headers_for_route(
+pub(crate) fn headers_for_route(
     state: &AppState,
     route: &routing::Route,
     base: &HeaderMap,
@@ -582,26 +587,30 @@ fn headers_for_route(
         // single-upstream hot path).
         //
         // Within a same-origin attempt, each retained slot is also checked *by
-        // value*, independently, against both of shunt's own inbound
-        // credentials — the gateway JWT and a configured static
-        // `[server.auth]` token — and stripped only if it holds one, never
+        // value*, independently, against all three of shunt's own inbound
+        // credentials — the gateway JWT, a configured static `[server.auth]`
+        // token, and a `[server.admin]` credential — and stripped only if it
+        // holds one, never
         // both slots just because one of them does. `authorization` and
         // `x-api-key` are the two slots an `apiKeyHelper` can fill (it fills
-        // both), so either of shunt's own credentials can land in either or
+        // both), so any of shunt's own credentials can land in either or
         // both, beside a genuine upstream credential in the other slot that
         // must keep flowing. `check_inbound_auth`'s auth gate authenticates
         // once for the whole route chain, so a chain mixing mapped and
         // passthrough routes can still reach this branch same-origin with a
-        // shunt-owned credential in one of these slots. A dedicated
+        // shunt-owned credential in one of these slots. An admin credential
+        // reaches these slots because the admin surface accepts one in
+        // `x-api-key` beside its own header, and it is the highest-value of
+        // the three: it can provision upstream accounts. A dedicated
         // `x-shunt-token` header remains a good operational habit — it keeps
         // `authorization`/`x-api-key` free for the caller's real credential
         // without needing this per-value check at all (`docs/m4-inbound-auth.md`
         // §2) — but it is no longer the only thing standing between a static
-        // token and the upstream: `is_consumed_by_shunt` (shared with
-        // `discovery/upstream.rs`) is applied to both slots for both
-        // credential kinds, so a static token delivered through a
-        // rotating-credential mechanism like `apiKeyHelper` is stripped here
-        // too.
+        // token and the upstream: `ShuntCredentials::strip_consumed_slots`
+        // (shared with `discovery/upstream.rs`, and enumerated once in
+        // `auth::slots`) is applied to both slots for every credential kind, so
+        // a static token delivered through a rotating-credential mechanism like
+        // `apiKeyHelper` is stripped here too.
         let mut headers = base.clone();
         let same_origin = is_primary
             || matches!(
@@ -617,30 +626,11 @@ fn headers_for_route(
             );
             return headers;
         }
-        if let Some(reason) = authorization_consumed_by(
-            &headers,
-            state.gateway_auth.as_deref(),
-            state.inbound_auth.as_deref(),
-        ) {
-            headers.remove("authorization");
+        for (slot, reason) in ShuntCredentials::from_state(state).strip_consumed_slots(&mut headers)
+        {
             tracing::debug!(
                 provider = %route.provider,
-                slot = "authorization",
-                reason = reason_label(reason),
-                "stripped passthrough credential slot"
-            );
-        }
-        if let Some(reason) = headers.get("x-api-key").and_then(|value| {
-            consumed_by(
-                value.as_bytes(),
-                state.gateway_auth.as_deref(),
-                state.inbound_auth.as_deref(),
-            )
-        }) {
-            headers.remove("x-api-key");
-            tracing::debug!(
-                provider = %route.provider,
-                slot = "x-api-key",
+                slot,
                 reason = reason_label(reason),
                 "stripped passthrough credential slot"
             );
@@ -680,7 +670,7 @@ fn is_passthrough_route(state: &AppState, route: &routing::Route) -> bool {
         .config
         .provider(&route.provider)
         .is_some_and(|provider| {
-            provider.auth == AuthMode::Passthrough && provider.kind != ProviderKind::Antigravity
+            provider.auth == AuthMode::Passthrough && provider.kind != ProviderKind::AntigravityCli
         })
 }
 
@@ -704,6 +694,7 @@ fn reason_label(reason: ConsumedBy) -> &'static str {
     match reason {
         ConsumedBy::GatewayJwt => "gateway_jwt",
         ConsumedBy::StaticToken => "static_token",
+        ConsumedBy::AdminCredential => "admin_credential",
     }
 }
 

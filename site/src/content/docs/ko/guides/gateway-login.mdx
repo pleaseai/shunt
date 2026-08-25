@@ -9,7 +9,7 @@ description: OAuth device flow, 로컬 승인 사용자, 또는 Google 같은 OI
 
 <Aside type="caution" title="관리형 다중 사용자 접근에만 선택하세요">
 
-게이트웨이 로그인 세션에는 Claude 앱 게이트웨이의 기능 트레이드오프가 따릅니다: WebSearch가 비활성화되고, 퍼스트파티 전용 beta 헤더와 1시간 cache-TTL beta가 생략되며, 로그인에 브라우저가 필요합니다. 개인용이나 단일 사용자 설정이라면 [`ANTHROPIC_BASE_URL`](/ko/guides/connect-claude-code/)과 선택적 [`[server.auth]`](/ko/guides/shared-gateway/)를 계속 사용하세요.
+게이트웨이 로그인 세션에는 Claude 앱 게이트웨이의 [기능 트레이드오프](/guides/gateway-login/#feature-trade-offs)가 따릅니다: WebSearch가 비활성화되고, 퍼스트파티 전용 beta 헤더와 1시간 cache-TTL beta가 생략되며, 로그인에 브라우저가 필요합니다. 개인용이나 단일 사용자 설정이라면 [`ANTHROPIC_BASE_URL`](/ko/guides/connect-claude-code/)과 선택적 [`[server.auth]`](/ko/guides/shared-gateway/)를 계속 사용하세요.
 
 </Aside>
 
@@ -107,6 +107,30 @@ Claude Code를 시작하고 `/login`을 실행하세요. CLI가 디바이스 코
 3. 성공 페이지가 나타나면 Claude Code로 돌아갑니다.
 
 코드를 미리 채워 넣어도 자동 승인되지는 않습니다. 비밀번호 승인 POST는 same-origin으로 보호됩니다. 외부 callback은 대신 일회용 10분짜리 OAuth state와 PKCE로 교차 사이트 리디렉션을 바인딩하며, 프로바이더 오류가 페이지에 그대로 출력되는 일은 없습니다.
+
+## 터미널에서 로그인하기
+
+사용자별 신원으로 게이트웨이에 도달하는 방법이 `forceLoginMethod: "gateway"`만 있는 것은 아닙니다. shunt는 동일한 device flow의 클라이언트 쪽도 제공하므로, 사용자는 터미널에서 로그인하고 Claude Code를 로그인된 게이트웨이 세션으로 만들지 않을 수 있습니다:
+
+```bash
+shunt gateway login https://gateway.example.com   # 동일한 /device 승인을 브라우저에서
+shunt gateway claude                              # 게이트웨이에 연결된 Claude Code 실행
+```
+
+`shunt gateway login`은 발급된 세션을 `~/.shunt/gateway/session.json`에 소유자 전용으로 저장합니다(`SHUNT_GATEWAY_SESSION_FILE`로 오버라이드). 이어서 `shunt gateway claude`는 게이트웨이 base URL과 `shunt gateway token`을 가리키는 `apiKeyHelper`를 담은 인라인 `--settings` 문서와 함께 Claude Code를 실행하며, 그 프로세스 하나에만 적용됩니다 — `~/.claude/settings.json`은 전혀 수정되지 않습니다. `shunt gateway logout`은 세션을 삭제합니다. 전체 플래그는 [CLI 레퍼런스](/ko/reference/cli/#shunt-gateway-login)에 있습니다.
+
+무엇이 달라지고 무엇이 그대로인지:
+
+| | 클라이언트 내 `/login`(`forceLoginMethod`) | `shunt gateway login` + `shunt gateway claude` |
+| :-- | :-- | :-- |
+| 브라우저 승인 | 필요 | 필요 — 동일한 `/device` 페이지, 동일한 same-origin 보호 |
+| 게이트웨이에서의 사용자별 신원 | 있음 | 있음, 동일한 device flow 세션 |
+| 클라이언트 측 [기능 트레이드오프](/guides/gateway-login/#feature-trade-offs) | 적용됨 | 적용되지 않음 — 자격 증명이 `apiKeyHelper`로 도착해 클라이언트가 일반적인 first-party 모드로 유지됨 |
+| 모델 별칭 | 게이트웨이 세션은 `opus`/`sonnet`을 구형 id로 고정 | 일반 세션과 동일 |
+| [자격 증명 종류 게이트](/ko/reference/client-environment/#which-gateway-restrictions-apply-to-you) | 적용됨 | **여기서도 적용됨** — `apiKeyHelper`를 제공하는 것 자체가 트리거이며, 세션 게이트와는 별개입니다(프롬프트 캐시 TTL 기본값, Remote Control, 음성 받아쓰기, 아티팩트 게시) |
+| `GET /managed/settings`의 사용자별 정책 | 전달됨 | 요청하는 것이 관측되지 않음 — 클라이언트가 정책을 강제해야 한다면 `forceLoginMethod: "gateway"`를 사용 |
+
+토큰이 어느 자격 증명 슬롯에 도착하는지가 클라이언트의 프로바이더 모드를 결정합니다. 위 표는 Claude Code 2.1.234 기준 실측이며 클라이언트 릴리스에 따라 달라질 수 있습니다.
 
 ## 관리형 설정과 모델 정책
 

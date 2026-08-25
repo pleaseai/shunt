@@ -11,7 +11,8 @@ use serde::Deserialize;
 
 pub(crate) use crate::auth::shared::{generate_pkce, PkceChallenge};
 
-use super::{auth, callback::CallbackServer, store};
+use super::{auth, store};
+use crate::auth::callback::{CallbackConfig, CallbackServer};
 
 pub(crate) const AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
 pub(crate) const MANUAL_REDIRECT_URL: &str = "https://platform.claude.com/oauth/code/callback";
@@ -64,12 +65,12 @@ async fn run_oauth_auto(name: &str) -> anyhow::Result<PathBuf> {
         challenge,
         state,
     } = generate_pkce();
-    let callback = CallbackServer::bind(state.clone()).await?;
+    let callback = CallbackServer::bind(CallbackConfig::ephemeral("Claude"), state.clone()).await?;
     let redirect_uri = callback.redirect_uri();
     let authorize_url = build_authorize_url(&challenge, &state, auth::SCOPE, &redirect_uri)?;
     println!("Open this URL to authorize shunt with the Claude account to store:\n");
     println!("    {authorize_url}\n");
-    open_url_async(authorize_url.as_str())
+    crate::auth::shared::open_url_async("Claude OAuth", authorize_url.as_str())
         .await
         .context("failed to open Claude OAuth authorization URL")?;
     let code = callback.wait_for_code(OAUTH_CALLBACK_TIMEOUT).await?;
@@ -95,7 +96,9 @@ async fn run_oauth_manual(name: &str) -> anyhow::Result<PathBuf> {
     let authorize_url = build_authorize_url(&challenge, &state, auth::SCOPE, MANUAL_REDIRECT_URL)?;
     println!("Open this URL to authorize shunt with the Claude account to store:\n");
     println!("    {authorize_url}\n");
-    if let Err(error) = open_url_async(authorize_url.as_str()).await {
+    if let Err(error) =
+        crate::auth::shared::open_url_async("Claude OAuth", authorize_url.as_str()).await
+    {
         eprintln!("Could not open browser automatically: {error}");
     }
     let pasted = prompt_authorization_code().await?;
@@ -198,7 +201,9 @@ async fn run_setup_token(name: &str) -> anyhow::Result<PathBuf> {
 
     println!("Open this URL to authorize shunt with the Claude account to store:\n");
     println!("    {authorize_url}\n");
-    if let Err(error) = open_url_async(authorize_url.as_str()).await {
+    if let Err(error) =
+        crate::auth::shared::open_url_async("Claude OAuth", authorize_url.as_str()).await
+    {
         eprintln!("Could not open browser automatically: {error}");
     }
     let pasted = prompt_authorization_code().await?;
@@ -394,32 +399,6 @@ fn claude_global_config_path_from(
             .unwrap_or(home)
             .join(".claude.json")
     }
-}
-
-fn open_url(url: &str) -> anyhow::Result<()> {
-    let status = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).status()?
-    } else if cfg!(target_os = "windows") {
-        std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", url])
-            .status()?
-    } else {
-        std::process::Command::new("xdg-open").arg(url).status()?
-    };
-    if !status.success() {
-        bail!("browser open command exited with {status}");
-    }
-    Ok(())
-}
-
-/// Launch the browser without blocking the async runtime: `open_url` spawns a
-/// child process and waits on it, so it runs on `spawn_blocking`'s dedicated pool
-/// rather than a Tokio worker thread.
-async fn open_url_async(url: &str) -> anyhow::Result<()> {
-    let url = url.to_string();
-    tokio::task::spawn_blocking(move || open_url(&url))
-        .await
-        .context("Claude OAuth browser open task failed")?
 }
 
 /// Prompt for the pasted authorization code without blocking the async runtime.

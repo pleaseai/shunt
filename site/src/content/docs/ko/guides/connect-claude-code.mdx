@@ -90,6 +90,38 @@ Claude Code는 `apiKeyHelper` 값을 `x-api-key`와 `Authorization: Bearer` **�
 
 
 
+### `shunt gateway token` 헬퍼
+
+shunt가 [`[server.gateway]`](/ko/guides/gateway-login/)를 운영한다면, 공유 토큰 하나 대신 사용자마다 자기 게이트웨이 세션을 가질 수 있습니다. 한 번 로그인한 뒤 두 번째 헬퍼를 사용하세요:
+
+```bash
+shunt gateway login https://gateway.example.com
+```
+
+```json
+// ~/.claude/settings.json
+{
+  "apiKeyHelper": "/path/to/shunt gateway token"
+}
+```
+
+이것은 위의 `shunt token`과는 다른 자격 증명입니다: 그쪽은 업스트림 Claude 구독 토큰을, 이쪽은 shunt 배포가 당신에게 발급한 토큰을 출력합니다. 헬퍼는 만료 5분 전에 갱신하며, 동시에 실행 중인 Claude Code 세션들이 일회용 refresh token을 재사용하지 못하도록 파일 잠금 아래에서 처리합니다. `shunt gateway logout`으로 세션을 삭제합니다.
+
+### 설정 파일 건너뛰기: `shunt gateway claude`
+
+`~/.claude/settings.json`을 아예 건드리지 않으려면, 프로세스 하나에 대해서만 shunt가 연결을 구성하게 하세요:
+
+```bash
+shunt gateway claude
+shunt gateway claude -p 'summarize this repo' --model opus
+```
+
+게이트웨이 base URL과 `apiKeyHelper`를 함께 담은 인라인 `--settings` 문서와 함께 Claude Code를 실행하며, 그 호출에만 적용됩니다 — 설정 파일은 그대로이고, 셸에 이미 export된 `ANTHROPIC_BASE_URL`보다 이 문서가 우선합니다(Claude Code 2.1.234 기준 실측). `claude` 뒤의 인자는 그대로 전달되며, 맨 앞에 오는 `--help`와 `--config`만 shunt가 가져갑니다(`--config`는 조용히 삼켜지는 대신 거부됩니다). 따라서 `claude` 자신의 `--help`나 `--config`는 `--` 뒤에 두세요. [`shunt gateway claude`](/ko/reference/cli/#shunt-gateway-claude)를 참고하세요.
+
+또한 실행되는 프로세스에서 자격 증명 및 프로바이더 모드 관련 변수 34개와, `CLAUDE_CODE_HOST_AUTH_ENV_VAR`가 가리키는 변수까지 제거합니다. 그렇게 하지 않으면 export된 `ANTHROPIC_AUTH_TOKEN`이 `apiKeyHelper`를 완전히 이겨버리고, `CLAUDE_CODE_USE_GATEWAY`는 클라이언트를 게이트웨이 프로바이더 모드로 전환시켜 헬퍼를 아예 조회하지 않게 만듭니다 — 둘 중 하나만 있어도 이 배선이 조용히 무력화됩니다. `ANTHROPIC_BASE_URL`은 settings 문서가 주입하므로 그대로 둡니다. 이것으로 닫히는 것은 주변 환경(ambient environment) 경로뿐입니다. settings 파일의 `env` 블록, 사용자가 이미 설정해 둔 `apiKeyHelper`, 기존에 저장된 로그인, 또는 file-descriptor 리더의 well-known 경로 폴백은 여전히 실행된 클라이언트에 자격 증명을 공급할 수 있습니다.
+
+
+
 ## 3. 매핑된 프로바이더의 자격 증명 제공
 
 이것들은 Claude Code가 아니라 **shunt의 환경**으로 갑니다:

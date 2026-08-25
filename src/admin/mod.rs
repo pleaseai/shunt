@@ -3,9 +3,15 @@
 //! (see `crate::server::build_router`); absent ⇒ none of these routes exist.
 //!
 //! Two credentials never mix: `[server.auth]` client tokens are handed to devices,
-//! `[server.admin]` admin tokens add upstream accounts. Browsers authenticate with
+//! `[server.admin]` admin credentials add upstream accounts and administer spend
+//! limits. Browsers authenticate with
 //! a session cookie minted after a login form and are CSRF-protected; API/curl
-//! callers pass the admin token header and are CSRF-exempt (no ambient cookie).
+//! callers pass the admin credential in the configured header or `x-api-key` and
+//! are CSRF-exempt (no ambient cookie).
+//! An admin credential is either a `tokens_env`/`tokens_file` `name:token` pair
+//! or a `[[server.admin.write_keys]]`/`[[server.admin.read_keys]]` entry; the
+//! read tier passes every GET and is refused on every mutation, the login form
+//! included.
 //! The provisioning flow reuses provider OAuth internals for Claude full/setup
 //! logins and refreshable ChatGPT/Codex logins; token values are never returned
 //! to the browser or logged. See `docs/m9-admin-surface.md`.
@@ -15,13 +21,14 @@ pub mod session;
 mod codex;
 mod html;
 mod oidc;
+mod plan;
 mod script;
 
 use std::{collections::HashSet, io, sync::Arc, time::Duration};
 
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderName, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
     Form, Json, Router,
@@ -32,29 +39,36 @@ use serde_json::{json, Value};
 use crate::{
     auth::{
         claude::{auth as claude_auth, login as claude_login, store as claude_store},
-        inbound::{constant_time_eq, InboundAuth},
+        inbound::constant_time_eq,
         observation::{self, ObservedCredential, ObservedProvider},
     },
-    config::AuthMode,
+    config::{AdminAccess, AdminCredential, AdminKeyring, AuthMode},
     error::ShuntError,
     server::AppState,
 };
 
+pub use plan::reset_profile_cache;
 pub use session::AdminStores;
 
 use session::{PendingAttempt, PendingKind};
 
 const SESSION_COOKIE: &str = "shunt_admin_session";
 
-/// Resolved admin credential plus session/pending lifetimes. Held in
-/// `RuntimeState` (hot-reloaded so token edits apply); the session and pending
-/// stores live in `AppState` (process lifetime). The token check reuses the
+/// Resolved admin credentials plus session/pending lifetimes. Held in
+/// `RuntimeState` (hot-reloaded so credential edits apply); the session and
+/// pending stores live in `AppState` (process lifetime). Matching reuses the
 /// inbound-auth constant-time compare.
-/// No `Debug`: `InboundAuth` holds the raw admin token values, so a derived
-/// `Debug` would risk leaking them (matches the secret-carrying `PendingLogin`).
+/// No `Debug` derive: it would be safe today (the keyring holds `Secret`s), but
+/// the type is the one place resolved admin credentials live, so keep it
+/// unprintable by construction (matches the secret-carrying `PendingLogin`).
 #[derive(Clone)]
 pub struct AdminAuth {
-    inbound: InboundAuth,
+    /// The credential header configured by `[server.admin] header`. `x-api-key`
+    /// is accepted alongside it; see [`Self::authenticate_credential`].
+    header: HeaderName,
+    /// Every resolved credential: the `tokens_env`/`tokens_file` pairs and both
+    /// key arrays.
+    credentials: AdminKeyring,
     session_ttl: Duration,
     pending_ttl: Duration,
     oidc: Option<Arc<crate::gateway::ResolvedIdp>>,
@@ -62,14 +76,38 @@ pub struct AdminAuth {
 }
 
 impl AdminAuth {
-    pub fn new(inbound: InboundAuth, session_ttl: Duration, pending_ttl: Duration) -> Self {
+    pub fn new(
+        header: HeaderName,
+        credentials: AdminKeyring,
+        session_ttl: Duration,
+        pending_ttl: Duration,
+    ) -> Self {
         Self {
-            inbound,
+            header,
+            credentials,
             session_ttl,
             pending_ttl,
             oidc: None,
             oidc_public_url: None,
         }
+    }
+
+    /// The configured credential header. `check_inbound_auth` removes it from
+    /// the forwarded header set while it is a *dedicated* name: this slot is one
+    /// shunt consumes, so its value must never go upstream. When an operator
+    /// points it at `authorization` or `x-api-key` instead, the slot is shared
+    /// with the caller's own upstream credential, so it is stripped by value in
+    /// `headers_for_route` rather than dropped outright.
+    pub(crate) fn header(&self) -> &HeaderName {
+        &self.header
+    }
+
+    /// The resolved credential table, for the outbound strip predicate
+    /// (`crate::auth::inbound::consumed_by`). Exposed as the keyring rather
+    /// than as `AdminAuth` so `auth::inbound` does not have to depend on the
+    /// admin surface.
+    pub(crate) fn credentials(&self) -> &AdminKeyring {
+        &self.credentials
     }
 
     pub fn with_oidc(mut self, public_url: String, idp: crate::gateway::ResolvedIdp) -> Self {
@@ -100,14 +138,82 @@ impl AdminAuth {
         self.pending_ttl
     }
 
-    /// Whether the request carries a valid admin token in the configured header.
-    fn authenticate_header(&self, headers: &HeaderMap) -> bool {
-        self.inbound.authenticate(headers).is_some()
+    /// The admin credential a request presents, or `None` when it presents
+    /// none that matches.
+    ///
+    /// Both the configured header (`x-shunt-admin-token` by default) and
+    /// `x-api-key` are accepted, so a dashboard client and an Admin-API-shaped
+    /// client both authenticate without a bespoke header. The merged
+    /// acceptance lives here rather than in [`InboundAuth`] on purpose:
+    /// `InboundAuth` also gates inference routes, where `x-api-key` is the
+    /// caller's *Anthropic* credential slot and must never authenticate an
+    /// admin credential.
+    ///
+    /// Whatever this accepts, `crate::auth::inbound::consumed_by` strips from
+    /// the same slot before anything is forwarded upstream — the strip
+    /// predicate is the mirror of this one, and both read
+    /// [`Self::credentials`].
+    ///
+    /// Privilege is the explicit maximum over every set that matched, so
+    /// scanning order cannot change it. Every slot is compared against every
+    /// set with no early exit. Order does decide one thing: when both slots
+    /// carry a *different* valid credential of the same tier, the configured
+    /// header supplies the audit actor, because it is scanned first.
+    pub(crate) fn authenticate_credential(&self, headers: &HeaderMap) -> Option<AdminCredential> {
+        let slots = [self.header.as_str(), "x-api-key"];
+        let mut matched: Option<AdminCredential> = None;
+        for slot in slots {
+            let Some(presented) = headers.get(slot).map(|value| value.as_bytes()) else {
+                continue;
+            };
+            matched = keep_higher(matched, self.authenticate_value(presented));
+        }
+        matched
     }
 
-    /// Whether a raw token (from the login form) matches a configured admin token.
-    fn authenticate_token(&self, token: &str) -> bool {
-        self.inbound.authenticate_value(token.as_bytes()).is_some()
+    /// The credential a raw presented value carries — the same maximum as
+    /// [`Self::authenticate_credential`], for values that did not come from a
+    /// header (the login form).
+    fn authenticate_value(&self, presented: &[u8]) -> Option<AdminCredential> {
+        self.credentials
+            .lookup(presented)
+            .map(|(access, actor)| AdminCredential {
+                access,
+                actor: actor.to_string(),
+            })
+    }
+
+    /// Whether a raw token (from the login form) may mint a browser session.
+    /// Read-tier credentials may not: a session carries full access today, so
+    /// minting one from a read key would silently escalate it to write.
+    fn authenticate_login_token(&self, token: &str) -> bool {
+        self.authenticate_value(token.as_bytes())
+            .is_some_and(|credential| credential.access >= AdminAccess::Write)
+    }
+}
+
+/// Keep whichever of two candidate credentials carries the higher privilege,
+/// keeping `current` when the two are equal.
+///
+/// [`AdminAuth::authenticate_credential`] feeds slots in order, so an equal-tier
+/// tie resolves to the earlier slot — the configured admin header outranks the
+/// `x-api-key` alias. The tie is reachable: key *values* are unique across the
+/// credential sets, but nothing stops a caller (or a proxy that adds the admin
+/// header to a request that already carries `x-api-key`) from presenting two
+/// different valid credentials at once, and the audit trail records exactly one
+/// actor. Comparing whole credentials instead would settle that by `actor`
+/// string order, which is why [`AdminCredential`] is not `Ord`.
+fn keep_higher(
+    current: Option<AdminCredential>,
+    candidate: Option<AdminCredential>,
+) -> Option<AdminCredential> {
+    match (current, candidate) {
+        (Some(current), Some(candidate)) => Some(if candidate.access > current.access {
+            candidate
+        } else {
+            current
+        }),
+        (current, candidate) => current.or(candidate),
     }
 }
 
@@ -157,16 +263,20 @@ pub(super) enum Authenticated {
 pub(super) struct AuthOk {
     pub(super) kind: Authenticated,
     pub(super) auth: Arc<AdminAuth>,
+    /// The privilege the request authenticated with. GET routes need only
+    /// `Read`; every mutation goes through [`require_write`].
+    pub(super) access: AdminAccess,
 }
 
 /// Resolve the request's admin authentication, or `None` when unauthenticated (or
 /// the admin surface has been disabled by a reload).
 pub(super) fn authenticate(state: &AppState, headers: &HeaderMap) -> Option<AuthOk> {
     let auth = state.admin_auth.clone()?;
-    if auth.authenticate_header(headers) {
+    if let Some(credential) = auth.authenticate_credential(headers) {
         return Some(AuthOk {
             kind: Authenticated::Header,
             auth,
+            access: credential.access,
         });
     }
     let sid = session_cookie(headers)?;
@@ -174,7 +284,18 @@ pub(super) fn authenticate(state: &AppState, headers: &HeaderMap) -> Option<Auth
     Some(AuthOk {
         kind: Authenticated::Session { csrf },
         auth,
+        // A session can only be minted by a write-tier credential or OIDC
+        // (`login_submit`, `oidc::callback`), so it carries full access.
+        access: AdminAccess::Write,
     })
+}
+
+/// Refuse a read-only credential on a mutating admin route. Returns the
+/// rejection response when the check fails, or `None` when the request may
+/// proceed — the same shape as [`check_csrf`], and called alongside it.
+pub(super) fn require_write(authok: &AuthOk) -> Option<Response> {
+    (authok.access < AdminAccess::Write)
+        .then(|| forbidden("read-only admin credential cannot perform this action"))
 }
 
 /// Enforce CSRF on cookie-authenticated mutations: a same-origin request bearing
@@ -426,7 +547,7 @@ async fn login_submit(
         Ok(Form(form)) => form.token,
         Err(_) => String::new(),
     };
-    if !auth.authenticate_token(&token) {
+    if !auth.authenticate_login_token(&token) {
         return login_response(
             StatusCode::UNAUTHORIZED,
             Some("Invalid admin token."),
@@ -829,11 +950,20 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if authenticate(&state, &headers).is_none() {
         return unauthorized();
     }
+    // Computed once, before the per-provider loop, and shared by every
+    // provider processed in this one request -- a stalled Claude account in
+    // an earlier provider must not let a later provider spend its own
+    // separate time budget on top. Only the production default is ever used
+    // on this path; a shrunk budget exists solely for tests.
+    let budgets = plan::BackfillBudgets::default();
+    let deadline = tokio::time::Instant::now()
+        .checked_add(budgets.total)
+        .unwrap_or_else(tokio::time::Instant::now);
     let mut providers = Vec::new();
     for (name, provider) in &state.config.providers {
         if !matches!(
             provider.auth,
-            AuthMode::ClaudeOauth | AuthMode::ChatgptOauth
+            AuthMode::ClaudeOauth | AuthMode::ChatgptOauth | AuthMode::KimiOauth
         ) {
             continue;
         }
@@ -860,6 +990,17 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 )
                 .await
             }
+            AuthMode::KimiOauth => {
+                crate::auth::shared::resolve_pool_accounts(
+                    "Kimi",
+                    &provider.accounts,
+                    &provider.account_scope,
+                    crate::accounts::StoreFamily::Kimi,
+                    crate::auth::kimi::store::default_accounts_dir(),
+                    crate::auth::kimi::store::scan_accounts,
+                )
+                .await
+            }
             _ => unreachable!("provider auth filtered above"),
         };
         let resolved = match resolved {
@@ -873,6 +1014,32 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
             state
                 .accounts
                 .snapshot(name, &resolved, None, state.config.server.pool.as_ref());
+        // Subscription plan (Claude "max"/"max 20x", ChatGPT "team"/"plus") is
+        // purely informational display data for the dashboard -- it never
+        // touches `AccountSnapshot` or the request-routing path. Resolved
+        // separately and merged into the JSON view only, keyed by account
+        // name (unique within one provider's resolved list).
+        let plans = plan::plans_for_accounts(
+            provider.auth,
+            name,
+            &provider.base_url,
+            &state.http_client,
+            &resolved,
+            &budgets,
+            deadline,
+        )
+        .await;
+        let accounts: Vec<Value> = snapshots
+            .into_iter()
+            .zip(&resolved)
+            .map(|(snapshot, account)| {
+                let mut value = serde_json::to_value(&snapshot).unwrap_or(Value::Null);
+                if let (Value::Object(map), Some(plan)) = (&mut value, plans.get(&account.name)) {
+                    map.insert("plan".to_string(), Value::String(plan.clone()));
+                }
+                value
+            })
+            .collect();
         // `auth` carries the account's actual auth kind (claude_oauth /
         // chatgpt_oauth), distinct from `provider`, which is the operator's
         // config-table name and therefore free-form. The dashboard needs the
@@ -880,7 +1047,7 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
         // an account -- a provider named "claude" is not necessarily a
         // claude_oauth provider, and a claude_oauth provider need not be
         // named "claude".
-        providers.push(json!({ "provider": name, "auth": provider.auth, "accounts": snapshots }));
+        providers.push(json!({ "provider": name, "auth": provider.auth, "accounts": accounts }));
     }
     json_secure(json!({ "providers": providers }))
 }
@@ -963,6 +1130,9 @@ async fn add_account(
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
     if let Some(response) = check_csrf(&authok.kind, &headers) {
         return response;
     }
@@ -1012,6 +1182,9 @@ async fn complete_account(
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
     if let Some(response) = check_csrf(&authok.kind, &headers) {
         return response;
     }
@@ -1204,6 +1377,9 @@ async fn remove_account_handler(
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
     if let Some(response) = check_csrf(&authok.kind, &headers) {
         return response;
     }

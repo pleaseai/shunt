@@ -78,8 +78,21 @@ pub enum AuthMap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         accounts: Option<Vec<AccountSelection>>,
     },
+    /// Kimi Code subscription OAuth. Shaped like `ClaudeOauth`/`ChatgptOauth`
+    /// because it goes through the same `absorb_oauth_scope` path onto
+    /// `provider.account_scope`/`provider.accounts`, which the Kimi account
+    /// pool (`resolve_pool_accounts`) reads to build its candidate list;
+    /// `resolve_kimi_account` resolves one account per call, same as the
+    /// Claude/ChatGPT resolvers it mirrors.
+    KimiOauth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accounts: Option<Vec<AccountSelection>>,
+    },
     XaiOauth {},
     CursorOauth {},
+    AntigravityOauth {},
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -113,8 +126,12 @@ impl UpstreamAuth {
                     provider,
                 )?;
             }
+            Self::Map(AuthMap::KimiOauth { account, accounts }) => {
+                absorb_oauth_scope(upstream, AuthMode::KimiOauth, account, accounts, provider)?;
+            }
             Self::Map(AuthMap::XaiOauth {}) => provider.auth = AuthMode::XaiOauth,
             Self::Map(AuthMap::CursorOauth {}) => provider.auth = AuthMode::CursorOauth,
+            Self::Map(AuthMap::AntigravityOauth {}) => provider.auth = AuthMode::AntigravityOauth,
         }
         Ok(())
     }

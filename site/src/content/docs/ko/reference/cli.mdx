@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: shunt 커맨드 라인 — run, check, init, add, token, provider login.
+description: shunt 커맨드 라인 — run, check, init, add, token, gateway login, provider login.
 ---
 
 ## `shunt run`
@@ -29,6 +29,8 @@ shunt check
 
 구체적인 오류를 보고합니다: 잘못된 bind 주소, 라우트의 알 수 없는 프로바이더, 누락된 `api_key_env`, 잘못된 `base_url`, 잘못된 어댑터/인증 조합.
 
+`shunt run`이 부팅 시 수행하는 라우팅된 Antigravity 자격 증명 가드도 동일하게 실행합니다: 네이티브 `antigravity` 업스트림으로 라우팅하면서 저장된 자격 증명이 없는 구성은 `config ok`를 출력한 뒤 시작 시점에 실패하는 대신, 검사 단계에서 실패하며 `shunt login antigravity`를 안내합니다. 이 검사는 오프라인으로 유지됩니다 — 라우트를 읽고 자격 증명 파일의 존재 여부만 확인할 뿐, 토큰을 갱신하거나 백엔드에 접속하지 않습니다. 내장 `antigravity` 프로바이더를 선언만 하고 라우팅하지 않는 구성은 영향을 받지 않으며, `kind = "antigravity_cli"` 라우팅도 마찬가지입니다.
+
 ## `shunt init`
 
 기존 디렉터리에 starter `shunt.toml`을 생성합니다. 이 명령은 해당 파일 하나만 쓰며, 아무것도 설치하거나 네트워크에 접근하지 않습니다.
@@ -40,7 +42,7 @@ shunt init --root /path/to/project
 shunt init --force
 ```
 
-Upstream을 지정하지 않으면 starter 전체가 주석으로 구성되어 shunt의 기본 passthrough 설정으로 로드됩니다. `--upstream`을 반복하면 failover 순서대로 preset 항목을 추가합니다. 사용할 수 있는 이름은 `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, `cursor`입니다. Starter는 `server.default_provider`를 설정하지 않으므로 매핑되지 않은 트래픽은 기본 Anthropic passthrough를 유지합니다. Preset을 지정하면 생성된 파일이 `shunt check`를 통과하면서도 이 fallback을 유지하도록 마지막에 `anthropic` passthrough upstream이 자동으로 추가됩니다(직접 `anthropic`을 지정한 경우는 제외).
+Upstream을 지정하지 않으면 starter 전체가 주석으로 구성되어 shunt의 기본 passthrough 설정으로 로드됩니다. `--upstream`을 반복하면 failover 순서대로 preset 항목을 추가합니다. 사용할 수 있는 이름은 `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, `cursor`, `kimi-code`입니다. Starter는 `server.default_provider`를 설정하지 않으므로 매핑되지 않은 트래픽은 기본 Anthropic passthrough를 유지합니다. Preset을 지정하면 생성된 파일이 `shunt check`를 통과하면서도 이 fallback을 유지하도록 마지막에 `anthropic` passthrough upstream이 자동으로 추가됩니다(직접 `anthropic`을 지정한 경우는 제외).
 
 Root의 기본값은 현재 디렉터리이며 이미 존재해야 합니다. 그 안에 `shunt.toml`, `shunt.yaml`, `shunt.yml` 중 하나가 있으면 `--force` 없이는 아무것도 쓰지 않고 중단합니다. 강제 init은 `shunt.toml`만 덮어씁니다. YAML variant는 그대로 남고, config discovery에서는 새 TOML 파일이 우선합니다.
 
@@ -79,6 +81,71 @@ Claude 구독 OAuth 토큰을 **stdout**으로 출력하며(로그는 stderr로)
 ```
 
 이것이 필요한 경우는 [Claude Code 연결](/ko/guides/connect-claude-code/#2-choose-the-anthropic-credential)을 참고하세요.
+
+## `shunt gateway login`
+
+[`[server.gateway]`](/ko/guides/gateway-login/)가 활성화된 shunt 배포에 이 머신을 로그인시킵니다. Claude Code의 `/login`이 사용하는 것과 동일한 OAuth device flow입니다. 이것은 게이트웨이의 **클라이언트** 쪽이며, `shunt login <provider>`와 `shunt token`은 그대로 유지되어 여전히 shunt 자신을 업스트림에 인증합니다.
+
+```bash
+shunt gateway login https://gateway.example.com
+shunt gateway login https://gateway.example.com --manual   # 브라우저를 열지 않고 URL만 출력
+```
+
+shunt는 배포의 `/.well-known/oauth-authorization-server` 문서를 읽어 거기서 광고된 엔드포인트를 사용하고, 확인용 URL과 짧은 사용자 코드를 출력한 뒤 브라우저를 열고, 게이트웨이의 `/device` 페이지에서 승인할 때까지 폴링합니다. discovery가 `404`를 반환한다면 대개 그 배포에 `[server.gateway]` 섹션이 없다는 뜻입니다. discovery와 device code 요청에는 각각 상한이 있어, 연결만 수락하고 응답하지 않는 배포는 터미널을 무한정 붙잡는 대신 타임아웃으로 보고됩니다. 그 뒤의 승인 폴링은 기다리는 것이 본래 역할이므로 같은 방식으로 제한하지 않습니다. 루프백이 아닌 평문 `http://` URL도 허용되지만 경고가 출력됩니다 — device code와 refresh token이 암호화되지 않은 채 전송되기 때문이며, 이는 이번 로그인에 한정되지 않습니다. 이후의 모든 토큰 갱신도 같은 전송 경로를 사용하며, `shunt gateway token`은 실제로 갱신을 수행할 때마다 같은 경고를 다시 출력합니다(네트워크 호출이 없는 캐시 토큰 반환 시에는 출력하지 않습니다). 그리고 그런 로그인은 끝까지 진행됩니다. 평문 `http` 게이트웨이는 평문 엔드포인트를 광고할 수 있지만 **자기 자신의 origin**에 한정됩니다 — 스킴·호스트·포트가 모두 입력한 URL과 같아야 합니다. 다른 origin의 평문 엔드포인트는 거부됩니다 — 다만 `https`로 접속한 게이트웨이를 포함해 모든 게이트웨이에 똑같이 적용되는 예외가 하나 있습니다. 머신 밖으로 나가지 않는 루프백 엔드포인트는 언제나 허용됩니다. 게이트웨이가 발급한 액세스 토큰은 세션이 저장되기 전에, 아래 `shunt gateway token`이 적용하는 것과 같은 `apiKeyHelper` 게이트를 통과합니다. 규격에 맞는 토큰을 발급하지 못하는 배포는 성공했다고 보고하면서도 결코 사용할 수 없는 세션을 남기는 대신, 로그인 단계에서 그대로 실패합니다.
+
+배포가 돌려주는 응답에는 두 가지 하한이 적용됩니다. shunt는 discovery 문서가 `https`로, 루프백 주소에 대해 `http`로, 또는 — 입력한 게이트웨이 URL 자체가 평문 `http`일 때 — 그 게이트웨이 자신의 origin에 대해 `http`로 광고한 엔드포인트에만 device code와 refresh token을 POST합니다. 그 외의 엔드포인트는 자격 증명을 받는 대신 discovery 단계에서 이름과 함께 실패합니다. 마지막 허용 범위는 discovery 문서가 아니라 사용자가 입력한 URL에서 계산되므로, 악의적이거나 중간에서 변조된 discovery 문서가 제3자의 평문 호스트를 지정해 refresh token을 그쪽으로 POST하게 만들 수 없습니다. 또한 확인용 URL은 `http` 또는 `https`일 때만 자동으로 열립니다 — 그 문자열은 shunt가 아니라 게이트웨이가 고르므로, 다른 스킴이면 열지 않은 이유와 함께 출력하고 따라갈지 여부는 사용자가 판단합니다.
+
+세션은 `~/.shunt/gateway/session.json`에 저장되며(`SHUNT_GATEWAY_SESSION_FILE`로 오버라이드), 소유자 전용으로 기록됩니다: `0700` 디렉터리 안의 `0600` 파일.
+
+## `shunt gateway token`
+
+게이트웨이 액세스 토큰을 **stdout**으로만 출력합니다 — 모든 메시지와 경고, 힌트는 stderr로 갑니다 — 그래서 Claude Code의 `apiKeyHelper`에 그대로 연결됩니다:
+
+```json
+// ~/.claude/settings.json
+{
+  "apiKeyHelper": "/path/to/shunt gateway token"
+}
+```
+
+이것은 업스트림 Claude 구독 토큰을 출력하는 [`shunt token`](#shunt-token)과는 **다른 헬퍼**입니다. 둘은 서로의 저장소를 읽지 않으며, 이름이 비슷한 `SHUNT_GATEWAY_TOKEN` 변수는 이 명령이 아니라 `shunt token`의 것입니다.
+
+저장된 토큰은 만료 5분 전까지 그대로 제공되고, 그 이후 갱신됩니다. 게이트웨이의 refresh token은 회전하며 일회용이므로, 갱신은 배타적 파일 잠금 아래에서 실행되고 잠금을 획득한 뒤 세션을 다시 읽습니다: 여러 Claude Code 세션이 동시에 헬퍼를 호출해도 갱신은 한 번만 일어나며, 회전 계열 전체를 무효화하는 재사용이 발생하지 않습니다. `shunt gateway login`과 `shunt gateway logout`도 같은 잠금을 획득해 자신의 쓰기가 끝날 때까지 유지하므로, 진행 중인 갱신의 쓰기가 뒤늦게 도착해 그 결과를 되돌리는 일은 없습니다.
+
+잠금도 갱신도 무한정 기다리지 않습니다. 게이트웨이와의 각 왕복은 물론 잠금 대기에도 상한이 있습니다 — 연결은 수락하고 응답하지 않는 배포가 잠금을 쥔 채로 그 머신의 다른 모든 `apiKeyHelper`를 아무 설명 없이 멈춰 세우기 때문입니다. 상한을 넘기면 명령이 실패하면서 잠금 파일 경로를 알려줍니다.
+
+5분 버퍼에 들어갔다는 것은 갱신이 **필요한 시점**이라는 뜻이지 **필수**라는 뜻은 아닙니다. 캐시된 토큰이 아직 실제로 유효한 상태에서 갱신이 실패하면, 짧은 네트워크 장애를 인증 실패로 바꾸는 대신 stderr에 경고를 남기고 그 토큰을 제공합니다. 실제로 만료된 뒤에는 명령이 실패합니다. 이 폴백에는 아무것도 회전되지 않았다는 증거가 필요하므로, refresh token을 제시한 적이 없음이 확실한 두 가지 실패 — discovery 실패, 그리고 연결조차 열지 못한 토큰 요청 — 에만 적용됩니다. 요청이 전송된 시점부터는 게이트웨이가 이미 토큰을 회전시켰을 수 있으므로, 타임아웃이나 읽을 수 없거나 해석할 수 없는 응답, 게이트웨이가 알려준 오류는 모두 명령 실패로 이어집니다. 그 상황에서 캐시된 토큰을 제공하면 이미 소진된 refresh token이 디스크에 남아 다음 실행에서 재사용되기 때문입니다. Claude Code의 헬퍼 검증기가 거부할 토큰 — 공백 없는 출력 가능 ASCII 1~16384자가 아닌 값 — 은 아무 설명 없이 인증을 실패시키도록 출력되는 대신, 게이트웨이를 지목하는 진단과 함께 여기서 거부됩니다. `shunt gateway logout`은 세션을 제거하지만, 비어 있는 형제 `.lock` 파일은 의도적으로 그대로 둡니다. logout·login·갱신이 서로를 배제하는 기준이 바로 그 inode이며, 파일을 지우면 진행 중인 보유자는 예전 inode의 잠금을 계속 들고 있고 다음 프로세스는 새로 만들어진 inode를 잠그게 되어 둘이 더 이상 서로를 배제하지 못합니다.
+
+## `shunt gateway claude`
+
+설정 파일을 편집하지 않고 Claude Code를 게이트웨이에 연결해 실행합니다:
+
+```bash
+shunt gateway claude
+shunt gateway claude -p 'summarize this repo' --model opus
+```
+
+저장된 세션의 게이트웨이를 `ANTHROPIC_BASE_URL`로 가리키고 `apiKeyHelper`를 이 바이너리의 절대 경로 + `gateway token`으로 설정한 인라인 `--settings` 문서와 함께 `claude`를 실행합니다. 이 문서는 해당 프로세스 하나에만 적용됩니다: `~/.claude/settings.json`은 전혀 수정되지 않으며, 셸에 이미 export된 `ANTHROPIC_BASE_URL`보다 우선합니다(Claude Code 2.1.234 기준 실측).
+
+실행되는 프로세스의 환경에서는 자격 증명 및 프로바이더 모드 관련 변수 34개도 제거됩니다: Anthropic·AWS·Foundry 자격 증명 변수, `CLAUDE_CODE_USE_*` 프로바이더 선택자와 그 리전·프로젝트 형제 변수, `CLAUDE_CODE_SKIP_*_AUTH` 수정자, 호스트 관리 간접 참조 변수, `ANTHROPIC_CUSTOM_HEADERS`, 그리고 두 개의 `*_FILE_DESCRIPTOR` 리더 — 여기에 더해, 실행 시점에 확인해서 `CLAUDE_CODE_HOST_AUTH_ENV_VAR`가 가리키는 변수까지 제거합니다. 그 변수는 임의의 이름을 담기 때문에 고정된 목록으로는 표현할 수 없습니다. 이것이 `apiKeyHelper`를 실제로 도달 가능하게 만드는 부분입니다. settings의 `env` 블록은 상속받은 환경 위에 덮어쓰는 방식이라, 그대로 두면 export된 `ANTHROPIC_AUTH_TOKEN`이 헬퍼를 완전히 이겨버리고(헬퍼는 그 변수가 없을 때만 조회됩니다), `CLAUDE_CODE_USE_GATEWAY`는 세션을 게이트웨이 프로바이더 모드로 전환시켜 헬퍼를 아예 조회하지 않는 경로로 보냅니다. `ANTHROPIC_BASE_URL`은 의도적으로 제거하지 않습니다 — settings 문서가 주입하는 값이기 때문입니다.
+
+이것으로 닫히는 것은 **주변 환경(ambient environment)** 경로뿐입니다. 자격 증명은 여전히 settings 파일의 `env` 블록(Claude Code가 실행 후 다시 적용합니다), 사용자가 이미 설정해 둔 `apiKeyHelper`, 자격 증명 저장소에 남아 있는 기존 로그인, 또는 두 file-descriptor 리더가 변수 없이도 참조하는 well-known 경로 폴백을 통해 실행된 클라이언트에 도달할 수 있습니다. 이 조치만으로 세션이 first-party 모드로 동작한다고 보장되지는 않습니다.
+
+`claude` 뒤의 인자는 모두 그대로 전달됩니다. 인자 목록 맨 앞에 올 때만 두 가지 예외가 있습니다: `--help`는 shunt의 도움말을 출력하고, `--config`는 shunt의 전역 옵션에 조용히 삼켜지는 대신 오류로 거부됩니다. 둘 중 어느 것이든 `claude`로 보내려면 `--` 뒤에 두세요:
+
+```bash
+shunt gateway claude -- --config /path/to/claude/config
+```
+
+자격 증명이 `apiKeyHelper`를 통해 전달되므로 세션은 로그인된 게이트웨이 세션이 되지 않고 Claude Code의 일반적인 first-party 모드로 유지됩니다 — 토큰이 어느 자격 증명 슬롯에 도착하는지가 모드를 결정합니다. 무엇을 포기하는지는 [게이트웨이 로그인](/ko/guides/gateway-login/#터미널에서-로그인하기)을 참고하세요.
+
+## `shunt gateway logout`
+
+저장된 세션을 삭제합니다. 멱등적입니다 — 이미 없는 세션을 삭제해도 성공합니다.
+
+```bash
+shunt gateway logout
+```
 
 ## `shunt login claude`
 
@@ -134,6 +201,33 @@ xAI device-code OAuth 플로우를 실행하고 갱신 가능한 credential을 �
 shunt login xai
 ```
 
+## `shunt login kimi`
+
+Kimi Code의 device-authorization([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)) OAuth 플로우를 실행하고 갱신 가능한 credential을 저장합니다:
+
+```bash
+shunt login kimi --name <account-name>
+```
+
+`--name`은 필수입니다. 생략하면 `` `shunt login kimi` requires --name <account-name> `` 오류로 실패합니다. Kimi Code OAuth 토큰은 항상 갱신 가능하므로 `--mode`와 `--long-lived`는 거부됩니다. `--manual`은 claude 전용입니다.
+
+로그인 시 해당 계정의 `X-Msh-Device-Id`가 한 번 생성되어 이후의 모든 갱신에서 재사용되므로, 계정은 Kimi에 안정적인 디바이스 신원을 제시합니다. 안정적인 upstream 계정 식별자를 담은 Kimi 로그인 응답은 지금까지 관측된 적이 없으므로, 스캔된 항목의 풀 신원은 그 자체의 파일명이 됩니다.
+
+파일은 Unix에서 `0600` 권한으로 원자적으로 기록됩니다. shunt가 생성하는 스토어 디렉터리는 `0700`으로 만들어집니다. `SHUNT_KIMI_ACCOUNTS_DIR`로 스토어 디렉터리를 재정의할 수 있으며, 같은 이름을 재사용하면 파일이 교체됩니다.
+
+결과는 `auth = "kimi_oauth"`를 사용하는 provider에서 소비되며, 이는 `kind = "anthropic"`이고 base URL이 `kimi.com`일 때만 유효합니다. 이름만 있는 풀 항목으로 참조합니다:
+
+```toml
+[[providers.kimi-code.accounts]]
+name = "primary"
+```
+
+config는 provider를 `[[upstreams]]` 또는 `[providers.*]` 중 한 형식으로만 선언하며 둘을 함께 쓸 수 없습니다. `[[upstreams]]` config에서는 대신 auth 맵에 계정을 지정하세요: `auth = { mode = "kimi_oauth", accounts = ["primary"] }`.
+
+Kimi는 갱신할 때마다 refresh token을 회전시키며, 발급되는 access token 수명도 약 15분으로 짧아 갱신이 자주 일어납니다. 따라서 위의 "갱신 가능한 로그인은 프로세스 하나만" 원칙이 그대로 강하게 적용됩니다. 하나의 Kimi 계정 파일을 여러 shunt 프로세스가 공유하면 첫 갱신에서 서로를 무효화합니다.
+
+전체 upstream 구성은 [Kimi](/ko/providers/kimi/#kimi-code-oauth-subscription)를 참고하세요.
+
 ## Anthropic 계정 풀 인증
 
 `auth = "claude_oauth"`인 Anthropic provider에서 계정은 이름만 있는 스토어 항목, `credentials = "~/.claude/.credentials.json"`, 또는 `token_env = "YOUR_ENV_NAME"`을 사용할 수 있습니다. 스토어 항목은 위의 Full OAuth, Claude Code 로그인 가져오기, setup-token 플로우 중 하나로 만들 수 있습니다. 전체 구성과 failover 규칙은 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/)을 참고하세요.
@@ -146,7 +240,9 @@ shunt login xai
 | `RUST_LOG` | 로그 필터, 예: `shunt=debug` |
 | `SHUNT_CLIENT_TOKENS` | [`[server.auth]`](/ko/guides/shared-gateway/)용 클라이언트 토큰(이름은 `tokens_env`로 구성 가능) |
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | `shunt token`용 정적 토큰 |
+| `SHUNT_GATEWAY_SESSION_FILE` | `shunt gateway` 명령들이 사용하는 대체 세션 파일(기본 `~/.shunt/gateway/session.json`); 위의 `SHUNT_GATEWAY_TOKEN`과는 무관 |
 | `CLAUDE_CREDENTIALS` | `shunt token` 및 갱신 가능한 `shunt login claude` 가져오기용 대체 credential 파일 경로 |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt가 관리하는 Claude 계정 스토어의 대체 디렉터리 |
+| `SHUNT_KIMI_ACCOUNTS_DIR` | shunt가 관리하는 Kimi Code 계정 스토어의 대체 디렉터리 |
 | `token_env`로 지정한 계정별 변수 | Anthropic `claude_oauth` 풀 항목의 setup token; 변경 없이 그대로 사용 |
 | `OPENAI_API_KEY` | `openai` 프로바이더용 기본 키 env(프로바이더별로 `api_key_env`를 통해) |

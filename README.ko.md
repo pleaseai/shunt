@@ -15,7 +15,7 @@
 
 이름 자체가 동작 방식을 나타냅니다. 전기/철도의 *shunt*는 흐름의 일부를 선택해 병렬 경로로 우회시킵니다. 여기서는 매핑된 모델의 추론이 다른 프로바이더로 우회되는 동안 Claude Code의 도구와 스킬은 그대로 유지됩니다.
 
-**OpenAI**, **ChatGPT/Codex**(`codex login`으로 구독을 재사용), **xAI**(API 키), **Grok**(`shunt login xai`로 SuperGrok / X Premium+ 구독을 재사용), **Cursor**(`shunt login cursor`로 구독을 재사용), **Anthropic** 패스스루가 기본 내장되어 있으며, Anthropic Messages 호환 백엔드(Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway 등)라면 무엇이든 TOML 테이블 하나만 추가하면 됩니다. 코드 변경은 필요 없습니다.
+**OpenAI**, **ChatGPT/Codex**(`codex login`으로 구독을 재사용), **xAI**(API 키), **Grok**(`shunt login xai`로 SuperGrok / X Premium+ 구독을 재사용), **Cursor**(`shunt login cursor`로 구독을 재사용), **Kimi Code**(`shunt login kimi`로 구독을 재사용), **Anthropic** 패스스루가 기본 내장되어 있으며, Anthropic Messages 호환 백엔드(Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway 등)라면 무엇이든 TOML 테이블 하나만 추가하면 됩니다. 코드 변경은 필요 없습니다.
 
 > [!NOTE]
 > `shunt`는 활발히 개발 중인 1.0 미만(pre-1.0) 소프트웨어입니다. [SemVer](https://semver.org/lang/ko/#spec) 관례에 따라 `0.x` 릴리스에는 설정 키, CLI, 동작에 대한 호환성이 깨지는 변경(breaking change)이 포함될 수 있으니, 업그레이드 전에 [릴리스 노트](https://github.com/pleaseai/shunt/releases)를 확인하세요.
@@ -123,6 +123,8 @@ codex-fallback = "gpt-5.6-sol"
 
 xAI는 구독 등급에 따라 OAuth 접근을 제한할 수 있습니다. `grok`이 403을 반환하면 `xai` API 키 프로바이더를 대신 사용하세요. 자세한 내용은 [`docs/m6-xai-provider.md`](docs/m6-xai-provider.md)를 참고하세요.
 
+**선택 기능인 Claude 앱 게이트웨이 로그인 및 정책.** `[server.gateway]`를 구성하면, 공유 정적 토큰 하나를 배포하는 대신 관리 대상 Claude Code 클라이언트가 OAuth device flow(`forceLoginMethod: "gateway"` + `forceLoginGatewayUrl`)로 로그인하게 할 수 있습니다. 브라우저 승인에는 환경 변수 기반 정적 사용자나 `[server.gateway.oidc]`를 통해 허용 목록에 올린 OIDC 프로바이더(예: Google)를 쓸 수 있으며, 두 방식을 함께 제공할 수도 있습니다. shunt는 OAuth discovery, 브라우저 승인, device/refresh 그랜트, HS256 액세스 JWT, 회전하는 불투명 refresh token, 그리고 `ETag` 캐싱과 텔레메트리 환경 변수 푸시, `availableModels` 강제를 갖춘 사용자별 `GET /managed/settings`를 제공합니다. 발급된 bearer는 `/v1/models`와, 선택된 프로바이더가 서버 측 자격 증명을 주입하는 추론 경로를 보호하며 passthrough 프로바이더는 그대로 열려 있습니다. `[server.auth]`와 조합할 수 있습니다. 이 기능은 기본적으로 꺼져 있습니다. refresh 세션은 기본적으로 재시작 후에도 유지됩니다(이슈 #194). `state_path`(기본값 `~/.shunt/gateway-sessions.json`)는 refresh token을 SHA-256 해시로, 원자적으로 기록되는 소유자 전용(Unix에서 0600) 파일에 저장하고 부팅 시 복원하므로, 사용자는 브라우저 플로우를 다시 거치지 않고 조용히 갱신을 이어갑니다. 메모리 전용 세션을 쓰려면 `state_path = ""`로 설정하세요. 이 경우 재시작하면 refresh 세션이 무효화되며, 이미 발급된 액세스 JWT는 만료될 때까지 유효하고 그 뒤에는 다시 로그인해야 합니다. device 그랜트는 항상 메모리 전용입니다. 클라이언트는 Claude Code 안에서가 아니라 터미널에서 로그인할 수도 있습니다. `shunt gateway login <url>`은 같은 device flow를 실행해 세션을 로컬(`~/.shunt/gateway/session.json`, 소유자 전용)에 저장하고, `shunt gateway token`은 `apiKeyHelper`로 쓸 액세스 토큰을 출력하며, `shunt gateway claude`는 그 연결 설정을 단일 프로세스에만 적용한 채 Claude Code를 실행합니다 — `~/.claude/settings.json`을 수정하지 않고, 클라이언트를 로그인된 게이트웨이 세션 상태로 만들지도 않으므로 그 게이트에 따르는 기능 트레이드오프를 떠안지 않습니다(모든 `apiKeyHelper`가 걸리는 일반적인 자격 증명 종류 게이트는 그대로 적용됩니다). `shunt login <provider>`와 `shunt token`은 변경되지 않았으며 여전히 shunt를 업스트림에 인증합니다. [설정 가이드](https://shunt.dev/guides/gateway-login/), [구성 레퍼런스](https://shunt.dev/reference/configuration/#servergateway-optional), [M-A 로그인 노트](docs/gateway-login.md), [M-B managed-settings 노트](docs/gateway-managed-settings.md), [M-C 텔레메트리 노트](docs/gateway-telemetry.md)를 참고하세요.
+
 OpenAI의 Thibault Sottiaux는 다른 코딩 하네스를 통해 Codex를 실행하는 것을 공개적으로 환영했습니다.
 
 > Share the recipe. People want to know how to use GPT-5.6 Sol in CC. We don't discriminate on the harness. ([출처](https://x.com/thsottiaux/status/2075830097488249060))
@@ -151,11 +153,39 @@ provider = "cursor"
 | 프로바이더 | `base_url` | 예시 모델 ID |
 | :-- | :-- | :-- |
 | Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k2.7-code` |
+| Kimi Code (구독, OAuth) | `https://api.kimi.com/coding` | 구독에서 제공하는 ID 사용 |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
+
+위 표의 행은 대부분 `auth = "api_key"`를 사용합니다. 예외는 **Kimi Code**로, 바로 위 행의 종량제 Moonshot API와는 별개의 구독형 Kimi 서비스입니다 — 호스트가 다르고, API 키 대신 OAuth를 사용합니다. `kind = "anthropic"`, `base_url = "https://api.kimi.com/coding"`, `auth = "kimi_oauth"`를 제공하는 전용 내장 `kimi-code` 프리셋이 있어, `provider = "kimi-code"`와 로그인한 계정만 있으면 별도의 `[providers.*]`/`[[upstreams]]` 테이블 작성이 필요 없습니다:
+
+```bash
+shunt login kimi --name <account-name>                # RFC 8628 디바이스 플로우 -> ~/.shunt/accounts/kimi/<account-name>.json
+```
+
+```toml
+# shunt.toml — Kimi Code 구독으로 라우팅
+[[upstreams]]
+name = "kimi-code"
+provider = "kimi-code"
+auth = { mode = "kimi_oauth", account = "<account-name>" }
+
+# [[upstreams]]를 선언하면 내장 provider 세트가 대체되므로 마지막에 anthropic
+# passthrough를 남겨 둡니다. 없으면 `shunt check`가 기본 server.default_provider를
+# 찾지 못해 실패합니다. `shunt init`이 덧붙이는 항목과 동일합니다.
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+
+[[routes]]
+model = "<model-id-your-subscription-exposes>"
+provider = "kimi-code"
+```
+
+`kimi_oauth`는 `claude_oauth`/`chatgpt_oauth`와 마찬가지로 풀링이 가능합니다 — `account` 대신 `accounts = [...]`를 사용하면 여러 개의 저장된 Kimi 계정에 부하를 분산할 수 있습니다. 어드민/`/usage` 풀 화면을 포함한 전체 안내는 [Kimi → Kimi Code (OAuth subscription)](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription)를 참고하세요. 디바이스 플로우·토큰 저장소·검증 내부 구조는 [M15 설계 노트](docs/m15-kimi-oauth.md)를 참고하세요.
 
 ```toml
 [providers.kimi]

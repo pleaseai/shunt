@@ -7,6 +7,7 @@ pub mod managed;
 mod oauth;
 pub mod persist;
 pub mod refresh;
+pub mod spend;
 pub mod store;
 pub mod telemetry_ingest;
 

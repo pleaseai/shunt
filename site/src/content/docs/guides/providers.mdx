@@ -9,7 +9,8 @@ Providers are a **name → config map**. Anthropic-compatible and Responses-comp
 - **`kind = "responses"`** — the upstream speaks the OpenAI Responses API. shunt translates Anthropic Messages ⇄ Responses, including streaming.
 - **`kind = "cursor"`** — the native Cursor ConnectRPC/protobuf adapter.
 - **`kind = "gemini"`** — the native Google Code Assist `generateContent` adapter.
-- **`kind = "antigravity"`** — invokes the local Antigravity `agy` CLI.
+- **`kind = "antigravity"`** — the Google Antigravity backend over HTTP.
+- **`kind = "antigravity_cli"`** — **deprecated**; invokes the local Antigravity `agy` CLI.
 
 ## Built-in providers
 
@@ -22,7 +23,8 @@ Providers are a **name → config map**. Anthropic-compatible and Responses-comp
 | [`grok`](/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` |
 | [`cursor`](/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — reuses `~/.gemini/oauth_creds.json` |
-| `antigravity` | `antigravity` | `none` | local `agy` CLI — uses its authenticated Google Antigravity backend |
+| `antigravity` | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` — reuses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
+| `antigravity-cli` | `antigravity_cli` | `none` | **Deprecated.** Local `agy` CLI — same backend via subprocess |
 
 Each linked name opens its dedicated setup page. `shunt add upstream <name>` prints a step-by-step blueprint for built-in providers; see the [CLI reference](/reference/cli/#shunt-add).
 
@@ -43,7 +45,12 @@ upstream_model = "gemini-2.5-flash"
 
 Code Assist also recognizes preview slugs such as `gemini-3.1-pro-preview` and `gemini-3-flash-preview`, subject to account entitlement and provider capacity. It does not accept the Antigravity-only `gemini-3.5-flash` and `gemini-3.6-flash` slugs.
 
-The separate `antigravity` provider invokes an installed and authenticated `agy` binary. Map each local alias to the exact `agy --model` slug:
+The separate `antigravity` provider reaches the same backend over HTTP. Authenticate it with `shunt login antigravity`: a Google
+authorization-code flow using Antigravity's own OAuth client, which asks for two scopes (`cclog`, `experimentsandconfigs`) a Gemini CLI
+login never carries — so the `gemini` credential cannot be reused here, and vice versa. The login also resolves the Code Assist project,
+provisioning one through `onboardUser` for a first-time account, so no discovery happens in front of a request.
+
+Map each local alias to the exact Antigravity model slug:
 
 ```toml
 [[models]]
@@ -56,7 +63,22 @@ provider = "antigravity"
 upstream_model = "gemini-3.6-flash"
 ```
 
-The Antigravity path runs one CLI subprocess per request in agentic mode. `agy` is a
+<Aside type="caution" title="`antigravity` changed meaning">
+
+`kind = "antigravity"` used to run the local `agy` binary. It is now the HTTP upstream, and the subprocess transport moved to
+`kind = "antigravity_cli"` (built-in provider `antigravity-cli`), which is deprecated. A config still carrying the old meaning is
+refused by name rather than retargeted, and a routed `antigravity` provider with no credential refuses to start — changing transport,
+credentials, and egress underneath a green startup would be worse than failing. [`shunt check`](/reference/cli/#shunt-check) runs that
+same credential guard offline, so CI catches a route to `antigravity` with no credential stored before a rollout rather than at
+startup — presence only, so an empty or stale credential still passes and fails later on the request path. Run
+`shunt login antigravity`, or point the route at `antigravity-cli`. Startup also logs a warning whenever a route still resolves to the deprecated `antigravity_cli` kind, so operators
+can catch a stale config without waiting for a request.
+
+</Aside>
+
+### The deprecated `antigravity-cli` transport
+
+The `antigravity-cli` path runs one CLI subprocess per request in agentic mode. `agy` is a
 full agent with its own tools, so it resolves its own tool calls and returns finished
 work — file edits included. Four consequences follow:
 
@@ -104,8 +126,8 @@ only when it canonicalizes inside one of these roots — canonicalizing first so
 symlinks cannot escape. With no roots configured, prompt-derived paths are ignored.
 
 ```toml
-[providers.antigravity]
-kind = "antigravity"
+[providers.antigravity-cli]
+kind = "antigravity_cli"
 base_url = "http://localhost"
 auth = "none"
 # Repos an agent may be pointed at by request content.
@@ -203,6 +225,7 @@ Most third-party "use Claude Code with X" gateways are Anthropic-Messages-compat
 | Provider | `base_url` | Example model IDs |
 | :-- | :-- | :-- |
 | [Kimi (Moonshot)](/providers/kimi/) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
+| [Kimi Code (subscription, OAuth)](/providers/kimi/#kimi-code-oauth-subscription) | `https://api.kimi.com/coding` | use the ids your subscription exposes |
 | [DeepSeek](/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | [Z.ai (GLM)](/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | [MiniMax](/providers/minimax/) | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
@@ -213,7 +236,42 @@ Most third-party "use Claude Code with X" gateways are Anthropic-Messages-compat
 For a provider not in this table, `shunt add upstream <docs-url>` prints a research blueprint
 that walks a coding agent through wiring it up from the provider's own documentation.
 
-For example, to route Kimi's model through shunt:
+Every row above but one takes `auth = "api_key"`. **Kimi Code** is the exception: a separate,
+subscription-billed Kimi service from the metered Moonshot API in the row above it — different
+host, and OAuth instead of an API key. It has a dedicated built-in `kimi-code` preset (`kind =
+"anthropic"`, `base_url = "https://api.kimi.com/coding"`, `auth = "kimi_oauth"`), so it needs no
+manual `[providers.*]` table beyond `provider = "kimi-code"` under the ordered `[[upstreams]]`
+form, plus a logged-in account:
+
+```bash
+shunt login kimi --name <account-name>   # RFC 8628 device flow -> ~/.shunt/accounts/kimi/<account-name>.json
+```
+
+```toml
+# shunt.toml — route to your Kimi Code subscription
+[[upstreams]]
+name = "kimi-code"
+provider = "kimi-code"
+auth = { mode = "kimi_oauth", account = "<account-name>" }
+
+# Declaring [[upstreams]] replaces the built-in provider set, so keep a trailing
+# anthropic passthrough — without it `shunt check` rejects the default
+# server.default_provider. This is the same entry `shunt init` appends.
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+
+[[routes]]
+model = "<model-id-your-subscription-exposes>"
+provider = "kimi-code"
+```
+
+`kimi_oauth` is pool-capable like `claude_oauth`/`chatgpt_oauth` — use `accounts = [...]` in place
+of `account` to spread load across several stored Kimi accounts. See
+[Kimi → Kimi Code (OAuth subscription)](/providers/kimi/#kimi-code-oauth-subscription) for the
+full walkthrough.
+
+For example, to route Kimi's (Moonshot) model through shunt:
 
 ```toml
 [providers.kimi]

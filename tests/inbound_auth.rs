@@ -453,12 +453,14 @@ async fn antigravity_requires_a_client_token_even_on_passthrough_auth() {
         test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_AGY"),
         "SHUNT_TEST_M4_TOKENS_AGY",
     );
-    // The reported configuration: a declared Antigravity upstream left on the
-    // default auth mode.
-    config.providers.get_mut("antigravity").unwrap().auth = AuthMode::Passthrough;
+    // The reported configuration: a declared Antigravity CLI upstream left on
+    // the default auth mode. `antigravity-cli` is the local-execution transport
+    // this gate exists for; the `antigravity` provider is the native HTTP one,
+    // which config validation already pins to `antigravity_oauth`.
+    config.providers.get_mut("antigravity-cli").unwrap().auth = AuthMode::Passthrough;
     config.routes.push(RouteConfig {
         model: "agy-guarded".to_string(),
-        provider: "antigravity".to_string(),
+        provider: "antigravity-cli".to_string(),
         upstream_model: Some("gemini-3.1-pro".to_string()),
         effort: None,
         service_tier: None,

@@ -66,13 +66,36 @@ impl RuntimeState {
 /// good config rather than going down or running open.
 ///
 /// Fields that cannot be hot-applied (`server.bind`,
-/// `server.max_concurrent_requests`, `[sentry]`, `[otel]`, and enabling or
-/// disabling the optional `[server.*]` route trees) are compared against the
-/// live config and a `warn!` is logged when they change; the new values are
-/// accepted into the swapped config but only take effect on restart.
+/// `server.max_concurrent_requests`, spend-limit route registration/state path,
+/// `[sentry]`, `[otel]`, and enabling or disabling the optional `[server.*]` route
+/// trees) are compared against the live config and a `warn!` is logged when they
+/// change; the new values are accepted into the swapped config but only take
+/// effect on restart.
 pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<(), ConfigError> {
     // Load + validate the candidate before touching the live state.
     let new_config = Config::load(path)?;
+    // The same guard `main.rs`'s boot path runs — both call
+    // `routed_antigravity_credential_error`, rather than each keeping a copy.
+    // A reload that newly routes to the native `antigravity` upstream without a
+    // credential must be refused here too, not just at startup: otherwise
+    // editing a running config could silently swap credentials, egress, and
+    // failure modes underneath a live provider.
+    if let Some(message) =
+        crate::auth::antigravity::routed_antigravity_credential_error(&new_config)
+    {
+        return Err(ConfigError::AntigravityMigrationRequired(message));
+    }
+    if crate::auth::antigravity::routes_to_antigravity(&new_config) {
+        // Mirror `main.rs`'s boot sequence here too: a config that starts with no
+        // route to `antigravity` never starts the version refresher, so a reload
+        // that later adds one is the only remaining place to start it. Without
+        // this, every Antigravity request for the rest of the process lifetime
+        // would carry the compiled-in fallback User-Agent instead of a refreshed
+        // one. `spawn_refresher` is idempotent (a process-lifetime guard, not
+        // per-call state), so calling it on every qualifying reload — including
+        // ones after the first — is safe.
+        crate::auth::antigravity::version::spawn_refresher(reqwest::Client::new());
+    }
     let previous = shared.load();
     warn_on_restart_only_changes(&previous.config, &new_config);
     let mut new_state = RuntimeState::from_config(new_config)?;
@@ -142,6 +165,19 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
     if previous.server.gateway.is_some() != next.server.gateway.is_some() {
         tracing::warn!(
             "[server.gateway] was enabled or disabled but requires a restart; the running route and JWT-auth capability remains unchanged"
+        );
+    }
+    let previous_spend = previous.server.spend.as_ref();
+    let next_spend = next.server.spend.as_ref();
+    if previous_spend.is_some() != next_spend.is_some() {
+        tracing::warn!(
+            "[server.spend] was enabled or disabled but requires a restart to register or drop spend-limit routes"
+        );
+    } else if previous_spend.and_then(|spend| spend.state_path())
+        != next_spend.and_then(|spend| spend.state_path())
+    {
+        tracing::warn!(
+            "[server.spend].state_path changed but requires a restart; spend-limit persistence is fixed at boot"
         );
     }
     // Like `[server.admin]`, whether the inbound Responses routes are registered
@@ -372,6 +408,8 @@ fn event_touches_path(event: &notify::Event, path: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
+
     use std::sync::Arc;
 
     use arc_swap::ArcSwap;
@@ -409,6 +447,71 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// RAII guard for a test that overwrites a real, fixed-name env var.
+    /// Unlike most env vars this file's tests use — which are given a
+    /// process-id-suffixed name (`SHUNT_RELOAD_TEST_TOKENS_{pid}`, etc.) so
+    /// they can never collide with anything real — `SHUNT_ANTIGRAVITY_AUTH_FILE`'s
+    /// name is fixed by its config-loading contract and cannot be made
+    /// unique. Unconditionally removing it after the test (the previous
+    /// shape here) would silently drop a value the run's real environment
+    /// had set before the test started; saving and restoring it on drop
+    /// (even across a panicking assertion) keeps the test's effect on the
+    /// process environment scoped to the test itself.
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn env_var_guard_restores_a_prior_value_on_drop() {
+        // The bug this guard fixes: overwriting a real env var and then
+        // unconditionally removing it (rather than restoring what was there
+        // before) would clobber a value the surrounding environment had set.
+        let key = "SHUNT_RELOAD_ENV_GUARD_TEST_PRIOR_VALUE";
+        std::env::set_var(key, "prior-value");
+        {
+            let _guard = EnvVarGuard::set(key, "temporary-value");
+            assert_eq!(std::env::var(key).unwrap(), "temporary-value");
+        }
+        assert_eq!(
+            std::env::var(key).unwrap(),
+            "prior-value",
+            "the guard must restore the value that was present before it ran, \
+             not leave it removed"
+        );
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn env_var_guard_removes_a_previously_unset_var_on_drop() {
+        let key = "SHUNT_RELOAD_ENV_GUARD_TEST_UNSET";
+        std::env::remove_var(key); // start from a clean slate
+        {
+            let _guard = EnvVarGuard::set(key, "temporary-value");
+            assert_eq!(std::env::var(key).unwrap(), "temporary-value");
+        }
+        assert!(
+            std::env::var_os(key).is_none(),
+            "a var with no prior value must end up unset again, not stuck at \
+             the test's temporary value"
+        );
     }
 
     fn shared_from(config: Config) -> SharedState {
@@ -482,6 +585,177 @@ mod tests {
         assert!(error.to_string().contains("unknown provider: nonexistent"));
         // Fail-safe: the previously-live config is untouched.
         assert_eq!(shared.load().config.server.default_provider, "anthropic");
+    }
+
+    #[test]
+    fn reload_routing_to_antigravity_without_a_credential_keeps_previous_state() {
+        use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
+
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_dir("antigravity-migration");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        // Point the credential probe at a file that does not exist.
+        let credential_path = dir.join("antigravity-auth.json");
+        let _env_var_guard = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        // Re-point default_provider at the native antigravity upstream, with no
+        // credential file present at the path checked above.
+        std::fs::write(&path, "[server]\ndefault_provider = \"antigravity\"\n").unwrap();
+        let error = reload(&shared, Some(&path)).expect_err("must refuse the migration");
+        assert!(
+            error.to_string().contains("shunt login antigravity"),
+            "{error}"
+        );
+        // Fail-safe: the previously-live config, still pointing at anthropic, is
+        // untouched — a bad edit never takes a running provider down mid-flight.
+        assert_eq!(shared.load().config.server.default_provider, "anthropic");
+    }
+
+    #[tokio::test]
+    // `reload` now starts the antigravity version refresher on this path
+    // (`version::spawn_refresher`), which needs a live Tokio runtime to
+    // `tokio::spawn` onto — hence `#[tokio::test]` rather than a plain `#[test]`.
+    async fn reload_routing_to_antigravity_with_a_credential_succeeds() {
+        use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
+
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_dir("antigravity-migration-ok");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        // Point the credential probe at a file that does exist this time.
+        let credential_path = dir.join("antigravity-auth.json");
+        std::fs::write(&credential_path, "{}").unwrap();
+        let _env_var_guard = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"antigravity\"\n").unwrap();
+        reload(&shared, Some(&path)).expect("a present credential must not be refused");
+        assert_eq!(shared.load().config.server.default_provider, "antigravity");
+    }
+
+    #[tokio::test]
+    async fn reload_routing_to_antigravity_starts_the_version_refresher() {
+        use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
+
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_dir("antigravity-migration-refresher");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        let credential_path = dir.join("antigravity-auth.json");
+        std::fs::write(&credential_path, "{}").unwrap();
+        let _env_var_guard = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+
+        // Start with no route to `antigravity` at all — the boot-time call in
+        // `main.rs` never runs in a test, so at this point nothing in this
+        // process has started the refresher via this config.
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        // `REFRESHER_STARTED` is a process-global guard (see `version.rs`),
+        // so a prior test in this binary that already reached
+        // `spawn_refresher` would otherwise leave `is_refresher_started()`
+        // observably `true` here regardless of what this test's own reload
+        // call does below -- passing the assertion below without this
+        // reload path having started anything. Reset it first, under
+        // `ANTIGRAVITY_AUTH_FILE_ENV_LOCK` (held above for this test's whole
+        // body), which serializes this reset against every other test
+        // capable of reaching `spawn_refresher` in this file.
+        crate::auth::antigravity::version::reset_refresher_started_for_test();
+
+        // A reload that newly routes to `antigravity`, with a credential
+        // present, must not just succeed -- it must also start the refresher.
+        // Before the fix, `reload` never called `spawn_refresher` at all, so a
+        // process that booted without an antigravity route and only gained one
+        // via reload would advertise the compiled-in fallback User-Agent for
+        // its entire remaining lifetime.
+        std::fs::write(&path, "[server]\ndefault_provider = \"antigravity\"\n").unwrap();
+        reload(&shared, Some(&path)).expect("a present credential must not be refused");
+
+        assert!(
+            crate::auth::antigravity::version::is_refresher_started(),
+            "a reload that newly routes to antigravity must start the version \
+             refresher, not just accept the config"
+        );
+    }
+
+    #[tokio::test]
+    // cubic flagged `spawn_refresher`'s `tokio::spawn` (called from inside
+    // `reload`, which `reload_off_thread` always drives through
+    // `tokio::task::spawn_blocking`) as a P1 panic risk on the theory that a
+    // blocking-pool thread has no runtime context to spawn onto. It does:
+    // tokio's blocking-pool threads `enter()` the runtime for the whole
+    // thread's lifetime (`tokio::runtime::blocking::pool::run`), so
+    // `Handle::current()` resolves fine there. That makes this test's
+    // premise a false positive rather than a bug -- but the invariant is
+    // exactly the kind a future tokio upgrade or refactor could silently
+    // break, so pin it here in the real production shape (`spawn_blocking`
+    // wrapping `reload`, mirroring `reload_off_thread` below) rather than
+    // only through the direct call in
+    // `reload_routing_to_antigravity_starts_the_version_refresher` above,
+    // which never exercises the blocking-pool thread at all.
+    async fn reload_via_spawn_blocking_starts_the_refresher_without_panicking() {
+        use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
+
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_dir("antigravity-spawn-blocking-refresher");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        let credential_path = dir.join("antigravity-auth.json");
+        std::fs::write(&credential_path, "{}").unwrap();
+        let _env_var_guard = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"antigravity\"\n").unwrap();
+
+        // See `reload_routing_to_antigravity_starts_the_version_refresher`
+        // above for why this reset is necessary and safe: `REFRESHER_STARTED`
+        // is process-global, and this test holds `ANTIGRAVITY_AUTH_FILE_ENV_LOCK`
+        // (above) for its whole body, serializing this reset against every
+        // other test capable of reaching `spawn_refresher`.
+        crate::auth::antigravity::version::reset_refresher_started_for_test();
+
+        // Mirror `reload_off_thread` exactly: move owned clones into the
+        // blocking closure and drive `reload` through `spawn_blocking`. A
+        // panic inside the closure surfaces as `Err(JoinError)`, not a
+        // propagated panic in this test's own task, so assert on the join
+        // result rather than letting a panic there be swallowed.
+        let shared_for_blocking = shared.clone();
+        let path_for_blocking = path.clone();
+        let join_result = tokio::task::spawn_blocking(move || {
+            reload(&shared_for_blocking, Some(&path_for_blocking))
+        })
+        .await;
+
+        assert!(
+            matches!(join_result, Ok(Ok(()))),
+            "reload driven through spawn_blocking must neither panic nor fail: {join_result:?}"
+        );
+        assert_eq!(shared.load().config.server.default_provider, "antigravity");
+        assert!(
+            crate::auth::antigravity::version::is_refresher_started(),
+            "the refresher must start even when reload runs on a blocking-pool \
+             thread, not only when called directly from an async context"
+        );
     }
 
     #[test]
@@ -620,6 +894,39 @@ mod tests {
 
         std::env::remove_var(secret_env);
         std::env::remove_var(users_env);
+    }
+
+    fn spend_config(state_path: Option<std::path::PathBuf>) -> crate::config::SpendConfig {
+        crate::config::SpendConfig {
+            state_path,
+            ..crate::config::SpendConfig::default()
+        }
+    }
+
+    #[test]
+    fn spend_presence_toggle_warns_that_restart_is_required() {
+        let previous = Config::default();
+        let mut next = previous.clone();
+        next.server.spend = Some(spend_config(None));
+
+        let logs = capture_logs(|| super::warn_on_restart_only_changes(&previous, &next));
+        assert!(
+            logs.contains("[server.spend] was enabled or disabled"),
+            "{logs}"
+        );
+        assert!(logs.contains("requires a restart"), "{logs}");
+    }
+
+    #[test]
+    fn spend_state_path_change_warns_that_restart_is_required() {
+        let mut previous = Config::default();
+        previous.server.spend = Some(spend_config(Some("/tmp/spend-before.json".into())));
+        let mut next = previous.clone();
+        next.server.spend.as_mut().unwrap().state_path = Some("/tmp/spend-after.json".into());
+
+        let logs = capture_logs(|| super::warn_on_restart_only_changes(&previous, &next));
+        assert!(logs.contains("[server.spend].state_path changed"), "{logs}");
+        assert!(logs.contains("requires a restart"), "{logs}");
     }
 
     #[test]

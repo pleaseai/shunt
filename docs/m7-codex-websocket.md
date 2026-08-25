@@ -72,7 +72,8 @@ reproducing attestation.**
   (`http→ws`) by [`to_websocket_url`]. For the codex backend that is
   `wss://chatgpt.com/backend-api/codex/responses`.
 - **Handshake headers.** The same Codex identity headers as the HTTP path (bearer,
-  `chatgpt-account-id`, `originator`, `user-agent`, `version`), with `OpenAI-Beta`
+  `chatgpt-account-id`, `originator`, `user-agent`, `version`, and
+  `x-codex-routing-hint` when the route yields a usable one), with `OpenAI-Beta`
   swapped for the WebSocket protocol value
   `responses_websockets=2026-02-06` ([`WEBSOCKET_BETA_PROTOCOL`]). Hop-by-hop
   headers are dropped; `into_client_request` fills the mandatory upgrade headers.

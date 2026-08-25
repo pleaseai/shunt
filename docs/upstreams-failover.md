@@ -20,11 +20,11 @@ One entry is one failover unit: a named route with its own credential scope.
 |---|---|---|
 | `name` | yes | Unique, non-empty, non-whitespace. The identity used by `upstream_model` maps, `[[routes]] provider`, `server.default_provider`, metrics, and the admin surface. |
 | `provider` | no | Built-in preset id (§1.2). Supplies defaults for `kind`, `base_url`, and `auth`; no preset overrides `count_tokens` (§1.2). |
-| `kind` | if no preset | Adapter protocol, unchanged enum (`anthropic`, `responses`, `cursor`, `gemini`, `antigravity`). No preset supplies `gemini` or `antigravity` (§1.2), so an upstream on either must set `kind` explicitly. |
+| `kind` | if no preset | Adapter protocol (`anthropic`, `responses`, `cursor`, `gemini`, `antigravity`, `antigravity_cli`). No preset supplies `gemini`, `antigravity`, or `antigravity_cli` (§1.2), so an upstream on any of them must set `kind` explicitly. |
 | `base_url` | if no preset | Upstream base URL. For `kind = "cursor"`, this is the login/token-refresh surface only; inference uses the fixed agent host `https://agentn.global.api5.cursor.sh`, overridable only with `SHUNT_CURSOR_AGENT_BASE_URL`. |
 | `auth` | no | String or map (§1.3). Default: preset's default auth, else `passthrough`. |
 | other provider fields | no | `effort`, `service_tier`, `count_tokens`, `websocket`, `tool_search`, `retry` — unchanged semantics, now per upstream, except that normalized `retry` settings do not apply to the Cursor streaming turn. |
-| `workspace_roots`, `sandbox` | no | `kind = "antigravity"` only; unchanged semantics and defaults (`[]` and `true`), now per upstream. `sandbox = false` is refused at startup when `server.bind` is non-loopback, and the adapter re-checks it per request against the listener bound at boot, so a reload cannot disable the sandbox under a public listener. |
+| `workspace_roots`, `sandbox` | no | `kind = "antigravity_cli"` only; unchanged semantics and defaults (`[]` and `true`), now per upstream. `sandbox = false` is refused at startup when `server.bind` is non-loopback, and the adapter re-checks it per request against the listener bound at boot, so a reload cannot disable the sandbox under a public listener. |
 
 Explicit fields always override preset-supplied values.
 
@@ -42,13 +42,19 @@ branching). Unknown preset name → config error listing available presets.
 | `grok` | responses | `https://cli-chat-proxy.grok.com/v1` | `xai_oauth` |
 | `kimi` | anthropic | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | cursor | Cursor backend (current documented URL) | `cursor_oauth` |
+| `kimi-code` | anthropic | `https://api.kimi.com/coding` | `kimi_oauth` |
+
+`kimi` and `kimi-code` are distinct presets for distinct services: `kimi` is the metered Moonshot
+API (`auth = "api_key"`, env `MOONSHOT_API_KEY`), while `kimi-code` is the subscription-billed Kimi
+Code service on a different host, authenticated via the device-code flow
+(`shunt login kimi --name <account-name>`) and pool-capable like `claude_oauth`/`chatgpt_oauth`.
 
 Exact URLs must be taken from the existing adapters/docs at implementation
 time, not from this table if they drift.
 
 No preset overrides `count_tokens`: every upstream keeps the field's normal
 serde default (`tiktoken`), which is only meaningful for `responses` and
-`cursor` kinds — `anthropic`-kind upstreams (including `kimi`) always forward
+`cursor` kinds — `anthropic`-kind upstreams (including `kimi` and `kimi-code`) always forward
 `count_tokens` requests upstream regardless of the setting. Operators override
 per upstream with the explicit `count_tokens` field as today.
 
@@ -62,8 +68,8 @@ existing `AuthMode` strings) and absorbs the legacy sibling fields:
 |---|---|
 | `passthrough` | — |
 | `api_key` | `env` (required unless preset supplies it), `header` (default as today) |
-| `claude_oauth` / `chatgpt_oauth` | optional scope: `account = "name"` (single) **or** `accounts = [...]` (subset; entries are full `AccountConfig` tables or bare name strings referencing the store). No scope → whole store scan; for `chatgpt_oauth` an empty store additionally falls through to the single-account `~/.codex/auth.json` path (both preserved today's behavior). Setting both `account` and `accounts` is an error. |
-| `xai_oauth` / `cursor_oauth` | as today (no scoping fields yet) |
+| `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` | optional scope: `account = "name"` (single) **or** `accounts = [...]` (subset; entries are full `AccountConfig` tables or bare name strings referencing the store). No scope → whole store scan (`~/.shunt/accounts/kimi/` for `kimi_oauth`); for `chatgpt_oauth` an empty store additionally falls through to the single-account `~/.codex/auth.json` path (both preserved today's behavior). `kimi_oauth` has no such single-account fallback — the shunt-managed store is its only source. Setting both `account` and `accounts` is an error. |
+| `xai_oauth` / `cursor_oauth` / `antigravity_oauth` | as today (no scoping fields yet) |
 
 Unknown map keys for a mode are errors (strict), mirroring the reference's
 strict per-provider auth objects.

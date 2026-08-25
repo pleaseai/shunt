@@ -42,3 +42,14 @@ body (verified via
 create-then-edit. Command still printed no stdout on success;
 `gh pr list --head "$BRANCH" --repo "$OWNER_REPO" --json number,title,isDraft,url`
 (plain gh) is the reliable way to confirm the PR exists and get its number.
+
+**CI surface gap worth stating in PR bodies**: no workflow builds `site/` on a
+pull request — the docs site is only built on push to `main`. When a PR touches
+`site/src/content/docs/`, record the local `npm run build` result (page count)
+in the PR body; CI will not produce that evidence for a reviewer.
+
+**Checklist honesty**: the "Source files stay under 500 lines" box is routinely
+unsatisfiable for new subsystems in this repo (existing `src/auth/*.rs` are
+already 600–1600 lines). Leave the box unchecked and explain the split under
+"Notes for reviewers" rather than checking it blind — AGENTS.md says
+"preferably under 500 lines", so it is a soft limit.

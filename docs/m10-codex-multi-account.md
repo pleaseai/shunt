@@ -66,7 +66,10 @@ Each account has these fields:
 
 `credentials` and `token_env` are mutually exclusive. A name-only account reads `~/.shunt/accounts/codex/<name>.json` (override the directory with `SHUNT_CODEX_ACCOUNTS_DIR`). With an entirely empty `accounts` list, shunt scans that directory and uses every valid `*.json` account in filename order. Store files are written atomically at `0600`, and the store directory is `0700` on Unix — the account is stored **verbatim** in the Codex CLI's own `auth.json` shape (no `claudeAiOauth`-style wrapper, unlike the Claude store).
 
-`shunt login codex --name <name>` imports the current login from `$CODEX_AUTH_FILE` (or `~/.codex/auth.json`) into the store without modifying the source file, and validates it is in `ChatGPT` auth mode with non-empty access and refresh tokens. Reusing a name replaces that store file. There is no `--long-lived` equivalent — Codex has no setup-token concept; every store-managed account is a refreshable OAuth login.
+`shunt login codex --name <name>` imports the current login from `$CODEX_AUTH_FILE` (or `~/.codex/auth.json`) into the store without modifying the source file, and validates it is a ChatGPT login with non-empty access and refresh tokens. The Codex CLI
+serializes `auth_mode` in lowercase (`"chatgpt"`); shunt matches it case-insensitively, so files
+from older Codex versions (`"ChatGPT"`) import unchanged. An API-key login (`"apikey"`) is
+rejected with `is not a ChatGPT login (auth_mode is not "chatgpt")`. Reusing a name replaces that store file. There is no `--long-lived` equivalent — Codex has no setup-token concept; every store-managed account is a refreshable OAuth login.
 
 The built-in `codex` provider remains `auth = "chatgpt_oauth"` by default even without a pool — a single-account `chatgpt_oauth` provider with no `accounts` configured behaves exactly as before M10 (see the "existing single-account path" note below). Multi-account pooling is opt-in via `[[providers.codex.accounts]]`.
 

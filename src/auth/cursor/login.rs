@@ -28,7 +28,7 @@ pub async fn run_with_base(base_url: &str) -> anyhow::Result<()> {
         "https://cursor.com/loginDeepControl?challenge={challenge}&uuid={uuid}&mode=login&redirectTarget=cli"
     );
     println!("Open this URL to authenticate with Cursor:\n\n    {login_url}\n");
-    if let Err(error) = open_url(&login_url) {
+    if let Err(error) = crate::auth::shared::open_url(&login_url) {
         eprintln!("Could not open browser automatically: {error}");
     }
 
@@ -100,25 +100,6 @@ async fn poll(
         )),
         None => bail!("Cursor login timed out; run shunt login cursor to try again"),
     }
-}
-
-fn open_url(url: &str) -> anyhow::Result<()> {
-    let status = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).status()?
-    } else if cfg!(target_os = "windows") {
-        // Open via rundll32 FileProtocolHandler rather than `cmd /c start`: the
-        // login URL contains `&` query separators, which cmd.exe would treat as
-        // command separators and truncate the URL.
-        std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", url])
-            .status()?
-    } else {
-        std::process::Command::new("xdg-open").arg(url).status()?
-    };
-    if !status.success() {
-        bail!("browser open command exited with {status}");
-    }
-    Ok(())
 }
 
 #[cfg(test)]
