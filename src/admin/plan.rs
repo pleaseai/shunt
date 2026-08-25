@@ -782,16 +782,16 @@ async fn backfill_claude_profile_plans(
     // them apart, and using it would serve the first account's profile result
     // as the second's -- so an ambiguous key is neither read nor written, and
     // each such account is resolved fresh.
-    let ambiguous: HashSet<AccountKey> = keys
-        .iter()
-        .enumerate()
-        .filter(|(_, (_, exact))| !exact)
-        .filter(|(index, (key, _))| {
-            keys.iter()
-                .enumerate()
-                .any(|(other, (other_key, _))| other != *index && other_key == key)
-        })
-        .map(|(_, (key, _))| key.clone())
+    let mut name_key_counts: HashMap<&AccountKey, usize> = HashMap::new();
+    for (key, exact) in &keys {
+        if !exact {
+            *name_key_counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    let ambiguous: HashSet<AccountKey> = name_key_counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(key, _)| key.clone())
         .collect();
 
     let mut new_candidates: Vec<Candidate> = Vec::new();
