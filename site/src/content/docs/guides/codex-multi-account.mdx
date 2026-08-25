@@ -68,6 +68,8 @@ Store files live at `~/.shunt/accounts/codex/<name>.json`; set `SHUNT_CODEX_ACCO
 
 There is no `--long-lived` flag for `shunt login codex` — Codex has no setup-token concept, so every store-managed account is a refreshable OAuth login imported from an existing `codex login`.
 
+The import only accepts a **ChatGPT** login. A current `codex login` writes `"auth_mode": "chatgpt"` into `$CODEX_AUTH_FILE` (or `~/.codex/auth.json`); shunt matches that field case-insensitively, so a file from an older Codex version (`"ChatGPT"`) imports unchanged. An API-key login (`"auth_mode": "apikey"`) is rejected with `is not a ChatGPT login (auth_mode is not "chatgpt")` — re-run `codex login` and pick a ChatGPT account.
+
 ## Account fields
 
 | Field | Required | Meaning |

@@ -12,6 +12,10 @@ const H = { "content-type": "application/json", "x-csrf-token": CSRF };
 const $ = (id) => document.getElementById(id);
 function esc(v) { return v === null || v === undefined ? "" : String(v); }
 function pct(v) { return v === null || v === undefined ? "—" : Math.round(v * 100) + "%"; }
+// Mirrors the Rust `title_case` helper (src/auth/observation.rs): capitalize
+// only the first character, matching the wording the observed-accounts view
+// already shows for a plan (e.g. "Max plan"), not per-word title casing.
+function titleCase(v) { return v ? v.charAt(0).toUpperCase() + v.slice(1) : ""; }
 function untilShort(resetSecs) {
   const mins = Math.ceil((resetSecs * 1000 - Math.min(Date.now(), resetSecs * 1000)) / 60000);
   if (mins <= 0) return "now";
@@ -75,7 +79,10 @@ function accountGroups(observed, pool, accounts) {
   for (const p of ((pool && pool.providers) || [])) {
     const provider = POOL_PROVIDER_ALIASES[p.provider] || p.provider;
     for (const a of (p.accounts || [])) {
-      const row = { provider: provider, label: a.name, detail: null, managed: a, observed: null,
+      // A managed-only row (no observed override below) shows the pool's own
+      // plan as its detail caption, matching the wording the observed path
+      // already uses ("Max plan") -- see observation::parse_claude/parse_codex.
+      const row = { provider: provider, label: a.name, detail: a.plan ? titleCase(a.plan) + " plan" : null, managed: a, observed: null,
         state: a.disabled ? "disabled" : !a.has_state ? "unseen" : a.cooldown_secs_remaining ? "cooling" : a.near_quota ? "near-quota" : a.cooldown_fable_secs_remaining ? "cooling-fable" : "available",
         utilization_5h: a.utilization_5h, reset_5h: a.reset_5h,
         utilization_7d: a.utilization_7d, reset_7d: a.reset_7d,
@@ -96,7 +103,13 @@ function accountGroups(observed, pool, accounts) {
     // A missing uuid means "identity unknown" and must never match.
     const match = o.uuid ? byUuid.get(o.uuid) : null;
     if (match) {
-      match.observed = o; match.detail = o.detail;
+      match.observed = o;
+      // Prefer the observed detail when present; otherwise keep the
+      // plan-derived detail from the pool payload. observed comes from
+      // ~/.claude/.credentials.json while the pool's detail comes from the
+      // account's store file or the live profile API -- different sources,
+      // and a null observed detail must not blank out a real plan-derived one.
+      if (o.detail) match.detail = o.detail;
       // Prefer the client's windows: the pool only learns a window from a
       // response header it has actually received, so it reports null for
       // windows the client can already see.
@@ -256,13 +269,13 @@ async function loadPool() {
   const body = $("pool"); body.textContent = "";
   let data, res;
   try { res = await fetch("/admin/pool"); data = await res.json(); }
-  catch (e) { const r = body.insertRow(); const c = cell(r, "Failed to load pool"); c.colSpan = 8; return; }
-  if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load pool"); c.colSpan = 8; return; }
+  catch (e) { const r = body.insertRow(); const c = cell(r, "Failed to load pool"); c.colSpan = 9; return; }
+  if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load pool"); c.colSpan = 9; return; }
   const providers = (data && data.providers) || [];
   let rows = 0;
   for (const p of providers) for (const a of (p.accounts || [])) {
     rows++; const r = body.insertRow();
-    cell(r, p.provider); cell(r, a.name);
+    cell(r, p.provider); cell(r, a.name); cell(r, titleCase(a.plan) || "—");
     cell(r, a.disabled ? "disabled" : !a.has_state ? "unseen" : a.near_quota ? "near quota" : a.cooldown_secs_remaining ? "cooling" : a.cooldown_fable_secs_remaining ? "cooling (fable)" : "available");
     const c5 = cell(r, pctReset(a.utilization_5h, a.reset_5h));
     if (a.reset_5h) c5.title = "resets " + new Date(a.reset_5h * 1000).toLocaleString();
@@ -273,7 +286,7 @@ async function loadPool() {
     cell(r, a.status || "—");
     cell(r, [a.cooldown_secs_remaining ? a.cooldown_secs_remaining + "s" : null, a.cooldown_fable_secs_remaining ? a.cooldown_fable_secs_remaining + "s (fable)" : null].filter(Boolean).join(" · ") || "—");
   }
-  if (!rows) { const r = body.insertRow(); const c = cell(r, "No pooled accounts configured"); c.colSpan = 8; c.className = "muted"; }
+  if (!rows) { const r = body.insertRow(); const c = cell(r, "No pooled accounts configured"); c.colSpan = 9; c.className = "muted"; }
 }
 
 function statusLabel(indicator) {
