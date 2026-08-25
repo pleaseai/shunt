@@ -1,0 +1,21 @@
+docs/codex-configuration.md
+  s_b28922d61f093d::t_a42cf620aed875 139-141
+src/auth/codex/auth.rs
+  s_b28922d61f093d::t_8410e00ee2dee6 276
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "ff05e1de47ef0e96a67a407ffc61eacf96d1b45b",
+  "prompts": {},
+  "sessions": {
+    "s_b28922d61f093d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "535a3da7-7b58-4447-9e4f-09e7c59758e2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
