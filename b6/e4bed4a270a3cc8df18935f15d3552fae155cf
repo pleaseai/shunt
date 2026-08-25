@@ -1,0 +1,23 @@
+src/admin/plan.rs
+  s_c0ba55af1760bc::t_4660c8310d22bd 621-635,918,936-937,939-941,950-952,964-968,979
+  s_c0ba55af1760bc::t_4c1359923c64a9 2762-2856
+  s_c0ba55af1760bc::t_2d9ae294929734 451,531-550,558-568,578,922-926,928-934,938
+docs/m9-admin-surface.md
+  s_c0ba55af1760bc::t_6d06ccd2ce9c7e 514-522
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b6e4bed4a270a3cc8df18935f15d3552fae155cf",
+  "prompts": {},
+  "sessions": {
+    "s_c0ba55af1760bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b757e74f-9bea-4f24-884b-ebede785b92c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
