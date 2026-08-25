@@ -429,9 +429,9 @@ impl ReadState {
                 self.pending.push_back(Err(CursorError::new(
                     502,
                     concat!(
-                        "cursor used one of its own built-in tools instead of a ",
-                        "caller-supplied tool, which shunt cannot bridge; retry, ",
-                        "or send a request with no tools"
+                        "cursor answered through one of its own built-in tools, ",
+                        "which shunt cannot bridge onto a caller-supplied tool; ",
+                        "the choice is not deterministic, so retry"
                     ),
                     Some(format!("unbridged ExecServerMessage field {field}")),
                 )));
@@ -858,12 +858,17 @@ fn extract_unbridged_builtin_tool_call(payload: &[u8]) -> Option<u64> {
 
 /// Whether `buf` contains a `tool_<...>` call-id string within [`MAX_TOOL_ID_SCAN_DEPTH`]
 /// levels of nesting.
+///
+/// The prefix is matched on raw bytes. A length-delimited field is not required
+/// to decode as UTF-8 for its `tool_` prefix to count, which keeps the scan on
+/// the wide side the measurements above support and avoids running a full UTF-8
+/// validation over every nested field of every frame on the streaming path.
 fn contains_tool_call_id(buf: &[u8], depth: usize) -> bool {
     for field in iter_fields(buf) {
         if field.wire != 2 {
             continue;
         }
-        if std::str::from_utf8(field.data).is_ok_and(|s| s.starts_with("tool_")) {
+        if field.data.starts_with(b"tool_") {
             return true;
         }
         if depth < MAX_TOOL_ID_SCAN_DEPTH && contains_tool_call_id(field.data, depth + 1) {
@@ -874,7 +879,10 @@ fn contains_tool_call_id(buf: &[u8], depth: usize) -> bool {
 }
 
 /// Nesting depth scanned for a `tool_*` call id. Bounds recursion on a
-/// malformed payload, mirroring [`MAX_PROTOBUF_VALUE_DEPTH`].
+/// malformed payload. Deliberately far shallower than [`MAX_PROTOBUF_VALUE_DEPTH`]
+/// (64): a call id sits a level or two under the `ExecServerMessage` field that
+/// carries it, so a deeper walk buys nothing on a well-formed frame and only
+/// does more work on a malformed one.
 const MAX_TOOL_ID_SCAN_DEPTH: usize = 8;
 
 /// Decode `McpArgs { name=1, args=2 (map<string,Value>), tool_call_id=3,
@@ -1354,6 +1362,20 @@ mod tests {
 
         assert!(extract_tool_call(&payload).is_some());
         assert_eq!(extract_unbridged_builtin_tool_call(&payload), None);
+    }
+
+    #[test]
+    fn call_id_with_non_utf8_tail_is_still_detected() {
+        // The prefix check reads raw bytes, so a field whose tail is not valid
+        // UTF-8 still counts. Reverting to a whole-slice `from_utf8` check turns
+        // this frame back into a silent `end_turn` with no tool_use.
+        let mut id = b"tool_".to_vec();
+        id.extend_from_slice(&[0xff, 0xfe]);
+        let mut builtin = field_str(1, "/etc/hostname");
+        builtin.extend(field_ld(2, &id));
+        let payload = field_ld(2, &field_ld(7, &builtin));
+
+        assert_eq!(extract_unbridged_builtin_tool_call(&payload), Some(7));
     }
 
     #[test]
