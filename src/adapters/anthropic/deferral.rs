@@ -61,16 +61,41 @@ fn tool_carries_deferral(tool: &Value) -> bool {
         })
 }
 
+fn is_search_tool(tool: &Value) -> bool {
+    tool.get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.starts_with("tool_search_tool"))
+}
+
+/// True when `tool_choice` names one of the tools this pass removed.
+///
+/// Keyed on the names actually dropped rather than on the shape of the name,
+/// so the predicate that clears the choice is the exact mirror of the one that
+/// removed the tool: a surviving tool merely *named* like a search tool keeps
+/// its choice, and a dropped tool with an unexpected name still clears it.
+fn tool_choice_is_dangling(tool_choice: Option<&Value>, dropped: &[String]) -> bool {
+    tool_choice
+        .and_then(|choice| choice.get("name"))
+        .and_then(Value::as_str)
+        .is_some_and(|name| dropped.iter().any(|dropped| dropped == name))
+}
+
 fn strip_deferral_fields(request: &mut Value) -> bool {
     let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) else {
         return false;
     };
     let before = tools.len();
+    // Remember what leaves: a `tool_choice` naming a removed tool has to leave
+    // with it, or the upstream rejects a choice it cannot resolve.
+    let mut dropped = Vec::new();
     tools.retain(|tool| {
-        !tool
-            .get("type")
-            .and_then(Value::as_str)
-            .is_some_and(|kind| kind.starts_with("tool_search_tool"))
+        if !is_search_tool(tool) {
+            return true;
+        }
+        if let Some(name) = tool.get("name").and_then(Value::as_str) {
+            dropped.push(name.to_string());
+        }
+        false
     });
     let mut changed = tools.len() != before;
     for tool in tools.iter_mut() {
@@ -98,15 +123,19 @@ fn strip_deferral_fields(request: &mut Value) -> bool {
             }
         }
     }
-    // A request whose whole `tools` array was search tools is now empty. Hosts
-    // on this path commonly enforce `minItems: 1`, so an empty array is a 400 —
-    // drop the key, and the `tool_choice` that has nothing left to choose from.
-    if tools.is_empty() {
-        if let Some(object) = request.as_object_mut() {
+    let tools_now_empty = tools.is_empty();
+    if let Some(object) = request.as_object_mut() {
+        if tools_now_empty {
+            // Every tool was a search tool. Hosts on this path commonly enforce
+            // `minItems: 1`, so an empty array is a 400 — drop the key, and the
+            // `tool_choice` that has nothing left to choose from.
             object.remove("tools");
             object.remove("tool_choice");
+            changed = true;
+        } else if tool_choice_is_dangling(object.get("tool_choice"), &dropped) {
+            object.remove("tool_choice");
+            changed = true;
         }
-        changed = true;
     }
     changed
 }
@@ -324,5 +353,60 @@ mod tests {
         assert_eq!(out["tools"].as_array().unwrap().len(), 1);
         assert_eq!(out["tools"][0]["name"], "Bash");
         assert_eq!(out["tool_choice"]["type"], "auto");
+    }
+
+    #[test]
+    fn tool_choice_pointing_to_search_tool_is_removed() {
+        let body = serde_json::to_vec(&json!({
+            "model": "ox-alpha",
+            "tool_choice": {
+                "type": "tool",
+                "name": "tool_search_tool_regex"
+            },
+            "tools": [
+                {
+                    "type": "tool_search_tool_regex_20251119",
+                    "name": "tool_search_tool_regex"
+                },
+                {
+                    "name": "Bash",
+                    "input_schema": {"type": "object"},
+                    "defer_loading": true
+                }
+            ]
+        }))
+        .unwrap();
+
+        let out = parsed(&apply(&body, "stealth/ox-alpha"));
+        assert_eq!(out["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(out["tools"][0]["name"], "Bash");
+        assert!(out.get("tool_choice").is_none());
+    }
+
+    /// A tool merely *named* like a search tool is not one — only `type`
+    /// decides. Since it survives the strip, the choice naming it must too.
+    /// This is what separates the dropped-name mirror from a name-prefix guess.
+    #[test]
+    fn tool_choice_naming_a_surviving_lookalike_is_kept() {
+        let body = serde_json::to_vec(&json!({
+            "model": "ox-alpha",
+            "tool_choice": {
+                "type": "tool",
+                "name": "tool_search_tool_lookalike"
+            },
+            "tools": [
+                {
+                    "name": "tool_search_tool_lookalike",
+                    "input_schema": {"type": "object"},
+                    "defer_loading": true
+                }
+            ]
+        }))
+        .unwrap();
+
+        let out = parsed(&apply(&body, "stealth/ox-alpha"));
+        assert_eq!(out["tools"].as_array().unwrap().len(), 1);
+        assert!(out["tools"][0].get("defer_loading").is_none());
+        assert_eq!(out["tool_choice"]["name"], "tool_search_tool_lookalike");
     }
 }
