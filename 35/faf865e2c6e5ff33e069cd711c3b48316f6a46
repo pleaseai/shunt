@@ -1,0 +1,43 @@
+docs/codex-configuration.md
+  s_b28922d61f093d::t_020002511446b7 126-127,138-142,679
+docs/m10-codex-multi-account.md
+  s_b28922d61f093d::t_3fa42b9eb457c2 69-72
+docs/m2-chatgpt-oauth.md
+  s_b28922d61f093d::t_d3f5e3fa75b5b9 47-48,62-63
+site/src/content/docs/guides/codex-multi-account.mdx
+  s_b28922d61f093d::t_573f8a0d081c8f 71-72
+site/src/content/docs/ja/guides/codex-multi-account.mdx
+  s_b28922d61f093d::t_c9f771abcfa812 71-72
+site/src/content/docs/ko/guides/codex-multi-account.mdx
+  s_b28922d61f093d::t_2498e17e3b3e73 71-72
+site/src/content/docs/zh-cn/guides/codex-multi-account.mdx
+  s_b28922d61f093d::t_b4675c0ef16475 71-72
+src/auth/codex/auth.rs
+  s_b28922d61f093d::t_f6a231c0445f9d 275-283,555-588
+src/auth/codex/store.rs
+  s_a4a1a8bd8d5215::t_be76fe85ca5ffd 193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "35faf865e2c6e5ff33e069cd711c3b48316f6a46",
+  "prompts": {},
+  "sessions": {
+    "s_a4a1a8bd8d5215": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01285740-d33a-40bc-8edc-67a311ac3dc0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_b28922d61f093d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "535a3da7-7b58-4447-9e4f-09e7c59758e2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
