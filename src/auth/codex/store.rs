@@ -190,7 +190,7 @@ pub fn import_auth(name: &str, source: &Path) -> anyhow::Result<PathBuf> {
         .is_some_and(|mode| mode.eq_ignore_ascii_case("chatgpt"))
     {
         anyhow::bail!(
-            "{} is not a ChatGPT login (auth_mode != \"ChatGPT\"); run `codex login` first",
+            "{} is not a ChatGPT login (auth_mode is not \"chatgpt\"); run `codex login` first",
             source.display()
         );
     }
