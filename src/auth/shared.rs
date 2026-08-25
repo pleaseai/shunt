@@ -22,6 +22,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{accounts::StoreFamily, config::AccountConfig};
 
+pub mod file_lock;
+
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 
 /// A freshly generated PKCE verifier/challenge plus an independent OAuth state.
