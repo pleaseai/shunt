@@ -511,6 +511,15 @@ outside the result the timeout discards — a failure the read already observed
 is knowledge the request keeps, and dropping it would hand that account back
 the cache access this rule exists to withhold.
 
+A failure also has to outlive the request that saw it, for the same reason
+one step further out. Per-request failure state says nothing about the *next*
+request, so a later one that times out would carry none and fall back to the
+still-memoized `uuid` — restoring precisely the identity the failed read
+refuted. The path memo therefore records a read failure rather than merely
+dropping what it knew, and an account whose path is remembered that way stays
+out of the cache on a timed-out pass too. Only a pass that reads the file
+again can clear it: a timeout is not evidence that the path became readable.
+
 The batched credential read is single-flight, process-wide. A read holds its
 permit until it genuinely finishes, not until the request waiting on it gives
 up, because a `spawn_blocking` task cannot be cancelled once started. A

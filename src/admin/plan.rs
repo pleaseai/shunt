@@ -448,7 +448,7 @@ async fn file_derived_plans(
                 // TTL, while keeping it risks serving the previous occupant's
                 // plan for the 24-hour exact-identity TTL. Ungated by family
                 // so the clear is never narrower than the record above.
-                forget_credential_uuid(&path);
+                remember_credential_read_failure(&path);
                 // Recorded through the shared handle so it survives this
                 // task outliving the request that spawned it (see
                 // `FilePhase`). Poisoning here would mean an earlier
@@ -528,8 +528,26 @@ fn file_read_lock() -> &'static Arc<tokio::sync::Mutex<()>> {
 /// uuid-less account by name and miss the entry cached under its `Verified`
 /// key, silently dropping the documented guarantee that an already-cached
 /// plan still appears in the response.
-fn credential_uuid_memo() -> &'static Mutex<HashMap<PathBuf, String>> {
-    static MEMO: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+/// What the last *completed* read of a credential path established.
+///
+/// Absent from the memo means nothing is known — either the path has never
+/// been read, or the last read parsed it and found no identity, which is an
+/// ordinary hand-placed credential and says nothing about `account.uuid`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RememberedIdentity {
+    /// The file carried this `shuntAccountUuid`.
+    Found(String),
+    /// The file could not be read or parsed at all. Recorded rather than
+    /// merely cleared, because `read_failed` is per pass: without this, a
+    /// *later* request that times out carries no failure of its own and would
+    /// fall back to the still-memoized `account.uuid` — restoring exactly the
+    /// identity the failed read refuted. A timeout is not evidence that the
+    /// path became readable again.
+    ReadFailed,
+}
+
+fn credential_uuid_memo() -> &'static Mutex<HashMap<PathBuf, RememberedIdentity>> {
+    static MEMO: OnceLock<Mutex<HashMap<PathBuf, RememberedIdentity>>> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -537,7 +555,17 @@ fn remember_credential_uuid(path: &Path, uuid: &str) {
     credential_uuid_memo()
         .lock()
         .expect("credential uuid memo lock poisoned")
-        .insert(path.to_path_buf(), uuid.to_string());
+        .insert(
+            path.to_path_buf(),
+            RememberedIdentity::Found(uuid.to_string()),
+        );
+}
+
+fn remember_credential_read_failure(path: &Path) {
+    credential_uuid_memo()
+        .lock()
+        .expect("credential uuid memo lock poisoned")
+        .insert(path.to_path_buf(), RememberedIdentity::ReadFailed);
 }
 
 fn forget_credential_uuid(path: &Path) {
@@ -547,7 +575,7 @@ fn forget_credential_uuid(path: &Path) {
         .remove(path);
 }
 
-fn recall_credential_uuid(path: &Path) -> Option<String> {
+fn recall_credential_identity(path: &Path) -> Option<RememberedIdentity> {
     credential_uuid_memo()
         .lock()
         .expect("credential uuid memo lock poisoned")
@@ -588,6 +616,21 @@ fn credential_account_uuid(value: &Value) -> Option<String> {
 
 fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// One account's resolved cache identity for this pass.
+#[derive(Clone)]
+struct KeyedAccount {
+    key: AccountKey,
+    /// Whether `key` identifies the credential exactly — see [`plan_cache_key`].
+    exact: bool,
+    /// The last *completed* read of this account's credential path failed,
+    /// and this pass timed out rather than producing a result of its own to
+    /// supersede that. Such an account must not touch the shared cache for
+    /// the same reason a failure observed in this pass must not: nothing
+    /// evidences its identity, so every key available to it names a previous
+    /// holder. Only a pass that actually reads the file again can clear this.
+    known_unreadable: bool,
 }
 
 /// A resolved (or attempted-and-failed) Claude profile plan lookup, cached for
@@ -872,21 +915,30 @@ async fn backfill_claude_profile_plans(
     // is all-absent; the path-keyed memo then supplies the uuid a previous
     // read established, so an account whose identity lives only in its
     // credential file can still find its cached entry.
-    let keys: Vec<(AccountKey, bool)> = accounts
+    let keys: Vec<KeyedAccount> = accounts
         .iter()
         .enumerate()
         .map(|(index, account)| {
-            let uuid = credential_uuids[index].clone().or_else(|| {
-                // Only when no read happened at all. A completed read that
-                // found no uuid is authoritative: the account holding this
-                // path today has no identity, whatever an earlier one had.
-                if !file_phase_timed_out {
-                    return None;
-                }
+            // Only consulted when no read happened at all. A completed read
+            // is authoritative about this path either way: if it found no
+            // uuid, the account holding the path today has no identity,
+            // whatever an earlier one had.
+            let remembered = if file_phase_timed_out {
                 credential_path(AuthMode::ClaudeOauth, account)
-                    .and_then(|path| recall_credential_uuid(&path))
+                    .and_then(|path| recall_credential_identity(&path))
+            } else {
+                None
+            };
+            let uuid = credential_uuids[index].clone().or(match &remembered {
+                Some(RememberedIdentity::Found(uuid)) => Some(uuid.clone()),
+                _ => None,
             });
-            plan_cache_key(upstream, account, uuid.as_deref())
+            let (key, exact) = plan_cache_key(upstream, account, uuid.as_deref());
+            KeyedAccount {
+                key,
+                exact,
+                known_unreadable: matches!(remembered, Some(RememberedIdentity::ReadFailed)),
+            }
         })
         .collect();
     // A non-exact key is only a display name, so two accounts in this one
@@ -895,9 +947,9 @@ async fn backfill_claude_profile_plans(
     // as the second's -- so an ambiguous key is neither read nor written, and
     // each such account is resolved fresh.
     let mut name_key_counts: HashMap<&AccountKey, usize> = HashMap::new();
-    for (key, exact) in &keys {
-        if !exact {
-            *name_key_counts.entry(key).or_insert(0) += 1;
+    for keyed in &keys {
+        if !keyed.exact {
+            *name_key_counts.entry(&keyed.key).or_insert(0) += 1;
         }
     }
     let ambiguous: HashSet<AccountKey> = name_key_counts
@@ -909,7 +961,11 @@ async fn backfill_claude_profile_plans(
     let mut new_candidates: Vec<Candidate> = Vec::new();
     let mut refinement_candidates: Vec<Candidate> = Vec::new();
     for index in 0..accounts.len() {
-        let (key, exact_identity) = keys[index].clone();
+        let KeyedAccount {
+            key,
+            exact: exact_identity,
+            known_unreadable,
+        } = keys[index].clone();
         // A pass that tried to read this account's credential and could not
         // has no evidence of its identity, so it must not touch the shared
         // cache. Every key still available to it names a *previous* holder:
@@ -920,7 +976,7 @@ async fn backfill_claude_profile_plans(
         // nothing to write, since a failed read also yields no token. So the
         // plan is omitted for this pass and reappears once the credential
         // reads again.
-        let cacheable = !ambiguous.contains(&key) && !read_failed[index];
+        let cacheable = !ambiguous.contains(&key) && !read_failed[index] && !known_unreadable;
         if cacheable {
             if let Some(cached) = cached_profile_plan(&key) {
                 merge_profile_plan(plans, index, cached);
@@ -2703,6 +2759,101 @@ mod tests {
     /// time out" gate stops the stale identity from being recalled. Without
     /// that gate the account's cache entry is served for a credential that
     /// can no longer be read at all.
+    /// The gap between `a_failed_read_clears_the_remembered_identity` (which
+    /// has no `account.uuid`, so it falls to the name key) and
+    /// `a_completed_failed_read_does_not_key_off_a_memoized_account_uuid`
+    /// (whose second pass completes): a memoized `account.uuid` plus a
+    /// *later* pass that times out. `read_failed` is per pass, so the
+    /// timed-out one carries none -- the failure has to be remembered against
+    /// the path for it to still count.
+    #[tokio::test]
+    async fn a_timeout_after_a_failed_read_does_not_restore_the_stale_identity() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("timeout-after-failure");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("restored.json");
+        write_identified_fixture(&creds_path, "token-restored", Some("uuid-restored"));
+
+        let account = AccountConfig {
+            name: "restored".to_string(),
+            uuid: Some("uuid-restored".to_string()),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let lock = fresh_file_lock();
+
+        let first = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "timeout-after-failure-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // One completed pass observes the credential is gone.
+        std::fs::remove_file(&creds_path).unwrap();
+        let second = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "timeout-after-failure-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(second[0], None, "the failed read must omit the plan");
+
+        // A *later* pass times out. It carries no `read_failed` of its own,
+        // and `account.uuid` still names the account that used to live here.
+        let held = lock.clone().lock_owned().await;
+        let starved = BackfillBudgets {
+            total: Duration::from_secs(8),
+            per_account: Duration::from_secs(5),
+            min_slice: Duration::ZERO,
+        };
+        let third = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "timeout-after-failure-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &starved,
+            tokio::time::Instant::now() - Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(
+            third[0], None,
+            "a timeout is not new evidence that this path is readable again, so it must not \
+             restore the identity the previous completed read refuted"
+        );
+        drop(held);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The producer half of `a_failure_seen_before_the_timeout_still_blocks_the_cache`:
     /// the flags must survive the discarded result, not ride along inside it.
     ///
