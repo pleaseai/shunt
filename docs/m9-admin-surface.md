@@ -471,6 +471,14 @@ memo is keyed by path rather than name for the same reason as everything else
 on this path: two accounts a name cannot separate still have distinct paths,
 and when they share a path they are reading one file and so share one identity.
 
+That memo is consulted **only** when the file phase produced no result at all.
+A completed read is authoritative even when it finds no uuid — the account
+holding that path today has no identity, whatever an earlier one had — and such
+a read also clears the remembered value, so a later timeout cannot resurrect
+it. The two rules cover different cases: an unreadable or unparsable
+credential file never reaches the clearing step, so only the first stops a
+replaced credential from inheriting the previous account's cached plan.
+
 The batched credential read is single-flight, process-wide. A read holds its
 permit until it genuinely finishes, not until the request waiting on it gives
 up, because a `spawn_blocking` task cannot be cancelled once started. A

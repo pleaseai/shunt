@@ -200,9 +200,11 @@ pub(crate) async fn plans_for_accounts(
     // candidates and never touch the network, but its cache-harvest step
     // (which runs before any token check) still surfaces whatever plan is
     // already cached for these accounts.
-    let file_derived = file_derived_plans(auth, accounts, budgets, deadline)
-        .await
-        .unwrap_or_else(|| FileDerivedPlans::empty(accounts.len()));
+    let read = file_derived_plans(auth, accounts, budgets, deadline).await;
+    // Distinct from "read fine, no uuid in the file": only a phase that never
+    // produced a result may fall back to the remembered identity.
+    let file_phase_timed_out = read.is_none();
+    let file_derived = read.unwrap_or_else(|| FileDerivedPlans::empty(accounts.len()));
     let mut plans = file_derived.plans;
     if matches!(auth, AuthMode::ClaudeOauth) {
         backfill_claude_profile_plans(
@@ -212,6 +214,7 @@ pub(crate) async fn plans_for_accounts(
             accounts,
             &file_derived.tokens,
             &file_derived.uuids,
+            file_phase_timed_out,
             budgets,
             deadline,
             &mut plans,
@@ -381,8 +384,13 @@ async fn file_derived_plans_under(
             if matches!(auth, AuthMode::ClaudeOauth) {
                 result.tokens[index] = claude_auth::refreshable_valid_access_token(&value, now);
                 let uuid = credential_account_uuid(&value);
-                if let Some(uuid) = uuid.as_deref() {
-                    remember_credential_uuid(&path, uuid);
+                match uuid.as_deref() {
+                    Some(uuid) => remember_credential_uuid(&path, uuid),
+                    // The file was read and parsed; it simply carries no
+                    // identity. Drop any uuid remembered for this path so a
+                    // later timeout cannot resurrect the identity of an
+                    // account this file no longer holds.
+                    None => forget_credential_uuid(&path),
                 }
                 result.uuids[index] = uuid;
             }
@@ -441,6 +449,13 @@ fn remember_credential_uuid(path: &Path, uuid: &str) {
         .lock()
         .expect("credential uuid memo lock poisoned")
         .insert(path.to_path_buf(), uuid.to_string());
+}
+
+fn forget_credential_uuid(path: &Path) {
+    credential_uuid_memo()
+        .lock()
+        .expect("credential uuid memo lock poisoned")
+        .remove(path);
 }
 
 fn recall_credential_uuid(path: &Path) -> Option<String> {
@@ -724,6 +739,7 @@ async fn backfill_claude_profile_plans(
     accounts: &[AccountConfig],
     tokens: &[Option<String>],
     credential_uuids: &[Option<String>],
+    file_phase_timed_out: bool,
     budgets: &BackfillBudgets,
     deadline: tokio::time::Instant,
     plans: &mut [Option<String>],
@@ -749,6 +765,12 @@ async fn backfill_claude_profile_plans(
         .enumerate()
         .map(|(index, account)| {
             let uuid = credential_uuids[index].clone().or_else(|| {
+                // Only when no read happened at all. A completed read that
+                // found no uuid is authoritative: the account holding this
+                // path today has no identity, whatever an earlier one had.
+                if !file_phase_timed_out {
+                    return None;
+                }
                 credential_path(AuthMode::ClaudeOauth, account)
                     .and_then(|path| recall_credential_uuid(&path))
             });
@@ -2320,6 +2342,157 @@ mod tests {
             (Some("max 20x"), Some("pro 5x")),
             "each account must get its own profile result; a shared name key serves the first \
              account's plan to the second"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// The memo must never outlive the identity it recorded. A credential
+    /// path that once held uuid `U` and is later read back successfully
+    /// *without* one belongs to a different, identity-less account: recalling
+    /// `U` would hit the old account's `Verified` cache entry and skip the
+    /// replacement's own lookup entirely.
+    #[tokio::test]
+    async fn a_completed_uuid_less_read_does_not_recall_the_previous_identity() {
+        use wiremock::matchers::{header, method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        reset_profile_cache();
+        let dir = unique_test_dir("memo-invalidate");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("swapped.json");
+        write_identified_fixture(&creds_path, "token-identified", Some("uuid-identified"));
+
+        let account = AccountConfig {
+            name: "swapped".to_string(),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-identified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-anonymous"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_pro_5x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let first = plans_for_accounts(
+            AuthMode::ClaudeOauth,
+            "memo-invalidate-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // Same path, a different account -- and this one carries no
+        // `shuntAccountUuid` at all.
+        write_identified_fixture(&creds_path, "token-anonymous", None);
+        let second = plans_for_accounts(
+            AuthMode::ClaudeOauth,
+            "memo-invalidate-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+
+        assert_eq!(
+            second[0].as_deref(),
+            Some("pro 5x"),
+            "a successfully read uuid-less credential must resolve its own plan, not inherit \
+             the cached plan of the identified account that previously used this path"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            2,
+            "the replacement must reach the profile endpoint rather than hit the remembered \
+             identity's cache entry"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// The half of the guard that `forget_credential_uuid` cannot cover: an
+    /// unreadable or unparsable credential file never reaches the forget
+    /// call (the read loop skips it), so only the "did the phase actually
+    /// time out" gate stops the stale identity from being recalled. Without
+    /// that gate the account's cache entry is served for a credential that
+    /// can no longer be read at all.
+    #[tokio::test]
+    async fn an_unreadable_credential_does_not_recall_the_remembered_identity() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        reset_profile_cache();
+        let dir = unique_test_dir("memo-unreadable");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("corrupt.json");
+        write_identified_fixture(&creds_path, "token-readable", Some("uuid-readable"));
+
+        let account = AccountConfig {
+            name: "corrupted".to_string(),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let first = plans_for_accounts(
+            AuthMode::ClaudeOauth,
+            "memo-unreadable-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // Not valid JSON: `read_json` returns `None` and the read loop skips
+        // this path without recording or clearing anything for it.
+        std::fs::write(&creds_path, b"}{ not json").unwrap();
+        let second = plans_for_accounts(
+            AuthMode::ClaudeOauth,
+            "memo-unreadable-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+
+        assert_eq!(
+            second[0], None,
+            "an unreadable credential must report no plan, not the plan cached under the \
+             identity its path used to hold"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
