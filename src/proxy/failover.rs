@@ -27,17 +27,17 @@ pub(super) async fn forward(
     headers: &HeaderMap,
     body: Body,
     started_at: Instant,
-) -> Result<(StatusCode, axum::response::Response), ForwardError> {
+) -> Result<(StatusCode, axum::response::Response), Box<ForwardError>> {
     let max_request_bytes = state.config.server.limits.max_request_bytes;
     if crate::http_tuning::content_length_exceeds(headers, max_request_bytes) {
-        return Err(ForwardError {
+        return Err(Box::new(ForwardError {
             message: "request body exceeds the configured limit".to_string(),
-            response: crate::http_tuning::request_too_large(false).await,
-        });
+            response: Box::new(crate::http_tuning::request_too_large(false).await),
+        }));
     }
     let body = crate::http_tuning::read_body(body, max_request_bytes, false)
         .await
-        .map_err(|response| ForwardError {
+        .map_err(|response| Box::new(ForwardError {
             message: if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
                 "request body exceeds the configured limit"
             } else {
@@ -45,20 +45,20 @@ pub(super) async fn forward(
             }
             .to_string(),
             response,
-        })?;
+        }))?;
     let mut body = crate::request::RequestBody::parse(body.to_vec())
         .map_err(routing::invalid_routing_request)
-        .map_err(|error| ForwardError {
+        .map_err(|error| Box::new(ForwardError {
             message: "failed to route request".to_string(),
-            response: error.into_response(),
-        })?;
+            response: Box::new(error.into_response()),
+        }))?;
     normalize_request_body(&mut body);
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json()).map_err(|error| {
-            ForwardError {
+            Box::new(ForwardError {
                 message: "failed to route request".to_string(),
-                response: error.into_response(),
-            }
+                response: Box::new(error.into_response()),
+            })
         })?;
     crate::observability::record_requested_model(&requested_model);
     // Records the request's final outcome exactly once, at whichever terminal
@@ -78,9 +78,9 @@ pub(super) async fn forward(
         routes.truncate(1);
     }
     let (base_headers, inbound) =
-        check_inbound_auth(&state, &routes, headers).map_err(|error| *error)?;
+        check_inbound_auth(&state, &routes, headers).await?;
     enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)
-        .map_err(|error| *error)?;
+        .await?;
 
     let first_route = routes
         .first()
@@ -216,10 +216,7 @@ pub(super) async fn forward(
                     }
                     _ => {
                         finish(&provider, response.status());
-                        return Err(ForwardError {
-                            message,
-                            response: *response,
-                        });
+                        return Err(Box::new(ForwardError { message, response }));
                     }
                 }
             }
@@ -246,10 +243,7 @@ pub(super) async fn forward(
             }
             FinalResponse::MappedError { message, response } => {
                 finish(&failure.provider, response.status());
-                Err(ForwardError {
-                    message,
-                    response: *response,
-                })
+                Err(Box::new(ForwardError { message, response }))
             }
         };
     }
@@ -264,7 +258,10 @@ pub(super) async fn forward(
         &last_route.upstream_model,
     );
     finish(&last_route.provider, StatusCode::BAD_GATEWAY);
-    Err(ForwardError { message, response })
+    Err(Box::new(ForwardError {
+        message,
+        response: Box::new(response),
+    }))
 }
 
 async fn count_tokens_response(
@@ -275,7 +272,7 @@ async fn count_tokens_response(
     inbound: &InboundContext,
     body: crate::request::RequestBody,
     requested_model: &str,
-) -> Result<(StatusCode, axum::response::Response), ForwardError> {
+) -> Result<(StatusCode, axum::response::Response), Box<ForwardError>> {
     let provider = route.provider.clone();
     let upstream_model = route.upstream_model.clone();
     let result = if matches!(
@@ -326,15 +323,15 @@ async fn count_tokens_response(
             Ok((status, response))
         }
         Err(error) => {
-            let mut response = *error.response;
+            let mut response = error.response;
             stamp_gateway_headers(&mut response, &provider, requested_model, &upstream_model);
             let status = response.status();
             crate::observability::record_span_outcome(&provider, status);
             crate::observability::capture_upstream_outcome(&provider, requested_model, status);
-            Err(ForwardError {
+            Err(Box::new(ForwardError {
                 message: error.message,
                 response,
-            })
+            }))
         }
     }
 }
@@ -448,7 +445,7 @@ fn remember_failure(
     });
 }
 
-fn enforce_managed_model_policy(
+async fn enforce_managed_model_policy(
     state: &AppState,
     claims: Option<&crate::gateway::jwt::Claims>,
     requested_model: &str,
@@ -473,8 +470,10 @@ fn enforce_managed_model_policy(
         format!("model \"{requested_model}\" is not permitted by this gateway's managed policy");
     Err(Box::new(ForwardError {
         message: message.clone(),
-        response: ShuntError::new(StatusCode::BAD_REQUEST, "invalid_request_error", message)
-            .into_response(),
+        response: Box::new(
+            ShuntError::new(StatusCode::BAD_REQUEST, "invalid_request_error", message)
+                .into_response(),
+        ),
     }))
 }
 
@@ -490,7 +489,7 @@ pub(crate) struct InboundContext {
 /// it. On failover, a passthrough attempt keeps the credential only while its
 /// origin matches the primary upstream's, so a host-specific token is never
 /// replayed to a different origin (a same-origin fallback still carries it).
-pub(crate) fn check_inbound_auth(
+pub(crate) async fn check_inbound_auth(
     state: &AppState,
     routes: &[routing::Route],
     headers: &HeaderMap,
@@ -559,8 +558,10 @@ pub(crate) fn check_inbound_auth(
     };
     Err(Box::new(ForwardError {
         message: "inbound authentication failed".to_string(),
-        response: ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-            .into_response(),
+        response: Box::new(
+            ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+                .into_response(),
+        ),
     }))
 }
 
