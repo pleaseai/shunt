@@ -1,0 +1,143 @@
+---
+title: Anthropic
+description: デフォルトのパススループロバイダー — 呼び出し元自身の認証情報を転送する、API キーを注入する、あるいは OAuth で Claude サブスクリプションアカウントをプールする。
+---
+
+組み込みの **`anthropic`** プロバイダーは shunt のデフォルトの送信先です。一致するルートを持たないモデルは
+すべて、そのまま `api.anthropic.com` へ転送されます（`server.default_provider` で変更可能）。これは
+**`kind = "anthropic"`** のプロバイダーです — 上流がすでに Anthropic Messages API を話すため、shunt は
+リクエストを変換せずにパススルーし、**どの認証情報**を上流へ送るかだけを決めます。
+
+| 認証モード | 認証情報 | ユースケース |
+| :-- | :-- | :-- |
+| `passthrough`（デフォルト） | 呼び出し元自身の `x-api-key` / `Authorization` | 透過プロキシ — 各クライアントが自分のキーまたは OAuth トークンを持ち込む |
+| `api_key` | 環境変数から取るサーバー側のキー | 運用者所有の API キー 1 本で、すべてのリクエストのキーを差し替える |
+| `claude_oauth` | shunt が管理する 1 つ以上の Claude サブスクリプションアカウント | プーリングとクォータを考慮したローテーションを伴い、Claude サブスクリプションを消費する |
+
+## クイックスタート
+
+コーディングエージェントにセットアップを任せることもできます — `shunt add` は組み込みのセットアップ
+ブループリントを出力します（オフラインかつ読み取り専用で、設定を編集するのはエージェントです。この
+コマンド自体は編集しません）。
+
+```bash
+shunt add upstream anthropic --print | claude
+```
+
+または、以下の手順に沿って手動で設定してください。
+
+## upstream を設定する
+
+`anthropic` は組み込みです — 設定が一切なくても、shunt はルーティングされないモデルを `passthrough` として
+すでにここへ転送します。（順序付きフェイルオーバーのため、あるいは認証を変えるために）明示的に宣言するには、
+`kind = "anthropic"`、`base_url = "https://api.anthropic.com"`、`auth = "passthrough"` を提供するプリセットを
+使います。
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+```
+
+明示的に指定したフィールドはプリセットのデフォルトを上書きします。従来の `[providers.anthropic]` テーブル
+形式も引き続きサポートされます — ただし `[[upstreams]]` と `[providers.*]` を 1 つのファイルで混在させない
+でください。
+
+### パススルー（デフォルト）
+
+ほかに設定するものはありません。shunt はクライアント自身の `x-api-key` または `Authorization` ヘッダーを
+転送します。サーバー側のシークレットを設定ファイルに置く必要はありません。*クライアント*が何を送るべきかは
+[Claude Code を接続する](/ja/guides/connect-claude-code/#2-anthropic-認証情報を選ぶ)で扱っています。
+
+### サーバー側の API キー
+
+呼び出し元がキーを持ち込むのを信頼する代わりに、運用者所有のキーを注入します。
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+auth = { mode = "api_key", env = "ANTHROPIC_API_KEY", header = "x_api_key" }
+```
+
+サーバー側の認証情報を注入する場合は、ループバックを越えて公開する前に
+[`[server.auth]`](/ja/guides/shared-gateway/) でゲートウェイをゲートしてください。
+
+### Claude サブスクリプションアカウント（`claude_oauth`）
+
+リフレッシュ可能な shunt 管理アカウントを一度作成し、upstream をそれにスコープします。
+
+```bash
+shunt login claude --name primary --mode oauth
+```
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+auth = { mode = "claude_oauth", account = "primary" }
+```
+
+`shunt login claude` には 3 つのモードがあります。`--mode oauth` は shunt 自身のリフレッシュ可能な OAuth
+フローを実行し（推奨）、`--mode import` は現在の Claude Code のログインをコピーし、`--mode setup-token` は
+1 年間有効な推論専用トークンを作成します。`account`（および `accounts`）を省略すると shunt 管理下の
+アカウントストア全体をスキャンします — ストアに複数のアカウントがあれば、セッションスティッキネスと
+クォータを考慮したローテーションを備えた**負荷分散プール**になります。明示的なアカウントエントリ、
+アカウント単位のしきい値、`[server.pool]` のチューニング、フェイルオーバーを含む完全なプーリングの挙動は
+[Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/)に記載されています。
+
+
+
+<Aside type="note" title="オリジン外へのトークンガード">
+
+`claude_oauth` の upstream は `anthropic.com`（またはそのサブドメイン）上の HTTPS な `base_url` を必要と
+するため、サブスクリプションの bearer が別のオリジンへ漏れることはありません。ローカルのモックやデバッグ用
+プロキシのために、ループバックホストは例外です。
+
+</Aside>
+
+
+
+## モデルとルーティング
+
+デフォルトプロバイダーであるため、`anthropic` にルートは不要です — ほかへマッピング**しなかった**ものが
+すべてここへ来ます。順序付きフェイルオーバーチェーンの中でモデルを明示的に固定するには:
+
+```toml
+[[models]]
+id = "claude-sonnet-5"
+display_name = "Claude Sonnet 5"
+
+[models.upstream_model]
+anthropic = "claude-sonnet-5"
+```
+
+マップのキーはプリセット id ではなく `[[upstreams]].name` です。`auto_include_builtin_models = true`
+（デフォルト）の場合、`GET /v1/models` はまず `server.default_provider` が Anthropic 種別のときにそこから
+ライブのモデル一覧を取得しようとし、それ以外では shunt の組み込み Claude カタログスナップショットへ
+フォールバックします — [Model Discovery](/ja/guides/model-discovery/) を参照。
+
+## 検証
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/models
+```
+
+続いて最小のリクエストを 1 つ送ります（`passthrough` では自分の認証情報を含め、`claude_oauth` では
+省きます）。
+
+```bash
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-sonnet-5","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+## 関連
+
+- [Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/) — アカウントプール、クォータを考慮した選択、`[server.pool]`
+- [管理とリモートプロビジョニング](/ja/guides/admin-remote-provisioning/) — ブラウザからアカウントをプロビジョニングする
+- [Configuration Reference](/reference/configuration/#providersnameaccounts) — すべてのアカウントキー

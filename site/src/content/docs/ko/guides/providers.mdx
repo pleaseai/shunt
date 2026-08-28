@@ -161,7 +161,7 @@ OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`
 | 프로바이더 | `base_url` | 예시 모델 ID |
 | :-- | :-- | :-- |
 | [Kimi (Moonshot)](/ko/providers/kimi/) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
-| [Kimi Code(구독, OAuth)](/ko/providers/kimi/#kimi-code-oauth-subscription) | `https://api.kimi.com/coding` | 구독이 노출하는 모델 ID 사용 |
+| [Kimi Code(구독, OAuth)](/ko/providers/kimi/#kimi-code-oauth-구독) | `https://api.kimi.com/coding` | 구독이 노출하는 모델 ID 사용 |
 | [DeepSeek](/ko/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | [Z.ai (GLM)](/ko/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | [MiniMax](/ko/providers/minimax/) | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
@@ -197,7 +197,7 @@ model = "<model-id-your-subscription-exposes>"
 provider = "kimi-code"
 ```
 
-`kimi_oauth`는 `claude_oauth`/`chatgpt_oauth`처럼 풀링을 지원합니다 — `account` 대신 `accounts = [...]`를 사용해 저장된 여러 Kimi 계정으로 부하를 분산할 수 있습니다. 전체 안내는 [Kimi → Kimi Code (OAuth subscription)](/ko/providers/kimi/#kimi-code-oauth-subscription)를 참고하세요.
+`kimi_oauth`는 `claude_oauth`/`chatgpt_oauth`처럼 풀링을 지원합니다 — `account` 대신 `accounts = [...]`를 사용해 저장된 여러 Kimi 계정으로 부하를 분산할 수 있습니다. 전체 안내는 [Kimi → Kimi Code (OAuth 구독)](/ko/providers/kimi/#kimi-code-oauth-구독)를 참고하세요.
 
 예를 들어, Kimi(Moonshot)의 모델을 shunt를 통해 라우팅하려면:
 

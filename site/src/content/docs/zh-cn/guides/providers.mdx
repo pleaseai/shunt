@@ -160,7 +160,7 @@ ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受�
 | 提供方 | `base_url` | 示例模型 ID |
 | :-- | :-- | :-- |
 | [Kimi (Moonshot)](/zh-cn/providers/kimi/) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`、`kimi-k2.7-code` |
-| [Kimi Code(订阅制,OAuth)](/zh-cn/providers/kimi/#kimi-code-oauth-subscription) | `https://api.kimi.com/coding` | 使用你的订阅暴露的模型 ID |
+| [Kimi Code(订阅制,OAuth)](/zh-cn/providers/kimi/#kimi-codeoauth-订阅) | `https://api.kimi.com/coding` | 使用你的订阅暴露的模型 ID |
 | [DeepSeek](/zh-cn/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`、`deepseek-v4-flash` |
 | [Z.ai (GLM)](/zh-cn/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`、`glm-4.7` |
 | [MiniMax](/zh-cn/providers/minimax/) | `https://api.minimax.io/anthropic` | 见 [MiniMax 文档](https://platform.minimax.io/docs/token-plan/claude-code) |
@@ -199,7 +199,7 @@ provider = "kimi-code"
 
 `kimi_oauth` 和 `claude_oauth`/`chatgpt_oauth` 一样支持账号池 —— 用 `accounts = [...]` 代替
 `account`,即可将负载分散到多个已保存的 Kimi 账号上。完整说明见
-[Kimi → Kimi Code (OAuth subscription)](/zh-cn/providers/kimi/#kimi-code-oauth-subscription)。
+[Kimi → Kimi Code(OAuth 订阅)](/zh-cn/providers/kimi/#kimi-codeoauth-订阅)。
 
 例如,要通过 shunt 路由 Kimi(Moonshot)的模型:
 

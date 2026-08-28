@@ -1,0 +1,93 @@
+---
+title: Z.ai (GLM)
+description: マッピングしたモデルを、ZAI_API_KEY を使って Z.ai の Anthropic 互換 GLM エンドポイントへルーティングする。
+---
+
+**Z.ai** は自社の **GLM** モデルを **Anthropic 互換**エンドポイントで提供します — shunt は Claude Code の
+Messages リクエストをそのまま転送し、Z.ai の API キーを注入します。組み込みのプリセットはないため、
+upstream で `kind` と `base_url` を明示的に宣言します。
+
+## クイックスタート
+
+コーディングエージェントにセットアップを任せることもできます — 名前付きブループリントのないプロバイダーでは、
+`shunt add` がドキュメント URL を汎用のリサーチガイドに差し込みます（オフラインかつ読み取り専用で、設定を
+編集するのはエージェントです。このコマンド自体は編集しません）。
+
+```bash
+shunt add upstream https://docs.z.ai/ --print | claude
+```
+
+または、以下の手順に沿って手動で設定してください。
+
+## upstream を設定する
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # ルーティングされないモデル（例 claude-*）のデフォルトとして Anthropic を残す
+
+[[upstreams]]
+name = "zai"
+kind = "anthropic"
+base_url = "https://api.z.ai/api/anthropic"
+auth = { mode = "api_key", env = "ZAI_API_KEY" }
+
+[[routes]]
+model = "glm-5.2"
+provider = "zai"
+
+[[routes]]
+model = "glm-4.7"
+provider = "zai"
+```
+
+順序付きの `[[upstreams]]` は shunt の組み込みプロバイダーを置き換えるため、設定側でフォールバック先の
+`anthropic` デフォルトも宣言する必要があります（`server.default_provider` のデフォルトは `anthropic`）。
+
+従来の `[providers.zai]` テーブル形式も引き続きサポートされます — ただし `[[upstreams]]` と
+`[providers.*]` を 1 つのファイルで混在させないでください。
+
+## 認証情報
+
+```bash
+export ZAI_API_KEY='...'
+```
+
+キーを設定ファイルに書き込まないでください。`shunt check` は設定の構造を検証しますが、キーの値は読み取り
+ません — `ZAI_API_KEY` が未設定の場合、`zai` へルーティングされた最初のリクエストが認証エラーを返します。
+
+## モデル
+
+| モデル ID | 備考 |
+| :-- | :-- |
+| `glm-5.2` | フロンティアティア |
+| `glm-4.7` | 前世代 |
+
+ルーティング済みの id は、Claude Code で `ANTHROPIC_MODEL`、`ANTHROPIC_CUSTOM_MODEL_OPTION`、または
+サブエージェントの `model:` フロントマターから選択します。代わりに `/model` ピッカーへエントリを出したい
+場合は、`[models.upstream_model]` マップとともに `claude` プレフィックス付きのエイリアスを広告してください —
+[Model Discovery](/ja/guides/model-discovery/) を参照。
+
+## 検証
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"glm-5.2","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+レスポンスの `x-gateway-upstream` ヘッダーが `zai` を示すことを確認したら、
+[Claude Code を shunt へ向け](/ja/guides/connect-claude-code/)てください。
+
+## サブエージェントプラグイン
+
+[`shunt-zai` プラグイン](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-zai)は、上記の各モデルに
+つき 1 つずつ、既製の Claude Code サブエージェントを出荷しています。
+
+```bash
+/plugin marketplace add pleaseai/shunt
+/plugin install shunt-zai@shunt
+```

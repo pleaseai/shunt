@@ -1,0 +1,134 @@
+---
+title: Cursor
+description: 通过原生 ConnectRPC 适配器触达你的 Cursor 订阅 —— 登录、agent 模式、模型 id、工具、图像和覆盖项。
+---
+
+内置的 **`cursor`** 提供方通过 Cursor 自己的 ConnectRPC/protobuf AgentService 触达你的 **Cursor**
+订阅。**`kind = "cursor"`** 原生适配器将其桥接到
+Anthropic Messages API —— 包括流式传输、流式响应中的推理、原生工具调用,以及
+内联图像。登录和 token 刷新使用 `api2.cursor.sh`;agent 轮次通过
+HTTP/2 对接 Cursor 当前的 agent 主机(`agentn.global.api5.cursor.sh`)。
+
+## 快速开始
+
+让编码 agent 为你完成接入 —— `shunt add` 会打印一份内置的设置蓝图
+(离线且只读;配置由 agent 编辑,该命令绝不会修改配置):
+
+```bash
+shunt add upstream cursor --print | claude
+```
+
+或者按照下面的手动步骤操作。
+
+## 1. 登录
+
+```bash
+shunt login cursor
+```
+
+这会运行 Cursor 的 OAuth 流程并写入 `~/.shunt/cursor-auth.json`,shunt 会读取并
+自动刷新它。如果该文件缺失或过期,shunt 会返回一个 `authentication_error`,
+提示你再次运行 `shunt login cursor`。
+
+## 2. 配置上游
+
+该提供方默认已预置,因此无需配置表 —— 路由一个 `cursor:*` 模型 id
+就完事了。要显式声明它(用于有序故障转移),`cursor` 预设提供了
+原生适配器、`base_url = "https://api2.cursor.sh"` 和 `auth = "cursor_oauth"`:
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+
+[[upstreams]]
+name = "cursor"
+provider = "cursor"
+```
+
+有序的 `[[upstreams]]` 会替换 shunt 的内置提供方(包括预置的 `cursor`),因此显式
+配置还必须声明它仍然回退到的 `anthropic` 默认项
+(`server.default_provider` 默认为 `anthropic`)。
+
+旧的 `[providers.cursor]` 表形式仍然受支持 —— 但不要在同一个文件中混用 `[[upstreams]]`
+和 `[providers.*]`。
+
+## 3. 模型 id 与 agent 模式
+
+前缀选择 Cursor 的 agent 模式(Agent / Plan / Ask),后缀是 Cursor 的模型
+id。请使用 **wire** id,而不是 `cursor-agent models` 中的显示名:Auto 是 `default`
+(路由 `cursor:auto` 会以 `Unknown model ID: auto` 失败)。具名模型(例如 `cursor:gpt-5.2`)
+需要一个授予其权限的付费套餐;免费套餐仅限 `cursor:default`。
+
+| 形式 | Agent 模式 | 示例 |
+| :-- | :-- | :-- |
+| `cursor:<id>` / `cursor-agent:<id>` | Agent | `cursor:default` |
+| `cursor-plan:<id>` | Plan | `cursor-plan:default` |
+| `cursor-ask:<id>` | Ask | `cursor-ask:default` |
+
+旧式的裸名称同样被接受:`cursor`、`cursor-agent`、`cursor-composer`、
+`cursor-composer-fast`(Agent);`cursor-plan`、`composer-2.5`(Plan);`cursor-ask`、
+`composer-2.5-fast`(Ask)。其他任何模型 id 都会被以 `invalid_request_error` 拒绝。
+
+直接路由,或者向 [模型发现](/zh-cn/guides/model-discovery/) 暴露一个 Claude 命名的别名:
+
+```toml
+[[routes]]
+model = "cursor:default"
+provider = "cursor"
+
+# Or: advertise + route in one declaration
+[[models]]
+id = "claude-cursor-default"
+display_name = "Cursor Auto"
+
+[models.upstream_model]
+cursor = "cursor:default"
+```
+
+## 适配器承载的内容
+
+适配器流式传输助手的**文本与推理**,把你客户端的**工具**桥接为原生的
+Cursor MCP 工具调用(模型调用的某个工具会以带 `stop_reason: "tool_use"` 的 Anthropic `tool_use`
+块浮现;你运行它并把 `tool_result` 送回,shunt 会带着该结果在历史中重跑这一轮),
+并转发**内联图像**(base64 源;URL 图像会被跳过)。Cursor 自己的 agentic 文件 / shell 工具
+不会被暴露 —— 只有你的请求所声明的工具。
+
+## 校验
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"cursor:default","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+确认响应的 `x-gateway-upstream` 头写的是 `cursor`,然后
+[将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/)。
+
+
+
+<Aside type="note" title="覆盖项">
+
+`SHUNT_CURSOR_BASE_URL` 覆盖登录 / 刷新端点,`SHUNT_CURSOR_AGENT_BASE_URL` 覆盖
+agent 主机(必须仍是一个 HTTPS 的 `cursor.sh` 主机),`SHUNT_CURSOR_AUTH_FILE` 覆盖凭据路径,
+`SHUNT_CURSOR_CLIENT_VERSION` 覆盖 `x-cursor-client-version` 头(如果 Cursor 开始拒绝过期的
+客户端版本,无需重新构建即可上调它)。`cursor_oauth` 提供方被固定到一个
+基于 HTTPS 的 Cursor 主机 —— 把 `base_url` 指向别的 origin 会被拒绝,以免 bearer token
+泄漏。
+
+</Aside>
+
+
+
+
+
+<Aside type="caution" title="由你自己决定">
+
+从非官方客户端复用 Cursor 订阅由你自己决定 —— 这可能违反
+Cursor 的条款或触发账号层面的处置。使用风险自负。
+
+</Aside>
+

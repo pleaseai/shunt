@@ -1,0 +1,176 @@
+---
+title: Antigravity
+description: 通过 HTTP 触达 Google Antigravity 后端 —— 登录、项目发现、模型 slug、thinking,以及适配器承载的内容。
+---
+
+内置的 **`antigravity`** 提供方通过 HTTP 在 `cloudcode-pa.googleapis.com` 触达 Google 的 **Antigravity**
+后端。它讲的是与 `gemini` 提供方相同的 Code Assist 协议 ——
+shunt 将 Anthropic Messages 转换为 `generateContent` / `streamGenerateContent` —— 但它
+用 Antigravity 订阅 token 认证,并在项目发现期间把自己标识为 `ideType: ANTIGRAVITY`。
+
+Antigravity 还有第二种、更老的传输方式。`kind = "antigravity_cli"` 以子进程方式运行本地 `agy` 二进制,
+且已**废弃** —— 见
+[已废弃的 `antigravity-cli` 传输](/zh-cn/guides/providers/#已废弃的-antigravity_cli-传输)。
+本页讲的是 HTTP 提供方,它完全不需要那套机制。
+
+## 快速开始
+
+让编码 agent 为你完成接入 —— `shunt add` 会打印一份内置的设置蓝图
+(离线且只读;配置由 agent 编辑,该命令绝不会修改配置):
+
+```bash
+shunt add upstream antigravity --print | claude
+```
+
+或者按照下面的手动步骤操作。
+
+## 1. 登录
+
+```bash
+shunt login antigravity
+```
+
+这会使用 Antigravity 自有的 OAuth 客户端运行一个 Google authorization-code 流程,并写入
+`~/.shunt/antigravity-auth.json`,shunt 会读取并自动刷新它。该流程申请五个
+scope:
+
+```text
+https://www.googleapis.com/auth/cloud-platform
+https://www.googleapis.com/auth/userinfo.email
+https://www.googleapis.com/auth/userinfo.profile
+https://www.googleapis.com/auth/cclog
+https://www.googleapis.com/auth/experimentsandconfigs
+```
+
+最后两个正是**Gemini CLI 的登录无法在此复用、反之亦然**的原因:一份
+`~/.gemini/oauth_creds.json` token 从不携带 `cclog` 或 `experimentsandconfigs`。`google_oauth`
+和 `antigravity_oauth` 不可互换。
+
+登录还会解析你的 Code Assist 项目 —— 先 `loadCodeAssist`,再用 `onboardUser`
+为首次使用的账号开通一个 —— 并把项目 id 存入凭据文件。你的第一个请求前不会再有
+任何发现步骤。如果发现失败,登录仍会保存 token,并在第一个请求时重试。
+
+## 2. 配置上游
+
+该提供方是内置的,所以一条写着 `provider = "antigravity"` 的 `[[routes]]` 条目无需你自己的提供方表
+即可工作。把它声明为有序上游则不同:**Antigravity 这些 kind 没有 `[[upstreams]]` 预设**,
+因此那里不能用 `provider = "antigravity"`,你必须自己设置 `kind`、`base_url` 和 `auth`:
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+
+[[upstreams]]
+name = "antigravity"
+kind = "antigravity"
+base_url = "https://cloudcode-pa.googleapis.com"
+auth = "antigravity_oauth"
+```
+
+有序的 `[[upstreams]]` 会替换 shunt 的内置提供方,因此显式配置还必须声明它仍然回退到的
+`anthropic` 默认项(`server.default_provider` 默认为 `anthropic`)。
+
+旧的 `[providers.antigravity]` 表形式仍然受支持 —— 但不要在同一个文件中混用 `[[upstreams]]`
+和 `[providers.*]`。
+
+## 3. 路由一个模型
+
+shunt 不为该提供方保留任何模型白名单:解析出的 `upstream_model` 会原样发送到
+后端,由后端决定。Antigravity 提供 Gemini 家族的 slug,包括
+`gemini-3.5-flash` 和 `gemini-3.6-flash` —— 这些 slug 是 Code Assist 的 `gemini` 提供方**不**
+接受的。
+
+把每个本地别名映射到确切的 Antigravity slug:
+
+```toml
+[[models]]
+id = "claude-gemini-3.6-flash-via-antigravity"
+display_name = "[AGY ] Gemini-3.6-Flash"
+
+[[routes]]
+model = "claude-gemini-3.6-flash-via-antigravity"
+provider = "antigravity"
+upstream_model = "gemini-3.6-flash"
+```
+
+Antigravity 也提供 Claude 模型,但 shunt 尚未实现它们所需的请求改写
+([#368](https://github.com/pleaseai/shunt/issues/368))。本地没有任何东西会拒绝这样的 slug ——
+它会原样抵达后端 —— 所以目前只路由 Gemini 家族的 slug。
+
+## 适配器承载的内容
+
+适配器以 Anthropic SSE 流式传输助手的**文本**和**thinking**,并原生桥接你客户端的
+**工具**:`tool_use` 变成 Gemini 的 `functionCall`,你的 `tool_result` 变成
+`functionResponse`,工具声明和工具选择也随之转换。**系统提示**
+变成 `systemInstruction`。Token 用量取自 Google 报告的计数 —— `promptTokenCount` 和
+`candidatesTokenCount` 映射到 `input_tokens` 和 `output_tokens`。
+
+**Thinking** 跟随请求:`thinking.type = "enabled"` 会用 `budget_tokens` 设置
+`thinkingConfig.thinkingBudget`(默认 `1024`),`"disabled"` 则把它设为 `0`。这条传输**没有
+`effort` 设置** —— `effort` 属于已废弃的 CLI 提供方,后者从 `agy models` 发现其有效的
+模型 / effort 组合。
+
+在把生产流量路由过来之前,有两项限制值得知道:
+
+- **图像必须是内联的。** base64 的 `image` 块会变成 Gemini 的 `inlineData`。而 **URL 图像
+  源会被以 `400` 拒绝**(`URL image sources are not supported by the Gemini adapter`)。
+- **工具结果不能携带富媒体。** 内容中包含 `image` 或 `document` 块的 `tool_result` 会被拒绝。
+
+## 校验
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-gemini-3.6-flash-via-antigravity","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+确认响应的 `x-gateway-upstream` 头写的是 `antigravity`,然后
+[将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/)。
+
+<Aside type="note" title="覆盖项">
+
+`SHUNT_ANTIGRAVITY_AUTH_FILE` 可覆盖凭据路径(空值会回退到
+默认值)。`antigravity_oauth` 上游被固定到一个主机:它接受的唯一非回环 `base_url`
+是 `cloudcode-pa.googleapis.com` 本身上的 HTTPS —— **没有其他 `googleapis.com` 主机
+合格**。回环主机可用于本地代理。其他任何情况都会在配置
+校验阶段被拒绝,而不是悄悄把你的订阅 token 发往别的 origin ——
+`providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
+subscription token over plaintext`,或者与之对应的 `... host <host> is not a googleapis.com host;
+refusing to send a subscription token off-origin`(该消息写的是 “googleapis.com host”,但它背后的
+检查针对的是确切的那个 Code Assist 主机)。
+
+`onboardUser` 位于一个独立的控制平面。一个纯生产的 `base_url` —— `cloudcode-pa.googleapis.com`
+上的 HTTPS,无端口,无路径前缀 —— 会针对
+`daily-cloudcode-pa.googleapis.com` 开通。任何挡在后端前面的东西(一个回环代理,或
+带显式端口或路径前缀的该主机)则通过它自身开通。
+
+[`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) 会针对你**已路由的**
+Antigravity 上游做发现 —— 或者在你还没接好路由之前,针对你所声明的 Antigravity 上游。
+只有一个候选时它直接胜出,而当有多个候选合格时,**名为 `antigravity`** 的那个胜出。如果有
+多个合格却都不叫这个名字,登录会拒绝猜测 —— 它记录一条警告并回退到生产端点,因此它开通的
+项目可能并不是你的路由所用的那个后端。请把你希望被发现的那个上游命名为 `antigravity`。
+
+</Aside>
+
+<Aside type="caution" title="`antigravity` 的含义已改变">
+
+`kind = "antigravity"` 过去运行的是本地 `agy` 二进制。现在它是 HTTP 上游,而
+子进程传输迁移到了 `kind = "antigravity_cli"`(内置提供方 `antigravity-cli`)。
+仍沿用旧含义的配置会按名称被拒绝,而不是被悄悄改指到别处;被路由到的
+`antigravity` 提供方若没有凭据则拒绝启动:
+
+```text
+provider `antigravity` is routed but has no credential. It is now the native HTTP upstream, not the
+local `agy` CLI. Run `shunt login antigravity` to authenticate it, or route to `antigravity-cli` to
+stay on the deprecated subprocess transport.
+```
+
+[`shunt check`](/zh-cn/reference/cli/#shunt-check) 会离线运行同一个守卫,因此 CI 能在上线前
+发现这种配置错误。该检查**只查存在性** —— 它不会打开凭据文件,
+所以空的或过期的文件仍会通过,并在之后的请求路径上失败。
+
+</Aside>
