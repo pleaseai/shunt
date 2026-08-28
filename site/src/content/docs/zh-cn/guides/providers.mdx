@@ -3,11 +3,13 @@ title: 提供方
 description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容 Anthropic 的后端。
 ---
 
-提供方是一个**名称 → 配置的映射**:一个新的上游只不过是又一个 `[providers.<name>]` 表 —— 无需改动代码。三种适配器类型即可覆盖一切:
+提供方是一个**名称 → 配置的映射**:一个新的上游只不过是又一个 `[providers.<name>]` 表 —— 无需改动代码。适配器类型如下:
 
 - **`kind = "anthropic"`** —— 上游讲 Anthropic Messages API。shunt 将请求透传,可选择注入一个不同的 API 密钥。
 - **`kind = "responses"`** —— 上游讲 OpenAI Responses API。shunt 在 Anthropic Messages ⇄ Responses 之间转换,含流式传输。
 - **`kind = "cursor"`** —— 原生 Cursor 适配器。shunt 将 Cursor 的 ConnectRPC/protobuf AgentService 桥接到 Anthropic Messages API,含流式传输、推理(流式响应中)、原生工具调用与内联图像。由内置的 `cursor` 提供方使用。
+- **`kind = "antigravity"`** —— 通过 HTTP 连接 Google Antigravity 后端。
+- **`kind = "antigravity_cli"`** —— **已废弃**;调用本地的 Antigravity `agy` CLI。
 
 ## 内置提供方
 
@@ -19,11 +21,48 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 | [`xai`](/zh-cn/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` —— xAI 开发者 API |
 | [`grok`](/zh-cn/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅 |
 | [`cursor`](/zh-cn/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
+| [`antigravity`](/zh-cn/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` —— 复用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |
+| `antigravity-cli` | `antigravity_cli` | `none` | **已废弃。** 本地 `agy` CLI —— 经由子进程访问同一后端 |
 
 每个名称都链接到对应提供方的专门页面,其中包含完整设置。`shunt add upstream <name>`
 会为任意内置提供方打印分步操作蓝图 —— 将它通过管道传给编码 agent
 (`shunt add upstream codex --print | claude`),即可让 agent 为你完成配置。见
 [CLI 参考](/zh-cn/reference/cli/#shunt-add)。
+
+### antigravity 提供方(Google Antigravity)
+
+`antigravity` 提供方通过 HTTP 触达 Google Antigravity 后端。用 `shunt login antigravity` 认证:这是一个使用 Antigravity
+自有 OAuth 客户端的 Google authorization-code 流程,它会申请两个 Gemini CLI 登录从不携带的 scope(`cclog` 和
+`experimentsandconfigs`),因此两者的凭据在任一方向上都不可互换。登录还会解析 Code Assist 项目,并为首次使用的账号通过
+`onboardUser` 完成开通,因此不会在请求前再做一次发现。
+
+把每个本地别名映射到确切的 Antigravity 模型 slug:
+
+```toml
+[[models]]
+id = "claude-gemini-3.6-flash-via-antigravity"
+display_name = "[AGY ] Gemini-3.6-Flash"
+
+[[routes]]
+model = "claude-gemini-3.6-flash-via-antigravity"
+provider = "antigravity"
+upstream_model = "gemini-3.6-flash"
+```
+
+完整设置 —— 登录与 scope、项目发现、模型 slug、thinking,以及适配器承载的内容 —— 见专门的
+[Antigravity 提供方页面](/zh-cn/providers/antigravity/)。
+
+<Aside type="caution" title="`antigravity` 的含义已改变">
+
+`kind = "antigravity"` 过去运行的是本地 `agy` 二进制。现在它是 HTTP 上游,而子进程传输迁移到了 `kind = "antigravity_cli"`
+(内置提供方 `antigravity-cli`),该方式已废弃。仍沿用旧含义的配置会按名称被拒绝,而不是被悄悄改指到别处;被路由到的
+`antigravity` 提供方若没有凭据则拒绝启动 —— 在一次看似正常的启动之下替换传输、凭据与出口流量,比直接失败更糟。
+`shunt check` 会离线运行同一个凭据守卫,因此 CI 能在上线前、而不是等到启动时,发现指向 `antigravity` 却未保存凭据的路由
+—— 它只检查存在性,所以空的或过期的凭据仍会通过,并在之后的请求路径上失败。请运行 `shunt login antigravity`,或把路由指向
+`antigravity-cli`。当某条路由仍解析到已废弃的 `antigravity_cli` 类型时,启动也会记录一条警告,让运维无需等待请求就能发现
+过期配置。
+
+</Aside>
 
 ### codex 提供方(ChatGPT 订阅)
 

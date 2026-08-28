@@ -1,0 +1,172 @@
+---
+title: Antigravity
+description: Reach the Google Antigravity backend over HTTP — login, project discovery, model slugs, thinking, and what the adapter carries.
+---
+
+The built-in **`antigravity`** provider reaches Google's **Antigravity** backend over HTTP at
+`cloudcode-pa.googleapis.com`. It speaks the same Code Assist protocol as the `gemini` provider —
+shunt translates Anthropic Messages to `generateContent` / `streamGenerateContent` — but it
+authenticates with an Antigravity subscription token and identifies itself as `ideType: ANTIGRAVITY`
+during project discovery.
+
+Antigravity has a second, older transport. `kind = "antigravity_cli"` runs the local `agy` binary
+as a subprocess and is **deprecated** — see
+[the deprecated `antigravity-cli` transport](/guides/providers/#the-deprecated-antigravity-cli-transport).
+This page covers the HTTP provider, which needs none of that machinery.
+
+## Quick start
+
+Let a coding agent wire it up for you — `shunt add` prints an embedded setup blueprint
+(offline and read-only; the agent edits the config, the command never does):
+
+```bash
+shunt add upstream antigravity --print | claude
+```
+
+Or follow the manual steps below.
+
+## 1. Log in
+
+```bash
+shunt login antigravity
+```
+
+This runs a Google authorization-code flow using Antigravity's own OAuth client and writes
+`~/.shunt/antigravity-auth.json`, which shunt reads and auto-refreshes. The flow asks for five
+scopes:
+
+```text
+https://www.googleapis.com/auth/cloud-platform
+https://www.googleapis.com/auth/userinfo.email
+https://www.googleapis.com/auth/userinfo.profile
+https://www.googleapis.com/auth/cclog
+https://www.googleapis.com/auth/experimentsandconfigs
+```
+
+The last two are the reason **a Gemini CLI login cannot be reused here, and vice versa**: a
+`~/.gemini/oauth_creds.json` token never carries `cclog` or `experimentsandconfigs`. `google_oauth`
+and `antigravity_oauth` are not interchangeable.
+
+Login also resolves your Code Assist project — `loadCodeAssist` first, then `onboardUser` to
+provision one for a first-time account — and stores the project id in the credential file. No
+discovery sits in front of your first request. If discovery fails, login still saves the token and
+retries on the first request.
+
+## 2. Configure the upstream
+
+The provider is built in, so a `[[routes]]` entry naming `provider = "antigravity"` works with no
+provider table of your own. Declaring it as an ordered upstream is different: **the Antigravity
+kinds have no `[[upstreams]]` preset**, so `provider = "antigravity"` is not available there and you
+must set `kind`, `base_url`, and `auth` yourself:
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+
+[[upstreams]]
+name = "antigravity"
+kind = "antigravity"
+base_url = "https://cloudcode-pa.googleapis.com"
+auth = "antigravity_oauth"
+```
+
+Ordered `[[upstreams]]` replace shunt's built-in providers, so an explicit config must also declare
+the `anthropic` default it still falls back to (`server.default_provider` defaults to `anthropic`).
+
+The legacy `[providers.antigravity]` table form remains supported — but do not mix `[[upstreams]]`
+and `[providers.*]` in one file.
+
+## 3. Route a model
+
+shunt keeps no model allowlist for this provider: the resolved `upstream_model` is sent to the
+backend as written, and the backend decides. Antigravity serves the Gemini-family slugs, including
+`gemini-3.5-flash` and `gemini-3.6-flash` — slugs the Code Assist `gemini` provider does **not**
+accept.
+
+Map a local alias to the exact Antigravity slug:
+
+```toml
+[[models]]
+id = "claude-gemini-3.6-flash-via-antigravity"
+display_name = "[AGY ] Gemini-3.6-Flash"
+
+[[routes]]
+model = "claude-gemini-3.6-flash-via-antigravity"
+provider = "antigravity"
+upstream_model = "gemini-3.6-flash"
+```
+
+Antigravity also offers Claude models, but shunt does not yet implement the request rewrites they
+need ([#368](https://github.com/pleaseai/shunt/issues/368)). Nothing rejects such a slug locally —
+it reaches the backend as written — so route only the Gemini-family slugs for now.
+
+## What the adapter carries
+
+The adapter streams assistant **text** and **thinking** as Anthropic SSE, and bridges your client's
+**tools** natively: `tool_use` becomes a Gemini `functionCall`, your `tool_result` becomes a
+`functionResponse`, and tool declarations and tool choice are translated with it. **System prompts**
+become `systemInstruction`. Token usage is Google's reported count — `promptTokenCount` and
+`candidatesTokenCount` map to `input_tokens` and `output_tokens`.
+
+**Thinking** follows the request: `thinking.type = "enabled"` sets `thinkingConfig.thinkingBudget`
+from `budget_tokens` (default `1024`), and `"disabled"` sets it to `0`. This transport has **no
+`effort` setting** — `effort` belongs to the deprecated CLI provider, which discovers its valid
+model/effort pairs from `agy models`.
+
+Two limits are worth knowing before you route production traffic:
+
+- **Images must be inline.** A base64 `image` block becomes Gemini `inlineData`. A **URL image
+  source is rejected with a `400`** (`URL image sources are not supported by the Gemini adapter`).
+- **Tool results cannot carry rich media.** A `tool_result` whose content includes `image` or
+  `document` blocks is rejected.
+
+## Verify
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-gemini-3.6-flash-via-antigravity","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+Confirm the response's `x-gateway-upstream` header names `antigravity`, then
+[point Claude Code at shunt](/guides/connect-claude-code/).
+
+<Aside type="note" title="Overrides">
+
+`SHUNT_ANTIGRAVITY_AUTH_FILE` overrides the credential path (an empty value falls back to the
+default). Unlike the Cursor provider's single pinned host, an `antigravity_oauth` upstream accepts
+any HTTPS `googleapis.com` Code Assist host, plus loopback hosts for a local proxy. Anything else is
+refused at config validation rather than silently shipping your subscription token off-origin —
+`providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
+subscription token over plaintext`, or the matching `... host <host> is not a googleapis.com host;
+refusing to send a subscription token off-origin`.
+
+On the production default host, `onboardUser` runs against its own `daily-cloudcode-pa.googleapis.com`
+control plane; a custom host onboards through itself. When several Antigravity upstreams are
+configured, [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) runs discovery
+against the one your routes select.
+
+</Aside>
+
+<Aside type="caution" title="`antigravity` changed meaning">
+
+`kind = "antigravity"` used to run the local `agy` binary. It is now the HTTP upstream, and the
+subprocess transport moved to `kind = "antigravity_cli"` (built-in provider `antigravity-cli`).
+A config still carrying the old meaning is refused by name rather than silently retargeted, and a
+routed `antigravity` provider with no credential refuses to start:
+
+```text
+provider `antigravity` is routed but has no credential. It is now the native HTTP upstream, not the
+local `agy` CLI. Run `shunt login antigravity` to authenticate it, or route to `antigravity-cli` to
+stay on the deprecated subprocess transport.
+```
+
+[`shunt check`](/reference/cli/#shunt-check) runs that same guard offline, so CI catches the
+misconfiguration before a rollout. The check is **presence-only** — it does not open the credential,
+so an empty or stale file still passes and fails later on the request path.
+
+</Aside>

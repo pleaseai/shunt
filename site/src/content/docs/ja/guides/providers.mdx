@@ -3,11 +3,13 @@ title: プロバイダー
 description: 組み込みプロバイダーと、TOML テーブルで任意の Anthropic 互換バックエンドを追加する方法。
 ---
 
-プロバイダーは**名前 → 設定のマップ**です。新しい上流は `[providers.<name>]` テーブルをもう 1 つ書くだけ — コード変更は不要です。3 種類のアダプターですべてをカバーします。
+プロバイダーは**名前 → 設定のマップ**です。新しい上流は `[providers.<name>]` テーブルをもう 1 つ書くだけ — コード変更は不要です。アダプターの種類は次のとおりです。
 
 - **`kind = "anthropic"`** — 上流が Anthropic Messages API を話します。shunt はリクエストをパススルーし、オプションで別の API キーを注入します。
 - **`kind = "responses"`** — 上流が OpenAI Responses API を話します。shunt は Anthropic Messages ⇄ Responses を、ストリーミングを含めて変換します。
 - **`kind = "cursor"`** — ネイティブな Cursor アダプター。shunt は Cursor の ConnectRPC/protobuf AgentService を Anthropic Messages API へブリッジし、ストリーミング・推論(ストリーミング応答時)・ネイティブなツール呼び出し・インライン画像を含みます。組み込みの `cursor` プロバイダーが使用します。
+- **`kind = "antigravity"`** — HTTP 経由で Google Antigravity バックエンドに接続します。
+- **`kind = "antigravity_cli"`** — **非推奨**。ローカルの Antigravity `agy` CLI を呼び出します。
 
 ## 組み込みプロバイダー
 
@@ -19,8 +21,47 @@ description: 組み込みプロバイダーと、TOML テーブルで任意の A
 | [`xai`](/ja/guides/xai/) | `responses` | `api_key`（`XAI_API_KEY`） | `api.x.ai/v1` — xAI 開発者 API |
 | [`grok`](/ja/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai` 経由の SuperGrok / X Premium+ サブスクリプション |
 | [`cursor`](/ja/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json`（`shunt login cursor`）を再利用 |
+| [`antigravity`](/ja/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` — `~/.shunt/antigravity-auth.json`（`shunt login antigravity`）を再利用 |
+| `antigravity-cli` | `antigravity_cli` | `none` | **非推奨。** ローカルの `agy` CLI — サブプロセス経由で同じバックエンド |
 
 各名前から、そのプロバイダーの完全なセットアップを説明する専用ページへ移動できます。`shunt add upstream <name>` は、任意の組み込みプロバイダーについて手順を追ったブループリントを出力します。コーディングエージェントへパイプすれば（`shunt add upstream codex --print | claude`）、エージェントに設定を組み込ませることができます。[CLI リファレンス](/ja/reference/cli/#shunt-add)も参照してください。
+
+### antigravity プロバイダー（Google Antigravity）
+
+`antigravity` プロバイダーは、HTTP 経由で Google Antigravity バックエンドに到達します。`shunt login antigravity` で認証してください —
+Antigravity 自身の OAuth クライアントを使う Google の authorization-code フローで、Gemini CLI のログインでは決して付与されない
+2 つのスコープ（`cclog`、`experimentsandconfigs`）を要求します。そのため、両者の認証情報はどちらの方向にも流用できません。
+ログイン時に Code Assist プロジェクトも解決し、初めてのアカウントは `onboardUser` でプロビジョニングするため、リクエストの
+手前でディスカバリーが走ることはありません。
+
+ローカルのエイリアスを、正確な Antigravity のモデルスラッグへマッピングします:
+
+```toml
+[[models]]
+id = "claude-gemini-3.6-flash-via-antigravity"
+display_name = "[AGY ] Gemini-3.6-Flash"
+
+[[routes]]
+model = "claude-gemini-3.6-flash-via-antigravity"
+provider = "antigravity"
+upstream_model = "gemini-3.6-flash"
+```
+
+ログインとスコープ、プロジェクトディスカバリー、モデルスラッグ、thinking、アダプターが伝えるものを含む完全なセットアップに
+ついては、専用の [Antigravity プロバイダーページ](/ja/providers/antigravity/)を参照してください。
+
+<Aside type="caution" title="`antigravity` の意味が変わりました">
+
+`kind = "antigravity"` はかつてローカルの `agy` バイナリを実行していました。現在は HTTP の上流であり、サブプロセス転送は
+`kind = "antigravity_cli"`（組み込みプロバイダー `antigravity-cli`）へ移動し、非推奨です。古い意味のまま残っている設定は、
+別の対象へ差し替えられるのではなく名前によって拒否され、認証情報のないままルーティングされた `antigravity` プロバイダーは
+起動を拒否します — 正常に見える起動の裏で転送・認証情報・エグレスが入れ替わるほうが、失敗するより悪いからです。
+`shunt check` も同じ認証情報ガードをオフラインで実行するため、認証情報が保存されていない `antigravity` へのルートを、CI が
+起動時ではなくロールアウト前に検出できます — 存在確認のみなので、空または古い認証情報は通過し、後でリクエスト経路で失敗
+します。`shunt login antigravity` を実行するか、ルートを `antigravity-cli` に向けてください。ルートが非推奨の
+`antigravity_cli` 種別に解決される場合は起動時に警告をログへ出力するため、リクエストを待たずに古い設定へ気づけます。
+
+</Aside>
 
 ### codex プロバイダー（ChatGPT サブスクリプション）
 

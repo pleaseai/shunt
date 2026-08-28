@@ -43,6 +43,7 @@ export const NAVIGATION: NavigationGroup[] = [
       { label: "ChatGPT / Codex", translations: { ko: "ChatGPT / Codex", ja: "ChatGPT / Codex", "zh-cn": "ChatGPT / Codex" }, slug: "guides/codex" },
       { label: "xAI / Grok", translations: { ko: "xAI / Grok", ja: "xAI / Grok", "zh-cn": "xAI / Grok" }, slug: "guides/xai" },
       { label: "Cursor", slug: "providers/cursor" },
+      { label: "Antigravity (Google)", slug: "providers/antigravity" },
       { label: "Kimi (Moonshot)", slug: "providers/kimi" },
       { label: "DeepSeek", slug: "providers/deepseek" },
       { label: "Z.ai (GLM)", slug: "providers/zai" },
