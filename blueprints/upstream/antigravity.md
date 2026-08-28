@@ -32,7 +32,7 @@ name = "anthropic"
 provider = "anthropic"
 ```
 
-Do not mix `[[upstreams]]` with the legacy `[providers.*]` table form in one file. `base_url` must stay an HTTPS `googleapis.com` host (a loopback host is allowed for a local proxy); anything else is refused at validation rather than sending the subscription token off-origin.
+Do not mix `[[upstreams]]` with the legacy `[providers.*]` table form in one file. `base_url` must stay HTTPS on `cloudcode-pa.googleapis.com` itself — no other `googleapis.com` host passes validation (a loopback host is allowed for a local proxy). Anything else is refused at validation rather than sending the subscription token off-origin.
 
 ## Credentials
 
@@ -94,6 +94,6 @@ Confirm a successful response and that the selected upstream is `antigravity`.
 
 - Never print, log, or commit OAuth tokens or credential files.
 - Keep credentials outside config.
-- Never point `base_url` at a non-Google host to "test" the upstream; validation refuses it because it would ship a subscription token off-origin.
+- Never point `base_url` at any host other than `cloudcode-pa.googleapis.com` (or a loopback proxy) to "test" the upstream; validation refuses it because it would ship a subscription token off-origin.
 - Preserve all unrelated config entries and security controls.
 - Make the smallest reversible edit, validate it, and report exactly what changed.

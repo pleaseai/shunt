@@ -138,17 +138,26 @@ Confirm the response's `x-gateway-upstream` header names `antigravity`, then
 <Aside type="note" title="Overrides">
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE` overrides the credential path (an empty value falls back to the
-default). Unlike the Cursor provider's single pinned host, an `antigravity_oauth` upstream accepts
-any HTTPS `googleapis.com` Code Assist host, plus loopback hosts for a local proxy. Anything else is
-refused at config validation rather than silently shipping your subscription token off-origin —
+default). An `antigravity_oauth` upstream is pinned to one host: the only non-loopback `base_url` it
+accepts is HTTPS on `cloudcode-pa.googleapis.com` itself — **no other `googleapis.com` host
+qualifies**. A loopback host is allowed for a local proxy. Anything else is refused at config
+validation rather than silently shipping your subscription token off-origin —
 `providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
 subscription token over plaintext`, or the matching `... host <host> is not a googleapis.com host;
-refusing to send a subscription token off-origin`.
+refusing to send a subscription token off-origin` (that message says "googleapis.com host", but the
+check behind it is the exact Code Assist host).
 
-On the production default host, `onboardUser` runs against its own `daily-cloudcode-pa.googleapis.com`
-control plane; a custom host onboards through itself. When several Antigravity upstreams are
-configured, [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) runs discovery
-against the one your routes select.
+`onboardUser` lives on a separate control plane. A `base_url` that is plain production — HTTPS on
+`cloudcode-pa.googleapis.com`, no port, no path prefix — onboards against
+`daily-cloudcode-pa.googleapis.com`. Anything sitting in front of the backend (a loopback proxy, or
+that host with an explicit port or path prefix) onboards through itself.
+
+[`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) discovers against your
+**routed** Antigravity upstreams — or, before you have wired up routes, the Antigravity upstreams you
+declared. A single candidate wins outright, and when several qualify the one
+**named `antigravity`** wins. If several qualify and none carries that name, login refuses to guess —
+it logs a warning and falls back to the production endpoint, so the project it provisions may not be
+the backend your routes use. Name the upstream you want discovered `antigravity`.
 
 </Aside>
 

@@ -64,6 +64,38 @@ upstream_model = "gemini-3.6-flash"
 
 </Aside>
 
+### 已废弃的 `antigravity_cli` 传输
+
+`antigravity-cli` 这条路径按每个请求以 agent 模式启动一个 `agy` CLI 子进程。`agy` 自己解析自己的工具调用,因此请求中的
+`tools` 数组不会被转发,响应里也永远不会包含 `tool_use` 块。需要自行驱动工具循环的客户端应改用 `gemini` 提供方。
+
+由于非交互式运行无法回答权限提示,`agy` 会带 `--dangerously-skip-permissions` 运行,并且默认带 `--sandbox`,所以**请把该
+提供方视为以运行 shunt 的用户身份执行任意代码**。
+
+有两项设置对它加以约束。`sandbox`(默认 `true`)会传入 `--sandbox`,这才是真正约束该 agent 的机制 —— 关掉它就只剩下不受
+限制的 shell 访问。`workspace_roots`(默认为空)只决定 agent 可以从哪里*启动*:解析顺序是 `SHUNT_AGY_WORKSPACE`,然后是
+请求系统提示中的 `Working directory:` 行,最后是网关自身的目录。系统提示是由客户端控制的文本,因此只有当其中给出的路径
+规范化后落在你配置的某个根目录内时才会被采纳;没有配置任何根目录时,取自提示的路径会被忽略。
+
+```toml
+[providers.antigravity-cli]
+kind = "antigravity_cli"
+base_url = "http://localhost"
+auth = "none"
+# 请求内容可以把 agent 指向的仓库。
+workspace_roots = ["/Users/you/repos"]
+# sandbox = false   # 仅在 agent 需要不受限制的终端访问时
+```
+
+`workspace_roots` 不是牢笼:在 `sandbox = false` 时,从允许的根目录启动的 agent 仍然可以操作提示中别处给出的路径。
+
+当 `sandbox = false` 与非回环的 `bind` 组合时,shunt 会拒绝启动,并按启动时绑定的监听器对每个请求执行同样的规则。热重载
+无法移动该监听器,因此重新加载一个回环 `bind` 并不能让你在公开监听器仍然存活时关闭沙箱。请保持沙箱开启,或以回环绑定
+重启。不要在非回环绑定上把该提供方暴露给不受信任的客户端。
+
+建议优先使用上面那个原生的 `antigravity` HTTP 提供方,它完全不需要这些。完整细节见
+[已废弃的 antigravity-cli 传输](/guides/providers/#the-deprecated-antigravity-cli-transport)。
+
 ### codex 提供方(ChatGPT 订阅)
 
 用 Codex CLI 登录一次;shunt 会读取并自动刷新 `~/.codex/auth.json`:
