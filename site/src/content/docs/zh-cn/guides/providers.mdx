@@ -8,6 +8,7 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 - **`kind = "anthropic"`** —— 上游讲 Anthropic Messages API。shunt 将请求透传,可选择注入一个不同的 API 密钥。
 - **`kind = "responses"`** —— 上游讲 OpenAI Responses API。shunt 在 Anthropic Messages ⇄ Responses 之间转换,含流式传输。
 - **`kind = "cursor"`** —— 原生 Cursor 适配器。shunt 将 Cursor 的 ConnectRPC/protobuf AgentService 桥接到 Anthropic Messages API,含流式传输、推理(流式响应中)、原生工具调用与内联图像。由内置的 `cursor` 提供方使用。
+- **`kind = "gemini"`** —— 原生的 Google Code Assist `generateContent` 适配器。
 - **`kind = "antigravity"`** —— 通过 HTTP 连接 Google Antigravity 后端。
 - **`kind = "antigravity_cli"`** —— **已废弃**;调用本地的 Antigravity `agy` CLI。
 
@@ -21,6 +22,7 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 | [`xai`](/zh-cn/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` —— xAI 开发者 API |
 | [`grok`](/zh-cn/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅 |
 | [`cursor`](/zh-cn/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
+| `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` —— 复用 `~/.gemini/oauth_creds.json` |
 | [`antigravity`](/zh-cn/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` —— 复用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |
 | `antigravity-cli` | `antigravity_cli` | `none` | **已废弃。** 本地 `agy` CLI —— 经由子进程访问同一后端 |
 

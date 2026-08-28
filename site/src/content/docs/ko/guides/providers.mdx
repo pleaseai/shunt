@@ -8,6 +8,7 @@ description: 내장 프로바이더와 TOML 테이블로 Anthropic 호환 백엔
 - **`kind = "anthropic"`** — 업스트림이 Anthropic Messages API를 사용합니다. shunt는 요청을 패스스루하며, 필요하면 다른 API 키를 주입합니다.
 - **`kind = "responses"`** — 업스트림이 OpenAI Responses API를 사용합니다. shunt는 Anthropic Messages ⇄ Responses를 스트리밍 포함하여 변환합니다.
 - **`kind = "cursor"`** — 네이티브 Cursor 어댑터입니다. shunt는 Cursor의 ConnectRPC/protobuf AgentService를 Anthropic Messages API로 브리지하며, 스트리밍·추론·네이티브 도구 호출·인라인 이미지를 포함합니다. 내장 `cursor` 프로바이더가 사용합니다.
+- **`kind = "gemini"`** — 네이티브 Google Code Assist `generateContent` 어댑터입니다.
 - **`kind = "antigravity"`** — HTTP를 통해 Google Antigravity 백엔드에 연결합니다.
 - **`kind = "antigravity_cli"`** — **더 이상 사용되지 않습니다**. 로컬 Antigravity `agy` CLI를 호출합니다.
 
@@ -21,6 +22,7 @@ description: 내장 프로바이더와 TOML 테이블로 Anthropic 호환 백엔
 | [`xai`](/ko/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — xAI 개발자 API |
 | [`grok`](/ko/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai`를 통한 SuperGrok / X Premium+ 구독 |
 | [`cursor`](/ko/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json` 재사용 (`shunt login cursor`) |
+| `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — `~/.gemini/oauth_creds.json` 재사용 |
 | [`antigravity`](/ko/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` — `~/.shunt/antigravity-auth.json` 재사용 (`shunt login antigravity`) |
 | `antigravity-cli` | `antigravity_cli` | `none` | **더 이상 사용되지 않습니다.** 로컬 `agy` CLI — 서브프로세스를 통해 동일한 백엔드 |
 

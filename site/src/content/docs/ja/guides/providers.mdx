@@ -8,6 +8,7 @@ description: 組み込みプロバイダーと、TOML テーブルで任意の A
 - **`kind = "anthropic"`** — 上流が Anthropic Messages API を話します。shunt はリクエストをパススルーし、オプションで別の API キーを注入します。
 - **`kind = "responses"`** — 上流が OpenAI Responses API を話します。shunt は Anthropic Messages ⇄ Responses を、ストリーミングを含めて変換します。
 - **`kind = "cursor"`** — ネイティブな Cursor アダプター。shunt は Cursor の ConnectRPC/protobuf AgentService を Anthropic Messages API へブリッジし、ストリーミング・推論(ストリーミング応答時)・ネイティブなツール呼び出し・インライン画像を含みます。組み込みの `cursor` プロバイダーが使用します。
+- **`kind = "gemini"`** — ネイティブな Google Code Assist `generateContent` アダプター。
 - **`kind = "antigravity"`** — HTTP 経由で Google Antigravity バックエンドに接続します。
 - **`kind = "antigravity_cli"`** — **非推奨**。ローカルの Antigravity `agy` CLI を呼び出します。
 
@@ -21,6 +22,7 @@ description: 組み込みプロバイダーと、TOML テーブルで任意の A
 | [`xai`](/ja/guides/xai/) | `responses` | `api_key`（`XAI_API_KEY`） | `api.x.ai/v1` — xAI 開発者 API |
 | [`grok`](/ja/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai` 経由の SuperGrok / X Premium+ サブスクリプション |
 | [`cursor`](/ja/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json`（`shunt login cursor`）を再利用 |
+| `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — `~/.gemini/oauth_creds.json` を再利用 |
 | [`antigravity`](/ja/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` — `~/.shunt/antigravity-auth.json`（`shunt login antigravity`）を再利用 |
 | `antigravity-cli` | `antigravity_cli` | `none` | **非推奨。** ローカルの `agy` CLI — サブプロセス経由で同じバックエンド |
 
