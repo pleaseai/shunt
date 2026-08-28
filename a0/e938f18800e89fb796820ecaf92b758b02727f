@@ -1,0 +1,23 @@
+site/src/content/docs/ko/guides/providers.mdx
+  s_628af05da18c20::t_ef4101e6c3f501 103-105
+site/src/content/docs/ja/guides/providers.mdx
+  s_628af05da18c20::t_ef4101e6c3f501 104-106
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_628af05da18c20::t_ef4101e6c3f501 98-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a0e938f18800e89fb796820ecaf92b758b02727f",
+  "prompts": {},
+  "sessions": {
+    "s_628af05da18c20": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb3f1b71-5c81-426a-8278-5b0079cf1c53",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
