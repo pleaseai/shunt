@@ -1,0 +1,67 @@
+.please/docs/knowledge/product-guidelines.md
+  s_3184d96529342d::t_959810dd4adfcc 15
+AGENTS.md
+  s_3184d96529342d::t_468921aafd69aa 32,53
+README.ja.md
+  s_e4fd10a570987c::t_3f8232e52f511f 18,42-44,51,88-108,141,147-149,153-158,162,165-167,171-182,200,204,210,252-255,272-279,295,298
+README.ko.md
+  s_e4fd10a570987c::t_cf42601bb6c486 18,42-45,51,86-104,138,144-146,150-155,162-165,168-179,197,201,207,249-252,269-276,292,295
+README.md
+  s_e37543bf61b962::t_06cb72a3ed5c81 152
+README.zh-CN.md
+  s_e4fd10a570987c::t_da15e7f043396c 18,42-43,50,87-103,136,142-144,148-153,157,160-162,166-177,195,199,205,247-250,267-274,290,293
+blueprints/upstream/antigravity.md
+  s_3184d96529342d::t_81e140d56cdc93 1-99
+docs/m9-admin-surface.md
+  s_3184d96529342d::t_8ad2870181950e 444-529
+site/src/content/docs/guides/providers.mdx
+  s_3184d96529342d::t_493971d5e90d42 26,66-68
+site/src/content/docs/ja/guides/providers.mdx
+  s_3184d96529342d::t_6161fff2d2c86f 6,11-13,25-27,31-107
+site/src/content/docs/ko/guides/providers.mdx
+  s_3184d96529342d::t_956a82dcedbe9b 6,11-13,25-27,31-106
+site/src/content/docs/providers/antigravity.mdx
+  s_3184d96529342d::t_b5cb90d825d88f 1-181
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_3184d96529342d::t_bd7cadb320044d 6,11-13,25-27,34-101
+site/src/lib/i18n.ts
+  s_3184d96529342d::t_2ecef601ba0240 46
+src/admin/mod.rs
+  s_3184d96529342d::t_88631424ae9804 1020-1021,1032-1036,1039-1040,1042-1043
+src/admin/plan.rs
+  s_3184d96529342d::t_03a93ac8196f71 46,48,55,194-231,234,240-247,256-258,295-304,306-347,367-390,392,397-401,405,407-409,411-412,415,419-434,436-439,441-458,461,463-471,473,478,486,495-505,509-616,621-635,653-658,662-673,675-678,687-737,741-751,765,777,797-802,894-897,900,910-984,986-994,996,1000,1017-1025,1028-1032,1042,1054-1057,1065-1067,1076-1078,1100,1104-1105,1109-1121,1155-1191,1283-1340,1347,1349,1351-1358,1373,1380,1382-1385,1458,1491-1492,1509,1525,1554-1555,1565,1579-1580,1591,1604,1633-1636,1638-1639,1648-1649,1659-1660,1675,1698-1699,1711,1729,1752-1753,1765,1780,1819,1827,1831,1841,1908-1909,1957-1958,1970,1986,1989-1993,2016-2017,2027,2030-2037,2044-2045,2057,2066-3316
+src/blueprints.rs
+  s_3184d96529342d::t_718a973a3b53ab 76-80,272
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "6c0130881e5a6483568a332ed059e27fc444a89d",
+  "prompts": {},
+  "sessions": {
+    "s_3184d96529342d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3e43cce-1061-4e76-98c3-fc94c7c1759e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e37543bf61b962": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7dccf57-959f-4921-a554-31c5e2e3689b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e4fd10a570987c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f5f21ca7-0785-4083-85f0-297f49d8a9d7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
