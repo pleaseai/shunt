@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.39.0](https://github.com/pleaseai/shunt/compare/v0.38.0...v0.39.0) (2026-08-29)
+
+
+### Features
+
+* **pool:** opportunistically re-probe stale near-quota accounts ([#429](https://github.com/pleaseai/shunt/issues/429)) ([7dedde3](https://github.com/pleaseai/shunt/commit/7dedde3bbe16773005b9ecee6b49dc5753e805aa))
+
+
+### Bug Fixes
+
+* **admin:** key pool plans by account identity and single-flight the file read ([#423](https://github.com/pleaseai/shunt/issues/423)) ([412a0e1](https://github.com/pleaseai/shunt/commit/412a0e1c21685df9565a061a611d052248c3a500)), closes [#420](https://github.com/pleaseai/shunt/issues/420) [#421](https://github.com/pleaseai/shunt/issues/421) [#422](https://github.com/pleaseai/shunt/issues/422)
+* **anthropic:** strip deferred tools on non-Anthropic Messages models ([#415](https://github.com/pleaseai/shunt/issues/415)) ([fe35207](https://github.com/pleaseai/shunt/commit/fe3520776b135bc177b948f92725e07a03bf52c9))
+* **pool:** bound the lifetime of reset-less quota marks ([#428](https://github.com/pleaseai/shunt/issues/428)) ([ad88866](https://github.com/pleaseai/shunt/commit/ad88866b2477c435ffd4cdaffdcb23cf5c05ccd4))
+
 ## [0.38.0](https://github.com/pleaseai/shunt/compare/v0.37.0...v0.38.0) (2026-08-25)
 
 
