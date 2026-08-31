@@ -1,0 +1,71 @@
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_87f64bfaa7d780::t_895d1e5972062c 31
+  s_87f64bfaa7d780::t_df6ff1e0000c86 28
+site/src/content/docs/reference/endpoints.md
+  s_87f64bfaa7d780::t_895d1e5972062c 35
+  s_87f64bfaa7d780::t_df6ff1e0000c86 31
+src/oauth_usage/tests.rs
+  s_87f64bfaa7d780::t_52cc70032f1b8d 38
+docs/m9-admin-surface.md
+  s_87f64bfaa7d780::t_c956d097a1db41 266,276
+  s_87f64bfaa7d780::t_fd46aa8ff535ed 401,412-463
+src/auth/claude/auth.rs
+  s_87f64bfaa7d780::t_a2c919c742a249 265-298,354-365
+src/accounts.rs
+  s_87f64bfaa7d780::t_dd062ba96cf280 1098-1112,1122
+  s_87f64bfaa7d780::t_3b74ba6103f5a7 253-268,302-306,329,1069-1097,1113-1121,1123-1134,1158-1160,1348
+src/server.rs
+  s_87f64bfaa7d780::t_1397d5f97d8516 377-388,390-391,397-415
+  s_87f64bfaa7d780::t_55d0aaa9667f07 389,392-396
+src/admin/script.rs
+  s_87f64bfaa7d780::t_72bddb59f7d10c 246-252,286-294
+  s_87f64bfaa7d780::t_b9a0beb393a884 387-396
+src/auth/claude/usage.rs
+  s_87f64bfaa7d780::t_52cc70032f1b8d 366
+tests/admin_surface.rs
+  s_87f64bfaa7d780::t_a48ba85dd36591 4063-4081,4100-4107
+  s_87f64bfaa7d780::t_5a81bbb7a8d2f5 3869-3872,3944-3947,3966-3969,4017-4018,4083-4087
+  s_87f64bfaa7d780::t_96a15c40203025 3788-3868,3873-3943,3948-3965,3970-4016,4019-4062,4082,4088-4099,4108-4117
+src/admin/mod.rs
+  s_87f64bfaa7d780::t_efb3b4ecc4bdbb 238-240,1391-1513,1523,1529-1530
+  s_87f64bfaa7d780::t_3be318fdb1df5b 1351-1361
+  s_87f64bfaa7d780::t_ee5c6201a482da 1514-1522,1524-1528
+  s_87f64bfaa7d780::t_cabbd37f31a558 237,1531-1532
+src/adapters/anthropic/mod.rs
+  s_87f64bfaa7d780::t_b9e389ed169088 400-404,447-453,455-456,464-471,473,478
+  s_87f64bfaa7d780::t_5a81bbb7a8d2f5 405,454,472
+src/admin/html.rs
+  s_87f64bfaa7d780::t_b9a0beb393a884 71
+src/usage/tests.rs
+  s_87f64bfaa7d780::t_52cc70032f1b8d 37
+site/src/content/docs/ko/reference/endpoints.md
+  s_87f64bfaa7d780::t_895d1e5972062c 31
+  s_87f64bfaa7d780::t_df6ff1e0000c86 28
+tests/multi_account.rs
+  s_87f64bfaa7d780::t_5a81bbb7a8d2f5 1473-1474
+  s_87f64bfaa7d780::t_7e2520ed687a6c 181-212,1485-1486,1572-1573,1643-1644,1706-1707
+  s_87f64bfaa7d780::t_a5b49a5ff5b1cc 158-180
+  s_87f64bfaa7d780::t_1397d5f97d8516 1496-1498
+  s_87f64bfaa7d780::t_fc487cbe481827 1413-1472,1475-1484,1487-1495,1499-1571,1574-1642,1645-1705,1708-1722
+site/src/content/docs/ja/reference/endpoints.md
+  s_87f64bfaa7d780::t_895d1e5972062c 31
+  s_87f64bfaa7d780::t_df6ff1e0000c86 28
+src/auth/claude/auth/tests.rs
+  s_87f64bfaa7d780::t_1ab9b60ecca669 354-466
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e19d0f93646ad66cb2e60dd6f9526f8b84c4adfe",
+  "prompts": {},
+  "sessions": {
+    "s_87f64bfaa7d780": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eff4611e-6f3e-4a6b-9cd3-0ea4a81203c7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
