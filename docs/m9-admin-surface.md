@@ -480,6 +480,14 @@ replaces the credential outright. A successful
 `POST /admin/accounts/claude/{name}/refresh` probe clears only a
 `RefreshGrant`-caused mark.
 
+A quota `429` clears the mark too, on both the initial and the post-refresh
+attempt. The provider read the credential and then refused on quota, so the
+bearer authenticated and any mark from an earlier 401 is stale; without this an
+exhausted account would tell the operator to re-login until some later non-429
+response. Deliberately narrowed to `429`: the same rotate arm also takes 5xx,
+which can come from an edge before the credential is ever read and proves
+nothing. Only the mark is cleared — the cooldown still runs.
+
 A successful refresh on the *proxy* path clears nothing on its own. The adapter
 deliberately waits for the retried request: a live grant proves the refresh
 token works, not that the account can serve inference, and the retry may still

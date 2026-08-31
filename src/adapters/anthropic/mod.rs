@@ -312,6 +312,19 @@ async fn forward_claude_oauth(
                     });
             }
             FailoverAction::Rotate => {
+                if status == StatusCode::TOO_MANY_REQUESTS {
+                    // A quota rejection is proof the bearer authenticated: the
+                    // provider read the credential, then refused on quota. That
+                    // disproves any needs-re-login mark left from an earlier 401,
+                    // which would otherwise survive until some later non-429
+                    // response and tell the operator to re-login over what is
+                    // only an exhausted quota. Deliberately narrowed to 429 —
+                    // this arm also takes 5xx, which can come from an edge before
+                    // the credential is ever read and proves nothing. Only the
+                    // mark is cleared; the cooldown below still runs, because
+                    // this change adds a signal and must not alter routing.
+                    state.accounts.clear_needs_relogin(&route.provider, account);
+                }
                 let cooldown = if status == StatusCode::TOO_MANY_REQUESTS {
                     accounts::retry_after(upstream.headers())
                         .unwrap_or(Duration::from_secs(60))
@@ -592,6 +605,13 @@ async fn forward_claude_oauth(
                     FailoverAction::Rotate
                     | FailoverAction::PauseSame
                     | FailoverAction::RefreshRetry => {
+                        if retry_status == StatusCode::TOO_MANY_REQUESTS {
+                            // Same reasoning as the initial Rotate arm: a quota
+                            // rejection proves the refreshed bearer was accepted,
+                            // so a mark left from before is stale. 5xx also lands
+                            // here and proves nothing, hence the narrow condition.
+                            state.accounts.clear_needs_relogin(&route.provider, account);
+                        }
                         let cooldown = if retry_status == StatusCode::TOO_MANY_REQUESTS {
                             accounts::retry_after(retry.headers())
                                 .unwrap_or(Duration::from_secs(60))

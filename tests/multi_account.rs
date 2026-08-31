@@ -324,6 +324,129 @@ async fn account_uuid_is_rewritten_for_each_account_during_rotation() {
     std::env::remove_var("SHUNT_TEST_MULTI_UUID_B");
 }
 
+/// A quota `429` is proof the bearer authenticated: the provider read the
+/// credential and then refused on quota. That disproves a needs-re-login mark
+/// left by an earlier 401, which would otherwise survive until some later
+/// non-429 response and tell the operator to re-login over an exhausted quota.
+#[tokio::test]
+async fn an_authenticated_quota_429_clears_a_stale_relogin_mark() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-oauth-", "quotaclear-a"].concat();
+    let token_b = ["fake-oauth-", "quotaclear-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_QUOTACLEAR_A", &token_a);
+    std::env::set_var("SHUNT_TEST_MULTI_QUOTACLEAR_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .insert_header("anthropic-ratelimit-unified-5h-status", "rejected")
+                .set_body_string(r#"{"error":"account a quota exhausted"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let account_a = account("account-a", "SHUNT_TEST_MULTI_QUOTACLEAR_A", "uuid-a");
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account("account-b", "SHUNT_TEST_MULTI_QUOTACLEAR_B", "uuid-b"),
+    ))
+    .await;
+
+    // Stand in for an earlier 401 that condemned the account, with the stronger
+    // cause: nothing short of proof the credential authenticated may clear it.
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &account_a,
+        shunt::accounts::ReloginCause::ServedRequest,
+    );
+    assert!(state.accounts.needs_relogin("anthropic", &account_a));
+
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    assert!(
+        !state.accounts.needs_relogin("anthropic", &account_a),
+        "a quota 429 proves the bearer authenticated, so the stale \
+         needs-re-login mark must be cleared rather than telling the operator to \
+         re-login over an exhausted quota"
+    );
+
+    upstream.verify().await;
+    std::env::remove_var("SHUNT_TEST_MULTI_QUOTACLEAR_A");
+    std::env::remove_var("SHUNT_TEST_MULTI_QUOTACLEAR_B");
+}
+
+/// The negative twin, and the reason the clear is narrowed to 429 rather than
+/// applied to the whole rotate arm: a 5xx can come from an edge before the
+/// credential is ever read, so it proves nothing about the bearer and must
+/// leave the verdict standing.
+#[tokio::test]
+async fn a_5xx_rotation_leaves_the_relogin_mark_standing() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-oauth-", "quotakeep-a"].concat();
+    let token_b = ["fake-oauth-", "quotakeep-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_QUOTAKEEP_A", &token_a);
+    std::env::set_var("SHUNT_TEST_MULTI_QUOTAKEEP_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(503).set_body_string(r#"{"error":"upstream down"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let account_a = account("account-a", "SHUNT_TEST_MULTI_QUOTAKEEP_A", "uuid-a");
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account("account-b", "SHUNT_TEST_MULTI_QUOTAKEEP_B", "uuid-b"),
+    ))
+    .await;
+
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &account_a,
+        shunt::accounts::ReloginCause::ServedRequest,
+    );
+
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    assert!(
+        state.accounts.needs_relogin("anthropic", &account_a),
+        "a 5xx says nothing about whether the credential authenticated, so \
+         clearing on it would report a dead account as recovered"
+    );
+
+    upstream.verify().await;
+    std::env::remove_var("SHUNT_TEST_MULTI_QUOTAKEEP_A");
+    std::env::remove_var("SHUNT_TEST_MULTI_QUOTAKEEP_B");
+}
+
 #[tokio::test]
 async fn quota_429_rotates_and_cools_down_the_rejected_account() {
     if !can_bind_loopback() {
