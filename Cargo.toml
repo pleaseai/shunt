@@ -7,7 +7,7 @@ name = "shunt-gateway"
 # unpublishable (issue #292). Remove this restriction with the pins once upstream
 # snapview/tungstenite-rs#426 ships in a crates.io release.
 publish = false
-version = "0.39.0"
+version = "0.39.1"
 edition = "2021"
 description = "Claude Code LLM gateway — an Anthropic Messages proxy that routes models to OpenAI/Codex and Anthropic-compatible backends"
 license = "MIT OR Apache-2.0"

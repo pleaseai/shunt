@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.1](https://github.com/pleaseai/shunt/compare/v0.39.0...v0.39.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **admin:** report Claude account status by credential kind, not raw expiry ([#437](https://github.com/pleaseai/shunt/issues/437)) ([06fd8e0](https://github.com/pleaseai/shunt/commit/06fd8e0c12759e5c581aae4c245faed4d6a810e3))
+
 ## [0.39.0](https://github.com/pleaseai/shunt/compare/v0.38.0...v0.39.0) (2026-08-29)
 
 
