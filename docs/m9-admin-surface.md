@@ -431,6 +431,18 @@ followed by that date; once past — or absent — it reads "Expired" under the
 `expired` danger style with a `Setup token cannot refresh · re-login required`
 note. Only the setup-token kind can reach that state.
 
+The Codex store table alongside it carries the same status column, but
+unconditionally: that store has no non-refreshable kind at all. Both writers
+into it reject a missing or empty refresh token (`import_credentials` and
+`store_chatgpt_tokens` in `auth/codex/store.rs`) and there is no setup-token
+analog, so shunt owns renewal for every row (single-flight refresh and atomic
+writeback in `auth/codex/auth.rs`, five minutes before the access token's JWT
+`exp`, via the shared `EXPIRY_BUFFER`). The expiry this column used to print
+was therefore never actionable — it simply made every healthy Codex account
+read as broken within the hour, directly beneath a Claude row saying
+"Auto-refreshes" for the identical situation. Every Codex row now reads
+"Auto-refreshes" too, with the raw timestamp on hover.
+
 Each Claude store row also carries a **Re-login** action beside Remove. It adds
 no endpoint: re-provisioning is already the ordinary flow run under an existing
 name (`POST /admin/accounts/claude` → paste → `.../complete`), which overwrites

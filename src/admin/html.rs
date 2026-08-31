@@ -213,7 +213,7 @@ pub fn dashboard_page(csrf: &str) -> String {
 <tbody id="accounts"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
 
 <h2>Codex accounts</h2>
-<div class="card overflow"><table><thead><tr><th>Name</th><th>Expires</th><th>Account ID</th><th></th></tr></thead>
+<div class="card overflow"><table><thead><tr><th>Name</th><th>Status</th><th>Account ID</th><th></th></tr></thead>
 <tbody id="codex-accounts"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody></table></div>
 
 <h2>Managed pool health</h2>
@@ -467,6 +467,48 @@ mod tests {
             page.contains("  currentName = null;"),
             "priming the form must drop the previously started flow's account handle, \
              not just hide the step that used it"
+        );
+    }
+
+    #[test]
+    fn the_codex_account_column_reports_renewal_ownership_not_the_raw_expiry() {
+        // Same defect as the Claude table, with a simpler resolution: the Codex
+        // store has no non-refreshable kind at all. Both writers reject a
+        // missing or empty refresh token (`import_credentials` and
+        // `store_chatgpt_tokens`), so shunt owns renewal for every row and the
+        // access-token JWT `exp` this column printed is never actionable --
+        // it just made every healthy account read as broken within the hour.
+        // The status is therefore unconditional, and must not be re-derived
+        // from the timestamp; the timestamp survives only as the tooltip.
+        let page = dashboard_page("csrf");
+        assert!(
+            page.contains("<tr><th>Name</th><th>Status</th><th>Account ID</th><th></th></tr>"),
+            "the Codex account table must report renewal ownership, not a raw expiry"
+        );
+        assert!(
+            !page.contains("<tr><th>Name</th><th>Expires</th><th>Account ID</th><th></th></tr>"),
+            "the raw-expiry column must be gone from the Codex account table"
+        );
+        let start = page
+            .find("async function loadCodexAccounts()")
+            .expect("loadCodexAccounts must exist");
+        let body = &page[start..];
+        let body = &body[..body.find("\n}").expect("loadCodexAccounts must be closed") + 2];
+        assert!(
+            body.contains(r#"const status = cell(r, "Auto-refreshes"); status.className = "status"; status.dataset.state = "available";"#),
+            "every Codex row must state that shunt renews it"
+        );
+        assert!(
+            body.contains(r#"statusNote.textContent = "shunt renews this login as needed""#),
+            "the Codex status needs the same remediation-free note as an imported Claude row"
+        );
+        assert!(
+            body.contains(r#"status.title = "access token expires " + when(a.expires_at)"#),
+            "the raw access-token timestamp must be preserved as a tooltip"
+        );
+        assert!(
+            !body.contains("cell(r, when(a.expires_at))"),
+            "the Codex row must not render the raw access-token expiry as a column again"
         );
     }
 

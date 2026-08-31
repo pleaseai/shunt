@@ -63,7 +63,7 @@ shunt run
 
 账户列表只暴露元数据:账户名、凭据类型(`setup_token` 或 `imported`)、过期时间和 UUID。它绝不返回 token 材料。shunt 在选择账户时如何使用配额状态、冷却和感知模型的周桶,见 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/#选择与主动轮换)。
 
-在仪表板中,Claude 表格把该过期时间渲染为由凭据类型推导出的 **Status**,因为原始值是约 8 小时的 *access* token 期限,在不同类型下含义完全相反。`imported` 账户持有 refresh token,shunt 会按需续期,所以它显示为 **Auto-refreshes**(原始时间戳可悬停查看),即使日期已过也属正常。`setup_token` 账户根本无法续期,因此它的一年期限确实需要处理:仍在未来时显示 **Valid until** 加日期,已经过期则显示 danger 样式的 **Expired** 以及重新登录提示。每一行还提供 **Re-login** 按钮,它会用该账户的名称和登录方式预填上方的添加表单 — 用已有名称完成常规流程会就地覆盖该账户。上方用量表格中的只读行不受影响;那些凭据由拥有它们的 provider 客户端续期,而非 shunt。
+在仪表板中,Claude 表格把该过期时间渲染为由凭据类型推导出的 **Status**,因为原始值是约 8 小时的 *access* token 期限,在不同类型下含义完全相反。`imported` 账户持有 refresh token,shunt 会按需续期,所以它显示为 **Auto-refreshes**(原始时间戳可悬停查看),即使日期已过也属正常。`setup_token` 账户根本无法续期,因此它的一年期限确实需要处理:仍在未来时显示 **Valid until** 加日期,已经过期则显示 danger 样式的 **Expired** 以及重新登录提示。每一行还提供 **Re-login** 按钮,它会用该账户的名称和登录方式预填上方的添加表单 — 用已有名称完成常规流程会就地覆盖该账户。Codex 表格也有同样的 **Status** 列,但它是无条件的:该 store 根本没有无法续期的类型(两条写入路径都要求 refresh token),所以 shunt 会续期每一个 Codex 账户,每一行都显示 **Auto-refreshes**,原始时间戳同样可悬停查看。上方用量表格中的只读行不受影响;那些凭据由拥有它们的 provider 客户端续期,而非 shunt。
 
 要通过 API/curl 访问账户 metadata、池健康状况、预配或删除账户,请在配置的头部(默认 `x-shunt-admin-token`)或 `x-api-key` 中发送管理员凭据(两个槽位都只在管理路由上被接受,推理路由上绝不接受),并使用 [HTTP 端点](/zh-cn/reference/endpoints/)中记录的 JSON route。头部认证的请求不使用浏览器会话,免于 CSRF 检查。开始预配时发送 `{ "name": "backup", "mode": "oauth" }` 或 `mode: "setup_token"`;省略 `mode` 时,为保持 API 向后兼容,默认使用 `setup_token`。
 

@@ -301,9 +301,22 @@ async function loadCodexAccounts() {
   if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load Codex accounts"); c.colSpan = 4; return; }
   const list = (data && data.accounts) || [];
   if (!list.length) { const r = body.insertRow(); const c = cell(r, "No Codex store accounts yet"); c.colSpan = 4; c.className = "muted"; return; }
+  // Unconditional, unlike the Claude table's kind-derived status: every Codex
+  // store account is refreshable. Both writers into the store reject a missing
+  // or empty refresh token (`import_credentials` and `store_chatgpt_tokens` in
+  // auth/codex/store.rs) and there is no setup-token analog, so shunt owns
+  // renewal for all of them (single-flight refresh + atomic writeback in
+  // auth/codex/auth.rs, five minutes before the access token's JWT `exp`).
+  // That expiry is therefore never the operator's problem -- printing it raw,
+  // as this column used to, made every healthy account read as broken within
+  // the hour. It is kept as the tooltip.
   for (const a of list) {
     const r = body.insertRow();
-    cell(r, a.name); cell(r, when(a.expires_at)); cell(r, a.account_id || "—", true);
+    cell(r, a.name);
+    const status = cell(r, "Auto-refreshes"); status.className = "status"; status.dataset.state = "available";
+    const statusNote = document.createElement("small"); statusNote.className = "status-note"; statusNote.textContent = "shunt renews this login as needed"; status.appendChild(statusNote);
+    if (a.expires_at) status.title = "access token expires " + when(a.expires_at);
+    cell(r, a.account_id || "—", true);
     const td = document.createElement("td");
     const btn = document.createElement("button"); btn.className = "danger"; btn.textContent = "Remove";
     btn.onclick = () => removeCodexAccount(a.name); td.appendChild(btn); r.appendChild(td);
