@@ -162,23 +162,23 @@ fn state_with_auth_and_seeded_pool(token: &str, label: &str) -> (AppState, Strin
         .expect("built-in codex provider")
         .accounts = vec![account.clone()];
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
-    // Seed authoritative usage for the codex account (in production the Codex
-    // backend has no quota headers; here we seed it to exercise the flow).
-    state.accounts.note_usage(
-        "codex",
-        &account,
-        &UsageSnapshot {
-            five_hour: Some(UsageWindow {
-                utilization: 0.25,
-                resets_at: Some(reset_5h),
-            }),
-            seven_day: Some(UsageWindow {
-                utilization: 0.40,
-                resets_at: Some(reset_5h + 3_600),
-            }),
-            seven_day_oi: None,
-        },
+    // Seed the same response-derived header groups that the Codex adapters
+    // pass to `note_codex_quota` in production. The 300-minute and 10080-minute
+    // groups map to the 5-hour and shared weekly windows respectively.
+    let mut headers = HeaderMap::new();
+    headers.insert("x-codex-primary-used-percent", "25".parse().unwrap());
+    headers.insert("x-codex-primary-window-minutes", "300".parse().unwrap());
+    headers.insert(
+        "x-codex-primary-reset-at",
+        reset_5h.to_string().parse().unwrap(),
     );
+    headers.insert("x-codex-secondary-used-percent", "40".parse().unwrap());
+    headers.insert("x-codex-secondary-window-minutes", "10080".parse().unwrap());
+    headers.insert(
+        "x-codex-secondary-reset-at",
+        (reset_5h + 3_600).to_string().parse().unwrap(),
+    );
+    state.accounts.note_codex_quota("codex", &account, &headers);
     (state, env, reset_5h)
 }
 
@@ -204,7 +204,131 @@ async fn serves_aggregate_to_an_authenticated_client() {
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.75));
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(reset_5h));
     assert_eq!(body["pool"]["windows"]["7d"]["remaining"], json!(0.60));
+    assert_eq!(
+        body["pool"]["windows"]["7d"]["resets_at"],
+        json!(reset_5h + 3_600)
+    );
     assert_eq!(body["pool"]["windows"]["fable"]["remaining"], Value::Null);
+}
+
+#[tokio::test]
+async fn aggregates_codex_headers_and_claude_fable_usage_together() {
+    use crate::accounts::StoreFamily;
+    use crate::config::{ApiKeyHeader, AuthMode, CountTokens, ProviderConfig, ProviderKind};
+
+    let env = format!(
+        "SHUNT_USAGE_TEST_TOKENS_{}_codex_claude",
+        std::process::id()
+    );
+    std::env::set_var(&env, "tester:tok-secret");
+    let reset_5h = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+    let reset_7d = reset_5h + 3_600;
+    let reset_fable = reset_7d + 3_600;
+
+    let mut config = crate::config::Config::default();
+    config.server.auth = Some(InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: env.clone(),
+    });
+    config.server.usage = Some(UsageEndpointConfig::default());
+
+    let codex_account = AccountConfig {
+        name: "codex-a".to_string(),
+        ..AccountConfig::default()
+    };
+    config
+        .providers
+        .get_mut("codex")
+        .expect("built-in codex provider")
+        .accounts = vec![codex_account.clone()];
+
+    let claude_account = AccountConfig {
+        name: "claude-a".to_string(),
+        ..AccountConfig::default()
+    };
+    config.providers.insert(
+        "claude-oauth".to_string(),
+        ProviderConfig {
+            kind: ProviderKind::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            auth: AuthMode::ClaudeOauth,
+            api_key_env: None,
+            api_key_header: ApiKeyHeader::Bearer,
+            effort: None,
+            service_tier: None,
+            count_tokens: CountTokens::default(),
+            accounts: vec![claude_account.clone()],
+            account_scope: Vec::new(),
+            websocket: false,
+            tool_search: None,
+            request_compression: true,
+            retry: Default::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
+        },
+    );
+
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let codex_account = AccountConfig {
+        store_family: Some(StoreFamily::Chatgpt),
+        ..codex_account
+    };
+    let claude_account = AccountConfig {
+        store_family: Some(StoreFamily::Claude),
+        ..claude_account
+    };
+
+    // Codex usage is response-derived. Claude's Fable value follows the same
+    // authoritative `note_usage` path used by its OAuth usage poller.
+    let mut codex_headers = HeaderMap::new();
+    codex_headers.insert("x-codex-primary-used-percent", "25".parse().unwrap());
+    codex_headers.insert("x-codex-primary-window-minutes", "300".parse().unwrap());
+    codex_headers.insert(
+        "x-codex-primary-reset-at",
+        reset_5h.to_string().parse().unwrap(),
+    );
+    codex_headers.insert("x-codex-secondary-used-percent", "40".parse().unwrap());
+    codex_headers.insert("x-codex-secondary-window-minutes", "10080".parse().unwrap());
+    codex_headers.insert(
+        "x-codex-secondary-reset-at",
+        reset_7d.to_string().parse().unwrap(),
+    );
+    state
+        .accounts
+        .note_codex_quota("codex", &codex_account, &codex_headers);
+    state.accounts.note_usage(
+        "claude-oauth",
+        &claude_account,
+        &UsageSnapshot {
+            five_hour: None,
+            seven_day: None,
+            seven_day_oi: Some(UsageWindow {
+                utilization: 0.15,
+                resets_at: Some(reset_fable),
+            }),
+        },
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", "tok-secret".parse().unwrap());
+    let response = get(State(state), headers).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = body_json(response).await;
+    std::env::remove_var(&env);
+
+    assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.75));
+    assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(reset_5h));
+    assert_eq!(body["pool"]["windows"]["7d"]["remaining"], json!(0.60));
+    assert_eq!(body["pool"]["windows"]["7d"]["resets_at"], json!(reset_7d));
+    assert_eq!(body["pool"]["windows"]["fable"]["remaining"], json!(0.85));
+    assert_eq!(
+        body["pool"]["windows"]["fable"]["resets_at"],
+        json!(reset_fable)
+    );
 }
 
 /// `GET /usage` must cover a `kimi_oauth` pool, not just Claude and Codex.

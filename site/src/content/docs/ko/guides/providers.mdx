@@ -3,11 +3,14 @@ title: 프로바이더
 description: 내장 프로바이더와 TOML 테이블로 Anthropic 호환 백엔드를 추가하는 방법.
 ---
 
-프로바이더는 **이름 → 구성 맵**입니다. 새 업스트림은 그저 또 하나의 `[providers.<name>]` 테이블일 뿐이며 — 코드 변경은 없습니다. 세 가지 어댑터 종류가 모든 것을 커버합니다:
+프로바이더는 **이름 → 구성 맵**입니다. 새 업스트림은 그저 또 하나의 `[providers.<name>]` 테이블일 뿐이며 — 코드 변경은 없습니다. 어댑터 종류는 다음과 같습니다:
 
 - **`kind = "anthropic"`** — 업스트림이 Anthropic Messages API를 사용합니다. shunt는 요청을 패스스루하며, 필요하면 다른 API 키를 주입합니다.
 - **`kind = "responses"`** — 업스트림이 OpenAI Responses API를 사용합니다. shunt는 Anthropic Messages ⇄ Responses를 스트리밍 포함하여 변환합니다.
 - **`kind = "cursor"`** — 네이티브 Cursor 어댑터입니다. shunt는 Cursor의 ConnectRPC/protobuf AgentService를 Anthropic Messages API로 브리지하며, 스트리밍·추론·네이티브 도구 호출·인라인 이미지를 포함합니다. 내장 `cursor` 프로바이더가 사용합니다.
+- **`kind = "gemini"`** — 네이티브 Google Code Assist `generateContent` 어댑터입니다.
+- **`kind = "antigravity"`** — HTTP를 통해 Google Antigravity 백엔드에 연결합니다.
+- **`kind = "antigravity_cli"`** — **더 이상 사용되지 않습니다**. 로컬 Antigravity `agy` CLI를 호출합니다.
 
 ## 내장 프로바이더
 
@@ -19,8 +22,87 @@ description: 내장 프로바이더와 TOML 테이블로 Anthropic 호환 백엔
 | [`xai`](/ko/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — xAI 개발자 API |
 | [`grok`](/ko/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai`를 통한 SuperGrok / X Premium+ 구독 |
 | [`cursor`](/ko/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json` 재사용 (`shunt login cursor`) |
+| `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — `~/.gemini/oauth_creds.json` 재사용 |
+| [`antigravity`](/ko/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` — `~/.shunt/antigravity-auth.json` 재사용 (`shunt login antigravity`) |
+| `antigravity-cli` | `antigravity_cli` | `none` | **더 이상 사용되지 않습니다.** 로컬 `agy` CLI — 서브프로세스를 통해 동일한 백엔드 |
 
 각 이름은 전체 설정을 설명하는 해당 프로바이더의 전용 페이지로 연결됩니다. `shunt add upstream <name>`은 모든 내장 프로바이더의 단계별 블루프린트를 출력합니다. 이를 코딩 에이전트에 파이프로 전달하면(`shunt add upstream codex --print | claude`) 에이전트가 구성을 연결하도록 할 수 있습니다. [CLI 레퍼런스](/ko/reference/cli/#shunt-add)를 참고하세요.
+
+### antigravity 프로바이더 (Google Antigravity)
+
+`antigravity` 프로바이더는 HTTP를 통해 Google Antigravity 백엔드에 도달합니다. `shunt login antigravity`로 인증하세요 —
+Antigravity 자체의 OAuth 클라이언트를 사용하는 Google authorization-code 플로우이며, Gemini CLI 로그인으로는 결코 가질 수 없는
+두 개의 스코프(`cclog`, `experimentsandconfigs`)를 요청합니다. 따라서 두 자격 증명은 어느 방향으로도 서로 대체할 수 없습니다.
+로그인 과정에서 Code Assist 프로젝트도 함께 해석하며, 처음 사용하는 계정은 `onboardUser`로 프로비저닝하므로 요청 앞에서
+별도의 디스커버리가 일어나지 않습니다.
+
+각 로컬 별칭을 정확한 Antigravity 모델 슬러그에 매핑하세요:
+
+```toml
+[[models]]
+id = "claude-gemini-3.6-flash-via-antigravity"
+display_name = "[AGY ] Gemini-3.6-Flash"
+
+[[routes]]
+model = "claude-gemini-3.6-flash-via-antigravity"
+provider = "antigravity"
+upstream_model = "gemini-3.6-flash"
+```
+
+전체 설정 — 로그인과 스코프, 프로젝트 디스커버리, 모델 슬러그, thinking, 어댑터가 전달하는 것 — 은 전용
+[Antigravity 프로바이더 페이지](/ko/providers/antigravity/)를 참고하세요.
+
+<Aside type="caution" title="`antigravity`의 의미가 바뀌었습니다">
+
+`kind = "antigravity"`는 예전에 로컬 `agy` 바이너리를 실행했습니다. 이제는 HTTP 업스트림이며, 서브프로세스 전송은
+`kind = "antigravity_cli"`(내장 프로바이더 `antigravity-cli`)로 옮겨졌고 더 이상 사용되지 않습니다. 예전 의미를 그대로 담고
+있는 구성은 다른 대상으로 재지정되지 않고 이름을 근거로 거부되며, 자격 증명 없이 라우팅된 `antigravity` 프로바이더는 기동을
+거부합니다 — 겉으로는 정상적으로 기동된 것처럼 보이지만 내부적으로 전송·자격 증명·이그레스가 바뀌는 편이 실패보다
+나쁘기 때문입니다. `shunt check`도 동일한 자격 증명 가드를 오프라인으로 실행하므로, 자격 증명이 저장되지 않은
+`antigravity` 라우트를 CI가 기동 시점이 아니라
+롤아웃 전에 잡아냅니다 — 존재 여부만 확인하므로 비어 있거나 오래된 자격 증명은 통과한 뒤 요청 경로에서 실패합니다.
+`shunt login antigravity`를 실행하거나 라우트를 `antigravity-cli`로 지정하세요. 라우트가 여전히 더 이상 사용되지 않는
+`antigravity_cli` 종류로 해석되면 기동 시 경고를 로그에 남기므로, 운영자는 요청을 기다리지 않고도 오래된 구성을 발견할 수
+있습니다.
+
+</Aside>
+
+### 더 이상 사용되지 않는 `antigravity_cli` 전송
+
+`antigravity-cli` 경로는 요청마다 `agy` CLI 서브프로세스를 하나씩 에이전트 모드로 실행합니다. `agy`는 자신의 도구 호출을
+스스로 해결하므로, 요청의 `tools` 배열은 전달되지 않고 응답에도 `tool_use` 블록이 담기지 않습니다. 도구 루프를 직접
+구동해야 하는 클라이언트는 `gemini` 프로바이더를 사용하세요.
+
+비대화형 실행에서는 권한 프롬프트에 응답할 수 없으므로, `agy`는 `--dangerously-skip-permissions`로, 그리고 기본적으로
+`--sandbox`와 함께 실행됩니다. 그러므로 **이 프로바이더는 shunt를 실행하는 사용자 권한의 임의 코드 실행으로 취급하세요.**
+
+두 가지 설정이 이를 제한합니다. `sandbox`(기본값 `true`)는 `--sandbox`를 전달하며, 실제로 에이전트를 가두는 것은 이
+설정입니다 — 끄면 제한 없는 셸 접근이 남습니다. `workspace_roots`(기본값은 비어 있음)는 에이전트가 *시작*할 수 있는
+위치만 결정합니다. 해석 순서는 `SHUNT_AGY_WORKSPACE`, 그다음 요청의 시스템 프롬프트에 있는 `Working directory:` 줄,
+그다음 게이트웨이 자신의 디렉터리입니다. 시스템 프롬프트는 클라이언트가 제어하는 텍스트이므로, 거기서 찾은 경로는 구성된
+루트 중 하나 안으로 정규화될 때만 인정됩니다. 루트를 하나도 구성하지 않으면 프롬프트에서 유래한 경로는 무시됩니다.
+
+```toml
+[providers.antigravity-cli]
+kind = "antigravity_cli"
+base_url = "http://localhost"
+auth = "none"
+# 요청 내용이 에이전트를 가리킬 수 있는 저장소.
+workspace_roots = ["/Users/you/repos"]
+# sandbox = false   # 에이전트에 제한 없는 터미널 접근이 필요한 경우에만
+```
+
+`workspace_roots`는 감옥이 아닙니다. `sandbox = false`이면 허용된 루트에서 시작한 에이전트도 프롬프트의 다른 곳에 적힌
+경로를 대상으로 동작할 수 있습니다.
+
+shunt는 `sandbox = false`가 루프백이 아닌 `bind`와 결합되면 기동을 거부하며, 기동 시점에 바인드된 리스너를 기준으로 요청
+단위로도 이를 강제합니다. 핫 리로드는 리스너를 옮길 수 없으므로, 루프백 `bind`를 다시 읽어들여도 공개 리스너가 살아 있는
+동안에는 샌드박스를 끌 수 없습니다. 샌드박스를 켜 두거나, 루프백 바인드로 다시 기동하세요. 신뢰할 수 없는 클라이언트에게
+루프백이 아닌 바인드로 이 프로바이더를 노출하지 마세요.
+
+이런 설정이 전혀 필요 없는 위의 네이티브 `antigravity` HTTP 프로바이더를 사용하는 편이 좋습니다. 이 절은 요약본입니다 —
+모델/effort 행렬을 비롯한 전체 문서는 영문 가이드의
+[The deprecated antigravity-cli transport](/guides/providers/#the-deprecated-antigravity-cli-transport)에 있습니다.
 
 ### codex 프로바이더 (ChatGPT 구독)
 

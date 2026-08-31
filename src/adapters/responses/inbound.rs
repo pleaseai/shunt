@@ -20,8 +20,9 @@ use crate::{
 use super::{
     error::own_error,
     pool::{
-        admit_and_resolve, classify_first, classify_retry, force_refresh_or_cooldown,
-        with_account_header, FirstOutcome, RetryOutcome,
+        admit_and_resolve, cancel_reprobe_for_account, classify_first, classify_retry,
+        commit_reprobe_for_account, force_refresh_or_cooldown, with_account_header, FirstOutcome,
+        RetryOutcome,
     },
     request::responses_url,
 };
@@ -139,7 +140,7 @@ async fn forward_codex_passthrough(
     // translating outbound path: near-quota accounts rotate proactively and
     // available accounts order by burn-rate headroom (issue #195). The
     // passthrough body's model is a label only (no fable-scoped Codex window).
-    let order = state.accounts.select_order(
+    let (order, mut reprobe_reservation) = state.accounts.select_order_deferred(
         &route.provider,
         &accounts_config,
         pool_key.as_deref(),
@@ -161,8 +162,11 @@ async fn forward_codex_passthrough(
         let Some((admission, credential)) =
             admit_and_resolve(&state, &route, account, ramp_initial, position, candidates).await
         else {
+            cancel_reprobe_for_account(&mut reprobe_reservation, index);
             continue;
         };
+
+        commit_reprobe_for_account(&mut reprobe_reservation, index);
 
         let upstream = match passthrough_send(
             &state,

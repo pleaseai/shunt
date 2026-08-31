@@ -191,16 +191,20 @@ possible backends*, not the same product.
 - **Narrow backend breadth.** Only Anthropic-Messages passthrough or OpenAI-Responses
   translation; no native Gemini/Bedrock/Azure/Ollama unless they expose one of those
   two protocols.
-- **Narrow, opt-in management surface; no usage/cost tracking.** The always-on
-  endpoints are just `/`, `/health`, `/protocol`, `/v1/models`, `/routes`,
-  `/v1/messages`, `/v1/messages/count_tokens` (`src/server.rs:106-112`). An opt-in
-  `[server.admin]` surface ([#77]) adds browser-based Anthropic-account provisioning
-  and a **read-only account-pool dashboard** (`src/admin/mod.rs:87-103`), but there is
-  still no request/token usage or cost accounting; observability beyond that is opt-in
-  Sentry metrics only (`src/metrics.rs`). CLIProxyAPI ships a full management API +
-  quota/usage manager and a third-party dashboard ecosystem; raine/claude-code-proxy
-  ships a built-in **monitor TUI** (live sessions, active / recent requests, error
-  events) — a live-traffic view shunt's account-oriented dashboard doesn't replace.
+- **Narrow, opt-in management surface; no full management API, per-request usage
+  accounting, or cost tracking.** The always-on endpoints are just `/`, `/health`,
+  `/protocol`, `/v1/models`, `/routes`, `/v1/messages`, `/v1/messages/count_tokens`
+  (`src/server.rs:106-112`). An opt-in `[server.admin]` surface ([#77]) adds
+  browser-based Anthropic-account provisioning and a **read-only account-pool
+  dashboard** (`src/admin/mod.rs:87-103`). A separate opt-in `[server.usage]`
+  endpoint exposes only an authenticated aggregate of pool quota windows, with no
+  account identities or per-account numbers. There is still no general management
+  API, per-request usage accounting, or cost tracking; observability beyond that is
+  opt-in Sentry metrics only (`src/metrics.rs`). CLIProxyAPI ships a full management
+  API + quota/usage manager and a third-party dashboard ecosystem;
+  raine/claude-code-proxy ships a built-in **monitor TUI** (live sessions, active /
+  recent requests, error events) — a live-traffic view shunt's account-oriented
+  dashboard doesn't replace.
 - **No own ChatGPT OAuth login.** shunt reuses the Codex CLI login
   (`~/.codex/auth.json`); a first-party PKCE flow is an open TODO
   (`src/auth/mod.rs:19-20`). raine/claude-code-proxy is prior art here — it ships its

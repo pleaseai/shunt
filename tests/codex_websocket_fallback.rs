@@ -6,17 +6,19 @@
 //! websocket endpoint, so the handshake fails and the request must still succeed
 //! over HTTP.
 
+use std::fs;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use shunt::{
-    config::{AccountConfig, Config, RouteConfig},
+    config::{AccountConfig, Config, PoolConfig, RouteConfig},
     server,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -41,6 +43,34 @@ struct TestGateway {
     task: JoinHandle<()>,
 }
 
+struct LogWriter {
+    output: Arc<StdMutex<Vec<u8>>>,
+}
+
+impl std::io::Write for LogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.output.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn reprobe_log_subscriber(
+    output: &Arc<StdMutex<Vec<u8>>>,
+) -> impl tracing::Subscriber + Send + Sync {
+    let writer_output = Arc::clone(output);
+    tracing_subscriber::fmt()
+        .with_writer(move || LogWriter {
+            output: Arc::clone(&writer_output),
+        })
+        .with_ansi(false)
+        .without_time()
+        .finish()
+}
+
 impl Drop for TestGateway {
     fn drop(&mut self) {
         self.task.abort();
@@ -53,7 +83,8 @@ async fn start_gateway_with(mut config: Config) -> TestGateway {
         .await
         .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let (app, _shared, _state) = server::build_router(config).unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    shunt::state_persist::restore(&state).await;
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
@@ -80,14 +111,40 @@ fn can_bind_loopback() -> bool {
 /// A minimal unsigned JWT (`x.<payload>.y`) with a far-future `exp`, so the codex
 /// auth store treats it as valid without any network refresh.
 fn fake_jwt(exp: u64) -> String {
+    fake_jwt_for_account(exp, "acct_fallback")
+}
+
+fn fake_jwt_for_account(exp: u64, account_id: &str) -> String {
     let payload = serde_json::json!({
         "exp": exp,
-        "https://api.openai.com/auth": {"chatgpt_account_id": "acct_fallback"}
+        "https://api.openai.com/auth": {"chatgpt_account_id": account_id}
     });
     format!(
         "x.{}.y",
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
     )
+}
+
+fn write_stale_pool_state(path: &std::path::Path, account_id: &str) {
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 61;
+    let state = serde_json::json!({
+        "version": 2,
+        "accounts": [{
+            "key": {
+                "store_family": "chatgpt",
+                "identity": {"kind": "verified", "id": account_id}
+            },
+            "quota": {
+                "utilization_5h": 0.9,
+                "observed_at_5h": observed_at
+            }
+        }]
+    });
+    fs::write(path, serde_json::to_vec(&state).unwrap()).unwrap();
 }
 
 /// Write a codex-style `auth.json` a valid ChatGPT credential can be read from,
@@ -324,6 +381,21 @@ fn pooled_codex_ws_config(base_url: String, token_envs: [&str; 2]) -> Config {
             ..Default::default()
         })
         .collect();
+    config
+}
+
+fn pooled_codex_ws_config_with_state(
+    base_url: String,
+    token_envs: [&str; 2],
+    state_path: PathBuf,
+) -> Config {
+    let mut config = pooled_codex_ws_config(base_url, token_envs);
+    config.server.pool = Some(PoolConfig {
+        default_threshold: Some(0.5),
+        reprobe_seconds: Some(60),
+        state_path: Some(state_path),
+        ..Default::default()
+    });
     config
 }
 
@@ -585,6 +657,87 @@ async fn pooled_websocket_drop_after_first_event_stops_without_http_or_rotation(
 
     std::env::remove_var("SHUNT_WS_POOL_TOKEN_A");
     std::env::remove_var("SHUNT_WS_POOL_TOKEN_B");
+}
+
+#[tokio::test]
+async fn websocket_pool_does_not_reprobe_restored_stale_account_on_http_fallback() {
+    // WebSocket-enabled outbound pools must bypass opportunistic re-probing.
+    // The stale account is restored from a v2 snapshot, so a mistaken probe
+    // would put it first. The socket drops before an event and the same selected
+    // healthy account must then complete the HTTP fallback without a second pool
+    // selection or a stale-account dispatch.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = ENV_LOCK.lock().await;
+
+    let token_a = fake_jwt_for_account(4_000_000_000, "acct-ws-restored-a");
+    let token_b = fake_jwt_for_account(4_000_000_000, "acct-ws-restored-b");
+    std::env::set_var("SHUNT_WS_REPROBE_TOKEN_A", &token_a);
+    std::env::set_var("SHUNT_WS_REPROBE_TOKEN_B", &token_b);
+
+    let state_dir = std::env::temp_dir().join(format!(
+        "shunt-ws-reprobe-state-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&state_dir).unwrap();
+    let state_path = state_dir.join("pool-state.json");
+    write_stale_pool_state(&state_path, "acct-ws-restored-a");
+
+    let total_hits = Arc::new(AtomicUsize::new(0));
+    let (base_url, http_hits) =
+        spawn_counted_dual_upstream(WsDrop::BeforeFirstEvent, total_hits).await;
+    let gateway = start_gateway_with(pooled_codex_ws_config_with_state(
+        base_url,
+        ["SHUNT_WS_REPROBE_TOKEN_A", "SHUNT_WS_REPROBE_TOKEN_B"],
+        state_path,
+    ))
+    .await;
+
+    let logs = Arc::new(StdMutex::new(Vec::new()));
+    let subscriber = reprobe_log_subscriber(&logs);
+    let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            r#"{"model":"codex-fallback-model","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-1",
+        "WebSocket-enabled selection must not promote the restored stale account"
+    );
+    assert!(response
+        .text()
+        .await
+        .unwrap()
+        .contains("served over HTTP fallback"));
+    assert_eq!(
+        http_hits.load(Ordering::SeqCst),
+        1,
+        "the selected account's websocket failure falls back over HTTP once"
+    );
+    drop(_subscriber_guard);
+    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert_eq!(
+        logs.matches("opportunistically re-probing a stale near-quota account")
+            .count(),
+        0,
+        "WebSocket selection and its HTTP fallback must not record a probe: {logs}"
+    );
+
+    std::env::remove_var("SHUNT_WS_REPROBE_TOKEN_A");
+    std::env::remove_var("SHUNT_WS_REPROBE_TOKEN_B");
+    fs::remove_dir_all(state_dir).ok();
 }
 
 /// The non-streaming analogue of the mid-stream drop: a `stream:false` client

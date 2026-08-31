@@ -199,9 +199,6 @@ struct Connection {
     _overflow_slot: Option<OverflowSlot>,
     /// The `x-codex-turn-state` captured from the handshake, if present.
     handshake_turn_state: Option<String>,
-    /// Quota headers from the connection's upgrade response. Reused turns do not
-    /// perform a fresh handshake, but dashboard quota capture still reads them.
-    handshake_headers: HeaderMap,
 }
 
 impl Connection {
@@ -228,7 +225,6 @@ impl Connection {
             pool_key,
             _overflow_slot: overflow_slot,
             handshake_turn_state,
-            handshake_headers: handshake_headers.clone(),
         });
         tokio::spawn(run_connection(conn.clone(), source, command_rx));
         Ok((conn, handshake_headers))
@@ -478,19 +474,10 @@ impl Turn {
         self.conn.handshake_turn_state.as_deref()
     }
 
-    /// Headers from the connection's upgrade response. Fresh connections return
-    /// the live handshake headers; reused connections return the headers captured
-    /// when the socket was first established.
+    /// Headers from the connection's upgrade response. A reused connection
+    /// performed no new handshake, so it has no fresh quota signal to report.
     pub fn handshake_headers(&self) -> Option<&HeaderMap> {
-        if self.reused {
-            if self.conn.handshake_headers.is_empty() {
-                None
-            } else {
-                Some(&self.conn.handshake_headers)
-            }
-        } else {
-            self.handshake_headers.as_ref()
-        }
+        self.handshake_headers.as_ref()
     }
 
     /// Dispatch the `response.create` frame to the connection's reader and stream
@@ -1560,13 +1547,13 @@ mod tests {
         );
 
         // Turn 2: reuses the pooled socket (the mock only accepts once) and
-        // reports no fresh handshake headers.
+        // performed no new handshake, so it has no fresh quota headers to report.
         let turn2 = begin(&url, HeaderMap::new(), Some("session-1"), "codex")
             .await
             .expect("second turn reuses connection");
         assert!(
-            turn2.handshake_headers().is_some(),
-            "a reused connection still exposes the stored handshake quota headers"
+            turn2.handshake_headers().is_none(),
+            "a reused connection has no fresh handshake headers to report"
         );
         let mut turn2 = turn2
             .stream(&frame, RecordPlan::none())

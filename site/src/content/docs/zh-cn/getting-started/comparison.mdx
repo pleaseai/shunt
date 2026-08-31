@@ -48,7 +48,7 @@ shunt 是一个**符合规范的 Claude Code LLM 网关**:它实现 Claude Code 
 | 多账户负载均衡 / 故障转移 | ◐⁷ | ○ | ● | 部分 | ● |
 | 后端广度 | 4 个提供方¹ | 4 个订阅⁶ | 11 个后端² | 不一 | 100–1600+ |
 | 管理 API / 仪表盘 | ◐(可选启用的管理界面) | ◐(监控 TUI) | ● | 部分 | ● |
-| 用量 / 配额 / 成本跟踪 | ○(仅 Sentry 指标) | ○ | ● | 部分 | ● |
+| 用量 / 配额 / 成本跟踪 | ◐⁹（池配额状态；无用量/成本） | ○ | ● | 部分 | ● |
 | 插件 / 拦截器系统 | ○ | ○ | ● | 部分 | ● |
 | 语言 / 体积 | Rust,1 个二进制 | Rust,1 个二进制 | Go | Node/Python | Go/Node/Python |
 | 配置模型 | TOML + env,热重载 | env + 配置文件 | YAML + 管理 API | 不一 | YAML/UI |
@@ -61,6 +61,7 @@ shunt 是一个**符合规范的 Claude Code LLM 网关**:它实现 Claude Code 
 ⁶ raine/ccp 订阅后端:Codex(ChatGPT Plus/Pro)、Kimi(kimi.com)、Grok(grok.com)、Cursor Agent —— 全部经由订阅 OAuth。
 ⁷ shunt 为 Anthropic `claude_oauth` 和 ChatGPT/Codex `chatgpt_oauth` 两者池化显式账户:会话粘性选择、按提供方轮询、基于每账户 5h/7d 配额头部(分别是 `anthropic-ratelimit-unified-*` 和 `x-codex-*`)的感知模型主动轮换、冷却、401 后强制刷新,以及对 429 和 5xx 响应的被动故障转移。每账户用量出现在可选启用的管理后台仪表盘中。
 ⁸ **[#82]** 增加了一个按提供方的 `tool_search` 标志(`src/config.rs:1136-1154,2811-2850`),把 Claude Code 的工具搜索映射到 OpenAI Responses API 自己的原生、客户端执行的 `tool_search` 协议 —— `ToolSearch` → `tool_search`,其 `tool_use` → `tool_search_call`,`tool_reference` → 一个以结构化 JSON 携带已加载工具完整 schema 的 `tool_search_output` 项(`src/model/responses_request.rs`) —— 而不是把 schema 折叠进文本。**默认是 auto,并收窄到已知宿主(issue #289)**:垫片会在每次揭示时都使缓存的提示前缀失效(它必须把每个被揭示的工具重新加回 `tools` 数组,而 shunt 每一轮都会依据客户端历史重新推导这个数组),因此未设置("auto")的默认值只会在已验证支持 `tool_search` 条目的宿主 —— ChatGPT/Codex 后端和 `api.openai.com` —— 路由到 gpt-5.4+ 模型时才走原生的、只追加 `input` 的路径;其他所有 OpenAI 兼容端点(包括 LiteLLM、vLLM、OpenRouter、自托管代理)都会保留垫片,除非运营者在确认其实现了该协议后设置 `tool_search = true` —— 因为大多数第三方 Responses 后端并未实现它,若强行启用会导致该轮直接失败,而不是优雅降级。这些原生形状已针对 ChatGPT/Codex 后端在 gpt-5.6 上做过实时探测验证(2026-07-13, [#86]);`tool_search` 已被记录在公开的 OpenAI Responses API 文档中,适用于 gpt-5.4+ 模型。xAI/Grok 路由和 gpt-5.2 及以下的模型无论如何都保留 #43 垫片 —— 静默地,绝不报错。若某个原本会走原生路径的提供方需要强制使用垫片,设置 `tool_search = false`。
+⁹ 可选启用的 `[server.usage]` 端点仅返回经过认证的池配额窗口聚合,不提供按请求用量核算或成本跟踪。
 
 > "raine/ccp" = [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy)。
 
@@ -80,7 +81,7 @@ shunt 是一个**符合规范的 Claude Code LLM 网关**:它实现 Claude Code 
 
 - **多账户池化刻意保持狭窄。** shunt 为 `auth = "claude_oauth"` 提供主动加被动的账户池:`x-claude-code-session-id` 粘性、按提供方轮询、在 5 小时或起决定作用的周桶撞墙之前的感知模型轮换、账户冷却、401 后凭据文件强制刷新,以及配额拒绝的 429 或 5xx 响应后的故障转移([详情](/zh-cn/guides/anthropic-multi-account/))。ChatGPT/Codex(`auth = "chatgpt_oauth"`)拥有一个镜像的池,配有同样的主动加被动机制,由后端的 `x-codex-*` 窗口驱动([详情](/zh-cn/guides/codex-multi-account/));两个池都能对刚切换的账户做并发爬坡(可选启用的风暴控制),可选启用的管理后台仪表盘则暴露每账户用量。CLIProxyAPI、LiteLLM 和 Portkey 仍提供更广的机群式均衡与可见性。
 - **后端广度窄。** 只有 Anthropic-Messages 透传或 OpenAI-Responses 转换;除非暴露这两种协议之一,否则没有原生的 Gemini/Bedrock/Azure/Ollama。
-- **没有完整的管理 API / 用量-配额 / 成本跟踪。** 可选启用的[管理 Web 界面](/zh-cn/guides/admin-remote-provisioning/)覆盖 `claude_oauth` 与 `chatgpt_oauth` provider 的浏览器账户预配和只读账户池状态。Claude 的配额 header 填充其窗口,Codex 的响应 header 填充上报的 5h/7d 用量(两者也都参与池选择)。仍然没有通用管理 API、按请求的用量核算或成本跟踪;可观测性只有可选启用的 Sentry 指标(`src/metrics.rs`)。完整的 HTTP 暴露面见 [HTTP 端点](/zh-cn/reference/endpoints/)。CLIProxyAPI 提供完整的管理 API + 配额/用量管理器和第三方仪表盘生态;即便同类的 raine/claude-code-proxy 也内置了 shunt 没有对应物的**监控 TUI**(实时会话、活跃/近期请求、错误事件)。
+- **没有完整的管理 API、按请求的用量核算或成本跟踪。** 可选启用的[管理 Web 界面](/zh-cn/guides/admin-remote-provisioning/)覆盖 `claude_oauth` 与 `chatgpt_oauth` provider 的浏览器账户预配和只读账户池状态。单独可选启用的 `[server.usage]` 端点只公开经过认证的池配额窗口聚合,不包含账户身份或账户级数值。Claude 的配额 header 填充其窗口,Codex 的响应 header 填充上报的 5h/7d 用量(两者也都参与池选择)。仍然没有通用管理 API、按请求的用量核算或成本跟踪;可观测性只有可选启用的 Sentry 指标(`src/metrics.rs`)。完整的 HTTP 暴露面见 [HTTP 端点](/zh-cn/reference/endpoints/)。CLIProxyAPI 提供完整的管理 API + 配额/用量管理器和第三方仪表盘生态;即便同类的 raine/claude-code-proxy 也内置了 shunt 没有对应物的**监控 TUI**(实时会话、活跃/近期请求、错误事件)。
 - **没有自己的 ChatGPT OAuth 登录。** shunt 复用 Codex CLI 登录(`~/.codex/auth.json`);第一方 PKCE 流程是未完成的 TODO(`src/auth/mod.rs:18-19`)。raine/claude-code-proxy 在此是先例 —— 它自带 `codex auth login`(PKCE)**和** `codex auth device`(设备码),因此无需安装 Codex CLI 也能工作。
 - **没有插件 / 拦截器系统。** 适配器集合是固定的双变体 `match`(`src/proxy.rs:152-163`);CLIProxyAPI 有完整的插件宿主(RPC ABI、认证提供方、执行器路由、请求/响应转换器)。
 - **只有纯 HTTP**(TLS 不在范围内,`docs/m4-inbound-auth.md:13`)。

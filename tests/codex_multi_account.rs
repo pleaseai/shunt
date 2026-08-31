@@ -30,6 +30,7 @@ use std::{
     io::ErrorKind,
     net::SocketAddr,
     path::PathBuf,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -38,7 +39,7 @@ use reqwest::StatusCode;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use shunt::{
-    config::{AccountConfig, Config, RouteConfig},
+    config::{AccountConfig, Config, PoolConfig, RouteConfig},
     server,
 };
 use tokio::task::JoinHandle;
@@ -48,6 +49,32 @@ use wiremock::{
 };
 
 struct BearerToken(String);
+
+struct LogWriter {
+    output: Arc<Mutex<Vec<u8>>>,
+}
+
+impl std::io::Write for LogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.output.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn reprobe_log_subscriber(output: &Arc<Mutex<Vec<u8>>>) -> impl tracing::Subscriber + Send + Sync {
+    let writer_output = Arc::clone(output);
+    tracing_subscriber::fmt()
+        .with_writer(move || LogWriter {
+            output: Arc::clone(&writer_output),
+        })
+        .with_ansi(false)
+        .without_time()
+        .finish()
+}
 
 impl Match for BearerToken {
     fn matches(&self, request: &Request) -> bool {
@@ -181,13 +208,52 @@ fn test_config(upstream_base_url: &str, first: AccountConfig, second: AccountCon
     config
 }
 
+fn write_stale_pool_state(path: &std::path::Path, account_id: &str) {
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 61;
+    let state = serde_json::json!({
+        "version": 2,
+        "accounts": [{
+            "key": {
+                "store_family": "chatgpt",
+                "identity": {"kind": "verified", "id": account_id}
+            },
+            "quota": {
+                "utilization_5h": 0.9,
+                "observed_at_5h": observed_at
+            }
+        }]
+    });
+    fs::write(path, serde_json::to_vec(&state).unwrap()).unwrap();
+}
+
+fn test_config_with_pool_state(
+    upstream_base_url: &str,
+    first: AccountConfig,
+    second: AccountConfig,
+    state_path: PathBuf,
+) -> Config {
+    let mut config = test_config(upstream_base_url, first, second);
+    config.server.pool = Some(PoolConfig {
+        default_threshold: Some(0.5),
+        reprobe_seconds: Some(60),
+        state_path: Some(state_path),
+        ..Default::default()
+    });
+    config
+}
+
 async fn start_gateway_with(mut config: Config) -> TestGateway {
     config.server.bind = "127.0.0.1:0".to_string();
     let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
         .await
         .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let (app, _shared, _state) = server::build_router(config).unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    shunt::state_persist::restore(&state).await;
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
@@ -1471,4 +1537,219 @@ async fn storm_control_last_candidate_is_always_admitted() {
     upstream.verify().await;
 
     std::env::remove_var("SHUNT_TEST_CODEX_STORM_SOLO");
+}
+
+#[tokio::test]
+async fn codex_quota_rotation_with_empty_reset_header() {
+    // Reproduces the incident this change fixes: a deployed multi-account
+    // codex pool sent a valid window-minutes group with near-quota
+    // utilization but a blank `x-codex-primary-reset-at`. Proactive rotation
+    // must still trigger off the utilization alone — a missing reset must not
+    // suppress the recorded quota signal. (Re-entry once the mark ages out is
+    // covered by the unit tests `account_reenters_selection_after_reset_passes`
+    // and `account_reenters_selection_after_reset_less_mark_ages_out` in
+    // src/accounts.rs, not here, to avoid a sleep-based flaky wait in this
+    // integration test.)
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-quota-noreset-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-quota-noreset-b");
+    std::env::set_var("SHUNT_TEST_CODEX_QUOTA_NORESET_A", &token_a);
+    std::env::set_var("SHUNT_TEST_CODEX_QUOTA_NORESET_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    // Account-a succeeds but reports its 5h window at 99% used with an empty
+    // reset-at header — no reset instant is ever recorded for this window.
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-codex-primary-window-minutes", "300")
+                .insert_header("x-codex-primary-used-percent", "99")
+                .insert_header("x-codex-primary-reset-at", "")
+                .set_body_string(sse_body("account a served")),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("account b served")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_CODEX_QUOTA_NORESET_A"),
+        account("account-b", "SHUNT_TEST_CODEX_QUOTA_NORESET_B"),
+    ))
+    .await;
+
+    // Both requests carry a session id that hashes to account-a, so absent the
+    // quota signal the pool would stay sticky on account-a for both.
+    let session_id = session_id_for_account(0, 2);
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b",
+        "a near-quota sticky account with an empty reset header should still rotate off"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_CODEX_QUOTA_NORESET_A");
+    std::env::remove_var("SHUNT_TEST_CODEX_QUOTA_NORESET_B");
+}
+
+#[tokio::test]
+async fn restored_stale_quota_reprobes_once_then_uses_healthy_account() {
+    // A v2 snapshot keys the stale quota by the verified ChatGPT account id,
+    // which is resolved from each token_env JWT before pool selection. The first
+    // request must therefore probe account-a even though the state predates this
+    // process, while the next request in the 60-second interval must prefer the
+    // healthy account-b. Neither response carries quota headers, so the second
+    // selection proves the dispatch stamp, rather than fresh upstream quota, is
+    // what suppresses another probe.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-restored-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-restored-b");
+    std::env::set_var("SHUNT_TEST_CODEX_RESTORED_A", &token_a);
+    std::env::set_var("SHUNT_TEST_CODEX_RESTORED_B", &token_b);
+
+    let state_dir = unique_temp_dir("restored-stale");
+    let state_path = state_dir.join("pool-state.json");
+    write_stale_pool_state(&state_path, "acct-restored-a");
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("account a served")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("account b served")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config_with_pool_state(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_CODEX_RESTORED_A"),
+        account("account-b", "SHUNT_TEST_CODEX_RESTORED_B"),
+        state_path,
+    ))
+    .await;
+    let session_id = session_id_for_account(0, 2);
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = reprobe_log_subscriber(&logs);
+    let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a",
+        "the restored stale account is promoted for its first live probe"
+    );
+    assert!(response.text().await.unwrap().contains("account a served"));
+
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b",
+        "a second request inside the reprobe interval must use the healthy account"
+    );
+    assert!(response.text().await.unwrap().contains("account b served"));
+    drop(_subscriber_guard);
+    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert_eq!(
+        logs.matches("opportunistically re-probing a stale near-quota account")
+            .count(),
+        1,
+        "only the first dispatched request is recorded as a probe: {logs}"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_CODEX_RESTORED_A");
+    std::env::remove_var("SHUNT_TEST_CODEX_RESTORED_B");
+    fs::remove_dir_all(state_dir).ok();
+}
+
+#[tokio::test]
+async fn missing_stale_probe_token_cancels_before_healthy_fallback() {
+    // Credential resolution fails before the upstream dispatch boundary. The
+    // stale account's reservation must be cancelled, and only the healthy
+    // fallback may reach the upstream.
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::remove_var("SHUNT_TEST_CODEX_MISSING_A");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-missing-fallback-b");
+    std::env::set_var("SHUNT_TEST_CODEX_MISSING_B", &token_b);
+
+    let state_dir = unique_temp_dir("missing-stale-token");
+    let state_path = state_dir.join("pool-state.json");
+    write_stale_pool_state(&state_path, "acct-missing-fallback-a");
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("account b served")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut stale = account("account-a", "SHUNT_TEST_CODEX_MISSING_A");
+    stale.uuid = Some("acct-missing-fallback-a".to_string());
+    let gateway = start_gateway_with(test_config_with_pool_state(
+        &upstream.uri(),
+        stale,
+        account("account-b", "SHUNT_TEST_CODEX_MISSING_B"),
+        state_path,
+    ))
+    .await;
+    let session_id = session_id_for_account(0, 2);
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = reprobe_log_subscriber(&logs);
+    let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b",
+        "a missing stale credential must fall back to the healthy account"
+    );
+    assert!(response.text().await.unwrap().contains("account b served"));
+    drop(_subscriber_guard);
+    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert_eq!(
+        logs.matches("opportunistically re-probing a stale near-quota account")
+            .count(),
+        0,
+        "a credential failure before dispatch must not record a probe: {logs}"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_CODEX_MISSING_B");
+    fs::remove_dir_all(state_dir).ok();
 }

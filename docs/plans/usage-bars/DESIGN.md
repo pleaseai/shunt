@@ -24,6 +24,13 @@ recommended credential path might never trigger the CLI's own fetch, and the reu
 aggregate is misleading for multi-account pools under native-UI labeling. See the
 changelog at the end of this document for the full list of what changed and why.
 
+**M12 contract supersession:** PR #429 supersedes the older M12 wording that treated Codex
+usage as categorically blank. Codex response `x-codex-*` headers populate its 5-hour and shared
+weekly windows, while its Fable-scoped (`7d_oi`) window remains unreported; a mixed provider pool
+may still supply Fable data. This branch has no out-of-band Codex poller. A private, undocumented
+ChatGPT usage API exists and is reserved for #430; PR #429 does not call it. The historical M12
+wording quoted below remains as design history, not as the current runtime contract.
+
 ## M-A — inbound `GET /api/oauth/usage` synthesizer
 
 **Status:** implementation-ready *contingent on* the verification step in
@@ -286,8 +293,9 @@ resets epoch) maps to the wire shape as:
   reports it, or none has a finite `priority` — i.e. never, since `priority` is always
   populated, but the `None` case exists for "zero qualifying accounts") **omits the key**
   (`skip_serializing_if = "Option::is_none"`) rather than emitting a fabricated `0%`. This
-  is not an error — it is the same "no signal" semantics M12 already established
-  (`docs/m12-client-usage-endpoint.md`, "Codex is blank by design"): the CLI's renderer
+  is not an error — it is the same "no signal" semantics M12 established for an unreported
+  window (`docs/m12-client-usage-endpoint.md`; its older "Codex is blank by design" wording is
+  superseded by PR #429): the CLI's renderer
   already handles an absent/incomplete window by not drawing that bar.
 - The Fable limit entry is included in `limits` **only** when the Fable window's
   `routing_aware_window` call returns `Some`; otherwise `limits` stays empty and is omitted

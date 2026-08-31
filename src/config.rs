@@ -230,6 +230,19 @@ pub struct PoolConfig {
     /// request, and a single-identity pool only ever has a last candidate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ramp_initial_concurrency: Option<u32>,
+    /// Interval, in seconds, at which a stale near-quota Codex/ChatGPT-family
+    /// account is opportunistically promoted to the front of selection once,
+    /// so it takes live traffic and refreshes its observed quota (issue
+    /// #135's safety net for pools with no usage poller). Unset defaults to
+    /// 900 seconds when `[server.pool]` is configured; `0` disables
+    /// re-probing; a positive value below 60 is clamped up to a 60-second
+    /// floor. When `[server.pool]` itself is absent, re-probing is disabled
+    /// regardless of this value (pre-#135 behavior). The outbound Responses
+    /// pool also suppresses re-probing for providers with WebSocket enabled;
+    /// inbound HTTP selection continues to probe. Claude and Kimi accounts are
+    /// never probed (see `reprobe_interval`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reprobe_seconds: Option<u64>,
 }
 
 pub(crate) fn default_hard_threshold() -> f64 {
@@ -248,6 +261,7 @@ impl Default for PoolConfig {
             usage_refresh_seconds: None,
             state_path: None,
             ramp_initial_concurrency: None,
+            reprobe_seconds: None,
         }
     }
 }
@@ -2795,6 +2809,10 @@ impl Config {
         }
         config.backfill_antigravity_cli_migration_auth(&effective_provider_figment);
         let config = config.validate()?;
+        // This diagnostic belongs to the successful load boundary. Runtime
+        // defensive validation and `shunt check` also call `validate`, so
+        // keeping it there would repeat the same warning on every validation.
+        config.warn_reprobe_seconds_below_floor();
         // One aggregated warning per load naming every `Secret` field whose
         // value was written literally in the config file — never the value
         // itself. A `Secret` populated from an env override, a `${...}`
@@ -2983,6 +3001,27 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// Warns once at load when `[server.pool] reprobe_seconds` is a positive
+    /// value below the 60-second floor `reprobe_interval` (accounts.rs)
+    /// silently clamps up to. The effective interval is read on each HTTP
+    /// pool selection, so a warning there would spam one line per request;
+    /// surfacing it at the successful load boundary means it fires exactly
+    /// once, while repeated runtime validation stays side-effect free.
+    fn warn_reprobe_seconds_below_floor(&self) {
+        let Some(pool) = &self.server.pool else {
+            return;
+        };
+        if let Some(configured) = pool.reprobe_seconds {
+            if configured > 0 && configured < crate::accounts::REPROBE_FLOOR_SECS {
+                tracing::warn!(
+                    configured_seconds = configured,
+                    effective_seconds = crate::accounts::REPROBE_FLOOR_SECS,
+                    "reprobe_seconds is below the floor; using the floor"
+                );
+            }
+        }
     }
 
     /// Warns when a provider or route has an explicitly configured
@@ -4494,6 +4533,24 @@ mod tests {
         }
     }
 
+    fn capture_logs<F, T>(operation: F) -> (T, String)
+    where
+        F: FnOnce() -> T,
+    {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let result = tracing::subscriber::with_default(subscriber, operation);
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        (result, logs)
+    }
+
     fn account(name: &str) -> AccountConfig {
         AccountConfig {
             name: name.to_string(),
@@ -4822,6 +4879,72 @@ mod tests {
         assert_eq!(bare.threshold, None);
         assert_eq!(bare.priority, 100, "serde default");
         assert!(!bare.disabled);
+    }
+
+    #[test]
+    fn reprobe_floor_warning_is_load_only_and_disabled_values_are_silent() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-reprobe-floor-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let low_path = dir.join("low.toml");
+        std::fs::write(&low_path, "[server.pool]\nreprobe_seconds = 1\n").unwrap();
+        let (loaded, load_logs) = capture_logs(|| Config::load(Some(&low_path)));
+        let config = loaded.expect("a positive below-floor reprobe value loads");
+        assert_eq!(
+            load_logs
+                .matches("reprobe_seconds is below the floor")
+                .count(),
+            1,
+            "the successful load emits one floor warning: {load_logs}"
+        );
+
+        let (_, validate_logs) = capture_logs(|| {
+            config
+                .clone()
+                .validate()
+                .expect("first validation succeeds");
+            config.validate().expect("second validation succeeds");
+        });
+        assert_eq!(
+            validate_logs
+                .matches("reprobe_seconds is below the floor")
+                .count(),
+            0,
+            "runtime validation must not repeat the load warning: {validate_logs}"
+        );
+
+        let zero_path = dir.join("zero.toml");
+        std::fs::write(&zero_path, "[server.pool]\nreprobe_seconds = 0\n").unwrap();
+        let (_, zero_logs) = capture_logs(|| Config::load(Some(&zero_path)));
+        assert_eq!(
+            zero_logs
+                .matches("reprobe_seconds is below the floor")
+                .count(),
+            0,
+            "zero disables reprobes and must not warn: {zero_logs}"
+        );
+
+        let absent_path = dir.join("absent.toml");
+        std::fs::write(&absent_path, "").unwrap();
+        let (_, absent_logs) = capture_logs(|| Config::load(Some(&absent_path)));
+        assert_eq!(
+            absent_logs
+                .matches("reprobe_seconds is below the floor")
+                .count(),
+            0,
+            "an absent pool must not warn: {absent_logs}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -5,6 +5,8 @@ description: ChatGPT/Codex サブスクリプションの OAuth アカウント�
 
 shunt は、`chatgpt_oauth` プロバイダー — 組み込みの `codex` プロバイダー、またはその認証モードを使う任意の `responses` プロバイダー — の背後で、複数の ChatGPT サブスクリプション OAuth 認証情報をプールできます。Claude Code が `x-claude-code-session-id` を送る場合、リクエストはセッションスティッキーになります。ヘッダーがないリクエストはプロバイダーごとのラウンドロビンを使います。[Anthropic アカウントプール](/ja/guides/anthropic-multi-account/)と同様に、選択は**クォータを考慮**します。shunt はバックエンドの `x-codex-*` 5 時間 / 7 日の使用量ウィンドウを記録し、クォータに近づいたスティッキーアカウントをプロアクティブにローテーションで外します。一方で、クールダウンに基づくリアクティブなフェイルオーバーが安全網として残ります。
 
+クライアント向けの [`GET /usage`](/ja/reference/endpoints/) 集約では、無効化されていないアカウントが報告していないウィンドウだけが `null` になります。Codex の `x-codex-*` レスポンスヘッダーは 5 時間と共有週次ウィンドウを埋めます。Codex には Fable スコープ（`7d_oi`）のシグナルがありませんが、混在プロバイダーのプールでは別のプロバイダーが集約 Fable 値を提供できます。このブランチには帯域外 Codex ポーラーがありません。ChatGPT バックエンドには非公開・未文書化の usage API がありますが、#430 用に確保されており、このブランチからは呼び出しません。
+
 
 
 <Aside type="caution" title="サブスクリプション規約">
@@ -109,9 +111,10 @@ admin web サーフェスからストア管理アカウントを削除すると�
 
 - `x-claude-code-session-id` がある場合: 安定したハッシュがスティッキーアカウントを選びます。Anthropic プールと同じ仕組みです。
 - ヘッダーがない場合: プロバイダーごとに独自のラウンドロビンカウンターを持ちます。
-- 成功レスポンスは `x-codex-primary-*` と `x-codex-secondary-*` ヘッダーから使用量を記録します。shunt は各グループを `window-minutes` でマッピングします。約 300 分は 5h、約 10080 分は 7d に現れ、それ以外のウィンドウは無視されます。Codex に `7d_oi` 相当はありません。
+- 成功レスポンスは `x-codex-primary-*` と `x-codex-secondary-*` ヘッダーから使用量を記録します。shunt は各グループを `window-minutes` でマッピングします。約 300 分は 5h、約 10080 分は 7d に現れ、それ以外のウィンドウは無視されます。グループの `x-codex-*-reset-at` ヘッダーが空でも、shunt はその位置に対応するウィンドウグループと使用量を記録します。リセットがない場合、使用量は自身の観測時刻からウィンドウ長が経過した時点で失効します。Codex に `7d_oi` 相当はありません。
 - 記録された使用量は、[Anthropic プール](/ja/guides/anthropic-multi-account/)とまったく同じように選択へ供給されます。しきい値（組み込みの `0.98`、または [`[server.pool]`](/ja/reference/configuration/#serverpoolオプション) / アカウント単位のソフトしきい値）に達したスティッキーアカウントは、最も余裕のあるアカウントへプロアクティブに道を譲り、`burn_rate_avoidance` と priority / 余裕（headroom）による順序付けが適用されます。`x-codex-rate-limit-reached-type` の値は表示用にのみ記録されます。
 - `[server.pool] ramp_initial_concurrency` を設定すると、スロースタートの受け入れゲートが、フェイルオーバー直後に選択されたばかりのアカウントへ殺到が起きるのを防ぎます。[`[server.pool]`](/ja/reference/configuration/#serverpoolオプション) を参照してください。
+- `[server.pool]` を設定すると、陳腐化した近接クォータアカウントが `reprobe_seconds`（デフォルト 900 秒、`0` で無効）ごとに一度、選択順の先頭へ日和見的に昇格され予約されます。admission または認証情報の解決に失敗すると予約を取り消し、最初の HTTP 送信時に再プローブ時刻と `shunt.pool.reprobes` をコミットします。[`[server.pool]`](/ja/reference/configuration/#serverpoolオプション) を参照してください。WebSocket 転送を有効にしたプロバイダーの outbound Responses プールは予約を作らず、この再プローブを抑止します。オプションの inbound Codex HTTP エンドポイントは引き続きプローブするため、カウンターは inbound プローブだけを数えます。Codex usage ポーラーがない場合、除外された outbound マークは観測時刻に基づくウィンドウ寿命の上限で期限切れになるまで残ります。鮮度は、5h、共有 7d、Fable 7d_oi の各ウィンドウで使用量観測と status 観測の新しい方を取り、4 つ目に独立した aggregate status 観測を使って判定します。使用量だけのポーリングは使用量の鮮度だけを更新し、各ウィンドウの status 鮮度は更新しません。
 - 成功レスポンスは、そのアカウントのクールダウンを解除します。
 
 | トリガー | クールダウン |
@@ -175,7 +178,7 @@ x-shunt-account: backup
 
 ## 残りのフォローアップ
 
-- **帯域外の使用量の突き合わせ:** Anthropic プールは権威ある使用量 API をポーリングできます（`usage_refresh_seconds`）。Codex には相当するものがないため、そのクォータ状態はレスポンスヘッダーからのみ更新されます。
+- **帯域外の使用量の突き合わせ:** Anthropic プールは権威ある使用量 API をポーリングできます（`usage_refresh_seconds`）。このブランチは ChatGPT バックエンドの非公開・未文書化の usage API をポーリングしないため、Codex のクォータ状態はここではレスポンスヘッダーから更新されます。帯域外 Codex ポーラーは #430 用に確保されています。
 - **admin web でのプロビジョニング:** オプトインの[管理サーフェス](/ja/guides/admin-remote-provisioning/)は、ブラウザーで ChatGPT OAuth を実行し、リフレッシュ可能な Codex アカウントを保存し、共有プールのテーブルに表示し、報告された 5h/7d の使用量を表示できます（Codex には相当するものがないため `7d_oi` は空のままです）。
 
 アカウントプールの内部仕様の全体は [M10 の挙動仕様](https://github.com/pleaseai/shunt/blob/main/docs/m10-codex-multi-account.md)を、単一アカウントのセットアップ、モデルルーティング、エフォート/コンテキストの設定については [ChatGPT / Codex ガイド](/ja/guides/codex/)を参照してください。

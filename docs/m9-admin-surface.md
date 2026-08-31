@@ -441,6 +441,92 @@ the pathological case where the file phase does not finish within that
 floor, any plan already cached from an earlier resolution still appears in
 the response.
 
+Plans, tokens, and credential identities are tracked **positionally** against
+the resolved account list, never keyed by display name.
+`resolve_pool_accounts` appends the configured accounts after any scoped store
+entries without deduplicating names, so one provider can legitimately resolve
+two distinct accounts that share a label; a name-keyed map collapses them,
+which would both show one account's subscription on the other and — because
+the same map supplies the bearer token — probe one account with the other's
+credential.
+
+The profile cache is keyed by the credential's own identity where one exists.
+An account whose credential file carries the `shuntAccountUuid` shunt's import
+stamps in is keyed by that value: it survives a token refresh and changes when
+the account is re-provisioned, so a resolved plan is held for 24 hours. The
+file's uuid outranks a `uuid` carried in config, because the cached value is
+the plan of whoever *that file's token* authenticates as, and the config field
+never selects the file — the credential path is derived from `credentials` or
+the account name. A config `uuid`, or the process-lifetime inline-identity memo
+that fills it in when config omits it, can therefore still name the previous
+occupant of a re-provisioned path; keying off it would file the new account's
+plan under the old account's identity and serve the old plan back for the full
+day. A config `uuid` is used only when the file yielded none. Only when no uuid
+exists anywhere does the key fall back to the account's name, which is stable
+but not unique over time — the same name may later belong to a different
+account. Nothing in production
+clears this cache, so that fallback caps its entries at 10 minutes instead,
+which is also the retry interval for a failed lookup.
+
+Two further rules follow from that fallback being a name rather than an
+identity. A name key shared by two accounts *within one resolved list* is
+ambiguous, not merely imprecise: the shared cache cannot separate them, so
+neither account reads or writes it and both are resolved fresh. And because a
+uuid-less account's identity lives only in its credential file, the uuid last
+seen at each credential **path** is memoized, so a resolution whose file phase
+timed out can still reconstruct the key and serve an already-cached plan. That
+memo is keyed by path rather than name for the same reason as everything else
+on this path: two accounts a name cannot separate still have distinct paths,
+and when they share a path they are reading one file and so share one identity.
+
+That memo is consulted **only** when the file phase produced no result at all.
+A completed read is authoritative even when it finds no uuid — the account
+holding that path today has no identity, whatever an earlier one had — and such
+a read also clears the remembered value, so a later timeout cannot resurrect
+it. Every way a read can fail to produce a uuid clears it, not just the
+parses-but-carries-none case: a missing, unreadable, or unparsable file drops
+the entry too. The bias is deliberate. Clearing costs at most a fallback to
+the name key and its 10-minute ceiling, while keeping a no-longer-evidenced
+uuid risks serving the path's previous occupant's plan for the full
+exact-identity day.
+
+More than the path memo goes stale on a failed read, so such an account does
+not use the shared cache at all for that pass. Every identity still available
+to it names a *previous* holder: `account.uuid` is filled by
+`resolve_pool_accounts` from the very file that just failed to read and is
+memoized for the process lifetime, so it outlives that credential; and the
+name fallback is stable but not unique over time. There is nothing to write
+either, since a failed read yields no token. So the plan is omitted for that
+pass and reappears once the credential reads again — an honest gap rather
+than another account's subscription.
+
+A file that parses and merely carries no `shuntAccountUuid` is not a failed
+read and none of this applies to it: that is an ordinary hand-placed
+credential, keyed as it always was.
+
+The batched read walks its candidates in order, so it can record one
+account's failure and then be abandoned mid-list when a later credential
+stalls past the deadline. The per-account failures are therefore tracked
+outside the result the timeout discards — a failure the read already observed
+is knowledge the request keeps, and dropping it would hand that account back
+the cache access this rule exists to withhold.
+
+A failure also has to outlive the request that saw it, for the same reason
+one step further out. Per-request failure state says nothing about the *next*
+request, so a later one that times out would carry none and fall back to the
+still-memoized `uuid` — restoring precisely the identity the failed read
+refuted. The path memo therefore records a read failure rather than merely
+dropping what it knew, and an account whose path is remembered that way stays
+out of the cache on a timed-out pass too. Only a pass that reads the file
+again can clear it: a timeout is not evidence that the path became readable.
+
+The batched credential read is single-flight, process-wide. A read holds its
+permit until it genuinely finishes, not until the request waiting on it gives
+up, because a `spawn_blocking` task cannot be cancelled once started. A
+credential file on a hung network or FUSE mount therefore leaks one blocking
+worker rather than one per `/admin/pool` request: later requests fail to
+acquire the permit, skip the file phase, and fall back to their cached plans.
+
 ## Shared foundations with gateway login
 
 The gateway-login milestone (Claude Code `/login` against shunt) is inbound and

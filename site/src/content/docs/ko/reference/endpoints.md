@@ -37,6 +37,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/v1/responses` | 인바운드 Codex CLI 패스스루 — `/v1` 접미 `base_url` 형식 |
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI 분석 sink — 수락 후 폐기하고 정제된 이벤트 이름 카운터만 기록 |
 | `POST` | `/codex/analytics-events/events` | Codex CLI 분석 sink — 루트형 `chatgpt_base_url` 형식 |
+| `GET` | `/usage` | 클라이언트용 정제된 풀 사용량 — 공유 계정 풀의 창별 잔여 여유와 리셋을 반환하며 계정 신원이나 용량은 반환하지 않음 |
 
 `/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로, `POST /admin/login`에서는 `401`로 거부됩니다.
 
@@ -45,6 +46,8 @@ spend-limit 라우트는 부팅 시 [`[server.spend]`](/ko/reference/configurati
 `GET /managed/settings`와 `POST /v1/{metrics,logs,traces}` 텔레메트리 ingest 라우트는 부팅 시 `[server.gateway]`가 활성화된 경우에만 존재하며, 둘 다 같은 게이트웨이 bearer JWT를 요구합니다. ingest 라우트는 관리형 Claude Code 클라이언트가 export하는 OTLP/HTTP 페이로드를 받아([`[server.gateway.telemetry]`](/ko/reference/configuration/)가 그 exporter들을 게이트웨이로 향하게 합니다) 요청 바이트를 해당 signal에 opt-in한 모든 목적지로 그대로 relay합니다. 인바운드 `content-type`과 `content-encoding`은 유지되고 목적지에 구성된 headers가 그 위에 적용됩니다(구성된 키는 전달값을 대체하며 헤더를 중복시키지 않습니다). 클라이언트의 `Authorization` 헤더는 전달되지 않고 relay는 리다이렉트를 따르지 않습니다. 목적지는 signal별로 opt-in하며(`metrics` 기본 on, `logs`/`traces` 기본 off), 어떤 목적지도 opt-in하지 않은 signal은 수신 후 폐기됩니다. relay는 분리되어 실행되므로 목적지 상태와 무관하게 응답은 항상 즉시 `200`이고, 성공 바디는 OTLP/HTTP에 따라 요청 프로토콜을 미러링합니다(`application/json`에는 `{}`, 그 외에는 빈 `application/x-protobuf` 바디). 32 MiB 인바운드 상한을 넘는 바디는 `413`을 받습니다.
 
 인바운드 Codex Responses 및 분석 라우트는 [`[server.codex_endpoint]`](/ko/reference/configuration/)가 구성된 경우에만 존재합니다. Responses 라우트는 OpenAI Responses 요청과 응답을 그대로 중계합니다. 두 분석 라우트는 같은 인바운드 인증 정책을 적용하고, 클라이언트 payload를 전달하거나 보관하지 않으며, 인증 후에는 잘못된 JSON이나 초과 크기 본문에도 `200 {}`를 반환합니다. 정제된 이벤트 이름만 `shunt.codex_client_events`에 기록되며, 메트릭 sink가 없으면 순수 폐기 sink로 동작합니다.
+
+`/usage` 라우트는 [`[server.usage]`](/ko/reference/configuration/#serverusage-선택)가 구성된 경우에만 존재하며, [`[server.auth]`](/ko/guides/shared-gateway/)도 필요합니다. `GET /v1/messages`와 같은 클라이언트 토큰으로 인증하고 공유 계정 풀의 창별 잔여 여유, 리셋 시각, `ok`/`degraded`/`exhausted` 상태를 반환합니다. 계정 신원, 수, priority, `disabled`, 임계값, 계정별 수치는 공개하지 않습니다. 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 `null`입니다. Codex 응답의 `x-codex-*` 헤더는 5시간 및 공유 주간 창을 채웁니다. Codex에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다.
 
 `GET /`와 `GET /health`는 [`[server.auth]`](/ko/guides/shared-gateway/)가 활성화되어 있어도 열린 채로 유지되며(헬스체크 도구는 보통 토큰을 첨부할 수 없음) 민감한 것을 노출하지 않습니다 — 오직 상태, 버전, 그리고 이미 공개된 엔드포인트 목록만입니다.
 

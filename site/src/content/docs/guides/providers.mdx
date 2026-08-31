@@ -23,7 +23,7 @@ Providers are a **name → config map**. Anthropic-compatible and Responses-comp
 | [`grok`](/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` |
 | [`cursor`](/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — reuses `~/.gemini/oauth_creds.json` |
-| `antigravity` | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` — reuses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
+| [`antigravity`](/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` — reuses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
 | `antigravity-cli` | `antigravity_cli` | `none` | **Deprecated.** Local `agy` CLI — same backend via subprocess |
 
 Each linked name opens its dedicated setup page. `shunt add upstream <name>` prints a step-by-step blueprint for built-in providers; see the [CLI reference](/reference/cli/#shunt-add).
@@ -62,6 +62,9 @@ model = "claude-gemini-3.6-flash-via-antigravity"
 provider = "antigravity"
 upstream_model = "gemini-3.6-flash"
 ```
+
+For the full setup — login and scopes, project discovery, model slugs, thinking, and what the
+adapter carries — see the dedicated [Antigravity provider page](/providers/antigravity/).
 
 <Aside type="caution" title="`antigravity` changed meaning">
 

@@ -57,8 +57,11 @@ pub struct WindowStatus {
     /// `0.0..=1.0` and rounded to four decimals. This is a pool-wide aggregate,
     /// not a prediction of which account the next request will actually route
     /// to (routing also weighs availability, model, session affinity, and
-    /// priority). `None` when no account reports the window (e.g. the Codex
-    /// backend, which publishes no quota headers).
+    /// priority). `None` when no non-disabled account reports the window.
+    /// ChatGPT/Codex accounts populate the 5-hour and shared weekly windows
+    /// from `x-codex-*` response headers; Codex has no Fable-scoped (`7d_oi`)
+    /// signal, although another provider in a mixed pool may still supply
+    /// that aggregate window.
     pub remaining: Option<f64>,
     /// Reset time (unix epoch seconds) of the least-utilized account's window,
     /// when the backend reported one.

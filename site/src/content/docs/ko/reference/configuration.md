@@ -193,6 +193,14 @@ headers = { "x-api-key" = "..." }
 
 `POST /backend-api/codex/responses`, `POST /responses`, `POST /v1/responses`를 등록하며, 모두 지정한 provider의 account pool이 처리합니다. `[server.auth]`가 있으면 다른 server-side credential route처럼 유효한 client token을 요구합니다. `[server.auth]`가 없으면 operator의 Codex credential을 주입하면서도 접근 가능한 누구에게나 **open** 상태이므로 loopback 외 환경에서는 반드시 보호하세요. `/v1/messages`와 달리 request는 Anthropic Messages로 변환하거나 그 반대로 변환하지 않고 upstream과 verbatim relay합니다.
 
+## `[server.usage]` (선택)
+
+이 테이블은 공유 계정 풀의 쿼터 상태를 정제해 집계한 클라이언트용 `GET /usage`를 등록하므로, 관리자 화면 없이도 클라이언트가 스로틀링을 예상할 수 있습니다([엔드포인트 상세](/ko/reference/endpoints/)). 테이블이 없으면 라우트도 등록되지 않습니다.
+
+현재 이 테이블에는 키가 없으며, 존재만으로 활성화됩니다. [`[server.auth]`](#serverauth-선택)가 필수입니다. 엔드포인트는 클라이언트 토큰으로 호출자를 식별하므로 `[server.auth]` 없이 `[server.usage]`를 설정하면 시작이 실패하고, 인증 없이 풀 텔레메트리를 제공하지 않습니다.
+
+`GET /usage`는 `/v1/messages`와 같은 클라이언트 토큰(구성된 헤더, `x-api-key`, `Authorization: Bearer`)으로 인증하고 창별 잔여 여유, 리셋 시각, `ok`/`degraded`/`exhausted` 상태를 반환합니다. 계정 이름, 수, priority, `disabled`, 임계값, 계정별 수치는 노출하지 않습니다. 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 창이 `null`입니다. Codex 응답의 `x-codex-*` 헤더는 5시간 및 공유 주간 창을 채웁니다. Codex 자체에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다. 이 브랜치는 아웃오브밴드 Codex 폴러를 추가하지 않으며, #430에서 사용할 비공개·문서화되지 않은 ChatGPT usage API도 호출하지 않습니다.
+
 ## `[server.pool]` (선택)
 
 계정 풀을 위한 쿼터 인지 로드 밸런싱 튜닝 — Claude(Anthropic)([상세](/ko/guides/anthropic-multi-account/#선택-튜닝-serverpool))와, 이슈 #195부터는 Codex/ChatGPT([상세](/ko/guides/codex-multi-account/)). 테이블이 없으면 선택은 이 테이블이 존재하기 이전과 동일하게 단일 내장 `0.98` 임계값을 사용합니다.
@@ -208,14 +216,17 @@ headers = { "x-api-key" = "..." }
 | `usage_refresh_seconds` | 비활성(`0`/미설정) | `GET /api/oauth/usage` 폴링 간격(초); 60 미만의 양수 값은 60초 하한으로 올림 |
 | `state_path` | 미설정 | 풀의 계정별 쿼터 상태를 저장할 파일; 재시작 시 빈 풀 대신 마지막으로 관측된 사용률에서 워밍업. 미설정이면 영속화 비활성(기본값) |
 | `ramp_initial_concurrency` | 비활성(`0`/미설정) | 폭주 제어: 방금 트래픽을 받기 시작한 계정 아이덴티티의 초기 동시 허용치. `0` 또는 미설정이면 허용 게이팅 비활성 |
+| `reprobe_seconds` | 이 테이블이 존재하면 `900`; `0`이면 비활성 | 오래된 근접 쿼터 Codex/ChatGPT 계정을 위한 기회적 재탐침 간격(초); 60 미만의 양수 값은 60초 하한으로 올림. `0`이면 재탐침 비활성; `[server.pool]` 자체가 없으면 이 값과 무관하게 재탐침 비활성(#135 이전 동작). 프로바이더의 WebSocket 전송을 켜면 outbound Responses 선택에서도 재탐침 비활성 |
 
-각 창 `X`에 대해 유효 소프트 임계값은 다음 순서로 결정됩니다: 계정 `threshold_X` → 계정 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, 그리고 `hard_threshold`로 상한이 걸립니다. 모든 임계값은 `[0.0, 1.0]` 범위의 사용률 비율이며, 범위를 벗어나면 시작이 실패합니다. 임계값과 번-레이트 노브는 두 풀 계열 모두를 관장합니다: Anthropic 풀은 `anthropic-ratelimit-unified-*` 헤더로부터, Codex/ChatGPT 풀은 `x-codex-*` 5시간/주간 윈도우로부터 동작합니다(Codex에는 Fable 범위의 `7d_oi` 창이 없어 `default_threshold_fable`은 그곳에서 무력화됩니다). `usage_refresh_seconds`는 Anthropic 전용입니다 — Codex에는 out-of-band usage API가 없습니다.
+각 창 `X`에 대해 유효 소프트 임계값은 다음 순서로 결정됩니다: 계정 `threshold_X` → 계정 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, 그리고 `hard_threshold`로 상한이 걸립니다. 모든 임계값은 `[0.0, 1.0]` 범위의 사용률 비율이며, 범위를 벗어나면 시작이 실패합니다. 임계값과 번-레이트 노브는 두 풀 계열 모두를 관장합니다: Anthropic 풀은 `anthropic-ratelimit-unified-*` 헤더로부터, Codex/ChatGPT 풀은 `x-codex-*` 5시간/주간 윈도우로부터 동작합니다(Codex에는 Fable 범위의 `7d_oi` 창이 없어 `default_threshold_fable`은 그곳에서 무력화됩니다). `usage_refresh_seconds`는 Anthropic 전용입니다. 이 브랜치는 비공개·문서화되지 않은 ChatGPT usage API를 폴링하지 않으며, 아웃오브밴드 Codex 폴러는 #430에 예약되어 있어 이곳에 해당 API 의존성을 추가하지 않습니다.
 
-양수 `usage_refresh_seconds`는 추가로 백그라운드 폴러를 시작해, Claude 계정 풀의 쿼터 상태를 Anthropic OAuth usage API와 대조해 재보정합니다; 미설정 또는 `0`이면 비활성(기본값)입니다. imported(갱신 가능) `claude_oauth` 계정만 폴링되며 — 장기 `claude setup-token`이나 `token_env` 계정은 usage 엔드포인트가 비갱신 토큰을 거부하므로 건너뜁니다. 폴러는 헤더 기반 5h/주간/Fable(`7d_oi`) 쿼터 상태를 shunt 외부의 동일 계정 소비까지 포함한 권위 있는 사용량과 대조합니다. 간격은 부팅 시 고정되며, 설정 리로드는 폴러를 시작·중지·재조정하지 않습니다.
+양수 `usage_refresh_seconds`는 추가로 백그라운드 폴러를 시작해, Claude 계정 풀의 쿼터 상태를 Anthropic OAuth usage API와 대조해 재보정합니다; 미설정 또는 `0`이면 비활성(기본값)입니다. imported(갱신 가능) `claude_oauth` 계정만 폴링되며 — 장기 `claude setup-token`이나 `token_env` 계정은 usage 엔드포인트가 비갱신 토큰을 거부하므로 건너뜁니다. 폴러는 보고된 각 창의 사용률, 해당 창의 고유 리셋 시각과 사용률 관측 시각을 갱신합니다. 창별 및 집계 status의 freshness와 status 관측 때 캡처한 리셋 경계만 헤더에서 유지합니다. shunt 외부의 동일 계정 소비까지 포함한 권위 있는 사용량과 대조하지만 status 수명은 연장하지 않습니다. 간격은 부팅 시 고정되며, 설정 리로드는 폴러를 시작·중지·재조정하지 않습니다.
 
-`state_path`는 풀의 쿼터 상태(모든 provider 계정의 창별 사용률과 리셋)를 디스크에 저장합니다. 없으면 재시작이 빈 풀로 시작해, 각 계정이 재시작 후 첫 응답 전까지 미관측 상태로 보이면서 burn-rate 회피가 비활성화되고 `GET /usage`가 트래픽으로 풀이 다시 채워질 때까지 빈 값을 반환합니다. 이 파일은 권위 있는 소스가 아니라 best-effort 캐시입니다 — 쿼터는 어차피 업스트림 응답에서 재도출되므로, 파일이 없거나·오래됐거나·손상돼도 cold start만 발생할 뿐 부팅 실패로 이어지지 않습니다. 쓰기는 비공개 temp 파일(Unix에서 `0600`)을 대상 위로 원자적으로 rename하는 방식이며, 쿼터가 변경됐을 때만 백그라운드 타이머로 이뤄집니다. 쓰기에 실패하면 다음 tick에서 재시도합니다. 쿨다운은 저장되지 않고(재시작 시 소멸), 복원된 창 중 이미 리셋이 지난 것은 복원 후 첫 선택 또는 snapshot에서 lazy하게 폐기됩니다. 경로는 부팅 시 고정되며, 설정 리로드는 영속화를 시작·중지하거나 경로를 바꾸지 않습니다.
+`state_path`는 풀의 쿼터 상태(모든 provider 계정의 창별 사용률과 각 창의 고유 리셋 시각, 사용률과 status의 독립 관측 시각 및 캡처한 status 리셋 경계)를 디스크에 저장합니다. 없으면 재시작이 빈 풀로 시작해, 각 계정이 재시작 후 첫 응답 전까지 미관측 상태로 보이면서 burn-rate 회피가 비활성화되고 `GET /usage`가 트래픽으로 풀이 다시 채워질 때까지 빈 값을 반환합니다. 이 파일은 권위 있는 소스가 아니라 best-effort 캐시입니다 — 쿼터는 어차피 업스트림 응답에서 재도출되므로, 파일이 없거나·오래됐거나·손상돼도 cold start만 발생할 뿐 부팅 실패로 이어지지 않습니다. 쓰기는 비공개 temp 파일(Unix에서 `0600`)을 대상 위로 원자적으로 rename하는 방식이며, 쿼터가 변경됐을 때만 백그라운드 타이머로 이뤄집니다. 쓰기에 실패하면 다음 tick에서 재시도합니다. 쿨다운은 저장되지 않고(재시작 시 소멸), 복원된 창 중 이미 리셋이 지난 것은 복원 시 import 단계에서 첫 선택이나 snapshot보다 먼저 폐기됩니다. 사용률은 자체 관측 시각 상한과 해당 창의 리셋 중 이른 시각에 만료되고, 상한만 지났으면 해당 창의 미래 리셋을 남깁니다. status는 자체 관측 시각 상한과 관측 때 캡처한 status 리셋 경계 중 이른 시각에 만료되며 캡처한 경계도 함께 지워집니다. 버전 2 파일은 명시적 migration 경로로 버전 3으로 다시 쓰며, `observed_at_status`가 없는 집계 `status`는 저장된 `reset_5h`, `reset_7d`, `reset_7d_oi` 중 가장 이른 리셋을 변경할 수 없는 기한으로 포착합니다. 그 리셋이 이미 지났으면 만료된 리셋, stamp가 없는 집계 `status`, 합성한 stamp를 같은 import에서 함께 제거합니다. 7일이라는 타당한 범위를 넘는 미래 리셋은 부팅 시각부터 7일 후를 상한으로 삼고, 리셋이 없으면 부팅 시각부터 7일 cap을 시작합니다. 이미 stamp된 v2 값은 리셋으로 다시 해석하지 않지만, 일반 import는 고아 메타데이터를 정규화하고 경과한 신호를 만료시키며 미래 시각을 부팅 시각으로 보정하고, 남은 stamp 없는 집계에는 필요하면 부팅 시각을 넣습니다. 이후 reset-only나 usage 갱신은 포착한 기한을 연장하지 않으며 v3으로 다시 쓴 뒤 두 번째 복원에서도 같은 상태를 유지합니다. 버전 3의 리셋 없는 status는 reset-only 갱신 뒤에도 리셋 없는 상태로 유지됩니다. 경로는 부팅 시 고정되며, 설정 리로드는 영속화를 시작·중지하거나 경로를 바꾸지 않습니다.
 
 양수 `ramp_initial_concurrency`는 모든 계정 풀에 **폭주 제어(storm control)**를 활성화합니다: 페일오버 전환 후에는 진행 중인 동시 요청이 방금 선택된 계정에 한꺼번에 몰릴 수 있습니다. 게이트를 켜면, 방금 트래픽을 받기 시작한 아이덴티티(신규, 쿨다운에서 복귀, 또는 60초간 유휴)는 최대 구성된 개수만큼의 동시 요청만 허용합니다; 성공 응답마다 허용치가 두 배로 늘고(슬로 스타트), 페일오버에 해당하는 실패는 램프를 다시 시작하며, 거부된 요청은 선택 순서상 다음 계정으로 넘어갑니다. 마지막 남은 후보는 게이트와 무관하게 항상 시도되므로, 게이팅은 요청을 미룰 수는 있어도 게이트가 없었다면 서빙됐을 요청을 실패시키는 일은 절대 없습니다. 이는 곧 풀의 모든 계정이 하나의 업스트림 아이덴티티로 귀결되면 사실상 게이트가 없는 것과 같다는 뜻이기도 합니다: 유일한 후보가 곧 마지막 후보이므로, 이 설정은 서로 다른 계정 아이덴티티가 둘 이상일 때만 효력이 있습니다.
+
+`reprobe_seconds`는 out-of-band usage 폴러가 없는 Codex/ChatGPT 풀을 위한 안전망입니다. rotation 대표 계정이 Codex/ChatGPT 계열이고 근접 쿼터이며 쿨다운이 아니고 최신 관측 시각이 이 간격보다 오래됐으면 간격당 한 번 선택 순서 맨 앞으로 승격하고 예약합니다. 신선도는 네 논리 값으로 판단합니다. 5h, 공유 7d, Fable 7d에서는 각각 사용률 관측 시각과 status 관측 시각 중 최신 값을 사용하고, 네 번째 값으로 독립된 aggregate status 관측 시각을 사용합니다. 사용률만 갱신하는 폴링은 사용률 신선도만 갱신하고 창별 status 신선도는 갱신하지 않습니다. admission이나 자격 증명 확인에 실패하면 예약을 취소하고 첫 실제 HTTP 전송이 시작될 때 probe 시각과 `shunt.pool.reprobes`를 커밋합니다. 그러면 다음 실제 요청이 그 계정의 쿼터를 갱신하므로 먼 미래의 주간 리셋까지 계정이 계속 배제 상태로 남는 일을 막습니다. Codex/ChatGPT 계정만 대상입니다. Claude와 Kimi는 일반 429 거부 시 더 느린 쿨다운 복구(`PauseSame`, 최대 5분)를 쓰므로 기회적 탐침이 실제 요청을 지연시킬 위험이 있고 Claude 계정에는 대신 위의 `usage_refresh_seconds`가 있습니다. 재탐침은 out-of-band 메타데이터 폴링인 `usage_refresh_seconds`와 달리 승격마다 실제 업스트림 요청 하나만큼의 트래픽 비용이 듭니다. 프로바이더의 WebSocket 전송을 켜면 outbound Responses 풀은 예약을 만들지 않고 재탐침을 억제합니다. 선택형 inbound Codex HTTP 엔드포인트는 계속 탐침하며 해당 프로바이더의 `shunt.pool.reprobes`는 inbound 탐침만 셉니다. Codex usage 폴러가 없으면 제외된 outbound 마크는 관측시각 기반 창 수명 경계에서 만료될 때까지 남습니다.
 
 ## `[server.status]` (선택)
 
@@ -309,7 +320,7 @@ origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 �
 
 기존 설정은 **변경할 필요가 없습니다**. 레거시 provider의 라우팅과 이름순 선택 동작은 유지됩니다. 업그레이드 시 다음 세 가지 추가 또는 의도된 동작 변경이 적용됩니다.
 
-1. 같은 물리적 OAuth 계정으로 해석되는 레거시 provider는 이제 quota window, health, cooldown, refresh lock, in-flight admission 상태를 공유합니다. 풀 영속화 키 스키마의 버전이 올라가므로 기존 `state_path` 캐시는 한 번 무시되고 풀은 한 번 cold start합니다.
+1. 같은 물리적 OAuth 계정으로 해석되는 레거시 provider는 이제 quota window, health, cooldown, refresh lock, in-flight admission 상태를 공유합니다. 풀 영속화 키 스키마의 버전이 올라가며, 버전 2 쿼터 캐시는 사용률과 status freshness를 분리한 버전 3으로 한 번 migration합니다.
 2. 모든 프록시 응답에 위의 `x-gateway-*` metadata 헤더 세 개가 추가됩니다.
 3. Anthropic Messages 경로(`/v1/messages`)에서 Claude 또는 Codex OAuth 풀의 크기와 관계없이 모든 시도가 응답 헤더 전에 실패하면, 이제 풀별 메시지인 `all Claude OAuth accounts failed before receiving an upstream response` 또는 `all Codex OAuth accounts failed before receiving an upstream response` 대신 `all upstreams failed (N attempted)`를 반환합니다. 별도의 `[server.codex_endpoint]` 인바운드 경로는 영향을 받지 않으며 Codex 전용 메시지를 유지합니다.
 

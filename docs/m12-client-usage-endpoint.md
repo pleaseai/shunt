@@ -14,9 +14,10 @@ slice of the same underlying data.
 ## Whose usage
 
 The data is **shared-pool** state, not per-client accounting. shunt records per-account quota from
-the Anthropic rate-limit headers and the [usage-API poller](m8-anthropic-multi-account.md); metrics
-are deliberately low-cardinality and never client-scoped. So M12 reports the *pool's* headroom, not
-"your usage." Per-client accounting would be a separate subsystem and is out of scope.
+the Anthropic rate-limit headers, ChatGPT/Codex `x-codex-*` response headers, and the [usage-API
+poller](m8-anthropic-multi-account.md); metrics are deliberately low-cardinality and never
+client-scoped. So M12 reports the *pool's* headroom, not "your usage." Per-client accounting would
+be a separate subsystem and is out of scope.
 
 ## Contrast with `GET /admin/pool`
 
@@ -55,8 +56,9 @@ the Fable-scoped weekly window (`fable` / `7d_oi`):
   least reported utilization among non-disabled accounts, clamped to `0.0..=1.0` and rounded to four
   decimals. This is a pool-wide aggregate, not a prediction of which account the next request will
   actually route to (routing also weighs availability, model, session affinity, and priority).
-  `null` when no account reports the window (e.g. the Codex backend, which publishes no quota
-  headers).
+  `null` only when no non-disabled account reports the window. ChatGPT/Codex response headers can
+  populate the 5-hour and shared weekly windows; Codex has no Fable-scoped (`7d_oi`) signal, though
+  another provider in a mixed pool may supply the aggregate Fable window.
 - `resets_at` — the least-utilized account's window reset (unix epoch seconds), when reported.
 
 Plus a pool-level `status` derived purely from availability booleans (no numbers): `exhausted` when
@@ -84,5 +86,8 @@ cannot be read) use the Anthropic error shape, like the rest of the gateway.
   contains an account name, `priority`, `disabled`, `threshold`, `headroom`, or `cooldown`.
 - **No per-client accounting.** The aggregate is pool-wide; it does not attribute usage to the
   calling client.
-- **Codex is blank by design.** No quota headers upstream ⇒ `null` windows, the same limitation the
-  admin dashboard carries.
+- **Codex usage is response-derived in this branch.** ChatGPT/Codex response `x-codex-*` headers
+  populate the 5-hour and shared weekly windows, and a window is `null` only when no non-disabled
+  account has reported it. Codex has no Fable-scoped (`7d_oi`) signal, although another provider
+  in a mixed pool may supply the aggregate Fable value. PR #429 adds no out-of-band Codex poller;
+  the private, undocumented ChatGPT usage API is reserved for #430 and is not called here.

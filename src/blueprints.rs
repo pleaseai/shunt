@@ -74,6 +74,11 @@ const BLUEPRINTS: &[Blueprint] = &[
     ),
     upstream_blueprint!("cursor", &[], "Cursor subscription via cursor_oauth login"),
     upstream_blueprint!(
+        "antigravity",
+        &[],
+        "Google Antigravity backend via antigravity_oauth login"
+    ),
+    upstream_blueprint!(
         "kimi-code",
         &[],
         "Kimi Code subscription via kimi_oauth login"
@@ -264,6 +269,7 @@ mod tests {
             "grok",
             "kimi",
             "cursor",
+            "antigravity",
             "kimi-code",
         ] {
             assert!(error.contains(slug), "missing {slug:?} in {error:?}");

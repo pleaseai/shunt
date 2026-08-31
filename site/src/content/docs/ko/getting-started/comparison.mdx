@@ -48,7 +48,7 @@ shunt는 **스펙을 준수하는 Claude Code LLM 게이트웨이**입니다: Cl
 | 멀티 계정 로드 밸런싱 / 페일오버 | ◐⁷ | ○ | ● | 일부 | ● |
 | 백엔드 폭 | 프로바이더 4개¹ | 구독 4개⁶ | 백엔드 11개² | 다양 | 100–1600+ |
 | 관리 API / 대시보드 | ◐ (옵트인 관리자 화면) | ◐ (모니터 TUI) | ● | 일부 | ● |
-| 사용량 / 쿼터 / 비용 추적 | ○ (Sentry 메트릭만) | ○ | ● | 일부 | ● |
+| 사용량 / 쿼터 / 비용 추적 | ◐⁹ (풀 쿼터 상태, 사용량/비용 없음) | ○ | ● | 일부 | ● |
 | 플러그인 / 인터셉터 시스템 | ○ | ○ | ● | 일부 | ● |
 | 언어 / 풋프린트 | Rust, 바이너리 1개 | Rust, 바이너리 1개 | Go | Node/Python | Go/Node/Python |
 | 구성 모델 | TOML + env, 핫 리로드 | env + 구성 파일 | YAML + 관리 API | 다양 | YAML/UI |
@@ -61,6 +61,7 @@ shunt는 **스펙을 준수하는 Claude Code LLM 게이트웨이**입니다: Cl
 ⁶ raine/ccp 구독 백엔드: Codex(ChatGPT Plus/Pro), Kimi(kimi.com), Grok(grok.com), Cursor Agent — 모두 구독 OAuth 경유.
 ⁷ shunt는 Anthropic `claude_oauth`와 ChatGPT/Codex `chatgpt_oauth` 모두에 대해 명시적 계정을 풀링합니다: 세션 스티키 선택, 프로바이더별 라운드 로빈, 계정별 5h/7d 쿼터 헤더(각각 `anthropic-ratelimit-unified-*`와 `x-codex-*`)에 기반한 모델 인지 선제 로테이션, 쿨다운, 401 후 강제 갱신, 그리고 429와 5xx 응답에 대한 반응형 페일오버. 계정별 사용량은 옵트인 관리자 대시보드에 표시됩니다.
 ⁸ **[#82]**는 프로바이더별 `tool_search` 플래그(`src/config.rs:1136-1154,2811-2850`)를 추가해 Claude Code의 도구 검색을 스키마를 텍스트로 접어 넣는 대신 OpenAI Responses API 자체의 네이티브 클라이언트 실행 `tool_search` 프로토콜에 매핑합니다 — `ToolSearch` → `tool_search`, 그 `tool_use` → `tool_search_call`, `tool_reference` → 로드된 도구들의 전체 스키마를 구조화된 JSON으로 담는 `tool_search_output` 항목(`src/model/responses_request.rs`). **기본값은 auto이며 알려진 호스트로 좁혀짐(issue #289)**: shim은 드러날 때마다 캐시된 프롬프트 프리픽스를 무효화합니다(드러난 도구를 매번 `tools` 배열에 다시 더해야 하는데, shunt는 이 배열을 매 턴 클라이언트 히스토리로부터 다시 도출하기 때문입니다) — 그래서 미설정("auto") 기본값은 이미 `tool_search` 항목 지원이 검증된 호스트 — ChatGPT/Codex 백엔드와 `api.openai.com` — 가 gpt-5.4+ 모델로 라우팅되는 경우에만 네이티브 append-only `input` 경로를 취하고, LiteLLM·vLLM·OpenRouter·자체 호스팅 프록시를 포함한 그 외 모든 OpenAI 호환 엔드포인트는 운영자가 프로토콜 지원을 확인한 뒤 `tool_search = true`를 설정하지 않는 한 shim을 유지합니다 — 대부분의 서드파티 Responses 백엔드는 이를 구현하지 않아 부드러운 폴백 대신 턴 자체가 실패하기 때문입니다. 네이티브 형태는 2026-07-13에 gpt-5.6에서 ChatGPT/Codex 백엔드를 대상으로 라이브 프로브로 검증되었습니다([#86]); `tool_search`는 gpt-5.4+ 모델에 대해 공개 OpenAI Responses API 문서에도 실려 있습니다. xAI/Grok 라우트와 gpt-5.2 이하 모델은 무관하게 #43 shim을 유지합니다 — 조용히, 오류 없이. 네이티브 경로를 쓰게 될 프로바이더에서 shim을 강제하려면 `tool_search = false`로 설정하세요.
+⁹ 옵트인 `[server.usage]` 엔드포인트는 인증된 풀 쿼터 창 집계만 반환하며, 요청별 사용량 계측이나 비용 추적은 제공하지 않습니다.
 
 > "raine/ccp" = [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy).
 
@@ -80,7 +81,7 @@ shunt는 **스펙을 준수하는 Claude Code LLM 게이트웨이**입니다: Cl
 
 - **멀티 계정 풀링은 의도적으로 좁습니다.** shunt는 `auth = "claude_oauth"`에 대한 선제적·반응형 계정 풀을 갖습니다: `x-claude-code-session-id` 스티키니스, 프로바이더별 라운드 로빈, 5시간 또는 적용 주간 버킷이 벽에 닿기 전의 모델 인지 로테이션, 계정 쿨다운, 401 후 자격 증명 파일 강제 갱신, 쿼터 거부 429 또는 5xx 응답 후 페일오버([상세](/ko/guides/anthropic-multi-account/)). ChatGPT/Codex(`auth = "chatgpt_oauth"`)는 백엔드의 `x-codex-*` 윈도우로 구동되는 동일한 선제+반응 메커니즘을 갖춘 미러링된 풀을 가지며([상세](/ko/guides/codex-multi-account/)), 두 풀 모두 새로 전환된 계정의 동시성을 램프업할 수 있고(옵트인 폭주 제어), 옵트인 관리자 대시보드가 계정별 사용량을 노출합니다. CLIProxyAPI, LiteLLM, Portkey는 여전히 더 광범위한 플릿 지향 밸런싱과 가시성을 제공합니다.
 - **좁은 백엔드 폭.** Anthropic-Messages 패스스루 또는 OpenAI-Responses 변환만; 두 프로토콜 중 하나를 노출하지 않는 한 네이티브 Gemini/Bedrock/Azure/Ollama는 없습니다.
-- **완전한 관리 API / 사용량-쿼터 / 비용 추적 없음.** 옵트인 [관리자 웹 화면](/ko/guides/admin-remote-provisioning/)이 `claude_oauth` 및 `chatgpt_oauth` 프로바이더의 브라우저 계정 프로비저닝과 읽기 전용 계정 풀 상태를 다룹니다. Claude 쿼터 헤더는 해당 창을 채우고, Codex 응답 헤더는 보고된 5h/7d 사용량을 채웁니다(둘 다 풀 선택에도 반영됩니다). 범용 관리 API, 요청별 사용량 계측, 비용 추적은 없습니다; 관측성은 옵트인 Sentry 메트릭뿐입니다(`src/metrics.rs`). 전체 HTTP 표면은 [HTTP 엔드포인트](/ko/reference/endpoints/)에 나열되어 있습니다. CLIProxyAPI는 완전한 관리 API + 쿼터/사용량 매니저와 서드파티 대시보드 생태계를 제공합니다; 같은 클래스 피어인 raine/claude-code-proxy조차 shunt에 상응물이 없는 내장 **모니터 TUI**(라이브 세션, 활성/최근 요청, 오류 이벤트)를 제공합니다.
+- **완전한 관리 API, 요청별 사용량 계측, 비용 추적 없음.** 옵트인 [관리자 웹 화면](/ko/guides/admin-remote-provisioning/)이 `claude_oauth` 및 `chatgpt_oauth` 프로바이더의 브라우저 계정 프로비저닝과 읽기 전용 계정 풀 상태를 다룹니다. 별도의 옵트인 `[server.usage]` 엔드포인트는 계정 식별자나 계정별 수치를 포함하지 않는 인증된 풀 쿼터 창 집계만 노출합니다. Claude 쿼터 헤더는 해당 창을 채우고, Codex 응답 헤더는 보고된 5h/7d 사용량을 채웁니다(둘 다 풀 선택에도 반영됩니다). 범용 관리 API, 요청별 사용량 계측, 비용 추적은 없습니다; 관측성은 옵트인 Sentry 메트릭뿐입니다(`src/metrics.rs`). 전체 HTTP 표면은 [HTTP 엔드포인트](/ko/reference/endpoints/)에 나열되어 있습니다. CLIProxyAPI는 완전한 관리 API + 쿼터/사용량 매니저와 서드파티 대시보드 생태계를 제공합니다; 같은 클래스 피어인 raine/claude-code-proxy조차 shunt에 상응물이 없는 내장 **모니터 TUI**(라이브 세션, 활성/최근 요청, 오류 이벤트)를 제공합니다.
 - **자체 ChatGPT OAuth 로그인 없음.** shunt는 Codex CLI 로그인(`~/.codex/auth.json`)을 재사용합니다; 퍼스트파티 PKCE 플로우는 미해결 TODO입니다(`src/auth/mod.rs:18-19`). raine/claude-code-proxy가 여기서 선행 사례입니다 — 자체 `codex auth login`(PKCE)과 `codex auth device`(디바이스 코드)를 모두 제공해 Codex CLI 설치 없이 동작합니다.
 - **플러그인 / 인터셉터 시스템 없음.** 어댑터 집합은 고정된 두 변형의 `match`입니다(`src/proxy.rs:152-163`); CLIProxyAPI는 완전한 플러그인 호스트(RPC ABI, 인증 프로바이더, 실행기 라우팅, 요청/응답 변환기)를 갖고 있습니다.
 - **평문 HTTP만**(TLS는 범위 밖, `docs/m4-inbound-auth.md:13`).

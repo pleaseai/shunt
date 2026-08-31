@@ -7,7 +7,7 @@ use std::{path::PathBuf, time::Duration};
 use axum::http::{HeaderValue, StatusCode};
 
 use crate::{
-    accounts::{self, FailoverAction},
+    accounts::{self, FailoverAction, ReprobeReservation},
     adapters::AdapterError,
     auth::{self, codex::auth::CodexAuthStore, resolve_chatgpt_account, Credential},
     config::{AccountConfig, AuthMode},
@@ -20,6 +20,55 @@ use super::context::{ForwardOptions, PoolForward, RelayOptions};
 use super::error::{mapped_upstream_error, own_error, transport_error};
 use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
+
+fn select_pool_order(
+    state: &AppState,
+    provider: &str,
+    accounts: &[AccountConfig],
+    session_id: Option<&str>,
+    upstream_model: &str,
+    ws_enabled: bool,
+) -> Vec<usize> {
+    debug_assert!(
+        ws_enabled,
+        "non-WebSocket selection uses deferred reservation"
+    );
+    state.accounts.select_order_without_reprobe(
+        provider,
+        accounts,
+        session_id,
+        Some(upstream_model),
+        state.config.server.pool.as_ref(),
+    )
+}
+
+pub(super) fn cancel_reprobe_for_account(
+    reservation: &mut Option<ReprobeReservation>,
+    selected_index: usize,
+) {
+    if reservation
+        .as_ref()
+        .is_some_and(|reservation| reservation.selected_index() == selected_index)
+    {
+        if let Some(reservation) = reservation.as_mut() {
+            reservation.cancel();
+        }
+    }
+}
+
+pub(super) fn commit_reprobe_for_account(
+    reservation: &mut Option<ReprobeReservation>,
+    selected_index: usize,
+) {
+    if reservation
+        .as_ref()
+        .is_some_and(|reservation| reservation.selected_index() == selected_index)
+    {
+        if let Some(reservation) = reservation.as_mut() {
+            reservation.commit();
+        }
+    }
+}
 
 /// Drive a Responses turn over the Codex/ChatGPT OAuth account pool (M10),
 /// mirroring the Anthropic adapter's `forward_claude_oauth` as closely as this
@@ -64,14 +113,28 @@ pub(super) async fn forward_chatgpt_oauth(
     // orders by burn-rate headroom, exactly like the Claude pool (issue #195).
     // Codex has no fable-scoped window, so the model only picks the shared
     // weekly bucket.
-    let order = state.accounts.select_order(
-        &route.provider,
-        &accounts_config,
-        session_id.as_deref(),
-        Some(route.upstream_model.as_str()),
-        state.config.server.pool.as_ref(),
-    );
     let ws_enabled = state.config.codex_websocket_enabled(&route.provider);
+    let (order, mut reprobe_reservation) = if ws_enabled {
+        (
+            select_pool_order(
+                &state,
+                &route.provider,
+                &accounts_config,
+                session_id.as_deref(),
+                &route.upstream_model,
+                true,
+            ),
+            None,
+        )
+    } else {
+        state.accounts.select_order_deferred(
+            &route.provider,
+            &accounts_config,
+            session_id.as_deref(),
+            Some(route.upstream_model.as_str()),
+            state.config.server.pool.as_ref(),
+        )
+    };
     let auth = AuthMode::ChatgptOauth;
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
@@ -104,6 +167,7 @@ pub(super) async fn forward_chatgpt_oauth(
         let Some((admission, credential)) =
             admit_and_resolve(&state, &route, account, ramp_initial, position, candidates).await
         else {
+            cancel_reprobe_for_account(&mut reprobe_reservation, index);
             continue;
         };
 
@@ -179,6 +243,11 @@ pub(super) async fn forward_chatgpt_oauth(
                 }));
             }
         }
+        // Commit at the dispatch boundary, after all admission, credential,
+        // body-preparation, and estimate setup has succeeded. A reservation
+        // that never reaches this call is cancelled instead of consuming the
+        // reprobe interval.
+        commit_reprobe_for_account(&mut reprobe_reservation, index);
         let upstream = match http_send(
             &state,
             &route,
@@ -684,9 +753,245 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::Config,
+        accounts::{account_key, QuotaState, StoreFamily},
+        config::{Config, PoolConfig},
         routing::{AdapterKind, Route},
     };
+
+    #[test]
+    fn websocket_gate_controls_reprobe_selection_and_stamp() {
+        let mut config = Config::default();
+        config.server.pool = Some(PoolConfig {
+            default_threshold: Some(0.5),
+            reprobe_seconds: Some(60),
+            ..Default::default()
+        });
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let mut a = AccountConfig {
+            name: "codex-a".to_string(),
+            ..Default::default()
+        };
+        a.store_family = Some(StoreFamily::Chatgpt);
+        let mut b = AccountConfig {
+            name: "codex-b".to_string(),
+            ..Default::default()
+        };
+        b.store_family = Some(StoreFamily::Chatgpt);
+        let accounts = vec![a, b];
+        let session = "websocket-reprobe-gate";
+        let initial = state.accounts.select_order(
+            "codex",
+            &accounts,
+            Some(session),
+            Some("test-model"),
+            state.config.server.pool.as_ref(),
+        );
+        let stale = initial[0];
+        let other = initial[1];
+        let observed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 61;
+        state.accounts.import_quotas([(
+            account_key("codex", &accounts[stale]),
+            QuotaState {
+                utilization_5h: Some(0.9),
+                observed_at_5h: Some(observed_at),
+                ..Default::default()
+            },
+        )]);
+
+        let ws_order = select_pool_order(
+            &state,
+            "codex",
+            &accounts,
+            Some(session),
+            "test-model",
+            true,
+        );
+        assert_eq!(
+            ws_order,
+            vec![other, stale],
+            "WebSocket-enabled selection must not promote a stale account"
+        );
+        assert_eq!(
+            state
+                .accounts
+                .last_probe_at_for_test("codex", &accounts[stale]),
+            None,
+            "WebSocket-enabled selection must not consume the shared probe interval"
+        );
+
+        let (http_order, mut reservation) = state.accounts.select_order_deferred(
+            "codex",
+            &accounts,
+            Some(session),
+            Some("test-model"),
+            state.config.server.pool.as_ref(),
+        );
+        assert_eq!(
+            http_order,
+            vec![stale, other],
+            "HTTP selection must retain stale-account re-probing"
+        );
+        assert!(
+            reservation.is_some(),
+            "HTTP selection must carry a reservation"
+        );
+        assert_eq!(
+            state
+                .accounts
+                .last_probe_at_for_test("codex", &accounts[stale]),
+            None,
+            "HTTP selection must defer the shared probe stamp until dispatch"
+        );
+        reservation.as_mut().unwrap().commit();
+        assert!(state
+            .accounts
+            .last_probe_at_for_test("codex", &accounts[stale])
+            .is_some());
+    }
+
+    #[test]
+    fn reprobe_helpers_ignore_mismatching_indices_and_cleanup_reservations() {
+        let provider = "pool-reprobe-helper-mismatch";
+        let mut config = Config::default();
+        config.server.pool = Some(PoolConfig {
+            default_threshold: Some(0.5),
+            reprobe_seconds: Some(60),
+            ..Default::default()
+        });
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let mut stale = AccountConfig {
+            name: "pool-helper-stale".to_string(),
+            ..Default::default()
+        };
+        stale.store_family = Some(StoreFamily::Chatgpt);
+        let mut healthy = AccountConfig {
+            name: "pool-helper-healthy".to_string(),
+            ..Default::default()
+        };
+        healthy.store_family = Some(StoreFamily::Chatgpt);
+        let accounts = vec![stale, healthy];
+        let session = "pool-reprobe-helper-mismatch-session";
+        let initial = state.accounts.select_order(
+            provider,
+            &accounts,
+            Some(session),
+            Some("test-model"),
+            state.config.server.pool.as_ref(),
+        );
+        let stale_index = initial[0];
+        state.accounts.import_quotas([(
+            account_key(provider, &accounts[stale_index]),
+            QuotaState {
+                utilization_5h: Some(0.9),
+                observed_at_5h: Some(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs()
+                        - 61,
+                ),
+                ..Default::default()
+            },
+        )]);
+        let wrong_index = 1 - stale_index;
+
+        let (_, mut commit_reservation) = state.accounts.select_order_deferred(
+            provider,
+            &accounts,
+            Some(session),
+            Some("test-model"),
+            state.config.server.pool.as_ref(),
+        );
+        let before = crate::metrics::pool_reprobe_count_for_tests(provider);
+        commit_reprobe_for_account(&mut commit_reservation, wrong_index);
+        assert_eq!(
+            state
+                .accounts
+                .last_probe_at_for_test(provider, &accounts[stale_index]),
+            None,
+            "a mismatching index must not commit another account's reservation"
+        );
+        assert_eq!(
+            crate::metrics::pool_reprobe_count_for_tests(provider),
+            before
+        );
+        commit_reprobe_for_account(&mut commit_reservation, stale_index);
+        assert!(state
+            .accounts
+            .last_probe_at_for_test(provider, &accounts[stale_index])
+            .is_some());
+        assert_eq!(
+            crate::metrics::pool_reprobe_count_for_tests(provider),
+            before + 1
+        );
+
+        let cancel_provider = "pool-reprobe-helper-cancel";
+        let session = "pool-reprobe-helper-cancel-session";
+        let cancel_pool = state.accounts.clone();
+        let initial = cancel_pool.select_order(
+            cancel_provider,
+            &accounts,
+            Some(session),
+            Some("test-model"),
+            state.config.server.pool.as_ref(),
+        );
+        let stale_index = initial[0];
+        cancel_pool.import_quotas([(
+            account_key(cancel_provider, &accounts[stale_index]),
+            QuotaState {
+                utilization_5h: Some(0.9),
+                observed_at_5h: Some(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs()
+                        - 61,
+                ),
+                ..Default::default()
+            },
+        )]);
+        let wrong_index = 1 - stale_index;
+        let (_, mut cancel_reservation) = cancel_pool.select_order_deferred(
+            cancel_provider,
+            &accounts,
+            Some(session),
+            Some("test-model"),
+            state.config.server.pool.as_ref(),
+        );
+        cancel_reprobe_for_account(&mut cancel_reservation, wrong_index);
+        let (_, blocked_reservation) = cancel_pool.select_order_deferred(
+            cancel_provider,
+            &accounts,
+            Some(session),
+            Some("test-model"),
+            state.config.server.pool.as_ref(),
+        );
+        assert!(
+            blocked_reservation.is_none(),
+            "a mismatching cancel must leave the original reservation pending"
+        );
+        cancel_reprobe_for_account(&mut cancel_reservation, stale_index);
+        assert_eq!(
+            cancel_pool.last_probe_at_for_test(cancel_provider, &accounts[stale_index]),
+            None
+        );
+        let (_, retry_reservation) = cancel_pool.select_order_deferred(
+            cancel_provider,
+            &accounts,
+            Some(session),
+            Some("test-model"),
+            state.config.server.pool.as_ref(),
+        );
+        assert!(
+            retry_reservation.is_some(),
+            "matching cancel must clean up the pending reservation"
+        );
+        drop(retry_reservation);
+    }
 
     #[tokio::test]
     async fn valid_token_resolution_does_not_wait_for_account_refresh_lock() {

@@ -5,6 +5,8 @@ description: ChatGPT/Codex 구독 OAuth 계정을 하나의 풀로 묶어 세션
 
 shunt는 `chatgpt_oauth` 프로바이더 뒤에서 여러 ChatGPT 구독 OAuth 자격 증명을 풀로 묶을 수 있습니다 — 내장 `codex` 프로바이더, 또는 그 인증 모드를 쓰는 모든 `responses` 프로바이더가 대상입니다. Claude Code가 `x-claude-code-session-id`를 보내면 요청은 세션에 고정(session-sticky)되고, 이 헤더가 없는 요청은 프로바이더별 라운드 로빈을 사용합니다. [Anthropic 계정 풀](/ko/guides/anthropic-multi-account/)과 마찬가지로 선택은 **쿼터 인지** 방식입니다: shunt는 백엔드의 `x-codex-*` 5시간/7일 사용량 창을 기록해 스티키 계정이 쿼터에 근접하면 선제적으로 로테이션하며, 쿨다운 기반 반응형 페일오버가 안전판으로 유지됩니다.
 
+클라이언트용 [`GET /usage`](/ko/reference/endpoints/) 집계는 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 창을 `null`로 보고합니다. Codex 응답의 `x-codex-*` 헤더는 5시간 및 공유 주간 창을 채우며, Codex 자체에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다. 이 브랜치에는 아웃오브밴드 Codex 폴러가 없습니다. ChatGPT 백엔드에는 비공개·문서화되지 않은 usage API가 있지만 #430에 예약되어 있으며, 이 브랜치는 호출하지 않습니다.
+
 
 
 <Aside type="caution" title="구독 약관">
@@ -109,9 +111,10 @@ admin web 화면을 통해 스토어 관리 계정을 삭제하면, 동일한 �
 
 - `x-claude-code-session-id`가 있으면: 안정적인 해시가 스티키 계정을 고릅니다. Anthropic 풀과 동일한 메커니즘입니다.
 - 헤더가 없으면: 프로바이더마다 자체 라운드 로빈 카운터를 사용합니다.
-- 성공한 응답은 `x-codex-primary-*`와 `x-codex-secondary-*` 헤더에서 사용량을 기록합니다. shunt는 각 그룹을 `window-minutes` 기준으로 매핑합니다: 약 300분은 5h로, 약 10080분은 7d로 나타나며 그 외 창은 무시됩니다. Codex에는 `7d_oi`에 대응하는 창이 없습니다.
+- 성공한 응답은 `x-codex-primary-*`와 `x-codex-secondary-*` 헤더에서 사용량을 기록합니다. shunt는 각 그룹을 `window-minutes` 기준으로 매핑합니다: 약 300분은 5h로, 약 10080분은 7d로 나타나며 그 외 창은 무시됩니다. 그룹의 `x-codex-*-reset-at` 헤더가 비어 있어도 shunt는 그 위치의 윈도 그룹과 사용률을 기록합니다. 리셋이 없으면 사용률은 자체 관측 시각에서 창 길이가 지난 뒤 만료됩니다. Codex에는 `7d_oi`에 대응하는 창이 없습니다.
 - 기록된 사용량은 [Anthropic 풀](/ko/guides/anthropic-multi-account/)에서와 정확히 동일하게 선택에 반영됩니다: 임계값(내장 `0.98`, 또는 [`[server.pool]`](/ko/reference/configuration/#serverpool-선택)/계정별 소프트 임계값)에 도달했거나 이를 넘긴 스티키 계정은 여유가 가장 큰 계정에 선제적으로 자리를 넘기며, `burn_rate_avoidance`와 priority/여유 기준 정렬이 적용됩니다. `x-codex-rate-limit-reached-type` 값은 표시용으로만 기록됩니다.
 - `[server.pool] ramp_initial_concurrency`가 설정되어 있으면 슬로 스타트 admission 게이트가 페일오버 직후 방금 선택된 계정에 트래픽이 몰리는 것을 막습니다. [`[server.pool]`](/ko/reference/configuration/#serverpool-선택)을 참고하세요.
+- `[server.pool]`이 설정되어 있으면 오래된 근접 쿼터 계정을 `reprobe_seconds`(기본 900초, `0`이면 비활성)당 한 번씩 선택 순서 맨 앞으로 승격하고 예약합니다. admission이나 자격 증명 확인에 실패하면 예약을 취소하고, 첫 HTTP 전송이 시작될 때 재탐침 시각과 `shunt.pool.reprobes`를 커밋합니다. [`[server.pool]`](/ko/reference/configuration/#serverpool-선택)을 참고하세요. WebSocket 전송을 켠 프로바이더의 outbound Responses 풀은 예약을 만들지 않고 스트림 내부 rate-limit 이벤트를 안전하게 회전시키지 못하므로 재탐침을 억제합니다. 선택형 inbound Codex HTTP 엔드포인트는 계속 탐침하므로 해당 프로바이더의 카운터는 inbound 탐침만 셉니다. Codex usage 폴러가 없으면 제외된 outbound 마크는 관측시각 기반 창 수명 경계에서 만료될 때까지 남습니다. 신선도는 각 논리 창 5h, 공유 7d, Fable 7d에서 사용률 관측 시각과 status 관측 시각 중 최신 값을 사용하며, 네 번째 값으로 독립된 aggregate status 관측 시각을 사용합니다. 사용률만 갱신하는 폴링은 창별 status 신선도를 갱신하지 않습니다.
 - 성공 응답은 그 계정의 쿨다운을 해제합니다.
 
 | 트리거 | 쿨다운 |
@@ -175,7 +178,7 @@ x-shunt-account: backup
 
 ## 남은 후속 작업
 
-- **아웃오브밴드 사용량 재보정:** Anthropic 풀은 권위 있는 사용량 API(`usage_refresh_seconds`)를 폴링할 수 있지만 Codex에는 대응물이 없으므로, 쿼터 상태는 응답 헤더로만 갱신됩니다.
+- **아웃오브밴드 사용량 재보정:** Anthropic 풀은 권위 있는 사용량 API(`usage_refresh_seconds`)를 폴링할 수 있습니다. 이 브랜치는 ChatGPT 백엔드의 비공개·문서화되지 않은 usage API를 폴링하지 않으므로 Codex 쿼터 상태는 여기서 응답 헤더로 갱신됩니다. 아웃오브밴드 Codex 폴러는 #430에 예약되어 있습니다.
 - **관리자 웹 프로비저닝:** 옵트인 [관리자 화면](/ko/guides/admin-remote-provisioning/)은 브라우저에서 ChatGPT OAuth를 실행해 갱신 가능한 Codex 계정을 저장하고, 공유 풀 테이블에 표시하며, 보고된 5h/7d 사용량을 보여줄 수 있습니다(Codex에는 대응물이 없어 `7d_oi`는 비어 있습니다).
 
 계정 풀 내부 동작 전체는 [M10 동작 명세](https://github.com/pleaseai/shunt/blob/main/docs/m10-codex-multi-account.md)를, 단일 계정 설정·모델 라우팅·effort/컨텍스트 구성은 [ChatGPT / Codex 가이드](/ko/guides/codex/)를 참고하세요.

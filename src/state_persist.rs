@@ -10,8 +10,22 @@
 //! The file is a best-effort cache, not a source of truth: quota is re-derived
 //! from upstream responses (and the usage API) regardless, so a missing, stale,
 //! or corrupt file only costs a cold start — never a boot failure. Restored
-//! windows whose reset has already passed are dropped lazily by the next
-//! `select_order`/`snapshot`, exactly as live ones are.
+//! windows whose reset has already passed are dropped during import, before
+//! the first `select_order`/`snapshot`, exactly as live ones are. A legacy
+//! aggregate status attached to such a window is dropped at the same import
+//! boundary when it has no independent observation timestamp. Version-2
+//! aggregate status without an independent timestamp captures the earliest
+//! persisted window reset as an immutable deadline through the existing
+//! aggregate cap; a synthesized future timestamp is clamped to boot time. A
+//! version-2 aggregate without a reset uses boot time as its cap. The
+//! synthesized stamp can remain in the v3 rewrite, and a later v3 restore
+//! preserves it while still running normal metadata normalization, expiry,
+//! missing-signal boot stamping, and future-timestamp clamping. A window that
+//! never carried a reset instant is bounded instead by its persisted
+//! utilization observation time and independent per-window status observation
+//! time: each reset-less signal expires one window length after its own
+//! timestamp, whether restored from disk or recorded live, so polling one
+//! signal cannot keep the other alive indefinitely.
 //!
 //! Only quota is persisted. Cooldowns are a monotonic [`std::time::Instant`]
 //! (not portable across a restart) and short-lived, so they are intentionally
@@ -27,7 +41,9 @@ use crate::{
 };
 
 /// Version 2 replaces the provider-name key with the physical-account key.
-const STATE_VERSION: u32 = 2;
+/// Version 3 separates utilization and per-window status freshness.
+const LEGACY_STATE_VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
 
 /// How often the background task flushes dirty quota to disk. A restart loses at
 /// most this much of the newest quota, which the next response re-derives anyway.
@@ -54,8 +70,13 @@ fn state_path(state: &AppState) -> Option<&Path> {
 
 /// Restore pool quota from disk at boot. A no-op when `state_path` is unset or
 /// the file is absent/unreadable/incompatible — every failure mode falls back
-/// to a cold start, never a boot error. Call once before serving requests so
-/// the first request already sees the restored quota.
+/// to a cold start, never a boot error. Version-2 files take the explicit
+/// legacy import path, which synthesizes an unstamped aggregate's earliest
+/// captured reset deadline through the existing v3 cap before rewriting the
+/// file. A second restore treats that synthesized value as an existing v3
+/// stamp while still applying normal normalization, expiry, and future-time
+/// clamping. Call once before serving requests so the first request already
+/// sees the restored quota.
 pub async fn restore(state: &AppState) {
     let Some(path) = state_path(state).map(Path::to_path_buf) else {
         return;
@@ -65,12 +86,25 @@ pub async fn restore(state: &AppState) {
     match result {
         Ok(Ok(Some(persisted))) => {
             let count = persisted.accounts.len();
-            state.accounts.import_quotas(
-                persisted
-                    .accounts
-                    .into_iter()
-                    .map(|account| (account.key, account.quota)),
-            );
+            let legacy = persisted.version == LEGACY_STATE_VERSION;
+            let corrected = if legacy {
+                state.accounts.import_quotas_legacy(
+                    persisted
+                        .accounts
+                        .into_iter()
+                        .map(|account| (account.key, account.quota)),
+                )
+            } else {
+                state.accounts.import_quotas(
+                    persisted
+                        .accounts
+                        .into_iter()
+                        .map(|account| (account.key, account.quota)),
+                )
+            };
+            if legacy || corrected {
+                state.accounts.mark_dirty();
+            }
             tracing::info!(
                 path = %path.display(),
                 accounts = count,
@@ -172,11 +206,11 @@ fn load(path: &Path) -> io::Result<Option<PersistedPool>> {
             return Ok(None);
         }
     };
-    if persisted.version != STATE_VERSION {
+    if persisted.version != STATE_VERSION && persisted.version != LEGACY_STATE_VERSION {
         tracing::warn!(
             path = %path.display(),
             found = persisted.version,
-            expected = STATE_VERSION,
+            expected = format!("{STATE_VERSION} or {LEGACY_STATE_VERSION}"),
             "pool state file version mismatch; ignoring"
         );
         return Ok(None);
@@ -199,7 +233,15 @@ mod tests {
         accounts::QuotaState,
         config::{AccountConfig, Config, PoolConfig},
     };
+    use reqwest::header::{HeaderMap, HeaderValue};
     use std::path::PathBuf;
+
+    fn unix_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_secs()
+    }
 
     fn sample_pool() -> PersistedPool {
         PersistedPool {
@@ -210,6 +252,7 @@ mod tests {
                     utilization_5h: Some(0.42),
                     reset_5h: Some(9_999_999_999),
                     status: Some("allowed".to_string()),
+                    observed_at_5h: Some(unix_now()),
                     ..Default::default()
                 },
             }],
@@ -249,10 +292,49 @@ mod tests {
         }
     }
 
+    async fn restore_v2_then_v3(
+        path: &Path,
+        quota: QuotaState,
+    ) -> (QuotaState, Option<QuotaState>, PersistedPool) {
+        let key = crate::accounts::account_key("anthropic", &account("acct-matrix"));
+        save(
+            path,
+            &PersistedPool {
+                version: LEGACY_STATE_VERSION,
+                accounts: vec![PersistedAccount {
+                    key: key.clone(),
+                    quota,
+                }],
+            },
+        )
+        .expect("save v2 succeeds");
+
+        let first_state = state_with_path(path.to_path_buf());
+        restore(&first_state).await;
+        let first = first_state
+            .accounts
+            .raw_quota_for_test(&key)
+            .expect("v2 account is restored")
+            .1;
+        flush(&first_state).await;
+
+        let rewritten = load(path)
+            .expect("load rewritten state succeeds")
+            .expect("rewritten v3 state exists");
+        let second_state = state_with_path(path.to_path_buf());
+        restore(&second_state).await;
+        let second = second_state
+            .accounts
+            .raw_quota_for_test(&key)
+            .map(|(_, quota)| quota);
+        (first, second, rewritten)
+    }
+
     #[test]
     fn save_then_load_round_trips_quota() {
         let path = temp_file("roundtrip");
-        save(&path, &sample_pool()).expect("save succeeds");
+        let pool = sample_pool();
+        save(&path, &pool).expect("save succeeds");
 
         let loaded = load(&path).expect("load succeeds").expect("file present");
         assert_eq!(loaded.version, STATE_VERSION);
@@ -265,6 +347,10 @@ mod tests {
         assert_eq!(persisted_account.quota.utilization_5h, Some(0.42));
         assert_eq!(persisted_account.quota.reset_5h, Some(9_999_999_999));
         assert_eq!(persisted_account.quota.status.as_deref(), Some("allowed"));
+        assert_eq!(
+            persisted_account.quota.observed_at_5h, pool.accounts[0].quota.observed_at_5h,
+            "the observation time round-trips through disk like any other quota field"
+        );
 
         remove_test_dir(&path);
     }
@@ -396,7 +482,367 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_snapshot_expires_stale_restored_quota() {
+    async fn restore_migrates_v2_combined_status_timestamp_and_rewrites_v3() {
+        let path = temp_file("migrate-v2");
+        let account = account("acct-a");
+        let observed = unix_now().saturating_sub(60);
+        let reset = unix_now() + 3_600;
+        save(
+            &path,
+            &PersistedPool {
+                version: LEGACY_STATE_VERSION,
+                accounts: vec![PersistedAccount {
+                    key: crate::accounts::account_key("anthropic", &account),
+                    quota: QuotaState {
+                        status_5h: Some("rejected".to_string()),
+                        observed_at_5h: Some(observed),
+                        reset_5h: Some(reset),
+                        ..Default::default()
+                    },
+                }],
+            },
+        )
+        .expect("save succeeds");
+        let state = state_with_path(path.clone());
+
+        restore(&state).await;
+
+        let key = crate::accounts::account_key("anthropic", &account);
+        let (_, quota) = state.accounts.raw_quota_for_test(&key).unwrap();
+        assert_eq!(quota.observed_at_5h, None);
+        assert_eq!(quota.observed_at_status_5h, Some(observed));
+        assert_eq!(quota.reset_at_status_5h, Some(reset));
+        assert!(state.accounts.take_dirty(), "v2 import schedules a rewrite");
+        state.accounts.mark_dirty();
+        flush(&state).await;
+
+        let rewritten = load(&path)
+            .expect("load succeeds")
+            .expect("rewritten file exists");
+        assert_eq!(rewritten.version, STATE_VERSION);
+        assert_eq!(
+            rewritten.accounts[0].quota.observed_at_status_5h,
+            Some(observed)
+        );
+        remove_test_dir(&path);
+    }
+
+    #[tokio::test]
+    async fn restore_migrates_v2_aggregate_status_to_earliest_reset_deadline() {
+        const WINDOW_7D_SECS: u64 = 7 * 24 * 60 * 60;
+        let path = temp_file("migrate-v2-aggregate");
+        let account = account("acct-aggregate");
+        let before = unix_now();
+        let earliest = before + 3_600;
+        let quota = QuotaState {
+            status: Some("rejected".to_string()),
+            reset_5h: Some(before + 7_200),
+            reset_7d: Some(earliest),
+            reset_7d_oi: Some(before + 10_800),
+            ..Default::default()
+        };
+        save(
+            &path,
+            &PersistedPool {
+                version: LEGACY_STATE_VERSION,
+                accounts: vec![PersistedAccount {
+                    key: crate::accounts::account_key("anthropic", &account),
+                    quota,
+                }],
+            },
+        )
+        .expect("save succeeds");
+        let state = state_with_path(path.clone());
+
+        restore(&state).await;
+
+        let key = crate::accounts::account_key("anthropic", &account);
+        let (_, quota) = state.accounts.raw_quota_for_test(&key).unwrap();
+        assert_eq!(
+            quota.observed_at_status,
+            Some(earliest.saturating_sub(WINDOW_7D_SECS)),
+            "v2 aggregate status keeps the earliest captured reset as its cap"
+        );
+        assert!(state.accounts.take_dirty(), "v2 import schedules a rewrite");
+        state.accounts.mark_dirty();
+        flush(&state).await;
+
+        let rewritten = load(&path)
+            .expect("load succeeds")
+            .expect("rewritten file exists");
+        assert_eq!(rewritten.version, STATE_VERSION);
+        assert_eq!(
+            rewritten.accounts[0].quota.observed_at_status,
+            Some(earliest.saturating_sub(WINDOW_7D_SECS))
+        );
+        remove_test_dir(&path);
+    }
+
+    #[tokio::test]
+    async fn restore_v2_aggregate_boundaries_survive_the_v3_restore_pipeline() {
+        const WINDOW_7D_SECS: u64 = 7 * 24 * 60 * 60;
+        enum Expectation {
+            Removed,
+            Deadline {
+                earliest: u64,
+                resets: [Option<u64>; 3],
+            },
+            BootCap,
+        }
+
+        let before = unix_now();
+        let valid = before + 3_600;
+        let later = before + 7_200;
+        let cases = [
+            (
+                "matrix-past",
+                QuotaState {
+                    status: Some("rejected".to_string()),
+                    reset_5h: Some(before.saturating_sub(1)),
+                    ..Default::default()
+                },
+                Expectation::Removed,
+            ),
+            (
+                "matrix-reset-only",
+                QuotaState {
+                    status: Some("rejected".to_string()),
+                    reset_5h: Some(valid),
+                    ..Default::default()
+                },
+                Expectation::Deadline {
+                    earliest: valid,
+                    resets: [Some(valid), None, None],
+                },
+            ),
+            (
+                "matrix-no-reset",
+                QuotaState {
+                    status: Some("rejected".to_string()),
+                    ..Default::default()
+                },
+                Expectation::BootCap,
+            ),
+            (
+                "matrix-far-future",
+                QuotaState {
+                    status: Some("rejected".to_string()),
+                    reset_5h: Some(before + WINDOW_7D_SECS + 3_600),
+                    ..Default::default()
+                },
+                Expectation::BootCap,
+            ),
+            (
+                "matrix-max",
+                QuotaState {
+                    status: Some("rejected".to_string()),
+                    reset_7d: Some(u64::MAX),
+                    ..Default::default()
+                },
+                Expectation::BootCap,
+            ),
+            (
+                "matrix-epoch-near",
+                QuotaState {
+                    status: Some("rejected".to_string()),
+                    reset_7d_oi: Some(WINDOW_7D_SECS - 1),
+                    ..Default::default()
+                },
+                Expectation::Removed,
+            ),
+            (
+                "matrix-multiple-reset",
+                QuotaState {
+                    status: Some("rejected".to_string()),
+                    reset_5h: Some(later),
+                    reset_7d: Some(valid),
+                    reset_7d_oi: Some(later + 3_600),
+                    ..Default::default()
+                },
+                Expectation::Deadline {
+                    earliest: valid,
+                    resets: [Some(later), Some(valid), Some(later + 3_600)],
+                },
+            ),
+        ];
+
+        for (label, input, expectation) in cases {
+            let path = temp_file(label);
+            let (first, second, rewritten) = restore_v2_then_v3(&path, input).await;
+            assert_eq!(rewritten.version, STATE_VERSION, "{label} rewrites as v3");
+            match expectation {
+                Expectation::Removed => {
+                    assert_eq!(first, QuotaState::default(), "{label} clears on import");
+                    assert!(second.is_none(), "{label} stays absent after v3 restore");
+                    assert!(rewritten.accounts.is_empty(), "{label} is removed on flush");
+                }
+                Expectation::Deadline { earliest, resets } => {
+                    assert_eq!(first.status.as_deref(), Some("rejected"), "{label}");
+                    assert_eq!(
+                        first.observed_at_status,
+                        Some(earliest - WINDOW_7D_SECS),
+                        "{label} captures the earliest reset deadline"
+                    );
+                    assert_eq!([first.reset_5h, first.reset_7d, first.reset_7d_oi], resets);
+                    assert_eq!(second.as_ref(), Some(&first), "{label} survives v3 restore");
+                    assert_eq!(rewritten.accounts.len(), 1, "{label} remains persisted");
+                    assert_eq!(
+                        rewritten.accounts[0].quota, first,
+                        "{label} rewrites equivalently"
+                    );
+                }
+                Expectation::BootCap => {
+                    assert_eq!(first.status.as_deref(), Some("rejected"), "{label}");
+                    let stamp = first
+                        .observed_at_status
+                        .expect("{label} has a boot-time aggregate stamp");
+                    let after = unix_now();
+                    assert!(
+                        stamp >= before && stamp <= after,
+                        "{label} uses boot-time cap"
+                    );
+                    assert_eq!(second.as_ref(), Some(&first), "{label} survives v3 restore");
+                    assert_eq!(rewritten.accounts.len(), 1, "{label} remains persisted");
+                    assert_eq!(
+                        rewritten.accounts[0].quota, first,
+                        "{label} rewrites equivalently"
+                    );
+                }
+            }
+            remove_test_dir(&path);
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_v2_existing_aggregate_stamps_are_stable_or_removed() {
+        const WINDOW_7D_SECS: u64 = 7 * 24 * 60 * 60;
+        enum Expectation {
+            SurvivesInBootRange,
+            Removed,
+            SurvivesWithPastWindowResetCleared,
+        }
+
+        let before = unix_now();
+        let cases = [
+            (
+                "stamp-future",
+                QuotaState {
+                    status: Some("rejected".to_string()),
+                    observed_at_status: Some(before + 86_400),
+                    ..Default::default()
+                },
+                Expectation::SurvivesInBootRange,
+            ),
+            (
+                "stamp-expired",
+                QuotaState {
+                    status: Some("rejected".to_string()),
+                    observed_at_status: Some(before.saturating_sub(WINDOW_7D_SECS)),
+                    ..Default::default()
+                },
+                Expectation::Removed,
+            ),
+            (
+                "stamp-orphan",
+                QuotaState {
+                    observed_at_status: Some(before + 86_400),
+                    ..Default::default()
+                },
+                Expectation::Removed,
+            ),
+            (
+                "stamp-past-window-reset",
+                QuotaState {
+                    status: Some("rejected".to_string()),
+                    observed_at_status: Some(before.saturating_sub(60)),
+                    reset_5h: Some(before.saturating_sub(1)),
+                    ..Default::default()
+                },
+                Expectation::SurvivesWithPastWindowResetCleared,
+            ),
+        ];
+
+        for (label, input, expectation) in cases {
+            let path = temp_file(label);
+            let (first, second, rewritten) = restore_v2_then_v3(&path, input).await;
+            assert_eq!(rewritten.version, STATE_VERSION, "{label} rewrites as v3");
+            match expectation {
+                Expectation::SurvivesInBootRange => {
+                    let stamp = first.observed_at_status.expect("future v2 stamp survives");
+                    let after = unix_now();
+                    assert!(
+                        stamp >= before && stamp <= after,
+                        "future stamp clamps to boot"
+                    );
+                    assert_eq!(first.status.as_deref(), Some("rejected"));
+                    assert_eq!(second.as_ref(), Some(&first));
+                    assert_eq!(rewritten.accounts[0].quota, first);
+                }
+                Expectation::Removed => {
+                    assert_eq!(first, QuotaState::default(), "{label} is normalized away");
+                    assert!(second.is_none(), "{label} stays removed after v3 restore");
+                    assert!(
+                        rewritten.accounts.is_empty(),
+                        "{label} is absent from v3 state"
+                    );
+                }
+                Expectation::SurvivesWithPastWindowResetCleared => {
+                    assert_eq!(first.status.as_deref(), Some("rejected"));
+                    assert_eq!(first.observed_at_status, Some(before.saturating_sub(60)));
+                    assert_eq!(first.reset_5h, None);
+                    assert_eq!(second.as_ref(), Some(&first));
+                    assert_eq!(rewritten.accounts[0].quota, first);
+                }
+            }
+            remove_test_dir(&path);
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_v3_resetless_status_stays_resetless_after_reset_only_roundtrip() {
+        let path = temp_file("v3-resetless-status");
+        let account = account("acct-a");
+        let observed = unix_now();
+        save(
+            &path,
+            &PersistedPool {
+                version: STATE_VERSION,
+                accounts: vec![PersistedAccount {
+                    key: crate::accounts::account_key("anthropic", &account),
+                    quota: QuotaState {
+                        status_5h: Some("rejected".to_string()),
+                        observed_at_status_5h: Some(observed),
+                        ..Default::default()
+                    },
+                }],
+            },
+        )
+        .expect("save succeeds");
+        let state = state_with_path(path.clone());
+        restore(&state).await;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "anthropic-ratelimit-unified-5h-reset",
+            HeaderValue::from_str(&(observed + 3_600).to_string()).unwrap(),
+        );
+        state.accounts.note_quota("anthropic", &account, &headers);
+        let key = crate::accounts::account_key("anthropic", &account);
+        let (_, quota) = state.accounts.raw_quota_for_test(&key).unwrap();
+        assert_eq!(quota.observed_at_status_5h, Some(observed));
+        assert_eq!(quota.reset_at_status_5h, None);
+        state.accounts.mark_dirty();
+        flush(&state).await;
+
+        let restored = state_with_path(path.clone());
+        restore(&restored).await;
+        let (_, quota) = restored.accounts.raw_quota_for_test(&key).unwrap();
+        assert_eq!(quota.observed_at_status_5h, Some(observed));
+        assert_eq!(quota.reset_at_status_5h, None);
+        remove_test_dir(&path);
+    }
+
+    #[tokio::test]
+    async fn restore_expires_stale_legacy_quota_before_first_snapshot() {
         let path = temp_file("expired");
         let expired = PersistedPool {
             version: STATE_VERSION,
@@ -414,6 +860,26 @@ mod tests {
         let state = state_with_path(path.clone());
         restore(&state).await;
 
+        // Import must remove the past-reset window and its unstamped legacy
+        // aggregate before any selection, snapshot, or export sweep runs.
+        let key = crate::accounts::account_key("anthropic", &account("acct-a"));
+        let (observed, raw_quota) = state
+            .accounts
+            .raw_quota_for_test(&key)
+            .expect("restored account entry exists");
+        assert!(observed, "restored account is marked observed");
+        assert_eq!(raw_quota, QuotaState::default());
+        assert!(
+            state.accounts.take_dirty(),
+            "import correction marks persistence dirty"
+        );
+        // The assertion above consumes the flag so this test can prove the
+        // flush path with the same dirty marker the restore normally leaves.
+        state.accounts.mark_dirty();
+        assert!(
+            state.accounts.export_quotas().is_empty(),
+            "expired quota is absent immediately after restore"
+        );
         let snapshots = state
             .accounts
             .snapshot("anthropic", &[account("acct-a")], None, None);
@@ -424,6 +890,125 @@ mod tests {
         assert_eq!(snapshots[0].utilization_5h, None);
         assert_eq!(snapshots[0].reset_5h, None);
         assert_eq!(snapshots[0].status, None);
+
+        // The import correction marks persistence dirty. The next flush must
+        // rewrite the file without the stale account, and a fresh restore must
+        // observe the cleaned disk state.
+        flush(&state).await;
+        let persisted = load(&path)
+            .expect("load succeeds")
+            .expect("corrected state remains loadable");
+        assert!(
+            persisted.accounts.is_empty(),
+            "dirty flush removes the expired quota record"
+        );
+
+        let restored_again = state_with_path(path.clone());
+        restore(&restored_again).await;
+        assert!(restored_again.accounts.export_quotas().is_empty());
+        remove_test_dir(&path);
+    }
+
+    #[tokio::test]
+    async fn restore_bounds_reset_less_quota() {
+        // A state file written before observed_at_* existed carries a
+        // reset-less window with no observation timestamp at all. Restoring
+        // it must not leave that window unstamped: without a bound, it would
+        // read as "never observed," and for a reset-less mark
+        // `expire_stale_quota` treats that as expired immediately, defeating
+        // the warm start this persistence feature exists for.
+        let path = temp_file("legacy-reset-less");
+        let legacy_key = crate::accounts::account_key("anthropic", &account("acct-a"));
+        let future_key = crate::accounts::account_key("anthropic", &account("acct-b"));
+        let before = unix_now();
+        let future = before + 86_400;
+        let legacy = PersistedPool {
+            version: STATE_VERSION,
+            accounts: vec![
+                PersistedAccount {
+                    key: legacy_key.clone(),
+                    quota: QuotaState {
+                        utilization_7d: Some(0.9),
+                        ..Default::default()
+                    },
+                },
+                PersistedAccount {
+                    key: future_key.clone(),
+                    quota: QuotaState {
+                        utilization_5h: Some(0.1),
+                        utilization_7d: Some(0.2),
+                        utilization_7d_oi: Some(0.3),
+                        status_5h: Some("allowed".to_string()),
+                        status_7d: Some("allowed".to_string()),
+                        status_7d_oi: Some("allowed".to_string()),
+                        status: Some("allowed".to_string()),
+                        observed_at_5h: Some(future),
+                        observed_at_7d: Some(future),
+                        observed_at_7d_oi: Some(future),
+                        observed_at_status_5h: Some(future),
+                        observed_at_status_7d: Some(future),
+                        observed_at_status_7d_oi: Some(future),
+                        observed_at_status: Some(future),
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        save(&path, &legacy).expect("save succeeds");
+        let state = state_with_path(path.clone());
+
+        restore(&state).await;
+        // Flush immediately: snapshot/select_order can expire a reset-less
+        // fixture and erase its observation stamp, causing a spurious failure.
+        flush(&state).await;
+
+        let persisted = load(&path)
+            .expect("load succeeds")
+            .expect("corrected state remains loadable");
+        let legacy_quota = &persisted
+            .accounts
+            .iter()
+            .find(|account| account.key == legacy_key)
+            .expect("legacy account persisted")
+            .quota;
+        let migration_time = legacy_quota
+            .observed_at_7d
+            .expect("legacy observation time persisted");
+        assert!(
+            migration_time >= before && migration_time <= unix_now(),
+            "a restored legacy window is backdated to boot time, not left unstamped"
+        );
+        let future_quota = &persisted
+            .accounts
+            .iter()
+            .find(|account| account.key == future_key)
+            .expect("future-stamped account persisted")
+            .quota;
+        for observed_at in [
+            future_quota.observed_at_5h,
+            future_quota.observed_at_7d,
+            future_quota.observed_at_7d_oi,
+            future_quota.observed_at_status_5h,
+            future_quota.observed_at_status_7d,
+            future_quota.observed_at_status_7d_oi,
+            future_quota.observed_at_status,
+        ] {
+            assert_eq!(observed_at, Some(migration_time));
+        }
+
+        let restored_again = state_with_path(path.clone());
+        restore(&restored_again).await;
+        let exported = restored_again.accounts.export_quotas();
+        let legacy_quota = &exported
+            .iter()
+            .find(|(key, _)| key == &legacy_key)
+            .expect("legacy account restored again")
+            .1;
+        assert_eq!(legacy_quota.observed_at_7d, Some(migration_time));
+        assert!(
+            !restored_again.accounts.take_dirty(),
+            "a second restore must keep the original migration time"
+        );
         remove_test_dir(&path);
     }
 }

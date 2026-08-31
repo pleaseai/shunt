@@ -43,16 +43,16 @@
 //!      for that account.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime},
 };
 
 use serde_json::Value;
 
 use crate::{
-    accounts::{account_key, AccountKey},
+    accounts::{account_key, AccountKey, AccountStateIdentity},
     auth::{
         claude::{auth as claude_auth, store as claude_store},
         codex::store as codex_store,
@@ -191,18 +191,60 @@ pub(crate) async fn plans_for_accounts(
     accounts: &[AccountConfig],
     budgets: &BackfillBudgets,
     deadline: tokio::time::Instant,
-) -> HashMap<String, String> {
+) -> Vec<Option<String>> {
+    plans_for_accounts_under(
+        file_read_lock(),
+        auth,
+        upstream,
+        base_url,
+        client,
+        accounts,
+        budgets,
+        deadline,
+    )
+    .await
+}
+
+/// [`plans_for_accounts`] against a caller-supplied single-flight lock, for
+/// the same reason as [`file_derived_plans`] — and additionally so a
+/// test can make the file phase time out *deterministically*.
+///
+/// [`acquire_read_permit`] is `timeout_at(file_deadline, lock.lock_owned())`,
+/// so a test that holds its own lock across the call leaves `lock_owned()`
+/// pending on the first poll and an already-expired deadline then fires with
+/// certainty. Inducing the same timeout by racing an oversized credential
+/// file against that deadline does not: `timeout_at` polls its inner future
+/// once and tokio rounds the timer up to the next millisecond tick, so
+/// whether the read finishes inside that window depends on the machine. Two
+/// tests here previously took that route and failed in CI while passing
+/// locally.
+#[allow(clippy::too_many_arguments)]
+async fn plans_for_accounts_under(
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    auth: AuthMode,
+    upstream: &str,
+    base_url: &str,
+    client: &reqwest::Client,
+    accounts: &[AccountConfig],
+    budgets: &BackfillBudgets,
+    deadline: tokio::time::Instant,
+) -> Vec<Option<String>> {
     // The file phase carries its own `min_slice` floor above `deadline` (see
     // `file_derived_plans`), so it only returns `None` in the pathological
-    // case where even that floor is not enough. Fall through to an empty
+    // case where even that floor is not enough. Fall through to an all-absent
     // `FileDerivedPlans` rather than returning early: with no tokens
     // harvested, `backfill_claude_profile_plans` will find zero backfill
     // candidates and never touch the network, but its cache-harvest step
     // (which runs before any token check) still surfaces whatever plan is
     // already cached for these accounts.
-    let file_derived = file_derived_plans(auth, accounts, budgets, deadline)
-        .await
-        .unwrap_or_default();
+    let phase = file_derived_plans(lock, auth, accounts, budgets, deadline).await;
+    // Distinct from "read fine, no uuid in the file": only a phase that never
+    // produced a result may fall back to the remembered identity.
+    let file_phase_timed_out = phase.read.is_none();
+    let read_failed = phase.read_failed;
+    let file_derived = phase
+        .read
+        .unwrap_or_else(|| FileDerivedPlans::empty(accounts.len()));
     let mut plans = file_derived.plans;
     if matches!(auth, AuthMode::ClaudeOauth) {
         backfill_claude_profile_plans(
@@ -211,6 +253,9 @@ pub(crate) async fn plans_for_accounts(
             client,
             accounts,
             &file_derived.tokens,
+            &file_derived.uuids,
+            &read_failed,
+            file_phase_timed_out,
             budgets,
             deadline,
             &mut plans,
@@ -247,10 +292,59 @@ fn credential_path(auth: AuthMode, account: &AccountConfig) -> Option<PathBuf> {
 /// read — an account with a file-derived plan is still a refinement
 /// candidate for the live profile lookup, and that lookup needs the token
 /// from here to run at all.
-#[derive(Default)]
+///
+/// Every field is **positionally aligned** to the `accounts` slice handed to
+/// [`file_derived_plans`]: `plans[i]`, `tokens[i]`, and `uuids[i]` all
+/// describe `accounts[i]`. Never key any of these by `account.name`.
+/// `resolve_pool_accounts` appends the configured accounts after the scoped
+/// store entries without deduplicating names (`auth::shared`), so one
+/// provider's resolved list may legitimately hold two distinct accounts
+/// sharing a display name — a name-keyed map silently collapses them, and
+/// for `tokens` that means probing one account with the other's bearer
+/// token. The index is the only identifier guaranteed unique here.
 struct FileDerivedPlans {
-    plans: HashMap<String, String>,
-    tokens: HashMap<String, String>,
+    plans: Vec<Option<String>>,
+    tokens: Vec<Option<String>>,
+    /// `shuntAccountUuid` as written by shunt's own credential import,
+    /// harvested from the same read that produced `plans`/`tokens` so it
+    /// costs no extra I/O. Used only to strengthen the profile cache key —
+    /// see [`plan_cache_key`].
+    uuids: Vec<Option<String>>,
+}
+
+impl FileDerivedPlans {
+    /// All-absent results for `len` accounts. The vectors must always be
+    /// exactly `accounts.len()` long, so this replaces a `Default` impl:
+    /// an empty `Vec` would make every positional lookup an out-of-bounds
+    /// read rather than a benign "no plan".
+    fn empty(len: usize) -> Self {
+        Self {
+            plans: vec![None; len],
+            tokens: vec![None; len],
+            uuids: vec![None; len],
+        }
+    }
+}
+
+/// One [`file_derived_plans`] pass: its result, plus the read failures it
+/// observed.
+///
+/// `read_failed` is deliberately **outside** `read`. The blocking read records
+/// a failure as it walks the candidate list and cannot be cancelled, so when a
+/// later account's credential stalls past the deadline the whole
+/// `FileDerivedPlans` is discarded — but a failure the task already saw is
+/// still knowledge this request has, and dropping it would let that account
+/// key the shared cache off an identity nothing evidences. Carrying the flags
+/// separately keeps them across the timeout.
+struct FilePhase {
+    /// `None` when the batched read did not finish in time.
+    read: Option<FileDerivedPlans>,
+    /// Per account, whether this pass tried to read its credential file and
+    /// could not — missing, unreadable, or unparsable. Distinct from a uuid
+    /// of `None`, which a perfectly healthy hand-placed credential also
+    /// produces: only an actual read failure is evidence *against* the
+    /// identity sitting on `AccountConfig::uuid`. See [`plan_cache_key`].
+    read_failed: Vec<bool>,
 }
 
 /// Read every resolvable credential file and extract a plan from each, in one
@@ -270,56 +364,118 @@ struct FileDerivedPlans {
 ///
 /// Returns `Some` for every normal path, including both early returns below
 /// (an unsupported family, or no candidate files at all) — an empty result
-/// is still a resolved result. Returns `None` only in the pathological case
-/// where the batched file read does not finish even before `file_deadline`
-/// (`deadline` raised by `budgets.min_slice`, see below): a truly blocked
-/// `spawn_blocking` thread cannot be cancelled, so this timeout bounds how
-/// long the caller waits on it, not the read itself.
+/// is still a resolved result. Returns `None` only when the batched file read
+/// does not finish before `file_deadline` (`deadline` raised by
+/// `budgets.min_slice`, see below), or when the single-flight permit below
+/// could not be acquired within it.
+///
+/// A truly blocked `spawn_blocking` thread cannot be cancelled, so that
+/// timeout bounds how long the caller waits on the read, not the read
+/// itself. To keep a permanently stalled credential file (a hung FUSE or
+/// network mount) from accumulating one leaked blocking worker per
+/// `/admin/pool` request, the read runs under [`FILE_READ_LOCK`], and the
+/// permit is **moved into the blocking closure** rather than held by this
+/// future: it is released when the read actually finishes, not when this
+/// function stops waiting for it. A stalled read therefore holds the permit
+/// forever, and every later request fails to acquire it and returns `None`
+/// without spawning anything — bounding the leak at one thread process-wide
+/// instead of one per request.
+///
+/// `lock` is the single-flight lock to read under. Production always passes
+/// [`file_read_lock`] (via [`plans_for_accounts`]); the parameter exists so a
+/// test can supply its own. Two things need that: asserting the permit is
+/// handed back after a completed read is order-dependent against the
+/// process-wide lock, since a concurrently running test may legitimately be
+/// holding it; and holding a private lock is how a test makes this function
+/// return `None` deterministically (see [`plans_for_accounts_under`]).
 async fn file_derived_plans(
+    lock: &Arc<tokio::sync::Mutex<()>>,
     auth: AuthMode,
     accounts: &[AccountConfig],
     budgets: &BackfillBudgets,
     deadline: tokio::time::Instant,
-) -> Option<FileDerivedPlans> {
+) -> FilePhase {
+    let settled = |read: Option<FileDerivedPlans>| FilePhase {
+        read,
+        read_failed: vec![false; accounts.len()],
+    };
     let extractor: fn(&Value) -> Option<String> = match auth {
         AuthMode::ClaudeOauth => claude_plan_from_credentials,
         AuthMode::ChatgptOauth => codex_plan_from_credentials,
-        _ => return Some(FileDerivedPlans::default()),
+        _ => return settled(Some(FileDerivedPlans::empty(accounts.len()))),
     };
-    let candidates: Vec<(String, PathBuf)> = accounts
+    // `(index into accounts, path)` — never `(name, path)`; see
+    // `FileDerivedPlans` for why the name is not a usable key here.
+    let candidates: Vec<(usize, PathBuf)> = accounts
         .iter()
-        .filter_map(|account| {
-            credential_path(auth, account).map(|path| (account.name.clone(), path))
-        })
+        .enumerate()
+        .filter_map(|(index, account)| credential_path(auth, account).map(|path| (index, path)))
         .collect();
     if candidates.is_empty() {
-        return Some(FileDerivedPlans::default());
+        return settled(Some(FileDerivedPlans::empty(accounts.len())));
     }
     let candidate_count = candidates.len();
     let now = SystemTime::now();
-    let read = tokio::task::spawn_blocking(move || {
-        let mut result = FileDerivedPlans::default();
-        for (name, path) in candidates {
-            let Some(value) = read_json(&path) else {
-                continue;
-            };
-            if let Some(plan) = extractor(&value) {
-                result.plans.insert(name.clone(), plan);
-            }
-            if matches!(auth, AuthMode::ClaudeOauth) {
-                if let Some(token) = claude_auth::refreshable_valid_access_token(&value, now) {
-                    result.tokens.insert(name, token);
-                }
-            }
-        }
-        result
-    });
+    let account_count = accounts.len();
     // Guarantee the file phase its own `min_slice` floor above whatever the
     // shared `deadline` has left, so an earlier provider's budget
     // exhaustion can never cut off this provider's free local
     // credential-file read.
     let file_deadline = deadline.max(tokio::time::Instant::now() + budgets.min_slice);
-    match tokio::time::timeout_at(file_deadline, read).await {
+    let Some(permit) = acquire_read_permit(lock, file_deadline).await else {
+        tracing::debug!(
+            candidates = candidate_count,
+            "admin pool: file-phase read permit wait timed out; an earlier credential read is \
+             still blocked, so this request reads no credential files"
+        );
+        return settled(None);
+    };
+    let read_failed = std::sync::Arc::new(std::sync::Mutex::new(vec![false; account_count]));
+    let failures = std::sync::Arc::clone(&read_failed);
+    let read = tokio::task::spawn_blocking(move || {
+        // Released only when this blocking read genuinely completes.
+        let _permit = permit;
+        let mut result = FileDerivedPlans::empty(account_count);
+        for (index, path) in candidates {
+            let Some(value) = read_json(&path) else {
+                // Missing, unreadable, or unparsable. Whatever identity this
+                // path once held is no longer evidenced by it, so drop the
+                // memo here too -- not only on the parses-but-carries-no-uuid
+                // branch below. Otherwise a later request whose file phase
+                // times out takes the recall path and keys the profile cache
+                // with that stale uuid. The bias is deliberate: clearing
+                // costs at most a fallback to the name key and its 10-minute
+                // TTL, while keeping it risks serving the previous occupant's
+                // plan for the 24-hour exact-identity TTL. Ungated by family
+                // so the clear is never narrower than the record above.
+                remember_credential_read_failure(&path);
+                // Recorded through the shared handle so it survives this
+                // task outliving the request that spawned it (see
+                // `FilePhase`). Poisoning here would mean an earlier
+                // iteration panicked, which the `JoinError` arm reports.
+                if let Ok(mut failures) = failures.lock() {
+                    failures[index] = true;
+                }
+                continue;
+            };
+            result.plans[index] = extractor(&value);
+            if matches!(auth, AuthMode::ClaudeOauth) {
+                result.tokens[index] = claude_auth::refreshable_valid_access_token(&value, now);
+                let uuid = credential_account_uuid(&value);
+                match uuid.as_deref() {
+                    Some(uuid) => remember_credential_uuid(&path, uuid),
+                    // The file was read and parsed; it simply carries no
+                    // identity. Drop any uuid remembered for this path so a
+                    // later timeout cannot resurrect the identity of an
+                    // account this file no longer holds.
+                    None => forget_credential_uuid(&path),
+                }
+                result.uuids[index] = uuid;
+            }
+        }
+        result
+    });
+    let outcome = match tokio::time::timeout_at(file_deadline, read).await {
         Ok(Ok(result)) => Some(result),
         Ok(Err(join_error)) => {
             tracing::debug!(
@@ -327,7 +483,7 @@ async fn file_derived_plans(
                 %join_error,
                 "admin pool: file-phase credential read task panicked"
             );
-            Some(FileDerivedPlans::default())
+            Some(FileDerivedPlans::empty(account_count))
         }
         Err(_elapsed) => {
             tracing::debug!(
@@ -336,11 +492,145 @@ async fn file_derived_plans(
             );
             None
         }
+    };
+    // Snapshot whatever the task has recorded, including when it is still
+    // running: `into_inner` on a poisoned lock recovers the flags a panicking
+    // iteration left behind rather than discarding them.
+    let read_failed = match read_failed.lock() {
+        Ok(failures) => failures.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    FilePhase {
+        read: outcome,
+        read_failed,
     }
+}
+
+/// Process-wide single-flight for the batched credential-file read, held as
+/// an owned permit across the blocking task's whole lifetime (see
+/// [`file_derived_plans`]). An `Arc` rather than a plain `static` because
+/// `lock_owned` is what lets the permit outlive the awaiting future.
+fn file_read_lock() -> &'static Arc<tokio::sync::Mutex<()>> {
+    static LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+    LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+}
+
+/// Last `shuntAccountUuid` seen at a given credential path.
+///
+/// Keyed by **path**, deliberately: the path is what was actually read, and
+/// two accounts that a display name cannot tell apart still have distinct
+/// credential paths (or, when both fall back to the same store path, they are
+/// reading the same file and so share the same identity anyway). A name key
+/// would be ambiguous exactly where this matters.
+///
+/// Consulted only when a read could not supply the uuid itself — that is,
+/// when the file phase timed out. Without it, a stalled read would key a
+/// uuid-less account by name and miss the entry cached under its `Verified`
+/// key, silently dropping the documented guarantee that an already-cached
+/// plan still appears in the response.
+/// What the last *completed* read of a credential path established.
+///
+/// Absent from the memo means nothing is known — either the path has never
+/// been read, or the last read parsed it and found no identity, which is an
+/// ordinary hand-placed credential and says nothing about `account.uuid`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RememberedIdentity {
+    /// The file carried this `shuntAccountUuid`.
+    Found(String),
+    /// The file could not be read or parsed at all. Recorded rather than
+    /// merely cleared, because `read_failed` is per pass: without this, a
+    /// *later* request that times out carries no failure of its own and would
+    /// fall back to the still-memoized `account.uuid` — restoring exactly the
+    /// identity the failed read refuted. A timeout is not evidence that the
+    /// path became readable again.
+    ReadFailed,
+}
+
+fn credential_uuid_memo() -> &'static Mutex<HashMap<PathBuf, RememberedIdentity>> {
+    static MEMO: OnceLock<Mutex<HashMap<PathBuf, RememberedIdentity>>> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn remember_credential_uuid(path: &Path, uuid: &str) {
+    credential_uuid_memo()
+        .lock()
+        .expect("credential uuid memo lock poisoned")
+        .insert(
+            path.to_path_buf(),
+            RememberedIdentity::Found(uuid.to_string()),
+        );
+}
+
+fn remember_credential_read_failure(path: &Path) {
+    credential_uuid_memo()
+        .lock()
+        .expect("credential uuid memo lock poisoned")
+        .insert(path.to_path_buf(), RememberedIdentity::ReadFailed);
+}
+
+fn forget_credential_uuid(path: &Path) {
+    credential_uuid_memo()
+        .lock()
+        .expect("credential uuid memo lock poisoned")
+        .remove(path);
+}
+
+fn recall_credential_identity(path: &Path) -> Option<RememberedIdentity> {
+    credential_uuid_memo()
+        .lock()
+        .expect("credential uuid memo lock poisoned")
+        .get(path)
+        .cloned()
+}
+
+/// Wait for the single-flight permit, giving up at `file_deadline` rather
+/// than queueing behind a read that may never finish. `None` means the
+/// caller must not spawn: some earlier read still holds the permit, and
+/// spawning anyway is exactly the unbounded accumulation this guards.
+///
+/// Takes the lock as a parameter so a test can exercise the give-up path
+/// against its own lock — holding the process-wide one would make every
+/// concurrently running test's credential read fail.
+async fn acquire_read_permit(
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    file_deadline: tokio::time::Instant,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    tokio::time::timeout_at(file_deadline, lock.clone().lock_owned())
+        .await
+        .ok()
+}
+
+/// `shuntAccountUuid` from an already-parsed credential blob — the identity
+/// shunt's own import stamps into the file. Mirrors
+/// `auth::claude::store`'s reader, including its blank-uuid handling: a
+/// whitespace-only value is a missing identity, never a distinct one that
+/// could collide with another blank.
+fn credential_account_uuid(value: &Value) -> Option<String> {
+    value
+        .get("shuntAccountUuid")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|uuid| !uuid.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// One account's resolved cache identity for this pass.
+#[derive(Clone)]
+struct KeyedAccount {
+    key: AccountKey,
+    /// Whether `key` identifies the credential exactly — see [`plan_cache_key`].
+    exact: bool,
+    /// The last *completed* read of this account's credential path failed,
+    /// and this pass timed out rather than producing a result of its own to
+    /// supersede that. Such an account must not touch the shared cache for
+    /// the same reason a failure observed in this pass must not: nothing
+    /// evidences its identity, so every key available to it names a previous
+    /// holder. Only a pass that actually reads the file again can clear this.
+    known_unreadable: bool,
 }
 
 /// A resolved (or attempted-and-failed) Claude profile plan lookup, cached for
@@ -360,14 +650,32 @@ struct CachedProfilePlan {
     plan: Option<String>,
     from_tier: bool,
     fetched_at: Instant,
+    /// Whether this entry's key identifies the credential itself (a
+    /// `Verified` uuid) rather than only a display name. Drives [`ttl`]:
+    /// see there for why a name-keyed success must not be trusted for a day.
+    ///
+    /// [`ttl`]: CachedProfilePlan::ttl
+    exact_identity: bool,
 }
 
 impl CachedProfilePlan {
+    /// Success is cached far longer than failure — but only when the key
+    /// actually identifies the credential.
+    ///
+    /// A `Verified` key carries the account's `shuntAccountUuid`, which
+    /// survives token refresh and changes when the account is re-imported,
+    /// so a resolved plan stays valid for a day. A `StoreEntry` /
+    /// `UpstreamInline` key is only a name: remove a uuid-less account and
+    /// re-provision a *different* subscription under the same store name and
+    /// the key is byte-identical, so a day-long entry would keep showing the
+    /// previous account's tier. Nothing in production clears this cache
+    /// (`reset_profile_cache` is test-only), so the TTL is the sole bound on
+    /// that staleness — hence the short one whenever identity is name-only.
     fn ttl(&self) -> Duration {
-        if self.plan.is_some() {
-            Duration::from_secs(24 * 60 * 60)
-        } else {
-            Duration::from_secs(10 * 60)
+        match (self.plan.is_some(), self.exact_identity) {
+            (true, true) => Duration::from_secs(24 * 60 * 60),
+            (true, false) => Duration::from_secs(10 * 60),
+            (false, _) => Duration::from_secs(10 * 60),
         }
     }
 
@@ -376,14 +684,71 @@ impl CachedProfilePlan {
     }
 }
 
+/// The profile cache key for one account, plus whether it identifies the
+/// credential exactly.
+///
+/// `account_key` alone resolves a configured account carrying a `uuid` as
+/// `Verified`, a scanned store entry as `StoreEntry`, and a uuid-less
+/// name-only configured account as `UpstreamInline`. The latter two are
+/// names, not identities.
+///
+/// The credential file's own `shuntAccountUuid` — harvested for free by
+/// [`file_derived_plans`] — outranks all three, because the value being
+/// cached is the plan of whoever *that file's token* authenticates as.
+/// `account.uuid` never selects the file ([`credential_path`] reads only
+/// `credentials`/`name`), so it is a label attached to the account, not a
+/// reading of the credential: an operator's stale `uuid = ` entry, or the
+/// process-lifetime inline-identity memo in `auth::shared`, can both still
+/// name the *previous* occupant of a re-provisioned path while the file
+/// itself already names the new one. Keying off the label there would file
+/// the new account's plan under the old account's identity and serve the old
+/// account's plan back for a full day. So a present `credential_uuid` always
+/// wins; `account.uuid` is the fallback for an account whose file could not
+/// be read or carries no uuid.
+///
+/// An account whose credential this pass tried to read and could not has no
+/// evidenced identity at all, so it does not get a key it can act on: the
+/// caller marks it non-cacheable rather than letting any key here reach the
+/// shared cache. See `read_failed`.
+///
+/// Only when no uuid exists anywhere (a hand-placed credential file shunt
+/// never imported) does the name-based key survive, and
+/// [`CachedProfilePlan::ttl`] then bounds how long a hit off it is trusted.
+fn plan_cache_key(
+    upstream: &str,
+    account: &AccountConfig,
+    credential_uuid: Option<&str>,
+) -> (AccountKey, bool) {
+    let key = account_key(upstream, account);
+    if let Some(uuid) = credential_uuid {
+        return (
+            AccountKey {
+                store_family: key.store_family,
+                identity: AccountStateIdentity::Verified {
+                    id: uuid.to_string(),
+                },
+            },
+            true,
+        );
+    }
+    let exact = matches!(key.identity, AccountStateIdentity::Verified { .. });
+    (key, exact)
+}
+
 /// Keyed by [`AccountKey`] — the pool's own stable-identity scheme, shared
 /// with `crate::accounts` and the pool health map — rather than by
 /// credential content, so a token refresh never invalidates the cache entry.
-/// `account_key` resolves a configured account with a `uuid` as `Verified`,
-/// a scanned store entry as `StoreEntry`, and a uuid-less name-only
-/// configured account as `UpstreamInline`; that last key is the
-/// `(upstream, name)` pair, which is stable for the lifetime of this
-/// process-wide cache just like the other two variants.
+/// [`plan_cache_key`], not `account_key`, builds the key used here: it
+/// prefers the credential file's own `shuntAccountUuid` over `account.uuid`,
+/// so the entry is filed under the identity of the credential the plan was
+/// actually read from.
+///
+/// A name-based key remains possible when no uuid exists anywhere. Such a key
+/// is *stable* — it never changes spuriously — but it is not *unique across
+/// time*: the same name re-provisioned to a different account produces a
+/// byte-identical key. Stability is not identity, and nothing in production
+/// clears this cache, so that residual case is bounded by
+/// [`CachedProfilePlan::ttl`] rather than by the key.
 fn profile_cache() -> &'static Mutex<HashMap<AccountKey, CachedProfilePlan>> {
     static CACHE: OnceLock<Mutex<HashMap<AccountKey, CachedProfilePlan>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -397,7 +762,7 @@ fn cached_profile_plan(key: &AccountKey) -> Option<Option<(String, bool)>> {
         .map(|entry| entry.plan.clone().map(|plan| (plan, entry.from_tier)))
 }
 
-fn store_profile_plan(key: AccountKey, resolved: Option<(String, bool)>) {
+fn store_profile_plan(key: AccountKey, exact_identity: bool, resolved: Option<(String, bool)>) {
     let mut cache = profile_cache().lock().expect("plan cache lock poisoned");
     let (plan, from_tier) = match resolved {
         Some((plan, from_tier)) => (Some(plan), from_tier),
@@ -409,6 +774,7 @@ fn store_profile_plan(key: AccountKey, resolved: Option<(String, bool)>) {
             plan,
             from_tier,
             fetched_at: Instant::now(),
+            exact_identity,
         },
     );
 }
@@ -428,6 +794,12 @@ fn store_profile_plan(key: AccountKey, resolved: Option<(String, bool)>) {
 /// every test in one test binary process; a test that exercises the backfill
 /// path must call this at its own start rather than risk inheriting an entry
 /// a different test's account happened to leave behind.
+///
+/// Calling it at the start is necessary but **not sufficient**: `cargo test`
+/// runs this module's tests concurrently in that one process, so a neighbour
+/// calling this mid-test wipes an entry the running test just cached. Tests
+/// therefore take it through `tests::exclusive_profile_cache`, which holds a
+/// guard for the whole test rather than only clearing at the start.
 #[doc(hidden)]
 pub fn reset_profile_cache() {
     profile_cache()
@@ -519,10 +891,13 @@ async fn backfill_claude_profile_plans(
     base_url: &str,
     client: &reqwest::Client,
     accounts: &[AccountConfig],
-    tokens: &HashMap<String, String>,
+    tokens: &[Option<String>],
+    credential_uuids: &[Option<String>],
+    read_failed: &[bool],
+    file_phase_timed_out: bool,
     budgets: &BackfillBudgets,
     deadline: tokio::time::Instant,
-    plans: &mut HashMap<String, String>,
+    plans: &mut [Option<String>],
 ) {
     // Two tiers, attempted in order: an account with no known plan at all
     // goes first, so a refinement candidate (one that already has a
@@ -532,23 +907,97 @@ async fn backfill_claude_profile_plans(
     // (`src/admin/mod.rs`), so this ordering gives no such guarantee across
     // multiple `claude_oauth` providers in the same request; see the doc
     // comment above for why that starvation is one-time and self-corrects.
-    let mut new_candidates: Vec<(&AccountConfig, AccountKey)> = Vec::new();
-    let mut refinement_candidates: Vec<(&AccountConfig, AccountKey)> = Vec::new();
-    for account in accounts {
-        let key = account_key(upstream, account);
-        if let Some(cached) = cached_profile_plan(&key) {
-            merge_profile_plan(plans, &account.name, cached);
-            continue;
-        }
-        if tokens.contains_key(&account.name) {
-            if plans.contains_key(&account.name) {
-                refinement_candidates.push((account, key));
+    // Every collection here is indexed, never keyed by `account.name`: two
+    // resolved accounts may share a display name (see `FileDerivedPlans`),
+    // and keying tokens by name would probe one account with the other's
+    // bearer token.
+    // One key per account. When the file phase timed out, `credential_uuids`
+    // is all-absent; the path-keyed memo then supplies the uuid a previous
+    // read established, so an account whose identity lives only in its
+    // credential file can still find its cached entry.
+    let keys: Vec<KeyedAccount> = accounts
+        .iter()
+        .enumerate()
+        .map(|(index, account)| {
+            // Only consulted when no read happened at all. A completed read
+            // is authoritative about this path either way: if it found no
+            // uuid, the account holding the path today has no identity,
+            // whatever an earlier one had.
+            let remembered = if file_phase_timed_out {
+                credential_path(AuthMode::ClaudeOauth, account)
+                    .and_then(|path| recall_credential_identity(&path))
             } else {
-                new_candidates.push((account, key));
+                None
+            };
+            let uuid = credential_uuids[index].clone().or(match &remembered {
+                Some(RememberedIdentity::Found(uuid)) => Some(uuid.clone()),
+                _ => None,
+            });
+            let (key, exact) = plan_cache_key(upstream, account, uuid.as_deref());
+            KeyedAccount {
+                key,
+                exact,
+                known_unreadable: matches!(remembered, Some(RememberedIdentity::ReadFailed)),
+            }
+        })
+        .collect();
+    // A non-exact key is only a display name, so two accounts in this one
+    // resolved list can share it. The shared process-wide cache cannot tell
+    // them apart, and using it would serve the first account's profile result
+    // as the second's -- so an ambiguous key is neither read nor written, and
+    // each such account is resolved fresh.
+    let mut name_key_counts: HashMap<&AccountKey, usize> = HashMap::new();
+    for keyed in &keys {
+        if !keyed.exact {
+            *name_key_counts.entry(&keyed.key).or_insert(0) += 1;
+        }
+    }
+    let ambiguous: HashSet<AccountKey> = name_key_counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(key, _)| key.clone())
+        .collect();
+
+    let mut new_candidates: Vec<Candidate> = Vec::new();
+    let mut refinement_candidates: Vec<Candidate> = Vec::new();
+    for index in 0..accounts.len() {
+        let KeyedAccount {
+            key,
+            exact: exact_identity,
+            known_unreadable,
+        } = keys[index].clone();
+        // A pass that tried to read this account's credential and could not
+        // has no evidence of its identity, so it must not touch the shared
+        // cache. Every key still available to it names a *previous* holder:
+        // `account.uuid` is filled from that same file by
+        // `resolve_pool_accounts` and memoized for the process lifetime, and
+        // the name fallback is stable but not unique over time. Reading
+        // either would show the previous account's subscription; there is
+        // nothing to write, since a failed read also yields no token. So the
+        // plan is omitted for this pass and reappears once the credential
+        // reads again.
+        let cacheable = !ambiguous.contains(&key) && !read_failed[index] && !known_unreadable;
+        if cacheable {
+            if let Some(cached) = cached_profile_plan(&key) {
+                merge_profile_plan(plans, index, cached);
+                continue;
+            }
+        }
+        if tokens[index].is_some() {
+            let candidate = Candidate {
+                index,
+                key,
+                exact_identity,
+                cacheable,
+            };
+            if plans[index].is_some() {
+                refinement_candidates.push(candidate);
+            } else {
+                new_candidates.push(candidate);
             }
         }
     }
-    let candidates: Vec<(&AccountConfig, AccountKey)> = new_candidates
+    let candidates: Vec<Candidate> = new_candidates
         .into_iter()
         .chain(refinement_candidates)
         .collect();
@@ -565,12 +1014,22 @@ async fn backfill_claude_profile_plans(
         return;
     };
 
-    for (account, key) in candidates {
+    for Candidate {
+        index,
+        key,
+        exact_identity,
+        cacheable,
+    } in candidates
+    {
+        // Display name only — used for log lines, never as a lookup key.
+        let account = &accounts[index];
         // Double-check: another caller may have resolved and cached this
         // exact account while this caller waited for the lock.
-        if let Some(cached) = cached_profile_plan(&key) {
-            merge_profile_plan(plans, &account.name, cached);
-            continue;
+        if cacheable {
+            if let Some(cached) = cached_profile_plan(&key) {
+                merge_profile_plan(plans, index, cached);
+                continue;
+            }
         }
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -580,7 +1039,7 @@ async fn backfill_claude_profile_plans(
 
         // `tokens` guaranteed this account an entry when it became a
         // candidate above; nothing between then and now removes it.
-        let Some(access_token) = tokens.get(&account.name) else {
+        let Some(access_token) = tokens[index].as_deref() else {
             continue;
         };
 
@@ -592,8 +1051,10 @@ async fn backfill_claude_profile_plans(
         .await
         {
             Ok(Some(resolved)) => {
-                store_profile_plan(key, Some(resolved.clone()));
-                merge_profile_plan(plans, &account.name, Some(resolved));
+                if cacheable {
+                    store_profile_plan(key, exact_identity, Some(resolved.clone()));
+                }
+                merge_profile_plan(plans, index, Some(resolved));
             }
             Ok(None) => {
                 tracing::debug!(
@@ -601,7 +1062,9 @@ async fn backfill_claude_profile_plans(
                     account = %account.name,
                     "admin pool: profile backfill fetch failed"
                 );
-                store_profile_plan(key, None);
+                if cacheable {
+                    store_profile_plan(key, exact_identity, None);
+                }
             }
             Err(_) => {
                 tracing::debug!(
@@ -610,7 +1073,9 @@ async fn backfill_claude_profile_plans(
                     timeout_ms = attempt_budget.as_millis() as u64,
                     "admin pool: profile backfill attempt timed out"
                 );
-                store_profile_plan(key, None);
+                if cacheable {
+                    store_profile_plan(key, exact_identity, None);
+                }
             }
         }
     }
@@ -632,17 +1097,26 @@ async fn backfill_claude_profile_plans(
 /// that would silently discard information. `None` (no profile result at
 /// all: cache miss with no entry, a failed fetch, or a timeout) never
 /// touches the existing entry.
-fn merge_profile_plan(
-    plans: &mut HashMap<String, String>,
-    name: &str,
-    profile: Option<(String, bool)>,
-) {
+fn merge_profile_plan(plans: &mut [Option<String>], index: usize, profile: Option<(String, bool)>) {
     let Some((plan, from_tier)) = profile else {
         return;
     };
-    if from_tier || !plans.contains_key(name) {
-        plans.insert(name.to_string(), plan);
+    if from_tier || plans[index].is_none() {
+        plans[index] = Some(plan);
     }
+}
+
+/// One account queued for a live profile fetch, identified by its position
+/// in the resolved `accounts` slice — the only unique identifier available
+/// (see [`FileDerivedPlans`]).
+struct Candidate {
+    index: usize,
+    key: AccountKey,
+    exact_identity: bool,
+    /// `false` when this account's key is a display name shared with another
+    /// account in the same resolved list -- the shared cache cannot tell the
+    /// two apart, so such an account is resolved fresh and never cached.
+    cacheable: bool,
 }
 
 /// One `GET {base_url}/api/oauth/profile` call against a token already known
@@ -678,6 +1152,43 @@ async fn fetch_claude_profile_plan(
 
 #[cfg(test)]
 mod tests {
+
+    /// Serializes every test that touches process-wide backfill state, and
+    /// clears the profile cache once the guard is held.
+    ///
+    /// Two statics are shared by the whole test binary: the profile cache
+    /// behind [`reset_profile_cache`], and `BACKFILL_LOCK`. `cargo test` runs
+    /// this module's tests concurrently in one process, so without this guard
+    /// a neighbour's `reset_profile_cache()` wipes the entry a test just
+    /// cached (the test then reads `None` where it expects a cache hit), and
+    /// a neighbour holding `BACKFILL_LOCK` can starve a test's budget until
+    /// it skips its own probe (the test then counts fewer requests than it
+    /// expects). Both surface as assertion failures unrelated to the
+    /// behaviour under test.
+    ///
+    /// `tokio::sync::Mutex` is not poisoned by a panicking holder, so one
+    /// failing test does not cascade into every later one.
+    static PROFILE_CACHE_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn exclusive_profile_cache() -> tokio::sync::MutexGuard<'static, ()> {
+        let guard = PROFILE_CACHE_GUARD.lock().await;
+        reset_profile_cache();
+        guard
+    }
+
+    /// A single-flight lock private to one test.
+    ///
+    /// Tests must not share the production [`file_read_lock`]: it serializes
+    /// every credential read process-wide, so a test whose assertion depends
+    /// on its own file phase completing can be starved past its deadline by
+    /// whatever else is running concurrently. A starved phase then falls back
+    /// to the remembered identity exactly as designed -- which inverts the
+    /// assertion under test and reads as a flake. A test that *wants* the
+    /// timeout takes the opposite route and holds its own lock across the
+    /// call (see [`plans_for_accounts_under`]).
+    fn fresh_file_lock() -> Arc<tokio::sync::Mutex<()>> {
+        Arc::new(tokio::sync::Mutex::new(()))
+    }
     use super::*;
 
     #[test]
@@ -769,18 +1280,83 @@ mod tests {
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let result = file_derived_plans(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             &accounts,
             &BackfillBudgets::default(),
             deadline,
         )
         .await
+        .read
         .expect("file phase must not time out against a 5s deadline");
+        assert_eq!(result.plans[0].as_deref(), Some("max"));
+        assert_eq!(result.plans[1], None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `resolve_pool_accounts` appends configured accounts after scoped
+    /// store entries without deduplicating display names
+    /// (`auth::shared::resolve_pool_accounts`), so one provider's resolved
+    /// list can legitimately hold two distinct accounts called the same
+    /// thing. Results must stay positional: keyed by name, the second
+    /// account's file plan overwrites the first's and both rows then show
+    /// the same subscription.
+    #[tokio::test]
+    async fn file_derived_plans_keeps_same_named_accounts_distinct() {
+        let dir = unique_test_dir("same-name-plans");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first_path = dir.join("first.json");
+        std::fs::write(
+            &first_path,
+            serde_json::json!({"claudeAiOauth": {"subscriptionType": "pro"}}).to_string(),
+        )
+        .unwrap();
+        let second_path = dir.join("second.json");
+        std::fs::write(
+            &second_path,
+            serde_json::json!({"claudeAiOauth": {"subscriptionType": "max"}}).to_string(),
+        )
+        .unwrap();
+
+        // Same `name`, different credentials -- the shape an ordered upstream
+        // produces when a scoped store reference and an inline account
+        // happen to share a label.
+        let accounts = vec![
+            AccountConfig {
+                name: "collide".to_string(),
+                credentials: Some(first_path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            AccountConfig {
+                name: "collide".to_string(),
+                credentials: Some(second_path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        ];
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let result = file_derived_plans(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            &accounts,
+            &BackfillBudgets::default(),
+            deadline,
+        )
+        .await
+        .read
+        .expect("file phase must not time out against a 5s deadline");
+
         assert_eq!(
-            result.plans.get("with-plan").map(String::as_str),
-            Some("max")
+            result.plans[0].as_deref(),
+            Some("pro"),
+            "the first account must keep its own file-derived plan"
         );
-        assert_eq!(result.plans.get("env-only"), None);
+        assert_eq!(
+            result.plans[1].as_deref(),
+            Some("max"),
+            "the second account must keep its own file-derived plan"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -794,15 +1370,19 @@ mod tests {
         }];
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let result = file_derived_plans(
+            &fresh_file_lock(),
             AuthMode::KimiOauth,
             &accounts,
             &BackfillBudgets::default(),
             deadline,
         )
         .await
+        .read
         .expect("unsupported family short-circuits before any timeout is possible");
-        assert!(result.plans.is_empty());
-        assert!(result.tokens.is_empty());
+        // Length-aligned to `accounts`, so "no results" is all-absent
+        // rather than an empty vector.
+        assert_eq!(result.plans, vec![None]);
+        assert_eq!(result.tokens, vec![None]);
     }
 
     /// A refreshable-login fixture for the backfill tests below: a non-empty
@@ -875,7 +1455,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("stall");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = write_refreshable_fixture(&dir, "stalled-account", None);
@@ -908,7 +1488,8 @@ mod tests {
         let client = reqwest::Client::new();
 
         let started = Instant::now();
-        let plans = plans_for_accounts(
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "stall-test-upstream",
             &server.uri(),
@@ -925,7 +1506,7 @@ mod tests {
             "plans_for_accounts took {elapsed:?}, expected under 1s given an 800ms total budget"
         );
         assert!(
-            !plans.contains_key("stalled-account"),
+            plans[0].is_none(),
             "a stalled endpoint must never resolve a plan"
         );
         assert!(
@@ -941,7 +1522,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("starved");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = write_refreshable_fixture(&dir, "starved-account", None);
@@ -970,7 +1551,8 @@ mod tests {
             min_slice: Duration::from_secs(2),
         };
         let deadline = tokio::time::Instant::now() + starved_budgets.total;
-        let plans = plans_for_accounts(
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "starved-test-upstream",
             &server.uri(),
@@ -980,7 +1562,7 @@ mod tests {
             deadline,
         )
         .await;
-        assert!(!plans.contains_key("starved-account"));
+        assert!(plans[0].is_none());
         assert_eq!(
             server.received_requests().await.unwrap().len(),
             0,
@@ -994,7 +1576,8 @@ mod tests {
         // would fail.
         let normal_budgets = BackfillBudgets::default();
         let deadline = tokio::time::Instant::now() + normal_budgets.total;
-        let plans = plans_for_accounts(
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "starved-test-upstream",
             &server.uri(),
@@ -1005,7 +1588,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            plans.get("starved-account").map(String::as_str),
+            plans[0].as_deref(),
             Some("max"),
             "a starved skip must not poison the cache with a false failure"
         );
@@ -1018,7 +1601,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("concurrent");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = write_refreshable_fixture(&dir, "concurrent-account", None);
@@ -1047,8 +1630,13 @@ mod tests {
         let client = reqwest::Client::new();
         let server_uri = server.uri();
 
+        // One lock shared by both concurrent calls -- still private to this
+        // test, and the file read releases it long before the profile fetch
+        // this test is actually single-flighting.
+        let lock = fresh_file_lock();
         let (a, b) = tokio::join!(
-            plans_for_accounts(
+            plans_for_accounts_under(
+                &lock,
                 AuthMode::ClaudeOauth,
                 "concurrent-test-upstream",
                 &server_uri,
@@ -1057,7 +1645,8 @@ mod tests {
                 &budgets,
                 deadline,
             ),
-            plans_for_accounts(
+            plans_for_accounts_under(
+                &lock,
                 AuthMode::ClaudeOauth,
                 "concurrent-test-upstream",
                 &server_uri,
@@ -1067,8 +1656,8 @@ mod tests {
                 deadline,
             ),
         );
-        assert_eq!(a.get("concurrent-account").map(String::as_str), Some("max"));
-        assert_eq!(b.get("concurrent-account").map(String::as_str), Some("max"));
+        assert_eq!(a[0].as_deref(), Some("max"));
+        assert_eq!(b[0].as_deref(), Some("max"));
         assert_eq!(
             server.received_requests().await.unwrap().len(),
             1,
@@ -1083,7 +1672,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("refine-tier");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = write_refreshable_fixture(&dir, "refine-tier-account", Some("max"));
@@ -1106,7 +1695,8 @@ mod tests {
         let budgets = BackfillBudgets::default();
         let deadline = tokio::time::Instant::now() + budgets.total;
         let client = reqwest::Client::new();
-        let plans = plans_for_accounts(
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "refine-tier-test-upstream",
             &server.uri(),
@@ -1118,7 +1708,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            plans.get("refine-tier-account").map(String::as_str),
+            plans[0].as_deref(),
             Some("max 20x"),
             "a tier-derived profile value must refine a coarser file-derived plan"
         );
@@ -1136,7 +1726,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("refine-no-downgrade");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = write_refreshable_fixture(&dir, "refine-guard-account", Some("max"));
@@ -1159,7 +1749,8 @@ mod tests {
         let budgets = BackfillBudgets::default();
         let deadline = tokio::time::Instant::now() + budgets.total;
         let client = reqwest::Client::new();
-        let plans = plans_for_accounts(
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "refine-guard-test-upstream",
             &server.uri(),
@@ -1171,7 +1762,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            plans.get("refine-guard-account").map(String::as_str),
+            plans[0].as_deref(),
             Some("max"),
             "an organization_type-derived profile value must never overwrite an existing file-derived plan"
         );
@@ -1186,7 +1777,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_derived_plans_floors_its_own_deadline_at_min_slice() {
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("floor");
         std::fs::create_dir_all(&dir).unwrap();
         let creds_path = dir.join("floor-account.json");
@@ -1225,6 +1816,7 @@ mod tests {
         let deadline = tokio::time::Instant::now() - Duration::from_secs(1);
 
         let result = file_derived_plans(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             std::slice::from_ref(&account),
             &budgets,
@@ -1232,14 +1824,11 @@ mod tests {
         )
         .await;
 
-        let result = result.expect(
+        let result = result.read.expect(
             "the min_slice floor must give the file phase its own budget even past an \
              already-expired deadline",
         );
-        assert_eq!(
-            result.plans.get("floor-account").map(String::as_str),
-            Some("max")
-        );
+        assert_eq!(result.plans[0].as_deref(), Some("max"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1249,7 +1838,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
 
         // One deadline, computed once (below, right after the mock server is
         // mounted and right before the first call) and reused for both calls
@@ -1316,7 +1905,8 @@ mod tests {
         let deadline = tokio::time::Instant::now() + budgets.total;
         let client = reqwest::Client::new();
 
-        let _first_plans = plans_for_accounts(
+        let _first_plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "mmp-first-provider-upstream",
             &server.uri(),
@@ -1364,7 +1954,8 @@ mod tests {
             ..Default::default()
         };
 
-        let second_plans = plans_for_accounts(
+        let second_plans = plans_for_accounts_under(
+            &fresh_file_lock(),
             AuthMode::ClaudeOauth,
             "mmp-second-provider-upstream",
             &server.uri(),
@@ -1376,7 +1967,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            second_plans.get("mmp-second-account").map(String::as_str),
+            second_plans[0].as_deref(),
             Some("max"),
             "a second provider with zero network candidates must still surface its \
              file-derived plan even after an earlier provider consumed part of the \
@@ -1392,32 +1983,14 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        reset_profile_cache();
+        let _cache = exclusive_profile_cache().await;
         let dir = unique_test_dir("cache-harvest");
         std::fs::create_dir_all(&dir).unwrap();
-        // Oversized on purpose. `tokio::time::timeout_at` polls its inner future
-        // before the delay, and tokio rounds a timer deadline up to the next
-        // millisecond tick -- so an already-expired deadline still grants the
-        // `spawn_blocking` read up to ~1ms of slack, and a few-hundred-byte
-        // credential file finishes well inside it. That would hand back `Ok` and
-        // silently skip the timeout branch this test exists to cover. A
-        // multi-megabyte `padding` sibling puts read+parse into the milliseconds,
-        // past that window by an order of magnitude, while staying far under the
-        // `min_slice` floor the normal path relies on. The key sits beside
-        // `claudeAiOauth`, which both extractors navigate into by name
-        // (`auth::shared::claude_plan_from_credentials`,
-        // `auth::claude::auth::refreshable_valid_access_token`), so it changes no
-        // extracted value. This mitigation is probabilistic rather than an
-        // absolute guarantee: padding widens the race window by orders of
-        // magnitude without proving it closed, and the escape-rate upper
-        // bound this relies on is tracked by mutation-repetition
-        // measurement, not by this padding size alone -- re-run that
-        // measurement before shrinking it. Do not "fix" a flake here with
-        // `start_paused`: virtual time auto-advances while a
-        // `spawn_blocking` is in flight and would fire the timeout on the
-        // normal path too.
-        let creds_path =
-            write_padded_refreshable_fixture(&dir, "cache-harvest-account", None, 2 * 1024 * 1024);
+        // The file phase is made to time out by holding `lock` across the
+        // second call, not by racing the read against the deadline -- see
+        // `plans_for_accounts_under`. So an ordinary fixture is enough here.
+        let creds_path = write_padded_refreshable_fixture(&dir, "cache-harvest-account", None, 0);
+        let lock: Arc<tokio::sync::Mutex<()>> = Arc::new(tokio::sync::Mutex::new(()));
         let account = AccountConfig {
             name: "cache-harvest-account".to_string(),
             uuid: Some("cache-harvest-account-uuid".to_string()),
@@ -1440,7 +2013,8 @@ mod tests {
         // account carries a uuid.
         let first_budgets = BackfillBudgets::default();
         let first_deadline = tokio::time::Instant::now() + first_budgets.total;
-        let first_plans = plans_for_accounts(
+        let first_plans = plans_for_accounts_under(
+            &lock,
             AuthMode::ClaudeOauth,
             "cache-harvest-upstream",
             &server.uri(),
@@ -1450,26 +2024,25 @@ mod tests {
             first_deadline,
         )
         .await;
-        assert_eq!(
-            first_plans.get("cache-harvest-account").map(String::as_str),
-            Some("max")
-        );
+        assert_eq!(first_plans[0].as_deref(), Some("max"));
 
         // Second call: same upstream and same uuid, so the same AccountKey
-        // hits the warm cache -- but min_slice is zeroed out (defeating the
-        // floor entirely) and the deadline is already expired, forcing the
-        // file phase's timeout_at to fire and unwrap_or_default() to an
-        // empty FileDerivedPlans. The cache-hit check inside
-        // backfill_claude_profile_plans runs before any token-eligibility
-        // check, so the plan must still surface purely from cache, with no
-        // additional network request.
+        // hits the warm cache -- but the single-flight permit is held here,
+        // min_slice is zeroed out (defeating the floor entirely) and the
+        // deadline is already expired, so `acquire_read_permit` cannot
+        // acquire and the file phase returns `None` with certainty. The
+        // cache-hit check inside backfill_claude_profile_plans runs before
+        // any token-eligibility check, so the plan must still surface purely
+        // from cache, with no additional network request.
+        let held = lock.clone().lock_owned().await;
         let second_budgets = BackfillBudgets {
             total: Duration::from_secs(8),
             per_account: Duration::from_secs(5),
             min_slice: Duration::ZERO,
         };
         let second_deadline = tokio::time::Instant::now() - Duration::from_secs(1);
-        let second_plans = plans_for_accounts(
+        let second_plans = plans_for_accounts_under(
+            &lock,
             AuthMode::ClaudeOauth,
             "cache-harvest-upstream",
             &server.uri(),
@@ -1481,9 +2054,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            second_plans
-                .get("cache-harvest-account")
-                .map(String::as_str),
+            second_plans[0].as_deref(),
             Some("max"),
             "a cached plan must surface even when the file phase times out and min_slice is zeroed"
         );
@@ -1491,6 +2062,1257 @@ mod tests {
             server.received_requests().await.unwrap().len(),
             1,
             "the second call must be a pure cache harvest with zero additional network requests"
+        );
+        drop(held);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A refreshable fixture with a caller-chosen access token and optional
+    /// `shuntAccountUuid`, so a test can tell two accounts' credentials apart
+    /// by what reaches the profile endpoint.
+    fn write_identified_fixture(
+        path: &std::path::Path,
+        access_token: &str,
+        account_uuid: Option<&str>,
+    ) {
+        let expires_at_ms = (std::time::SystemTime::now() + Duration::from_secs(3600))
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let mut blob = serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": access_token,
+                "refreshToken": "refresh-token",
+                "expiresAt": expires_at_ms
+            }
+        });
+        if let Some(uuid) = account_uuid {
+            blob["shuntAccountUuid"] = serde_json::Value::String(uuid.to_string());
+        }
+        std::fs::write(path, blob.to_string()).unwrap();
+    }
+
+    /// The sharper half of the same-name hazard: `tokens` keyed by display
+    /// name hands whichever credential was read last to *every* account
+    /// sharing that name, so one account's profile is fetched with another
+    /// account's bearer token. Each account must be probed with its own.
+    #[tokio::test]
+    async fn backfill_probes_each_same_named_account_with_its_own_token() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("same-name-tokens");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first_path = dir.join("first.json");
+        write_identified_fixture(&first_path, "token-first", None);
+        let second_path = dir.join("second.json");
+        write_identified_fixture(&second_path, "token-second", None);
+
+        // Distinct uuids keep the two cache keys apart, so both accounts
+        // genuinely reach the fetch and the tokens they carry are what this
+        // test observes. The *names* still collide, which is the hazard.
+        let accounts = vec![
+            AccountConfig {
+                name: "collide".to_string(),
+                uuid: Some("uuid-first".to_string()),
+                credentials: Some(first_path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            AccountConfig {
+                name: "collide".to_string(),
+                uuid: Some("uuid-second".to_string()),
+                credentials: Some(second_path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        ];
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"organization_type": "claude_max"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let deadline = tokio::time::Instant::now() + budgets.total;
+        let client = reqwest::Client::new();
+        let _plans = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "same-name-token-upstream",
+            &server.uri(),
+            &client,
+            &accounts,
+            &budgets,
+            deadline,
+        )
+        .await;
+
+        let mut seen: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|request| {
+                request
+                    .headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .map(ToOwned::to_owned)
+            })
+            .collect();
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![
+                "Bearer token-first".to_string(),
+                "Bearer token-second".to_string()
+            ],
+            "each account must be probed with the token from its own credential file; a \
+             name-keyed token map sends the last-read token twice"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Nothing in production clears the profile cache, so a uuid-less account
+    /// re-provisioned under the same store name must not be served the
+    /// previous account's plan. The credential file's own `shuntAccountUuid`
+    /// is what distinguishes them.
+    #[tokio::test]
+    async fn reprovisioning_under_the_same_name_is_not_served_the_previous_plan() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("reprovision");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("reprovision.json");
+        write_identified_fixture(&creds_path, "token-before", Some("uuid-before"));
+
+        // No `uuid` on the config: without the credential file's own
+        // identity this keys as `UpstreamInline { upstream, name }`, which is
+        // byte-identical before and after re-provisioning.
+        let account = AccountConfig {
+            name: "reprovisioned".to_string(),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-before"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-after"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_pro_5x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let first = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "reprovision-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // Same name, same path -- a different account.
+        write_identified_fixture(&creds_path, "token-after", Some("uuid-after"));
+        let second = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "reprovision-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+
+        assert_eq!(
+            second[0].as_deref(),
+            Some("pro 5x"),
+            "the replacement account's own plan must be resolved, not the cached plan of the \
+             account that previously held this name"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            2,
+            "the replacement account must reach the profile endpoint rather than hit the \
+             previous account's cache entry"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stale_account_uuid_does_not_pin_the_cache_to_the_previous_occupant() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("stale-uuid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("stale-uuid.json");
+        write_identified_fixture(&creds_path, "token-before", Some("uuid-before"));
+
+        // `uuid` carries the *previous* occupant of this path. That is exactly
+        // what `resolve_pool_accounts` hands us after a re-provisioning with no
+        // config reload: its inline-identity memo is process-lifetime, so it
+        // keeps answering "uuid-before" while the file already says
+        // "uuid-after" (`auth::shared`). An operator's stale `uuid = ` entry
+        // reaches this code identically.
+        let account = AccountConfig {
+            name: "stale".to_string(),
+            uuid: Some("uuid-before".to_string()),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-before"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-after"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_pro_5x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let first = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "stale-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // The path is re-provisioned to a different account. `account.uuid`
+        // does not move -- only the file does.
+        write_identified_fixture(&creds_path, "token-after", Some("uuid-after"));
+        let second = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "stale-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(
+            second[0].as_deref(),
+            Some("pro 5x"),
+            "keying off the stale `account.uuid` would file the new account's plan under the old \
+             account's identity and keep serving `max 20x` for the 24h exact-identity TTL"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_cache_key_prefers_the_credential_file_uuid() {
+        let account = AccountConfig {
+            name: "named".to_string(),
+            uuid: Some("stale-uuid".to_string()),
+            ..Default::default()
+        };
+        let (key, exact) = plan_cache_key("upstream", &account, Some("credential-uuid"));
+        assert!(exact);
+        assert_eq!(
+            key.identity,
+            AccountStateIdentity::Verified {
+                id: "credential-uuid".to_string()
+            },
+            "the plan belongs to whoever the file's token authenticates as, so the file's own \
+             uuid outranks the label on the account -- which may be a stale operator entry or a \
+             stale inline-identity memo naming the path's previous occupant"
+        );
+    }
+
+    #[test]
+    fn plan_cache_key_falls_back_to_the_account_uuid_without_a_file_uuid() {
+        let account = AccountConfig {
+            name: "named".to_string(),
+            uuid: Some("configured-uuid".to_string()),
+            ..Default::default()
+        };
+        let (key, exact) = plan_cache_key("upstream", &account, None);
+        assert!(exact, "a uuid is an identity");
+        assert_eq!(
+            key.identity,
+            AccountStateIdentity::Verified {
+                id: "configured-uuid".to_string()
+            },
+            "with no uuid from the file the account's own is the best identity available"
+        );
+    }
+
+    #[test]
+    fn plan_cache_key_upgrades_a_name_key_with_the_credential_uuid() {
+        let account = AccountConfig {
+            name: "named".to_string(),
+            ..Default::default()
+        };
+        let (name_keyed, exact_without) = plan_cache_key("upstream", &account, None);
+        assert!(!exact_without, "a bare name is not an identity");
+        assert_eq!(
+            name_keyed.identity,
+            AccountStateIdentity::UpstreamInline {
+                upstream: "upstream".to_string(),
+                name: "named".to_string()
+            }
+        );
+
+        let (upgraded, exact_with) = plan_cache_key("upstream", &account, Some("credential-uuid"));
+        assert!(exact_with);
+        assert_eq!(
+            upgraded.identity,
+            AccountStateIdentity::Verified {
+                id: "credential-uuid".to_string()
+            },
+            "the credential file's own uuid must key the entry when config carries none"
+        );
+    }
+
+    #[test]
+    fn a_name_keyed_success_is_not_cached_for_a_day() {
+        let exact = CachedProfilePlan {
+            plan: Some("max".to_string()),
+            from_tier: true,
+            fetched_at: Instant::now(),
+            exact_identity: true,
+        };
+        let name_only = CachedProfilePlan {
+            exact_identity: false,
+            ..CachedProfilePlan {
+                plan: Some("max".to_string()),
+                from_tier: true,
+                fetched_at: Instant::now(),
+                exact_identity: true,
+            }
+        };
+        assert_eq!(exact.ttl(), Duration::from_secs(24 * 60 * 60));
+        assert_eq!(
+            name_only.ttl(),
+            Duration::from_secs(10 * 60),
+            "a key that is only a display name must not pin a plan for a day -- the same name \
+             may belong to a different account by then"
+        );
+    }
+
+    /// The give-up path that bounds the blocking-pool leak: when a previous
+    /// read still holds the permit, a new request must return without
+    /// spawning a second read. Exercised against a local lock -- holding the
+    /// process-wide one would fail every concurrently running test's
+    /// credential read.
+    #[tokio::test]
+    async fn read_permit_is_refused_while_an_earlier_read_holds_it() {
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let held = lock.clone().lock_owned().await;
+
+        let refused = acquire_read_permit(
+            &lock,
+            tokio::time::Instant::now() + Duration::from_millis(20),
+        )
+        .await;
+        assert!(
+            refused.is_none(),
+            "a request must give up rather than queue behind a read that may never finish"
+        );
+
+        drop(held);
+        let granted =
+            acquire_read_permit(&lock, tokio::time::Instant::now() + Duration::from_secs(5)).await;
+        assert!(
+            granted.is_some(),
+            "the permit must be available again once the holder releases it"
+        );
+    }
+
+    /// The complement: a read that completes must hand the permit back, or
+    /// the first `/admin/pool` request would wedge every later one.
+    #[tokio::test]
+    async fn read_permit_is_released_after_a_completed_read() {
+        let dir = unique_test_dir("permit-release");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("released.json");
+        std::fs::write(
+            &creds_path,
+            serde_json::json!({"claudeAiOauth": {"subscriptionType": "max"}}).to_string(),
+        )
+        .unwrap();
+        let accounts = vec![AccountConfig {
+            name: "released".to_string(),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        }];
+
+        // Driven against a lock of this test's own: asserting on the
+        // process-wide one is order-dependent, since a concurrently running
+        // test may legitimately be holding it.
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let result = file_derived_plans(
+            &lock,
+            AuthMode::ClaudeOauth,
+            &accounts,
+            &BackfillBudgets::default(),
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await
+        .read
+        .expect("a local file read must not time out against a 5s deadline");
+        assert_eq!(result.plans[0].as_deref(), Some("max"));
+
+        assert!(
+            lock.try_lock().is_ok(),
+            "the permit must be released once the blocking read finishes"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A stalled file phase must not lose access to plans an earlier
+    /// resolution already cached. The identity of a uuid-less account lives
+    /// only in its credential file, so when that file cannot be read the
+    /// path-keyed memo is the only way back to its cache entry.
+    #[tokio::test]
+    async fn a_timed_out_file_phase_still_serves_a_cached_plan_for_a_uuid_less_account() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("timeout-harvest");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("harvest.json");
+        write_identified_fixture(&creds_path, "token-harvest", Some("uuid-harvest"));
+        // The file phase is made to time out by holding `lock` across the
+        // second call rather than by racing the read against the deadline --
+        // see `plans_for_accounts_under`. Without that the read may well
+        // succeed, the uuid is re-read, and this test silently stops
+        // exercising the timeout path it exists to cover.
+        let lock: Arc<tokio::sync::Mutex<()>> = Arc::new(tokio::sync::Mutex::new(()));
+
+        // No config uuid: the account's identity is only in the file.
+        let account = AccountConfig {
+            name: "harvested".to_string(),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let first = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "timeout-harvest-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // Force the file phase to time out: the permit is held here,
+        // `min_slice` zeroed defeats the floor, and the deadline is already
+        // expired, so `acquire_read_permit` cannot acquire. No credential is
+        // read and no uuid reaches the backfill from this pass.
+        let held = lock.clone().lock_owned().await;
+        let starved = BackfillBudgets {
+            total: Duration::from_secs(8),
+            per_account: Duration::from_secs(5),
+            min_slice: Duration::ZERO,
+        };
+        let second = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "timeout-harvest-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &starved,
+            tokio::time::Instant::now() - Duration::from_secs(1),
+        )
+        .await;
+
+        assert_eq!(
+            second[0].as_deref(),
+            Some("max 20x"),
+            "a plan cached from an earlier resolution must still appear when the file phase \
+             times out, even though the account's uuid could not be re-read"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "the cached plan must be harvested, not re-fetched"
+        );
+        drop(held);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two accounts with no identity anywhere -- no config uuid, no
+    /// `shuntAccountUuid` -- collapse onto one `UpstreamInline` key. The
+    /// shared cache cannot separate them, so neither may use it: without the
+    /// guard the first account's profile result is served as the second's.
+    #[tokio::test]
+    async fn ambiguous_name_keys_are_resolved_fresh_rather_than_shared() {
+        use wiremock::matchers::{header, method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("ambiguous-key");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first_path = dir.join("first.json");
+        write_identified_fixture(&first_path, "token-alpha", None);
+        let second_path = dir.join("second.json");
+        write_identified_fixture(&second_path, "token-beta", None);
+
+        let accounts = vec![
+            AccountConfig {
+                name: "twins".to_string(),
+                credentials: Some(first_path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            AccountConfig {
+                name: "twins".to_string(),
+                credentials: Some(second_path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        ];
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-alpha"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-beta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_pro_5x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let plans = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "ambiguous-upstream",
+            &server.uri(),
+            &reqwest::Client::new(),
+            &accounts,
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+
+        assert_eq!(
+            (plans[0].as_deref(), plans[1].as_deref()),
+            (Some("max 20x"), Some("pro 5x")),
+            "each account must get its own profile result; a shared name key serves the first \
+             account's plan to the second"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// The memo must never outlive the identity it recorded. A credential
+    /// path that once held uuid `U` and is later read back successfully
+    /// *without* one belongs to a different, identity-less account: recalling
+    /// `U` would hit the old account's `Verified` cache entry and skip the
+    /// replacement's own lookup entirely.
+    #[tokio::test]
+    async fn a_completed_uuid_less_read_does_not_recall_the_previous_identity() {
+        use wiremock::matchers::{header, method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("memo-invalidate");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("swapped.json");
+        write_identified_fixture(&creds_path, "token-identified", Some("uuid-identified"));
+
+        let account = AccountConfig {
+            name: "swapped".to_string(),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-identified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .and(header("authorization", "Bearer token-anonymous"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_pro_5x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let first = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "memo-invalidate-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // Same path, a different account -- and this one carries no
+        // `shuntAccountUuid` at all.
+        write_identified_fixture(&creds_path, "token-anonymous", None);
+        let second = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "memo-invalidate-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+
+        assert_eq!(
+            second[0].as_deref(),
+            Some("pro 5x"),
+            "a successfully read uuid-less credential must resolve its own plan, not inherit \
+             the cached plan of the identified account that previously used this path"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            2,
+            "the replacement must reach the profile endpoint rather than hit the remembered \
+             identity's cache entry"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// The half of the guard that `forget_credential_uuid` cannot cover: an
+    /// unreadable or unparsable credential file never reaches the forget
+    /// call (the read loop skips it), so only the "did the phase actually
+    /// time out" gate stops the stale identity from being recalled. Without
+    /// that gate the account's cache entry is served for a credential that
+    /// can no longer be read at all.
+    /// The gap between `a_failed_read_clears_the_remembered_identity` (which
+    /// has no `account.uuid`, so it falls to the name key) and
+    /// `a_completed_failed_read_does_not_key_off_a_memoized_account_uuid`
+    /// (whose second pass completes): a memoized `account.uuid` plus a
+    /// *later* pass that times out. `read_failed` is per pass, so the
+    /// timed-out one carries none -- the failure has to be remembered against
+    /// the path for it to still count.
+    #[tokio::test]
+    async fn a_timeout_after_a_failed_read_does_not_restore_the_stale_identity() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("timeout-after-failure");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("restored.json");
+        write_identified_fixture(&creds_path, "token-restored", Some("uuid-restored"));
+
+        let account = AccountConfig {
+            name: "restored".to_string(),
+            uuid: Some("uuid-restored".to_string()),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let lock = fresh_file_lock();
+
+        let first = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "timeout-after-failure-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // One completed pass observes the credential is gone.
+        std::fs::remove_file(&creds_path).unwrap();
+        let second = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "timeout-after-failure-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(second[0], None, "the failed read must omit the plan");
+
+        // A *later* pass times out. It carries no `read_failed` of its own,
+        // and `account.uuid` still names the account that used to live here.
+        let held = lock.clone().lock_owned().await;
+        let starved = BackfillBudgets {
+            total: Duration::from_secs(8),
+            per_account: Duration::from_secs(5),
+            min_slice: Duration::ZERO,
+        };
+        let third = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "timeout-after-failure-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &starved,
+            tokio::time::Instant::now() - Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(
+            third[0], None,
+            "a timeout is not new evidence that this path is readable again, so it must not \
+             restore the identity the previous completed read refuted"
+        );
+        drop(held);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The producer half of `a_failure_seen_before_the_timeout_still_blocks_the_cache`:
+    /// the flags must survive the discarded result, not ride along inside it.
+    ///
+    /// A FIFO with no writer blocks `std::fs::read` at `open`, which is the
+    /// only way to stall the batched read on demand rather than by racing a
+    /// large file against the deadline. The first candidate is a missing
+    /// file, so its failure is recorded microseconds in, and the deadline is
+    /// seconds out — not a race in any meaningful sense. The FIFO is opened
+    /// for writing the moment the call returns and **before** any assertion,
+    /// because dropping a runtime waits for its `spawn_blocking` tasks: a
+    /// panic with the read still blocked would hang teardown instead of
+    /// failing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_failures_survive_a_timed_out_file_phase() {
+        let dir = unique_test_dir("failure-survives");
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("missing.json");
+        let fifo = dir.join("stalls.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo must be available on unix");
+        assert!(status.success(), "mkfifo failed");
+
+        let accounts = vec![
+            AccountConfig {
+                name: "missing".to_string(),
+                credentials: Some(missing.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            AccountConfig {
+                name: "stalls".to_string(),
+                credentials: Some(fifo.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        ];
+
+        let budgets = BackfillBudgets {
+            total: Duration::from_secs(2),
+            per_account: Duration::from_secs(1),
+            min_slice: Duration::from_secs(2),
+        };
+        let phase = file_derived_plans(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            &accounts,
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+
+        // Unblock before asserting -- see the doc comment. Opened read+write
+        // rather than write-only: a write-only open on a FIFO blocks until a
+        // reader is present, so if the blocking task had not reached this
+        // path yet the test thread would deadlock against it. `O_RDWR` never
+        // blocks, and holding it open keeps the reader's own open satisfied
+        // whenever it arrives.
+        let writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&fifo);
+
+        assert!(
+            phase.read.is_none(),
+            "the stalled candidate must make this phase time out"
+        );
+        assert!(
+            phase.read_failed[0],
+            "the missing credential failed to read before the stall, and that is knowledge \
+             this pass keeps even though the result was discarded"
+        );
+
+        drop(writer);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A read failure observed before a *later* account's credential stalls
+    /// must still count. The batched read walks its candidates in order, so
+    /// it can record one account's failure and then be abandoned mid-list
+    /// when the deadline expires — `FilePhase` carries the flags outside the
+    /// discarded result precisely so this pass still knows.
+    #[tokio::test]
+    async fn a_failure_seen_before_the_timeout_still_blocks_the_cache() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("failure-before-timeout");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("abandoned.json");
+        write_identified_fixture(&creds_path, "token-abandoned", Some("uuid-abandoned"));
+
+        let account = AccountConfig {
+            name: "abandoned".to_string(),
+            uuid: Some("uuid-abandoned".to_string()),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let warm = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "abandoned-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(warm[0].as_deref(), Some("max 20x"));
+
+        // The state a timed-out phase hands over when the task had already
+        // read this account's credential and failed: no result at all
+        // (`file_phase_timed_out`), no token, no uuid -- but the failure is
+        // still known. Driving the backfill directly is what makes the
+        // ordering deterministic; inducing a real mid-list stall would put
+        // the assertion back on a race.
+        let mut plans = vec![None];
+        backfill_claude_profile_plans(
+            "abandoned-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &[None],
+            &[None],
+            &[true],
+            true,
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+            &mut plans,
+        )
+        .await;
+        assert_eq!(
+            plans[0], None,
+            "the abandoned read still evidences nothing about this account, so its cached \
+             entry must stay out of reach even though the phase timed out"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed read must not reach the shared cache through the *name*
+    /// fallback either. An account with no uuid anywhere is keyed by name,
+    /// which is stable but not unique over time -- so an entry left under it
+    /// describes whoever held that name before, and a pass that cannot read
+    /// the credential has no evidence it is still the same account.
+    #[tokio::test]
+    async fn a_failed_read_does_not_harvest_the_name_keyed_entry() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("name-keyed-failed");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("nameless.json");
+        // No `shuntAccountUuid`, and no `uuid` on the config below: this
+        // account's only key is `UpstreamInline { upstream, name }`.
+        write_identified_fixture(&creds_path, "token-nameless", None);
+
+        let account = AccountConfig {
+            name: "nameless".to_string(),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let first = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "name-keyed-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(
+            first[0].as_deref(),
+            Some("max 20x"),
+            "the plan is now cached under the name key"
+        );
+
+        std::fs::remove_file(&creds_path).unwrap();
+        let second = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "name-keyed-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(
+            second[0], None,
+            "a pass that could not read the credential must not harvest the entry left under \
+             this account's name by whoever held it before"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The sibling hazard to `a_failed_read_clears_the_remembered_identity`,
+    /// on the *other* memo. Clearing the path memo is not enough when
+    /// `account.uuid` itself was filled from `resolve_pool_accounts`'"'"'s
+    /// process-lifetime inline-identity memo: that value survives the
+    /// credential file it came from, so the cache key would still be built
+    /// from the previous occupant'"'"'s identity.
+    #[tokio::test]
+    async fn a_completed_failed_read_does_not_key_off_a_memoized_account_uuid() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("memoized-uuid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("memoized.json");
+        write_identified_fixture(&creds_path, "token-memoized", Some("uuid-memoized"));
+
+        // `uuid` as `resolve_pool_accounts` leaves it for a warm inline
+        // account: derived from this very file on an earlier request and
+        // memoized for the process lifetime, so it does not move when the
+        // file does.
+        let account = AccountConfig {
+            name: "memoized".to_string(),
+            uuid: Some("uuid-memoized".to_string()),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let first = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "memoized-uuid-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // The credential is gone. This read *completes* and produces no uuid,
+        // so nothing recalls the path memo -- but `account.uuid` still names
+        // the account that used to live here.
+        std::fs::remove_file(&creds_path).unwrap();
+        let second = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "memoized-uuid-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(
+            second[0], None,
+            "a completed read that produced no uuid is evidence against `account.uuid`; keying \
+             off it anyway serves the plan cached under the identity this path no longer holds"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The sharper half of `an_unreadable_credential_does_not_recall_the_...`:
+    /// that one shows a *completed* read is not served the stale identity,
+    /// which the timeout gate alone achieves. This one shows the memo is
+    /// actually cleared, by making a *later* request time out -- the one path
+    /// that does consult it.
+    #[tokio::test]
+    async fn a_failed_read_clears_the_remembered_identity() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("memo-cleared");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("cleared.json");
+        write_identified_fixture(&creds_path, "token-readable", Some("uuid-readable"));
+
+        let account = AccountConfig {
+            name: "cleared".to_string(),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let lock = fresh_file_lock();
+
+        // Resolve once: the plan is cached under `Verified { uuid-readable }`
+        // and the path remembers that uuid.
+        let first = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "memo-cleared-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // A completed read that cannot parse the file. Nothing is recorded
+        // for this path -- and the memo entry must be dropped.
+        std::fs::remove_file(&creds_path).unwrap();
+        let _second = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "memo-cleared-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+
+        // Now force the recall path: holding the permit with an expired
+        // deadline makes the file phase time out with certainty, which is the
+        // only path that consults the memo.
+        let held = lock.clone().lock_owned().await;
+        let starved = BackfillBudgets {
+            total: Duration::from_secs(8),
+            per_account: Duration::from_secs(5),
+            min_slice: Duration::ZERO,
+        };
+        let third = plans_for_accounts_under(
+            &lock,
+            AuthMode::ClaudeOauth,
+            "memo-cleared-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &starved,
+            tokio::time::Instant::now() - Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(
+            third[0], None,
+            "the failed read must have cleared the memo -- otherwise this timed-out phase \
+             recalls `uuid-readable` and serves the plan cached under the identity this path \
+             no longer holds"
+        );
+        drop(held);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_credential_does_not_recall_the_remembered_identity() {
+        use wiremock::matchers::{method, path as path_matcher};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _cache = exclusive_profile_cache().await;
+        let dir = unique_test_dir("memo-unreadable");
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds_path = dir.join("corrupt.json");
+        write_identified_fixture(&creds_path, "token-readable", Some("uuid-readable"));
+
+        let account = AccountConfig {
+            name: "corrupted".to_string(),
+            credentials: Some(creds_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "organization": {"rate_limit_tier": "default_claude_max_20x"}
+            })))
+            .mount(&server)
+            .await;
+
+        let budgets = BackfillBudgets::default();
+        let client = reqwest::Client::new();
+        let first = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "memo-unreadable-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+        assert_eq!(first[0].as_deref(), Some("max 20x"));
+
+        // Not valid JSON: `read_json` returns `None` and the read loop skips
+        // this path without recording or clearing anything for it.
+        std::fs::write(&creds_path, b"}{ not json").unwrap();
+        let second = plans_for_accounts_under(
+            &fresh_file_lock(),
+            AuthMode::ClaudeOauth,
+            "memo-unreadable-upstream",
+            &server.uri(),
+            &client,
+            std::slice::from_ref(&account),
+            &budgets,
+            tokio::time::Instant::now() + budgets.total,
+        )
+        .await;
+
+        assert_eq!(
+            second[0], None,
+            "an unreadable credential must report no plan, not the plan cached under the \
+             identity its path used to hold"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
