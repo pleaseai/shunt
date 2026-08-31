@@ -417,6 +417,34 @@ responses now populate the 5h/7d fields from `x-codex-*` rate-limit headers;
 unsupported windows are ignored and `7d_oi` remains `None` because Codex has no
 analog. Since issue #195 this recorded state also feeds Codex account selection (see `m10-codex-multi-account.md`), in addition to the dashboard display.
 
+The Claude store table in that section reports a **derived status** rather than
+the raw `claudeAiOauth.expiresAt` it used to render. That timestamp is the
+~8-hour *access*-token deadline and means opposite things per credential kind,
+so showing it verbatim made healthy accounts read as broken. An `imported`
+account carries a refresh token and shunt renews it in-band (single-flight
+writeback in `auth/claude/auth.rs`, triggered five minutes before expiry), so a
+past timestamp there is routine and needs no operator action — the row reads
+"Auto-refreshes", with the raw timestamp preserved on hover. A `setup_token`
+account has no refresh token at all (one-year lifetime), so the same timestamp
+is genuinely actionable: still in the future, the row reads "Valid until"
+followed by that date; once past — or absent — it reads "Expired" under the
+`expired` danger style with a `Setup token cannot refresh · re-login required`
+note. Only the setup-token kind can reach that state.
+
+Each Claude store row also carries a **Re-login** action beside Remove. It adds
+no endpoint: re-provisioning is already the ordinary flow run under an existing
+name (`POST /admin/accounts/claude` → paste → `.../complete`), which overwrites
+the account in place and cleans up the prior identity's health entry when the
+upstream identity changes. The button therefore only primes the existing add
+form — it fills in the account name, preselects the login method matching that
+row's current kind (re-provisioning under the other mode would silently convert
+the account between refreshable and inference-only), clears any half-finished
+flow so a code cannot be pasted against the wrong account, and scrolls the form
+into view. This is deliberately confined to the managed store table: the
+observed rows in the top-level **Accounts and usage** table are unchanged, since
+those credentials are owned and refreshed by the provider client itself and
+shunt never invokes a refresh/writeback store for them.
+
 The optional `plan` field is derived from credential data already held by
 shunt: Claude reads `claudeAiOauth.subscriptionType`, and Codex reads the
 `chatgpt_plan_type` claim from its stored JWT. Whenever an imported Claude

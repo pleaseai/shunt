@@ -56,6 +56,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, .choice:has(i
   outline: 2px solid var(--accent-light); outline-offset: 3px; }
 button.secondary { background: transparent; color: inherit; border-color: var(--border); }
 button.danger { min-height: 0; background: transparent; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); padding: .25rem .5rem; }
+button.compact { min-height: 0; padding: .25rem .5rem; }
+.row-actions { white-space: nowrap; } .row-actions button + button { margin-left: .4rem; }
 table { width: 100%; border-collapse: collapse; font-size: .88rem; }
 th, td { text-align: left; vertical-align: top; padding: .72rem .55rem; border-bottom: 1px solid rgba(128,144,168,.22); }
 th { color: var(--text-secondary); font-weight: 600; } tbody tr:last-child td { border-bottom: 0; }
@@ -207,7 +209,7 @@ pub fn dashboard_page(csrf: &str) -> String {
 </div>
 
 <h2>Claude accounts</h2>
-<div class="card overflow"><table><thead><tr><th>Name</th><th>Kind</th><th>Expires</th><th>UUID</th><th></th></tr></thead>
+<div class="card overflow"><table><thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>UUID</th><th></th></tr></thead>
 <tbody id="accounts"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
 
 <h2>Codex accounts</h2>
@@ -344,6 +346,117 @@ mod tests {
         assert!(
             page.contains("row.managed.cooldown_fable_secs_remaining"),
             "the Fable cooldown needs its own remediation note"
+        );
+    }
+
+    #[test]
+    fn the_claude_account_column_reports_a_kind_derived_status_not_the_raw_expiry() {
+        // `expires_at` is the ~8h ACCESS-token deadline. For an `imported`
+        // account shunt refreshes it in-band, so a past timestamp is routine;
+        // for a `setup_token` account there is nothing to refresh, so the same
+        // timestamp means a dead credential. Rendering the raw value under an
+        // "Expires" header made healthy imported accounts read as expired.
+        // The two kinds must therefore produce different wording, and the raw
+        // timestamp must survive as a tooltip rather than being dropped.
+        let page = dashboard_page("csrf");
+        assert!(
+            page.contains(
+                "<tr><th>Name</th><th>Kind</th><th>Status</th><th>UUID</th><th></th></tr>"
+            ),
+            "the Claude account table must report a derived status column"
+        );
+        assert!(
+            !page.contains(
+                "<tr><th>Name</th><th>Kind</th><th>Expires</th><th>UUID</th><th></th></tr>"
+            ),
+            "the raw-expiry column must be gone from the Claude account table"
+        );
+        assert!(
+            page.contains(r#"text: "Auto-refreshes""#),
+            "an imported account must read as self-renewing"
+        );
+        assert!(
+            page.contains(r#"text: "Valid until " + when(expiresAt)"#),
+            "a live setup token must still surface its actionable expiry date"
+        );
+        assert!(
+            page.contains(r#"note: "Setup token cannot refresh · re-login required""#),
+            "a dead setup token must say what the operator has to do"
+        );
+        assert!(
+            page.contains(r#"status.title = "access token expires " + when(a.expires_at)"#),
+            "the raw access-token timestamp must be preserved as a tooltip"
+        );
+    }
+
+    #[test]
+    fn only_a_setup_token_past_its_expiry_renders_the_expired_state() {
+        // The danger styling (`.status[data-state="expired"]`) is reserved for
+        // an account an operator actually has to re-provision. An imported
+        // account must return before the expiry comparison is ever reached, so
+        // a past `expires_at` on a healthy refreshable login can never reach
+        // the expired arm; guard against the kind check being moved after --
+        // or dropped from ahead of -- the timestamp branch it outranks.
+        let page = dashboard_page("csrf");
+        let start = page
+            .find("function accountStatus(kind, expiresAt)")
+            .expect("accountStatus function must exist");
+        let body = &page[start..start + 600];
+        assert!(
+            body.contains(
+                r#"if (kind === "imported") return { state: "available", text: "Auto-refreshes""#
+            ),
+            "the imported arm must return an available state before any expiry check"
+        );
+        let imported = body
+            .find(r#"kind === "imported""#)
+            .expect("the kind check must exist");
+        let expiry = body
+            .find("expiresAt > Date.now()")
+            .expect("the setup-token expiry comparison must exist");
+        let expired = body
+            .find(r#"state: "expired""#)
+            .expect("the expired state must exist");
+        assert!(
+            imported < expiry && expiry < expired,
+            "the imported arm must precede the expiry comparison, which must precede the expired state"
+        );
+        assert_eq!(
+            body.matches(r#"state: "expired""#).count(),
+            1,
+            "expired must be reachable from exactly one arm"
+        );
+    }
+
+    #[test]
+    fn every_claude_account_row_offers_a_relogin_that_preselects_its_own_kind() {
+        // Re-login reuses the existing add form (completing it under the same
+        // name overwrites the account in place), so the row button only has to
+        // prime that form. The mode must be preselected from the row's own
+        // kind: re-provisioning under the other mode silently converts the
+        // account between refreshable and inference-only. Remove stays.
+        let page = dashboard_page("csrf");
+        assert!(
+            page.contains(r#"relogin.textContent = "Re-login""#),
+            "each account row needs a re-login button"
+        );
+        assert!(
+            page.contains("relogin.onclick = () => reloginAccount(a.name, a.kind);"),
+            "the button must carry the row's own name and kind"
+        );
+        assert!(
+            page.contains(
+                r#"(kind === "setup_token" ? $("mode-setup") : $("mode-oauth")).checked = true;"#
+            ),
+            "the add form's login method must be preselected from the row's kind"
+        );
+        assert!(
+            page.contains(r#"$("name").value = name;"#),
+            "re-login must prefill the add form with the existing account name"
+        );
+        assert!(
+            page.contains(r#"btn.onclick = () => removeAccount(a.name);"#),
+            "the existing Remove action must survive"
         );
     }
 

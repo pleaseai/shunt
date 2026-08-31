@@ -26,6 +26,21 @@ function pctReset(v, resetSecs) {
   return resetSecs ? pct(v) + " · " + untilShort(resetSecs) : pct(v);
 }
 function when(ms) { return ms ? new Date(ms).toLocaleString() : "—"; }
+// A Claude store row's status is derived from its credential kind, never from
+// the raw `expires_at` alone. That timestamp is the ~8h ACCESS-token deadline
+// and means opposite things per kind: an `imported` account carries a refresh
+// token and shunt renews it in-band (src/auth/claude/auth.rs), so a past
+// timestamp there is routine and needs no operator action, while a
+// `setup_token` account has no refresh token at all (one-year lifetime), so a
+// past timestamp is a dead credential that only a re-login can fix. Rendering
+// the same raw timestamp for both is what made healthy imported accounts read
+// as expired; the raw value is kept as the cell's tooltip instead.
+function accountStatus(kind, expiresAt) {
+  if (kind === "imported") return { state: "available", text: "Auto-refreshes", note: "shunt renews this login as needed" };
+  if (expiresAt && expiresAt > Date.now()) return { state: "available", text: "Valid until " + when(expiresAt), note: "Setup token · re-login before this date" };
+  return { state: "expired", text: "Expired", note: "Setup token cannot refresh · re-login required" };
+}
+
 function cell(row, text, mono) { const td = document.createElement("td"); td.textContent = esc(text);
   if (mono) td.className = "mono"; row.appendChild(td); return td; }
 
@@ -241,11 +256,36 @@ async function loadAccounts() {
   if (!list.length) { const r = body.insertRow(); const c = cell(r, "No store accounts yet"); c.colSpan = 5; c.className = "muted"; return; }
   for (const a of list) {
     const r = body.insertRow();
-    cell(r, a.name); cell(r, a.kind); cell(r, when(a.expires_at)); cell(r, a.uuid || "—", true);
-    const td = document.createElement("td");
+    cell(r, a.name); cell(r, a.kind);
+    const info = accountStatus(a.kind, a.expires_at);
+    const status = cell(r, info.text); status.className = "status"; status.dataset.state = info.state;
+    const statusNote = document.createElement("small"); statusNote.className = "status-note"; statusNote.textContent = info.note; status.appendChild(statusNote);
+    if (a.expires_at) status.title = "access token expires " + when(a.expires_at);
+    cell(r, a.uuid || "—", true);
+    const td = document.createElement("td"); td.className = "row-actions";
+    const relogin = document.createElement("button"); relogin.className = "secondary compact"; relogin.textContent = "Re-login";
+    relogin.onclick = () => reloginAccount(a.name, a.kind); td.appendChild(relogin);
     const btn = document.createElement("button"); btn.className = "danger"; btn.textContent = "Remove";
     btn.onclick = () => removeAccount(a.name); td.appendChild(btn); r.appendChild(td);
   }
+}
+
+// Re-login deliberately drives the existing add form rather than a dedicated
+// endpoint: completing the normal provisioning flow under an account's
+// existing name overwrites that account in place, including cleanup when the
+// upstream identity changes (src/admin/mod.rs). The login method is
+// preselected from the row's current kind -- re-provisioning under the other
+// mode would silently convert the account between refreshable and
+// inference-only. Any half-finished flow in the form is cleared first so the
+// operator cannot paste a code belonging to a different account.
+function reloginAccount(name, kind) {
+  $("name").value = name;
+  (kind === "setup_token" ? $("mode-setup") : $("mode-oauth")).checked = true;
+  updateModeHelp();
+  $("step2").style.display = "none"; $("code").value = "";
+  $("addmsg").className = ""; $("addmsg").textContent = "";
+  $("name").focus({ preventScroll: true });
+  $("name").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 async function loadCodexAccounts() {
