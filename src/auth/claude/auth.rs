@@ -268,7 +268,8 @@ const INVALID_GRANT: &str = "invalid_grant";
 
 /// Marker attached to a Claude refresh failure that no retry can recover: the
 /// stored refresh token is dead, so the only cure is a fresh login. Mirrors
-/// the Kimi (`auth/kimi/auth.rs`), xAI, and gateway stores, which already
+/// the gateway store's identical marker (`auth/gateway/auth.rs`) and the Kimi
+/// store's `invalid_grant` classification (`auth/kimi/auth.rs`), which already
 /// separate this case from a transient endpoint failure.
 ///
 /// A type rather than a string match, because callers

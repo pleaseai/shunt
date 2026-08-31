@@ -10,7 +10,7 @@ use crate::{
     accounts::{self, FailoverAction},
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{
-        self, claude::auth::ClaudeAuthStore, resolve_claude_account, resolve_credential,
+        self, claude::auth::ClaudeAuthStore, resolve_claude_account_classified, resolve_credential,
         resolve_kimi_account, Credential,
     },
     config::{ApiKeyHeader, AuthMode},
@@ -209,19 +209,28 @@ async fn forward_claude_oauth(
 
         let credential = {
             let _guard = refresh_lock.lock().await;
-            match resolve_claude_account(account, &state.http_client).await {
+            match resolve_claude_account_classified(account, &state.http_client).await {
                 Ok(credential) => credential,
-                Err(error) => {
+                Err(failure) => {
                     state.accounts.cooldown(
                         &route.provider,
                         account,
                         Duration::from_secs(5 * 60),
                         "auth",
                     );
+                    // The dominant steady state for a dead account: once its
+                    // access token expires, the refresh is rejected here rather
+                    // than after a 401, so the mark has to be set on this path
+                    // too or the account cycles through this cooldown forever
+                    // with nothing durable for an operator to see.
+                    if failure.terminal {
+                        state.accounts.mark_needs_relogin(&route.provider, account);
+                    }
                     tracing::warn!(
                         provider = %route.provider,
                         account = %account.name,
-                        error = %error.message,
+                        error = %failure.detail,
+                        terminal = failure.terminal,
                         "failed to resolve Claude OAuth account"
                     );
                     continue;
@@ -468,14 +477,15 @@ async fn forward_claude_oauth(
                             // failure (5xx, network, timeout) must not set the
                             // mark — that would report a healthy account as dead
                             // on a momentary provider blip.
-                            if auth::claude::auth::is_terminal_refresh_failure(&error) {
+                            let terminal = auth::claude::auth::is_terminal_refresh_failure(&error);
+                            if terminal {
                                 state.accounts.mark_needs_relogin(&route.provider, account);
                             }
                             tracing::warn!(
                                 provider = %route.provider,
                                 account = %account.name,
                                 error = %error,
-                                terminal = auth::claude::auth::is_terminal_refresh_failure(&error),
+                                terminal,
                                 "failed to force-refresh Claude OAuth account"
                             );
                             last_response = Some(upstream);

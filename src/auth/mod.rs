@@ -150,16 +150,66 @@ pub async fn resolve_credential(
     }
 }
 
+/// A Claude account credential-resolution failure, plus the two facts the
+/// account pool needs that a bare [`AdapterError`] cannot carry: whether the
+/// provider *terminally* rejected the stored refresh grant, and the underlying
+/// cause. `auth_error` collapses every authentication failure to the constant
+/// `"authentication failed"` message and puts the real cause in a response
+/// body the pool discards on failover, so without this the resolution path can
+/// neither mark a dead account nor log why it failed.
+pub struct ClaudeResolveError {
+    pub error: AdapterError,
+    /// The provider will never accept the stored refresh token again
+    /// (`invalid_grant`), so retrying after the cooldown can only repeat the
+    /// same rejection — see
+    /// [`claude::auth::is_terminal_refresh_failure`].
+    pub terminal: bool,
+    /// The underlying cause, for server-side logging only.
+    pub detail: String,
+}
+
+fn claude_resolve_error(error: anyhow::Error) -> ClaudeResolveError {
+    ClaudeResolveError {
+        terminal: claude::auth::is_terminal_refresh_failure(&error),
+        detail: error.to_string(),
+        error: auth_error(error.to_string()),
+    }
+}
+
 /// Resolve one Claude OAuth account for the account pool.
 pub async fn resolve_claude_account(
     account: &crate::config::AccountConfig,
     client: &reqwest::Client,
 ) -> Result<Credential, AdapterError> {
+    resolve_claude_account_classified(account, client)
+        .await
+        .map_err(|failure| failure.error)
+}
+
+/// [`resolve_claude_account`], additionally reporting whether the failure was a
+/// terminal refresh rejection. The pool path uses this so a dead credential is
+/// marked here too, not only on the 401 → force-refresh path: once a dead
+/// account's *access* token expires — the steady state within hours — every
+/// later request fails during resolution instead, and would otherwise cool down
+/// and retry forever with nothing durable for an operator to see.
+pub async fn resolve_claude_account_classified(
+    account: &crate::config::AccountConfig,
+    client: &reqwest::Client,
+) -> Result<Credential, ClaudeResolveError> {
     if let Some(token_env) = account.token_env.as_deref() {
+        // A missing env var is an operator configuration error, not a
+        // credential the provider rejected: never terminal.
         let access_token = env::var(token_env)
             .ok()
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| auth_error(format!("{token_env} is not set")))?;
+            .ok_or_else(|| {
+                let detail = format!("{token_env} is not set");
+                ClaudeResolveError {
+                    error: auth_error(detail.clone()),
+                    terminal: false,
+                    detail,
+                }
+            })?;
         return Ok(Credential::ClaudeOauth {
             access_token,
             account_uuid: account.uuid.clone(),
@@ -189,7 +239,7 @@ pub async fn resolve_claude_account(
                 access_token,
                 account_uuid,
             })
-            .map_err(|error| auth_error(error.to_string()));
+            .map_err(claude_resolve_error);
     }
 
     let account_uuid = match account.uuid.clone() {
@@ -213,7 +263,7 @@ pub async fn resolve_claude_account(
             access_token,
             account_uuid,
         })
-        .map_err(|error| auth_error(error.to_string()))
+        .map_err(claude_resolve_error)
 }
 
 /// Resolve one Kimi Code OAuth account for the account pool. Mirrors

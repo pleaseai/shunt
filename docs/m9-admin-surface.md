@@ -429,10 +429,15 @@ It is set from exactly two places, both terminal by construction:
   branch), and
 - a refresh the provider terminally rejected, classified by
   `auth::claude::auth::is_terminal_refresh_failure` — the OAuth `invalid_grant`
-  code, mirroring the Kimi, xAI, Antigravity, and gateway stores. A transient
-  failure (5xx, network, timeout, an unparseable body) is deliberately **not**
-  terminal: marking one would report a healthy account as dead after a
-  momentary provider blip.
+  code, mirroring the typed marker the gateway store already uses
+  (`auth/gateway/auth.rs`) and the code-based classification in the Kimi store
+  (`auth/kimi/auth.rs`). A transient failure (5xx, network, timeout, an
+  unparseable body) is deliberately **not** terminal: marking one would report
+  a healthy account as dead after a momentary provider blip. Both the 401 →
+  force-refresh path and credential *resolution* classify this way: once a dead
+  account's access token expires — its steady state within hours — the refresh
+  is rejected on read, before any upstream POST, and that path marks the
+  account too (`auth::resolve_claude_account_classified`).
 
 It is cleared by any proof the credential works again: a served response
 (`mark_healthy`), a successful refresh on the proxy path, a successful
