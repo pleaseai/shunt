@@ -166,12 +166,18 @@ function rowStatusText(state) {
   return "Live";
 }
 
+// Same generation guard as `loadPool`, and for the same reason now that this
+// table renders `needs_relogin`: several mutation handlers reload it, so an
+// older load can land last and repaint the pre-probe state. The table is
+// cleared after the awaits so a superseded load never blanks the newer rows.
+let observedLoadSeq = 0;
 async function loadObserved() {
-  const body = $("observed"); body.textContent = "";
-  let data, res;
+  const seq = ++observedLoadSeq;
+  let data, res, failure = null;
   try { res = await fetch("/admin/observed"); data = await res.json(); }
-  catch (e) { const r = body.insertRow(); const c = cell(r, "Failed to observe local accounts"); c.colSpan = 4; return; }
-  if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to observe local accounts"); c.colSpan = 4; return; }
+  catch (e) { failure = "Failed to observe local accounts"; }
+  if (seq !== observedLoadSeq) return;
+  if (failure || !res.ok) { const body = $("observed"); body.textContent = ""; const r = body.insertRow(); const c = cell(r, failure || (data && data.error && data.error.message) || "Failed to observe local accounts"); c.colSpan = 4; return; }
   // Managed pool state only enriches this view. If either call fails the table
   // still renders the observations alone rather than rendering nothing.
   let pool = null, accounts = null;
@@ -185,6 +191,8 @@ async function loadObserved() {
     if (poolRes && poolRes.ok) pool = await poolRes.json();
     if (accountsRes && accountsRes.ok) accounts = await accountsRes.json();
   } catch (e) { /* observation-only render */ }
+  if (seq !== observedLoadSeq) return;
+  const body = $("observed"); body.textContent = "";
   const groups = accountGroups((data && data.accounts) || [], pool, accounts);
   let rendered = 0;
   for (const [provider, rows] of groups) {

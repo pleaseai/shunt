@@ -4228,13 +4228,20 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
         body["message"]
     );
 
-    // The mirror: a grant-caused mark on the same account *is* cleared, so the
-    // probe has not simply stopped clearing.
+    // The mirror: a grant-caused mark *is* cleared, so the probe has not simply
+    // stopped clearing. A served response has to come first — the pool keeps
+    // the stronger `ServedRequest` verdict, so a grant failure recorded on top
+    // of it cannot downgrade the cause (pinned in
+    // `accounts::tests::a_grant_failure_never_downgrades_a_served_request_verdict`).
+    state
+        .accounts
+        .mark_healthy_scoped("anthropic", &account, true, false);
     state.accounts.mark_needs_relogin(
         "anthropic",
         &account,
         shunt::accounts::ReloginCause::RefreshGrant,
     );
+    assert!(state.accounts.needs_relogin("anthropic", &account));
     let response = client
         .post(format!(
             "{}/admin/accounts/claude/servedmark/refresh",

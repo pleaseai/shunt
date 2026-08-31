@@ -235,6 +235,24 @@ pub enum ReloginCause {
     ServedRequest,
 }
 
+impl ReloginCause {
+    /// Fold a new verdict into whatever the entry already carried, keeping the
+    /// stronger evidence. `ServedRequest` outranks `RefreshGrant`: a bearer the
+    /// provider rejected in a real request says something a failing grant does
+    /// not, and only a served response can disprove it.
+    ///
+    /// Without this, a terminal admin probe on an account the proxy had already
+    /// condemned would rewrite `ServedRequest` as `RefreshGrant` — and the next
+    /// grant that happened to succeed would then clear the mark, even though
+    /// nothing had shown the account could serve inference again.
+    fn strongest(existing: Option<Self>, incoming: Self) -> Self {
+        match existing {
+            Some(Self::ServedRequest) => Self::ServedRequest,
+            _ => incoming,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct AccountHealth {
     cooldown_until: Option<Instant>,
@@ -1100,7 +1118,7 @@ impl AccountPool {
         let health = entries.entry(account_key(provider, account)).or_default();
         health.observed = true;
         health.enabled = !account.disabled;
-        health.needs_relogin = Some(cause);
+        health.needs_relogin = Some(ReloginCause::strongest(health.needs_relogin, cause));
     }
 
     /// Clear the needs-re-login mark alone, leaving every other health field —
@@ -1164,7 +1182,9 @@ impl AccountPool {
                     | AccountStateIdentity::UpstreamInline { name, .. } => name == account_name,
                 };
             if matches {
-                health.needs_relogin = needs_relogin.then_some(ReloginCause::RefreshGrant);
+                health.needs_relogin = needs_relogin.then(|| {
+                    ReloginCause::strongest(health.needs_relogin, ReloginCause::RefreshGrant)
+                });
             }
         }
     }
@@ -2419,6 +2439,55 @@ mod tests {
             headers.insert(*name, HeaderValue::from_str(value).unwrap());
         }
         headers
+    }
+
+    /// `ServedRequest` outranks `RefreshGrant`, and a later grant failure must
+    /// not rewrite it. Otherwise a terminal admin probe on an account the proxy
+    /// had already condemned would downgrade the verdict, and the next grant
+    /// that happened to succeed would clear a mark nothing had disproved.
+    #[test]
+    fn a_grant_failure_never_downgrades_a_served_request_verdict() {
+        let pool = AccountPool::new();
+        let account = account_with_uuid("dead", "acct-dead");
+
+        // The proxy proved a refreshed bearer still gets a 401.
+        pool.mark_needs_relogin("anthropic", &account, ReloginCause::ServedRequest);
+        // A terminal admin probe then reports its own (weaker) grant failure.
+        pool.set_needs_relogin_for_store_account(
+            StoreFamily::Claude,
+            "dead",
+            Some("acct-dead"),
+            true,
+        );
+        // …and a later grant succeeds. It must not clear the stronger verdict.
+        pool.clear_grant_relogin_for_store_account(StoreFamily::Claude, "dead", Some("acct-dead"));
+
+        assert!(
+            pool.needs_relogin("anthropic", &account),
+            "a successful grant must not clear a mark the proxy set from a \
+             rejected bearer, even after a grant failure was recorded on top"
+        );
+
+        // The mirror: a grant failure recorded on a *clean* entry is
+        // grant-caused, so the same successful grant does clear it.
+        let fresh = account_with_uuid("stale", "acct-stale");
+        pool.mark_healthy("anthropic", &fresh, true);
+        pool.set_needs_relogin_for_store_account(
+            StoreFamily::Claude,
+            "stale",
+            Some("acct-stale"),
+            true,
+        );
+        assert!(pool.needs_relogin("anthropic", &fresh));
+        pool.clear_grant_relogin_for_store_account(
+            StoreFamily::Claude,
+            "stale",
+            Some("acct-stale"),
+        );
+        assert!(
+            !pool.needs_relogin("anthropic", &fresh),
+            "a purely grant-caused mark must still be cleared by a successful grant"
+        );
     }
 
     /// `clear_needs_relogin` is the narrow clear used where a response proves
