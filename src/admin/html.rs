@@ -145,7 +145,14 @@ pub fn login_page(error: Option<&str>, sso_label: Option<&str>) -> String {
 /// on mutating requests.
 pub fn dashboard_page(csrf: &str) -> String {
     let csrf = escape_html(csrf);
-    let script = super::script::DASHBOARD_SCRIPT.replace("{csrf}", &csrf);
+    let script = super::script::DASHBOARD_SCRIPT
+        .replace("{csrf}", &csrf)
+        .replace(
+            "{expiry_buffer_ms}",
+            &crate::auth::claude::auth::EXPIRY_BUFFER
+                .as_millis()
+                .to_string(),
+        );
     format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -393,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_setup_token_past_its_expiry_renders_the_expired_state() {
+    fn only_a_setup_token_inside_the_refresh_buffer_renders_the_expired_state() {
         // The danger styling (`.status[data-state="expired"]`) is reserved for
         // an account an operator actually has to re-provision. An imported
         // account must return before the expiry comparison is ever reached, so
@@ -419,9 +426,15 @@ mod tests {
         let imported = body
             .find(r#"kind === "imported""#)
             .expect("the kind check must exist");
+        // The comparison must carry the buffer, not the bare deadline. A setup
+        // token stops being usable EXPIRY_BUFFER before its own `expiresAt`
+        // (`Tokens::is_valid_at`, src/auth/claude/auth.rs) and has no refresh
+        // token to recover with, so reporting it usable inside that window puts
+        // the dashboard at odds with routing for the credential's last five
+        // minutes -- exactly when the operator needs the warning.
         let expiry = body
-            .find("expiresAt > Date.now()")
-            .expect("the setup-token expiry comparison must exist");
+            .find("expiresAt > Date.now() + EXPIRY_BUFFER_MS")
+            .expect("the setup-token expiry comparison must carry the refresh buffer");
         let expired = body
             .find(r#"state: "expired""#)
             .expect("the expired state must exist");
@@ -433,6 +446,37 @@ mod tests {
             body.matches(r#"state: "expired""#).count(),
             1,
             "expired must be reachable from exactly one arm"
+        );
+    }
+
+    #[test]
+    fn the_rendered_refresh_buffer_is_routings_own_value() {
+        // The comparison above is only correct if the number it compares
+        // against is the one routing applies. `EXPIRY_BUFFER_MS` is substituted
+        // from `crate::auth::claude::auth::EXPIRY_BUFFER` -- the constant
+        // `Tokens::is_valid_at` uses -- so assert the value the browser
+        // actually receives rather than the placeholder that produced it.
+        let page = dashboard_page("csrf");
+        assert!(
+            !page.contains("{expiry_buffer_ms}"),
+            "the buffer placeholder must be substituted, not shipped to the browser"
+        );
+        let rendered = format!(
+            "const EXPIRY_BUFFER_MS = {};",
+            crate::auth::claude::auth::EXPIRY_BUFFER.as_millis()
+        );
+        assert!(
+            page.contains(&rendered),
+            "the script must declare the buffer as routing's own value; expected `{rendered}`"
+        );
+        // The assertion above ties the two sides together but says nothing
+        // about the unit: rendering `as_secs()` would move both. Pin the number
+        // as well, so a buffer that reaches the browser a thousand times too
+        // small is a failure here and not a dashboard that calls a credential
+        // valid for the five minutes routing already refuses it.
+        assert!(
+            page.contains("const EXPIRY_BUFFER_MS = 300000;"),
+            "the five-minute buffer must reach the browser as milliseconds"
         );
     }
 

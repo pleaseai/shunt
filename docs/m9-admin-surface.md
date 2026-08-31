@@ -573,10 +573,24 @@ writeback in `auth/claude/auth.rs`, triggered five minutes before expiry), so a
 past timestamp there is routine and needs no operator action — the row reads
 "Auto-refreshes", with the raw timestamp preserved on hover. A `setup_token`
 account has no refresh token at all (one-year lifetime), so the same timestamp
-is genuinely actionable: still in the future, the row reads "Valid until"
-followed by that date; once past — or absent — it reads "Expired" under the
-`expired` danger style with a `Setup token cannot refresh · re-login required`
-note. Only the setup-token kind can reach that state.
+is genuinely actionable: with more than the refresh buffer left, the row reads
+"Valid until" followed by that date; inside that buffer — or past the date, or
+with no date at all — it reads "Expired" under the `expired` danger style with a
+`Setup token cannot refresh · re-login required` note. Only the setup-token kind
+can reach that state.
+
+The buffer is the same five minutes routing itself applies, and the dashboard
+takes it from that constant rather than copying the number.
+`Tokens::is_valid_at` accepts a credential only while
+`expiresAt > now + EXPIRY_BUFFER`, where `EXPIRY_BUFFER` is `auth/claude/auth.rs`'s
+own five minutes — `auth/shared.rs` declares a same-named constant that drives
+the generic JWT helper, not this path. A setup token has no refresh token to
+recover with, so inside that window a routed request already fails on the
+no-refresh-token path; comparing against the bare deadline here would have the
+dashboard call a credential usable for the last five minutes of its life while
+routing rejects it, the window in which the operator most needs the warning.
+`dashboard_page` substitutes the constant's millisecond value into the script's
+`{expiry_buffer_ms}` placeholder, so the two cannot drift apart.
 
 The Codex store table alongside it carries the same status column, but
 unconditionally: that store has no non-refreshable kind at all. Both writers

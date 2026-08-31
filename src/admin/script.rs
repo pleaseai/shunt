@@ -1,8 +1,8 @@
 //! The admin dashboard's inline script, split out of `html.rs` to keep that
 //! file within the repository's per-file size guidance. Held as a plain const
 //! rather than a `format!` argument so the JavaScript reads as JavaScript:
-//! inside a format string every brace has to be doubled. The single `{csrf}`
-//! placeholder is substituted by `html::dashboard_page`.
+//! inside a format string every brace has to be doubled. Its two placeholders,
+//! `{csrf}` and `{expiry_buffer_ms}`, are substituted by `html::dashboard_page`.
 //!
 //! As in `html.rs`, all account/pool data is written with `textContent` and
 //! never `innerHTML`, so upstream-derived strings cannot inject markup.
@@ -35,9 +35,21 @@ function when(ms) { return ms ? new Date(ms).toLocaleString() : "—"; }
 // past timestamp is a dead credential that only a re-login can fix. Rendering
 // the same raw timestamp for both is what made healthy imported accounts read
 // as expired; the raw value is kept as the cell's tooltip instead.
+//
+// A setup token stops being usable EXPIRY_BUFFER before its own `expiresAt`,
+// not at it: `Tokens::is_valid_at` accepts a credential only while
+// `expiresAt > now + EXPIRY_BUFFER` (five minutes, declared in
+// src/auth/claude/auth.rs -- src/auth/shared.rs has a same-named constant that
+// drives the JWT helper, not this path), and a setup token has no refresh token,
+// so inside that window a routed request already fails on the no-refresh-token
+// path. Reporting it usable there would have the dashboard contradict routing
+// for the last five minutes of the credential's life, which is precisely the
+// window an operator needs the warning in. The value is substituted from that
+// same Rust constant rather than copied, so the two cannot drift apart.
+const EXPIRY_BUFFER_MS = {expiry_buffer_ms};
 function accountStatus(kind, expiresAt) {
   if (kind === "imported") return { state: "available", text: "Auto-refreshes", note: "shunt renews this login as needed" };
-  if (expiresAt && expiresAt > Date.now()) return { state: "available", text: "Valid until " + when(expiresAt), note: "Setup token · re-login before this date" };
+  if (expiresAt && expiresAt > Date.now() + EXPIRY_BUFFER_MS) return { state: "available", text: "Valid until " + when(expiresAt), note: "Setup token · re-login before this date" };
   return { state: "expired", text: "Expired", note: "Setup token cannot refresh · re-login required" };
 }
 
