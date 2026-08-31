@@ -503,6 +503,67 @@ async fn refresh_without_a_stored_refresh_token_is_terminal() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+/// `chmod 0500` is the only writeback failure the two tests below can inject
+/// without a fault-injection seam in [`write_auth_file_atomic`], and it does
+/// not hold for every process: a privileged one (uid 0, common in dev
+/// containers) bypasses the directory's write bit, so the atomic writer still
+/// creates its temp sibling, the refresh succeeds, and `unwrap_err()` panics on
+/// an environment the change under test is not about.
+///
+/// Probe the directory instead of guessing at a uid — the question is whether
+/// the injection works *here*, not who we are. Returns `false` when the write
+/// went through anyway, meaning this environment cannot run the case.
+#[cfg(unix)]
+fn read_only_dir_blocks_writes(dir: &Path) -> bool {
+    let probe = dir.join(".writeback-injection-probe");
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            false
+        }
+        Err(_) => true,
+    }
+}
+
+/// Undo the read-only injection and remove the fixture. Called on both the
+/// skip and the assert path so a failed run never leaves an undeletable
+/// directory behind in the system temp dir.
+#[cfg(unix)]
+fn restore_and_remove(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The probe's negative half, which every environment can run: a *writable*
+/// directory must report the injection as unavailable. Without this the probe
+/// could be hardcoded to `true` and both writeback tests would keep passing
+/// here while still panicking for the privileged process they were meant to
+/// spare. The privileged half is what the environment decides, so it is not
+/// asserted.
+#[cfg(unix)]
+#[test]
+fn the_writeback_injection_probe_reports_a_writable_directory_as_unblocked() {
+    let dir = temp_credentials_path("probe-writable")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    std::fs::create_dir_all(&dir).unwrap();
+
+    assert!(
+        !read_only_dir_blocks_writes(&dir),
+        "a writable directory cannot inject a writeback failure, so the probe \
+         must report it as unblocked"
+    );
+    assert!(
+        !dir.join(".writeback-injection-probe").exists(),
+        "the probe must clean up the file it created"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The provider rotated the token but the new pair could not be persisted. The
 /// grant already consumed the refresh token on disk, so every later attempt
 /// replays a spent one — terminal, even though nothing about the *request*
@@ -513,15 +574,25 @@ async fn refresh_without_a_stored_refresh_token_is_terminal() {
 async fn refresh_whose_writeback_fails_is_terminal() {
     use std::os::unix::fs::PermissionsExt;
 
-    let server = mock_token_server("rotated-refresh").await;
     let path = temp_credentials_path("writeback-failure");
     write_credentials(&path, "expired-access", "live-refresh", 0);
 
     // Read-only directory: the file is still readable, but the atomic writer
-    // cannot create its temporary sibling.
+    // cannot create its temporary sibling. Injected — and verified — before the
+    // mock server is mounted, because its `.expect(1)` would fail on drop if a
+    // skip returned without ever making the request.
     let dir = path.parent().unwrap().to_path_buf();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    if !read_only_dir_blocks_writes(&dir) {
+        restore_and_remove(&dir);
+        eprintln!(
+            "skipping refresh_whose_writeback_fails_is_terminal: this process writes \
+             through a 0500 directory, so the writeback failure cannot be injected"
+        );
+        return;
+    }
 
+    let server = mock_token_server("rotated-refresh").await;
     let store = ClaudeAuthStore::with_token_url(
         path.clone(),
         reqwest::Client::new(),
@@ -529,15 +600,13 @@ async fn refresh_whose_writeback_fails_is_terminal() {
     );
     let error = store.force_refresh().await.unwrap_err();
 
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    restore_and_remove(&dir);
 
     assert!(
         is_terminal_refresh_failure(&error),
         "a lost rotated token must classify as terminal — the stored refresh \
          token is spent and no retry can recover it, got: {error:#}"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The mirror of `refresh_whose_writeback_fails_is_terminal`, and the one that
@@ -552,6 +621,19 @@ async fn refresh_writeback_failure_without_rotation_is_not_terminal() {
     use wiremock::matchers::{method, path as wm_path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    let path = temp_credentials_path("writeback-no-rotation");
+    write_credentials(&path, "expired-access", "live-refresh", 0);
+    let dir = path.parent().unwrap().to_path_buf();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    if !read_only_dir_blocks_writes(&dir) {
+        restore_and_remove(&dir);
+        eprintln!(
+            "skipping refresh_writeback_failure_without_rotation_is_not_terminal: this \
+             process writes through a 0500 directory, so the writeback failure cannot be injected"
+        );
+        return;
+    }
+
     let server = MockServer::start().await;
     // No `refresh_token` in the response — the stored one is reused.
     Mock::given(method("POST"))
@@ -564,11 +646,6 @@ async fn refresh_writeback_failure_without_rotation_is_not_terminal() {
         .mount(&server)
         .await;
 
-    let path = temp_credentials_path("writeback-no-rotation");
-    write_credentials(&path, "expired-access", "live-refresh", 0);
-    let dir = path.parent().unwrap().to_path_buf();
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-
     let store = ClaudeAuthStore::with_token_url(
         path.clone(),
         reqwest::Client::new(),
@@ -576,13 +653,11 @@ async fn refresh_writeback_failure_without_rotation_is_not_terminal() {
     );
     let error = store.force_refresh().await.unwrap_err();
 
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    restore_and_remove(&dir);
 
     assert!(
         !is_terminal_refresh_failure(&error),
         "the provider did not rotate the refresh token, so the stored one is \
          still usable and the failure must stay recoverable, got: {error:#}"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
