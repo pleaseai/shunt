@@ -401,9 +401,13 @@ async function refreshAccount(name) {
   try {
     const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(name) + "/refresh", { method: "POST", headers: H });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) { showMsg("addmsg", (data.error && data.error.message) || "Refresh failed", false); loadAccounts(); loadPool(); return; }
-    showMsg("addmsg", data.message || "Refresh succeeded", true);
-    loadAccounts(); loadPool();
+    // `loadObserved()` too, matching every other mutation handler: it is the
+    // only path that rebuilds the primary Accounts table, which now renders
+    // `needs_relogin` — the probe can set or clear that, so omitting it would
+    // leave the top table showing the pre-probe state until a page reload.
+    if (!res.ok) { showMsg("addmsg", (data.error && data.error.message) || "Refresh failed", false); loadObserved(); loadAccounts(); loadPool(); return; }
+    showMsg("addmsg", data.message || "Refresh succeeded", data.needs_relogin !== true);
+    loadObserved(); loadAccounts(); loadPool();
   } catch (e) { showMsg("addmsg", "Request failed", false); }
 }
 

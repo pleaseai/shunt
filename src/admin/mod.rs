@@ -1487,6 +1487,15 @@ async fn refresh_account(
                 &name,
                 account_uuid.as_deref(),
             );
+            // Report the state the pool is actually in, not the state the grant
+            // implies. A `ServedRequest` mark survives the clear above, and
+            // saying "this login is alive" while `/admin/pool` still demands a
+            // re-login would hand callers two contradictory answers.
+            let still_marked = state.accounts.store_account_needs_relogin(
+                crate::accounts::StoreFamily::Claude,
+                &name,
+                account_uuid.as_deref(),
+            );
             let expiry_name = name.clone();
             let expires_at = tokio::task::spawn_blocking(move || {
                 claude_store::account_meta(&expiry_name).and_then(|meta| meta.expires_at)
@@ -1497,9 +1506,14 @@ async fn refresh_account(
             json_secure(json!({
                 "name": name,
                 "refreshed": true,
-                "needs_relogin": false,
+                "needs_relogin": still_marked,
                 "expires_at": expires_at,
-                "message": "Refresh succeeded; this login is alive."
+                "message": if still_marked {
+                    "Refresh succeeded, but this account still needs a re-login: the provider \
+                     rejected a token it had already issued to this account. Remove and re-add it."
+                } else {
+                    "Refresh succeeded; this login is alive."
+                }
             }))
         }
         Err(error) => {

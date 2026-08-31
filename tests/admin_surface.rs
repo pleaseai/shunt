@@ -4203,12 +4203,29 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
         reqwest::StatusCode::OK,
         "the grant is healthy, so the probe itself succeeds"
     );
+    let body: serde_json::Value = response.json().await.unwrap();
 
     assert!(
         state.accounts.needs_relogin("anthropic", &account),
         "a successful refresh grant must not clear a mark set by the provider \
          rejecting a bearer the account actually presented — the grant was \
          never the broken part"
+    );
+    // The response must agree with the pool. Reporting `needs_relogin: false`
+    // and "this login is alive" while `/admin/pool` still demands a re-login
+    // would hand the dashboard and API callers contradictory answers.
+    assert_eq!(
+        body["needs_relogin"],
+        serde_json::Value::Bool(true),
+        "the probe must report the state the pool is actually in"
+    );
+    assert!(
+        body["message"]
+            .as_str()
+            .expect("the probe answers with a message")
+            .contains("still needs a re-login"),
+        "the message must not claim recovery, got: {}",
+        body["message"]
     );
 
     // The mirror: a grant-caused mark on the same account *is* cleared, so the
@@ -4229,9 +4246,15 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
         .await
         .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
     assert!(
         !state.accounts.needs_relogin("anthropic", &account),
         "a grant-caused mark must still be cleared by a successful grant"
+    );
+    assert_eq!(
+        body["needs_relogin"],
+        serde_json::Value::Bool(false),
+        "and the response must say so"
     );
 
     std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");

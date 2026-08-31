@@ -354,15 +354,21 @@ mod tests {
     fn account_mutations_refresh_the_grouped_observed_table_too() {
         // The advanced account/pool tables (loadAccounts/loadCodexAccounts/
         // loadPool) are populated separately from the top-level grouped
-        // table, which loadObserved() alone fills in. Every success path
-        // that adds or removes an account must refresh loadObserved() too,
-        // or the grouped table goes stale until the next full page load.
+        // table, which loadObserved() alone fills in. Every path that mutates
+        // an account must refresh loadObserved() too, or the grouped table
+        // goes stale until the next full page load.
+        //
+        // Four on the Claude side: add and remove, plus *both* branches of the
+        // refresh probe. The probe's failure branch counts because a terminal
+        // verdict sets `needs_relogin`, which the grouped table renders — so
+        // there the failure is exactly the state change worth showing.
         let page = dashboard_page("csrf");
         assert_eq!(
             page.matches("loadObserved(); loadAccounts(); loadPool();")
                 .count(),
-            2,
-            "expected both Claude add/remove success paths to refresh the grouped table"
+            4,
+            "expected both Claude add/remove success paths and both refresh-probe \
+             branches to refresh the grouped table"
         );
         assert_eq!(
             page.matches("loadObserved(); loadCodexAccounts(); loadPool();")

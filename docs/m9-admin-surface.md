@@ -509,7 +509,9 @@ nothing else — no access token, no refresh token, and no provider body that
 carried them. It clears a `RefreshGrant`-caused mark, but deliberately not a
 `ServedRequest`-caused one: the probe never sends a request the account has to
 serve, so its success is no evidence against a bearer the provider already
-rejected. `AccountPool` tracks no sticky flag or last-selected
+rejected. The response's `needs_relogin` is read back from the pool *after* that
+clear, so a probe that succeeded against a still-dead account says so rather
+than reporting a recovery `/admin/pool` would contradict. `AccountPool` tracks no sticky flag or last-selected
 timestamp, so the dashboard reports what is actually stored rather than inventing
 it. `GET /admin/pool` enumerates each `claude_oauth` and `chatgpt_oauth`
 provider's accounts (its configured list, or the corresponding Claude/Codex store

@@ -1169,6 +1169,32 @@ impl AccountPool {
         }
     }
 
+    /// Whether any pool entry backed by one store account still carries the
+    /// needs-re-login mark. Matched the same way as
+    /// [`Self::set_needs_relogin_for_store_account`], because the admin paths
+    /// know an account by its store name and uuid rather than by the provider
+    /// entry that selected it.
+    ///
+    /// The refresh probe reports this *after* its own clear, so its response
+    /// cannot claim recovery for an account the pool still considers dead.
+    pub fn store_account_needs_relogin(
+        &self,
+        store_family: StoreFamily,
+        account_name: &str,
+        account_uuid: Option<&str>,
+    ) -> bool {
+        let entries = self.entries.lock().expect("account health lock poisoned");
+        entries.iter().any(|(key, health)| {
+            health.needs_relogin.is_some()
+                && key.store_family == store_family
+                && match &key.identity {
+                    AccountStateIdentity::Verified { id } => account_uuid == Some(id.as_str()),
+                    AccountStateIdentity::StoreEntry { name }
+                    | AccountStateIdentity::UpstreamInline { name, .. } => name == account_name,
+                }
+        })
+    }
+
     /// Clear the mark on every pool entry backed by one store account, but only
     /// where a *grant* failure set it ([`ReloginCause::RefreshGrant`]).
     ///

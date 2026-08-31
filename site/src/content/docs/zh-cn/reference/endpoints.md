@@ -28,7 +28,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/admin/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider 的池状态;每个 account 对象可能包含可选的 `plan` 字符串;文件中读取的值之后可能通过 profile 查询被修正为更精确的值;Codex 行包含已上报的 5h/7d 用量,`7d_oi` 没有对应的 Codex 字段;每个 account 还带有布尔字段 `needs_relogin`:凭据被终结性拒绝(`invalid_grant`)、根本不带刷新令牌,或轮换出的令牌对未能写入而丢失 —— 任何重试都无法恢复,只有运维人员重新登录才行。它与冷却字段**相互独立**上报 —— 冷却会自行到期,而该标记不会 —— 仪表盘的两个表格都会显示为 **needs re-login**,而不是配额暂停时的 `cooling`。仅存于内存:重启后清空,该账户的下一次终结性失败会重新置位。 |
 | `POST` | `/admin/accounts/claude` | 用 `{name, mode}` 开始 Claude 浏览器预配;`mode` 为 `oauth` 或 `setup_token`,省略时默认为 `setup_token`;返回 `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | 用包含 `<code>#<state>` 的 `{code}` 完成 Claude 预配;存储账户并报告其是否生效 |
-| `POST` | `/admin/accounts/claude/{name}/refresh` | 按需执行 **imported** Claude 账户的 refresh 授权,报告该登录是否仍然有效。因为会请求提供方的令牌端点,所以受限流保护;并且始终经由共享凭据存储,不会与代理路径自身的刷新竞争。仅返回新的 `expires_at`,绝不返回任何令牌材料。对 `setup_token` 账户(不含 refresh 授权)或任何终结性判定返回 `400`,对非终结性失败返回 `502` |
+| `POST` | `/admin/accounts/claude/{name}/refresh` | 按需执行 **imported** Claude 账户的 refresh 授权,报告该登录是否仍然有效。因为会请求提供方的令牌端点,所以受限流保护;并且始终经由共享凭据存储,不会与代理路径自身的刷新竞争。仅返回新的 `expires_at`,绝不返回任何令牌材料;并附带在该探测自身清除之后从池中重新读取的 `needs_relogin` —— 对池仍视为已死的账户,授权本身也可能成功,因此响应如实报告,而不会宣称与 `/admin/pool` 矛盾的恢复。对 `setup_token` 账户(不含 refresh 授权)或任何终结性判定返回 `400`,对非终结性失败返回 `502` |
 | `DELETE` | `/admin/accounts/claude/{name}` | 删除指定 Claude 账户的存储文件 |
 | `POST` | `/admin/accounts/codex` | 用 `{name}` 开始 ChatGPT OAuth;返回 `{authorize_url}` |
 | `POST` | `/admin/accounts/codex/{name}/complete` | 用包含完整 localhost redirect URL 或 `<code>#<state>` 的 `{code}` 完成 Codex 预配 |
