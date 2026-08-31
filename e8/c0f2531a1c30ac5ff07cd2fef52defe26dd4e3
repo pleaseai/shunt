@@ -1,0 +1,19 @@
+tests/admin_surface.rs
+  s_87f64bfaa7d780::t_e7528ec676ec5c 3850,3856-3861,3863-3864
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e8c0f2531a1c30ac5ff07cd2fef52defe26dd4e3",
+  "prompts": {},
+  "sessions": {
+    "s_87f64bfaa7d780": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eff4611e-6f3e-4a6b-9cd3-0ea4a81203c7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
