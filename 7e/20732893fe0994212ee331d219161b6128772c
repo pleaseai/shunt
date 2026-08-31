@@ -1,0 +1,34 @@
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_8b1a6f3281be39 110
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_8b1a6f3281be39 66
+docs/m9-admin-surface.md
+  s_bd6b61d56815d2::t_5af2deae0b2db2 446-465
+src/admin/html.rs
+  s_bd6b61d56815d2::t_091dcf1950fba5 529-532,546-548
+  s_bd6b61d56815d2::t_b907337259bd8d 516-528,533-545,549-556
+  s_bd6b61d56815d2::t_3293ece062c12f 515
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_8b1a6f3281be39 66
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_8b1a6f3281be39 66
+src/admin/script.rs
+  s_bd6b61d56815d2::t_c0ad1a9b614ce3 320-322,328-341
+  s_bd6b61d56815d2::t_1baec0c4d85e82 342-343
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7e20732893fe0994212ee331d219161b6128772c",
+  "prompts": {},
+  "sessions": {
+    "s_bd6b61d56815d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0985229-0686-45b4-8ef2-ae1a231ebf11",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
