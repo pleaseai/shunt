@@ -68,7 +68,7 @@ code, .mono { font-family: inherit; font-size: .85em; }
 .account-detail, .status-note { display: block; margin-top: .18rem; color: var(--text-secondary); font-size: .76rem; line-height: 1.35; }
 .status { white-space: nowrap; font-weight: 600; }
 .status[data-state="available"]::before { content: ""; display: inline-block; width: .46rem; height: .46rem; margin-right: .42rem; border-radius: 50%; background: var(--accent); }
-.status[data-state="expired"], .status[data-state="unavailable"] { color: var(--danger); }
+.status[data-state="expired"], .status[data-state="unavailable"], .status[data-state="needs-relogin"] { color: var(--danger); }
 .status[data-state="minor"] { color: var(--accent-light); }
 .status[data-state="major"], .status[data-state="critical"], .status[data-state="unknown"] { color: var(--danger); }
 .usage-lines { min-width: 24rem; }

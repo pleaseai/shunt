@@ -250,6 +250,22 @@ struct AccountHealth {
     /// this token while admission or credential resolution waits, but only an
     /// actual HTTP send consumes it and stamps the completed-probe interval.
     reprobe_reservation: Option<u64>,
+    /// The account's credential is dead and only a re-login can revive it: a
+    /// refresh the provider terminally rejected (`invalid_grant`), or a 401 on
+    /// a credential that cannot be refreshed at all (`token_env`, a long-lived
+    /// setup token).
+    ///
+    /// Deliberately **independent of `cooldown_until`**: a cooldown expires on
+    /// its own after five minutes and the account is retried, which is exactly
+    /// why a dead account otherwise cycles in and out of cooldown forever with
+    /// nothing durable for an operator to see. This flag is the durable signal,
+    /// and it is set only on a *terminal* failure — never on a transient one,
+    /// which would report a healthy account as dead after a provider blip.
+    ///
+    /// Memory-only, like `cooldown_until`: the on-disk `[server.pool]
+    /// state_path` persists quota alone, so a restart clears this and the next
+    /// 401 re-establishes it.
+    needs_relogin: bool,
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
@@ -283,6 +299,11 @@ pub struct AccountSnapshot {
     pub utilization_7d_oi: Option<f64>,
     pub reset_7d_oi: Option<u64>,
     pub status: Option<String>,
+    /// The credential is dead and needs an operator re-login (see
+    /// [`AccountHealth::needs_relogin`]). Reported alongside — not folded
+    /// into — `available` and the cooldown fields, so the dashboard can tell
+    /// "cooling down, will retry" apart from "cooling down forever".
+    pub needs_relogin: bool,
 }
 
 impl AccountSnapshot {
@@ -305,6 +326,7 @@ impl AccountSnapshot {
             utilization_7d_oi: None,
             reset_7d_oi: None,
             status: None,
+            needs_relogin: false,
         }
     }
 }
@@ -1044,6 +1066,72 @@ impl AccountPool {
         crate::metrics::record_pool_rotation(provider, reason);
     }
 
+    /// Record that this account's credential is terminally dead: only an
+    /// operator re-login can revive it. Callers must have established that the
+    /// failure is terminal — [`crate::auth::claude::auth::is_terminal_refresh_failure`]
+    /// for a rejected refresh, or a 401 on an unrefreshable credential — never
+    /// on a transient failure.
+    ///
+    /// Deliberately separate from [`Self::cooldown`]: this changes nothing
+    /// about selection or the cooldown clock, it only makes the dead account
+    /// visible to the operator instead of letting it cycle silently.
+    pub fn mark_needs_relogin(&self, provider: &str, account: &AccountConfig) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        let health = entries.entry(account_key(provider, account)).or_default();
+        health.observed = true;
+        health.enabled = !account.disabled;
+        health.needs_relogin = true;
+    }
+
+    /// Clear the needs-re-login mark after proof the credential works again: a
+    /// successful refresh (proxy path or the admin probe) or a re-login that
+    /// overwrote the stored account. Unlike [`Self::mark_healthy`] this touches
+    /// nothing else — a successful *refresh* says the credential is alive, but
+    /// says nothing about the cooldown the failed request imposed.
+    pub fn clear_needs_relogin(&self, provider: &str, account: &AccountConfig) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        if let Some(health) = entries.get_mut(&account_key(provider, account)) {
+            health.needs_relogin = false;
+        }
+    }
+
+    /// Set or clear the needs-re-login mark on every entry of one physical
+    /// store identity, whatever provider table it is reachable through. Used by
+    /// the admin re-login and refresh-probe paths, which know an account by its
+    /// store name rather than by the provider entry that selected it.
+    ///
+    /// Only entries the pool already holds are updated — an account the pool
+    /// has never selected has no health entry, and the dashboard reports it as
+    /// `unseen` rather than carrying any mark. Inventing an entry here would
+    /// mean synthesizing an [`AccountKey`] the selection path never produced.
+    pub fn set_needs_relogin_for_identity(
+        &self,
+        store_family: StoreFamily,
+        identity: &str,
+        needs_relogin: bool,
+    ) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        for (key, health) in entries.iter_mut() {
+            let matches = key.store_family == store_family
+                && match &key.identity {
+                    AccountStateIdentity::Verified { id }
+                    | AccountStateIdentity::StoreEntry { name: id } => id == identity,
+                    AccountStateIdentity::UpstreamInline { .. } => false,
+                };
+            if matches {
+                health.needs_relogin = needs_relogin;
+            }
+        }
+    }
+
+    /// Whether this account currently carries the needs-re-login mark.
+    pub fn needs_relogin(&self, provider: &str, account: &AccountConfig) -> bool {
+        let entries = self.entries.lock().expect("account health lock poisoned");
+        entries
+            .get(&account_key(provider, account))
+            .is_some_and(|health| health.needs_relogin)
+    }
+
     /// Clear the account-wide cooldown and record the account as observed-healthy.
     /// A non-Fable success proves nothing about the Fable quota bucket, so this
     /// compatibility entry point deliberately leaves the Fable-only slot intact.
@@ -1067,6 +1155,9 @@ impl AccountPool {
         health.observed = true;
         health.enabled = !account.disabled;
         health.cooldown_until = None;
+        // A response the account actually served proves the credential is
+        // alive, whatever a previous 401 concluded.
+        health.needs_relogin = false;
         if is_fable {
             health.cooldown_until_fable = None;
         }
@@ -1254,6 +1345,7 @@ impl AccountPool {
                         utilization_7d_oi: health.quota.utilization_7d_oi,
                         reset_7d_oi: health.quota.reset_7d_oi,
                         status: health.quota.status.clone(),
+                        needs_relogin: health.needs_relogin,
                     }
                 })
                 .collect();

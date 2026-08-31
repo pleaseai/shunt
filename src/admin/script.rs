@@ -243,6 +243,13 @@ async function loadAccounts() {
     const r = body.insertRow();
     cell(r, a.name); cell(r, a.kind); cell(r, when(a.expires_at)); cell(r, a.uuid || "—", true);
     const td = document.createElement("td");
+    // Only an imported login carries a refresh grant; a setup-token account has
+    // nothing to probe (the endpoint refuses it), so it gets no button.
+    if (a.kind === "imported") {
+      const refresh = document.createElement("button"); refresh.className = "secondary"; refresh.textContent = "Refresh";
+      refresh.title = "Exercise this account's refresh grant now and report whether the login is still alive";
+      refresh.onclick = () => refreshAccount(a.name); td.appendChild(refresh);
+    }
     const btn = document.createElement("button"); btn.className = "danger"; btn.textContent = "Remove";
     btn.onclick = () => removeAccount(a.name); td.appendChild(btn); r.appendChild(td);
   }
@@ -276,7 +283,15 @@ async function loadPool() {
   for (const p of providers) for (const a of (p.accounts || [])) {
     rows++; const r = body.insertRow();
     cell(r, p.provider); cell(r, a.name); cell(r, titleCase(a.plan) || "—");
-    cell(r, a.disabled ? "disabled" : !a.has_state ? "unseen" : a.near_quota ? "near quota" : a.cooldown_secs_remaining ? "cooling" : a.cooldown_fable_secs_remaining ? "cooling (fable)" : "available");
+    // `needs_relogin` is checked before the cooldown states on purpose: a dead
+    // credential is *also* cooling down, and reporting only "cooling" is what
+    // made a permanently dead account indistinguishable from a quota pause.
+    const state = a.disabled ? "disabled" : a.needs_relogin ? "needs re-login" : !a.has_state ? "unseen" : a.near_quota ? "near quota" : a.cooldown_secs_remaining ? "cooling" : a.cooldown_fable_secs_remaining ? "cooling (fable)" : "available";
+    const stateCell = cell(r, state);
+    if (a.needs_relogin) {
+      stateCell.className = "status"; stateCell.dataset.state = "needs-relogin";
+      stateCell.title = "The stored credential was permanently rejected, or cannot be refreshed. Re-add this account to sign in again.";
+    }
     const c5 = cell(r, pctReset(a.utilization_5h, a.reset_5h));
     if (a.reset_5h) c5.title = "resets " + new Date(a.reset_5h * 1000).toLocaleString();
     const c7 = cell(r, pctReset(a.utilization_7d, a.reset_7d));
@@ -366,6 +381,16 @@ async function removeAccount(name) {
     const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(name), { method: "DELETE", headers: H });
     if (!res.ok) { const data = await res.json().catch(() => ({})); showMsg("addmsg", (data.error && data.error.message) || "Failed to remove", false); return; }
     loadObserved(); loadAccounts(); loadPool();
+  } catch (e) { showMsg("addmsg", "Request failed", false); }
+}
+
+async function refreshAccount(name) {
+  try {
+    const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(name) + "/refresh", { method: "POST", headers: H });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showMsg("addmsg", (data.error && data.error.message) || "Refresh failed", false); loadAccounts(); loadPool(); return; }
+    showMsg("addmsg", data.message || "Refresh succeeded", true);
+    loadAccounts(); loadPool();
   } catch (e) { showMsg("addmsg", "Request failed", false); }
 }
 

@@ -263,6 +263,7 @@ process-lifetime state:
 | `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state; account objects may include an optional `plan` string |
 | `POST` | `/admin/accounts/claude` | `{name, mode}` → start Claude provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the Claude account |
+| `POST` | `/admin/accounts/claude/{name}/refresh` | Exercise an **imported** account's refresh grant now and report whether the login is still alive; returns the new `expires_at` and never token material. `400` for a `setup_token` account (no refresh grant exists) or a terminal `invalid_grant`; `502` for a non-terminal failure |
 | `DELETE` | `/admin/accounts/claude/{name}` | Remove the Claude account's store file |
 | `POST` | `/admin/accounts/codex` | `{name}` → start ChatGPT OAuth; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/codex/{name}/complete` | `{code}` with a full callback URL or `<code>#<state>` → finish and store the Codex account |
@@ -272,7 +273,7 @@ Gateway-owned errors keep the Anthropic error shape (`ShuntError`); page routes
 render minimal server-side HTML with inline CSS/JS and no external requests.
 
 Every `GET` above is reachable with a **read** credential. `POST /admin/login`
-and the six account-provisioning routes (`POST`/`DELETE` under
+and the seven account-provisioning routes (`POST`/`DELETE` under
 `/admin/accounts/...`) require **write**. `POST /admin/logout` and the two OIDC
 routes are login-flow plumbing and are guarded by the same-origin/state checks
 rather than by tier.
@@ -397,7 +398,7 @@ Managed provisioning and store metadata remain available under a collapsed
 **Manage pool accounts (advanced)** section. `AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,
 serializable view per account: 5h/7d/7d_oi utilization + reset, unified status,
 account-wide cooldown-seconds-remaining, Fable-only cooldown-seconds-remaining,
-`near_quota`, and a derived `available` flag. The Fable-only cooldown counts
+`near_quota`, a `needs_relogin` flag, and a derived `available` flag. The Fable-only cooldown counts
 toward `available` only when `model` is a Fable model, so an account cooling on
 its `7d_oi` bucket still reports available to every other family. Because the
 admin snapshot is taken with `model = None`, the dashboard carries the
@@ -408,7 +409,58 @@ plain "Cooling" describes it. It reads
 the same `entries` map `select_order` reads, clears only already-past quota
 buckets (as the next selection would), never mutates the round-robin cursor, and
 never inserts entries for accounts the pool has not yet seen (reported as
-`has_state: false`). `AccountPool` tracks no sticky flag or last-selected
+`has_state: false`).
+
+### `needs_relogin` — a dead credential, not a pause
+
+`needs_relogin` marks an account whose credential no operator-free retry can
+revive, and the pool-table State column reports it as **needs re-login**, ahead
+of every cooldown state. It exists because the two are otherwise
+indistinguishable on the dashboard: a cooldown expires after five minutes and
+the account is selected again, so a permanently dead account shows the same
+`cooling` a quota pause does, forever — one 401 (and, for an imported account,
+one already-rejected refresh POST) every five minutes with nothing durable to
+see.
+
+It is set from exactly two places, both terminal by construction:
+
+- a 401 on a credential that carries no refresh grant at all (`token_env`, or a
+  long-lived setup token — `adapters/anthropic/mod.rs`, the `RefreshRetry`
+  branch), and
+- a refresh the provider terminally rejected, classified by
+  `auth::claude::auth::is_terminal_refresh_failure` — the OAuth `invalid_grant`
+  code, mirroring the Kimi, xAI, Antigravity, and gateway stores. A transient
+  failure (5xx, network, timeout, an unparseable body) is deliberately **not**
+  terminal: marking one would report a healthy account as dead after a
+  momentary provider blip.
+
+It is cleared by any proof the credential works again: a served response
+(`mark_healthy`), a successful refresh on the proxy path, a successful
+`POST /admin/accounts/claude/{name}/refresh` probe, and a re-login through
+`POST /admin/accounts/claude/{name}/complete`.
+
+The flag is deliberately **independent of the cooldown** and changes nothing
+about routing, selection, or the cooldown clock — it adds a signal, it does not
+add a policy. It is memory-only: the opt-in `[server.pool] state_path`
+persister carries quota alone, so a restart clears the mark and the next 401
+re-establishes it.
+
+`POST /admin/accounts/claude/{name}/refresh` is the operator's on-demand probe
+for the same question. It is write-tier, CSRF-checked, and rate-limited through
+the same `complete_rate` limiter as the completion route (it POSTs to the
+provider's token endpoint). It refuses a `setup_token` account up front rather
+than attempting a grant that cannot exist, and it always goes through
+`ClaudeAuthStore::force_refresh`, never a hand-rolled grant: that store holds
+the process-global `REFRESH_LOCK` across read → POST → atomic writeback, which
+is what keeps the probe from racing the proxy's own refresh and stranding a
+rotated refresh token. It does not additionally take the per-account
+`AccountPool::refresh_lock` the proxy takes — that lock is keyed by an
+`AccountConfig` from a provider table, and a store account may be reachable
+through zero, one, or several provider entries, so there is no single right one
+to pick; it is also unnecessary, because both of the proxy's critical sections
+sit inside the same global lock. Success returns the new `expires_at` and
+nothing else — no access token, no refresh token, and no provider body that
+carried them. `AccountPool` tracks no sticky flag or last-selected
 timestamp, so the dashboard reports what is actually stored rather than inventing
 it. `GET /admin/pool` enumerates each `claude_oauth` and `chatgpt_oauth`
 provider's accounts (its configured list, or the corresponding Claude/Codex store

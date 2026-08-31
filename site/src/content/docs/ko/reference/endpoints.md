@@ -25,9 +25,10 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/admin/logout` | 브라우저 세션 삭제 |
 | `GET` | `/admin/accounts` | Claude 계정 스토어 메타데이터: 이름, 종류, 만료, UUID; 토큰 자체는 절대 반환하지 않음 |
 | `GET` | `/admin/accounts/codex` | Codex 계정 스토어 메타데이터: 이름, 만료, ChatGPT 계정 ID; 토큰 자체는 절대 반환하지 않음 |
-| `GET` | `/admin/pool` | `claude_oauth`, `chatgpt_oauth`, `kimi_oauth` 프로바이더별 풀 상태; 각 account 객체에는 선택적인 `plan` 문자열이 포함될 수 있고 파일에서 읽은 값은 이후 profile 조회로 더 정밀하게 보정될 수 있으며, Codex 행은 보고된 5시간/7일 사용량을 담으며 `7d_oi`에는 Codex 대응 항목이 없음 |
+| `GET` | `/admin/pool` | `claude_oauth`, `chatgpt_oauth`, `kimi_oauth` 프로바이더별 풀 상태; 각 account 객체에는 선택적인 `plan` 문자열이 포함될 수 있고 파일에서 읽은 값은 이후 profile 조회로 더 정밀하게 보정될 수 있으며, Codex 행은 보고된 5시간/7일 사용량을 담으며 `7d_oi`에는 Codex 대응 항목이 없음 각 account에는 불리언 `needs_relogin`도 실린다: 크리덴셜이 종결적으로 거부되었거나(`invalid_grant`) 애초에 갱신 자체가 불가능한 경우로, 어떤 재시도로도 되살릴 수 없고 운영자 재로그인만이 해결한다. 쿨다운 필드와 **독립적으로** 보고된다 — 쿨다운은 저절로 만료되지만 이 표식은 남는다 — 그리고 대시보드 State 열은 쿼터 일시정지의 `cooling`이 아니라 **needs re-login**으로 표시한다. 인메모리라 재시작하면 초기화되고 다음 `401`에서 다시 세워진다. |
 | `POST` | `/admin/accounts/claude` | `{name, mode}`로 Claude 브라우저 프로비저닝 시작. `mode`는 `oauth` 또는 `setup_token`이며, 생략하면 `setup_token`; `{authorize_url}` 반환 |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `<code>#<state>`가 담긴 `{code}`로 Claude 프로비저닝 완료; 계정을 저장하고 실제 사용 여부(live)를 보고 |
+| `POST` | `/admin/accounts/claude/{name}/refresh` | **imported** Claude 계정의 refresh 그랜트를 즉시 실행해 로그인이 아직 살아 있는지 보고. 프로바이더 토큰 엔드포인트를 호출하므로 rate limit이 걸리며, 공용 크리덴셜 스토어를 반드시 경유해 프록시 경로의 갱신과 경합하지 않는다. 새 `expires_at`만 반환하고 토큰 물질은 절대 반환하지 않는다. `setup_token` 계정(refresh 그랜트 없음)이나 종결 `invalid_grant`에는 `400`, 일시적 실패에는 `502` |
 | `DELETE` | `/admin/accounts/claude/{name}` | 해당 이름 Claude 계정의 스토어 파일 제거 |
 | `POST` | `/admin/accounts/codex` | `{name}`으로 ChatGPT OAuth 시작; `{authorize_url}` 반환 |
 | `POST` | `/admin/accounts/codex/{name}/complete` | 전체 localhost redirect URL 또는 `<code>#<state>`가 담긴 `{code}`로 Codex 프로비저닝 완료 |

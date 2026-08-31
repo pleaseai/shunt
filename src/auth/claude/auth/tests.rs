@@ -351,3 +351,116 @@ fn refreshable_valid_access_token_none_for_malformed_value() {
         None
     );
 }
+
+/// `invalid_grant` is terminal — the provider will never accept this refresh
+/// token again, so a retry in five minutes can only repeat the same rejection.
+/// Without the classification the caller sees only "token refresh failed
+/// (400): ..." and cannot tell this apart from a transient outage, which is
+/// what let a dead account cycle in and out of a 5-minute cooldown forever.
+#[tokio::test]
+async fn refresh_invalid_grant_is_terminal() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "invalid_grant",
+            "error_description": "refresh token not found"
+        })))
+        .mount(&server)
+        .await;
+
+    let path = temp_credentials_path("invalid-grant");
+    write_credentials(&path, "expired-access", "dead-refresh", 0);
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    );
+
+    let error = store.force_refresh().await.unwrap_err();
+    assert!(
+        is_terminal_refresh_failure(&error),
+        "invalid_grant must classify as terminal, got: {error:#}"
+    );
+    assert!(
+        format!("{error:#}").contains("invalid_grant"),
+        "the message must name the provider's verdict, got: {error:#}"
+    );
+    // A terminal rejection persists nothing: the stored (dead) pair is left
+    // exactly as it was, so a later re-login has something to overwrite.
+    let stored = read_file(&path).unwrap();
+    assert_eq!(stored["claudeAiOauth"]["refreshToken"], "dead-refresh");
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// The mirror of the test above, and the one that actually constrains the
+/// implementation: a 5xx is a transient provider failure and must **not** be
+/// terminal. Classifying it as terminal would mark a perfectly healthy account
+/// as permanently dead on a momentary outage.
+#[tokio::test]
+async fn refresh_server_error_is_not_terminal() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("upstream unavailable"))
+        .mount(&server)
+        .await;
+
+    let path = temp_credentials_path("transient-refresh");
+    write_credentials(&path, "expired-access", "live-refresh", 0);
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    );
+
+    let error = store.force_refresh().await.unwrap_err();
+    assert!(
+        !is_terminal_refresh_failure(&error),
+        "a 503 must stay non-terminal, got: {error:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// An OAuth error envelope that is *not* `invalid_grant` is also non-terminal:
+/// only the code the spec reserves for a permanently dead grant may condemn an
+/// account. Pins that the classifier matches the code, not merely "the body
+/// parsed as an error".
+#[tokio::test]
+async fn refresh_other_oauth_error_is_not_terminal() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "temporarily_unavailable"
+        })))
+        .mount(&server)
+        .await;
+
+    let path = temp_credentials_path("other-oauth-error");
+    write_credentials(&path, "expired-access", "live-refresh", 0);
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    );
+
+    let error = store.force_refresh().await.unwrap_err();
+    assert!(
+        !is_terminal_refresh_failure(&error),
+        "only invalid_grant is terminal, got: {error:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}

@@ -262,6 +262,40 @@ pub(crate) fn refreshable_valid_access_token(value: &Value, now: SystemTime) -> 
         .then_some(tokens.access_token)
 }
 
+/// The OAuth error code a provider returns for a refresh token it will never
+/// accept again.
+const INVALID_GRANT: &str = "invalid_grant";
+
+/// Marker attached to a Claude refresh failure that no retry can recover: the
+/// stored refresh token is dead, so the only cure is a fresh login. Mirrors
+/// the Kimi (`auth/kimi/auth.rs`), xAI, and gateway stores, which already
+/// separate this case from a transient endpoint failure.
+///
+/// A type rather than a string match, because callers
+/// ([`crate::adapters::anthropic`], [`crate::admin`]) have to classify this
+/// failure to decide whether an account is permanently dead, and matching on
+/// the message would break silently the first time that message is reworded.
+#[derive(Debug)]
+pub(crate) struct InvalidGrant;
+
+impl std::fmt::Display for InvalidGrant {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(INVALID_GRANT)
+    }
+}
+
+impl std::error::Error for InvalidGrant {}
+
+/// Whether a refresh failure is terminal: the provider has permanently
+/// rejected the stored refresh token, so re-attempting the same grant — now
+/// or in five minutes — cannot succeed. A transient failure (5xx, a network
+/// error, a timeout, an unparseable body) is deliberately **not** terminal:
+/// treating one as terminal would mark a perfectly healthy account as dead on
+/// a momentary provider blip.
+pub(crate) fn is_terminal_refresh_failure(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<InvalidGrant>().is_some()
+}
+
 struct Refreshed {
     access_token: String,
     refresh_token: String,
@@ -317,6 +351,18 @@ async fn refresh(
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
+        // Body before status: Anthropic answers a dead refresh token with a
+        // 4xx that, on its own, says nothing about whether the failure is
+        // permanent. Only the OAuth `error` code separates "this grant will
+        // never be accepted again" from "the endpoint is unhappy right now".
+        let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        if value.get("error").and_then(Value::as_str) == Some(INVALID_GRANT) {
+            return Err(anyhow::Error::new(InvalidGrant).context(
+                "Claude rejected the stored refresh token (invalid_grant); it expired or was \
+                 revoked and no retry can recover it. Re-add the account from the admin \
+                 dashboard, or run `shunt login claude --name <account-name>` again",
+            ));
+        }
         let detail: String = text.chars().take(200).collect();
         anyhow::bail!("token refresh failed ({status}): {detail}");
     }

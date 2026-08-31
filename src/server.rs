@@ -374,6 +374,45 @@ mod tests {
         (config, env)
     }
 
+    /// The needs-re-login mark is process-lifetime pool health, not per-request
+    /// config: a config reload re-snapshots `AppState` and must carry it
+    /// forward. PR #389 is the precedent — `state.refreshed()` silently
+    /// discarded a hand-set `admin_auth` field, so a field that must outlive a
+    /// reload has to be pinned rather than assumed.
+    #[tokio::test]
+    async fn needs_relogin_mark_survives_a_config_re_snapshot() {
+        let mut config = Config::default();
+        let account = AccountConfig {
+            name: "dead-account".to_string(),
+            ..AccountConfig::default()
+        };
+        let provider = config
+            .providers
+            .get_mut("anthropic")
+            .expect("built-in anthropic provider");
+        // A pool account is only valid on an OAuth provider; the built-in
+        // `anthropic` entry defaults to a plain API-key upstream.
+        provider.auth = crate::config::AuthMode::ClaudeOauth;
+        provider.accounts = vec![account.clone()];
+        let (_router, _shared, state) =
+            build_router(config).expect("router builds from the default config");
+
+        state.accounts.mark_needs_relogin("anthropic", &account);
+        assert!(state.accounts.needs_relogin("anthropic", &account));
+
+        let reloaded = state.refreshed();
+        assert!(
+            reloaded.accounts.needs_relogin("anthropic", &account),
+            "a config re-snapshot must not discard the needs-re-login mark"
+        );
+        // And the snapshot the admin dashboard reads still carries it.
+        let snapshots =
+            reloaded
+                .accounts
+                .snapshot("anthropic", std::slice::from_ref(&account), None, None);
+        assert!(snapshots[0].needs_relogin);
+    }
+
     #[tokio::test]
     async fn usage_route_is_registered_and_answers_when_enabled_with_valid_auth() {
         let (config, env) = config_with_usage_enabled("registered");

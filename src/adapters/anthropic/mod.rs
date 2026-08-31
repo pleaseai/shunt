@@ -397,8 +397,12 @@ async fn forward_claude_oauth(
                     );
                     // A static credential (token_env or a long-lived setup token)
                     // cannot be refreshed, so a 401 here means it is expired or
-                    // revoked. Log it — otherwise the account cycles in and out of
-                    // this cooldown indefinitely with no operator-visible signal.
+                    // revoked — terminal by definition, with no grant left to
+                    // retry. Mark it so the operator sees a dead account on the
+                    // admin dashboard; without the mark it just cycles in and out
+                    // of this cooldown indefinitely, indistinguishable from a
+                    // quota cooldown that will clear on its own.
+                    state.accounts.mark_needs_relogin(&route.provider, account);
                     tracing::warn!(
                         provider = %route.provider,
                         account = %account.name,
@@ -440,7 +444,16 @@ async fn forward_claude_oauth(
                         .force_refresh_if_access_token(failed_access_token)
                         .await
                     {
-                        Ok(token) => token,
+                        Ok(token) => {
+                            // The refresh grant succeeded, so whatever a previous
+                            // 401 concluded about this credential is now false.
+                            // Clearing here (rather than waiting for the retry's
+                            // `mark_healthy`) keeps the mark tied to the
+                            // credential's liveness, not to the retried request's
+                            // outcome.
+                            state.accounts.clear_needs_relogin(&route.provider, account);
+                            token
+                        }
                         Err(error) => {
                             state.accounts.cooldown(
                                 &route.provider,
@@ -448,10 +461,21 @@ async fn forward_claude_oauth(
                                 Duration::from_secs(5 * 60),
                                 "auth",
                             );
+                            // Only a *terminal* rejection means the account is
+                            // dead: the provider will never accept this refresh
+                            // token again, so the 5-minute retry loop can only
+                            // repeat the same rejected grant forever. A transient
+                            // failure (5xx, network, timeout) must not set the
+                            // mark — that would report a healthy account as dead
+                            // on a momentary provider blip.
+                            if auth::claude::auth::is_terminal_refresh_failure(&error) {
+                                state.accounts.mark_needs_relogin(&route.provider, account);
+                            }
                             tracing::warn!(
                                 provider = %route.provider,
                                 account = %account.name,
                                 error = %error,
+                                terminal = auth::claude::auth::is_terminal_refresh_failure(&error),
                                 "failed to force-refresh Claude OAuth account"
                             );
                             last_response = Some(upstream);
