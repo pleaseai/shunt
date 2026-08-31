@@ -39,13 +39,13 @@ shunt add upstream openai --print | claude
 ```toml
 [[upstreams]]
 name = "anthropic"
-provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+provider = "anthropic"   # 라우트가 없는 모델(예: claude-*)의 기본값으로 Anthropic을 유지
 
 [[upstreams]]
 name = "openai"
 provider = "openai"
-# effort = "high"          # optional default reasoning effort
-# count_tokens = "tiktoken" # default; "estimate" opts out of local counting
+# effort = "high"          # 선택적 기본 추론 노력
+# count_tokens = "tiktoken" # 기본값; "estimate"는 로컬 카운팅을 끕니다
 ```
 
 순서가 있는 `[[upstreams]]`는 shunt의 내장 프로바이더를 대체하므로, 구성은 여전히 폴백 대상인
@@ -71,7 +71,7 @@ id를 정확히 라우팅하거나, 프리픽스로 라우팅하거나, Claude �
 [모델 디스커버리](/ko/guides/model-discovery/)에 광고하세요:
 
 ```toml
-# Recommended: advertise + route + translate in one declaration
+# 권장: 노출 + 라우팅 + 변환을 한 선언으로
 [[models]]
 id = "claude-gpt-5-4-via-openai"
 display_name = "GPT-5.4 (via OpenAI)"
@@ -79,7 +79,7 @@ display_name = "GPT-5.4 (via OpenAI)"
 [models.upstream_model]
 openai = "gpt-5.4"
 
-# Or catch every gpt-* id a client sends
+# 또는 클라이언트가 보내는 모든 gpt-* id를 받기
 [[route_prefixes]]
 prefix = "gpt-"
 provider = "openai"

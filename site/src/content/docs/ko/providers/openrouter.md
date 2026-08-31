@@ -27,7 +27,7 @@ shunt add upstream https://openrouter.ai/docs --print | claude
 ```toml
 [[upstreams]]
 name = "anthropic"
-provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+provider = "anthropic"   # 라우트가 없는 모델(예: claude-*)의 기본값으로 Anthropic을 유지
 
 [[upstreams]]
 name = "openrouter"

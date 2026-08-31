@@ -32,7 +32,7 @@ shunt add upstream kimi --print | claude
 ```toml
 [[upstreams]]
 name = "anthropic"
-provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+provider = "anthropic"   # 라우트가 없는 모델(예: claude-*)의 기본값으로 Anthropic을 유지
 
 [[upstreams]]
 name = "kimi"
@@ -145,9 +145,9 @@ name = "kimi-code"
 provider = "kimi-code"
 auth = { mode = "kimi_oauth", account = "<account-name>" }
 
-# Declaring [[upstreams]] replaces the built-in provider set, so keep a trailing
-# anthropic passthrough — without it `shunt check` rejects the default
-# server.default_provider. This is the same entry `shunt init` appends.
+# [[upstreams]]를 선언하면 내장 프로바이더 집합이 대체되므로, 맨 뒤에 anthropic
+# 패스스루를 남겨 두세요 — 없으면 `shunt check`가 기본값인
+# server.default_provider를 거부합니다. `shunt init`이 덧붙이는 것과 같은 항목입니다.
 [[upstreams]]
 name = "anthropic"
 provider = "anthropic"

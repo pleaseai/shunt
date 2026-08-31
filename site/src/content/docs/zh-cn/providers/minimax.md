@@ -24,7 +24,7 @@ shunt add upstream https://platform.minimax.io/docs/token-plan/claude-code --pri
 ```toml
 [[upstreams]]
 name = "anthropic"
-provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+provider = "anthropic"   # 让 Anthropic 作为无路由匹配模型(例如 claude-*)的默认项
 
 [[upstreams]]
 name = "minimax"

@@ -32,7 +32,7 @@ shunt add upstream kimi --print | claude
 ```toml
 [[upstreams]]
 name = "anthropic"
-provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+provider = "anthropic"   # 让 Anthropic 作为无路由匹配模型(例如 claude-*)的默认项
 
 [[upstreams]]
 name = "kimi"
@@ -147,9 +147,9 @@ name = "kimi-code"
 provider = "kimi-code"
 auth = { mode = "kimi_oauth", account = "<account-name>" }
 
-# Declaring [[upstreams]] replaces the built-in provider set, so keep a trailing
-# anthropic passthrough — without it `shunt check` rejects the default
-# server.default_provider. This is the same entry `shunt init` appends.
+# 声明 [[upstreams]] 会替换内置的提供方集合,因此要在末尾保留一个
+# anthropic 透传 —— 否则 `shunt check` 会拒绝默认的
+# server.default_provider。这与 `shunt init` 追加的条目相同。
 [[upstreams]]
 name = "anthropic"
 provider = "anthropic"

@@ -28,7 +28,7 @@ shunt add upstream https://openrouter.ai/docs --print | claude
 ```toml
 [[upstreams]]
 name = "anthropic"
-provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+provider = "anthropic"   # 让 Anthropic 作为无路由匹配模型(例如 claude-*)的默认项
 
 [[upstreams]]
 name = "openrouter"

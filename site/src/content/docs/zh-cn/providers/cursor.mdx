@@ -39,7 +39,7 @@ shunt login cursor
 ```toml
 [[upstreams]]
 name = "anthropic"
-provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+provider = "anthropic"   # 让 Anthropic 作为无路由匹配模型(例如 claude-*)的默认项
 
 [[upstreams]]
 name = "cursor"
@@ -77,7 +77,7 @@ id。请使用 **wire** id,而不是 `cursor-agent models` 中的显示名:Auto 
 model = "cursor:default"
 provider = "cursor"
 
-# Or: advertise + route in one declaration
+# 或者: 在一个声明中同时公开 + 路由
 [[models]]
 id = "claude-cursor-default"
 display_name = "Cursor Auto"

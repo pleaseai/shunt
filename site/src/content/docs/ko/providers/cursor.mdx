@@ -39,7 +39,7 @@ shunt login cursor
 ```toml
 [[upstreams]]
 name = "anthropic"
-provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+provider = "anthropic"   # 라우트가 없는 모델(예: claude-*)의 기본값으로 Anthropic을 유지
 
 [[upstreams]]
 name = "cursor"
@@ -77,7 +77,7 @@ provider = "cursor"
 model = "cursor:default"
 provider = "cursor"
 
-# Or: advertise + route in one declaration
+# 또는: 노출 + 라우팅을 한 선언으로
 [[models]]
 id = "claude-cursor-default"
 display_name = "Cursor Auto"

@@ -40,13 +40,13 @@ shunt add upstream openai --print | claude
 ```toml
 [[upstreams]]
 name = "anthropic"
-provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+provider = "anthropic"   # 让 Anthropic 作为无路由匹配模型(例如 claude-*)的默认项
 
 [[upstreams]]
 name = "openai"
 provider = "openai"
-# effort = "high"          # optional default reasoning effort
-# count_tokens = "tiktoken" # default; "estimate" opts out of local counting
+# effort = "high"          # 可选的默认推理力度
+# count_tokens = "tiktoken" # 默认;"estimate" 表示不使用本地计数
 ```
 
 有序的 `[[upstreams]]` 会替换 shunt 的内置提供方,因此该配置必须声明它仍然回退到的
@@ -72,7 +72,7 @@ export OPENAI_API_KEY='...'
 [模型发现](/zh-cn/guides/model-discovery/) 声明一个 Claude 命名的别名:
 
 ```toml
-# Recommended: advertise + route + translate in one declaration
+# 推荐: 在一个声明中同时公开 + 路由 + 转换
 [[models]]
 id = "claude-gpt-5-4-via-openai"
 display_name = "GPT-5.4 (via OpenAI)"
@@ -80,7 +80,7 @@ display_name = "GPT-5.4 (via OpenAI)"
 [models.upstream_model]
 openai = "gpt-5.4"
 
-# Or catch every gpt-* id a client sends
+# 或者接住客户端发送的所有 gpt-* id
 [[route_prefixes]]
 prefix = "gpt-"
 provider = "openai"
