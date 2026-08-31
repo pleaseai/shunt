@@ -1,0 +1,140 @@
+---
+title: Anthropic
+description: 默认的透传提供方 —— 转发调用方自己的凭据、注入一个 API 密钥,或用 OAuth 池化 Claude 订阅账号。
+---
+
+内置的 **`anthropic`** 提供方是 shunt 的默认目的地:任何没有匹配路由的模型都会被原样转发到
+`api.anthropic.com`(可通过 `server.default_provider` 配置)。它是一个 **`kind = "anthropic"`** 提供方 ——
+上游本身就讲 Anthropic Messages API,因此 shunt 不做转换直接透传请求,只决定**哪一份凭据**
+被发往上游。
+
+| 认证模式 | 凭据 | 使用场景 |
+| :-- | :-- | :-- |
+| `passthrough`(默认) | 调用方自己的 `x-api-key` / `Authorization` | 透明代理 —— 每个客户端自带密钥或 OAuth token |
+| `api_key` | 来自环境变量的服务端密钥 | 用一个运维方持有的 API 密钥为每个请求重新加钥 |
+| `claude_oauth` | 一个或多个 shunt 托管的 Claude 订阅账号 | 消耗 Claude 订阅,支持池化与配额感知轮换 |
+
+## 快速开始
+
+让编码 agent 为你完成接入 —— `shunt add` 会打印一份内置的设置蓝图
+(离线且只读;配置由 agent 编辑,该命令绝不会修改配置):
+
+```bash
+shunt add upstream anthropic --print | claude
+```
+
+或者按照下面的手动步骤操作。
+
+## 配置上游
+
+`anthropic` 是内置的 —— 完全不做配置时,shunt 已经会把未路由的模型以 `passthrough` 转发给它。
+要显式声明它(用于有序故障转移,或改变认证方式),请使用预设,它提供了 `kind = "anthropic"`、
+`base_url = "https://api.anthropic.com"` 和 `auth = "passthrough"`:
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+```
+
+显式字段会覆盖预设默认值。旧的 `[providers.anthropic]` 表形式仍然受支持 —— 但不要在同一个文件中
+混用 `[[upstreams]]` 和 `[providers.*]`。
+
+### 透传(默认)
+
+无需再配置什么:shunt 会转发客户端自己的 `x-api-key` 或 `Authorization`
+头。配置中不应存放任何服务端机密。*客户端*应当发送哪一份凭据,
+在 [连接 Claude Code](/zh-cn/guides/connect-claude-code/#2-选择-anthropic-凭据) 中有说明。
+
+### 服务端 API 密钥
+
+注入一个运维方持有的密钥,而不是信任调用方自带:
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+auth = { mode = "api_key", env = "ANTHROPIC_API_KEY", header = "x_api_key" }
+```
+
+如果你注入了服务端凭据,请在把网关暴露到回环之外前,先用
+[`[server.auth]`](/zh-cn/guides/shared-gateway/) 为它加上门禁。
+
+### Claude 订阅账号(`claude_oauth`)
+
+先创建一个可刷新的、由 shunt 托管的账号,然后把上游限定到它:
+
+```bash
+shunt login claude --name primary --mode oauth
+```
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+auth = { mode = "claude_oauth", account = "primary" }
+```
+
+`shunt login claude` 有三种模式:`--mode oauth` 运行 shunt 自己的可刷新 OAuth 流程
+(推荐),`--mode import` 复制当前的 Claude Code 登录,`--mode setup-token`
+创建一个为期一年、仅用于推理的 token。省略 `account`(以及 `accounts`)会扫描整个
+shunt 托管的账号存储 —— 存储中有多个账号时,它就成了一个**负载均衡的池**,
+带会话粘性和配额感知轮换。完整的池化行为 —— 显式账号条目、按账号阈值、`[server.pool]` 调优,
+以及故障转移 —— 都记录在
+[Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/) 中。
+
+
+
+<Aside type="note" title="跨 origin token 守卫">
+
+`claude_oauth` 上游要求 `base_url` 是 `anthropic.com`(或其子域)上的 HTTPS,这样订阅 bearer
+就绝不会泄漏到另一个 origin。回环主机不受此限制,以便用于本地 mock
+和调试代理。
+
+</Aside>
+
+
+
+## 模型与路由
+
+作为默认提供方,`anthropic` 不需要任何路由 —— 所有你**没有**映射到别处的东西
+都会落到这里。要在一条有序故障转移链中显式把某个模型固定到它:
+
+```toml
+[[models]]
+id = "claude-sonnet-5"
+display_name = "Claude Sonnet 5"
+
+[models.upstream_model]
+anthropic = "claude-sonnet-5"
+```
+
+映射的键是 `[[upstreams]].name`,而不是预设 id。在
+`auto_include_builtin_models = true`(默认)时,`GET /v1/models` 会先在 `server.default_provider`
+是 Anthropic 类型的情况下尝试它的实时模型列表;否则回退到 shunt
+内置的 Claude 目录快照 —— 见 [模型发现](/zh-cn/guides/model-discovery/)。
+
+## 校验
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/models
+```
+
+然后发送一个最小请求(使用 `passthrough` 时带上你自己的凭据;使用
+`claude_oauth` 时省略它):
+
+```bash
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-sonnet-5","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+## 相关内容
+
+- [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/) —— 账号池、配额感知选择、`[server.pool]`
+- [管理后台与远程开通](/zh-cn/guides/admin-remote-provisioning/) —— 从浏览器开通账号
+- [配置参考](/reference/configuration/#providersnameaccounts) —— 每一个账号键

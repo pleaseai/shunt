@@ -351,3 +351,313 @@ fn refreshable_valid_access_token_none_for_malformed_value() {
         None
     );
 }
+
+/// `invalid_grant` is terminal — the provider will never accept this refresh
+/// token again, so a retry in five minutes can only repeat the same rejection.
+/// Without the classification the caller sees only "token refresh failed
+/// (400): ..." and cannot tell this apart from a transient outage, which is
+/// what let a dead account cycle in and out of a 5-minute cooldown forever.
+#[tokio::test]
+async fn refresh_invalid_grant_is_terminal() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "invalid_grant",
+            "error_description": "refresh token not found"
+        })))
+        .mount(&server)
+        .await;
+
+    let path = temp_credentials_path("invalid-grant");
+    write_credentials(&path, "expired-access", "dead-refresh", 0);
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    );
+
+    let error = store.force_refresh().await.unwrap_err();
+    assert!(
+        is_terminal_refresh_failure(&error),
+        "invalid_grant must classify as terminal, got: {error:#}"
+    );
+    assert!(
+        format!("{error:#}").contains("invalid_grant"),
+        "the message must name the provider's verdict, got: {error:#}"
+    );
+    // A terminal rejection persists nothing: the stored (dead) pair is left
+    // exactly as it was, so a later re-login has something to overwrite.
+    let stored = read_file(&path).unwrap();
+    assert_eq!(stored["claudeAiOauth"]["refreshToken"], "dead-refresh");
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// The mirror of the test above, and the one that actually constrains the
+/// implementation: a 5xx is a transient provider failure and must **not** be
+/// terminal. Classifying it as terminal would mark a perfectly healthy account
+/// as permanently dead on a momentary outage.
+#[tokio::test]
+async fn refresh_server_error_is_not_terminal() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("upstream unavailable"))
+        .mount(&server)
+        .await;
+
+    let path = temp_credentials_path("transient-refresh");
+    write_credentials(&path, "expired-access", "live-refresh", 0);
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    );
+
+    let error = store.force_refresh().await.unwrap_err();
+    assert!(
+        !is_terminal_refresh_failure(&error),
+        "a 503 must stay non-terminal, got: {error:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// An OAuth error envelope that is *not* `invalid_grant` is also non-terminal:
+/// only the code the spec reserves for a permanently dead grant may condemn an
+/// account. Pins that the classifier matches the code, not merely "the body
+/// parsed as an error".
+#[tokio::test]
+async fn refresh_other_oauth_error_is_not_terminal() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "temporarily_unavailable"
+        })))
+        .mount(&server)
+        .await;
+
+    let path = temp_credentials_path("other-oauth-error");
+    write_credentials(&path, "expired-access", "live-refresh", 0);
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    );
+
+    let error = store.force_refresh().await.unwrap_err();
+    assert!(
+        !is_terminal_refresh_failure(&error),
+        "only invalid_grant is terminal, got: {error:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// A credential file with no `refreshToken` — an expired setup token, or a
+/// login that never stored one — fails during *resolution*, before any upstream
+/// request is sent, so it never reaches the 401 handling that classifies
+/// non-refreshable credentials. Without a terminal verdict here the account
+/// cycles through the five-minute auth cooldown forever with nothing durable
+/// for an operator to see, which is the loop this whole change exists to break.
+#[tokio::test]
+async fn refresh_without_a_stored_refresh_token_is_terminal() {
+    let path = temp_credentials_path("no-refresh-token");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        json!({
+            "claudeAiOauth": {
+                "accessToken": "expired-access",
+                "expiresAt": 0
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // No token URL is ever contacted: the store bails before building a grant.
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        "http://127.0.0.1:1/token".to_string(),
+    );
+
+    let error = store.get_valid_access_token().await.unwrap_err();
+    assert!(
+        is_terminal_refresh_failure(&error),
+        "a credential with no refresh token must classify as terminal, got: {error:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// `chmod 0500` is the only writeback failure the two tests below can inject
+/// without a fault-injection seam in [`write_auth_file_atomic`], and it does
+/// not hold for every process: a privileged one (uid 0, common in dev
+/// containers) bypasses the directory's write bit, so the atomic writer still
+/// creates its temp sibling, the refresh succeeds, and `unwrap_err()` panics on
+/// an environment the change under test is not about.
+///
+/// Probe the directory instead of guessing at a uid — the question is whether
+/// the injection works *here*, not who we are. Returns `false` when the write
+/// went through anyway, meaning this environment cannot run the case.
+#[cfg(unix)]
+fn read_only_dir_blocks_writes(dir: &Path) -> bool {
+    let probe = dir.join(".writeback-injection-probe");
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            false
+        }
+        Err(_) => true,
+    }
+}
+
+/// Undo the read-only injection and remove the fixture. Called on both the
+/// skip and the assert path so a failed run never leaves an undeletable
+/// directory behind in the system temp dir.
+#[cfg(unix)]
+fn restore_and_remove(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The probe's negative half, which every environment can run: a *writable*
+/// directory must report the injection as unavailable. Without this the probe
+/// could be hardcoded to `true` and both writeback tests would keep passing
+/// here while still panicking for the privileged process they were meant to
+/// spare. The privileged half is what the environment decides, so it is not
+/// asserted.
+#[cfg(unix)]
+#[test]
+fn the_writeback_injection_probe_reports_a_writable_directory_as_unblocked() {
+    let dir = temp_credentials_path("probe-writable")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    std::fs::create_dir_all(&dir).unwrap();
+
+    assert!(
+        !read_only_dir_blocks_writes(&dir),
+        "a writable directory cannot inject a writeback failure, so the probe \
+         must report it as unblocked"
+    );
+    assert!(
+        !dir.join(".writeback-injection-probe").exists(),
+        "the probe must clean up the file it created"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The provider rotated the token but the new pair could not be persisted. The
+/// grant already consumed the refresh token on disk, so every later attempt
+/// replays a spent one — terminal, even though nothing about the *request*
+/// failed. Unix-only because it makes the write fail by removing write
+/// permission from the credential directory.
+#[cfg(unix)]
+#[tokio::test]
+async fn refresh_whose_writeback_fails_is_terminal() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = temp_credentials_path("writeback-failure");
+    write_credentials(&path, "expired-access", "live-refresh", 0);
+
+    // Read-only directory: the file is still readable, but the atomic writer
+    // cannot create its temporary sibling. Injected — and verified — before the
+    // mock server is mounted, because its `.expect(1)` would fail on drop if a
+    // skip returned without ever making the request.
+    let dir = path.parent().unwrap().to_path_buf();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    if !read_only_dir_blocks_writes(&dir) {
+        restore_and_remove(&dir);
+        eprintln!(
+            "skipping refresh_whose_writeback_fails_is_terminal: this process writes \
+             through a 0500 directory, so the writeback failure cannot be injected"
+        );
+        return;
+    }
+
+    let server = mock_token_server("rotated-refresh").await;
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    );
+    let error = store.force_refresh().await.unwrap_err();
+
+    restore_and_remove(&dir);
+
+    assert!(
+        is_terminal_refresh_failure(&error),
+        "a lost rotated token must classify as terminal — the stored refresh \
+         token is spent and no retry can recover it, got: {error:#}"
+    );
+}
+
+/// The mirror of `refresh_whose_writeback_fails_is_terminal`, and the one that
+/// actually constrains the classifier: when the provider **omits**
+/// `refresh_token`, `parse_refresh` reuses the one already on disk, so that
+/// token is still live and a lost writeback costs only an access token. Marking
+/// it terminal would send an operator to re-login for nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn refresh_writeback_failure_without_rotation_is_not_terminal() {
+    use std::os::unix::fs::PermissionsExt;
+    use wiremock::matchers::{method, path as wm_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let path = temp_credentials_path("writeback-no-rotation");
+    write_credentials(&path, "expired-access", "live-refresh", 0);
+    let dir = path.parent().unwrap().to_path_buf();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    if !read_only_dir_blocks_writes(&dir) {
+        restore_and_remove(&dir);
+        eprintln!(
+            "skipping refresh_writeback_failure_without_rotation_is_not_terminal: this \
+             process writes through a 0500 directory, so the writeback failure cannot be injected"
+        );
+        return;
+    }
+
+    let server = MockServer::start().await;
+    // No `refresh_token` in the response — the stored one is reused.
+    Mock::given(method("POST"))
+        .and(wm_path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "new-access",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    );
+    let error = store.force_refresh().await.unwrap_err();
+
+    restore_and_remove(&dir);
+
+    assert!(
+        !is_terminal_refresh_failure(&error),
+        "the provider did not rotate the refresh token, so the stored one is \
+         still usable and the failure must stay recoverable, got: {error:#}"
+    );
+}

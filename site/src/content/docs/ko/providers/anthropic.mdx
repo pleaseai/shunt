@@ -1,0 +1,139 @@
+---
+title: Anthropic
+description: 기본 패스스루 프로바이더 — 호출자 본인의 자격 증명을 전달하거나, API 키를 주입하거나, OAuth로 Claude 구독 계정을 풀링합니다.
+---
+
+내장 **`anthropic`** 프로바이더는 shunt의 기본 목적지입니다: 일치하는 라우트가 없는 모델은 모두
+`api.anthropic.com`으로 변경 없이 전달됩니다(`server.default_provider`로 설정 가능).
+이는 **`kind = "anthropic"`** 프로바이더입니다 — 업스트림이 이미 Anthropic Messages API를 사용하므로,
+shunt는 변환 없이 요청을 패스스루하고 **어떤 자격 증명**을 업스트림으로 보낼지만 결정합니다.
+
+| 인증 모드 | 자격 증명 | 사용 사례 |
+| :-- | :-- | :-- |
+| `passthrough` (기본값) | 호출자 본인의 `x-api-key` / `Authorization` | 투명 프록시 — 각 클라이언트가 자신의 키나 OAuth 토큰을 가져옴 |
+| `api_key` | env 변수에서 읽는 서버 측 키 | 운영자 소유의 API 키 하나로 모든 요청을 다시 키잉 |
+| `claude_oauth` | shunt가 관리하는 하나 이상의 Claude 구독 계정 | 풀링과 쿼터 인지 로테이션을 통해 Claude 구독을 사용 |
+
+## 빠른 시작
+
+코딩 에이전트가 대신 구성하도록 하세요 — `shunt add`는 내장된 설정 블루프린트를 출력합니다
+(오프라인·읽기 전용이며, 구성은 에이전트가 편집하고 이 명령은 절대 편집하지 않습니다):
+
+```bash
+shunt add upstream anthropic --print | claude
+```
+
+또는 아래의 수동 단계를 따르세요.
+
+## 업스트림 구성
+
+`anthropic`은 내장입니다 — 구성이 전혀 없어도 shunt는 라우팅되지 않은 모델을 이미 `passthrough`로
+그쪽에 전달합니다. 명시적으로 선언하려면(순서가 있는 페일오버를 위해서, 또는 인증을 바꾸기 위해서)
+`kind = "anthropic"`, `base_url = "https://api.anthropic.com"`, `auth = "passthrough"`를 제공하는
+프리셋을 사용하세요:
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+```
+
+명시적으로 지정한 필드는 프리셋 기본값을 오버라이드합니다. 레거시 `[providers.anthropic]` 테이블 형식도
+계속 지원됩니다 — 다만 한 파일에서 `[[upstreams]]`와 `[providers.*]`를 섞지 마세요.
+
+### 패스스루 (기본값)
+
+더 구성할 것이 없습니다: shunt는 클라이언트 본인의 `x-api-key` 또는 `Authorization` 헤더를
+전달합니다. 서버 측 시크릿은 구성에 들어가지 않습니다. *클라이언트*가 어떤 자격 증명을 보내야 하는지는
+[Claude Code 연결](/ko/guides/connect-claude-code/#2-anthropic-자격-증명-선택)에서 다룹니다.
+
+### 서버 측 API 키
+
+호출자가 키를 가져오리라 믿는 대신 운영자 소유의 키를 주입하세요:
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+auth = { mode = "api_key", env = "ANTHROPIC_API_KEY", header = "x_api_key" }
+```
+
+서버 측 자격 증명을 주입한다면, 루프백 밖으로 노출하기 전에
+[`[server.auth]`](/ko/guides/shared-gateway/)로 게이트웨이를 보호하세요.
+
+### Claude 구독 계정 (`claude_oauth`)
+
+갱신 가능한 shunt 관리 계정을 한 번 만든 다음, 업스트림을 그 계정으로 한정하세요:
+
+```bash
+shunt login claude --name primary --mode oauth
+```
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+auth = { mode = "claude_oauth", account = "primary" }
+```
+
+`shunt login claude`에는 세 가지 모드가 있습니다: `--mode oauth`는 shunt 자체의 갱신 가능한 OAuth
+플로우를 실행하고(권장), `--mode import`는 현재 Claude Code 로그인을 복사하며, `--mode setup-token`은
+1년짜리 추론 전용 토큰을 생성합니다. `account`(그리고 `accounts`)를 생략하면 shunt가 관리하는 계정
+스토어 전체를 스캔합니다 — 스토어에 계정이 여러 개 있으면 이는 세션 고정성과 쿼터 인지 로테이션을 갖춘
+**부하 분산 풀**이 됩니다. 전체 풀링 동작 — 명시적 계정 항목, 계정별 임계값, `[server.pool]` 튜닝,
+페일오버 — 은 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/)에 문서화되어 있습니다.
+
+
+
+<Aside type="note" title="오프오리진 토큰 가드">
+
+`claude_oauth` 업스트림은 `anthropic.com`(또는 그 서브도메인)의 HTTPS `base_url`을 요구하므로, 구독
+bearer가 다른 origin으로 새어 나갈 수 없습니다. 로컬 목과 디버깅 프록시를 위해 루프백 호스트는 예외입니다.
+
+</Aside>
+
+
+
+## 모델 & 라우팅
+
+기본 프로바이더이므로 `anthropic`에는 라우트가 필요 없습니다 — 다른 곳에 매핑하지 **않은** 것은 모두
+여기로 옵니다. 순서가 있는 페일오버 체인 안에서 모델을 명시적으로 고정하려면:
+
+```toml
+[[models]]
+id = "claude-sonnet-5"
+display_name = "Claude Sonnet 5"
+
+[models.upstream_model]
+anthropic = "claude-sonnet-5"
+```
+
+맵의 키는 프리셋 id가 아니라 `[[upstreams]].name`입니다.
+`auto_include_builtin_models = true`(기본값)이면, `GET /v1/models`는 `server.default_provider`가
+Anthropic 종류일 때 먼저 그쪽의 실시간 모델 목록을 시도합니다. 그렇지 않으면 shunt의 내장 Claude 카탈로그
+스냅샷으로 폴백합니다 — [모델 디스커버리](/ko/guides/model-discovery/)를 참고하세요.
+
+## 검증
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/models
+```
+
+그런 다음 최소 요청을 하나 보내세요(`passthrough`에서는 본인의 자격 증명을 포함하고,
+`claude_oauth`에서는 생략합니다):
+
+```bash
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-sonnet-5","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+## 관련 문서
+
+- [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/) — 계정 풀, 쿼터 인지 선택, `[server.pool]`
+- [관리자 & 원격 프로비저닝](/ko/guides/admin-remote-provisioning/) — 브라우저에서 계정 프로비저닝
+- [구성 레퍼런스](/reference/configuration/#providersnameaccounts) — 모든 계정 키

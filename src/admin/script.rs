@@ -98,7 +98,10 @@ function accountGroups(observed, pool, accounts) {
       // plan as its detail caption, matching the wording the observed path
       // already uses ("Max plan") -- see observation::parse_claude/parse_codex.
       const row = { provider: provider, label: a.name, detail: a.plan ? titleCase(a.plan) + " plan" : null, managed: a, observed: null,
-        state: a.disabled ? "disabled" : !a.has_state ? "unseen" : a.cooldown_secs_remaining ? "cooling" : a.near_quota ? "near-quota" : a.cooldown_fable_secs_remaining ? "cooling-fable" : "available",
+        // `needs_relogin` is checked before the cooldown states for the same
+        // reason the pool table checks it first: a dead credential is *also*
+        // cooling, and this is the primary table operators actually read.
+        state: a.disabled ? "disabled" : a.needs_relogin ? "needs-relogin" : !a.has_state ? "unseen" : a.cooldown_secs_remaining ? "cooling" : a.near_quota ? "near-quota" : a.cooldown_fable_secs_remaining ? "cooling-fable" : "available",
         utilization_5h: a.utilization_5h, reset_5h: a.reset_5h,
         utilization_7d: a.utilization_7d, reset_7d: a.reset_7d,
         utilization_7d_oi: a.utilization_7d_oi, reset_7d_oi: a.reset_7d_oi };
@@ -153,7 +156,7 @@ function effectiveState(row) {
   // observation error: an account the pool has already benched should not
   // read "Needs login" -- with no cooldown remediation -- just because the
   // last local check happened to see an expired token.
-  if (row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;
+  if (row.state === "disabled" || row.state === "needs-relogin" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;
   const o = row.observed;
   if (o) {
     if (o.state === "expired") return "expired";
@@ -165,6 +168,7 @@ function effectiveState(row) {
 }
 
 function rowStatusText(state) {
+  if (state === "needs-relogin") return "Needs re-login";
   if (state === "expired") return "Needs login";
   if (state === "unavailable") return "Usage unavailable";
   if (state === "waiting-for-traffic") return "Waiting for traffic";
@@ -177,12 +181,18 @@ function rowStatusText(state) {
   return "Live";
 }
 
+// Same generation guard as `loadPool`, and for the same reason now that this
+// table renders `needs_relogin`: several mutation handlers reload it, so an
+// older load can land last and repaint the pre-probe state. The table is
+// cleared after the awaits so a superseded load never blanks the newer rows.
+let observedLoadSeq = 0;
 async function loadObserved() {
-  const body = $("observed"); body.textContent = "";
-  let data, res;
+  const seq = ++observedLoadSeq;
+  let data, res, failure = null;
   try { res = await fetch("/admin/observed"); data = await res.json(); }
-  catch (e) { const r = body.insertRow(); const c = cell(r, "Failed to observe local accounts"); c.colSpan = 4; return; }
-  if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to observe local accounts"); c.colSpan = 4; return; }
+  catch (e) { failure = "Failed to observe local accounts"; }
+  if (seq !== observedLoadSeq) return;
+  if (failure || !res.ok) { const body = $("observed"); body.textContent = ""; const r = body.insertRow(); const c = cell(r, failure || (data && data.error && data.error.message) || "Failed to observe local accounts"); c.colSpan = 4; return; }
   // Managed pool state only enriches this view. If either call fails the table
   // still renders the observations alone rather than rendering nothing.
   let pool = null, accounts = null;
@@ -196,6 +206,8 @@ async function loadObserved() {
     if (poolRes && poolRes.ok) pool = await poolRes.json();
     if (accountsRes && accountsRes.ok) accounts = await accountsRes.json();
   } catch (e) { /* observation-only render */ }
+  if (seq !== observedLoadSeq) return;
+  const body = $("observed"); body.textContent = "";
   const groups = accountGroups((data && data.accounts) || [], pool, accounts);
   let rendered = 0;
   for (const [provider, rows] of groups) {
@@ -219,6 +231,7 @@ async function loadObserved() {
       if (state === "waiting-for-traffic") statusNote.textContent = "Quota arrives in GPT response headers";
       else if (state === "expired") statusNote.textContent = "The provider client owns refresh";
       else if (state === "unavailable") statusNote.textContent = "Current login could not read quota";
+      else if (state === "needs-relogin") statusNote.textContent = "Re-add this account to sign in again";
       else if (row.managed && row.managed.cooldown_secs_remaining) statusNote.textContent = "retries in " + untilShort(Math.floor(Date.now() / 1000) + row.managed.cooldown_secs_remaining);
       else if (row.managed && row.managed.cooldown_fable_secs_remaining) statusNote.textContent = "Fable retries in " + untilShort(Math.floor(Date.now() / 1000) + row.managed.cooldown_fable_secs_remaining);
       if (statusNote.textContent) status.appendChild(statusNote);
@@ -263,6 +276,13 @@ async function loadAccounts() {
     if (a.expires_at) status.title = "access token expires " + when(a.expires_at);
     cell(r, a.uuid || "—", true);
     const td = document.createElement("td"); td.className = "row-actions";
+    // Only an imported login carries a refresh grant; a setup-token account has
+    // nothing to probe (the endpoint refuses it), so it gets no button.
+    if (a.kind === "imported") {
+      const refresh = document.createElement("button"); refresh.className = "secondary compact"; refresh.textContent = "Refresh";
+      refresh.title = "Exercise this account's refresh grant now and report whether the login is still alive";
+      refresh.onclick = () => refreshAccount(a.name); td.appendChild(refresh);
+    }
     const relogin = document.createElement("button"); relogin.className = "secondary compact"; relogin.textContent = "Re-login";
     relogin.onclick = () => reloginAccount(a.name, a.kind); td.appendChild(relogin);
     const btn = document.createElement("button"); btn.className = "danger"; btn.textContent = "Remove";
@@ -343,18 +363,34 @@ function reloginCodexAccount(name) {
   $("codex-name").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
+// Every mutation handler reloads the pool table, so two loads can be in
+// flight at once. Without this counter the older response renders last and
+// wins, which after a Refresh means the table falls back to the pre-probe
+// `needs_relogin`. The table is also cleared *after* the await, so a
+// superseded load never blanks the rows the newer one drew.
+let poolLoadSeq = 0;
 async function loadPool() {
-  const body = $("pool"); body.textContent = "";
-  let data, res;
+  const seq = ++poolLoadSeq;
+  let data, res, failure = null;
   try { res = await fetch("/admin/pool"); data = await res.json(); }
-  catch (e) { const r = body.insertRow(); const c = cell(r, "Failed to load pool"); c.colSpan = 9; return; }
-  if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load pool"); c.colSpan = 9; return; }
+  catch (e) { failure = "Failed to load pool"; }
+  if (seq !== poolLoadSeq) return;
+  const body = $("pool"); body.textContent = "";
+  if (failure || !res.ok) { const r = body.insertRow(); const c = cell(r, failure || (data && data.error && data.error.message) || "Failed to load pool"); c.colSpan = 9; return; }
   const providers = (data && data.providers) || [];
   let rows = 0;
   for (const p of providers) for (const a of (p.accounts || [])) {
     rows++; const r = body.insertRow();
     cell(r, p.provider); cell(r, a.name); cell(r, titleCase(a.plan) || "—");
-    cell(r, a.disabled ? "disabled" : !a.has_state ? "unseen" : a.near_quota ? "near quota" : a.cooldown_secs_remaining ? "cooling" : a.cooldown_fable_secs_remaining ? "cooling (fable)" : "available");
+    // `needs_relogin` is checked before the cooldown states on purpose: a dead
+    // credential is *also* cooling down, and reporting only "cooling" is what
+    // made a permanently dead account indistinguishable from a quota pause.
+    const state = a.disabled ? "disabled" : a.needs_relogin ? "needs re-login" : !a.has_state ? "unseen" : a.near_quota ? "near quota" : a.cooldown_secs_remaining ? "cooling" : a.cooldown_fable_secs_remaining ? "cooling (fable)" : "available";
+    const stateCell = cell(r, state);
+    if (a.needs_relogin) {
+      stateCell.className = "status"; stateCell.dataset.state = "needs-relogin";
+      stateCell.title = "The stored credential was permanently rejected, or cannot be refreshed. Re-add this account to sign in again.";
+    }
     const c5 = cell(r, pctReset(a.utilization_5h, a.reset_5h));
     if (a.reset_5h) c5.title = "resets " + new Date(a.reset_5h * 1000).toLocaleString();
     const c7 = cell(r, pctReset(a.utilization_7d, a.reset_7d));
@@ -504,6 +540,20 @@ async function removeAccount(name) {
   try {
     const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(name), { method: "DELETE", headers: H });
     if (!res.ok) { const data = await res.json().catch(() => ({})); showMsg("addmsg", (data.error && data.error.message) || "Failed to remove", false); return; }
+    loadObserved(); loadAccounts(); loadPool();
+  } catch (e) { showMsg("addmsg", "Request failed", false); }
+}
+
+async function refreshAccount(name) {
+  try {
+    const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(name) + "/refresh", { method: "POST", headers: H });
+    const data = await res.json().catch(() => ({}));
+    // `loadObserved()` too, matching every other mutation handler: it is the
+    // only path that rebuilds the primary Accounts table, which now renders
+    // `needs_relogin` — the probe can set or clear that, so omitting it would
+    // leave the top table showing the pre-probe state until a page reload.
+    if (!res.ok) { showMsg("addmsg", (data.error && data.error.message) || "Refresh failed", false); loadObserved(); loadAccounts(); loadPool(); return; }
+    showMsg("addmsg", data.message || "Refresh succeeded", data.needs_relogin !== true);
     loadObserved(); loadAccounts(); loadPool();
   } catch (e) { showMsg("addmsg", "Request failed", false); }
 }

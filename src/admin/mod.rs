@@ -235,6 +235,10 @@ pub fn admin_router() -> Router<AppState> {
             post(complete_account),
         )
         .route(
+            "/admin/accounts/claude/{name}/refresh",
+            post(refresh_account),
+        )
+        .route(
             "/admin/accounts/claude/{name}",
             delete(remove_account_handler),
         )
@@ -1327,11 +1331,11 @@ async fn complete_account(
     // name, and may be shared by other stored aliases, so only clear an
     // identity when no other stored account still resolves to it.
     let identity_name = name.clone();
-    let new_identity = tokio::task::spawn_blocking(move || {
-        claude_store::account_uuid(&identity_name).unwrap_or(identity_name)
-    })
-    .await
-    .unwrap_or_else(|_| name.clone());
+    let account_uuid =
+        tokio::task::spawn_blocking(move || claude_store::account_uuid(&identity_name))
+            .await
+            .unwrap_or(None);
+    let new_identity = account_uuid.clone().unwrap_or_else(|| name.clone());
     let other_identities =
         remaining_account_identities(&name, claude_store::scan_accounts_strict).await;
     if other_identities.is_none() {
@@ -1343,6 +1347,18 @@ async fn complete_account(
         old_identity.as_deref(),
         &new_identity,
         other_identities.as_ref(),
+    );
+    // A fresh login provably produced a live credential, so the needs-re-login
+    // mark for this identity is now false. `cleanup_reprovisioned_pool_health`
+    // above drops the whole health entry, but only when no other stored account
+    // still resolves to the identity — this clears the mark unconditionally so
+    // a re-login on a shared identity does not leave a stale "needs re-login"
+    // on the dashboard.
+    state.accounts.set_needs_relogin_for_store_account(
+        crate::accounts::StoreFamily::Claude,
+        &name,
+        account_uuid.as_deref(),
+        false,
     );
     tracing::info!(account = %name, "admin: account stored");
 
@@ -1371,6 +1387,172 @@ async fn complete_account(
         }
     };
     json_secure(json!({ "name": name, "stored": true, "live": live, "message": message }))
+}
+
+/// Probe one imported Claude account's refresh grant on demand: exercise the
+/// exact credential path inference uses and report whether the login is still
+/// alive, so an operator can tell a dead account apart from a quota cooldown
+/// without waiting for the next 401.
+///
+/// Rate-limited like [`complete_account`] — it POSTs to Anthropic's token
+/// endpoint, so an unthrottled button would let the admin surface drive
+/// provider traffic.
+///
+/// *** The refresh goes through [`claude_auth::ClaudeAuthStore::force_refresh`]
+/// and never re-implements the grant. That store takes the process-global
+/// `REFRESH_LOCK` across read → POST → atomic writeback, which is what keeps
+/// this probe from racing the proxy's own refresh and burning a rotated
+/// refresh token (`src/auth/claude/auth.rs` warns about exactly that: "stored
+/// refresh token is now stale until re-login"). The proxy additionally takes a
+/// *per-account* lock (`state.accounts.refresh_lock`), which this path
+/// deliberately does not: that lock is keyed by an `AccountConfig` from a
+/// provider table, and a store account may be reachable through zero, one, or
+/// several provider entries — there is no single right one to pick. It is also
+/// unnecessary, because both of the proxy's critical sections sit *inside* the
+/// same global lock this probe takes.
+async fn refresh_account(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let state = state.refreshed();
+    let Some(authok) = authenticate(&state, &headers) else {
+        return unauthorized();
+    };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
+    if let Some(response) = check_csrf(&authok.kind, &headers) {
+        return response;
+    }
+    if !state.admin_stores.complete_rate.check() {
+        return too_many_requests("too many refresh attempts; slow down");
+    }
+    if claude_store::validate_account_name(&name).is_err() {
+        return bad_request("account name must match [a-z0-9-]+");
+    }
+    let meta_name = name.clone();
+    let meta = match tokio::task::spawn_blocking(move || claude_store::account_meta(&meta_name))
+        .await
+    {
+        Ok(meta) => meta,
+        Err(join_error) => {
+            tracing::error!(account = %name, %join_error, "admin: account metadata task panicked");
+            return internal("failed to read the account");
+        }
+    };
+    let Some(meta) = meta else {
+        return not_found();
+    };
+    // A setup token and a `token_env` credential carry no refresh grant at all
+    // (kind is decided by `refreshToken` presence — see
+    // `claude_store::read_account_meta`), so there is nothing to probe: the
+    // only cure is a re-login. Say so instead of POSTing a grant that cannot
+    // exist.
+    if meta.kind == claude_store::AccountKind::SetupToken {
+        return bad_request(
+            "this account holds a long-lived setup token, which carries no refresh grant; \
+             it cannot be refreshed — remove and re-add the account to sign in again",
+        );
+    }
+
+    let store = claude_auth::ClaudeAuthStore::new(
+        claude_store::account_path(&name),
+        state.http_client.clone(),
+    );
+    let outcome = store.force_refresh().await;
+
+    // Name *and* uuid: a store account can be keyed by either, depending on
+    // whether its credential file carries a `shuntAccountUuid` and on how the
+    // provider table reaches it — see `set_needs_relogin_for_store_account`.
+    let uuid_name = name.clone();
+    let account_uuid = tokio::task::spawn_blocking(move || claude_store::account_uuid(&uuid_name))
+        .await
+        .unwrap_or(None);
+
+    match outcome {
+        Ok(_) => {
+            // The rotated tokens are already persisted by the store. Nothing
+            // about them is returned here: the browser gets the new expiry and
+            // nothing else.
+            //
+            // Only a *grant-caused* mark is cleared. This probe exercises the
+            // refresh grant and nothing else, so it proves the refresh token is
+            // alive — not that the account can serve inference. An account
+            // marked because the provider rejected a bearer it actually
+            // presented is still dead, and clearing it here would hide that
+            // until the next real request re-established it.
+            state.accounts.clear_grant_relogin_for_store_account(
+                crate::accounts::StoreFamily::Claude,
+                &name,
+                account_uuid.as_deref(),
+            );
+            // Report the state the pool is actually in, not the state the grant
+            // implies. A `ServedRequest` mark survives the clear above, and
+            // saying "this login is alive" while `/admin/pool` still demands a
+            // re-login would hand callers two contradictory answers.
+            let still_marked = state.accounts.store_account_needs_relogin(
+                crate::accounts::StoreFamily::Claude,
+                &name,
+                account_uuid.as_deref(),
+            );
+            let expiry_name = name.clone();
+            let expires_at = tokio::task::spawn_blocking(move || {
+                claude_store::account_meta(&expiry_name).and_then(|meta| meta.expires_at)
+            })
+            .await
+            .unwrap_or(None);
+            tracing::info!(account = %name, "admin: Claude account refresh probe succeeded");
+            json_secure(json!({
+                "name": name,
+                "refreshed": true,
+                "needs_relogin": still_marked,
+                "expires_at": expires_at,
+                "message": if still_marked {
+                    "Refresh succeeded, but this account still needs a re-login: the provider \
+                     rejected a token it had already issued to this account. Remove and re-add it."
+                } else {
+                    "Refresh succeeded; this login is alive."
+                }
+            }))
+        }
+        Err(error) => {
+            let terminal = claude_auth::is_terminal_refresh_failure(&error);
+            if terminal {
+                state.accounts.set_needs_relogin_for_store_account(
+                    crate::accounts::StoreFamily::Claude,
+                    &name,
+                    account_uuid.as_deref(),
+                    true,
+                );
+            }
+            // Full detail server-side; the browser gets a generalized message.
+            // A refresh failure body can echo provider hints, and the error
+            // chain here has already been near token material.
+            tracing::warn!(
+                account = %name,
+                %error,
+                terminal,
+                "admin: Claude account refresh probe failed"
+            );
+            // Gateway-owned errors keep the Anthropic error shape (AGENTS.md),
+            // so the terminal/transient distinction travels in the message and
+            // the status, not in an extra field. The durable signal is the pool
+            // mark set above, which the dashboard's State column renders.
+            if terminal {
+                bad_request(
+                    "this account's stored credential can no longer produce an access token \
+                     — the provider rejected the refresh token, the file carries none, or a \
+                     rotated pair was lost. It needs a re-login — remove and re-add the account",
+                )
+            } else {
+                bad_gateway(
+                    "the refresh attempt failed without a terminal verdict; the provider may \
+                     be unavailable. See the server logs and try again",
+                )
+            }
+        }
+    }
 }
 
 async fn remove_account_handler(

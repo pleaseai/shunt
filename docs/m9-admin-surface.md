@@ -263,6 +263,7 @@ process-lifetime state:
 | `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state; account objects may include an optional `plan` string |
 | `POST` | `/admin/accounts/claude` | `{name, mode}` → start Claude provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the Claude account |
+| `POST` | `/admin/accounts/claude/{name}/refresh` | Exercise an **imported** account's refresh grant now and report whether the login is still alive; returns the new `expires_at` and never token material. `400` for a `setup_token` account (no refresh grant exists) or a terminal verdict (`invalid_grant`, no stored refresh token, or a rotated pair that could not be persisted); `502` for a non-terminal failure |
 | `DELETE` | `/admin/accounts/claude/{name}` | Remove the Claude account's store file |
 | `POST` | `/admin/accounts/codex` | `{name}` → start ChatGPT OAuth; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/codex/{name}/complete` | `{code}` with a full callback URL or `<code>#<state>` → finish and store the Codex account |
@@ -272,7 +273,7 @@ Gateway-owned errors keep the Anthropic error shape (`ShuntError`); page routes
 render minimal server-side HTML with inline CSS/JS and no external requests.
 
 Every `GET` above is reachable with a **read** credential. `POST /admin/login`
-and the six account-provisioning routes (`POST`/`DELETE` under
+and the seven account-provisioning routes (`POST`/`DELETE` under
 `/admin/accounts/...`) require **write**. `POST /admin/logout` and the two OIDC
 routes are login-flow plumbing and are guarded by the same-origin/state checks
 rather than by tier.
@@ -397,7 +398,7 @@ Managed provisioning and store metadata remain available under a collapsed
 **Manage pool accounts (advanced)** section. `AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,
 serializable view per account: 5h/7d/7d_oi utilization + reset, unified status,
 account-wide cooldown-seconds-remaining, Fable-only cooldown-seconds-remaining,
-`near_quota`, and a derived `available` flag. The Fable-only cooldown counts
+`near_quota`, a `needs_relogin` flag, and a derived `available` flag. The Fable-only cooldown counts
 toward `available` only when `model` is a Fable model, so an account cooling on
 its `7d_oi` bucket still reports available to every other family. Because the
 admin snapshot is taken with `model = None`, the dashboard carries the
@@ -408,7 +409,153 @@ plain "Cooling" describes it. It reads
 the same `entries` map `select_order` reads, clears only already-past quota
 buckets (as the next selection would), never mutates the round-robin cursor, and
 never inserts entries for accounts the pool has not yet seen (reported as
-`has_state: false`). `AccountPool` tracks no sticky flag or last-selected
+`has_state: false`).
+
+### `needs_relogin` — a dead credential, not a pause
+
+`needs_relogin` marks an account whose credential no operator-free retry can
+revive, and **both** dashboard tables report it as **needs re-login** — the
+primary Accounts table ("Needs re-login", with a "Re-add this account to sign in
+again" note) and the collapsed managed-pool table's State column — ahead
+of every cooldown state. It exists because the two are otherwise
+indistinguishable on the dashboard: a cooldown expires after five minutes and
+the account is selected again, so a permanently dead account shows the same
+`cooling` a quota pause does, forever — one 401 (and, for an imported account,
+one already-rejected refresh POST) every five minutes with nothing durable to
+see.
+
+The mark also records *why* it was set (`ReloginCause`, internal — the JSON
+field stays a boolean). Only one decision reads it: whether a successful refresh
+grant is enough to clear the mark. `RefreshGrant` means the grant itself failed,
+so a later grant that succeeds disproves it and the admin probe may clear it.
+`ServedRequest` means the provider rejected a bearer the account actually
+presented — the grant was never the broken part, so a working grant proves
+nothing and only a served response clears it.
+
+It is set from exactly three places, all terminal by construction:
+
+- a 401 on a credential that carries no refresh grant at all — a `token_env`
+  token, or a setup token **still inside its local `expiresAt`** that the
+  provider has revoked early (`adapters/anthropic/mod.rs`, the `RefreshRetry`
+  branch). Resolution succeeds because the stored token still looks valid, so
+  the verdict can only come from the upstream 401,
+- a 401 on the *retry* after a refresh that itself succeeded. A live grant
+  yielding a bearer the API still rejects means the account is de-authorized
+  upstream, not momentarily unlucky; the adapter already cools it for five
+  minutes and rotates, so without the mark it cycles there forever reported as
+  plain `cooling`, and
+- a refresh that cannot be retried into success, classified by
+  `auth::claude::auth::is_terminal_refresh_failure`. Three reasons carry the
+  typed `TerminalRefresh` marker, mirroring the one the gateway store already
+  uses (`auth/gateway/auth.rs`) and the code-based classification in the Kimi
+  store (`auth/kimi/auth.rs`):
+  - `InvalidGrant` — the provider returned the OAuth `invalid_grant` code.
+  - `NoRefreshToken` — the credential file carries no refresh token, so there
+    is no grant left to send. A setup token **past its local `expiresAt`**
+    reaches its dead state through *this* path rather than the 401 above:
+    resolution fails before any upstream request is sent, so the `RefreshRetry`
+    branch is never entered. The two setup-token bullets are the same
+    credential at different times — revoked-before-expiry surfaces via the 401,
+    expired surfaces at resolution — and an expired token takes this path
+    whether or not it was also revoked, because nothing reaches the provider.
+  - `WritebackFailed` — the provider rotated the token but the new pair could
+    not be persisted. The grant already consumed the refresh token on disk, so
+    every later attempt replays a spent one. Attached only when the response
+    actually carried a *different* refresh token: a provider that omits the
+    field leaves the stored one live, and that writeback failure stays
+    non-terminal.
+
+  A transient failure (5xx, network, timeout, an unparseable body) is
+  deliberately **not** terminal: marking one would report a healthy account as
+  dead after a momentary provider blip. Both the 401 → force-refresh path and
+  credential *resolution* classify this way: once a dead account's access token
+  expires — its steady state within hours — the refresh is rejected on read,
+  before any upstream POST, and that path marks the account too
+  (`auth::resolve_claude_account_classified`).
+
+It is cleared by proof the credential works again — but the proof has to match
+the cause. A served response (`mark_healthy_scoped`) clears any mark, and so
+does a re-login through `POST /admin/accounts/claude/{name}/complete`, which
+replaces the credential outright. A successful
+`POST /admin/accounts/claude/{name}/refresh` probe clears only a
+`RefreshGrant`-caused mark.
+
+A quota `429` clears the mark too, on both the initial and the post-refresh
+attempt. The provider read the credential and then refused on quota, so the
+bearer authenticated and any mark from an earlier 401 is stale; without this an
+exhausted account would tell the operator to re-login until some later non-429
+response. Narrowed to the **quota-rejected** `429` specifically — the one carrying an
+`anthropic-ratelimit-unified-*-status: rejected` header, which is what
+`accounts::classify` routes to `Rotate`. Two other responses reach the same
+code and prove nothing: a 5xx, which can come from an edge before the
+credential is ever read, and a *headerless* `429`, a generic throttle with no
+account-scoped quota verdict behind it. The initial arm can test the status
+alone because it is entered only for `Rotate`; the post-refresh arm groups
+`Rotate | PauseSame | RefreshRetry`, so it checks the classification too. Only
+the mark is cleared — the cooldown still runs.
+
+A successful refresh on the *proxy* path clears nothing on its own. The adapter
+deliberately waits for the retried request: a live grant proves the refresh
+token works, not that the account can serve inference, and the retry may still
+come back 401 — in which case the mark is set rather than cleared.
+
+The mark follows the *credential*, not the provider row that tripped over it.
+One store account activated by name in two `[[providers.*]]` tables gets two
+health entries — `resolve_pool_accounts` leaves a name-only entry UUID-less, so
+`account_key` keys it as `UpstreamInline`, which carries the upstream name — yet
+both are backed by one credential file. Marking (and clearing) therefore fans
+out across every entry for the same store account, exactly as the admin
+re-login and probe paths already do. The fan-out is narrow on purpose: an
+account carrying its own `credentials` path or `token_env` is a different
+credential that merely shares a name, so a failure on it condemns nothing else.
+An entry keyed by uuid (`Verified`) is reached only from an account that carries
+that same uuid, because `AccountKey` keeps no name to match on there.
+
+The fan-out reaches three things it would otherwise miss. It stamps `observed`
+on the sibling, because `snapshot` reports an unobserved entry as `unseen` and
+drops every field on it — a row `select_order` has picked but no response has
+answered yet would carry the mark and still render clean. It runs on
+`mark_healthy_scoped` as well, so a response served through *any* row clears the
+mark on all of them rather than leaving a live credential condemned until each
+row happens to serve traffic of its own. And on the success path it clears the
+mark alone: cooldowns and storm-control ramps stay per-row, because this is a
+signal and not a routing policy.
+
+That success-path clear is gated on an `any_needs_relogin` flag, because it sits
+on the path every served response takes and scanning the map there cost ~2x on
+the `account_pool_healthy_updates` benchmark for a signal that is absent in the
+steady state. The flag is conservative in one direction only — `false` means no
+entry carries a mark, `true` may outlive the last one and cost a single extra
+scan — and every mutation of it happens under the entries lock, so the recompute
+can never store `false` over a mark that landed beside it.
+
+The flag is deliberately **independent of the cooldown** and changes nothing
+about routing, selection, or the cooldown clock — it adds a signal, it does not
+add a policy. It is memory-only: the opt-in `[server.pool] state_path`
+persister carries quota alone, so a restart clears the mark and the account's
+next terminal failure re-establishes it.
+
+`POST /admin/accounts/claude/{name}/refresh` is the operator's on-demand probe
+for the same question. It is write-tier, CSRF-checked, and rate-limited through
+the same `complete_rate` limiter as the completion route (it POSTs to the
+provider's token endpoint). It refuses a `setup_token` account up front rather
+than attempting a grant that cannot exist, and it always goes through
+`ClaudeAuthStore::force_refresh`, never a hand-rolled grant: that store holds
+the process-global `REFRESH_LOCK` across read → POST → atomic writeback, which
+is what keeps the probe from racing the proxy's own refresh and stranding a
+rotated refresh token. It does not additionally take the per-account
+`AccountPool::refresh_lock` the proxy takes — that lock is keyed by an
+`AccountConfig` from a provider table, and a store account may be reachable
+through zero, one, or several provider entries, so there is no single right one
+to pick; it is also unnecessary, because both of the proxy's critical sections
+sit inside the same global lock. Success returns the new `expires_at` and
+nothing else — no access token, no refresh token, and no provider body that
+carried them. It clears a `RefreshGrant`-caused mark, but deliberately not a
+`ServedRequest`-caused one: the probe never sends a request the account has to
+serve, so its success is no evidence against a bearer the provider already
+rejected. The response's `needs_relogin` is read back from the pool *after* that
+clear, so a probe that succeeded against a still-dead account says so rather
+than reporting a recovery `/admin/pool` would contradict. `AccountPool` tracks no sticky flag or last-selected
 timestamp, so the dashboard reports what is actually stored rather than inventing
 it. `GET /admin/pool` enumerates each `claude_oauth` and `chatgpt_oauth`
 provider's accounts (its configured list, or the corresponding Claude/Codex store

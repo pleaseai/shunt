@@ -363,6 +363,7 @@ mod tests {
             utilization_7d_oi: Some(0.125),
             reset_7d_oi: Some(reset_fable),
             status: None,
+            needs_relogin: false,
         };
 
         let wire = crate::oauth_usage::to_wire(

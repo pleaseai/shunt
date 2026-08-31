@@ -159,7 +159,7 @@ OAuth 経由であなたの **SuperGrok / X Premium+** サブスクリプショ�
 | プロバイダー | `base_url` | モデル ID の例 |
 | :-- | :-- | :-- |
 | [Kimi (Moonshot)](/ja/providers/kimi/) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
-| [Kimi Code（サブスクリプション、OAuth）](/ja/providers/kimi/#kimi-code-oauth-subscription) | `https://api.kimi.com/coding` | サブスクリプションが公開しているモデル ID を使用 |
+| [Kimi Code（サブスクリプション、OAuth）](/ja/providers/kimi/#kimi-codeoauth-サブスクリプション) | `https://api.kimi.com/coding` | サブスクリプションが公開しているモデル ID を使用 |
 | [DeepSeek](/ja/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | [Z.ai (GLM)](/ja/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | [MiniMax](/ja/providers/minimax/) | `https://api.minimax.io/anthropic` | [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) を参照 |
@@ -195,7 +195,7 @@ model = "<model-id-your-subscription-exposes>"
 provider = "kimi-code"
 ```
 
-`kimi_oauth` は `claude_oauth` / `chatgpt_oauth` と同様にプール対応です — `account` の代わりに `accounts = [...]` を使うと、保存済みの複数の Kimi アカウントへ負荷を分散できます。詳しい手順は [Kimi → Kimi Code (OAuth subscription)](/ja/providers/kimi/#kimi-code-oauth-subscription) を参照してください。
+`kimi_oauth` は `claude_oauth` / `chatgpt_oauth` と同様にプール対応です — `account` の代わりに `accounts = [...]` を使うと、保存済みの複数の Kimi アカウントへ負荷を分散できます。詳しい手順は [Kimi → Kimi Code（OAuth サブスクリプション）](/ja/providers/kimi/#kimi-codeoauth-サブスクリプション) を参照してください。
 
 例えば、Kimi（Moonshot）のモデルを shunt 経由でルーティングするには:
 

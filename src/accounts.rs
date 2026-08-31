@@ -217,6 +217,42 @@ pub struct UsageSnapshot {
 /// is exactly the stampede the gate exists to absorb (issue #195).
 const RAMP_IDLE_RESET: Duration = Duration::from_secs(60);
 
+/// Why an account carries the needs-re-login mark. The distinction matters for
+/// exactly one decision: whether a *successful refresh grant* is enough to clear
+/// the mark. It is never surfaced to clients — [`AccountSnapshot::needs_relogin`]
+/// stays a boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReloginCause {
+    /// The refresh grant itself failed terminally — `invalid_grant`, no stored
+    /// refresh token, or a rotated pair lost before it could be persisted. A
+    /// later grant that succeeds disproves this, so the admin refresh probe may
+    /// clear it.
+    RefreshGrant,
+    /// The provider rejected a bearer the account actually presented to the API:
+    /// a 401 on a credential that cannot be refreshed, or on the retry after a
+    /// refresh that itself succeeded. A working grant says nothing about this —
+    /// the grant was never the broken part — so only a served response clears it.
+    ServedRequest,
+}
+
+impl ReloginCause {
+    /// Fold a new verdict into whatever the entry already carried, keeping the
+    /// stronger evidence. `ServedRequest` outranks `RefreshGrant`: a bearer the
+    /// provider rejected in a real request says something a failing grant does
+    /// not, and only a served response can disprove it.
+    ///
+    /// Without this, a terminal admin probe on an account the proxy had already
+    /// condemned would rewrite `ServedRequest` as `RefreshGrant` — and the next
+    /// grant that happened to succeed would then clear the mark, even though
+    /// nothing had shown the account could serve inference again.
+    fn strongest(existing: Option<Self>, incoming: Self) -> Self {
+        match existing {
+            Some(Self::ServedRequest) => Self::ServedRequest,
+            _ => incoming,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct AccountHealth {
     cooldown_until: Option<Instant>,
@@ -250,6 +286,24 @@ struct AccountHealth {
     /// this token while admission or credential resolution waits, but only an
     /// actual HTTP send consumes it and stamps the completed-probe interval.
     reprobe_reservation: Option<u64>,
+    /// The account's credential is dead and only a re-login can revive it. Set
+    /// on a terminal refresh failure, on a 401 against a credential that cannot
+    /// be refreshed at all (`token_env`, a long-lived setup token), and on a
+    /// 401 against the retry after a refresh that itself succeeded. The
+    /// [`ReloginCause`] records which, so the admin probe knows whether its own
+    /// successful grant is evidence of recovery.
+    ///
+    /// Deliberately **independent of `cooldown_until`**: a cooldown expires on
+    /// its own after five minutes and the account is retried, which is exactly
+    /// why a dead account otherwise cycles in and out of cooldown forever with
+    /// nothing durable for an operator to see. This flag is the durable signal,
+    /// and it is set only on a *terminal* failure — never on a transient one,
+    /// which would report a healthy account as dead after a provider blip.
+    ///
+    /// Memory-only, like `cooldown_until`: the on-disk `[server.pool]
+    /// state_path` persists quota alone, so a restart clears this and the
+    /// account's next terminal failure re-establishes it.
+    needs_relogin: Option<ReloginCause>,
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
@@ -283,6 +337,11 @@ pub struct AccountSnapshot {
     pub utilization_7d_oi: Option<f64>,
     pub reset_7d_oi: Option<u64>,
     pub status: Option<String>,
+    /// The credential is dead and needs an operator re-login (see
+    /// [`AccountHealth::needs_relogin`]). Reported alongside — not folded
+    /// into — `available` and the cooldown fields, so the dashboard can tell
+    /// "cooling down, will retry" apart from "cooling down forever".
+    pub needs_relogin: bool,
 }
 
 impl AccountSnapshot {
@@ -305,6 +364,7 @@ impl AccountSnapshot {
             utilization_7d_oi: None,
             reset_7d_oi: None,
             status: None,
+            needs_relogin: false,
         }
     }
 }
@@ -324,6 +384,17 @@ pub struct AccountPool {
     /// Lets the opt-in on-disk persister (see [`crate::state_persist`]) flush
     /// only when quota actually changed, rather than on every timer tick.
     dirty: AtomicBool,
+    /// Whether any entry might carry a needs-re-login mark. The mark fans out
+    /// across every row backed by one store account, so clearing it does too —
+    /// and the clear sits on [`Self::mark_healthy_scoped`], which runs on every
+    /// served response. Scanning the map there cost ~2x on
+    /// `account_pool_healthy_updates`, for a signal that is absent in the
+    /// steady state, so the scan is gated on this flag.
+    ///
+    /// Conservative in exactly one direction: `false` means no entry carries a
+    /// mark (every setter raises it first), while `true` may outlive the last
+    /// mark and cost one extra scan. Never the reverse, so no clear is missed.
+    any_needs_relogin: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -1044,6 +1115,199 @@ impl AccountPool {
         crate::metrics::record_pool_rotation(provider, reason);
     }
 
+    /// Record that this account's credential is terminally dead: only an
+    /// operator re-login can revive it. Callers must have established that the
+    /// failure is terminal — [`crate::auth::claude::auth::is_terminal_refresh_failure`]
+    /// for a rejected refresh, or a 401 on an unrefreshable credential — never
+    /// on a transient failure.
+    ///
+    /// Deliberately separate from [`Self::cooldown`]: this changes nothing
+    /// about selection or the cooldown clock, it only makes the dead account
+    /// visible to the operator instead of letting it cycle silently.
+    pub fn mark_needs_relogin(&self, provider: &str, account: &AccountConfig, cause: ReloginCause) {
+        let key = account_key(provider, account);
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        // Raised *under* the entries lock, not before it: every other mutation
+        // of this flag also happens under that lock, so the recompute in
+        // `mark_healthy_scoped` can never interleave between raising the flag
+        // and writing the mark and then store `false` over a live mark.
+        self.any_needs_relogin.store(true, Ordering::Relaxed);
+        for (sibling, health) in entries.iter_mut() {
+            if backed_by_same_store_account(sibling, &key, account) {
+                // `observed` too, and not only for symmetry with the entry
+                // below: `snapshot` reports an unobserved entry as `unseen`
+                // and drops every field on it, so a sibling that `select_order`
+                // has created but no response has answered yet would carry the
+                // mark and still render clean — the fan-out would be invisible
+                // on exactly the row it was added for. The pool *has* processed
+                // an upstream response for this credential; that is what the
+                // fan-out asserts.
+                health.observed = true;
+                health.needs_relogin = Some(ReloginCause::strongest(health.needs_relogin, cause));
+            }
+        }
+        let health = entries.entry(key).or_default();
+        health.observed = true;
+        health.enabled = !account.disabled;
+        health.needs_relogin = Some(ReloginCause::strongest(health.needs_relogin, cause));
+    }
+
+    /// Clear the needs-re-login mark alone, leaving every other health field —
+    /// the cooldown included — untouched. Used where a response proves the
+    /// credential authenticated without proving the account is healthy: a
+    /// relayed non-401 4xx after a refresh. [`Self::mark_healthy_scoped`] is
+    /// the wrong tool there because it also clears the cooldown, and this
+    /// change is meant to add a signal, not to alter routing.
+    pub fn clear_needs_relogin(&self, provider: &str, account: &AccountConfig) {
+        let key = account_key(provider, account);
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        // Checked under the lock for the same reason the setters raise it there:
+        // a fast path outside the lock could observe `false` while a mark is
+        // landing and skip a clear that was ordered after it.
+        if !self.any_needs_relogin.load(Ordering::Relaxed) {
+            return;
+        }
+        for (sibling, health) in entries.iter_mut() {
+            if *sibling == key || backed_by_same_store_account(sibling, &key, account) {
+                health.needs_relogin = None;
+            }
+        }
+    }
+
+    /// Set or clear the needs-re-login mark on every pool entry backed by one
+    /// store account, whatever provider table it is reachable through. Used by
+    /// the admin re-login and refresh-probe paths, which know an account by its
+    /// store name rather than by the provider entry that selected it.
+    ///
+    /// Takes the name *and* the uuid rather than one conflated identity string,
+    /// because the three [`AccountStateIdentity`] variants are keyed
+    /// differently and a store account can land in any of them:
+    ///
+    /// - `Verified` — the credential file carried a `shuntAccountUuid`; keyed
+    ///   by that uuid.
+    /// - `StoreEntry` — a scanned store account with no uuid; keyed by name.
+    /// - `UpstreamInline` — **the shape a name-only `[[providers.*.accounts]]`
+    ///   entry gets**, which is the documented way to activate one store
+    ///   account. `resolve_pool_accounts` leaves it `store_entry = false` with
+    ///   no uuid (`inline_identity_key` returns `None` without a `credentials`
+    ///   path or `token_env`), so it is keyed by `(upstream, name)`. Skipping
+    ///   this variant made the admin probe unable to mark, and a re-login
+    ///   unable to clear, exactly the accounts operators are told to configure.
+    ///
+    /// The two name-keyed variants are matched on the name alone, which is all
+    /// [`AccountKey`] carries. An inline account that names a *different*
+    /// credential (a `credentials` path whose file has no uuid) and happens to
+    /// share this store account's name would therefore also match. Both error
+    /// directions self-correct — a wrong set is cleared by that account's next
+    /// success, a wrong clear is re-established by its next terminal failure —
+    /// so this is preferred over leaving the ordinary configuration unreachable.
+    ///
+    /// Only entries the pool already holds are updated — an account the pool
+    /// has never selected has no health entry, and the dashboard reports it as
+    /// `unseen` rather than carrying any mark. Inventing an entry here would
+    /// mean synthesizing an [`AccountKey`] the selection path never produced.
+    pub fn set_needs_relogin_for_store_account(
+        &self,
+        store_family: StoreFamily,
+        account_name: &str,
+        account_uuid: Option<&str>,
+        needs_relogin: bool,
+    ) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        for (key, health) in entries.iter_mut() {
+            let matches = key.store_family == store_family
+                && match &key.identity {
+                    AccountStateIdentity::Verified { id } => account_uuid == Some(id.as_str()),
+                    AccountStateIdentity::StoreEntry { name }
+                    | AccountStateIdentity::UpstreamInline { name, .. } => name == account_name,
+                };
+            if matches {
+                if needs_relogin {
+                    self.any_needs_relogin.store(true, Ordering::Relaxed);
+                    // `snapshot` reports an unobserved entry as `unseen` and
+                    // drops every field on it, and `select_order` leaves exactly
+                    // such an entry behind for a row it considered but that
+                    // never answered. Without this stamp the admin probe would
+                    // record a terminal verdict the map holds and both
+                    // dashboard tables hide — the same defect the proxy path's
+                    // fan-out has to avoid ([`Self::mark_needs_relogin`]).
+                    health.observed = true;
+                }
+                health.needs_relogin = needs_relogin.then(|| {
+                    ReloginCause::strongest(health.needs_relogin, ReloginCause::RefreshGrant)
+                });
+            }
+        }
+    }
+
+    /// Whether any pool entry backed by one store account still carries the
+    /// needs-re-login mark. Matched the same way as
+    /// [`Self::set_needs_relogin_for_store_account`], because the admin paths
+    /// know an account by its store name and uuid rather than by the provider
+    /// entry that selected it.
+    ///
+    /// The refresh probe reports this *after* its own clear, so its response
+    /// cannot claim recovery for an account the pool still considers dead.
+    pub fn store_account_needs_relogin(
+        &self,
+        store_family: StoreFamily,
+        account_name: &str,
+        account_uuid: Option<&str>,
+    ) -> bool {
+        let entries = self.entries.lock().expect("account health lock poisoned");
+        entries.iter().any(|(key, health)| {
+            health.needs_relogin.is_some()
+                && key.store_family == store_family
+                && match &key.identity {
+                    AccountStateIdentity::Verified { id } => account_uuid == Some(id.as_str()),
+                    AccountStateIdentity::StoreEntry { name }
+                    | AccountStateIdentity::UpstreamInline { name, .. } => name == account_name,
+                }
+        })
+    }
+
+    /// Clear the mark on every pool entry backed by one store account, but only
+    /// where a *grant* failure set it ([`ReloginCause::RefreshGrant`]).
+    ///
+    /// This is what the admin refresh probe calls on success. The probe only
+    /// exercises the refresh grant, which proves the refresh token is alive —
+    /// not that the account can serve inference. An account marked because the
+    /// provider rejected a bearer it actually presented
+    /// ([`ReloginCause::ServedRequest`]) is still dead, and clearing it here
+    /// would hide that until the next real request re-established it. Such a
+    /// mark is cleared only by a served response, in
+    /// [`Self::mark_healthy_scoped`].
+    pub fn clear_grant_relogin_for_store_account(
+        &self,
+        store_family: StoreFamily,
+        account_name: &str,
+        account_uuid: Option<&str>,
+    ) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        for (key, health) in entries.iter_mut() {
+            if health.needs_relogin != Some(ReloginCause::RefreshGrant) {
+                continue;
+            }
+            let matches = key.store_family == store_family
+                && match &key.identity {
+                    AccountStateIdentity::Verified { id } => account_uuid == Some(id.as_str()),
+                    AccountStateIdentity::StoreEntry { name }
+                    | AccountStateIdentity::UpstreamInline { name, .. } => name == account_name,
+                };
+            if matches {
+                health.needs_relogin = None;
+            }
+        }
+    }
+
+    /// Whether this account currently carries the needs-re-login mark.
+    pub fn needs_relogin(&self, provider: &str, account: &AccountConfig) -> bool {
+        let entries = self.entries.lock().expect("account health lock poisoned");
+        entries
+            .get(&account_key(provider, account))
+            .is_some_and(|health| health.needs_relogin.is_some())
+    }
+
     /// Clear the account-wide cooldown and record the account as observed-healthy.
     /// A non-Fable success proves nothing about the Fable quota bucket, so this
     /// compatibility entry point deliberately leaves the Fable-only slot intact.
@@ -1062,11 +1326,41 @@ impl AccountPool {
         turn_succeeded: bool,
         is_fable: bool,
     ) {
+        let key = account_key(provider, account);
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let health = entries.entry(account_key(provider, account)).or_default();
+        // A served response disproves the mark on every row backed by this
+        // credential, not only the row that carried the request — the mark fans
+        // out, so the clear has to reach at least as far or a live credential
+        // stays condemned on its sibling rows until each one happens to serve a
+        // request of its own. Only the mark: the cooldown and the ramp stay
+        // per-row, because this change adds a signal and must not alter routing.
+        //
+        // Gated on `any_needs_relogin`: this runs on every served response, and
+        // in the steady state there is nothing to clear. The scan also recomputes
+        // the flag, so it stops running once the last mark is gone.
+        if self.any_needs_relogin.load(Ordering::Relaxed) {
+            let mut still_marked = false;
+            for (sibling, health) in entries.iter_mut() {
+                if *sibling == key {
+                    continue;
+                }
+                if backed_by_same_store_account(sibling, &key, account) {
+                    health.needs_relogin = None;
+                }
+                still_marked |= health.needs_relogin.is_some();
+            }
+            // The entry for `key` is cleared unconditionally just below, so it
+            // is deliberately excluded from the recomputed flag.
+            self.any_needs_relogin
+                .store(still_marked, Ordering::Relaxed);
+        }
+        let health = entries.entry(key).or_default();
         health.observed = true;
         health.enabled = !account.disabled;
         health.cooldown_until = None;
+        // A response the account actually served proves the credential is
+        // alive, whatever a previous 401 concluded.
+        health.needs_relogin = None;
         if is_fable {
             health.cooldown_until_fable = None;
         }
@@ -1254,6 +1548,7 @@ impl AccountPool {
                         utilization_7d_oi: health.quota.utilization_7d_oi,
                         reset_7d_oi: health.quota.reset_7d_oi,
                         status: health.quota.status.clone(),
+                        needs_relogin: health.needs_relogin.is_some(),
                     }
                 })
                 .collect();
@@ -1484,6 +1779,49 @@ pub(crate) fn account_identity(account: &AccountConfig) -> &str {
         Some(uuid) if !uuid.trim().is_empty() => uuid,
         _ => &account.name,
     }
+}
+
+/// Whether `sibling` is another pool entry for the very same store account as
+/// the one `key`/`account` describe — the fan-out predicate shared by
+/// [`AccountPool::mark_needs_relogin`] and [`AccountPool::clear_needs_relogin`].
+///
+/// A store account activated by name in two `[[providers.*]]` tables gets a
+/// **separate** health entry per table, because `resolve_pool_accounts` leaves
+/// such an entry UUID-less (`inline_identity_key` returns `None` without a
+/// `credentials` path) and [`account_key`] then keys it as `UpstreamInline`,
+/// which carries the upstream name. One credential file, several keys. Marking
+/// only the entry that happened to see the terminal failure leaves its siblings
+/// reporting `available` and retrying the same dead credential — the loop this
+/// mark exists to end.
+///
+/// The fan-out is deliberately narrow in two ways:
+///
+/// - Only an account that *is* the store account fans out. One carrying its own
+///   `credentials` path or `token_env` merely shares a name with it and is a
+///   different credential, so a failure on it says nothing about the store file.
+/// - A sibling keyed as `Verified` is reached only when this account also
+///   carries that uuid. A name-only entry has none, so it cannot reach a
+///   uuid-keyed entry for the same store file — [`AccountKey`] keeps no name
+///   there to match on. That residue is the pre-existing per-key behaviour, not
+///   a regression, and the uuid-keyed entry still self-corrects on its own next
+///   terminal failure.
+fn backed_by_same_store_account(
+    sibling: &AccountKey,
+    key: &AccountKey,
+    account: &AccountConfig,
+) -> bool {
+    if account.credentials.is_some() || account.token_env.is_some() {
+        return false;
+    }
+    sibling.store_family == key.store_family
+        && match &sibling.identity {
+            AccountStateIdentity::Verified { id } => account
+                .uuid
+                .as_deref()
+                .is_some_and(|uuid| !uuid.trim().is_empty() && uuid == id),
+            AccountStateIdentity::StoreEntry { name }
+            | AccountStateIdentity::UpstreamInline { name, .. } => *name == account.name,
+        }
 }
 
 pub(crate) fn account_key(upstream: &str, account: &AccountConfig) -> AccountKey {
@@ -2222,6 +2560,390 @@ mod tests {
             headers.insert(*name, HeaderValue::from_str(value).unwrap());
         }
         headers
+    }
+
+    /// `ServedRequest` outranks `RefreshGrant`, and a later grant failure must
+    /// not rewrite it. Otherwise a terminal admin probe on an account the proxy
+    /// had already condemned would downgrade the verdict, and the next grant
+    /// that happened to succeed would clear a mark nothing had disproved.
+    #[test]
+    fn a_grant_failure_never_downgrades_a_served_request_verdict() {
+        let pool = AccountPool::new();
+        let account = account_with_uuid("dead", "acct-dead");
+
+        // The proxy proved a refreshed bearer still gets a 401.
+        pool.mark_needs_relogin("anthropic", &account, ReloginCause::ServedRequest);
+        // A terminal admin probe then reports its own (weaker) grant failure.
+        pool.set_needs_relogin_for_store_account(
+            StoreFamily::Claude,
+            "dead",
+            Some("acct-dead"),
+            true,
+        );
+        // …and a later grant succeeds. It must not clear the stronger verdict.
+        pool.clear_grant_relogin_for_store_account(StoreFamily::Claude, "dead", Some("acct-dead"));
+
+        assert!(
+            pool.needs_relogin("anthropic", &account),
+            "a successful grant must not clear a mark the proxy set from a \
+             rejected bearer, even after a grant failure was recorded on top"
+        );
+
+        // The mirror: a grant failure recorded on a *clean* entry is
+        // grant-caused, so the same successful grant does clear it.
+        let fresh = account_with_uuid("stale", "acct-stale");
+        pool.mark_healthy("anthropic", &fresh, true);
+        pool.set_needs_relogin_for_store_account(
+            StoreFamily::Claude,
+            "stale",
+            Some("acct-stale"),
+            true,
+        );
+        assert!(pool.needs_relogin("anthropic", &fresh));
+        pool.clear_grant_relogin_for_store_account(
+            StoreFamily::Claude,
+            "stale",
+            Some("acct-stale"),
+        );
+        assert!(
+            !pool.needs_relogin("anthropic", &fresh),
+            "a purely grant-caused mark must still be cleared by a successful grant"
+        );
+    }
+
+    /// `clear_needs_relogin` is the narrow clear used where a response proves
+    /// the credential authenticated without proving the account is healthy — a
+    /// relayed non-401 4xx after a refresh. It must drop the mark and leave the
+    /// cooldown standing; [`AccountPool::mark_healthy_scoped`] would drop both,
+    /// which would turn a signal-only change into a routing change.
+    #[test]
+    fn clearing_the_mark_alone_leaves_the_cooldown_standing() {
+        let pool = AccountPool::new();
+        let account = account("dead");
+        pool.cooldown("anthropic", &account, Duration::from_secs(300), "auth");
+        pool.mark_needs_relogin("anthropic", &account, ReloginCause::ServedRequest);
+
+        let before = pool.snapshot("anthropic", std::slice::from_ref(&account), None, None);
+        assert!(before[0].needs_relogin);
+        assert!(before[0].cooldown_secs_remaining.is_some());
+
+        pool.clear_needs_relogin("anthropic", &account);
+
+        let after = pool.snapshot("anthropic", std::slice::from_ref(&account), None, None);
+        assert!(!after[0].needs_relogin, "the mark must be cleared");
+        assert!(
+            after[0].cooldown_secs_remaining.is_some(),
+            "the cooldown must survive: this clear adds a signal, it does not \
+             alter routing"
+        );
+
+        // The contrast that gives the assertion above its meaning: the healthy
+        // mark drops both, which is why it is the wrong tool for that branch.
+        pool.mark_needs_relogin("anthropic", &account, ReloginCause::ServedRequest);
+        pool.mark_healthy_scoped("anthropic", &account, false, false);
+        let healthy = pool.snapshot("anthropic", std::slice::from_ref(&account), None, None);
+        assert!(!healthy[0].needs_relogin);
+        assert!(healthy[0].cooldown_secs_remaining.is_none());
+    }
+
+    /// The three [`AccountStateIdentity`] shapes are keyed differently, and the
+    /// admin paths only know a store account by name + uuid. A name-only
+    /// `[[providers.*.accounts]]` entry — the documented way to activate a
+    /// store account — becomes `UpstreamInline`, so skipping that variant would
+    /// leave the ordinary configuration unmarkable and unclearable.
+    #[test]
+    fn the_store_account_setter_reaches_every_identity_shape() {
+        let pool = AccountPool::new();
+        // `Verified`: credential file carried a uuid.
+        let verified = account_with_uuid("dead", "acct-dead");
+        // `StoreEntry`: scanned store account, no uuid.
+        let store_entry = AccountConfig {
+            name: "dead".to_string(),
+            store_entry: true,
+            ..Default::default()
+        };
+        // `UpstreamInline`: name-only provider entry, no uuid, not a scan.
+        let inline = account("dead");
+        // Same name, different store family — must not be touched.
+        let other_family = AccountConfig {
+            name: "dead".to_string(),
+            store_family: Some(StoreFamily::Chatgpt),
+            ..Default::default()
+        };
+        // Different name — must not be touched.
+        let bystander = account("alive");
+
+        for account in [&verified, &store_entry, &inline, &other_family, &bystander] {
+            pool.mark_healthy("anthropic", account, true);
+        }
+
+        pool.set_needs_relogin_for_store_account(
+            StoreFamily::Claude,
+            "dead",
+            Some("acct-dead"),
+            true,
+        );
+
+        assert!(
+            pool.needs_relogin("anthropic", &verified),
+            "a uuid-keyed (Verified) account was not marked"
+        );
+        assert!(
+            pool.needs_relogin("anthropic", &store_entry),
+            "a scanned (StoreEntry) account was not marked"
+        );
+        assert!(
+            pool.needs_relogin("anthropic", &inline),
+            "a name-only provider entry (UpstreamInline) was not marked — this is \
+             the shape operators are told to configure"
+        );
+        assert!(
+            !pool.needs_relogin("anthropic", &other_family),
+            "a same-named account in another store family was marked"
+        );
+        assert!(
+            !pool.needs_relogin("anthropic", &bystander),
+            "an unrelated account was marked"
+        );
+
+        pool.set_needs_relogin_for_store_account(
+            StoreFamily::Claude,
+            "dead",
+            Some("acct-dead"),
+            false,
+        );
+
+        for (account, shape) in [
+            (&verified, "Verified"),
+            (&store_entry, "StoreEntry"),
+            (&inline, "UpstreamInline"),
+        ] {
+            assert!(
+                !pool.needs_relogin("anthropic", account),
+                "a re-login did not clear the mark on the {shape} account"
+            );
+        }
+    }
+
+    /// One store account activated by name in two provider tables gets two
+    /// health entries, because `UpstreamInline` carries the upstream name. They
+    /// are backed by one credential file, so a terminal verdict on either is a
+    /// verdict on both — marking only the row that happened to serve the failing
+    /// request leaves the other reporting `available` and retrying the same dead
+    /// credential, which is the loop this mark exists to end.
+    #[test]
+    fn a_terminal_failure_marks_every_provider_row_backed_by_one_store_account() {
+        let pool = AccountPool::new();
+        let shared = account("work");
+        let bystander = account("spare");
+
+        // Both provider tables have selected the account at least once, so both
+        // health entries exist before anything fails.
+        for provider in ["claude-a", "claude-b"] {
+            pool.mark_healthy(provider, &shared, true);
+            pool.mark_healthy(provider, &bystander, true);
+        }
+
+        pool.mark_needs_relogin("claude-a", &shared, ReloginCause::RefreshGrant);
+
+        assert!(
+            pool.needs_relogin("claude-a", &shared),
+            "the row that saw the failure was not marked"
+        );
+        assert!(
+            pool.needs_relogin("claude-b", &shared),
+            "the sibling row for the same store account was left unmarked, so it \
+             keeps retrying the dead credential and reports `available`"
+        );
+        assert!(
+            !pool.needs_relogin("claude-b", &bystander),
+            "an unrelated store account was marked"
+        );
+    }
+
+    /// The fan-out's negative twin, and the reason it is keyed on more than the
+    /// name: an account carrying its own `credentials` path is a *different*
+    /// credential that merely shares a name with a store account. A failure on
+    /// it says nothing about the store file, so it must not condemn it.
+    #[test]
+    fn a_failure_on_an_inline_credential_never_marks_a_same_named_store_account() {
+        let pool = AccountPool::new();
+        let store_backed = account("work");
+        let own_file = AccountConfig {
+            name: "work".to_string(),
+            credentials: Some("/tmp/somewhere-else.json".to_string()),
+            ..Default::default()
+        };
+        pool.mark_healthy("claude-a", &store_backed, true);
+        pool.mark_healthy("claude-b", &own_file, true);
+
+        pool.mark_needs_relogin("claude-b", &own_file, ReloginCause::ServedRequest);
+
+        assert!(
+            pool.needs_relogin("claude-b", &own_file),
+            "the account that actually failed was not marked"
+        );
+        assert!(
+            !pool.needs_relogin("claude-a", &store_backed),
+            "a same-named store account was condemned by a failure on an unrelated \
+             credential file"
+        );
+    }
+
+    /// The success-path scan is gated on a flag so it does not run on every
+    /// served response, and that scan recomputes the flag. The gate may only
+    /// ever close when nothing is marked: a success on an *unrelated* account
+    /// must leave it open while another account is still condemned, or every
+    /// later clear silently stops fanning out.
+    #[test]
+    fn a_success_on_an_unrelated_account_does_not_close_the_fan_out_gate() {
+        let pool = AccountPool::new();
+        let dead = account("dead");
+        let other = account("other");
+        for provider in ["claude-a", "claude-b"] {
+            pool.mark_healthy(provider, &dead, true);
+            pool.mark_healthy(provider, &other, true);
+        }
+        pool.mark_needs_relogin("claude-a", &dead, ReloginCause::RefreshGrant);
+
+        // A different store account serving a response recomputes the gate.
+        pool.mark_healthy("claude-a", &other, true);
+        // The condemned credential then serves one of its own.
+        pool.mark_healthy("claude-a", &dead, true);
+
+        assert!(
+            !pool.needs_relogin("claude-b", &dead),
+            "a success on an unrelated account closed the fan-out gate, so the \
+             credential's own success never reached its sibling row"
+        );
+    }
+
+    /// The gate's other direction: once it has legitimately closed, a later
+    /// mark has to re-open it, or the fan-out stops working for the rest of the
+    /// process — the first dead credential would be the only one ever reported
+    /// across sibling rows.
+    #[test]
+    fn a_later_mark_reopens_the_fan_out_gate() {
+        let pool = AccountPool::new();
+        let dead = account("dead");
+        for provider in ["claude-a", "claude-b"] {
+            pool.mark_healthy(provider, &dead, true);
+        }
+
+        pool.mark_needs_relogin("claude-a", &dead, ReloginCause::RefreshGrant);
+        pool.mark_healthy("claude-a", &dead, true);
+        assert!(
+            !pool.needs_relogin("claude-b", &dead),
+            "the first clear never reached the sibling row, so the gate was \
+             never opened by the mark that preceded it"
+        );
+
+        pool.mark_needs_relogin("claude-a", &dead, ReloginCause::RefreshGrant);
+        pool.mark_healthy("claude-b", &dead, true);
+
+        assert!(
+            !pool.needs_relogin("claude-a", &dead),
+            "the gate stayed shut after a later mark, so the sibling clear ran \
+             once and never again"
+        );
+    }
+
+    /// The admin mirror of
+    /// `a_fanned_out_mark_is_visible_on_a_sibling_the_pool_has_only_selected`:
+    /// the refresh probe's terminal verdict has to survive the snapshot too, on
+    /// a row `select_order` created but no response ever answered.
+    #[test]
+    fn an_admin_recorded_mark_is_visible_on_a_row_the_pool_has_only_selected() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("work")];
+        pool.select_order("claude-a", &accounts, Some("session"), None, None);
+        assert!(
+            !pool.snapshot("claude-a", &accounts, None, None)[0].has_state,
+            "precondition: the row is unobserved, so it renders as unseen"
+        );
+
+        pool.set_needs_relogin_for_store_account(StoreFamily::Claude, "work", None, true);
+
+        let row = &pool.snapshot("claude-a", &accounts, None, None)[0];
+        assert!(
+            row.has_state && row.needs_relogin,
+            "the admin probe recorded a terminal verdict the dashboard still \
+             hides, so the Refresh button reports a dead credential nowhere"
+        );
+    }
+
+    /// The fan-out has to survive the snapshot, not just the map. `snapshot`
+    /// drops every field of an entry whose `observed` is false and reports it as
+    /// `unseen`, and `select_order` creates exactly such an entry for a row it
+    /// has picked but that has not answered yet — the row most likely to be a
+    /// sibling. Without stamping `observed`, the mark would be set and still
+    /// render clean on the dashboard.
+    #[test]
+    fn a_fanned_out_mark_is_visible_on_a_sibling_the_pool_has_only_selected() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("work")];
+        // `claude-b` has selected the account — a default, unobserved entry —
+        // but no response has come back through it.
+        pool.select_order("claude-b", &accounts, Some("session"), None, None);
+        assert!(
+            !pool.snapshot("claude-b", &accounts, None, None)[0].has_state,
+            "precondition: the sibling row is unobserved, so it renders as unseen"
+        );
+
+        pool.mark_needs_relogin("claude-a", &accounts[0], ReloginCause::RefreshGrant);
+
+        let sibling = &pool.snapshot("claude-b", &accounts, None, None)[0];
+        assert!(
+            sibling.has_state && sibling.needs_relogin,
+            "the sibling row carries the mark in the map but the dashboard still \
+             reports it clean, so the fan-out is invisible where it matters"
+        );
+    }
+
+    /// The mark's own mirror on the success path. A served response proves the
+    /// credential is alive, which is as true for the sibling rows as for the one
+    /// that carried the request; a clear narrower than the mark leaves a live
+    /// credential condemned on every row that has not happened to serve yet.
+    #[test]
+    fn a_success_on_one_provider_row_clears_the_mark_on_its_siblings() {
+        let pool = AccountPool::new();
+        let shared = account("work");
+        for provider in ["claude-a", "claude-b"] {
+            pool.mark_healthy(provider, &shared, true);
+        }
+        pool.mark_needs_relogin("claude-a", &shared, ReloginCause::RefreshGrant);
+        assert!(pool.needs_relogin("claude-b", &shared), "precondition");
+
+        pool.mark_healthy("claude-b", &shared, true);
+
+        assert!(
+            !pool.needs_relogin("claude-a", &shared),
+            "the sibling row stayed condemned after the credential served a \
+             response through another provider row"
+        );
+    }
+
+    /// The clear must reach exactly what the mark reaches. A relayed non-401 4xx
+    /// proves the *credential* authenticated, which is as true for the sibling
+    /// rows as for the one that served the request; a narrower clear would strand
+    /// a mark the same evidence just disproved.
+    #[test]
+    fn clearing_the_mark_reaches_the_rows_the_marking_reached() {
+        let pool = AccountPool::new();
+        let shared = account("work");
+        for provider in ["claude-a", "claude-b"] {
+            pool.mark_healthy(provider, &shared, true);
+        }
+        pool.mark_needs_relogin("claude-a", &shared, ReloginCause::RefreshGrant);
+
+        pool.clear_needs_relogin("claude-b", &shared);
+
+        for provider in ["claude-a", "claude-b"] {
+            assert!(
+                !pool.needs_relogin(provider, &shared),
+                "the {provider} row kept a mark the clear should have reached"
+            );
+        }
     }
 
     #[test]

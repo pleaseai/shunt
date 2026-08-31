@@ -1,0 +1,180 @@
+---
+title: Antigravity
+description: HTTP를 통해 Google Antigravity 백엔드에 도달하기 — 로그인, 프로젝트 디스커버리, 모델 슬러그, thinking, 어댑터가 전달하는 것.
+---
+
+내장 **`antigravity`** 프로바이더는 HTTP를 통해 `cloudcode-pa.googleapis.com`에 있는 Google의
+**Antigravity** 백엔드에 도달합니다. `gemini` 프로바이더와 동일한 Code Assist 프로토콜을 사용하며 —
+shunt는 Anthropic Messages를 `generateContent` / `streamGenerateContent`로 변환합니다 — 다만
+Antigravity 구독 토큰으로 인증하고 프로젝트 디스커버리 과정에서 자신을 `ideType: ANTIGRAVITY`로
+식별합니다.
+
+Antigravity에는 두 번째의 더 오래된 전송이 있습니다. `kind = "antigravity_cli"`는 로컬 `agy` 바이너리를
+서브프로세스로 실행하며 **더 이상 사용되지 않습니다** —
+[더 이상 사용되지 않는 `antigravity-cli` 전송](/ko/guides/providers/#더-이상-사용되지-않는-antigravity_cli-전송)을
+참고하세요. 이 페이지는 그런 장치가 전혀 필요 없는 HTTP 프로바이더를 다룹니다.
+
+## 빠른 시작
+
+코딩 에이전트가 대신 구성하도록 하세요 — `shunt add`는 내장된 설정 블루프린트를 출력합니다
+(오프라인·읽기 전용이며, 구성은 에이전트가 편집하고 이 명령은 절대 편집하지 않습니다):
+
+```bash
+shunt add upstream antigravity --print | claude
+```
+
+또는 아래의 수동 단계를 따르세요.
+
+## 1. 로그인
+
+```bash
+shunt login antigravity
+```
+
+이는 Antigravity 자체의 OAuth 클라이언트를 사용하는 Google authorization-code 플로우를 실행하고
+`~/.shunt/antigravity-auth.json`을 기록하며, shunt는 이 파일을 읽고 자동 갱신합니다. 이 플로우는 다섯 개의
+스코프를 요청합니다:
+
+```text
+https://www.googleapis.com/auth/cloud-platform
+https://www.googleapis.com/auth/userinfo.email
+https://www.googleapis.com/auth/userinfo.profile
+https://www.googleapis.com/auth/cclog
+https://www.googleapis.com/auth/experimentsandconfigs
+```
+
+마지막 두 개가 바로 **Gemini CLI 로그인을 여기서 재사용할 수 없고, 그 반대도 마찬가지인** 이유입니다:
+`~/.gemini/oauth_creds.json` 토큰은 결코 `cclog`나 `experimentsandconfigs`를 담지 않습니다.
+`google_oauth`와 `antigravity_oauth`는 서로 교체할 수 없습니다.
+
+로그인은 Code Assist 프로젝트도 함께 해석하며 — 먼저 `loadCodeAssist`, 그다음 처음 사용하는 계정을
+프로비저닝하기 위한 `onboardUser` — 프로젝트 id를 자격 증명 파일에 저장합니다. 첫 요청 앞에 디스커버리가
+놓이지 않습니다. 디스커버리가 실패해도 로그인은 토큰을 저장하고 첫 요청에서 재시도합니다.
+
+## 2. 업스트림 구성
+
+프로바이더는 내장이므로, `provider = "antigravity"`를 지정한 `[[routes]]` 항목만으로 자체 프로바이더
+테이블 없이 동작합니다. 순서가 있는 업스트림으로 선언하는 것은 다릅니다: **Antigravity 종류에는
+`[[upstreams]]` 프리셋이 없으므로**, 거기서는 `provider = "antigravity"`를 쓸 수 없고 `kind`, `base_url`,
+`auth`를 직접 설정해야 합니다:
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # 라우트가 없는 모델(예: claude-*)의 기본값으로 Anthropic을 유지
+
+[[upstreams]]
+name = "antigravity"
+kind = "antigravity"
+base_url = "https://cloudcode-pa.googleapis.com"
+auth = "antigravity_oauth"
+```
+
+순서가 있는 `[[upstreams]]`는 shunt의 내장 프로바이더를 대체하므로, 명시적 구성은 여전히 폴백 대상인
+`anthropic` 기본값도 함께 선언해야 합니다(`server.default_provider`의 기본값은 `anthropic`입니다).
+
+레거시 `[providers.antigravity]` 테이블 형식도 계속 지원됩니다 — 다만 한 파일에서 `[[upstreams]]`와
+`[providers.*]`를 섞지 마세요.
+
+## 3. 모델 라우팅
+
+shunt는 이 프로바이더에 대해 모델 허용 목록을 두지 않습니다: 해석된 `upstream_model`이 적힌 그대로
+백엔드로 전송되고, 판단은 백엔드가 합니다. Antigravity는 Gemini 계열 슬러그를 제공하며, 여기에는
+Code Assist `gemini` 프로바이더가 받아들이지 **않는** 슬러그인 `gemini-3.5-flash`와 `gemini-3.6-flash`도
+포함됩니다.
+
+로컬 별칭을 정확한 Antigravity 슬러그에 매핑하세요:
+
+```toml
+[[models]]
+id = "claude-gemini-3.6-flash-via-antigravity"
+display_name = "[AGY ] Gemini-3.6-Flash"
+
+[[routes]]
+model = "claude-gemini-3.6-flash-via-antigravity"
+provider = "antigravity"
+upstream_model = "gemini-3.6-flash"
+```
+
+Antigravity는 Claude 모델도 제공하지만, shunt는 아직 그 모델들이 필요로 하는 요청 재작성을 구현하지
+않았습니다([#368](https://github.com/pleaseai/shunt/issues/368)). 로컬에서 그런 슬러그를 거부하는 것은
+아무것도 없으며 — 적힌 그대로 백엔드에 도달합니다 — 그러니 당분간은 Gemini 계열 슬러그만 라우팅하세요.
+
+## 어댑터가 전달하는 것
+
+어댑터는 어시스턴트의 **텍스트**와 **thinking**을 Anthropic SSE로 스트리밍하고, 클라이언트의 **도구**를
+네이티브로 브리지합니다: `tool_use`는 Gemini `functionCall`이 되고, `tool_result`는 `functionResponse`가
+되며, 도구 선언과 도구 선택도 함께 변환됩니다. **시스템 프롬프트**는 `systemInstruction`이 됩니다. 토큰
+사용량은 Google이 보고한 수치입니다 — `promptTokenCount`와 `candidatesTokenCount`가 `input_tokens`와
+`output_tokens`에 매핑됩니다.
+
+**Thinking**은 요청을 따릅니다: `thinking.type = "enabled"`는 `budget_tokens`(기본값 `1024`)로부터
+`thinkingConfig.thinkingBudget`을 설정하고, `"disabled"`는 이를 `0`으로 설정합니다. 이 전송에는
+**`effort` 설정이 없습니다** — `effort`는 더 이상 사용되지 않는 CLI 프로바이더의 것이며, 그쪽은 유효한
+모델/effort 쌍을 `agy models`에서 발견합니다.
+
+프로덕션 트래픽을 라우팅하기 전에 알아둘 만한 제한이 두 가지 있습니다:
+
+- **이미지는 인라인이어야 합니다.** base64 `image` 블록은 Gemini `inlineData`가 됩니다. **URL 이미지
+  소스는 `400`으로 거부됩니다**(`URL image sources are not supported by the Gemini adapter`).
+- **도구 결과는 리치 미디어를 담을 수 없습니다.** 내용에 `image`나 `document` 블록이 포함된
+  `tool_result`는 거부됩니다.
+
+## 검증
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-gemini-3.6-flash-via-antigravity","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+응답의 `x-gateway-upstream` 헤더가 `antigravity`를 가리키는지 확인한 다음,
+[Claude Code를 shunt로 지정](/ko/guides/connect-claude-code/)하세요.
+
+<Aside type="note" title="오버라이드">
+
+`SHUNT_ANTIGRAVITY_AUTH_FILE`은 자격 증명 경로를 오버라이드합니다(빈 값이면 기본값으로 폴백합니다).
+`antigravity_oauth` 업스트림은 하나의 호스트에 고정됩니다: 받아들이는 유일한 비루프백 `base_url`은
+`cloudcode-pa.googleapis.com` 자체에 대한 HTTPS입니다 — **다른 어떤 `googleapis.com` 호스트도 자격이
+없습니다**. 로컬 프록시를 위해 루프백 호스트는 허용됩니다. 그 외에는 구독 토큰을 조용히 오프오리진으로
+내보내는 대신 구성 검증 단계에서 거부됩니다 —
+`providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
+subscription token over plaintext`, 또는 이에 대응하는 `... host <host> is not a googleapis.com host;
+refusing to send a subscription token off-origin`(이 메시지는 "googleapis.com host"라고 말하지만, 그
+뒤의 검사는 정확한 Code Assist 호스트를 봅니다).
+
+`onboardUser`는 별도의 컨트롤 플레인에 있습니다. 평범한 프로덕션 `base_url` — 포트도 경로 프리픽스도 없는
+`cloudcode-pa.googleapis.com`에 대한 HTTPS — 은 `daily-cloudcode-pa.googleapis.com`을 상대로
+온보딩합니다. 백엔드 앞에 무언가가 놓여 있다면(루프백 프록시, 또는 명시적 포트나 경로 프리픽스가 붙은 그
+호스트) 자기 자신을 통해 온보딩합니다.
+
+[`shunt login antigravity`](/reference/cli/#shunt-login-antigravity)는 **라우팅된** Antigravity
+업스트림을 상대로 — 또는 라우트를 아직 연결하지 않았다면 선언한 Antigravity 업스트림을 상대로 —
+디스커버리를 수행합니다. 후보가 하나면 그대로 이기고, 여럿이 자격을 갖추면 **`antigravity`라는 이름의**
+후보가 이깁니다. 여럿이 자격을 갖추었는데 그 이름을 가진 것이 없으면 로그인은 추측하기를 거부합니다 —
+경고를 로그에 남기고 프로덕션 엔드포인트로 폴백하므로, 프로비저닝하는 프로젝트가 라우트가 사용하는
+백엔드의 것이 아닐 수 있습니다. 디스커버리 대상으로 삼고 싶은 업스트림의 이름을 `antigravity`로 지으세요.
+
+</Aside>
+
+<Aside type="caution" title="`antigravity`의 의미가 바뀌었습니다">
+
+`kind = "antigravity"`는 예전에 로컬 `agy` 바이너리를 실행했습니다. 이제는 HTTP 업스트림이며, 서브프로세스
+전송은 `kind = "antigravity_cli"`(내장 프로바이더 `antigravity-cli`)로 옮겨졌습니다.
+예전 의미를 그대로 담고 있는 구성은 조용히 다른 대상으로 재지정되지 않고 이름을 근거로 거부되며, 자격 증명
+없이 라우팅된 `antigravity` 프로바이더는 기동을 거부합니다:
+
+```text
+provider `antigravity` is routed but has no credential. It is now the native HTTP upstream, not the
+local `agy` CLI. Run `shunt login antigravity` to authenticate it, or route to `antigravity-cli` to
+stay on the deprecated subprocess transport.
+```
+
+[`shunt check`](/ko/reference/cli/#shunt-check)도 동일한 가드를 오프라인으로 실행하므로, CI가 롤아웃 전에
+잘못된 구성을 잡아냅니다. 이 검사는 **존재 여부만** 확인합니다 — 자격 증명을 열지 않으므로 비어 있거나
+오래된 파일도 통과한 뒤 요청 경로에서 실패합니다.
+
+</Aside>

@@ -70,7 +70,7 @@ code, .mono { font-family: inherit; font-size: .85em; }
 .account-detail, .status-note { display: block; margin-top: .18rem; color: var(--text-secondary); font-size: .76rem; line-height: 1.35; }
 .status { white-space: nowrap; font-weight: 600; }
 .status[data-state="available"]::before { content: ""; display: inline-block; width: .46rem; height: .46rem; margin-right: .42rem; border-radius: 50%; background: var(--accent); }
-.status[data-state="expired"], .status[data-state="unavailable"] { color: var(--danger); }
+.status[data-state="expired"], .status[data-state="unavailable"], .status[data-state="needs-relogin"] { color: var(--danger); }
 .status[data-state="minor"] { color: var(--accent-light); }
 .status[data-state="major"], .status[data-state="critical"], .status[data-state="unknown"] { color: var(--danger); }
 .usage-lines { min-width: 24rem; }
@@ -298,12 +298,15 @@ mod tests {
 
     #[test]
     fn managed_operational_states_outrank_a_stale_observed_error() {
-        // A coalesced row's managed pool state (disabled/cooling/near-quota/
-        // cooling-fable) is an actionable gateway-side fact and must not be
+        // A coalesced row's managed pool state (disabled/needs-relogin/cooling/
+        // near-quota/cooling-fable) is an actionable gateway-side fact and must
+        // not be
         // masked by a stale local observation error: a cooling account whose
         // last local check happened to see an expired token must still
         // surface as "cooling" (with its cooldown remediation), not "Needs
-        // login" with no such hint. Guard against the precedence check being
+        // login" with no such hint. `needs-relogin` joins that list for a
+        // stronger reason: it is a terminal verdict the pool reached itself,
+        // and a local observation must never downgrade it. Guard against the precedence check being
         // introduced after -- or dropped from ahead of -- the observed-state
         // checks it must outrank.
         let page = dashboard_page("csrf");
@@ -312,7 +315,7 @@ mod tests {
             .expect("effectiveState function must exist");
         let body = &page[start..start + 800];
         let guard = body
-            .find(r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable""#)
+            .find(r#"row.state === "disabled" || row.state === "needs-relogin" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable""#)
             .expect("managed operational states must be checked before observed error states");
         let observed_expired = body
             .find(r#"o.state === "expired""#)
@@ -322,7 +325,7 @@ mod tests {
             "the managed-operational-state guard must run before the observed error checks it outranks"
         );
         assert!(body[guard..].starts_with(
-            r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;"#
+            r#"row.state === "disabled" || row.state === "needs-relogin" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;"#
         ));
     }
 
@@ -769,15 +772,15 @@ mod tests {
     fn account_mutations_refresh_the_grouped_observed_table_too() {
         // The advanced account/pool tables (loadAccounts/loadCodexAccounts/
         // loadPool) are populated separately from the top-level grouped
-        // table, which loadObserved() alone fills in. Every success path
-        // that adds or removes an account must refresh loadObserved() too,
-        // or the grouped table goes stale until the next full page load.
+        // table, which loadObserved() alone fills in. Every path that mutates
+        // an account must refresh loadObserved() too, or the grouped table
+        // goes stale until the next full page load.
         //
         // Asserted per mutation site rather than by counting the call across
-        // the page: the failure path of a completion refreshes the tables too
-        // (an abandoned request leaves the outcome unknown), so a page-wide
-        // count no longer distinguishes "every success path refreshes" from
-        // "some path somewhere does".
+        // the page: a completion's abandoned path refreshes the tables too (an
+        // abandoned request leaves the outcome unknown), so a page-wide count
+        // no longer distinguishes "every mutating path refreshes" from "some
+        // path somewhere does".
         let page = dashboard_page("csrf");
         for (site, refresh) in [
             (
@@ -811,5 +814,22 @@ mod tests {
                 "{site} must refresh the grouped observed table exactly once on success"
             );
         }
+
+        // The refresh probe is the exception, and deliberately so: *both* of
+        // its branches refresh, because a terminal verdict sets
+        // `needs_relogin` and the grouped table renders it — there the failure
+        // is exactly the state change worth showing. Asserted on the whole
+        // function body rather than the success branch alone.
+        let at = page
+            .find("async function refreshAccount(name) {")
+            .expect("the refresh probe must exist");
+        let body = &page[at..];
+        let body = &body[..body.find("\n}").expect("the probe must be closed") + 2];
+        assert_eq!(
+            body.matches("loadObserved(); loadAccounts(); loadPool();")
+                .count(),
+            2,
+            "both branches of the refresh probe must refresh the grouped table"
+        );
     }
 }

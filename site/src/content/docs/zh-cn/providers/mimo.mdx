@@ -1,0 +1,103 @@
+---
+title: Mimo (Xiaomi)
+description: 用 MIMO_API_KEY 将 mimo-v2.5-pro 路由到小米的兼容 Anthropic Mimo 端点。
+---
+
+**Mimo** 是小米的模型家族,通过一个**兼容 Anthropic** 的端点提供 —— shunt
+原样转发 Claude Code 的 Messages 请求并注入 Mimo API 密钥。没有内置的
+预设,因此上游需显式声明 `kind` 和 `base_url`。
+
+## 快速开始
+
+让编码 agent 为你完成接入 —— 对于没有具名蓝图的提供方,`shunt add`
+会把文档 URL 注入其通用调研指南(离线且只读;配置由 agent
+编辑,该命令绝不会修改配置):
+
+```bash
+shunt add upstream https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode --print | claude
+```
+
+或者按照下面的手动步骤操作。
+
+## 配置上游
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # 让 Anthropic 作为无路由匹配模型(例如 claude-*)的默认项
+
+[[upstreams]]
+name = "mimo"
+kind = "anthropic"
+base_url = "https://api.xiaomimimo.com/anthropic"
+auth = { mode = "api_key", env = "MIMO_API_KEY" }
+
+[[routes]]
+model = "mimo-v2.5-pro"
+provider = "mimo"
+```
+
+有序的 `[[upstreams]]` 会替换 shunt 的内置提供方,因此该配置必须声明它仍然回退到的
+`anthropic` 默认项(`server.default_provider` 默认为 `anthropic`)。
+
+
+
+<Aside type="note" title="base_url 取决于你的套餐">
+
+`https://api.xiaomimimo.com/anthropic` 是按量付费的主机。在 **Token Plan** 上,请改用
+`https://token-plan-cn.xiaomimimo.com/anthropic` —— 把 `base_url` 设为你的
+账号所需要的那一个。主机取自小米当前的
+[Claude Code 接入文档](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode)。
+
+</Aside>
+
+
+
+旧的 `[providers.mimo]` 表形式仍然受支持 —— 但不要在同一个文件中混用 `[[upstreams]]` 和
+`[providers.*]`。
+
+## 凭据
+
+```bash
+export MIMO_API_KEY='...'
+```
+
+绝不要把密钥写进配置。`shunt check` 校验配置的结构,但不会
+读取密钥的值 —— 如果 `MIMO_API_KEY` 未设置,第一个被路由到 `mimo` 的请求会返回一个
+认证错误。
+
+## 模型
+
+| 模型 id | 说明 |
+| :-- | :-- |
+| `mimo-v2.5-pro` | 标准上下文 |
+| `mimo-v2.5-pro[1m]` | 同一模型的 1M 上下文形式;shunt 会在匹配前剥离 `[1m]`,所以上面那条 `mimo-v2.5-pro` 路由已经能服务它 —— 无需单独的路由 |
+
+在 Claude Code 中通过 `ANTHROPIC_MODEL`、`ANTHROPIC_CUSTOM_MODEL_OPTION` 或子 agent 的
+`model:` frontmatter 选择一个已路由的 id。若想改为在 `/model` 选择器中呈现一个条目,
+请用 `[models.upstream_model]` 映射声明一个以 `claude` 为前缀的别名 —— 见
+[模型发现](/zh-cn/guides/model-discovery/)。
+
+## 校验
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"mimo-v2.5-pro","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+确认响应的 `x-gateway-upstream` 头写的是 `mimo`,然后
+[将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/)。
+
+## 子 agent 插件
+
+[`shunt-mimo` 插件](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-mimo)
+为上面那个模型提供一个现成的 Claude Code 子 agent:
+
+```bash
+/plugin marketplace add pleaseai/shunt
+/plugin install shunt-mimo@shunt
+```
