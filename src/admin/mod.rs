@@ -1475,11 +1475,17 @@ async fn refresh_account(
             // The rotated tokens are already persisted by the store. Nothing
             // about them is returned here: the browser gets the new expiry and
             // nothing else.
-            state.accounts.set_needs_relogin_for_store_account(
+            //
+            // Only a *grant-caused* mark is cleared. This probe exercises the
+            // refresh grant and nothing else, so it proves the refresh token is
+            // alive — not that the account can serve inference. An account
+            // marked because the provider rejected a bearer it actually
+            // presented is still dead, and clearing it here would hide that
+            // until the next real request re-established it.
+            state.accounts.clear_grant_relogin_for_store_account(
                 crate::accounts::StoreFamily::Claude,
                 &name,
                 account_uuid.as_deref(),
-                false,
             );
             let expiry_name = name.clone();
             let expires_at = tokio::task::spawn_blocking(move || {

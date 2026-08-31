@@ -296,12 +296,15 @@ mod tests {
 
     #[test]
     fn managed_operational_states_outrank_a_stale_observed_error() {
-        // A coalesced row's managed pool state (disabled/cooling/near-quota/
-        // cooling-fable) is an actionable gateway-side fact and must not be
+        // A coalesced row's managed pool state (disabled/needs-relogin/cooling/
+        // near-quota/cooling-fable) is an actionable gateway-side fact and must
+        // not be
         // masked by a stale local observation error: a cooling account whose
         // last local check happened to see an expired token must still
         // surface as "cooling" (with its cooldown remediation), not "Needs
-        // login" with no such hint. Guard against the precedence check being
+        // login" with no such hint. `needs-relogin` joins that list for a
+        // stronger reason: it is a terminal verdict the pool reached itself,
+        // and a local observation must never downgrade it. Guard against the precedence check being
         // introduced after -- or dropped from ahead of -- the observed-state
         // checks it must outrank.
         let page = dashboard_page("csrf");
@@ -310,7 +313,7 @@ mod tests {
             .expect("effectiveState function must exist");
         let body = &page[start..start + 800];
         let guard = body
-            .find(r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable""#)
+            .find(r#"row.state === "disabled" || row.state === "needs-relogin" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable""#)
             .expect("managed operational states must be checked before observed error states");
         let observed_expired = body
             .find(r#"o.state === "expired""#)
@@ -320,7 +323,7 @@ mod tests {
             "the managed-operational-state guard must run before the observed error checks it outranks"
         );
         assert!(body[guard..].starts_with(
-            r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;"#
+            r#"row.state === "disabled" || row.state === "needs-relogin" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;"#
         ));
     }
 

@@ -2030,7 +2030,13 @@ async fn a_post_refresh_401_marks_the_account_as_needing_relogin() {
 /// auth failures come back 401, so reaching a validation error means the
 /// credential authenticated. A mark left from an earlier failure is stale and
 /// must go — otherwise a working account stays branded dead until it happens to
-/// serve a 2xx. The cooldown is deliberately left alone.
+/// serve a 2xx.
+///
+/// Scope: this drives the *clear* end to end. It cannot also assert that the
+/// clear leaves a cooldown standing, because nothing in this flow cools the
+/// account and seeding one up front removes it from selection entirely, so the
+/// branch is never reached. That asymmetry is pinned directly instead, in
+/// `accounts::tests::clearing_the_mark_alone_leaves_the_cooldown_standing`.
 #[tokio::test]
 async fn a_relayed_client_error_after_refresh_clears_a_stale_mark() {
     if !can_bind_loopback() {
@@ -2092,8 +2098,14 @@ async fn a_relayed_client_error_after_refresh_clears_a_stale_mark() {
     .await;
 
     let live = resolved_store_account("account-a");
-    // Stand in for an earlier failure that condemned the account.
-    state.accounts.mark_needs_relogin("anthropic", &live);
+    // Stand in for an earlier failure that condemned the account. Deliberately
+    // the *stronger* cause: a served 400 is itself a served response, so it
+    // clears even a mark that a successful refresh grant alone could not.
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &live,
+        shunt::accounts::ReloginCause::ServedRequest,
+    );
     assert!(state.accounts.needs_relogin("anthropic", &live));
 
     // The 400 is relayed straight back — a client error is not the pool's to retry.

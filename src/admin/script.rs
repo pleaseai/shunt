@@ -83,7 +83,10 @@ function accountGroups(observed, pool, accounts) {
       // plan as its detail caption, matching the wording the observed path
       // already uses ("Max plan") -- see observation::parse_claude/parse_codex.
       const row = { provider: provider, label: a.name, detail: a.plan ? titleCase(a.plan) + " plan" : null, managed: a, observed: null,
-        state: a.disabled ? "disabled" : !a.has_state ? "unseen" : a.cooldown_secs_remaining ? "cooling" : a.near_quota ? "near-quota" : a.cooldown_fable_secs_remaining ? "cooling-fable" : "available",
+        // `needs_relogin` is checked before the cooldown states for the same
+        // reason the pool table checks it first: a dead credential is *also*
+        // cooling, and this is the primary table operators actually read.
+        state: a.disabled ? "disabled" : a.needs_relogin ? "needs-relogin" : !a.has_state ? "unseen" : a.cooldown_secs_remaining ? "cooling" : a.near_quota ? "near-quota" : a.cooldown_fable_secs_remaining ? "cooling-fable" : "available",
         utilization_5h: a.utilization_5h, reset_5h: a.reset_5h,
         utilization_7d: a.utilization_7d, reset_7d: a.reset_7d,
         utilization_7d_oi: a.utilization_7d_oi, reset_7d_oi: a.reset_7d_oi };
@@ -138,7 +141,7 @@ function effectiveState(row) {
   // observation error: an account the pool has already benched should not
   // read "Needs login" -- with no cooldown remediation -- just because the
   // last local check happened to see an expired token.
-  if (row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;
+  if (row.state === "disabled" || row.state === "needs-relogin" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;
   const o = row.observed;
   if (o) {
     if (o.state === "expired") return "expired";
@@ -150,6 +153,7 @@ function effectiveState(row) {
 }
 
 function rowStatusText(state) {
+  if (state === "needs-relogin") return "Needs re-login";
   if (state === "expired") return "Needs login";
   if (state === "unavailable") return "Usage unavailable";
   if (state === "waiting-for-traffic") return "Waiting for traffic";
@@ -204,6 +208,7 @@ async function loadObserved() {
       if (state === "waiting-for-traffic") statusNote.textContent = "Quota arrives in GPT response headers";
       else if (state === "expired") statusNote.textContent = "The provider client owns refresh";
       else if (state === "unavailable") statusNote.textContent = "Current login could not read quota";
+      else if (state === "needs-relogin") statusNote.textContent = "Re-add this account to sign in again";
       else if (row.managed && row.managed.cooldown_secs_remaining) statusNote.textContent = "retries in " + untilShort(Math.floor(Date.now() / 1000) + row.managed.cooldown_secs_remaining);
       else if (row.managed && row.managed.cooldown_fable_secs_remaining) statusNote.textContent = "Fable retries in " + untilShort(Math.floor(Date.now() / 1000) + row.managed.cooldown_fable_secs_remaining);
       if (statusNote.textContent) status.appendChild(statusNote);

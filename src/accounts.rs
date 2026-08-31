@@ -217,6 +217,24 @@ pub struct UsageSnapshot {
 /// is exactly the stampede the gate exists to absorb (issue #195).
 const RAMP_IDLE_RESET: Duration = Duration::from_secs(60);
 
+/// Why an account carries the needs-re-login mark. The distinction matters for
+/// exactly one decision: whether a *successful refresh grant* is enough to clear
+/// the mark. It is never surfaced to clients — [`AccountSnapshot::needs_relogin`]
+/// stays a boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReloginCause {
+    /// The refresh grant itself failed terminally — `invalid_grant`, no stored
+    /// refresh token, or a rotated pair lost before it could be persisted. A
+    /// later grant that succeeds disproves this, so the admin refresh probe may
+    /// clear it.
+    RefreshGrant,
+    /// The provider rejected a bearer the account actually presented to the API:
+    /// a 401 on a credential that cannot be refreshed, or on the retry after a
+    /// refresh that itself succeeded. A working grant says nothing about this —
+    /// the grant was never the broken part — so only a served response clears it.
+    ServedRequest,
+}
+
 #[derive(Debug, Default)]
 struct AccountHealth {
     cooldown_until: Option<Instant>,
@@ -250,10 +268,12 @@ struct AccountHealth {
     /// this token while admission or credential resolution waits, but only an
     /// actual HTTP send consumes it and stamps the completed-probe interval.
     reprobe_reservation: Option<u64>,
-    /// The account's credential is dead and only a re-login can revive it: a
-    /// refresh the provider terminally rejected (`invalid_grant`), or a 401 on
-    /// a credential that cannot be refreshed at all (`token_env`, a long-lived
-    /// setup token).
+    /// The account's credential is dead and only a re-login can revive it. Set
+    /// on a terminal refresh failure, on a 401 against a credential that cannot
+    /// be refreshed at all (`token_env`, a long-lived setup token), and on a
+    /// 401 against the retry after a refresh that itself succeeded. The
+    /// [`ReloginCause`] records which, so the admin probe knows whether its own
+    /// successful grant is evidence of recovery.
     ///
     /// Deliberately **independent of `cooldown_until`**: a cooldown expires on
     /// its own after five minutes and the account is retried, which is exactly
@@ -263,9 +283,9 @@ struct AccountHealth {
     /// which would report a healthy account as dead after a provider blip.
     ///
     /// Memory-only, like `cooldown_until`: the on-disk `[server.pool]
-    /// state_path` persists quota alone, so a restart clears this and the next
-    /// 401 re-establishes it.
-    needs_relogin: bool,
+    /// state_path` persists quota alone, so a restart clears this and the
+    /// account's next terminal failure re-establishes it.
+    needs_relogin: Option<ReloginCause>,
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
@@ -1075,12 +1095,12 @@ impl AccountPool {
     /// Deliberately separate from [`Self::cooldown`]: this changes nothing
     /// about selection or the cooldown clock, it only makes the dead account
     /// visible to the operator instead of letting it cycle silently.
-    pub fn mark_needs_relogin(&self, provider: &str, account: &AccountConfig) {
+    pub fn mark_needs_relogin(&self, provider: &str, account: &AccountConfig, cause: ReloginCause) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = entries.entry(account_key(provider, account)).or_default();
         health.observed = true;
         health.enabled = !account.disabled;
-        health.needs_relogin = true;
+        health.needs_relogin = Some(cause);
     }
 
     /// Clear the needs-re-login mark alone, leaving every other health field —
@@ -1092,7 +1112,7 @@ impl AccountPool {
     pub fn clear_needs_relogin(&self, provider: &str, account: &AccountConfig) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         if let Some(health) = entries.get_mut(&account_key(provider, account)) {
-            health.needs_relogin = false;
+            health.needs_relogin = None;
         }
     }
 
@@ -1144,7 +1164,41 @@ impl AccountPool {
                     | AccountStateIdentity::UpstreamInline { name, .. } => name == account_name,
                 };
             if matches {
-                health.needs_relogin = needs_relogin;
+                health.needs_relogin = needs_relogin.then_some(ReloginCause::RefreshGrant);
+            }
+        }
+    }
+
+    /// Clear the mark on every pool entry backed by one store account, but only
+    /// where a *grant* failure set it ([`ReloginCause::RefreshGrant`]).
+    ///
+    /// This is what the admin refresh probe calls on success. The probe only
+    /// exercises the refresh grant, which proves the refresh token is alive —
+    /// not that the account can serve inference. An account marked because the
+    /// provider rejected a bearer it actually presented
+    /// ([`ReloginCause::ServedRequest`]) is still dead, and clearing it here
+    /// would hide that until the next real request re-established it. Such a
+    /// mark is cleared only by a served response, in
+    /// [`Self::mark_healthy_scoped`].
+    pub fn clear_grant_relogin_for_store_account(
+        &self,
+        store_family: StoreFamily,
+        account_name: &str,
+        account_uuid: Option<&str>,
+    ) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        for (key, health) in entries.iter_mut() {
+            if health.needs_relogin != Some(ReloginCause::RefreshGrant) {
+                continue;
+            }
+            let matches = key.store_family == store_family
+                && match &key.identity {
+                    AccountStateIdentity::Verified { id } => account_uuid == Some(id.as_str()),
+                    AccountStateIdentity::StoreEntry { name }
+                    | AccountStateIdentity::UpstreamInline { name, .. } => name == account_name,
+                };
+            if matches {
+                health.needs_relogin = None;
             }
         }
     }
@@ -1154,7 +1208,7 @@ impl AccountPool {
         let entries = self.entries.lock().expect("account health lock poisoned");
         entries
             .get(&account_key(provider, account))
-            .is_some_and(|health| health.needs_relogin)
+            .is_some_and(|health| health.needs_relogin.is_some())
     }
 
     /// Clear the account-wide cooldown and record the account as observed-healthy.
@@ -1182,7 +1236,7 @@ impl AccountPool {
         health.cooldown_until = None;
         // A response the account actually served proves the credential is
         // alive, whatever a previous 401 concluded.
-        health.needs_relogin = false;
+        health.needs_relogin = None;
         if is_fable {
             health.cooldown_until_fable = None;
         }
@@ -1370,7 +1424,7 @@ impl AccountPool {
                         utilization_7d_oi: health.quota.utilization_7d_oi,
                         reset_7d_oi: health.quota.reset_7d_oi,
                         status: health.quota.status.clone(),
-                        needs_relogin: health.needs_relogin,
+                        needs_relogin: health.needs_relogin.is_some(),
                     }
                 })
                 .collect();
@@ -2339,6 +2393,41 @@ mod tests {
             headers.insert(*name, HeaderValue::from_str(value).unwrap());
         }
         headers
+    }
+
+    /// `clear_needs_relogin` is the narrow clear used where a response proves
+    /// the credential authenticated without proving the account is healthy — a
+    /// relayed non-401 4xx after a refresh. It must drop the mark and leave the
+    /// cooldown standing; [`AccountPool::mark_healthy_scoped`] would drop both,
+    /// which would turn a signal-only change into a routing change.
+    #[test]
+    fn clearing_the_mark_alone_leaves_the_cooldown_standing() {
+        let pool = AccountPool::new();
+        let account = account("dead");
+        pool.cooldown("anthropic", &account, Duration::from_secs(300), "auth");
+        pool.mark_needs_relogin("anthropic", &account, ReloginCause::ServedRequest);
+
+        let before = pool.snapshot("anthropic", std::slice::from_ref(&account), None, None);
+        assert!(before[0].needs_relogin);
+        assert!(before[0].cooldown_secs_remaining.is_some());
+
+        pool.clear_needs_relogin("anthropic", &account);
+
+        let after = pool.snapshot("anthropic", std::slice::from_ref(&account), None, None);
+        assert!(!after[0].needs_relogin, "the mark must be cleared");
+        assert!(
+            after[0].cooldown_secs_remaining.is_some(),
+            "the cooldown must survive: this clear adds a signal, it does not \
+             alter routing"
+        );
+
+        // The contrast that gives the assertion above its meaning: the healthy
+        // mark drops both, which is why it is the wrong tool for that branch.
+        pool.mark_needs_relogin("anthropic", &account, ReloginCause::ServedRequest);
+        pool.mark_healthy_scoped("anthropic", &account, false, false);
+        let healthy = pool.snapshot("anthropic", std::slice::from_ref(&account), None, None);
+        assert!(!healthy[0].needs_relogin);
+        assert!(healthy[0].cooldown_secs_remaining.is_none());
     }
 
     /// The three [`AccountStateIdentity`] shapes are keyed differently, and the

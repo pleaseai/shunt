@@ -414,13 +414,23 @@ never inserts entries for accounts the pool has not yet seen (reported as
 ### `needs_relogin` — a dead credential, not a pause
 
 `needs_relogin` marks an account whose credential no operator-free retry can
-revive, and the pool-table State column reports it as **needs re-login**, ahead
+revive, and **both** dashboard tables report it as **needs re-login** — the
+primary Accounts table ("Needs re-login", with a "Re-add this account to sign in
+again" note) and the collapsed managed-pool table's State column — ahead
 of every cooldown state. It exists because the two are otherwise
 indistinguishable on the dashboard: a cooldown expires after five minutes and
 the account is selected again, so a permanently dead account shows the same
 `cooling` a quota pause does, forever — one 401 (and, for an imported account,
 one already-rejected refresh POST) every five minutes with nothing durable to
 see.
+
+The mark also records *why* it was set (`ReloginCause`, internal — the JSON
+field stays a boolean). Only one decision reads it: whether a successful refresh
+grant is enough to clear the mark. `RefreshGrant` means the grant itself failed,
+so a later grant that succeeds disproves it and the admin probe may clear it.
+`ServedRequest` means the provider rejected a bearer the account actually
+presented — the grant was never the broken part, so a working grant proves
+nothing and only a served response clears it.
 
 It is set from exactly three places, all terminal by construction:
 
@@ -463,16 +473,23 @@ It is set from exactly three places, all terminal by construction:
   before any upstream POST, and that path marks the account too
   (`auth::resolve_claude_account_classified`).
 
-It is cleared by any proof the credential works again: a served response
-(`mark_healthy`), a successful refresh on the proxy path, a successful
-`POST /admin/accounts/claude/{name}/refresh` probe, and a re-login through
-`POST /admin/accounts/claude/{name}/complete`.
+It is cleared by proof the credential works again — but the proof has to match
+the cause. A served response (`mark_healthy_scoped`) clears any mark, and so
+does a re-login through `POST /admin/accounts/claude/{name}/complete`, which
+replaces the credential outright. A successful
+`POST /admin/accounts/claude/{name}/refresh` probe clears only a
+`RefreshGrant`-caused mark.
+
+A successful refresh on the *proxy* path clears nothing on its own. The adapter
+deliberately waits for the retried request: a live grant proves the refresh
+token works, not that the account can serve inference, and the retry may still
+come back 401 — in which case the mark is set rather than cleared.
 
 The flag is deliberately **independent of the cooldown** and changes nothing
 about routing, selection, or the cooldown clock — it adds a signal, it does not
 add a policy. It is memory-only: the opt-in `[server.pool] state_path`
-persister carries quota alone, so a restart clears the mark and the next 401
-re-establishes it.
+persister carries quota alone, so a restart clears the mark and the account's
+next terminal failure re-establishes it.
 
 `POST /admin/accounts/claude/{name}/refresh` is the operator's on-demand probe
 for the same question. It is write-tier, CSRF-checked, and rate-limited through
@@ -489,7 +506,10 @@ through zero, one, or several provider entries, so there is no single right one
 to pick; it is also unnecessary, because both of the proxy's critical sections
 sit inside the same global lock. Success returns the new `expires_at` and
 nothing else — no access token, no refresh token, and no provider body that
-carried them. `AccountPool` tracks no sticky flag or last-selected
+carried them. It clears a `RefreshGrant`-caused mark, but deliberately not a
+`ServedRequest`-caused one: the probe never sends a request the account has to
+serve, so its success is no evidence against a bearer the provider already
+rejected. `AccountPool` tracks no sticky flag or last-selected
 timestamp, so the dashboard reports what is actually stored rather than inventing
 it. `GET /admin/pool` enumerates each `claude_oauth` and `chatgpt_oauth`
 provider's accounts (its configured list, or the corresponding Claude/Codex store

@@ -4121,3 +4121,121 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
     std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_DEAD");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The probe exercises the refresh grant and nothing else, so a *successful*
+/// grant proves the refresh token is alive — not that the account can serve
+/// inference. An account marked because the provider rejected a bearer it
+/// actually presented (a post-refresh 401) must keep its mark, or clicking
+/// Refresh hides a dead account until the next real request re-establishes it.
+#[tokio::test]
+async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_PROBE_SERVED",
+        "ops:secret-probe-served",
+    );
+
+    std::fs::write(
+        dir.join("servedmark.json"),
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "OLD-ACCESS",
+                "refreshToken": "OLD-REFRESH",
+                "expiresAt": 1_000_i64
+            },
+            "shuntAccountUuid": "acct-served"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // The grant is perfectly healthy — that is the whole point of the test.
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "FRESH-ACCESS",
+            "refresh_token": "FRESH-REFRESH",
+            "expires_in": 7200
+        })))
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let (gateway, state) =
+        start_with_state(admin_config("SHUNT_TEST_ADMIN_TOKENS_PROBE_SERVED")).await;
+    let client = reqwest::Client::new();
+
+    let account = AccountConfig {
+        name: "servedmark".to_string(),
+        uuid: Some("acct-served".to_string()),
+        store_family: Some(shunt::accounts::StoreFamily::Claude),
+        ..Default::default()
+    };
+    // The proxy already proved a refreshed bearer still gets a 401.
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &account,
+        shunt::accounts::ReloginCause::ServedRequest,
+    );
+    assert!(state.accounts.needs_relogin("anthropic", &account));
+
+    let response = client
+        .post(format!(
+            "{}/admin/accounts/claude/servedmark/refresh",
+            gateway.base_url
+        ))
+        .header("x-shunt-admin-token", "secret-probe-served")
+        .header("content-type", "application/json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "the grant is healthy, so the probe itself succeeds"
+    );
+
+    assert!(
+        state.accounts.needs_relogin("anthropic", &account),
+        "a successful refresh grant must not clear a mark set by the provider \
+         rejecting a bearer the account actually presented — the grant was \
+         never the broken part"
+    );
+
+    // The mirror: a grant-caused mark on the same account *is* cleared, so the
+    // probe has not simply stopped clearing.
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &account,
+        shunt::accounts::ReloginCause::RefreshGrant,
+    );
+    let response = client
+        .post(format!(
+            "{}/admin/accounts/claude/servedmark/refresh",
+            gateway.base_url
+        ))
+        .header("x-shunt-admin-token", "secret-probe-served")
+        .header("content-type", "application/json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert!(
+        !state.accounts.needs_relogin("anthropic", &account),
+        "a grant-caused mark must still be cleared by a successful grant"
+    );
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_SERVED");
+    let _ = std::fs::remove_dir_all(&dir);
+}

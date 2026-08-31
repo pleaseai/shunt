@@ -224,7 +224,11 @@ async fn forward_claude_oauth(
                     // too or the account cycles through this cooldown forever
                     // with nothing durable for an operator to see.
                     if failure.terminal {
-                        state.accounts.mark_needs_relogin(&route.provider, account);
+                        state.accounts.mark_needs_relogin(
+                            &route.provider,
+                            account,
+                            accounts::ReloginCause::RefreshGrant,
+                        );
                     }
                     tracing::warn!(
                         provider = %route.provider,
@@ -411,7 +415,11 @@ async fn forward_claude_oauth(
                     // admin dashboard; without the mark it just cycles in and out
                     // of this cooldown indefinitely, indistinguishable from a
                     // quota cooldown that will clear on its own.
-                    state.accounts.mark_needs_relogin(&route.provider, account);
+                    state.accounts.mark_needs_relogin(
+                        &route.provider,
+                        account,
+                        accounts::ReloginCause::ServedRequest,
+                    );
                     tracing::warn!(
                         provider = %route.provider,
                         account = %account.name,
@@ -478,7 +486,11 @@ async fn forward_claude_oauth(
                             // on a momentary provider blip.
                             let terminal = auth::claude::auth::is_terminal_refresh_failure(&error);
                             if terminal {
-                                state.accounts.mark_needs_relogin(&route.provider, account);
+                                state.accounts.mark_needs_relogin(
+                                    &route.provider,
+                                    account,
+                                    accounts::ReloginCause::RefreshGrant,
+                                );
                             }
                             tracing::warn!(
                                 provider = %route.provider,
@@ -531,7 +543,11 @@ async fn forward_claude_oauth(
                     // set *here* rather than kept from before the refresh, because
                     // the refresh itself succeeded and the success path clears on a
                     // served response, never on the grant alone.
-                    state.accounts.mark_needs_relogin(&route.provider, account);
+                    state.accounts.mark_needs_relogin(
+                        &route.provider,
+                        account,
+                        accounts::ReloginCause::ServedRequest,
+                    );
                     last_response = Some(retry);
                     continue;
                 }

@@ -397,7 +397,11 @@ mod tests {
         let (_router, _shared, state) =
             build_router(config).expect("router builds from the default config");
 
-        state.accounts.mark_needs_relogin("anthropic", &account);
+        state.accounts.mark_needs_relogin(
+            "anthropic",
+            &account,
+            crate::accounts::ReloginCause::RefreshGrant,
+        );
         assert!(state.accounts.needs_relogin("anthropic", &account));
 
         let reloaded = state.refreshed();
