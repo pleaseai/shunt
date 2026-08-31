@@ -422,11 +422,16 @@ the account is selected again, so a permanently dead account shows the same
 one already-rejected refresh POST) every five minutes with nothing durable to
 see.
 
-It is set from exactly two places, both terminal by construction:
+It is set from exactly three places, all terminal by construction:
 
 - a 401 on a credential that carries no refresh grant at all (`token_env`, or a
   long-lived setup token — `adapters/anthropic/mod.rs`, the `RefreshRetry`
-  branch), and
+  branch),
+- a 401 on the *retry* after a refresh that itself succeeded. A live grant
+  yielding a bearer the API still rejects means the account is de-authorized
+  upstream, not momentarily unlucky; the adapter already cools it for five
+  minutes and rotates, so without the mark it cycles there forever reported as
+  plain `cooling`, and
 - a refresh that cannot be retried into success, classified by
   `auth::claude::auth::is_terminal_refresh_failure`. Three reasons carry the
   typed `TerminalRefresh` marker, mirroring the one the gateway store already

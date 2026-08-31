@@ -1922,3 +1922,106 @@ async fn transient_resolution_failure_does_not_mark_the_account() {
     std::env::remove_var("SHUNT_TEST_MULTI_RESOLVE_TRANSIENT_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
+
+/// The refresh grant succeeds but the bearer it produces is *still* rejected by
+/// `/v1/messages`. The account is de-authorized upstream, not momentarily
+/// unlucky, and the adapter already treats it as broken (a five-minute cooldown
+/// plus rotation) — so it must carry the durable mark too. Without it the
+/// account cycles through that cooldown forever, reported as plain `cooling`.
+#[tokio::test]
+async fn a_post_refresh_401_marks_the_account_as_needing_relogin() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = ["fake-oauth-", "postrefresh-stale"].concat();
+    let rotated = ["fake-oauth-", "postrefresh-rotated"].concat();
+    let token_b = ["fake-oauth-", "postrefresh-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_POSTREFRESH_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("postrefresh");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "live-refresh-token",
+        "uuid-a",
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    // The grant itself is healthy: it hands back a fresh access token.
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": rotated,
+            "refresh_token": "live-refresh-token",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    // The rotated bearer is rejected too — this is the branch under test.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(rotated.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"account disabled"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_POSTREFRESH_B", "uuid-b"),
+    ))
+    .await;
+
+    // The client is served by the healthy account: routing is unchanged.
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    let dead = resolved_store_account("account-a");
+    assert_pool_observed(&state, &dead);
+    assert!(
+        state.accounts.needs_relogin("anthropic", &dead),
+        "a refresh that succeeds into a still-rejected bearer must condemn the \
+         account — otherwise it cools down and retries forever with no signal"
+    );
+    // The cooldown is still there and still independent of the mark.
+    let snapshots = state
+        .accounts
+        .snapshot("anthropic", std::slice::from_ref(&dead), None, None);
+    assert!(
+        snapshots[0].cooldown_secs_remaining.is_some(),
+        "the mark must be additive: the auth cooldown is unchanged"
+    );
+    assert!(snapshots[0].needs_relogin);
+
+    upstream.verify().await;
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_POSTREFRESH_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}

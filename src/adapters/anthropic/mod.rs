@@ -522,6 +522,16 @@ async fn forward_claude_oauth(
                         Duration::from_secs(5 * 60),
                         "auth",
                     );
+                    // A live refresh grant that yields a bearer the API still
+                    // rejects is not something the next attempt can fix: the
+                    // account is de-authorized upstream, not momentarily unlucky.
+                    // Without the mark it cycles through this cooldown forever,
+                    // reported as plain `cooling` — the exact indistinguishable
+                    // state this change exists to remove. The mark is deliberately
+                    // set *here* rather than kept from before the refresh, because
+                    // the refresh itself succeeded and the success path clears on a
+                    // served response, never on the grant alone.
+                    state.accounts.mark_needs_relogin(&route.provider, account);
                     last_response = Some(retry);
                     continue;
                 }
