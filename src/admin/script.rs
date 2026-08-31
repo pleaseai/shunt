@@ -486,10 +486,15 @@ $("complete").onclick = async () => {
   } catch (e) {
     // The request was abandoned without an answer -- it timed out, hit the bound
     // above, or the connection failed -- so from here it is unknown whether the
-    // account was stored. Refresh the tables so the operator can read the real
-    // outcome off them instead of guessing from an error message.
+    // account was stored. Refresh the tables and say so. The refresh races an
+    // exchange that may still be running, so it settles the question only if
+    // the store has already landed; that is worth one request and no more.
+    // Polling for a completion that has already missed a two-minute deadline
+    // would relocate the same ambiguity to a later one, and reading it
+    // authoritatively needs a server-side completion status this surface does
+    // not have (issue #440).
     loadObserved(); loadAccounts(); loadPool();
-    if (epoch === claudeFlowEpoch) showMsg("addmsg", "No answer from the server — check the account table before retrying", false);
+    if (epoch === claudeFlowEpoch) showMsg("addmsg", "No answer from the server — the account may still have been stored; recheck the table before retrying", false);
   }
   finally { clearTimeout(bound); claudeCompleting = false; $("complete").disabled = false; }
 };
@@ -554,10 +559,15 @@ $("complete-codex").onclick = async () => {
   } catch (e) {
     // The request was abandoned without an answer -- it timed out, hit the bound
     // above, or the connection failed -- so from here it is unknown whether the
-    // account was stored. Refresh the tables so the operator can read the real
-    // outcome off them instead of guessing from an error message.
+    // account was stored. Refresh the tables and say so. The refresh races an
+    // exchange that may still be running, so it settles the question only if
+    // the store has already landed; that is worth one request and no more.
+    // Polling for a completion that has already missed a two-minute deadline
+    // would relocate the same ambiguity to a later one, and reading it
+    // authoritatively needs a server-side completion status this surface does
+    // not have (issue #440).
     loadObserved(); loadCodexAccounts(); loadPool();
-    if (epoch === codexFlowEpoch) showMsg("codex-addmsg", "No answer from the server — check the account table before retrying", false);
+    if (epoch === codexFlowEpoch) showMsg("codex-addmsg", "No answer from the server — the account may still have been stored; recheck the table before retrying", false);
   }
   finally { clearTimeout(bound); codexCompleting = false; $("complete-codex").disabled = false; }
 };
