@@ -1,0 +1,156 @@
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 163,202
+site/src/content/docs/ja/providers/openai.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-122
+site/src/content/docs/zh-cn/providers/openrouter.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-81
+site/src/content/docs/zh-cn/providers/cursor.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-134
+src/adapters/anthropic/mod.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 13,212,214,221-232,236-237,315-334,433-442,484-491,500-514,519,557-570,588-597,612,614-633
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-176
+site/src/content/docs/ko/providers/minimax.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-90
+site/src/content/docs/ja/providers/minimax.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-91
+src/oauth_usage/tests.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 38
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 108-115
+site/src/content/docs/ko/providers/openrouter.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-79
+site/src/content/docs/ja/providers/anthropic.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-143
+site/src/content/docs/zh-cn/providers/openai.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-120
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 229
+AGENTS.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 52,64-74
+site/src/content/docs/zh-cn/providers/zai.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-94
+src/usage/tests.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 37
+site/src/content/docs/zh-cn/providers/vercel-ai-gateway.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-79
+src/auth/claude/auth.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 162,165,179-184,186-196,199,277-332,388-399
+site/src/content/docs/ko/guides/providers.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 164,200
+README.zh-CN.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 170
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 64-71
+site/src/content/docs/ja/guides/providers.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 162,198
+site/src/content/docs/ko/providers/mimo.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-102
+tests/multi_account.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 158-212,327-541,1628-2345
+site/src/content/docs/ja/providers/vercel-ai-gateway.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-79
+site/src/content/docs/ja/providers/zai.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-93
+src/accounts.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 220-255,289-306,340-344,367,387-397,1118-1310,1329,1331-1357,1361-1363,1551,1784-1826,2565-2947
+  s_bd6b61d56815d2::t_f19ead4556030a 2948
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 28,31
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-180
+site/src/content/docs/zh-cn/providers/mimo.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-103
+README.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 174
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 64-71
+site/src/content/docs/ko/providers/kimi.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-198
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 64-71
+site/src/content/docs/ko/providers/zai.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-93
+site/src/content/docs/reference/endpoints.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 31,35
+site/src/content/docs/zh-cn/providers/anthropic.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-140
+src/admin/script.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 101-104,159,171,184-188,190-191,193-195,209-210,234,279-281,283-285,366-371,373-374,376-379,385-393,547-556
+  s_bd6b61d56815d2::t_977ffdba413158 282
+  s_bd6b61d56815d2::t_43a8a8a2744195 557-560
+site/src/content/docs/zh-cn/providers/deepseek.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-94
+site/src/content/docs/ko/reference/cli.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 229
+src/server.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 377-419
+site/src/content/docs/zh-cn/providers/kimi.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-202
+tests/admin_surface.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 3788-4271
+site/src/content/docs/ko/reference/endpoints.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 28,31
+site/src/content/docs/ja/providers/kimi.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-202
+README.ja.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 175
+src/auth/claude/auth/tests.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 354-663
+src/admin/mod.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 238-240,1334-1338,1351-1362,1392-1555
+  s_bd6b61d56815d2::t_5686772ea7cafd 237,1556-1557
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-184
+site/src/content/docs/ja/reference/endpoints.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 28,31
+site/src/content/docs/zh-cn/providers/minimax.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-91
+src/auth/claude/usage.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 366
+README.ko.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 172
+site/src/content/docs/ko/providers/deepseek.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-93
+site/src/content/docs/ko/providers/anthropic.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-139
+site/src/content/docs/ja/providers/mimo.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-103
+site/src/content/docs/ko/providers/openai.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-118
+src/auth/mod.rs
+  s_bd6b61d56815d2::t_2d68b8f8178afb 153-178,184-198,200-201,205-212,242,266
+src/admin/html.rs
+  s_bd6b61d56815d2::t_657d49f623977f 775-777,780-783,817-827,829,832
+  s_bd6b61d56815d2::t_2d68b8f8178afb 73,301-303,307-309,318,328,828,830-831,833
+site/src/content/docs/ja/providers/openrouter.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-80
+site/src/content/docs/ko/providers/vercel-ai-gateway.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-77
+site/src/content/docs/ja/providers/deepseek.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-94
+site/src/content/docs/ko/providers/cursor.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-134
+docs/m9-admin-surface.md
+  s_bd6b61d56815d2::t_2d68b8f8178afb 266,276,401,412-558
+site/src/content/docs/ja/providers/cursor.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 1-136
+site/src/content/docs/ja/reference/cli.mdx
+  s_bd6b61d56815d2::t_2d68b8f8178afb 229
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d1f728f6eefa06da586fc4be838d9f580cf2a973",
+  "prompts": {},
+  "sessions": {
+    "s_bd6b61d56815d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0985229-0686-45b4-8ef2-ae1a231ebf11",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
