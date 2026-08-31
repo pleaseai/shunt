@@ -1331,11 +1331,11 @@ async fn complete_account(
     // name, and may be shared by other stored aliases, so only clear an
     // identity when no other stored account still resolves to it.
     let identity_name = name.clone();
-    let new_identity = tokio::task::spawn_blocking(move || {
-        claude_store::account_uuid(&identity_name).unwrap_or(identity_name)
-    })
-    .await
-    .unwrap_or_else(|_| name.clone());
+    let account_uuid =
+        tokio::task::spawn_blocking(move || claude_store::account_uuid(&identity_name))
+            .await
+            .unwrap_or(None);
+    let new_identity = account_uuid.clone().unwrap_or_else(|| name.clone());
     let other_identities =
         remaining_account_identities(&name, claude_store::scan_accounts_strict).await;
     if other_identities.is_none() {
@@ -1354,9 +1354,10 @@ async fn complete_account(
     // still resolves to the identity — this clears the mark unconditionally so
     // a re-login on a shared identity does not leave a stale "needs re-login"
     // on the dashboard.
-    state.accounts.set_needs_relogin_for_identity(
+    state.accounts.set_needs_relogin_for_store_account(
         crate::accounts::StoreFamily::Claude,
-        &new_identity,
+        &name,
+        account_uuid.as_deref(),
         false,
     );
     tracing::info!(account = %name, "admin: account stored");
@@ -1461,21 +1462,23 @@ async fn refresh_account(
     );
     let outcome = store.force_refresh().await;
 
-    let identity_name = name.clone();
-    let identity = tokio::task::spawn_blocking(move || {
-        claude_store::account_uuid(&identity_name).unwrap_or(identity_name)
-    })
-    .await
-    .unwrap_or_else(|_| name.clone());
+    // Name *and* uuid: a store account can be keyed by either, depending on
+    // whether its credential file carries a `shuntAccountUuid` and on how the
+    // provider table reaches it — see `set_needs_relogin_for_store_account`.
+    let uuid_name = name.clone();
+    let account_uuid = tokio::task::spawn_blocking(move || claude_store::account_uuid(&uuid_name))
+        .await
+        .unwrap_or(None);
 
     match outcome {
         Ok(_) => {
             // The rotated tokens are already persisted by the store. Nothing
             // about them is returned here: the browser gets the new expiry and
             // nothing else.
-            state.accounts.set_needs_relogin_for_identity(
+            state.accounts.set_needs_relogin_for_store_account(
                 crate::accounts::StoreFamily::Claude,
-                &identity,
+                &name,
+                account_uuid.as_deref(),
                 false,
             );
             let expiry_name = name.clone();
@@ -1496,9 +1499,10 @@ async fn refresh_account(
         Err(error) => {
             let terminal = claude_auth::is_terminal_refresh_failure(&error);
             if terminal {
-                state.accounts.set_needs_relogin_for_identity(
+                state.accounts.set_needs_relogin_for_store_account(
                     crate::accounts::StoreFamily::Claude,
-                    &identity,
+                    &name,
+                    account_uuid.as_deref(),
                     true,
                 );
             }
@@ -1517,8 +1521,9 @@ async fn refresh_account(
             // mark set above, which the dashboard's State column renders.
             if terminal {
                 bad_request(
-                    "the provider permanently rejected this account's refresh token \
-                     (invalid_grant); it needs a re-login — remove and re-add the account",
+                    "this account's stored credential can no longer produce an access token \
+                     — the provider rejected the refresh token, the file carries none, or a \
+                     rotated pair was lost. It needs a re-login — remove and re-add the account",
                 )
             } else {
                 bad_gateway(

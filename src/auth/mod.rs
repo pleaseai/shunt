@@ -159,10 +159,10 @@ pub async fn resolve_credential(
 /// neither mark a dead account nor log why it failed.
 pub struct ClaudeResolveError {
     pub error: AdapterError,
-    /// The provider will never accept the stored refresh token again
-    /// (`invalid_grant`), so retrying after the cooldown can only repeat the
-    /// same rejection — see
-    /// [`claude::auth::is_terminal_refresh_failure`].
+    /// No retry can recover this credential — the provider rejected the
+    /// refresh token, the file carries none, or a rotated pair was lost before
+    /// it could be persisted — so retrying after the cooldown can only repeat
+    /// the same failure. See [`claude::auth::is_terminal_refresh_failure`].
     pub terminal: bool,
     /// The underlying cause, for server-side logging only.
     pub detail: String,

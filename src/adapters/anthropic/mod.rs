@@ -453,16 +453,15 @@ async fn forward_claude_oauth(
                         .force_refresh_if_access_token(failed_access_token)
                         .await
                     {
-                        Ok(token) => {
-                            // The refresh grant succeeded, so whatever a previous
-                            // 401 concluded about this credential is now false.
-                            // Clearing here (rather than waiting for the retry's
-                            // `mark_healthy`) keeps the mark tied to the
-                            // credential's liveness, not to the retried request's
-                            // outcome.
-                            state.accounts.clear_needs_relogin(&route.provider, account);
-                            token
-                        }
+                        // A successful refresh grant proves the *refresh token*
+                        // is alive, which is not the same as the account being
+                        // able to serve traffic: the retry below can still come
+                        // back 401 (a revoked subscription, a withdrawn scope),
+                        // and that branch cools down and rotates. Clearing the
+                        // mark here would unflag an account in exactly that
+                        // state, so the clear is deferred to the retry's
+                        // `mark_healthy_scoped` on a successful response.
+                        Ok(token) => token,
                         Err(error) => {
                             state.accounts.cooldown(
                                 &route.provider,

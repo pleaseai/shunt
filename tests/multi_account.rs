@@ -1662,10 +1662,15 @@ async fn unrefreshable_setup_token_401_marks_the_account_as_needing_relogin() {
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
-/// A later successful response clears the mark: the flag tracks the
-/// credential's current liveness, not the fact that it once failed.
+/// The mark is cleared by `mark_healthy_scoped` — the exact call the relay
+/// makes on a served response (`adapters/anthropic/mod.rs`) — so the flag
+/// tracks the credential's current liveness rather than the fact that it once
+/// failed. The 401 that sets the mark is driven end to end; the clear is
+/// asserted at that seam rather than through a second served request, because
+/// the failing account is left in a five-minute auth cooldown and the pool
+/// would route the follow-up request to the healthy account instead.
 #[tokio::test]
-async fn a_successful_response_clears_the_needs_relogin_mark() {
+async fn mark_healthy_clears_the_needs_relogin_mark() {
     if !can_bind_loopback() {
         return;
     }
@@ -1707,9 +1712,11 @@ async fn a_successful_response_clears_the_needs_relogin_mark() {
     assert_pool_observed(&state, &dead);
     assert!(state.accounts.needs_relogin("anthropic", &dead));
 
-    // Simulate the account answering a request again (an operator re-logged in
-    // out of band): `mark_healthy` is the same call the relay path makes.
-    state.accounts.mark_healthy("anthropic", &dead, true);
+    // The account answers a request again (an operator re-logged in out of
+    // band). This is the relay's own success call, arguments included.
+    state
+        .accounts
+        .mark_healthy_scoped("anthropic", &dead, true, false);
     assert!(
         !state.accounts.needs_relogin("anthropic", &dead),
         "a served response proves the credential is alive again"

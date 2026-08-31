@@ -1083,40 +1083,52 @@ impl AccountPool {
         health.needs_relogin = true;
     }
 
-    /// Clear the needs-re-login mark after proof the credential works again: a
-    /// successful refresh (proxy path or the admin probe) or a re-login that
-    /// overwrote the stored account. Unlike [`Self::mark_healthy`] this touches
-    /// nothing else — a successful *refresh* says the credential is alive, but
-    /// says nothing about the cooldown the failed request imposed.
-    pub fn clear_needs_relogin(&self, provider: &str, account: &AccountConfig) {
-        let mut entries = self.entries.lock().expect("account health lock poisoned");
-        if let Some(health) = entries.get_mut(&account_key(provider, account)) {
-            health.needs_relogin = false;
-        }
-    }
-
-    /// Set or clear the needs-re-login mark on every entry of one physical
-    /// store identity, whatever provider table it is reachable through. Used by
+    /// Set or clear the needs-re-login mark on every pool entry backed by one
+    /// store account, whatever provider table it is reachable through. Used by
     /// the admin re-login and refresh-probe paths, which know an account by its
     /// store name rather than by the provider entry that selected it.
+    ///
+    /// Takes the name *and* the uuid rather than one conflated identity string,
+    /// because the three [`AccountStateIdentity`] variants are keyed
+    /// differently and a store account can land in any of them:
+    ///
+    /// - `Verified` — the credential file carried a `shuntAccountUuid`; keyed
+    ///   by that uuid.
+    /// - `StoreEntry` — a scanned store account with no uuid; keyed by name.
+    /// - `UpstreamInline` — **the shape a name-only `[[providers.*.accounts]]`
+    ///   entry gets**, which is the documented way to activate one store
+    ///   account. `resolve_pool_accounts` leaves it `store_entry = false` with
+    ///   no uuid (`inline_identity_key` returns `None` without a `credentials`
+    ///   path or `token_env`), so it is keyed by `(upstream, name)`. Skipping
+    ///   this variant made the admin probe unable to mark, and a re-login
+    ///   unable to clear, exactly the accounts operators are told to configure.
+    ///
+    /// The two name-keyed variants are matched on the name alone, which is all
+    /// [`AccountKey`] carries. An inline account that names a *different*
+    /// credential (a `credentials` path whose file has no uuid) and happens to
+    /// share this store account's name would therefore also match. Both error
+    /// directions self-correct — a wrong set is cleared by that account's next
+    /// success, a wrong clear is re-established by its next terminal failure —
+    /// so this is preferred over leaving the ordinary configuration unreachable.
     ///
     /// Only entries the pool already holds are updated — an account the pool
     /// has never selected has no health entry, and the dashboard reports it as
     /// `unseen` rather than carrying any mark. Inventing an entry here would
     /// mean synthesizing an [`AccountKey`] the selection path never produced.
-    pub fn set_needs_relogin_for_identity(
+    pub fn set_needs_relogin_for_store_account(
         &self,
         store_family: StoreFamily,
-        identity: &str,
+        account_name: &str,
+        account_uuid: Option<&str>,
         needs_relogin: bool,
     ) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         for (key, health) in entries.iter_mut() {
             let matches = key.store_family == store_family
                 && match &key.identity {
-                    AccountStateIdentity::Verified { id }
-                    | AccountStateIdentity::StoreEntry { name: id } => id == identity,
-                    AccountStateIdentity::UpstreamInline { .. } => false,
+                    AccountStateIdentity::Verified { id } => account_uuid == Some(id.as_str()),
+                    AccountStateIdentity::StoreEntry { name }
+                    | AccountStateIdentity::UpstreamInline { name, .. } => name == account_name,
                 };
             if matches {
                 health.needs_relogin = needs_relogin;
@@ -2314,6 +2326,85 @@ mod tests {
             headers.insert(*name, HeaderValue::from_str(value).unwrap());
         }
         headers
+    }
+
+    /// The three [`AccountStateIdentity`] shapes are keyed differently, and the
+    /// admin paths only know a store account by name + uuid. A name-only
+    /// `[[providers.*.accounts]]` entry — the documented way to activate a
+    /// store account — becomes `UpstreamInline`, so skipping that variant would
+    /// leave the ordinary configuration unmarkable and unclearable.
+    #[test]
+    fn the_store_account_setter_reaches_every_identity_shape() {
+        let pool = AccountPool::new();
+        // `Verified`: credential file carried a uuid.
+        let verified = account_with_uuid("dead", "acct-dead");
+        // `StoreEntry`: scanned store account, no uuid.
+        let store_entry = AccountConfig {
+            name: "dead".to_string(),
+            store_entry: true,
+            ..Default::default()
+        };
+        // `UpstreamInline`: name-only provider entry, no uuid, not a scan.
+        let inline = account("dead");
+        // Same name, different store family — must not be touched.
+        let other_family = AccountConfig {
+            name: "dead".to_string(),
+            store_family: Some(StoreFamily::Chatgpt),
+            ..Default::default()
+        };
+        // Different name — must not be touched.
+        let bystander = account("alive");
+
+        for account in [&verified, &store_entry, &inline, &other_family, &bystander] {
+            pool.mark_healthy("anthropic", account, true);
+        }
+
+        pool.set_needs_relogin_for_store_account(
+            StoreFamily::Claude,
+            "dead",
+            Some("acct-dead"),
+            true,
+        );
+
+        assert!(
+            pool.needs_relogin("anthropic", &verified),
+            "a uuid-keyed (Verified) account was not marked"
+        );
+        assert!(
+            pool.needs_relogin("anthropic", &store_entry),
+            "a scanned (StoreEntry) account was not marked"
+        );
+        assert!(
+            pool.needs_relogin("anthropic", &inline),
+            "a name-only provider entry (UpstreamInline) was not marked — this is \
+             the shape operators are told to configure"
+        );
+        assert!(
+            !pool.needs_relogin("anthropic", &other_family),
+            "a same-named account in another store family was marked"
+        );
+        assert!(
+            !pool.needs_relogin("anthropic", &bystander),
+            "an unrelated account was marked"
+        );
+
+        pool.set_needs_relogin_for_store_account(
+            StoreFamily::Claude,
+            "dead",
+            Some("acct-dead"),
+            false,
+        );
+
+        for (account, shape) in [
+            (&verified, "Verified"),
+            (&store_entry, "StoreEntry"),
+            (&inline, "UpstreamInline"),
+        ] {
+            assert!(
+                !pool.needs_relogin("anthropic", account),
+                "a re-login did not clear the mark on the {shape} account"
+            );
+        }
     }
 
     #[test]

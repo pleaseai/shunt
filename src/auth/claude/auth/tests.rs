@@ -464,3 +464,78 @@ async fn refresh_other_oauth_error_is_not_terminal() {
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+/// A credential file with no `refreshToken` — an expired setup token, or a
+/// login that never stored one — fails during *resolution*, before any upstream
+/// request is sent, so it never reaches the 401 handling that classifies
+/// non-refreshable credentials. Without a terminal verdict here the account
+/// cycles through the five-minute auth cooldown forever with nothing durable
+/// for an operator to see, which is the loop this whole change exists to break.
+#[tokio::test]
+async fn refresh_without_a_stored_refresh_token_is_terminal() {
+    let path = temp_credentials_path("no-refresh-token");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        json!({
+            "claudeAiOauth": {
+                "accessToken": "expired-access",
+                "expiresAt": 0
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // No token URL is ever contacted: the store bails before building a grant.
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        "http://127.0.0.1:1/token".to_string(),
+    );
+
+    let error = store.get_valid_access_token().await.unwrap_err();
+    assert!(
+        is_terminal_refresh_failure(&error),
+        "a credential with no refresh token must classify as terminal, got: {error:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// The provider rotated the token but the new pair could not be persisted. The
+/// grant already consumed the refresh token on disk, so every later attempt
+/// replays a spent one — terminal, even though nothing about the *request*
+/// failed. Unix-only because it makes the write fail by removing write
+/// permission from the credential directory.
+#[cfg(unix)]
+#[tokio::test]
+async fn refresh_whose_writeback_fails_is_terminal() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let server = mock_token_server("rotated-refresh").await;
+    let path = temp_credentials_path("writeback-failure");
+    write_credentials(&path, "expired-access", "live-refresh", 0);
+
+    // Read-only directory: the file is still readable, but the atomic writer
+    // cannot create its temporary sibling.
+    let dir = path.parent().unwrap().to_path_buf();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    );
+    let error = store.force_refresh().await.unwrap_err();
+
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert!(
+        is_terminal_refresh_failure(&error),
+        "a lost rotated token must classify as terminal — the stored refresh \
+         token is spent and no retry can recover it, got: {error:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

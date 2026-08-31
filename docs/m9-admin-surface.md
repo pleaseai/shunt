@@ -263,7 +263,7 @@ process-lifetime state:
 | `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state; account objects may include an optional `plan` string |
 | `POST` | `/admin/accounts/claude` | `{name, mode}` → start Claude provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the Claude account |
-| `POST` | `/admin/accounts/claude/{name}/refresh` | Exercise an **imported** account's refresh grant now and report whether the login is still alive; returns the new `expires_at` and never token material. `400` for a `setup_token` account (no refresh grant exists) or a terminal `invalid_grant`; `502` for a non-terminal failure |
+| `POST` | `/admin/accounts/claude/{name}/refresh` | Exercise an **imported** account's refresh grant now and report whether the login is still alive; returns the new `expires_at` and never token material. `400` for a `setup_token` account (no refresh grant exists) or a terminal verdict (`invalid_grant`, no stored refresh token, or a rotated pair that could not be persisted); `502` for a non-terminal failure |
 | `DELETE` | `/admin/accounts/claude/{name}` | Remove the Claude account's store file |
 | `POST` | `/admin/accounts/codex` | `{name}` → start ChatGPT OAuth; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/codex/{name}/complete` | `{code}` with a full callback URL or `<code>#<state>` → finish and store the Codex account |
@@ -427,17 +427,27 @@ It is set from exactly two places, both terminal by construction:
 - a 401 on a credential that carries no refresh grant at all (`token_env`, or a
   long-lived setup token — `adapters/anthropic/mod.rs`, the `RefreshRetry`
   branch), and
-- a refresh the provider terminally rejected, classified by
-  `auth::claude::auth::is_terminal_refresh_failure` — the OAuth `invalid_grant`
-  code, mirroring the typed marker the gateway store already uses
-  (`auth/gateway/auth.rs`) and the code-based classification in the Kimi store
-  (`auth/kimi/auth.rs`). A transient failure (5xx, network, timeout, an
-  unparseable body) is deliberately **not** terminal: marking one would report
-  a healthy account as dead after a momentary provider blip. Both the 401 →
-  force-refresh path and credential *resolution* classify this way: once a dead
-  account's access token expires — its steady state within hours — the refresh
-  is rejected on read, before any upstream POST, and that path marks the
-  account too (`auth::resolve_claude_account_classified`).
+- a refresh that cannot be retried into success, classified by
+  `auth::claude::auth::is_terminal_refresh_failure`. Three reasons carry the
+  typed `TerminalRefresh` marker, mirroring the one the gateway store already
+  uses (`auth/gateway/auth.rs`) and the code-based classification in the Kimi
+  store (`auth/kimi/auth.rs`):
+  - `InvalidGrant` — the provider returned the OAuth `invalid_grant` code.
+  - `NoRefreshToken` — the credential file carries no refresh token, so there
+    is no grant left to send. An expired setup token reaches its dead state
+    through *this* path, not through a 401: resolution fails before any
+    upstream request, so the `RefreshRetry` branch above is never entered.
+  - `WritebackFailed` — the provider rotated the token but the new pair could
+    not be persisted. The grant already consumed the refresh token on disk, so
+    every later attempt replays a spent one.
+
+  A transient failure (5xx, network, timeout, an unparseable body) is
+  deliberately **not** terminal: marking one would report a healthy account as
+  dead after a momentary provider blip. Both the 401 → force-refresh path and
+  credential *resolution* classify this way: once a dead account's access token
+  expires — its steady state within hours — the refresh is rejected on read,
+  before any upstream POST, and that path marks the account too
+  (`auth::resolve_claude_account_classified`).
 
 It is cleared by any proof the credential works again: a served response
 (`mark_healthy`), a successful refresh on the proxy path, a successful

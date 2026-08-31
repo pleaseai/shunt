@@ -272,12 +272,20 @@ async function loadCodexAccounts() {
   }
 }
 
+// Every mutation handler reloads the pool table, so two loads can be in
+// flight at once. Without this counter the older response renders last and
+// wins, which after a Refresh means the table falls back to the pre-probe
+// `needs_relogin`. The table is also cleared *after* the await, so a
+// superseded load never blanks the rows the newer one drew.
+let poolLoadSeq = 0;
 async function loadPool() {
-  const body = $("pool"); body.textContent = "";
-  let data, res;
+  const seq = ++poolLoadSeq;
+  let data, res, failure = null;
   try { res = await fetch("/admin/pool"); data = await res.json(); }
-  catch (e) { const r = body.insertRow(); const c = cell(r, "Failed to load pool"); c.colSpan = 9; return; }
-  if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load pool"); c.colSpan = 9; return; }
+  catch (e) { failure = "Failed to load pool"; }
+  if (seq !== poolLoadSeq) return;
+  const body = $("pool"); body.textContent = "";
+  if (failure || !res.ok) { const r = body.insertRow(); const c = cell(r, failure || (data && data.error && data.error.message) || "Failed to load pool"); c.colSpan = 9; return; }
   const providers = (data && data.providers) || [];
   let rows = 0;
   for (const p of providers) for (const a of (p.accounts || [])) {
