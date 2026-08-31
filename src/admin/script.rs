@@ -317,10 +317,28 @@ async function loadCodexAccounts() {
     const statusNote = document.createElement("small"); statusNote.className = "status-note"; statusNote.textContent = "shunt renews this login as needed"; status.appendChild(statusNote);
     if (a.expires_at) status.title = "access token expires " + when(a.expires_at);
     cell(r, a.account_id || "—", true);
-    const td = document.createElement("td");
+    const td = document.createElement("td"); td.className = "row-actions";
+    const relogin = document.createElement("button"); relogin.className = "secondary compact"; relogin.textContent = "Re-login";
+    relogin.onclick = () => reloginCodexAccount(a.name); td.appendChild(relogin);
     const btn = document.createElement("button"); btn.className = "danger"; btn.textContent = "Remove";
     btn.onclick = () => removeCodexAccount(a.name); td.appendChild(btn); r.appendChild(td);
   }
+}
+
+// The Codex counterpart of `reloginAccount`, and safe for the same reason:
+// `POST /admin/accounts/codex` has no duplicate-name guard, and completion
+// captures the pre-store identity, overwrites the account in place, and hands
+// both identities to `cleanup_reprovisioned_pool_health` (src/admin/codex.rs).
+// There is no login method to preselect here -- ChatGPT OAuth is the only way
+// into this store -- so priming the form is just the name plus clearing the
+// half-finished flow, `currentCodexName` included.
+function reloginCodexAccount(name) {
+  $("codex-name").value = name;
+  currentCodexName = null;
+  $("codex-step2").style.display = "none"; $("codex-code").value = "";
+  $("codex-addmsg").className = ""; $("codex-addmsg").textContent = "";
+  $("codex-name").focus({ preventScroll: true });
+  $("codex-name").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 async function loadPool() {

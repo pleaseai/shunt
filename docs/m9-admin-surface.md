@@ -443,19 +443,26 @@ read as broken within the hour, directly beneath a Claude row saying
 "Auto-refreshes" for the identical situation. Every Codex row now reads
 "Auto-refreshes" too, with the raw timestamp on hover.
 
-Each Claude store row also carries a **Re-login** action beside Remove. It adds
-no endpoint: re-provisioning is already the ordinary flow run under an existing
-name (`POST /admin/accounts/claude` → paste → `.../complete`), which overwrites
-the account in place and cleans up the prior identity's health entry when the
-upstream identity changes. The button therefore only primes the existing add
-form — it fills in the account name, preselects the login method matching that
-row's current kind (re-provisioning under the other mode would silently convert
-the account between refreshable and inference-only), clears any half-finished
-flow so a code cannot be pasted against the wrong account, and scrolls the form
-into view. This is deliberately confined to the managed store table: the
-observed rows in the top-level **Accounts and usage** table are unchanged, since
-those credentials are owned and refreshed by the provider client itself and
-shunt never invokes a refresh/writeback store for them.
+Each store row in both tables also carries a **Re-login** action beside Remove.
+It adds no endpoint: re-provisioning is already the ordinary flow run under an
+existing name (`POST /admin/accounts/{claude,codex}` → paste → `.../complete`).
+Neither start route carries a duplicate-name guard, and both completions capture
+the pre-store identity, overwrite the account in place, and hand the old and new
+identities to `cleanup_reprovisioned_pool_health`, so a reprovision that changes
+the upstream identity does not strand the replaced one's health entry. The
+button therefore only primes the existing add form — it fills in the account
+name, clears any half-finished flow (including the `currentName` /
+`currentCodexName` handle the completion POST interpolates into its URL, so a
+code cannot be completed against the wrong account), and scrolls the form into
+view. The Claude button additionally preselects the login method matching that
+row's current kind, since re-provisioning under the other mode would silently
+convert the account between refreshable and inference-only; the Codex form has
+no such choice, ChatGPT OAuth being the only way into that store.
+
+Both are deliberately confined to the managed store tables: the observed rows in
+the top-level **Accounts and usage** table are unchanged, since those credentials
+are owned and refreshed by the provider client itself and shunt never invokes a
+refresh/writeback store for them.
 
 The optional `plan` field is derived from credential data already held by
 shunt: Claude reads `claudeAiOauth.subscriptionType`, and Codex reads the

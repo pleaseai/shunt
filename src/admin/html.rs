@@ -513,6 +513,48 @@ mod tests {
     }
 
     #[test]
+    fn every_codex_account_row_offers_a_relogin_that_clears_the_prior_flow() {
+        // Symmetric with the Claude table, and safe for the same reason: the
+        // Codex start route has no duplicate-name guard and completion
+        // overwrites in place, cleaning up the replaced identity's pool health.
+        // There is no login method to preselect (ChatGPT OAuth is the only way
+        // into this store), so the whole contract is: prime the name, and drop
+        // the half-finished flow -- `currentCodexName` included, since that is
+        // the handle the completion POST interpolates into its URL.
+        let page = dashboard_page("csrf");
+        let start = page
+            .find("function reloginCodexAccount(name)")
+            .expect("reloginCodexAccount must exist");
+        let body = &page[start..];
+        let body = &body[..body
+            .find("\n}")
+            .expect("reloginCodexAccount must be closed")
+            + 2];
+        assert!(
+            page.contains("relogin.onclick = () => reloginCodexAccount(a.name);"),
+            "each Codex row needs a re-login button carrying its own name"
+        );
+        assert!(
+            body.contains(r#"$("codex-name").value = name;"#),
+            "re-login must prefill the Codex add form with the existing account name"
+        );
+        assert!(
+            body.contains("  currentCodexName = null;"),
+            "priming the form must drop the previously started flow's account handle"
+        );
+        assert!(
+            body.contains(
+                r#"$("codex-step2").style.display = "none"; $("codex-code").value = "";"#
+            ),
+            "the half-finished Codex flow must be cleared, not left pasteable"
+        );
+        assert!(
+            page.contains(r#"btn.onclick = () => removeCodexAccount(a.name);"#),
+            "the existing Codex Remove action must survive"
+        );
+    }
+
+    #[test]
     fn account_mutations_refresh_the_grouped_observed_table_too() {
         // The advanced account/pool tables (loadAccounts/loadCodexAccounts/
         // loadPool) are populated separately from the top-level grouped
