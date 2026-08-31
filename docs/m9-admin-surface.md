@@ -507,6 +507,14 @@ row happens to serve traffic of its own. And on the success path it clears the
 mark alone: cooldowns and storm-control ramps stay per-row, because this is a
 signal and not a routing policy.
 
+That success-path clear is gated on an `any_needs_relogin` flag, because it sits
+on the path every served response takes and scanning the map there cost ~2x on
+the `account_pool_healthy_updates` benchmark for a signal that is absent in the
+steady state. The flag is conservative in one direction only — `false` means no
+entry carries a mark, `true` may outlive the last one and cost a single extra
+scan — and every mutation of it happens under the entries lock, so the recompute
+can never store `false` over a mark that landed beside it.
+
 The flag is deliberately **independent of the cooldown** and changes nothing
 about routing, selection, or the cooldown clock — it adds a signal, it does not
 add a policy. It is memory-only: the opt-in `[server.pool] state_path`
