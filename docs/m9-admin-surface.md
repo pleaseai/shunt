@@ -497,6 +497,16 @@ credential that merely shares a name, so a failure on it condemns nothing else.
 An entry keyed by uuid (`Verified`) is reached only from an account that carries
 that same uuid, because `AccountKey` keeps no name to match on there.
 
+The fan-out reaches three things it would otherwise miss. It stamps `observed`
+on the sibling, because `snapshot` reports an unobserved entry as `unseen` and
+drops every field on it — a row `select_order` has picked but no response has
+answered yet would carry the mark and still render clean. It runs on
+`mark_healthy_scoped` as well, so a response served through *any* row clears the
+mark on all of them rather than leaving a live credential condemned until each
+row happens to serve traffic of its own. And on the success path it clears the
+mark alone: cooldowns and storm-control ramps stay per-row, because this is a
+signal and not a routing policy.
+
 The flag is deliberately **independent of the cooldown** and changes nothing
 about routing, selection, or the cooldown clock — it adds a signal, it does not
 add a policy. It is memory-only: the opt-in `[server.pool] state_path`

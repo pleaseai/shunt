@@ -1118,6 +1118,15 @@ impl AccountPool {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         for (sibling, health) in entries.iter_mut() {
             if backed_by_same_store_account(sibling, &key, account) {
+                // `observed` too, and not only for symmetry with the entry
+                // below: `snapshot` reports an unobserved entry as `unseen`
+                // and drops every field on it, so a sibling that `select_order`
+                // has created but no response has answered yet would carry the
+                // mark and still render clean — the fan-out would be invisible
+                // on exactly the row it was added for. The pool *has* processed
+                // an upstream response for this credential; that is what the
+                // fan-out asserts.
+                health.observed = true;
                 health.needs_relogin = Some(ReloginCause::strongest(health.needs_relogin, cause));
             }
         }
@@ -1284,8 +1293,20 @@ impl AccountPool {
         turn_succeeded: bool,
         is_fable: bool,
     ) {
+        let key = account_key(provider, account);
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let health = entries.entry(account_key(provider, account)).or_default();
+        // A served response disproves the mark on every row backed by this
+        // credential, not only the row that carried the request — the mark fans
+        // out, so the clear has to reach at least as far or a live credential
+        // stays condemned on its sibling rows until each one happens to serve a
+        // request of its own. Only the mark: the cooldown and the ramp stay
+        // per-row, because this change adds a signal and must not alter routing.
+        for (sibling, health) in entries.iter_mut() {
+            if *sibling != key && backed_by_same_store_account(sibling, &key, account) {
+                health.needs_relogin = None;
+            }
+        }
+        let health = entries.entry(key).or_default();
         health.observed = true;
         health.enabled = !account.disabled;
         health.cooldown_until = None;
@@ -2718,6 +2739,57 @@ mod tests {
             !pool.needs_relogin("claude-a", &store_backed),
             "a same-named store account was condemned by a failure on an unrelated \
              credential file"
+        );
+    }
+
+    /// The fan-out has to survive the snapshot, not just the map. `snapshot`
+    /// drops every field of an entry whose `observed` is false and reports it as
+    /// `unseen`, and `select_order` creates exactly such an entry for a row it
+    /// has picked but that has not answered yet — the row most likely to be a
+    /// sibling. Without stamping `observed`, the mark would be set and still
+    /// render clean on the dashboard.
+    #[test]
+    fn a_fanned_out_mark_is_visible_on_a_sibling_the_pool_has_only_selected() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("work")];
+        // `claude-b` has selected the account — a default, unobserved entry —
+        // but no response has come back through it.
+        pool.select_order("claude-b", &accounts, Some("session"), None, None);
+        assert!(
+            !pool.snapshot("claude-b", &accounts, None, None)[0].has_state,
+            "precondition: the sibling row is unobserved, so it renders as unseen"
+        );
+
+        pool.mark_needs_relogin("claude-a", &accounts[0], ReloginCause::RefreshGrant);
+
+        let sibling = &pool.snapshot("claude-b", &accounts, None, None)[0];
+        assert!(
+            sibling.has_state && sibling.needs_relogin,
+            "the sibling row carries the mark in the map but the dashboard still \
+             reports it clean, so the fan-out is invisible where it matters"
+        );
+    }
+
+    /// The mark's own mirror on the success path. A served response proves the
+    /// credential is alive, which is as true for the sibling rows as for the one
+    /// that carried the request; a clear narrower than the mark leaves a live
+    /// credential condemned on every row that has not happened to serve yet.
+    #[test]
+    fn a_success_on_one_provider_row_clears_the_mark_on_its_siblings() {
+        let pool = AccountPool::new();
+        let shared = account("work");
+        for provider in ["claude-a", "claude-b"] {
+            pool.mark_healthy(provider, &shared, true);
+        }
+        pool.mark_needs_relogin("claude-a", &shared, ReloginCause::RefreshGrant);
+        assert!(pool.needs_relogin("claude-b", &shared), "precondition");
+
+        pool.mark_healthy("claude-b", &shared, true);
+
+        assert!(
+            !pool.needs_relogin("claude-a", &shared),
+            "the sibling row stayed condemned after the credential served a \
+             response through another provider row"
         );
     }
 
