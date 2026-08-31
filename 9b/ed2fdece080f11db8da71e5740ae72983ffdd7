@@ -1,0 +1,33 @@
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_0e2318bbc7d6ec 66
+src/admin/html.rs
+  s_bd6b61d56815d2::t_dbd510264a648a 474-514
+  s_bd6b61d56815d2::t_7b5ebb7bc35c1a 216
+  s_bd6b61d56815d2::t_14312a7863fcab 473
+docs/m9-admin-surface.md
+  s_bd6b61d56815d2::t_34155bf39f2768 434-445
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_0e2318bbc7d6ec 66
+src/admin/script.rs
+  s_bd6b61d56815d2::t_7b5ebb7bc35c1a 304-312,315-319
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_0e2318bbc7d6ec 110
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_bd6b61d56815d2::t_0e2318bbc7d6ec 66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9bed2fdece080f11db8da71e5740ae72983ffdd7",
+  "prompts": {},
+  "sessions": {
+    "s_bd6b61d56815d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0985229-0686-45b4-8ef2-ae1a231ebf11",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
