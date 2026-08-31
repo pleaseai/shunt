@@ -3847,15 +3847,21 @@ async fn refresh_probe_rotates_an_imported_account_without_returning_token_mater
     let raw = response.text().await.unwrap();
     // The whole response body, not just the fields the test reads: no token
     // material of any kind may reach the browser.
-    for secret in [
+    for marker in [
         "SECRET-PROBE-ACCESS",
         "SECRET-PROBE-REFRESH",
         "OLD-ACCESS",
         "OLD-REFRESH",
     ] {
+        // The message deliberately does not echo `raw`. This assertion fires
+        // exactly when the response body holds token material, so printing the
+        // body here would write the leak it just caught into the CI log
+        // (CodeQL rust/cleartext-logging). Naming the matched fixture marker is
+        // all the diagnosis needs, and every marker is a literal from this
+        // array.
         assert!(
-            !raw.contains(secret),
-            "the probe response leaked token material ({secret}): {raw}"
+            !raw.contains(marker),
+            "the probe response leaked token material: the body contains {marker}"
         );
     }
     let body: serde_json::Value = serde_json::from_str(&raw).unwrap();
