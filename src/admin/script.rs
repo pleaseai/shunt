@@ -435,9 +435,10 @@ const COMPLETE_TIMEOUT_MS = 120000;
 // the form reset are gated on the epoch -- and surface the failed one instead,
 // reporting an error over an account that was in fact stored and leaving the
 // finished form open. The button is closed for the duration of its own request
-// instead. That keeps two completions for one account out of flight together on
-// this page -- bounded by the request timeout below, which is where the page
-// stops waiting while the server may still be exchanging.
+// instead. This keeps one page's own two clicks from racing, which is all this
+// marker reaches: it is a `let` in this script, so a reload clears it and
+// permits the same retry, and a second tab or a direct API call never sees it.
+// Ordering concurrent completions is server-side work (issue #440).
 let claudeCompleting = false;
 $("start").onclick = async () => {
   const name = $("name").value.trim();
@@ -482,7 +483,14 @@ $("complete").onclick = async () => {
     if (epoch !== claudeFlowEpoch) return;
     showMsg("addmsg", data.message || "Account stored", true);
     $("step2").style.display = "none"; $("name").value = ""; $("code").value = "";
-  } catch (e) { if (epoch === claudeFlowEpoch) showMsg("addmsg", "Request failed", false); }
+  } catch (e) {
+    // The request was abandoned without an answer -- it timed out, hit the bound
+    // above, or the connection failed -- so from here it is unknown whether the
+    // account was stored. Refresh the tables so the operator can read the real
+    // outcome off them instead of guessing from an error message.
+    loadObserved(); loadAccounts(); loadPool();
+    if (epoch === claudeFlowEpoch) showMsg("addmsg", "No answer from the server — check the account table before retrying", false);
+  }
   finally { clearTimeout(bound); claudeCompleting = false; $("complete").disabled = false; }
 };
 
@@ -543,7 +551,14 @@ $("complete-codex").onclick = async () => {
     if (epoch !== codexFlowEpoch) return;
     showMsg("codex-addmsg", data.message || "Codex account stored", true);
     $("codex-step2").style.display = "none"; $("codex-name").value = ""; $("codex-code").value = "";
-  } catch (e) { if (epoch === codexFlowEpoch) showMsg("codex-addmsg", "Request failed", false); }
+  } catch (e) {
+    // The request was abandoned without an answer -- it timed out, hit the bound
+    // above, or the connection failed -- so from here it is unknown whether the
+    // account was stored. Refresh the tables so the operator can read the real
+    // outcome off them instead of guessing from an error message.
+    loadObserved(); loadCodexAccounts(); loadPool();
+    if (epoch === codexFlowEpoch) showMsg("codex-addmsg", "No answer from the server — check the account table before retrying", false);
+  }
   finally { clearTimeout(bound); codexCompleting = false; $("complete-codex").disabled = false; }
 };
 

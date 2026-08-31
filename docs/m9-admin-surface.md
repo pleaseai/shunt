@@ -493,11 +493,17 @@ keeps that sequence out of reach.
 
 Nothing else may release the marker, so the completion request carries its own
 120-second `AbortController` bound, cleared in a `finally`: a connection that
-never settles must not close the button for the life of the page. That bound is
-also the limit of the guarantee above. Once it fires the page stops waiting
-while the server may still be exchanging, so a retry can overlap the abandoned
-attempt — as can any second client, another tab or a direct API call, which the
-server does not order either. Both remainders are tracked in
+never settles must not close the button for the life of the page. Whether the
+account was stored is unknown once a completion is abandoned, so that path
+refreshes the tables and says so, rather than reporting a failure the server may
+not agree with.
+
+The marker is a per-page-load convenience, not an enforceable lock: it is a
+`let` in the inline script, so reloading the dashboard clears it and permits the
+same retry the bound does. Being page-local it also cannot see a second tab or a
+direct API call, and the server orders nothing. Its job is only to keep one
+page's own two clicks from racing; ordering concurrent completions is
+server-side work, tracked in
 [issue #440](https://github.com/pleaseai/shunt/issues/440).
 
 Both are deliberately confined to the managed store tables: the observed rows in

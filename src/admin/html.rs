@@ -600,10 +600,22 @@ mod tests {
                 1,
                 "{handler} must discard its own response once superseded"
             );
+            // Asserted by shape rather than by one literal line: every report
+            // the failure path makes must sit behind the same guard, however
+            // that block is laid out. An unguarded showMsg there would speak
+            // for a flow the operator has already abandoned.
+            let caught = body
+                .find("} catch (e)")
+                .expect("the handler must have a failure path");
+            let failure = &body[caught..];
+            let failure = &failure[..failure.find("\n  finally {").unwrap_or(failure.len())];
+            let reports = failure.matches("showMsg(").count();
             assert!(
-                body.contains(&format!(
-                    "}} catch (e) {{ if (epoch === {counter}) showMsg("
-                )),
+                reports > 0
+                    && reports
+                        == failure
+                            .matches(&format!("if (epoch === {counter}) showMsg("))
+                            .count(),
                 "{handler} must stay silent on failure once superseded"
             );
         }
@@ -729,6 +741,23 @@ mod tests {
                     && body.contains("signal: abort.signal"),
                 "{handler} must bound its own request so the marker cannot strand"
             );
+            // An abandoned completion is ambiguous -- the exchange may have
+            // stored the account before the page stopped waiting -- so the
+            // failure path must re-read the server rather than leave the
+            // operator to guess the outcome from an error message.
+            let abandoned = body
+                .find("} catch (e) {")
+                .expect("the handler must have a failure path");
+            let refreshed = body[abandoned..]
+                .find("loadObserved(")
+                .expect("an abandoned completion must refresh the tables");
+            let reported = body[abandoned..]
+                .find("showMsg(")
+                .expect("an abandoned completion must say so");
+            assert!(
+                refreshed < reported,
+                "{handler} must refresh the tables before reporting an abandoned completion"
+            );
             assert!(
                 body.contains(&format!("$(\"{button}\").disabled = true;")),
                 "{handler} must also close the button so the refusal is visible"
@@ -743,18 +772,44 @@ mod tests {
         // table, which loadObserved() alone fills in. Every success path
         // that adds or removes an account must refresh loadObserved() too,
         // or the grouped table goes stale until the next full page load.
+        //
+        // Asserted per mutation site rather than by counting the call across
+        // the page: the failure path of a completion refreshes the tables too
+        // (an abandoned request leaves the outcome unknown), so a page-wide
+        // count no longer distinguishes "every success path refreshes" from
+        // "some path somewhere does".
         let page = dashboard_page("csrf");
-        assert_eq!(
-            page.matches("loadObserved(); loadAccounts(); loadPool();")
-                .count(),
-            2,
-            "expected both Claude add/remove success paths to refresh the grouped table"
-        );
-        assert_eq!(
-            page.matches("loadObserved(); loadCodexAccounts(); loadPool();")
-                .count(),
-            2,
-            "expected both Codex add/remove success paths to refresh the grouped table"
-        );
+        for (site, refresh) in [
+            (
+                r#"$("complete").onclick = async () => {"#,
+                "loadObserved(); loadAccounts(); loadPool();",
+            ),
+            (
+                "async function removeAccount(name) {",
+                "loadObserved(); loadAccounts(); loadPool();",
+            ),
+            (
+                r#"$("complete-codex").onclick = async () => {"#,
+                "loadObserved(); loadCodexAccounts(); loadPool();",
+            ),
+            (
+                "async function removeCodexAccount(name) {",
+                "loadObserved(); loadCodexAccounts(); loadPool();",
+            ),
+        ] {
+            let at = page.find(site).expect("the mutation site must exist");
+            let body = &page[at..];
+            let body = &body[..body.find("\n}").expect("the site must be closed") + 2];
+            // Bounded to the success branch. A completion also refreshes on its
+            // abandoned path, so a whole-body `contains` would still pass with
+            // the success-path refresh deleted -- the very regression this test
+            // exists to catch. Exactly once, so a duplicate is caught too.
+            let success = &body[..body.find("} catch (e)").unwrap_or(body.len())];
+            assert_eq!(
+                success.matches(refresh).count(),
+                1,
+                "{site} must refresh the grouped observed table exactly once on success"
+            );
+        }
     }
 }
