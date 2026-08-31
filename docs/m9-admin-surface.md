@@ -485,6 +485,18 @@ deliberately waits for the retried request: a live grant proves the refresh
 token works, not that the account can serve inference, and the retry may still
 come back 401 — in which case the mark is set rather than cleared.
 
+The mark follows the *credential*, not the provider row that tripped over it.
+One store account activated by name in two `[[providers.*]]` tables gets two
+health entries — `resolve_pool_accounts` leaves a name-only entry UUID-less, so
+`account_key` keys it as `UpstreamInline`, which carries the upstream name — yet
+both are backed by one credential file. Marking (and clearing) therefore fans
+out across every entry for the same store account, exactly as the admin
+re-login and probe paths already do. The fan-out is narrow on purpose: an
+account carrying its own `credentials` path or `token_env` is a different
+credential that merely shares a name, so a failure on it condemns nothing else.
+An entry keyed by uuid (`Verified`) is reached only from an account that carries
+that same uuid, because `AccountKey` keeps no name to match on there.
+
 The flag is deliberately **independent of the cooldown** and changes nothing
 about routing, selection, or the cooldown clock — it adds a signal, it does not
 add a policy. It is memory-only: the opt-in `[server.pool] state_path`

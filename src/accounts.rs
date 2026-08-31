@@ -1114,8 +1114,14 @@ impl AccountPool {
     /// about selection or the cooldown clock, it only makes the dead account
     /// visible to the operator instead of letting it cycle silently.
     pub fn mark_needs_relogin(&self, provider: &str, account: &AccountConfig, cause: ReloginCause) {
+        let key = account_key(provider, account);
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let health = entries.entry(account_key(provider, account)).or_default();
+        for (sibling, health) in entries.iter_mut() {
+            if backed_by_same_store_account(sibling, &key, account) {
+                health.needs_relogin = Some(ReloginCause::strongest(health.needs_relogin, cause));
+            }
+        }
+        let health = entries.entry(key).or_default();
         health.observed = true;
         health.enabled = !account.disabled;
         health.needs_relogin = Some(ReloginCause::strongest(health.needs_relogin, cause));
@@ -1128,9 +1134,12 @@ impl AccountPool {
     /// the wrong tool there because it also clears the cooldown, and this
     /// change is meant to add a signal, not to alter routing.
     pub fn clear_needs_relogin(&self, provider: &str, account: &AccountConfig) {
+        let key = account_key(provider, account);
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        if let Some(health) = entries.get_mut(&account_key(provider, account)) {
-            health.needs_relogin = None;
+        for (sibling, health) in entries.iter_mut() {
+            if *sibling == key || backed_by_same_store_account(sibling, &key, account) {
+                health.needs_relogin = None;
+            }
         }
     }
 
@@ -1701,6 +1710,49 @@ pub(crate) fn account_identity(account: &AccountConfig) -> &str {
         Some(uuid) if !uuid.trim().is_empty() => uuid,
         _ => &account.name,
     }
+}
+
+/// Whether `sibling` is another pool entry for the very same store account as
+/// the one `key`/`account` describe — the fan-out predicate shared by
+/// [`AccountPool::mark_needs_relogin`] and [`AccountPool::clear_needs_relogin`].
+///
+/// A store account activated by name in two `[[providers.*]]` tables gets a
+/// **separate** health entry per table, because `resolve_pool_accounts` leaves
+/// such an entry UUID-less (`inline_identity_key` returns `None` without a
+/// `credentials` path) and [`account_key`] then keys it as `UpstreamInline`,
+/// which carries the upstream name. One credential file, several keys. Marking
+/// only the entry that happened to see the terminal failure leaves its siblings
+/// reporting `available` and retrying the same dead credential — the loop this
+/// mark exists to end.
+///
+/// The fan-out is deliberately narrow in two ways:
+///
+/// - Only an account that *is* the store account fans out. One carrying its own
+///   `credentials` path or `token_env` merely shares a name with it and is a
+///   different credential, so a failure on it says nothing about the store file.
+/// - A sibling keyed as `Verified` is reached only when this account also
+///   carries that uuid. A name-only entry has none, so it cannot reach a
+///   uuid-keyed entry for the same store file — [`AccountKey`] keeps no name
+///   there to match on. That residue is the pre-existing per-key behaviour, not
+///   a regression, and the uuid-keyed entry still self-corrects on its own next
+///   terminal failure.
+fn backed_by_same_store_account(
+    sibling: &AccountKey,
+    key: &AccountKey,
+    account: &AccountConfig,
+) -> bool {
+    if account.credentials.is_some() || account.token_env.is_some() {
+        return false;
+    }
+    sibling.store_family == key.store_family
+        && match &sibling.identity {
+            AccountStateIdentity::Verified { id } => account
+                .uuid
+                .as_deref()
+                .is_some_and(|uuid| !uuid.trim().is_empty() && uuid == id),
+            AccountStateIdentity::StoreEntry { name }
+            | AccountStateIdentity::UpstreamInline { name, .. } => *name == account.name,
+        }
 }
 
 pub(crate) fn account_key(upstream: &str, account: &AccountConfig) -> AccountKey {
@@ -2600,6 +2652,94 @@ mod tests {
             assert!(
                 !pool.needs_relogin("anthropic", account),
                 "a re-login did not clear the mark on the {shape} account"
+            );
+        }
+    }
+
+    /// One store account activated by name in two provider tables gets two
+    /// health entries, because `UpstreamInline` carries the upstream name. They
+    /// are backed by one credential file, so a terminal verdict on either is a
+    /// verdict on both — marking only the row that happened to serve the failing
+    /// request leaves the other reporting `available` and retrying the same dead
+    /// credential, which is the loop this mark exists to end.
+    #[test]
+    fn a_terminal_failure_marks_every_provider_row_backed_by_one_store_account() {
+        let pool = AccountPool::new();
+        let shared = account("work");
+        let bystander = account("spare");
+
+        // Both provider tables have selected the account at least once, so both
+        // health entries exist before anything fails.
+        for provider in ["claude-a", "claude-b"] {
+            pool.mark_healthy(provider, &shared, true);
+            pool.mark_healthy(provider, &bystander, true);
+        }
+
+        pool.mark_needs_relogin("claude-a", &shared, ReloginCause::RefreshGrant);
+
+        assert!(
+            pool.needs_relogin("claude-a", &shared),
+            "the row that saw the failure was not marked"
+        );
+        assert!(
+            pool.needs_relogin("claude-b", &shared),
+            "the sibling row for the same store account was left unmarked, so it \
+             keeps retrying the dead credential and reports `available`"
+        );
+        assert!(
+            !pool.needs_relogin("claude-b", &bystander),
+            "an unrelated store account was marked"
+        );
+    }
+
+    /// The fan-out's negative twin, and the reason it is keyed on more than the
+    /// name: an account carrying its own `credentials` path is a *different*
+    /// credential that merely shares a name with a store account. A failure on
+    /// it says nothing about the store file, so it must not condemn it.
+    #[test]
+    fn a_failure_on_an_inline_credential_never_marks_a_same_named_store_account() {
+        let pool = AccountPool::new();
+        let store_backed = account("work");
+        let own_file = AccountConfig {
+            name: "work".to_string(),
+            credentials: Some("/tmp/somewhere-else.json".to_string()),
+            ..Default::default()
+        };
+        pool.mark_healthy("claude-a", &store_backed, true);
+        pool.mark_healthy("claude-b", &own_file, true);
+
+        pool.mark_needs_relogin("claude-b", &own_file, ReloginCause::ServedRequest);
+
+        assert!(
+            pool.needs_relogin("claude-b", &own_file),
+            "the account that actually failed was not marked"
+        );
+        assert!(
+            !pool.needs_relogin("claude-a", &store_backed),
+            "a same-named store account was condemned by a failure on an unrelated \
+             credential file"
+        );
+    }
+
+    /// The clear must reach exactly what the mark reaches. A relayed non-401 4xx
+    /// proves the *credential* authenticated, which is as true for the sibling
+    /// rows as for the one that served the request; a narrower clear would strand
+    /// a mark the same evidence just disproved.
+    #[test]
+    fn clearing_the_mark_reaches_the_rows_the_marking_reached() {
+        let pool = AccountPool::new();
+        let shared = account("work");
+        for provider in ["claude-a", "claude-b"] {
+            pool.mark_healthy(provider, &shared, true);
+        }
+        pool.mark_needs_relogin("claude-a", &shared, ReloginCause::RefreshGrant);
+
+        pool.clear_needs_relogin("claude-b", &shared);
+
+        for provider in ["claude-a", "claude-b"] {
+            assert!(
+                !pool.needs_relogin(provider, &shared),
+                "the {provider} row kept a mark the clear should have reached"
             );
         }
     }
