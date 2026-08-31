@@ -1,0 +1,23 @@
+tests/multi_account.rs
+  s_87f64bfaa7d780::t_fc53636a0c9195 393-484
+docs/m9-admin-surface.md
+  s_87f64bfaa7d780::t_8661340b75ec4b 487-495
+src/adapters/anthropic/mod.rs
+  s_87f64bfaa7d780::t_18505acdcb3b19 326-332,612,614-631
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4d0c01e5b52e361e1740ddd026f0c58fc320c373",
+  "prompts": {},
+  "sessions": {
+    "s_87f64bfaa7d780": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eff4611e-6f3e-4a6b-9cd3-0ea4a81203c7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
