@@ -474,7 +474,7 @@ mod tests {
     fn the_codex_account_column_reports_renewal_ownership_not_the_raw_expiry() {
         // Same defect as the Claude table, with a simpler resolution: the Codex
         // store has no non-refreshable kind at all. Both writers reject a
-        // missing or empty refresh token (`import_credentials` and
+        // missing or empty refresh token (`import_auth` and
         // `store_chatgpt_tokens`), so shunt owns renewal for every row and the
         // access-token JWT `exp` this column printed is never actionable --
         // it just made every healthy account read as broken within the hour.
@@ -552,6 +552,110 @@ mod tests {
             page.contains(r#"btn.onclick = () => removeCodexAccount(a.name);"#),
             "the existing Codex Remove action must survive"
         );
+    }
+
+    #[test]
+    fn a_superseded_provisioning_response_cannot_restore_a_cleared_flow() {
+        // Clearing the form on Re-login is not enough on its own: a start or
+        // completion request already in flight writes its result back
+        // unconditionally when it lands. A late start response would reopen the
+        // previous account's authorization step and restore its `currentName`
+        // while the name field already reads the newly picked account -- so
+        // following that reopened link stores the freshly authorized credential
+        // under the OLD account's name, silently overwriting a different pool
+        // account. A late completion would blank the just-primed name and
+        // report success for the wrong account.
+        //
+        // Assert per handler body rather than by counting matches across the
+        // page: a page-wide count is satisfied by deleting a guard from one
+        // handler and duplicating it in another, which leaves one of the four
+        // response paths writing back after being superseded.
+        let page = dashboard_page("csrf");
+        for (counter, handler) in [
+            ("claudeFlowEpoch", r#"$("start").onclick = async () => {"#),
+            (
+                "claudeFlowEpoch",
+                r#"$("complete").onclick = async () => {"#,
+            ),
+            (
+                "codexFlowEpoch",
+                r#"$("start-codex").onclick = async () => {"#,
+            ),
+            (
+                "codexFlowEpoch",
+                r#"$("complete-codex").onclick = async () => {"#,
+            ),
+        ] {
+            let at = page.find(handler).expect("the handler must exist");
+            let body = &page[at..];
+            let body = &body[..body.find("\n};").expect("handler must be closed") + 3];
+            assert_eq!(
+                body.matches(&format!("const epoch = ++{counter};")).count(),
+                1,
+                "{handler} must capture the epoch it was issued under, exactly once"
+            );
+            assert_eq!(
+                body.matches(&format!("if (epoch !== {counter}) return;"))
+                    .count(),
+                1,
+                "{handler} must discard its own response once superseded"
+            );
+            assert!(
+                body.contains(&format!(
+                    "}} catch (e) {{ if (epoch === {counter}) showMsg("
+                )),
+                "{handler} must stay silent on failure once superseded"
+            );
+        }
+
+        // Each form counts on its own, so re-priming one never discards the
+        // other's live flow, and each primer supersedes what is in flight.
+        for (counter, primer) in [
+            ("claudeFlowEpoch", "function reloginAccount(name, kind)"),
+            ("codexFlowEpoch", "function reloginCodexAccount(name)"),
+        ] {
+            assert!(
+                page.contains(&format!("let {counter} = 0;")),
+                "{counter} must exist as its own per-form counter"
+            );
+            let at = page.find(primer).expect("the primer function must exist");
+            let body = &page[at..];
+            let body = &body[..body.find("\n}").expect("primer must be closed") + 2];
+            assert!(
+                body.contains(&format!("  {counter}++;")),
+                "{primer} must supersede any request still in flight"
+            );
+        }
+
+        // A completion that reached the server stored the account whether or
+        // not its flow was superseded, so the table refresh must run before the
+        // guard -- only the confirmation and the form reset are gated.
+        for (counter, handler, refresh) in [
+            (
+                "claudeFlowEpoch",
+                r#"$("complete").onclick = async () => {"#,
+                "loadObserved(); loadAccounts(); loadPool();",
+            ),
+            (
+                "codexFlowEpoch",
+                r#"$("complete-codex").onclick = async () => {"#,
+                "loadObserved(); loadCodexAccounts(); loadPool();",
+            ),
+        ] {
+            let at = page.find(handler).expect("the handler must exist");
+            let body = &page[at..];
+            let body = &body[..body.find("\n};").expect("handler must be closed") + 3];
+            let refreshed = body
+                .find(refresh)
+                .expect("a completed account must refresh the tables");
+            let gate = body
+                .find(&format!("if (epoch !== {counter}) return;"))
+                .expect("the guard must exist");
+            assert!(
+                refreshed < gate,
+                "{handler} must refresh the tables before returning on a superseded flow"
+            );
+        }
     }
 
     #[test]

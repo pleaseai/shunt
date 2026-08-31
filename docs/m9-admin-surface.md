@@ -433,7 +433,7 @@ note. Only the setup-token kind can reach that state.
 
 The Codex store table alongside it carries the same status column, but
 unconditionally: that store has no non-refreshable kind at all. Both writers
-into it reject a missing or empty refresh token (`import_credentials` and
+into it reject a missing or empty refresh token (`import_auth` and
 `store_chatgpt_tokens` in `auth/codex/store.rs`) and there is no setup-token
 analog, so shunt owns renewal for every row (single-flight refresh and atomic
 writeback in `auth/codex/auth.rs`, five minutes before the access token's JWT
@@ -445,11 +445,12 @@ read as broken within the hour, directly beneath a Claude row saying
 
 Each store row in both tables also carries a **Re-login** action beside Remove.
 It adds no endpoint: re-provisioning is already the ordinary flow run under an
-existing name (`POST /admin/accounts/{claude,codex}` → paste → `.../complete`).
-Neither start route carries a duplicate-name guard, and both completions capture
-the pre-store identity, overwrite the account in place, and hand the old and new
-identities to `cleanup_reprovisioned_pool_health`, so a reprovision that changes
-the upstream identity does not strand the replaced one's health entry. The
+existing name (`POST /admin/accounts/{claude,codex}` → paste →
+`.../complete`). Neither start route carries a duplicate-name guard, and both
+completions capture the pre-store identity, overwrite the account in place, and
+hand the old and new identities to `cleanup_reprovisioned_pool_health`, so a
+reprovision that changes the upstream identity does not strand the replaced
+one's health entry. The
 button therefore only primes the existing add form — it fills in the account
 name, clears any half-finished flow (including the `currentName` /
 `currentCodexName` handle the completion POST interpolates into its URL, so a
@@ -458,6 +459,19 @@ view. The Claude button additionally preselects the login method matching that
 row's current kind, since re-provisioning under the other mode would silently
 convert the account between refreshable and inference-only; the Codex form has
 no such choice, ChatGPT OAuth being the only way into that store.
+
+Clearing the form is not sufficient on its own. A start or completion request
+already in flight writes its result back when it lands, restoring the flow that
+was just cleared. The late *start* is the damaging one: it reopens the previous
+account's authorize step and restores that account's handle while the name field
+already reads the newly picked one, so following the reopened link stores the
+freshly authorized credential under the *old* account's name — silently
+overwriting a different pool account. A late completion is milder, blanking the
+just-primed name and reporting success for the wrong account. Each request
+therefore captures a per-form flow epoch (`claudeFlowEpoch` / `codexFlowEpoch`,
+bumped by a re-login and by every new start or completion) and discards its own
+response once superseded. Claude and Codex count separately, so re-priming one
+form never discards the other's live flow.
 
 Both are deliberately confined to the managed store tables: the observed rows in
 the top-level **Accounts and usage** table are unchanged, since those credentials

@@ -284,6 +284,7 @@ async function loadAccounts() {
 // one guard, so it is cleared here rather than relied upon to stay unreachable.
 function reloginAccount(name, kind) {
   $("name").value = name;
+  claudeFlowEpoch++;
   (kind === "setup_token" ? $("mode-setup") : $("mode-oauth")).checked = true;
   updateModeHelp();
   currentName = null;
@@ -303,7 +304,7 @@ async function loadCodexAccounts() {
   if (!list.length) { const r = body.insertRow(); const c = cell(r, "No Codex store accounts yet"); c.colSpan = 4; c.className = "muted"; return; }
   // Unconditional, unlike the Claude table's kind-derived status: every Codex
   // store account is refreshable. Both writers into the store reject a missing
-  // or empty refresh token (`import_credentials` and `store_chatgpt_tokens` in
+  // or empty refresh token (`import_auth` and `store_chatgpt_tokens` in
   // auth/codex/store.rs) and there is no setup-token analog, so shunt owns
   // renewal for all of them (single-flight refresh + atomic writeback in
   // auth/codex/auth.rs, five minutes before the access token's JWT `exp`).
@@ -334,6 +335,7 @@ async function loadCodexAccounts() {
 // half-finished flow, `currentCodexName` included.
 function reloginCodexAccount(name) {
   $("codex-name").value = name;
+  codexFlowEpoch++;
   currentCodexName = null;
   $("codex-step2").style.display = "none"; $("codex-code").value = "";
   $("codex-addmsg").className = ""; $("codex-addmsg").textContent = "";
@@ -409,31 +411,50 @@ function updateModeHelp() {
 for (const input of document.querySelectorAll('input[name="mode"]')) { input.onchange = updateModeHelp; }
 
 let currentName = null;
+// Monotonic per-form flow epoch. A start or completion request that is still in
+// flight when the form is re-primed must not write its result back: its response
+// would restore the flow `reloginAccount` just cleared, leaving the name field
+// naming one account while `currentName` -- the handle the completion POST
+// interpolates into its URL -- still names the previous one. Following the
+// reopened link then stores the newly authorized credential under the OLD
+// account's name, silently overwriting a different pool account. Each request
+// captures the epoch it was issued under and discards its own response once a
+// newer start or a re-login has superseded it. Claude and Codex count
+// separately so re-priming one form never discards the other's live flow.
+let claudeFlowEpoch = 0;
 $("start").onclick = async () => {
   const name = $("name").value.trim();
   $("addmsg").className = ""; $("addmsg").textContent = "";
+  const epoch = ++claudeFlowEpoch;
   try {
     const mode = selectedMode();
     const res = await fetch("/admin/accounts/claude", { method: "POST", headers: H, body: JSON.stringify({ name, mode }) });
     const data = await res.json();
+    if (epoch !== claudeFlowEpoch) return;
     if (!res.ok) { showMsg("addmsg", (data.error && data.error.message) || "Failed to start", false); return; }
     currentName = data.name;
     $("authlink").textContent = data.authorize_url; $("authlink").href = data.authorize_url;
     $("step2").style.display = "block";
-  } catch (e) { showMsg("addmsg", "Request failed", false); }
+  } catch (e) { if (epoch === claudeFlowEpoch) showMsg("addmsg", "Request failed", false); }
 };
 
 $("complete").onclick = async () => {
   const code = $("code").value.trim();
+  const epoch = ++claudeFlowEpoch;
   try {
     const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(currentName) + "/complete",
       { method: "POST", headers: H, body: JSON.stringify({ code }) });
     const data = await res.json();
-    if (!res.ok) { showMsg("addmsg", (data.error && data.error.message) || "Failed to complete", false); return; }
+    if (!res.ok) { if (epoch === claudeFlowEpoch) showMsg("addmsg", (data.error && data.error.message) || "Failed to complete", false); return; }
+    // The account was stored upstream whether or not this flow has since been
+    // superseded, so the tables must refresh either way -- they re-read the
+    // server and touch no flow-local state. Only the confirmation and the form
+    // reset stay gated: those would stomp the newly primed flow.
+    loadObserved(); loadAccounts(); loadPool();
+    if (epoch !== claudeFlowEpoch) return;
     showMsg("addmsg", data.message || "Account stored", true);
     $("step2").style.display = "none"; $("name").value = ""; $("code").value = "";
-    loadObserved(); loadAccounts(); loadPool();
-  } catch (e) { showMsg("addmsg", "Request failed", false); }
+  } catch (e) { if (epoch === claudeFlowEpoch) showMsg("addmsg", "Request failed", false); }
 };
 
 async function removeAccount(name) {
@@ -446,30 +467,39 @@ async function removeAccount(name) {
 }
 
 let currentCodexName = null;
+let codexFlowEpoch = 0;
 $("start-codex").onclick = async () => {
   const name = $("codex-name").value.trim();
   $("codex-addmsg").className = ""; $("codex-addmsg").textContent = "";
+  const epoch = ++codexFlowEpoch;
   try {
     const res = await fetch("/admin/accounts/codex", { method: "POST", headers: H, body: JSON.stringify({ name }) });
     const data = await res.json();
+    if (epoch !== codexFlowEpoch) return;
     if (!res.ok) { showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to start Codex login", false); return; }
     currentCodexName = data.name;
     $("codex-authlink").textContent = data.authorize_url; $("codex-authlink").href = data.authorize_url;
     $("codex-step2").style.display = "block";
-  } catch (e) { showMsg("codex-addmsg", "Request failed", false); }
+  } catch (e) { if (epoch === codexFlowEpoch) showMsg("codex-addmsg", "Request failed", false); }
 };
 
 $("complete-codex").onclick = async () => {
   const code = $("codex-code").value.trim();
+  const epoch = ++codexFlowEpoch;
   try {
     const res = await fetch("/admin/accounts/codex/" + encodeURIComponent(currentCodexName) + "/complete",
       { method: "POST", headers: H, body: JSON.stringify({ code }) });
     const data = await res.json();
-    if (!res.ok) { showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to complete Codex login", false); return; }
+    if (!res.ok) { if (epoch === codexFlowEpoch) showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to complete Codex login", false); return; }
+    // The account was stored upstream whether or not this flow has since been
+    // superseded, so the tables must refresh either way -- they re-read the
+    // server and touch no flow-local state. Only the confirmation and the form
+    // reset stay gated: those would stomp the newly primed flow.
+    loadObserved(); loadCodexAccounts(); loadPool();
+    if (epoch !== codexFlowEpoch) return;
     showMsg("codex-addmsg", data.message || "Codex account stored", true);
     $("codex-step2").style.display = "none"; $("codex-name").value = ""; $("codex-code").value = "";
-    loadObserved(); loadCodexAccounts(); loadPool();
-  } catch (e) { showMsg("codex-addmsg", "Request failed", false); }
+  } catch (e) { if (epoch === codexFlowEpoch) showMsg("codex-addmsg", "Request failed", false); }
 };
 
 async function removeCodexAccount(name) {
