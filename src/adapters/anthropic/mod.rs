@@ -323,6 +323,13 @@ async fn forward_claude_oauth(
                     // the credential is ever read and proves nothing. Only the
                     // mark is cleared; the cooldown below still runs, because
                     // this change adds a signal and must not alter routing.
+                    //
+                    // A status check suffices *here* because this arm is entered
+                    // only for `FailoverAction::Rotate`, and the sole 429 that
+                    // classifies as `Rotate` is the quota-rejected one — a
+                    // headerless 429 goes to `PauseSame` and never arrives. The
+                    // post-refresh arm groups three actions and therefore needs
+                    // the classification checked explicitly.
                     state.accounts.clear_needs_relogin(&route.provider, account);
                 }
                 let cooldown = if status == StatusCode::TOO_MANY_REQUESTS {
@@ -602,14 +609,26 @@ async fn forward_claude_oauth(
                     // forces a decision here. RefreshRetry cannot recur (a 401 is
                     // special-cased just above), but listing it keeps this
                     // compiler-checked without a panic-on-invariant-break arm.
-                    FailoverAction::Rotate
+                    action @ (FailoverAction::Rotate
                     | FailoverAction::PauseSame
-                    | FailoverAction::RefreshRetry => {
-                        if retry_status == StatusCode::TOO_MANY_REQUESTS {
-                            // Same reasoning as the initial Rotate arm: a quota
-                            // rejection proves the refreshed bearer was accepted,
-                            // so a mark left from before is stale. 5xx also lands
-                            // here and proves nothing, hence the narrow condition.
+                    | FailoverAction::RefreshRetry) => {
+                        if retry_status == StatusCode::TOO_MANY_REQUESTS
+                            && matches!(action, FailoverAction::Rotate)
+                        {
+                            // Same reasoning as the initial Rotate arm: a
+                            // *quota-rejected* 429 proves the refreshed bearer
+                            // was accepted, so a mark left from before is stale.
+                            //
+                            // Both halves of the condition are load-bearing here,
+                            // where the initial arm needs only one. This arm
+                            // groups three actions, so it also takes 5xx (proves
+                            // nothing — the response can come from an edge before
+                            // the credential is read) and a *headerless* 429,
+                            // which `classify` sends to `PauseSame`: a generic
+                            // throttle with no account-scoped quota verdict, so
+                            // it does not establish that the credential was
+                            // identified either. Only the `rejected` quota status
+                            // does, and that is exactly what routes to `Rotate`.
                             state.accounts.clear_needs_relogin(&route.provider, account);
                         }
                         let cooldown = if retry_status == StatusCode::TOO_MANY_REQUESTS {

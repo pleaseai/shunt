@@ -390,6 +390,98 @@ async fn an_authenticated_quota_429_clears_a_stale_relogin_mark() {
     std::env::remove_var("SHUNT_TEST_MULTI_QUOTACLEAR_B");
 }
 
+/// The retry arm's negative twin. It groups `Rotate | PauseSame | RefreshRetry`,
+/// so a *headerless* 429 — which `classify` sends to `PauseSame` — reaches it
+/// too. A generic throttle carries no account-scoped quota verdict, so unlike
+/// the `rejected` variant it does not establish that the credential was
+/// identified, and it must leave the terminal marker standing.
+#[tokio::test]
+async fn a_headerless_429_after_refresh_leaves_the_relogin_mark_standing() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = ["fake-oauth-", "throttlekeep-stale"].concat();
+    let rotated = ["fake-oauth-", "throttlekeep-rotated"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_THROTTLEKEEP_B", "unused");
+
+    let accounts_dir = unique_temp_dir("throttlekeep");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "live-refresh-token",
+        "uuid-a",
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": rotated,
+            "refresh_token": "rotated-refresh-token",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    // No quota-status header: a generic throttle, not an account quota verdict.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(rotated.clone()))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .set_body_string(r#"{"error":"slow down"}"#),
+        )
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_THROTTLEKEEP_B", "uuid-b"),
+    ))
+    .await;
+
+    let live = resolved_store_account("account-a");
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &live,
+        shunt::accounts::ReloginCause::ServedRequest,
+    );
+
+    post_messages(&gateway, None).await;
+
+    assert!(
+        state.accounts.needs_relogin("anthropic", &live),
+        "a headerless 429 is a generic throttle with no account-scoped quota \
+         verdict, so it does not prove the credential was identified and must \
+         not erase the terminal marker"
+    );
+
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_THROTTLEKEEP_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
 /// The negative twin, and the reason the clear is narrowed to 429 rather than
 /// applied to the whole rotate arm: a 5xx can come from an edge before the
 /// credential is ever read, so it proves nothing about the bearer and must

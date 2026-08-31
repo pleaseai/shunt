@@ -484,9 +484,15 @@ A quota `429` clears the mark too, on both the initial and the post-refresh
 attempt. The provider read the credential and then refused on quota, so the
 bearer authenticated and any mark from an earlier 401 is stale; without this an
 exhausted account would tell the operator to re-login until some later non-429
-response. Deliberately narrowed to `429`: the same rotate arm also takes 5xx,
-which can come from an edge before the credential is ever read and proves
-nothing. Only the mark is cleared — the cooldown still runs.
+response. Narrowed to the **quota-rejected** `429` specifically — the one carrying an
+`anthropic-ratelimit-unified-*-status: rejected` header, which is what
+`accounts::classify` routes to `Rotate`. Two other responses reach the same
+code and prove nothing: a 5xx, which can come from an edge before the
+credential is ever read, and a *headerless* `429`, a generic throttle with no
+account-scoped quota verdict behind it. The initial arm can test the status
+alone because it is entered only for `Rotate`; the post-refresh arm groups
+`Rotate | PauseSame | RefreshRetry`, so it checks the classification too. Only
+the mark is cleared — the cooldown still runs.
 
 A successful refresh on the *proxy* path clears nothing on its own. The adapter
 deliberately waits for the retried request: a live grant proves the refresh
