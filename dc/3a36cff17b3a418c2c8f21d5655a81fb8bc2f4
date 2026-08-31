@@ -1,0 +1,29 @@
+docs/m9-admin-surface.md
+  s_bd6b61d56815d2::t_ddf11419def7be 476-482,502
+  s_bd6b61d56815d2::t_e3ae2c0cf4b864 483-491,493
+  s_bd6b61d56815d2::t_417c095ab5cf4e 492,494-501
+src/admin/html.rs
+  s_bd6b61d56815d2::t_7e9c1f53443583 737
+  s_bd6b61d56815d2::t_bc41f0ac2367fd 662-736,738
+  s_bd6b61d56815d2::t_7f78453211198a 661
+src/admin/script.rs
+  s_bd6b61d56815d2::t_fcf416337f9736 425-429,463-471,474,486,524-532,535,547
+  s_bd6b61d56815d2::t_58965712c0f9dd 430-437,441,459,500-503,520
+  s_bd6b61d56815d2::t_d4fd79637f3bb7 438-440,461,522
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "dc3a36cff17b3a418c2c8f21d5655a81fb8bc2f4",
+  "prompts": {},
+  "sessions": {
+    "s_bd6b61d56815d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0985229-0686-45b4-8ef2-ae1a231ebf11",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
