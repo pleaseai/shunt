@@ -97,7 +97,7 @@ a { color: var(--accent-light); }
   #observed td:nth-child(4) { padding-top: .3rem; }
   #observed-table thead { display: none; }
   .usage-lines { min-width: 0; } .account-detail { display: block; }
-  .usage-meta { font-size: .76rem; } .status { white-space: normal; }
+  .usage-meta { font-size: .76rem; } .status { white-space: normal; } .row-actions { white-space: normal; }
 }
 @media (prefers-color-scheme: light) {
   :root { --bg: #fff; --text: #1a1f2e; --text-secondary: #5a6a7e; --border: rgba(208,216,224,.95);
@@ -401,7 +401,12 @@ mod tests {
         let start = page
             .find("function accountStatus(kind, expiresAt)")
             .expect("accountStatus function must exist");
-        let body = &page[start..start + 600];
+        // Bound the window to the function's own closing brace rather than a
+        // fixed byte count: a fixed count can land mid-character (the notes
+        // carry a multi-byte "\u{b7}") and panic, or slide past the function and
+        // scan unrelated helpers for the single-`expired`-arm assertion below.
+        let body = &page[start..];
+        let body = &body[..body.find("\n}").expect("accountStatus must be closed") + 2];
         assert!(
             body.contains(
                 r#"if (kind === "imported") return { state: "available", text: "Auto-refreshes""#
@@ -457,6 +462,11 @@ mod tests {
         assert!(
             page.contains(r#"btn.onclick = () => removeAccount(a.name);"#),
             "the existing Remove action must survive"
+        );
+        assert!(
+            page.contains("  currentName = null;"),
+            "priming the form must drop the previously started flow's account handle, \
+             not just hide the step that used it"
         );
     }
 

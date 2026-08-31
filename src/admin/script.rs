@@ -277,11 +277,16 @@ async function loadAccounts() {
 // preselected from the row's current kind -- re-provisioning under the other
 // mode would silently convert the account between refreshable and
 // inference-only. Any half-finished flow in the form is cleared first so the
-// operator cannot paste a code belonging to a different account.
+// operator cannot paste a code belonging to a different account -- including
+// `currentName`, the handle `#complete` posts to. Hiding `#step2` is what makes
+// that unreachable today, but leaving the handle pointing at the previously
+// started account keeps a completion armed against the wrong name behind that
+// one guard, so it is cleared here rather than relied upon to stay unreachable.
 function reloginAccount(name, kind) {
   $("name").value = name;
   (kind === "setup_token" ? $("mode-setup") : $("mode-oauth")).checked = true;
   updateModeHelp();
+  currentName = null;
   $("step2").style.display = "none"; $("code").value = "";
   $("addmsg").className = ""; $("addmsg").textContent = "";
   $("name").focus({ preventScroll: true });
