@@ -422,6 +422,23 @@ let currentName = null;
 // newer start or a re-login has superseded it. Claude and Codex count
 // separately so re-priming one form never discards the other's live flow.
 let claudeFlowEpoch = 0;
+// How long a completion request may stay in flight before the page stops
+// waiting for it. Generous -- it covers an upstream token exchange plus the
+// store write -- because its only job is to keep a connection that never
+// settles from closing the Complete button for the life of the page.
+const COMPLETE_TIMEOUT_MS = 120000;
+// A completion is the one request in this flow that consumes the pending login,
+// so unlike a start it must not be superseded by a second click of its own
+// button. The first completion is the one that stores the credential; a second
+// finds the pending entry already consumed and fails. Letting that second click
+// bump the epoch would silence the successful response -- the confirmation and
+// the form reset are gated on the epoch -- and surface the failed one instead,
+// reporting an error over an account that was in fact stored and leaving the
+// finished form open. The button is closed for the duration of its own request
+// instead. That keeps two completions for one account out of flight together on
+// this page -- bounded by the request timeout below, which is where the page
+// stops waiting while the server may still be exchanging.
+let claudeCompleting = false;
 $("start").onclick = async () => {
   const name = $("name").value.trim();
   $("addmsg").className = ""; $("addmsg").textContent = "";
@@ -439,11 +456,22 @@ $("start").onclick = async () => {
 };
 
 $("complete").onclick = async () => {
+  if (claudeCompleting) return;
   const code = $("code").value.trim();
+  claudeCompleting = true; $("complete").disabled = true;
   const epoch = ++claudeFlowEpoch;
+  // A completion that never settles would strand the marker above and close the
+  // button for the life of the page. Releasing the marker on a newer start is
+  // not the way out: that would put two completions in flight against different
+  // pending entries, and the server does not order them -- `PendingStore::attempt`
+  // leaves the entry in place and `complete_account` removes it only after the
+  // store, so the older exchange can land last and leave the account holding the
+  // superseded credential. The request itself is bounded instead.
+  const abort = new AbortController();
+  const bound = setTimeout(() => abort.abort(), COMPLETE_TIMEOUT_MS);
   try {
     const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(currentName) + "/complete",
-      { method: "POST", headers: H, body: JSON.stringify({ code }) });
+      { method: "POST", headers: H, body: JSON.stringify({ code }), signal: abort.signal });
     const data = await res.json();
     if (!res.ok) { if (epoch === claudeFlowEpoch) showMsg("addmsg", (data.error && data.error.message) || "Failed to complete", false); return; }
     // The account was stored upstream whether or not this flow has since been
@@ -455,6 +483,7 @@ $("complete").onclick = async () => {
     showMsg("addmsg", data.message || "Account stored", true);
     $("step2").style.display = "none"; $("name").value = ""; $("code").value = "";
   } catch (e) { if (epoch === claudeFlowEpoch) showMsg("addmsg", "Request failed", false); }
+  finally { clearTimeout(bound); claudeCompleting = false; $("complete").disabled = false; }
 };
 
 async function removeAccount(name) {
@@ -468,6 +497,10 @@ async function removeAccount(name) {
 
 let currentCodexName = null;
 let codexFlowEpoch = 0;
+// The Codex counterpart of `claudeCompleting`, for the same reason: the first
+// completion consumes the pending login and stores the account, so a second
+// click must be refused rather than allowed to supersede it.
+let codexCompleting = false;
 $("start-codex").onclick = async () => {
   const name = $("codex-name").value.trim();
   $("codex-addmsg").className = ""; $("codex-addmsg").textContent = "";
@@ -484,11 +517,22 @@ $("start-codex").onclick = async () => {
 };
 
 $("complete-codex").onclick = async () => {
+  if (codexCompleting) return;
   const code = $("codex-code").value.trim();
+  codexCompleting = true; $("complete-codex").disabled = true;
   const epoch = ++codexFlowEpoch;
+  // A completion that never settles would strand the marker above and close the
+  // button for the life of the page. Releasing the marker on a newer start is
+  // not the way out: that would put two completions in flight against different
+  // pending entries, and the server does not order them -- `PendingStore::attempt`
+  // leaves the entry in place and `complete_account` removes it only after the
+  // store, so the older exchange can land last and leave the account holding the
+  // superseded credential. The request itself is bounded instead.
+  const abort = new AbortController();
+  const bound = setTimeout(() => abort.abort(), COMPLETE_TIMEOUT_MS);
   try {
     const res = await fetch("/admin/accounts/codex/" + encodeURIComponent(currentCodexName) + "/complete",
-      { method: "POST", headers: H, body: JSON.stringify({ code }) });
+      { method: "POST", headers: H, body: JSON.stringify({ code }), signal: abort.signal });
     const data = await res.json();
     if (!res.ok) { if (epoch === codexFlowEpoch) showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to complete Codex login", false); return; }
     // The account was stored upstream whether or not this flow has since been
@@ -500,6 +544,7 @@ $("complete-codex").onclick = async () => {
     showMsg("codex-addmsg", data.message || "Codex account stored", true);
     $("codex-step2").style.display = "none"; $("codex-name").value = ""; $("codex-code").value = "";
   } catch (e) { if (epoch === codexFlowEpoch) showMsg("codex-addmsg", "Request failed", false); }
+  finally { clearTimeout(bound); codexCompleting = false; $("complete-codex").disabled = false; }
 };
 
 async function removeCodexAccount(name) {

@@ -659,6 +659,84 @@ mod tests {
     }
 
     #[test]
+    fn a_second_completion_click_cannot_supersede_the_one_that_stores_the_account() {
+        // A completion is the one request in the flow that consumes the pending
+        // login, so the FIRST click is the one that stores the credential and a
+        // second finds the entry already consumed and fails. Letting that second
+        // click bump the flow epoch inverts which response the operator sees:
+        // the successful one is silenced by the epoch guard the confirmation and
+        // the form reset sit behind, while the failed one reports an error over
+        // an account that was in fact stored, leaving the finished form open.
+        // Starts are the opposite -- there the later click is the live one -- so
+        // this is asserted on the completion handlers alone.
+        let page = dashboard_page("csrf");
+        for (flag, button, handler) in [
+            (
+                "claudeCompleting",
+                "complete",
+                r#"$("complete").onclick = async () => {"#,
+            ),
+            (
+                "codexCompleting",
+                "complete-codex",
+                r#"$("complete-codex").onclick = async () => {"#,
+            ),
+        ] {
+            assert_eq!(
+                page.matches(&format!("let {flag} = false;")).count(),
+                1,
+                "{flag} must exist as its own per-form in-flight marker"
+            );
+            let at = page.find(handler).expect("the handler must exist");
+            let body = &page[at..];
+            let body = &body[..body.find("\n};").expect("handler must be closed") + 3];
+            let refused = body
+                .find(&format!("if ({flag}) return;"))
+                .expect("a second completion click must be refused");
+            let raised = body
+                .find(&format!("{flag} = true;"))
+                .expect("the completion must mark itself in flight");
+            let bumped = body
+                .find("const epoch = ++")
+                .expect("the completion must capture its epoch");
+            assert!(
+                refused < raised && raised < bumped,
+                "{handler} must refuse the second click before it can bump the epoch"
+            );
+            assert!(
+                body.contains(&format!(
+                    "finally {{ clearTimeout(bound); {flag} = false; $(\"{button}\").disabled = false; }}"
+                )),
+                "{handler} must release the marker on every exit, not only on success"
+            );
+            // The marker must not be released by a newer start or a re-login
+            // either, tempting as that is for a page whose Complete button is
+            // closed: that would put two completions in flight against different
+            // pending entries, and the server does not order them --
+            // `PendingStore::attempt` leaves the entry in place and
+            // `complete_account` removes it only after the store, so the older
+            // exchange can land last and leave the account holding the superseded
+            // credential. The request carries its own bound instead, so a
+            // connection that never settles cannot close the button for good.
+            assert_eq!(
+                page.matches(&format!("{flag} = false")).count(),
+                2,
+                "{flag} must be released in exactly one place -- its declaration and the handler's finally"
+            );
+            assert!(
+                body.contains("const abort = new AbortController();")
+                    && body.contains("setTimeout(() => abort.abort(), COMPLETE_TIMEOUT_MS);")
+                    && body.contains("signal: abort.signal"),
+                "{handler} must bound its own request so the marker cannot strand"
+            );
+            assert!(
+                body.contains(&format!("$(\"{button}\").disabled = true;")),
+                "{handler} must also close the button so the refusal is visible"
+            );
+        }
+    }
+
+    #[test]
     fn account_mutations_refresh_the_grouped_observed_table_too() {
         // The advanced account/pool tables (loadAccounts/loadCodexAccounts/
         // loadPool) are populated separately from the top-level grouped

@@ -473,6 +473,33 @@ bumped by a re-login and by every new start or completion) and discards its own
 response once superseded. Claude and Codex count separately, so re-priming one
 form never discards the other's live flow.
 
+The epoch orders *starts*, where the later click is the live one, and must not
+be extended to order two completions of the same flow: a completion consumes the
+pending login, so there the **first** click is the one that stores the
+credential and a second finds the entry already consumed and fails. Superseding
+by epoch would silence the successful response and surface the failed one,
+reporting an error over an account that was in fact stored. Each completion
+handler therefore refuses re-entry while its own request is in flight
+(`claudeCompleting` / `codexCompleting`), disabling the button for the duration.
+
+That marker is deliberately not released by a newer start, tempting as that is
+for a page whose Complete button is closed. `PendingStore::attempt` does not
+consume the entry and `complete_account` removes it only after the store, so a
+start issued during an in-flight exchange replaces the entry and lets a second
+completion pass its own state check — both exchanges then reach the store in an
+order nothing constrains, and the older one landing last leaves the account
+holding the superseded credential. Serializing the page's completions is what
+keeps that sequence out of reach.
+
+Nothing else may release the marker, so the completion request carries its own
+120-second `AbortController` bound, cleared in a `finally`: a connection that
+never settles must not close the button for the life of the page. That bound is
+also the limit of the guarantee above. Once it fires the page stops waiting
+while the server may still be exchanging, so a retry can overlap the abandoned
+attempt — as can any second client, another tab or a direct API call, which the
+server does not order either. Both remainders are tracked in
+[issue #440](https://github.com/pleaseai/shunt/issues/440).
+
 Both are deliberately confined to the managed store tables: the observed rows in
 the top-level **Accounts and usage** table are unchanged, since those credentials
 are owned and refreshed by the provider client itself and shunt never invokes a
