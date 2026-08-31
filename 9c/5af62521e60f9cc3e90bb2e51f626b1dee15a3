@@ -1,0 +1,22 @@
+src/accounts.rs
+  s_87f64bfaa7d780::t_b1836368d67c1d 1121-1129,1296,1298-1309
+  s_87f64bfaa7d780::t_89b4ec4e9a0c11 2745-2795
+docs/m9-admin-surface.md
+  s_87f64bfaa7d780::t_1c1812c11eb313 500-509
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9c5af62521e60f9cc3e90bb2e51f626b1dee15a3",
+  "prompts": {},
+  "sessions": {
+    "s_87f64bfaa7d780": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eff4611e-6f3e-4a6b-9cd3-0ea4a81203c7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
