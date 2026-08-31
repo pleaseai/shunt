@@ -424,9 +424,11 @@ see.
 
 It is set from exactly three places, all terminal by construction:
 
-- a 401 on a credential that carries no refresh grant at all (`token_env`, or a
-  long-lived setup token — `adapters/anthropic/mod.rs`, the `RefreshRetry`
-  branch),
+- a 401 on a credential that carries no refresh grant at all — a `token_env`
+  token, or a setup token **still inside its local `expiresAt`** that the
+  provider has revoked early (`adapters/anthropic/mod.rs`, the `RefreshRetry`
+  branch). Resolution succeeds because the stored token still looks valid, so
+  the verdict can only come from the upstream 401,
 - a 401 on the *retry* after a refresh that itself succeeded. A live grant
   yielding a bearer the API still rejects means the account is de-authorized
   upstream, not momentarily unlucky; the adapter already cools it for five
@@ -439,12 +441,19 @@ It is set from exactly three places, all terminal by construction:
   store (`auth/kimi/auth.rs`):
   - `InvalidGrant` — the provider returned the OAuth `invalid_grant` code.
   - `NoRefreshToken` — the credential file carries no refresh token, so there
-    is no grant left to send. An expired setup token reaches its dead state
-    through *this* path, not through a 401: resolution fails before any
-    upstream request, so the `RefreshRetry` branch above is never entered.
+    is no grant left to send. A setup token **past its local `expiresAt`**
+    reaches its dead state through *this* path rather than the 401 above:
+    resolution fails before any upstream request is sent, so the `RefreshRetry`
+    branch is never entered. The two setup-token bullets are the same
+    credential at different times — revoked-before-expiry surfaces via the 401,
+    expired surfaces at resolution — and an expired token takes this path
+    whether or not it was also revoked, because nothing reaches the provider.
   - `WritebackFailed` — the provider rotated the token but the new pair could
     not be persisted. The grant already consumed the refresh token on disk, so
-    every later attempt replays a spent one.
+    every later attempt replays a spent one. Attached only when the response
+    actually carried a *different* refresh token: a provider that omits the
+    field leaves the stored one live, and that writeback failure stays
+    non-terminal.
 
   A transient failure (5xx, network, timeout, an unparseable body) is
   deliberately **not** terminal: marking one would report a healthy account as

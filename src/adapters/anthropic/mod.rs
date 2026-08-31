@@ -549,6 +549,16 @@ async fn forward_claude_oauth(
                                 true,
                                 is_fable,
                             );
+                        } else {
+                            // A relayed non-401 4xx is the client's error, not the
+                            // account's: auth failures come back 401, so reaching a
+                            // validation error proves the refreshed bearer was
+                            // accepted. A mark left from an earlier failure is now
+                            // stale. Only the mark is cleared — unlike the initial
+                            // Relay arm this deliberately leaves the cooldown in
+                            // place, because this change adds a signal and must not
+                            // alter routing.
+                            state.accounts.clear_needs_relogin(&route.provider, account);
                         }
                         return relay_response(&state, &route, retry, Some(&account.name))
                             .await

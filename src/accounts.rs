@@ -1083,6 +1083,19 @@ impl AccountPool {
         health.needs_relogin = true;
     }
 
+    /// Clear the needs-re-login mark alone, leaving every other health field —
+    /// the cooldown included — untouched. Used where a response proves the
+    /// credential authenticated without proving the account is healthy: a
+    /// relayed non-401 4xx after a refresh. [`Self::mark_healthy_scoped`] is
+    /// the wrong tool there because it also clears the cooldown, and this
+    /// change is meant to add a signal, not to alter routing.
+    pub fn clear_needs_relogin(&self, provider: &str, account: &AccountConfig) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        if let Some(health) = entries.get_mut(&account_key(provider, account)) {
+            health.needs_relogin = false;
+        }
+    }
+
     /// Set or clear the needs-re-login mark on every pool entry backed by one
     /// store account, whatever provider table it is reachable through. Used by
     /// the admin re-login and refresh-probe paths, which know an account by its

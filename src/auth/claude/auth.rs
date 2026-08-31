@@ -176,18 +176,29 @@ impl ClaudeAuthStore {
             let _refreshing = refreshing;
             let refreshed = refresh(&client, &token_url, &refresh_token).await?;
             let access_token = refreshed.access_token.clone();
+            // Only a *rotated* refresh token makes a lost writeback terminal. When
+            // the provider omits `refresh_token`, `parse_refresh` reuses the one on
+            // disk, which is therefore still live: the next attempt can simply
+            // refresh again, and condemning the account would send an operator to
+            // re-login for nothing.
+            let rotated = refreshed.refresh_token != refresh_token;
             if let Err(error) = write_back_off_thread(path, refreshed).await {
-                // The upstream refresh already consumed the old refresh token, so a
-                // failed writeback leaves the file holding a now-invalid token. Log
-                // here (not only via the returned Err) so the failure stays visible
-                // even when the caller's future was dropped and the JoinHandle —
-                // carrying this Err — is discarded with it.
+                // Log here (not only via the returned Err) so the failure stays
+                // visible even when the caller's future was dropped and the
+                // JoinHandle — carrying this Err — is discarded with it.
+                if rotated {
+                    tracing::warn!(
+                        %error,
+                        "Claude OAuth token refreshed upstream but writeback failed; stored refresh token is now stale until re-login"
+                    );
+                    return Err(anyhow::Error::new(TerminalRefresh::WritebackFailed)
+                        .context(format!("failed to update Claude auth file: {error}")));
+                }
                 tracing::warn!(
                     %error,
-                    "Claude OAuth token refreshed upstream but writeback failed; stored refresh token is now stale until re-login"
+                    "Claude OAuth token refreshed upstream but writeback failed; the provider did not rotate the refresh token, so the stored one is still usable"
                 );
-                return Err(anyhow::Error::new(TerminalRefresh::WritebackFailed)
-                    .context(format!("failed to update Claude auth file: {error}")));
+                return Err(anyhow::anyhow!("failed to update Claude auth file: {error}"));
             }
             Ok::<String, anyhow::Error>(access_token)
         })
@@ -290,9 +301,10 @@ pub(crate) enum TerminalRefresh {
     NoRefreshToken,
     /// The provider rotated the token but the new pair could not be persisted.
     /// The grant already consumed the refresh token on disk, so every later
-    /// attempt reuses a spent one — see the writeback failure in
-    /// [`ClaudeAuthStore::refresh_and_write_back`], whose own log says the
-    /// stored token "is now stale until re-login".
+    /// attempt replays a spent one. Only attached when the response actually
+    /// carried a *different* refresh token: a provider that omits the field
+    /// leaves the stored one live, so losing that writeback costs an access
+    /// token, not the account.
     WritebackFailed,
 }
 

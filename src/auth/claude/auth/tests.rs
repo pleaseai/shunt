@@ -539,3 +539,50 @@ async fn refresh_whose_writeback_fails_is_terminal() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The mirror of `refresh_whose_writeback_fails_is_terminal`, and the one that
+/// actually constrains the classifier: when the provider **omits**
+/// `refresh_token`, `parse_refresh` reuses the one already on disk, so that
+/// token is still live and a lost writeback costs only an access token. Marking
+/// it terminal would send an operator to re-login for nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn refresh_writeback_failure_without_rotation_is_not_terminal() {
+    use std::os::unix::fs::PermissionsExt;
+    use wiremock::matchers::{method, path as wm_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    // No `refresh_token` in the response — the stored one is reused.
+    Mock::given(method("POST"))
+        .and(wm_path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "new-access",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let path = temp_credentials_path("writeback-no-rotation");
+    write_credentials(&path, "expired-access", "live-refresh", 0);
+    let dir = path.parent().unwrap().to_path_buf();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    );
+    let error = store.force_refresh().await.unwrap_err();
+
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert!(
+        !is_terminal_refresh_failure(&error),
+        "the provider did not rotate the refresh token, so the stored one is \
+         still usable and the failure must stay recoverable, got: {error:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
