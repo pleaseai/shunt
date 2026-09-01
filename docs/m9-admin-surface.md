@@ -606,14 +606,31 @@ set purge alone (the entry, refresh-lock and membership matcher stays keyed by
 identity): the admin call sites resolve `identity = account_uuid(name).unwrap_or(name)`,
 so a delete whose uuid read succeeds arrives with a uuid that equals neither
 field of a verdict recorded when that read had failed, and the ref would survive
-the delete to condemn a later re-add of the same name. The served-response purge
-reproduces the fan-out in both directions. Its narrowing: an account carrying
-its own `credentials` path or `token_env` is a different credential that merely
-shares a name, so serving on it clears nothing — and for the same reason neither
-snapshot branch condemns such a row either, since nothing it could do would ever
-clear the mark. Its width: a `Verified`-keyed
-account reaches its name-keyed siblings through the *name*, so the purge strips
-on `(family, name-or-uuid)` rather than on the key's own identity. Matching only
+the delete to condemn a later re-add of the same name.
+
+That purge is also gated differently from the rest of the deletion cleanup.
+`forget_pool_health_if_absent` reaches `forget_identity` only once nothing in the
+store family still references the identity *and* the store scan actually
+answered, because the identity-keyed state is legitimately shared: two store
+names can resolve to one Anthropic account, and the surviving alias's health must
+outlive the delete. The deleted *name*'s verdict must not, whatever the scan
+said — the caller has already removed or re-provisioned that name. So the
+name-keyed half runs first and unconditionally, through
+`forget_store_relogin_name(family, name)`, which takes the set alone and strips
+on `(family, name)`: wider than accept, and safe for the same reasons the other
+strips are, since the name is unique within its family, a sibling alias's verdict
+is a separate ref keyed by that alias's own name, and the next terminal probe
+re-marks. `forget_identity`'s own `store_name` arm stays in place — redundant on
+that path now, but it is public API that has to remain correct on its own.
+
+The served-response purge reproduces the fan-out in both directions. Its
+narrowing: an account carrying its own `credentials` path or `token_env` is a
+different credential that merely shares a name, so serving on it clears nothing
+— and for the same reason neither snapshot branch condemns such a row either,
+since nothing it could do would ever clear the mark. Its width: a
+`Verified`-keyed account reaches its name-keyed siblings through the *name*, so
+the purge strips on `(family, name-or-uuid)` rather than on the key's own
+identity. Matching only
 the key would strand a verdict recorded with no uuid — the credential file
 carried no `shuntAccountUuid` when the probe ran, or the admin path's uuid read
 failed into `None` — once the account is only ever reached through a uuid-keyed
@@ -659,8 +676,8 @@ stays at least as wide as the display.
 Two ordering rules make this safe. **The entries lock is always acquired first
 and `store_relogin` second, never the reverse** — most sites that touch the set
 already hold the entries lock, so nesting is the usual pattern; `forget_identity`
-takes the set alone, after releasing `entries`. And
-`any_needs_relogin` is raised **unconditionally** by the setter rather than from
+takes the set alone, after releasing `entries`, and `forget_store_relogin_name`
+takes nothing else at all. And `any_needs_relogin` is raised **unconditionally** by the setter rather than from
 inside the entry loop (a never-selected account matches no entry), while
 `mark_healthy_scoped` folds `!store_relogin.is_empty()` into its recomputed value
 *after* purging. Without that fold the flag would drop to `false` while a

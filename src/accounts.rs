@@ -77,7 +77,7 @@ impl StoreAccountRef {
             && match &key.identity {
                 AccountStateIdentity::Verified { id } => self.uuid.as_deref() == Some(id.as_str()),
                 AccountStateIdentity::StoreEntry { name }
-                | AccountStateIdentity::UpstreamInline { name, .. } => *name == self.name,
+                | AccountStateIdentity::UpstreamInline { name, .. } => name == &self.name,
             }
     }
 }
@@ -1673,6 +1673,31 @@ impl AccountPool {
         if removed_quota {
             self.mark_dirty();
         }
+    }
+
+    /// Drop a store-name verdict for `name` in `store_family`, leaving every
+    /// other pool state untouched.
+    ///
+    /// Split out of [`Self::forget_identity`] because that method purges two
+    /// kinds of state under one predicate: `entries`/`refresh_locks`/
+    /// `memberships` are keyed by *identity*, while [`Self::store_relogin`] is
+    /// keyed by the store *name*. `forget_pool_health_if_absent` must preserve
+    /// the identity-keyed half whenever another alias still resolves to the
+    /// same identity — but the deleted name's verdict has to go regardless,
+    /// because the caller has already removed (or re-provisioned) that name and
+    /// a ref left behind would condemn whatever is added under it next through
+    /// the name fallback in [`store_relogin_ref_condemns`].
+    ///
+    /// Matched on `(family, name)` alone, which is deliberately wider than the
+    /// accept side: a store name is unique within its family, so it cannot
+    /// reach another account's verdict, and a sibling alias's own verdict is a
+    /// separate ref keyed by that alias's own name. Over-stripping is fail-safe
+    /// — the next terminal refresh probe re-marks.
+    pub fn forget_store_relogin_name(&self, store_family: StoreFamily, name: &str) {
+        self.store_relogin
+            .lock()
+            .expect("store relogin lock poisoned")
+            .retain(|marked| !(marked.store_family == store_family && marked.name == name));
     }
 
     /// Read-only per-account health snapshot for the admin dashboard, in the
