@@ -580,24 +580,38 @@ So the verdict is also recorded in a second, key-free place: `store_relogin`, a
 set of `StoreAccountRef` — `(store_family, name, uuid)` — on the pool. It is a
 set rather than a
 map of causes because only the admin probe writes there and its verdict is
-always `RefreshGrant` — membership *is* the cause. `snapshot` consults it in the
-unseen branch alone; a row with an observed entry keeps using that entry's mark,
-which stays authoritative once the pool has seen the credential. `has_state`
-stays `false` on the unseen row, which is still true and which both dashboard
-tables read *after* `needs_relogin`, so the row renders **needs re-login**
-rather than **unseen**.
+always `RefreshGrant` — membership *is* the cause. `snapshot` consults it in
+**both** branches: the unseen row reports it alone, and an observed row reports
+its entry's mark **or** the set's. The entry is not authoritative, because the
+setter cannot always reach it — it matches entries with `StoreAccountRef::matches`,
+which is uuid-only on a `Verified` key, so a verdict recorded with no uuid never
+stamps a row whose config carries a `uuid` (`AccountConfig::uuid` is a config key,
+and the probe's own uuid read returns `None` both when the credential file has no
+`shuntAccountUuid` and when the read failed). Reporting only the entry there made
+`/admin/pool` answer `needs_relogin: false` while `store_account_needs_relogin`
+called the same account dead. ORing is safe because every clear purges the set
+too, so one served response on any row backed by that store account lifts the
+display. `has_state` stays `false` on the unseen row, which is still true and
+which both dashboard tables read *after* `needs_relogin`, so the row renders
+**needs re-login** rather than **unseen**.
 
 Every path that clears the mark purges the set as well — a re-login
 (`set_needs_relogin_for_store_account(.., false)`), a successful probe
 (`clear_grant_relogin_for_store_account`), the narrow clear
 (`clear_needs_relogin`), a served response (`mark_healthy_scoped`), and account
 deletion (`forget_identity`, reached from
-`DELETE /admin/accounts/claude/{name}` through `forget_pool_health_if_absent`). The
-served-response purge reproduces the fan-out in both directions. Its narrowing:
-an account carrying its own `credentials` path or `token_env` is a different
-credential that merely shares a name, so serving on it clears nothing — and for
-the same reason the unseen branch does not condemn such a row either, since
-nothing it could do would ever clear the mark. Its width: a `Verified`-keyed
+`DELETE /admin/accounts/claude/{name}` through `forget_pool_health_if_absent`).
+`forget_identity` takes the store *name* alongside the resolved identity for the
+set purge alone (the entry, refresh-lock and membership matcher stays keyed by
+identity): the admin call sites resolve `identity = account_uuid(name).unwrap_or(name)`,
+so a delete whose uuid read succeeds arrives with a uuid that equals neither
+field of a verdict recorded when that read had failed, and the ref would survive
+the delete to condemn a later re-add of the same name. The served-response purge
+reproduces the fan-out in both directions. Its narrowing: an account carrying
+its own `credentials` path or `token_env` is a different credential that merely
+shares a name, so serving on it clears nothing — and for the same reason neither
+snapshot branch condemns such a row either, since nothing it could do would ever
+clear the mark. Its width: a `Verified`-keyed
 account reaches its name-keyed siblings through the *name*, so the purge strips
 on `(family, name-or-uuid)` rather than on the key's own identity. Matching only
 the key would strand a verdict recorded with no uuid — the credential file

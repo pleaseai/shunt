@@ -331,6 +331,7 @@ pub(super) fn forget_pool_health_if_absent(
     state: &AppState,
     auth: AuthMode,
     identity: &str,
+    store_name: Option<&str>,
     store_scan_others: Option<&HashSet<String>>,
 ) {
     let mut uncertain = false;
@@ -365,7 +366,7 @@ pub(super) fn forget_pool_health_if_absent(
         AuthMode::ChatgptOauth => crate::accounts::StoreFamily::Chatgpt,
         _ => return,
     };
-    state.accounts.forget_identity(family, identity);
+    state.accounts.forget_identity(family, identity, store_name);
 }
 
 pub(super) async fn remaining_account_identities(
@@ -391,12 +392,13 @@ pub(super) fn cleanup_reprovisioned_pool_health(
     auth: AuthMode,
     old_identity: Option<&str>,
     new_identity: &str,
+    store_name: Option<&str>,
     other_identities: Option<&HashSet<String>>,
 ) {
     if let Some(old_identity) = old_identity.filter(|old| *old != new_identity) {
-        forget_pool_health_if_absent(state, auth, old_identity, other_identities);
+        forget_pool_health_if_absent(state, auth, old_identity, store_name, other_identities);
     }
-    forget_pool_health_if_absent(state, auth, new_identity, other_identities);
+    forget_pool_health_if_absent(state, auth, new_identity, store_name, other_identities);
 }
 
 /// Same-origin check: prefer Fetch Metadata (`Sec-Fetch-Site`), fall back to
@@ -1346,6 +1348,7 @@ async fn complete_account(
         AuthMode::ClaudeOauth,
         old_identity.as_deref(),
         &new_identity,
+        Some(name.as_str()),
         other_identities.as_ref(),
     );
     // A fresh login provably produced a live credential, so the needs-re-login
@@ -1622,6 +1625,7 @@ async fn remove_account_handler(
         &state,
         AuthMode::ClaudeOauth,
         &identity,
+        Some(name.as_str()),
         store_scan_others.as_ref(),
     );
     json_secure(json!({ "name": name, "removed": removed }))
@@ -1893,7 +1897,7 @@ mod tests {
             .accounts
             .cooldown("anthropic", &account, Duration::from_secs(60), "transport");
 
-        forget_pool_health_if_absent(&state, AuthMode::ClaudeOauth, "alice", None);
+        forget_pool_health_if_absent(&state, AuthMode::ClaudeOauth, "alice", Some("alice"), None);
 
         let snapshot = state.accounts.snapshot("anthropic", &[account], None, None);
         assert!(
@@ -1921,6 +1925,7 @@ mod tests {
             &state,
             AuthMode::ClaudeOauth,
             "stored-uuid",
+            Some("stored"),
             Some(&stored_identities),
         );
 
@@ -1980,7 +1985,13 @@ mod tests {
             .accounts
             .cooldown("anthropic", &live, Duration::from_secs(60), "transport");
 
-        forget_pool_health_if_absent(&state, AuthMode::ClaudeOauth, "orphan-uuid", None);
+        forget_pool_health_if_absent(
+            &state,
+            AuthMode::ClaudeOauth,
+            "orphan-uuid",
+            Some("orphan"),
+            None,
+        );
 
         let orphan_snapshot = state.accounts.snapshot("anthropic", &[orphan], None, None);
         assert!(
