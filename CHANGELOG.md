@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.2](https://github.com/pleaseai/shunt/compare/v0.39.1...v0.39.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* **admin:** keep a needs-relogin verdict for a never-selected account ([#444](https://github.com/pleaseai/shunt/issues/444)) ([7fd812c](https://github.com/pleaseai/shunt/commit/7fd812cfb471f0ca2d438a34f234e449d5410127))
+
 ## [0.39.1](https://github.com/pleaseai/shunt/compare/v0.39.0...v0.39.1) (2026-08-31)
 
 
