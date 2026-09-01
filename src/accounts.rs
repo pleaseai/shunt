@@ -60,11 +60,18 @@ impl StoreAccountRef {
     /// uuid while the two name-keyed variants are matched on the name — all
     /// [`AccountKey`] carries there.
     ///
-    /// This is the single copy of the predicate every store-account-scoped path
-    /// uses ([`AccountPool::set_needs_relogin_for_store_account`],
-    /// [`AccountPool::store_account_needs_relogin`],
-    /// [`AccountPool::clear_grant_relogin_for_store_account`], and the snapshot's
-    /// side-table lookup), so a set and its mirroring clear can never drift.
+    /// This is the single copy of the predicate every path that matches a *pool
+    /// entry* uses ([`AccountPool::set_needs_relogin_for_store_account`],
+    /// [`AccountPool::store_account_needs_relogin`], and
+    /// [`AccountPool::clear_grant_relogin_for_store_account`]), so a set and its
+    /// mirroring clear can never drift.
+    ///
+    /// Not used where an [`AccountConfig`] is in hand — the snapshot's
+    /// side-table lookup and [`purge_store_relogin`] go through
+    /// [`store_relogin_ref_matches`] instead. An [`AccountKey`] keeps no name on
+    /// its `Verified` variant, so matching through the key alone is uuid-only
+    /// there; the account carries both, and using it keeps those two paths as
+    /// wide as the set that recorded the verdict.
     fn matches(&self, key: &AccountKey) -> bool {
         self.store_family == key.store_family
             && match &key.identity {
@@ -1690,8 +1697,24 @@ impl AccountPool {
                         // already read *after* `needs_relogin`, so the row renders
                         // "needs re-login" rather than "unseen".
                         //
-                        // Narrowed exactly as the purge is: an account carrying
-                        // its own `credentials` path or `token_env` is a
+                        // Matched exactly as the purge matches, through the
+                        // *account* rather than through `key`. A `Verified` key
+                        // carries a uuid and no name, so `StoreAccountRef::matches`
+                        // can only reach it by uuid — and the probe records
+                        // whatever `claude_store::account_uuid` returned, which is
+                        // `None` both when the credential file carries no
+                        // `shuntAccountUuid` and when that read failed
+                        // (`unwrap_or(None)`, `admin::refresh_claude_account`).
+                        // An operator may also set `uuid` on the provider entry
+                        // directly (`AccountConfig::uuid` is a config key), so the
+                        // two need not agree even without a race. Keying off the
+                        // account gives the name back, which is what makes the
+                        // accept side as wide as the set that recorded the verdict
+                        // — otherwise a recorded verdict is silently never shown,
+                        // which is issue #439 all over again.
+                        //
+                        // Narrowed exactly as the purge is, too: an account
+                        // carrying its own `credentials` path or `token_env` is a
                         // different credential that merely shares the store
                         // account's name, and serving on it never purges the
                         // verdict (`purge_store_relogin`), so accepting it here
@@ -1699,11 +1722,22 @@ impl AccountPool {
                         // able to clear it.
                         let store_backed =
                             account.credentials.is_none() && account.token_env.is_none();
+                        let account_uuid = account
+                            .uuid
+                            .as_deref()
+                            .filter(|uuid| !uuid.trim().is_empty());
                         return AccountSnapshot::unseen(
                             account,
                             store_marked
                                 && store_backed
-                                && store_relogin.iter().any(|marked| marked.matches(&key)),
+                                && store_relogin.iter().any(|marked| {
+                                    store_relogin_ref_condemns(
+                                        marked,
+                                        key.store_family,
+                                        &account.name,
+                                        account_uuid,
+                                    )
+                                }),
                         );
                     };
                     quota_expired |= expire_stale_quota(&mut health.quota, unix_now);
@@ -2081,8 +2115,42 @@ fn purge_store_relogin_ref(
     });
 }
 
+/// Whether a recorded verdict condemns this account — the **accept** side, used
+/// by the snapshot's side-table lookup.
+///
+/// Deliberately narrower than [`store_relogin_ref_matches`], because the two
+/// sides fail in opposite directions. Over-stripping only drops a verdict the
+/// account's next terminal failure re-establishes, so the clear is wide. Over-
+/// accepting renders "needs re-login" against a credential the verdict is not
+/// about, which nothing on that row can lift — so the accept side takes the uuid
+/// as the stronger identity whenever *both* sides carry one, and falls back to
+/// the store name only when at most one does:
+///
+/// - Both carry a uuid and they agree → the same credential.
+/// - Both carry a uuid and they disagree → different credentials that merely
+///   share a store name; the verdict does not travel.
+/// - At most one carries a uuid → the name is all there is to go on, and within
+///   a family it is unique (it *is* the credential file's name). This is the
+///   reachable case: the probe records whatever `claude_store::account_uuid`
+///   returned — `None` when the file carries no `shuntAccountUuid` and `None`
+///   again when that read failed — while `AccountConfig::uuid` is a config key
+///   an operator can set on the provider entry directly.
+///
+/// Every pair this accepts, [`store_relogin_ref_matches`] also strips, so the
+/// clear stays at least as wide as the display.
+fn store_relogin_ref_condemns(
+    marked: &StoreAccountRef,
+    store_family: StoreFamily,
+    account_name: &str,
+    account_uuid: Option<&str>,
+) -> bool {
+    marked.store_family == store_family
+        && ((marked.uuid.is_some() && marked.uuid.as_deref() == account_uuid)
+            || ((marked.uuid.is_none() || account_uuid.is_none()) && marked.name == account_name))
+}
+
 /// The single copy of the `(family, name-or-uuid)` predicate the store-account
-/// paths speak — shared by [`purge_store_relogin_ref`] and
+/// clears speak — shared by [`purge_store_relogin_ref`] and
 /// [`AccountPool::store_account_needs_relogin`]'s side-table read so the strip
 /// and the read can never be narrower than the set that recorded the verdict.
 fn store_relogin_ref_matches(
@@ -3212,6 +3280,44 @@ mod tests {
                 "a {label} left the verdict standing for the probe's read-back"
             );
         }
+    }
+
+    /// The accept side has to be as wide as the set, too. The probe records
+    /// whatever `claude_store::account_uuid` returned — `None` when the
+    /// credential file carries no `shuntAccountUuid`, and `None` again when that
+    /// read failed (`unwrap_or(None)`). Meanwhile `AccountConfig::uuid` is a
+    /// config key an operator can set on the provider entry directly, which keys
+    /// the row as `Verified`. Matching the recorded ref against that key alone is
+    /// uuid-only, so the verdict would never reach the dashboard and the row
+    /// would render `unseen` — issue #439 again, one layer in.
+    #[test]
+    fn a_uuidless_verdict_reaches_a_uuid_keyed_row_for_the_same_store_name() {
+        let pool = AccountPool::new();
+        pool.set_needs_relogin_for_store_account(StoreFamily::Claude, "a", None, true);
+
+        let uuid_keyed = [account_with_uuid("a", "acct-a")];
+        assert!(
+            pool.snapshot("anthropic", &uuid_keyed, None, None)[0].needs_relogin,
+            "a verdict recorded without a uuid never reached the uuid-keyed row for \
+             the same store account, so the dashboard still reports it unseen"
+        );
+
+        // The narrowing still holds in the other direction: a *different* store
+        // account that happens to be uuid-keyed is not condemned by it.
+        let bystander = [account_with_uuid("b", "acct-b")];
+        assert!(
+            !pool.snapshot("anthropic", &bystander, None, None)[0].needs_relogin,
+            "an unrelated store account inherited the verdict"
+        );
+
+        // Nor does a uuid-less bystander. Both sides carry `None` here, so an
+        // accept rule that compared the uuids alone would read `None == None` as
+        // agreement and condemn every uuid-less account in the family.
+        let uuidless_bystander = [account("b")];
+        assert!(
+            !pool.snapshot("anthropic", &uuidless_bystander, None, None)[0].needs_relogin,
+            "a uuid-less bystander was condemned — `None == None` is not identity"
+        );
     }
 
     /// A clear has to strip at least as much as a set accepts. The set matches a

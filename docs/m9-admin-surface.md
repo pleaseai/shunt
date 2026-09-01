@@ -619,6 +619,29 @@ credential file's name — so widening to it cannot reach another account's
 verdict. The uuid arm is guarded on the ref actually having one, or a clear
 carrying no uuid would match every uuid-less ref in the family whatever its name.
 
+The **accept** side also matches through the account rather than through the
+`AccountKey` — `snapshot` holds an `AccountConfig`, and a `Verified` key carries
+a uuid and no name, so keying off it would be uuid-only. That matters because the
+probe records whatever `claude_store::account_uuid` returned, which is `None`
+both when the credential file carries no `shuntAccountUuid` and when that read
+failed (`unwrap_or(None)`), while `AccountConfig::uuid` is a config key an
+operator can set on the provider entry directly — so the two need not agree even
+without a race, and matching through the key alone would silently never show a
+verdict the probe did record. `matches` stays the predicate for the three paths
+that match a pool *entry*, where the key really is all there is.
+
+But accept is **narrower** than the strip, not identical to it, because the two
+fail in opposite directions. Over-stripping only drops a verdict the account's
+next terminal failure re-establishes; over-accepting renders "needs re-login"
+against a credential the verdict is not about, and nothing on that row can lift
+it. So `store_relogin_ref_condemns` takes the uuid as the stronger identity
+whenever *both* sides carry one — same uuid, same credential; different uuids,
+different credentials that merely share a store name — and falls back to the
+name only when at most one side has a uuid. The `is_some` guard on that uuid arm
+is what stops `None == None` from reading as agreement between two unrelated
+uuid-less accounts. Every pair accept admits, the strip also strips, so the clear
+stays at least as wide as the display.
+
 Two ordering rules make this safe. **The entries lock is always acquired first
 and `store_relogin` second, never the reverse** — most sites that touch the set
 already hold the entries lock, so nesting is the usual pattern; `forget_identity`
