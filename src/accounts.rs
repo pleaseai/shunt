@@ -54,6 +54,26 @@ pub(crate) struct StoreAccountRef {
 }
 
 impl StoreAccountRef {
+    /// Build a ref with the store's blank-uuid normalization applied: a
+    /// whitespace-only uuid means the same as a missing one, matching
+    /// `read_account_uuid`, [`account_identity`] and the `snapshot` reader.
+    ///
+    /// Normalized here rather than at each call site so a later caller cannot
+    /// skip it. Today every caller sources its uuid from the store, which
+    /// already filters, but a ref carrying `Some("")` would cross-match a
+    /// *different* blank-uuid account through the uuid arm of
+    /// [`store_relogin_ref_matches`] — the set is the only place such a ref
+    /// would persist to be compared against later.
+    fn new(store_family: StoreFamily, name: &str, uuid: Option<&str>) -> Self {
+        Self {
+            store_family,
+            name: name.to_string(),
+            uuid: uuid
+                .filter(|uuid| !uuid.trim().is_empty())
+                .map(str::to_string),
+        }
+    }
+
     /// Whether one pool entry is backed by this store account. The three
     /// [`AccountStateIdentity`] variants are keyed differently and a store
     /// account can land in any of them, so a `Verified` entry is matched on the
@@ -1299,11 +1319,7 @@ impl AccountPool {
         account_uuid: Option<&str>,
         needs_relogin: bool,
     ) {
-        let marked = StoreAccountRef {
-            store_family,
-            name: account_name.to_string(),
-            uuid: account_uuid.map(str::to_string),
-        };
+        let marked = StoreAccountRef::new(store_family, account_name, account_uuid);
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         // Raised unconditionally, not from inside the entry loop: a never-selected
         // account matches no entry, and the flag gates the only path that clears
@@ -1365,11 +1381,7 @@ impl AccountPool {
         account_name: &str,
         account_uuid: Option<&str>,
     ) -> bool {
-        let marked = StoreAccountRef {
-            store_family,
-            name: account_name.to_string(),
-            uuid: account_uuid.map(str::to_string),
-        };
+        let marked = StoreAccountRef::new(store_family, account_name, account_uuid);
         let entries = self.entries.lock().expect("account health lock poisoned");
         entries
             .iter()
@@ -1407,11 +1419,7 @@ impl AccountPool {
         account_name: &str,
         account_uuid: Option<&str>,
     ) {
-        let marked = StoreAccountRef {
-            store_family,
-            name: account_name.to_string(),
-            uuid: account_uuid.map(str::to_string),
-        };
+        let marked = StoreAccountRef::new(store_family, account_name, account_uuid);
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         for (key, health) in entries.iter_mut() {
             if health.needs_relogin != Some(ReloginCause::RefreshGrant) {
@@ -3465,6 +3473,30 @@ mod tests {
     /// is reached through the uuid alone. A same-named account carrying a
     /// *different* uuid is a different credential and must not inherit the
     /// verdict — nor may an account in another store family, or one with
+    /// another name.
+    ///
+    /// Regression test: a blank uuid is not an identity. Every production caller
+    /// sources its uuid from the store, which already folds a whitespace-only
+    /// `shuntAccountUuid` to `None`, so this cannot happen today — but a ref that
+    /// reached the set as `Some("")` would match any *other* blank-uuid account
+    /// through the uuid arm of `store_relogin_ref_matches`, condemning a
+    /// credential that was never probed. `StoreAccountRef::new` normalizes at
+    /// construction so no future caller can introduce one.
+    #[test]
+    fn a_blank_uuid_verdict_does_not_condemn_a_different_account() {
+        let pool = AccountPool::new();
+        pool.set_needs_relogin_for_store_account(StoreFamily::Claude, "a", Some(""), true);
+
+        assert!(
+            pool.store_account_needs_relogin(StoreFamily::Claude, "a", Some("")),
+            "the probed account must still carry its own verdict, by name"
+        );
+        assert!(
+            !pool.store_account_needs_relogin(StoreFamily::Claude, "b", Some("")),
+            "a blank uuid must not carry one account's verdict onto another"
+        );
+    }
+
     /// another name.
     #[test]
     fn a_never_selected_verdict_is_keyed_by_uuid_family_and_name() {
