@@ -409,7 +409,9 @@ plain "Cooling" describes it. It reads
 the same `entries` map `select_order` reads, clears only already-past quota
 buckets (as the next selection would), never mutates the round-robin cursor, and
 never inserts entries for accounts the pool has not yet seen (reported as
-`has_state: false`).
+`has_state: false`). Such a row still carries a `needs_relogin` the admin
+refresh probe recorded by *store name* — see the side table below — because that
+is the one thing that can be known about an account the pool holds no entry for.
 
 ### `needs_relogin` — a dead credential, not a pause
 
@@ -563,6 +565,59 @@ scan for an empty list — the same resolution the adapters use). Codex successf
 responses now populate the 5h/7d fields from `x-codex-*` rate-limit headers;
 unsupported windows are ignored and `7d_oi` remains `None` because Codex has no
 analog. Since issue #195 this recorded state also feeds Codex account selection (see `m10-codex-multi-account.md`), in addition to the dashboard display.
+
+The mark above lives on health entries, keyed by `AccountKey`. The admin routes
+do not have one: `POST /admin/accounts/claude/{name}/refresh` knows a store
+*name* and, when the credential file carries a `shuntAccountUuid`, a uuid. For
+an account some provider table has selected that is enough — the setter matches
+those against every entry's identity. An account the pool has **never** selected
+has no entry at all, so the setter used to update nothing and `/admin/pool` kept
+reporting the row `unseen` even though the operator had just been told the
+credential is dead (issue #439). Inventing an entry is not an option: it would
+mean synthesizing an `AccountKey` the selection path never produced.
+
+So the verdict is also recorded in a second, key-free place: `store_relogin`, a
+set of `StoreAccountRef` — `(store_family, name, uuid)` — on the pool. It is a
+set rather than a
+map of causes because only the admin probe writes there and its verdict is
+always `RefreshGrant` — membership *is* the cause. `snapshot` consults it in the
+unseen branch alone; a row with an observed entry keeps using that entry's mark,
+which stays authoritative once the pool has seen the credential. `has_state`
+stays `false` on the unseen row, which is still true and which both dashboard
+tables read *after* `needs_relogin`, so the row renders **needs re-login**
+rather than **unseen**.
+
+Every path that clears the mark purges the set as well — a re-login
+(`set_needs_relogin_for_store_account(.., false)`), a successful probe
+(`clear_grant_relogin_for_store_account`), the narrow clear
+(`clear_needs_relogin`), a served response (`mark_healthy_scoped`), and account
+deletion (`forget_identity`, reached from
+`DELETE /admin/accounts/claude/{name}` through `forget_pool_health_if_absent`). The
+served-response purge reproduces the fan-out's narrowing: an account carrying its
+own `credentials` path or `token_env` is a different credential that merely
+shares a name, so serving on it clears nothing.
+
+The two clears that speak the admin routes' own `(family, name, uuid)` strip by
+`(family, name-or-uuid)`, not by ref equality, so a clear is always at least as
+wide as the set that recorded the verdict — the set matches an entry on the uuid
+*or* the name, and an equality-removal would strip less than it accepts. The
+reachable gap is a re-login under the same store name that signs a *different*
+subscription in: the credential file now reports a new uuid, the recorded ref
+still carries the old one, and the fresh account would stay condemned on every
+name-keyed row. A store name is unique within its family — it *is* the
+credential file's name — so widening to it cannot reach another account's
+verdict. The uuid arm is guarded on the ref actually having one, or a clear
+carrying no uuid would match every uuid-less ref in the family whatever its name.
+
+Two ordering rules make this safe. **The entries lock is always acquired first
+and `store_relogin` second, never the reverse** — every site that touches the set
+already holds the entries lock, so nesting is the only pattern. And
+`any_needs_relogin` is raised **unconditionally** by the setter rather than from
+inside the entry loop (a never-selected account matches no entry), while
+`mark_healthy_scoped` folds `!store_relogin.is_empty()` into its recomputed value
+*after* purging. Without that fold the flag would drop to `false` while a
+never-selected account's verdict is still live, and the gated scan — the only
+thing that ever clears it — would never run again.
 
 The Claude store table in that section reports a **derived status** rather than
 the raw `claudeAiOauth.expiresAt` it used to render. That timestamp is the

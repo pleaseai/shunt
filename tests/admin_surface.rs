@@ -4122,6 +4122,131 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Issue #439: the account is in the store and enumerated by `/admin/pool`, but
+/// no provider table has ever selected it, so the pool holds no health entry for
+/// it. A terminal probe verdict used to update nothing and the row kept
+/// reporting `unseen` — the operator clicked Refresh, was told the credential is
+/// dead, and the dashboard disagreed.
+#[tokio::test]
+async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_PROBE_UNSEEN",
+        "ops:secret-probe-unseen",
+    );
+
+    std::fs::write(
+        dir.join("neverpicked.json"),
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "DEAD-ACCESS",
+                "refreshToken": "DEAD-REFRESH",
+                "expiresAt": 1_000_i64
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": "invalid_grant",
+            "error_description": "revoked"
+        })))
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_PROBE_UNSEEN")).await;
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-probe-unseen")
+            .header("content-type", "application/json")
+    };
+
+    let relogin_state = |data: &serde_json::Value| -> (bool, bool) {
+        let row = data["providers"]
+            .as_array()
+            .expect("the pool response carries providers")
+            .iter()
+            .flat_map(|provider| {
+                provider["accounts"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+            })
+            .find(|account| account["name"] == "neverpicked")
+            .expect("the store account is enumerated by /admin/pool");
+        (
+            row["needs_relogin"] == serde_json::Value::Bool(true),
+            row["has_state"] == serde_json::Value::Bool(true),
+        )
+    };
+
+    let before: serde_json::Value = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        relogin_state(&before),
+        (false, false),
+        "precondition: nothing has ever selected this account, so it is unseen \
+         and unmarked"
+    );
+
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/claude/neverpicked/refresh",
+        gateway.base_url
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "the grant is terminally rejected"
+    );
+
+    let after: serde_json::Value = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let (needs_relogin, has_state) = relogin_state(&after);
+    assert!(
+        needs_relogin,
+        "the probe's terminal verdict never reached /admin/pool for an account \
+         the pool has no health entry for: {after}"
+    );
+    assert!(
+        !has_state,
+        "the pool still has observed nothing for this account, so `has_state` \
+         stays false — both dashboard tables read `needs_relogin` before it"
+    );
+
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_UNSEEN");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The probe exercises the refresh grant and nothing else, so a *successful*
 /// grant proves the refresh token is alive — not that the account can serve
 /// inference. An account marked because the provider rejected a bearer it
