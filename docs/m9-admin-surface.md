@@ -593,13 +593,23 @@ Every path that clears the mark purges the set as well — a re-login
 (`clear_needs_relogin`), a served response (`mark_healthy_scoped`), and account
 deletion (`forget_identity`, reached from
 `DELETE /admin/accounts/claude/{name}` through `forget_pool_health_if_absent`). The
-served-response purge reproduces the fan-out's narrowing: an account carrying its
-own `credentials` path or `token_env` is a different credential that merely
-shares a name, so serving on it clears nothing.
+served-response purge reproduces the fan-out in both directions. Its narrowing:
+an account carrying its own `credentials` path or `token_env` is a different
+credential that merely shares a name, so serving on it clears nothing — and for
+the same reason the unseen branch does not condemn such a row either, since
+nothing it could do would ever clear the mark. Its width: a `Verified`-keyed
+account reaches its name-keyed siblings through the *name*, so the purge strips
+on `(family, name-or-uuid)` rather than on the key's own identity. Matching only
+the key would strand a verdict recorded with no uuid — the credential file
+carried no `shuntAccountUuid` when the probe ran, or the admin path's uuid read
+failed into `None` — once the account is only ever reached through a uuid-keyed
+row, and every name-keyed row would keep rendering "needs re-login" for an
+account that is demonstrably serving.
 
-The two clears that speak the admin routes' own `(family, name, uuid)` strip by
-`(family, name-or-uuid)`, not by ref equality, so a clear is always at least as
-wide as the set that recorded the verdict — the set matches an entry on the uuid
+Every read and clear of the set speaks `(family, name-or-uuid)` rather than ref
+equality — the two clears that carry the admin routes' own `(family, name,
+uuid)`, and the probe's `needs_relogin` read-back — so neither is ever narrower
+than the set that recorded the verdict — the set matches an entry on the uuid
 *or* the name, and an equality-removal would strip less than it accepts. The
 reachable gap is a re-login under the same store name that signs a *different*
 subscription in: the credential file now reports a new uuid, the recorded ref
@@ -610,8 +620,9 @@ verdict. The uuid arm is guarded on the ref actually having one, or a clear
 carrying no uuid would match every uuid-less ref in the family whatever its name.
 
 Two ordering rules make this safe. **The entries lock is always acquired first
-and `store_relogin` second, never the reverse** — every site that touches the set
-already holds the entries lock, so nesting is the only pattern. And
+and `store_relogin` second, never the reverse** — most sites that touch the set
+already hold the entries lock, so nesting is the usual pattern; `forget_identity`
+takes the set alone, after releasing `entries`. And
 `any_needs_relogin` is raised **unconditionally** by the setter rather than from
 inside the entry loop (a never-selected account matches no entry), while
 `mark_healthy_scoped` folds `!store_relogin.is_empty()` into its recomputed value
