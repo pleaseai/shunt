@@ -231,14 +231,35 @@ fn translate_messages(request: &Value, model: &str) -> Result<Vec<Value>, Adapte
         }
 
         if !parts.is_empty() {
-            contents.push(json!({
-                "role": role,
-                "parts": parts
-            }));
+            push_content(&mut contents, role, parts);
         }
     }
 
     Ok(contents)
+}
+
+/// Append a translated turn, merging consecutive `user` turns into one.
+///
+/// Claude Code's `mid-conversation-system-2026-04-07` beta inserts `system`-role
+/// messages into `messages`, including between an assistant `tool_use` and the
+/// user's `tool_result`. Those fold to `user` here, which would otherwise emit a
+/// standalone text turn between a `functionCall` and its `functionResponse` —
+/// the Gemini API rejects that ordering. Merging keeps the reminder text and the
+/// `functionResponse` in the same turn. `model` turns are never merged: shifting
+/// their part indices would misalign thought signatures.
+fn push_content(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
+    if role == "user" {
+        if let Some(previous) = contents
+            .last_mut()
+            .filter(|previous| previous["role"] == "user")
+        {
+            if let Some(existing) = previous["parts"].as_array_mut() {
+                existing.extend(parts);
+                return;
+            }
+        }
+    }
+    contents.push(json!({ "role": role, "parts": parts }));
 }
 
 fn decode_tool_use_signature(id: &str) -> Option<String> {
@@ -580,6 +601,99 @@ mod tests {
         let response = &result["contents"][1]["parts"][0]["functionResponse"]["response"];
         assert_eq!(response["error"], true);
         assert_eq!(response["output"], "not found");
+    }
+
+    #[test]
+    fn merges_system_message_between_tool_use_and_tool_result_into_user_turn() {
+        // Claude Code's mid-conversation system message must not become a
+        // standalone user turn between a functionCall and its functionResponse.
+        let input = json!({
+            "messages": [
+                {"role": "user", "content": "read a.txt"},
+                {"role": "assistant", "content": [{
+                    "type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "a.txt"}
+                }]},
+                {"role": "system", "content": "<system-reminder>a.txt changed</system-reminder>"},
+                {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": "toolu_1", "content": "hello"
+                }]}
+            ]
+        });
+
+        let contents = translate_request(&input).unwrap()["contents"].clone();
+        let roles: Vec<&str> = contents
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["user", "model", "user"]);
+
+        let parts = contents[2]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(
+            parts[0]["text"],
+            "<system-reminder>a.txt changed</system-reminder>"
+        );
+        assert_eq!(parts[1]["functionResponse"]["name"], "read_file");
+        assert_eq!(parts[1]["functionResponse"]["response"]["output"], "hello");
+    }
+
+    #[test]
+    fn merges_consecutive_user_and_system_turns() {
+        let input = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "system", "content": [{"type": "text", "text": "date rolled over"}]},
+                {"role": "user", "content": "continue"}
+            ]
+        });
+
+        let contents = translate_request(&input).unwrap()["contents"].clone();
+        assert_eq!(contents.as_array().unwrap().len(), 1);
+        assert_eq!(contents[0]["role"], "user");
+        let texts: Vec<&str> = contents[0]["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(texts, ["hi", "date rolled over", "continue"]);
+    }
+
+    #[test]
+    fn never_merges_consecutive_model_turns() {
+        // Merging model turns would shift part indices and break the
+        // thought-signature placement on the first functionCall of a turn.
+        let input = json!({
+            "model": "gemini-3-flash-preview",
+            "messages": [
+                {"role": "user", "content": "go"},
+                {"role": "assistant", "content": [{
+                    "type": "tool_use", "id": "toolu_1", "name": "a", "input": {}
+                }]},
+                {"role": "assistant", "content": [{
+                    "type": "tool_use", "id": "toolu_2", "name": "b", "input": {}
+                }]}
+            ]
+        });
+
+        let contents = translate_request(&input).unwrap()["contents"].clone();
+        let roles: Vec<&str> = contents
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["user", "model", "model"]);
+        assert_eq!(
+            contents[1]["parts"][0]["thoughtSignature"],
+            GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER
+        );
+        assert_eq!(
+            contents[2]["parts"][0]["thoughtSignature"],
+            GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER
+        );
     }
 
     #[test]
