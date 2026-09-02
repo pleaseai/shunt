@@ -1,0 +1,191 @@
+.please/docs/knowledge/product-guidelines.md
+  s_ed5fe86a52d943::t_a07ccc47070e94 15
+.release-please-manifest.json
+  s_ed5fe86a52d943::t_bd3ed60e91500e 2
+AGENTS.md
+  s_ed5fe86a52d943::t_5b3428d901a83e 32,52-53,64-74
+CHANGELOG.md
+  s_ed5fe86a52d943::t_286b745a17ae2e 3-30
+Cargo.lock
+  s_ed5fe86a52d943::t_41bdcea431d27c 2732
+Cargo.toml
+  s_ed5fe86a52d943::t_827149e53a4568 10
+README.ja.md
+  s_ed5fe86a52d943::t_3ad414abfa7321 18,42-44,51,88-108,141,147-149,153-158,163-165,169-180,198,202,208,250-253,270-277,293,296
+README.ko.md
+  s_ed5fe86a52d943::t_0c00abb38e3498 18,42-45,51,86-104,138,144-146,150-152,154-156,160-163,166-177,195,199,205,247-250,267-274,290,293
+README.md
+  s_ed5fe86a52d943::t_936a13968f4fd4 152,173
+README.zh-CN.md
+  s_ed5fe86a52d943::t_eda8c1b562eda2 18,42-43,50,87-103,136,142-144,148-153,158-160,164-175,193,197,203,245-248,265-272,288,291
+blueprints/upstream/antigravity.md
+  s_ed5fe86a52d943::t_cfa13981016a29 1-99
+docs/m9-admin-surface.md
+  s_ed5fe86a52d943::t_906f8f5a21791f 266,276,401,412-560,569-794,819-904
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_ed5fe86a52d943::t_518b5373860893 108-115,118-119
+site/src/content/docs/guides/providers.mdx
+  s_ed5fe86a52d943::t_82c86275ccf89f 26,66-68
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_ed5fe86a52d943::t_e97bbdc5f0577a 64-71,74-75
+site/src/content/docs/ja/guides/providers.mdx
+  s_ed5fe86a52d943::t_4a4baf6c5829a7 6,11-13,25-27,31-107,162,198
+site/src/content/docs/ja/providers/anthropic.mdx
+  s_ed5fe86a52d943::t_ab672ccfba9c59 1-143
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_ed5fe86a52d943::t_78814ef368b3ce 1-184
+site/src/content/docs/ja/providers/cursor.mdx
+  s_ed5fe86a52d943::t_d5272958f31926 1-136
+site/src/content/docs/ja/providers/deepseek.md
+  s_ed5fe86a52d943::t_510e1fac24bbfa 1-94
+site/src/content/docs/ja/providers/kimi.md
+  s_ed5fe86a52d943::t_cae6fb62482554 1-202
+site/src/content/docs/ja/providers/mimo.mdx
+  s_ed5fe86a52d943::t_e68b5ec502c83c 1-103
+site/src/content/docs/ja/providers/minimax.md
+  s_ed5fe86a52d943::t_a4a3e704a6b9ef 1-91
+site/src/content/docs/ja/providers/openai.mdx
+  s_ed5fe86a52d943::t_3361f26584322e 1-122
+site/src/content/docs/ja/providers/openrouter.md
+  s_ed5fe86a52d943::t_187abb3edb5878 1-80
+site/src/content/docs/ja/providers/vercel-ai-gateway.md
+  s_ed5fe86a52d943::t_24f66623d8973f 1-79
+site/src/content/docs/ja/providers/zai.md
+  s_ed5fe86a52d943::t_4e2c83abf4bf89 1-93
+site/src/content/docs/ja/reference/cli.mdx
+  s_ed5fe86a52d943::t_be25512936f85a 229
+site/src/content/docs/ja/reference/configuration.md
+  s_ed5fe86a52d943::t_246de57d6531b5 214
+site/src/content/docs/ja/reference/endpoints.md
+  s_ed5fe86a52d943::t_1e9dd4e1ef9e2a 28,31
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_ed5fe86a52d943::t_f2b711011178b6 64-71,74-75
+site/src/content/docs/ko/guides/providers.mdx
+  s_ed5fe86a52d943::t_f38384c9a67220 6,11-13,25-27,31-106,164,200
+site/src/content/docs/ko/providers/anthropic.mdx
+  s_ed5fe86a52d943::t_967b0b12592a2f 1-139
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_ed5fe86a52d943::t_9d14488dbdf4d1 1-180
+site/src/content/docs/ko/providers/cursor.mdx
+  s_ed5fe86a52d943::t_ec98cf97c78faf 1-134
+site/src/content/docs/ko/providers/deepseek.md
+  s_ed5fe86a52d943::t_91bbaa1d851ba9 1-93
+site/src/content/docs/ko/providers/kimi.md
+  s_ed5fe86a52d943::t_b9b3fa5e2ca2a1 1-198
+site/src/content/docs/ko/providers/mimo.mdx
+  s_ed5fe86a52d943::t_3ffac07d59cfc7 1-102
+site/src/content/docs/ko/providers/minimax.md
+  s_ed5fe86a52d943::t_579cccbf32da3e 1-90
+site/src/content/docs/ko/providers/openai.mdx
+  s_ed5fe86a52d943::t_03435e5e988be7 1-118
+site/src/content/docs/ko/providers/openrouter.md
+  s_ed5fe86a52d943::t_f1580854b348c9 1-79
+site/src/content/docs/ko/providers/vercel-ai-gateway.md
+  s_ed5fe86a52d943::t_af4914be27b208 1-77
+site/src/content/docs/ko/providers/zai.md
+  s_ed5fe86a52d943::t_f6e5b28940b2cc 1-93
+site/src/content/docs/ko/reference/cli.mdx
+  s_ed5fe86a52d943::t_dca30783a3204b 229
+site/src/content/docs/ko/reference/configuration.md
+  s_ed5fe86a52d943::t_b174e5aa73736f 223
+site/src/content/docs/ko/reference/endpoints.md
+  s_ed5fe86a52d943::t_7e94603f89f25c 28,31
+site/src/content/docs/providers/antigravity.mdx
+  s_ed5fe86a52d943::t_e80acfd2eac266 1-181
+site/src/content/docs/reference/configuration.md
+  s_ed5fe86a52d943::t_c40b18c08b2e12 327
+site/src/content/docs/reference/endpoints.md
+  s_ed5fe86a52d943::t_388e4d4f86c8b7 31,35
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_ed5fe86a52d943::t_8a8095cdbc849a 64-71,74-75
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_ed5fe86a52d943::t_512041f2178152 6,11-13,25-27,34-101,163,202
+site/src/content/docs/zh-cn/providers/anthropic.mdx
+  s_ed5fe86a52d943::t_031e211a065522 1-140
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_ed5fe86a52d943::t_6c2aa59fb67c98 1-176
+site/src/content/docs/zh-cn/providers/cursor.mdx
+  s_ed5fe86a52d943::t_072578f1398527 1-134
+site/src/content/docs/zh-cn/providers/deepseek.md
+  s_ed5fe86a52d943::t_9b5c4d5aeac02f 1-94
+site/src/content/docs/zh-cn/providers/kimi.md
+  s_ed5fe86a52d943::t_ff6466e89dc09a 1-202
+site/src/content/docs/zh-cn/providers/mimo.mdx
+  s_ed5fe86a52d943::t_b9754c68233fc0 1-103
+site/src/content/docs/zh-cn/providers/minimax.md
+  s_ed5fe86a52d943::t_dd606f25e8b020 1-91
+site/src/content/docs/zh-cn/providers/openai.mdx
+  s_ed5fe86a52d943::t_70216cc3a2fa1f 1-120
+site/src/content/docs/zh-cn/providers/openrouter.md
+  s_ed5fe86a52d943::t_ae2c62c99248e4 1-81
+site/src/content/docs/zh-cn/providers/vercel-ai-gateway.md
+  s_ed5fe86a52d943::t_90b819e46dd7d5 1-79
+site/src/content/docs/zh-cn/providers/zai.md
+  s_ed5fe86a52d943::t_69f9cf16cd528d 1-94
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_ed5fe86a52d943::t_2a20c3a2d1874c 229
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_ed5fe86a52d943::t_bc4e944ea2b2d6 214
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_ed5fe86a52d943::t_4fbfd74b8ab1e3 28,31
+site/src/lib/i18n.ts
+  s_ed5fe86a52d943::t_185620688417ce 46
+src/accounts.rs
+  s_ed5fe86a52d943::t_b638dafbfc6681 2,42-104,300-335,369-386,420-424,428-433,451,471-498,1304-1561,1580,1582-1621,1625-1627,1717-1732,1764-1782,1788-1812,1833-1840,1846-1890,1894-1900,1932-1950,2221-2377,3118-4074,5425,5497,8541,8555
+src/adapters/anthropic/mod.rs
+  s_ed5fe86a52d943::t_6de374731991f4 13,212,214,221-232,236-237,315-334,433-442,484-491,500-514,519,557-570,588-597,612,614-633
+src/admin/codex.rs
+  s_ed5fe86a52d943::t_8e60dafe052710 246,330
+src/admin/html.rs
+  s_ed5fe86a52d943::t_94303af2ee686a 59-60,73,100,148-155,219,223,308-310,314-316,325,335,362-814,819-827,829-871,873,876
+src/admin/mod.rs
+  s_ed5fe86a52d943::t_8e0da6d402c8c3 237-240,334,366-379,405,409,411,1036-1037,1048-1052,1055-1056,1058-1059,1346-1350,1361,1364-1375,1405-1570,1638,1910,1938,1949-2006,2056-2062
+src/admin/plan.rs
+  s_ed5fe86a52d943::t_27e6fb7eaccfb8 46,48,55,194-231,234,240-247,256-258,295-304,306-347,367-390,392,397-401,405,407-409,411-412,415,419-434,436-439,441-458,461,463-471,473,478,486,495-505,509-616,621-635,653-658,662-673,675-678,687-737,741-751,765,777,797-802,894-897,900,910-984,986-994,996,1000,1017-1025,1028-1032,1042,1054-1057,1065-1067,1076-1078,1100,1104-1105,1109-1121,1155-1191,1283-1340,1347,1349,1351-1358,1373,1380,1382-1385,1458,1491-1492,1509,1525,1554-1555,1565,1579-1580,1591,1604,1633-1636,1638-1639,1648-1649,1659-1660,1675,1698-1699,1711,1729,1752-1753,1765,1780,1819,1827,1831,1841,1908-1909,1957-1958,1970,1986,1989-1993,2016-2017,2027,2030-2037,2044-2045,2057,2066-3316
+src/admin/script.rs
+  s_ed5fe86a52d943::t_9f411acd23ad12 4-5,29-55,113-116,171,183,196-200,202-203,205-207,221-222,246,284-299,305-328,337-345,348-355,361-383,385-386,388-391,397-405,462-490,494,499,504,508,510-520,523,525-531,534-543,545-547,559-572,574-578,582,586,591,595,597-607,610,612-618,621-630,632-634
+src/auth/claude/auth.rs
+  s_ed5fe86a52d943::t_8b22ac1fdedf9d 33-36,165,168,182-187,189-199,202,280-335,391-402
+src/auth/claude/auth/tests.rs
+  s_ed5fe86a52d943::t_dab5f0f447aedc 354-663
+src/auth/claude/usage.rs
+  s_ed5fe86a52d943::t_0c8700bc4495dc 375
+src/auth/mod.rs
+  s_ed5fe86a52d943::t_e706180696605d 153-178,184-198,200-201,205-212,242,266
+src/blueprints.rs
+  s_ed5fe86a52d943::t_e1e0c1d8e18df8 76-80,272
+src/oauth_usage/tests.rs
+  s_ed5fe86a52d943::t_a57fd06055163f 38
+src/server.rs
+  s_ed5fe86a52d943::t_0638050393aca3 377-419
+src/usage/tests.rs
+  s_ed5fe86a52d943::t_ddd11180aadb93 37
+tests/admin_surface.rs
+  s_ed5fe86a52d943::t_e1fdebb539706d 3788-4396
+tests/multi_account.rs
+  s_f823cb99b05b39::t_022a51c672a283 173-227,342-557,1651-2372
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fe02f3292eda2152fe855dcd009392b29029a381",
+  "prompts": {},
+  "sessions": {
+    "s_ed5fe86a52d943": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fb109163-e970-41db-ad5a-6126a36f8e88",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_f823cb99b05b39": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d1a0043-be8d-489b-bd00-bef41f34144a",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
