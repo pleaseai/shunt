@@ -287,3 +287,20 @@ fn wrap_envelope_creates_code_assist_shape() {
     assert_eq!(wrapped["project"], "test-proj-789");
     assert!(wrapped.get("request").is_some());
 }
+
+#[test]
+fn the_code_assist_envelope_carries_none_of_the_agent_fields() {
+    // The `gemini` provider talks to production Code Assist as the Gemini
+    // CLI. Sending Antigravity's client identity there would misidentify
+    // it, so these fields must never leak onto that path.
+    let wrapped = wrap_code_assist_envelope(
+        "gemini-3-flash-preview",
+        "test-proj-789",
+        json!({ "contents": [] }),
+    );
+
+    for field in ["userAgent", "requestType", "requestId"] {
+        assert!(wrapped.get(field).is_none(), "{field} must not be sent");
+    }
+    assert!(wrapped["request"].get("sessionId").is_none());
+}

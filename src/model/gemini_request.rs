@@ -12,6 +12,11 @@ const GEMINI_3_MODEL_PREFIX: &str = "gemini-3";
 const GEMINI_TOOL_USE_ID_PREFIX: &str = "call_gemini_v1_";
 // Google documents this exact value for imported/custom Gemini 3 function-call history.
 const GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER: &str = "context_engineering_is_the_way to_go";
+/// Budget an enabled `thinking` block asks for when it names none. Shared with
+/// `crate::model::antigravity_request`, which reads the same block to pick an
+/// effort tier — the two must not drift apart on what "enabled, no budget"
+/// means.
+pub(crate) const DEFAULT_THINKING_BUDGET: u64 = 1024;
 
 fn bad_request(message: impl Into<String>) -> AdapterError {
     AdapterError {
@@ -440,7 +445,7 @@ fn translate_thinking_config(request: &Value) -> Option<Value> {
             let budget = thinking
                 .get("budget_tokens")
                 .and_then(Value::as_u64)
-                .unwrap_or(1024);
+                .unwrap_or(DEFAULT_THINKING_BUDGET);
             Some(json!({ "thinkingBudget": budget }))
         }
         Some("disabled") => Some(json!({ "thinkingBudget": 0 })),

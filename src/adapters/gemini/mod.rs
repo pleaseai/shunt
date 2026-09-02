@@ -12,6 +12,10 @@ use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{resolve_credential, Credential},
     config::AuthMode,
+    model::antigravity_request::{
+        antigravity_request_id, antigravity_session_id, antigravity_upstream_model,
+        wrap_antigravity_envelope,
+    },
     model::gemini::{map_gemini_error, GeminiSseMachine},
     model::gemini_request::{translate_request_for_model, wrap_code_assist_envelope},
     request::RequestBody,
@@ -114,7 +118,24 @@ async fn forward(
         provider.auth,
         AuthMode::GoogleOauth | AuthMode::AntigravityOauth
     );
-    let (endpoint, payload) = if is_code_assist {
+    let (endpoint, payload) = if provider.auth == AuthMode::AntigravityOauth {
+        // Antigravity speaks the same `v1internal` methods, but the client
+        // identifies itself as the agent and names a session, and its catalog
+        // ids carry their effort tier. See `wrap_antigravity_envelope` and
+        // `antigravity_upstream_model`.
+        let endpoint = format!("{base_url}/v1internal:{method}");
+        let model =
+            antigravity_upstream_model(&route.upstream_model, route.effort.as_deref(), json_body);
+        let session_id = antigravity_session_id(&inner_req);
+        let envelope = wrap_antigravity_envelope(
+            &model,
+            &project_id,
+            inner_req,
+            &antigravity_request_id(),
+            &session_id,
+        );
+        (endpoint, envelope)
+    } else if is_code_assist {
         let endpoint = format!("{base_url}/v1internal:{method}");
         let envelope = wrap_code_assist_envelope(&route.upstream_model, &project_id, inner_req);
         (endpoint, envelope)
