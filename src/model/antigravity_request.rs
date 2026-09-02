@@ -71,29 +71,26 @@ pub fn antigravity_request_id() -> String {
 
 /// The `sessionId` for a *translated* Gemini request.
 ///
-/// The backend correlates turns by this value, so it is derived from the first
-/// user turn's first text part rather than drawn at random: a follow-up turn
-/// in the same conversation repeats that opening text and lands on the same
-/// session, mirroring `generateStableSessionID` in CLIProxyAPI. A request with
-/// no user text at all (an empty or tool-only history) has nothing stable to
-/// key on and gets a random id instead of colliding with every other such
-/// request.
+/// The backend correlates turns by this value, so it is derived from the
+/// earliest user text in the history rather than drawn at random: a follow-up
+/// turn in the same conversation repeats that opening text and lands on the
+/// same session, mirroring `generateStableSessionID` in CLIProxyAPI. The scan
+/// covers every user turn, not only the first — an opening turn that is an
+/// image or a tool result alone would otherwise push every follow-up onto a
+/// fresh random id. A request with no user text at all (an empty or tool-only
+/// history) has nothing stable to key on and gets a random id instead of
+/// colliding with every other such request.
 pub fn antigravity_session_id(request: &Value) -> String {
     let seed = request
         .get("contents")
         .and_then(Value::as_array)
-        .and_then(|contents| {
-            contents
-                .iter()
-                .find(|content| content.get("role").and_then(Value::as_str) == Some("user"))
-        })
-        .and_then(|content| content.get("parts"))
-        .and_then(Value::as_array)
-        .and_then(|parts| {
-            parts
-                .iter()
-                .find_map(|part| part.get("text").and_then(Value::as_str))
-        });
+        .into_iter()
+        .flatten()
+        .filter(|content| content.get("role").and_then(Value::as_str) == Some("user"))
+        .filter_map(|content| content.get("parts").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .find(|text| !text.is_empty());
 
     let digits = match seed {
         Some(text) => stable_session_digits(text),
@@ -176,8 +173,10 @@ fn antigravity_effort_tier(
             .map(str::to_string)
             // No allowlist for the operator: the backend catalog is the
             // authority on which tiers exist, so a tier shunt has not heard of
-            // must be reachable without a release.
-            .unwrap_or_else(|| effort.to_string());
+            // must be reachable without a release. It still goes out in the
+            // catalog's own spelling — trimmed and lower-cased — so `High`
+            // names the published tier rather than a `-High` id.
+            .unwrap_or_else(|| normalize_effort(effort));
         (tier, "config")
     } else if let Some(effort) = request
         .pointer("/output_config/effort")
@@ -214,17 +213,24 @@ fn ends_with_tier(model: &str, tier: &str) -> bool {
 /// request's `output_config.effort` — onto the tiers Antigravity publishes.
 ///
 /// Claude Code sends `low|medium|high|xhigh|max`; the catalog stops at `high`,
-/// so the two levels above it fold onto it. `None` means the level is outside
-/// that vocabulary; each caller decides what to do with it, since an operator
-/// naming a tier shunt has not heard of and a client sending noise deserve
-/// different answers.
+/// so the two levels above it fold onto it. Matching is case-insensitive and
+/// ignores surrounding whitespace, so a hand-written `High` is the published
+/// tier rather than a level shunt has never seen. `None` means the level is
+/// outside that vocabulary; each caller decides what to do with it, since an
+/// operator naming a tier shunt has not heard of and a client sending noise
+/// deserve different answers.
 fn fold_effort(effort: &str) -> Option<&'static str> {
-    match effort {
+    match normalize_effort(effort).as_str() {
         "low" => Some("low"),
         "medium" => Some("medium"),
         "high" | "xhigh" | "max" => Some("high"),
         _ => None,
     }
+}
+
+/// The catalog spells its tiers in lower case with no padding.
+fn normalize_effort(effort: &str) -> String {
+    effort.trim().to_ascii_lowercase()
 }
 
 /// `thinking.budget_tokens` is the only quantitative signal a client that does
@@ -242,8 +248,16 @@ fn thinking_budget_tier(budget: u64) -> &'static str {
 
 /// The Pro family is published as `-low` and `-high` only, so a derived (or
 /// pinned) `medium` would 404. Flash keeps all three.
+///
+/// The family is read from the id's `-`-separated segments, so a
+/// `gemini-3-pro-preview`-style variant is still Pro while an id that merely
+/// contains the letters (`-prod`, `-prompt`) is not. It is deliberately not a
+/// suffix check: `high` is published in every family and `medium` is not in
+/// Pro, so mis-reading a Pro variant as Flash costs a `404` where the reverse
+/// only costs a tier.
 fn clamp_tier_to_family(upstream_model: &str, tier: String) -> String {
-    if tier == "medium" && upstream_model.contains("-pro") {
+    let is_pro = upstream_model.split('-').any(|segment| segment == "pro");
+    if tier == "medium" && is_pro {
         return "high".to_string();
     }
     tier
@@ -375,6 +389,44 @@ mod tests {
     }
 
     #[test]
+    fn a_session_id_survives_an_image_only_opening_turn() {
+        // An opening turn that is an image (or a tool result) alone carries no
+        // text; the first user *text* in the history seeds the id instead, so
+        // follow-ups still correlate rather than each drawing a random id.
+        let image_first = json!({
+            "contents": [
+                {"role": "user", "parts": [{"inlineData": {"mimeType": "image/png", "data": "AAAA"}}]},
+                {"role": "model", "parts": [{"text": "I see a chart"}]},
+                {"role": "user", "parts": [{"text": "refactor the parser"}]},
+            ]
+        });
+        // An empty text part is not a seed either: the scan continues past
+        // it rather than stopping and falling back to a random id.
+        let empty_text_first = json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": ""}, {"inlineData": {"mimeType": "image/png", "data": "AAAA"}}]},
+                {"role": "user", "parts": [{"text": "refactor the parser"}]},
+            ]
+        });
+        let user_only = json!({
+            "contents": [{"role": "user", "parts": [{"text": "refactor the parser"}]}]
+        });
+
+        assert_eq!(
+            antigravity_session_id(&image_first),
+            antigravity_session_id(&image_first)
+        );
+        assert_eq!(
+            antigravity_session_id(&image_first),
+            antigravity_session_id(&user_only)
+        );
+        assert_eq!(
+            antigravity_session_id(&empty_text_first),
+            antigravity_session_id(&user_only)
+        );
+    }
+
+    #[test]
     fn a_session_id_without_user_text_is_random_rather_than_shared() {
         // Nothing stable to key on, so every such request gets its own session
         // instead of all of them colliding on one.
@@ -435,6 +487,12 @@ mod tests {
             ("xhigh", "gemini-3.6-flash-high"),
             ("max", "gemini-3.6-flash-high"),
             ("extra-low", "gemini-3.6-flash-extra-low"),
+            // Spelling is normalized before either branch: a hand-written
+            // `High` is the published tier, not a `-High` id the backend
+            // cannot serve, and an unknown level goes out in catalog case.
+            ("High", "gemini-3.6-flash-high"),
+            (" MAX ", "gemini-3.6-flash-high"),
+            ("Extra-Low", "gemini-3.6-flash-extra-low"),
         ] {
             assert_eq!(
                 antigravity_upstream_model("gemini-3.6-flash", Some(effort), &json!({})),
@@ -532,6 +590,16 @@ mod tests {
                 &json!({"thinking": {"type": "enabled", "budget_tokens": 4096}})
             ),
             "gemini-3.1-pro-high"
+        );
+        // The family is a segment of the id, not a suffix: a Pro variant
+        // still clamps, and an id that only contains the letters does not.
+        assert_eq!(
+            antigravity_upstream_model("gemini-3-pro-preview", None, &json!({})),
+            "gemini-3-pro-preview-high"
+        );
+        assert_eq!(
+            antigravity_upstream_model("gemini-3.8-flash-prod", None, &json!({})),
+            "gemini-3.8-flash-prod-medium"
         );
         // Low still reaches Pro, and Flash keeps its medium.
         assert_eq!(

@@ -111,8 +111,8 @@ upstream_model = "gemini-3.6-flash-medium"
 ティアを解決して付与します。最初に当てはまったシグナルが使われます:
 
 1. `[[routes]]` エントリまたはプロバイダーの `effort` — 明示的な指定です。ここでも `xhigh` と `max`
-   は `high` に畳まれ、shunt が知らないティアはそのまま通るので、カタログに後から追加されるティアを
-   先に指定できます。
+   は `high` に畳まれ、大文字小文字と前後の空白は無視されます。shunt が知らないティアは書かれたまま
+   （空白を取り除き小文字にして）通るので、カタログに後から追加されるティアを先に指定できます。
 2. リクエストの `output_config.effort`（Claude Code は `low`/`medium`/`high`/`xhigh`/`max` を送り、
    `xhigh` と `max` は `high` に畳まれます）。
 3. `thinking.type = "enabled"` — `budget_tokens` が 2048 以下なら `low`、8192 以下なら `medium`、
@@ -120,9 +120,10 @@ upstream_model = "gemini-3.6-flash-medium"
    のと同じデフォルトの `1024` を使うため、`low` になります。
 4. それ以外は `medium` です。
 
-結果はそのファミリーが実際に公開しているティアに丸められるため、`-pro` の id での `medium` は `-high` に
-なります。すでにティアで終わる id と、Gemini 以外の id（`claude-sonnet-4-6`、`gpt-oss-120b-medium`）は
-書かれたまま送られます。認識できない `output_config.effort` は、モデル id に反映されずに `medium` へ
+認識されたティアはそのファミリーが実際に公開しているティアに丸められるため、`-pro` の id での `medium`
+は `-high` になります。設定に書かれた認識できない `effort` はルール 1 のとおり書かれたまま付与され、
+丸められません。すでにティアで終わる id と、Gemini 以外の id（`claude-sonnet-4-6`、`gpt-oss-120b-medium`）
+は書かれたまま送られます。認識できない `output_config.effort` は、モデル id に反映されずに `medium` へ
 フォールバックします。
 
 Antigravity は Claude モデルも提供していますが、shunt はそれらが必要とするリクエストの書き換えをまだ実装して
@@ -144,7 +145,7 @@ Antigravity は Claude モデルも提供していますが、shunt はそれら
 
 さらにすべてのリクエストは、Antigravity クライアントが送る**エージェント識別情報**を伴います:
 `userAgent: "antigravity"`、`requestType: "agent"`、リクエストごとの `requestId`、そして続きのターンが
-同じセッションに届くよう最初のユーザーターンから導出した `sessionId` です。`gemini` プロバイダーの
+同じセッションに届くよう会話中で最初に現れるユーザーテキストから導出した `sessionId` です。`gemini` プロバイダーの
 Code Assist リクエストは、これらをいずれも送りません。
 
 本番トラフィックをルーティングする前に知っておく価値のある制限が 2 つあります。

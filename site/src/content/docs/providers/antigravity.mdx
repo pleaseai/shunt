@@ -110,8 +110,9 @@ You do not have to write the suffix by hand. For a bare `gemini-*` id, shunt res
 itself and appends it, taking the first signal that applies:
 
 1. `effort` on the `[[routes]]` entry, or on the provider — an explicit pin. `xhigh` and `max` fold
-   onto `high` here too; a level shunt does not recognise is passed through unchanged, so you can
-   name a tier the catalog adds later.
+   onto `high` here too, and matching ignores case and surrounding whitespace. A level shunt does
+   not recognise is passed through as written (trimmed and lower-cased), so you can name a tier
+   the catalog adds later.
 2. The request's `output_config.effort` (Claude Code sends `low`/`medium`/`high`/`xhigh`/`max`;
    `xhigh` and `max` fold onto `high`).
 3. `thinking.type = "enabled"` — `budget_tokens` at or below 2048 is `low`, at or below 8192 is
@@ -119,8 +120,9 @@ itself and appends it, taking the first signal that applies:
    default the translated request carries, so it lands in `low`.
 4. Otherwise `medium`.
 
-The result is clamped to the tiers the family actually publishes, so a `medium` on a `-pro` id
-becomes `-high`. An id that already ends in a tier, and any non-Gemini id (`claude-sonnet-4-6`,
+A recognised tier is clamped to the ones the family actually publishes, so a `medium` on a `-pro`
+id becomes `-high`; an unrecognised configured `effort` is appended as written, per rule 1, and is
+never clamped. An id that already ends in a tier, and any non-Gemini id (`claude-sonnet-4-6`,
 `gpt-oss-120b-medium`), is sent exactly as written. An unrecognised `output_config.effort` falls
 back to `medium` rather than reaching the model id.
 
@@ -143,7 +145,8 @@ above.
 
 Every request additionally carries the **agent identity the Antigravity client sends**:
 `userAgent: "antigravity"`, `requestType: "agent"`, a per-request `requestId`, and a `sessionId`
-derived from the opening user turn so follow-up turns land on the same session. The `gemini`
+derived from the earliest user text in the conversation so follow-up turns land on the same
+session. The `gemini`
 provider's Code Assist requests carry none of these.
 
 Two limits are worth knowing before you route production traffic:

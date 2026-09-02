@@ -109,8 +109,8 @@ upstream_model = "gemini-3.6-flash-medium"
 붙이며, 다음 신호 중 먼저 적용되는 것을 따릅니다:
 
 1. `[[routes]]` 항목이나 프로바이더의 `effort` — 명시적 지정입니다. 여기서도 `xhigh`와 `max`는
-   `high`로 접히며, shunt가 모르는 등급은 그대로 통과하므로 카탈로그에 나중에 추가될 등급을 미리
-   지정할 수 있습니다.
+   `high`로 접히며, 대소문자와 앞뒤 공백은 무시됩니다. shunt가 모르는 등급은 적힌 대로(공백을 제거하고
+   소문자로) 통과하므로 카탈로그에 나중에 추가될 등급을 미리 지정할 수 있습니다.
 2. 요청의 `output_config.effort`(Claude Code는 `low`/`medium`/`high`/`xhigh`/`max`를 보내며,
    `xhigh`와 `max`는 `high`로 접힙니다).
 3. `thinking.type = "enabled"` — `budget_tokens`가 2048 이하이면 `low`, 8192 이하이면 `medium`,
@@ -118,7 +118,8 @@ upstream_model = "gemini-3.6-flash-medium"
    `1024`를 사용하므로 `low`가 됩니다.
 4. 그 외에는 `medium`입니다.
 
-결과는 해당 계열이 실제로 게시하는 등급으로 조정되므로, `-pro` id의 `medium`은 `-high`가 됩니다. 이미
+인식된 등급은 해당 계열이 실제로 게시하는 등급으로 조정되므로, `-pro` id의 `medium`은 `-high`가 됩니다.
+설정에 적힌 인식되지 않는 `effort`는 1번 규칙대로 적힌 그대로 덧붙여지며 조정되지 않습니다. 이미
 등급으로 끝나는 id와 Gemini가 아닌 id(`claude-sonnet-4-6`, `gpt-oss-120b-medium`)는 적힌 그대로
 전송됩니다. 인식되지 않는 `output_config.effort`는 모델 id에 반영되지 않고 `medium`으로 되돌아갑니다.
 
@@ -140,7 +141,7 @@ Antigravity는 Claude 모델도 제공하지만, shunt는 아직 그 모델들�
 
 또한 모든 요청은 Antigravity 클라이언트가 보내는 **에이전트 신원**을 함께 전달합니다:
 `userAgent: "antigravity"`, `requestType: "agent"`, 요청마다 생성되는 `requestId`, 그리고 후속 턴이
-같은 세션에 도달하도록 첫 사용자 턴에서 유도한 `sessionId`입니다. `gemini` 프로바이더의 Code Assist
+같은 세션에 도달하도록 대화에서 가장 먼저 나오는 사용자 텍스트에서 유도한 `sessionId`입니다. `gemini` 프로바이더의 Code Assist
 요청은 이 중 어느 것도 보내지 않습니다.
 
 프로덕션 트래픽을 라우팅하기 전에 알아둘 만한 제한이 두 가지 있습니다:

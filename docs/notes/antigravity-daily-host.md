@@ -101,8 +101,9 @@ mirroring the identity the Antigravity client sends:
 }
 ```
 
-The session id is FNV-1a over the first user turn's first text part in
-the *translated* request, rendered as at most 19 decimal digits behind a
+The session id is FNV-1a over the earliest non-empty user text part in
+the *translated* request — every user turn is scanned, so an image-only
+opening turn does not force a random id — rendered as at most 19 decimal digits behind a
 leading `-`, bounded by the reference client's `Int63n` modulus
 (9e18) so every id fits in a signed 64-bit integer; a request with no
 user text falls back to a random value in the same range so such
@@ -123,13 +124,18 @@ sends none of these four fields.
 
 The two effort sources are normalized the same way: Claude Code sends
 `low|medium|high|xhigh|max`, and `xhigh` and `max` fold onto `high`
-because the catalog stops there. They differ only in what happens to a
-level outside that vocabulary — a configured one passes through unchanged
-(the catalog, not shunt, decides which tiers exist, so an operator can
-name a future one), while an unrecognised request value falls back to
-`medium` rather than being pasted into the upstream model id.
+because the catalog stops there. Matching ignores case and surrounding
+whitespace, so `High` names the published tier. The sources differ only
+in what happens to a level outside that vocabulary. A configured one
+passes through trimmed and lower-cased: the catalog, not shunt, decides
+which tiers exist, so an operator can name a future one. An unrecognised
+request value falls back to `medium` rather than being pasted into the
+upstream model id.
 
-The result is clamped to the tiers the family publishes, so `medium` on
-a `-pro` id becomes `high`. Ids that already end in a tier, and ids that
-are not `gemini-*`, are sent exactly as written. The resolved id and the
-signal that decided it are logged at debug level.
+A recognised tier is clamped to the tiers the family publishes, so
+`medium` on a `-pro` id becomes `high`. An unrecognised configured level
+is appended as written and never clamped. The family is read from the
+id's `-`-separated segments: `gemini-3-pro-preview` is Pro, and an id
+that merely contains the letters is not. Ids that already end in a tier,
+and ids that are not `gemini-*`, are sent exactly as written. The
+resolved id and the signal that decided it are logged at debug level.

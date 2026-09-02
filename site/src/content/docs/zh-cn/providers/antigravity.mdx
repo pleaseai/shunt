@@ -105,15 +105,17 @@ upstream_model = "gemini-3.6-flash-medium"
 适用的信号:
 
 1. `[[routes]]` 条目或提供方上的 `effort` —— 显式指定。这里 `xhigh` 和 `max` 同样会折叠为 `high`;
-   shunt 不认识的档位会原样通过,因此你可以指定目录以后才加入的档位。
+   匹配忽略大小写和前后空白。shunt 不认识的档位会按所写(去除空白并转为小写)通过,因此你可以指定
+   目录以后才加入的档位。
 2. 请求中的 `output_config.effort`(Claude Code 会发送 `low`/`medium`/`high`/`xhigh`/`max`,
    其中 `xhigh` 和 `max` 会折叠为 `high`)。
 3. `thinking.type = "enabled"` —— `budget_tokens` 不超过 2048 为 `low`,不超过 8192 为 `medium`,
    更大则为 `high`。启用但未指定 budget 的块会使用与转换后请求相同的默认值 `1024`,因此落在 `low`。
 4. 其余情况为 `medium`。
 
-结果会被收敛到该家族实际发布的档位,因此 `-pro` id 上的 `medium` 会变成 `-high`。已经以档位结尾的
-id,以及非 Gemini 的 id(`claude-sonnet-4-6`、`gpt-oss-120b-medium`),都会原样发送。无法识别的
+已识别的档位会被收敛到该家族实际发布的档位,因此 `-pro` id 上的 `medium` 会变成 `-high`;配置中
+未识别的 `effort` 会按规则 1 所述原样追加,不会被收敛。已经以档位结尾的 id,以及非 Gemini 的
+id(`claude-sonnet-4-6`、`gpt-oss-120b-medium`),都会原样发送。无法识别的
 `output_config.effort` 会回退到 `medium`,不会进入模型 id。
 
 Antigravity 也提供 Claude 模型,但 shunt 尚未实现它们所需的请求改写
@@ -133,7 +135,7 @@ Antigravity 也提供 Claude 模型,但 shunt 尚未实现它们所需的请求�
 挑选模型 effort 档位的信号之一,见上面的**路由一个模型**。
 
 此外,每个请求都会带上 Antigravity 客户端所发送的**代理身份**:`userAgent: "antigravity"`、
-`requestType: "agent"`、每个请求各自的 `requestId`,以及从首个用户轮次推导出的 `sessionId`,好让后续
+`requestType: "agent"`、每个请求各自的 `requestId`,以及从对话中最早出现的用户文本推导出的 `sessionId`,好让后续
 轮次落到同一个会话。`gemini` 提供方的 Code Assist 请求不会发送其中任何一项。
 
 在把生产流量路由过来之前,有两项限制值得知道:
