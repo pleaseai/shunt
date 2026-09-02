@@ -1,0 +1,22 @@
+src/model/gemini_request.rs
+  s_f823cb99b05b39::t_dd0f438d874522 606-633,638-698
+  s_f823cb99b05b39::t_34dfeddc7b8ec8 234,241-262
+  s_f823cb99b05b39::t_8f00eadd883894 634-637
+  s_f823cb99b05b39::t_ff432a4bc4733c 263-264
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2402f489f597f64fa6c8b296e8f8ec47564797c0",
+  "prompts": {},
+  "sessions": {
+    "s_f823cb99b05b39": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d1a0043-be8d-489b-bd00-bef41f34144a",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
