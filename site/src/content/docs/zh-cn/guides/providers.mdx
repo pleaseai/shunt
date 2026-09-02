@@ -23,7 +23,7 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 | [`grok`](/zh-cn/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅 |
 | [`cursor`](/zh-cn/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` —— 复用 `~/.gemini/oauth_creds.json` |
-| [`antigravity`](/zh-cn/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` —— 复用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |
+| [`antigravity`](/zh-cn/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` —— 复用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |
 | `antigravity-cli` | `antigravity_cli` | `none` | **已废弃。** 本地 `agy` CLI —— 经由子进程访问同一后端 |
 
 每个名称都链接到对应提供方的专门页面,其中包含完整设置。`shunt add upstream <name>`
@@ -48,8 +48,12 @@ display_name = "[AGY ] Gemini-3.6-Flash"
 [[routes]]
 model = "claude-gemini-3.6-flash-via-antigravity"
 provider = "antigravity"
-upstream_model = "gemini-3.6-flash"
+upstream_model = "gemini-3.6-flash-medium"
 ```
+
+Antigravity 把 Gemini 模型的 effort 档位写进 id 发布(`-low`、`-medium`、`-high`;Pro 只有 `-low` 和
+`-high`),并不提供不带后缀的 slug。不带后缀的 `gemini-*` id 会由 shunt 依据 `effort`、请求、否则按
+`medium` 解析出档位并追加,所以两种写法都能用。
 
 完整设置 —— 登录与 scope、项目发现、模型 slug、thinking,以及适配器承载的内容 —— 见专门的
 [Antigravity 提供方页面](/zh-cn/providers/antigravity/)。

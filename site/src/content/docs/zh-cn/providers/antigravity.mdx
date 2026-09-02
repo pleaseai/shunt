@@ -3,8 +3,8 @@ title: Antigravity
 description: 通过 HTTP 触达 Google Antigravity 后端 —— 登录、项目发现、模型 slug、thinking,以及适配器承载的内容。
 ---
 
-内置的 **`antigravity`** 提供方通过 HTTP 在 `cloudcode-pa.googleapis.com` 触达 Google 的 **Antigravity**
-后端。它讲的是与 `gemini` 提供方相同的 Code Assist 协议 ——
+内置的 **`antigravity`** 提供方通过 HTTP 在 `daily-cloudcode-pa.googleapis.com` 触达 Google 的
+**Antigravity** 后端。该主机就是 Antigravity 客户端自身在发现和推理时都会访问的 `daily-` 控制平面。它讲的是与 `gemini` 提供方相同的 Code Assist 协议 ——
 shunt 将 Anthropic Messages 转换为 `generateContent` / `streamGenerateContent` —— 但它
 用 Antigravity 订阅 token 认证,并在项目发现期间把自己标识为 `ideType: ANTIGRAVITY`。
 
@@ -64,7 +64,7 @@ provider = "anthropic"   # 让 Anthropic 作为无路由匹配模型(例如 clau
 [[upstreams]]
 name = "antigravity"
 kind = "antigravity"
-base_url = "https://cloudcode-pa.googleapis.com"
+base_url = "https://daily-cloudcode-pa.googleapis.com"
 auth = "antigravity_oauth"
 ```
 
@@ -77,9 +77,16 @@ auth = "antigravity_oauth"
 ## 3. 路由一个模型
 
 shunt 不为该提供方保留任何模型白名单:解析出的 `upstream_model` 会原样发送到
-后端,由后端决定。Antigravity 提供 Gemini 家族的 slug,包括
-`gemini-3.5-flash` 和 `gemini-3.6-flash` —— 这些 slug 是 Code Assist 的 `gemini` 提供方**不**
-接受的。
+后端,由后端决定。Antigravity 提供 Code Assist 的 `gemini` 提供方**不**接受的 Gemini 家族 slug ——
+但它把 **effort 档位写进 id**,以 `-low`、`-medium`、`-high` 后缀的形式发布(Pro 只有 `-low` 和
+`-high`)。用 `agy models` 可以列出当前目录;撰写本文时其中包含 `gemini-3.8-flash-*`、
+`gemini-3.7-flash-*`、`gemini-3.6-flash-*`、`gemini-3.1-pro-low` / `-high`、`claude-sonnet-4-6`、
+`claude-opus-4-6-thinking` 和 `gpt-oss-120b-medium`。
+
+不带后缀的 slug **不会被提供**:`daily-cloudcode-pa.googleapis.com` 会回 `404`。在生产主机上,shunt
+早先的请求 —— 不带后缀的 id 加上普通的 Code Assist 信封 —— 返回了看起来像限流的、具有误导性的
+`429 RESOURCE_EXHAUSTED`(“check quota”);但探测同时改变了这两个输入,因此无法确定是哪一个导致了
+这个 429。
 
 把每个本地别名映射到确切的 Antigravity slug:
 
@@ -91,8 +98,25 @@ display_name = "[AGY ] Gemini-3.6-Flash"
 [[routes]]
 model = "claude-gemini-3.6-flash-via-antigravity"
 provider = "antigravity"
-upstream_model = "gemini-3.6-flash"
+upstream_model = "gemini-3.6-flash-medium"
 ```
+
+你不必手写这个后缀。对于不带后缀的 `gemini-*` id,shunt 会自行解析档位并追加,按以下顺序取第一个
+适用的信号:
+
+1. `[[routes]]` 条目或提供方上的 `effort` —— 显式指定。这里 `xhigh` 和 `max` 同样会折叠为 `high`;
+   匹配忽略大小写和前后空白。shunt 不认识的档位会按所写(去除空白并转为小写)通过,因此你可以指定
+   目录以后才加入的档位。
+2. 请求中的 `output_config.effort`(Claude Code 会发送 `low`/`medium`/`high`/`xhigh`/`max`,
+   其中 `xhigh` 和 `max` 会折叠为 `high`)。
+3. `thinking.type = "enabled"` —— `budget_tokens` 不超过 2048 为 `low`,不超过 8192 为 `medium`,
+   更大则为 `high`。启用但未指定 budget 的块会使用与转换后请求相同的默认值 `1024`,因此落在 `low`。
+4. 其余情况为 `medium`。
+
+已识别的档位会被收敛到该家族实际发布的档位,因此 `-pro` id 上的 `medium` 会变成 `-high`;配置中
+未识别的 `effort` 会按规则 1 所述原样追加,不会被收敛。已经以档位结尾的 id,以及非 Gemini 的
+id(`claude-sonnet-4-6`、`gpt-oss-120b-medium`),都会原样发送。无法识别的
+`output_config.effort` 会回退到 `medium`,不会进入模型 id。
 
 Antigravity 也提供 Claude 模型,但 shunt 尚未实现它们所需的请求改写
 ([#368](https://github.com/pleaseai/shunt/issues/368))。本地没有任何东西会拒绝这样的 slug ——
@@ -107,9 +131,12 @@ Antigravity 也提供 Claude 模型,但 shunt 尚未实现它们所需的请求�
 `candidatesTokenCount` 映射到 `input_tokens` 和 `output_tokens`。
 
 **Thinking** 跟随请求:`thinking.type = "enabled"` 会用 `budget_tokens` 设置
-`thinkingConfig.thinkingBudget`(默认 `1024`),`"disabled"` 则把它设为 `0`。这条传输**没有
-`effort` 设置** —— `effort` 属于已废弃的 CLI 提供方,后者从 `agy models` 发现其有效的
-模型 / effort 组合。
+`thinkingConfig.thinkingBudget`(默认 `1024`),`"disabled"` 则把它设为 `0`。启用的 `thinking` 块也是
+挑选模型 effort 档位的信号之一,见上面的**路由一个模型**。
+
+此外,每个请求都会带上 Antigravity 客户端所发送的**代理身份**:`userAgent: "antigravity"`、
+`requestType: "agent"`、每个请求各自的 `requestId`,以及从对话中最早出现的用户文本推导出的 `sessionId`,好让后续
+轮次落到同一个会话。`gemini` 提供方的 Code Assist 请求不会发送其中任何一项。
 
 在把生产流量路由过来之前,有两项限制值得知道:
 
@@ -134,24 +161,25 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 <Aside type="note" title="覆盖项">
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE` 可覆盖凭据路径(空值会回退到
-默认值)。`antigravity_oauth` 上游被固定到一个主机:它接受的唯一非回环 `base_url`
-是 `cloudcode-pa.googleapis.com` 本身上的 HTTPS —— **没有其他 `googleapis.com` 主机
-合格**。回环主机可用于本地代理。其他任何情况都会在配置
+默认值)。`antigravity_oauth` 上游被固定到两个主机:它接受的非回环 `base_url` 只能是
+`daily-cloudcode-pa.googleapis.com`(默认)或仍然有效、供确有需要的运维者使用的
+`cloudcode-pa.googleapis.com` 上的 HTTPS —— 包括 `daily-cloudcode-pa.sandbox.googleapis.com` 在内,
+**没有其他 `googleapis.com` 主机合格**。回环主机可用于本地代理。其他任何情况都会在配置
 校验阶段被拒绝,而不是悄悄把你的订阅 token 发往别的 origin ——
 `providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
-subscription token over plaintext`,或者与之对应的 `... host <host> is not a googleapis.com host;
-refusing to send a subscription token off-origin`(该消息写的是 “googleapis.com host”,但它背后的
-检查针对的是确切的那个 Code Assist 主机)。
+subscription token over plaintext`,或者与之对应的 `... host <host> is neither
+daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription
+token off-origin`。
 
-`onboardUser` 位于一个独立的控制平面。一个纯生产的 `base_url` —— `cloudcode-pa.googleapis.com`
-上的 HTTPS,无端口,无路径前缀 —— 会针对
-`daily-cloudcode-pa.googleapis.com` 开通。任何挡在后端前面的东西(一个回环代理,或
-带显式端口或路径前缀的该主机)则通过它自身开通。
+`onboardUser` 位于 `daily-` 控制平面,而默认的 `base_url` 已经指向那里。一个固定在纯生产的
+`base_url` —— `cloudcode-pa.googleapis.com` 上的 HTTPS,无端口,无路径前缀 —— 推理仍留在那里,但
+开通仍会针对 `daily-cloudcode-pa.googleapis.com`。任何挡在后端前面的东西(一个回环代理,或带显式
+端口或路径前缀的这两个主机之一)则通过它自身开通。
 
 [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) 会针对你**已路由的**
 Antigravity 上游做发现 —— 或者在你还没接好路由之前,针对你所声明的 Antigravity 上游。
 只有一个候选时它直接胜出,而当有多个候选合格时,**名为 `antigravity`** 的那个胜出。如果有
-多个合格却都不叫这个名字,登录会拒绝猜测 —— 它记录一条警告并回退到生产端点,因此它开通的
+多个合格却都不叫这个名字,登录会拒绝猜测 —— 它记录一条警告并回退到默认端点,因此它开通的
 项目可能并不是你的路由所用的那个后端。请把你希望被发现的那个上游命名为 `antigravity`。
 
 </Aside>

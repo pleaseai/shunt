@@ -126,7 +126,7 @@ pub fn routed_antigravity_credential_error(config: &Config) -> Option<String> {
 
 /// The Code Assist host `shunt login antigravity` runs project discovery
 /// against: the `base_url` of the Antigravity upstream the config routes to,
-/// else of the only one it declares, else the production default.
+/// else of the only one it declares, else [`auth::DEFAULT_API_ENDPOINT`].
 ///
 /// Looking a slot up by name alone is not enough, and that distinction is
 /// load-bearing rather than defensive. `[providers.antigravity]` is only a
@@ -145,12 +145,13 @@ pub fn routed_antigravity_credential_error(config: &Config) -> Option<String> {
 /// `resolve_credential`.
 pub fn login_base_url(config: Option<&Config>) -> String {
     let Some(config) = config else {
-        return auth::API_ENDPOINT.to_string();
+        return auth::DEFAULT_API_ENDPOINT.to_string();
     };
 
     // Prefer the upstreams the config can actually send a request to. A
     // non-ordered `[providers.*]` config keeps every built-in table merged in,
-    // so the seeded `antigravity` slot exists — pointing at production — even
+    // so the seeded `antigravity` slot exists — pointing at the default
+    // backend — even
     // when the operator declared their own Antigravity provider under another
     // name and routed to that one. Picking by name alone would then discover
     // against production while the request path used the configured host,
@@ -173,7 +174,7 @@ pub fn login_base_url(config: Option<&Config>) -> String {
     let candidates = if routed_vetted.is_empty() {
         // Nothing Antigravity-shaped is routed, so there is no intent to read
         // off the routes — but the seeded `antigravity` table is still in the
-        // map, and left at the production default it is not a declaration
+        // map, and left at the built-in default it is not a declaration
         // either. Dropping it here cannot widen where the token can go: the
         // host it names is exactly the fallback this function returns when it
         // finds no signal at all. Keeping it would instead outvote the one
@@ -182,7 +183,7 @@ pub fn login_base_url(config: Option<&Config>) -> String {
         vetted
             .into_iter()
             .filter(|(name, provider)| {
-                *name != "antigravity" || !auth::addresses_production_backend(&provider.base_url)
+                *name != "antigravity" || !auth::addresses_default_backend(&provider.base_url)
             })
             .collect()
     } else {
@@ -196,7 +197,7 @@ pub fn login_base_url(config: Option<&Config>) -> String {
     // reach another host the operator themself pinned — never an arbitrary
     // one.
     match candidates.as_slice() {
-        [] => auth::API_ENDPOINT.to_string(),
+        [] => auth::DEFAULT_API_ENDPOINT.to_string(),
         [(_, provider)] => provider.base_url.clone(),
         // Several qualify. The built-in name still disambiguates when it is
         // one of them: an operator who configured that slot named the upstream
@@ -209,7 +210,7 @@ pub fn login_base_url(config: Option<&Config>) -> String {
             // Otherwise there is no operator-intended pick to infer — a
             // failover chain can hold both a debug proxy and the real backend.
             // Guessing would provision a project against a backend the
-            // operator never chose, so say so and use the production default,
+            // operator never chose, so say so and use the built-in default,
             // which is what login targeted before it read config at all.
             tracing::warn!(
                 candidates = ?several.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
@@ -217,7 +218,7 @@ pub fn login_base_url(config: Option<&Config>) -> String {
                  `antigravity`; signing in against the default Code Assist endpoint. Name the \
                  one to log in to `antigravity` to discover the project against it."
             );
-            auth::API_ENDPOINT.to_string()
+            auth::DEFAULT_API_ENDPOINT.to_string()
         }
     }
 }
@@ -405,7 +406,7 @@ mod tests {
 
             assert_eq!(
                 login_base_url(Some(&config)),
-                super::auth::API_ENDPOINT,
+                super::auth::DEFAULT_API_ENDPOINT,
                 "kind {kind:?} with auth {auth:?} must not redirect discovery"
             );
         }
@@ -437,8 +438,8 @@ mod tests {
         // A failover chain can hold both a debug proxy and the real backend.
         // With no built-in name to disambiguate there is no operator-intended
         // pick to infer, and guessing would provision a project against a
-        // backend they never chose — so fall back to production rather than
-        // take the first one.
+        // backend they never chose — so fall back to the built-in default
+        // rather than take the first one.
         let mut config = base();
         let provider = config
             .providers
@@ -455,7 +456,10 @@ mod tests {
             config.providers.insert(name.to_string(), candidate);
         }
 
-        assert_eq!(login_base_url(Some(&config)), super::auth::API_ENDPOINT);
+        assert_eq!(
+            login_base_url(Some(&config)),
+            super::auth::DEFAULT_API_ENDPOINT
+        );
     }
 
     #[test]
@@ -508,19 +512,18 @@ mod tests {
     }
 
     #[test]
-    fn login_treats_every_production_spelling_of_the_built_in_slot_as_no_signal() {
+    fn login_treats_every_default_spelling_of_the_built_in_slot_as_no_signal() {
         // Whether the seeded `antigravity` table was left alone or spelled out
-        // by hand, a slot that addresses production names exactly the host
-        // login falls back to — so it never outvotes a declared upstream. The
-        // check parses the URL rather than comparing bytes, which is why the
-        // cased, trailing-slash, and explicit-port spellings behave the same;
+        // by hand, a slot that addresses the built-in default names exactly
+        // the host login falls back to — so it never outvotes a declared
+        // upstream. The check parses the URL rather than comparing bytes,
+        // which is why the cased and trailing-slash spellings behave the same;
         // a byte compare would make the pick depend on capitalization, the
-        // defect `addresses_production_backend` exists to prevent.
+        // defect `addresses_default_backend` exists to prevent.
         for spelling in [
-            "https://cloudcode-pa.googleapis.com",
-            "https://cloudcode-pa.googleapis.com/",
-            "https://CloudCode-PA.googleapis.com",
-            "https://cloudcode-pa.googleapis.com:443",
+            "https://daily-cloudcode-pa.googleapis.com",
+            "https://daily-cloudcode-pa.googleapis.com/",
+            "https://Daily-CloudCode-PA.googleapis.com",
         ] {
             let mut config = base();
             let mut provider = config
@@ -545,10 +548,10 @@ mod tests {
     }
 
     #[test]
-    fn login_falls_back_to_production_without_a_config() {
+    fn login_falls_back_to_the_default_backend_without_a_config() {
         // `shunt login antigravity` must still work when no config loads at
         // all — that is the whole reason main.rs treats the load as optional.
-        assert_eq!(login_base_url(None), super::auth::API_ENDPOINT);
+        assert_eq!(login_base_url(None), super::auth::DEFAULT_API_ENDPOINT);
     }
 
     /// A legacy `[providers.*]` config with the operator's own Antigravity
@@ -666,7 +669,10 @@ mod tests {
         });
         config.providers.remove("antigravity");
 
-        assert_eq!(login_base_url(Some(&config)), super::auth::API_ENDPOINT);
+        assert_eq!(
+            login_base_url(Some(&config)),
+            super::auth::DEFAULT_API_ENDPOINT
+        );
     }
 
     #[test]

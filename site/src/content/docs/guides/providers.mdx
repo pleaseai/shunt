@@ -23,7 +23,7 @@ Providers are a **name → config map**. Anthropic-compatible and Responses-comp
 | [`grok`](/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` |
 | [`cursor`](/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — reuses `~/.gemini/oauth_creds.json` |
-| [`antigravity`](/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` — reuses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
+| [`antigravity`](/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` — reuses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
 | `antigravity-cli` | `antigravity_cli` | `none` | **Deprecated.** Local `agy` CLI — same backend via subprocess |
 
 Each linked name opens its dedicated setup page. `shunt add upstream <name>` prints a step-by-step blueprint for built-in providers; see the [CLI reference](/reference/cli/#shunt-add).
@@ -43,7 +43,7 @@ provider = "gemini"
 upstream_model = "gemini-2.5-flash"
 ```
 
-Code Assist also recognizes preview slugs such as `gemini-3.1-pro-preview` and `gemini-3-flash-preview`, subject to account entitlement and provider capacity. It does not accept the Antigravity-only `gemini-3.5-flash` and `gemini-3.6-flash` slugs.
+Code Assist also recognizes preview slugs such as `gemini-3.1-pro-preview` and `gemini-3-flash-preview`, subject to account entitlement and provider capacity. It does not accept the Antigravity-only slugs such as `gemini-3.6-flash-medium`.
 
 The separate `antigravity` provider reaches the same backend over HTTP. Authenticate it with `shunt login antigravity`: a Google
 authorization-code flow using Antigravity's own OAuth client, which asks for two scopes (`cclog`, `experimentsandconfigs`) a Gemini CLI
@@ -60,8 +60,12 @@ display_name = "[AGY ] Gemini-3.6-Flash"
 [[routes]]
 model = "claude-gemini-3.6-flash-via-antigravity"
 provider = "antigravity"
-upstream_model = "gemini-3.6-flash"
+upstream_model = "gemini-3.6-flash-medium"
 ```
+
+Antigravity publishes its Gemini models with the effort tier in the id (`-low`, `-medium`, `-high`;
+Pro has only `-low` and `-high`) and does not serve a bare slug. A bare `gemini-*` id is resolved to a tier
+for you — from `effort`, the request, or `medium` — so both spellings work.
 
 For the full setup — login and scopes, project discovery, model slugs, thinking, and what the
 adapter carries — see the dedicated [Antigravity provider page](/providers/antigravity/).

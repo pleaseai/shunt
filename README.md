@@ -144,7 +144,7 @@ This chain tries `anthropic-primary` and then `codex-fallback`. `auth` accepts e
 | `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` (`shunt login xai` with a SuperGrok / X Premium+ subscription) |
 | `cursor` | `cursor` | Cursor OAuth | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 | `gemini` | `gemini` | Google OAuth | `cloudcode-pa.googleapis.com` — Google Code Assist backend; reuses `~/.gemini/oauth_creds.json` |
-| `antigravity` | `antigravity` | Antigravity OAuth | `cloudcode-pa.googleapis.com` — Google Antigravity backend over HTTP; uses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
+| `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — Google Antigravity backend over HTTP; uses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
 | `antigravity-cli` | `antigravity_cli` | None (local CLI) | **Deprecated.** Local `agy` binary — same backend via subprocess; superseded by `antigravity` above |
 
 xAI may gate OAuth access by subscription tier — if `grok` returns 403, use the `xai` API-key provider instead. Details in [`docs/m6-xai-provider.md`](docs/m6-xai-provider.md).

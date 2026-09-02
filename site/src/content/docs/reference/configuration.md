@@ -456,7 +456,7 @@ Each provider is a table under a name of your choosing. Built-ins (`anthropic`, 
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. Its own value can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)). |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `accounts` | array of account tables | OAuth account pool. Valid only with `auth = "claude_oauth"`, `"chatgpt_oauth"`, or `"kimi_oauth"`; see below. |
-| `effort` | `low` … `max` | Optional default reasoning effort (`responses` providers). |
+| `effort` | `low` … `max` | Optional default reasoning effort (`responses` providers). Also applies to `kind = "antigravity"`, where it is appended to a bare `gemini-*` `upstream_model` as the catalog's effort suffix. |
 | `service_tier` | `fast` \| `priority` \| `flex` \| `default` | Optional default Codex "Fast" mode opt-in (`responses` providers) — sent as the Responses API `service_tier` field. `fast` normalizes to `priority`; `default` is a client-only sentinel that is never sent on the wire. Off by default. Withheld for the `xai`/`grok` flavors even when configured (xAI 400s on it). A route-level `service_tier` (including an explicit `default`) overrides this value — see below. See [Codex → Fast mode](/guides/codex/#fast-mode). |
 | `count_tokens` | `tiktoken` (default) \| `estimate` | `responses` and `cursor` providers: local tiktoken count vs. `501 not_supported` fallback ([details](/guides/effort-and-context/#token-counting-count_tokens)). |
 | `websocket` | `true` \| `false` (default) | Opt in to the Codex Responses WebSocket v2 transport (ChatGPT/Codex backend only; falls back to HTTP on any transport failure before the first event reaches the client, so it can never do worse than plain HTTP). |
@@ -535,7 +535,7 @@ Legacy exact-match routing entries — checked after a matching `[models.upstrea
 | `model` | ✅ | The exact `model` id Claude Code sends |
 | `provider` | ✅ | Configured upstream name |
 | `upstream_model` | — | Rewrite the model id forwarded upstream |
-| `effort` | — | Per-route reasoning-effort override |
+| `effort` | — | Per-route reasoning-effort override. On an `antigravity` route it pins the effort suffix synthesized onto a bare `gemini-*` `upstream_model`. |
 | `service_tier` | — | Per-route Codex "Fast" mode override; see `[providers.*]` `service_tier` above. An explicit route-level `default` opts the route out of a provider-level `priority`/`flex` tier instead of inheriting it. |
 
 ## `[[route_prefixes]]`

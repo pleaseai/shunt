@@ -310,7 +310,7 @@ codex-fallback = "gpt-5.2"
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough` 转发客户端自己的 credential;`api_key` 从 `api_key_env` 注入一个密钥;`chatgpt_oauth` 复用 `~/.codex/auth.json`;`claude_oauth` 从显式 Anthropic 账户中选择;`xai_oauth` 复用来自 `shunt login xai` 的 `~/.shunt/xai-auth.json`(仅经由 HTTPS 发送到 x.ai/grok.com 主机);`cursor_oauth` 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`);`google_oauth` 复用 gemini CLI 登录的 `~/.gemini/oauth_creds.json`,仅在 `kind = "gemini"` 下有效;`antigravity_oauth` 复用来自 `shunt login antigravity` 的 `~/.shunt/antigravity-auth.json`,仅在 `kind = "antigravity"` 下有效,且与 `google_oauth` **不可互换** —— Antigravity 会请求 Gemini CLI 令牌所没有的两个 scope(`cclog`、`experimentsandconfigs`);`none` 完全不发送 credential,用于没有上游需要认证的适配器(`kind = "antigravity_cli"`)。 |
 | `api_key_env` | 环境变量名 | 当 `auth = "api_key"` 时,从何处读取密钥。该值自身也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。 |
 | `api_key_header` | `bearer`(默认) \| `x_api_key` | 注入的密钥在哪个头部中发送。 |
-| `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。 |
+| `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。也适用于 `kind = "antigravity"`,会作为目录的 effort 后缀追加到不带后缀的 `gemini-*` `upstream_model` 上。 |
 | `count_tokens` | `tiktoken`(默认) \| `estimate` | `responses` 与 `cursor` provider:本地 tiktoken 计数 vs. `501 not_supported` 回退([详情](/zh-cn/guides/effort-and-context/#token-counting-count_tokens))。 |
 | `tool_search` | 未设置("auto",默认) \| `true` \| `false` | 在模型为 GPT-5.4+ 且风格不是 xAI/Grok 时,为 Claude Code 的工具搜索使用原生的客户端执行 `tool_search` 协议。未设置时仅对已验证支持的主机 —— ChatGPT/Codex 后端与 `api.openai.com` —— 默认使用原生协议,LiteLLM、vLLM、OpenRouter、自托管代理等其他所有 OpenAI 兼容端点都保留文本 shim。设为 `true` 可让已验证的自定义端点选择加入原生协议;设为 `false` 则始终强制使用 shim。见 [Codex → 工具搜索](/zh-cn/guides/codex/#原生协议)。 |
 
@@ -327,7 +327,7 @@ codex-fallback = "gpt-5.2"
 | `model` | ✅ | Claude Code 发送的精确 `model` id |
 | `provider` | ✅ | 已配置的上游名称 |
 | `upstream_model` | — | 重写转发给上游的模型 id |
-| `effort` | — | 按路由的推理力度覆盖 |
+| `effort` | — | 按路由的推理力度覆盖。在 `antigravity` 路由上,它会固定合成到不带后缀的 `gemini-*` `upstream_model` 上的 effort 后缀。 |
 
 ## `[[route_prefixes]]`
 

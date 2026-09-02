@@ -340,7 +340,7 @@ origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 �
 | `api_key_env` | env 변수 이름 | `auth = "api_key"`일 때 키를 읽어오는 곳. 이 값 자신도 `${VAR}` / `${file:...}`로 쓸 수 있음([Secret 참조](#secret-참조) 참고). |
 | `api_key_header` | `bearer`(기본) \| `x_api_key` | 주입된 키가 전송되는 헤더. |
 | `accounts` | 계정 테이블 배열 | Anthropic OAuth 계정 풀. `kind = "anthropic"`이고 `auth = "claude_oauth"`일 때만 유효; 아래 참고. |
-| `effort` | `low` … `max` | 선택적 기본 추론 노력(`responses` 프로바이더). |
+| `effort` | `low` … `max` | 선택적 기본 추론 노력(`responses` 프로바이더). `kind = "antigravity"`에도 적용되며, 접미사가 없는 `gemini-*` `upstream_model`에 카탈로그의 effort 접미사로 붙습니다. |
 | `count_tokens` | `tiktoken`(기본) \| `estimate` | `responses` 및 `cursor` provider: 로컬 tiktoken 카운트 대 `501 not_supported` fallback([상세](/ko/guides/effort-and-context/#token-counting-count_tokens)). |
 | `tool_search` | 미설정("auto", 기본) \| `true` \| `false` | gpt-5.4+ 모델이면서 계열이 xAI/Grok이 아닐 때 Claude Code의 도구 검색에 네이티브 클라이언트 실행 `tool_search` 프로토콜을 사용합니다. 미설정 시에는 이미 검증된 호스트 — ChatGPT/Codex 백엔드와 `api.openai.com` — 에서만 기본으로 네이티브를 사용하고, LiteLLM·vLLM·OpenRouter·자체 호스팅 프록시 등 그 외 모든 OpenAI 호환 엔드포인트는 텍스트 shim을 유지합니다. 검증된 커스텀 엔드포인트를 네이티브에 옵트인하려면 `true`로, shim을 항상 강제하려면 `false`로 설정하세요. [Codex → 도구 검색](/ko/guides/codex/#네이티브-프로토콜)을 참고하세요. |
 
@@ -357,7 +357,7 @@ origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 �
 | `model` | ✅ | Claude Code가 보내는 정확한 `model` id |
 | `provider` | ✅ | 설정된 업스트림 이름 |
 | `upstream_model` | — | 업스트림으로 전달되는 모델 id를 다시 씀 |
-| `effort` | — | 라우트별 추론 노력 오버라이드 |
+| `effort` | — | 라우트별 추론 노력 오버라이드. `antigravity` 라우트에서는 접미사가 없는 `gemini-*` `upstream_model`에 붙일 effort 접미사를 고정합니다. |
 
 ## `[[route_prefixes]]`
 
