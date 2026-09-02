@@ -1,0 +1,19 @@
+src/model/antigravity_request.rs
+  s_042a69e8c0aab0::t_b0dbd18d2d598e 27-28,109-112,115-116,334-335,338-339,342,349-352
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "21219474e84ac88f4458ca28a4439b041eafca8f",
+  "prompts": {},
+  "sessions": {
+    "s_042a69e8c0aab0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a613fc2-5d4c-4309-ac6f-980d73a2fe4d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
