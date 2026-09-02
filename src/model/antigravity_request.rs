@@ -24,6 +24,8 @@ const THINKING_MEDIUM_BUDGET: u64 = 8192;
 /// 19-digit ceiling of `10^19`: that ceiling admits values no Antigravity
 /// client ever emits, and a backend parsing the field as a signed 64-bit
 /// integer would reject them.
+/// Bytes of the opening user text that seed the stable session id.
+const SESSION_SEED_LIMIT: usize = 4096;
 const SESSION_ID_MODULUS: u64 = 9_000_000_000_000_000_000;
 
 /// Wrap a Gemini `generateContent` request in the Antigravity *agent*
@@ -104,11 +106,14 @@ pub fn antigravity_session_id(request: &Value) -> String {
 /// value is a session identity the backend correlates across requests, so it
 /// must not change when the standard library's default hasher does. The
 /// modulus keeps the rendering inside the 19 decimal digits the reference
-/// client emits.
+/// client emits. Only the first [`SESSION_SEED_LIMIT`] bytes feed the hash:
+/// an opening turn can carry a whole pasted file, and a bounded prefix is
+/// already enough to tell sessions apart without scanning every byte on the
+/// request path.
 fn stable_session_digits(text: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in text.as_bytes() {
-        hash ^= u64::from(*byte);
+    for byte in text.bytes().take(SESSION_SEED_LIMIT) {
+        hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100_0000_01b3);
     }
     hash % SESSION_ID_MODULUS
@@ -326,20 +331,25 @@ mod tests {
                 "contents": [{"role": "user", "parts": [{"text": seed}]}]
             });
             let session_id = antigravity_session_id(&request);
+            // The id itself stays out of these messages: CodeQL reads a
+            // formatted `session_id` as sensitive data reaching a log sink.
             let digits = session_id
                 .strip_prefix('-')
-                .unwrap_or_else(|| panic!("{session_id} must start with a dash"));
-            assert!(digits.len() <= 19, "{session_id} is longer than 19 digits");
+                .expect("a session id must start with a dash");
+            assert!(digits.len() <= 19, "a session id is at most 19 digits");
             digits
                 .parse::<i64>()
-                .unwrap_or_else(|error| panic!("{session_id} must parse as i64: {error}"));
+                .unwrap_or_else(|error| panic!("a session id must parse as i64: {error}"));
         }
 
         // The random fallback is bounded by the same modulus.
         for _ in 0..256 {
             let session_id = antigravity_session_id(&json!({ "contents": [] }));
             let digits = session_id.strip_prefix('-').expect("leading dash");
-            assert!(digits.len() <= 19, "{session_id} is longer than 19 digits");
+            assert!(
+                digits.len() <= 19,
+                "a random session id is at most 19 digits"
+            );
             digits.parse::<i64>().expect("random ids parse as i64");
         }
     }
