@@ -1,0 +1,23 @@
+.please/docs/research/README.md
+  s_ed5fe86a52d943::t_f56e6d2f03d18e 1-10
+.please/docs/research/md/001-codex-model-verbosity-implementation.md
+  s_ed5fe86a52d943::t_3a5f47fd2e4a18 1-96
+.please/docs/research/md/002-openai-codex-model-catalog-sources-presets.md
+  s_ed5fe86a52d943::t_d61301ddbdb7d3 1-139
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2307989d9a476e92559b4476afb9cbf844843e2b",
+  "prompts": {},
+  "sessions": {
+    "s_ed5fe86a52d943": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fb109163-e970-41db-ad5a-6126a36f8e88",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
