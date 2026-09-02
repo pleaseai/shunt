@@ -253,7 +253,7 @@ fn push_content(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
             .last_mut()
             .filter(|previous| previous["role"] == "user")
         {
-            if let Some(existing) = previous["parts"].as_array_mut() {
+            if let Some(existing) = previous.get_mut("parts").and_then(Value::as_array_mut) {
                 existing.extend(parts);
                 return;
             }
