@@ -4,10 +4,11 @@ description: Reach the Google Antigravity backend over HTTP — login, project d
 ---
 
 The built-in **`antigravity`** provider reaches Google's **Antigravity** backend over HTTP at
-`cloudcode-pa.googleapis.com`. It speaks the same Code Assist protocol as the `gemini` provider —
-shunt translates Anthropic Messages to `generateContent` / `streamGenerateContent` — but it
-authenticates with an Antigravity subscription token and identifies itself as `ideType: ANTIGRAVITY`
-during project discovery.
+`daily-cloudcode-pa.googleapis.com` — the `daily-` control plane the Antigravity client itself
+addresses for both discovery and inference. It speaks the same Code
+Assist protocol as the `gemini` provider — shunt translates Anthropic Messages to
+`generateContent` / `streamGenerateContent` — but it authenticates with an Antigravity subscription
+token and identifies itself as `ideType: ANTIGRAVITY` during project discovery.
 
 Antigravity has a second, older transport. `kind = "antigravity_cli"` runs the local `agy` binary
 as a subprocess and is **deprecated** — see
@@ -67,7 +68,7 @@ provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.
 [[upstreams]]
 name = "antigravity"
 kind = "antigravity"
-base_url = "https://cloudcode-pa.googleapis.com"
+base_url = "https://daily-cloudcode-pa.googleapis.com"
 auth = "antigravity_oauth"
 ```
 
@@ -80,9 +81,17 @@ and `[providers.*]` in one file.
 ## 3. Route a model
 
 shunt keeps no model allowlist for this provider: the resolved `upstream_model` is sent to the
-backend as written, and the backend decides. Antigravity serves the Gemini-family slugs, including
-`gemini-3.5-flash` and `gemini-3.6-flash` — slugs the Code Assist `gemini` provider does **not**
-accept.
+backend as written, and the backend decides. Antigravity serves the Gemini-family slugs the Code
+Assist `gemini` provider does **not** accept — but it publishes them with the **effort tier in the
+id**, as a `-low`, `-medium`, or `-high` suffix (Pro has only `-low` and `-high`). Run `agy models`
+to list the catalog as it stands today; at the time of writing it holds `gemini-3.8-flash-*`,
+`gemini-3.7-flash-*`, `gemini-3.6-flash-*`, `gemini-3.1-pro-low` / `-high`, `claude-sonnet-4-6`,
+`claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`.
+
+A bare slug is **not served**: `daily-cloudcode-pa.googleapis.com` answers it with a `404`.
+Against the production host, shunt's earlier request — a bare id *and* the plain Code Assist
+envelope — came back as a misleading `429 RESOURCE_EXHAUSTED` ("check quota"), which reads as a rate
+limit; the probes changed both inputs together, so which one produced that 429 is not established.
 
 Map a local alias to the exact Antigravity slug:
 
@@ -94,8 +103,26 @@ display_name = "[AGY ] Gemini-3.6-Flash"
 [[routes]]
 model = "claude-gemini-3.6-flash-via-antigravity"
 provider = "antigravity"
-upstream_model = "gemini-3.6-flash"
+upstream_model = "gemini-3.6-flash-medium"
 ```
+
+You do not have to write the suffix by hand. For a bare `gemini-*` id, shunt resolves the tier
+itself and appends it, taking the first signal that applies:
+
+1. `effort` on the `[[routes]]` entry, or on the provider — an explicit pin. `xhigh` and `max` fold
+   onto `high` here too; a level shunt does not recognise is passed through unchanged, so you can
+   name a tier the catalog adds later.
+2. The request's `output_config.effort` (Claude Code sends `low`/`medium`/`high`/`xhigh`/`max`;
+   `xhigh` and `max` fold onto `high`).
+3. `thinking.type = "enabled"` — `budget_tokens` at or below 2048 is `low`, at or below 8192 is
+   `medium`, above that is `high`. An enabled block that names no budget uses the same `1024`
+   default the translated request carries, so it lands in `low`.
+4. Otherwise `medium`.
+
+The result is clamped to the tiers the family actually publishes, so a `medium` on a `-pro` id
+becomes `-high`. An id that already ends in a tier, and any non-Gemini id (`claude-sonnet-4-6`,
+`gpt-oss-120b-medium`), is sent exactly as written. An unrecognised `output_config.effort` falls
+back to `medium` rather than reaching the model id.
 
 Antigravity also offers Claude models, but shunt does not yet implement the request rewrites they
 need ([#368](https://github.com/pleaseai/shunt/issues/368)). Nothing rejects such a slug locally —
@@ -110,9 +137,14 @@ become `systemInstruction`. Token usage is Google's reported count — `promptTo
 `candidatesTokenCount` map to `input_tokens` and `output_tokens`.
 
 **Thinking** follows the request: `thinking.type = "enabled"` sets `thinkingConfig.thinkingBudget`
-from `budget_tokens` (default `1024`), and `"disabled"` sets it to `0`. This transport has **no
-`effort` setting** — `effort` belongs to the deprecated CLI provider, which discovers its valid
-model/effort pairs from `agy models`.
+from `budget_tokens` (default `1024`), and `"disabled"` sets it to `0`. An enabled `thinking` block
+is also one of the signals that picks the model's effort tier, as described under **Route a model**
+above.
+
+Every request additionally carries the **agent identity the Antigravity client sends**:
+`userAgent: "antigravity"`, `requestType: "agent"`, a per-request `requestId`, and a `sessionId`
+derived from the opening user turn so follow-up turns land on the same session. The `gemini`
+provider's Code Assist requests carry none of these.
 
 Two limits are worth knowing before you route production traffic:
 
@@ -138,25 +170,28 @@ Confirm the response's `x-gateway-upstream` header names `antigravity`, then
 <Aside type="note" title="Overrides">
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE` overrides the credential path (an empty value falls back to the
-default). An `antigravity_oauth` upstream is pinned to one host: the only non-loopback `base_url` it
-accepts is HTTPS on `cloudcode-pa.googleapis.com` itself — **no other `googleapis.com` host
-qualifies**. A loopback host is allowed for a local proxy. Anything else is refused at config
-validation rather than silently shipping your subscription token off-origin —
+default). An `antigravity_oauth` upstream is pinned to two hosts: the only non-loopback `base_url`
+it accepts is HTTPS on `daily-cloudcode-pa.googleapis.com` (the default) or on
+`cloudcode-pa.googleapis.com`, which stays valid for operators who need it — **no other
+`googleapis.com` host qualifies**, `daily-cloudcode-pa.sandbox.googleapis.com` included. A loopback
+host is allowed for a local proxy. Anything else is refused at config validation rather than
+silently shipping your subscription token off-origin —
 `providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
-subscription token over plaintext`, or the matching `... host <host> is not a googleapis.com host;
-refusing to send a subscription token off-origin` (that message says "googleapis.com host", but the
-check behind it is the exact Code Assist host).
+subscription token over plaintext`, or the matching `... host <host> is neither
+daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription
+token off-origin`.
 
-`onboardUser` lives on a separate control plane. A `base_url` that is plain production — HTTPS on
-`cloudcode-pa.googleapis.com`, no port, no path prefix — onboards against
-`daily-cloudcode-pa.googleapis.com`. Anything sitting in front of the backend (a loopback proxy, or
-that host with an explicit port or path prefix) onboards through itself.
+`onboardUser` lives on the `daily-` control plane, which is where the default `base_url` already
+points. A `base_url` pinned at plain production — HTTPS on `cloudcode-pa.googleapis.com`, no port,
+no path prefix — keeps inference there but onboards against `daily-cloudcode-pa.googleapis.com`
+anyway. Anything sitting in front of the backend (a loopback proxy, or either host with an explicit
+port or path prefix) onboards through itself.
 
 [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) discovers against your
 **routed** Antigravity upstreams — or, before you have wired up routes, the Antigravity upstreams you
 declared. A single candidate wins outright, and when several qualify the one
 **named `antigravity`** wins. If several qualify and none carries that name, login refuses to guess —
-it logs a warning and falls back to the production endpoint, so the project it provisions may not be
+it logs a warning and falls back to the default endpoint, so the project it provisions may not be
 the backend your routes use. Name the upstream you want discovered `antigravity`.
 
 </Aside>
