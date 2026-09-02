@@ -411,7 +411,11 @@ mod tests {
             .await;
 
         let file = temp_auth_file("expired_token");
-        let past_expiry = 1000000000000_u64; // past date
+        let past_expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .saturating_sub(1_000) as u64;
 
         let creds_json = json!({
             "access_token": "old-access-token",
@@ -453,10 +457,15 @@ mod tests {
             .await;
 
         let file = temp_auth_file("revoked_token");
+        let past_expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .saturating_sub(1_000) as u64;
         let creds_json = json!({
             "access_token": "old-access-token",
             "refresh_token": "revoked-refresh-token",
-            "expiry_date": 1000000000000_u64
+            "expiry_date": past_expiry
         });
         fs::write(&file, serde_json::to_string(&creds_json).unwrap()).unwrap();
 

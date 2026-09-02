@@ -186,9 +186,9 @@ fn default_max_concurrent_requests() -> usize {
 pub(crate) const MAX_CONCURRENT_REQUESTS_LIMIT: usize = usize::MAX >> 3;
 
 /// `[server.pool]` — quota-aware load-balancing tuning and optional usage-API
-/// reconciliation for Claude (Anthropic) account pools (issue #135). Quota
-/// headers exist only on the Anthropic backend, so threshold/burn-rate knobs
-/// are inert for Codex pools; per-account `priority`/`disabled` apply to both.
+/// reconciliation for Claude (Anthropic) and Codex (ChatGPT) account pools
+/// (issue #135). Both backends supply quota windows used by threshold and
+/// burn-rate selection; per-account `priority`/`disabled` also apply to both.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolConfig {
     /// Safety backstop common to all quota windows.
@@ -206,9 +206,9 @@ pub struct PoolConfig {
     /// Avoid an account projected to exhaust a soft threshold before reset.
     #[serde(default)]
     pub burn_rate_avoidance: bool,
-    /// Poll `GET /api/oauth/usage` every N seconds for refreshable Claude
-    /// accounts. Unset or `0` disables polling; positive values below 60 are
-    /// clamped to 60 seconds.
+    /// Poll Claude's `/api/oauth/usage` and Codex's `/wham/usage` every N
+    /// seconds for refreshable accounts. Unset or `0` disables polling;
+    /// positive values below 60 are clamped to 60 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_refresh_seconds: Option<u64>,
     /// Persist the pool's per-account quota state to this file so a restart

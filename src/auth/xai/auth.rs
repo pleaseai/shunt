@@ -323,6 +323,14 @@ mod tests {
         )
     }
 
+    fn future_exp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3_600
+    }
+
     fn temp_path(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "shunt-xai-auth-{tag}-{}",
@@ -446,7 +454,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "access_token": jwt(4_000_000_000),
+                "access_token": jwt(future_exp()),
                 "refresh_token": "rotated-refresh",
                 "id_token": "rotated-id",
                 "expires_in": 900
@@ -489,7 +497,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "access_token": jwt(4_000_000_000),
+                "access_token": jwt(future_exp()),
                 "refresh_token": "rotated-refresh",
                 "expires_in": 900
             })))

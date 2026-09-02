@@ -264,6 +264,22 @@ pub fn record_pool_utilization(provider: &str, window: &'static str, utilization
     let _ = otel_instruments();
 }
 
+/// Test-only observation point for [`record_pool_utilization`]. The production
+/// gauge is callback-driven, so focused pool tests read the in-process value
+/// map to verify that each provider alias receives an update.
+#[cfg(test)]
+pub(crate) fn pool_utilization_value_for_tests(
+    provider: &str,
+    window: &'static str,
+) -> Option<f64> {
+    pool_utilization_values()
+        .lock()
+        .expect("pool utilization metric lock poisoned")
+        .get(&(provider.to_owned(), window))
+        .copied()
+        .flatten()
+}
+
 /// Record one move away from a pool account, or one request that found the pool
 /// exhausted. Reasons are deliberately low-cardinality and account-free.
 pub fn record_pool_rotation(provider: &str, reason: &'static str) {

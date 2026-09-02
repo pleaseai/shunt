@@ -159,9 +159,14 @@ fn write_fake_codex_auth() -> PathBuf {
             .as_nanos()
     );
     let path = std::env::temp_dir().join(unique_name);
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_add(3_600);
     let auth = serde_json::json!({
         "tokens": {
-            "access_token": fake_jwt(4_000_000_000),
+            "access_token": fake_jwt(expires_at),
             "refresh_token": "refresh-xyz",
             "account_id": "acct_fallback"
         }

@@ -5,7 +5,7 @@ description: ChatGPT/Codex 구독 OAuth 계정을 하나의 풀로 묶어 세션
 
 shunt는 `chatgpt_oauth` 프로바이더 뒤에서 여러 ChatGPT 구독 OAuth 자격 증명을 풀로 묶을 수 있습니다 — 내장 `codex` 프로바이더, 또는 그 인증 모드를 쓰는 모든 `responses` 프로바이더가 대상입니다. Claude Code가 `x-claude-code-session-id`를 보내면 요청은 세션에 고정(session-sticky)되고, 이 헤더가 없는 요청은 프로바이더별 라운드 로빈을 사용합니다. [Anthropic 계정 풀](/ko/guides/anthropic-multi-account/)과 마찬가지로 선택은 **쿼터 인지** 방식입니다: shunt는 백엔드의 `x-codex-*` 5시간/7일 사용량 창을 기록해 스티키 계정이 쿼터에 근접하면 선제적으로 로테이션하며, 쿨다운 기반 반응형 페일오버가 안전판으로 유지됩니다.
 
-클라이언트용 [`GET /usage`](/ko/reference/endpoints/) 집계는 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 창을 `null`로 보고합니다. Codex 응답의 `x-codex-*` 헤더는 5시간 및 공유 주간 창을 채우며, Codex 자체에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다. 이 브랜치에는 아웃오브밴드 Codex 폴러가 없습니다. ChatGPT 백엔드에는 비공개·문서화되지 않은 usage API가 있지만 #430에 예약되어 있으며, 이 브랜치는 호출하지 않습니다.
+클라이언트용 [`GET /usage`](/ko/reference/endpoints/) 집계는 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 창을 `null`로 보고합니다. Codex 응답의 `x-codex-*` 헤더와 선택적인 `wham/usage` 폴링은 5시간 및 공유 주간 창을 채우며, Codex 자체에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다. 폴링은 기본적으로 꺼져 있습니다.
 
 
 
@@ -126,6 +126,14 @@ admin web 화면을 통해 스토어 관리 계정을 삭제하면, 동일한 �
 | `token_env` 계정에서의 401 | 5분 |
 | `credentials`/스토어 계정에서의 401 — 갱신 실패 또는 재시도도 401 | 5분 |
 
+## 사용량 폴러
+
+양수 [`usage_refresh_seconds`](/ko/reference/configuration/#serverpool-선택)는 모든 imported(갱신 가능한) `chatgpt_oauth` 계정에 대해서도 `GET /wham/usage`를 폴링해, Anthropic 풀이 `GET /api/oauth/usage`로 하는 것과 동일한 방식으로 헤더 기반 5h/주간 쿼터 상태를 재보정합니다. 이는 `reprobe_seconds`가 실제 요청으로 메우는 것과 같은 간극을 메웁니다. 풀이 쿼터 근접을 이유로 제외한 계정은 더 이상 프록시 요청을 받지 못하므로 그 계정의 `x-codex-*` 헤더는 갱신되지 않습니다 — 실제로는 창이 이미 리셋된 지 오래되었더라도 마찬가지입니다. 폴러는 대신 대역 외에서 근거 있는 사용량을 읽어옵니다.
+
+**이는 공식 문서화된 OpenAI/ChatGPT API가 아닙니다.** 그 형태의 근거는 게시된 문서가 아니라 Codex CLI 자체에서 관측된 60초 주기 폴링 동작이므로, 예고 없이 바뀌거나 사라질 수 있습니다. 파싱은 처음부터 끝까지 의도적으로 관대하고 fail-soft하게 동작합니다. 성공적으로 파싱된 비어 있지 않은 wham 응답은 열거한 창을 권위 있는 정보로 취급합니다. 사용 가능한 5h 또는 7d 창이 하나 이상 있으면 후보 창이 전혀 없는 버킷의 사용률과 사용률 관찰 시각을 지우지만 헤더에서 온 리셋과 상태 메타데이터는 보존합니다. 보고된 창에서는 미래의 헤더 리셋을 유지하고, 저장된 리셋이 이미 지났으면 새 사용률을 쓰기 전에 그 리셋만 지웁니다. wham의 `reset_at`은 실제 리셋 메타데이터로 채택하지 않습니다. `null` 창은 부재를 뜻하지만 인식할 수 없는 기간의 후보는 미지 상태이므로 지우기를 막습니다. 가져오기 또는 파싱 오류와 사용 가능한 인식 창이 없는 빈 스냅샷은 기존 상태를 유지합니다. 이는 창이 생략되어도 이전 값을 유지하는 Claude의 `/api/oauth/usage` 경로와 다릅니다. 창 하나가 손상된 형태여도 그 형제 창의 적용을 막지 않습니다. 이 경로의 파싱 실패는 계정을 비정상으로 표시하거나 요청 라우팅에 영향을 주지 않으며, 헤더 기반 상태를 대체값으로 남겨둘 뿐입니다.
+
+자격 조건은 Claude 쪽과 동일합니다: imported 로그인(스토어 관리 계정, 또는 `tokens.refresh_token`이 있는 인라인 `credentials` 경로)만 폴링할 수 있습니다 — 순수 `token_env` 베어러 토큰은 정적이므로 건너뜁니다.
+
 ## 페일오버 규칙
 
 | 응답 | 동작 |
@@ -178,7 +186,6 @@ x-shunt-account: backup
 
 ## 남은 후속 작업
 
-- **아웃오브밴드 사용량 재보정:** Anthropic 풀은 권위 있는 사용량 API(`usage_refresh_seconds`)를 폴링할 수 있습니다. 이 브랜치는 ChatGPT 백엔드의 비공개·문서화되지 않은 usage API를 폴링하지 않으므로 Codex 쿼터 상태는 여기서 응답 헤더로 갱신됩니다. 아웃오브밴드 Codex 폴러는 #430에 예약되어 있습니다.
 - **관리자 웹 프로비저닝:** 옵트인 [관리자 화면](/ko/guides/admin-remote-provisioning/)은 브라우저에서 ChatGPT OAuth를 실행해 갱신 가능한 Codex 계정을 저장하고, 공유 풀 테이블에 표시하며, 보고된 5h/7d 사용량을 보여줄 수 있습니다(Codex에는 대응물이 없어 `7d_oi`는 비어 있습니다).
 
 계정 풀 내부 동작 전체는 [M10 동작 명세](https://github.com/pleaseai/shunt/blob/main/docs/m10-codex-multi-account.md)를, 단일 계정 설정·모델 라우팅·effort/컨텍스트 구성은 [ChatGPT / Codex 가이드](/ko/guides/codex/)를 참고하세요.

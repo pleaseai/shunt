@@ -33,9 +33,14 @@ impl TempDir {
     }
 
     fn session(&self, access_token: &str) -> PathBuf {
-        // Far-future expiry: the token is served from disk, so the command
+        // Runtime future expiry: the token is served from disk, so the command
         // makes no network call and the gateway URL is never contacted.
-        self.session_at("https://gateway.example", access_token, 4_000_000_000_000)
+        let expires_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_millis()
+            .saturating_add(3_600_000) as i64;
+        self.session_at("https://gateway.example", access_token, expires_at)
     }
 
     fn session_at(&self, gateway_url: &str, access_token: &str, expires_at: i64) -> PathBuf {
@@ -226,7 +231,12 @@ fn a_cached_token_is_served_without_repeating_the_plaintext_warning() {
     // warning there would fire on every single helper invocation instead of
     // roughly once per token lifetime.
     let dir = TempDir::new("plaintext-cached");
-    let path = dir.session_at(PLAINTEXT_GATEWAY, "access-1", 4_000_000_000_000);
+    let expires_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_millis()
+        .saturating_add(3_600_000) as i64;
+    let path = dir.session_at(PLAINTEXT_GATEWAY, "access-1", expires_at);
 
     let output = shunt(Some(&path), &["gateway", "token"]);
     assert!(output.status.success(), "stderr: {}", stderr(&output));

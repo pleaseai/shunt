@@ -48,7 +48,7 @@ spend-limit 라우트는 부팅 시 [`[server.spend]`](/ko/reference/configurati
 
 인바운드 Codex Responses 및 분석 라우트는 [`[server.codex_endpoint]`](/ko/reference/configuration/)가 구성된 경우에만 존재합니다. Responses 라우트는 OpenAI Responses 요청과 응답을 그대로 중계합니다. 두 분석 라우트는 같은 인바운드 인증 정책을 적용하고, 클라이언트 payload를 전달하거나 보관하지 않으며, 인증 후에는 잘못된 JSON이나 초과 크기 본문에도 `200 {}`를 반환합니다. 정제된 이벤트 이름만 `shunt.codex_client_events`에 기록되며, 메트릭 sink가 없으면 순수 폐기 sink로 동작합니다.
 
-`/usage` 라우트는 [`[server.usage]`](/ko/reference/configuration/#serverusage-선택)가 구성된 경우에만 존재하며, [`[server.auth]`](/ko/guides/shared-gateway/)도 필요합니다. `GET /v1/messages`와 같은 클라이언트 토큰으로 인증하고 공유 계정 풀의 창별 잔여 여유, 리셋 시각, `ok`/`degraded`/`exhausted` 상태를 반환합니다. 계정 신원, 수, priority, `disabled`, 임계값, 계정별 수치는 공개하지 않습니다. 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 `null`입니다. Codex 응답의 `x-codex-*` 헤더는 5시간 및 공유 주간 창을 채웁니다. Codex에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다.
+`/usage` 라우트는 [`[server.usage]`](/ko/reference/configuration/#serverusage-선택)가 구성된 경우에만 존재하며, [`[server.auth]`](/ko/guides/shared-gateway/)도 필요합니다. `GET /v1/messages`와 같은 클라이언트 토큰으로 인증하고 공유 계정 풀의 창별 잔여 여유, 리셋 시각, `ok`/`degraded`/`exhausted` 상태를 반환합니다. 계정 신원, 수, priority, `disabled`, 임계값, 계정별 수치는 공개하지 않습니다. 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 `null`입니다. Codex 응답의 `x-codex-*` 헤더와 선택적인 `wham/usage` 폴링은 관측된 5시간 및 공유 주간 창을 채웁니다. Codex에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다.
 
 `GET /`와 `GET /health`는 [`[server.auth]`](/ko/guides/shared-gateway/)가 활성화되어 있어도 열린 채로 유지되며(헬스체크 도구는 보통 토큰을 첨부할 수 없음) 민감한 것을 노출하지 않습니다 — 오직 상태, 버전, 그리고 이미 공개된 엔드포인트 목록만입니다.
 

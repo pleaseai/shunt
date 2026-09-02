@@ -147,6 +147,14 @@ static REFRESH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(
 
 const FAR_FUTURE_EXP: u64 = 4_102_444_800;
 
+fn future_exp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_add(3_600)
+}
+
 /// Fake ChatGPT access token carrying the `chatgpt_account_id` claim shunt reads.
 fn chatgpt_token(exp: u64, account_id: &str) -> String {
     let payload = serde_json::json!({
@@ -1278,11 +1286,12 @@ async fn single_credential_fallback_when_no_accounts_configured() {
     // Point the store scan at an empty dir so the accounts list resolves empty
     // (taking the single-credential branch), and the default credential at a temp
     // auth file carrying a valid ChatGPT token.
-    let unique = format!("{}-{}", std::process::id(), FAR_FUTURE_EXP);
+    let expires_at = future_exp();
+    let unique = format!("{}-{}", std::process::id(), expires_at);
     let accounts_dir = std::env::temp_dir().join(format!("shunt-inbound-single-accts-{unique}"));
     std::fs::create_dir_all(&accounts_dir).unwrap();
     let auth_file = std::env::temp_dir().join(format!("shunt-inbound-single-auth-{unique}.json"));
-    let token = chatgpt_token(FAR_FUTURE_EXP, "acct-single");
+    let token = chatgpt_token(expires_at, "acct-single");
     std::fs::write(
         &auth_file,
         serde_json::to_vec(&serde_json::json!({
@@ -1365,8 +1374,9 @@ async fn refresh_retry_refreshes_then_relays_verbatim() {
     let _env = REFRESH_ENV_LOCK.lock().await;
     // `stale` and `fresh` must differ so the BearerToken matchers can tell the
     // pre-refresh and post-refresh upstream requests apart.
-    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-refresh");
-    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-refresh");
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-refresh");
+    let fresh = chatgpt_token(expires_at + 1, "acct-refresh");
 
     let dir = unique_temp_dir("refresh-ok");
     let store_path = dir.join("account-a.json");
@@ -1431,7 +1441,8 @@ async fn refresh_failure_cools_down_and_rotates_to_next_account() {
         return;
     }
     let _env = REFRESH_ENV_LOCK.lock().await;
-    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-refresh-fail-a");
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-refresh-fail-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-served-b");
     std::env::set_var("SHUNT_TEST_INBOUND_REFRESH_FAIL_B", &token_b);
 
@@ -1498,8 +1509,9 @@ async fn refresh_retry_still_unauthorized_rotates_to_next_account() {
         return;
     }
     let _env = REFRESH_ENV_LOCK.lock().await;
-    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-still401-stale");
-    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-still401-fresh");
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-still401-stale");
+    let fresh = chatgpt_token(expires_at + 1, "acct-still401-fresh");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-still401-b");
     std::env::set_var("SHUNT_TEST_INBOUND_STILL401_B", &token_b);
 
@@ -1675,8 +1687,9 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
         return;
     }
     let _env = REFRESH_ENV_LOCK.lock().await;
-    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-retry5xx-stale");
-    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-retry5xx-fresh");
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-retry5xx-stale");
+    let fresh = chatgpt_token(expires_at + 1, "acct-retry5xx-fresh");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-retry5xx-b");
     std::env::set_var("SHUNT_TEST_INBOUND_RETRY5XX_B", &token_b);
 

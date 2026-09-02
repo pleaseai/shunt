@@ -48,7 +48,7 @@ spend-limit 路由仅在启动时配置了 [`[server.spend]`](/zh-cn/reference/c
 
 入站 Codex Responses 和分析路由仅在配置了 [`[server.codex_endpoint]`](/zh-cn/reference/configuration/) 时存在。Responses 路由逐字中继 OpenAI Responses 请求和响应。两个分析路由采用相同的入站认证策略，不转发或保留客户端 payload，并在认证后对无效 JSON 或超大正文也返回 `200 {}`。只有净化后的事件名称会记录到 `shunt.codex_client_events`；未配置指标 sink 时，它们是纯丢弃 sink。
 
-`/usage` 路由仅在配置 [`[server.usage]`](/zh-cn/reference/configuration/#serverusage可选) 时存在,且同样要求 [`[server.auth]`](/zh-cn/guides/shared-gateway/)。它使用与 `GET /v1/messages` 相同的客户端 token 进行认证,返回共享账户池按窗口的剩余余量、重置时间和 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户身份、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部会填充 5 小时和共享每周窗口。Codex 没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。
+`/usage` 路由仅在配置 [`[server.usage]`](/zh-cn/reference/configuration/#serverusage可选) 时存在,且同样要求 [`[server.auth]`](/zh-cn/guides/shared-gateway/)。它使用与 `GET /v1/messages` 相同的客户端 token 进行认证,返回共享账户池按窗口的剩余余量、重置时间和 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户身份、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充已观测的 5 小时和共享每周窗口。Codex 没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。
 
 即使启用了 [`[server.auth]`](/zh-cn/guides/shared-gateway/),`GET /` 和 `GET /health` 也保持开放(健康检查工具通常无法附带 token),并且不暴露任何敏感信息 —— 只有状态、版本以及已经公开的端点列表。
 

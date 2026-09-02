@@ -273,6 +273,14 @@ mod tests {
         format!("x.{payload}.y")
     }
 
+    fn future_exp() -> u64 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3_600
+    }
+
     fn temp_path(tag: &str) -> PathBuf {
         std::env::temp_dir()
             .join(format!(
@@ -296,7 +304,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/auth/refresh"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "accessToken": jwt(4_000_000_000)
+                "accessToken": jwt(future_exp())
             })))
             .mount(&server)
             .await;

@@ -1005,8 +1005,13 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("auth.json");
+        let future_exp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3_600;
         let payload = json!({
-            "exp": 4_102_444_800_u64,
+            "exp": future_exp,
             "https://api.openai.com/auth": {"chatgpt_account_id": "acct-valid"}
         });
         let access_token = format!(

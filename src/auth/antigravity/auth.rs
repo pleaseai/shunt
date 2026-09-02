@@ -1237,6 +1237,14 @@ mod tests {
             .as_millis() as u64
     }
 
+    fn past_millis(secs: u64) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .saturating_sub(u128::from(secs).saturating_mul(1_000)) as u64
+    }
+
     fn write(path: &Path, stored: &StoredAuth) {
         write_stored(path, stored).unwrap();
     }
@@ -1458,7 +1466,7 @@ mod tests {
             email: None,
             project_id: None,
         };
-        let result = std::panic::catch_unwind(|| is_stored_valid(&stored, SystemTime::now()));
+        let result = std::panic::catch_unwind(|| is_stored_valid(&stored, UNIX_EPOCH));
         assert!(
             result.is_ok(),
             "is_stored_valid must not panic on a corrupted huge expiry_date"
@@ -2270,7 +2278,7 @@ mod tests {
             &StoredAuth {
                 access_token: "stale-token".to_string(),
                 refresh_token: "refresh-1".to_string(),
-                expiry_date: Some(1),
+                expiry_date: Some(past_millis(1)),
                 email: None,
                 project_id: Some("proj".to_string()),
             },
@@ -2311,7 +2319,7 @@ mod tests {
             &StoredAuth {
                 access_token: "stale".to_string(),
                 refresh_token: "refresh-1".to_string(),
-                expiry_date: Some(1),
+                expiry_date: Some(past_millis(1)),
                 email: None,
                 project_id: Some("proj".to_string()),
             },
@@ -2362,7 +2370,7 @@ mod tests {
             &StoredAuth {
                 access_token: "stale".to_string(),
                 refresh_token: "revoked".to_string(),
-                expiry_date: Some(1),
+                expiry_date: Some(past_millis(1)),
                 email: None,
                 project_id: Some("proj".to_string()),
             },

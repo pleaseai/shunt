@@ -17,8 +17,11 @@ use crate::{auth::Credential, routing::Route, server::AppState};
 /// (codex-rs/login/src/auth/default_client.rs) and sends the bare CLI
 /// version in a `version` header (codex-rs/model-provider-info/src/lib.rs).
 /// Bump both together when a new slug requires a newer client version.
-pub(super) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.148.0";
-pub(super) const CODEX_CLIENT_VERSION: &str = "0.148.0";
+/// `pub(crate)`: also reused by `crate::auth::codex::usage` (the wham/usage
+/// poller) so its CLI identity headers cannot drift from the Responses
+/// adapter's own.
+pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.148.0";
+pub(crate) const CODEX_CLIENT_VERSION: &str = "0.148.0";
 
 /// Grok CLI identity, mirrored from the official Grok CLI (via
 /// raine/claude-code-proxy `src/providers/grok/client.rs`). The subscription
