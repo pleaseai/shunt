@@ -1,0 +1,35 @@
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_0051e986f8c52d 7-8,112-114,123-124,143
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_0051e986f8c52d 7,105-106,114-115,133
+docs/notes/antigravity-daily-host.md
+  s_042a69e8c0aab0::t_d89d49ee700590 30-34,38,47-51,88-89,111-112,118-123
+  s_042a69e8c0aab0::t_6c575319fbd373 117
+  s_042a69e8c0aab0::t_378fdae805832d 124
+site/src/content/docs/guides/providers.mdx
+  s_042a69e8c0aab0::t_bfd6dbfcc02dc1 67
+blueprints/upstream/antigravity.md
+  s_042a69e8c0aab0::t_d89d49ee700590 35,49
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_0051e986f8c52d 7-8,110-112,121,139
+site/src/content/docs/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_bfd6dbfcc02dc1 8,111-113,122-123,142
+site/src/content/docs/ko/guides/providers.mdx
+  s_042a69e8c0aab0::t_d89d49ee700590 53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1be9c8fa846e589c97c5e7ce80a36bce3d71b184",
+  "prompts": {},
+  "sessions": {
+    "s_042a69e8c0aab0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a613fc2-5d4c-4309-ac6f-980d73a2fe4d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
