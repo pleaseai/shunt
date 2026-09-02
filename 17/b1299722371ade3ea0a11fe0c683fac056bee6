@@ -1,0 +1,41 @@
+.claude/agent-memory/review-review-cubic-reviewer/pr449-antigravity-behind-main.md
+  s_042a69e8c0aab0::t_31e55cf143bdc4 1-28
+.claude/agent-memory/review-review-ocr-reviewer/MEMORY.md
+  s_042a69e8c0aab0::t_ed895d8937179b 1-4
+site/src/content/docs/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_fcaa2505f00a17 91-94,118-119
+.claude/agent-memory/review-review-cubic-reviewer/MEMORY.md
+  s_042a69e8c0aab0::t_cc2538ce1579cf 5-6
+.claude/agent-memory/review-review-cubic-reviewer/cubic-provider-deadline-timeout.md
+  s_042a69e8c0aab0::t_035dbf353699fb 1-23
+.claude/agent-memory/review-review-ocr-reviewer/antigravity-daily-host-migration-449.md
+  s_042a69e8c0aab0::t_cf7326a189e619 1-16
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_fcaa2505f00a17 92-95,119-120
+blueprints/upstream/antigravity.md
+  s_042a69e8c0aab0::t_fcaa2505f00a17 49
+.claude/agent-memory/review-review-ocr-reviewer/gemini-adapter-unit-test-granularity.md
+  s_042a69e8c0aab0::t_abe923b3564c0b 1-10
+docs/notes/antigravity-daily-host.md
+  s_042a69e8c0aab0::t_d2efe9bf1cc3c4 30-36,106-109,118-121
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_fcaa2505f00a17 90-93,117-118
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_fcaa2505f00a17 86-89,112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "17b1299722371ade3ea0a11fe0c683fac056bee6",
+  "prompts": {},
+  "sessions": {
+    "s_042a69e8c0aab0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a613fc2-5d4c-4309-ac6f-980d73a2fe4d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
