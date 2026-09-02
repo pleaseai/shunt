@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.40.0](https://github.com/pleaseai/shunt/compare/v0.39.2...v0.40.0) (2026-09-02)
+
+
+### Features
+
+* **codex:** poll the wham usage endpoint for codex account quota ([#430](https://github.com/pleaseai/shunt/issues/430)) ([bf04cf8](https://github.com/pleaseai/shunt/commit/bf04cf8726f7f5efa49cb6ae04a8be23cb8428b0))
+
+
+### Bug Fixes
+
+* **antigravity:** reach the daily backend with the agent envelope and effort-suffixed model ids ([#449](https://github.com/pleaseai/shunt/issues/449)) ([a4be60a](https://github.com/pleaseai/shunt/commit/a4be60a863053fff2fb9b6ccc2818494059be57a))
+* **gemini:** merge adjacent user turns to keep tool pairing across mid-conversation system messages ([#446](https://github.com/pleaseai/shunt/issues/446)) ([17bb0dc](https://github.com/pleaseai/shunt/commit/17bb0dcd46f19356aa52f5e5b85c6da0b0971644))
+
 ## [0.39.2](https://github.com/pleaseai/shunt/compare/v0.39.1...v0.39.2) (2026-09-01)
 
 
