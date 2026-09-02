@@ -1,0 +1,78 @@
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_22317534ef455e 6,72,85-94,106,109-111,115-122,125,140-142,144-146,172-176,178-180,182-186
+  s_042a69e8c0aab0::t_cf6135db233d34 192
+  s_042a69e8c0aab0::t_0051e986f8c52d 7-8,112-114,123-124,143
+site/src/content/docs/ko/guides/providers.mdx
+  s_042a69e8c0aab0::t_b29dd756ee368e 49,52,54
+  s_042a69e8c0aab0::t_9fbff752319209 26
+  s_042a69e8c0aab0::t_24ae307d28b8a5 55
+  s_042a69e8c0aab0::t_d89d49ee700590 53
+site/src/content/docs/reference/configuration.md
+  s_042a69e8c0aab0::t_ef92aa5be48832 459,538
+site/src/content/docs/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_6fa68a7ea70dbc 7,71,84-85,90-93,105,108-110,114-121,124,138,141,143-145,171-176,178-180,182-186,192
+  s_042a69e8c0aab0::t_d15d4e0e480588 10-11,86-89
+  s_042a69e8c0aab0::t_fe562124140df1 9,139-140
+  s_042a69e8c0aab0::t_bfd6dbfcc02dc1 8,111-113,122-123,142
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_b81ce83e527bb4 6,67,80-87,99,102-104,107-113,116,130-132,134-135,160-163,166-168,170-173
+  s_042a69e8c0aab0::t_86048b4d33e10c 178
+  s_042a69e8c0aab0::t_0051e986f8c52d 7,105-106,114-115,133
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_042a69e8c0aab0::t_ef92aa5be48832 313,330
+README.md
+  s_042a69e8c0aab0::t_6f85046d311d26 147
+docs/notes/antigravity-daily-host.md
+  s_042a69e8c0aab0::t_957dca64eef5b2 1-29,35-37,39-46,52-87,90-110,113-116,125-128
+  s_042a69e8c0aab0::t_d89d49ee700590 30-34,38,47-51,88-89,111-112,118-123
+  s_042a69e8c0aab0::t_6c575319fbd373 117
+  s_042a69e8c0aab0::t_378fdae805832d 124
+site/src/content/docs/ja/guides/providers.mdx
+  s_042a69e8c0aab0::t_9fbff752319209 26
+  s_042a69e8c0aab0::t_b29dd756ee368e 49,52-55
+  s_042a69e8c0aab0::t_9a4293feaa124f 56
+README.ko.md
+  s_042a69e8c0aab0::t_6f85046d311d26 145
+README.ja.md
+  s_042a69e8c0aab0::t_6f85046d311d26 148
+site/src/content/docs/guides/providers.mdx
+  s_042a69e8c0aab0::t_9fbff752319209 26,46,63,66,68
+  s_042a69e8c0aab0::t_8b8333b17e7a45 69
+  s_042a69e8c0aab0::t_bfd6dbfcc02dc1 67
+site/src/content/docs/ja/reference/configuration.md
+  s_042a69e8c0aab0::t_ef92aa5be48832 313,330
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_042a69e8c0aab0::t_9fbff752319209 26
+  s_042a69e8c0aab0::t_b29dd756ee368e 51,54-56
+  s_042a69e8c0aab0::t_3e84c5f156ebeb 57
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_042a69e8c0aab0::t_d0aade618417f2 6,70,83-92,104,107-109,113-120,122,136-138,140-142,168-172,174-176,178-182,188
+  s_042a69e8c0aab0::t_0051e986f8c52d 7-8,110-112,121,139
+site/src/content/docs/ko/reference/configuration.md
+  s_042a69e8c0aab0::t_ef92aa5be48832 343,360
+blueprints/upstream/antigravity.md
+  s_042a69e8c0aab0::t_82e4831ce80070 23,59,62,97
+  s_042a69e8c0aab0::t_d89d49ee700590 35,49
+README.zh-CN.md
+  s_042a69e8c0aab0::t_6f85046d311d26 143
+src/config.rs
+  s_042a69e8c0aab0::t_ac53626eb7ef96 1922-1923,1933-1935,2532-2534
+src/auth/antigravity/auth.rs
+  s_042a69e8c0aab0::t_ac53626eb7ef96 67-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2f93d939834c53b1e73ac7a50ca6c2dcc92f5ae1",
+  "prompts": {},
+  "sessions": {
+    "s_042a69e8c0aab0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a613fc2-5d4c-4309-ac6f-980d73a2fe4d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
