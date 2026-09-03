@@ -1,6 +1,6 @@
 ---
 name: shunt-catalog-cache-sibling-map-eviction
-description: shunt antigravity catalog module keeps two maps (CATALOG_CACHE, CATALOG_FETCH_SLOTS) keyed identically — an eviction fix applied to one silently misses the other
+description: shunt antigravity catalog module keeps two maps (CATALOG_CACHE, CATALOG_FETCH_SLOTS) keyed identically — an eviction fix applied to one silently misses the other (caught in PR #451 review, fixed before merge)
 metadata:
   type: project
 ---
@@ -25,5 +25,6 @@ both maps' growth rate identically.
 **How to apply:** when reviewing a change to `cache_key` / the keying scheme in this file,
 check `CATALOG_FETCH_SLOTS` too, not just `CATALOG_CACHE` — grep for every
 `static ... LazyLock<Mutex<HashMap<String, ...>>>` in the file and confirm each has an
-eviction path if its key can grow unboundedly. See [[new-credential-kind-slot-audit]] for the
-general pattern of a sibling data structure silently missing a fix applied to its counterpart.
+eviction path if its key can grow unboundedly. This is one instance of a general pattern: a
+sibling data structure silently missing a fix applied to its counterpart, so enumerate the
+siblings before calling the fix complete.
