@@ -83,8 +83,11 @@ auth = "antigravity_oauth"
 
 shunt はこのプロバイダーについてモデルの許可リストを持ちません。解決された `upstream_model` はそのまま
 バックエンドへ送られ、判断はバックエンドが行います。Antigravity は Code Assist の `gemini` プロバイダーが
-**受け付けない** Gemini ファミリーのスラッグを提供します — ただし **effort のティアを id に** `-low`、
-`-medium`、`-high` というサフィックスとして付けて公開します（Pro には `-low` と `-high` しかありません）。
+**受け付けない** Gemini ファミリーのスラッグを提供します — ただし **effort を id に**含めて、2 つの形の
+どちらかで公開します。`-low` / `-medium` / `-high` のサフィックス（Pro には `-low` と `-high` しか
+ありません）か、effort をリクエストのフィールドとして受け取る単一の `-tiered` id です。**どちらの形が
+提供されるかはアカウントごとに異なり、時間とともに変わります** — あるアカウントには
+`gemini-3.8-flash-tiered` が、別のアカウントには `gemini-3.8-flash-medium` が提供されます。
 現在のカタログは `agy models` で一覧できます。本稿の執筆時点では `gemini-3.8-flash-*`、
 `gemini-3.7-flash-*`、`gemini-3.6-flash-*`、`gemini-3.1-pro-low` / `-high`、`claude-sonnet-4-6`、
 `claude-opus-4-6-thinking`、`gpt-oss-120b-medium` が含まれます。
@@ -93,6 +96,10 @@ shunt はこのプロバイダーについてモデルの許可リストを持�
 本番ホストでは、以前の shunt のリクエスト — サフィックスのない id と素の Code Assist エンベロープ — が
 レート制限のように見える `429 RESOURCE_EXHAUSTED`（"check quota"）で返ってきました。ただしプローブは
 両方の入力を同時に変えているため、そのどちらが 429 を生んだのかは確認できていません。
+
+どちらの形かを推測しなくて済むよう、shunt はリクエストの経路でアカウント自身のカタログ
+（`fetchAvailableModels`）を読み — バックエンドごとに 10 分キャッシュ、時間制限つき、失敗時はそのまま
+続行 — そのアカウントが実際に公開している id を選びます。
 
 ローカルのエイリアスを、正確な Antigravity のモデルスラッグへマッピングします:
 
@@ -120,11 +127,20 @@ upstream_model = "gemini-3.6-flash-medium"
    のと同じデフォルトの `1024` を使うため、`low` になります。
 4. それ以外は `medium` です。
 
-認識されたティアはそのファミリーが実際に公開しているティアに丸められるため、`-pro` の id での `medium`
-は `-high` になります。設定に書かれた認識できない `effort` はルール 1 のとおり書かれたまま付与され、
-丸められません。すでにティアで終わる id と、Gemini 以外の id（`claude-sonnet-4-6`、`gpt-oss-120b-medium`）
-は書かれたまま送られます。認識できない `output_config.effort` は、モデル id に反映されずに `medium` へ
-フォールバックします。
+そのティアが何になるかはカタログが決めます。アカウントが `{id}-{ティア}` を公開していればそれが送られ
+ます。`{id}-tiered` だけを公開している場合、shunt は tiered の id を送り、ティアは
+`generationConfig.thinkingConfig.thinkingLevel` に載せます（バックエンドは両方同時に受け付けるので、
+既存の `thinkingBudget` はそのままです）。どちらもなく、同じモデルの別のティアが公開されている場合は、
+最も近い公開ティアが選ばれ、同点なら上のティアになります — `-pro` の id での `medium` が `-high` に
+なるのは Pro 専用の規則ではなく、この規則によるものです。
+
+カタログが使えない場合（ディスカバリー障害、`fetchAvailableModels` に答えないバックエンド）は、Pro の
+丸めを含む `-{ティア}` の付与 — 0.40.0 の挙動 — にフォールバックするので、参照の失敗で失うのは
+推測であってリクエストではありません。設定に書かれた認識できない `effort` はルール 1 のとおり書かれた
+まま付与され、丸められません。ただし `-tiered` の経路では、バックエンドが知らない `thinkingLevel` を
+拒否するため `medium` に畳まれます。すでにティアや `-tiered` で終わる id、カタログがそのまま公開している
+id、そして Gemini 以外の id（`claude-sonnet-4-6`、`gpt-oss-120b-medium`）は書かれたまま送られます。
+認識できない `output_config.effort` は、モデル id に反映されずに `medium` へフォールバックします。
 
 Antigravity は Claude モデルも提供していますが、shunt はそれらが必要とするリクエストの書き換えをまだ実装して
 いません（[#368](https://github.com/pleaseai/shunt/issues/368)）。そうしたスラッグをローカルで拒否するものは

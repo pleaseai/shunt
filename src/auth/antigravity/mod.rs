@@ -6,6 +6,7 @@ use std::{collections::BTreeSet, env, path::PathBuf};
 use crate::config::{AuthMode, Config, ProviderConfig, ProviderKind};
 
 pub mod auth;
+pub mod catalog;
 pub mod login;
 pub mod version;
 

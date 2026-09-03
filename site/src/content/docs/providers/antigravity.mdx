@@ -82,8 +82,11 @@ and `[providers.*]` in one file.
 
 shunt keeps no model allowlist for this provider: the resolved `upstream_model` is sent to the
 backend as written, and the backend decides. Antigravity serves the Gemini-family slugs the Code
-Assist `gemini` provider does **not** accept — but it publishes them with the **effort tier in the
-id**, as a `-low`, `-medium`, or `-high` suffix (Pro has only `-low` and `-high`). Run `agy models`
+Assist `gemini` provider does **not** accept — but it publishes them with the **effort in the id**,
+in one of two shapes: a `-low` / `-medium` / `-high` suffix (Pro has only `-low` and `-high`), or a
+single `-tiered` id that takes the effort as a request field instead. **Which shape you get is per
+account and changes over time** — one account is served `gemini-3.8-flash-tiered`, another
+`gemini-3.8-flash-medium`. Run `agy models`
 to list the catalog as it stands today; at the time of writing it holds `gemini-3.8-flash-*`,
 `gemini-3.7-flash-*`, `gemini-3.6-flash-*`, `gemini-3.1-pro-low` / `-high`, `claude-sonnet-4-6`,
 `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`.
@@ -92,6 +95,10 @@ A bare slug is **not served**: `daily-cloudcode-pa.googleapis.com` answers it wi
 Against the production host, shunt's earlier request — a bare id *and* the plain Code Assist
 envelope — came back as a misleading `429 RESOURCE_EXHAUSTED` ("check quota"), which reads as a rate
 limit; the probes changed both inputs together, so which one produced that 429 is not established.
+
+So that neither shape has to be guessed, shunt reads your account's own catalog
+(`fetchAvailableModels`) on the request path — cached for ten minutes per backend, bounded, and
+fail-open — and picks the id that account actually publishes.
 
 Map a local alias to the exact Antigravity slug:
 
@@ -120,11 +127,21 @@ itself and appends it, taking the first signal that applies:
    default the translated request carries, so it lands in `low`.
 4. Otherwise `medium`.
 
-A recognised tier is clamped to the ones the family actually publishes, so a `medium` on a `-pro`
-id becomes `-high`; an unrecognised configured `effort` is appended as written, per rule 1, and is
-never clamped. An id that already ends in a tier, and any non-Gemini id (`claude-sonnet-4-6`,
-`gpt-oss-120b-medium`), is sent exactly as written. An unrecognised `output_config.effort` falls
-back to `medium` rather than reaching the model id.
+The catalog then decides what that tier becomes. If your account publishes `{id}-{tier}`, that is
+what goes out. If it publishes only `{id}-tiered`, shunt sends the tiered id and carries the tier
+in `generationConfig.thinkingConfig.thinkingLevel` instead (alongside any `thinkingBudget`, which
+the backend accepts together). If it publishes neither but does publish other tiers of the same
+model, the nearest published tier wins, ties resolving upward — which is how a `medium` on a `-pro`
+id becomes `-high` without any Pro-specific rule.
+
+When the catalog is unavailable (a discovery outage, a backend that does not answer
+`fetchAvailableModels`), shunt falls back to appending `-{tier}` with that Pro clamp — the
+0.40.0 behaviour — so a failed lookup costs you the guess, never the request. An unrecognised
+configured `effort` is appended as written, per rule 1, and is never clamped; on the `-tiered` path
+it folds onto `medium`, because the backend rejects a `thinkingLevel` it does not know. An id that
+already ends in a tier or in `-tiered`, an id your catalog publishes verbatim, and any non-Gemini id
+(`claude-sonnet-4-6`, `gpt-oss-120b-medium`), is sent exactly as written. An unrecognised
+`output_config.effort` falls back to `medium` rather than reaching the model id.
 
 Antigravity also offers Claude models, but shunt does not yet implement the request rewrites they
 need ([#368](https://github.com/pleaseai/shunt/issues/368)). Nothing rejects such a slug locally —

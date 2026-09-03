@@ -78,8 +78,10 @@ auth = "antigravity_oauth"
 
 shunt 不为该提供方保留任何模型白名单:解析出的 `upstream_model` 会原样发送到
 后端,由后端决定。Antigravity 提供 Code Assist 的 `gemini` 提供方**不**接受的 Gemini 家族 slug ——
-但它把 **effort 档位写进 id**,以 `-low`、`-medium`、`-high` 后缀的形式发布(Pro 只有 `-low` 和
-`-high`)。用 `agy models` 可以列出当前目录;撰写本文时其中包含 `gemini-3.8-flash-*`、
+但它把 **effort 写进 id**,并以两种形态之一发布:`-low` / `-medium` / `-high` 后缀(Pro 只有 `-low`
+和 `-high`),或者一个把 effort 作为请求字段接收的单一 `-tiered` id。**你拿到哪种形态因账号而异,并且
+会随时间变化** —— 有的账号拿到 `gemini-3.8-flash-tiered`,有的拿到 `gemini-3.8-flash-medium`。
+用 `agy models` 可以列出当前目录;撰写本文时其中包含 `gemini-3.8-flash-*`、
 `gemini-3.7-flash-*`、`gemini-3.6-flash-*`、`gemini-3.1-pro-low` / `-high`、`claude-sonnet-4-6`、
 `claude-opus-4-6-thinking` 和 `gpt-oss-120b-medium`。
 
@@ -87,6 +89,9 @@ shunt 不为该提供方保留任何模型白名单:解析出的 `upstream_model
 早先的请求 —— 不带后缀的 id 加上普通的 Code Assist 信封 —— 返回了看起来像限流的、具有误导性的
 `429 RESOURCE_EXHAUSTED`(“check quota”);但探测同时改变了这两个输入,因此无法确定是哪一个导致了
 这个 429。
+
+为了不必猜测是哪种形态,shunt 会在请求路径上读取账号自己的目录(`fetchAvailableModels`)—— 按后端
+缓存十分钟、有超时上限、失败即放行 —— 并挑选该账号实际发布的 id。
 
 把每个本地别名映射到确切的 Antigravity slug:
 
@@ -113,9 +118,17 @@ upstream_model = "gemini-3.6-flash-medium"
    更大则为 `high`。启用但未指定 budget 的块会使用与转换后请求相同的默认值 `1024`,因此落在 `low`。
 4. 其余情况为 `medium`。
 
-已识别的档位会被收敛到该家族实际发布的档位,因此 `-pro` id 上的 `medium` 会变成 `-high`;配置中
-未识别的 `effort` 会按规则 1 所述原样追加,不会被收敛。已经以档位结尾的 id,以及非 Gemini 的
-id(`claude-sonnet-4-6`、`gpt-oss-120b-medium`),都会原样发送。无法识别的
+这个档位最终变成什么,由目录决定。如果你的账号发布了 `{id}-{档位}`,发出去的就是它。如果只发布了
+`{id}-tiered`,shunt 就发送这个 tiered id,并把档位放进
+`generationConfig.thinkingConfig.thinkingLevel`(与已有的 `thinkingBudget` 并存,后端两者同时接受)。
+如果两者都没有、但发布了同一模型的其他档位,则最接近的已发布档位胜出,打平时取更高的那个 —— `-pro`
+id 上的 `medium` 变成 `-high`,靠的正是这条规则,而不是任何 Pro 专用规则。
+
+当目录不可用时(发现失败,或后端不响应 `fetchAvailableModels`),shunt 会回退到追加 `-{档位}` 并带上
+Pro 收敛 —— 也就是 0.40.0 的行为 —— 因此一次查不到只让你失去这次猜测,而不会让你失去这次请求。
+配置中未识别的 `effort` 会按规则 1 所述原样追加,不会被收敛;但在 `-tiered` 路径上它会折叠为
+`medium`,因为后端会拒绝它不认识的 `thinkingLevel`。已经以档位或 `-tiered` 结尾的 id、目录原样发布的
+id,以及非 Gemini 的 id(`claude-sonnet-4-6`、`gpt-oss-120b-medium`),都会原样发送。无法识别的
 `output_config.effort` 会回退到 `medium`,不会进入模型 id。
 
 Antigravity 也提供 Claude 模型,但 shunt 尚未实现它们所需的请求改写

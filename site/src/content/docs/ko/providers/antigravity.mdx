@@ -81,8 +81,11 @@ auth = "antigravity_oauth"
 
 shunt는 이 프로바이더에 대해 모델 허용 목록을 두지 않습니다: 해석된 `upstream_model`이 적힌 그대로
 백엔드로 전송되고, 판단은 백엔드가 합니다. Antigravity는 Code Assist `gemini` 프로바이더가 받아들이지
-**않는** Gemini 계열 슬러그를 제공합니다 — 다만 **effort 등급을 id에** `-low`, `-medium`, `-high`
-접미사로 붙여 게시합니다(Pro에는 `-low`와 `-high`만 있습니다). 현재 카탈로그는 `agy models`로 확인할 수
+**않는** Gemini 계열 슬러그를 제공합니다 — 다만 **effort를 id에** 담아 두 가지 형태 중 하나로
+게시합니다: `-low` / `-medium` / `-high` 접미사(Pro에는 `-low`와 `-high`만 있습니다), 또는 effort를
+요청 필드로 받는 단일 `-tiered` id입니다. **어느 형태가 오는지는 계정마다 다르고 시간이 지나면
+바뀝니다** — 어떤 계정은 `gemini-3.8-flash-tiered`를, 다른 계정은 `gemini-3.8-flash-medium`을
+받습니다. 현재 카탈로그는 `agy models`로 확인할 수
 있으며, 이 글을 쓰는 시점에는 `gemini-3.8-flash-*`, `gemini-3.7-flash-*`, `gemini-3.6-flash-*`,
 `gemini-3.1-pro-low` / `-high`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`,
 `gpt-oss-120b-medium`이 들어 있습니다.
@@ -91,6 +94,10 @@ shunt는 이 프로바이더에 대해 모델 허용 목록을 두지 않습니�
 프로덕션 호스트에서는 이전의 shunt 요청 — 접미사 없는 id와 평범한 Code Assist 엔벨로프 — 이 요청량
 제한처럼 보이는 `429 RESOURCE_EXHAUSTED`("check quota")로 돌아왔습니다. 다만 탐침에서 두 입력을 함께
 바꾸었기 때문에 둘 중 무엇이 그 429를 만들었는지는 확인되지 않았습니다.
+
+두 형태 중 어느 쪽인지 추측하지 않도록, shunt는 요청 경로에서 계정 자신의 카탈로그
+(`fetchAvailableModels`)를 읽어 — 백엔드별 10분 캐시, 시간 제한, 실패 시 통과 — 그 계정이 실제로
+게시하는 id를 고릅니다.
 
 로컬 별칭을 정확한 Antigravity 슬러그에 매핑하세요:
 
@@ -118,10 +125,20 @@ upstream_model = "gemini-3.6-flash-medium"
    `1024`를 사용하므로 `low`가 됩니다.
 4. 그 외에는 `medium`입니다.
 
-인식된 등급은 해당 계열이 실제로 게시하는 등급으로 조정되므로, `-pro` id의 `medium`은 `-high`가 됩니다.
-설정에 적힌 인식되지 않는 `effort`는 1번 규칙대로 적힌 그대로 덧붙여지며 조정되지 않습니다. 이미
-등급으로 끝나는 id와 Gemini가 아닌 id(`claude-sonnet-4-6`, `gpt-oss-120b-medium`)는 적힌 그대로
-전송됩니다. 인식되지 않는 `output_config.effort`는 모델 id에 반영되지 않고 `medium`으로 되돌아갑니다.
+그 등급이 무엇이 될지는 카탈로그가 정합니다. 계정이 `{id}-{등급}`을 게시하면 그것이 나갑니다.
+`{id}-tiered`만 게시하면 shunt는 tiered id를 보내고 등급은
+`generationConfig.thinkingConfig.thinkingLevel`에 실어 보냅니다(백엔드가 함께 받아들이므로 기존
+`thinkingBudget`은 그대로 둡니다). 둘 다 없지만 같은 모델의 다른 등급을 게시한다면 가장 가까운 게시
+등급이 이기고, 동점이면 더 높은 쪽이 됩니다 — `-pro` id의 `medium`이 `-high`가 되는 것은 Pro 전용
+규칙이 아니라 이 규칙 때문입니다.
+
+카탈로그를 쓸 수 없을 때(디스커버리 장애, `fetchAvailableModels`에 답하지 않는 백엔드)에는 Pro 조정을
+포함한 `-{등급}` 덧붙이기 — 0.40.0 동작 — 로 되돌아가므로, 조회 실패는 추측만 잃을 뿐 요청을
+잃지 않습니다. 설정에 적힌 인식되지 않는 `effort`는 1번 규칙대로 적힌 그대로 덧붙여지며 조정되지
+않습니다. 다만 `-tiered` 경로에서는 백엔드가 모르는 `thinkingLevel`을 거부하므로 `medium`으로
+접힙니다. 이미 등급이나 `-tiered`로 끝나는 id, 카탈로그가 그대로 게시하는 id, 그리고 Gemini가 아닌
+id(`claude-sonnet-4-6`, `gpt-oss-120b-medium`)는 적힌 그대로 전송됩니다. 인식되지 않는
+`output_config.effort`는 모델 id에 반영되지 않고 `medium`으로 되돌아갑니다.
 
 Antigravity는 Claude 모델도 제공하지만, shunt는 아직 그 모델들이 필요로 하는 요청 재작성을 구현하지
 않았습니다([#368](https://github.com/pleaseai/shunt/issues/368)). 로컬에서 그런 슬러그를 거부하는 것은
