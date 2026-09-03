@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-cubic-reviewer/cubic-empty-review-clean-tree.md
+  s_9d9dff3d493fd0::t_a18d5934e8ab89 24-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "06a257a99244e2c685f846978bd4a8fb8af83641",
+  "prompts": {},
+  "sessions": {
+    "s_9d9dff3d493fd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4559a2c0-a23b-4c63-892c-9735745af516",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
