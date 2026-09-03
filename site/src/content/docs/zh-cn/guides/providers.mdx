@@ -51,9 +51,10 @@ provider = "antigravity"
 upstream_model = "gemini-3.6-flash-medium"
 ```
 
-Antigravity 把 Gemini 模型的 effort 档位写进 id 发布(`-low`、`-medium`、`-high`;Pro 只有 `-low` 和
-`-high`),并不提供不带后缀的 slug。不带后缀的 `gemini-*` id 会由 shunt 依据 `effort`、请求、否则按
-`medium` 解析出档位并追加,所以两种写法都能用。
+Antigravity 把 Gemini 模型的 effort 写进 id 发布,并不提供不带后缀的 slug,而且有两种形态 —— `-low` /
+`-medium` / `-high` 后缀,或者把 effort 作为请求字段接收的单个 `-tiered` id。账号拿到哪种形态会随时间
+变化,所以 shunt 会读取账号自己的目录,挑出它真正发布的 id:不带后缀的 `gemini-*` id 会依据 `effort`、
+请求、否则按 `medium` 解析,而账号已不再发布的后缀会被重新解析而不是照原样发出。每种写法都能用。
 
 完整设置 —— 登录与 scope、项目发现、模型 slug、thinking,以及适配器承载的内容 —— 见专门的
 [Antigravity 提供方页面](/zh-cn/providers/antigravity/)。

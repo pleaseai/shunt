@@ -1158,6 +1158,27 @@ pub(super) fn addresses_production_backend(endpoint: &str) -> bool {
     addresses_bare_backend(endpoint, crate::config::host_is_google_codeassist)
 }
 
+/// The host Antigravity *inference* is sent to for a provider configured with
+/// `base_url`: the `daily-` control plane when `base_url` is plain production,
+/// the configured host (trailing slash trimmed) otherwise.
+///
+/// Production does not serve Antigravity inference — it answers the very first
+/// request with a fake-looking `429 RESOURCE_EXHAUSTED` (live-verified, PR
+/// #449 / `docs/notes/antigravity-daily-host.md`). Docs before 0.40.0 told
+/// operators to pin `base_url` at production, so those configs keep loading
+/// and keep failing after an upgrade unless the request path redirects them.
+/// A plain-production `base_url` is therefore redirected here exactly as
+/// onboarding already redirects it in [`AntigravityAuthStore::new`]. A
+/// loopback host, an explicit port, or a path prefix is left alone: it
+/// addresses something standing in *front* of the backend, which is the case
+/// that must be carried through rather than routed around.
+pub fn inference_base_url(base_url: &str) -> String {
+    if addresses_production_backend(base_url) {
+        return DAILY_API_ENDPOINT.to_string();
+    }
+    base_url.trim_end_matches('/').to_string()
+}
+
 /// Whether `endpoint` addresses the default Antigravity backend itself — the
 /// `daily-` control plane both [`DEFAULT_API_ENDPOINT`] and the seeded
 /// `antigravity` provider name.
@@ -1382,8 +1403,10 @@ mod tests {
 
     #[test]
     fn a_production_base_url_still_routes_onboarding_to_the_daily_host() {
-        // An operator who pins `base_url` at production keeps inference there,
-        // but production does not serve `onboardUser` — only a genuinely
+        // An operator who pins `base_url` at production has it recorded as
+        // `api_endpoint` — the request path redirects inference separately,
+        // via `inference_base_url` — but production does not serve
+        // `onboardUser` either, so only a genuinely
         // non-production, non-daily base_url (necessarily loopback, per the
         // AntigravityOauth validation guard in src/config.rs) collapses
         // daily_api_endpoint onto api_endpoint.
@@ -1430,6 +1453,56 @@ mod tests {
             assert!(
                 !addresses_production_backend(spelling),
                 "{spelling} is not the plain production backend"
+            );
+        }
+    }
+
+    #[test]
+    fn a_production_pinned_base_url_sends_inference_to_the_daily_host() {
+        // Production answers Antigravity inference with a fake 429 from the
+        // first request, and pre-0.40.0 docs told operators to pin it — so
+        // every spelling the validator calls plain production has to be
+        // redirected, not just the one that matches the constant byte for
+        // byte.
+        for spelling in [
+            API_ENDPOINT,
+            "https://cloudcode-pa.googleapis.com/",
+            "https://CloudCode-PA.googleapis.com",
+            "https://cloudcode-pa.googleapis.com:443",
+        ] {
+            assert_eq!(
+                inference_base_url(spelling),
+                DAILY_API_ENDPOINT,
+                "{spelling} must send inference to the daily host"
+            );
+        }
+    }
+
+    #[test]
+    fn anything_in_front_of_the_backend_keeps_its_own_inference_host() {
+        // A proxy port, a path prefix, or loopback stands in front of the
+        // backend: redirecting past it would egress straight around the
+        // endpoint the operator configured. Only the trailing slash is
+        // normalized, mirroring what the adapter trimmed before.
+        for (spelling, expected) in [
+            (
+                "https://cloudcode-pa.googleapis.com:8443",
+                "https://cloudcode-pa.googleapis.com:8443",
+            ),
+            (
+                "https://cloudcode-pa.googleapis.com/debug-proxy",
+                "https://cloudcode-pa.googleapis.com/debug-proxy",
+            ),
+            ("http://127.0.0.1:9", "http://127.0.0.1:9"),
+            (
+                "https://daily-cloudcode-pa.googleapis.com/",
+                DAILY_API_ENDPOINT,
+            ),
+        ] {
+            assert_eq!(
+                inference_base_url(spelling),
+                expected,
+                "{spelling} addresses something in front of the backend"
             );
         }
     }

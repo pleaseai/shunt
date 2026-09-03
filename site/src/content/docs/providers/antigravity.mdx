@@ -82,8 +82,11 @@ and `[providers.*]` in one file.
 
 shunt keeps no model allowlist for this provider: the resolved `upstream_model` is sent to the
 backend as written, and the backend decides. Antigravity serves the Gemini-family slugs the Code
-Assist `gemini` provider does **not** accept — but it publishes them with the **effort tier in the
-id**, as a `-low`, `-medium`, or `-high` suffix (Pro has only `-low` and `-high`). Run `agy models`
+Assist `gemini` provider does **not** accept — but it publishes them with the **effort in the id**,
+in one of two shapes: a `-low` / `-medium` / `-high` suffix (Pro has only `-low` and `-high`), or a
+single `-tiered` id that takes the effort as a request field instead. **Which shape you get is per
+account and changes over time** — one account is served `gemini-3.8-flash-tiered`, another
+`gemini-3.8-flash-medium`. Run `agy models`
 to list the catalog as it stands today; at the time of writing it holds `gemini-3.8-flash-*`,
 `gemini-3.7-flash-*`, `gemini-3.6-flash-*`, `gemini-3.1-pro-low` / `-high`, `claude-sonnet-4-6`,
 `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`.
@@ -92,6 +95,10 @@ A bare slug is **not served**: `daily-cloudcode-pa.googleapis.com` answers it wi
 Against the production host, shunt's earlier request — a bare id *and* the plain Code Assist
 envelope — came back as a misleading `429 RESOURCE_EXHAUSTED` ("check quota"), which reads as a rate
 limit; the probes changed both inputs together, so which one produced that 429 is not established.
+
+So that neither shape has to be guessed, shunt reads your account's own catalog
+(`fetchAvailableModels`) on the request path — cached for ten minutes per account, bounded, and
+fail-open — and picks the id that account actually publishes.
 
 Map a local alias to the exact Antigravity slug:
 
@@ -120,11 +127,35 @@ itself and appends it, taking the first signal that applies:
    default the translated request carries, so it lands in `low`.
 4. Otherwise `medium`.
 
-A recognised tier is clamped to the ones the family actually publishes, so a `medium` on a `-pro`
-id becomes `-high`; an unrecognised configured `effort` is appended as written, per rule 1, and is
-never clamped. An id that already ends in a tier, and any non-Gemini id (`claude-sonnet-4-6`,
-`gpt-oss-120b-medium`), is sent exactly as written. An unrecognised `output_config.effort` falls
-back to `medium` rather than reaching the model id.
+The catalog then decides what that tier becomes. If your account publishes `{id}-{tier}`, that is
+what goes out. If it publishes only `{id}-tiered`, shunt sends the tiered id and carries the tier
+in `generationConfig.thinkingConfig.thinkingLevel` instead (alongside any `thinkingBudget`, which
+the backend accepts together). If it publishes neither but does publish other tiers of the same
+model, the nearest published tier wins, ties resolving upward — which is how a `medium` on a `-pro`
+id becomes `-high` without any Pro-specific rule.
+
+A suffix you pinned by hand gets the same treatment. If your account no longer publishes
+`gemini-3.6-flash-medium`, the suffix still says which tier you wanted, so shunt re-resolves it
+through the rules above rather than forwarding an id the catalog just proved is a 404; a catalog
+that says nothing about the family leaves your pin alone. A `-tiered` id you pinned yourself keeps
+its id and still carries your `effort` as the `thinkingLevel`, so pinning the exact published id
+costs you no effort control — and if your account later moves back to suffixed ids, that pin is
+re-resolved the same way. Only a catalog fetched just now can prove an id is gone: while shunt is
+serving the last known set after a failed refresh, every pin goes out as written.
+
+When the catalog is unavailable (a discovery outage, a backend that does not answer
+`fetchAvailableModels`), shunt falls back to appending `-{tier}` with that Pro clamp — the
+0.40.0 behaviour — so a failed lookup costs you the guess, never the request. A failed lookup is
+remembered for a minute before it is retried, so an unreachable control plane costs one bounded
+request per minute rather than one per message, and only Gemini ids are looked up at all. An
+unrecognised configured `effort` is appended as written, per rule 1, and is never clamped *without*
+a catalog; with one, it folds onto a tier the account publishes, because the catalog has just said
+that tier is not served. On the `-tiered` path it folds onto `medium`, because the backend rejects
+a `thinkingLevel` it does not know. An id your catalog publishes verbatim and any non-Gemini id
+(`claude-sonnet-4-6`, `gpt-oss-120b-medium`) is sent exactly as written. An unrecognised
+`output_config.effort` falls back to `medium` rather than reaching the model id. A request that
+explicitly disables thinking (`thinking.type = "disabled"`) never gains a `thinkingLevel`: the
+translated `thinkingBudget: 0` stands on its own.
 
 Antigravity also offers Claude models, but shunt does not yet implement the request rewrites they
 need ([#368](https://github.com/pleaseai/shunt/issues/368)). Nothing rejects such a slug locally —
@@ -175,8 +206,8 @@ Confirm the response's `x-gateway-upstream` header names `antigravity`, then
 `SHUNT_ANTIGRAVITY_AUTH_FILE` overrides the credential path (an empty value falls back to the
 default). An `antigravity_oauth` upstream is pinned to two hosts: the only non-loopback `base_url`
 it accepts is HTTPS on `daily-cloudcode-pa.googleapis.com` (the default) or on
-`cloudcode-pa.googleapis.com`, which stays valid for operators who need it — **no other
-`googleapis.com` host qualifies**, `daily-cloudcode-pa.sandbox.googleapis.com` included. A loopback
+`cloudcode-pa.googleapis.com`, which is still accepted at validation so configs written against
+older docs keep loading — **no other `googleapis.com` host qualifies**, `daily-cloudcode-pa.sandbox.googleapis.com` included. A loopback
 host is allowed for a local proxy. Anything else is refused at config validation rather than
 silently shipping your subscription token off-origin —
 `providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
@@ -184,11 +215,14 @@ subscription token over plaintext`, or the matching `... host <host> is neither
 daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription
 token off-origin`.
 
-`onboardUser` lives on the `daily-` control plane, which is where the default `base_url` already
-points. A `base_url` pinned at plain production — HTTPS on `cloudcode-pa.googleapis.com`, no port,
-no path prefix — keeps inference there but onboards against `daily-cloudcode-pa.googleapis.com`
-anyway. Anything sitting in front of the backend (a loopback proxy, or either host with an explicit
-port or path prefix) onboards through itself.
+Production does not serve Antigravity — neither `onboardUser` nor inference, which it answers with
+a fake-looking `429 RESOURCE_EXHAUSTED` from the very first request. The default `base_url` already
+points at the `daily-` control plane. A `base_url` pinned at plain production — HTTPS on
+`cloudcode-pa.googleapis.com`, no port, no path prefix — still loads, but both inference and
+onboarding go to `daily-cloudcode-pa.googleapis.com`, and startup, `shunt check`, and a reload log a
+warning naming the provider so you can drop `base_url` or point it at the daily host. Anything
+sitting in front of the backend (a loopback proxy, or either host with an explicit port or path
+prefix) is left alone and goes through itself.
 
 [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) discovers against your
 **routed** Antigravity upstreams — or, before you have wired up routes, the Antigravity upstreams you

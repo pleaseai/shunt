@@ -49,10 +49,12 @@ provider = "antigravity"
 upstream_model = "gemini-3.6-flash-medium"
 ```
 
-Antigravity は Gemini モデルを effort ティア付きの id（`-low`、`-medium`、`-high`。Pro は `-low` と
-`-high` のみ）で公開しており、サフィックスのないスラッグは提供しません。サフィックスのない `gemini-*` の
-id は、`effort` かリクエストから、いずれもなければ `medium` として shunt がティアを解決するため、
-どちらの書き方でも動きます。
+Antigravity は Gemini モデルを effort が id に含まれる形で公開しており、サフィックスのないスラッグは
+提供しません。形は 2 つあります — `-low` / `-medium` / `-high` のサフィックスか、effort をリクエスト
+フィールドとして受け取る単一の `-tiered` id です。どちらの形がアカウントに配られるかは時期によって
+変わるため、shunt はアカウント自身のカタログを読み、実際に公開されている id を選びます。サフィックスの
+ない `gemini-*` の id は `effort` かリクエストから、いずれもなければ `medium` として解決され、
+アカウントがもう公開していないサフィックスはそのまま送らずに解決し直されます。どの書き方でも動きます。
 
 ログインとスコープ、プロジェクトディスカバリー、モデルスラッグ、thinking、アダプターが伝えるものを含む完全なセットアップに
 ついては、専用の [Antigravity プロバイダーページ](/ja/providers/antigravity/)を参照してください。

@@ -6,6 +6,8 @@
 //! rather than as the Gemini CLI, and its catalog names models differently.
 //! Both differences live here so the Code Assist path stays untouched.
 
+use std::collections::BTreeSet;
+
 use serde_json::{json, Value};
 
 /// Client identity the Antigravity client sends on every request.
@@ -13,7 +15,12 @@ const ANTIGRAVITY_USER_AGENT: &str = "antigravity";
 const ANTIGRAVITY_REQUEST_TYPE: &str = "agent";
 /// Only Gemini ids carry an effort suffix in the Antigravity catalog.
 const ANTIGRAVITY_GEMINI_PREFIX: &str = "gemini-";
+/// Ordered weakest to strongest: [`nearest_published_tier`] measures distance
+/// along this list, so the order is load-bearing, not cosmetic.
 const ANTIGRAVITY_EFFORT_TIERS: [&str; 3] = ["low", "medium", "high"];
+/// The catalog's single-id form, which names no effort of its own and takes
+/// one as `thinkingConfig.thinkingLevel` instead.
+const ANTIGRAVITY_TIERED_SUFFIX: &str = "tiered";
 const ANTIGRAVITY_DEFAULT_TIER: &str = "medium";
 const THINKING_LOW_BUDGET: u64 = 2048;
 const THINKING_MEDIUM_BUDGET: u64 = 8192;
@@ -116,47 +123,351 @@ fn stable_session_digits(text: &str) -> u64 {
     hash % SESSION_ID_MODULUS
 }
 
-/// Resolve the Antigravity catalog id for `upstream_model`.
+/// The wire model id for one Antigravity request, plus the thinking level it
+/// has to carry.
 ///
-/// The Antigravity backend publishes its Gemini models with the effort tier in
-/// the id (`gemini-3.8-flash-medium`, `gemini-3.1-pro-high`) and serves no bare
-/// slug — a bare id is a 404 on the daily host and a misleading
-/// `429 RESOURCE_EXHAUSTED` on production. Rather than make every operator
-/// hand-write the suffix, the tier is resolved from the strongest signal
-/// available, in order: an explicit `effort` on the route or provider, the
-/// inbound request's `output_config.effort`, an enabled `thinking` budget, and
-/// finally `medium`. Whichever source wins, its value is normalized by
-/// [`fold_effort`] onto a tier the catalog publishes.
+/// The two travel together because they are one decision: a `-tiered` catalog
+/// id names no effort of its own, so the tier that would have been a suffix
+/// moves into `request.generationConfig.thinkingConfig.thinkingLevel` instead.
+/// Every other form keeps the tier in the id and sets no level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntigravityModel {
+    pub id: String,
+    /// Always one of `low` / `medium` / `high` when set: the backend parses
+    /// this field (an unknown value is a `400`), so an operator's unrecognised
+    /// `effort` folds onto the default rather than going out verbatim the way
+    /// it may in an id suffix.
+    pub thinking_level: Option<&'static str>,
+}
+
+impl AntigravityModel {
+    fn as_written(upstream_model: &str) -> Self {
+        Self {
+            id: upstream_model.to_string(),
+            thinking_level: None,
+        }
+    }
+}
+
+/// Whether the account's catalog could change the id shunt sends for
+/// `upstream_model`.
 ///
-/// Ids that are not Gemini (`claude-sonnet-4-6`, `gpt-oss-120b-medium`) and ids
-/// that already carry a tier are returned untouched.
+/// Only Gemini ids carry a tier in the Antigravity catalog, so every other id
+/// resolves to itself with or without one — and
+/// [`crate::auth::antigravity::catalog::catalog_ids`] runs inline on the
+/// request path. Asking this first keeps a Claude- or GPT-routed Antigravity
+/// provider off a discovery round trip whose answer it would discard.
+pub fn antigravity_model_needs_catalog(upstream_model: &str) -> bool {
+    upstream_model.starts_with(ANTIGRAVITY_GEMINI_PREFIX)
+}
+
+/// Resolve the Antigravity catalog id for `upstream_model`, and the thinking
+/// level that has to accompany it.
+///
+/// The Antigravity backend serves no bare Gemini slug — a bare id is a 404 on
+/// the daily host and a misleading `429 RESOURCE_EXHAUSTED` on production — and
+/// it publishes two different shapes of the same model, *per account*: the
+/// effort baked into the id (`gemini-3.6-flash-medium`, `gemini-3.1-pro-high`)
+/// and a single `-tiered` id that takes the effort as a `thinkingLevel`
+/// (`gemini-3.8-flash-tiered`). Which one exists is the account's business, so
+/// `catalog` — the live key set from
+/// [`crate::auth::antigravity::catalog::catalog_ids`] — decides, in order:
+///
+/// 1. A Gemini `upstream_model` ending in `-tiered` → sent as written,
+///    carrying the requested tier as the thinking level. That form names no
+///    effort of its own, so an operator who pins the id their catalog
+///    publishes keeps the same `effort` control the bare slug gives them.
+///    A catalog that omits the pinned id is the stale pin of step 3 in the
+///    other direction — the account moved *back* to suffixes — so its base
+///    is re-resolved through steps 4-6 first, and sent as written only when
+///    the catalog knows nothing about the family either.
+/// 2. `upstream_model` is itself a catalog key → sent as written.
+/// 3. `upstream_model` ends in a published tier the account does *not* publish
+///    → the suffix already says which tier was wanted, so the base is
+///    re-resolved through steps 4-6 rather than forwarded as a known 404.
+/// 4. `{upstream_model}-{tier}` is a key → that id, no level.
+/// 5. `{upstream_model}-tiered` is a key → that id, carrying the tier as the
+///    thinking level.
+/// 6. Some other `{upstream_model}-{tier}` is a key → the nearest published
+///    tier (see [`nearest_published_tier`]), which subsumes the Pro
+///    `medium → high` clamp. A tier outside the published vocabulary folds
+///    onto a known one first, since the catalog has just proved it is not
+///    served.
+/// 7. Nothing matches → the no-catalog behaviour below.
+///
+/// `catalog = None` — discovery has never succeeded for this backend — is
+/// exactly the pre-catalog behaviour: `{upstream_model}-{tier}` with the Pro
+/// clamp. A discovery outage therefore degrades to shunt 0.40.0, never worse.
+///
+/// A catalog that is not `fresh` — the last known good set, served because
+/// the refresh just failed — still answers every *positive* question above,
+/// but never a negative one: steps 1 and 3 rewrite a pinned id only on the
+/// evidence of a fetch that just succeeded, since a set that may predate the
+/// account's latest move cannot prove the pin is gone. Until discovery
+/// recovers, pins go out as written.
+///
+/// The tier itself comes from the strongest signal available, unchanged: an
+/// explicit `effort` on the route or provider, the inbound request's
+/// `output_config.effort`, an enabled `thinking` budget, and finally `medium`.
+///
+/// Ids that are not Gemini (`claude-sonnet-4-6`, `gpt-oss-120b-medium`) are
+/// returned untouched, as is a tier-suffixed id no catalog contradicts.
 pub fn antigravity_upstream_model(
     upstream_model: &str,
     route_effort: Option<&str>,
     request: &Value,
-) -> String {
+    catalog: Option<&BTreeSet<String>>,
+) -> AntigravityModel {
+    antigravity_upstream_model_with(
+        upstream_model,
+        route_effort,
+        request,
+        catalog.map(|ids| AntigravityCatalog { ids, fresh: true }),
+    )
+}
+
+/// A catalog as the resolver sees it: the account's id set and whether it
+/// came from a fetch that just succeeded. See [`antigravity_upstream_model`]
+/// for what a stale set may and may not decide.
+#[derive(Clone, Copy, Debug)]
+pub struct AntigravityCatalog<'a> {
+    pub ids: &'a BTreeSet<String>,
+    pub fresh: bool,
+}
+
+/// [`antigravity_upstream_model`] with the catalog's freshness carried along;
+/// the plain form is the fresh case.
+pub fn antigravity_upstream_model_with(
+    upstream_model: &str,
+    route_effort: Option<&str>,
+    request: &Value,
+    catalog: Option<AntigravityCatalog<'_>>,
+) -> AntigravityModel {
+    // Only a fetch that just succeeded may say an id is *absent*.
+    let fresh = catalog.is_none_or(|catalog| catalog.fresh);
+    let catalog = catalog.map(|catalog| catalog.ids);
+    // Ahead of every other catalog check: `-tiered` is not a tier, it is the
+    // marker for a Gemini id that takes its effort as a field. Whether the
+    // operator pinned it or the catalog picked it, the tier still has to
+    // travel — an id sent without one is served at whatever the backend
+    // defaults to, silently discarding a configured `effort`. Only Gemini
+    // ids use the convention, so a `claude-…`/`gpt-…` id that happens to end
+    // the same way is left exactly as written, level and all.
+    if upstream_model.starts_with(ANTIGRAVITY_GEMINI_PREFIX)
+        && ends_with_tier(upstream_model, ANTIGRAVITY_TIERED_SUFFIX)
+    {
+        let (tier, source) = requested_tier(route_effort, request);
+        // A live catalog that no longer lists the pinned `-tiered` id is the
+        // same stale pin as an unpublished `-{tier}` (step 3): the account
+        // moved shape again. Forwarding it would be a known 404, so the base
+        // goes back through the catalog with the tier that was asked for.
+        if let Some(catalog) = catalog.filter(|catalog| fresh && !catalog.contains(upstream_model))
+        {
+            let base = upstream_model
+                .strip_suffix(ANTIGRAVITY_TIERED_SUFFIX)
+                .and_then(|head| head.strip_suffix('-'))
+                .unwrap_or(upstream_model);
+            if let Some(resolved) = resolve_against_catalog(base, &tier, catalog) {
+                tracing::debug!(
+                    upstream_model,
+                    resolved = %resolved.id,
+                    thinking_level = resolved.thinking_level.unwrap_or("-"),
+                    source,
+                    catalog = "hit",
+                    form = "repinned",
+                    "resolved antigravity model id"
+                );
+                return resolved;
+            }
+        }
+        let thinking_level = fold_effort(&tier).unwrap_or(ANTIGRAVITY_DEFAULT_TIER);
+        tracing::debug!(
+            upstream_model,
+            thinking_level,
+            source,
+            form = "tiered-as-written",
+            "resolved antigravity model id"
+        );
+        return AntigravityModel {
+            id: upstream_model.to_string(),
+            thinking_level: Some(thinking_level),
+        };
+    }
+
+    if let Some(catalog) = catalog {
+        if catalog.contains(upstream_model) {
+            tracing::debug!(
+                upstream_model,
+                catalog = "hit",
+                form = "as-published",
+                "resolved antigravity model id"
+            );
+            return AntigravityModel::as_written(upstream_model);
+        }
+        // A pinned `{model}-{tier}` the account does *not* publish is not a
+        // wire id: it was copied from an older `agy models` run, or from
+        // shunt's own docs, and the account has since moved to another shape.
+        // The suffix already states which tier was wanted, so the catalog can
+        // answer exactly the question it asked — rather than forwarding an id
+        // discovery just proved is a 404.
+        if let Some((base, tier)) = split_published_tier(upstream_model).filter(|_| fresh) {
+            if let Some(resolved) = resolve_against_catalog(base, tier, catalog) {
+                tracing::debug!(
+                    upstream_model,
+                    resolved = %resolved.id,
+                    thinking_level = resolved.thinking_level.unwrap_or("-"),
+                    catalog = "hit",
+                    form = "repinned",
+                    "resolved antigravity model id"
+                );
+                return resolved;
+            }
+        }
+    }
+
     let Some((tier, source)) = antigravity_effort_tier(upstream_model, route_effort, request)
     else {
-        return upstream_model.to_string();
+        return AntigravityModel::as_written(upstream_model);
     };
-    let resolved = format!("{upstream_model}-{tier}");
+
+    if let Some(catalog) = catalog {
+        if let Some(resolved) = resolve_against_catalog(upstream_model, &tier, catalog) {
+            tracing::debug!(
+                upstream_model,
+                resolved = %resolved.id,
+                thinking_level = resolved.thinking_level.unwrap_or("-"),
+                source,
+                catalog = "hit",
+                form = if resolved.thinking_level.is_some() {
+                    "tiered"
+                } else {
+                    "suffix"
+                },
+                "resolved antigravity model id"
+            );
+            return resolved;
+        }
+    }
+
+    let resolved = format!(
+        "{upstream_model}-{}",
+        clamp_tier_to_family(upstream_model, tier)
+    );
     tracing::debug!(
         upstream_model,
         resolved = %resolved,
         source,
-        "resolved antigravity effort tier"
+        // A present catalog that produced no answer is not the same state as
+        // no catalog at all: it says "discovery works, your account does not
+        // publish this family", which is the one an operator debugging a 404
+        // has to be able to tell apart.
+        catalog = if catalog.is_some() { "no-match" } else { "miss" },
+        form = "heuristic",
+        "resolved antigravity model id"
     );
-    resolved
+    AntigravityModel {
+        id: resolved,
+        thinking_level: None,
+    }
 }
 
-/// The tier to append, plus the signal that decided it, or `None` when
-/// `upstream_model` must be sent as written.
+/// The catalog-driven half of [`antigravity_upstream_model`], or `None` when
+/// the account publishes nothing that resembles `upstream_model` — in which
+/// case the caller falls back to the no-catalog heuristic rather than inventing
+/// an id from an unrelated key set.
+fn resolve_against_catalog(
+    upstream_model: &str,
+    tier: &str,
+    catalog: &BTreeSet<String>,
+) -> Option<AntigravityModel> {
+    let exact = format!("{upstream_model}-{tier}");
+    if catalog.contains(&exact) {
+        return Some(AntigravityModel {
+            id: exact,
+            thinking_level: None,
+        });
+    }
+
+    let tiered = format!("{upstream_model}-{ANTIGRAVITY_TIERED_SUFFIX}");
+    if catalog.contains(&tiered) {
+        return Some(AntigravityModel {
+            id: tiered,
+            // The suffix path may carry an operator's unrecognised tier
+            // verbatim, so a future catalog tier is reachable without a
+            // release. This path may not: the backend parses `thinkingLevel`
+            // and rejects what it does not know, so an unknown level would
+            // turn a working request into a 400.
+            thinking_level: Some(fold_effort(tier).unwrap_or(ANTIGRAVITY_DEFAULT_TIER)),
+        });
+    }
+
+    nearest_published_tier(upstream_model, tier, catalog)
+        // A tier outside the published vocabulary has no position to measure
+        // from. Without a catalog that is a reason to pass it through — a
+        // level shunt has not heard of may be one the backend added. With one,
+        // the account has just told us it publishes neither that tier nor the
+        // `-tiered` form, so folding onto a tier it *does* publish beats
+        // sending an id discovery already proved is a 404.
+        .or_else(|| {
+            let folded = fold_effort(tier).unwrap_or(ANTIGRAVITY_DEFAULT_TIER);
+            nearest_published_tier(upstream_model, folded, catalog)
+        })
+        .map(|id| AntigravityModel {
+            id,
+            thinking_level: None,
+        })
+}
+
+/// Split a published tier suffix off `upstream_model`:
+/// `gemini-3.6-flash-medium` → `("gemini-3.6-flash", "medium")`, and `None`
+/// for an id that carries no tier. The mirror of the `{model}-{tier}` id the
+/// heuristic path builds.
+fn split_published_tier(upstream_model: &str) -> Option<(&str, &'static str)> {
+    ANTIGRAVITY_EFFORT_TIERS.iter().find_map(|tier| {
+        upstream_model
+            .strip_suffix(tier)
+            .and_then(|head| head.strip_suffix('-'))
+            .map(|base| (base, *tier))
+    })
+}
+
+/// The published `{upstream_model}-{tier}` id closest to `tier`.
+///
+/// Tiers are ordered `low < medium < high`, and the nearest published one by
+/// that distance wins; a tie breaks upward, because under-serving a request is
+/// the more surprising of the two failures. This is the general form of the
+/// hard-coded Pro clamp: an account whose Pro model is published as `-low` and
+/// `-high` resolves a derived `medium` to `high` because it read the catalog,
+/// not because Pro was special-cased. A `tier` outside the published
+/// vocabulary has no position to measure from, so it yields `None` and the
+/// caller falls back.
+fn nearest_published_tier(
+    upstream_model: &str,
+    tier: &str,
+    catalog: &BTreeSet<String>,
+) -> Option<String> {
+    let wanted = ANTIGRAVITY_EFFORT_TIERS
+        .iter()
+        .position(|published| *published == tier)?;
+    ANTIGRAVITY_EFFORT_TIERS
+        .iter()
+        .enumerate()
+        .map(|(index, published)| (index, format!("{upstream_model}-{published}")))
+        .filter(|(_, id)| catalog.contains(id))
+        .min_by_key(|(index, _)| (index.abs_diff(wanted), std::cmp::Reverse(*index)))
+        .map(|(_, id)| id)
+}
+
+/// The tier the request asks for, plus the signal that decided it, or `None`
+/// when `upstream_model` must be sent as written. Unclamped and unmatched
+/// against any catalog — [`antigravity_upstream_model`] does both.
 fn antigravity_effort_tier(
     upstream_model: &str,
     route_effort: Option<&str>,
     request: &Value,
 ) -> Option<(String, &'static str)> {
     if !upstream_model.starts_with(ANTIGRAVITY_GEMINI_PREFIX)
+        || ends_with_tier(upstream_model, ANTIGRAVITY_TIERED_SUFFIX)
         || ANTIGRAVITY_EFFORT_TIERS
             .iter()
             .any(|tier| ends_with_tier(upstream_model, tier))
@@ -164,7 +475,17 @@ fn antigravity_effort_tier(
         return None;
     }
 
-    let (tier, source) = if let Some(effort) = route_effort {
+    Some(requested_tier(route_effort, request))
+}
+
+/// The tier this request asks for, plus the signal that decided it, for a
+/// model whose shape has already been established to need one.
+///
+/// Split from [`antigravity_effort_tier`]'s shape guard because a `-tiered` id
+/// needs the answer without needing the guard: it names no effort of its own,
+/// so the tier travels as `thinkingLevel` rather than as a suffix.
+fn requested_tier(route_effort: Option<&str>, request: &Value) -> (String, &'static str) {
+    if let Some(effort) = route_effort {
         // Operator intent wins over every request signal, but the *value* is
         // normalized the same way a request's is: `xhigh` and `max` name
         // levels the Antigravity catalog has never published, and appending
@@ -197,10 +518,11 @@ fn antigravity_effort_tier(
             .unwrap_or(crate::model::gemini_request::DEFAULT_THINKING_BUDGET);
         (thinking_budget_tier(budget).to_string(), "thinking")
     } else {
+        // Returned raw: the Pro clamp is one *heuristic* answer to "this tier
+        // may not be published", and a live catalog answers the same question
+        // with evidence. Applying it here would pre-empt the catalog.
         (ANTIGRAVITY_DEFAULT_TIER.to_string(), "default")
-    };
-
-    Some((clamp_tier_to_family(upstream_model, tier), source))
+    }
 }
 
 fn ends_with_tier(model: &str, tier: &str) -> bool {
@@ -439,6 +761,26 @@ mod tests {
         assert!(digits.len() <= 19, "{digits} is longer than 19 digits");
     }
 
+    /// The no-catalog resolution — discovery never succeeded for this backend.
+    /// Asserts the level is unset every time, because each id this path
+    /// produces carries its tier in the id itself.
+    fn without_catalog(
+        upstream_model: &str,
+        route_effort: Option<&str>,
+        request: &Value,
+    ) -> String {
+        let resolved = antigravity_upstream_model(upstream_model, route_effort, request, None);
+        assert_eq!(
+            resolved.thinking_level, None,
+            "{upstream_model} keeps its tier in the id without a catalog"
+        );
+        resolved.id
+    }
+
+    fn catalog(ids: &[&str]) -> BTreeSet<String> {
+        ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
     #[test]
     fn ids_that_need_no_effort_suffix_are_sent_as_written() {
         // Rule 1: non-Gemini catalog ids carry their tier in the published
@@ -453,14 +795,65 @@ mod tests {
             "gemini-3.6-flash-low",
         ] {
             assert_eq!(
-                antigravity_upstream_model(model, None, &no_signals),
+                without_catalog(model, None, &no_signals),
                 model,
                 "{model} must be sent as written"
             );
             assert_eq!(
-                antigravity_upstream_model(model, Some("high"), &no_signals),
+                without_catalog(model, Some("high"), &no_signals),
                 model,
                 "{model} must be sent as written even with a configured effort"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pinned_tiered_id_keeps_its_id_and_still_carries_the_effort() {
+        // `-tiered` names no effort of its own, so appending one would build
+        // `…-tiered-medium`, an id no catalog contains — but dropping the tier
+        // entirely would silently discard the operator's `effort` and leave
+        // the backend to pick. The id is sent as written; the tier travels as
+        // `thinkingLevel`, exactly as it does when the catalog picks the same
+        // id for a bare slug.
+        let no_signals = json!({});
+        let published = catalog(&["gemini-3.8-flash-tiered"]);
+        for catalog in [None, Some(&published)] {
+            assert_eq!(
+                antigravity_upstream_model("gemini-3.8-flash-tiered", None, &no_signals, catalog),
+                AntigravityModel {
+                    id: "gemini-3.8-flash-tiered".to_string(),
+                    thinking_level: Some("medium"),
+                },
+                "no signal falls to the default tier"
+            );
+            assert_eq!(
+                antigravity_upstream_model(
+                    "gemini-3.8-flash-tiered",
+                    Some("high"),
+                    &no_signals,
+                    catalog
+                ),
+                AntigravityModel {
+                    id: "gemini-3.8-flash-tiered".to_string(),
+                    thinking_level: Some("high"),
+                },
+                "a configured effort must reach the level"
+            );
+            assert_eq!(
+                antigravity_upstream_model(
+                    "gemini-3.8-flash-tiered",
+                    Some("extra-low"),
+                    &no_signals,
+                    catalog
+                ),
+                AntigravityModel {
+                    id: "gemini-3.8-flash-tiered".to_string(),
+                    // The backend parses this field, so an unrecognised level
+                    // folds onto the default rather than turning a working
+                    // request into a 400.
+                    thinking_level: Some("medium"),
+                },
+                "an unrecognised effort folds onto the default"
             );
         }
     }
@@ -471,7 +864,7 @@ mod tests {
         // here over an `output_config.effort` that says something else.
         let request = json!({"output_config": {"effort": "low"}});
         assert_eq!(
-            antigravity_upstream_model("gemini-3.6-flash", Some("high"), &request),
+            without_catalog("gemini-3.6-flash", Some("high"), &request),
             "gemini-3.6-flash-high"
         );
 
@@ -495,7 +888,7 @@ mod tests {
             ("Extra-Low", "gemini-3.6-flash-extra-low"),
         ] {
             assert_eq!(
-                antigravity_upstream_model("gemini-3.6-flash", Some(effort), &json!({})),
+                without_catalog("gemini-3.6-flash", Some(effort), &json!({})),
                 expected,
                 "configured effort {effort}"
             );
@@ -519,7 +912,7 @@ mod tests {
         ] {
             let request = json!({"output_config": {"effort": effort}});
             assert_eq!(
-                antigravity_upstream_model("gemini-3.6-flash", None, &request),
+                without_catalog("gemini-3.6-flash", None, &request),
                 expected,
                 "output_config.effort {effort}"
             );
@@ -545,7 +938,7 @@ mod tests {
             };
             let request = json!({"thinking": thinking});
             assert_eq!(
-                antigravity_upstream_model("gemini-3.6-flash", None, &request),
+                without_catalog("gemini-3.6-flash", None, &request),
                 expected,
                 "thinking budget {budget:?}"
             );
@@ -554,7 +947,7 @@ mod tests {
         // A disabled thinking block is not a signal.
         let disabled = json!({"thinking": {"type": "disabled", "budget_tokens": 100}});
         assert_eq!(
-            antigravity_upstream_model("gemini-3.6-flash", None, &disabled),
+            without_catalog("gemini-3.6-flash", None, &disabled),
             "gemini-3.6-flash-medium"
         );
     }
@@ -565,7 +958,7 @@ mod tests {
         // and a misleading 429 on production — so there is no "leave it alone"
         // option here.
         assert_eq!(
-            antigravity_upstream_model("gemini-3.6-flash", None, &json!({})),
+            without_catalog("gemini-3.6-flash", None, &json!({})),
             "gemini-3.6-flash-medium"
         );
     }
@@ -575,16 +968,16 @@ mod tests {
         // Rule 6: Pro is published as `-low` / `-high` only, so a medium from
         // any source clamps up rather than 404ing.
         assert_eq!(
-            antigravity_upstream_model("gemini-3.1-pro", None, &json!({})),
+            without_catalog("gemini-3.1-pro", None, &json!({})),
             "gemini-3.1-pro-high"
         );
         let request = json!({"output_config": {"effort": "medium"}});
         assert_eq!(
-            antigravity_upstream_model("gemini-3.1-pro", None, &request),
+            without_catalog("gemini-3.1-pro", None, &request),
             "gemini-3.1-pro-high"
         );
         assert_eq!(
-            antigravity_upstream_model(
+            without_catalog(
                 "gemini-3.1-pro",
                 None,
                 &json!({"thinking": {"type": "enabled", "budget_tokens": 4096}})
@@ -594,16 +987,16 @@ mod tests {
         // The family is a segment of the id, not a suffix: a Pro variant
         // still clamps, and an id that only contains the letters does not.
         assert_eq!(
-            antigravity_upstream_model("gemini-3-pro-preview", None, &json!({})),
+            without_catalog("gemini-3-pro-preview", None, &json!({})),
             "gemini-3-pro-preview-high"
         );
         assert_eq!(
-            antigravity_upstream_model("gemini-3.8-flash-prod", None, &json!({})),
+            without_catalog("gemini-3.8-flash-prod", None, &json!({})),
             "gemini-3.8-flash-prod-medium"
         );
         // Low still reaches Pro, and Flash keeps its medium.
         assert_eq!(
-            antigravity_upstream_model(
+            without_catalog(
                 "gemini-3.1-pro",
                 None,
                 &json!({"output_config": {"effort": "low"}})
@@ -611,8 +1004,368 @@ mod tests {
             "gemini-3.1-pro-low"
         );
         assert_eq!(
-            antigravity_upstream_model("gemini-3.8-flash", None, &json!({})),
+            without_catalog("gemini-3.8-flash", None, &json!({})),
             "gemini-3.8-flash-medium"
         );
+    }
+
+    #[test]
+    fn a_pinned_tiered_id_the_catalog_no_longer_publishes_is_re_resolved() {
+        // The mirror image of the stale suffix pin: an operator who followed
+        // the tiered-era advice and wrote `gemini-3.8-flash-tiered` finds the
+        // account moved back to suffixed ids. The catalog has just proved the
+        // pin is a 404, and the tier it was going to carry as a level names
+        // exactly the suffix to ask for instead.
+        let suffixed = catalog(&["gemini-3.8-flash-medium", "gemini-3.8-flash-high"]);
+        assert_eq!(
+            antigravity_upstream_model(
+                "gemini-3.8-flash-tiered",
+                None,
+                &json!({}),
+                Some(&suffixed)
+            ),
+            AntigravityModel {
+                id: "gemini-3.8-flash-medium".to_string(),
+                thinking_level: None,
+            }
+        );
+        assert_eq!(
+            antigravity_upstream_model(
+                "gemini-3.8-flash-tiered",
+                Some("high"),
+                &json!({}),
+                Some(&suffixed)
+            )
+            .id,
+            "gemini-3.8-flash-high",
+            "the configured effort picks the suffix, not the default tier"
+        );
+        // The nearest-tier rule applies just as it does for a bare slug.
+        let low_only = catalog(&["gemini-3.8-flash-low"]);
+        assert_eq!(
+            antigravity_upstream_model(
+                "gemini-3.8-flash-tiered",
+                None,
+                &json!({}),
+                Some(&low_only)
+            )
+            .id,
+            "gemini-3.8-flash-low"
+        );
+        // A catalog that knows nothing about the family leaves the pin alone,
+        // level and all: an unrelated key set is not evidence the id is wrong.
+        let unrelated = catalog(&["claude-sonnet-4-6"]);
+        assert_eq!(
+            antigravity_upstream_model(
+                "gemini-3.8-flash-tiered",
+                None,
+                &json!({}),
+                Some(&unrelated)
+            ),
+            AntigravityModel {
+                id: "gemini-3.8-flash-tiered".to_string(),
+                thinking_level: Some("medium"),
+            }
+        );
+    }
+
+    #[test]
+    fn a_non_gemini_id_ending_in_tiered_is_left_alone() {
+        // `-tiered` is a Gemini catalog convention. A Claude or GPT id that
+        // happens to end the same way must not grow a `thinkingLevel` — the
+        // backend does not read one for those models and the id is sent as
+        // the operator wrote it.
+        for id in ["claude-sonnet-4-6-tiered", "gpt-oss-120b-tiered"] {
+            assert_eq!(
+                antigravity_upstream_model(id, Some("high"), &json!({}), None),
+                AntigravityModel::as_written(id),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stale_catalog_confirms_ids_but_never_rules_one_out() {
+        // A set served after a failed refresh may predate the account's
+        // latest move. It is still evidence *for* an id it lists — nothing
+        // changed because one request failed — but its silence about a pinned
+        // id proves nothing, so neither pin is rewritten until a fetch
+        // succeeds. Without this, a suffix-era set outliving the account's
+        // move to `-tiered` would turn the now-correct pin back into a 404.
+        let published = catalog(&["gemini-3.8-flash-medium", "gemini-3.6-flash-tiered"]);
+        let stale = |ids| AntigravityCatalog { ids, fresh: false };
+
+        assert_eq!(
+            antigravity_upstream_model_with(
+                "gemini-3.8-flash-tiered",
+                None,
+                &json!({}),
+                Some(stale(&published))
+            ),
+            AntigravityModel {
+                id: "gemini-3.8-flash-tiered".to_string(),
+                thinking_level: Some("medium"),
+            },
+            "a pinned tiered id the stale set omits goes out as written"
+        );
+        assert_eq!(
+            antigravity_upstream_model_with(
+                "gemini-3.6-flash-medium",
+                None,
+                &json!({}),
+                Some(stale(&published))
+            ),
+            AntigravityModel::as_written("gemini-3.6-flash-medium"),
+            "a pinned suffix id the stale set omits goes out as written"
+        );
+        assert_eq!(
+            antigravity_upstream_model_with(
+                "gemini-3.6-flash",
+                None,
+                &json!({}),
+                Some(stale(&published))
+            )
+            .id,
+            "gemini-3.6-flash-tiered",
+            "a positive match on a stale set still decides the form"
+        );
+        // The same set, fresh, is allowed to rewrite both pins.
+        assert_eq!(
+            antigravity_upstream_model(
+                "gemini-3.8-flash-tiered",
+                None,
+                &json!({}),
+                Some(&published)
+            )
+            .id,
+            "gemini-3.8-flash-medium"
+        );
+        assert_eq!(
+            antigravity_upstream_model(
+                "gemini-3.6-flash-medium",
+                None,
+                &json!({}),
+                Some(&published)
+            )
+            .id,
+            "gemini-3.6-flash-tiered"
+        );
+    }
+
+    #[test]
+    fn a_published_suffix_id_beats_the_tiered_form() {
+        // An account served both shapes gets the one that names the tier in
+        // the id: it needs no second field to be right, and it is what shunt
+        // sent before the catalog existed.
+        let both = catalog(&["gemini-3.6-flash-medium", "gemini-3.6-flash-tiered"]);
+        assert_eq!(
+            antigravity_upstream_model("gemini-3.6-flash", None, &json!({}), Some(&both)),
+            AntigravityModel {
+                id: "gemini-3.6-flash-medium".to_string(),
+                thinking_level: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_tiered_only_catalog_moves_the_tier_into_the_thinking_level() {
+        // Today's live failure: the account publishes `gemini-3.8-flash-tiered`
+        // and no `gemini-3.8-flash-medium`, so 0.40.0's hard-coded suffix
+        // 404s. The tier still has to travel — as `thinkingLevel`.
+        let tiered = catalog(&["gemini-3.8-flash-tiered", "gemini-3.6-flash-medium"]);
+        for (effort, expected_level) in [
+            (None, "medium"),
+            (Some("low"), "low"),
+            (Some("high"), "high"),
+            // The backend parses this field, so an operator's unrecognised
+            // level folds onto the default instead of going out verbatim and
+            // turning a working request into a 400.
+            (Some("extra-low"), "medium"),
+            (Some("max"), "high"),
+        ] {
+            assert_eq!(
+                antigravity_upstream_model("gemini-3.8-flash", effort, &json!({}), Some(&tiered)),
+                AntigravityModel {
+                    id: "gemini-3.8-flash-tiered".to_string(),
+                    thinking_level: Some(expected_level),
+                },
+                "configured effort {effort:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_id_the_catalog_publishes_verbatim_is_never_reshaped() {
+        // Whatever the operator pinned, a key the account actually publishes
+        // is already a wire id — suffixing it can only invent one that is not.
+        let published = catalog(&[
+            "claude-sonnet-4-6",
+            "gemini-3.8-flash-tiered",
+            "gemini-3.6-flash-medium",
+        ]);
+        for model in ["claude-sonnet-4-6", "gemini-3.6-flash-medium"] {
+            assert_eq!(
+                antigravity_upstream_model(model, Some("high"), &json!({}), Some(&published)),
+                AntigravityModel {
+                    id: model.to_string(),
+                    thinking_level: None,
+                },
+                "{model} is already a catalog id"
+            );
+        }
+        // The one published id that is not finished on its own: `-tiered`
+        // names no effort, so it keeps the id and gains the level.
+        assert_eq!(
+            antigravity_upstream_model(
+                "gemini-3.8-flash-tiered",
+                Some("high"),
+                &json!({}),
+                Some(&published)
+            ),
+            AntigravityModel {
+                id: "gemini-3.8-flash-tiered".to_string(),
+                thinking_level: Some("high"),
+            }
+        );
+    }
+
+    #[test]
+    fn a_pinned_suffix_the_account_no_longer_publishes_is_re_resolved() {
+        // The config shape shunt's own docs hand operators
+        // (`upstream_model = "gemini-3.6-flash-medium"`) is the one that broke
+        // in the field once the account moved to the tiered form. The suffix
+        // already states which tier was wanted, so the catalog can answer it
+        // rather than forwarding an id discovery just proved is a 404.
+        let tiered = catalog(&["gemini-3.6-flash-tiered"]);
+        assert_eq!(
+            antigravity_upstream_model("gemini-3.6-flash-medium", None, &json!({}), Some(&tiered)),
+            AntigravityModel {
+                id: "gemini-3.6-flash-tiered".to_string(),
+                thinking_level: Some("medium"),
+            }
+        );
+        // The same rule reaches a family published under other tiers.
+        let low_only = catalog(&["gemini-3.6-flash-low"]);
+        assert_eq!(
+            antigravity_upstream_model("gemini-3.6-flash-high", None, &json!({}), Some(&low_only))
+                .id,
+            "gemini-3.6-flash-low"
+        );
+        // A catalog that knows nothing about the family leaves the pin alone:
+        // an unrelated key set is not evidence the id is wrong.
+        let unrelated = catalog(&["claude-sonnet-4-6"]);
+        assert_eq!(
+            antigravity_upstream_model(
+                "gemini-3.6-flash-medium",
+                None,
+                &json!({}),
+                Some(&unrelated)
+            ),
+            AntigravityModel {
+                id: "gemini-3.6-flash-medium".to_string(),
+                thinking_level: None,
+            }
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_effort_still_lands_on_a_published_tier_when_the_catalog_says_so() {
+        // Without a catalog an unknown tier goes out verbatim, so a level the
+        // backend adds later is reachable without a release. With one, the
+        // account has just said it publishes neither that tier nor `-tiered`,
+        // so folding beats sending a known 404.
+        let published = catalog(&["gemini-3.6-flash-low", "gemini-3.6-flash-high"]);
+        assert_eq!(
+            antigravity_upstream_model(
+                "gemini-3.6-flash",
+                Some("turbo"),
+                &json!({}),
+                Some(&published)
+            )
+            .id,
+            "gemini-3.6-flash-high",
+            "turbo folds onto the default, which ties low/high and breaks upward"
+        );
+        // The catalog is still the authority: a tier it does publish under
+        // that name is sent as written.
+        let turbo = catalog(&["gemini-3.6-flash-turbo"]);
+        assert_eq!(
+            antigravity_upstream_model("gemini-3.6-flash", Some("turbo"), &json!({}), Some(&turbo))
+                .id,
+            "gemini-3.6-flash-turbo"
+        );
+        assert_eq!(
+            without_catalog("gemini-3.6-flash", Some("turbo"), &json!({})),
+            "gemini-3.6-flash-turbo",
+            "without a catalog the operator's tier still goes out verbatim"
+        );
+    }
+
+    #[test]
+    fn only_gemini_ids_are_worth_a_catalog_lookup() {
+        // The lookup runs inline on the request path, so an id no catalog
+        // could reshape must not pay for one.
+        assert!(antigravity_model_needs_catalog("gemini-3.8-flash"));
+        assert!(antigravity_model_needs_catalog("gemini-3.8-flash-tiered"));
+        assert!(!antigravity_model_needs_catalog("claude-sonnet-4-6"));
+        assert!(!antigravity_model_needs_catalog("gpt-oss-120b-medium"));
+    }
+
+    #[test]
+    fn a_missing_tier_resolves_to_the_nearest_one_the_account_publishes() {
+        // The general form of the Pro clamp, now driven by evidence: Pro is
+        // published as low/high, so a derived medium is equidistant and breaks
+        // upward. The same rule serves a Flash family published low-only.
+        let pro = catalog(&["gemini-3.1-pro-low", "gemini-3.1-pro-high"]);
+        assert_eq!(
+            antigravity_upstream_model("gemini-3.1-pro", None, &json!({}), Some(&pro)).id,
+            "gemini-3.1-pro-high"
+        );
+        assert_eq!(
+            antigravity_upstream_model("gemini-3.1-pro", Some("low"), &json!({}), Some(&pro)).id,
+            "gemini-3.1-pro-low"
+        );
+
+        let low_only = catalog(&["gemini-3.9-flash-low"]);
+        assert_eq!(
+            antigravity_upstream_model(
+                "gemini-3.9-flash",
+                Some("high"),
+                &json!({}),
+                Some(&low_only)
+            )
+            .id,
+            "gemini-3.9-flash-low"
+        );
+    }
+
+    #[test]
+    fn a_catalog_that_knows_nothing_about_the_model_falls_back_to_the_heuristic() {
+        // A stale or unrelated key set must not make the request worse than a
+        // discovery outage would: an empty catalog and no catalog at all have
+        // to land on the same id, Pro clamp included.
+        for irrelevant in [
+            catalog(&[]),
+            catalog(&["claude-sonnet-4-6", "gpt-oss-120b-medium"]),
+        ] {
+            for (model, expected) in [
+                ("gemini-3.6-flash", "gemini-3.6-flash-medium"),
+                ("gemini-3.1-pro", "gemini-3.1-pro-high"),
+            ] {
+                assert_eq!(
+                    antigravity_upstream_model(model, None, &json!({}), Some(&irrelevant)),
+                    AntigravityModel {
+                        id: expected.to_string(),
+                        thinking_level: None,
+                    },
+                    "{model} against an irrelevant catalog"
+                );
+                assert_eq!(
+                    without_catalog(model, None, &json!({})),
+                    expected,
+                    "{model} without a catalog"
+                );
+            }
+        }
     }
 }

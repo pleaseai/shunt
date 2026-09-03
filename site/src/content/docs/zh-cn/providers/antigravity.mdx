@@ -78,8 +78,10 @@ auth = "antigravity_oauth"
 
 shunt 不为该提供方保留任何模型白名单:解析出的 `upstream_model` 会原样发送到
 后端,由后端决定。Antigravity 提供 Code Assist 的 `gemini` 提供方**不**接受的 Gemini 家族 slug ——
-但它把 **effort 档位写进 id**,以 `-low`、`-medium`、`-high` 后缀的形式发布(Pro 只有 `-low` 和
-`-high`)。用 `agy models` 可以列出当前目录;撰写本文时其中包含 `gemini-3.8-flash-*`、
+但它把 **effort 写进 id**,并以两种形态之一发布:`-low` / `-medium` / `-high` 后缀(Pro 只有 `-low`
+和 `-high`),或者一个把 effort 作为请求字段接收的单一 `-tiered` id。**你拿到哪种形态因账号而异,并且
+会随时间变化** —— 有的账号拿到 `gemini-3.8-flash-tiered`,有的拿到 `gemini-3.8-flash-medium`。
+用 `agy models` 可以列出当前目录;撰写本文时其中包含 `gemini-3.8-flash-*`、
 `gemini-3.7-flash-*`、`gemini-3.6-flash-*`、`gemini-3.1-pro-low` / `-high`、`claude-sonnet-4-6`、
 `claude-opus-4-6-thinking` 和 `gpt-oss-120b-medium`。
 
@@ -87,6 +89,9 @@ shunt 不为该提供方保留任何模型白名单:解析出的 `upstream_model
 早先的请求 —— 不带后缀的 id 加上普通的 Code Assist 信封 —— 返回了看起来像限流的、具有误导性的
 `429 RESOURCE_EXHAUSTED`(“check quota”);但探测同时改变了这两个输入,因此无法确定是哪一个导致了
 这个 429。
+
+为了不必猜测是哪种形态,shunt 会在请求路径上读取账号自己的目录(`fetchAvailableModels`)—— 按账号
+缓存十分钟、有超时上限、失败即放行 —— 并挑选该账号实际发布的 id。
 
 把每个本地别名映射到确切的 Antigravity slug:
 
@@ -113,10 +118,28 @@ upstream_model = "gemini-3.6-flash-medium"
    更大则为 `high`。启用但未指定 budget 的块会使用与转换后请求相同的默认值 `1024`,因此落在 `low`。
 4. 其余情况为 `medium`。
 
-已识别的档位会被收敛到该家族实际发布的档位,因此 `-pro` id 上的 `medium` 会变成 `-high`;配置中
-未识别的 `effort` 会按规则 1 所述原样追加,不会被收敛。已经以档位结尾的 id,以及非 Gemini 的
-id(`claude-sonnet-4-6`、`gpt-oss-120b-medium`),都会原样发送。无法识别的
-`output_config.effort` 会回退到 `medium`,不会进入模型 id。
+这个档位最终变成什么,由目录决定。如果你的账号发布了 `{id}-{档位}`,发出去的就是它。如果只发布了
+`{id}-tiered`,shunt 就发送这个 tiered id,并把档位放进
+`generationConfig.thinkingConfig.thinkingLevel`(与已有的 `thinkingBudget` 并存,后端两者同时接受)。
+如果两者都没有、但发布了同一模型的其他档位,则最接近的已发布档位胜出,打平时取更高的那个 —— `-pro`
+id 上的 `medium` 变成 `-high`,靠的正是这条规则,而不是任何 Pro 专用规则。
+
+你手写的后缀也一样。如果你的账号不再发布 `gemini-3.6-flash-medium`,这个后缀仍然说明了你想要哪个
+档位,所以 shunt 会按上面的规则重新解析,而不是把目录刚刚证明会 404 的 id 原样发出;如果目录对该系列
+一无所知,你写下的值就保持原样。你自己指定的 `-tiered` id 会保留 id,并继续把 `effort` 作为
+`thinkingLevel` 带上,因此写下确切的已发布 id 不会让你失去 effort 控制;如果账号后来又回到带后缀的
+id,这个指定也会按同样的规则重新解析。只有刚刚取到的目录才能证明某个 id 已经消失:在刷新失败、shunt
+仍使用上一次已知目录期间,所有指定都按你写下的原样发出。
+
+当目录不可用时(发现失败,或后端不响应 `fetchAvailableModels`),shunt 会回退到追加 `-{档位}` 并带上
+Pro 收敛 —— 也就是 0.40.0 的行为 —— 因此一次查不到只让你失去这次猜测,而不会让你失去这次请求。
+一次失败的查询会被记住一分钟后再重试,所以一个无法访问的控制面每分钟只花费一次有上限的请求,而不是
+每条消息一次;而且只有 Gemini 的 id 才会去查目录。配置中未识别的 `effort`,在*没有*目录时会按规则 1
+所述原样追加、不会被收敛;有目录时它会折叠到账号确实发布的档位,因为目录刚刚说明了该档位并未提供。
+在 `-tiered` 路径上它会折叠为 `medium`,因为后端会拒绝它不认识的 `thinkingLevel`。目录原样发布的
+id,以及非 Gemini 的 id(`claude-sonnet-4-6`、`gpt-oss-120b-medium`),都会原样发送。无法识别的
+`output_config.effort` 会回退到 `medium`,不会进入模型 id。明确关闭 thinking 的请求
+(`thinking.type = "disabled"`)不会获得 `thinkingLevel`:转换出的 `thinkingBudget: 0` 独自成立。
 
 Antigravity 也提供 Claude 模型,但 shunt 尚未实现它们所需的请求改写
 ([#368](https://github.com/pleaseai/shunt/issues/368))。本地没有任何东西会拒绝这样的 slug ——
@@ -162,7 +185,7 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE` 可覆盖凭据路径(空值会回退到
 默认值)。`antigravity_oauth` 上游被固定到两个主机:它接受的非回环 `base_url` 只能是
-`daily-cloudcode-pa.googleapis.com`(默认)或仍然有效、供确有需要的运维者使用的
+`daily-cloudcode-pa.googleapis.com`(默认)或在校验阶段仍被接受、以便照着旧文档写的配置继续能加载的
 `cloudcode-pa.googleapis.com` 上的 HTTPS —— 包括 `daily-cloudcode-pa.sandbox.googleapis.com` 在内,
 **没有其他 `googleapis.com` 主机合格**。回环主机可用于本地代理。其他任何情况都会在配置
 校验阶段被拒绝,而不是悄悄把你的订阅 token 发往别的 origin ——
@@ -171,10 +194,12 @@ subscription token over plaintext`,或者与之对应的 `... host <host> is nei
 daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription
 token off-origin`。
 
-`onboardUser` 位于 `daily-` 控制平面,而默认的 `base_url` 已经指向那里。一个固定在纯生产的
-`base_url` —— `cloudcode-pa.googleapis.com` 上的 HTTPS,无端口,无路径前缀 —— 推理仍留在那里,但
-开通仍会针对 `daily-cloudcode-pa.googleapis.com`。任何挡在后端前面的东西(一个回环代理,或带显式
-端口或路径前缀的这两个主机之一)则通过它自身开通。
+生产环境并不提供 Antigravity —— `onboardUser` 和推理都不提供,推理从第一个请求起就返回一个看起来是
+假的 `429 RESOURCE_EXHAUSTED`。默认的 `base_url` 已经指向 `daily-` 控制平面。一个固定在纯生产的
+`base_url` —— `cloudcode-pa.googleapis.com` 上的 HTTPS,无端口,无路径前缀 —— 仍然能加载,但推理和
+开通都会走 `daily-cloudcode-pa.googleapis.com`,并且启动、`shunt check` 和重载都会记录一条点名该
+provider 的警告,方便你删掉 `base_url` 或把它改成 daily 主机。任何挡在后端前面的东西(一个回环代理,
+或带显式端口或路径前缀的这两个主机之一)则保持原样,通过它自身发出。
 
 [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) 会针对你**已路由的**
 Antigravity 上游做发现 —— 或者在你还没接好路由之前,针对你所声明的 Antigravity 上游。

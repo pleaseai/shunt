@@ -83,8 +83,11 @@ auth = "antigravity_oauth"
 
 shunt はこのプロバイダーについてモデルの許可リストを持ちません。解決された `upstream_model` はそのまま
 バックエンドへ送られ、判断はバックエンドが行います。Antigravity は Code Assist の `gemini` プロバイダーが
-**受け付けない** Gemini ファミリーのスラッグを提供します — ただし **effort のティアを id に** `-low`、
-`-medium`、`-high` というサフィックスとして付けて公開します（Pro には `-low` と `-high` しかありません）。
+**受け付けない** Gemini ファミリーのスラッグを提供します — ただし **effort を id に**含めて、2 つの形の
+どちらかで公開します。`-low` / `-medium` / `-high` のサフィックス（Pro には `-low` と `-high` しか
+ありません）か、effort をリクエストのフィールドとして受け取る単一の `-tiered` id です。**どちらの形が
+提供されるかはアカウントごとに異なり、時間とともに変わります** — あるアカウントには
+`gemini-3.8-flash-tiered` が、別のアカウントには `gemini-3.8-flash-medium` が提供されます。
 現在のカタログは `agy models` で一覧できます。本稿の執筆時点では `gemini-3.8-flash-*`、
 `gemini-3.7-flash-*`、`gemini-3.6-flash-*`、`gemini-3.1-pro-low` / `-high`、`claude-sonnet-4-6`、
 `claude-opus-4-6-thinking`、`gpt-oss-120b-medium` が含まれます。
@@ -93,6 +96,10 @@ shunt はこのプロバイダーについてモデルの許可リストを持�
 本番ホストでは、以前の shunt のリクエスト — サフィックスのない id と素の Code Assist エンベロープ — が
 レート制限のように見える `429 RESOURCE_EXHAUSTED`（"check quota"）で返ってきました。ただしプローブは
 両方の入力を同時に変えているため、そのどちらが 429 を生んだのかは確認できていません。
+
+どちらの形かを推測しなくて済むよう、shunt はリクエストの経路でアカウント自身のカタログ
+（`fetchAvailableModels`）を読み — アカウントごとに 10 分キャッシュ、時間制限つき、失敗時はそのまま
+続行 — そのアカウントが実際に公開している id を選びます。
 
 ローカルのエイリアスを、正確な Antigravity のモデルスラッグへマッピングします:
 
@@ -120,11 +127,34 @@ upstream_model = "gemini-3.6-flash-medium"
    のと同じデフォルトの `1024` を使うため、`low` になります。
 4. それ以外は `medium` です。
 
-認識されたティアはそのファミリーが実際に公開しているティアに丸められるため、`-pro` の id での `medium`
-は `-high` になります。設定に書かれた認識できない `effort` はルール 1 のとおり書かれたまま付与され、
-丸められません。すでにティアで終わる id と、Gemini 以外の id（`claude-sonnet-4-6`、`gpt-oss-120b-medium`）
-は書かれたまま送られます。認識できない `output_config.effort` は、モデル id に反映されずに `medium` へ
-フォールバックします。
+そのティアが何になるかはカタログが決めます。アカウントが `{id}-{ティア}` を公開していればそれが送られ
+ます。`{id}-tiered` だけを公開している場合、shunt は tiered の id を送り、ティアは
+`generationConfig.thinkingConfig.thinkingLevel` に載せます（バックエンドは両方同時に受け付けるので、
+既存の `thinkingBudget` はそのままです）。どちらもなく、同じモデルの別のティアが公開されている場合は、
+最も近い公開ティアが選ばれ、同点なら上のティアになります — `-pro` の id での `medium` が `-high` に
+なるのは Pro 専用の規則ではなく、この規則によるものです。
+
+手で書いたサフィックスも同じ扱いです。アカウントが `gemini-3.6-flash-medium` をもう公開していない
+場合、そのサフィックスはどのティアを望んだかをまだ示しているので、shunt はカタログが 404 だと確認した
+ばかりの id をそのまま送らず、上のルールで解決し直します。カタログがそのファミリーを何も知らなければ、
+書いた値はそのまま残ります。自分で指定した `-tiered` の id は id を保ったまま `effort` を
+`thinkingLevel` として運び続けるので、実際に公開されている id を書いても effort の制御は失われません。
+アカウントが後でサフィックス付きの id に戻った場合も、その指定は同じ規則で解決し直されます。id が
+消えたと言えるのはたった今取得したカタログだけなので、更新に失敗して最後に知っていたカタログで動いて
+いる間は、すべての指定が書いたとおりに送られます。
+
+カタログが使えない場合（ディスカバリー障害、`fetchAvailableModels` に答えないバックエンド）は、Pro の
+丸めを含む `-{ティア}` の付与 — 0.40.0 の挙動 — にフォールバックするので、参照の失敗で失うのは
+推測であってリクエストではありません。失敗した参照は 1 分間記憶してから再試行するため、到達できない
+コントロールプレーンのコストはメッセージごとではなく 1 分あたり 1 回に抑えられ、参照自体も Gemini の id
+に対してのみ行われます。設定に書かれた認識できない `effort` は、カタログが*ない*ときはルール 1 のとおり
+書かれたまま付与され、丸められません。カタログがあるときは、そのティアが提供されていないとアカウントが
+たった今示したことになるので、公開されているティアへ畳まれます。`-tiered` の経路では、バックエンドが
+知らない `thinkingLevel` を拒否するため `medium` に畳まれます。カタログがそのまま公開している id、
+そして Gemini 以外の id（`claude-sonnet-4-6`、`gpt-oss-120b-medium`）は書かれたまま送られます。
+認識できない `output_config.effort` は、モデル id に反映されずに `medium` へフォールバックします。
+thinking を明示的に無効にしたリクエスト（`thinking.type = "disabled"`）に `thinkingLevel` が付くことは
+ありません。変換された `thinkingBudget: 0` がそのまま残ります。
 
 Antigravity は Claude モデルも提供していますが、shunt はそれらが必要とするリクエストの書き換えをまだ実装して
 いません（[#368](https://github.com/pleaseai/shunt/issues/368)）。そうしたスラッグをローカルで拒否するものは
@@ -173,8 +203,8 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE` は認証情報のパスを上書きします（空の値はデフォルトへフォールバックします）。
 `antigravity_oauth` の upstream は 2 つのホストに固定されます。受け入れられるループバック以外の `base_url`
-は `daily-cloudcode-pa.googleapis.com`（デフォルト）か、必要な運用者のために引き続き有効な
-`cloudcode-pa.googleapis.com` への HTTPS だけです — `daily-cloudcode-pa.sandbox.googleapis.com` を含め、
+は `daily-cloudcode-pa.googleapis.com`（デフォルト）か、古いドキュメントに沿って書かれた設定が読み込め
+続けるよう検証では引き続き受け入れられる `cloudcode-pa.googleapis.com` への HTTPS だけです — `daily-cloudcode-pa.sandbox.googleapis.com` を含め、
 **ほかの `googleapis.com` ホストは該当しません**。ローカルプロキシのためにループバックホストは許可されます。
 それ以外は、サブスクリプショントークンを黙ってオリジン外へ送るのではなく、設定検証の段階で拒否されます —
 `providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
@@ -182,11 +212,14 @@ subscription token over plaintext`、または対応する `... host <host> is n
 daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription
 token off-origin` です。
 
-`onboardUser` は `daily-` コントロールプレーンにあり、デフォルトの `base_url` はすでにそこを指しています。
-素の本番に固定した `base_url` — `cloudcode-pa.googleapis.com` への HTTPS で、ポートもパスプレフィックスも
-ないもの — は推論こそそのままそこで行いますが、onboard は `daily-cloudcode-pa.googleapis.com` に対して
-行います。バックエンドの手前に何かが挟まっている場合（ループバックプロキシ、あるいはどちらかのホストに
-明示的なポートやパスプレフィックスを伴うもの）は、それ自身を通して onboard します。
+本番は Antigravity を提供していません — `onboardUser` も推論もです。推論は最初のリクエストから偽物めいた
+`429 RESOURCE_EXHAUSTED` を返します。デフォルトの `base_url` はすでに `daily-` コントロールプレーンを
+指しています。素の本番に固定した `base_url` — `cloudcode-pa.googleapis.com` への HTTPS で、ポートもパス
+プレフィックスもないもの — も引き続き読み込めますが、推論も onboard も
+`daily-cloudcode-pa.googleapis.com` へ向かい、起動時・`shunt check`・リロードでその provider 名を含む警告が
+ログに出るので、`base_url` を外すか daily ホストに向け直せます。バックエンドの手前に何かが挟まっている場合
+（ループバックプロキシ、あるいはどちらかのホストに明示的なポートやパスプレフィックスを伴うもの）はそのまま
+にされ、それ自身を通して送られます。
 
 [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) は、あなたの**ルーティングされた**
 Antigravity upstream に対してディスカバリーを行います — あるいは、まだルートを組んでいなければ、宣言した
