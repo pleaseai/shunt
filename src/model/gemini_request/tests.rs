@@ -119,6 +119,101 @@ fn sanitize_tool_input_schema_removes_unsupported_keys() {
 }
 
 #[test]
+fn a_tuple_array_schema_gets_the_items_gemini_requires() {
+    // The shape that failed in the field: a `where` clause declared as
+    // `[field, operator, value]` with `prefixItems` and no `items`. The
+    // backend answers `…properties[where].items.items: missing field.` with a
+    // 400 for the whole request, so the positions have to become the one
+    // `items` schema Gemini reads — and the typeless "anything" slot must not
+    // become a typeless branch that fails one level down.
+    let input = json!({
+        "messages": [{ "role": "user", "content": "Query" }],
+        "tools": [{
+            "name": "query",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "where": {
+                        "type": "array",
+                        "items": {
+                            "type": "array",
+                            "prefixItems": [
+                                { "type": "string" },
+                                { "type": "string", "enum": ["eq", "ne"] },
+                                {}
+                            ]
+                        }
+                    }
+                }
+            }
+        }]
+    });
+
+    let result = translate_request(&input).unwrap();
+    let clause = &result["tools"][0]["functionDeclarations"][0]["parameters"]["properties"]
+        ["where"]["items"];
+    assert!(clause.get("prefixItems").is_none());
+    assert_eq!(
+        clause["items"],
+        json!({ "anyOf": [
+            { "type": "string" },
+            { "type": "string", "enum": ["eq", "ne"] }
+        ] })
+    );
+}
+
+#[test]
+fn array_items_are_derived_only_when_something_is_missing() {
+    let sanitized = |schema: Value| {
+        let input = json!({
+            "messages": [{ "role": "user", "content": "x" }],
+            "tools": [{ "name": "t", "input_schema": {
+                "type": "object",
+                "properties": { "a": schema }
+            } }]
+        });
+        translate_request(&input).unwrap()["tools"][0]["functionDeclarations"][0]["parameters"]
+            ["properties"]["a"]
+            .clone()
+    };
+
+    // A homogeneous tuple collapses to its one schema rather than a one-arm anyOf.
+    assert_eq!(
+        sanitized(
+            json!({ "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }] })
+        ),
+        json!({ "type": "array", "items": { "type": "number" } })
+    );
+    // An array that says nothing about its elements still gets an `items`.
+    assert_eq!(
+        sanitized(json!({ "type": "array" })),
+        json!({ "type": "array", "items": { "type": "string" } })
+    );
+    // A tuple of only typeless slots falls to the same last resort.
+    assert_eq!(
+        sanitized(json!({ "type": "array", "prefixItems": [{}] })),
+        json!({ "type": "array", "items": { "type": "string" } })
+    );
+    // `items` already present: `prefixItems` is dropped, `items` is kept as written.
+    assert_eq!(
+        sanitized(
+            json!({ "type": "array", "prefixItems": [{ "type": "string" }], "items": { "type": "object" } })
+        ),
+        json!({ "type": "array", "items": { "type": "object" } })
+    );
+    // A nullable array spelled as a type list is still an array.
+    assert_eq!(
+        sanitized(json!({ "type": ["array", "null"], "prefixItems": [{ "type": "boolean" }] })),
+        json!({ "type": ["array", "null"], "items": { "type": "boolean" } })
+    );
+    // A non-array is untouched — no `items` is invented for an object.
+    assert_eq!(
+        sanitized(json!({ "type": "object", "properties": { "k": { "type": "string" } } })),
+        json!({ "type": "object", "properties": { "k": { "type": "string" } } })
+    );
+}
+
+#[test]
 fn rejects_url_images_instead_of_dropping_them() {
     let input = json!({
         "messages": [{"role": "user", "content": [{

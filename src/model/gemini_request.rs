@@ -351,6 +351,7 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
             ] {
                 map.remove(key);
             }
+            give_array_schema_items(map);
             for child in map.values_mut() {
                 sanitize_gemini_schema(child, depth + 1)?;
             }
@@ -363,6 +364,55 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
         _ => {}
     }
     Ok(())
+}
+
+/// Make sure an array schema carries the one `items` schema the Gemini
+/// backend requires, deriving it from a JSON Schema tuple when that is all
+/// the tool declared.
+///
+/// The backend validates function declarations against its own `Schema`
+/// message, and there an array without `items` is a hard `400` for the whole
+/// request (`…properties[where].items.items: missing field.`). Tools written
+/// against JSON Schema 2020-12 describe a fixed-shape array —
+/// `[field, operator, value]` — with `prefixItems` and no `items`, which is
+/// exactly that case. `prefixItems` is positional and has no Gemini
+/// counterpart, so it becomes one `items` schema that admits any of the
+/// declared positions: the single schema when they all agree, `anyOf` over
+/// the distinct ones otherwise. A position that declares no `type` at all
+/// (the JSON Schema "anything" slot) contributes nothing, since a typeless
+/// branch is the same missing-field failure one level down; when no position
+/// carries a type — or the array declares nothing about its elements — the
+/// element is declared a string. That last resort trades precision for a
+/// request that reaches the model at all, and is the least surprising type for
+/// an element nothing described.
+fn give_array_schema_items(map: &mut Map<String, Value>) {
+    let prefix_items = map.remove("prefixItems");
+    if !is_array_schema(map) || map.contains_key("items") {
+        return;
+    }
+    let mut branches: Vec<Value> = Vec::new();
+    if let Some(Value::Array(prefix)) = prefix_items {
+        for schema in prefix {
+            let typed = schema.get("type").is_some() || schema.get("anyOf").is_some();
+            if typed && !branches.contains(&schema) {
+                branches.push(schema);
+            }
+        }
+    }
+    let items = match branches.len() {
+        0 => json!({ "type": "string" }),
+        1 => branches.remove(0),
+        _ => json!({ "anyOf": branches }),
+    };
+    map.insert("items".to_string(), items);
+}
+
+fn is_array_schema(map: &Map<String, Value>) -> bool {
+    match map.get("type") {
+        Some(Value::String(kind)) => kind == "array",
+        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind == "array"),
+        _ => false,
+    }
 }
 
 fn translate_tools(request: &Value) -> Result<Option<Value>, AdapterError> {
