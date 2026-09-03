@@ -21,3 +21,13 @@ plugin-provided "user flags" string that omits `-b`/`-c` as ambiguous, not autho
 when the working tree is clean — verify with `git status --porcelain` first. Re-running with
 `cubic review -j -b origin/main` on this repo took ~2+ minutes; ran in background via
 `run_in_background` and polled with a `ps`-based wait loop rather than blocking `sleep`.
+
+**Inverse trap:** `-b` also has the opposite failure mode. When there ARE uncommitted
+changes but the task scope is specifically those uncommitted changes, `cubic review -j -b
+<base>` reviews the **committed** branch-vs-base diff and silently ignores the uncommitted
+working-tree edit — the report will be about unrelated already-committed files, not the
+thing you were asked to review (agy-429, 2026-09-03: task scoped to a one-line uncommitted
+frontmatter edit; `-b` returned a P3 finding on an unrelated committed file,
+`src/auth/antigravity/catalog.rs`, from earlier in the branch history). Before trusting a
+default-flags `-b` run against a stated review scope, cross-check that the flagged file(s)
+are actually inside `git diff`/`git status --porcelain`, not just `git diff <base>...HEAD`.
