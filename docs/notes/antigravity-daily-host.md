@@ -135,8 +135,10 @@ sends none of these four fields.
 **Model id.** `antigravity_upstream_model` resolves the tier for a bare
 `gemini-*` id, then asks the account's catalog what to do with it.
 `auth::antigravity::catalog::catalog_ids` fetches the key set inline
-(10-minute cache per backend, 5-second bound, warn-and-fall-back on any
-failure, stale set preferred over none) and hands it in.
+(10-minute cache per account — backend plus Code Assist project, so an
+hourly token refresh keeps the entry and an account swap does not — 5-second
+bound, warn-and-fall-back on any failure, stale set preferred over none) and
+hands it in, flagged with whether it came from a fetch that just succeeded.
 
 The tier itself comes from the first signal that applies:
 
@@ -165,7 +167,12 @@ a key → that id, with the tier moved into `thinkingLevel` (folded onto
 `low|medium|high`, since the backend parses the field); some other
 `{id}-{tier}` is a key → the nearest published tier, ties breaking upward.
 That last rule subsumes the Pro clamp with evidence rather than a
-hard-coded family rule.
+hard-coded family rule. A pinned `{id}-{tier}` or `{id}-tiered` the
+catalog omits is re-resolved from its base the same way — the pin already
+names the tier — but only when the catalog is fresh: a set served after a
+failed refresh may predate the account's latest move, so it confirms ids
+and never rules one out, and pins go out as written until a fetch
+succeeds.
 
 Without a catalog — discovery never succeeded for this backend — the
 0.40.0 heuristic stands unchanged: `{id}-{tier}` with `medium` clamped to

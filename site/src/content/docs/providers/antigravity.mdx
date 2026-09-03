@@ -97,7 +97,7 @@ envelope — came back as a misleading `429 RESOURCE_EXHAUSTED` ("check quota"),
 limit; the probes changed both inputs together, so which one produced that 429 is not established.
 
 So that neither shape has to be guessed, shunt reads your account's own catalog
-(`fetchAvailableModels`) on the request path — cached for ten minutes per backend, bounded, and
+(`fetchAvailableModels`) on the request path — cached for ten minutes per account, bounded, and
 fail-open — and picks the id that account actually publishes.
 
 Map a local alias to the exact Antigravity slug:
@@ -139,7 +139,9 @@ A suffix you pinned by hand gets the same treatment. If your account no longer p
 through the rules above rather than forwarding an id the catalog just proved is a 404; a catalog
 that says nothing about the family leaves your pin alone. A `-tiered` id you pinned yourself keeps
 its id and still carries your `effort` as the `thinkingLevel`, so pinning the exact published id
-costs you no effort control.
+costs you no effort control — and if your account later moves back to suffixed ids, that pin is
+re-resolved the same way. Only a catalog fetched just now can prove an id is gone: while shunt is
+serving the last known set after a failed refresh, every pin goes out as written.
 
 When the catalog is unavailable (a discovery outage, a backend that does not answer
 `fetchAvailableModels`), shunt falls back to appending `-{tier}` with that Pro clamp — the

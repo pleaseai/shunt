@@ -16,6 +16,32 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
+/// Points `SHUNT_ANTIGRAVITY_AUTH_FILE` at a test credential for the guard's
+/// lifetime and puts the previous value back on drop — on a failing assertion
+/// too, so a red run never leaves a temp path in the process environment for
+/// whichever test the harness schedules next.
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(previous) => std::env::set_var(self.key, previous),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 fn can_bind_loopback() -> bool {
     match std::net::TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => {
@@ -91,7 +117,7 @@ async fn a_tiered_only_catalog_decides_the_model_id_and_the_thinking_level() {
         .unwrap(),
     )
     .unwrap();
-    std::env::set_var("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+    let _auth_file = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
 
     let config_path = dir.join("shunt.toml");
     std::fs::write(
@@ -146,6 +172,5 @@ async fn a_tiered_only_catalog_decides_the_model_id_and_the_thinking_level() {
     );
 
     gateway.abort();
-    std::env::remove_var("SHUNT_ANTIGRAVITY_AUTH_FILE");
     let _ = std::fs::remove_dir_all(&dir);
 }

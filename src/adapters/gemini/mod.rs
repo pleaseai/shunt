@@ -17,7 +17,7 @@ use crate::{
     config::AuthMode,
     model::antigravity_request::{
         antigravity_model_needs_catalog, antigravity_request_id, antigravity_session_id,
-        antigravity_upstream_model, wrap_antigravity_envelope,
+        antigravity_upstream_model_with, wrap_antigravity_envelope, AntigravityCatalog,
     },
     model::gemini::{map_gemini_error, GeminiSseMachine},
     model::gemini_request::{translate_request_for_model, wrap_code_assist_envelope},
@@ -60,10 +60,13 @@ fn antigravity_endpoint(base_url: &str, method: &str) -> String {
 ///
 /// The one case it must not join is a budget of `0`, which is how
 /// [`crate::model::gemini_request`] renders an explicitly *disabled* `thinking`
-/// block. The tier there is the `medium` default nobody asked for, so writing
-/// it would send "do not think" and "think at medium" in one object — and if
-/// the backend gives the level precedence, a client that opted out of
-/// reasoning is billed for it anyway.
+/// block. Writing a level there would send "do not think" and "think at
+/// medium" in one object — and if the backend gives the level precedence, a
+/// client that opted out of reasoning is billed for it anyway. A configured
+/// `effort` is dropped here too, while a suffixed id (`…-flash-high`) would
+/// still carry it in the id: an accepted asymmetry, because the client's
+/// explicit opt-out is the stronger signal in the one place the backend can
+/// honour it.
 fn set_thinking_level(inner_req: &mut Value, level: &str) {
     if inner_req
         .pointer("/generationConfig/thinkingConfig/thinkingBudget")
@@ -197,20 +200,29 @@ async fn forward(
         // The account's own catalog decides between the `-<tier>` and
         // `-tiered` forms of the same model; both exist in the wild and which
         // one an account is served changes over time. Discovery is cached and
-        // fails open, so this costs at most one bounded request per host per
-        // TTL and never fails the client's request. It is skipped outright for
+        // fails open, so this costs at most one bounded request per account
+        // per TTL and never fails the client's request. It is skipped outright for
         // an id no catalog could reshape — only Gemini ids carry a tier — so a
         // Claude- or GPT-routed Antigravity provider never pays for it.
         let catalog = if antigravity_model_needs_catalog(&route.upstream_model) {
-            catalog_ids(&state.http_client, &inference_base, &access_token).await
+            catalog_ids(
+                &state.http_client,
+                &inference_base,
+                &access_token,
+                &project_id,
+            )
+            .await
         } else {
             None
         };
-        let model = antigravity_upstream_model(
+        let model = antigravity_upstream_model_with(
             &route.upstream_model,
             route.effort.as_deref(),
             json_body,
-            catalog.as_deref(),
+            catalog.as_ref().map(|catalog| AntigravityCatalog {
+                ids: &catalog.ids,
+                fresh: catalog.fresh,
+            }),
         );
         if let Some(level) = model.thinking_level {
             set_thinking_level(&mut inner_req, level);
