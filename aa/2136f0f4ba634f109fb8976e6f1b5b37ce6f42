@@ -1,0 +1,41 @@
+docs/notes/antigravity-daily-host.md
+  s_9d9dff3d493fd0::t_04f50962df1709 138-141,170-175
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_04f50962df1709 99,139-141
+src/auth/antigravity/catalog.rs
+  s_9d9dff3d493fd0::t_1827a90436a050 50,69-72,76-77,85,92-102,109-128,131-133,164-166,168-169,175-182,194-197,202-203,208,211-212,220-221,237,254,331,334-338,405,434-439,462-464,468,476,482,487,509-511,541,564-568,573,575,577,593,597-604,608-635,637-640,643-681,683,688-712
+  s_9d9dff3d493fd0::t_6881ecc25af11b 473-475,477,582-585
+  s_9d9dff3d493fd0::t_586c88508a9310 23,86-91,103-108,129-130,137-138,145-146,155-157,161,172,174,210,215,219,227-230,244-247,356,358-359,362-363,569-572,574,576,578-581,586-592,594-596,605-607,684-687,713
+  s_9d9dff3d493fd0::t_7a0497976685e5 134-136,139-144,347-355,357,682
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_04f50962df1709 93,130-132
+src/model/antigravity_request.rs
+  s_9d9dff3d493fd0::t_1827a90436a050 202-208,221-248,264-265,313,1085-1153
+  s_9d9dff3d493fd0::t_76ffcc3774745d 176-183,249-258,260-263,266-282,1012-1084
+  s_9d9dff3d493fd0::t_c5cf9277fdc13a 1154
+src/adapters/gemini/mod.rs
+  s_9d9dff3d493fd0::t_1827a90436a050 20,203-204,208-214,218,222-225
+  s_9d9dff3d493fd0::t_481c08e469bd2e 63-69
+site/src/content/docs/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_04f50962df1709 100,142-144
+tests/antigravity_catalog.rs
+  s_9d9dff3d493fd0::t_76ffcc3774745d 19-44,120
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_04f50962df1709 101,142-144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "aa2136f0f4ba634f109fb8976e6f1b5b37ce6f42",
+  "prompts": {},
+  "sessions": {
+    "s_9d9dff3d493fd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4559a2c0-a23b-4c63-892c-9735745af516",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
