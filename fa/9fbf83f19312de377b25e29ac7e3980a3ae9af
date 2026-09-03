@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-ocr-reviewer/catalog-fetch-slots-sibling-map-eviction.md
+  s_9d9dff3d493fd0::t_4476aa0e6f69eb 20-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fa9fbf83f19312de377b25e29ac7e3980a3ae9af",
+  "prompts": {},
+  "sessions": {
+    "s_9d9dff3d493fd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4559a2c0-a23b-4c63-892c-9735745af516",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
