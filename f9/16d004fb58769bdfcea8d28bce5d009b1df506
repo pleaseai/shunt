@@ -1,0 +1,29 @@
+.claude/agent-memory/review-review-cubic-reviewer/MEMORY.md
+  s_9d9dff3d493fd0::t_3d169a5fc3d92c 5
+.claude/agent-memory/review-review-ocr-reviewer/workspace-mutates-during-review.md
+  s_9d9dff3d493fd0::t_a39fe444c50499 1-30
+  s_9d9dff3d493fd0::t_1760c14ad43c00 31
+.claude/agent-memory/review-review-ocr-reviewer/catalog-fetch-slots-sibling-map-eviction.md
+  s_9d9dff3d493fd0::t_65f4623767f11c 1-26
+.claude/agent-memory/review-review-ocr-reviewer/MEMORY.md
+  s_9d9dff3d493fd0::t_0f9d2f1d702eb9 1-4
+.claude/agent-memory/review-review-cubic-reviewer/shunt-catalog-cache-sibling-map-eviction.md
+  s_9d9dff3d493fd0::t_2792f9cf652cd7 1-27
+  s_9d9dff3d493fd0::t_acf6f871b3a728 28-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f916d004fb58769bdfcea8d28bce5d009b1df506",
+  "prompts": {},
+  "sessions": {
+    "s_9d9dff3d493fd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4559a2c0-a23b-4c63-892c-9735745af516",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
