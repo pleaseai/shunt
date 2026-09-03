@@ -82,9 +82,13 @@ The `antigravity_oauth` config guard accepts exactly two non-loopback
 hosts — the daily host and production — through its own predicate rather
 than borrowing Code Assist's. No other `googleapis.com` host qualifies,
 `daily-cloudcode-pa.sandbox.googleapis.com` included, and the
-`google_oauth` guard is unchanged. Onboarding still redirects to the
-daily control plane for a production-pinned `base_url`, and travels with
-the configured host for a loopback proxy.
+`google_oauth` guard is unchanged. Both onboarding and inference redirect
+to the daily control plane for a production-pinned `base_url` — production
+serves neither — and startup, `shunt check`, and reload log a warning
+naming the provider so the operator can drop `base_url` or point it at the
+daily host. Anything in front of the backend (a loopback proxy, or either
+host with an explicit port or path prefix) travels with the configured
+host instead.
 
 **Envelope.** `AuthMode::AntigravityOauth` requests use
 `wrap_antigravity_envelope` instead of `wrap_code_assist_envelope`,

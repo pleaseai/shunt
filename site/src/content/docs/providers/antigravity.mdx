@@ -175,8 +175,8 @@ Confirm the response's `x-gateway-upstream` header names `antigravity`, then
 `SHUNT_ANTIGRAVITY_AUTH_FILE` overrides the credential path (an empty value falls back to the
 default). An `antigravity_oauth` upstream is pinned to two hosts: the only non-loopback `base_url`
 it accepts is HTTPS on `daily-cloudcode-pa.googleapis.com` (the default) or on
-`cloudcode-pa.googleapis.com`, which stays valid for operators who need it — **no other
-`googleapis.com` host qualifies**, `daily-cloudcode-pa.sandbox.googleapis.com` included. A loopback
+`cloudcode-pa.googleapis.com`, which is still accepted at validation so configs written against
+older docs keep loading — **no other `googleapis.com` host qualifies**, `daily-cloudcode-pa.sandbox.googleapis.com` included. A loopback
 host is allowed for a local proxy. Anything else is refused at config validation rather than
 silently shipping your subscription token off-origin —
 `providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
@@ -184,11 +184,14 @@ subscription token over plaintext`, or the matching `... host <host> is neither
 daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription
 token off-origin`.
 
-`onboardUser` lives on the `daily-` control plane, which is where the default `base_url` already
-points. A `base_url` pinned at plain production — HTTPS on `cloudcode-pa.googleapis.com`, no port,
-no path prefix — keeps inference there but onboards against `daily-cloudcode-pa.googleapis.com`
-anyway. Anything sitting in front of the backend (a loopback proxy, or either host with an explicit
-port or path prefix) onboards through itself.
+Production does not serve Antigravity — neither `onboardUser` nor inference, which it answers with
+a fake-looking `429 RESOURCE_EXHAUSTED` from the very first request. The default `base_url` already
+points at the `daily-` control plane. A `base_url` pinned at plain production — HTTPS on
+`cloudcode-pa.googleapis.com`, no port, no path prefix — still loads, but both inference and
+onboarding go to `daily-cloudcode-pa.googleapis.com`, and startup, `shunt check`, and a reload log a
+warning naming the provider so you can drop `base_url` or point it at the daily host. Anything
+sitting in front of the backend (a loopback proxy, or either host with an explicit port or path
+prefix) is left alone and goes through itself.
 
 [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) discovers against your
 **routed** Antigravity upstreams — or, before you have wired up routes, the Antigravity upstreams you

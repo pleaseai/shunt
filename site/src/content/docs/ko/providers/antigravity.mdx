@@ -169,8 +169,8 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE`은 자격 증명 경로를 오버라이드합니다(빈 값이면 기본값으로 폴백합니다).
 `antigravity_oauth` 업스트림은 두 호스트에 고정됩니다: 받아들이는 비루프백 `base_url`은
-`daily-cloudcode-pa.googleapis.com`(기본값) 또는 필요한 운영자를 위해 여전히 유효한
-`cloudcode-pa.googleapis.com`에 대한 HTTPS뿐입니다 — `daily-cloudcode-pa.sandbox.googleapis.com`을
+`daily-cloudcode-pa.googleapis.com`(기본값) 또는 예전 문서를 보고 작성한 구성이 계속 로드되도록
+검증 단계에서는 여전히 받아들여지는 `cloudcode-pa.googleapis.com`에 대한 HTTPS뿐입니다 — `daily-cloudcode-pa.sandbox.googleapis.com`을
 포함해 **다른 어떤 `googleapis.com` 호스트도 자격이 없습니다**. 로컬 프록시를 위해 루프백 호스트는
 허용됩니다. 그 외에는 구독 토큰을 조용히 오프오리진으로 내보내는 대신 구성 검증 단계에서 거부됩니다 —
 `providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
@@ -178,11 +178,14 @@ subscription token over plaintext`, 또는 이에 대응하는 `... host <host> 
 daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription
 token off-origin`입니다.
 
-`onboardUser`는 `daily-` 컨트롤 플레인에 있으며, 기본 `base_url`이 이미 그곳을 가리킵니다. 평범한
-프로덕션에 고정된 `base_url` — 포트도 경로 프리픽스도 없는 `cloudcode-pa.googleapis.com`에 대한
-HTTPS — 은 추론은 그대로 그곳에서 하되 온보딩은 `daily-cloudcode-pa.googleapis.com`을 상대로 합니다.
-백엔드 앞에 무언가가 놓여 있다면(루프백 프록시, 또는 두 호스트 중 하나에 명시적 포트나 경로 프리픽스가
-붙은 것) 자기 자신을 통해 온보딩합니다.
+프로덕션은 Antigravity를 서비스하지 않습니다 — `onboardUser`도, 추론도 그렇습니다. 추론은 첫 요청부터
+가짜처럼 보이는 `429 RESOURCE_EXHAUSTED`로 응답합니다. 기본 `base_url`은 이미 `daily-` 컨트롤 플레인을
+가리킵니다. 평범한 프로덕션에 고정된 `base_url` — 포트도 경로 프리픽스도 없는
+`cloudcode-pa.googleapis.com`에 대한 HTTPS — 도 여전히 로드되지만, 추론과 온보딩 모두
+`daily-cloudcode-pa.googleapis.com`으로 갑니다. 그리고 시작 시, `shunt check`, 리로드에서 해당 프로바이더
+이름을 담은 경고를 로그로 남기므로 `base_url`을 지우거나 daily 호스트로 바꿀 수 있습니다. 백엔드 앞에
+무언가가 놓여 있다면(루프백 프록시, 또는 두 호스트 중 하나에 명시적 포트나 경로 프리픽스가 붙은 것)
+그대로 두고 자기 자신을 통해 나갑니다.
 
 [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity)는 **라우팅된** Antigravity
 업스트림을 상대로 — 또는 라우트를 아직 연결하지 않았다면 선언한 Antigravity 업스트림을 상대로 —

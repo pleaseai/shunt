@@ -162,7 +162,7 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE` 可覆盖凭据路径(空值会回退到
 默认值)。`antigravity_oauth` 上游被固定到两个主机:它接受的非回环 `base_url` 只能是
-`daily-cloudcode-pa.googleapis.com`(默认)或仍然有效、供确有需要的运维者使用的
+`daily-cloudcode-pa.googleapis.com`(默认)或在校验阶段仍被接受、以便照着旧文档写的配置继续能加载的
 `cloudcode-pa.googleapis.com` 上的 HTTPS —— 包括 `daily-cloudcode-pa.sandbox.googleapis.com` 在内,
 **没有其他 `googleapis.com` 主机合格**。回环主机可用于本地代理。其他任何情况都会在配置
 校验阶段被拒绝,而不是悄悄把你的订阅 token 发往别的 origin ——
@@ -171,10 +171,12 @@ subscription token over plaintext`,或者与之对应的 `... host <host> is nei
 daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription
 token off-origin`。
 
-`onboardUser` 位于 `daily-` 控制平面,而默认的 `base_url` 已经指向那里。一个固定在纯生产的
-`base_url` —— `cloudcode-pa.googleapis.com` 上的 HTTPS,无端口,无路径前缀 —— 推理仍留在那里,但
-开通仍会针对 `daily-cloudcode-pa.googleapis.com`。任何挡在后端前面的东西(一个回环代理,或带显式
-端口或路径前缀的这两个主机之一)则通过它自身开通。
+生产环境并不提供 Antigravity —— `onboardUser` 和推理都不提供,推理从第一个请求起就返回一个看起来是
+假的 `429 RESOURCE_EXHAUSTED`。默认的 `base_url` 已经指向 `daily-` 控制平面。一个固定在纯生产的
+`base_url` —— `cloudcode-pa.googleapis.com` 上的 HTTPS,无端口,无路径前缀 —— 仍然能加载,但推理和
+开通都会走 `daily-cloudcode-pa.googleapis.com`,并且启动、`shunt check` 和重载都会记录一条点名该
+provider 的警告,方便你删掉 `base_url` 或把它改成 daily 主机。任何挡在后端前面的东西(一个回环代理,
+或带显式端口或路径前缀的这两个主机之一)则保持原样,通过它自身发出。
 
 [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) 会针对你**已路由的**
 Antigravity 上游做发现 —— 或者在你还没接好路由之前,针对你所声明的 Antigravity 上游。

@@ -173,8 +173,8 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE` は認証情報のパスを上書きします（空の値はデフォルトへフォールバックします）。
 `antigravity_oauth` の upstream は 2 つのホストに固定されます。受け入れられるループバック以外の `base_url`
-は `daily-cloudcode-pa.googleapis.com`（デフォルト）か、必要な運用者のために引き続き有効な
-`cloudcode-pa.googleapis.com` への HTTPS だけです — `daily-cloudcode-pa.sandbox.googleapis.com` を含め、
+は `daily-cloudcode-pa.googleapis.com`（デフォルト）か、古いドキュメントに沿って書かれた設定が読み込め
+続けるよう検証では引き続き受け入れられる `cloudcode-pa.googleapis.com` への HTTPS だけです — `daily-cloudcode-pa.sandbox.googleapis.com` を含め、
 **ほかの `googleapis.com` ホストは該当しません**。ローカルプロキシのためにループバックホストは許可されます。
 それ以外は、サブスクリプショントークンを黙ってオリジン外へ送るのではなく、設定検証の段階で拒否されます —
 `providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
@@ -182,11 +182,14 @@ subscription token over plaintext`、または対応する `... host <host> is n
 daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription
 token off-origin` です。
 
-`onboardUser` は `daily-` コントロールプレーンにあり、デフォルトの `base_url` はすでにそこを指しています。
-素の本番に固定した `base_url` — `cloudcode-pa.googleapis.com` への HTTPS で、ポートもパスプレフィックスも
-ないもの — は推論こそそのままそこで行いますが、onboard は `daily-cloudcode-pa.googleapis.com` に対して
-行います。バックエンドの手前に何かが挟まっている場合（ループバックプロキシ、あるいはどちらかのホストに
-明示的なポートやパスプレフィックスを伴うもの）は、それ自身を通して onboard します。
+本番は Antigravity を提供していません — `onboardUser` も推論もです。推論は最初のリクエストから偽物めいた
+`429 RESOURCE_EXHAUSTED` を返します。デフォルトの `base_url` はすでに `daily-` コントロールプレーンを
+指しています。素の本番に固定した `base_url` — `cloudcode-pa.googleapis.com` への HTTPS で、ポートもパス
+プレフィックスもないもの — も引き続き読み込めますが、推論も onboard も
+`daily-cloudcode-pa.googleapis.com` へ向かい、起動時・`shunt check`・リロードでその provider 名を含む警告が
+ログに出るので、`base_url` を外すか daily ホストに向け直せます。バックエンドの手前に何かが挟まっている場合
+（ループバックプロキシ、あるいはどちらかのホストに明示的なポートやパスプレフィックスを伴うもの）はそのまま
+にされ、それ自身を通して送られます。
 
 [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) は、あなたの**ルーティングされた**
 Antigravity upstream に対してディスカバリーを行います — あるいは、まだルートを組んでいなければ、宣言した

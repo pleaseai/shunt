@@ -88,6 +88,37 @@ pub fn warn_if_routes_to_antigravity_cli(config: &Config) {
     }
 }
 
+/// Warn when a routed native Antigravity provider still pins
+/// `base_url` at the production Code Assist host.
+///
+/// Production does not serve Antigravity inference — it answers the first
+/// request with a fake-looking `429 RESOURCE_EXHAUSTED` — and docs before
+/// 0.40.0 told operators to write exactly that host, so an upgraded config
+/// keeps loading while every request fails. `auth::inference_base_url`
+/// redirects the request itself; this says so out loud, once per provider, so
+/// the operator can drop the key instead of living on a silent redirect.
+/// Split from the call site so the warning is testable without spinning up the
+/// server, like [`warn_if_routes_to_antigravity_cli`].
+pub fn warn_if_antigravity_pinned_to_production(config: &Config) {
+    for name in routed_provider_names(config) {
+        let Some(provider) = config.providers.get(name) else {
+            continue;
+        };
+        if !is_vetted_antigravity(provider) {
+            continue;
+        }
+        if !auth::addresses_production_backend(&provider.base_url) {
+            continue;
+        }
+        tracing::warn!(
+            "providers.{name} base_url is pinned at https://cloudcode-pa.googleapis.com, which \
+             does not serve Antigravity inference; requests go to \
+             https://daily-cloudcode-pa.googleapis.com instead. Remove base_url or set it to the \
+             daily host to silence this warning."
+        );
+    }
+}
+
 /// The refusal message for a routed native Antigravity provider with no
 /// credential. Split from the filesystem probe so the message is testable
 /// without depending on what happens to exist in the test environment's home
@@ -256,8 +287,8 @@ mod tests {
 
     use super::{
         antigravity_migration_error, default_antigravity_auth_path, login_base_url,
-        routes_to_antigravity, routes_to_antigravity_cli, warn_if_routes_to_antigravity_cli,
-        ANTIGRAVITY_AUTH_FILE_ENV_LOCK,
+        routes_to_antigravity, routes_to_antigravity_cli, warn_if_antigravity_pinned_to_production,
+        warn_if_routes_to_antigravity_cli, ANTIGRAVITY_AUTH_FILE_ENV_LOCK,
     };
 
     struct BufferWriter {
@@ -362,6 +393,85 @@ mod tests {
             warn_if_routes_to_antigravity_cli(&base());
         });
         let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+
+        assert!(logs.is_empty(), "{logs}");
+    }
+
+    /// Run `emit` with a capturing subscriber installed and return what it
+    /// logged.
+    fn captured_logs(emit: impl FnOnce()) -> String {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, emit);
+        let logs = output.lock().unwrap().clone();
+        String::from_utf8(logs).unwrap()
+    }
+
+    /// A production-pinned copy of the seeded Antigravity provider, declared
+    /// under `name` — the shape pre-0.40.0 docs told operators to write.
+    fn with_production_pinned_provider(config: &mut Config, name: &str) {
+        let mut provider = config
+            .providers
+            .get("antigravity")
+            .expect("the default config seeds an antigravity provider")
+            .clone();
+        provider.base_url = super::auth::API_ENDPOINT.to_string();
+        config.providers.insert(name.to_string(), provider);
+    }
+
+    #[test]
+    fn a_routed_production_pinned_antigravity_provider_warns() {
+        // Production answers Antigravity inference with a fake 429, so a
+        // config written against pre-0.40.0 docs loads and then fails every
+        // request. The request path redirects it; the operator has to be told
+        // which provider is being redirected.
+        let mut config = base();
+        with_production_pinned_provider(&mut config, "agy-prod");
+        config.server.default_provider = "agy-prod".to_string();
+
+        let logs = captured_logs(|| warn_if_antigravity_pinned_to_production(&config));
+
+        assert!(logs.contains("providers.agy-prod"), "{logs}");
+        assert!(logs.contains("daily-cloudcode-pa.googleapis.com"), "{logs}");
+    }
+
+    #[test]
+    fn an_unrouted_production_pinned_antigravity_provider_does_not_warn() {
+        // Every `Config::default()` seeds provider tables no route can reach,
+        // so keying off the providers map alone would warn about upstreams
+        // that never serve a request.
+        let mut config = base();
+        with_production_pinned_provider(&mut config, "agy-prod");
+
+        let logs = captured_logs(|| warn_if_antigravity_pinned_to_production(&config));
+
+        assert!(logs.is_empty(), "{logs}");
+    }
+
+    #[test]
+    fn a_routed_antigravity_provider_on_the_daily_host_does_not_warn() {
+        // The default `base_url` is already the daily host: routing to it is
+        // the fixed configuration, and warning there would train operators to
+        // ignore the message.
+        let mut config = base();
+        config.server.default_provider = "antigravity".to_string();
+
+        let logs = captured_logs(|| warn_if_antigravity_pinned_to_production(&config));
+
+        assert!(logs.is_empty(), "{logs}");
+    }
+
+    #[test]
+    fn a_default_config_does_not_warn_about_a_production_pinned_base_url() {
+        let logs = captured_logs(|| warn_if_antigravity_pinned_to_production(&base()));
 
         assert!(logs.is_empty(), "{logs}");
     }

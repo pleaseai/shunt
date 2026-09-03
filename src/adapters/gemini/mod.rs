@@ -38,6 +38,16 @@ impl Adapter for GeminiAdapter {
     }
 }
 
+/// The Antigravity inference URL for a provider configured with `base_url`.
+///
+/// Split out so the production redirect is unit-testable without a live
+/// request: `inference_base_url` carries the "production does not serve
+/// Antigravity inference" rule that onboarding already applies.
+fn antigravity_endpoint(base_url: &str, method: &str) -> String {
+    let base_url = crate::auth::antigravity::auth::inference_base_url(base_url);
+    format!("{base_url}/v1internal:{method}")
+}
+
 fn append_gemini_events(line: &[u8], machine: &mut GeminiSseMachine, output: &mut Vec<u8>) {
     let Ok(line) = std::str::from_utf8(line) else {
         return;
@@ -123,7 +133,20 @@ async fn forward(
         // identifies itself as the agent and names a session, and its catalog
         // ids carry their effort tier. See `wrap_antigravity_envelope` and
         // `antigravity_upstream_model`.
-        let endpoint = format!("{base_url}/v1internal:{method}");
+        //
+        // The host is resolved rather than taken verbatim: production does not
+        // serve Antigravity inference, and configs written against pre-0.40.0
+        // docs pin it. Code Assist (`AuthMode::GoogleOauth`) genuinely lives
+        // on production, so the redirect is scoped to this branch.
+        let endpoint = antigravity_endpoint(base_url, method);
+        if !endpoint.starts_with(base_url) {
+            tracing::debug!(
+                provider = %route.provider,
+                configured = %base_url,
+                "antigravity base_url is pinned at the production Code Assist host, which does \
+                 not serve inference; sending this request to the daily host instead"
+            );
+        }
         let model =
             antigravity_upstream_model(&route.upstream_model, route.effort.as_deref(), json_body);
         let session_id = antigravity_session_id(&inner_req);
@@ -300,6 +323,27 @@ async fn forward(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_production_pinned_antigravity_base_url_sends_inference_to_the_daily_host() {
+        // Pre-0.40.0 docs told operators to write the production host, which
+        // answers every Antigravity inference request with a fake 429. Such a
+        // config still loads, so the request path is what has to redirect it.
+        assert_eq!(
+            antigravity_endpoint("https://cloudcode-pa.googleapis.com", "generateContent"),
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent"
+        );
+    }
+
+    #[test]
+    fn an_antigravity_base_url_in_front_of_the_backend_is_left_alone() {
+        // A loopback proxy stands in front of the backend: redirecting past it
+        // would egress straight around the endpoint the operator configured.
+        assert_eq!(
+            antigravity_endpoint("http://127.0.0.1:9999", "streamGenerateContent?alt=sse"),
+            "http://127.0.0.1:9999/v1internal:streamGenerateContent?alt=sse"
+        );
+    }
 
     #[test]
     fn complete_utf8_line_survives_arbitrary_byte_chunking() {
