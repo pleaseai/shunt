@@ -531,8 +531,10 @@ fn merge_branches(mut branches: Vec<Value>) -> Value {
 /// schema is. The list collapses the way the reference bridges collapse it
 /// (CLIProxyAPI's `flattenTypeArrays`): the first non-`null` entry becomes the
 /// type, and `null` among the entries becomes `nullable: true`. A list that
-/// names nothing but `null` is simply that type; one that names nothing usable
-/// is left alone rather than guessed at.
+/// names nothing but `null` becomes a nullable string: the generativelanguage
+/// proto does list a `NULL` member, but the Code Assist surface shunt talks to
+/// is unverified there, so `string` + `nullable` is the fallback. A list that
+/// names nothing usable is left alone rather than guessed at.
 fn flatten_type_list(map: &mut Map<String, Value>) {
     let Some(Value::Array(kinds)) = map.get("type") else {
         return;
@@ -554,7 +556,8 @@ fn flatten_type_list(map: &mut Map<String, Value>) {
             }
         }
         None if nullable => {
-            map.insert("type".to_string(), json!("null"));
+            map.insert("type".to_string(), json!("string"));
+            map.insert("nullable".to_string(), json!(true));
         }
         None => {}
     }

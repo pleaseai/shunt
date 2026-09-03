@@ -241,10 +241,11 @@ fn a_type_list_becomes_a_scalar_type_and_nullable() {
         sanitized(json!({ "type": ["string", "number"] })),
         json!({ "type": "string" })
     );
-    // A list naming nothing but `null` is that type.
+    // A list naming nothing but `null` becomes a nullable string rather than
+    // a `null` type the Code Assist surface is not known to accept.
     assert_eq!(
         sanitized(json!({ "type": ["null"] })),
-        json!({ "type": "null" })
+        json!({ "type": "string", "nullable": true })
     );
 }
 
