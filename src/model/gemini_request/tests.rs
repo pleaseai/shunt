@@ -124,8 +124,11 @@ fn a_tuple_array_schema_gets_the_items_gemini_requires() {
     // `[field, operator, value]` with `prefixItems` and no `items`. The
     // backend answers `…properties[where].items.items: missing field.` with a
     // 400 for the whole request, so the positions have to become the one
-    // `items` schema Gemini reads — and the typeless "anything" slot must not
-    // become a typeless branch that fails one level down.
+    // `items` schema Gemini reads — and that schema must itself carry a
+    // `type`: `Schema.type` is REQUIRED on every node, so an `anyOf` with no
+    // sibling type is the same missing-field failure one level down. The
+    // positions agree on `string`, so `string` is what the element becomes;
+    // the typeless "anything" slot contributes nothing.
     let input = json!({
         "messages": [{ "role": "user", "content": "Query" }],
         "tools": [{
@@ -153,18 +156,193 @@ fn a_tuple_array_schema_gets_the_items_gemini_requires() {
     let clause = &result["tools"][0]["functionDeclarations"][0]["parameters"]["properties"]
         ["where"]["items"];
     assert!(clause.get("prefixItems").is_none());
+    assert_eq!(clause["items"], json!({ "type": "string" }));
+}
+
+#[test]
+fn a_derived_items_schema_always_declares_a_type() {
+    let sanitized = element_schema_sanitizer();
+
+    // Positions that agree on nothing but their type keep that type.
     assert_eq!(
-        clause["items"],
-        json!({ "anyOf": [
-            { "type": "string" },
-            { "type": "string", "enum": ["eq", "ne"] }
-        ] })
+        sanitized(json!({
+            "type": "array",
+            "prefixItems": [{ "type": "string", "minLength": 1 }, { "type": "string" }]
+        })),
+        json!({ "type": "array", "items": { "type": "string" } })
+    );
+    // Positions that disagree on type keep the first one — a typeless union
+    // would be rejected, and no single Gemini type admits both.
+    assert_eq!(
+        sanitized(
+            json!({ "type": "array", "prefixItems": [{ "type": "number" }, { "type": "string" }] })
+        ),
+        json!({ "type": "array", "items": { "type": "number" } })
+    );
+    // An `anyOf`/`oneOf` position contributes its arms, not itself: forwarding
+    // it would put a typeless node where Gemini requires a type.
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "prefixItems": [{ "anyOf": [{ "type": "boolean" }, { "type": "boolean" }] }]
+        })),
+        json!({ "type": "array", "items": { "type": "boolean" } })
+    );
+    // An arm with no type of its own contributes nothing, so an `anyOf` of
+    // typeless arms falls to the last resort rather than being forwarded.
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "prefixItems": [{ "anyOf": [{ "description": "anything" }] }]
+        })),
+        json!({ "type": "array", "items": { "type": "string" } })
+    );
+    // A position constrained by an enum alone is not the "anything" slot: its
+    // type is read off the enum instead of being dropped, so the other
+    // positions cannot silently retype it. (The enum leads and the other
+    // position is a number, so dropping the inference would change the answer.)
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "prefixItems": [{ "enum": ["gt", "lt"] }, { "type": "number" }]
+        })),
+        json!({ "type": "array", "items": { "type": "string" } })
+    );
+    // A non-string enum is where the inference differs from the last resort.
+    assert_eq!(
+        sanitized(json!({ "type": "array", "prefixItems": [{ "enum": [1, 2] }] })),
+        json!({ "type": "array", "items": { "type": "number" } })
+    );
+    // Two array positions of the same element type keep a complete branch:
+    // collapsing them to a bare `array` would recreate the missing `items`.
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "prefixItems": [
+                { "type": "array", "items": { "type": "string" } },
+                { "type": "array", "items": { "type": "number" } }
+            ]
+        })),
+        json!({ "type": "array", "items": { "type": "array", "items": { "type": "string" } } })
     );
 }
 
 #[test]
-fn array_items_are_derived_only_when_something_is_missing() {
-    let sanitized = |schema: Value| {
+fn a_type_list_becomes_a_scalar_type_and_nullable() {
+    let sanitized = element_schema_sanitizer();
+
+    // `Schema.type` is one enum value, with nullability in its own field.
+    assert_eq!(
+        sanitized(json!({ "type": ["string", "null"] })),
+        json!({ "type": "string", "nullable": true })
+    );
+    // No `null` in the list: no `nullable` invented.
+    assert_eq!(
+        sanitized(json!({ "type": ["string", "number"] })),
+        json!({ "type": "string" })
+    );
+    // A list naming nothing but `null` is that type.
+    assert_eq!(
+        sanitized(json!({ "type": ["null"] })),
+        json!({ "type": "null" })
+    );
+}
+
+#[test]
+fn a_draft_07_tuple_is_folded_like_a_2020_12_one() {
+    let sanitized = element_schema_sanitizer();
+
+    // draft-04/07 spell a tuple as an array-valued `items`. That is not a
+    // Gemini `Schema` either, so its presence must not read as "already answered".
+    assert_eq!(
+        sanitized(
+            json!({ "type": "array", "items": [{ "type": "number" }, { "type": "number" }] })
+        ),
+        json!({ "type": "array", "items": { "type": "number" } })
+    );
+    // 2020-12 closes a tuple with `items: false`; a boolean is no schema either.
+    assert_eq!(
+        sanitized(
+            json!({ "type": "array", "prefixItems": [{ "type": "boolean" }], "items": false })
+        ),
+        json!({ "type": "array", "items": { "type": "boolean" } })
+    );
+}
+
+#[test]
+fn a_tuple_position_is_sanitized_before_it_becomes_items() {
+    let sanitized = element_schema_sanitizer();
+
+    // The positions are folded in after the child walk, so an element schema
+    // that is itself an array already carries its own `items` — otherwise the
+    // 400 this fix exists to stop reappears one level down.
+    assert_eq!(
+        sanitized(json!({ "type": "array", "prefixItems": [{ "type": "array" }] })),
+        json!({ "type": "array", "items": { "type": "array", "items": { "type": "string" } } })
+    );
+    // And two positions that differ only in a key the sanitizer strips are the
+    // duplicates they look like once it has run — the shared constraint
+    // survives, which folding before the strip would have collapsed away.
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "prefixItems": [
+                { "type": "string", "minLength": 1, "const": "asc" },
+                { "type": "string", "minLength": 1, "const": "desc" }
+            ]
+        })),
+        json!({ "type": "array", "items": { "type": "string", "minLength": 1 } })
+    );
+}
+
+#[test]
+fn instance_values_are_not_mistaken_for_schemas() {
+    let sanitized = element_schema_sanitizer();
+
+    // `default` holds an instance, not a schema. A tool that documents a
+    // JSON-Schema-shaped default must get it back verbatim, not with an
+    // `items` invented inside it.
+    assert_eq!(
+        sanitized(json!({ "type": "object", "default": { "type": "array" } })),
+        json!({ "type": "object", "default": { "type": "array" } })
+    );
+    // Nor may a property named after a keyword be deleted or retyped.
+    assert_eq!(
+        sanitized(json!({
+            "type": "object",
+            "properties": { "prefixItems": { "type": "string" } }
+        })),
+        json!({
+            "type": "object",
+            "properties": { "prefixItems": { "type": "string" } }
+        })
+    );
+    // A property named after an instance keyword is still a schema: it is
+    // sanitized like any other, not skipped on account of its name.
+    assert_eq!(
+        sanitized(json!({
+            "type": "object",
+            "properties": {
+                "enum": { "type": ["string", "null"] },
+                "default": { "type": "array", "prefixItems": [{ "type": "number" }] },
+                "const": { "type": "string", "const": "x" }
+            }
+        })),
+        json!({
+            "type": "object",
+            "properties": {
+                "enum": { "type": "string", "nullable": true },
+                "default": { "type": "array", "items": { "type": "number" } },
+                "const": { "type": "string" }
+            }
+        })
+    );
+}
+
+/// Translate a request carrying one tool parameter and hand back the schema
+/// that parameter reached the Gemini side as.
+fn element_schema_sanitizer() -> impl Fn(Value) -> Value {
+    |schema: Value| {
         let input = json!({
             "messages": [{ "role": "user", "content": "x" }],
             "tools": [{ "name": "t", "input_schema": {
@@ -175,8 +353,12 @@ fn array_items_are_derived_only_when_something_is_missing() {
         translate_request(&input).unwrap()["tools"][0]["functionDeclarations"][0]["parameters"]
             ["properties"]["a"]
             .clone()
-    };
+    }
+}
 
+#[test]
+fn array_items_are_derived_only_when_something_is_missing() {
+    let sanitized = element_schema_sanitizer();
     // A homogeneous tuple collapses to its one schema rather than a one-arm anyOf.
     assert_eq!(
         sanitized(
@@ -201,10 +383,18 @@ fn array_items_are_derived_only_when_something_is_missing() {
         ),
         json!({ "type": "array", "items": { "type": "object" } })
     );
-    // A nullable array spelled as a type list is still an array.
+    // A tuple declared with `prefixItems` alone is an array in all but name:
+    // it gains the type and the derived `items` instead of losing the tuple.
+    assert_eq!(
+        sanitized(json!({ "prefixItems": [{ "type": "string" }, { "type": "integer" }] })),
+        json!({ "type": "array", "items": { "type": "string" } })
+    );
+    // A nullable array spelled as a type list is still an array — and the list
+    // becomes the scalar type plus `nullable`, which is the only spelling
+    // Gemini's `Schema.type` accepts.
     assert_eq!(
         sanitized(json!({ "type": ["array", "null"], "prefixItems": [{ "type": "boolean" }] })),
-        json!({ "type": ["array", "null"], "items": { "type": "boolean" } })
+        json!({ "type": "array", "nullable": true, "items": { "type": "boolean" } })
     );
     // A non-array is untouched — no `items` is invented for an object.
     assert_eq!(

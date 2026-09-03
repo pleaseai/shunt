@@ -351,10 +351,32 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
             ] {
                 map.remove(key);
             }
-            give_array_schema_items(map);
-            for child in map.values_mut() {
-                sanitize_gemini_schema(child, depth + 1)?;
+            for (key, child) in map.iter_mut() {
+                match key.as_str() {
+                    // Maps of schemas keyed by names the *tool* chose. The
+                    // values are schemas; the keys are not keywords, so a
+                    // property called `const` or `enum` must be neither
+                    // stripped nor skipped on account of its name.
+                    "properties" | "$defs" | "definitions" => {
+                        if let Value::Object(schemas) = child {
+                            for schema in schemas.values_mut() {
+                                sanitize_gemini_schema(schema, depth + 1)?;
+                            }
+                        }
+                    }
+                    // `default`, `example(s)` and `enum` hold *instances*, not
+                    // schemas. Walking them would strip keys from — and, worse,
+                    // invent an `items` inside — data the tool declared verbatim.
+                    "default" | "example" | "examples" | "enum" => {}
+                    _ => sanitize_gemini_schema(child, depth + 1)?,
+                }
             }
+            // After the children, so the tuple positions folded into `items`
+            // below are already sanitized: an element schema that is itself an
+            // array has its own `items` by now, and two positions that differ
+            // only in a key just stripped are seen as the duplicates they are.
+            flatten_type_list(map);
+            give_array_schema_items(map);
         }
         Value::Array(array) => {
             for child in array {
@@ -373,45 +395,182 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
 /// The backend validates function declarations against its own `Schema`
 /// message, and there an array without `items` is a hard `400` for the whole
 /// request (`…properties[where].items.items: missing field.`). Tools written
-/// against JSON Schema 2020-12 describe a fixed-shape array —
-/// `[field, operator, value]` — with `prefixItems` and no `items`, which is
-/// exactly that case. `prefixItems` is positional and has no Gemini
-/// counterpart, so it becomes one `items` schema that admits any of the
-/// declared positions: the single schema when they all agree, `anyOf` over
-/// the distinct ones otherwise. A position that declares no `type` at all
-/// (the JSON Schema "anything" slot) contributes nothing, since a typeless
-/// branch is the same missing-field failure one level down; when no position
-/// carries a type — or the array declares nothing about its elements — the
-/// element is declared a string. That last resort trades precision for a
-/// request that reaches the model at all, and is the least surprising type for
-/// an element nothing described.
+/// against JSON Schema describe a fixed-shape array — `[field, operator,
+/// value]` — as a tuple: `prefixItems` in 2020-12, an array-valued `items` in
+/// draft-07. Neither is a Gemini `Schema` and neither leaves the array with the
+/// single `items` schema it needs, so the positions are folded into one.
+///
+/// `Schema` also declares `type` REQUIRED on *every* node and has no union of
+/// its own, so the folded schema has to carry a type: an `anyOf` node with no
+/// `type` is the same missing-field failure one level down, and it is the shape
+/// Google's own bridges collapse rather than forward. A position contributes
+/// the type it declares — directly, through `anyOf`/`oneOf` arms, or through an
+/// `enum` of uniformly typed values; a position that declares nothing (the JSON
+/// Schema "anything" slot) contributes nothing. The contributions collapse to
+/// the single schema when they agree, to their shared `type` when they agree on
+/// that much, and otherwise to the first position's schema. When no position
+/// carries a type — or the array declares nothing about its elements at all —
+/// the element is declared a string, matching CLIProxyAPI's fallback (see
+/// `.please/docs/research/md/003-json-schema-sanitization-for-gemini-functiondeclar.md`).
+/// Those last resorts trade precision for a request that reaches the model at
+/// all: the cost is a narrowed element type, not a rejected request.
+///
+/// A tuple that declares `prefixItems` and no `type` at all is an array in
+/// everything but name — JSON Schema applies `prefixItems` only to array
+/// instances, and a tool author who wrote one meant a tuple — so it is given
+/// `type: "array"` before the same derivation runs, rather than losing the
+/// tuple and reaching the backend as a schema that says nothing.
 fn give_array_schema_items(map: &mut Map<String, Value>) {
-    let prefix_items = map.remove("prefixItems");
-    if !is_array_schema(map) || map.contains_key("items") {
+    // Established before anything is removed: every other object in a schema
+    // tree — a `properties` container above all — must leave here untouched.
+    if !is_array_schema(map) {
         return;
     }
+    // Positional and without a Gemini counterpart: folded in below, or dropped
+    // when `items` already says what the elements are.
+    let prefix_items = map.remove("prefixItems");
+    map.entry("type").or_insert_with(|| json!("array"));
+    // `items` counts as already answered only when it is a schema object.
+    // draft-07 spells a tuple as an array there and 2020-12 closes one with
+    // `false`; neither is a schema Gemini can read.
+    let legacy_tuple = match map.get("items") {
+        Some(Value::Object(_)) => return,
+        Some(Value::Array(_)) => map.remove("items"),
+        Some(_) => {
+            map.remove("items");
+            None
+        }
+        None => None,
+    };
     let mut branches: Vec<Value> = Vec::new();
-    if let Some(Value::Array(prefix)) = prefix_items {
-        for schema in prefix {
-            let typed = schema.get("type").is_some() || schema.get("anyOf").is_some();
-            if typed && !branches.contains(&schema) {
-                branches.push(schema);
-            }
+    if let Some(Value::Array(positions)) = prefix_items.or(legacy_tuple) {
+        for position in positions {
+            collect_typed_branches(position, &mut branches);
         }
     }
     let items = match branches.len() {
         0 => json!({ "type": "string" }),
         1 => branches.remove(0),
-        _ => json!({ "anyOf": branches }),
+        _ => merge_branches(branches),
     };
     map.insert("items".to_string(), items);
+}
+
+/// Add the schemas one tuple position admits, skipping the ones that would
+/// leave a branch without the `type` Gemini requires.
+fn collect_typed_branches(position: Value, branches: &mut Vec<Value>) {
+    let Some(map) = position.as_object() else {
+        return;
+    };
+    if map.contains_key("type") {
+        push_distinct(branches, position);
+        return;
+    }
+    if let Some(Value::Array(arms)) = map.get("anyOf").or_else(|| map.get("oneOf")) {
+        for arm in arms.clone() {
+            collect_typed_branches(arm, branches);
+        }
+        return;
+    }
+    if let Some(kind) = enum_value_type(map.get("enum")) {
+        push_distinct(branches, json!({ "type": kind }));
+    }
+}
+
+fn push_distinct(branches: &mut Vec<Value>, schema: Value) {
+    if !branches.contains(&schema) {
+        branches.push(schema);
+    }
+}
+
+/// The one `type` an `enum` of uniformly typed values implies, so a position
+/// constrained by an enum alone is not mistaken for the "anything" slot.
+fn enum_value_type(values: Option<&Value>) -> Option<&'static str> {
+    let Value::Array(values) = values? else {
+        return None;
+    };
+    let mut kind: Option<&'static str> = None;
+    for value in values {
+        let this = match value {
+            Value::String(_) => "string",
+            Value::Number(_) => "number",
+            Value::Bool(_) => "boolean",
+            _ => return None,
+        };
+        match kind {
+            None => kind = Some(this),
+            Some(seen) if seen == this => {}
+            Some(_) => return None,
+        }
+    }
+    kind
+}
+
+/// Collapse several element schemas into the one typed schema Gemini reads.
+fn merge_branches(mut branches: Vec<Value>) -> Value {
+    if let Some(shared) = branches[0].get("type").cloned() {
+        // A bare `array` is the one type that is no schema on its own — it
+        // needs `items` — so array positions keep the first, already
+        // sanitized, branch instead of collapsing to the type.
+        if shared != json!("array")
+            && branches
+                .iter()
+                .all(|branch| branch.get("type") == Some(&shared))
+        {
+            return json!({ "type": shared });
+        }
+    }
+    branches.remove(0)
+}
+
+/// Rewrite a JSON Schema type *list* as the scalar type plus `nullable`.
+///
+/// `Schema.type` is a single `Type` enum and nullability is its own `nullable`
+/// field, so `{"type": ["array", "null"]}` is not a value the `parameters`
+/// field can take — it is a `400` on `type` however good the rest of the
+/// schema is. The list collapses the way the reference bridges collapse it
+/// (CLIProxyAPI's `flattenTypeArrays`): the first non-`null` entry becomes the
+/// type, and `null` among the entries becomes `nullable: true`. A list that
+/// names nothing but `null` is simply that type; one that names nothing usable
+/// is left alone rather than guessed at.
+fn flatten_type_list(map: &mut Map<String, Value>) {
+    let Some(Value::Array(kinds)) = map.get("type") else {
+        return;
+    };
+    let mut nullable = false;
+    let mut scalar: Option<Value> = None;
+    for kind in kinds {
+        match kind.as_str() {
+            Some("null") => nullable = true,
+            Some(_) if scalar.is_none() => scalar = Some(kind.clone()),
+            _ => {}
+        }
+    }
+    match scalar {
+        Some(kind) => {
+            map.insert("type".to_string(), kind);
+            if nullable {
+                map.insert("nullable".to_string(), json!(true));
+            }
+        }
+        None if nullable => {
+            map.insert("type".to_string(), json!("null"));
+        }
+        None => {}
+    }
 }
 
 fn is_array_schema(map: &Map<String, Value>) -> bool {
     match map.get("type") {
         Some(Value::String(kind)) => kind == "array",
-        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind == "array"),
-        _ => false,
+        // A type list has been flattened to a scalar by the time this runs.
+        Some(_) => false,
+        // `prefixItems` constrains arrays and nothing else, so a tuple that
+        // omits `type` — which JSON Schema allows — is still an array schema.
+        // A *list* of positions, specifically: a schema keyed under a property
+        // named `prefixItems` is an object, and must not turn its `properties`
+        // container into an array.
+        None => matches!(map.get("prefixItems"), Some(Value::Array(_))),
     }
 }
 
