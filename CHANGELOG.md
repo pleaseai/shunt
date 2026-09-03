@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.1](https://github.com/pleaseai/shunt/compare/v0.40.0...v0.40.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **antigravity:** resolve model ids from the live catalog and redirect a production-pinned base_url ([#451](https://github.com/pleaseai/shunt/issues/451)) ([6d1fab3](https://github.com/pleaseai/shunt/commit/6d1fab312358c46096994dc5f3c4501134583c0b))
+
 ## [0.40.0](https://github.com/pleaseai/shunt/compare/v0.39.2...v0.40.0) (2026-09-02)
 
 
