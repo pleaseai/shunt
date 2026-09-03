@@ -1,0 +1,42 @@
+src/auth/antigravity/auth.rs
+  s_9d9dff3d493fd0::t_acc0cc25ad0f28 1161-1181
+  s_9d9dff3d493fd0::t_5df6cfbf1a4b1f 1460-1509
+  s_9d9dff3d493fd0::t_6669953eff1a80 1406-1409
+src/adapters/gemini/mod.rs
+  s_9d9dff3d493fd0::t_f070c4ea66b7d7 41-50,136-149,327-346
+  s_9d9dff3d493fd0::t_8e5ecc1e3b8830 347
+src/auth/antigravity/mod.rs
+  s_9d9dff3d493fd0::t_9e86271c2f0f58 290-291,397-474
+  s_9d9dff3d493fd0::t_677297c43f61a8 91-121
+  s_9d9dff3d493fd0::t_7b1a3099367e73 475
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_63837c59eff859 176-177,185-192
+src/main.rs
+  s_9d9dff3d493fd0::t_fb1cc6547f0c5e 10,621-625,710-712
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_63837c59eff859 172-173,181-188
+site/src/content/docs/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_63837c59eff859 178-179,187-194
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_63837c59eff859 165,174-179
+src/reload.rs
+  s_9d9dff3d493fd0::t_fb1cc6547f0c5e 88-91
+docs/notes/antigravity-daily-host.md
+  s_9d9dff3d493fd0::t_63837c59eff859 85-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "73a47d80f464ec6281b380e0ef0fc89ae100125a",
+  "prompts": {},
+  "sessions": {
+    "s_9d9dff3d493fd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4559a2c0-a23b-4c63-892c-9735745af516",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
