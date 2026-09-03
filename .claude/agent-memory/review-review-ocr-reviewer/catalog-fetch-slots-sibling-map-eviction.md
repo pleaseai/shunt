@@ -17,9 +17,11 @@ still only grew (`slots.entry(key).or_default()`), never shrank: one
 process.
 
 The finding was fixed before the commit landed: the merged `evict_expired()`
-sweeps both maps, and the key is now backend + Code Assist `project_id`
-(token fingerprint only for a project-less credential), so a routine token
-refresh no longer rotates the key at all.
+sweeps both maps, and the key is now backend + Code Assist `project_id`, so a
+routine token refresh no longer rotates the key for a credential that has a
+project. The project-less fallback still keys on a token fingerprint and still
+rotates on every refresh — that path is why the eviction has to cover both
+maps, and a review of the keying scheme should check it explicitly.
 
 **How to apply:** when reviewing a cache-keying change here (or any paired
 cache + lock-slot map keyed by the same identity), check that eviction covers
