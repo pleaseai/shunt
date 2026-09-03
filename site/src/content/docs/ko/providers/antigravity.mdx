@@ -132,13 +132,23 @@ upstream_model = "gemini-3.6-flash-medium"
 등급이 이기고, 동점이면 더 높은 쪽이 됩니다 — `-pro` id의 `medium`이 `-high`가 되는 것은 Pro 전용
 규칙이 아니라 이 규칙 때문입니다.
 
+직접 적어 넣은 접미사도 똑같이 다뤄집니다. 계정이 `gemini-3.6-flash-medium`을 더 이상 게시하지
+않는다면, 그 접미사는 여전히 원하는 등급을 말해 주므로 shunt는 카탈로그가 404임을 방금 확인한 id를
+그대로 보내는 대신 위 규칙으로 다시 해석합니다. 카탈로그가 그 계열을 전혀 모른다면 적어 넣은 값을
+그대로 둡니다. 직접 지정한 `-tiered` id는 id를 유지한 채 `effort`를 `thinkingLevel`로 계속 싣기
+때문에, 실제로 게시된 id를 그대로 적어도 effort 제어를 잃지 않습니다.
+
 카탈로그를 쓸 수 없을 때(디스커버리 장애, `fetchAvailableModels`에 답하지 않는 백엔드)에는 Pro 조정을
 포함한 `-{등급}` 덧붙이기 — 0.40.0 동작 — 로 되돌아가므로, 조회 실패는 추측만 잃을 뿐 요청을
-잃지 않습니다. 설정에 적힌 인식되지 않는 `effort`는 1번 규칙대로 적힌 그대로 덧붙여지며 조정되지
-않습니다. 다만 `-tiered` 경로에서는 백엔드가 모르는 `thinkingLevel`을 거부하므로 `medium`으로
-접힙니다. 이미 등급이나 `-tiered`로 끝나는 id, 카탈로그가 그대로 게시하는 id, 그리고 Gemini가 아닌
-id(`claude-sonnet-4-6`, `gpt-oss-120b-medium`)는 적힌 그대로 전송됩니다. 인식되지 않는
-`output_config.effort`는 모델 id에 반영되지 않고 `medium`으로 되돌아갑니다.
+잃지 않습니다. 실패한 조회는 1분 동안 기억한 뒤 다시 시도하므로, 닿지 않는 컨트롤 플레인의 비용은
+메시지마다가 아니라 1분에 한 번으로 제한되며, 조회 자체도 Gemini id에 대해서만 일어납니다. 설정에 적힌
+인식되지 않는 `effort`는 카탈로그가 *없을* 때 1번 규칙대로 적힌 그대로 덧붙여지며 조정되지 않습니다.
+카탈로그가 있으면 그 등급이 제공되지 않는다고 방금 확인한 셈이므로, 계정이 게시하는 등급으로 접힙니다.
+`-tiered` 경로에서는 백엔드가 모르는 `thinkingLevel`을 거부하므로 `medium`으로 접힙니다. 카탈로그가
+그대로 게시하는 id, 그리고 Gemini가 아닌 id(`claude-sonnet-4-6`, `gpt-oss-120b-medium`)는 적힌 그대로
+전송됩니다. 인식되지 않는 `output_config.effort`는 모델 id에 반영되지 않고 `medium`으로 되돌아갑니다.
+thinking을 명시적으로 끈 요청(`thinking.type = "disabled"`)에는 `thinkingLevel`이 붙지 않습니다.
+변환된 `thinkingBudget: 0`이 그대로 유지됩니다.
 
 Antigravity는 Claude 모델도 제공하지만, shunt는 아직 그 모델들이 필요로 하는 요청 재작성을 구현하지
 않았습니다([#368](https://github.com/pleaseai/shunt/issues/368)). 로컬에서 그런 슬러그를 거부하는 것은

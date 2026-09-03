@@ -30,16 +30,54 @@ const CATALOG_TTL: Duration = Duration::from_secs(600);
 /// request path, so a hung control plane must cost the request a known small
 /// delay and then fall back, rather than the client's whole timeout budget.
 const CATALOG_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a *failed* discovery is remembered before it is retried.
+///
+/// Without this the entry a failure produces is indistinguishable from no
+/// entry at all, so a backend that does not answer `fetchAvailableModels` —
+/// a loopback proxy that forwards only `generateContent`, a revoked scope, a
+/// control-plane blip — costs *every* subsequent request another inline fetch,
+/// up to the full [`CATALOG_FETCH_TIMEOUT`], for as long as it stays down. A
+/// minute is short enough that a recovered backend is picked up promptly and
+/// long enough that the failure is paid once per window rather than per
+/// request.
+const CATALOG_FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
 
 struct CachedCatalog {
-    fetched_at: Instant,
-    ids: Arc<BTreeSet<String>>,
+    /// When this entry was written — by a success or by a failure.
+    refreshed_at: Instant,
+    /// The last known good id set, or `None` when discovery has never
+    /// succeeded for this host.
+    ids: Option<Arc<BTreeSet<String>>>,
+    /// Whether the write that produced `refreshed_at` was a successful fetch.
+    /// A failed entry is retried after the shorter
+    /// [`CATALOG_FAILURE_COOLDOWN`] rather than after [`CATALOG_TTL`].
+    healthy: bool,
+}
+
+impl CachedCatalog {
+    fn is_fresh(&self) -> bool {
+        let ttl = if self.healthy {
+            CATALOG_TTL
+        } else {
+            CATALOG_FAILURE_COOLDOWN
+        };
+        self.refreshed_at.elapsed() < ttl
+    }
 }
 
 /// Keyed by the *resolved* inference base URL, so two providers pointed at the
 /// same backend share one entry and a production-pinned one shares the daily
 /// host's.
 static CATALOG_CACHE: LazyLock<Mutex<HashMap<String, CachedCatalog>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// One fetch slot per host, so a cold cache under load costs one discovery
+/// request rather than one per in-flight request. The losers wait on the
+/// winner and then re-read the cache, which is why the fetch is guarded rather
+/// than skipped: without it every request in flight at process start — or at a
+/// TTL boundary — POSTs `fetchAvailableModels` against a backend whose failure
+/// mode for over-use is precisely the fake `429` this module exists to avoid.
+static CATALOG_FETCH_SLOTS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn cache() -> std::sync::MutexGuard<'static, HashMap<String, CachedCatalog>> {
@@ -50,14 +88,40 @@ fn cache() -> std::sync::MutexGuard<'static, HashMap<String, CachedCatalog>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The fetch slot for `base_url`, created on first use. Never held across an
+/// await: only the `tokio` mutex it hands back is.
+fn fetch_slot(base_url: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut slots = CATALOG_FETCH_SLOTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(slots.entry(base_url.to_string()).or_default())
+}
+
+/// The cached entry for `base_url` when it is still fresh, plus the stale set
+/// to fall back on when it is not.
+enum Cached {
+    Fresh(Option<Arc<BTreeSet<String>>>),
+    Stale(Option<Arc<BTreeSet<String>>>),
+}
+
+fn cached(base_url: &str) -> Cached {
+    let cache = cache();
+    match cache.get(base_url) {
+        Some(entry) if entry.is_fresh() => Cached::Fresh(entry.ids.clone()),
+        Some(entry) => Cached::Stale(entry.ids.clone()),
+        None => Cached::Stale(None),
+    }
+}
+
 /// The catalog ids for the backend `base_url` addresses, or `None` when
 /// discovery has never succeeded for it.
 ///
 /// Serves a cached set younger than [`CATALOG_TTL`] without a request. On a
 /// miss or an expiry it fetches inline, bounded by [`CATALOG_FETCH_TIMEOUT`],
-/// and on any failure falls back to the stale set it already had. Concurrent
-/// callers may each fetch once; the cost of a duplicate discovery request is
-/// far below the cost of holding a lock across an await on the request path.
+/// and on any failure falls back to the stale set it already had and records
+/// the failure for [`CATALOG_FAILURE_COOLDOWN`], so an unreachable control
+/// plane costs one bounded fetch per window rather than one per request.
+/// Concurrent callers on the same host share a single fetch.
 pub async fn catalog_ids(
     client: &reqwest::Client,
     base_url: &str,
@@ -68,15 +132,18 @@ pub async fn catalog_ids(
     // does not serve `fetchAvailableModels` any more than it serves inference.
     let base_url = super::auth::inference_base_url(base_url);
 
-    let stale = {
-        let cache = cache();
-        match cache.get(&base_url) {
-            Some(entry) if entry.fetched_at.elapsed() < CATALOG_TTL => {
-                return Some(Arc::clone(&entry.ids));
-            }
-            Some(entry) => Some(Arc::clone(&entry.ids)),
-            None => None,
-        }
+    let stale = match cached(&base_url) {
+        Cached::Fresh(ids) => return ids,
+        Cached::Stale(ids) => ids,
+    };
+
+    let slot = fetch_slot(&base_url);
+    let _fetching = slot.lock().await;
+    // Re-read under the slot: whoever held it may have just refreshed the
+    // entry, in which case this caller owes the backend nothing.
+    let stale = match cached(&base_url) {
+        Cached::Fresh(ids) => return ids,
+        Cached::Stale(ids) => ids.or(stale),
     };
 
     match fetch_catalog(client, &base_url, access_token).await {
@@ -85,15 +152,28 @@ pub async fn catalog_ids(
             cache().insert(
                 base_url,
                 CachedCatalog {
-                    fetched_at: Instant::now(),
-                    ids: Arc::clone(&ids),
+                    refreshed_at: Instant::now(),
+                    ids: Some(Arc::clone(&ids)),
+                    healthy: true,
                 },
             );
             Some(ids)
         }
         // Keep the stale entry rather than evicting it: a backend blip must
         // not cost the next ten minutes' worth of requests their catalog too.
-        None => stale,
+        // Record the failure all the same, so the next request inside the
+        // cooldown is served from here instead of repeating the fetch.
+        None => {
+            cache().insert(
+                base_url,
+                CachedCatalog {
+                    refreshed_at: Instant::now(),
+                    ids: stale.clone(),
+                    healthy: false,
+                },
+            );
+            stale
+        }
     }
 }
 
@@ -116,7 +196,12 @@ async fn fetch_catalog(
         let response = request.send().await.map_err(|error| error.to_string())?;
         let status = response.status();
         if !status.is_success() {
-            return Err(format!("backend answered {status}"));
+            // Drain through the shared helper rather than dropping the
+            // response: the backend's own message is the only thing that
+            // distinguishes a revoked scope from a relocated endpoint, and an
+            // undrained body strands the pooled connection.
+            let body = super::auth::diagnostic_body(CATALOG_FETCH_TIMEOUT, response).await;
+            return Err(format!("backend answered {status}: {body}"));
         }
         response
             .json::<Value>()
@@ -169,8 +254,9 @@ pub(crate) fn prime_for_test(base_url: &str, ids: &[&str]) {
     cache().insert(
         super::auth::inference_base_url(base_url),
         CachedCatalog {
-            fetched_at: Instant::now(),
-            ids: Arc::new(ids),
+            refreshed_at: Instant::now(),
+            ids: Some(Arc::new(ids)),
+            healthy: true,
         },
     );
 }
@@ -285,7 +371,7 @@ mod tests {
             let entry = cache
                 .get_mut(&super::super::auth::inference_base_url(&server.uri()))
                 .expect("the primed entry");
-            entry.fetched_at = Instant::now() - CATALOG_TTL - Duration::from_secs(1);
+            entry.refreshed_at = Instant::now() - CATALOG_TTL - Duration::from_secs(1);
         }
 
         let stale = catalog_ids(&client, &server.uri(), "token")
@@ -293,6 +379,65 @@ mod tests {
             .expect("a failed refresh must serve the last known good set");
 
         assert!(stale.contains("gemini-3.8-flash-tiered"));
+        clear_for_test(&server.uri());
+    }
+
+    #[tokio::test]
+    async fn a_failing_backend_is_asked_once_per_cooldown_not_once_per_request() {
+        // Discovery runs inline on the request path, so a control plane that
+        // does not answer `fetchAvailableModels` — a loopback proxy forwarding
+        // only `generateContent`, a revoked scope — would otherwise add a
+        // fetch, and up to CATALOG_FETCH_TIMEOUT, to every single request for
+        // as long as it stays down.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:fetchAvailableModels"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        clear_for_test(&server.uri());
+        for _ in 0..5 {
+            assert!(catalog_ids(&client, &server.uri(), "token").await.is_none());
+        }
+
+        server.verify().await;
+        clear_for_test(&server.uri());
+    }
+
+    #[tokio::test]
+    async fn concurrent_callers_on_a_cold_cache_share_one_fetch() {
+        // Every request in flight at process start misses, and the backend's
+        // failure mode for over-use is precisely the fake 429 this module
+        // exists to route around.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:fetchAvailableModels"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(50))
+                    .set_body_json(catalog_body(&["gemini-3.8-flash-tiered"])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        clear_for_test(&server.uri());
+        let uri = server.uri();
+        let fetches = (0..8).map(|_| {
+            let client = client.clone();
+            let uri = uri.clone();
+            async move { catalog_ids(&client, &uri, "token").await }
+        });
+        let results = futures_util::future::join_all(fetches).await;
+
+        assert!(results.iter().all(|ids| ids
+            .as_ref()
+            .is_some_and(|ids| ids.contains("gemini-3.8-flash-tiered"))));
+        server.verify().await;
         clear_for_test(&server.uri());
     }
 

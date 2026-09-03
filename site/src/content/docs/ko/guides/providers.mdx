@@ -49,9 +49,12 @@ provider = "antigravity"
 upstream_model = "gemini-3.6-flash-medium"
 ```
 
-Antigravity는 Gemini 모델을 effort 등급이 id에 붙은 형태(`-low`, `-medium`, `-high`; Pro는 `-low`와
-`-high`만)로 게시하며, 접미사가 없는 슬러그는 제공하지 않습니다. 접미사가 없는 `gemini-*` id는 shunt가
-`effort`나 요청에서, 그것도 없으면 `medium`으로 등급을 정해 붙여 주므로 두 표기 모두 동작합니다.
+Antigravity는 Gemini 모델을 effort가 id에 담긴 형태로 게시하며, 접미사가 없는 슬러그는 제공하지
+않습니다. 형태는 두 가지입니다 — `-low` / `-medium` / `-high` 접미사, 또는 effort를 요청 필드로 받는
+단일 `-tiered` id. 계정이 어느 형태를 받는지는 시간이 지나며 바뀌므로, shunt는 계정 자신의 카탈로그를
+읽어 실제로 게시된 id를 고릅니다. 접미사가 없는 `gemini-*` id는 `effort`나 요청에서, 그것도 없으면
+`medium`으로 등급이 정해지고, 계정이 더 이상 게시하지 않는 접미사는 그대로 보내는 대신 다시 해석됩니다.
+어느 표기든 동작합니다.
 
 전체 설정 — 로그인과 스코프, 프로젝트 디스커버리, 모델 슬러그, thinking, 어댑터가 전달하는 것 — 은 전용
 [Antigravity 프로바이더 페이지](/ko/providers/antigravity/)를 참고하세요.

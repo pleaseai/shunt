@@ -16,8 +16,8 @@ use crate::{
     },
     config::AuthMode,
     model::antigravity_request::{
-        antigravity_request_id, antigravity_session_id, antigravity_upstream_model,
-        wrap_antigravity_envelope,
+        antigravity_model_needs_catalog, antigravity_request_id, antigravity_session_id,
+        antigravity_upstream_model, wrap_antigravity_envelope,
     },
     model::gemini::{map_gemini_error, GeminiSseMachine},
     model::gemini_request::{translate_request_for_model, wrap_code_assist_envelope},
@@ -57,7 +57,21 @@ fn antigravity_endpoint(base_url: &str, method: &str) -> String {
 /// Additive on purpose: `thinkingBudget` is already translated from the
 /// client's `thinking` block and the backend accepts both fields together, so
 /// the level joins the existing `thinkingConfig` rather than replacing it.
+///
+/// The one case it must not join is a budget of `0`, which is how
+/// [`crate::model::gemini_request`] renders an explicitly *disabled* `thinking`
+/// block. The tier there is the `medium` default nobody asked for, so writing
+/// it would send "do not think" and "think at medium" in one object — and if
+/// the backend gives the level precedence, a client that opted out of
+/// reasoning is billed for it anyway.
 fn set_thinking_level(inner_req: &mut Value, level: &str) {
+    if inner_req
+        .pointer("/generationConfig/thinkingConfig/thinkingBudget")
+        .and_then(Value::as_u64)
+        == Some(0)
+    {
+        return;
+    }
     let Some(object) = inner_req.as_object_mut() else {
         return;
     };
@@ -184,8 +198,14 @@ async fn forward(
         // `-tiered` forms of the same model; both exist in the wild and which
         // one an account is served changes over time. Discovery is cached and
         // fails open, so this costs at most one bounded request per host per
-        // TTL and never fails the client's request.
-        let catalog = catalog_ids(&state.http_client, &inference_base, &access_token).await;
+        // TTL and never fails the client's request. It is skipped outright for
+        // an id no catalog could reshape — only Gemini ids carry a tier — so a
+        // Claude- or GPT-routed Antigravity provider never pays for it.
+        let catalog = if antigravity_model_needs_catalog(&route.upstream_model) {
+            catalog_ids(&state.http_client, &inference_base, &access_token).await
+        } else {
+            None
+        };
         let model = antigravity_upstream_model(
             &route.upstream_model,
             route.effort.as_deref(),
@@ -410,6 +430,32 @@ mod tests {
         assert_eq!(
             inner_req["generationConfig"]["thinkingConfig"]["thinkingBudget"],
             8192
+        );
+    }
+
+    #[test]
+    fn an_explicitly_disabled_thinking_block_is_not_overridden_by_the_default_tier() {
+        // `thinking: {"type": "disabled"}` translates to `thinkingBudget: 0`,
+        // and the tier the resolver derived for it is the `medium` default
+        // nobody asked for. Writing the level here would send "do not think"
+        // and "think at medium" in one object, and bill reasoning to a client
+        // that opted out.
+        let mut inner_req = serde_json::json!({
+            "contents": [],
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}
+        });
+
+        set_thinking_level(&mut inner_req, "medium");
+
+        assert!(
+            inner_req["generationConfig"]["thinkingConfig"]
+                .get("thinkingLevel")
+                .is_none(),
+            "{inner_req}"
+        );
+        assert_eq!(
+            inner_req["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            0
         );
     }
 

@@ -63,9 +63,12 @@ provider = "antigravity"
 upstream_model = "gemini-3.6-flash-medium"
 ```
 
-Antigravity publishes its Gemini models with the effort tier in the id (`-low`, `-medium`, `-high`;
-Pro has only `-low` and `-high`) and does not serve a bare slug. A bare `gemini-*` id is resolved to a tier
-for you — from `effort`, the request, or `medium` — so both spellings work.
+Antigravity publishes its Gemini models with the effort in the id and does not serve a bare slug, in
+one of two shapes — a `-low` / `-medium` / `-high` suffix, or a single `-tiered` id that takes the
+effort as a request field. Which shape your account gets changes over time, so shunt reads the
+account's own catalog and picks the id it actually publishes: a bare `gemini-*` id is resolved for
+you — from `effort`, the request, or `medium` — and a suffix your account no longer publishes is
+re-resolved rather than forwarded. Every spelling works.
 
 For the full setup — login and scopes, project discovery, model slugs, thinking, and what the
 adapter carries — see the dedicated [Antigravity provider page](/providers/antigravity/).

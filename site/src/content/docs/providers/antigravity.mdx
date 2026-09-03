@@ -134,14 +134,26 @@ the backend accepts together). If it publishes neither but does publish other ti
 model, the nearest published tier wins, ties resolving upward — which is how a `medium` on a `-pro`
 id becomes `-high` without any Pro-specific rule.
 
+A suffix you pinned by hand gets the same treatment. If your account no longer publishes
+`gemini-3.6-flash-medium`, the suffix still says which tier you wanted, so shunt re-resolves it
+through the rules above rather than forwarding an id the catalog just proved is a 404; a catalog
+that says nothing about the family leaves your pin alone. A `-tiered` id you pinned yourself keeps
+its id and still carries your `effort` as the `thinkingLevel`, so pinning the exact published id
+costs you no effort control.
+
 When the catalog is unavailable (a discovery outage, a backend that does not answer
 `fetchAvailableModels`), shunt falls back to appending `-{tier}` with that Pro clamp — the
-0.40.0 behaviour — so a failed lookup costs you the guess, never the request. An unrecognised
-configured `effort` is appended as written, per rule 1, and is never clamped; on the `-tiered` path
-it folds onto `medium`, because the backend rejects a `thinkingLevel` it does not know. An id that
-already ends in a tier or in `-tiered`, an id your catalog publishes verbatim, and any non-Gemini id
-(`claude-sonnet-4-6`, `gpt-oss-120b-medium`), is sent exactly as written. An unrecognised
-`output_config.effort` falls back to `medium` rather than reaching the model id.
+0.40.0 behaviour — so a failed lookup costs you the guess, never the request. A failed lookup is
+remembered for a minute before it is retried, so an unreachable control plane costs one bounded
+request per minute rather than one per message, and only Gemini ids are looked up at all. An
+unrecognised configured `effort` is appended as written, per rule 1, and is never clamped *without*
+a catalog; with one, it folds onto a tier the account publishes, because the catalog has just said
+that tier is not served. On the `-tiered` path it folds onto `medium`, because the backend rejects
+a `thinkingLevel` it does not know. An id your catalog publishes verbatim and any non-Gemini id
+(`claude-sonnet-4-6`, `gpt-oss-120b-medium`) is sent exactly as written. An unrecognised
+`output_config.effort` falls back to `medium` rather than reaching the model id. A request that
+explicitly disables thinking (`thinking.type = "disabled"`) never gains a `thinkingLevel`: the
+translated `thinkingBudget: 0` stands on its own.
 
 Antigravity also offers Claude models, but shunt does not yet implement the request rewrites they
 need ([#368](https://github.com/pleaseai/shunt/issues/368)). Nothing rejects such a slug locally —
