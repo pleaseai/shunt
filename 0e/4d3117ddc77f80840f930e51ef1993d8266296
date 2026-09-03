@@ -1,0 +1,60 @@
+src/model/antigravity_request.rs
+  s_9d9dff3d493fd0::t_1c8a89a5bf294b 391
+  s_9d9dff3d493fd0::t_8fab84419261b3 247,345-348
+  s_9d9dff3d493fd0::t_efdbd9eb83b5b6 227
+  s_9d9dff3d493fd0::t_be0f86fb8e0b72 294-298
+  s_9d9dff3d493fd0::t_04ec8b61247ba9 412-422,455-457,459
+  s_9d9dff3d493fd0::t_d63480fb54123a 152-163
+  s_9d9dff3d493fd0::t_604be1f0fa2b56 338-344,349-364
+  s_9d9dff3d493fd0::t_099242828d7dcf 210-226,228-230,241-246,248-258
+  s_9d9dff3d493fd0::t_83983fdfeadd34 744-791
+  s_9d9dff3d493fd0::t_4e3a94c6277776 793,997,1007-1102
+  s_9d9dff3d493fd0::t_463bdbd009f3f5 176-185,187,189-192,202-203
+  s_9d9dff3d493fd0::t_acfb7097005334 259,792,794
+site/src/content/docs/guides/providers.mdx
+  s_9d9dff3d493fd0::t_38402b625e555a 66-71
+src/adapters/gemini/mod.rs
+  s_9d9dff3d493fd0::t_8fab84419261b3 71
+  s_9d9dff3d493fd0::t_d8edb96804e0c4 437-461
+  s_9d9dff3d493fd0::t_d7de6db0215c31 60-66,68-70,72-74
+  s_9d9dff3d493fd0::t_1f3f971286f09d 201-208
+  s_9d9dff3d493fd0::t_9ac31c1fb90100 19-20
+  s_9d9dff3d493fd0::t_8d86648cbeb7b2 436
+site/src/content/docs/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_3a188ea343629c 137-143,146-156
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_37a0b7bb3e4c71 127-131,134-137,139-140
+site/src/content/docs/ko/guides/providers.mdx
+  s_9d9dff3d493fd0::t_38402b625e555a 52-57
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_9d9dff3d493fd0::t_38402b625e555a 54-57
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_37a0b7bb3e4c71 137-142,145-151,153-154
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_9d9dff3d493fd0::t_37a0b7bb3e4c71 135-140,143-151
+src/auth/antigravity/catalog.rs
+  s_9d9dff3d493fd0::t_4f51d2da6a2e2c 385-443
+  s_9d9dff3d493fd0::t_7a4e93dca29666 374
+  s_9d9dff3d493fd0::t_efdbd9eb83b5b6 166-176
+  s_9d9dff3d493fd0::t_f049c589262980 33-43,46-65,74-82,91-114
+  s_9d9dff3d493fd0::t_d27448f60e9a80 121-124,135-146,155-157,164-165,199-204,257-259
+  s_9d9dff3d493fd0::t_c624a56e00c9cc 115
+site/src/content/docs/ja/guides/providers.mdx
+  s_9d9dff3d493fd0::t_38402b625e555a 52-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0e4d3117ddc77f80840f930e51ef1993d8266296",
+  "prompts": {},
+  "sessions": {
+    "s_9d9dff3d493fd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4559a2c0-a23b-4c63-892c-9735745af516",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
