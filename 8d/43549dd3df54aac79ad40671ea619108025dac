@@ -1,0 +1,22 @@
+.please/docs/research/README.md
+  s_9d9dff3d493fd0::t_5de8e099a094bf 7
+  s_9d9dff3d493fd0::t_ee8bacf37afe0e 11
+.please/docs/research/md/003-json-schema-sanitization-for-gemini-functiondeclar.md
+  s_9d9dff3d493fd0::t_bc93c83c386273 1-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8d43549dd3df54aac79ad40671ea619108025dac",
+  "prompts": {},
+  "sessions": {
+    "s_9d9dff3d493fd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4559a2c0-a23b-4c63-892c-9735745af516",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
