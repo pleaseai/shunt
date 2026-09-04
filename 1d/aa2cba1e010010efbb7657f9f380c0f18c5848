@@ -1,0 +1,41 @@
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 66-74
+site/src/content/docs/ja/guides/providers.mdx
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 66-77
+README.md
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 189-190
+README.ja.md
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 189-190
+README.zh-CN.md
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 184-185
+site/src/content/docs/guides/providers.mdx
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 81-91
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 16-24
+README.ko.md
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 186-187
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 18-29
+site/src/content/docs/ko/guides/providers.mdx
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 66-76
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 18-28
+site/src/content/docs/providers/antigravity.mdx
+  s_9ea1229c04bd16::t_9be96bc0a0ca4e 18-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1daa2cba1e010010efbb7657f9f380c0f18c5848",
+  "prompts": {},
+  "sessions": {
+    "s_9ea1229c04bd16": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e1e1c326-30bc-43ac-90bc-2fa6f93a69b7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
