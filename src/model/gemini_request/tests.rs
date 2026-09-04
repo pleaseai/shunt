@@ -590,6 +590,13 @@ fn array_items_are_derived_only_when_something_is_missing() {
         ),
         json!({ "type": "string" })
     );
+    // Nor is a typeless schema whose only array keyword is a boolean `items`:
+    // the boolean is no schema Gemini can read, so it goes and nothing is
+    // invented in its place.
+    assert_eq!(
+        sanitized(json!({ "description": "anything", "items": false })),
+        json!({ "description": "anything" })
+    );
 }
 
 #[test]

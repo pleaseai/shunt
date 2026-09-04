@@ -649,14 +649,15 @@ fn flatten_type_list(map: &mut Map<String, Value>) {
 
 /// `prefixItems`, draft-07's array-valued `items`, and 2020-12's boolean
 /// `items` that closes a tuple describe array positions and nothing else, and
-/// none of them is a shape Gemini's `Schema` can hold. On a schema whose type
-/// — once `flatten_type_list` has settled a union such as `["string",
-/// "array"]` on its first non-null member — is anything but `array`, they
-/// would ride along and be rejected, so they go with the array member they
-/// belonged to. An object-valued `items` is left as written: it is a `Schema`
-/// field, so it is carried rather than refused.
+/// none of them is a shape Gemini's `Schema` can hold. On a schema that is
+/// not an array — its type, once `flatten_type_list` has settled a union such
+/// as `["string", "array"]` on its first non-null member, is another kind, or
+/// it declares no type and no array shape beyond a lone boolean `items` —
+/// they would ride along and be rejected, so they go with the array member
+/// they belonged to. An object-valued `items` is left as written: it is a
+/// `Schema` field, so it is carried rather than refused.
 fn drop_tuple_keywords_from_non_array(map: &mut Map<String, Value>) {
-    if !matches!(map.get("type"), Some(Value::String(kind)) if kind != "array") {
+    if is_array_schema(map) {
         return;
     }
     map.remove("prefixItems");

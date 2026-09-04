@@ -182,8 +182,8 @@ Code Assist リクエストは、これらをいずれも送りません。
 `gemini` プロバイダーでも同様です。 `$schema`、`$id`、`$comment`、
 `propertyNames`、`patternProperties`、`exclusiveMinimum`、`exclusiveMaximum`、`const` は削除され、それ以外の
 キーワードは書かれたとおりに転送されます。`type` のリストは最初の非 `null` 項目を保ち、リストに `null` があれば
-`nullable: true` が設定され、`null` だけのリストは nullable な `string` になります。結果の `type` が `array` でない
-スキーマ — 別のメンバーに決まったユニオンでも、単なるスカラーでも — は `prefixItems` とスキーマオブジェクトでない `items` を捨て、
+`nullable: true` が設定され、`null` だけのリストは nullable な `string` になります。配列でない
+スキーマ — 別のメンバーに決まったユニオンでも、単なるスカラーでも、型のないスキーマでも — は `prefixItems` とスキーマオブジェクトでない `items` を捨て、
 オブジェクト値の `items` はそのまま保ちます。すべての配列は単一の `items`
 スキーマで送られます: タプル — `prefixItems`、または draft-07 の配列値 `items` — は 1 つに畳み込まれ、同一の
 位置はそのスキーマを保ち、配列以外の型だけが一致する位置はその型を保ち、それ以外は先頭の位置のスキーマが
