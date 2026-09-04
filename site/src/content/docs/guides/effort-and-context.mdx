@@ -10,7 +10,7 @@ Claude Code's effort level (`/effort`, the `/model` slider, `--effort`, or `CLAU
 | Claude Code effort | → `reasoning.effort` |
 | :-- | :-- |
 | `low` / `medium` / `high` / `xhigh` | passthrough |
-| `max` | passthrough on models that accept it (the **gpt-5.6** family), else folded to `xhigh` |
+| `max` | passthrough on models that accept it (the **gpt-5.6** and **gpt-6** families), else folded to `xhigh` |
 
 Which reasoning levels a Codex slug accepts is listed per-model in openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) (`supported_reasoning_levels`).
 
