@@ -164,8 +164,9 @@ Antigravity 也提供 Claude 模型,但 shunt 尚未实现它们所需的请求�
 **工具 schema 会被调整为 Gemini 的 `Schema` 方言** —— 在本提供方以及共用同一适配器的 `gemini` 提供方上都是如此。`$schema`、`$id`、`$comment`、`propertyNames`、
 `patternProperties`、`exclusiveMinimum`、`exclusiveMaximum` 和 `const` 会被丢弃,其余关键字按原样转发。`type`
 列表保留其第一个非 `null` 项,列表中若有 `null` 则设置 `nullable: true`,只含 `null` 的列表则变成可为空的
-`string`。任何不是数组的 schema —— 无论是落到其他成员的联合类型、普通标量,还是没有类型的 schema —— 都会丢弃
-`prefixItems` 和任何不是 schema 对象的 `items`,而对象值的 `items` 原样保留。每个数组都以单一的 `items` schema 发送:元组 —— `prefixItems`,或 draft-07 的数组值 `items` —— 会
+`string`。任何不是数组的 schema —— 无论是落到其他成员的联合类型,还是普通标量 —— 都会丢弃
+`prefixItems` 和任何不是 schema 对象的 `items`,而对象值的 `items` 原样保留;没有类型的 schema 若带有 `prefixItems`
+或数组值、对象值的 `items`,则按数组处理,否则只丢弃孤立的布尔 `items`。每个数组都以单一的 `items` schema 发送:元组 —— `prefixItems`,或 draft-07 的数组值 `items` —— 会
 折叠成一个,其中相同的位置保留其 schema,仅在非数组类型上一致的位置保留该类型,否则以第一个位置的 schema
 为准。若 `prefixItems` 旁边已经有声明了类型的 `items` schema,则原样保留该 schema 并丢弃各位置。类型位于 `anyOf`/`oneOf`/`allOf` 分支中的元素也以同样方式折叠。对元素未作任何声明的数组,或元素
 schema 未声明类型的数组,除非元素通过 `enum` 或 `properties` 暗示了类型,否则会以 `items: {"type": "string"}`

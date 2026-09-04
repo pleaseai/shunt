@@ -481,7 +481,7 @@ fn give_array_schema_items(map: &mut Map<String, Value>) {
         }
         None => None,
     };
-    let mut branches: Vec<Value> = Vec::new();
+    let mut branches = Branches::default();
     for source in [prefix_items, legacy_tuple].into_iter().flatten() {
         if let Value::Array(positions) = source {
             for position in positions {
@@ -489,12 +489,7 @@ fn give_array_schema_items(map: &mut Map<String, Value>) {
             }
         }
     }
-    let items = match branches.len() {
-        0 => json!({ "type": "string" }),
-        1 => branches.remove(0),
-        _ => merge_branches(branches),
-    };
-    map.insert("items".to_string(), items);
+    map.insert("items".to_string(), branches.into_items());
 }
 
 /// The keywords whose arms a schema may declare its type through instead of
@@ -529,12 +524,12 @@ fn give_element_schema_a_type(items: &mut Map<String, Value>) {
 /// through its own `type`, through the arms of a composition, or through
 /// what its `enum` or `properties` imply, in that order — arms that name no
 /// type hand back to the position itself rather than silencing it.
-fn collect_typed_branches(mut position: Value, branches: &mut Vec<Value>) {
+fn collect_typed_branches(mut position: Value, branches: &mut Branches) {
     let Some(map) = position.as_object_mut() else {
         return;
     };
     if map.contains_key("type") {
-        push_distinct(branches, position);
+        branches.push(position);
         return;
     }
     // The position is owned and never emitted whole from here on, so its arms
@@ -544,7 +539,7 @@ fn collect_typed_branches(mut position: Value, branches: &mut Vec<Value>) {
     // A node may carry more than one composition. The first whose arms name
     // a type speaks for the position; reading a later one as well would
     // merge arms that differ only in their constraints down to a bare type.
-    let before = branches.len();
+    let before = branches.seen;
     for key in COMPOSITION_KEYWORDS {
         let Some(Value::Array(arms)) = map.remove(key) else {
             continue;
@@ -552,18 +547,71 @@ fn collect_typed_branches(mut position: Value, branches: &mut Vec<Value>) {
         for arm in arms {
             collect_typed_branches(arm, branches);
         }
-        if branches.len() > before {
+        if branches.seen > before {
             return;
         }
     }
     if let Some(kind) = implied_type(map) {
-        push_distinct(branches, json!({ "type": kind }));
+        branches.push(json!({ "type": kind }));
     }
 }
 
-fn push_distinct(branches: &mut Vec<Value>, schema: Value) {
-    if !branches.contains(&schema) {
-        branches.push(schema);
+/// What the fold keeps of the typed branches it has seen — one per typed
+/// position, one per typed arm of a position's composition: the first, and
+/// whether the rest have all matched it, whole or in `type` alone. That is
+/// everything `into_items` decides on, so each branch is compared once,
+/// against the first, however many a tuple contributes. A list every new
+/// branch was checked against instead grew quadratic in the number of
+/// distinct branches, which a client controls up to the inbound body limit.
+#[derive(Default)]
+struct Branches {
+    first: Option<Value>,
+    /// Every branch so far equals `first`.
+    identical: bool,
+    /// The `type` every branch so far agrees on, while they still do.
+    shared_type: Option<Value>,
+    /// Branches pushed, duplicates included — what the composition gate in
+    /// `collect_typed_branches` reads to tell whether a keyword's arms spoke.
+    seen: usize,
+}
+
+impl Branches {
+    fn push(&mut self, schema: Value) {
+        self.seen += 1;
+        match &self.first {
+            None => {
+                self.identical = true;
+                self.shared_type = schema.get("type").cloned();
+                self.first = Some(schema);
+            }
+            Some(first) => {
+                if self.identical && *first != schema {
+                    self.identical = false;
+                }
+                if self.shared_type.is_some() && schema.get("type") != self.shared_type.as_ref() {
+                    self.shared_type = None;
+                }
+            }
+        }
+    }
+
+    /// Collapse the positions into the one typed schema Gemini reads: the
+    /// schema they all share, else the type they all share, else the first.
+    /// A bare `array` is the one type that is no schema on its own — it
+    /// needs `items` — so array positions keep the first, already sanitized,
+    /// position instead of collapsing to the type. No typed position at all
+    /// falls back to a string element.
+    fn into_items(self) -> Value {
+        let Some(first) = self.first else {
+            return json!({ "type": "string" });
+        };
+        if self.identical {
+            return first;
+        }
+        match self.shared_type {
+            Some(kind) if kind != json!("array") => json!({ "type": kind }),
+            _ => first,
+        }
     }
 }
 
@@ -588,23 +636,6 @@ fn enum_value_type(values: Option<&Value>) -> Option<&'static str> {
         }
     }
     kind
-}
-
-/// Collapse several element schemas into the one typed schema Gemini reads.
-fn merge_branches(mut branches: Vec<Value>) -> Value {
-    if let Some(shared) = branches[0].get("type").cloned() {
-        // A bare `array` is the one type that is no schema on its own — it
-        // needs `items` — so array positions keep the first, already
-        // sanitized, branch instead of collapsing to the type.
-        if shared != json!("array")
-            && branches
-                .iter()
-                .all(|branch| branch.get("type") == Some(&shared))
-        {
-            return json!({ "type": shared });
-        }
-    }
-    branches.remove(0)
 }
 
 /// Rewrite a JSON Schema type *list* as the scalar type plus `nullable`.
