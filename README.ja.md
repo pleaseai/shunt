@@ -186,6 +186,8 @@ OpenAI の Thibault Sottiaux は、他のコーディングハーネスを通じ
 
 とはいえ、非公式なクライアントから ChatGPT/Codex や SuperGrok のサブスクリプション（あるいは Kimi、Cursor などの他のバックエンド）を再利用するかどうかは、あなた自身の判断です。公の歓迎は、将来のポリシーやアカウントに対する措置がないことを保証するものではありません。ご利用は自己責任でお願いします。
 
+**Antigravity は、規約がこれを明記している例外です。** Google の [Antigravity 利用規約](https://antigravity.google/terms)は、「サードパーティのソフトウェア、ツール、サービスを使ってサービスにアクセスすること（例：OpenClaw を Antigravity OAuth と組み合わせて使うこと）は本契約の違反」であり、そのような違反は「Antigravity および／または Gemini CLI アカウントの停止または解約の根拠となり得る」と述べています。shunt の `antigravity` プロバイダーはまさにそれ — Antigravity OAuth を使うサードパーティのソフトウェア — なので、このプロバイダーへのルーティングはその条項にそのまま該当します。`shunt login antigravity` を実行する前に、この点を踏まえて判断してください。
+
 **Cursor** も同じ仕組みです。一度ログインすれば、`cursor:*` のモデル id をルーティングできます。
 
 ```bash

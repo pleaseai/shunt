@@ -63,6 +63,15 @@ Antigravity 把 Gemini 模型的 effort 写进 id 发布,并不提供不带后�
 完整设置 —— 登录与 scope、项目发现、模型 slug、thinking,以及适配器承载的内容 —— 见专门的
 [Antigravity 提供方页面](/zh-cn/providers/antigravity/)。
 
+<Aside type="caution" title="Antigravity 的条款">
+
+Google 的 [Antigravity 条款](https://antigravity.google/terms)直接点名了这种用法:"使用第三方软件、工具或服务访问本服务(例如将
+OpenClaw 与 Antigravity OAuth 配合使用)即违反本协议",且此类违约"可能成为暂停或终止你的 Antigravity
+和/或 Gemini CLI 账号的理由"。shunt 就是使用 Antigravity OAuth 的第三方软件,因此经由该提供方路由恰好落在
+该条款之内。这份订阅是否值得冒这个风险由你自己决定 —— 这里没有任何东西能保护你的账号。
+
+</Aside>
+
 <Aside type="caution" title="`antigravity` 的含义已改变">
 
 `kind = "antigravity"` 过去运行的是本地 `agy` 二进制。现在它是 HTTP 上游,而子进程传输迁移到了 `kind = "antigravity_cli"`
