@@ -412,15 +412,23 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
 /// carries a type — or the array declares nothing about its elements at all —
 /// the element is declared a string, matching CLIProxyAPI's fallback (see
 /// `.please/docs/research/md/003-json-schema-sanitization-for-gemini-functiondeclar.md`).
-/// Those last resorts trade precision for a request that reaches the model at
-/// all: the cost is a narrowed element type, not a rejected request.
+/// An `items` schema that is present but declares no type is the same
+/// missing field one level down. One whose type lives in `anyOf`/`oneOf`
+/// arms is folded like a tuple of one position; `{}` — the JSON Schema
+/// "anything" element — and its kin are given the type they imply (through
+/// `enum` or `properties`) and otherwise `string`, as opencode's bridge does,
+/// with the rest of the schema kept. Those last resorts trade precision for a
+/// request that reaches the model at all: the cost is a narrowed element
+/// type, not a rejected request.
 ///
-/// A tuple that declares `prefixItems` or an array-valued `items` and no
-/// `type` at all is an array in everything but name — JSON Schema applies both
-/// keywords only to array instances, and a tool author who wrote one meant a
-/// tuple — so it is given `type: "array"` before the same derivation runs,
-/// rather than losing the tuple and reaching the backend as a schema that
-/// says nothing, or as one whose array-valued `items` the backend rejects.
+/// A schema that declares `prefixItems` or `items` and no `type` at all is an
+/// array in everything but name — JSON Schema applies both keywords only to
+/// array instances, and a tool author who wrote one meant an array — so it is
+/// given `type: "array"` before the same derivation runs, rather than losing
+/// the tuple and reaching the backend as a schema that says nothing, or as one
+/// whose array-valued `items` the backend rejects. Recognizing it is also what
+/// lets a nested element schema be typed on its own pass, before the parent
+/// array's fallback would otherwise declare it a string.
 fn give_array_schema_items(map: &mut Map<String, Value>) {
     // Established before anything is removed: every other object in a schema
     // tree — a `properties` container above all — must leave here untouched.
@@ -431,11 +439,25 @@ fn give_array_schema_items(map: &mut Map<String, Value>) {
     // when `items` already says what the elements are.
     let prefix_items = map.remove("prefixItems");
     map.entry("type").or_insert_with(|| json!("array"));
-    // `items` counts as already answered only when it is a schema object.
-    // draft-07 spells a tuple as an array there and 2020-12 closes one with
-    // `false`; neither is a schema Gemini can read.
-    let legacy_tuple = match map.get("items") {
-        Some(Value::Object(_)) => return,
+    // `items` counts as already answered only when it is a schema object,
+    // and a typeless one is answered only once it has been given the type
+    // every node needs. draft-07 spells a tuple as an array there and
+    // 2020-12 closes one with `false`; neither is a schema Gemini can read.
+    let legacy_tuple = match map.get_mut("items") {
+        Some(Value::Object(items)) if items.contains_key("type") => return,
+        // A union element declares its type through its arms, which is the
+        // shape a tuple position already folds through: treat it as a tuple
+        // of one, so the node Gemini sees carries a type.
+        Some(Value::Object(items))
+            if items.contains_key("anyOf") || items.contains_key("oneOf") =>
+        {
+            map.remove("items")
+                .map(|element| Value::Array(vec![element]))
+        }
+        Some(Value::Object(items)) => {
+            give_element_schema_a_type(items);
+            return;
+        }
         Some(Value::Array(_)) => map.remove("items"),
         Some(_) => {
             map.remove("items");
@@ -455,6 +477,19 @@ fn give_array_schema_items(map: &mut Map<String, Value>) {
         _ => merge_branches(branches),
     };
     map.insert("items".to_string(), items);
+}
+
+/// Give an element schema that declares no type — directly or through
+/// `anyOf`/`oneOf` arms, which the caller folds instead — the one Gemini
+/// requires: the type an `enum` of uniformly typed values or a `properties`
+/// map implies, and `string` when nothing does.
+fn give_element_schema_a_type(items: &mut Map<String, Value>) {
+    let kind = match enum_value_type(items.get("enum")) {
+        Some(kind) => kind,
+        None if matches!(items.get("properties"), Some(Value::Object(_))) => "object",
+        None => "string",
+    };
+    items.insert("type".to_string(), json!(kind));
 }
 
 /// Add the schemas one tuple position admits, skipping the ones that would
@@ -572,15 +607,17 @@ fn is_array_schema(map: &Map<String, Value>) -> bool {
         Some(Value::String(kind)) => kind == "array",
         // A type list has been flattened to a scalar by the time this runs.
         Some(_) => false,
-        // `prefixItems` and an array-valued `items` (the draft-07 tuple) each
-        // constrain arrays and nothing else, so a tuple that omits `type` —
-        // which JSON Schema allows — is still an array schema. A *list* of
-        // positions, specifically: a schema keyed under a property named
-        // `prefixItems` or `items` is an object, and must not turn its
-        // `properties` container into an array.
+        // `prefixItems` and `items` — a draft-07 tuple or a single element
+        // schema — each constrain arrays and nothing else, so a schema that
+        // omits `type` but carries one of them is still an array schema, and
+        // has to be seen as one here so its own elements get the treatment
+        // above before a parent folds it in. Only a schema *keyword* counts:
+        // a `properties` container never reaches this function (the walk
+        // above descends into its values, never the map itself), and a
+        // boolean `items` says nothing about being an array.
         None => {
             matches!(map.get("prefixItems"), Some(Value::Array(_)))
-                || matches!(map.get("items"), Some(Value::Array(_)))
+                || matches!(map.get("items"), Some(Value::Array(_) | Value::Object(_)))
         }
     }
 }

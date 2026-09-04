@@ -325,6 +325,18 @@ fn instance_values_are_not_mistaken_for_schemas() {
             "properties": { "prefixItems": { "type": "string" } }
         })
     );
+    // A property named `items` is a schema under a container, not the array
+    // keyword: the container must not become an array around it.
+    assert_eq!(
+        sanitized(json!({
+            "type": "object",
+            "properties": { "items": { "type": "string" } }
+        })),
+        json!({
+            "type": "object",
+            "properties": { "items": { "type": "string" } }
+        })
+    );
     // A property named after an instance keyword is still a schema: it is
     // sanitized like any other, not skipped on account of its name.
     assert_eq!(
@@ -390,6 +402,59 @@ fn array_items_are_derived_only_when_something_is_missing() {
             json!({ "type": "array", "prefixItems": [{ "type": "string" }], "items": { "type": "object" } })
         ),
         json!({ "type": "array", "items": { "type": "object" } })
+    );
+    // An `items` that is present but says nothing — the "anything" element —
+    // is the missing type one level down, so it falls to the same last
+    // resort instead of being forwarded typeless. What it does say is kept.
+    assert_eq!(
+        sanitized(json!({ "type": "array", "items": {} })),
+        json!({ "type": "array", "items": { "type": "string" } })
+    );
+    assert_eq!(
+        sanitized(json!({ "type": "array", "items": { "description": "anything" } })),
+        json!({ "type": "array", "items": { "type": "string", "description": "anything" } })
+    );
+    // A typeless element schema that implies its type gets that type, not
+    // the fallback.
+    assert_eq!(
+        sanitized(json!({ "type": "array", "items": { "enum": [1, 2] } })),
+        json!({ "type": "array", "items": { "type": "number", "enum": [1, 2] } })
+    );
+    assert_eq!(
+        sanitized(
+            json!({ "type": "array", "items": { "properties": { "a": { "type": "string" } } } })
+        ),
+        json!({
+            "type": "array",
+            "items": { "type": "object", "properties": { "a": { "type": "string" } } }
+        })
+    );
+    // A nested element schema that omits `type` but carries `items` is an
+    // array on its own pass, so the parent's fallback never declares it a
+    // string — and its own typeless element gets the same treatment.
+    assert_eq!(
+        sanitized(json!({ "type": "array", "items": { "items": { "type": "boolean" } } })),
+        json!({ "type": "array", "items": { "type": "array", "items": { "type": "boolean" } } })
+    );
+    assert_eq!(
+        sanitized(json!({ "type": "array", "items": { "items": {} } })),
+        json!({ "type": "array", "items": { "type": "array", "items": { "type": "string" } } })
+    );
+    // An element schema whose type lives only in its `anyOf` arms is still a
+    // typeless node, so it folds the way a tuple position with the same arms
+    // does rather than being forwarded.
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "items": { "anyOf": [{ "type": "boolean" }, { "type": "boolean" }] }
+        })),
+        json!({ "type": "array", "items": { "type": "boolean" } })
+    );
+    assert_eq!(
+        sanitized(
+            json!({ "type": "array", "items": { "oneOf": [{ "description": "anything" }] } })
+        ),
+        json!({ "type": "array", "items": { "type": "string" } })
     );
     // A tuple declared with `prefixItems` alone is an array in all but name:
     // it gains the type and the derived `items` instead of losing the tuple.
