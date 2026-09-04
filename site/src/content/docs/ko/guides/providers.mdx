@@ -28,6 +28,10 @@ description: 내장 프로바이더와 TOML 테이블로 Anthropic 호환 백엔
 
 각 이름은 전체 설정을 설명하는 해당 프로바이더의 전용 페이지로 연결됩니다. `shunt add upstream <name>`은 모든 내장 프로바이더의 단계별 블루프린트를 출력합니다. 이를 코딩 에이전트에 파이프로 전달하면(`shunt add upstream codex --print | claude`) 에이전트가 구성을 연결하도록 할 수 있습니다. [CLI 레퍼런스](/ko/reference/cli/#shunt-add)를 참고하세요.
 
+`gemini` 프로바이더의 도구 선언은 `antigravity` 프로바이더와 동일한 스키마 조정을 거칩니다. 두 전송이 하나의 Gemini 어댑터를
+공유하므로, [Antigravity 프로바이더 페이지](/ko/providers/antigravity/)의 **어댑터가 전달하는 것**에서 설명한 튜플 접기와 타입
+없는 요소 폴백이 `gemini` 라우트에도 적용됩니다.
+
 ### antigravity 프로바이더 (Google Antigravity)
 
 `antigravity` 프로바이더는 HTTP를 통해 Google Antigravity 백엔드에 도달합니다. `shunt login antigravity`로 인증하세요 —

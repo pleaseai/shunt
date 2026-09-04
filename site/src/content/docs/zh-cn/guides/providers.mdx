@@ -31,6 +31,10 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 (`shunt add upstream codex --print | claude`),即可让 agent 为你完成配置。见
 [CLI 参考](/zh-cn/reference/cli/#shunt-add)。
 
+`gemini` 提供方的工具声明会经过与 `antigravity` 提供方相同的 schema 调整。两种传输共用同一个 Gemini 适配器,因此
+[Antigravity 提供方页面](/zh-cn/providers/antigravity/)的**适配器承载的内容**中所述的元组折叠和无类型元素回退同样适用于
+`gemini` 路由。
+
 ### antigravity 提供方(Google Antigravity)
 
 `antigravity` 提供方通过 HTTP 触达 Google Antigravity 后端。用 `shunt login antigravity` 认证:这是一个使用 Antigravity

@@ -43,6 +43,11 @@ provider = "gemini"
 upstream_model = "gemini-2.5-flash"
 ```
 
+Tool declarations go through the same schema adaptation as the `antigravity` provider — both
+transports share one Gemini adapter — so the tuple folding and typeless-element fallbacks described
+under **What the adapter carries** on the [Antigravity provider page](/providers/antigravity/) apply
+to `gemini` routes as well.
+
 Code Assist also recognizes preview slugs such as `gemini-3.1-pro-preview` and `gemini-3-flash-preview`, subject to account entitlement and provider capacity. It does not accept the Antigravity-only slugs such as `gemini-3.6-flash-medium`.
 
 The separate `antigravity` provider reaches the same backend over HTTP. Authenticate it with `shunt login antigravity`: a Google

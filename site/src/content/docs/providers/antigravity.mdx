@@ -180,6 +180,25 @@ derived from the earliest user text in the conversation so follow-up turns land 
 session. The `gemini`
 provider's Code Assist requests carry none of these.
 
+**Tool schemas are adapted** to Gemini's `Schema` dialect — on this provider and on `gemini`, which
+shares the adapter. `$schema`, `$id`, `$comment`,
+`propertyNames`, `patternProperties`, `exclusiveMinimum`, `exclusiveMaximum`, and `const` are dropped;
+every other keyword is forwarded as written. A `type` list keeps its first non-`null` entry, a `null`
+in the list sets `nullable: true`, and a null-only list becomes a nullable `string`. Any schema that is
+not an array — a union that settled on another member, or a plain scalar — drops `prefixItems` and any
+`items` that is not a schema object, keeping an object-valued `items` as written; a typeless schema counts
+as an array when it carries `prefixItems` or an array- or object-valued `items`, and otherwise loses a lone
+boolean `items`. Every array is
+sent with a single `items` schema: a tuple — `prefixItems`, or draft-07's array-valued `items` — is
+folded into one, where identical positions keep their schema, positions that agree only on a
+non-array type keep that type, and otherwise the first position's schema stands. A typed `items`
+schema already sitting beside `prefixItems` is kept as written and the positions are dropped. An element whose
+type lives in `anyOf`/`oneOf`/`allOf` arms is folded the same way. An array that says nothing about
+its elements, or whose element schema declares no type, is sent with `items: {"type": "string"}`
+unless the element implies its type through `enum` or `properties`. These fallbacks narrow the
+element type rather than rejecting the request, so a tool whose tuple arrives typed as `string` is
+this adaptation at work, not a routing error.
+
 Two limits are worth knowing before you route production traffic:
 
 - **Images must be inline.** A base64 `image` block becomes Gemini `inlineData`. A **URL image
