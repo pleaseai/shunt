@@ -78,6 +78,17 @@ re-resolved rather than forwarded. Every spelling works.
 For the full setup — login and scopes, project discovery, model slugs, thinking, and what the
 adapter carries — see the dedicated [Antigravity provider page](/providers/antigravity/).
 
+<Aside type="caution" title="Antigravity's terms">
+
+Google's [Antigravity terms](https://antigravity.google/terms) name this use directly: "using third party software, tools,
+or services to access the Service (e.g. using OpenClaw with Antigravity OAuth) is a breach of this
+Agreement", and such a breach "may be grounds for suspension or termination of your Antigravity
+and/or Gemini CLI accounts". shunt is third-party software using Antigravity OAuth, so routing
+through this provider falls squarely under that clause. Whether the subscription is worth that risk
+is your own call — nothing here can shield the account.
+
+</Aside>
+
 <Aside type="caution" title="`antigravity` changed meaning">
 
 `kind = "antigravity"` used to run the local `agy` binary. It is now the HTTP upstream, and the subprocess transport moved to

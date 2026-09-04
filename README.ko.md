@@ -183,6 +183,8 @@ OpenAI의 Thibault Sottiaux는 다른 코딩 하네스를 통해 Codex를 실행
 
 다만, 비공식 클라이언트에서 ChatGPT/Codex나 SuperGrok 구독(또는 Kimi, Cursor 등 다른 백엔드)을 재사용하는 것은 본인의 판단입니다. 공개적인 환영이 향후 정책이나 계정 제재가 없음을 보장하지는 않습니다. 사용에 따른 책임은 본인에게 있습니다.
 
+**Antigravity는 약관이 이를 명시한 예외입니다.** Google의 [Antigravity 약관](https://antigravity.google/terms)은 "서드파티 소프트웨어, 도구, 서비스로 서비스에 접근하는 것(예: OpenClaw를 Antigravity OAuth와 함께 사용)은 본 계약 위반"이며, 그러한 위반은 "Antigravity 및/또는 Gemini CLI 계정의 정지 또는 해지 사유가 될 수 있다"고 명시합니다. shunt의 `antigravity` 프로바이더가 바로 그것 — Antigravity OAuth를 사용하는 서드파티 소프트웨어 — 이므로, 이 프로바이더로 라우팅하는 것은 그 조항에 그대로 해당합니다. `shunt login antigravity`를 실행하기 전에 이를 감안해 결정하세요.
+
 **Cursor**도 같은 방식으로 동작합니다. 한 번 로그인한 뒤 `cursor:*` 모델 id를 라우팅하세요:
 
 ```bash

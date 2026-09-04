@@ -181,6 +181,8 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 
 话虽如此，是否从非官方客户端复用你的 ChatGPT/Codex 或 SuperGrok 订阅（或 Kimi、Cursor 等其他后端），由你自己决定 —— 公开的欢迎并不保证未来的政策或账号层面的处置。使用风险自负。
 
+**Antigravity 是条款对此有明文规定的例外。** Google 的 [Antigravity 条款](https://antigravity.google/terms)写明：“使用第三方软件、工具或服务访问本服务（例如将 OpenClaw 与 Antigravity OAuth 配合使用）即违反本协议”，且此类违约“可能成为暂停或终止你的 Antigravity 和/或 Gemini CLI 账号的理由”。shunt 的 `antigravity` 提供方正是如此 —— 使用 Antigravity OAuth 的第三方软件 —— 因此经由该提供方路由恰好落在该条款之内。运行 `shunt login antigravity` 之前，请据此做出决定。
+
 **Cursor** 的工作方式相同 —— 登录一次,然后路由一个 `cursor:*` 模型 id:
 
 ```bash

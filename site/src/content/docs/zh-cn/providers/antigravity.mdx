@@ -13,6 +13,15 @@ Antigravity 还有第二种、更老的传输方式。`kind = "antigravity_cli"`
 [已废弃的 `antigravity-cli` 传输](/zh-cn/guides/providers/#已废弃的-antigravity_cli-传输)。
 本页讲的是 HTTP 提供方,它完全不需要那套机制。
 
+<Aside type="caution" title="Antigravity 的条款">
+
+Google 的 [Antigravity 条款](https://antigravity.google/terms)直接点名了这种用法:"使用第三方软件、工具或服务访问本服务(例如将
+OpenClaw 与 Antigravity OAuth 配合使用)即违反本协议",且此类违约"可能成为暂停或终止你的 Antigravity
+和/或 Gemini CLI 账号的理由"。shunt 就是使用 Antigravity OAuth 的第三方软件,因此经由该提供方路由恰好落在
+该条款之内。这份订阅是否值得冒这个风险由你自己决定 —— 这里没有任何东西能保护你的账号。
+
+</Aside>
+
 ## 快速开始
 
 让编码 agent 为你完成接入 —— `shunt add` 会打印一份内置的设置蓝图

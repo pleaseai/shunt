@@ -15,6 +15,17 @@ as a subprocess and is **deprecated** — see
 [the deprecated `antigravity-cli` transport](/guides/providers/#the-deprecated-antigravity-cli-transport).
 This page covers the HTTP provider, which needs none of that machinery.
 
+<Aside type="caution" title="Antigravity's terms">
+
+Google's [Antigravity terms](https://antigravity.google/terms) name this use directly: "using third party software, tools,
+or services to access the Service (e.g. using OpenClaw with Antigravity OAuth) is a breach of this
+Agreement", and such a breach "may be grounds for suspension or termination of your Antigravity
+and/or Gemini CLI accounts". shunt is third-party software using Antigravity OAuth, so routing
+through this provider falls squarely under that clause. Whether the subscription is worth that risk
+is your own call — nothing here can shield the account.
+
+</Aside>
+
 ## Quick start
 
 Let a coding agent wire it up for you — `shunt add` prints an embedded setup blueprint

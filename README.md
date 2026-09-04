@@ -186,6 +186,8 @@ He [followed up](https://x.com/thsottiaux/status/2076119366647894371) by walking
 
 That said, reusing your ChatGPT/Codex or SuperGrok subscription (or Kimi, Cursor, or other backends) from an unofficial client is your own call — a public welcome doesn't guarantee future policy or account enforcement. Use at your own risk.
 
+**Antigravity is the exception where the terms are explicit.** Google's [Antigravity terms](https://antigravity.google/terms) state that "using third party software, tools, or services to access the Service (e.g. using OpenClaw with Antigravity OAuth) is a breach of this Agreement" and that such a breach "may be grounds for suspension or termination of your Antigravity and/or Gemini CLI accounts". shunt's `antigravity` provider is exactly that — third-party software using Antigravity OAuth — so routing through it falls squarely under that clause. Decide with that in mind before running `shunt login antigravity`.
+
 **Cursor** works the same way — log in once and route a `cursor:*` model id:
 
 ```bash
