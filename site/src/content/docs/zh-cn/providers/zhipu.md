@@ -50,7 +50,9 @@ export ZHIPUAI_API_KEY='...'
 | `glm-5.3-flash` | 更快的多模态档位；客户端可以添加 `[1m]`，shunt 会在路由匹配前移除它 |
 
 在 Claude Code 中通过 `ANTHROPIC_MODEL`、`ANTHROPIC_CUSTOM_MODEL_OPTION` 或子 agent 的
-`model:` frontmatter 选择一个已路由的 ID。
+`model:` frontmatter 选择一个已路由的 ID。要在 `/model` 选择器中展示条目,请用
+`[models.upstream_model]` 映射声明一个以 `claude` 为前缀的别名 —— 见
+[模型发现](/zh-cn/guides/model-discovery/)。
 
 ## 校验
 

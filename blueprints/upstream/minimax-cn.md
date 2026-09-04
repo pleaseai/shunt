@@ -44,7 +44,7 @@ display_name = "MiniMax (China)"
 minimax-cn = "MiniMax-M3"
 ```
 
-Remove Claude Code's `[1m]` context hint from `upstream_model`; shunt strips it from inbound requests before matching.
+Verify the model ID against the operator's MiniMax China plan. Remove Claude Code's `[1m]` context hint from `upstream_model`; shunt strips it from inbound requests before matching.
 
 ## Validate
 

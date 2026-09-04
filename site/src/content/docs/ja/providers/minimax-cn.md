@@ -46,7 +46,9 @@ export MINIMAX_API_KEY='...'
 | `MiniMax-M3` | 1M トークンコンテキスト。クライアントは Claude Code の `[1m]` マーカーを付けられますが、shunt はマッチ前に除去するため、接尾辞なしの ID をルーティングしてください |
 
 Claude Code では `ANTHROPIC_MODEL`、`ANTHROPIC_CUSTOM_MODEL_OPTION`、またはサブエージェントの
-`model:` frontmatter でルーティングされた ID を選択します。
+`model:` frontmatter でルーティングされた ID を選択します。代わりに `/model` ピッカーへ表示するには、
+`[models.upstream_model]` マップとともに `claude` プレフィックス付きのエイリアスを広告してください —
+[Model Discovery](/ja/guides/model-discovery/) を参照。マッピングする ID は `[1m]` で終わっては**いけません**。
 
 ## 検証
 

@@ -44,7 +44,9 @@ export MINIMAX_API_KEY='...'
 | `MiniMax-M3` | 1M token 上下文；客户端可以添加 Claude Code 的 `[1m]` 标记，shunt 会在匹配前移除它，因此请路由不带后缀的 ID |
 
 在 Claude Code 中通过 `ANTHROPIC_MODEL`、`ANTHROPIC_CUSTOM_MODEL_OPTION` 或子 agent 的
-`model:` frontmatter 选择一个已路由的 ID。
+`model:` frontmatter 选择一个已路由的 ID。要在 `/model` 选择器中展示条目,请用
+`[models.upstream_model]` 映射声明一个以 `claude` 为前缀的别名 —— 见
+[模型发现](/zh-cn/guides/model-discovery/)。被映射的 ID **不得**以 `[1m]` 结尾。
 
 ## 校验
 

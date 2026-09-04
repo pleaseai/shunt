@@ -51,7 +51,9 @@ export ZHIPUAI_API_KEY='...'
 | `glm-5.3-flash` | 더 빠른 멀티모달 티어. 클라이언트가 `[1m]`을 붙일 수 있으며 shunt는 라우트 매칭 전에 제거합니다 |
 
 Claude Code에서 `ANTHROPIC_MODEL`, `ANTHROPIC_CUSTOM_MODEL_OPTION`, 또는 서브에이전트의
-`model:` frontmatter로 라우팅된 ID를 선택하세요.
+`model:` frontmatter로 라우팅된 ID를 선택하세요. 대신 `/model` 선택기에 노출하려면
+`[models.upstream_model]` 맵과 함께 `claude` 프리픽스가 붙은 별칭을 선언하세요 —
+[모델 디스커버리](/ko/guides/model-discovery/)를 참고하세요.
 
 ## 검증
 

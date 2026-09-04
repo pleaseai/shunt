@@ -50,7 +50,9 @@ export ZHIPUAI_API_KEY='...'
 | `glm-5.3-flash` | より高速なマルチモーダルティア。クライアントは `[1m]` を付けられますが、shunt はルートマッチ前に除去します |
 
 Claude Code では `ANTHROPIC_MODEL`、`ANTHROPIC_CUSTOM_MODEL_OPTION`、またはサブエージェントの
-`model:` frontmatter でルーティングされた ID を選択します。
+`model:` frontmatter でルーティングされた ID を選択します。代わりに `/model` ピッカーへ表示するには、
+`[models.upstream_model]` マップとともに `claude` プレフィックス付きのエイリアスを広告してください —
+[Model Discovery](/ja/guides/model-discovery/) を参照。
 
 ## 検証
 

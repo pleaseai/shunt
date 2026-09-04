@@ -47,7 +47,9 @@ export MINIMAX_API_KEY='...'
 | `MiniMax-M3` | 1M 토큰 컨텍스트. 클라이언트가 Claude Code의 `[1m]` 표시를 붙일 수 있으며 shunt는 매칭 전에 제거하므로 접미사 없는 ID로 라우팅하세요 |
 
 Claude Code에서 `ANTHROPIC_MODEL`, `ANTHROPIC_CUSTOM_MODEL_OPTION`, 또는 서브에이전트의
-`model:` frontmatter로 라우팅된 ID를 선택하세요.
+`model:` frontmatter로 라우팅된 ID를 선택하세요. 대신 `/model` 선택기에 노출하려면
+`[models.upstream_model]` 맵과 함께 `claude` 프리픽스가 붙은 별칭을 선언하세요 —
+[모델 디스커버리](/ko/guides/model-discovery/)를 참고하세요. 매핑된 ID는 `[1m]`으로 끝나면 **안 됩니다**.
 
 ## 검증
 
