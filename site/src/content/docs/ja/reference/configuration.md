@@ -270,6 +270,9 @@ codex-fallback = "gpt-5.2"
 | `grok` | `responses` | `https://cli-chat-proxy.grok.com/v1` | `xai_oauth` |
 | `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
+| `kimi-code` | `anthropic` | `https://api.kimi.com/coding` | `kimi_oauth` |
+| `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
+| `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 
 `auth = "claude_oauth"` のような文字列は `auth = { mode = "claude_oauth" }` の省略形です。`api_key` マップは `env`（preset が提供しない場合は必須）と `header`（デフォルトは `bearer`、または `x_api_key`）を受け取ります。`claude_oauth` と `chatgpt_oauth` のマップは `account = "name"` または `accounts = [...]` で範囲を絞れますが、両方は指定できません。`accounts` にはストアエントリ名の文字列と完全なアカウントテーブルを指定できます。明示的な `accounts = []` は拒否され、両方のスコープフィールドを省略するとストア全体を走査します。ChatGPT ストアが空の場合、`chatgpt_oauth` は従来どおり `~/.codex/auth.json` にフォールバックします。`passthrough`、`xai_oauth`、`cursor_oauth`、`antigravity_oauth` のマップは `mode` のみを受け付け、mode 固有の未知のキーはエラーです。
 

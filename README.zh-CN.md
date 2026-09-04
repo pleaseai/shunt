@@ -15,7 +15,7 @@
 
 名字即机制:电气/铁路中的 *shunt(分流)* 将流量中被选中的部分导向一条并行路径。在这里,被映射模型的推理被分流到另一个提供方,而 Claude Code 的工具和技能保持完好。
 
-它内置了 **OpenAI**、**ChatGPT/Codex**(通过 `codex login` 复用你的订阅)、**xAI**(API 密钥)、**Grok**(通过 `shunt login xai` 复用你的 SuperGrok / X Premium+ 订阅)、**Cursor**(通过 `shunt login cursor` 复用你的订阅)、**Kimi Code**(通过 `shunt login kimi` 复用你的订阅)、**Gemini / Google Code Assist**(通过 `~/.gemini/oauth_creds.json` 复用你的订阅;shunt 会直接使用有效的访问令牌,而自行刷新需要 `SHUNT_GOOGLE_CLIENT_ID` 和 `SHUNT_GOOGLE_CLIENT_SECRET`)以及 **Anthropic** 透传 —— 而任何兼容 Anthropic-Messages 的后端(Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway……)只需一个 TOML 表或 YAML 映射即可接入,无需改动代码。
+它内置了 **OpenAI**、**ChatGPT/Codex**(通过 `codex login` 复用你的订阅)、**xAI**(API 密钥)、**Grok**(通过 `shunt login xai` 复用你的 SuperGrok / X Premium+ 订阅)、**Cursor**(通过 `shunt login cursor` 复用你的订阅)、**Kimi Code**(通过 `shunt login kimi` 复用你的订阅)、**智谱**和 **MiniMax 国内版**(API 密钥)、**Gemini / Google Code Assist**(通过 `~/.gemini/oauth_creds.json` 复用你的订阅;shunt 会直接使用有效的访问令牌,而自行刷新需要 `SHUNT_GOOGLE_CLIENT_ID` 和 `SHUNT_GOOGLE_CLIENT_SECRET`)以及 **Anthropic** 透传 —— 而任何兼容 Anthropic-Messages 的后端(Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway……)只需一个 TOML 表或 YAML 映射即可接入,无需改动代码。
 
 > [!NOTE]
 > `shunt` 是仍在活跃开发中的 1.0 之前(pre-1.0)软件。按照 [SemVer](https://semver.org/lang/zh-CN/#spec) 惯例,`0.x` 版本可能包含对配置键、CLI 和行为的破坏性变更(breaking change) —— 升级前请查看[发布说明](https://github.com/pleaseai/shunt/releases)。
@@ -204,7 +204,9 @@ provider = "cursor"
 | Kimi Code(订阅制,OAuth) | `https://api.kimi.com/coding` | 使用你订阅提供的 ID |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`、`deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`、`glm-4.7` |
+| 智谱（GLM 国内版） | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`、`glm-5.3-flash` |
 | MiniMax | `https://api.minimax.io/anthropic` | 见 [MiniMax 文档](https://platform.minimax.io/docs/token-plan/claude-code) |
+| MiniMax 国内版 | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 

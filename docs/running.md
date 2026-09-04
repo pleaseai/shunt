@@ -238,7 +238,9 @@ fields. Ready-to-use entries (uncomment in
 | Kimi Code (subscription, OAuth) | `https://api.kimi.com/coding` | use the ids your subscription exposes |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
+| Zhipu (GLM China) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
+| MiniMax China | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | Mimo (Xiaomi) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — see [Mimo docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8`, `~anthropic/claude-sonnet-latest` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |

@@ -48,6 +48,16 @@ export const NAVIGATION: NavigationGroup[] = [
       { label: "DeepSeek", slug: "providers/deepseek" },
       { label: "Z.ai (GLM)", slug: "providers/zai" },
       { label: "MiniMax", slug: "providers/minimax" },
+      {
+        label: "Zhipu (GLM China)",
+        translations: { ko: "Zhipu (GLM 중국)", ja: "Zhipu（GLM 中国版）", "zh-cn": "智谱（GLM 国内版）" },
+        slug: "providers/zhipu",
+      },
+      {
+        label: "MiniMax China",
+        translations: { ko: "MiniMax 중국", ja: "MiniMax 中国版", "zh-cn": "MiniMax 国内版" },
+        slug: "providers/minimax-cn",
+      },
       { label: "Mimo (Xiaomi)", slug: "providers/mimo" },
       { label: "OpenRouter", slug: "providers/openrouter" },
       { label: "Vercel AI Gateway", slug: "providers/vercel-ai-gateway" },

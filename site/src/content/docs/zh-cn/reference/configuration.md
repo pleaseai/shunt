@@ -270,6 +270,9 @@ codex-fallback = "gpt-5.2"
 | `grok` | `responses` | `https://cli-chat-proxy.grok.com/v1` | `xai_oauth` |
 | `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
+| `kimi-code` | `anthropic` | `https://api.kimi.com/coding` | `kimi_oauth` |
+| `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
+| `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 
 `auth = "claude_oauth"` 这样的字符串是 `auth = { mode = "claude_oauth" }` 的简写。`api_key` 映射接受 `env`（除非 preset 已提供，否则必需）和 `header`（默认为 `bearer`，也可设为 `x_api_key`）。`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小范围，但不能同时设置两者。`accounts` 接受存储条目名称字符串和完整账户表；显式的 `accounts = []` 会被拒绝，而省略两个范围字段则扫描整个存储。若 ChatGPT 存储为空，`chatgpt_oauth` 仍会回退到 `~/.codex/auth.json`。`passthrough`、`xai_oauth`、`cursor_oauth`、`antigravity_oauth` 映射只接受 `mode`；特定 mode 下的未知键会报错。
 

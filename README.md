@@ -15,7 +15,7 @@
 
 The name is the mechanism: an electrical/railway *shunt* diverts a selected part of the flow onto a parallel path. Here, a mapped model's inference is diverted to another provider while Claude Code's tools and skills stay intact.
 
-It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), **xAI** (API key), **Grok** (reuse your SuperGrok / X Premium+ subscription via `shunt login xai`), **Cursor** (reuse your subscription via `shunt login cursor`), **Kimi Code** (reuse your subscription via `shunt login kimi`), **Gemini / Google Code Assist** (reuse your subscription via `~/.gemini/oauth_creds.json`; shunt uses a valid access token directly, while self-refresh requires `SHUNT_GOOGLE_CLIENT_ID` and `SHUNT_GOOGLE_CLIENT_SECRET`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table or YAML mapping away, no code changes.
+It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), **xAI** (API key), **Grok** (reuse your SuperGrok / X Premium+ subscription via `shunt login xai`), **Cursor** (reuse your subscription via `shunt login cursor`), **Kimi Code** (reuse your subscription via `shunt login kimi`), **Zhipu** and **MiniMax China** (API keys), **Gemini / Google Code Assist** (reuse your subscription via `~/.gemini/oauth_creds.json`; shunt uses a valid access token directly, while self-refresh requires `SHUNT_GOOGLE_CLIENT_ID` and `SHUNT_GOOGLE_CLIENT_SECRET`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table or YAML mapping away, no code changes.
 
 > [!NOTE]
 > `shunt` is pre-1.0 software under active development. Per [SemVer](https://semver.org/#spec), `0.x` releases may include breaking changes to configuration keys, the CLI, and behavior — check the [release notes](https://github.com/pleaseai/shunt/releases) before upgrading.
@@ -209,7 +209,9 @@ The `cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` prefixes pick C
 | Kimi Code (subscription, OAuth) | `https://api.kimi.com/coding` | use the ids your subscription exposes |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
+| Zhipu (GLM China) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
+| MiniMax China | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 
