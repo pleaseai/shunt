@@ -187,7 +187,8 @@ every other keyword is forwarded as written. A `type` list keeps its first non-`
 in the list sets `nullable: true`, and a null-only list becomes a nullable `string`. Every array is
 sent with a single `items` schema: a tuple — `prefixItems`, or draft-07's array-valued `items` — is
 folded into one, where identical positions keep their schema, positions that agree only on a
-non-array type keep that type, and otherwise the first position's schema stands. An element whose
+non-array type keep that type, and otherwise the first position's schema stands. A typed `items`
+schema already sitting beside `prefixItems` is kept as written and the positions are dropped. An element whose
 type lives in `anyOf`/`oneOf`/`allOf` arms is folded the same way. An array that says nothing about
 its elements, or whose element schema declares no type, is sent with `items: {"type": "string"}`
 unless the element implies its type through `enum` or `properties`. These fallbacks narrow the
