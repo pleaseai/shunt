@@ -1,0 +1,29 @@
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_264590a68c539c::t_d1c2aa2fab33be 180-181
+site/src/content/docs/providers/antigravity.mdx
+  s_264590a68c539c::t_d1c2aa2fab33be 187-188
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_264590a68c539c::t_d1c2aa2fab33be 185-186
+src/model/gemini_request.rs
+  s_264590a68c539c::t_d1c2aa2fab33be 652-658,660
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_264590a68c539c::t_007e7427183acc 167
+src/model/gemini_request/tests.rs
+  s_264590a68c539c::t_57e17a259ae28c 593-599
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f6c356a55a498ed1741599df17f7c35549ffdb4e",
+  "prompts": {},
+  "sessions": {
+    "s_264590a68c539c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fefe4be4-91b8-4482-89d3-a0833160efce",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
