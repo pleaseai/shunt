@@ -357,10 +357,23 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
                     // values are schemas; the keys are not keywords, so a
                     // property called `const` or `enum` must be neither
                     // stripped nor skipped on account of its name.
-                    "properties" | "$defs" | "definitions" => {
+                    "properties" | "$defs" | "definitions" | "dependentSchemas" => {
                         if let Value::Object(schemas) = child {
                             for schema in schemas.values_mut() {
                                 sanitize_gemini_schema(schema, depth + 1)?;
+                            }
+                        }
+                    }
+                    // Also keyed by property names. `dependentRequired` maps
+                    // each to a list of names — instances, left alone — and
+                    // draft-07 `dependencies` maps each to either that list
+                    // or a schema. Walking the map itself would read a
+                    // property called `items` as the array keyword.
+                    "dependentRequired" => {}
+                    "dependencies" => {
+                        if let Value::Object(entries) = child {
+                            for entry in entries.values_mut().filter(|entry| entry.is_object()) {
+                                sanitize_gemini_schema(entry, depth + 1)?;
                             }
                         }
                     }
@@ -527,9 +540,14 @@ fn collect_typed_branches(mut position: Value, branches: &mut Vec<Value>) {
     // are moved out rather than cloned. `allOf` is an intersection, not a
     // union, but its arms agree on the type when they name one, so the same
     // read serves; Gemini's `Schema` has no `allOf` to forward it as.
-    let arms = COMPOSITION_KEYWORDS.iter().find_map(|key| map.remove(*key));
-    if let Some(Value::Array(arms)) = arms {
-        let before = branches.len();
+    // A node may carry more than one composition. The first whose arms name
+    // a type speaks for the position; reading a later one as well would
+    // merge arms that differ only in their constraints down to a bare type.
+    let before = branches.len();
+    for key in COMPOSITION_KEYWORDS {
+        let Some(Value::Array(arms)) = map.remove(key) else {
+            continue;
+        };
         for arm in arms {
             collect_typed_branches(arm, branches);
         }
@@ -638,9 +656,10 @@ fn is_array_schema(map: &Map<String, Value>) -> bool {
         // omits `type` but carries one of them is still an array schema, and
         // has to be seen as one here so its own elements get the treatment
         // above before a parent folds it in. Only a schema *keyword* counts:
-        // a `properties` container never reaches this function (the walk
-        // above descends into its values, never the map itself), and a
-        // boolean `items` says nothing about being an array.
+        // the maps keyed by property names (`properties`, `$defs`,
+        // `dependentSchemas`, `dependencies`, ...) never reach this function
+        // because the walk above descends into their values, never the map
+        // itself, and a boolean `items` says nothing about being an array.
         None => {
             matches!(map.get("prefixItems"), Some(Value::Array(_)))
                 || matches!(map.get("items"), Some(Value::Array(_) | Value::Object(_)))

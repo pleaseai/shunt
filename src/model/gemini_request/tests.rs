@@ -337,6 +337,22 @@ fn instance_values_are_not_mistaken_for_schemas() {
             "properties": { "items": { "type": "string" } }
         })
     );
+    // The same holds for every map keyed by property names: a dependency
+    // on a property called `items` is not a tuple to fold.
+    assert_eq!(
+        sanitized(json!({
+            "type": "object",
+            "dependentRequired": { "items": ["count"] },
+            "dependencies": { "items": ["count"], "count": { "required": ["items"] } },
+            "dependentSchemas": { "items": { "required": ["count"] } }
+        })),
+        json!({
+            "type": "object",
+            "dependentRequired": { "items": ["count"] },
+            "dependencies": { "items": ["count"], "count": { "required": ["items"] } },
+            "dependentSchemas": { "items": { "required": ["count"] } }
+        })
+    );
     // A property named after an instance keyword is still a schema: it is
     // sanitized like any other, not skipped on account of its name.
     assert_eq!(
@@ -488,6 +504,26 @@ fn array_items_are_derived_only_when_something_is_missing() {
             "items": { "properties": { "b": { "type": "string" } } }
         })),
         json!({ "type": "array", "items": { "type": "object" } })
+    );
+    // A node carrying two compositions is read past a typeless first one —
+    // and no further than the first that names a type, so arms that differ
+    // only in constraints are not merged down to a bare type.
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "items": { "anyOf": [{}], "allOf": [{ "type": "number" }] }
+        })),
+        json!({ "type": "array", "items": { "type": "number" } })
+    );
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "items": {
+                "anyOf": [{ "type": "number", "minimum": 0 }],
+                "allOf": [{ "type": "number", "maximum": 10 }]
+            }
+        })),
+        json!({ "type": "array", "items": { "type": "number", "minimum": 0 } })
     );
     // Composition arms that name no type hand back to the position, so a
     // sibling `enum` still decides the type.
