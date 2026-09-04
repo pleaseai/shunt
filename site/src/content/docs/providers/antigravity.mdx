@@ -180,7 +180,8 @@ derived from the earliest user text in the conversation so follow-up turns land 
 session. The `gemini`
 provider's Code Assist requests carry none of these.
 
-**Tool schemas are adapted** to Gemini's `Schema` dialect. `$schema`, `$id`, `$comment`,
+**Tool schemas are adapted** to Gemini's `Schema` dialect — on this provider and on `gemini`, which
+shares the adapter. `$schema`, `$id`, `$comment`,
 `propertyNames`, `patternProperties`, `exclusiveMinimum`, `exclusiveMaximum`, and `const` are dropped;
 every other keyword is forwarded as written. A `type` list keeps its first non-`null` entry, a `null`
 in the list sets `nullable: true`, and a null-only list becomes a nullable `string`. Every array is

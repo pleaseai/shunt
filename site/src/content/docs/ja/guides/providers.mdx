@@ -28,6 +28,10 @@ description: 組み込みプロバイダーと、TOML テーブルで任意の A
 
 各名前から、そのプロバイダーの完全なセットアップを説明する専用ページへ移動できます。`shunt add upstream <name>` は、任意の組み込みプロバイダーについて手順を追ったブループリントを出力します。コーディングエージェントへパイプすれば（`shunt add upstream codex --print | claude`）、エージェントに設定を組み込ませることができます。[CLI リファレンス](/ja/reference/cli/#shunt-add)も参照してください。
 
+`gemini` プロバイダーのツール宣言には、`antigravity` プロバイダーと同じスキーマ調整が適用されます。両方の転送が 1 つの Gemini
+アダプターを共有するため、[Antigravity プロバイダーページ](/ja/providers/antigravity/)の**アダプターが伝えるもの**で説明する
+タプルの畳み込みと型のない要素のフォールバックは `gemini` ルートにも適用されます。
+
 ### antigravity プロバイダー（Google Antigravity）
 
 `antigravity` プロバイダーは、HTTP 経由で Google Antigravity バックエンドに到達します。`shunt login antigravity` で認証してください —

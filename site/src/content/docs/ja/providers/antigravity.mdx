@@ -178,7 +178,8 @@ Antigravity は Claude モデルも提供していますが、shunt はそれら
 同じセッションに届くよう会話中で最初に現れるユーザーテキストから導出した `sessionId` です。`gemini` プロバイダーの
 Code Assist リクエストは、これらをいずれも送りません。
 
-**ツールスキーマは Gemini の `Schema` 方言に合わせて調整されます。** `$schema`、`$id`、`$comment`、
+**ツールスキーマは Gemini の `Schema` 方言に合わせて調整されます** — このプロバイダーでも、同じアダプターを共有する
+`gemini` プロバイダーでも同様です。 `$schema`、`$id`、`$comment`、
 `propertyNames`、`patternProperties`、`exclusiveMinimum`、`exclusiveMaximum`、`const` は削除され、それ以外の
 キーワードは書かれたとおりに転送されます。`type` のリストは最初の非 `null` 項目を保ち、リストに `null` があれば
 `nullable: true` が設定され、`null` だけのリストは nullable な `string` になります。すべての配列は単一の `items`

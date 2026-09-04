@@ -161,7 +161,7 @@ Antigravity 也提供 Claude 模型,但 shunt 尚未实现它们所需的请求�
 `requestType: "agent"`、每个请求各自的 `requestId`,以及从对话中最早出现的用户文本推导出的 `sessionId`,好让后续
 轮次落到同一个会话。`gemini` 提供方的 Code Assist 请求不会发送其中任何一项。
 
-**工具 schema 会被调整为 Gemini 的 `Schema` 方言。** `$schema`、`$id`、`$comment`、`propertyNames`、
+**工具 schema 会被调整为 Gemini 的 `Schema` 方言** —— 在本提供方以及共用同一适配器的 `gemini` 提供方上都是如此。`$schema`、`$id`、`$comment`、`propertyNames`、
 `patternProperties`、`exclusiveMinimum`、`exclusiveMaximum` 和 `const` 会被丢弃,其余关键字按原样转发。`type`
 列表保留其第一个非 `null` 项,列表中若有 `null` 则设置 `nullable: true`,只含 `null` 的列表则变成可为空的
 `string`。每个数组都以单一的 `items` schema 发送:元组 —— `prefixItems`,或 draft-07 的数组值 `items` —— 会
