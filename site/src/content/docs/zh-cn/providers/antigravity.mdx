@@ -161,6 +161,16 @@ Antigravity 也提供 Claude 模型,但 shunt 尚未实现它们所需的请求�
 `requestType: "agent"`、每个请求各自的 `requestId`,以及从对话中最早出现的用户文本推导出的 `sessionId`,好让后续
 轮次落到同一个会话。`gemini` 提供方的 Code Assist 请求不会发送其中任何一项。
 
+**工具 schema 会被调整为 Gemini 的 `Schema` 方言。** `$schema`、`$id`、`$comment`、`propertyNames`、
+`patternProperties`、`exclusiveMinimum`、`exclusiveMaximum` 和 `const` 会被丢弃,其余关键字按原样转发。`type`
+列表保留其第一个非 `null` 项,列表中若有 `null` 则设置 `nullable: true`,只含 `null` 的列表则变成可为空的
+`string`。每个数组都以单一的 `items` schema 发送:元组 —— `prefixItems`,或 draft-07 的数组值 `items` —— 会
+折叠成一个,其中相同的位置保留其 schema,仅在非数组类型上一致的位置保留该类型,否则以第一个位置的 schema
+为准。类型位于 `anyOf`/`oneOf`/`allOf` 分支中的元素也以同样方式折叠。对元素未作任何声明的数组,或元素
+schema 未声明类型的数组,除非元素通过 `enum` 或 `properties` 暗示了类型,否则会以 `items: {"type": "string"}`
+发送。这些回退只是收窄元素类型而不是拒绝请求,因此若某个工具的元组以 `string` 类型到达,那是这一调整在起作用,
+而不是路由错误。
+
 在把生产流量路由过来之前,有两项限制值得知道:
 
 - **图像必须是内联的。** base64 的 `image` 块会变成 Gemini 的 `inlineData`。而 **URL 图像

@@ -456,6 +456,57 @@ fn array_items_are_derived_only_when_something_is_missing() {
         ),
         json!({ "type": "array", "items": { "type": "string" } })
     );
+    // 2020-12 spells "positions, then this" as `prefixItems` beside an
+    // untyped `items`. The trailing schema is one more position: `{}` adds
+    // nothing, an enum adds the type it implies, a union adds its arms.
+    assert_eq!(
+        sanitized(json!({ "type": "array", "prefixItems": [{ "type": "number" }], "items": {} })),
+        json!({ "type": "array", "items": { "type": "number" } })
+    );
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "prefixItems": [{ "type": "string" }],
+            "items": { "enum": [1, 2] }
+        })),
+        json!({ "type": "array", "items": { "type": "string" } })
+    );
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "prefixItems": [{ "type": "number" }],
+            "items": { "anyOf": [{ "type": "number" }] }
+        })),
+        json!({ "type": "array", "items": { "type": "number" } })
+    );
+    // A trailing schema that implies `object` through `properties` joins
+    // object positions on their shared type instead of being dropped.
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "prefixItems": [{ "type": "object", "properties": { "a": { "type": "string" } } }],
+            "items": { "properties": { "b": { "type": "string" } } }
+        })),
+        json!({ "type": "array", "items": { "type": "object" } })
+    );
+    // Composition arms that name no type hand back to the position, so a
+    // sibling `enum` still decides the type.
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "items": { "allOf": [{ "minimum": 0 }], "enum": [1, 2] }
+        })),
+        json!({ "type": "array", "items": { "type": "number" } })
+    );
+    // An element whose type lives in `allOf` arms folds like the unions do
+    // rather than gaining a contradicting fallback beside the composition.
+    assert_eq!(
+        sanitized(json!({
+            "type": "array",
+            "items": { "allOf": [{ "type": "integer" }, { "minimum": 0 }] }
+        })),
+        json!({ "type": "array", "items": { "type": "integer" } })
+    );
     // A tuple declared with `prefixItems` alone is an array in all but name:
     // it gains the type and the derived `items` instead of losing the tuple.
     assert_eq!(

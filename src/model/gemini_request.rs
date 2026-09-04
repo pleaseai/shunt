@@ -404,8 +404,9 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
 /// its own, so the folded schema has to carry a type: an `anyOf` node with no
 /// `type` is the same missing-field failure one level down, and it is the shape
 /// Google's own bridges collapse rather than forward. A position contributes
-/// the type it declares — directly, through `anyOf`/`oneOf` arms, or through an
-/// `enum` of uniformly typed values; a position that declares nothing (the JSON
+/// the type it declares — directly, through `anyOf`/`oneOf`/`allOf` arms, or
+/// through what an `enum` of uniformly typed values or a `properties` map
+/// implies; a position that declares nothing (the JSON
 /// Schema "anything" slot) contributes nothing. The contributions collapse to
 /// the single schema when they agree, to their shared `type` when they agree on
 /// that much, and otherwise to the first position's schema. When no position
@@ -413,11 +414,12 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
 /// the element is declared a string, matching CLIProxyAPI's fallback (see
 /// `.please/docs/research/md/003-json-schema-sanitization-for-gemini-functiondeclar.md`).
 /// An `items` schema that is present but declares no type is the same
-/// missing field one level down. One whose type lives in `anyOf`/`oneOf`
-/// arms is folded like a tuple of one position; `{}` — the JSON Schema
-/// "anything" element — and its kin are given the type they imply (through
-/// `enum` or `properties`) and otherwise `string`, as opencode's bridge does,
-/// with the rest of the schema kept. Those last resorts trade precision for a
+/// missing field one level down. One whose type lives in composition arms,
+/// or that sits beside `prefixItems`, is folded as one more position; `{}` —
+/// the JSON Schema "anything" element — and its kin are otherwise given the
+/// type they imply (through `enum` or `properties`) and failing that
+/// `string`, as opencode's bridge does, with the rest of the schema kept.
+/// Those last resorts trade precision for a
 /// request that reaches the model at all: the cost is a narrowed element
 /// type, not a rejected request.
 ///
@@ -446,14 +448,14 @@ fn give_array_schema_items(map: &mut Map<String, Value>) {
     let legacy_tuple = match map.get_mut("items") {
         Some(Value::Object(items)) if items.contains_key("type") => return,
         // A union element declares its type through its arms, which is the
-        // shape a tuple position already folds through: treat it as a tuple
-        // of one, so the node Gemini sees carries a type.
-        Some(Value::Object(items))
-            if items.contains_key("anyOf") || items.contains_key("oneOf") =>
-        {
-            map.remove("items")
-                .map(|element| Value::Array(vec![element]))
-        }
+        // shape a tuple position already folds through, and an untyped
+        // `items` beside `prefixItems` is how 2020-12 spells "and this after
+        // the positions". Either way it is one more position: folded with the
+        // rest, so the node Gemini sees carries a type and `{}` — "anything"
+        // — contributes nothing rather than pulling the element to string.
+        Some(Value::Object(items)) if has_composition(items) || prefix_items.is_some() => map
+            .remove("items")
+            .map(|element| Value::Array(vec![element])),
         Some(Value::Object(items)) => {
             give_element_schema_a_type(items);
             return;
@@ -466,9 +468,11 @@ fn give_array_schema_items(map: &mut Map<String, Value>) {
         None => None,
     };
     let mut branches: Vec<Value> = Vec::new();
-    if let Some(Value::Array(positions)) = prefix_items.or(legacy_tuple) {
-        for position in positions {
-            collect_typed_branches(position, &mut branches);
+    for source in [prefix_items, legacy_tuple].into_iter().flatten() {
+        if let Value::Array(positions) = source {
+            for position in positions {
+                collect_typed_branches(position, &mut branches);
+            }
         }
     }
     let items = match branches.len() {
@@ -479,21 +483,38 @@ fn give_array_schema_items(map: &mut Map<String, Value>) {
     map.insert("items".to_string(), items);
 }
 
+/// The keywords whose arms a schema may declare its type through instead of
+/// directly — the shape the tuple-position fold reads a type out of. The
+/// gate in `give_array_schema_items` and the removal in
+/// `collect_typed_branches` both read this list, so they cannot drift apart.
+const COMPOSITION_KEYWORDS: [&str; 3] = ["anyOf", "oneOf", "allOf"];
+
+fn has_composition(map: &Map<String, Value>) -> bool {
+    COMPOSITION_KEYWORDS
+        .iter()
+        .any(|key| map.contains_key(*key))
+}
+
+/// The type a schema implies without declaring one: the one an `enum` of
+/// uniformly typed values or a `properties` map is only meaningful for.
+fn implied_type(map: &Map<String, Value>) -> Option<&'static str> {
+    enum_value_type(map.get("enum"))
+        .or_else(|| matches!(map.get("properties"), Some(Value::Object(_))).then_some("object"))
+}
+
 /// Give an element schema that declares no type — directly or through
-/// `anyOf`/`oneOf` arms, which the caller folds instead — the one Gemini
-/// requires: the type an `enum` of uniformly typed values or a `properties`
-/// map implies, and `string` when nothing does.
+/// composition arms, which the caller folds instead — the one Gemini
+/// requires: the type it implies, and `string` when it implies none.
 fn give_element_schema_a_type(items: &mut Map<String, Value>) {
-    let kind = match enum_value_type(items.get("enum")) {
-        Some(kind) => kind,
-        None if matches!(items.get("properties"), Some(Value::Object(_))) => "object",
-        None => "string",
-    };
+    let kind = implied_type(items).unwrap_or("string");
     items.insert("type".to_string(), json!(kind));
 }
 
 /// Add the schemas one tuple position admits, skipping the ones that would
-/// leave a branch without the `type` Gemini requires.
+/// leave a branch without the `type` Gemini requires. A position speaks
+/// through its own `type`, through the arms of a composition, or through
+/// what its `enum` or `properties` imply, in that order — arms that name no
+/// type hand back to the position itself rather than silencing it.
 fn collect_typed_branches(mut position: Value, branches: &mut Vec<Value>) {
     let Some(map) = position.as_object_mut() else {
         return;
@@ -503,15 +524,20 @@ fn collect_typed_branches(mut position: Value, branches: &mut Vec<Value>) {
         return;
     }
     // The position is owned and never emitted whole from here on, so its arms
-    // are moved out rather than cloned.
-    let arms = map.remove("anyOf").or_else(|| map.remove("oneOf"));
+    // are moved out rather than cloned. `allOf` is an intersection, not a
+    // union, but its arms agree on the type when they name one, so the same
+    // read serves; Gemini's `Schema` has no `allOf` to forward it as.
+    let arms = COMPOSITION_KEYWORDS.iter().find_map(|key| map.remove(*key));
     if let Some(Value::Array(arms)) = arms {
+        let before = branches.len();
         for arm in arms {
             collect_typed_branches(arm, branches);
         }
-        return;
+        if branches.len() > before {
+            return;
+        }
     }
-    if let Some(kind) = enum_value_type(map.get("enum")) {
+    if let Some(kind) = implied_type(map) {
         push_distinct(branches, json!({ "type": kind }));
     }
 }

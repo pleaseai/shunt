@@ -178,6 +178,17 @@ Antigravity は Claude モデルも提供していますが、shunt はそれら
 同じセッションに届くよう会話中で最初に現れるユーザーテキストから導出した `sessionId` です。`gemini` プロバイダーの
 Code Assist リクエストは、これらをいずれも送りません。
 
+**ツールスキーマは Gemini の `Schema` 方言に合わせて調整されます。** `$schema`、`$id`、`$comment`、
+`propertyNames`、`patternProperties`、`exclusiveMinimum`、`exclusiveMaximum`、`const` は削除され、それ以外の
+キーワードは書かれたとおりに転送されます。`type` のリストは最初の非 `null` 項目を保ち、リストに `null` があれば
+`nullable: true` が設定され、`null` だけのリストは nullable な `string` になります。すべての配列は単一の `items`
+スキーマで送られます: タプル — `prefixItems`、または draft-07 の配列値 `items` — は 1 つに畳み込まれ、同一の
+位置はそのスキーマを保ち、配列以外の型だけが一致する位置はその型を保ち、それ以外は先頭の位置のスキーマが
+残ります。型が `anyOf`/`oneOf`/`allOf` の分岐にある要素も同じ方法で畳み込まれます。要素について何も述べない
+配列や、要素スキーマが型を宣言しない配列は、要素が `enum` や `properties` で型を暗示しない限り
+`items: {"type": "string"}` として送られます。これらのフォールバックはリクエストを拒否する代わりに要素の型を
+狭めるので、タプルが `string` 型で届くツールはルーティングの誤りではなく、この調整が働いた結果です。
+
 本番トラフィックをルーティングする前に知っておく価値のある制限が 2 つあります。
 
 - **画像はインラインである必要があります。** base64 の `image` ブロックは Gemini の `inlineData` になります。
