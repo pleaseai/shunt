@@ -389,6 +389,7 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
             // array has its own `items` by now, and two positions that differ
             // only in a key just stripped are seen as the duplicates they are.
             flatten_type_list(map);
+            drop_tuple_keywords_from_non_array(map);
             give_array_schema_items(map);
         }
         Value::Array(array) => {
@@ -643,6 +644,24 @@ fn flatten_type_list(map: &mut Map<String, Value>) {
             map.insert("nullable".to_string(), json!(true));
         }
         None => {}
+    }
+}
+
+/// `prefixItems`, draft-07's array-valued `items`, and 2020-12's boolean
+/// `items` that closes a tuple describe array positions and nothing else, and
+/// none of them is a shape Gemini's `Schema` can hold. On a schema whose type
+/// — once `flatten_type_list` has settled a union such as `["string",
+/// "array"]` on its first non-null member — is anything but `array`, they
+/// would ride along and be rejected, so they go with the array member they
+/// belonged to. An object-valued `items` is left as written: it is a `Schema`
+/// field, so it is carried rather than refused.
+fn drop_tuple_keywords_from_non_array(map: &mut Map<String, Value>) {
+    if !matches!(map.get("type"), Some(Value::String(kind)) if kind != "array") {
+        return;
+    }
+    map.remove("prefixItems");
+    if !matches!(map.get("items"), None | Some(Value::Object(_))) {
+        map.remove("items");
     }
 }
 

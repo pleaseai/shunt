@@ -247,6 +247,27 @@ fn a_type_list_becomes_a_scalar_type_and_nullable() {
         sanitized(json!({ "type": ["null"] })),
         json!({ "type": "string", "nullable": true })
     );
+    // A union that settles on a non-array type leaves the tuple keywords —
+    // `prefixItems`, or draft-07's array-valued `items` — with nothing to
+    // describe, and Gemini's `Schema` has no field for either: they go with
+    // the array member rather than riding along to be rejected.
+    assert_eq!(
+        sanitized(json!({ "type": ["string", "array"], "prefixItems": [{ "type": "number" }] })),
+        json!({ "type": "string" })
+    );
+    assert_eq!(
+        sanitized(json!({
+            "type": ["string", "array", "null"],
+            "items": [{ "type": "number" }],
+            "minLength": 1
+        })),
+        json!({ "type": "string", "nullable": true, "minLength": 1 })
+    );
+    // 2020-12 closes a tuple with a boolean `items`; that goes the same way.
+    assert_eq!(
+        sanitized(json!({ "type": ["string", "array"], "items": false })),
+        json!({ "type": "string" })
+    );
 }
 
 #[test]
@@ -560,6 +581,14 @@ fn array_items_are_derived_only_when_something_is_missing() {
     assert_eq!(
         sanitized(json!({ "type": "object", "properties": { "k": { "type": "string" } } })),
         json!({ "type": "object", "properties": { "k": { "type": "string" } } })
+    );
+    // One that nevertheless carries tuple keywords loses them rather than
+    // gaining an `items`: they describe positions of an array this is not.
+    assert_eq!(
+        sanitized(
+            json!({ "type": "string", "prefixItems": [{ "type": "number" }], "items": [{}] })
+        ),
+        json!({ "type": "string" })
     );
 }
 

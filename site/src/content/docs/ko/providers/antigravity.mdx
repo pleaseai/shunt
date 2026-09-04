@@ -177,7 +177,9 @@ Antigravity는 Claude 모델도 제공하지만, shunt는 아직 그 모델들�
 프로바이더 모두에서요. `$schema`, `$id`, `$comment`,
 `propertyNames`, `patternProperties`, `exclusiveMinimum`, `exclusiveMaximum`, `const`는 제거되고, 그 외의
 키워드는 작성된 그대로 전달됩니다. `type` 목록은 첫 번째 non-`null` 항목을 유지하며, 목록에 `null`이 있으면
-`nullable: true`가 설정되고, `null`만 있는 목록은 nullable `string`이 됩니다. 모든 배열은 단일 `items`
+`nullable: true`가 설정되고, `null`만 있는 목록은 nullable `string`이 됩니다. 결과 `type`이 `array`가 아닌 모든
+스키마 — 다른 멤버로 정해진 유니언이든, 평범한 스칼라든 — 는 `prefixItems`와 스키마 객체가 아닌 `items`를 버리고, 객체 값
+`items`는 그대로 유지합니다. 모든 배열은 단일 `items`
 스키마로 전송됩니다: 튜플 — `prefixItems`, 또는 draft-07의 배열 값 `items` — 은 하나로 접히는데, 동일한
 위치들은 그 스키마를 유지하고, 배열이 아닌 타입만 일치하는 위치들은 그 타입을 유지하며, 그 외에는 첫
 위치의 스키마가 남습니다. `prefixItems` 옆에 타입이 선언된 `items` 스키마가 이미 있으면 그 스키마가 그대로
