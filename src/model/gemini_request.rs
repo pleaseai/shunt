@@ -415,11 +415,12 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
 /// Those last resorts trade precision for a request that reaches the model at
 /// all: the cost is a narrowed element type, not a rejected request.
 ///
-/// A tuple that declares `prefixItems` and no `type` at all is an array in
-/// everything but name — JSON Schema applies `prefixItems` only to array
-/// instances, and a tool author who wrote one meant a tuple — so it is given
-/// `type: "array"` before the same derivation runs, rather than losing the
-/// tuple and reaching the backend as a schema that says nothing.
+/// A tuple that declares `prefixItems` or an array-valued `items` and no
+/// `type` at all is an array in everything but name — JSON Schema applies both
+/// keywords only to array instances, and a tool author who wrote one meant a
+/// tuple — so it is given `type: "array"` before the same derivation runs,
+/// rather than losing the tuple and reaching the backend as a schema that
+/// says nothing, or as one whose array-valued `items` the backend rejects.
 fn give_array_schema_items(map: &mut Map<String, Value>) {
     // Established before anything is removed: every other object in a schema
     // tree — a `properties` container above all — must leave here untouched.
@@ -458,16 +459,19 @@ fn give_array_schema_items(map: &mut Map<String, Value>) {
 
 /// Add the schemas one tuple position admits, skipping the ones that would
 /// leave a branch without the `type` Gemini requires.
-fn collect_typed_branches(position: Value, branches: &mut Vec<Value>) {
-    let Some(map) = position.as_object() else {
+fn collect_typed_branches(mut position: Value, branches: &mut Vec<Value>) {
+    let Some(map) = position.as_object_mut() else {
         return;
     };
     if map.contains_key("type") {
         push_distinct(branches, position);
         return;
     }
-    if let Some(Value::Array(arms)) = map.get("anyOf").or_else(|| map.get("oneOf")) {
-        for arm in arms.clone() {
+    // The position is owned and never emitted whole from here on, so its arms
+    // are moved out rather than cloned.
+    let arms = map.remove("anyOf").or_else(|| map.remove("oneOf"));
+    if let Some(Value::Array(arms)) = arms {
+        for arm in arms {
             collect_typed_branches(arm, branches);
         }
         return;
@@ -568,12 +572,16 @@ fn is_array_schema(map: &Map<String, Value>) -> bool {
         Some(Value::String(kind)) => kind == "array",
         // A type list has been flattened to a scalar by the time this runs.
         Some(_) => false,
-        // `prefixItems` constrains arrays and nothing else, so a tuple that
-        // omits `type` — which JSON Schema allows — is still an array schema.
-        // A *list* of positions, specifically: a schema keyed under a property
-        // named `prefixItems` is an object, and must not turn its `properties`
-        // container into an array.
-        None => matches!(map.get("prefixItems"), Some(Value::Array(_))),
+        // `prefixItems` and an array-valued `items` (the draft-07 tuple) each
+        // constrain arrays and nothing else, so a tuple that omits `type` —
+        // which JSON Schema allows — is still an array schema. A *list* of
+        // positions, specifically: a schema keyed under a property named
+        // `prefixItems` or `items` is an object, and must not turn its
+        // `properties` container into an array.
+        None => {
+            matches!(map.get("prefixItems"), Some(Value::Array(_)))
+                || matches!(map.get("items"), Some(Value::Array(_)))
+        }
     }
 }
 

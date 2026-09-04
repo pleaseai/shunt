@@ -268,6 +268,13 @@ fn a_draft_07_tuple_is_folded_like_a_2020_12_one() {
         ),
         json!({ "type": "array", "items": { "type": "boolean" } })
     );
+    // A draft-07 tuple that omits `type` is still an array schema, exactly as
+    // one declared with `prefixItems` alone is: it gains the type and the
+    // folded `items` instead of reaching Gemini with an array-valued `items`.
+    assert_eq!(
+        sanitized(json!({ "items": [{ "type": "string" }, { "type": "integer" }] })),
+        json!({ "type": "array", "items": { "type": "string" } })
+    );
 }
 
 #[test]
