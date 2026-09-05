@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.40.2](https://github.com/pleaseai/shunt/compare/v0.40.1...v0.40.2) (2026-09-05)
+
+
+### Bug Fixes
+
+* **antigravity:** reject caller-supplied tools instead of silently ignoring them ([#405](https://github.com/pleaseai/shunt/issues/405)) ([140098f](https://github.com/pleaseai/shunt/commit/140098fc78a9e195862269090bcde1bdbbaf5bf1))
+* **codex:** bump client identity to 0.153.3 for gpt-6-astra ([#459](https://github.com/pleaseai/shunt/issues/459)) ([72134ff](https://github.com/pleaseai/shunt/commit/72134fffb918dfbdcd1d8df93f10f0b5e5165cf3))
+* **codex:** classify in-stream rate_limit_exceeded as 429 and forward misalignment steer ([#463](https://github.com/pleaseai/shunt/issues/463)) ([d8105de](https://github.com/pleaseai/shunt/commit/d8105de9bfa3ad1480bc2bb6c1b19dc1ffb42353))
+* **gemini:** derive the items schema Gemini requires from a tuple-style array ([#454](https://github.com/pleaseai/shunt/issues/454)) ([3421716](https://github.com/pleaseai/shunt/commit/34217167ecb537395106990d9128a24853195473))
+
 ## [0.40.1](https://github.com/pleaseai/shunt/compare/v0.40.0...v0.40.1) (2026-09-03)
 
 
