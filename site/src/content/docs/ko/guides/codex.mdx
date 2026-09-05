@@ -119,7 +119,7 @@ ChatGPT 계정 백엔드는 `gpt-*-codex` 슬러그(예: `gpt-5.2-codex`)를 `40
 
 <Aside type="note" title="`Model not found <slug>`는 자격이 아니라 클라이언트 버전 게이팅입니다">
 
-일부 슬러그는 `minimal_client_version`을 요구합니다(예: `gpt-5.6-luna`는 ≥ 0.144.0 필요). 요청의 클라이언트 신원이 없거나 너무 오래되면 백엔드는 `Model not found <slug>`를 반환합니다. shunt는 고정된 Codex CLI 신원 헤더(`originator: codex_cli_rs`, `user-agent`, `version`)를 **openai/codex rust-v0.148.0**에 고정하여 보내므로 이를 피합니다. [openai/codex#31967](https://github.com/openai/codex/issues/31967)을 참고하세요.
+일부 슬러그는 `minimal_client_version`을 요구합니다(예: `gpt-6-astra`는 ≥ 0.153.0 필요). 요청의 클라이언트 신원이 없거나 너무 오래되면 백엔드는 `Model not found <slug>`를 반환합니다. shunt는 고정된 Codex CLI 신원 헤더(`originator: codex_cli_rs`, `user-agent`, `version`)를 **openai/codex rust-v0.153.3**에 고정하여 보내므로 이를 피합니다. [openai/codex#31967](https://github.com/openai/codex/issues/31967)을 참고하세요.
 
 </Aside>
 
@@ -222,7 +222,7 @@ provider = "codex"
 
 ## 5. 추론 노력
 
-Claude Code의 일반 컨트롤(`/effort`, `/model` 슬라이더, `--effort`)로 노력을 설정하세요. shunt는 이를 Responses `reasoning.effort`로 매핑하며, `max`를 지원하지 않는 슬러그에 대해서는 `max → xhigh`로 접습니다(오직 **gpt-5.6** 계열만 지원).
+Claude Code의 일반 컨트롤(`/effort`, `/model` 슬라이더, `--effort`)로 노력을 설정하세요. shunt는 이를 Responses `reasoning.effort`로 매핑하며, `max`를 지원하지 않는 슬러그에 대해서는 `max → xhigh`로 접습니다(**gpt-5.6** 및 **gpt-6** 계열이 지원).
 
 
 

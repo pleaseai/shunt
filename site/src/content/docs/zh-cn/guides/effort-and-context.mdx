@@ -10,7 +10,7 @@ Claude Code 的力度级别(`/effort`、`/model` 滑块、`--effort` 或 `CLAUDE
 | Claude Code 力度 | → `reasoning.effort` |
 | :-- | :-- |
 | `low` / `medium` / `high` / `xhigh` | 透传 |
-| `max` | 在接受它的模型上透传(**gpt-5.6** 系列),否则折叠为 `xhigh` |
+| `max` | 在接受它的模型上透传(**gpt-5.6** 和 **gpt-6** 系列),否则折叠为 `xhigh` |
 
 一个 Codex slug 接受哪些推理级别,按模型列在 openai/codex 的 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) 中(`supported_reasoning_levels`)。
 

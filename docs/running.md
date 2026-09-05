@@ -104,7 +104,7 @@ auth = "chatgpt_oauth"         # reuses ~/.codex/auth.json
 model = "gpt-5.6-sol"
 provider = "codex"
 # upstream_model = "gpt-5.6-sol"
-# effort = "high"          # gpt-5.6 slugs also accept "max"
+# effort = "high"          # gpt-5.6 and gpt-6 slugs also accept "max"
 
 # Then prefix match.
 [[route_prefixes]]
@@ -801,7 +801,7 @@ an accurate window, one model at a time. (Subagents are a separate path — see 
 > slug via `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
 
 > **Client-version gating:** some slugs additionally carry a `minimal_client_version` (e.g.
-> `gpt-5.6-luna` requires ≥ 0.144.0) and the backend answers **`Model not found <slug>`** — not
+> `gpt-6-astra` requires ≥ 0.153.0) and the backend answers **`Model not found <slug>`** — not
 > an entitlement error — when the request's client identity is missing or too old. The gate keys
 > on the `originator` + `version` headers ([openai/codex#31967](https://github.com/openai/codex/issues/31967)).
 > shunt therefore sends the Codex CLI identity headers (`originator: codex_cli_rs`,
@@ -920,13 +920,14 @@ it to the Responses `reasoning.effort` for mapped models:
 | Claude Code effort | → `reasoning.effort` |
 | :-- | :-- |
 | `low` / `medium` / `high` / `xhigh` | passthrough |
-| `max` | passthrough on models that accept it (the **gpt-5.6** family), else folded to `xhigh` |
+| `max` | passthrough on models that accept it (the **gpt-5.6** and **gpt-6** families), else folded to `xhigh` |
 
 Which reasoning levels a Codex slug accepts is listed per-model in openai/codex's
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)
-(`supported_reasoning_levels`): `gpt-5.6-sol`/`-terra`/`-luna` accept up to `max` (sol/terra even
-`ultra`, which Claude Code never sends), while `gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds
-`max → xhigh` only for slugs that don't support it.
+(`supported_reasoning_levels`): `gpt-5.6-sol`/`-terra`/`-luna` and the gpt-6 slugs (e.g.
+`gpt-6-astra`) accept up to `max` (sol/terra even `ultra`, which Claude Code never sends), while
+`gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds `max → xhigh` only for slugs that don't
+support it.
 
 **A custom gateway id like `gpt-5.6-sol` carries effort on its own.** Verified on the wire against Claude Code v2.1.224: the request already
 includes `output_config.effort` with `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` unset, and setting it to `1`

@@ -275,8 +275,8 @@ to**, and **rejects the `gpt-*-codex` slugs** (e.g. `gpt-5.2-codex`) with a `400
 - To see what your account can use, look at what the `codex` CLI itself sends, or the live
   `/models` fetch it performs at startup.
 
-> **Client-version gating.** Some slugs carry a `minimal_client_version` (e.g. `gpt-5.6-luna`
-> needs ≥ 0.144.0). When the request's client identity is missing or too old the backend answers
+> **Client-version gating.** Some slugs carry a `minimal_client_version` (e.g. `gpt-6-astra`
+> needs ≥ 0.153.0). When the request's client identity is missing or too old the backend answers
 > **`Model not found <slug>`** — *not* an entitlement error. shunt avoids this by sending the
 > pinned Codex CLI headers (§4.4). See [openai/codex#31967](https://github.com/openai/codex/issues/31967).
 
@@ -480,11 +480,11 @@ Claude Code's effort level (`/effort`, the `/model` slider, `--effort`, or
 | Claude Code effort | → `reasoning.effort` |
 | :-- | :-- |
 | `low` / `medium` / `high` / `xhigh` | passthrough |
-| `max` | passthrough on slugs that accept it (the **gpt-5.6** family), else folded to `xhigh` |
+| `max` | passthrough on slugs that accept it (the **gpt-5.6** and **gpt-6** families), else folded to `xhigh` |
 
 `max` folds to `xhigh` unless the upstream slug contains `gpt-5.6` or `gpt-6` (`supports_max_effort`,
 `src/model/responses_request.rs`), because `models.json` `supported_reasoning_levels` caps
-`gpt-5.5`/`5.4`/`5.2` at `xhigh` while the gpt-5.6 family accepts `max`.
+`gpt-5.5`/`5.4`/`5.2` at `xhigh` while the gpt-5.6 and gpt-6 families accept `max`.
 
 > **Custom gateway ids carry effort on their own.** Verified on the wire against Claude Code v2.1.224: an id like `gpt-5.6-sol` already sends
 > `output_config.effort` with `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` unset, and setting it to `1`

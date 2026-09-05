@@ -10,7 +10,7 @@ Claude Code의 노력 레벨(`/effort`, `/model` 슬라이더, `--effort`, 또�
 | Claude Code 노력 | → `reasoning.effort` |
 | :-- | :-- |
 | `low` / `medium` / `high` / `xhigh` | 패스스루 |
-| `max` | 받아들이는 모델(**gpt-5.6** 계열)에서는 패스스루, 그 외에는 `xhigh`로 접힘 |
+| `max` | 받아들이는 모델(**gpt-5.6** 및 **gpt-6** 계열)에서는 패스스루, 그 외에는 `xhigh`로 접힘 |
 
 Codex 슬러그가 어떤 추론 레벨을 받아들이는지는 openai/codex의 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)에 모델별로(`supported_reasoning_levels`) 나열되어 있습니다.
 
