@@ -1,0 +1,39 @@
+site/src/content/docs/ko/guides/effort-and-context.mdx
+  s_a725e6e5f664a6::t_3c1b0579b4745c 13
+docs/codex-configuration.md
+  s_a725e6e5f664a6::t_6c8444f8067461 278
+  s_a725e6e5f664a6::t_8dfcbfe453d5d1 279
+  s_a725e6e5f664a6::t_3c1b0579b4745c 483,487
+site/src/content/docs/guides/codex.mdx
+  s_a725e6e5f664a6::t_3c1b0579b4745c 286
+site/src/content/docs/ja/guides/effort-and-context.mdx
+  s_a725e6e5f664a6::t_3c1b0579b4745c 13
+site/src/content/docs/ko/guides/codex.mdx
+  s_a725e6e5f664a6::t_3c1b0579b4745c 122,225
+site/src/content/docs/zh-cn/guides/effort-and-context.mdx
+  s_a725e6e5f664a6::t_3c1b0579b4745c 13
+site/src/content/docs/ja/guides/codex.mdx
+  s_a725e6e5f664a6::t_3c1b0579b4745c 126,238
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_a725e6e5f664a6::t_3c1b0579b4745c 147,150,281
+docs/running.md
+  s_a725e6e5f664a6::t_1085585a27334e 927-930
+  s_a725e6e5f664a6::t_8dfcbfe453d5d1 804
+  s_a725e6e5f664a6::t_3c1b0579b4745c 107,923
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "735aa6725bea4b9244e0ac91ca1524663229eeec",
+  "prompts": {},
+  "sessions": {
+    "s_a725e6e5f664a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2b9374b9-7135-4a54-9f21-e0e7ac1f6738",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
