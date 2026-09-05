@@ -1511,6 +1511,41 @@ fn records_backend_error_event_for_non_streaming_paths() {
 }
 
 #[test]
+fn classifies_rate_limit_from_every_error_payload_shape() {
+    // `backend_error_status` reads the code from all three places a backend puts
+    // it: the plain `error` event (`/error/code`), the streaming `response.failed`
+    // event (`/response/error/code`), and a bare top-level `code`. Each must
+    // classify as 429 `rate_limit_error`, not fall back to the 502 default.
+    let shapes = [
+        (
+            "error",
+            json!({"type": "error", "error": {"code": "rate_limit_exceeded", "message": "slow down"}}),
+        ),
+        (
+            "response.failed",
+            json!({"type": "response.failed", "response": {"error": {"code": "rate_limit_exceeded", "message": "slow down"}}}),
+        ),
+        (
+            "error",
+            json!({"code": "rate_limit_exceeded", "message": "slow down"}),
+        ),
+    ];
+    for (event, data) in shapes {
+        let fixture = format!("event: {event}\ndata: {data}\n\n");
+        let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+        let emitted = parse_sse_events(&fixture)
+            .into_iter()
+            .flat_map(|event| machine.apply(event))
+            .collect::<String>();
+        let (status, backend_error) = machine.take_backend_error().expect("recorded");
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{data}");
+        assert_eq!(backend_error["error"]["type"], "rate_limit_error", "{data}");
+        assert_eq!(backend_error["error"]["message"], "slow down", "{data}");
+        assert!(emitted.contains("\"type\":\"rate_limit_error\""), "{data}");
+    }
+}
+
+#[test]
 fn backend_error_event_without_rate_limit_code_stays_gateway_error() {
     // Only `rate_limit_exceeded` is a throttle; every other in-stream failure
     // (content policy, server-side) keeps the 502 `api_error` gateway shape.
