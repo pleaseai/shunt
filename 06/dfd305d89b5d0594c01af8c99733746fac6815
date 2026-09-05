@@ -1,0 +1,23 @@
+site/src/content/docs/ko/guides/providers.mdx
+  s_188bd990f53bc9::t_a4a08f2395db2e 95-102
+site/src/content/docs/ja/guides/providers.mdx
+  s_188bd990f53bc9::t_a4a08f2395db2e 94-102
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_188bd990f53bc9::t_a4a08f2395db2e 89-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "06dfd305d89b5d0594c01af8c99733746fac6815",
+  "prompts": {},
+  "sessions": {
+    "s_188bd990f53bc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "10fc8320-7223-41c8-bafb-5822ba05c800",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
