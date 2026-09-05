@@ -115,7 +115,7 @@ Upstream Responses events to handle (names as emitted by the Codex backend / Res
 | `response.function_call_arguments.done` / `response.output_item.done` | full `arguments` | `content_block_stop {index}`; advance index. |
 | `response.reasoning_summary_text.delta` (optional) | `delta` | either a `thinking` block delta (if we surface thinking) or drop. MVP: drop. |
 | `response.completed` / `response.done` / `response.incomplete` | full `response` + `usage`, `stop_reason` | `message_delta {delta:{stop_reason, stop_sequence:null}, usage:{output_tokens,...}}` then `message_stop`. `stop_reason` = `tool_use` if any function_call emitted, else `end_turn`. `response.incomplete` (a clean, if truncated, terminal — mirrors the WebSocket transport's terminal set, `m7-codex-websocket.md` §4) is treated identically to `completed`/`done`, so a stream that ends right after it does **not** trigger the Robustness fallback below. |
-| `error` / `response.failed` | error object | translate to an Anthropic error (§8); terminate the stream. |
+| `error` / `response.failed` | error object | translate to an Anthropic error and terminate the stream. The envelope's type and status follow the error `code`, not an HTTP status (§8, "In-stream backend errors"). |
 
 Robustness: unknown event types are ignored. If the stream ends without a terminal
 event (`completed` / `done` / `incomplete`), fall back to closing any open block, emit
@@ -125,8 +125,9 @@ shape).
 Non-streaming client: run the same machine but collect blocks instead of emitting; return
 `transformCodexToAnthropic`-equivalent JSON: `{id,type:"message",role:"assistant",model:<original>,content,stop_reason,stop_sequence:null,usage}`.
 Exception: if the machine recorded a backend error (the `error` / `response.failed` row above),
-return the mapped Anthropic error envelope as a `502` gateway error instead of the collected
-message JSON (issue #113; see `m7-codex-websocket.md` §8).
+return the mapped Anthropic error envelope as a gateway error instead of the collected message
+JSON (issue #113; see `m7-codex-websocket.md` §8) — `429` for an in-stream
+`rate_limit_exceeded`, else `502`; either way terminal, never replayed on the next upstream.
 
 ## 7. Residual model-map concern
 
@@ -172,6 +173,24 @@ until a manual `/compact`. `map_error_value` detects them (error code
 `prompt is too long: {actual} tokens > {limit} maximum`, keeping the upstream token counts when
 the message carries two (order-agnostic: the larger is the actual count), or to the bare phrase
 when it carries none.
+
+**In-stream backend errors.** A backend-sent `error` / `response.failed` event (§6) arrives on
+a `200 OK` stream, so there is no upstream status to preserve. `backend_error_status` picks the
+row from the error `code` instead: `rate_limit_exceeded` — the Codex backend's throttle code,
+which openai/codex (rust-v0.153+) classifies as its own `RateLimitExceeded` error — maps to the
+`429`/`rate_limit_error` row so Claude Code's own rate-limit handling sees the right type and
+status. Every other code maps to `api_error`/`502`. Both are terminal (`failure: None`): the
+event follows a 2xx acceptance, and a post-acceptance failure never re-enters the ordered
+failover chain (`upstreams-failover.md` §3 — the turn is not idempotent). Pool-account cooldown
+is likewise driven by HTTP status only (`pool.rs` `classify_first`); an in-stream throttle does
+not cool the account down.
+
+**Exception — misalignment steer.** A `misalignment_policy_violation` may carry
+`error.misalignment.steer.message` (openai/codex rust-v0.153+): a public, customer-facing
+instruction on how the agent should proceed. Claude Code surfaces only the error message, so
+`map_error_value` appends the steer to it (`{message}\n\n{steer}`). The sibling
+`detailed_explanation` / `error_type` fields are not forwarded — upstream treats them as
+sensitive and never persists them.
 
 ## 9. Test targets (M1)
 

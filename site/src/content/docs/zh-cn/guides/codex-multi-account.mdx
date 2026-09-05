@@ -146,7 +146,7 @@ Codex 没有可配置的显式 `uuid` 字段。作为替代,shunt 对每个账�
 | 凭据解析失败 | 冷却 5 分钟并轮换。 |
 | 其他状态(例如 `400`) | 直接中继,不做故障转移;并把该账户标记为健康。 |
 
-分类发生在响应体开始流式传输之前,因此流中途的失败绝不会被重放。如果池在收到至少一个上游响应之后耗尽了尝试,shunt 会基于最后那个响应构造并中继一个**经过转换**的 Anthropic 风格错误信封 —— 状态码(例如 `429`)保留,但响应体被重新塑形,而不是逐字中继。这与 Anthropic 账户池正好相反,后者会逐字节中继最后一个上游响应。如果所有账户都在收到任何上游响应之前失败,普通的 Anthropic Messages 路由(`/v1/messages`)会返回一个网关自身的 `502 api_error`,内容为 `all upstreams failed (N attempted)`。单独的 `[server.codex_endpoint]` 入站路径不受影响,并保留 `all Codex OAuth accounts failed before receiving an upstream response`。
+分类发生在响应体开始流式传输之前,因此流中途的失败绝不会被重放。 这也包括在 `200 OK` 流上到达的、code 为 `rate_limit_exceeded` 的后端 `error` / `response.failed` 事件:非流式客户端会收到带 `rate_limit_error` 信封的 HTTP `429`,而流式客户端保持 `200`,并以 SSE `error` 事件的形式内联收到同一个信封。两种情况下该回合都不会被重放,账户也**不会**被冷却或轮换 —— 上表中的 429 行只在上游 HTTP 响应状态本身为 429 时适用。如果池在收到至少一个上游响应之后耗尽了尝试,shunt 会基于最后那个响应构造并中继一个**经过转换**的 Anthropic 风格错误信封 —— 状态码(例如 `429`)保留,但响应体被重新塑形,而不是逐字中继。这与 Anthropic 账户池正好相反,后者会逐字节中继最后一个上游响应。如果所有账户都在收到任何上游响应之前失败,普通的 Anthropic Messages 路由(`/v1/messages`)会返回一个网关自身的 `502 api_error`,内容为 `all upstreams failed (N attempted)`。单独的 `[server.codex_endpoint]` 入站路径不受影响,并保留 `all Codex OAuth accounts failed before receiving an upstream response`。
 
 ## 请求与响应的改动
 
