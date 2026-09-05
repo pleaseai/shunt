@@ -1,0 +1,40 @@
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_a725e6e5f664a6::t_f515ecacbeb972 136
+docs/running.md
+  s_a725e6e5f664a6::t_f515ecacbeb972 798
+  s_a725e6e5f664a6::t_f2b42d77b4a089 799,928-930
+  s_a725e6e5f664a6::t_45dbe046c25478 800-801
+site/src/content/docs/ja/guides/codex.mdx
+  s_a725e6e5f664a6::t_f515ecacbeb972 115
+site/src/content/docs/guides/codex.mdx
+  s_a725e6e5f664a6::t_f515ecacbeb972 139
+site/src/content/docs/guides/providers.mdx
+  s_a725e6e5f664a6::t_f515ecacbeb972 207
+docs/codex-configuration.md
+  s_a725e6e5f664a6::t_f2b42d77b4a089 272-274
+  s_a725e6e5f664a6::t_f515ecacbeb972 271
+site/src/content/docs/ja/guides/providers.mdx
+  s_a725e6e5f664a6::t_f515ecacbeb972 147
+site/src/content/docs/ko/guides/codex.mdx
+  s_a725e6e5f664a6::t_f515ecacbeb972 112
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_a725e6e5f664a6::t_f515ecacbeb972 134
+site/src/content/docs/ko/guides/providers.mdx
+  s_a725e6e5f664a6::t_f515ecacbeb972 145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4725be942e83944e9b4013b434acce230995d32e",
+  "prompts": {},
+  "sessions": {
+    "s_a725e6e5f664a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2b9374b9-7135-4a54-9f21-e0e7ac1f6738",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
