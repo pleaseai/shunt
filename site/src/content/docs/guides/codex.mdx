@@ -136,7 +136,7 @@ The ChatGPT-account backend **rejects** `gpt-*-codex` slugs (e.g. `gpt-5.2-codex
 it only accepts your account's **live-entitled** slugs. The authoritative catalog (and the
 reasoning levels each accepts) is openai/codex's
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-Current slugs: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (frontier) and
+Current slugs: `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (frontier) and
 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`. Older accounts may only be entitled to the
 earlier ones (a free account has resolved to `gpt-5.5`). shunt surfaces the backend's own error
 `detail`, so a wrong slug returns the real reason.
@@ -283,7 +283,7 @@ runs `gpt-5.6-luna` — the resolved id is exactly what shunt routes on, so no
 
 Set the effort with Claude Code's usual controls (`/effort`, the `/model` slider, `--effort`).
 shunt maps it to the Responses `reasoning.effort`, folding `max → xhigh` for slugs that don't
-support `max` (only the **gpt-5.6** family does).
+support `max` (only the **gpt-5.6** and **gpt-6** families do).
 
 
 

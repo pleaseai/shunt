@@ -131,7 +131,7 @@ ChatGPT 账户后端**拒绝** `gpt-*-codex` slug(例如 `gpt-5.2-codex`),返回
 它只接受你账户的**实时授权** slug。权威目录(以及每个 slug 接受的
 推理级别)是 openai/codex 的
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)。
-当前 slug:`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`(前沿)以及
+当前 slug:`gpt-6-astra`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`(前沿)以及
 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`。较老的账户可能只被授权使用
 较早的那些(一个免费账户会解析到 `gpt-5.5`)。shunt 会透出后端自身的错误
 `detail`,因此错误的 slug 会返回真实原因。
@@ -144,10 +144,10 @@ ChatGPT 账户后端**拒绝** `gpt-*-codex` slug(例如 `gpt-5.2-codex`),返回
 
 <Aside type="note" title="`Model not found <slug>` 是客户端版本门控,不是授权问题">
 
-一些 slug 带有 `minimal_client_version`(例如 `gpt-5.6-luna` 需要 ≥ 0.144.0)。当
+一些 slug 带有 `minimal_client_version`(例如 `gpt-6-astra` 需要 ≥ 0.153.0)。当
 请求的客户端身份缺失或过旧时,后端会应答 `Model not found <slug>`。
 shunt 通过发送固定的 Codex CLI 身份头(`originator: codex_cli_rs`、
-`user-agent`、`version`)来避免这一点,固定到 **openai/codex rust-v0.148.0**。见
+`user-agent`、`version`)来避免这一点,固定到 **openai/codex rust-v0.153.3**。见
 [openai/codex#31967](https://github.com/openai/codex/issues/31967)。
 
 </Aside>
@@ -278,7 +278,7 @@ provider = "codex"
 
 用 Claude Code 的常规控制项设置力度(`/effort`、`/model` 滑块、`--effort`)。
 shunt 将其映射到 Responses 的 `reasoning.effort`,对不支持 `max` 的 slug 将
-`max → xhigh` 折叠(只有 **gpt-5.6** 系列支持)。
+`max → xhigh` 折叠(只有 **gpt-5.6** 和 **gpt-6** 系列支持)。
 
 
 
