@@ -1,0 +1,25 @@
+site/src/content/docs/ja/guides/codex.mdx
+  s_a725e6e5f664a6::t_91d0b0b34eb7f3 238
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_a725e6e5f664a6::t_91d0b0b34eb7f3 281
+site/src/content/docs/ko/guides/codex.mdx
+  s_a725e6e5f664a6::t_91d0b0b34eb7f3 225
+site/src/content/docs/guides/codex.mdx
+  s_a725e6e5f664a6::t_91d0b0b34eb7f3 286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "05c9d4ab70f3f360c9eeab94ed743449b34c56e5",
+  "prompts": {},
+  "sessions": {
+    "s_a725e6e5f664a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2b9374b9-7135-4a54-9f21-e0e7ac1f6738",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
