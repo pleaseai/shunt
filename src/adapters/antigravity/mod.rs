@@ -921,7 +921,7 @@ fn find_agy_binary_uncached() -> Option<PathBuf> {
     None
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1036,6 +1036,7 @@ mod tests {
     }
 
     /// `kill(-0, ...)` is `kill(0, ...)`: every process in shunt's own group.
+    #[cfg(unix)]
     #[test]
     fn kill_group_refuses_process_group_zero() {
         // Reaching the syscall would SIGKILL this test process and its group,
@@ -1048,6 +1049,7 @@ mod tests {
     /// `stderr_text` truncates on the way out, so an end-to-end assertion on the
     /// response body passes whether or not the drain itself is bounded — it
     /// cannot distinguish the two. This reads the buffer directly.
+    #[cfg(unix)]
     #[tokio::test]
     async fn drain_stderr_bounds_newline_free_output() {
         // 75 bytes, repeated 1000 times, with no newline anywhere: the shape
