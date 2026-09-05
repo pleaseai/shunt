@@ -201,7 +201,7 @@ model = "cursor:default"                             # "default" is the wire id 
 provider = "cursor"
 ```
 
-The `cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` prefixes pick Cursor's agent mode (Agent / Plan / Ask); the suffix is the Cursor **wire** model id (Auto is `default`, not `auto`). The adapter streams assistant text and reasoning, bridges your client's tools as native Cursor MCP tool calls, and forwards inline images (issue #170). See [Providers → Cursor](https://shunt.dev/providers/cursor/) for details.
+The `cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` prefixes pick Cursor's agent mode (Agent / Plan / Ask); the suffix is the Cursor **wire** model id (Auto is `default`, not `auto`). The adapter streams assistant text and reasoning, bridges your client's tools as native Cursor MCP tool calls, and forwards inline images (issue #170). Composer chooses per turn whether to answer through a bridged tool or through one of Cursor's own built-in tools, and a built-in call carries no tool name to map onto a caller tool — so that turn fails with an explicit error rather than closing as if the model had finished. The choice is not deterministic; retrying usually lands on the bridged path. See [Providers → Cursor](https://shunt.dev/providers/cursor/) for details.
 
 **Any Anthropic-compatible backend** is one table away — no code changes:
 
