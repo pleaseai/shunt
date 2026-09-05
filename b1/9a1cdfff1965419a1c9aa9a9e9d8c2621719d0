@@ -1,0 +1,360 @@
+tests/codex_websocket_fallback.rs
+  s_11bcf4cff8e905::t_b4830909d18599 162-166,169
+src/adapters/anthropic/mod.rs
+  s_11bcf4cff8e905::t_b4830909d18599 13,212,214,221-232,236-237,315-334,433-442,484-491,500-514,519,557-570,588-597,612,614-633
+src/adapters/antigravity/mod.rs
+  s_11bcf4cff8e905::t_b4830909d18599 120,146,612-669,924,928-1037,1039,1052
+src/auth/antigravity/catalog.rs
+  s_11bcf4cff8e905::t_b4830909d18599 1-714
+src/admin/codex.rs
+  s_11bcf4cff8e905::t_b4830909d18599 246,330
+site/src/content/docs/guides/providers.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 26,46-51,68,71-77,81-91,111-121,186-195,224,266,268
+src/usage_poll.rs
+  s_11bcf4cff8e905::t_b4830909d18599 1-2,5-10,12-20,22-27,30,38-39,44-46,71,88-93,96-98,100-158,160-230,232,237-249,253,257-258,262,265-303,306-307,312-375,409-442,460-532,543-560,609,649,679-799,806,869,934,1000-1002,1006-1007,1009-1016,1018,1020-1025,1028-1045,1047-1085,1091-2646
+tests/antigravity_catalog.rs
+  s_11bcf4cff8e905::t_b4830909d18599 1-176
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-273
+tests/gateway_cli.rs
+  s_11bcf4cff8e905::t_b4830909d18599 36,38-43,234-239
+src/server.rs
+  s_11bcf4cff8e905::t_b4830909d18599 377-419
+src/auth/codex/mod.rs
+  s_11bcf4cff8e905::t_b4830909d18599 4
+site/src/content/docs/guides/codex.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 139,152,155,286
+src/auth/google/auth.rs
+  s_11bcf4cff8e905::t_b4830909d18599 414-418,460-464,468
+.please/docs/research/md/002-openaicodex-model-catalog-sources-presets-metadata.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-139
+CHANGELOG.md
+  s_11bcf4cff8e905::t_b4830909d18599 3-46
+site/src/content/docs/reference/cli.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 45
+site/src/content/docs/ja/providers/minimax.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-91
+site/src/content/docs/ja/providers/minimax-cn.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-65
+docs/m12-client-usage-endpoint.md
+  s_11bcf4cff8e905::t_b4830909d18599 89-99
+site/src/content/docs/ja/providers/kimi.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-202
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 64-71,74
+  s_11bcf4cff8e905::t_2c87c39282d340 75
+src/config/presets.rs
+  s_11bcf4cff8e905::t_b4830909d18599 76-89,129-131,136,175-192
+blueprints/upstream/antigravity.md
+  s_11bcf4cff8e905::t_b4830909d18599 23,35,49,59,62,97
+docs/codex-configuration.md
+  s_11bcf4cff8e905::t_b4830909d18599 183-184,190,271-274,278-279,483,485,487,820
+site/src/content/docs/ja/providers/zhipu.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-69
+src/adapters/responses/mod.rs
+  s_11bcf4cff8e905::t_b4830909d18599 10-13
+site/src/content/docs/providers/minimax-cn.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-66
+docs/init-command.md
+  s_11bcf4cff8e905::t_b4830909d18599 9
+site/src/content/docs/zh-cn/providers/kimi.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-202
+src/auth/mod.rs
+  s_11bcf4cff8e905::t_b4830909d18599 153-178,184-198,200-201,205-212,242,266
+src/blueprints.rs
+  s_11bcf4cff8e905::t_b4830909d18599 86-95,284-285
+site/src/content/docs/ko/providers/deepseek.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-93
+site/src/content/docs/zh-cn/providers/minimax-cn.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-63
+blueprints/upstream/zhipu.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-57
+site/src/content/docs/ko/providers/kimi.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-198
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_11bcf4cff8e905::t_b4830909d18599 191,207,210,212,214,220,273-275,311,316,333
+site/src/content/docs/ko/reference/configuration.md
+  s_11bcf4cff8e905::t_b4830909d18599 202,216,219,221,223,229,302-304,340,346,363
+site/src/content/docs/ja/providers/openrouter.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-80
+src/admin/script.rs
+  s_11bcf4cff8e905::t_b4830909d18599 4-5,29-55,113-116,171,183,196-200,202-203,205-207,221-222,246,284-299,305-328,337-345,348-355,361-383,385-386,388-391,397-405,462-490,494,499,504,508,510-520,523,525-531,534-543,545-547,559-572,574-578,582,586,591,595,597-607,610,612-618,621-630,632-634
+src/metrics.rs
+  s_11bcf4cff8e905::t_b4830909d18599 267-282
+src/adapters/responses/error.rs
+  s_11bcf4cff8e905::t_b4830909d18599 110-124,126,139-143
+site/src/content/docs/guides/effort-and-context.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 13
+src/model/mod.rs
+  s_11bcf4cff8e905::t_b4830909d18599 1
+src/admin/html.rs
+  s_11bcf4cff8e905::t_b4830909d18599 59-60,73,100,148-155,219,223,308-310,314-316,325,335,362-814,819-827,829-871,873,876
+src/accounts.rs
+  s_11bcf4cff8e905::t_b4830909d18599 2,42-104,152-155,157,280-292,300-335,369-386,420-424,428-433,451,471-498,1154-1226,1234-1245,1304-1561,1580,1582-1621,1625-1627,1717-1732,1764-1782,1788-1812,1833-1840,1846-1890,1894-1900,1932-1950,2117-2154,2221-2377,2492-2494,3042-3856,3858-3884,3886-3917,3919-3946,3948-3976,3979-3998,4001-4017,4019,4021-4027,4029-4038,4040-4049,4052-4061,4063,4065,4067-4071,5425,5497,7315-7369,7443-7681,8541,8555
+docs/m9-admin-surface.md
+  s_11bcf4cff8e905::t_b4830909d18599 266,276,401,412-560,569-793
+  s_11bcf4cff8e905::t_f536881e34b243 794
+site/src/content/docs/ja/providers/openai.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-122
+site/src/content/docs/ko/reference/endpoints.md
+  s_11bcf4cff8e905::t_b4830909d18599 28,31,51
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 108-115,118
+  s_11bcf4cff8e905::t_849675ea2ebfb3 119
+README.ja.md
+  s_11bcf4cff8e905::t_b4830909d18599 18,148,155,161,173,175,189-190,214,216
+site/src/content/docs/ko/providers/mimo.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-102
+.please/docs/research/md/003-json-schema-sanitization-for-gemini-functiondeclar.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-89
+site/src/content/docs/ja/providers/vercel-ai-gateway.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-79
+docs/notes/antigravity-daily-host.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-185
+site/src/content/docs/ko/providers/vercel-ai-gateway.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-77
+site/src/content/docs/ja/reference/configuration.md
+  s_11bcf4cff8e905::t_b4830909d18599 191,207,210,212,214,220,273-275,311,316,333
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-279
+.please/docs/review/rejected-findings.jsonl
+  s_11bcf4cff8e905::t_b4830909d18599 81
+src/auth/antigravity/mod.rs
+  s_11bcf4cff8e905::t_b4830909d18599 9,92-122,161,180,185-186,209,218,232,245,253,291-292,401-479,520,552-553,570-573,626,628-631,633,635-637,662,665,783-786
+src/model/responses.rs
+  s_11bcf4cff8e905::t_b4830909d18599 87-90,190-191,195,207,893,967-1017,1044
+site/src/content/docs/ja/guides/codex-multi-account.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 8,117,122,125,129-136,149
+.claude/agent-memory/review-review-ocr-reviewer/MEMORY.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-4
+site/src/content/docs/zh-cn/providers/openai.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-120
+src/adapters/responses/ws_stream.rs
+  s_11bcf4cff8e905::t_b4830909d18599 18,123-124,266,283-313,329,351
+tests/admin_surface.rs
+  s_11bcf4cff8e905::t_b4830909d18599 3788-4396
+.claude/agent-memory/review-review-cubic-reviewer/shunt-catalog-cache-sibling-map-eviction.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-30
+site/src/content/docs/ja/providers/mimo.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-103
+tests/codex_multi_account.rs
+  s_11bcf4cff8e905::t_b4830909d18599 140-147,426-428,496-498,570-572,664-666,783-785,1339-1343,1358
+site/src/content/docs/ja/guides/effort-and-context.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 13
+site/src/content/docs/ko/providers/anthropic.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-139
+site/src/content/docs/zh-cn/providers/zai.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-94
+Cargo.toml
+  s_11bcf4cff8e905::t_b4830909d18599 10
+README.md
+  s_11bcf4cff8e905::t_b4830909d18599 18,147,154,160,173,175,189-190,214,216
+  s_11bcf4cff8e905::t_3278be497c5406 204
+site/src/content/docs/ja/providers/deepseek.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-94
+site/src/content/docs/providers/zhipu.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-71
+src/main.rs
+  s_11bcf4cff8e905::t_b4830909d18599 10,621-625,674-676,710-712
+src/adapters/gemini/mod.rs
+  s_11bcf4cff8e905::t_b4830909d18599 13-16,18-21,44-97,161,178-239,405-487
+  s_11bcf4cff8e905::t_82302f7aaa6ad0 488
+site/src/content/docs/reference/configuration.md
+  s_11bcf4cff8e905::t_b4830909d18599 298,320,323,325,327,333,418-419,455,461,540
+src/adapters/responses/http.rs
+  s_11bcf4cff8e905::t_b4830909d18599 23,219-220,323,334-358
+site/src/content/docs/ko/reference/cli.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 45,229
+docs/m11-inbound-codex-endpoint.md
+  s_11bcf4cff8e905::t_b4830909d18599 115
+src/auth/claude/auth.rs
+  s_11bcf4cff8e905::t_b4830909d18599 33-36,165,168,182-187,189-199,202,280-335,391-402
+site/src/content/docs/guides/codex-multi-account.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 8,117,129-136,149
+src/usage/tests.rs
+  s_11bcf4cff8e905::t_b4830909d18599 37
+site/src/content/docs/zh-cn/providers/mimo.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-103
+.claude/agent-memory/review-review-cubic-reviewer/MEMORY.md
+  s_11bcf4cff8e905::t_b4830909d18599 5
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 64-71,74
+  s_11bcf4cff8e905::t_4cf3b84cf4fd99 75
+site/src/content/docs/ja/guides/providers.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 26,31-34,53,56-62,66-77,94-102,154,192,195,197,230
+site/src/content/docs/providers/cursor.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 102-115
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 26,34-37,55,58-62,66-74,89-95,141,186,189,191,227
+site/src/content/docs/zh-cn/guides/codex-multi-account.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 8,117,129-136,149
+site/src/content/docs/zh-cn/providers/zhipu.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-69
+site/src/content/docs/zh-cn/providers/deepseek.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-94
+src/model/responses_request.rs
+  s_11bcf4cff8e905::t_b4830909d18599 341-342,353,355,996-1001
+  s_11bcf4cff8e905::t_260e5fc8079a8a 1002-1003
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-250
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 64-71,74
+  s_11bcf4cff8e905::t_fdd2ab7e186ffa 75
+site/src/content/docs/ko/guides/effort-and-context.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 13
+site/src/content/docs/zh-cn/providers/cursor.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-134
+tests/inbound_codex_endpoint.rs
+  s_11bcf4cff8e905::t_b4830909d18599 150-157,1289-1290,1294,1377-1379,1444-1445,1512-1514,1690-1692
+docs/upstreams-failover.md
+  s_11bcf4cff8e905::t_b4830909d18599 46-47,59-61
+docs/m7-codex-websocket.md
+  s_11bcf4cff8e905::t_b4830909d18599 285,287-290
+site/src/content/docs/ko/guides/providers.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 26,31-34,53,56-62,66-76,95-102,151,192,195,197,230
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_11bcf4cff8e905::t_b4830909d18599 28,31,51
+src/auth/antigravity/auth.rs
+  s_11bcf4cff8e905::t_b4830909d18599 4-6,58-65,67-71,73-78,258-259,264-275,1158-1193,1198,1289-1296,1392-1412,1460-1540,1614,2426,2467,2518
+docs/m10-codex-multi-account.md
+  s_11bcf4cff8e905::t_b4830909d18599 188,202
+src/model/gemini_request/tests.rs
+  s_11bcf4cff8e905::t_b4830909d18599 1-787
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 134,147,150,281
+tests/responses_translate.rs
+  s_11bcf4cff8e905::t_b4830909d18599 1500-1503,1506,1508,1510-1618
+site/src/content/docs/zh-cn/providers/vercel-ai-gateway.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-79
+.claude/agent-memory/review-review-ocr-reviewer/workspace-mutates-during-review.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-31
+src/config.rs
+  s_11bcf4cff8e905::t_b4830909d18599 189-191,209-211,1920-1939,2088,2532-2534,2536,3423-3425,3439,6977,7228-7282
+  s_11bcf4cff8e905::t_542f4de322f027 7283
+src/auth/xai/auth.rs
+  s_11bcf4cff8e905::t_b4830909d18599 326-333,457,500
+AGENTS.md
+  s_11bcf4cff8e905::t_b4830909d18599 52,64-74
+site/src/content/docs/ko/providers/zhipu.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-70
+site/src/content/docs/zh-cn/guides/effort-and-context.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 13
+src/auth/claude/auth/tests.rs
+  s_11bcf4cff8e905::t_b4830909d18599 354-663
+blueprints/upstream/minimax-cn.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-57
+src/reload.rs
+  s_11bcf4cff8e905::t_b4830909d18599 88-91
+site/src/content/docs/ja/reference/endpoints.md
+  s_11bcf4cff8e905::t_b4830909d18599 28,31,51
+src/auth/codex/usage.rs
+  s_11bcf4cff8e905::t_b4830909d18599 1-712
+site/src/content/docs/ko/providers/minimax-cn.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-66
+site/src/content/docs/ko/providers/minimax.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-90
+src/adapters/responses/pool.rs
+  s_11bcf4cff8e905::t_b4830909d18599 1008-1012,1014
+site/src/content/docs/ko/providers/openrouter.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-79
+.claude/agent-memory/review-review-cubic-reviewer/cubic-empty-review-clean-tree.md
+  s_11bcf4cff8e905::t_b4830909d18599 24-33
+tests/multi_account.rs
+  s_11bcf4cff8e905::t_b4830909d18599 109-116,120-127,129,173-227,342-557,779,788,855,865,1040,1050,1214,1216,1233,1237,1651-2372
+.release-please-manifest.json
+  s_11bcf4cff8e905::t_b4830909d18599 2
+site/src/content/docs/ko/providers/cursor.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-134
+src/auth/cursor/auth.rs
+  s_11bcf4cff8e905::t_b4830909d18599 276-283,307
+.claude/agent-memory/review-review-ocr-reviewer/catalog-fetch-slots-sibling-map-eviction.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-28
+README.zh-CN.md
+  s_11bcf4cff8e905::t_b4830909d18599 18,143,150,156,168,170,184-185,209,211
+site/src/content/docs/zh-cn/providers/anthropic.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-140
+site/src/content/docs/zh-cn/providers/minimax.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-91
+site/src/content/docs/ko/guides/codex-multi-account.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 8,129-136,149
+site/src/content/docs/ko/guides/codex.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 112,122,225
+src/adapters/antigravity/models.rs
+  s_11bcf4cff8e905::t_b4830909d18599 28-29,31,68-113,119-177,179-190,201-211,213-217,221,230-237,242-247,448-577
+src/admin/mod.rs
+  s_11bcf4cff8e905::t_b4830909d18599 238-240,334,366-379,405,409,411,1346-1350,1361,1364-1375,1405-1570,1638,1910,1938,1949-2006,2056-2062
+  s_11bcf4cff8e905::t_3090c0dd9ceea0 237
+docs/running.md
+  s_11bcf4cff8e905::t_b4830909d18599 107,241,243,248-251,804-807,810,815,929,933-935
+site/src/content/docs/ja/providers/anthropic.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-143
+README.ko.md
+  s_11bcf4cff8e905::t_b4830909d18599 18,145,152,158,170,172,186-187,211,213
+site/src/content/docs/ko/providers/zai.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-93
+site/src/content/docs/providers/antigravity.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 7-11,18-28,82,95-112,124,127-170,184-211,237-242,244-255,261
+src/state_persist.rs
+  s_11bcf4cff8e905::t_b4830909d18599 253,348-351,442-443,453,857
+tests/failover.rs
+  s_11bcf4cff8e905::t_b4830909d18599 641,682-729
+  s_11bcf4cff8e905::t_2b5dd383d5146b 730-733
+docs/m1-responses-translation.md
+  s_11bcf4cff8e905::t_b4830909d18599 118,128-130,177-193
+  s_11bcf4cff8e905::t_0a1b50d204d76c 194
+site/src/content/docs/zh-cn/providers/openrouter.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-81
+site/src/lib/i18n.ts
+  s_11bcf4cff8e905::t_b4830909d18599 50-54,56-60
+site/src/content/docs/ko/providers/openai.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-118
+src/adapters/cursor/agent.rs
+  s_11bcf4cff8e905::t_b4830909d18599 425-440,814-889,1362-1409
+  s_11bcf4cff8e905::t_0e9b3328229e59 1410
+.please/docs/research/README.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-11
+docs/plans/usage-bars/DESIGN.md
+  s_11bcf4cff8e905::t_b4830909d18599 30-36
+src/auth/claude/usage.rs
+  s_11bcf4cff8e905::t_b4830909d18599 16-17,51-54,122-126,375
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 45,229
+site/src/content/docs/ja/reference/cli.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 45,229
+site/src/content/docs/ja/providers/cursor.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 1-136
+src/model/antigravity_request.rs
+  s_11bcf4cff8e905::t_b4830909d18599 1-1371
+src/model/gemini_request.rs
+  s_11bcf4cff8e905::t_b4830909d18599 15-19,239,246-269,354-385,387-393,405-720,801,810
+site/src/content/docs/ja/providers/zai.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-93
+.please/docs/research/md/001-openaicodex-how-modelverbosity-works-end-to-end-co.md
+  s_11bcf4cff8e905::t_b4830909d18599 1-96
+src/oauth_usage/tests.rs
+  s_11bcf4cff8e905::t_b4830909d18599 38
+site/src/content/docs/ja/guides/codex.mdx
+  s_11bcf4cff8e905::t_b4830909d18599 115,126,238
+site/src/content/docs/reference/endpoints.md
+  s_11bcf4cff8e905::t_b4830909d18599 31,35,76
+src/adapters/responses/request.rs
+  s_11bcf4cff8e905::t_b4830909d18599 8,10-11,20-24
+Cargo.lock
+  s_11bcf4cff8e905::t_73fb39c82a5cb6 2732
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b19a1cdfff1965419a1c9aa9a9e9d8c2621719d0",
+  "prompts": {},
+  "sessions": {
+    "s_11bcf4cff8e905": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3956028c-9211-44ca-902a-4243708ac34a",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
