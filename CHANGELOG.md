@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.41.0](https://github.com/pleaseai/shunt/compare/v0.40.2...v0.41.0) (2026-09-05)
+
+
+### Features
+
+* **config:** add Zhipu and MiniMax China Anthropic presets ([#455](https://github.com/pleaseai/shunt/issues/455)) ([c0181e8](https://github.com/pleaseai/shunt/commit/c0181e8764844f00bd787a7a5fc112ba61336f02))
+
+
+### Bug Fixes
+
+* **antigravity:** re-discover the effort matrix when a turn names an unknown model ([#370](https://github.com/pleaseai/shunt/issues/370)) ([42787f6](https://github.com/pleaseai/shunt/commit/42787f642426197121bc79845b8c34865c6baffe))
+* **cursor:** send composer fast mode as model metadata, not a model id ([#411](https://github.com/pleaseai/shunt/issues/411)) ([8bcacff](https://github.com/pleaseai/shunt/commit/8bcacff7e47815aa677884e1cd7ded8fea3a4be5))
+* **cursor:** surface built-in tool calls instead of dropping the turn ([#410](https://github.com/pleaseai/shunt/issues/410)) ([4991462](https://github.com/pleaseai/shunt/commit/49914626460e5c52bf0709845d366aee01290848))
+
 ## [0.40.2](https://github.com/pleaseai/shunt/compare/v0.40.1...v0.40.2) (2026-09-05)
 
 
