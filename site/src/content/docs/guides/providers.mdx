@@ -155,8 +155,9 @@ matrix is still empty.
 
 A discovered matrix is not treated as a closed catalogue. `agy` gains models while the
 gateway runs, so a request naming a model the matrix does not list schedules a fresh
-discovery in the background, at most once a minute. That request still passes through to
-`agy` unvalidated; the one after it resolves normally. Without this, a model released
+discovery in the background, at most once a minute. That request, and any that arrive
+before the discovery finishes, still pass through to `agy` unvalidated; once a discovery
+that lists the model lands, later requests resolve normally. Without this, a model released
 after startup would stay unknown until shunt restarted.
 
 The configured upstream slug proves which model shunt asks `agy` to run; it does not
