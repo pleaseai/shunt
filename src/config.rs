@@ -186,9 +186,9 @@ fn default_max_concurrent_requests() -> usize {
 pub(crate) const MAX_CONCURRENT_REQUESTS_LIMIT: usize = usize::MAX >> 3;
 
 /// `[server.pool]` — quota-aware load-balancing tuning and optional usage-API
-/// reconciliation for Claude (Anthropic) account pools (issue #135). Quota
-/// headers exist only on the Anthropic backend, so threshold/burn-rate knobs
-/// are inert for Codex pools; per-account `priority`/`disabled` apply to both.
+/// reconciliation for Claude (Anthropic) and Codex (ChatGPT) account pools
+/// (issue #135). Both backends supply quota windows used by threshold and
+/// burn-rate selection; per-account `priority`/`disabled` also apply to both.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolConfig {
     /// Safety backstop common to all quota windows.
@@ -206,9 +206,9 @@ pub struct PoolConfig {
     /// Avoid an account projected to exhaust a soft threshold before reset.
     #[serde(default)]
     pub burn_rate_avoidance: bool,
-    /// Poll `GET /api/oauth/usage` every N seconds for refreshable Claude
-    /// accounts. Unset or `0` disables polling; positive values below 60 are
-    /// clamped to 60 seconds.
+    /// Poll Claude's `/api/oauth/usage` and Codex's `/wham/usage` every N
+    /// seconds for refreshable accounts. Unset or `0` disables polling;
+    /// positive values below 60 are clamped to 60 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_refresh_seconds: Option<u64>,
     /// Persist the pool's per-account quota state to this file so a restart
@@ -1917,6 +1917,26 @@ pub fn host_is_google_codeassist(host: &str) -> bool {
     host == "cloudcode-pa.googleapis.com"
 }
 
+/// Whether `host` is the `daily-` Code Assist control plane
+/// (`daily-cloudcode-pa.googleapis.com`). This is the backend the Antigravity
+/// client itself addresses for both discovery and inference, and is shunt's
+/// default for `kind = "antigravity"`.
+pub fn host_is_antigravity_daily(host: &str) -> bool {
+    host == "daily-cloudcode-pa.googleapis.com"
+}
+
+/// Whether `host` is a backend an `antigravity_oauth` provider may address.
+///
+/// Deliberately wider than [`host_is_google_codeassist`] and deliberately not
+/// "any googleapis.com host": the Antigravity backend answers on the `daily-`
+/// control plane as well as on production, and the two are the only hosts that
+/// answer for Antigravity. Every other `googleapis.com` name — the `sandbox`
+/// spellings included — is a different product, so a subscription bearer must
+/// not reach it.
+pub fn host_is_antigravity_backend(host: &str) -> bool {
+    host_is_google_codeassist(host) || host_is_antigravity_daily(host)
+}
+
 /// Whether `host` belongs to Kimi (`kimi.com` or any subdomain, which covers
 /// the measured `api.kimi.com` API host). Used to reject a `kimi_oauth`
 /// provider pointed at a non-Kimi host, so shunt never leaks a Kimi Code
@@ -2065,7 +2085,7 @@ pub enum ConfigError {
     GoogleOauthNotHttps { provider: String },
     #[error("providers.{provider} uses auth = \"antigravity_oauth\" but kind is not \"antigravity\"; another adapter would forward the client's own credential instead of the Antigravity token")]
     AntigravityOauthWrongKind { provider: String },
-    #[error("providers.{provider} uses auth = \"antigravity_oauth\" but base_url host {host} is not a googleapis.com host; refusing to send a subscription token off-origin")]
+    #[error("providers.{provider} uses auth = \"antigravity_oauth\" but base_url host {host} is neither daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription token off-origin")]
     AntigravityOauthNonGoogleHost { provider: String, host: String },
     #[error("providers.{provider} uses auth = \"antigravity_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
     AntigravityOauthNotHttps { provider: String },
@@ -2509,9 +2529,11 @@ impl Default for Config {
             (
                 // Antigravity over its native HTTP backend, authenticated with
                 // `shunt login antigravity`. Same service the `agy` CLI reaches,
-                // without the subprocess.
+                // without the subprocess — including the `daily-` control
+                // plane that client addresses for both discovery and
+                // inference.
                 "antigravity".to_string(),
-                ProviderConfig::antigravity("https://cloudcode-pa.googleapis.com"),
+                ProviderConfig::antigravity("https://daily-cloudcode-pa.googleapis.com"),
             ),
             (
                 // Local Antigravity CLI binary (`agy`) execution for Gemini
@@ -3398,9 +3420,9 @@ impl Config {
             }
             // Mirrors the `google_oauth` guards above: the Antigravity token is
             // a subscription bearer on the same Google host family, so it must
-            // stay on a googleapis.com host over https and be carried by the
-            // adapter that injects it rather than one that forwards the
-            // client's own credential.
+            // stay on one of the two Antigravity backends over https and be
+            // carried by the adapter that injects it rather than one that
+            // forwards the client's own credential.
             if provider.auth == AuthMode::AntigravityOauth {
                 if provider.kind != ProviderKind::Antigravity {
                     return Err(ConfigError::AntigravityOauthWrongKind {
@@ -3414,7 +3436,7 @@ impl Config {
                             provider: name.clone(),
                         });
                     }
-                    if !host_is_google_codeassist(host) {
+                    if !host_is_antigravity_backend(host) {
                         return Err(ConfigError::AntigravityOauthNonGoogleHost {
                             provider: name.clone(),
                             host: host.to_string(),
@@ -6952,7 +6974,7 @@ id = "claude-sonnet-5"
         let native = config.provider("antigravity").unwrap();
         assert_eq!(native.kind, ProviderKind::Antigravity);
         assert_eq!(native.auth, AuthMode::AntigravityOauth);
-        assert_eq!(native.base_url, "https://cloudcode-pa.googleapis.com");
+        assert_eq!(native.base_url, "https://daily-cloudcode-pa.googleapis.com");
 
         // The `agy` subprocess transport kept its behaviour under a new name.
         let cli = config.provider("antigravity-cli").unwrap();
@@ -7201,6 +7223,62 @@ id = "claude-sonnet-5"
             ConfigError::AntigravityOauthNotHttps { .. }
         ));
         assert!(error.to_string().contains("plaintext"));
+    }
+
+    #[test]
+    fn antigravity_oauth_accepts_both_antigravity_backends() {
+        // The `daily-` control plane is the default and the only host that
+        // serves the Antigravity catalog; production stays valid for operators
+        // who still point at it.
+        for base_url in [
+            "https://daily-cloudcode-pa.googleapis.com",
+            "https://cloudcode-pa.googleapis.com",
+        ] {
+            let mut config = Config::default();
+            config.providers.get_mut("antigravity").unwrap().base_url = base_url.to_string();
+            config
+                .validate()
+                .unwrap_or_else(|error| panic!("{base_url} must validate: {error}"));
+        }
+    }
+
+    #[test]
+    fn antigravity_oauth_rejects_other_googleapis_hosts() {
+        // Widening the guard to the `daily-` host must not widen it to the
+        // whole domain: the sandbox spelling and every other googleapis.com
+        // product are different backends the subscription bearer must not
+        // reach.
+        for host in [
+            "daily-cloudcode-pa.sandbox.googleapis.com",
+            "generativelanguage.googleapis.com",
+            "storage.googleapis.com",
+        ] {
+            let mut config = Config::default();
+            config.providers.get_mut("antigravity").unwrap().base_url = format!("https://{host}");
+            let error = config.validate().unwrap_err();
+            assert!(matches!(
+                error,
+                ConfigError::AntigravityOauthNonGoogleHost { .. }
+            ));
+            assert!(error.to_string().contains(host));
+        }
+    }
+
+    #[test]
+    fn google_oauth_still_rejects_the_antigravity_daily_host() {
+        // The wider host predicate belongs to `antigravity_oauth` alone. Code
+        // Assist's own guard stays pinned to the production host.
+        let mut config = Config::default();
+        config.providers.get_mut("gemini").unwrap().base_url =
+            "https://daily-cloudcode-pa.googleapis.com".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::GoogleOauthNonGoogleHost { .. }
+        ));
+        assert!(error
+            .to_string()
+            .contains("daily-cloudcode-pa.googleapis.com"));
     }
 
     #[test]

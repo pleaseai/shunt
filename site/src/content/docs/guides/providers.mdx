@@ -23,7 +23,7 @@ Providers are a **name → config map**. Anthropic-compatible and Responses-comp
 | [`grok`](/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` |
 | [`cursor`](/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — reuses `~/.gemini/oauth_creds.json` |
-| [`antigravity`](/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` — reuses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
+| [`antigravity`](/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` — reuses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
 | `antigravity-cli` | `antigravity_cli` | `none` | **Deprecated.** Local `agy` CLI — same backend via subprocess |
 
 Each linked name opens its dedicated setup page. `shunt add upstream <name>` prints a step-by-step blueprint for built-in providers; see the [CLI reference](/reference/cli/#shunt-add).
@@ -43,7 +43,12 @@ provider = "gemini"
 upstream_model = "gemini-2.5-flash"
 ```
 
-Code Assist also recognizes preview slugs such as `gemini-3.1-pro-preview` and `gemini-3-flash-preview`, subject to account entitlement and provider capacity. It does not accept the Antigravity-only `gemini-3.5-flash` and `gemini-3.6-flash` slugs.
+Tool declarations go through the same schema adaptation as the `antigravity` provider — both
+transports share one Gemini adapter — so the tuple folding and typeless-element fallbacks described
+under **What the adapter carries** on the [Antigravity provider page](/providers/antigravity/) apply
+to `gemini` routes as well.
+
+Code Assist also recognizes preview slugs such as `gemini-3.1-pro-preview` and `gemini-3-flash-preview`, subject to account entitlement and provider capacity. It does not accept the Antigravity-only slugs such as `gemini-3.6-flash-medium`.
 
 The separate `antigravity` provider reaches the same backend over HTTP. Authenticate it with `shunt login antigravity`: a Google
 authorization-code flow using Antigravity's own OAuth client, which asks for two scopes (`cclog`, `experimentsandconfigs`) a Gemini CLI
@@ -60,11 +65,29 @@ display_name = "[AGY ] Gemini-3.6-Flash"
 [[routes]]
 model = "claude-gemini-3.6-flash-via-antigravity"
 provider = "antigravity"
-upstream_model = "gemini-3.6-flash"
+upstream_model = "gemini-3.6-flash-medium"
 ```
+
+Antigravity publishes its Gemini models with the effort in the id and does not serve a bare slug, in
+one of two shapes — a `-low` / `-medium` / `-high` suffix, or a single `-tiered` id that takes the
+effort as a request field. Which shape your account gets changes over time, so shunt reads the
+account's own catalog and picks the id it actually publishes: a bare `gemini-*` id is resolved for
+you — from `effort`, the request, or `medium` — and a suffix your account no longer publishes is
+re-resolved rather than forwarded. Every spelling works.
 
 For the full setup — login and scopes, project discovery, model slugs, thinking, and what the
 adapter carries — see the dedicated [Antigravity provider page](/providers/antigravity/).
+
+<Aside type="caution" title="Antigravity's terms">
+
+Google's [Antigravity terms](https://antigravity.google/terms) name this use directly: "using third party software, tools,
+or services to access the Service (e.g. using OpenClaw with Antigravity OAuth) is a breach of this
+Agreement", and such a breach "may be grounds for suspension or termination of your Antigravity
+and/or Gemini CLI accounts". shunt is third-party software using Antigravity OAuth, so routing
+through this provider falls squarely under that clause. Whether the subscription is worth that risk
+is your own call — nothing here can shield the account.
+
+</Aside>
 
 <Aside type="caution" title="`antigravity` changed meaning">
 
@@ -85,9 +108,17 @@ The `antigravity-cli` path runs one CLI subprocess per request in agentic mode. 
 full agent with its own tools, so it resolves its own tool calls and returns finished
 work — file edits included. Four consequences follow:
 
-- **Tools are `agy`'s, not the caller's.** A `tools` array on the Messages request is
-  not forwarded, and the response never contains a `tool_use` block. Clients that need
-  to drive the tool loop themselves should use the `gemini` provider instead.
+- **Tools are `agy`'s, not the caller's, and a request asking for one is refused.** This
+  adapter can never emit a `tool_use` block, so a non-empty `tools` array, or a
+  `tool_choice` of `any` or `tool`, is rejected with a `400 invalid_request_error` naming
+  the limitation. Such requests used to be dropped silently, returning a text-only `200`
+  with `stop_reason: "end_turn"` — a response an agentic caller cannot act on, and a
+  direct violation of `tool_choice: {"type": "any"}` while still reporting success. Two
+  shapes stay exempt, because neither obliges a tool call: `tool_choice: {"type": "none"}`
+  even alongside `tools`, and `tool_choice: {"type": "auto"}` with no tools, which is the
+  Anthropic SDK default that many clients serialize on every request. An empty
+  `tools: []` is likewise not a tool request. Clients that drive the tool loop themselves
+  should use the `antigravity` or `gemini` provider, both of which forward tools.
 - **It runs with `--dangerously-skip-permissions` and, by default, `--sandbox`,**
   because a non-interactive run has no channel to approve a permission prompt. See
   [Workspace and sandboxing](#workspace-and-sandboxing) — this provider executes code.
@@ -152,7 +183,16 @@ active. Either keep the sandbox on or restart shunt with a loopback bind.
 
 The model/effort matrix is discovered in the background at startup, so no request pays
 for it. Until it lands, or if `agy models` fails, configured values are passed through
-and `agy` validates them itself — a failed discovery is retried rather than cached.
+and `agy` validates them itself — a failed discovery is retried rather than cached, after
+a short backoff so a persistently failing `agy` is not re-forked once per turn while the
+matrix is still empty.
+
+A discovered matrix is not treated as a closed catalogue. `agy` gains models while the
+gateway runs, so a request naming a model the matrix does not list schedules a fresh
+discovery in the background, at most once a minute. That request, and any that arrive
+before the discovery finishes, still pass through to `agy` unvalidated; once a discovery
+that lists the model lands, later requests resolve normally. Without this, a model released
+after startup would stay unknown until shunt restarted.
 
 The configured upstream slug proves which model shunt asks `agy` to run; it does not
 independently attest Google's internal serving identity.
@@ -181,7 +221,7 @@ xAI may gate OAuth access by subscription tier — if `grok` returns 403, use th
 
 <Aside type="caution" title="Model slugs">
 
-The ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs — it only accepts the account's live-entitled slugs. The authoritative catalog is openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json). Current slugs are `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (frontier) and `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`; older accounts may only be entitled to the earlier ones. Use `upstream_model` in a route to map any alias onto an entitled slug.
+The ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs — it only accepts the account's live-entitled slugs. The authoritative catalog is openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json). Current slugs are `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (frontier) and `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`; older accounts may only be entitled to the earlier ones. Use `upstream_model` in a route to map any alias onto an entitled slug.
 
 </Aside>
 
@@ -223,7 +263,9 @@ Most third-party "use Claude Code with X" gateways are Anthropic-Messages-compat
 | [Kimi Code (subscription, OAuth)](/providers/kimi/#kimi-code-oauth-subscription) | `https://api.kimi.com/coding` | use the ids your subscription exposes |
 | [DeepSeek](/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | [Z.ai (GLM)](/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
+| [Zhipu (GLM China)](/providers/zhipu/) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | [MiniMax](/providers/minimax/) | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
+| [MiniMax China](/providers/minimax-cn/) | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | [Mimo (Xiaomi)](/providers/mimo/) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — see [Mimo docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
 | [OpenRouter](/providers/openrouter/) | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | [Vercel AI Gateway](/providers/vercel-ai-gateway/) | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |

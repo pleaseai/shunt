@@ -1497,12 +1497,125 @@ fn records_backend_error_event_for_non_streaming_paths() {
     // Streaming path: the error is emitted inline as an SSE `error` event.
     assert!(emitted.contains("event: error"));
 
-    // Non-streaming path: the mapped envelope is recorded for the JSON collectors.
-    let backend_error = machine
+    // Non-streaming path: the mapped envelope is recorded for the JSON collectors,
+    // paired with the status it was mapped against — `rate_limit_exceeded` is the
+    // backend's throttle code, so it classifies as 429 `rate_limit_error`.
+    let (status, backend_error) = machine
         .take_backend_error()
         .expect("a backend error event is recorded");
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(backend_error["type"], "error");
+    assert_eq!(backend_error["error"]["type"], "rate_limit_error");
     assert_eq!(backend_error["error"]["message"], "Rate limit reached");
+    assert!(emitted.contains("\"type\":\"rate_limit_error\""));
+}
+
+#[test]
+fn classifies_rate_limit_from_every_error_payload_shape() {
+    // `backend_error_status` reads the code from all three places a backend puts
+    // it: the plain `error` event (`/error/code`), the streaming `response.failed`
+    // event (`/response/error/code`), and a bare top-level `code`. Each must
+    // classify as 429 `rate_limit_error`, not fall back to the 502 default.
+    let shapes = [
+        (
+            "error",
+            json!({"type": "error", "error": {"code": "rate_limit_exceeded", "message": "slow down"}}),
+        ),
+        (
+            "response.failed",
+            json!({"type": "response.failed", "response": {"error": {"code": "rate_limit_exceeded", "message": "slow down"}}}),
+        ),
+        (
+            "error",
+            json!({"code": "rate_limit_exceeded", "message": "slow down"}),
+        ),
+    ];
+    for (event, data) in shapes {
+        let fixture = format!("event: {event}\ndata: {data}\n\n");
+        let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+        let emitted = parse_sse_events(&fixture)
+            .into_iter()
+            .flat_map(|event| machine.apply(event))
+            .collect::<String>();
+        let (status, backend_error) = machine.take_backend_error().expect("recorded");
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{data}");
+        assert_eq!(backend_error["error"]["type"], "rate_limit_error", "{data}");
+        assert_eq!(backend_error["error"]["message"], "slow down", "{data}");
+        assert!(emitted.contains("\"type\":\"rate_limit_error\""), "{data}");
+    }
+}
+
+#[test]
+fn backend_error_event_without_rate_limit_code_stays_gateway_error() {
+    // Only `rate_limit_exceeded` is a throttle; every other in-stream failure
+    // (content policy, server-side) keeps the 502 `api_error` gateway shape.
+    for code in [
+        "server_error",
+        "misalignment_policy_violation",
+        "unknown_error",
+    ] {
+        let fixture = format!(
+            "event: response.failed\ndata: {}\n\n",
+            json!({"type": "response.failed", "response": {"error": {"code": code, "message": "nope"}}})
+        );
+        let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+        for event in parse_sse_events(&fixture) {
+            let _ = machine.apply(event);
+        }
+        let (status, backend_error) = machine.take_backend_error().expect("recorded");
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{code}");
+        assert_eq!(backend_error["error"]["type"], "api_error", "{code}");
+    }
+}
+
+#[test]
+fn appends_misalignment_steer_to_policy_violation_message() {
+    // openai/codex rust-v0.153 attaches `error.misalignment.steer.message` to a
+    // `misalignment_policy_violation`; the steer must reach the client inside the
+    // message, from both the plain and the nested `response.failed` shapes.
+    let plain = json!({"error": {
+        "code": "misalignment_policy_violation",
+        "message": "This request violated the misalignment policy.",
+        "misalignment": {
+            "error_type": "future_safety_category",
+            "detailed_explanation": "sensitive, not for the client",
+            "steer": {"message": "Do not transfer the user's files."}
+        }
+    }});
+    let mapped = map_error_value(&plain, StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        mapped["error"]["message"],
+        "This request violated the misalignment policy.\n\nDo not transfer the user's files."
+    );
+    assert!(!mapped["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("sensitive"));
+
+    let nested = json!({"type": "response.failed", "response": {"error": plain["error"].clone()}});
+    assert_eq!(
+        map_error_value(&nested, StatusCode::BAD_GATEWAY)["error"]["message"],
+        mapped["error"]["message"]
+    );
+
+    // No steer, an empty steer, or a steer on a different code: message untouched.
+    let bare = json!({"error": {"code": "misalignment_policy_violation", "message": "blocked"}});
+    assert_eq!(
+        map_error_value(&bare, StatusCode::BAD_GATEWAY)["error"]["message"],
+        "blocked"
+    );
+    let empty = json!({"error": {"code": "misalignment_policy_violation", "message": "blocked",
+        "misalignment": {"steer": {"message": "  "}}}});
+    assert_eq!(
+        map_error_value(&empty, StatusCode::BAD_GATEWAY)["error"]["message"],
+        "blocked"
+    );
+    let other = json!({"error": {"code": "server_error", "message": "blocked",
+        "misalignment": {"steer": {"message": "ignored"}}}});
+    assert_eq!(
+        map_error_value(&other, StatusCode::BAD_GATEWAY)["error"]["message"],
+        "blocked"
+    );
 }
 
 #[test]

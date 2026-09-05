@@ -10,7 +10,7 @@ Claude Code のエフォートレベル（`/effort`、`/model` のスライダ�
 | Claude Code のエフォート | → `reasoning.effort` |
 | :-- | :-- |
 | `low` / `medium` / `high` / `xhigh` | パススルー |
-| `max` | 受け入れるモデル（**gpt-5.6** ファミリー）ではパススルー、それ以外は `xhigh` に折りたたむ |
+| `max` | 受け入れるモデル（**gpt-5.6** と **gpt-6** ファミリー）ではパススルー、それ以外は `xhigh` に折りたたむ |
 
 Codex スラッグがどの reasoning レベルを受け入れるかは、openai/codex の [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)（`supported_reasoning_levels`）にモデルごとに記載されています。
 

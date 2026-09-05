@@ -1,0 +1,250 @@
+---
+title: Antigravity
+description: 通过 HTTP 触达 Google Antigravity 后端 —— 登录、项目发现、模型 slug、thinking,以及适配器承载的内容。
+---
+
+内置的 **`antigravity`** 提供方通过 HTTP 在 `daily-cloudcode-pa.googleapis.com` 触达 Google 的
+**Antigravity** 后端。该主机就是 Antigravity 客户端自身在发现和推理时都会访问的 `daily-` 控制平面。它讲的是与 `gemini` 提供方相同的 Code Assist 协议 ——
+shunt 将 Anthropic Messages 转换为 `generateContent` / `streamGenerateContent` —— 但它
+用 Antigravity 订阅 token 认证,并在项目发现期间把自己标识为 `ideType: ANTIGRAVITY`。
+
+Antigravity 还有第二种、更老的传输方式。`kind = "antigravity_cli"` 以子进程方式运行本地 `agy` 二进制,
+且已**废弃** —— 见
+[已废弃的 `antigravity-cli` 传输](/zh-cn/guides/providers/#已废弃的-antigravity_cli-传输)。
+本页讲的是 HTTP 提供方,它完全不需要那套机制。
+
+<Aside type="caution" title="Antigravity 的条款">
+
+Google 的 [Antigravity 条款](https://antigravity.google/terms)直接点名了这种用法:"使用第三方软件、工具或服务访问本服务(例如将
+OpenClaw 与 Antigravity OAuth 配合使用)即违反本协议",且此类违约"可能成为暂停或终止你的 Antigravity
+和/或 Gemini CLI 账号的理由"。shunt 就是使用 Antigravity OAuth 的第三方软件,因此经由该提供方路由恰好落在
+该条款之内。这份订阅是否值得冒这个风险由你自己决定 —— 这里没有任何东西能保护你的账号。
+
+</Aside>
+
+## 快速开始
+
+让编码 agent 为你完成接入 —— `shunt add` 会打印一份内置的设置蓝图
+(离线且只读;配置由 agent 编辑,该命令绝不会修改配置):
+
+```bash
+shunt add upstream antigravity --print | claude
+```
+
+或者按照下面的手动步骤操作。
+
+## 1. 登录
+
+```bash
+shunt login antigravity
+```
+
+这会使用 Antigravity 自有的 OAuth 客户端运行一个 Google authorization-code 流程,并写入
+`~/.shunt/antigravity-auth.json`,shunt 会读取并自动刷新它。该流程申请五个
+scope:
+
+```text
+https://www.googleapis.com/auth/cloud-platform
+https://www.googleapis.com/auth/userinfo.email
+https://www.googleapis.com/auth/userinfo.profile
+https://www.googleapis.com/auth/cclog
+https://www.googleapis.com/auth/experimentsandconfigs
+```
+
+最后两个正是**Gemini CLI 的登录无法在此复用、反之亦然**的原因:一份
+`~/.gemini/oauth_creds.json` token 从不携带 `cclog` 或 `experimentsandconfigs`。`google_oauth`
+和 `antigravity_oauth` 不可互换。
+
+登录还会解析你的 Code Assist 项目 —— 先 `loadCodeAssist`,再用 `onboardUser`
+为首次使用的账号开通一个 —— 并把项目 id 存入凭据文件。你的第一个请求前不会再有
+任何发现步骤。如果发现失败,登录仍会保存 token,并在第一个请求时重试。
+
+## 2. 配置上游
+
+该提供方是内置的,所以一条写着 `provider = "antigravity"` 的 `[[routes]]` 条目无需你自己的提供方表
+即可工作。把它声明为有序上游则不同:**Antigravity 这些 kind 没有 `[[upstreams]]` 预设**,
+因此那里不能用 `provider = "antigravity"`,你必须自己设置 `kind`、`base_url` 和 `auth`:
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # 让 Anthropic 作为无路由匹配模型(例如 claude-*)的默认项
+
+[[upstreams]]
+name = "antigravity"
+kind = "antigravity"
+base_url = "https://daily-cloudcode-pa.googleapis.com"
+auth = "antigravity_oauth"
+```
+
+有序的 `[[upstreams]]` 会替换 shunt 的内置提供方,因此显式配置还必须声明它仍然回退到的
+`anthropic` 默认项(`server.default_provider` 默认为 `anthropic`)。
+
+旧的 `[providers.antigravity]` 表形式仍然受支持 —— 但不要在同一个文件中混用 `[[upstreams]]`
+和 `[providers.*]`。
+
+## 3. 路由一个模型
+
+shunt 不为该提供方保留任何模型白名单:解析出的 `upstream_model` 会原样发送到
+后端,由后端决定。Antigravity 提供 Code Assist 的 `gemini` 提供方**不**接受的 Gemini 家族 slug ——
+但它把 **effort 写进 id**,并以两种形态之一发布:`-low` / `-medium` / `-high` 后缀(Pro 只有 `-low`
+和 `-high`),或者一个把 effort 作为请求字段接收的单一 `-tiered` id。**你拿到哪种形态因账号而异,并且
+会随时间变化** —— 有的账号拿到 `gemini-3.8-flash-tiered`,有的拿到 `gemini-3.8-flash-medium`。
+用 `agy models` 可以列出当前目录;撰写本文时其中包含 `gemini-3.8-flash-*`、
+`gemini-3.7-flash-*`、`gemini-3.6-flash-*`、`gemini-3.1-pro-low` / `-high`、`claude-sonnet-4-6`、
+`claude-opus-4-6-thinking` 和 `gpt-oss-120b-medium`。
+
+不带后缀的 slug **不会被提供**:`daily-cloudcode-pa.googleapis.com` 会回 `404`。在生产主机上,shunt
+早先的请求 —— 不带后缀的 id 加上普通的 Code Assist 信封 —— 返回了看起来像限流的、具有误导性的
+`429 RESOURCE_EXHAUSTED`(“check quota”);但探测同时改变了这两个输入,因此无法确定是哪一个导致了
+这个 429。
+
+为了不必猜测是哪种形态,shunt 会在请求路径上读取账号自己的目录(`fetchAvailableModels`)—— 按账号
+缓存十分钟、有超时上限、失败即放行 —— 并挑选该账号实际发布的 id。
+
+把每个本地别名映射到确切的 Antigravity slug:
+
+```toml
+[[models]]
+id = "claude-gemini-3.6-flash-via-antigravity"
+display_name = "[AGY ] Gemini-3.6-Flash"
+
+[[routes]]
+model = "claude-gemini-3.6-flash-via-antigravity"
+provider = "antigravity"
+upstream_model = "gemini-3.6-flash-medium"
+```
+
+你不必手写这个后缀。对于不带后缀的 `gemini-*` id,shunt 会自行解析档位并追加,按以下顺序取第一个
+适用的信号:
+
+1. `[[routes]]` 条目或提供方上的 `effort` —— 显式指定。这里 `xhigh` 和 `max` 同样会折叠为 `high`;
+   匹配忽略大小写和前后空白。shunt 不认识的档位会按所写(去除空白并转为小写)通过,因此你可以指定
+   目录以后才加入的档位。
+2. 请求中的 `output_config.effort`(Claude Code 会发送 `low`/`medium`/`high`/`xhigh`/`max`,
+   其中 `xhigh` 和 `max` 会折叠为 `high`)。
+3. `thinking.type = "enabled"` —— `budget_tokens` 不超过 2048 为 `low`,不超过 8192 为 `medium`,
+   更大则为 `high`。启用但未指定 budget 的块会使用与转换后请求相同的默认值 `1024`,因此落在 `low`。
+4. 其余情况为 `medium`。
+
+这个档位最终变成什么,由目录决定。如果你的账号发布了 `{id}-{档位}`,发出去的就是它。如果只发布了
+`{id}-tiered`,shunt 就发送这个 tiered id,并把档位放进
+`generationConfig.thinkingConfig.thinkingLevel`(与已有的 `thinkingBudget` 并存,后端两者同时接受)。
+如果两者都没有、但发布了同一模型的其他档位,则最接近的已发布档位胜出,打平时取更高的那个 —— `-pro`
+id 上的 `medium` 变成 `-high`,靠的正是这条规则,而不是任何 Pro 专用规则。
+
+你手写的后缀也一样。如果你的账号不再发布 `gemini-3.6-flash-medium`,这个后缀仍然说明了你想要哪个
+档位,所以 shunt 会按上面的规则重新解析,而不是把目录刚刚证明会 404 的 id 原样发出;如果目录对该系列
+一无所知,你写下的值就保持原样。你自己指定的 `-tiered` id 会保留 id,并继续把 `effort` 作为
+`thinkingLevel` 带上,因此写下确切的已发布 id 不会让你失去 effort 控制;如果账号后来又回到带后缀的
+id,这个指定也会按同样的规则重新解析。只有刚刚取到的目录才能证明某个 id 已经消失:在刷新失败、shunt
+仍使用上一次已知目录期间,所有指定都按你写下的原样发出。
+
+当目录不可用时(发现失败,或后端不响应 `fetchAvailableModels`),shunt 会回退到追加 `-{档位}` 并带上
+Pro 收敛 —— 也就是 0.40.0 的行为 —— 因此一次查不到只让你失去这次猜测,而不会让你失去这次请求。
+一次失败的查询会被记住一分钟后再重试,所以一个无法访问的控制面每分钟只花费一次有上限的请求,而不是
+每条消息一次;而且只有 Gemini 的 id 才会去查目录。配置中未识别的 `effort`,在*没有*目录时会按规则 1
+所述原样追加、不会被收敛;有目录时它会折叠到账号确实发布的档位,因为目录刚刚说明了该档位并未提供。
+在 `-tiered` 路径上它会折叠为 `medium`,因为后端会拒绝它不认识的 `thinkingLevel`。目录原样发布的
+id,以及非 Gemini 的 id(`claude-sonnet-4-6`、`gpt-oss-120b-medium`),都会原样发送。无法识别的
+`output_config.effort` 会回退到 `medium`,不会进入模型 id。明确关闭 thinking 的请求
+(`thinking.type = "disabled"`)不会获得 `thinkingLevel`:转换出的 `thinkingBudget: 0` 独自成立。
+
+Antigravity 也提供 Claude 模型,但 shunt 尚未实现它们所需的请求改写
+([#368](https://github.com/pleaseai/shunt/issues/368))。本地没有任何东西会拒绝这样的 slug ——
+它会原样抵达后端 —— 所以目前只路由 Gemini 家族的 slug。
+
+## 适配器承载的内容
+
+适配器以 Anthropic SSE 流式传输助手的**文本**和**thinking**,并原生桥接你客户端的
+**工具**:`tool_use` 变成 Gemini 的 `functionCall`,你的 `tool_result` 变成
+`functionResponse`,工具声明和工具选择也随之转换。**系统提示**
+变成 `systemInstruction`。Token 用量取自 Google 报告的计数 —— `promptTokenCount` 和
+`candidatesTokenCount` 映射到 `input_tokens` 和 `output_tokens`。
+
+**Thinking** 跟随请求:`thinking.type = "enabled"` 会用 `budget_tokens` 设置
+`thinkingConfig.thinkingBudget`(默认 `1024`),`"disabled"` 则把它设为 `0`。启用的 `thinking` 块也是
+挑选模型 effort 档位的信号之一,见上面的**路由一个模型**。
+
+此外,每个请求都会带上 Antigravity 客户端所发送的**代理身份**:`userAgent: "antigravity"`、
+`requestType: "agent"`、每个请求各自的 `requestId`,以及从对话中最早出现的用户文本推导出的 `sessionId`,好让后续
+轮次落到同一个会话。`gemini` 提供方的 Code Assist 请求不会发送其中任何一项。
+
+**工具 schema 会被调整为 Gemini 的 `Schema` 方言** —— 在本提供方以及共用同一适配器的 `gemini` 提供方上都是如此。`$schema`、`$id`、`$comment`、`propertyNames`、
+`patternProperties`、`exclusiveMinimum`、`exclusiveMaximum` 和 `const` 会被丢弃,其余关键字按原样转发。`type`
+列表保留其第一个非 `null` 项,列表中若有 `null` 则设置 `nullable: true`,只含 `null` 的列表则变成可为空的
+`string`。任何不是数组的 schema —— 无论是落到其他成员的联合类型,还是普通标量 —— 都会丢弃
+`prefixItems` 和任何不是 schema 对象的 `items`,而对象值的 `items` 原样保留;没有类型的 schema 若带有 `prefixItems`
+或数组值、对象值的 `items`,则按数组处理,否则只丢弃孤立的布尔 `items`。每个数组都以单一的 `items` schema 发送:元组 —— `prefixItems`,或 draft-07 的数组值 `items` —— 会
+折叠成一个,其中相同的位置保留其 schema,仅在非数组类型上一致的位置保留该类型,否则以第一个位置的 schema
+为准。若 `prefixItems` 旁边已经有声明了类型的 `items` schema,则原样保留该 schema 并丢弃各位置。类型位于 `anyOf`/`oneOf`/`allOf` 分支中的元素也以同样方式折叠。对元素未作任何声明的数组,或元素
+schema 未声明类型的数组,除非元素通过 `enum` 或 `properties` 暗示了类型,否则会以 `items: {"type": "string"}`
+发送。这些回退只是收窄元素类型而不是拒绝请求,因此若某个工具的元组以 `string` 类型到达,那是这一调整在起作用,
+而不是路由错误。
+
+在把生产流量路由过来之前,有两项限制值得知道:
+
+- **图像必须是内联的。** base64 的 `image` 块会变成 Gemini 的 `inlineData`。而 **URL 图像
+  源会被以 `400` 拒绝**(`URL image sources are not supported by the Gemini adapter`)。
+- **工具结果不能携带富媒体。** 内容中包含 `image` 或 `document` 块的 `tool_result` 会被拒绝。
+
+## 校验
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-gemini-3.6-flash-via-antigravity","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+确认响应的 `x-gateway-upstream` 头写的是 `antigravity`,然后
+[将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/)。
+
+<Aside type="note" title="覆盖项">
+
+`SHUNT_ANTIGRAVITY_AUTH_FILE` 可覆盖凭据路径(空值会回退到
+默认值)。`antigravity_oauth` 上游被固定到两个主机:它接受的非回环 `base_url` 只能是
+`daily-cloudcode-pa.googleapis.com`(默认)或在校验阶段仍被接受、以便照着旧文档写的配置继续能加载的
+`cloudcode-pa.googleapis.com` 上的 HTTPS —— 包括 `daily-cloudcode-pa.sandbox.googleapis.com` 在内,
+**没有其他 `googleapis.com` 主机合格**。回环主机可用于本地代理。其他任何情况都会在配置
+校验阶段被拒绝,而不是悄悄把你的订阅 token 发往别的 origin ——
+`providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
+subscription token over plaintext`,或者与之对应的 `... host <host> is neither
+daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription
+token off-origin`。
+
+生产环境并不提供 Antigravity —— `onboardUser` 和推理都不提供,推理从第一个请求起就返回一个看起来是
+假的 `429 RESOURCE_EXHAUSTED`。默认的 `base_url` 已经指向 `daily-` 控制平面。一个固定在纯生产的
+`base_url` —— `cloudcode-pa.googleapis.com` 上的 HTTPS,无端口,无路径前缀 —— 仍然能加载,但推理和
+开通都会走 `daily-cloudcode-pa.googleapis.com`,并且启动、`shunt check` 和重载都会记录一条点名该
+provider 的警告,方便你删掉 `base_url` 或把它改成 daily 主机。任何挡在后端前面的东西(一个回环代理,
+或带显式端口或路径前缀的这两个主机之一)则保持原样,通过它自身发出。
+
+[`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) 会针对你**已路由的**
+Antigravity 上游做发现 —— 或者在你还没接好路由之前,针对你所声明的 Antigravity 上游。
+只有一个候选时它直接胜出,而当有多个候选合格时,**名为 `antigravity`** 的那个胜出。如果有
+多个合格却都不叫这个名字,登录会拒绝猜测 —— 它记录一条警告并回退到默认端点,因此它开通的
+项目可能并不是你的路由所用的那个后端。请把你希望被发现的那个上游命名为 `antigravity`。
+
+</Aside>
+
+<Aside type="caution" title="`antigravity` 的含义已改变">
+
+`kind = "antigravity"` 过去运行的是本地 `agy` 二进制。现在它是 HTTP 上游,而
+子进程传输迁移到了 `kind = "antigravity_cli"`(内置提供方 `antigravity-cli`)。
+仍沿用旧含义的配置会按名称被拒绝,而不是被悄悄改指到别处;被路由到的
+`antigravity` 提供方若没有凭据则拒绝启动:
+
+```text
+provider `antigravity` is routed but has no credential. It is now the native HTTP upstream, not the
+local `agy` CLI. Run `shunt login antigravity` to authenticate it, or route to `antigravity-cli` to
+stay on the deprecated subprocess transport.
+```
+
+[`shunt check`](/zh-cn/reference/cli/#shunt-check) 会离线运行同一个守卫,因此 CI 能在上线前
+发现这种配置错误。该检查**只查存在性** —— 它不会打开凭据文件,
+所以空的或过期的文件仍会通过,并在之后的请求路径上失败。
+
+</Aside>

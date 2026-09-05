@@ -25,9 +25,10 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/admin/logout` | 브라우저 세션 삭제 |
 | `GET` | `/admin/accounts` | Claude 계정 스토어 메타데이터: 이름, 종류, 만료, UUID; 토큰 자체는 절대 반환하지 않음 |
 | `GET` | `/admin/accounts/codex` | Codex 계정 스토어 메타데이터: 이름, 만료, ChatGPT 계정 ID; 토큰 자체는 절대 반환하지 않음 |
-| `GET` | `/admin/pool` | `claude_oauth`, `chatgpt_oauth`, `kimi_oauth` 프로바이더별 풀 상태; 각 account 객체에는 선택적인 `plan` 문자열이 포함될 수 있고 파일에서 읽은 값은 이후 profile 조회로 더 정밀하게 보정될 수 있으며, Codex 행은 보고된 5시간/7일 사용량을 담으며 `7d_oi`에는 Codex 대응 항목이 없음 |
+| `GET` | `/admin/pool` | `claude_oauth`, `chatgpt_oauth`, `kimi_oauth` 프로바이더별 풀 상태; 각 account 객체에는 선택적인 `plan` 문자열이 포함될 수 있고 파일에서 읽은 값은 이후 profile 조회로 더 정밀하게 보정될 수 있으며, Codex 행은 보고된 5시간/7일 사용량을 담으며 `7d_oi`에는 Codex 대응 항목이 없음; 각 account에는 불리언 `needs_relogin`도 실린다: 크리덴셜이 종결적으로 거부되었거나(`invalid_grant`), 리프레시 토큰이 아예 없거나, 회전된 토큰 쌍을 저장하지 못해 잃어버린 경우로, 어떤 재시도로도 되살릴 수 없고 운영자 재로그인만이 해결한다. 쿨다운 필드와 **독립적으로** 보고된다 — 쿨다운은 저절로 만료되지만 이 표식은 남는다 — 그리고 대시보드의 두 표 모두 쿼터 일시정지의 `cooling`이 아니라 **needs re-login**으로 표시한다. 인메모리라 재시작하면 초기화되고, 해당 계정의 다음 종결 실패에서 다시 세워진다. 어떤 provider 테이블도 선택한 적 없는 계정에도 — `has_state: false`와 함께 — 보고된다. admin refresh 프로브가 판정을 스토어 이름으로 기록하기 때문이다. |
 | `POST` | `/admin/accounts/claude` | `{name, mode}`로 Claude 브라우저 프로비저닝 시작. `mode`는 `oauth` 또는 `setup_token`이며, 생략하면 `setup_token`; `{authorize_url}` 반환 |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `<code>#<state>`가 담긴 `{code}`로 Claude 프로비저닝 완료; 계정을 저장하고 실제 사용 여부(live)를 보고 |
+| `POST` | `/admin/accounts/claude/{name}/refresh` | **imported** Claude 계정의 refresh 그랜트를 즉시 실행해 로그인이 아직 살아 있는지 보고. 프로바이더 토큰 엔드포인트를 호출하므로 rate limit이 걸리며, 공용 크리덴셜 스토어를 반드시 경유해 프록시 경로의 갱신과 경합하지 않는다. 새 `expires_at`만 반환하고 토큰 물질은 절대 반환하지 않으며, 프로브 자신의 clear 이후 풀에서 다시 읽은 `needs_relogin`을 함께 싣는다 — 풀이 여전히 죽은 것으로 보는 계정에도 그랜트는 성공할 수 있으므로, `/admin/pool`과 모순되는 복구를 주장하지 않고 그대로 보고한다. `setup_token` 계정(refresh 그랜트 없음)이나 모든 종결 판정에는 `400`, 일시적 실패에는 `502` |
 | `DELETE` | `/admin/accounts/claude/{name}` | 해당 이름 Claude 계정의 스토어 파일 제거 |
 | `POST` | `/admin/accounts/codex` | `{name}`으로 ChatGPT OAuth 시작; `{authorize_url}` 반환 |
 | `POST` | `/admin/accounts/codex/{name}/complete` | 전체 localhost redirect URL 또는 `<code>#<state>`가 담긴 `{code}`로 Codex 프로비저닝 완료 |
@@ -47,7 +48,7 @@ spend-limit 라우트는 부팅 시 [`[server.spend]`](/ko/reference/configurati
 
 인바운드 Codex Responses 및 분석 라우트는 [`[server.codex_endpoint]`](/ko/reference/configuration/)가 구성된 경우에만 존재합니다. Responses 라우트는 OpenAI Responses 요청과 응답을 그대로 중계합니다. 두 분석 라우트는 같은 인바운드 인증 정책을 적용하고, 클라이언트 payload를 전달하거나 보관하지 않으며, 인증 후에는 잘못된 JSON이나 초과 크기 본문에도 `200 {}`를 반환합니다. 정제된 이벤트 이름만 `shunt.codex_client_events`에 기록되며, 메트릭 sink가 없으면 순수 폐기 sink로 동작합니다.
 
-`/usage` 라우트는 [`[server.usage]`](/ko/reference/configuration/#serverusage-선택)가 구성된 경우에만 존재하며, [`[server.auth]`](/ko/guides/shared-gateway/)도 필요합니다. `GET /v1/messages`와 같은 클라이언트 토큰으로 인증하고 공유 계정 풀의 창별 잔여 여유, 리셋 시각, `ok`/`degraded`/`exhausted` 상태를 반환합니다. 계정 신원, 수, priority, `disabled`, 임계값, 계정별 수치는 공개하지 않습니다. 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 `null`입니다. Codex 응답의 `x-codex-*` 헤더는 5시간 및 공유 주간 창을 채웁니다. Codex에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다.
+`/usage` 라우트는 [`[server.usage]`](/ko/reference/configuration/#serverusage-선택)가 구성된 경우에만 존재하며, [`[server.auth]`](/ko/guides/shared-gateway/)도 필요합니다. `GET /v1/messages`와 같은 클라이언트 토큰으로 인증하고 공유 계정 풀의 창별 잔여 여유, 리셋 시각, `ok`/`degraded`/`exhausted` 상태를 반환합니다. 계정 신원, 수, priority, `disabled`, 임계값, 계정별 수치는 공개하지 않습니다. 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 `null`입니다. Codex 응답의 `x-codex-*` 헤더와 선택적인 `wham/usage` 폴링은 관측된 5시간 및 공유 주간 창을 채웁니다. Codex에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다.
 
 `GET /`와 `GET /health`는 [`[server.auth]`](/ko/guides/shared-gateway/)가 활성화되어 있어도 열린 채로 유지되며(헬스체크 도구는 보통 토큰을 첨부할 수 없음) 민감한 것을 노출하지 않습니다 — 오직 상태, 버전, 그리고 이미 공개된 엔드포인트 목록만입니다.
 

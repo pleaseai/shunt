@@ -84,7 +84,10 @@ pub struct AnthropicSseMachine {
     /// non-streaming JSON collectors take it here (via
     /// [`Self::take_backend_error`]) so they can return a gateway error instead
     /// of a `200 OK` carrying the partial/empty content accumulated so far.
-    backend_error: Option<Value>,
+    /// Paired with the client-facing status the envelope was mapped against
+    /// ([`backend_error_status`]): `429` for an in-stream `rate_limit_exceeded`,
+    /// else `502`.
+    backend_error: Option<(StatusCode, Value)>,
 }
 
 #[derive(Debug, Clone)]
@@ -184,11 +187,12 @@ impl AnthropicSseMachine {
             }
             "error" | "response.failed" => {
                 self.stopped = true;
-                let value = map_error_value(&event.data, StatusCode::BAD_GATEWAY);
+                let status = backend_error_status(&event.data);
+                let value = map_error_value(&event.data, status);
                 // Build the SSE event first (borrowing `value`), then move
                 // ownership into `backend_error` — avoids cloning the envelope.
                 let sse_event = sse("error", &value);
-                self.backend_error = Some(value);
+                self.backend_error = Some((status, value));
                 vec![sse_event]
             }
             _ => Vec::new(),
@@ -200,7 +204,7 @@ impl AnthropicSseMachine {
     /// the machine so the non-streaming JSON collectors can hand it straight to
     /// the response body without cloning; the event is terminal, so the machine
     /// is dropped right after (issue #113).
-    pub fn take_backend_error(&mut self) -> Option<Value> {
+    pub fn take_backend_error(&mut self) -> Option<(StatusCode, Value)> {
         self.backend_error.take()
     }
 
@@ -886,6 +890,7 @@ pub fn parse_sse_events(input: &str) -> Vec<ResponseEvent> {
 pub fn map_error_value(value: &Value, status: StatusCode) -> Value {
     let message = error_message(value);
     let message = context_overflow_message(value, &message).unwrap_or(message);
+    let message = misalignment_steer_message(value, &message).unwrap_or(message);
     json!({
         "type": "error",
         "error": {
@@ -959,6 +964,57 @@ pub fn client_facing_status(status: StatusCode) -> StatusCode {
     }
 }
 
+/// The upstream error `code`, wherever the payload shape puts it: a plain
+/// `{"error":{"code":..}}` object, a streaming `response.failed` event nesting it
+/// under `response`, or a bare top-level `code`. Empty when absent.
+fn error_code(value: &Value) -> &str {
+    value
+        .pointer("/error/code")
+        .or_else(|| value.pointer("/response/error/code"))
+        .or_else(|| value.get("code"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+/// Client-facing status for a backend-sent `error` / `response.failed` event.
+///
+/// These events ride a `200 OK` stream, so there is no upstream HTTP status to
+/// preserve; the default is the `502` gateway error. The one code the Codex
+/// backend uses for throttling, `rate_limit_exceeded` (openai/codex classifies
+/// it as its own `RateLimitExceeded` error since rust-v0.153), maps to `429` so
+/// the client sees `rate_limit_error` — the same envelope an HTTP 429 produces.
+/// Status only: the event follows a 2xx acceptance, so it never re-enters
+/// failover (`docs/upstreams-failover.md` §3).
+pub fn backend_error_status(value: &Value) -> StatusCode {
+    if error_code(value) == "rate_limit_exceeded" {
+        StatusCode::TOO_MANY_REQUESTS
+    } else {
+        StatusCode::BAD_GATEWAY
+    }
+}
+
+/// Append the backend's public steering instruction to a
+/// `misalignment_policy_violation` error message.
+///
+/// Since openai/codex rust-v0.153 the Codex backend attaches
+/// `error.misalignment.steer.message` — a customer-facing sentence telling the
+/// agent how to proceed — alongside the generic policy message. Claude Code
+/// shows the error message to the user, so the steer is only actionable if it
+/// travels in the message. Returns `None` when the code does not match or the
+/// steer is absent/empty, leaving the message untouched.
+fn misalignment_steer_message(value: &Value, message: &str) -> Option<String> {
+    if error_code(value) != "misalignment_policy_violation" {
+        return None;
+    }
+    let steer = value
+        .pointer("/error/misalignment/steer/message")
+        .or_else(|| value.pointer("/response/error/misalignment/steer/message"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|steer| !steer.is_empty())?;
+    Some(format!("{message}\n\n{steer}"))
+}
+
 fn error_message(value: &Value) -> String {
     // OpenAI Responses errors use {"error":{"message":...}} or {"message":...};
     // streaming `response.failed` events nest it at {"response":{"error":...}};
@@ -985,12 +1041,7 @@ fn error_message(value: &Value) -> String {
 /// size the retry. Upstream providers phrase the same failure in their own
 /// words, which would otherwise strand the session until a manual /compact.
 pub fn context_overflow_message(value: &Value, message: &str) -> Option<String> {
-    let code = value
-        .pointer("/error/code")
-        .or_else(|| value.pointer("/response/error/code"))
-        .or_else(|| value.get("code"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let code = error_code(value);
     let lower = message.to_lowercase();
     // "exceeds the limit" alone also appears in quota/rate errors ("exceeds the
     // limit of 1000000 tokens per minute"); requiring "prompt" or "token count"

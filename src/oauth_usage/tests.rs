@@ -35,6 +35,7 @@ fn snapshot(
         utilization_7d_oi: None,
         reset_7d_oi: None,
         status: None,
+        needs_relogin: false,
     }
 }
 

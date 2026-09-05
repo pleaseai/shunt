@@ -1,0 +1,279 @@
+---
+title: Antigravity
+description: HTTP 経由で Google Antigravity バックエンドに接続する — ログイン、プロジェクトディスカバリー、モデルスラッグ、thinking、そしてアダプターが伝えるもの。
+---
+
+組み込みの **`antigravity`** プロバイダーは、`daily-cloudcode-pa.googleapis.com` において HTTP 経由で
+Google の **Antigravity** バックエンドに到達します。このホストは Antigravity クライアント自身が
+ディスカバリーと推論の両方に使う `daily-` コントロールプレーンです。`gemini` プロバイダーと同じ Code Assist プロトコルを話し —
+shunt は Anthropic Messages を `generateContent` / `streamGenerateContent` へ変換します — ただし
+Antigravity のサブスクリプショントークンで認証し、プロジェクトディスカバリーの際に自身を
+`ideType: ANTIGRAVITY` として名乗ります。
+
+Antigravity には、もう 1 つ古い転送があります。`kind = "antigravity_cli"` はローカルの `agy` バイナリを
+サブプロセスとして実行するもので、**非推奨**です —
+[非推奨の `antigravity-cli` 転送](/ja/guides/providers/#非推奨の-antigravity_cli-転送)を参照してください。
+このページは HTTP プロバイダーを扱い、そうした仕組みは一切必要としません。
+
+<Aside type="caution" title="Antigravity の利用規約">
+
+Google の [Antigravity 利用規約](https://antigravity.google/terms)は、この使い方を名指ししています。「サードパーティの
+ソフトウェア、ツール、サービスを使ってサービスにアクセスすること（例：OpenClaw を Antigravity OAuth と
+組み合わせて使うこと）は本契約の違反」であり、そのような違反は「Antigravity および／または Gemini CLI
+アカウントの停止または解約の根拠となり得る」とされています。shunt は Antigravity OAuth を使う
+サードパーティのソフトウェアなので、このプロバイダーへのルーティングはその条項にそのまま該当します。
+サブスクリプションがそのリスクに見合うかどうかはあなた自身の判断であり、ここにあるものは何も
+アカウントを守ってはくれません。
+
+</Aside>
+
+## クイックスタート
+
+コーディングエージェントにセットアップを任せることもできます — `shunt add` は組み込みのセットアップ
+ブループリントを出力します（オフラインかつ読み取り専用で、設定を編集するのはエージェントです。この
+コマンド自体は編集しません）。
+
+```bash
+shunt add upstream antigravity --print | claude
+```
+
+または、以下の手順に沿って手動で設定してください。
+
+## 1. ログイン
+
+```bash
+shunt login antigravity
+```
+
+これは Antigravity 自身の OAuth クライアントを使う Google の authorization-code フローを実行し、shunt が
+読み込んで自動リフレッシュする `~/.shunt/antigravity-auth.json` を書き込みます。このフローは 5 つのスコープを
+要求します。
+
+```text
+https://www.googleapis.com/auth/cloud-platform
+https://www.googleapis.com/auth/userinfo.email
+https://www.googleapis.com/auth/userinfo.profile
+https://www.googleapis.com/auth/cclog
+https://www.googleapis.com/auth/experimentsandconfigs
+```
+
+後ろの 2 つが、**Gemini CLI のログインをここで流用できず、その逆もできない**理由です。
+`~/.gemini/oauth_creds.json` のトークンが `cclog` や `experimentsandconfigs` を持つことは決してありません。
+`google_oauth` と `antigravity_oauth` は互換ではありません。
+
+ログイン時には Code Assist プロジェクトも解決し — まず `loadCodeAssist`、次に初めてのアカウントには
+`onboardUser` でプロビジョニングします — プロジェクト id を認証情報ファイルに保存します。最初のリクエストの
+手前でディスカバリーが走ることはありません。ディスカバリーが失敗した場合でも、ログインはトークンを保存し、
+最初のリクエストで再試行します。
+
+## 2. upstream を設定する
+
+このプロバイダーは組み込みなので、`provider = "antigravity"` を指定した `[[routes]]` エントリは、自前の
+プロバイダーテーブルなしで機能します。順序付き upstream として宣言する場合は事情が異なります。
+**Antigravity の種別には `[[upstreams]]` プリセットがない**ため、そこでは `provider = "antigravity"` を使えず、
+`kind`、`base_url`、`auth` を自分で設定する必要があります。
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # ルーティングされないモデル（例 claude-*）のデフォルトとして Anthropic を残す
+
+[[upstreams]]
+name = "antigravity"
+kind = "antigravity"
+base_url = "https://daily-cloudcode-pa.googleapis.com"
+auth = "antigravity_oauth"
+```
+
+順序付きの `[[upstreams]]` は shunt の組み込みプロバイダーを置き換えるため、明示的な設定ではフォールバック先の
+`anthropic` デフォルトも宣言する必要があります（`server.default_provider` のデフォルトは `anthropic`）。
+
+従来の `[providers.antigravity]` テーブル形式も引き続きサポートされます — ただし `[[upstreams]]` と
+`[providers.*]` を 1 つのファイルで混在させないでください。
+
+## 3. モデルをルーティングする
+
+shunt はこのプロバイダーについてモデルの許可リストを持ちません。解決された `upstream_model` はそのまま
+バックエンドへ送られ、判断はバックエンドが行います。Antigravity は Code Assist の `gemini` プロバイダーが
+**受け付けない** Gemini ファミリーのスラッグを提供します — ただし **effort を id に**含めて、2 つの形の
+どちらかで公開します。`-low` / `-medium` / `-high` のサフィックス（Pro には `-low` と `-high` しか
+ありません）か、effort をリクエストのフィールドとして受け取る単一の `-tiered` id です。**どちらの形が
+提供されるかはアカウントごとに異なり、時間とともに変わります** — あるアカウントには
+`gemini-3.8-flash-tiered` が、別のアカウントには `gemini-3.8-flash-medium` が提供されます。
+現在のカタログは `agy models` で一覧できます。本稿の執筆時点では `gemini-3.8-flash-*`、
+`gemini-3.7-flash-*`、`gemini-3.6-flash-*`、`gemini-3.1-pro-low` / `-high`、`claude-sonnet-4-6`、
+`claude-opus-4-6-thinking`、`gpt-oss-120b-medium` が含まれます。
+
+サフィックスのないスラッグは**提供されません**。`daily-cloudcode-pa.googleapis.com` は `404` を返します。
+本番ホストでは、以前の shunt のリクエスト — サフィックスのない id と素の Code Assist エンベロープ — が
+レート制限のように見える `429 RESOURCE_EXHAUSTED`（"check quota"）で返ってきました。ただしプローブは
+両方の入力を同時に変えているため、そのどちらが 429 を生んだのかは確認できていません。
+
+どちらの形かを推測しなくて済むよう、shunt はリクエストの経路でアカウント自身のカタログ
+（`fetchAvailableModels`）を読み — アカウントごとに 10 分キャッシュ、時間制限つき、失敗時はそのまま
+続行 — そのアカウントが実際に公開している id を選びます。
+
+ローカルのエイリアスを、正確な Antigravity のモデルスラッグへマッピングします:
+
+```toml
+[[models]]
+id = "claude-gemini-3.6-flash-via-antigravity"
+display_name = "[AGY ] Gemini-3.6-Flash"
+
+[[routes]]
+model = "claude-gemini-3.6-flash-via-antigravity"
+provider = "antigravity"
+upstream_model = "gemini-3.6-flash-medium"
+```
+
+サフィックスを自分で書く必要はありません。サフィックスのない `gemini-*` の id については、shunt が
+ティアを解決して付与します。最初に当てはまったシグナルが使われます:
+
+1. `[[routes]]` エントリまたはプロバイダーの `effort` — 明示的な指定です。ここでも `xhigh` と `max`
+   は `high` に畳まれ、大文字小文字と前後の空白は無視されます。shunt が知らないティアは書かれたまま
+   （空白を取り除き小文字にして）通るので、カタログに後から追加されるティアを先に指定できます。
+2. リクエストの `output_config.effort`（Claude Code は `low`/`medium`/`high`/`xhigh`/`max` を送り、
+   `xhigh` と `max` は `high` に畳まれます）。
+3. `thinking.type = "enabled"` — `budget_tokens` が 2048 以下なら `low`、8192 以下なら `medium`、
+   それより大きい場合は `high` です。budget を指定しない有効なブロックは、変換後のリクエストが載せる
+   のと同じデフォルトの `1024` を使うため、`low` になります。
+4. それ以外は `medium` です。
+
+そのティアが何になるかはカタログが決めます。アカウントが `{id}-{ティア}` を公開していればそれが送られ
+ます。`{id}-tiered` だけを公開している場合、shunt は tiered の id を送り、ティアは
+`generationConfig.thinkingConfig.thinkingLevel` に載せます（バックエンドは両方同時に受け付けるので、
+既存の `thinkingBudget` はそのままです）。どちらもなく、同じモデルの別のティアが公開されている場合は、
+最も近い公開ティアが選ばれ、同点なら上のティアになります — `-pro` の id での `medium` が `-high` に
+なるのは Pro 専用の規則ではなく、この規則によるものです。
+
+手で書いたサフィックスも同じ扱いです。アカウントが `gemini-3.6-flash-medium` をもう公開していない
+場合、そのサフィックスはどのティアを望んだかをまだ示しているので、shunt はカタログが 404 だと確認した
+ばかりの id をそのまま送らず、上のルールで解決し直します。カタログがそのファミリーを何も知らなければ、
+書いた値はそのまま残ります。自分で指定した `-tiered` の id は id を保ったまま `effort` を
+`thinkingLevel` として運び続けるので、実際に公開されている id を書いても effort の制御は失われません。
+アカウントが後でサフィックス付きの id に戻った場合も、その指定は同じ規則で解決し直されます。id が
+消えたと言えるのはたった今取得したカタログだけなので、更新に失敗して最後に知っていたカタログで動いて
+いる間は、すべての指定が書いたとおりに送られます。
+
+カタログが使えない場合（ディスカバリー障害、`fetchAvailableModels` に答えないバックエンド）は、Pro の
+丸めを含む `-{ティア}` の付与 — 0.40.0 の挙動 — にフォールバックするので、参照の失敗で失うのは
+推測であってリクエストではありません。失敗した参照は 1 分間記憶してから再試行するため、到達できない
+コントロールプレーンのコストはメッセージごとではなく 1 分あたり 1 回に抑えられ、参照自体も Gemini の id
+に対してのみ行われます。設定に書かれた認識できない `effort` は、カタログが*ない*ときはルール 1 のとおり
+書かれたまま付与され、丸められません。カタログがあるときは、そのティアが提供されていないとアカウントが
+たった今示したことになるので、公開されているティアへ畳まれます。`-tiered` の経路では、バックエンドが
+知らない `thinkingLevel` を拒否するため `medium` に畳まれます。カタログがそのまま公開している id、
+そして Gemini 以外の id（`claude-sonnet-4-6`、`gpt-oss-120b-medium`）は書かれたまま送られます。
+認識できない `output_config.effort` は、モデル id に反映されずに `medium` へフォールバックします。
+thinking を明示的に無効にしたリクエスト（`thinking.type = "disabled"`）に `thinkingLevel` が付くことは
+ありません。変換された `thinkingBudget: 0` がそのまま残ります。
+
+Antigravity は Claude モデルも提供していますが、shunt はそれらが必要とするリクエストの書き換えをまだ実装して
+いません（[#368](https://github.com/pleaseai/shunt/issues/368)）。そうしたスラッグをローカルで拒否するものは
+何もなく — 書かれたままバックエンドへ到達します — そのため当面は Gemini ファミリーのスラッグだけを
+ルーティングしてください。
+
+## アダプターが伝えるもの
+
+アダプターはアシスタントの**テキスト**と**thinking** を Anthropic SSE としてストリーミングし、クライアントの
+**ツール**をネイティブにブリッジします: `tool_use` は Gemini の `functionCall` になり、あなたの `tool_result` は
+`functionResponse` になり、ツール宣言とツール選択もあわせて変換されます。**システムプロンプト**は
+`systemInstruction` になります。トークン使用量は Google が報告する値です — `promptTokenCount` と
+`candidatesTokenCount` が `input_tokens` と `output_tokens` に対応します。
+
+**Thinking** はリクエストに従います: `thinking.type = "enabled"` は `budget_tokens`（デフォルト `1024`）から
+`thinkingConfig.thinkingBudget` を設定し、`"disabled"` はそれを `0` にします。有効な `thinking` ブロックは、
+上の**モデルをルーティングする**で説明したとおり、モデルの effort ティアを決めるシグナルの 1 つでもあります。
+
+さらにすべてのリクエストは、Antigravity クライアントが送る**エージェント識別情報**を伴います:
+`userAgent: "antigravity"`、`requestType: "agent"`、リクエストごとの `requestId`、そして続きのターンが
+同じセッションに届くよう会話中で最初に現れるユーザーテキストから導出した `sessionId` です。`gemini` プロバイダーの
+Code Assist リクエストは、これらをいずれも送りません。
+
+**ツールスキーマは Gemini の `Schema` 方言に合わせて調整されます** — このプロバイダーでも、同じアダプターを共有する
+`gemini` プロバイダーでも同様です。 `$schema`、`$id`、`$comment`、
+`propertyNames`、`patternProperties`、`exclusiveMinimum`、`exclusiveMaximum`、`const` は削除され、それ以外の
+キーワードは書かれたとおりに転送されます。`type` のリストは最初の非 `null` 項目を保ち、リストに `null` があれば
+`nullable: true` が設定され、`null` だけのリストは nullable な `string` になります。配列でない
+スキーマ — 別のメンバーに決まったユニオンでも、単なるスカラーでも — は `prefixItems` とスキーマオブジェクトでない `items` を捨て、
+オブジェクト値の `items` はそのまま保ちます。型のないスキーマは、`prefixItems` か配列値またはオブジェクト値の `items` を
+持てば配列として扱われ、そうでなければ単独の boolean の `items` だけを捨てます。すべての配列は単一の `items`
+スキーマで送られます: タプル — `prefixItems`、または draft-07 の配列値 `items` — は 1 つに畳み込まれ、同一の
+位置はそのスキーマを保ち、配列以外の型だけが一致する位置はその型を保ち、それ以外は先頭の位置のスキーマが
+残ります。`prefixItems` の隣に型を宣言した `items` スキーマがすでにある場合は、そのスキーマがそのまま保たれ、
+位置は捨てられます。型が `anyOf`/`oneOf`/`allOf` の分岐にある要素も同じ方法で畳み込まれます。要素について何も述べない
+配列や、要素スキーマが型を宣言しない配列は、要素が `enum` や `properties` で型を暗示しない限り
+`items: {"type": "string"}` として送られます。これらのフォールバックはリクエストを拒否する代わりに要素の型を
+狭めるので、タプルが `string` 型で届くツールはルーティングの誤りではなく、この調整が働いた結果です。
+
+本番トラフィックをルーティングする前に知っておく価値のある制限が 2 つあります。
+
+- **画像はインラインである必要があります。** base64 の `image` ブロックは Gemini の `inlineData` になります。
+  **URL の画像ソースは `400` で拒否されます**（`URL image sources are not supported by the Gemini adapter`）。
+- **ツール結果はリッチメディアを運べません。** `image` や `document` ブロックを含む内容の `tool_result` は
+  拒否されます。
+
+## 検証
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-gemini-3.6-flash-via-antigravity","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+レスポンスの `x-gateway-upstream` ヘッダーが `antigravity` を示すことを確認したら、
+[Claude Code を shunt へ向け](/ja/guides/connect-claude-code/)てください。
+
+<Aside type="note" title="オーバーライド">
+
+`SHUNT_ANTIGRAVITY_AUTH_FILE` は認証情報のパスを上書きします（空の値はデフォルトへフォールバックします）。
+`antigravity_oauth` の upstream は 2 つのホストに固定されます。受け入れられるループバック以外の `base_url`
+は `daily-cloudcode-pa.googleapis.com`（デフォルト）か、古いドキュメントに沿って書かれた設定が読み込め
+続けるよう検証では引き続き受け入れられる `cloudcode-pa.googleapis.com` への HTTPS だけです — `daily-cloudcode-pa.sandbox.googleapis.com` を含め、
+**ほかの `googleapis.com` ホストは該当しません**。ローカルプロキシのためにループバックホストは許可されます。
+それ以外は、サブスクリプショントークンを黙ってオリジン外へ送るのではなく、設定検証の段階で拒否されます —
+`providers.<name> uses auth = "antigravity_oauth" but base_url is not https; refusing to send a
+subscription token over plaintext`、または対応する `... host <host> is neither
+daily-cloudcode-pa.googleapis.com nor cloudcode-pa.googleapis.com; refusing to send a subscription
+token off-origin` です。
+
+本番は Antigravity を提供していません — `onboardUser` も推論もです。推論は最初のリクエストから偽物めいた
+`429 RESOURCE_EXHAUSTED` を返します。デフォルトの `base_url` はすでに `daily-` コントロールプレーンを
+指しています。素の本番に固定した `base_url` — `cloudcode-pa.googleapis.com` への HTTPS で、ポートもパス
+プレフィックスもないもの — も引き続き読み込めますが、推論も onboard も
+`daily-cloudcode-pa.googleapis.com` へ向かい、起動時・`shunt check`・リロードでその provider 名を含む警告が
+ログに出るので、`base_url` を外すか daily ホストに向け直せます。バックエンドの手前に何かが挟まっている場合
+（ループバックプロキシ、あるいはどちらかのホストに明示的なポートやパスプレフィックスを伴うもの）はそのまま
+にされ、それ自身を通して送られます。
+
+[`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) は、あなたの**ルーティングされた**
+Antigravity upstream に対してディスカバリーを行います — あるいは、まだルートを組んでいなければ、宣言した
+Antigravity upstream に対して行います。候補が 1 つならそれが無条件に選ばれ、複数が該当する場合は
+**`antigravity` という名前の**ものが選ばれます。複数が該当し、どれもその名前を持たない場合、ログインは推測を
+拒否します — 警告をログに出してデフォルトのエンドポイントへフォールバックするため、プロビジョニングされる
+プロジェクトがあなたのルートの使うバックエンドと一致しない可能性があります。ディスカバリーさせたい upstream に
+`antigravity` という名前を付けてください。
+
+</Aside>
+
+<Aside type="caution" title="`antigravity` の意味が変わりました">
+
+`kind = "antigravity"` はかつてローカルの `agy` バイナリを実行していました。現在は HTTP の上流であり、
+サブプロセス転送は `kind = "antigravity_cli"`（組み込みプロバイダー `antigravity-cli`）へ移動しました。
+古い意味のまま残っている設定は、別の対象へ差し替えられるのではなく名前によって拒否され、認証情報のないまま
+ルーティングされた `antigravity` プロバイダーは起動を拒否します:
+
+```text
+provider `antigravity` is routed but has no credential. It is now the native HTTP upstream, not the
+local `agy` CLI. Run `shunt login antigravity` to authenticate it, or route to `antigravity-cli` to
+stay on the deprecated subprocess transport.
+```
+
+[`shunt check`](/ja/reference/cli/#shunt-check) も同じガードをオフラインで実行するため、CI がロールアウト前に
+この設定ミスを検出できます。このチェックは**存在確認のみ**です — 認証情報を開かないため、空または古い
+ファイルでも通過し、後でリクエスト経路で失敗します。
+
+</Aside>

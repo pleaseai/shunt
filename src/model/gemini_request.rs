@@ -12,6 +12,11 @@ const GEMINI_3_MODEL_PREFIX: &str = "gemini-3";
 const GEMINI_TOOL_USE_ID_PREFIX: &str = "call_gemini_v1_";
 // Google documents this exact value for imported/custom Gemini 3 function-call history.
 const GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER: &str = "context_engineering_is_the_way to_go";
+/// Budget an enabled `thinking` block asks for when it names none. Shared with
+/// `crate::model::antigravity_request`, which reads the same block to pick an
+/// effort tier — the two must not drift apart on what "enabled, no budget"
+/// means.
+pub(crate) const DEFAULT_THINKING_BUDGET: u64 = 1024;
 
 fn bad_request(message: impl Into<String>) -> AdapterError {
     AdapterError {
@@ -231,14 +236,35 @@ fn translate_messages(request: &Value, model: &str) -> Result<Vec<Value>, Adapte
         }
 
         if !parts.is_empty() {
-            contents.push(json!({
-                "role": role,
-                "parts": parts
-            }));
+            push_content(&mut contents, role, parts);
         }
     }
 
     Ok(contents)
+}
+
+/// Append a translated turn, merging consecutive `user` turns into one.
+///
+/// Claude Code's `mid-conversation-system-2026-04-07` beta inserts `system`-role
+/// messages into `messages`, including between an assistant `tool_use` and the
+/// user's `tool_result`. Those fold to `user` here, which would otherwise emit a
+/// standalone text turn between a `functionCall` and its `functionResponse` —
+/// the Gemini API rejects that ordering. Merging keeps the reminder text and the
+/// `functionResponse` in the same turn. `model` turns are never merged: shifting
+/// their part indices would misalign thought signatures.
+fn push_content(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
+    if role == "user" {
+        if let Some(previous) = contents
+            .last_mut()
+            .filter(|previous| previous["role"] == "user")
+        {
+            if let Some(existing) = previous.get_mut("parts").and_then(Value::as_array_mut) {
+                existing.extend(parts);
+                return;
+            }
+        }
+    }
+    contents.push(json!({ "role": role, "parts": parts }));
 }
 
 fn decode_tool_use_signature(id: &str) -> Option<String> {
@@ -325,9 +351,46 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
             ] {
                 map.remove(key);
             }
-            for child in map.values_mut() {
-                sanitize_gemini_schema(child, depth + 1)?;
+            for (key, child) in map.iter_mut() {
+                match key.as_str() {
+                    // Maps of schemas keyed by names the *tool* chose. The
+                    // values are schemas; the keys are not keywords, so a
+                    // property called `const` or `enum` must be neither
+                    // stripped nor skipped on account of its name.
+                    "properties" | "$defs" | "definitions" | "dependentSchemas" => {
+                        if let Value::Object(schemas) = child {
+                            for schema in schemas.values_mut() {
+                                sanitize_gemini_schema(schema, depth + 1)?;
+                            }
+                        }
+                    }
+                    // Also keyed by property names. `dependentRequired` maps
+                    // each to a list of names — instances, left alone — and
+                    // draft-07 `dependencies` maps each to either that list
+                    // or a schema. Walking the map itself would read a
+                    // property called `items` as the array keyword.
+                    "dependentRequired" => {}
+                    "dependencies" => {
+                        if let Value::Object(entries) = child {
+                            for entry in entries.values_mut().filter(|entry| entry.is_object()) {
+                                sanitize_gemini_schema(entry, depth + 1)?;
+                            }
+                        }
+                    }
+                    // `default`, `example(s)` and `enum` hold *instances*, not
+                    // schemas. Walking them would strip keys from — and, worse,
+                    // invent an `items` inside — data the tool declared verbatim.
+                    "default" | "example" | "examples" | "enum" => {}
+                    _ => sanitize_gemini_schema(child, depth + 1)?,
+                }
             }
+            // After the children, so the tuple positions folded into `items`
+            // below are already sanitized: an element schema that is itself an
+            // array has its own `items` by now, and two positions that differ
+            // only in a key just stripped are seen as the duplicates they are.
+            flatten_type_list(map);
+            drop_tuple_keywords_from_non_array(map);
+            give_array_schema_items(map);
         }
         Value::Array(array) => {
             for child in array {
@@ -337,6 +400,322 @@ fn sanitize_gemini_schema(value: &mut Value, depth: usize) -> Result<(), Adapter
         _ => {}
     }
     Ok(())
+}
+
+/// Make sure an array schema carries the one `items` schema the Gemini
+/// backend requires, deriving it from a JSON Schema tuple when that is all
+/// the tool declared.
+///
+/// The backend validates function declarations against its own `Schema`
+/// message, and there an array without `items` is a hard `400` for the whole
+/// request (`…properties[where].items.items: missing field.`). Tools written
+/// against JSON Schema describe a fixed-shape array — `[field, operator,
+/// value]` — as a tuple: `prefixItems` in 2020-12, an array-valued `items` in
+/// draft-07. Neither is a Gemini `Schema` and neither leaves the array with the
+/// single `items` schema it needs, so the positions are folded into one.
+///
+/// `Schema` also declares `type` REQUIRED on *every* node and has no union of
+/// its own, so the folded schema has to carry a type: an `anyOf` node with no
+/// `type` is the same missing-field failure one level down, and it is the shape
+/// Google's own bridges collapse rather than forward. A position contributes
+/// the type it declares — directly, through `anyOf`/`oneOf`/`allOf` arms, or
+/// through what an `enum` of uniformly typed values or a `properties` map
+/// implies; a position that declares nothing (the JSON
+/// Schema "anything" slot) contributes nothing. The contributions collapse to
+/// the single schema when they agree, to their shared `type` when they agree on
+/// that much, and otherwise to the first position's schema. When no position
+/// carries a type — or the array declares nothing about its elements at all —
+/// the element is declared a string, matching CLIProxyAPI's fallback (see
+/// `.please/docs/research/md/003-json-schema-sanitization-for-gemini-functiondeclar.md`).
+/// An `items` schema that is present but declares no type is the same
+/// missing field one level down. One whose type lives in composition arms,
+/// or that sits beside `prefixItems`, is folded as one more position; `{}` —
+/// the JSON Schema "anything" element — and its kin are otherwise given the
+/// type they imply (through `enum` or `properties`) and failing that
+/// `string`, as opencode's bridge does, with the rest of the schema kept.
+/// Those last resorts trade precision for a
+/// request that reaches the model at all: the cost is a narrowed element
+/// type, not a rejected request.
+///
+/// A schema that declares `prefixItems` or `items` and no `type` at all is an
+/// array in everything but name — JSON Schema applies both keywords only to
+/// array instances, and a tool author who wrote one meant an array — so it is
+/// given `type: "array"` before the same derivation runs, rather than losing
+/// the tuple and reaching the backend as a schema that says nothing, or as one
+/// whose array-valued `items` the backend rejects. Recognizing it is also what
+/// lets a nested element schema be typed on its own pass, before the parent
+/// array's fallback would otherwise declare it a string.
+fn give_array_schema_items(map: &mut Map<String, Value>) {
+    // Established before anything is removed: every other object in a schema
+    // tree — a `properties` container above all — must leave here untouched.
+    if !is_array_schema(map) {
+        return;
+    }
+    // Positional and without a Gemini counterpart: folded in below, or dropped
+    // when `items` already says what the elements are.
+    let prefix_items = map.remove("prefixItems");
+    map.entry("type").or_insert_with(|| json!("array"));
+    // `items` counts as already answered only when it is a schema object,
+    // and a typeless one is answered only once it has been given the type
+    // every node needs. draft-07 spells a tuple as an array there and
+    // 2020-12 closes one with `false`; neither is a schema Gemini can read.
+    let legacy_tuple = match map.get_mut("items") {
+        Some(Value::Object(items)) if items.contains_key("type") => return,
+        // A union element declares its type through its arms, which is the
+        // shape a tuple position already folds through, and an untyped
+        // `items` beside `prefixItems` is how 2020-12 spells "and this after
+        // the positions". Either way it is one more position: folded with the
+        // rest, so the node Gemini sees carries a type and `{}` — "anything"
+        // — contributes nothing rather than pulling the element to string.
+        Some(Value::Object(items)) if has_composition(items) || prefix_items.is_some() => map
+            .remove("items")
+            .map(|element| Value::Array(vec![element])),
+        Some(Value::Object(items)) => {
+            give_element_schema_a_type(items);
+            return;
+        }
+        Some(Value::Array(_)) => map.remove("items"),
+        Some(_) => {
+            map.remove("items");
+            None
+        }
+        None => None,
+    };
+    let mut branches = Branches::default();
+    for source in [prefix_items, legacy_tuple].into_iter().flatten() {
+        if let Value::Array(positions) = source {
+            for position in positions {
+                collect_typed_branches(position, &mut branches);
+            }
+        }
+    }
+    map.insert("items".to_string(), branches.into_items());
+}
+
+/// The keywords whose arms a schema may declare its type through instead of
+/// directly — the shape the tuple-position fold reads a type out of. The
+/// gate in `give_array_schema_items` and the removal in
+/// `collect_typed_branches` both read this list, so they cannot drift apart.
+const COMPOSITION_KEYWORDS: [&str; 3] = ["anyOf", "oneOf", "allOf"];
+
+fn has_composition(map: &Map<String, Value>) -> bool {
+    COMPOSITION_KEYWORDS
+        .iter()
+        .any(|key| map.contains_key(*key))
+}
+
+/// The type a schema implies without declaring one: the one an `enum` of
+/// uniformly typed values or a `properties` map is only meaningful for.
+fn implied_type(map: &Map<String, Value>) -> Option<&'static str> {
+    enum_value_type(map.get("enum"))
+        .or_else(|| matches!(map.get("properties"), Some(Value::Object(_))).then_some("object"))
+}
+
+/// Give an element schema that declares no type — directly or through
+/// composition arms, which the caller folds instead — the one Gemini
+/// requires: the type it implies, and `string` when it implies none.
+fn give_element_schema_a_type(items: &mut Map<String, Value>) {
+    let kind = implied_type(items).unwrap_or("string");
+    items.insert("type".to_string(), json!(kind));
+}
+
+/// Add the schemas one tuple position admits, skipping the ones that would
+/// leave a branch without the `type` Gemini requires. A position speaks
+/// through its own `type`, through the arms of a composition, or through
+/// what its `enum` or `properties` imply, in that order — arms that name no
+/// type hand back to the position itself rather than silencing it.
+fn collect_typed_branches(mut position: Value, branches: &mut Branches) {
+    let Some(map) = position.as_object_mut() else {
+        return;
+    };
+    if map.contains_key("type") {
+        branches.push(position);
+        return;
+    }
+    // The position is owned and never emitted whole from here on, so its arms
+    // are moved out rather than cloned. `allOf` is an intersection, not a
+    // union, but its arms agree on the type when they name one, so the same
+    // read serves; Gemini's `Schema` has no `allOf` to forward it as.
+    // A node may carry more than one composition. The first whose arms name
+    // a type speaks for the position; reading a later one as well would
+    // merge arms that differ only in their constraints down to a bare type.
+    let before = branches.seen;
+    for key in COMPOSITION_KEYWORDS {
+        let Some(Value::Array(arms)) = map.remove(key) else {
+            continue;
+        };
+        for arm in arms {
+            collect_typed_branches(arm, branches);
+        }
+        if branches.seen > before {
+            return;
+        }
+    }
+    if let Some(kind) = implied_type(map) {
+        branches.push(json!({ "type": kind }));
+    }
+}
+
+/// What the fold keeps of the typed branches it has seen — one per typed
+/// position, one per typed arm of a position's composition: the first, and
+/// whether the rest have all matched it, whole or in `type` alone. That is
+/// everything `into_items` decides on, so each branch is compared once,
+/// against the first, however many a tuple contributes. A list every new
+/// branch was checked against instead grew quadratic in the number of
+/// distinct branches, which a client controls up to the inbound body limit.
+#[derive(Default)]
+struct Branches {
+    first: Option<Value>,
+    /// Every branch so far equals `first`.
+    identical: bool,
+    /// The `type` every branch so far agrees on, while they still do.
+    shared_type: Option<Value>,
+    /// Branches pushed, duplicates included — what the composition gate in
+    /// `collect_typed_branches` reads to tell whether a keyword's arms spoke.
+    seen: usize,
+}
+
+impl Branches {
+    fn push(&mut self, schema: Value) {
+        self.seen += 1;
+        match &self.first {
+            None => {
+                self.identical = true;
+                self.shared_type = schema.get("type").cloned();
+                self.first = Some(schema);
+            }
+            Some(first) => {
+                if self.identical && *first != schema {
+                    self.identical = false;
+                }
+                if self.shared_type.is_some() && schema.get("type") != self.shared_type.as_ref() {
+                    self.shared_type = None;
+                }
+            }
+        }
+    }
+
+    /// Collapse the positions into the one typed schema Gemini reads: the
+    /// schema they all share, else the type they all share, else the first.
+    /// A bare `array` is the one type that is no schema on its own — it
+    /// needs `items` — so array positions keep the first, already sanitized,
+    /// position instead of collapsing to the type. No typed position at all
+    /// falls back to a string element.
+    fn into_items(self) -> Value {
+        let Some(first) = self.first else {
+            return json!({ "type": "string" });
+        };
+        if self.identical {
+            return first;
+        }
+        match self.shared_type {
+            Some(kind) if kind != json!("array") => json!({ "type": kind }),
+            _ => first,
+        }
+    }
+}
+
+/// The one `type` an `enum` of uniformly typed values implies, so a position
+/// constrained by an enum alone is not mistaken for the "anything" slot.
+fn enum_value_type(values: Option<&Value>) -> Option<&'static str> {
+    let Value::Array(values) = values? else {
+        return None;
+    };
+    let mut kind: Option<&'static str> = None;
+    for value in values {
+        let this = match value {
+            Value::String(_) => "string",
+            Value::Number(_) => "number",
+            Value::Bool(_) => "boolean",
+            _ => return None,
+        };
+        match kind {
+            None => kind = Some(this),
+            Some(seen) if seen == this => {}
+            Some(_) => return None,
+        }
+    }
+    kind
+}
+
+/// Rewrite a JSON Schema type *list* as the scalar type plus `nullable`.
+///
+/// `Schema.type` is a single `Type` enum and nullability is its own `nullable`
+/// field, so `{"type": ["array", "null"]}` is not a value the `parameters`
+/// field can take — it is a `400` on `type` however good the rest of the
+/// schema is. The list collapses the way the reference bridges collapse it
+/// (CLIProxyAPI's `flattenTypeArrays`): the first non-`null` entry becomes the
+/// type, and `null` among the entries becomes `nullable: true`. A list that
+/// names nothing but `null` becomes a nullable string: the generativelanguage
+/// proto does list a `NULL` member, but the Code Assist surface shunt talks to
+/// is unverified there, so `string` + `nullable` is the fallback. A list that
+/// names nothing usable is left alone rather than guessed at.
+fn flatten_type_list(map: &mut Map<String, Value>) {
+    let Some(Value::Array(kinds)) = map.get("type") else {
+        return;
+    };
+    let mut nullable = false;
+    let mut scalar: Option<Value> = None;
+    for kind in kinds {
+        match kind.as_str() {
+            Some("null") => nullable = true,
+            Some(_) if scalar.is_none() => scalar = Some(kind.clone()),
+            _ => {}
+        }
+    }
+    match scalar {
+        Some(kind) => {
+            map.insert("type".to_string(), kind);
+            if nullable {
+                map.insert("nullable".to_string(), json!(true));
+            }
+        }
+        None if nullable => {
+            map.insert("type".to_string(), json!("string"));
+            map.insert("nullable".to_string(), json!(true));
+        }
+        None => {}
+    }
+}
+
+/// `prefixItems`, draft-07's array-valued `items`, and 2020-12's boolean
+/// `items` that closes a tuple describe array positions and nothing else, and
+/// none of them is a shape Gemini's `Schema` can hold. On a schema that is
+/// not an array — its type, once `flatten_type_list` has settled a union such
+/// as `["string", "array"]` on its first non-null member, is another kind, or
+/// it declares no type and no array shape beyond a lone boolean `items` —
+/// they would ride along and be rejected, so they go with the array member
+/// they belonged to. An object-valued `items` is left as written: it is a
+/// `Schema` field, so it is carried rather than refused.
+fn drop_tuple_keywords_from_non_array(map: &mut Map<String, Value>) {
+    if is_array_schema(map) {
+        return;
+    }
+    map.remove("prefixItems");
+    if !matches!(map.get("items"), None | Some(Value::Object(_))) {
+        map.remove("items");
+    }
+}
+
+fn is_array_schema(map: &Map<String, Value>) -> bool {
+    match map.get("type") {
+        Some(Value::String(kind)) => kind == "array",
+        // A type list has been flattened to a scalar by the time this runs.
+        Some(_) => false,
+        // `prefixItems` and `items` — a draft-07 tuple or a single element
+        // schema — each constrain arrays and nothing else, so a schema that
+        // omits `type` but carries one of them is still an array schema, and
+        // has to be seen as one here so its own elements get the treatment
+        // above before a parent folds it in. Only a schema *keyword* counts:
+        // the maps keyed by property names (`properties`, `$defs`,
+        // `dependentSchemas`, `dependencies`, ...) never reach this function
+        // because the walk above descends into their values, never the map
+        // itself, and a boolean `items` says nothing about being an array.
+        None => {
+            matches!(map.get("prefixItems"), Some(Value::Array(_)))
+                || matches!(map.get("items"), Some(Value::Array(_) | Value::Object(_)))
+        }
+    }
 }
 
 fn translate_tools(request: &Value) -> Result<Option<Value>, AdapterError> {
@@ -419,7 +798,7 @@ fn translate_thinking_config(request: &Value) -> Option<Value> {
             let budget = thinking
                 .get("budget_tokens")
                 .and_then(Value::as_u64)
-                .unwrap_or(1024);
+                .unwrap_or(DEFAULT_THINKING_BUDGET);
             Some(json!({ "thinkingBudget": budget }))
         }
         Some("disabled") => Some(json!({ "thinkingBudget": 0 })),
@@ -428,201 +807,4 @@ fn translate_thinking_config(request: &Value) -> Option<Value> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn translate_plain_text_user_message() {
-        let input = json!({
-            "messages": [
-                { "role": "user", "content": "Hello Gemini!" }
-            ]
-        });
-
-        let result = translate_request(&input).unwrap();
-        assert!(result.get("thinkingConfig").is_none());
-        assert_eq!(result["contents"][0]["role"], "user");
-        assert_eq!(result["contents"][0]["parts"][0]["text"], "Hello Gemini!");
-    }
-
-    #[test]
-    fn translate_system_prompt_and_generation_config() {
-        let input = json!({
-            "system": "You are a Rust expert.",
-            "temperature": 0.5,
-            "max_tokens": 2048,
-            "messages": [
-                { "role": "user", "content": "Explain async/await." }
-            ]
-        });
-
-        let result = translate_request(&input).unwrap();
-        assert_eq!(
-            result["systemInstruction"]["parts"][0]["text"],
-            "You are a Rust expert."
-        );
-        assert_eq!(result["generationConfig"]["temperature"], 0.5);
-        assert_eq!(result["generationConfig"]["maxOutputTokens"], 2048);
-    }
-
-    #[test]
-    fn translate_tools_and_tool_choice() {
-        let input = json!({
-            "messages": [
-                { "role": "user", "content": "Check weather in Tokyo" }
-            ],
-            "tools": [
-                {
-                    "name": "get_weather",
-                    "description": "Get current weather",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "location": { "type": "string" }
-                        }
-                    }
-                }
-            ],
-            "tool_choice": {
-                "type": "tool",
-                "name": "get_weather"
-            }
-        });
-
-        let result = translate_request(&input).unwrap();
-        let decls = &result["tools"][0]["functionDeclarations"];
-        assert_eq!(decls[0]["name"], "get_weather");
-        assert_eq!(result["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
-        assert_eq!(
-            result["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"][0],
-            "get_weather"
-        );
-    }
-
-    #[test]
-    fn translate_extended_thinking() {
-        let input = json!({
-            "messages": [
-                { "role": "user", "content": "Solve math puzzle" }
-            ],
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": 4096
-            }
-        });
-
-        let result = translate_request(&input).unwrap();
-        assert_eq!(
-            result["generationConfig"]["thinkingConfig"]["thinkingBudget"],
-            4096
-        );
-        assert!(result.get("thinkingConfig").is_none());
-    }
-
-    #[test]
-    fn sanitize_tool_input_schema_removes_unsupported_keys() {
-        let input = json!({
-            "messages": [
-                { "role": "user", "content": "Run tool" }
-            ],
-            "tools": [
-                {
-                    "name": "sample_tool",
-                    "description": "Tool description",
-                    "input_schema": {
-                        "$schema": "http://json-schema.org/draft-07/schema#",
-                        "type": "object",
-                        "properties": {
-                            "arg1": {
-                                "type": "string",
-                                "propertyNames": { "pattern": "^[a-z]+$" }
-                            }
-                        }
-                    }
-                }
-            ]
-        });
-
-        let result = translate_request(&input).unwrap();
-        let params = &result["tools"][0]["functionDeclarations"][0]["parameters"];
-        assert!(params.get("$schema").is_none());
-        assert!(params["properties"]["arg1"].get("propertyNames").is_none());
-    }
-
-    #[test]
-    fn rejects_url_images_instead_of_dropping_them() {
-        let input = json!({
-            "messages": [{"role": "user", "content": [{
-                "type": "image",
-                "source": {"type": "url", "url": "https://example.com/image.png"}
-            }]}]
-        });
-
-        let error = translate_request(&input).unwrap_err();
-        assert!(error.message.contains("URL image sources"));
-    }
-
-    #[test]
-    fn preserves_tool_failure_signal() {
-        let input = json!({
-            "messages": [
-                {"role": "assistant", "content": [{
-                    "type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}
-                }]},
-                {"role": "user", "content": [{
-                    "type": "tool_result", "tool_use_id": "toolu_1",
-                    "is_error": true, "content": "not found"
-                }]}
-            ]
-        });
-
-        let result = translate_request(&input).unwrap();
-        let response = &result["contents"][1]["parts"][0]["functionResponse"]["response"];
-        assert_eq!(response["error"], true);
-        assert_eq!(response["output"], "not found");
-    }
-
-    #[test]
-    fn rejects_rich_media_tool_results() {
-        let input = json!({
-            "messages": [
-                {"role": "assistant", "content": [{
-                    "type": "tool_use", "id": "toolu_1", "name": "inspect", "input": {}
-                }]},
-                {"role": "user", "content": [{
-                    "type": "tool_result", "tool_use_id": "toolu_1", "content": [{
-                        "type": "image", "source": {"type": "base64", "data": "AA=="}
-                    }]
-                }]}
-            ]
-        });
-
-        let error = translate_request(&input).unwrap_err();
-        assert!(error.message.contains("rich media tool results"));
-    }
-
-    #[test]
-    fn rejects_excessively_nested_tool_schema() {
-        let mut nested = json!({"type": "string"});
-        for _ in 0..=MAX_SCHEMA_DEPTH {
-            nested = json!({"items": nested});
-        }
-        let input = json!({
-            "messages": [{"role": "user", "content": "run"}],
-            "tools": [{"name": "deep", "input_schema": nested}]
-        });
-
-        let error = translate_request(&input).unwrap_err();
-        assert!(error.message.contains("maximum nesting depth"));
-    }
-
-    #[test]
-    fn wrap_envelope_creates_code_assist_shape() {
-        let inner = json!({ "contents": [] });
-        let wrapped = wrap_code_assist_envelope("gemini-3-flash-preview", "test-proj-789", inner);
-
-        assert_eq!(wrapped["model"], "gemini-3-flash-preview");
-        assert_eq!(wrapped["project"], "test-proj-789");
-        assert!(wrapped.get("request").is_some());
-    }
-}
+mod tests;

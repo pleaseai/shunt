@@ -27,8 +27,13 @@ changelog at the end of this document for the full list of what changed and why.
 **M12 contract supersession:** PR #429 supersedes the older M12 wording that treated Codex
 usage as categorically blank. Codex response `x-codex-*` headers populate its 5-hour and shared
 weekly windows, while its Fable-scoped (`7d_oi`) window remains unreported; a mixed provider pool
-may still supply Fable data. This branch has no out-of-band Codex poller. A private, undocumented
-ChatGPT usage API exists and is reserved for #430; PR #429 does not call it. The historical M12
+may still supply Fable data. PR #430 now adds an optional out-of-band poller for imported,
+refreshable Codex accounts through the private, undocumented `GET /wham/usage` endpoint. The
+poller updates utilization and observation timestamps. Codex reset metadata remains
+header-derived: future header boundaries survive, while an elapsed stored reset is dropped for a
+reported window before fresh utilization is written; parsed wham `reset_at` is not adopted as
+live reset metadata. Status metadata remains header-derived, and failed or unrecognized
+observations preserve prior state. The historical M12
 wording quoted below remains as design history, not as the current runtime contract.
 
 ## M-A — inbound `GET /api/oauth/usage` synthesizer

@@ -99,6 +99,20 @@ with that result in history), and forwards **inline images** (base64 sources; UR
 skipped). Cursor's own agentic file/shell tools are not exposed — only the tools your request
 advertises.
 
+Composer nevertheless chooses per turn whether to answer through a bridged tool or through one of
+Cursor's built-in tools, and a built-in call arrives on the wire with no tool name, carrying only
+its arguments and a call id. shunt cannot map that onto a tool your client owns, so it fails the
+turn with an explicit error rather than closing it as if the model had finished:
+
+```json
+{"type":"error","error":{"type":"api_error","message":"cursor answered through one of its own built-in tools, which shunt cannot bridge onto a caller-supplied tool; the choice is not deterministic, so retry"}}
+```
+
+The choice is not deterministic — retrying the same request usually lands on the bridged path.
+Detection does not depend on what the request advertised: shunt recognizes the built-in call from
+the response frame alone, so a request that carries no `tools` can raise the same error whenever
+Composer reaches for a built-in. Retrying is the mitigation in both cases.
+
 ## Verify
 
 ```bash

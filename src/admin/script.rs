@@ -1,8 +1,8 @@
 //! The admin dashboard's inline script, split out of `html.rs` to keep that
 //! file within the repository's per-file size guidance. Held as a plain const
 //! rather than a `format!` argument so the JavaScript reads as JavaScript:
-//! inside a format string every brace has to be doubled. The single `{csrf}`
-//! placeholder is substituted by `html::dashboard_page`.
+//! inside a format string every brace has to be doubled. Its two placeholders,
+//! `{csrf}` and `{expiry_buffer_ms}`, are substituted by `html::dashboard_page`.
 //!
 //! As in `html.rs`, all account/pool data is written with `textContent` and
 //! never `innerHTML`, so upstream-derived strings cannot inject markup.
@@ -26,6 +26,33 @@ function pctReset(v, resetSecs) {
   return resetSecs ? pct(v) + " · " + untilShort(resetSecs) : pct(v);
 }
 function when(ms) { return ms ? new Date(ms).toLocaleString() : "—"; }
+// A Claude store row's status is derived from its credential kind, never from
+// the raw `expires_at` alone. That timestamp is the ~8h ACCESS-token deadline
+// and means opposite things per kind: an `imported` account carries a refresh
+// token and shunt renews it in-band (src/auth/claude/auth.rs), so a past
+// timestamp there is routine and needs no operator action, while a
+// `setup_token` account has no refresh token at all (one-year lifetime), so a
+// past timestamp is a dead credential that only a re-login can fix. Rendering
+// the same raw timestamp for both is what made healthy imported accounts read
+// as expired; the raw value is kept as the cell's tooltip instead.
+//
+// A setup token stops being usable EXPIRY_BUFFER before its own `expiresAt`,
+// not at it: `Tokens::is_valid_at` accepts a credential only while
+// `expiresAt > now + EXPIRY_BUFFER` (five minutes, declared in
+// src/auth/claude/auth.rs -- src/auth/shared.rs has a same-named constant that
+// drives the JWT helper, not this path), and a setup token has no refresh token,
+// so inside that window a routed request already fails on the no-refresh-token
+// path. Reporting it usable there would have the dashboard contradict routing
+// for the last five minutes of the credential's life, which is precisely the
+// window an operator needs the warning in. The value is substituted from that
+// same Rust constant rather than copied, so the two cannot drift apart.
+const EXPIRY_BUFFER_MS = {expiry_buffer_ms};
+function accountStatus(kind, expiresAt) {
+  if (kind === "imported") return { state: "available", text: "Auto-refreshes", note: "shunt renews this login as needed" };
+  if (expiresAt && expiresAt > Date.now() + EXPIRY_BUFFER_MS) return { state: "available", text: "Valid until " + when(expiresAt), note: "Setup token · re-login before this date" };
+  return { state: "expired", text: "Expired", note: "Setup token cannot refresh · re-login required" };
+}
+
 function cell(row, text, mono) { const td = document.createElement("td"); td.textContent = esc(text);
   if (mono) td.className = "mono"; row.appendChild(td); return td; }
 
@@ -83,7 +110,10 @@ function accountGroups(observed, pool, accounts) {
       // plan as its detail caption, matching the wording the observed path
       // already uses ("Max plan") -- see observation::parse_claude/parse_codex.
       const row = { provider: provider, label: a.name, detail: a.plan ? titleCase(a.plan) + " plan" : null, managed: a, observed: null,
-        state: a.disabled ? "disabled" : !a.has_state ? "unseen" : a.cooldown_secs_remaining ? "cooling" : a.near_quota ? "near-quota" : a.cooldown_fable_secs_remaining ? "cooling-fable" : "available",
+        // `needs_relogin` is checked before the cooldown states for the same
+        // reason the pool table checks it first: a dead credential is *also*
+        // cooling, and this is the primary table operators actually read.
+        state: a.disabled ? "disabled" : a.needs_relogin ? "needs-relogin" : !a.has_state ? "unseen" : a.cooldown_secs_remaining ? "cooling" : a.near_quota ? "near-quota" : a.cooldown_fable_secs_remaining ? "cooling-fable" : "available",
         utilization_5h: a.utilization_5h, reset_5h: a.reset_5h,
         utilization_7d: a.utilization_7d, reset_7d: a.reset_7d,
         utilization_7d_oi: a.utilization_7d_oi, reset_7d_oi: a.reset_7d_oi };
@@ -138,7 +168,7 @@ function effectiveState(row) {
   // observation error: an account the pool has already benched should not
   // read "Needs login" -- with no cooldown remediation -- just because the
   // last local check happened to see an expired token.
-  if (row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;
+  if (row.state === "disabled" || row.state === "needs-relogin" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;
   const o = row.observed;
   if (o) {
     if (o.state === "expired") return "expired";
@@ -150,6 +180,7 @@ function effectiveState(row) {
 }
 
 function rowStatusText(state) {
+  if (state === "needs-relogin") return "Needs re-login";
   if (state === "expired") return "Needs login";
   if (state === "unavailable") return "Usage unavailable";
   if (state === "waiting-for-traffic") return "Waiting for traffic";
@@ -162,12 +193,18 @@ function rowStatusText(state) {
   return "Live";
 }
 
+// Same generation guard as `loadPool`, and for the same reason now that this
+// table renders `needs_relogin`: several mutation handlers reload it, so an
+// older load can land last and repaint the pre-probe state. The table is
+// cleared after the awaits so a superseded load never blanks the newer rows.
+let observedLoadSeq = 0;
 async function loadObserved() {
-  const body = $("observed"); body.textContent = "";
-  let data, res;
+  const seq = ++observedLoadSeq;
+  let data, res, failure = null;
   try { res = await fetch("/admin/observed"); data = await res.json(); }
-  catch (e) { const r = body.insertRow(); const c = cell(r, "Failed to observe local accounts"); c.colSpan = 4; return; }
-  if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to observe local accounts"); c.colSpan = 4; return; }
+  catch (e) { failure = "Failed to observe local accounts"; }
+  if (seq !== observedLoadSeq) return;
+  if (failure || !res.ok) { const body = $("observed"); body.textContent = ""; const r = body.insertRow(); const c = cell(r, failure || (data && data.error && data.error.message) || "Failed to observe local accounts"); c.colSpan = 4; return; }
   // Managed pool state only enriches this view. If either call fails the table
   // still renders the observations alone rather than rendering nothing.
   let pool = null, accounts = null;
@@ -181,6 +218,8 @@ async function loadObserved() {
     if (poolRes && poolRes.ok) pool = await poolRes.json();
     if (accountsRes && accountsRes.ok) accounts = await accountsRes.json();
   } catch (e) { /* observation-only render */ }
+  if (seq !== observedLoadSeq) return;
+  const body = $("observed"); body.textContent = "";
   const groups = accountGroups((data && data.accounts) || [], pool, accounts);
   let rendered = 0;
   for (const [provider, rows] of groups) {
@@ -204,6 +243,7 @@ async function loadObserved() {
       if (state === "waiting-for-traffic") statusNote.textContent = "Quota arrives in GPT response headers";
       else if (state === "expired") statusNote.textContent = "The provider client owns refresh";
       else if (state === "unavailable") statusNote.textContent = "Current login could not read quota";
+      else if (state === "needs-relogin") statusNote.textContent = "Re-add this account to sign in again";
       else if (row.managed && row.managed.cooldown_secs_remaining) statusNote.textContent = "retries in " + untilShort(Math.floor(Date.now() / 1000) + row.managed.cooldown_secs_remaining);
       else if (row.managed && row.managed.cooldown_fable_secs_remaining) statusNote.textContent = "Fable retries in " + untilShort(Math.floor(Date.now() / 1000) + row.managed.cooldown_fable_secs_remaining);
       if (statusNote.textContent) status.appendChild(statusNote);
@@ -241,11 +281,49 @@ async function loadAccounts() {
   if (!list.length) { const r = body.insertRow(); const c = cell(r, "No store accounts yet"); c.colSpan = 5; c.className = "muted"; return; }
   for (const a of list) {
     const r = body.insertRow();
-    cell(r, a.name); cell(r, a.kind); cell(r, when(a.expires_at)); cell(r, a.uuid || "—", true);
-    const td = document.createElement("td");
+    cell(r, a.name); cell(r, a.kind);
+    const info = accountStatus(a.kind, a.expires_at);
+    const status = cell(r, info.text); status.className = "status"; status.dataset.state = info.state;
+    const statusNote = document.createElement("small"); statusNote.className = "status-note"; statusNote.textContent = info.note; status.appendChild(statusNote);
+    if (a.expires_at) status.title = "access token expires " + when(a.expires_at);
+    cell(r, a.uuid || "—", true);
+    const td = document.createElement("td"); td.className = "row-actions";
+    // Only an imported login carries a refresh grant; a setup-token account has
+    // nothing to probe (the endpoint refuses it), so it gets no button.
+    if (a.kind === "imported") {
+      const refresh = document.createElement("button"); refresh.className = "secondary compact"; refresh.textContent = "Refresh";
+      refresh.title = "Exercise this account's refresh grant now and report whether the login is still alive";
+      refresh.onclick = () => refreshAccount(a.name); td.appendChild(refresh);
+    }
+    const relogin = document.createElement("button"); relogin.className = "secondary compact"; relogin.textContent = "Re-login";
+    relogin.onclick = () => reloginAccount(a.name, a.kind); td.appendChild(relogin);
     const btn = document.createElement("button"); btn.className = "danger"; btn.textContent = "Remove";
     btn.onclick = () => removeAccount(a.name); td.appendChild(btn); r.appendChild(td);
   }
+}
+
+// Re-login deliberately drives the existing add form rather than a dedicated
+// endpoint: completing the normal provisioning flow under an account's
+// existing name overwrites that account in place, including cleanup when the
+// upstream identity changes (src/admin/mod.rs). The login method is
+// preselected from the row's current kind -- re-provisioning under the other
+// mode would silently convert the account between refreshable and
+// inference-only. Any half-finished flow in the form is cleared first so the
+// operator cannot paste a code belonging to a different account -- including
+// `currentName`, the handle `#complete` posts to. Hiding `#step2` is what makes
+// that unreachable today, but leaving the handle pointing at the previously
+// started account keeps a completion armed against the wrong name behind that
+// one guard, so it is cleared here rather than relied upon to stay unreachable.
+function reloginAccount(name, kind) {
+  $("name").value = name;
+  claudeFlowEpoch++;
+  (kind === "setup_token" ? $("mode-setup") : $("mode-oauth")).checked = true;
+  updateModeHelp();
+  currentName = null;
+  $("step2").style.display = "none"; $("code").value = "";
+  $("addmsg").className = ""; $("addmsg").textContent = "";
+  $("name").focus({ preventScroll: true });
+  $("name").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 async function loadCodexAccounts() {
@@ -256,27 +334,75 @@ async function loadCodexAccounts() {
   if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load Codex accounts"); c.colSpan = 4; return; }
   const list = (data && data.accounts) || [];
   if (!list.length) { const r = body.insertRow(); const c = cell(r, "No Codex store accounts yet"); c.colSpan = 4; c.className = "muted"; return; }
+  // Unconditional, unlike the Claude table's kind-derived status: every Codex
+  // store account is refreshable. Both writers into the store reject a missing
+  // or empty refresh token (`import_auth` and `store_chatgpt_tokens` in
+  // auth/codex/store.rs) and there is no setup-token analog, so shunt owns
+  // renewal for all of them (single-flight refresh + atomic writeback in
+  // auth/codex/auth.rs, five minutes before the access token's JWT `exp`).
+  // That expiry is therefore never the operator's problem -- printing it raw,
+  // as this column used to, made every healthy account read as broken within
+  // the hour. It is kept as the tooltip.
   for (const a of list) {
     const r = body.insertRow();
-    cell(r, a.name); cell(r, when(a.expires_at)); cell(r, a.account_id || "—", true);
-    const td = document.createElement("td");
+    cell(r, a.name);
+    const status = cell(r, "Auto-refreshes"); status.className = "status"; status.dataset.state = "available";
+    const statusNote = document.createElement("small"); statusNote.className = "status-note"; statusNote.textContent = "shunt renews this login as needed"; status.appendChild(statusNote);
+    if (a.expires_at) status.title = "access token expires " + when(a.expires_at);
+    cell(r, a.account_id || "—", true);
+    const td = document.createElement("td"); td.className = "row-actions";
+    const relogin = document.createElement("button"); relogin.className = "secondary compact"; relogin.textContent = "Re-login";
+    relogin.onclick = () => reloginCodexAccount(a.name); td.appendChild(relogin);
     const btn = document.createElement("button"); btn.className = "danger"; btn.textContent = "Remove";
     btn.onclick = () => removeCodexAccount(a.name); td.appendChild(btn); r.appendChild(td);
   }
 }
 
+// The Codex counterpart of `reloginAccount`, and safe for the same reason:
+// `POST /admin/accounts/codex` has no duplicate-name guard, and completion
+// captures the pre-store identity, overwrites the account in place, and hands
+// both identities to `cleanup_reprovisioned_pool_health` (src/admin/codex.rs).
+// There is no login method to preselect here -- ChatGPT OAuth is the only way
+// into this store -- so priming the form is just the name plus clearing the
+// half-finished flow, `currentCodexName` included.
+function reloginCodexAccount(name) {
+  $("codex-name").value = name;
+  codexFlowEpoch++;
+  currentCodexName = null;
+  $("codex-step2").style.display = "none"; $("codex-code").value = "";
+  $("codex-addmsg").className = ""; $("codex-addmsg").textContent = "";
+  $("codex-name").focus({ preventScroll: true });
+  $("codex-name").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// Every mutation handler reloads the pool table, so two loads can be in
+// flight at once. Without this counter the older response renders last and
+// wins, which after a Refresh means the table falls back to the pre-probe
+// `needs_relogin`. The table is also cleared *after* the await, so a
+// superseded load never blanks the rows the newer one drew.
+let poolLoadSeq = 0;
 async function loadPool() {
-  const body = $("pool"); body.textContent = "";
-  let data, res;
+  const seq = ++poolLoadSeq;
+  let data, res, failure = null;
   try { res = await fetch("/admin/pool"); data = await res.json(); }
-  catch (e) { const r = body.insertRow(); const c = cell(r, "Failed to load pool"); c.colSpan = 9; return; }
-  if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load pool"); c.colSpan = 9; return; }
+  catch (e) { failure = "Failed to load pool"; }
+  if (seq !== poolLoadSeq) return;
+  const body = $("pool"); body.textContent = "";
+  if (failure || !res.ok) { const r = body.insertRow(); const c = cell(r, failure || (data && data.error && data.error.message) || "Failed to load pool"); c.colSpan = 9; return; }
   const providers = (data && data.providers) || [];
   let rows = 0;
   for (const p of providers) for (const a of (p.accounts || [])) {
     rows++; const r = body.insertRow();
     cell(r, p.provider); cell(r, a.name); cell(r, titleCase(a.plan) || "—");
-    cell(r, a.disabled ? "disabled" : !a.has_state ? "unseen" : a.near_quota ? "near quota" : a.cooldown_secs_remaining ? "cooling" : a.cooldown_fable_secs_remaining ? "cooling (fable)" : "available");
+    // `needs_relogin` is checked before the cooldown states on purpose: a dead
+    // credential is *also* cooling down, and reporting only "cooling" is what
+    // made a permanently dead account indistinguishable from a quota pause.
+    const state = a.disabled ? "disabled" : a.needs_relogin ? "needs re-login" : !a.has_state ? "unseen" : a.near_quota ? "near quota" : a.cooldown_secs_remaining ? "cooling" : a.cooldown_fable_secs_remaining ? "cooling (fable)" : "available";
+    const stateCell = cell(r, state);
+    if (a.needs_relogin) {
+      stateCell.className = "status"; stateCell.dataset.state = "needs-relogin";
+      stateCell.title = "The stored credential was permanently rejected, or cannot be refreshed. Re-add this account to sign in again.";
+    }
     const c5 = cell(r, pctReset(a.utilization_5h, a.reset_5h));
     if (a.reset_5h) c5.title = "resets " + new Date(a.reset_5h * 1000).toLocaleString();
     const c7 = cell(r, pctReset(a.utilization_7d, a.reset_7d));
@@ -333,31 +459,92 @@ function updateModeHelp() {
 for (const input of document.querySelectorAll('input[name="mode"]')) { input.onchange = updateModeHelp; }
 
 let currentName = null;
+// Monotonic per-form flow epoch. A start or completion request that is still in
+// flight when the form is re-primed must not write its result back: its response
+// would restore the flow `reloginAccount` just cleared, leaving the name field
+// naming one account while `currentName` -- the handle the completion POST
+// interpolates into its URL -- still names the previous one. Following the
+// reopened link then stores the newly authorized credential under the OLD
+// account's name, silently overwriting a different pool account. Each request
+// captures the epoch it was issued under and discards its own response once a
+// newer start or a re-login has superseded it. Claude and Codex count
+// separately so re-priming one form never discards the other's live flow.
+let claudeFlowEpoch = 0;
+// How long a completion request may stay in flight before the page stops
+// waiting for it. Generous -- it covers an upstream token exchange plus the
+// store write -- because its only job is to keep a connection that never
+// settles from closing the Complete button for the life of the page.
+const COMPLETE_TIMEOUT_MS = 120000;
+// A completion is the one request in this flow that consumes the pending login,
+// so unlike a start it must not be superseded by a second click of its own
+// button. The first completion is the one that stores the credential; a second
+// finds the pending entry already consumed and fails. Letting that second click
+// bump the epoch would silence the successful response -- the confirmation and
+// the form reset are gated on the epoch -- and surface the failed one instead,
+// reporting an error over an account that was in fact stored and leaving the
+// finished form open. The button is closed for the duration of its own request
+// instead. This keeps one page's own two clicks from racing, which is all this
+// marker reaches: it is a `let` in this script, so a reload clears it and
+// permits the same retry, and a second tab or a direct API call never sees it.
+// Ordering concurrent completions is server-side work (issue #440).
+let claudeCompleting = false;
 $("start").onclick = async () => {
   const name = $("name").value.trim();
   $("addmsg").className = ""; $("addmsg").textContent = "";
+  const epoch = ++claudeFlowEpoch;
   try {
     const mode = selectedMode();
     const res = await fetch("/admin/accounts/claude", { method: "POST", headers: H, body: JSON.stringify({ name, mode }) });
     const data = await res.json();
+    if (epoch !== claudeFlowEpoch) return;
     if (!res.ok) { showMsg("addmsg", (data.error && data.error.message) || "Failed to start", false); return; }
     currentName = data.name;
     $("authlink").textContent = data.authorize_url; $("authlink").href = data.authorize_url;
     $("step2").style.display = "block";
-  } catch (e) { showMsg("addmsg", "Request failed", false); }
+  } catch (e) { if (epoch === claudeFlowEpoch) showMsg("addmsg", "Request failed", false); }
 };
 
 $("complete").onclick = async () => {
+  if (claudeCompleting) return;
   const code = $("code").value.trim();
+  claudeCompleting = true; $("complete").disabled = true;
+  const epoch = ++claudeFlowEpoch;
+  // A completion that never settles would strand the marker above and close the
+  // button for the life of the page. Releasing the marker on a newer start is
+  // not the way out: that would put two completions in flight against different
+  // pending entries, and the server does not order them -- `PendingStore::attempt`
+  // leaves the entry in place and `complete_account` removes it only after the
+  // store, so the older exchange can land last and leave the account holding the
+  // superseded credential. The request itself is bounded instead.
+  const abort = new AbortController();
+  const bound = setTimeout(() => abort.abort(), COMPLETE_TIMEOUT_MS);
   try {
     const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(currentName) + "/complete",
-      { method: "POST", headers: H, body: JSON.stringify({ code }) });
+      { method: "POST", headers: H, body: JSON.stringify({ code }), signal: abort.signal });
     const data = await res.json();
-    if (!res.ok) { showMsg("addmsg", (data.error && data.error.message) || "Failed to complete", false); return; }
+    if (!res.ok) { if (epoch === claudeFlowEpoch) showMsg("addmsg", (data.error && data.error.message) || "Failed to complete", false); return; }
+    // The account was stored upstream whether or not this flow has since been
+    // superseded, so the tables must refresh either way -- they re-read the
+    // server and touch no flow-local state. Only the confirmation and the form
+    // reset stay gated: those would stomp the newly primed flow.
+    loadObserved(); loadAccounts(); loadPool();
+    if (epoch !== claudeFlowEpoch) return;
     showMsg("addmsg", data.message || "Account stored", true);
     $("step2").style.display = "none"; $("name").value = ""; $("code").value = "";
+  } catch (e) {
+    // The request was abandoned without an answer -- it timed out, hit the bound
+    // above, or the connection failed -- so from here it is unknown whether the
+    // account was stored. Refresh the tables and say so. The refresh races an
+    // exchange that may still be running, so it settles the question only if
+    // the store has already landed; that is worth one request and no more.
+    // Polling for a completion that has already missed a two-minute deadline
+    // would relocate the same ambiguity to a later one, and reading it
+    // authoritatively needs a server-side completion status this surface does
+    // not have (issue #440).
     loadObserved(); loadAccounts(); loadPool();
-  } catch (e) { showMsg("addmsg", "Request failed", false); }
+    if (epoch === claudeFlowEpoch) showMsg("addmsg", "No answer from the server — the account may still have been stored; recheck the table before retrying", false);
+  }
+  finally { clearTimeout(bound); claudeCompleting = false; $("complete").disabled = false; }
 };
 
 async function removeAccount(name) {
@@ -369,31 +556,82 @@ async function removeAccount(name) {
   } catch (e) { showMsg("addmsg", "Request failed", false); }
 }
 
+async function refreshAccount(name) {
+  try {
+    const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(name) + "/refresh", { method: "POST", headers: H });
+    const data = await res.json().catch(() => ({}));
+    // `loadObserved()` too, matching every other mutation handler: it is the
+    // only path that rebuilds the primary Accounts table, which now renders
+    // `needs_relogin` — the probe can set or clear that, so omitting it would
+    // leave the top table showing the pre-probe state until a page reload.
+    if (!res.ok) { showMsg("addmsg", (data.error && data.error.message) || "Refresh failed", false); loadObserved(); loadAccounts(); loadPool(); return; }
+    showMsg("addmsg", data.message || "Refresh succeeded", data.needs_relogin !== true);
+    loadObserved(); loadAccounts(); loadPool();
+  } catch (e) { showMsg("addmsg", "Request failed", false); }
+}
+
 let currentCodexName = null;
+let codexFlowEpoch = 0;
+// The Codex counterpart of `claudeCompleting`, for the same reason: the first
+// completion consumes the pending login and stores the account, so a second
+// click must be refused rather than allowed to supersede it.
+let codexCompleting = false;
 $("start-codex").onclick = async () => {
   const name = $("codex-name").value.trim();
   $("codex-addmsg").className = ""; $("codex-addmsg").textContent = "";
+  const epoch = ++codexFlowEpoch;
   try {
     const res = await fetch("/admin/accounts/codex", { method: "POST", headers: H, body: JSON.stringify({ name }) });
     const data = await res.json();
+    if (epoch !== codexFlowEpoch) return;
     if (!res.ok) { showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to start Codex login", false); return; }
     currentCodexName = data.name;
     $("codex-authlink").textContent = data.authorize_url; $("codex-authlink").href = data.authorize_url;
     $("codex-step2").style.display = "block";
-  } catch (e) { showMsg("codex-addmsg", "Request failed", false); }
+  } catch (e) { if (epoch === codexFlowEpoch) showMsg("codex-addmsg", "Request failed", false); }
 };
 
 $("complete-codex").onclick = async () => {
+  if (codexCompleting) return;
   const code = $("codex-code").value.trim();
+  codexCompleting = true; $("complete-codex").disabled = true;
+  const epoch = ++codexFlowEpoch;
+  // A completion that never settles would strand the marker above and close the
+  // button for the life of the page. Releasing the marker on a newer start is
+  // not the way out: that would put two completions in flight against different
+  // pending entries, and the server does not order them -- `PendingStore::attempt`
+  // leaves the entry in place and `complete_account` removes it only after the
+  // store, so the older exchange can land last and leave the account holding the
+  // superseded credential. The request itself is bounded instead.
+  const abort = new AbortController();
+  const bound = setTimeout(() => abort.abort(), COMPLETE_TIMEOUT_MS);
   try {
     const res = await fetch("/admin/accounts/codex/" + encodeURIComponent(currentCodexName) + "/complete",
-      { method: "POST", headers: H, body: JSON.stringify({ code }) });
+      { method: "POST", headers: H, body: JSON.stringify({ code }), signal: abort.signal });
     const data = await res.json();
-    if (!res.ok) { showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to complete Codex login", false); return; }
+    if (!res.ok) { if (epoch === codexFlowEpoch) showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to complete Codex login", false); return; }
+    // The account was stored upstream whether or not this flow has since been
+    // superseded, so the tables must refresh either way -- they re-read the
+    // server and touch no flow-local state. Only the confirmation and the form
+    // reset stay gated: those would stomp the newly primed flow.
+    loadObserved(); loadCodexAccounts(); loadPool();
+    if (epoch !== codexFlowEpoch) return;
     showMsg("codex-addmsg", data.message || "Codex account stored", true);
     $("codex-step2").style.display = "none"; $("codex-name").value = ""; $("codex-code").value = "";
+  } catch (e) {
+    // The request was abandoned without an answer -- it timed out, hit the bound
+    // above, or the connection failed -- so from here it is unknown whether the
+    // account was stored. Refresh the tables and say so. The refresh races an
+    // exchange that may still be running, so it settles the question only if
+    // the store has already landed; that is worth one request and no more.
+    // Polling for a completion that has already missed a two-minute deadline
+    // would relocate the same ambiguity to a later one, and reading it
+    // authoritatively needs a server-side completion status this surface does
+    // not have (issue #440).
     loadObserved(); loadCodexAccounts(); loadPool();
-  } catch (e) { showMsg("codex-addmsg", "Request failed", false); }
+    if (epoch === codexFlowEpoch) showMsg("codex-addmsg", "No answer from the server — the account may still have been stored; recheck the table before retrying", false);
+  }
+  finally { clearTimeout(bound); codexCompleting = false; $("complete-codex").disabled = false; }
 };
 
 async function removeCodexAccount(name) {

@@ -42,7 +42,7 @@ shunt init --root /path/to/project
 shunt init --force
 ```
 
-Upstream を指定しない場合、starter はすべてコメントで構成され、shunt のデフォルト passthrough 設定として読み込まれます。`--upstream` を繰り返すと、failover 順に preset エントリを追加できます。指定できる名前は `anthropic`、`codex`、`openai`、`xai`、`grok`、`kimi`、`cursor`、`kimi-code` です。Starter は `server.default_provider` を設定しないため、マッピングされていないトラフィックはデフォルトの Anthropic passthrough のままです。preset を指定すると、生成されたファイルが `shunt check` を通過しつつこの fallback を維持できるよう、末尾に `anthropic` passthrough upstream が自動的に追加されます（自分で `anthropic` を指定した場合を除く）。
+Upstream を指定しない場合、starter はすべてコメントで構成され、shunt のデフォルト passthrough 設定として読み込まれます。`--upstream` を繰り返すと、failover 順に preset エントリを追加できます。指定できる名前は `anthropic`、`codex`、`openai`、`xai`、`grok`、`kimi`、`cursor`、`kimi-code`、`zhipu`、`minimax-cn` です。Starter は `server.default_provider` を設定しないため、マッピングされていないトラフィックはデフォルトの Anthropic passthrough のままです。preset を指定すると、生成されたファイルが `shunt check` を通過しつつこの fallback を維持できるよう、末尾に `anthropic` passthrough upstream が自動的に追加されます（自分で `anthropic` を指定した場合を除く）。
 
 Root のデフォルトは現在のディレクトリで、あらかじめ存在している必要があります。そこに `shunt.toml`、`shunt.yaml`、`shunt.yml` のいずれかがある場合、`--force` なしでは何も書き込まず停止します。強制 init が上書きするのは `shunt.toml` だけです。YAML variant はそのまま残り、config discovery では新しい TOML ファイルが優先されます。
 
@@ -226,7 +226,7 @@ config は provider を `[[upstreams]]` か `[providers.*]` のどちらか一�
 
 Kimi はリフレッシュのたびに refresh token をローテーションし、発行される access token の寿命も約 15 分と短いため、リフレッシュは頻繁に発生します。したがって上記の「リフレッシュ可能なログインは 1 プロセスのみ」の原則がそのまま強く当てはまります。1 つの Kimi アカウントファイルを複数の shunt プロセスで共有すると、最初のリフレッシュで互いを無効化します。
 
-完全な upstream 設定は [Kimi](/ja/providers/kimi/#kimi-code-oauth-subscription) を参照してください。
+完全な upstream 設定は [Kimi](/ja/providers/kimi/#kimi-codeoauth-サブスクリプション) を参照してください。
 
 ## Anthropic アカウントプール認証
 

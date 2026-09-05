@@ -30,7 +30,10 @@ pub(crate) const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub(crate) const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 pub(crate) const SCOPE: &str =
     "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
-const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
+/// Also rendered into the admin dashboard's inline script, so the Status column
+/// applies the same deadline `Tokens::is_valid_at` does rather than a copy of it
+/// (`admin::html::dashboard_page` substitutes it; `admin::script`).
+pub(crate) const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 
 /// Resolve a usable token: a static override if present, else the refreshed
 /// subscription access token.
@@ -159,10 +162,10 @@ impl ClaudeAuthStore {
         refreshing: tokio::sync::MutexGuard<'static, ()>,
     ) -> anyhow::Result<String> {
         let refresh_token = tokens.refresh_token.ok_or_else(|| {
-            anyhow::anyhow!(
+            anyhow::Error::new(TerminalRefresh::NoRefreshToken).context(format!(
                 "no refresh token in {}; run `claude` then /login",
                 self.path.display()
-            )
+            ))
         })?;
 
         // The detached task owns both the single-flight guard and the critical
@@ -176,15 +179,27 @@ impl ClaudeAuthStore {
             let _refreshing = refreshing;
             let refreshed = refresh(&client, &token_url, &refresh_token).await?;
             let access_token = refreshed.access_token.clone();
+            // Only a *rotated* refresh token makes a lost writeback terminal. When
+            // the provider omits `refresh_token`, `parse_refresh` reuses the one on
+            // disk, which is therefore still live: the next attempt can simply
+            // refresh again, and condemning the account would send an operator to
+            // re-login for nothing.
+            let rotated = refreshed.refresh_token != refresh_token;
             if let Err(error) = write_back_off_thread(path, refreshed).await {
-                // The upstream refresh already consumed the old refresh token, so a
-                // failed writeback leaves the file holding a now-invalid token. Log
-                // here (not only via the returned Err) so the failure stays visible
-                // even when the caller's future was dropped and the JoinHandle —
-                // carrying this Err — is discarded with it.
+                // Log here (not only via the returned Err) so the failure stays
+                // visible even when the caller's future was dropped and the
+                // JoinHandle — carrying this Err — is discarded with it.
+                if rotated {
+                    tracing::warn!(
+                        %error,
+                        "Claude OAuth token refreshed upstream but writeback failed; stored refresh token is now stale until re-login"
+                    );
+                    return Err(anyhow::Error::new(TerminalRefresh::WritebackFailed)
+                        .context(format!("failed to update Claude auth file: {error}")));
+                }
                 tracing::warn!(
                     %error,
-                    "Claude OAuth token refreshed upstream but writeback failed; stored refresh token is now stale until re-login"
+                    "Claude OAuth token refreshed upstream but writeback failed; the provider did not rotate the refresh token, so the stored one is still usable"
                 );
                 return Err(anyhow::anyhow!("failed to update Claude auth file: {error}"));
             }
@@ -262,6 +277,62 @@ pub(crate) fn refreshable_valid_access_token(value: &Value, now: SystemTime) -> 
         .then_some(tokens.access_token)
 }
 
+/// The OAuth error code a provider returns for a refresh token it will never
+/// accept again.
+const INVALID_GRANT: &str = "invalid_grant";
+
+/// Marker attached to a Claude refresh failure that no retry can recover: the
+/// stored credential can no longer produce an access token, so the only cure
+/// is a fresh login. Mirrors the gateway store's `InvalidGrant` marker
+/// (`auth/gateway/auth.rs`) and the Kimi store's `invalid_grant`
+/// classification (`auth/kimi/auth.rs`), which already separate that one case
+/// from a transient endpoint failure.
+///
+/// A type rather than a string match, because callers
+/// ([`crate::adapters::anthropic`], [`crate::admin`]) have to classify this
+/// failure to decide whether an account is permanently dead, and matching on
+/// the message would break silently the first time that message is reworded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalRefresh {
+    /// The provider rejected the stored refresh token outright.
+    InvalidGrant,
+    /// The credential file carries no refresh token at all — an expired setup
+    /// token, or a login that never stored one. This fails during *resolution*,
+    /// before any upstream request, so it never reaches the 401 handling that
+    /// classifies non-refreshable credentials; without this variant such an
+    /// account cycles through the five-minute auth cooldown forever.
+    NoRefreshToken,
+    /// The provider rotated the token but the new pair could not be persisted.
+    /// The grant already consumed the refresh token on disk, so every later
+    /// attempt replays a spent one. Only attached when the response actually
+    /// carried a *different* refresh token: a provider that omits the field
+    /// leaves the stored one live, so losing that writeback costs an access
+    /// token, not the account.
+    WritebackFailed,
+}
+
+impl std::fmt::Display for TerminalRefresh {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidGrant => INVALID_GRANT,
+            Self::NoRefreshToken => "no refresh token stored",
+            Self::WritebackFailed => "refreshed token could not be persisted",
+        })
+    }
+}
+
+impl std::error::Error for TerminalRefresh {}
+
+/// Whether a refresh failure is terminal: re-attempting the same grant — now
+/// or in five minutes — cannot succeed, because the provider has permanently
+/// rejected the stored refresh token or there is no usable one left to send.
+/// A transient failure (5xx, a network error, a timeout, an unparseable body)
+/// is deliberately **not** terminal: treating one as terminal would mark a
+/// perfectly healthy account as dead on a momentary provider blip.
+pub(crate) fn is_terminal_refresh_failure(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<TerminalRefresh>().is_some()
+}
+
 struct Refreshed {
     access_token: String,
     refresh_token: String,
@@ -317,6 +388,18 @@ async fn refresh(
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
+        // Body before status: Anthropic answers a dead refresh token with a
+        // 4xx that, on its own, says nothing about whether the failure is
+        // permanent. Only the OAuth `error` code separates "this grant will
+        // never be accepted again" from "the endpoint is unhappy right now".
+        let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        if value.get("error").and_then(Value::as_str) == Some(INVALID_GRANT) {
+            return Err(anyhow::Error::new(TerminalRefresh::InvalidGrant).context(
+                "Claude rejected the stored refresh token (invalid_grant); it expired or was \
+                 revoked and no retry can recover it. Re-add the account from the admin \
+                 dashboard, or run `shunt login claude --name <account-name>` again",
+            ));
+        }
         let detail: String = text.chars().take(200).collect();
         anyhow::bail!("token refresh failed ({status}): {detail}");
     }

@@ -137,6 +137,14 @@ fn unique_temp_dir(tag: &str) -> PathBuf {
 /// A far-future expiry (year 2100) for tokens that must read as locally valid.
 const FAR_FUTURE_EXP: u64 = 4_102_444_800;
 
+fn future_exp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_add(3_600)
+}
+
 /// Build a fake ChatGPT access token carrying the `chatgpt_account_id` claim
 /// `codex::auth::jwt_account_id` reads (mirrors the `token()` helper in
 /// `src/auth/codex/auth.rs`'s own test module). A far-future `exp` keeps a
@@ -415,8 +423,9 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
     let _env = REFRESH_ENV_LOCK.lock().await;
     // `stale` and `fresh` must differ so the BearerToken matchers below can
     // tell the pre-refresh and post-refresh requests apart.
-    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-a");
-    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-a");
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-a");
+    let fresh = chatgpt_token(expires_at + 1, "acct-a");
 
     let accounts_dir = unique_temp_dir("succeeds");
     write_store_account(&accounts_dir, "account-a", &stale, "refresh-token-a");
@@ -484,8 +493,9 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
     let _env = REFRESH_ENV_LOCK.lock().await;
     // `stale` and `fresh` must differ so the BearerToken matchers below can
     // tell the pre-refresh and post-refresh requests apart.
-    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-a");
-    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-a");
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-a");
+    let fresh = chatgpt_token(expires_at + 1, "acct-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-rotate-b");
     std::env::set_var("SHUNT_TEST_CODEX_ROTATE_B", &token_b);
 
@@ -557,8 +567,9 @@ async fn refresh_retry_and_rotation_reuse_the_identical_serialized_body() {
         return;
     }
     let _env = REFRESH_ENV_LOCK.lock().await;
-    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-body-a");
-    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-body-a");
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-body-a");
+    let fresh = chatgpt_token(expires_at + 1, "acct-body-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-body-b");
     std::env::set_var("SHUNT_TEST_CODEX_BODY_B", &token_b);
 
@@ -650,8 +661,9 @@ async fn refresh_retry_and_rotation_reuse_the_identical_compressed_body() {
         return;
     }
     let _env = REFRESH_ENV_LOCK.lock().await;
-    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-zbody-a");
-    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-zbody-a");
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-zbody-a");
+    let fresh = chatgpt_token(expires_at + 1, "acct-zbody-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-zbody-b");
     std::env::set_var("SHUNT_TEST_CODEX_ZBODY_B", &token_b);
 
@@ -768,8 +780,9 @@ async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
     let _env = REFRESH_ENV_LOCK.lock().await;
     // `stale` and `fresh` must differ so the BearerToken matchers below can
     // tell the pre-refresh and post-refresh requests apart.
-    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-a");
-    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-a");
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-a");
+    let fresh = chatgpt_token(expires_at + 1, "acct-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-still401-b");
     std::env::set_var("SHUNT_TEST_CODEX_STILL401_B", &token_b);
 
@@ -1323,6 +1336,11 @@ async fn codex_quota_headers_drive_proactive_rotation() {
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-quota-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-quota-b");
+    let reset_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_add(16_200);
     std::env::set_var("SHUNT_TEST_CODEX_QUOTA_A", &token_a);
     std::env::set_var("SHUNT_TEST_CODEX_QUOTA_B", &token_b);
 
@@ -1337,10 +1355,7 @@ async fn codex_quota_headers_drive_proactive_rotation() {
             ResponseTemplate::new(200)
                 .insert_header("x-codex-primary-window-minutes", "300")
                 .insert_header("x-codex-primary-used-percent", "99")
-                .insert_header(
-                    "x-codex-primary-reset-at",
-                    FAR_FUTURE_EXP.to_string().as_str(),
-                )
+                .insert_header("x-codex-primary-reset-at", reset_at.to_string().as_str())
                 .set_body_string(sse_body("account a served")),
         )
         .expect(1)

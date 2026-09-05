@@ -25,9 +25,10 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/admin/logout` | 清除浏览器会话 |
 | `GET` | `/admin/accounts` | Claude 账户存储元数据:名称、类型、过期时间和 UUID;绝不返回 token 材料 |
 | `GET` | `/admin/accounts/codex` | Codex 账户存储元数据:名称、过期时间和 ChatGPT 账户 ID;绝不返回 token 材料 |
-| `GET` | `/admin/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider 的池状态;每个 account 对象可能包含可选的 `plan` 字符串;文件中读取的值之后可能通过 profile 查询被修正为更精确的值;Codex 行包含已上报的 5h/7d 用量,`7d_oi` 没有对应的 Codex 字段 |
+| `GET` | `/admin/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider 的池状态;每个 account 对象可能包含可选的 `plan` 字符串;文件中读取的值之后可能通过 profile 查询被修正为更精确的值;Codex 行包含已上报的 5h/7d 用量,`7d_oi` 没有对应的 Codex 字段;每个 account 还带有布尔字段 `needs_relogin`:凭据被终结性拒绝(`invalid_grant`)、根本不带刷新令牌,或轮换出的令牌对未能写入而丢失 —— 任何重试都无法恢复,只有运维人员重新登录才行。它与冷却字段**相互独立**上报 —— 冷却会自行到期,而该标记不会 —— 仪表盘的两个表格都会显示为 **needs re-login**,而不是配额暂停时的 `cooling`。仅存于内存:重启后清空,该账户的下一次终结性失败会重新置位。即使某个账户从未被任何 provider 表选中过,它也会被上报 —— 与 `has_state: false` 并列 —— 因为 admin 的 refresh 探测按存储名记录其判定。 |
 | `POST` | `/admin/accounts/claude` | 用 `{name, mode}` 开始 Claude 浏览器预配;`mode` 为 `oauth` 或 `setup_token`,省略时默认为 `setup_token`;返回 `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | 用包含 `<code>#<state>` 的 `{code}` 完成 Claude 预配;存储账户并报告其是否生效 |
+| `POST` | `/admin/accounts/claude/{name}/refresh` | 按需执行 **imported** Claude 账户的 refresh 授权,报告该登录是否仍然有效。因为会请求提供方的令牌端点,所以受限流保护;并且始终经由共享凭据存储,不会与代理路径自身的刷新竞争。仅返回新的 `expires_at`,绝不返回任何令牌材料;并附带在该探测自身清除之后从池中重新读取的 `needs_relogin` —— 对池仍视为已死的账户,授权本身也可能成功,因此响应如实报告,而不会宣称与 `/admin/pool` 矛盾的恢复。对 `setup_token` 账户(不含 refresh 授权)或任何终结性判定返回 `400`,对非终结性失败返回 `502` |
 | `DELETE` | `/admin/accounts/claude/{name}` | 删除指定 Claude 账户的存储文件 |
 | `POST` | `/admin/accounts/codex` | 用 `{name}` 开始 ChatGPT OAuth;返回 `{authorize_url}` |
 | `POST` | `/admin/accounts/codex/{name}/complete` | 用包含完整 localhost redirect URL 或 `<code>#<state>` 的 `{code}` 完成 Codex 预配 |
@@ -47,7 +48,7 @@ spend-limit 路由仅在启动时配置了 [`[server.spend]`](/zh-cn/reference/c
 
 入站 Codex Responses 和分析路由仅在配置了 [`[server.codex_endpoint]`](/zh-cn/reference/configuration/) 时存在。Responses 路由逐字中继 OpenAI Responses 请求和响应。两个分析路由采用相同的入站认证策略，不转发或保留客户端 payload，并在认证后对无效 JSON 或超大正文也返回 `200 {}`。只有净化后的事件名称会记录到 `shunt.codex_client_events`；未配置指标 sink 时，它们是纯丢弃 sink。
 
-`/usage` 路由仅在配置 [`[server.usage]`](/zh-cn/reference/configuration/#serverusage可选) 时存在,且同样要求 [`[server.auth]`](/zh-cn/guides/shared-gateway/)。它使用与 `GET /v1/messages` 相同的客户端 token 进行认证,返回共享账户池按窗口的剩余余量、重置时间和 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户身份、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部会填充 5 小时和共享每周窗口。Codex 没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。
+`/usage` 路由仅在配置 [`[server.usage]`](/zh-cn/reference/configuration/#serverusage可选) 时存在,且同样要求 [`[server.auth]`](/zh-cn/guides/shared-gateway/)。它使用与 `GET /v1/messages` 相同的客户端 token 进行认证,返回共享账户池按窗口的剩余余量、重置时间和 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户身份、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充已观测的 5 小时和共享每周窗口。Codex 没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。
 
 即使启用了 [`[server.auth]`](/zh-cn/guides/shared-gateway/),`GET /` 和 `GET /health` 也保持开放(健康检查工具通常无法附带 token),并且不暴露任何敏感信息 —— 只有状态、版本以及已经公开的端点列表。
 

@@ -243,6 +243,7 @@ pub(super) async fn complete_codex_account(
         AuthMode::ChatgptOauth,
         old_identity.as_deref(),
         &new_identity,
+        Some(name.as_str()),
         other_identities.as_ref(),
     );
     tracing::info!(account = %name, account_id_present = true, "admin: Codex account stored");
@@ -326,6 +327,7 @@ pub(super) async fn remove_codex_account_handler(
         &state,
         AuthMode::ChatgptOauth,
         &identity,
+        Some(name.as_str()),
         store_scan_others.as_ref(),
     );
     json_secure(json!({ "name": name, "removed": removed }))

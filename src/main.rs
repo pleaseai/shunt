@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use shunt::{
     auth::antigravity::{
         routed_antigravity_credential_error, routes_to_antigravity, routes_to_antigravity_cli,
-        warn_if_routes_to_antigravity_cli,
+        warn_if_antigravity_pinned_to_production, warn_if_routes_to_antigravity_cli,
     },
     blueprints::{self, AddKind},
     config::{Config, OtelConfig, SentryConfig},
@@ -618,6 +618,11 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // over HTTP without the subprocess. Warn operators still routed to the CLI
     // transport so they can migrate before it is removed.
     warn_if_routes_to_antigravity_cli(&config);
+    // Docs before 0.40.0 told operators to pin `base_url` at the
+    // production Code Assist host, which does not serve Antigravity inference.
+    // Such a config still loads and the request path redirects it, so say so
+    // rather than leave the operator with a silent override of their own key.
+    warn_if_antigravity_pinned_to_production(&config);
     if routes_to_antigravity_cli(&config) {
         if let Some(agy) = shunt::adapters::antigravity::find_agy_binary() {
             tokio::spawn(async move {
@@ -666,9 +671,9 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // endpoints in the background, sharing the router's status store.
     // Observation-only (see AGENTS.md) and a no-op when `sources` is empty.
     shunt::status_poll::spawn_status_poller(state.clone());
-    // Opt-in `[server.pool] usage_refresh_seconds`: poll the Anthropic OAuth
-    // usage API in the background, sharing the router's account pool. A no-op
-    // when the key is unset.
+    // Opt-in `[server.pool] usage_refresh_seconds`: poll imported Claude and
+    // ChatGPT/Codex OAuth usage APIs in the background, sharing the router's
+    // account pool. A no-op when the key is unset.
     shunt::usage_poll::spawn_usage_poller(state);
     axum::serve(
         listener,
@@ -702,6 +707,9 @@ fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     if let Some(message) = routed_antigravity_credential_error(&config) {
         anyhow::bail!(message);
     }
+    // Same production-pin warning the serve path emits, so `check` reports the
+    // config a run would actually get.
+    warn_if_antigravity_pinned_to_production(&config);
     println!("config ok");
     Ok(())
 }

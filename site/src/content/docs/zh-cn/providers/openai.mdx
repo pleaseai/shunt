@@ -1,0 +1,120 @@
+---
+title: OpenAI
+description: 用 OPENAI_API_KEY 将映射的模型路由到 OpenAI Responses API —— 转换、力度、token 计数和工具搜索。
+---
+
+内置的 **`openai`** 提供方将映射模型的推理路由到 **OpenAI 平台
+API**(`api.openai.com`),按 token 记账到一个 `OPENAI_API_KEY` 上。它是一个
+**`kind = "responses"`** 提供方:shunt 把 Claude Code 的 Anthropic Messages 请求转换为
+OpenAI 的 **Responses API**,把回复流式传回,再转换一次 —— 包括工具、图像
+和流式传输。
+
+
+
+<Aside type="note" title="API 密钥 vs. ChatGPT 订阅">
+
+`openai` 消耗计量的 **API 额度**。要改为消耗 **ChatGPT/Codex 订阅**
+(复用 `codex login`,无按 token 计费),请使用 [`codex` 提供方](/zh-cn/guides/codex/) —— 相同的
+转换路径,不同的后端和认证。
+
+</Aside>
+
+
+
+## 快速开始
+
+让编码 agent 为你完成接入 —— `shunt add` 会打印一份内置的设置蓝图
+(离线且只读;配置由 agent 编辑,该命令绝不会修改配置):
+
+```bash
+shunt add upstream openai --print | claude
+```
+
+或者按照下面的手动步骤操作。
+
+## 配置上游
+
+`openai` 预设提供了 `kind = "responses"`、`base_url = "https://api.openai.com/v1"`
+(shunt 会追加 `/responses`),以及来自 `OPENAI_API_KEY` 的 API 密钥认证:
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # 让 Anthropic 作为无路由匹配模型(例如 claude-*)的默认项
+
+[[upstreams]]
+name = "openai"
+provider = "openai"
+# effort = "high"          # 可选的默认推理力度
+# count_tokens = "tiktoken" # 默认;"estimate" 表示不使用本地计数
+```
+
+有序的 `[[upstreams]]` 会替换 shunt 的内置提供方,因此该配置必须声明它仍然回退到的
+`anthropic` 默认项(`server.default_provider` 默认为 `anthropic`)。
+
+显式字段会覆盖预设默认值。旧的 `[providers.openai]` 表形式仍然
+受支持 —— 但不要在同一个文件中混用 `[[upstreams]]` 和 `[providers.*]`。
+
+## 凭据
+
+在启动 shunt 的那个环境中导出密钥 —— 绝不要把它写进配置:
+
+```bash
+export OPENAI_API_KEY='...'
+```
+
+`shunt check` 校验配置的结构,但不会读取密钥的值 —— 如果
+`OPENAI_API_KEY` 未设置,第一个被路由到 `openai` 的请求会返回一个认证错误。
+
+## 模型与路由
+
+可以精确路由、按前缀路由,或者向
+[模型发现](/zh-cn/guides/model-discovery/) 声明一个 Claude 命名的别名:
+
+```toml
+# 推荐: 在一个声明中同时公开 + 路由 + 转换
+[[models]]
+id = "claude-gpt-5-4-via-openai"
+display_name = "GPT-5.4 (via OpenAI)"
+
+[models.upstream_model]
+openai = "gpt-5.4"
+
+# 或者接住客户端发送的所有 gpt-* id
+[[route_prefixes]]
+prefix = "gpt-"
+provider = "openai"
+```
+
+在选定一个 slug 之前,请在你的 OpenAI 账号上确认当前的模型可用性。与
+ChatGPT 账户的 Codex 后端不同,平台 API 接受它常规的公开 slug。
+
+## 推理力度、上下文与 token 计数
+
+Responses 转换支持一个按提供方或按路由的推理力度旋钮
+(`low` … `max`),以及基于本地 tiktoken 的 `count_tokens`,好让 Claude Code 的上下文核算继续
+工作。两者都与其他 Responses 提供方共用,并记录在
+[力度与上下文](/zh-cn/guides/effort-and-context/) 中。
+
+**工具搜索。** 在 Claude Code 的 `ENABLE_TOOL_SEARCH=true` 下,shunt 会把 Responses 路径上的延迟工具发现
+映射到 GPT-5.4+ 模型上原生的、由客户端执行的 `tool_search` 协议。该
+提供方指向 `api.openai.com`,它是未设置(“auto”)默认值已经信任其实现
+`tool_search` 项的两个主机之一 —— 另一个是 ChatGPT/Codex 后端 —— 所以它免费获得原生支持;
+而自定义的兼容 OpenAI 端点(LiteLLM、vLLM、OpenRouter、自托管)不会以同样的方式被自动启用,
+需要 `tool_search = true` 来选择加入。在这里设置 `tool_search = false` 可强制改用文本
+垫片。见 [工具搜索](/zh-cn/guides/codex/#工具搜索)。
+
+## 校验
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/models
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-gpt-5-4-via-openai","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+确认响应的 `x-gateway-upstream` 头写的是 `openai`,然后
+[将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/)。

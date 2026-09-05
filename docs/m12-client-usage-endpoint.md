@@ -86,8 +86,14 @@ cannot be read) use the Anthropic error shape, like the rest of the gateway.
   contains an account name, `priority`, `disabled`, `threshold`, `headroom`, or `cooldown`.
 - **No per-client accounting.** The aggregate is pool-wide; it does not attribute usage to the
   calling client.
-- **Codex usage is response-derived in this branch.** ChatGPT/Codex response `x-codex-*` headers
-  populate the 5-hour and shared weekly windows, and a window is `null` only when no non-disabled
-  account has reported it. Codex has no Fable-scoped (`7d_oi`) signal, although another provider
-  in a mixed pool may supply the aggregate Fable value. PR #429 adds no out-of-band Codex poller;
-  the private, undocumented ChatGPT usage API is reserved for #430 and is not called here.
+- **Codex usage is response- and poller-derived in this branch.** ChatGPT/Codex response
+  `x-codex-*` headers and the optional `GET /wham/usage` poller populate the 5-hour and shared
+  weekly windows, and a window is `null` only when no non-disabled account has reported it. The
+  poller uses imported, refreshable accounts. For Codex, reset metadata remains header-derived:
+  a future header reset is preserved, while an elapsed stored reset for a reported window is
+  cleared before fresh utilization is written; the wham report's parsed `reset_at` is not adopted
+  as live reset metadata, and status metadata remains header-derived. An authoritatively absent
+  bucket still clears only its utilization and observation timestamp. Codex has no Fable-scoped (`7d_oi`) signal, although
+  another provider in a mixed pool may supply the aggregate Fable value. The private endpoint is
+  unofficial and opt-in through `usage_refresh_seconds`; fetch and parse failures preserve the
+  prior state.

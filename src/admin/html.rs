@@ -56,6 +56,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, .choice:has(i
   outline: 2px solid var(--accent-light); outline-offset: 3px; }
 button.secondary { background: transparent; color: inherit; border-color: var(--border); }
 button.danger { min-height: 0; background: transparent; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); padding: .25rem .5rem; }
+button.compact { min-height: 0; padding: .25rem .5rem; }
+.row-actions { white-space: nowrap; } .row-actions button + button { margin-left: .4rem; }
 table { width: 100%; border-collapse: collapse; font-size: .88rem; }
 th, td { text-align: left; vertical-align: top; padding: .72rem .55rem; border-bottom: 1px solid rgba(128,144,168,.22); }
 th { color: var(--text-secondary); font-weight: 600; } tbody tr:last-child td { border-bottom: 0; }
@@ -68,7 +70,7 @@ code, .mono { font-family: inherit; font-size: .85em; }
 .account-detail, .status-note { display: block; margin-top: .18rem; color: var(--text-secondary); font-size: .76rem; line-height: 1.35; }
 .status { white-space: nowrap; font-weight: 600; }
 .status[data-state="available"]::before { content: ""; display: inline-block; width: .46rem; height: .46rem; margin-right: .42rem; border-radius: 50%; background: var(--accent); }
-.status[data-state="expired"], .status[data-state="unavailable"] { color: var(--danger); }
+.status[data-state="expired"], .status[data-state="unavailable"], .status[data-state="needs-relogin"] { color: var(--danger); }
 .status[data-state="minor"] { color: var(--accent-light); }
 .status[data-state="major"], .status[data-state="critical"], .status[data-state="unknown"] { color: var(--danger); }
 .usage-lines { min-width: 24rem; }
@@ -95,7 +97,7 @@ a { color: var(--accent-light); }
   #observed td:nth-child(4) { padding-top: .3rem; }
   #observed-table thead { display: none; }
   .usage-lines { min-width: 0; } .account-detail { display: block; }
-  .usage-meta { font-size: .76rem; } .status { white-space: normal; }
+  .usage-meta { font-size: .76rem; } .status { white-space: normal; } .row-actions { white-space: normal; }
 }
 @media (prefers-color-scheme: light) {
   :root { --bg: #fff; --text: #1a1f2e; --text-secondary: #5a6a7e; --border: rgba(208,216,224,.95);
@@ -143,7 +145,14 @@ pub fn login_page(error: Option<&str>, sso_label: Option<&str>) -> String {
 /// on mutating requests.
 pub fn dashboard_page(csrf: &str) -> String {
     let csrf = escape_html(csrf);
-    let script = super::script::DASHBOARD_SCRIPT.replace("{csrf}", &csrf);
+    let script = super::script::DASHBOARD_SCRIPT
+        .replace("{csrf}", &csrf)
+        .replace(
+            "{expiry_buffer_ms}",
+            &crate::auth::claude::auth::EXPIRY_BUFFER
+                .as_millis()
+                .to_string(),
+        );
     format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -207,11 +216,11 @@ pub fn dashboard_page(csrf: &str) -> String {
 </div>
 
 <h2>Claude accounts</h2>
-<div class="card overflow"><table><thead><tr><th>Name</th><th>Kind</th><th>Expires</th><th>UUID</th><th></th></tr></thead>
+<div class="card overflow"><table><thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>UUID</th><th></th></tr></thead>
 <tbody id="accounts"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
 
 <h2>Codex accounts</h2>
-<div class="card overflow"><table><thead><tr><th>Name</th><th>Expires</th><th>Account ID</th><th></th></tr></thead>
+<div class="card overflow"><table><thead><tr><th>Name</th><th>Status</th><th>Account ID</th><th></th></tr></thead>
 <tbody id="codex-accounts"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody></table></div>
 
 <h2>Managed pool health</h2>
@@ -296,12 +305,15 @@ mod tests {
 
     #[test]
     fn managed_operational_states_outrank_a_stale_observed_error() {
-        // A coalesced row's managed pool state (disabled/cooling/near-quota/
-        // cooling-fable) is an actionable gateway-side fact and must not be
+        // A coalesced row's managed pool state (disabled/needs-relogin/cooling/
+        // near-quota/cooling-fable) is an actionable gateway-side fact and must
+        // not be
         // masked by a stale local observation error: a cooling account whose
         // last local check happened to see an expired token must still
         // surface as "cooling" (with its cooldown remediation), not "Needs
-        // login" with no such hint. Guard against the precedence check being
+        // login" with no such hint. `needs-relogin` joins that list for a
+        // stronger reason: it is a terminal verdict the pool reached itself,
+        // and a local observation must never downgrade it. Guard against the precedence check being
         // introduced after -- or dropped from ahead of -- the observed-state
         // checks it must outrank.
         let page = dashboard_page("csrf");
@@ -310,7 +322,7 @@ mod tests {
             .expect("effectiveState function must exist");
         let body = &page[start..start + 800];
         let guard = body
-            .find(r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable""#)
+            .find(r#"row.state === "disabled" || row.state === "needs-relogin" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable""#)
             .expect("managed operational states must be checked before observed error states");
         let observed_expired = body
             .find(r#"o.state === "expired""#)
@@ -320,7 +332,7 @@ mod tests {
             "the managed-operational-state guard must run before the observed error checks it outranks"
         );
         assert!(body[guard..].starts_with(
-            r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;"#
+            r#"row.state === "disabled" || row.state === "needs-relogin" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;"#
         ));
     }
 
@@ -348,24 +360,520 @@ mod tests {
     }
 
     #[test]
+    fn the_claude_account_column_reports_a_kind_derived_status_not_the_raw_expiry() {
+        // `expires_at` is the ~8h ACCESS-token deadline. For an `imported`
+        // account shunt refreshes it in-band, so a past timestamp is routine;
+        // for a `setup_token` account there is nothing to refresh, so the same
+        // timestamp means a dead credential. Rendering the raw value under an
+        // "Expires" header made healthy imported accounts read as expired.
+        // The two kinds must therefore produce different wording, and the raw
+        // timestamp must survive as a tooltip rather than being dropped.
+        let page = dashboard_page("csrf");
+        assert!(
+            page.contains(
+                "<tr><th>Name</th><th>Kind</th><th>Status</th><th>UUID</th><th></th></tr>"
+            ),
+            "the Claude account table must report a derived status column"
+        );
+        assert!(
+            !page.contains(
+                "<tr><th>Name</th><th>Kind</th><th>Expires</th><th>UUID</th><th></th></tr>"
+            ),
+            "the raw-expiry column must be gone from the Claude account table"
+        );
+        assert!(
+            page.contains(r#"text: "Auto-refreshes""#),
+            "an imported account must read as self-renewing"
+        );
+        assert!(
+            page.contains(r#"text: "Valid until " + when(expiresAt)"#),
+            "a live setup token must still surface its actionable expiry date"
+        );
+        assert!(
+            page.contains(r#"note: "Setup token cannot refresh · re-login required""#),
+            "a dead setup token must say what the operator has to do"
+        );
+        assert!(
+            page.contains(r#"status.title = "access token expires " + when(a.expires_at)"#),
+            "the raw access-token timestamp must be preserved as a tooltip"
+        );
+    }
+
+    #[test]
+    fn only_a_setup_token_inside_the_refresh_buffer_renders_the_expired_state() {
+        // The danger styling (`.status[data-state="expired"]`) is reserved for
+        // an account an operator actually has to re-provision. An imported
+        // account must return before the expiry comparison is ever reached, so
+        // a past `expires_at` on a healthy refreshable login can never reach
+        // the expired arm; guard against the kind check being moved after --
+        // or dropped from ahead of -- the timestamp branch it outranks.
+        let page = dashboard_page("csrf");
+        let start = page
+            .find("function accountStatus(kind, expiresAt)")
+            .expect("accountStatus function must exist");
+        // Bound the window to the function's own closing brace rather than a
+        // fixed byte count: a fixed count can land mid-character (the notes
+        // carry a multi-byte "\u{b7}") and panic, or slide past the function and
+        // scan unrelated helpers for the single-`expired`-arm assertion below.
+        let body = &page[start..];
+        let body = &body[..body.find("\n}").expect("accountStatus must be closed") + 2];
+        assert!(
+            body.contains(
+                r#"if (kind === "imported") return { state: "available", text: "Auto-refreshes""#
+            ),
+            "the imported arm must return an available state before any expiry check"
+        );
+        let imported = body
+            .find(r#"kind === "imported""#)
+            .expect("the kind check must exist");
+        // The comparison must carry the buffer, not the bare deadline. A setup
+        // token stops being usable EXPIRY_BUFFER before its own `expiresAt`
+        // (`Tokens::is_valid_at`, src/auth/claude/auth.rs) and has no refresh
+        // token to recover with, so reporting it usable inside that window puts
+        // the dashboard at odds with routing for the credential's last five
+        // minutes -- exactly when the operator needs the warning.
+        let expiry = body
+            .find("expiresAt > Date.now() + EXPIRY_BUFFER_MS")
+            .expect("the setup-token expiry comparison must carry the refresh buffer");
+        let expired = body
+            .find(r#"state: "expired""#)
+            .expect("the expired state must exist");
+        assert!(
+            imported < expiry && expiry < expired,
+            "the imported arm must precede the expiry comparison, which must precede the expired state"
+        );
+        assert_eq!(
+            body.matches(r#"state: "expired""#).count(),
+            1,
+            "expired must be reachable from exactly one arm"
+        );
+    }
+
+    #[test]
+    fn the_rendered_refresh_buffer_is_routings_own_value() {
+        // The comparison above is only correct if the number it compares
+        // against is the one routing applies. `EXPIRY_BUFFER_MS` is substituted
+        // from `crate::auth::claude::auth::EXPIRY_BUFFER` -- the constant
+        // `Tokens::is_valid_at` uses -- so assert the value the browser
+        // actually receives rather than the placeholder that produced it.
+        let page = dashboard_page("csrf");
+        assert!(
+            !page.contains("{expiry_buffer_ms}"),
+            "the buffer placeholder must be substituted, not shipped to the browser"
+        );
+        let rendered = format!(
+            "const EXPIRY_BUFFER_MS = {};",
+            crate::auth::claude::auth::EXPIRY_BUFFER.as_millis()
+        );
+        assert!(
+            page.contains(&rendered),
+            "the script must declare the buffer as routing's own value; expected `{rendered}`"
+        );
+        // The assertion above ties the two sides together but says nothing
+        // about the unit: rendering `as_secs()` would move both. Pin the number
+        // as well, so a buffer that reaches the browser a thousand times too
+        // small is a failure here and not a dashboard that calls a credential
+        // valid for the five minutes routing already refuses it.
+        assert!(
+            page.contains("const EXPIRY_BUFFER_MS = 300000;"),
+            "the five-minute buffer must reach the browser as milliseconds"
+        );
+    }
+
+    #[test]
+    fn every_claude_account_row_offers_a_relogin_that_preselects_its_own_kind() {
+        // Re-login reuses the existing add form (completing it under the same
+        // name overwrites the account in place), so the row button only has to
+        // prime that form. The mode must be preselected from the row's own
+        // kind: re-provisioning under the other mode silently converts the
+        // account between refreshable and inference-only. Remove stays.
+        let page = dashboard_page("csrf");
+        assert!(
+            page.contains(r#"relogin.textContent = "Re-login""#),
+            "each account row needs a re-login button"
+        );
+        assert!(
+            page.contains("relogin.onclick = () => reloginAccount(a.name, a.kind);"),
+            "the button must carry the row's own name and kind"
+        );
+        assert!(
+            page.contains(
+                r#"(kind === "setup_token" ? $("mode-setup") : $("mode-oauth")).checked = true;"#
+            ),
+            "the add form's login method must be preselected from the row's kind"
+        );
+        assert!(
+            page.contains(r#"$("name").value = name;"#),
+            "re-login must prefill the add form with the existing account name"
+        );
+        assert!(
+            page.contains(r#"btn.onclick = () => removeAccount(a.name);"#),
+            "the existing Remove action must survive"
+        );
+        assert!(
+            page.contains("  currentName = null;"),
+            "priming the form must drop the previously started flow's account handle, \
+             not just hide the step that used it"
+        );
+    }
+
+    #[test]
+    fn the_codex_account_column_reports_renewal_ownership_not_the_raw_expiry() {
+        // Same defect as the Claude table, with a simpler resolution: the Codex
+        // store has no non-refreshable kind at all. Both writers reject a
+        // missing or empty refresh token (`import_auth` and
+        // `store_chatgpt_tokens`), so shunt owns renewal for every row and the
+        // access-token JWT `exp` this column printed is never actionable --
+        // it just made every healthy account read as broken within the hour.
+        // The status is therefore unconditional, and must not be re-derived
+        // from the timestamp; the timestamp survives only as the tooltip.
+        let page = dashboard_page("csrf");
+        assert!(
+            page.contains("<tr><th>Name</th><th>Status</th><th>Account ID</th><th></th></tr>"),
+            "the Codex account table must report renewal ownership, not a raw expiry"
+        );
+        assert!(
+            !page.contains("<tr><th>Name</th><th>Expires</th><th>Account ID</th><th></th></tr>"),
+            "the raw-expiry column must be gone from the Codex account table"
+        );
+        let start = page
+            .find("async function loadCodexAccounts()")
+            .expect("loadCodexAccounts must exist");
+        let body = &page[start..];
+        let body = &body[..body.find("\n}").expect("loadCodexAccounts must be closed") + 2];
+        assert!(
+            body.contains(r#"const status = cell(r, "Auto-refreshes"); status.className = "status"; status.dataset.state = "available";"#),
+            "every Codex row must state that shunt renews it"
+        );
+        assert!(
+            body.contains(r#"statusNote.textContent = "shunt renews this login as needed""#),
+            "the Codex status needs the same remediation-free note as an imported Claude row"
+        );
+        assert!(
+            body.contains(r#"status.title = "access token expires " + when(a.expires_at)"#),
+            "the raw access-token timestamp must be preserved as a tooltip"
+        );
+        assert!(
+            !body.contains("cell(r, when(a.expires_at))"),
+            "the Codex row must not render the raw access-token expiry as a column again"
+        );
+    }
+
+    #[test]
+    fn every_codex_account_row_offers_a_relogin_that_clears_the_prior_flow() {
+        // Symmetric with the Claude table, and safe for the same reason: the
+        // Codex start route has no duplicate-name guard and completion
+        // overwrites in place, cleaning up the replaced identity's pool health.
+        // There is no login method to preselect (ChatGPT OAuth is the only way
+        // into this store), so the whole contract is: prime the name, and drop
+        // the half-finished flow -- `currentCodexName` included, since that is
+        // the handle the completion POST interpolates into its URL.
+        let page = dashboard_page("csrf");
+        let start = page
+            .find("function reloginCodexAccount(name)")
+            .expect("reloginCodexAccount must exist");
+        let body = &page[start..];
+        let body = &body[..body
+            .find("\n}")
+            .expect("reloginCodexAccount must be closed")
+            + 2];
+        assert!(
+            page.contains("relogin.onclick = () => reloginCodexAccount(a.name);"),
+            "each Codex row needs a re-login button carrying its own name"
+        );
+        assert!(
+            body.contains(r#"$("codex-name").value = name;"#),
+            "re-login must prefill the Codex add form with the existing account name"
+        );
+        assert!(
+            body.contains("  currentCodexName = null;"),
+            "priming the form must drop the previously started flow's account handle"
+        );
+        assert!(
+            body.contains(
+                r#"$("codex-step2").style.display = "none"; $("codex-code").value = "";"#
+            ),
+            "the half-finished Codex flow must be cleared, not left pasteable"
+        );
+        assert!(
+            page.contains(r#"btn.onclick = () => removeCodexAccount(a.name);"#),
+            "the existing Codex Remove action must survive"
+        );
+    }
+
+    #[test]
+    fn a_superseded_provisioning_response_cannot_restore_a_cleared_flow() {
+        // Clearing the form on Re-login is not enough on its own: a start or
+        // completion request already in flight writes its result back
+        // unconditionally when it lands. A late start response would reopen the
+        // previous account's authorization step and restore its `currentName`
+        // while the name field already reads the newly picked account -- so
+        // following that reopened link stores the freshly authorized credential
+        // under the OLD account's name, silently overwriting a different pool
+        // account. A late completion would blank the just-primed name and
+        // report success for the wrong account.
+        //
+        // Assert per handler body rather than by counting matches across the
+        // page: a page-wide count is satisfied by deleting a guard from one
+        // handler and duplicating it in another, which leaves one of the four
+        // response paths writing back after being superseded.
+        let page = dashboard_page("csrf");
+        for (counter, handler) in [
+            ("claudeFlowEpoch", r#"$("start").onclick = async () => {"#),
+            (
+                "claudeFlowEpoch",
+                r#"$("complete").onclick = async () => {"#,
+            ),
+            (
+                "codexFlowEpoch",
+                r#"$("start-codex").onclick = async () => {"#,
+            ),
+            (
+                "codexFlowEpoch",
+                r#"$("complete-codex").onclick = async () => {"#,
+            ),
+        ] {
+            let at = page.find(handler).expect("the handler must exist");
+            let body = &page[at..];
+            let body = &body[..body.find("\n};").expect("handler must be closed") + 3];
+            assert_eq!(
+                body.matches(&format!("const epoch = ++{counter};")).count(),
+                1,
+                "{handler} must capture the epoch it was issued under, exactly once"
+            );
+            assert_eq!(
+                body.matches(&format!("if (epoch !== {counter}) return;"))
+                    .count(),
+                1,
+                "{handler} must discard its own response once superseded"
+            );
+            // Asserted by shape rather than by one literal line: every report
+            // the failure path makes must sit behind the same guard, however
+            // that block is laid out. An unguarded showMsg there would speak
+            // for a flow the operator has already abandoned.
+            let caught = body
+                .find("} catch (e)")
+                .expect("the handler must have a failure path");
+            let failure = &body[caught..];
+            let failure = &failure[..failure.find("\n  finally {").unwrap_or(failure.len())];
+            let reports = failure.matches("showMsg(").count();
+            assert!(
+                reports > 0
+                    && reports
+                        == failure
+                            .matches(&format!("if (epoch === {counter}) showMsg("))
+                            .count(),
+                "{handler} must stay silent on failure once superseded"
+            );
+        }
+
+        // Each form counts on its own, so re-priming one never discards the
+        // other's live flow, and each primer supersedes what is in flight.
+        for (counter, primer) in [
+            ("claudeFlowEpoch", "function reloginAccount(name, kind)"),
+            ("codexFlowEpoch", "function reloginCodexAccount(name)"),
+        ] {
+            assert!(
+                page.contains(&format!("let {counter} = 0;")),
+                "{counter} must exist as its own per-form counter"
+            );
+            let at = page.find(primer).expect("the primer function must exist");
+            let body = &page[at..];
+            let body = &body[..body.find("\n}").expect("primer must be closed") + 2];
+            assert!(
+                body.contains(&format!("  {counter}++;")),
+                "{primer} must supersede any request still in flight"
+            );
+        }
+
+        // A completion that reached the server stored the account whether or
+        // not its flow was superseded, so the table refresh must run before the
+        // guard -- only the confirmation and the form reset are gated.
+        for (counter, handler, refresh) in [
+            (
+                "claudeFlowEpoch",
+                r#"$("complete").onclick = async () => {"#,
+                "loadObserved(); loadAccounts(); loadPool();",
+            ),
+            (
+                "codexFlowEpoch",
+                r#"$("complete-codex").onclick = async () => {"#,
+                "loadObserved(); loadCodexAccounts(); loadPool();",
+            ),
+        ] {
+            let at = page.find(handler).expect("the handler must exist");
+            let body = &page[at..];
+            let body = &body[..body.find("\n};").expect("handler must be closed") + 3];
+            let refreshed = body
+                .find(refresh)
+                .expect("a completed account must refresh the tables");
+            let gate = body
+                .find(&format!("if (epoch !== {counter}) return;"))
+                .expect("the guard must exist");
+            assert!(
+                refreshed < gate,
+                "{handler} must refresh the tables before returning on a superseded flow"
+            );
+        }
+    }
+
+    #[test]
+    fn a_second_completion_click_cannot_supersede_the_one_that_stores_the_account() {
+        // A completion is the one request in the flow that consumes the pending
+        // login, so the FIRST click is the one that stores the credential and a
+        // second finds the entry already consumed and fails. Letting that second
+        // click bump the flow epoch inverts which response the operator sees:
+        // the successful one is silenced by the epoch guard the confirmation and
+        // the form reset sit behind, while the failed one reports an error over
+        // an account that was in fact stored, leaving the finished form open.
+        // Starts are the opposite -- there the later click is the live one -- so
+        // this is asserted on the completion handlers alone.
+        let page = dashboard_page("csrf");
+        for (flag, button, handler) in [
+            (
+                "claudeCompleting",
+                "complete",
+                r#"$("complete").onclick = async () => {"#,
+            ),
+            (
+                "codexCompleting",
+                "complete-codex",
+                r#"$("complete-codex").onclick = async () => {"#,
+            ),
+        ] {
+            assert_eq!(
+                page.matches(&format!("let {flag} = false;")).count(),
+                1,
+                "{flag} must exist as its own per-form in-flight marker"
+            );
+            let at = page.find(handler).expect("the handler must exist");
+            let body = &page[at..];
+            let body = &body[..body.find("\n};").expect("handler must be closed") + 3];
+            let refused = body
+                .find(&format!("if ({flag}) return;"))
+                .expect("a second completion click must be refused");
+            let raised = body
+                .find(&format!("{flag} = true;"))
+                .expect("the completion must mark itself in flight");
+            let bumped = body
+                .find("const epoch = ++")
+                .expect("the completion must capture its epoch");
+            assert!(
+                refused < raised && raised < bumped,
+                "{handler} must refuse the second click before it can bump the epoch"
+            );
+            assert!(
+                body.contains(&format!(
+                    "finally {{ clearTimeout(bound); {flag} = false; $(\"{button}\").disabled = false; }}"
+                )),
+                "{handler} must release the marker on every exit, not only on success"
+            );
+            // The marker must not be released by a newer start or a re-login
+            // either, tempting as that is for a page whose Complete button is
+            // closed: that would put two completions in flight against different
+            // pending entries, and the server does not order them --
+            // `PendingStore::attempt` leaves the entry in place and
+            // `complete_account` removes it only after the store, so the older
+            // exchange can land last and leave the account holding the superseded
+            // credential. The request carries its own bound instead, so a
+            // connection that never settles cannot close the button for good.
+            assert_eq!(
+                page.matches(&format!("{flag} = false")).count(),
+                2,
+                "{flag} must be released in exactly one place -- its declaration and the handler's finally"
+            );
+            assert!(
+                body.contains("const abort = new AbortController();")
+                    && body.contains("setTimeout(() => abort.abort(), COMPLETE_TIMEOUT_MS);")
+                    && body.contains("signal: abort.signal"),
+                "{handler} must bound its own request so the marker cannot strand"
+            );
+            // An abandoned completion is ambiguous -- the exchange may have
+            // stored the account before the page stopped waiting -- so the
+            // failure path must re-read the server rather than leave the
+            // operator to guess the outcome from an error message.
+            let abandoned = body
+                .find("} catch (e) {")
+                .expect("the handler must have a failure path");
+            let refreshed = body[abandoned..]
+                .find("loadObserved(")
+                .expect("an abandoned completion must refresh the tables");
+            let reported = body[abandoned..]
+                .find("showMsg(")
+                .expect("an abandoned completion must say so");
+            assert!(
+                refreshed < reported,
+                "{handler} must refresh the tables before reporting an abandoned completion"
+            );
+            assert!(
+                body.contains(&format!("$(\"{button}\").disabled = true;")),
+                "{handler} must also close the button so the refusal is visible"
+            );
+        }
+    }
+
+    #[test]
     fn account_mutations_refresh_the_grouped_observed_table_too() {
         // The advanced account/pool tables (loadAccounts/loadCodexAccounts/
         // loadPool) are populated separately from the top-level grouped
-        // table, which loadObserved() alone fills in. Every success path
-        // that adds or removes an account must refresh loadObserved() too,
-        // or the grouped table goes stale until the next full page load.
+        // table, which loadObserved() alone fills in. Every path that mutates
+        // an account must refresh loadObserved() too, or the grouped table
+        // goes stale until the next full page load.
+        //
+        // Asserted per mutation site rather than by counting the call across
+        // the page: a completion's abandoned path refreshes the tables too (an
+        // abandoned request leaves the outcome unknown), so a page-wide count
+        // no longer distinguishes "every mutating path refreshes" from "some
+        // path somewhere does".
         let page = dashboard_page("csrf");
+        for (site, refresh) in [
+            (
+                r#"$("complete").onclick = async () => {"#,
+                "loadObserved(); loadAccounts(); loadPool();",
+            ),
+            (
+                "async function removeAccount(name) {",
+                "loadObserved(); loadAccounts(); loadPool();",
+            ),
+            (
+                r#"$("complete-codex").onclick = async () => {"#,
+                "loadObserved(); loadCodexAccounts(); loadPool();",
+            ),
+            (
+                "async function removeCodexAccount(name) {",
+                "loadObserved(); loadCodexAccounts(); loadPool();",
+            ),
+        ] {
+            let at = page.find(site).expect("the mutation site must exist");
+            let body = &page[at..];
+            let body = &body[..body.find("\n}").expect("the site must be closed") + 2];
+            // Bounded to the success branch. A completion also refreshes on its
+            // abandoned path, so a whole-body `contains` would still pass with
+            // the success-path refresh deleted -- the very regression this test
+            // exists to catch. Exactly once, so a duplicate is caught too.
+            let success = &body[..body.find("} catch (e)").unwrap_or(body.len())];
+            assert_eq!(
+                success.matches(refresh).count(),
+                1,
+                "{site} must refresh the grouped observed table exactly once on success"
+            );
+        }
+
+        // The refresh probe is the exception, and deliberately so: *both* of
+        // its branches refresh, because a terminal verdict sets
+        // `needs_relogin` and the grouped table renders it — there the failure
+        // is exactly the state change worth showing. Asserted on the whole
+        // function body rather than the success branch alone.
+        let at = page
+            .find("async function refreshAccount(name) {")
+            .expect("the refresh probe must exist");
+        let body = &page[at..];
+        let body = &body[..body.find("\n}").expect("the probe must be closed") + 2];
         assert_eq!(
-            page.matches("loadObserved(); loadAccounts(); loadPool();")
+            body.matches("loadObserved(); loadAccounts(); loadPool();")
                 .count(),
             2,
-            "expected both Claude add/remove success paths to refresh the grouped table"
-        );
-        assert_eq!(
-            page.matches("loadObserved(); loadCodexAccounts(); loadPool();")
-                .count(),
-            2,
-            "expected both Codex add/remove success paths to refresh the grouped table"
+            "both branches of the refresh probe must refresh the grouped table"
         );
     }
 }

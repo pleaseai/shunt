@@ -1,8 +1,9 @@
 //! Antigravity subscription OAuth credential store.
 //!
 //! Antigravity reaches the same Code Assist backend the `gemini` provider uses
-//! — `cloudcode-pa.googleapis.com/v1internal` by default, or whatever host the
-//! provider's `base_url` configures (see [`AntigravityAuthStore::new`]) — but
+//! — `v1internal` methods on `daily-cloudcode-pa.googleapis.com` by default,
+//! or whatever host the provider's `base_url` configures (see
+//! [`AntigravityAuthStore::new`]) — but
 //! with its own OAuth client and scopes, and it identifies itself as
 //! `ideType: ANTIGRAVITY` during project discovery. The two credentials are
 //! therefore not interchangeable, which is why this store exists alongside
@@ -54,16 +55,27 @@ pub(crate) const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth"
 pub(crate) const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub(crate) const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo?alt=json";
 
-/// Production Code Assist backend. This is only the default: `discover_project`
-/// and inference (`adapters::gemini`) both address the provider's configured
-/// `base_url`, which `AntigravityAuthStore::new` derives `api_endpoint` from —
-/// see there for why. This constant remains the production value that
-/// `main.rs`'s login command falls back to when no config is available.
+/// Production Code Assist backend. This is *not* the Antigravity default —
+/// see [`DEFAULT_API_ENDPOINT`]. It is the value
+/// [`addresses_production_backend`] recognises, so an operator who pins their
+/// provider at production still gets onboarding on the `daily-` control
+/// plane; that predicate parses the operator's own spelling rather than
+/// comparing against this constant, which is why nothing outside tests names
+/// it.
+#[cfg(test)]
 pub(crate) const API_ENDPOINT: &str = "https://cloudcode-pa.googleapis.com";
-/// Onboarding is served from the `daily-` host, not the production one — but
-/// only when the configured backend actually is production; see
-/// `AntigravityAuthStore::new` for the non-production case.
+/// The `daily-` control plane — the host the Antigravity client itself
+/// addresses for both discovery and inference. Onboarding is served from here
+/// rather than from production, and a live probe reached `200` here for a
+/// suffixed catalog id where production returned `429 RESOURCE_EXHAUSTED` for
+/// a bare one.
 pub(crate) const DAILY_API_ENDPOINT: &str = "https://daily-cloudcode-pa.googleapis.com";
+/// The backend `shunt login antigravity` addresses when no config is available
+/// (see `main.rs`), and the `base_url` the built-in `antigravity` provider is
+/// seeded with (`Config::default` in `src/config.rs`). The two must name the
+/// same host, or login provisions a project against one backend while
+/// inference runs against another.
+pub(crate) const DEFAULT_API_ENDPOINT: &str = DAILY_API_ENDPOINT;
 pub(crate) const API_VERSION: &str = "v1internal";
 
 /// Antigravity requests two scopes the Gemini CLI never asks for — `cclog` and
@@ -243,21 +255,24 @@ impl AntigravityAuthStore {
     /// configured, rather than always reaching the hardcoded production host
     /// regardless of `base_url`. Trailing slashes are trimmed once here,
     /// mirroring the Gemini adapter's own normalization at the point it
-    /// builds a request URL; no fallback to [`API_ENDPOINT`] is applied for an
-    /// empty or malformed value — config validation already parses every
+    /// builds a request URL; no fallback to a built-in endpoint is applied for
+    /// an empty or malformed value — config validation already parses every
     /// provider `base_url` (`provider_base_url` in `src/config.rs`), and
     /// silently falling back here would fail open to the production host.
     pub fn new(path: PathBuf, client: reqwest::Client, base_url: impl Into<String>) -> Self {
         let api_endpoint = base_url.into().trim_end_matches('/').to_string();
-        // The `daily-` control-plane host that serves onboarding only exists
-        // for the production backend. Anything else config validation admits
-        // (the `AuthMode::AntigravityOauth` block in `src/config.rs`) is a
-        // loopback host — the operator's proxy standing in for the whole
-        // backend — so sending `onboardUser` to the real `daily-` host there
-        // would egress straight past the very endpoint the operator
-        // configured. `discover_project` chains into `onboard_user` on the same
-        // request path, so this has to travel with `api_endpoint` rather than
-        // stay pinned to the production default.
+        // Onboarding is served from the `daily-` control plane. On the default
+        // `base_url` that is already `api_endpoint`, so this branch is a no-op
+        // there. It still matters for the two other shapes config validation
+        // admits (the `AuthMode::AntigravityOauth` block in `src/config.rs`):
+        // a `base_url` pinned at production, which does not serve
+        // `onboardUser` and so has to be redirected here; and a loopback host
+        // — the operator's proxy standing in for the whole backend — where
+        // sending `onboardUser` to the real `daily-` host would egress
+        // straight past the very endpoint the operator configured.
+        // `discover_project` chains into `onboard_user` on the same request
+        // path, so this has to travel with `api_endpoint` rather than stay
+        // pinned to a constant.
         let daily_api_endpoint = if addresses_production_backend(&api_endpoint) {
             DAILY_API_ENDPOINT.to_string()
         } else {
@@ -1140,13 +1155,47 @@ pub(crate) fn default_tier_id(load_response: &Value) -> String {
 /// production" — those address something in front of the backend, which is
 /// exactly the case that must carry onboarding with it.
 pub(super) fn addresses_production_backend(endpoint: &str) -> bool {
+    addresses_bare_backend(endpoint, crate::config::host_is_google_codeassist)
+}
+
+/// The host Antigravity *inference* is sent to for a provider configured with
+/// `base_url`: the `daily-` control plane when `base_url` is plain production,
+/// the configured host (trailing slash trimmed) otherwise.
+///
+/// Production does not serve Antigravity inference — it answers the very first
+/// request with a fake-looking `429 RESOURCE_EXHAUSTED` (live-verified, PR
+/// #449 / `docs/notes/antigravity-daily-host.md`). Docs before 0.40.0 told
+/// operators to pin `base_url` at production, so those configs keep loading
+/// and keep failing after an upgrade unless the request path redirects them.
+/// A plain-production `base_url` is therefore redirected here exactly as
+/// onboarding already redirects it in [`AntigravityAuthStore::new`]. A
+/// loopback host, an explicit port, or a path prefix is left alone: it
+/// addresses something standing in *front* of the backend, which is the case
+/// that must be carried through rather than routed around.
+pub fn inference_base_url(base_url: &str) -> String {
+    if addresses_production_backend(base_url) {
+        return DAILY_API_ENDPOINT.to_string();
+    }
+    base_url.trim_end_matches('/').to_string()
+}
+
+/// Whether `endpoint` addresses the default Antigravity backend itself — the
+/// `daily-` control plane both [`DEFAULT_API_ENDPOINT`] and the seeded
+/// `antigravity` provider name.
+///
+/// Used by `login_base_url` to tell a slot left at the built-in default from
+/// one the operator actually declared. Same parse-don't-compare reasoning as
+/// [`addresses_production_backend`].
+pub(super) fn addresses_default_backend(endpoint: &str) -> bool {
+    addresses_bare_backend(endpoint, crate::config::host_is_antigravity_daily)
+}
+
+fn addresses_bare_backend(endpoint: &str, is_host: impl Fn(&str) -> bool) -> bool {
     reqwest::Url::parse(endpoint).is_ok_and(|url| {
         url.scheme() == "https"
             && url.port().is_none()
             && url.path() == "/"
-            && url
-                .host_str()
-                .is_some_and(crate::config::host_is_google_codeassist)
+            && url.host_str().is_some_and(is_host)
     })
 }
 
@@ -1235,6 +1284,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
+    }
+
+    fn past_millis(secs: u64) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .saturating_sub(u128::from(secs).saturating_mul(1_000)) as u64
     }
 
     fn write(path: &Path, stored: &StoredAuth) {
@@ -1332,12 +1389,27 @@ mod tests {
     }
 
     #[test]
-    fn the_production_default_still_routes_onboarding_to_the_daily_host() {
-        // When the configured base_url resolves to the production default,
-        // onboarding must keep using the dedicated `daily-` control-plane
-        // host — only a genuinely non-production base_url (necessarily
-        // loopback, per the AntigravityOauth validation guard in
-        // src/config.rs) collapses daily_api_endpoint onto api_endpoint.
+    fn the_default_base_url_puts_both_endpoints_on_the_daily_host() {
+        // The default `base_url` is the `daily-` control plane, so onboarding
+        // and inference address the same backend and nothing is redirected.
+        let store = AntigravityAuthStore::new(
+            temp_auth_file("default_daily_host"),
+            reqwest::Client::new(),
+            DEFAULT_API_ENDPOINT,
+        );
+        assert_eq!(store.api_endpoint, DAILY_API_ENDPOINT);
+        assert_eq!(store.daily_api_endpoint, DAILY_API_ENDPOINT);
+    }
+
+    #[test]
+    fn a_production_base_url_still_routes_onboarding_to_the_daily_host() {
+        // An operator who pins `base_url` at production has it recorded as
+        // `api_endpoint` — the request path redirects inference separately,
+        // via `inference_base_url` — but production does not serve
+        // `onboardUser` either, so only a genuinely
+        // non-production, non-daily base_url (necessarily loopback, per the
+        // AntigravityOauth validation guard in src/config.rs) collapses
+        // daily_api_endpoint onto api_endpoint.
         let store = AntigravityAuthStore::new(
             temp_auth_file("production_default_daily_host"),
             reqwest::Client::new(),
@@ -1381,6 +1453,87 @@ mod tests {
             assert!(
                 !addresses_production_backend(spelling),
                 "{spelling} is not the plain production backend"
+            );
+        }
+    }
+
+    #[test]
+    fn a_production_pinned_base_url_sends_inference_to_the_daily_host() {
+        // Production answers Antigravity inference with a fake 429 from the
+        // first request, and pre-0.40.0 docs told operators to pin it — so
+        // every spelling the validator calls plain production has to be
+        // redirected, not just the one that matches the constant byte for
+        // byte.
+        for spelling in [
+            API_ENDPOINT,
+            "https://cloudcode-pa.googleapis.com/",
+            "https://CloudCode-PA.googleapis.com",
+            "https://cloudcode-pa.googleapis.com:443",
+        ] {
+            assert_eq!(
+                inference_base_url(spelling),
+                DAILY_API_ENDPOINT,
+                "{spelling} must send inference to the daily host"
+            );
+        }
+    }
+
+    #[test]
+    fn anything_in_front_of_the_backend_keeps_its_own_inference_host() {
+        // A proxy port, a path prefix, or loopback stands in front of the
+        // backend: redirecting past it would egress straight around the
+        // endpoint the operator configured. Only the trailing slash is
+        // normalized, mirroring what the adapter trimmed before.
+        for (spelling, expected) in [
+            (
+                "https://cloudcode-pa.googleapis.com:8443",
+                "https://cloudcode-pa.googleapis.com:8443",
+            ),
+            (
+                "https://cloudcode-pa.googleapis.com/debug-proxy",
+                "https://cloudcode-pa.googleapis.com/debug-proxy",
+            ),
+            ("http://127.0.0.1:9", "http://127.0.0.1:9"),
+            (
+                "https://daily-cloudcode-pa.googleapis.com/",
+                DAILY_API_ENDPOINT,
+            ),
+        ] {
+            assert_eq!(
+                inference_base_url(spelling),
+                expected,
+                "{spelling} addresses something in front of the backend"
+            );
+        }
+    }
+
+    #[test]
+    fn every_config_valid_spelling_of_the_default_host_is_recognised_as_the_default() {
+        // `login_base_url` uses this to tell a slot left at the built-in
+        // default from one the operator declared, so the same spellings the
+        // validator admits for the default must all read as the default — a
+        // byte compare would make that pick depend on capitalization.
+        for spelling in [
+            DEFAULT_API_ENDPOINT,
+            "https://Daily-CloudCode-PA.googleapis.com",
+            "https://daily-cloudcode-pa.googleapis.com/",
+        ] {
+            assert!(
+                addresses_default_backend(spelling),
+                "{spelling} is the default backend"
+            );
+        }
+        for spelling in [
+            API_ENDPOINT,
+            "https://daily-cloudcode-pa.googleapis.com:8443",
+            "https://daily-cloudcode-pa.googleapis.com/debug-proxy",
+            "http://daily-cloudcode-pa.googleapis.com",
+            "http://127.0.0.1:8080",
+            "not a url",
+        ] {
+            assert!(
+                !addresses_default_backend(spelling),
+                "{spelling} is not the plain default backend"
             );
         }
     }
@@ -1458,7 +1611,7 @@ mod tests {
             email: None,
             project_id: None,
         };
-        let result = std::panic::catch_unwind(|| is_stored_valid(&stored, SystemTime::now()));
+        let result = std::panic::catch_unwind(|| is_stored_valid(&stored, UNIX_EPOCH));
         assert!(
             result.is_ok(),
             "is_stored_valid must not panic on a corrupted huge expiry_date"
@@ -2270,7 +2423,7 @@ mod tests {
             &StoredAuth {
                 access_token: "stale-token".to_string(),
                 refresh_token: "refresh-1".to_string(),
-                expiry_date: Some(1),
+                expiry_date: Some(past_millis(1)),
                 email: None,
                 project_id: Some("proj".to_string()),
             },
@@ -2311,7 +2464,7 @@ mod tests {
             &StoredAuth {
                 access_token: "stale".to_string(),
                 refresh_token: "refresh-1".to_string(),
-                expiry_date: Some(1),
+                expiry_date: Some(past_millis(1)),
                 email: None,
                 project_id: Some("proj".to_string()),
             },
@@ -2362,7 +2515,7 @@ mod tests {
             &StoredAuth {
                 access_token: "stale".to_string(),
                 refresh_token: "revoked".to_string(),
-                expiry_date: Some(1),
+                expiry_date: Some(past_millis(1)),
                 email: None,
                 project_id: Some("proj".to_string()),
             },

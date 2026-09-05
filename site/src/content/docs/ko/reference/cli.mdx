@@ -42,7 +42,7 @@ shunt init --root /path/to/project
 shunt init --force
 ```
 
-Upstream을 지정하지 않으면 starter 전체가 주석으로 구성되어 shunt의 기본 passthrough 설정으로 로드됩니다. `--upstream`을 반복하면 failover 순서대로 preset 항목을 추가합니다. 사용할 수 있는 이름은 `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, `cursor`, `kimi-code`입니다. Starter는 `server.default_provider`를 설정하지 않으므로 매핑되지 않은 트래픽은 기본 Anthropic passthrough를 유지합니다. Preset을 지정하면 생성된 파일이 `shunt check`를 통과하면서도 이 fallback을 유지하도록 마지막에 `anthropic` passthrough upstream이 자동으로 추가됩니다(직접 `anthropic`을 지정한 경우는 제외).
+Upstream을 지정하지 않으면 starter 전체가 주석으로 구성되어 shunt의 기본 passthrough 설정으로 로드됩니다. `--upstream`을 반복하면 failover 순서대로 preset 항목을 추가합니다. 사용할 수 있는 이름은 `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, `cursor`, `kimi-code`, `zhipu`, `minimax-cn`입니다. Starter는 `server.default_provider`를 설정하지 않으므로 매핑되지 않은 트래픽은 기본 Anthropic passthrough를 유지합니다. Preset을 지정하면 생성된 파일이 `shunt check`를 통과하면서도 이 fallback을 유지하도록 마지막에 `anthropic` passthrough upstream이 자동으로 추가됩니다(직접 `anthropic`을 지정한 경우는 제외).
 
 Root의 기본값은 현재 디렉터리이며 이미 존재해야 합니다. 그 안에 `shunt.toml`, `shunt.yaml`, `shunt.yml` 중 하나가 있으면 `--force` 없이는 아무것도 쓰지 않고 중단합니다. 강제 init은 `shunt.toml`만 덮어씁니다. YAML variant는 그대로 남고, config discovery에서는 새 TOML 파일이 우선합니다.
 
@@ -226,7 +226,7 @@ config는 provider를 `[[upstreams]]` 또는 `[providers.*]` 중 한 형식으�
 
 Kimi는 갱신할 때마다 refresh token을 회전시키며, 발급되는 access token 수명도 약 15분으로 짧아 갱신이 자주 일어납니다. 따라서 위의 "갱신 가능한 로그인은 프로세스 하나만" 원칙이 그대로 강하게 적용됩니다. 하나의 Kimi 계정 파일을 여러 shunt 프로세스가 공유하면 첫 갱신에서 서로를 무효화합니다.
 
-전체 upstream 구성은 [Kimi](/ko/providers/kimi/#kimi-code-oauth-subscription)를 참고하세요.
+전체 upstream 구성은 [Kimi](/ko/providers/kimi/#kimi-code-oauth-구독)를 참고하세요.
 
 ## Anthropic 계정 풀 인증
 

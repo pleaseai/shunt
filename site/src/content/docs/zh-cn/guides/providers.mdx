@@ -23,13 +23,17 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 | [`grok`](/zh-cn/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅 |
 | [`cursor`](/zh-cn/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` —— 复用 `~/.gemini/oauth_creds.json` |
-| [`antigravity`](/zh-cn/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` —— 复用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |
+| [`antigravity`](/zh-cn/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` —— 复用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |
 | `antigravity-cli` | `antigravity_cli` | `none` | **已废弃。** 本地 `agy` CLI —— 经由子进程访问同一后端 |
 
 每个名称都链接到对应提供方的专门页面,其中包含完整设置。`shunt add upstream <name>`
 会为任意内置提供方打印分步操作蓝图 —— 将它通过管道传给编码 agent
 (`shunt add upstream codex --print | claude`),即可让 agent 为你完成配置。见
 [CLI 参考](/zh-cn/reference/cli/#shunt-add)。
+
+`gemini` 提供方的工具声明会经过与 `antigravity` 提供方相同的 schema 调整。两种传输共用同一个 Gemini 适配器,因此
+[Antigravity 提供方页面](/zh-cn/providers/antigravity/)的**适配器承载的内容**中所述的元组折叠和无类型元素回退同样适用于
+`gemini` 路由。
 
 ### antigravity 提供方(Google Antigravity)
 
@@ -48,11 +52,25 @@ display_name = "[AGY ] Gemini-3.6-Flash"
 [[routes]]
 model = "claude-gemini-3.6-flash-via-antigravity"
 provider = "antigravity"
-upstream_model = "gemini-3.6-flash"
+upstream_model = "gemini-3.6-flash-medium"
 ```
+
+Antigravity 把 Gemini 模型的 effort 写进 id 发布,并不提供不带后缀的 slug,而且有两种形态 —— `-low` /
+`-medium` / `-high` 后缀,或者把 effort 作为请求字段接收的单个 `-tiered` id。账号拿到哪种形态会随时间
+变化,所以 shunt 会读取账号自己的目录,挑出它真正发布的 id:不带后缀的 `gemini-*` id 会依据 `effort`、
+请求、否则按 `medium` 解析,而账号已不再发布的后缀会被重新解析而不是照原样发出。每种写法都能用。
 
 完整设置 —— 登录与 scope、项目发现、模型 slug、thinking,以及适配器承载的内容 —— 见专门的
 [Antigravity 提供方页面](/zh-cn/providers/antigravity/)。
+
+<Aside type="caution" title="Antigravity 的条款">
+
+Google 的 [Antigravity 条款](https://antigravity.google/terms)直接点名了这种用法:"使用第三方软件、工具或服务访问本服务(例如将
+OpenClaw 与 Antigravity OAuth 配合使用)即违反本协议",且此类违约"可能成为暂停或终止你的 Antigravity
+和/或 Gemini CLI 账号的理由"。shunt 就是使用 Antigravity OAuth 的第三方软件,因此经由该提供方路由恰好落在
+该条款之内。这份订阅是否值得冒这个风险由你自己决定 —— 这里没有任何东西能保护你的账号。
+
+</Aside>
 
 <Aside type="caution" title="`antigravity` 的含义已改变">
 
@@ -68,8 +86,13 @@ upstream_model = "gemini-3.6-flash"
 
 ### 已废弃的 `antigravity_cli` 传输
 
-`antigravity-cli` 这条路径按每个请求以 agent 模式启动一个 `agy` CLI 子进程。`agy` 自己解析自己的工具调用,因此请求中的
-`tools` 数组不会被转发,响应里也永远不会包含 `tool_use` 块。需要自行驱动工具循环的客户端应改用 `gemini` 提供方。
+`antigravity-cli` 这条路径按每个请求以 agent 模式启动一个 `agy` CLI 子进程。`agy` 自己解析自己的工具调用,因此该适配器
+永远无法返回 `tool_use` 块,真正要求调用工具的请求会被拒绝:非空的 `tools` 数组,或值为 `any`/`tool` 的 `tool_choice`,
+会以指明这一限制的 `400 invalid_request_error` 拒绝。此类请求过去会被悄悄丢弃,返回 `stop_reason: "end_turn"` 的纯文本
+`200` —— 这是 agent 式调用方无法据以行动的响应,并且在直接违反 `tool_choice: {"type": "any"}` 的同时仍报告成功。有两种
+形式不受此限制,因为它们都不强制调用工具:即使同时提供了 `tools`,`tool_choice: {"type": "none"}` 也不受限制;没有工具的
+`tool_choice: {"type": "auto"}` 同样不受限制,它是许多客户端在每个请求中都会序列化的 Anthropic SDK 默认值。空的
+`tools: []` 同样不算工具请求。需要自行驱动工具循环的客户端应改用会转发工具的 `antigravity` 或 `gemini` 提供方。
 
 由于非交互式运行无法回答权限提示,`agy` 会带 `--dangerously-skip-permissions` 运行,并且默认带 `--sandbox`,所以**请把该
 提供方视为以运行 shunt 的用户身份执行任意代码**。
@@ -115,7 +138,7 @@ codex login
 
 <Aside type="caution" title="模型 slug">
 
-ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受该账户实时授权的 slug。权威目录是 openai/codex 的 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)。当前的 slug 有 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`(前沿)以及 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`;较老的账户可能只被授权使用较早的那些。在路由中使用 `upstream_model` 可将任意别名映射到一个已授权的 slug。
+ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受该账户实时授权的 slug。权威目录是 openai/codex 的 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)。当前的 slug 有 `gpt-6-astra`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`(前沿)以及 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`;较老的账户可能只被授权使用较早的那些。在路由中使用 `upstream_model` 可将任意别名映射到一个已授权的 slug。
 
 </Aside>
 
@@ -160,10 +183,12 @@ ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受�
 | 提供方 | `base_url` | 示例模型 ID |
 | :-- | :-- | :-- |
 | [Kimi (Moonshot)](/zh-cn/providers/kimi/) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`、`kimi-k2.7-code` |
-| [Kimi Code(订阅制,OAuth)](/zh-cn/providers/kimi/#kimi-code-oauth-subscription) | `https://api.kimi.com/coding` | 使用你的订阅暴露的模型 ID |
+| [Kimi Code(订阅制,OAuth)](/zh-cn/providers/kimi/#kimi-codeoauth-订阅) | `https://api.kimi.com/coding` | 使用你的订阅暴露的模型 ID |
 | [DeepSeek](/zh-cn/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`、`deepseek-v4-flash` |
 | [Z.ai (GLM)](/zh-cn/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`、`glm-4.7` |
+| [智谱（GLM 国内版）](/zh-cn/providers/zhipu/) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`、`glm-5.3-flash` |
 | [MiniMax](/zh-cn/providers/minimax/) | `https://api.minimax.io/anthropic` | 见 [MiniMax 文档](https://platform.minimax.io/docs/token-plan/claude-code) |
+| [MiniMax 国内版](/zh-cn/providers/minimax-cn/) | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | [Mimo (Xiaomi)](/zh-cn/providers/mimo/) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — 见 [Mimo 文档](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
 | [OpenRouter](/zh-cn/providers/openrouter/) | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | [Vercel AI Gateway](/zh-cn/providers/vercel-ai-gateway/) | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8`(接受 `x_api_key`) |
@@ -199,7 +224,7 @@ provider = "kimi-code"
 
 `kimi_oauth` 和 `claude_oauth`/`chatgpt_oauth` 一样支持账号池 —— 用 `accounts = [...]` 代替
 `account`,即可将负载分散到多个已保存的 Kimi 账号上。完整说明见
-[Kimi → Kimi Code (OAuth subscription)](/zh-cn/providers/kimi/#kimi-code-oauth-subscription)。
+[Kimi → Kimi Code(OAuth 订阅)](/zh-cn/providers/kimi/#kimi-codeoauth-订阅)。
 
 例如,要通过 shunt 路由 Kimi(Moonshot)的模型:
 

@@ -85,6 +85,10 @@ pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<()
     {
         return Err(ConfigError::AntigravityMigrationRequired(message));
     }
+    // Same production-pin warning `main.rs` emits at boot: a
+    // reload that newly pins `base_url` at production is accepted, but the
+    // operator has to learn that inference is being redirected past it.
+    crate::auth::antigravity::warn_if_antigravity_pinned_to_production(&new_config);
     if crate::auth::antigravity::routes_to_antigravity(&new_config) {
         // Mirror `main.rs`'s boot sequence here too: a config that starts with no
         // route to `antigravity` never starts the version refresher, so a reload

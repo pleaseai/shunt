@@ -13,6 +13,8 @@
 //! *refreshable* login token; a long-lived `claude setup-token` is rejected, so
 //! the poller restricts itself to imported accounts.
 
+use anyhow::Context;
+
 use crate::accounts::{UsageSnapshot, UsageWindow};
 
 /// Path appended to a provider's base URL to reach the usage endpoint.
@@ -46,7 +48,10 @@ pub async fn fetch_usage(
         .send()
         .await?;
     let status = response.status();
-    let text = response.text().await.unwrap_or_default();
+    let text = response
+        .text()
+        .await
+        .context("Claude usage response body read failed")?;
     if !status.is_success() {
         let detail: String = text.chars().take(200).collect();
         anyhow::bail!("usage request failed ({status}): {detail}");
@@ -114,7 +119,11 @@ fn normalize_percent(percent: f64) -> f64 {
 /// `None` on any malformed component so a bad timestamp degrades to "no reset"
 /// rather than poisoning the whole snapshot. The codebase carries no date crate;
 /// this is a focused, self-contained parser for exactly this endpoint's shape.
-fn parse_rfc3339_to_epoch_secs(input: &str) -> Option<u64> {
+///
+/// `pub(crate)`: shared by the Claude usage parser and its wire-shape
+/// tests for converting the endpoint's RFC 3339 reset timestamps to epoch
+/// seconds.
+pub(crate) fn parse_rfc3339_to_epoch_secs(input: &str) -> Option<u64> {
     let (date, rest) = input.split_once('T')?;
     let mut date_parts = date.split('-');
     let year: i64 = date_parts.next()?.parse().ok()?;
@@ -363,6 +372,7 @@ mod tests {
             utilization_7d_oi: Some(0.125),
             reset_7d_oi: Some(reset_fable),
             status: None,
+            needs_relogin: false,
         };
 
         let wire = crate::oauth_usage::to_wire(

@@ -1,0 +1,136 @@
+---
+title: Cursor
+description: ネイティブな ConnectRPC アダプター経由で Cursor サブスクリプションに接続する — ログイン、エージェントモード、モデル ID、ツール、画像、オーバーライド。
+---
+
+組み込みの **`cursor`** プロバイダーは、Cursor 自身の ConnectRPC/protobuf AgentService を通じて、あなたの
+**Cursor** サブスクリプションに接続します。**`kind = "cursor"`** のネイティブアダプターがこれを Anthropic
+Messages API へブリッジします — ストリーミング、ストリーミング応答時の推論、ネイティブなツール呼び出し、
+インライン画像を含みます。ログインとトークンのリフレッシュは `api2.cursor.sh` を使い、エージェントの
+ターンは Cursor の現行エージェントホスト（`agentn.global.api5.cursor.sh`）に対して HTTP/2 で実行されます。
+
+## クイックスタート
+
+コーディングエージェントにセットアップを任せることもできます — `shunt add` は組み込みのセットアップ
+ブループリントを出力します（オフラインかつ読み取り専用で、設定を編集するのはエージェントです。この
+コマンド自体は編集しません）。
+
+```bash
+shunt add upstream cursor --print | claude
+```
+
+または、以下の手順に沿って手動で設定してください。
+
+## 1. ログイン
+
+```bash
+shunt login cursor
+```
+
+これは Cursor の OAuth フローを実行して `~/.shunt/cursor-auth.json` を書き込み、shunt がそれを読み込んで
+自動リフレッシュします。ファイルが存在しないか期限切れの場合、shunt は `authentication_error` を返し、
+再度 `shunt login cursor` を実行するよう伝えます。
+
+## 2. upstream を設定する
+
+このプロバイダーはデフォルトでシードされているため、テーブルは不要です — `cursor:*` のモデル id を
+ルーティングすれば完了です。（順序付きフェイルオーバーのために）明示的に宣言する場合、`cursor` プリセットが
+ネイティブアダプター、`base_url = "https://api2.cursor.sh"`、`auth = "cursor_oauth"` を提供します。
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # ルーティングされないモデル（例 claude-*）のデフォルトとして Anthropic を残す
+
+[[upstreams]]
+name = "cursor"
+provider = "cursor"
+```
+
+順序付きの `[[upstreams]]` は shunt の組み込みプロバイダー（シードされた `cursor` を含む）を置き換えるため、
+明示的な設定ではフォールバック先の `anthropic` デフォルトも宣言する必要があります
+（`server.default_provider` のデフォルトは `anthropic`）。
+
+従来の `[providers.cursor]` テーブル形式も引き続きサポートされます — ただし `[[upstreams]]` と
+`[providers.*]` を 1 つのファイルで混在させないでください。
+
+## 3. モデル ID とエージェントモード
+
+プレフィックスが Cursor のエージェントモード（Agent / Plan / Ask）を選び、サフィックスが Cursor のモデル
+id です。`cursor-agent models` に出る表示名ではなく、**ワイヤー**上の id を使ってください: Auto は
+`default` です（`cursor:auto` をルーティングすると `Unknown model ID: auto` で失敗します）。名前付きモデル
+（例 `cursor:gpt-5.2`）にはそれを entitle する有料プランが必要で、無料プランは `cursor:default` に限られます。
+
+| 形式 | エージェントモード | 例 |
+| :-- | :-- | :-- |
+| `cursor:<id>` / `cursor-agent:<id>` | Agent | `cursor:default` |
+| `cursor-plan:<id>` | Plan | `cursor-plan:default` |
+| `cursor-ask:<id>` | Ask | `cursor-ask:default` |
+
+従来のベア名も受け付けます: `cursor`、`cursor-agent`、`cursor-composer`、`cursor-composer-fast`（Agent）、
+`cursor-plan`、`composer-2.5`（Plan）、`cursor-ask`、`composer-2.5-fast`（Ask）。それ以外のモデル id は
+`invalid_request_error` で拒否されます。
+
+直接ルーティングするか、[model discovery](/ja/guides/model-discovery/) へ Claude 名のエイリアスを広告します。
+
+```toml
+[[routes]]
+model = "cursor:default"
+provider = "cursor"
+
+# または: 広告 + ルーティングを 1 つの宣言で
+[[models]]
+id = "claude-cursor-default"
+display_name = "Cursor Auto"
+
+[models.upstream_model]
+cursor = "cursor:default"
+```
+
+## アダプターが伝えるもの
+
+アダプターはアシスタントの**テキストと推論**をストリーミングし、クライアントの**ツール**をネイティブな
+Cursor MCP ツール呼び出しとしてブリッジし（モデルが呼び出したツールは `stop_reason: "tool_use"` を伴う
+Anthropic の `tool_use` ブロックとして現れます。あなたがそれを実行して `tool_result` を返すと、shunt は
+その結果を履歴に含めてターンを再実行します）、**インライン画像**を転送します（base64 ソース。URL 画像は
+スキップされます）。Cursor 自身のエージェント的なファイル / シェルツールは公開されません — リクエストが
+広告したツールだけです。
+
+## 検証
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"cursor:default","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+レスポンスの `x-gateway-upstream` ヘッダーが `cursor` を示すことを確認したら、
+[Claude Code を shunt へ向け](/ja/guides/connect-claude-code/)てください。
+
+
+
+<Aside type="note" title="オーバーライド">
+
+`SHUNT_CURSOR_BASE_URL` はログイン / リフレッシュのエンドポイントを、`SHUNT_CURSOR_AGENT_BASE_URL` は
+エージェントホストを（HTTPS の `cursor.sh` ホストである必要があります）、`SHUNT_CURSOR_AUTH_FILE` は認証情報の
+パスを、`SHUNT_CURSOR_CLIENT_VERSION` は `x-cursor-client-version` ヘッダーをそれぞれ上書きします（Cursor が
+古いクライアントバージョンを拒否し始めたら、再ビルドせずに上げられます）。`cursor_oauth` のプロバイダーは
+HTTPS の Cursor ホストに固定されます — `base_url` をオリジン外へ向けることは拒否されるため、bearer トークンが
+漏れることはありません。
+
+</Aside>
+
+
+
+
+
+<Aside type="caution" title="自己責任">
+
+非公式なクライアントから Cursor サブスクリプションを再利用するかどうかは、あなた自身の判断です — Cursor の
+利用規約やアカウントに対する措置に抵触する可能性があります。ご利用は自己責任でお願いします。
+
+</Aside>
+

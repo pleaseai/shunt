@@ -282,9 +282,12 @@ The issue frames this as "prewarm". Two separable things:
   mapped Anthropic error envelope ([`AnthropicSseMachine::backend_error`]); the
   streaming drivers emit it inline as an SSE `error` event, and the non-streaming
   collectors (`json_events_response` + the HTTP `json_response`) return it as a
-  `502` gateway error instead of a `200 OK` carrying the partial content collected
+  gateway error instead of a `200 OK` carrying the partial content collected
   before it — so a non-streaming client cannot mistake a backend failure for a
-  truncated-but-successful result. Symmetric with the transport-error handling
+  truncated-but-successful result. The status follows the error `code`
+  (`m1-responses-translation.md` §8): an in-stream `rate_limit_exceeded` is `429`
+  `rate_limit_error`, every other code `502`; both are terminal and never replay
+  the turn on the next upstream. Symmetric with the transport-error handling
   above and shared by both the WebSocket and HTTP JSON paths.
 - **HTTP fallback.** Any websocket failure *before the first event reaches the
   client* — connect timeout, refused/failed handshake, a failed frame send, or a

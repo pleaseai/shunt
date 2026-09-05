@@ -15,7 +15,7 @@ use crate::{adapters::AdapterError, error::ShuntError, model::responses::map_err
 
 use super::codex_ws::{CodexWsError, CodexWsEvents};
 use super::context::RelayOptions;
-use super::error::backend_error_response;
+use super::error::backend_error;
 use super::websocket::BufferedEvent;
 
 /// Stream translated events to the client as Anthropic SSE. Mirrors
@@ -120,12 +120,8 @@ pub(super) async fn json_events_response(
                 // mapped envelope and ignores everything after. Return the moment
                 // it lands instead of looping on `recv()` for a channel close the
                 // backend may never send — that would hang the request.
-                if let Some(error) = machine.take_backend_error() {
-                    return Err(AdapterError {
-                        message: "responses backend error event".into(),
-                        response: Box::new(backend_error_response(error)),
-                        failure: None,
-                    });
+                if let Some((status, error)) = machine.take_backend_error() {
+                    return Err(backend_error(status, error));
                 }
             }
             Some(Err(error)) => {
@@ -267,7 +263,7 @@ mod tests {
             event: Some("response.failed".to_string()),
             data: json!({
                 "type": "response.failed",
-                "response": { "error": { "code": "rate_limit_exceeded", "message": "Rate limit reached" } }
+                "response": { "error": { "code": "server_error", "message": "Upstream failed" } }
             }),
         }))
         .unwrap();
@@ -284,6 +280,37 @@ mod tests {
             .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["message"], "Upstream failed");
+    }
+
+    /// An in-stream `rate_limit_exceeded` on the websocket JSON path maps to
+    /// `429` `rate_limit_error` yet stays terminal (no failover replay), mirroring
+    /// `http::json_response`.
+    #[tokio::test]
+    async fn json_events_response_maps_in_stream_rate_limit_to_429_without_failover() {
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Ok(created_event())).unwrap();
+        tx.try_send(Ok(ResponseEvent {
+            event: Some("response.failed".to_string()),
+            data: json!({
+                "type": "response.failed",
+                "response": { "error": { "code": "rate_limit_exceeded", "message": "Rate limit reached" } }
+            }),
+        }))
+        .unwrap();
+        drop(tx);
+
+        let error = json_events_response(None, rx, relay_opts())
+            .await
+            .expect_err("in-stream rate limit is an error");
+
+        assert!(error.failure.is_none());
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["type"], "rate_limit_error");
         assert_eq!(body["error"]["message"], "Rate limit reached");
     }
 
@@ -299,7 +326,7 @@ mod tests {
             event: Some("response.failed".to_string()),
             data: json!({
                 "type": "response.failed",
-                "response": { "error": { "code": "rate_limit_exceeded", "message": "Rate limit reached" } }
+                "response": { "error": { "code": "server_error", "message": "Upstream failed" } }
             }),
         }))
         .unwrap();
@@ -321,7 +348,7 @@ mod tests {
             .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["type"], "error");
-        assert_eq!(body["error"]["message"], "Rate limit reached");
+        assert_eq!(body["error"]["message"], "Upstream failed");
 
         drop(tx);
     }

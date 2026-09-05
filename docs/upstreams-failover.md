@@ -43,6 +43,8 @@ branching). Unknown preset name → config error listing available presets.
 | `kimi` | anthropic | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | cursor | Cursor backend (current documented URL) | `cursor_oauth` |
 | `kimi-code` | anthropic | `https://api.kimi.com/coding` | `kimi_oauth` |
+| `zhipu` | anthropic | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
+| `minimax-cn` | anthropic | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 
 `kimi` and `kimi-code` are distinct presets for distinct services: `kimi` is the metered Moonshot
 API (`auth = "api_key"`, env `MOONSHOT_API_KEY`), while `kimi-code` is the subscription-billed Kimi
@@ -54,9 +56,9 @@ time, not from this table if they drift.
 
 No preset overrides `count_tokens`: every upstream keeps the field's normal
 serde default (`tiktoken`), which is only meaningful for `responses` and
-`cursor` kinds — `anthropic`-kind upstreams (including `kimi` and `kimi-code`) always forward
-`count_tokens` requests upstream regardless of the setting. Operators override
-per upstream with the explicit `count_tokens` field as today.
+`cursor` kinds — `anthropic`-kind upstreams (including `kimi`, `kimi-code`, `zhipu`, and
+`minimax-cn`) always forward `count_tokens` requests upstream regardless of the setting.
+Operators override per upstream with the explicit `count_tokens` field as today.
 
 ### 1.3 `auth` — string or map
 

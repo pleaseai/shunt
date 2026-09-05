@@ -3785,3 +3785,612 @@ fn admin_config_without_tokens_env_fails_startup() {
     assert!(error.contains("SHUNT_TEST_ADMIN_TOKENS_MISSING"));
     assert!(error.contains("refusing to run open"));
 }
+
+/// The refresh probe drives the store's own grant, returns the new expiry, and
+/// returns **no token material** — not the rotated access token, not the
+/// rotated refresh token, and not any provider body that carried them.
+#[tokio::test]
+async fn refresh_probe_rotates_an_imported_account_without_returning_token_material() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_OK", "ops:secret-probe-ok");
+
+    std::fs::write(
+        dir.join("importee.json"),
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "OLD-ACCESS",
+                "refreshToken": "OLD-REFRESH",
+                "expiresAt": 1_000_i64
+            },
+            "shuntAccountUuid": "acct-importee"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_partial_json(serde_json::json!({
+            "grant_type": "refresh_token",
+            "refresh_token": "OLD-REFRESH",
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "SECRET-PROBE-ACCESS",
+            "refresh_token": "SECRET-PROBE-REFRESH",
+            "expires_in": 7200
+        })))
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_PROBE_OK")).await;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/admin/accounts/claude/importee/refresh",
+            gateway.base_url
+        ))
+        .header("x-shunt-admin-token", "secret-probe-ok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let raw = response.text().await.unwrap();
+    // The whole response body, not just the fields the test reads: no token
+    // material of any kind may reach the browser.
+    for marker in [
+        "SECRET-PROBE-ACCESS",
+        "SECRET-PROBE-REFRESH",
+        "OLD-ACCESS",
+        "OLD-REFRESH",
+    ] {
+        // The message deliberately does not echo `raw`. This assertion fires
+        // exactly when the response body holds token material, so printing the
+        // body here would write the leak it just caught into the CI log
+        // (CodeQL rust/cleartext-logging). Naming the matched fixture marker is
+        // all the diagnosis needs, and every marker is a literal from this
+        // array.
+        assert!(
+            !raw.contains(marker),
+            "the probe response leaked token material: the body contains {marker}"
+        );
+    }
+    let body: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(body["refreshed"], serde_json::json!(true));
+    assert_eq!(body["needs_relogin"], serde_json::json!(false));
+    // The rotated pair really was persisted by the store, and the reported
+    // expiry is the new one (the file started at epoch millis 1000).
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("importee.json")).unwrap()).unwrap();
+    assert_eq!(
+        stored["claudeAiOauth"]["accessToken"],
+        "SECRET-PROBE-ACCESS"
+    );
+    assert_eq!(
+        stored["claudeAiOauth"]["refreshToken"],
+        "SECRET-PROBE-REFRESH"
+    );
+    assert!(body["expires_at"].as_i64().unwrap() > 1_000);
+    token_server.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_OK");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A setup-token account carries no refresh grant at all, so the probe must
+/// refuse it up front rather than POST a grant that cannot exist. `expect(0)`
+/// on the token endpoint is the load-bearing assertion.
+#[tokio::test]
+async fn refresh_probe_never_attempts_a_grant_for_a_setup_token_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_SETUP", "ops:secret-probe-st");
+
+    let original = serde_json::json!({
+        "claudeAiOauth": {
+            "accessToken": "STATIC-SETUP-TOKEN",
+            "expiresAt": 4_102_444_800_000_i64,
+            "shuntCredentialKind": "setup_token"
+        },
+        "shuntAccountUuid": "acct-static"
+    })
+    .to_string();
+    std::fs::write(dir.join("statik.json"), &original).unwrap();
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "NEVER-USED",
+            "refresh_token": "NEVER-USED",
+            "expires_in": 7200
+        })))
+        .expect(0)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_PROBE_SETUP")).await;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/admin/accounts/claude/statik/refresh",
+            gateway.base_url
+        ))
+        .header("x-shunt-admin-token", "secret-probe-st")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("setup token"),
+        "the refusal must name the reason, got: {message}"
+    );
+    // expect(0) above: no grant was attempted, and the credential is untouched.
+    token_server.verify().await;
+    assert_eq!(
+        std::fs::read_to_string(dir.join("statik.json")).unwrap(),
+        original
+    );
+
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_SETUP");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A terminal `invalid_grant` from the probe marks the pool account, and a
+/// re-login through `POST /admin/accounts/claude/{name}/complete` clears the
+/// mark again. Also pins that the failure response carries no provider detail.
+#[tokio::test]
+async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_PROBE_DEAD",
+        "ops:secret-probe-dead",
+    );
+
+    std::fs::write(
+        dir.join("deadone.json"),
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "DEAD-ACCESS",
+                "refreshToken": "DEAD-REFRESH",
+                "expiresAt": 1_000_i64
+            },
+            "shuntAccountUuid": "acct-dead"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let token_server = MockServer::start().await;
+    // The refresh grant is terminally rejected; the authorization_code grant
+    // (the re-login) succeeds.
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_partial_json(
+            serde_json::json!({"grant_type": "refresh_token"}),
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": "invalid_grant",
+            "error_description": "PROVIDER-INTERNAL-HINT"
+        })))
+        .mount(&token_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_partial_json(
+            serde_json::json!({"grant_type": "authorization_code"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "REVIVED-ACCESS",
+            "refresh_token": "REVIVED-REFRESH",
+            "expires_in": 7200,
+            "account": {"uuid": "acct-dead"}
+        })))
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let (gateway, state) =
+        start_with_state(admin_config("SHUNT_TEST_ADMIN_TOKENS_PROBE_DEAD")).await;
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-probe-dead")
+            .header("content-type", "application/json")
+    };
+
+    // Seed the pool entry the dashboard renders: the mark lands on health the
+    // pool already holds, so an account nothing ever selected has nothing to
+    // mark (it reports as `unseen`).
+    let account = AccountConfig {
+        name: "deadone".to_string(),
+        uuid: Some("acct-dead".to_string()),
+        store_family: Some(shunt::accounts::StoreFamily::Claude),
+        ..Default::default()
+    };
+    state.accounts.mark_healthy("anthropic", &account, true);
+    assert!(!state.accounts.needs_relogin("anthropic", &account));
+
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/claude/deadone/refresh",
+        gateway.base_url
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let raw = response.text().await.unwrap();
+    assert!(
+        !raw.contains("PROVIDER-INTERNAL-HINT") && !raw.contains("DEAD-REFRESH"),
+        "the failure response must not echo provider detail or token material: {raw}"
+    );
+    assert!(
+        state.accounts.needs_relogin("anthropic", &account),
+        "a terminal probe verdict must mark the account"
+    );
+    assert!(
+        state
+            .accounts
+            .snapshot("anthropic", std::slice::from_ref(&account), None, None)[0]
+            .needs_relogin,
+        "the mark must reach the /admin/pool snapshot"
+    );
+
+    // A second store account resolving to the *same* upstream identity. This is
+    // what makes the clear below load-bearing: `cleanup_reprovisioned_pool_health`
+    // only drops the whole health entry when no other stored account still
+    // resolves to the identity, so with a shared alias present the entry
+    // survives the re-login and a stale "needs re-login" would survive with it.
+    std::fs::write(
+        dir.join("deadtwin.json"),
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "TWIN-ACCESS",
+                "refreshToken": "TWIN-REFRESH",
+                "expiresAt": 4_102_444_800_000_i64
+            },
+            "shuntAccountUuid": "acct-dead"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Re-login through the ordinary provisioning flow clears it again.
+    let start_response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
+        .body(r#"{"name":"deadone","mode":"oauth"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(start_response.status(), StatusCode::OK);
+    let start_body: serde_json::Value = start_response.json().await.unwrap();
+    let (_url, oauth_state) = authorize_state(&start_body);
+    let complete = auth(client.post(format!(
+        "{}/admin/accounts/claude/deadone/complete",
+        gateway.base_url
+    )))
+    .body(format!(r#"{{"code":"relogin-code#{oauth_state}"}}"#))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(complete.status(), StatusCode::OK);
+    assert!(
+        state
+            .accounts
+            .snapshot("anthropic", std::slice::from_ref(&account), None, None)[0]
+            .has_state,
+        "the shared alias must keep the health entry alive, so the clear below is \
+         the only thing that can drop the mark"
+    );
+    assert!(
+        !state.accounts.needs_relogin("anthropic", &account),
+        "a successful re-login must clear the needs-re-login mark"
+    );
+
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_DEAD");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #439: the account is in the store and enumerated by `/admin/pool`, but
+/// no provider table has ever selected it, so the pool holds no health entry for
+/// it. A terminal probe verdict used to update nothing and the row kept
+/// reporting `unseen` — the operator clicked Refresh, was told the credential is
+/// dead, and the dashboard disagreed.
+#[tokio::test]
+async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_PROBE_UNSEEN",
+        "ops:secret-probe-unseen",
+    );
+
+    std::fs::write(
+        dir.join("neverpicked.json"),
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "DEAD-ACCESS",
+                "refreshToken": "DEAD-REFRESH",
+                "expiresAt": 1_000_i64
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": "invalid_grant",
+            "error_description": "revoked"
+        })))
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_PROBE_UNSEEN")).await;
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-probe-unseen")
+            .header("content-type", "application/json")
+    };
+
+    let relogin_state = |data: &serde_json::Value| -> (bool, bool) {
+        let row = data["providers"]
+            .as_array()
+            .expect("the pool response carries providers")
+            .iter()
+            .flat_map(|provider| {
+                provider["accounts"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+            })
+            .find(|account| account["name"] == "neverpicked")
+            .expect("the store account is enumerated by /admin/pool");
+        (
+            row["needs_relogin"] == serde_json::Value::Bool(true),
+            row["has_state"] == serde_json::Value::Bool(true),
+        )
+    };
+
+    let before: serde_json::Value = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        relogin_state(&before),
+        (false, false),
+        "precondition: nothing has ever selected this account, so it is unseen \
+         and unmarked"
+    );
+
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/claude/neverpicked/refresh",
+        gateway.base_url
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "the grant is terminally rejected"
+    );
+
+    let after: serde_json::Value = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let (needs_relogin, has_state) = relogin_state(&after);
+    assert!(
+        needs_relogin,
+        "the probe's terminal verdict never reached /admin/pool for an account \
+         the pool has no health entry for: {after}"
+    );
+    assert!(
+        !has_state,
+        "the pool still has observed nothing for this account, so `has_state` \
+         stays false — both dashboard tables read `needs_relogin` before it"
+    );
+
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_UNSEEN");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The probe exercises the refresh grant and nothing else, so a *successful*
+/// grant proves the refresh token is alive — not that the account can serve
+/// inference. An account marked because the provider rejected a bearer it
+/// actually presented (a post-refresh 401) must keep its mark, or clicking
+/// Refresh hides a dead account until the next real request re-establishes it.
+#[tokio::test]
+async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_PROBE_SERVED",
+        "ops:secret-probe-served",
+    );
+
+    std::fs::write(
+        dir.join("servedmark.json"),
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "OLD-ACCESS",
+                "refreshToken": "OLD-REFRESH",
+                "expiresAt": 1_000_i64
+            },
+            "shuntAccountUuid": "acct-served"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // The grant is perfectly healthy — that is the whole point of the test.
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "FRESH-ACCESS",
+            "refresh_token": "FRESH-REFRESH",
+            "expires_in": 7200
+        })))
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let (gateway, state) =
+        start_with_state(admin_config("SHUNT_TEST_ADMIN_TOKENS_PROBE_SERVED")).await;
+    let client = reqwest::Client::new();
+
+    let account = AccountConfig {
+        name: "servedmark".to_string(),
+        uuid: Some("acct-served".to_string()),
+        store_family: Some(shunt::accounts::StoreFamily::Claude),
+        ..Default::default()
+    };
+    // The proxy already proved a refreshed bearer still gets a 401.
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &account,
+        shunt::accounts::ReloginCause::ServedRequest,
+    );
+    assert!(state.accounts.needs_relogin("anthropic", &account));
+
+    let response = client
+        .post(format!(
+            "{}/admin/accounts/claude/servedmark/refresh",
+            gateway.base_url
+        ))
+        .header("x-shunt-admin-token", "secret-probe-served")
+        .header("content-type", "application/json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "the grant is healthy, so the probe itself succeeds"
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+
+    assert!(
+        state.accounts.needs_relogin("anthropic", &account),
+        "a successful refresh grant must not clear a mark set by the provider \
+         rejecting a bearer the account actually presented — the grant was \
+         never the broken part"
+    );
+    // The response must agree with the pool. Reporting `needs_relogin: false`
+    // and "this login is alive" while `/admin/pool` still demands a re-login
+    // would hand the dashboard and API callers contradictory answers.
+    assert_eq!(
+        body["needs_relogin"],
+        serde_json::Value::Bool(true),
+        "the probe must report the state the pool is actually in"
+    );
+    assert!(
+        body["message"]
+            .as_str()
+            .expect("the probe answers with a message")
+            .contains("still needs a re-login"),
+        "the message must not claim recovery, got: {}",
+        body["message"]
+    );
+
+    // The mirror: a grant-caused mark *is* cleared, so the probe has not simply
+    // stopped clearing. A served response has to come first — the pool keeps
+    // the stronger `ServedRequest` verdict, so a grant failure recorded on top
+    // of it cannot downgrade the cause (pinned in
+    // `accounts::tests::a_grant_failure_never_downgrades_a_served_request_verdict`).
+    state
+        .accounts
+        .mark_healthy_scoped("anthropic", &account, true, false);
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &account,
+        shunt::accounts::ReloginCause::RefreshGrant,
+    );
+    assert!(state.accounts.needs_relogin("anthropic", &account));
+    let response = client
+        .post(format!(
+            "{}/admin/accounts/claude/servedmark/refresh",
+            gateway.base_url
+        ))
+        .header("x-shunt-admin-token", "secret-probe-served")
+        .header("content-type", "application/json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert!(
+        !state.accounts.needs_relogin("anthropic", &account),
+        "a grant-caused mark must still be cleared by a successful grant"
+    );
+    assert_eq!(
+        body["needs_relogin"],
+        serde_json::Value::Bool(false),
+        "and the response must say so"
+    );
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_SERVED");
+    let _ = std::fs::remove_dir_all(&dir);
+}

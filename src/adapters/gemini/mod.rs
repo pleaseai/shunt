@@ -10,8 +10,15 @@ use serde_json::Value;
 
 use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
-    auth::{resolve_credential, Credential},
+    auth::{
+        antigravity::{auth::inference_base_url, catalog::catalog_ids},
+        resolve_credential, Credential,
+    },
     config::AuthMode,
+    model::antigravity_request::{
+        antigravity_model_needs_catalog, antigravity_request_id, antigravity_session_id,
+        antigravity_upstream_model_with, wrap_antigravity_envelope, AntigravityCatalog,
+    },
     model::gemini::{map_gemini_error, GeminiSseMachine},
     model::gemini_request::{translate_request_for_model, wrap_code_assist_envelope},
     request::RequestBody,
@@ -31,6 +38,60 @@ impl Adapter for GeminiAdapter {
         body: RequestBody,
     ) -> AdapterFuture<'a> {
         Box::pin(async move { forward(state, route, uri, headers, body).await })
+    }
+}
+
+/// The Antigravity inference URL for a provider configured with `base_url`.
+///
+/// Split out so the production redirect is unit-testable without a live
+/// request: `inference_base_url` carries the "production does not serve
+/// Antigravity inference" rule that onboarding already applies.
+fn antigravity_endpoint(base_url: &str, method: &str) -> String {
+    let base_url = inference_base_url(base_url);
+    format!("{base_url}/v1internal:{method}")
+}
+
+/// Carry the effort tier a `-tiered` catalog id does not name into the request
+/// body, where the backend reads it.
+///
+/// Additive on purpose: `thinkingBudget` is already translated from the
+/// client's `thinking` block and the backend accepts both fields together, so
+/// the level joins the existing `thinkingConfig` rather than replacing it.
+///
+/// The one case it must not join is a budget of `0`, which is how
+/// [`crate::model::gemini_request`] renders an explicitly *disabled* `thinking`
+/// block. Writing a level there would send "do not think" and "think at
+/// medium" in one object — and if the backend gives the level precedence, a
+/// client that opted out of reasoning is billed for it anyway. A configured
+/// `effort` is dropped here too, while a suffixed id (`…-flash-high`) would
+/// still carry it in the id: an accepted asymmetry, because the client's
+/// explicit opt-out is the stronger signal in the one place the backend can
+/// honour it.
+fn set_thinking_level(inner_req: &mut Value, level: &str) {
+    if inner_req
+        .pointer("/generationConfig/thinkingConfig/thinkingBudget")
+        .and_then(Value::as_u64)
+        == Some(0)
+    {
+        return;
+    }
+    let Some(object) = inner_req.as_object_mut() else {
+        return;
+    };
+    let generation_config = object
+        .entry("generationConfig")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Some(generation_config) = generation_config.as_object_mut() else {
+        return;
+    };
+    let thinking_config = generation_config
+        .entry("thinkingConfig")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(thinking_config) = thinking_config.as_object_mut() {
+        thinking_config.insert(
+            "thinkingLevel".to_string(),
+            Value::String(level.to_string()),
+        );
     }
 }
 
@@ -97,7 +158,7 @@ async fn forward(
     let json_body = body.json();
     let is_streaming = json_body.get("stream").and_then(Value::as_bool) == Some(true);
 
-    let inner_req = translate_request_for_model(json_body, &route.upstream_model)?;
+    let mut inner_req = translate_request_for_model(json_body, &route.upstream_model)?;
 
     let base_url = provider.base_url.trim_end_matches('/');
 
@@ -114,7 +175,68 @@ async fn forward(
         provider.auth,
         AuthMode::GoogleOauth | AuthMode::AntigravityOauth
     );
-    let (endpoint, payload) = if is_code_assist {
+    let (endpoint, payload) = if provider.auth == AuthMode::AntigravityOauth {
+        // Antigravity speaks the same `v1internal` methods, but the client
+        // identifies itself as the agent and names a session, and its catalog
+        // ids carry their effort tier. See `wrap_antigravity_envelope` and
+        // `antigravity_upstream_model`.
+        //
+        // The host is resolved rather than taken verbatim: production does not
+        // serve Antigravity inference, and configs written against pre-0.40.0
+        // docs pin it. Code Assist (`AuthMode::GoogleOauth`) genuinely lives
+        // on production, so the redirect is scoped to this branch.
+        let inference_base = inference_base_url(base_url);
+        // Resolving twice is a no-op — the daily host resolves to itself — and
+        // keeps the endpoint's own rule readable next to its unit tests.
+        let endpoint = antigravity_endpoint(&inference_base, method);
+        if !endpoint.starts_with(base_url) {
+            tracing::debug!(
+                provider = %route.provider,
+                configured = %base_url,
+                "antigravity base_url is pinned at the production Code Assist host, which does \
+                 not serve inference; sending this request to the daily host instead"
+            );
+        }
+        // The account's own catalog decides between the `-<tier>` and
+        // `-tiered` forms of the same model; both exist in the wild and which
+        // one an account is served changes over time. Discovery is cached and
+        // fails open, so this costs at most one bounded request per account
+        // per TTL and never fails the client's request. It is skipped outright for
+        // an id no catalog could reshape — only Gemini ids carry a tier — so a
+        // Claude- or GPT-routed Antigravity provider never pays for it.
+        let catalog = if antigravity_model_needs_catalog(&route.upstream_model) {
+            catalog_ids(
+                &state.http_client,
+                &inference_base,
+                &access_token,
+                &project_id,
+            )
+            .await
+        } else {
+            None
+        };
+        let model = antigravity_upstream_model_with(
+            &route.upstream_model,
+            route.effort.as_deref(),
+            json_body,
+            catalog.as_ref().map(|catalog| AntigravityCatalog {
+                ids: &catalog.ids,
+                fresh: catalog.fresh,
+            }),
+        );
+        if let Some(level) = model.thinking_level {
+            set_thinking_level(&mut inner_req, level);
+        }
+        let session_id = antigravity_session_id(&inner_req);
+        let envelope = wrap_antigravity_envelope(
+            &model.id,
+            &project_id,
+            inner_req,
+            &antigravity_request_id(),
+            &session_id,
+        );
+        (endpoint, envelope)
+    } else if is_code_assist {
         let endpoint = format!("{base_url}/v1internal:{method}");
         let envelope = wrap_code_assist_envelope(&route.upstream_model, &project_id, inner_req);
         (endpoint, envelope)
@@ -279,6 +401,90 @@ async fn forward(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_production_pinned_antigravity_base_url_sends_inference_to_the_daily_host() {
+        // Pre-0.40.0 docs told operators to write the production host, which
+        // answers every Antigravity inference request with a fake 429. Such a
+        // config still loads, so the request path is what has to redirect it.
+        assert_eq!(
+            antigravity_endpoint("https://cloudcode-pa.googleapis.com", "generateContent"),
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent"
+        );
+    }
+
+    #[test]
+    fn an_antigravity_base_url_in_front_of_the_backend_is_left_alone() {
+        // A loopback proxy stands in front of the backend: redirecting past it
+        // would egress straight around the endpoint the operator configured.
+        assert_eq!(
+            antigravity_endpoint("http://127.0.0.1:9999", "streamGenerateContent?alt=sse"),
+            "http://127.0.0.1:9999/v1internal:streamGenerateContent?alt=sse"
+        );
+    }
+
+    #[test]
+    fn a_thinking_level_joins_the_translated_thinking_budget_rather_than_replacing_it() {
+        // The `-tiered` catalog id names no effort, so the tier rides in
+        // `thinkingLevel` — beside the `thinkingBudget` the client's own
+        // `thinking` block already translated to. The backend accepts both.
+        let mut inner_req = serde_json::json!({
+            "contents": [],
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 8192}}
+        });
+
+        set_thinking_level(&mut inner_req, "medium");
+
+        assert_eq!(
+            inner_req["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "medium"
+        );
+        assert_eq!(
+            inner_req["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            8192
+        );
+    }
+
+    #[test]
+    fn an_explicitly_disabled_thinking_block_is_not_overridden_by_the_default_tier() {
+        // `thinking: {"type": "disabled"}` translates to `thinkingBudget: 0`,
+        // and the tier the resolver derived for it is the `medium` default
+        // nobody asked for. Writing the level here would send "do not think"
+        // and "think at medium" in one object, and bill reasoning to a client
+        // that opted out.
+        let mut inner_req = serde_json::json!({
+            "contents": [],
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}
+        });
+
+        set_thinking_level(&mut inner_req, "medium");
+
+        assert!(
+            inner_req["generationConfig"]["thinkingConfig"]
+                .get("thinkingLevel")
+                .is_none(),
+            "{inner_req}"
+        );
+        assert_eq!(
+            inner_req["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            0
+        );
+    }
+
+    #[test]
+    fn a_thinking_level_creates_the_config_objects_it_needs() {
+        // A non-thinking request carries no `generationConfig` at all, so the
+        // level would be dropped if the path were only ever patched in.
+        let mut inner_req = serde_json::json!({"contents": []});
+
+        set_thinking_level(&mut inner_req, "high");
+
+        assert_eq!(
+            inner_req["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "high"
+        );
+        assert!(inner_req.get("contents").is_some());
+    }
 
     #[test]
     fn complete_utf8_line_survives_arbitrary_byte_chunking() {

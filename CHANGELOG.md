@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.40.2](https://github.com/pleaseai/shunt/compare/v0.40.1...v0.40.2) (2026-09-05)
+
+
+### Bug Fixes
+
+* **antigravity:** reject caller-supplied tools instead of silently ignoring them ([#405](https://github.com/pleaseai/shunt/issues/405)) ([140098f](https://github.com/pleaseai/shunt/commit/140098fc78a9e195862269090bcde1bdbbaf5bf1))
+* **codex:** bump client identity to 0.153.3 for gpt-6-astra ([#459](https://github.com/pleaseai/shunt/issues/459)) ([72134ff](https://github.com/pleaseai/shunt/commit/72134fffb918dfbdcd1d8df93f10f0b5e5165cf3))
+* **codex:** classify in-stream rate_limit_exceeded as 429 and forward misalignment steer ([#463](https://github.com/pleaseai/shunt/issues/463)) ([d8105de](https://github.com/pleaseai/shunt/commit/d8105de9bfa3ad1480bc2bb6c1b19dc1ffb42353))
+* **gemini:** derive the items schema Gemini requires from a tuple-style array ([#454](https://github.com/pleaseai/shunt/issues/454)) ([3421716](https://github.com/pleaseai/shunt/commit/34217167ecb537395106990d9128a24853195473))
+
+## [0.40.1](https://github.com/pleaseai/shunt/compare/v0.40.0...v0.40.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **antigravity:** resolve model ids from the live catalog and redirect a production-pinned base_url ([#451](https://github.com/pleaseai/shunt/issues/451)) ([6d1fab3](https://github.com/pleaseai/shunt/commit/6d1fab312358c46096994dc5f3c4501134583c0b))
+
+## [0.40.0](https://github.com/pleaseai/shunt/compare/v0.39.2...v0.40.0) (2026-09-02)
+
+
+### Features
+
+* **codex:** poll the wham usage endpoint for codex account quota ([#430](https://github.com/pleaseai/shunt/issues/430)) ([bf04cf8](https://github.com/pleaseai/shunt/commit/bf04cf8726f7f5efa49cb6ae04a8be23cb8428b0))
+
+
+### Bug Fixes
+
+* **antigravity:** reach the daily backend with the agent envelope and effort-suffixed model ids ([#449](https://github.com/pleaseai/shunt/issues/449)) ([a4be60a](https://github.com/pleaseai/shunt/commit/a4be60a863053fff2fb9b6ccc2818494059be57a))
+* **gemini:** merge adjacent user turns to keep tool pairing across mid-conversation system messages ([#446](https://github.com/pleaseai/shunt/issues/446)) ([17bb0dc](https://github.com/pleaseai/shunt/commit/17bb0dcd46f19356aa52f5e5b85c6da0b0971644))
+
+## [0.39.2](https://github.com/pleaseai/shunt/compare/v0.39.1...v0.39.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* **admin:** keep a needs-relogin verdict for a never-selected account ([#444](https://github.com/pleaseai/shunt/issues/444)) ([7fd812c](https://github.com/pleaseai/shunt/commit/7fd812cfb471f0ca2d438a34f234e449d5410127))
+
+## [0.39.1](https://github.com/pleaseai/shunt/compare/v0.39.0...v0.39.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **admin:** report Claude account status by credential kind, not raw expiry ([#437](https://github.com/pleaseai/shunt/issues/437)) ([06fd8e0](https://github.com/pleaseai/shunt/commit/06fd8e0c12759e5c581aae4c245faed4d6a810e3))
+
 ## [0.39.0](https://github.com/pleaseai/shunt/compare/v0.38.0...v0.39.0) (2026-08-29)
 
 

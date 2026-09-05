@@ -188,7 +188,7 @@ headers = { "x-api-key" = "..." }
 
 此表目前没有键,仅凭存在即启用。它**要求 [`[server.auth]`](#serverauth可选)**:端点通过客户端 token 识别调用方,因此配置 `[server.usage]` 却没有 `[server.auth]` 时启动会失败,不会在未认证的情况下提供池遥测。
 
-`GET /usage` 使用与 `/v1/messages` 相同的客户端 token(配置的头部、`x-api-key` 或 `Authorization: Bearer`)进行认证,并返回每个窗口的剩余余量、重置时间以及 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户名称、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部会填充 5 小时和共享每周窗口。Codex 本身没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。本分支不添加带外 Codex 轮询器,也不会调用为 #430 保留的私有、未公开文档的 ChatGPT 用量 API。
+`GET /usage` 使用与 `/v1/messages` 相同的客户端 token(配置的头部、`x-api-key` 或 `Authorization: Bearer`)进行认证,并返回每个窗口的剩余余量、重置时间以及 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户名称、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充 5 小时和共享每周窗口。Codex 本身没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。正的 `usage_refresh_seconds` 只轮询 imported 且可刷新的 `chatgpt_oauth` 账户;轮询默认关闭,获取或解析失败会保留既有状态。
 
 ## `[server.pool]`(可选)
 
@@ -204,20 +204,20 @@ headers = { "x-api-key" = "..." }
 | `default_threshold_7d` | 未设置 | 共享周(`7d`)窗口的软默认值 |
 | `default_threshold_fable` | 未设置 | 仅 fable 的周(`7d_oi`)窗口的软默认值 |
 | `burn_rate_avoidance` | `false` | 同时避开按预测会在窗口重置之前耗尽其软阈值的账户 |
-| `usage_refresh_seconds` | 禁用(`0`/未设置) | `GET /api/oauth/usage` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
+| `usage_refresh_seconds` | 禁用(`0`/未设置) | Claude `GET /api/oauth/usage` 和 Codex `GET /wham/usage` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
 | `state_path` | 未设置 | 用于持久化池中按账户配额状态的文件;重启时从最后观测到的使用率热启动,而非从空池开始。未设置则禁用持久化(默认) |
 | `ramp_initial_concurrency` | 禁用(`0`/未设置) | 风暴控制:对刚开始承接流量的账户身份的初始并发准入额度。`0` 或未设置则禁用准入门控 |
-| `reprobe_seconds` | 只要该表存在就是 `900`;`0` 则禁用 | 对陈旧的近配额 Codex/ChatGPT 账户进行机会性重新探测的间隔(秒);低于 60 的正值会向上取到 60 秒下限。`0` 禁用重新探测;若 `[server.pool]` 本身不存在,无论该值为何都禁用重新探测(#135 之前的行为)。为提供方启用 WebSocket 传输时,outbound Responses 选择也会禁用重新探测 |
+| `reprobe_seconds` | 只要该表存在就是 `900`;`0` 则禁用 | 对陈旧的近配额 Codex/ChatGPT 账户进行机会性重新探测的间隔(秒);低于 60 的正值会向上取到 60 秒下限。`0` 禁用重新探测;若 `[server.pool]` 本身不存在,无论该值为何都禁用重新探测(#135 之前的行为)。非 WebSocket 的 outbound Responses 选择和可选的 inbound Codex HTTP 端点会保留重新探测;WebSocket 启用时的 outbound 选择会禁用重新探测 |
 
-对每个窗口 `X`,生效的软阈值按以下顺序解析:账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`,并以 `hard_threshold` 为上限。所有阈值都是 `[0.0, 1.0]` 范围内的使用率分数;超出范围会导致启动失败。阈值与 burn-rate 旋钮对两个池家族都生效:Anthropic 池取自其 `anthropic-ratelimit-unified-*` 头部,Codex/ChatGPT 池取自其 `x-codex-*` 5 小时/周窗口(Codex 没有 Fable 范围的 `7d_oi` 窗口,因此 `default_threshold_fable` 在那里不起作用)。`usage_refresh_seconds` 仅限 Anthropic。本分支不轮询私有、未公开文档的 ChatGPT 用量 API;带外 Codex 轮询器保留给 #430,因此这里不会引入对该私有 API 的依赖。
+对每个窗口 `X`,生效的软阈值按以下顺序解析:账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`,并以 `hard_threshold` 为上限。所有阈值都是 `[0.0, 1.0]` 范围内的使用率分数;超出范围会导致启动失败。阈值与 burn-rate 旋钮对两个池家族都生效:Anthropic 池取自其 `anthropic-ratelimit-unified-*` 头部,Codex/ChatGPT 池取自其 `x-codex-*` 5 小时/周窗口(Codex 没有 Fable 范围的 `7d_oi` 窗口,因此 `default_threshold_fable` 在那里不起作用)。`usage_refresh_seconds` 除了 `claude_oauth` 账户外,还会通过非官方的 `wham/usage` 端点轮询 Codex/ChatGPT 后端的 `chatgpt_oauth` 账户。
 
-正的 `usage_refresh_seconds` 还会启动一个后台轮询器,把 Claude 账户池的配额状态与 Anthropic OAuth usage API 对账校正;未设置或为 `0` 时禁用(默认)。只有 imported(可刷新)的 `claude_oauth` 账户会被轮询 —— 长期 `claude setup-token` 或 `token_env` 账户会被跳过,因为 usage 端点会拒绝不可刷新的令牌。轮询器会更新每个报告窗口的用量、该窗口自身的重置时刻和用量观测时间;只有按窗口及聚合 status 的新鲜度,以及观测 status 时捕获的重置边界仍由头部驱动,即使权威用量包含 shunt 之外同一账户的消耗。间隔在启动时固定;配置重载不会启动、停止或重新调整轮询器。
+正的 `usage_refresh_seconds` 还会启动一个后台轮询器,针对每个家族各自的 usage API 对账户池的配额状态进行对账校正:`claude_oauth` 账户对接官方 Anthropic OAuth usage API,Codex/ChatGPT 后端的 `chatgpt_oauth` 账户对接非官方的 `wham/usage` 端点;未设置或为 `0` 时禁用(默认)。两个家族都只轮询 imported(可刷新)账户 —— 长期 `claude setup-token`,或任一家族的 `token_env` 账户,都会被跳过,因为 usage 端点会拒绝不可刷新的令牌。Claude 轮询器会更新每个报告窗口的用量、窗口自身的重置时刻和用量观测时间;只有按窗口及聚合 status 的新鲜度,以及观测 status 时捕获的重置边界仍由头部驱动,即使权威用量包含 shunt 之外同一账户的消耗。Codex 轮询器会更新用量和用量观测时间;重置时间与 status 元数据仍由 header 驱动。对于已报告的窗口,未来的 header 重置时间会保留;已经过期的存储重置时间会在写入新用量前被清除。wham 的 `reset_at` 不会被采用为实际重置元数据。非公开的 schema 采用宽松、fail-soft 的解析,间隔在启动时固定,配置重载不会启动、停止或重新调整轮询器。
 
 `state_path` 会把池的配额状态(所有 provider 账户的按窗口使用率与各窗口自身的重置时刻,使用率和 status 的独立观测时间及捕获的 status 重置边界)写入磁盘。不设置时,重启会从空池开始:每个账户在重启后首个响应之前都显示为未观测,这会禁用 burn-rate 规避,并使 `GET /usage` 在流量重新填充池之前返回空值。该文件是尽力而为的缓存,而非权威来源 —— 配额无论如何都会从上游响应重新导出,因此文件缺失、陈旧或损坏只会导致冷启动,绝不会导致启动失败。写入使用私有 temp 文件(Unix 上为 `0600`)并将其原子重命名覆盖目标,且仅在配额发生变化时按后台定时器进行。写入失败时会在下一个 tick 重试。冷却不会被持久化(重启即失效),恢复的窗口中重置已过期的会在恢复时的 import 阶段、首次选择或 snapshot 之前丢弃。使用率在自身观测时间上限和该窗口的重置之间较早者到达时过期;仅上限经过时该窗口的未来重置仍可保留。按窗口 status 在自身观测时间上限和观测时捕获的 status 重置边界之间较早者到达时过期,捕获边界也会随 status 清除。版本2文件通过明确的迁移路径重写为版本3;版本3的无重置 status 在仅重置更新后仍保持无重置。路径在启动时固定;配置重载不会启动、停止或改变持久化路径。
 
 正的 `ramp_initial_concurrency` 会在每个账户池上启用**风暴控制(storm control)**:一次故障转移切换之后,在途的并发请求本会全部同时落到刚选中的账户上。开启该门控后,刚开始承接流量的身份(全新、刚从冷却回来,或空闲 60 秒)最多准入所配置数量的并发请求;每次成功响应把额度翻倍(slow start),一次达到故障转移条件的失败会重启该 ramp,被拒绝的请求则顺延到选择顺序中的下一个账户。无论门控如何,最后一个候选始终会被尝试,因此门控只能推迟、而绝不会失败一个未门控的池本会服务的请求。这也意味着,若池中所有账户都解析到同一个上游身份,则该池实际上不受门控:唯一的候选同时也是最后一个候选,因此该设置仅在存在两个及以上不同账户身份时才生效。
 
-`reprobe_seconds` 是为没有带外 usage 轮询器的 Codex/ChatGPT 池准备的安全网:当某个 rotation 代表账户属于 Codex/ChatGPT 家族、处于近配额、不在冷却中,且最新观测早于该间隔时,每个间隔内会被提升到选择顺序的最前面并预留。新鲜度使用四个逻辑值:5h、共享 7d、Fable 7d_oi 三个窗口分别取用量观测时间戳与 status 观测时间戳中较新的一个,第四个值取独立的 aggregate status 观测时间戳。仅用量轮询只更新用量新鲜度,不会更新各窗口的 status 新鲜度。admission 或凭据解析失败会取消预留,首次实际 HTTP 发送开始时才提交探测时间并增加 `shunt.pool.reprobes`;这样下一次实际请求就会刷新该账户的配额,避免账户一直被排除到遥远的未来周重置为止。仅 Codex/ChatGPT 账户符合条件。Claude 与 Kimi 在遇到通用 429 拒绝时采用更慢的冷却恢复(`PauseSame`,最长 5 分钟),机会性探测在那里有拖慢真实请求的风险,Claude 账户改由上面的 `usage_refresh_seconds` 负责。与带外元数据轮询的 `usage_refresh_seconds` 不同,重新探测每次提升都要花费一次真实上游请求的流量成本。为提供方启用 WebSocket 传输时,outbound Responses 池不会创建预留并会抑制重新探测。可选的 inbound Codex HTTP 端点仍会探测,该提供方的 `shunt.pool.reprobes` 只统计 inbound 探测。没有 Codex usage 轮询器时,被排除的 outbound 标记会一直保留到基于观测时间的窗口寿命上限到期。
+`reprobe_seconds` 是在带外 usage 轮询器不可用或等待下一次轮询时,为 Codex/ChatGPT 池准备的安全网:当某个 rotation 代表账户属于 Codex/ChatGPT 家族、处于近配额、不在冷却中,且四个观测值中最新的一个早于该间隔时,每个间隔内会被提升到选择顺序的最前面并预留。5h、共享 7d、Fable 7d_oi 三个窗口分别取使用量观测与 status 观测的较新时间,第四个值取独立的 aggregate status 观测时间。仅用量轮询只更新用量新鲜度,不会更新各窗口的 status 新鲜度。admission 或凭据解析失败会取消预留,首次实际 HTTP 发送开始时才提交探测时间并增加 `shunt.pool.reprobes`;这样下一次实际请求就会刷新该账户的配额,避免账户一直被排除到遥远的未来周重置为止。仅 Codex/ChatGPT 账户符合条件。Claude 与 Kimi 在遇到通用 429 拒绝时采用更慢的冷却恢复(`PauseSame`,最长 5 分钟),机会性探测在那里有拖慢真实请求的风险,Claude 账户改由上面的 `usage_refresh_seconds` 负责。配置的轮询器只为 imported 且可刷新的 `chatgpt_oauth` 账户提供提前恢复;没有轮询器或账户不符合条件时,outbound 标记会在基于观测时间的窗口寿命上限到期时清除。与带外元数据轮询的 `usage_refresh_seconds` 不同,重新探测每次提升都要花费一次真实上游请求的流量成本。为提供方启用 WebSocket 传输时,outbound Responses 池不会创建预留并会抑制重新探测。可选的 inbound Codex HTTP 端点仍会探测,该提供方的 `shunt.pool.reprobes` 只统计 inbound 探测。
 
 ## `[[upstreams]]`（有序故障转移）
 
@@ -270,6 +270,9 @@ codex-fallback = "gpt-5.2"
 | `grok` | `responses` | `https://cli-chat-proxy.grok.com/v1` | `xai_oauth` |
 | `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
+| `kimi-code` | `anthropic` | `https://api.kimi.com/coding` | `kimi_oauth` |
+| `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
+| `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 
 `auth = "claude_oauth"` 这样的字符串是 `auth = { mode = "claude_oauth" }` 的简写。`api_key` 映射接受 `env`（除非 preset 已提供，否则必需）和 `header`（默认为 `bearer`，也可设为 `x_api_key`）。`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小范围，但不能同时设置两者。`accounts` 接受存储条目名称字符串和完整账户表；显式的 `accounts = []` 会被拒绝，而省略两个范围字段则扫描整个存储。若 ChatGPT 存储为空，`chatgpt_oauth` 仍会回退到 `~/.codex/auth.json`。`passthrough`、`xai_oauth`、`cursor_oauth`、`antigravity_oauth` 映射只接受 `mode`；特定 mode 下的未知键会报错。
 
@@ -305,12 +308,12 @@ codex-fallback = "gpt-5.2"
 
 | 键 | 取值 | 含义 |
 | :-- | :-- | :-- |
-| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` \| `antigravity_cli` | 上游协议 / 适配器。`anthropic` = Messages API(透传,可选择重新设置密钥);`responses` = Anthropic Messages 转换为 OpenAI Responses API;`cursor` = 原生 Cursor ConnectRPC/protobuf AgentService 适配器;`gemini` = Anthropic Messages 转换为 Google Code Assist 后端的 Gemini `generateContent`/`streamGenerateContent`;`antigravity` = 通过 HTTP 连接 Google Antigravity 后端,与 `gemini` 使用相同的 Code Assist 协议,但以 Antigravity 订阅令牌认证,并在项目发现时以 `ideType: ANTIGRAVITY` 标识自身;`antigravity_cli` = **已弃用** —— 没有任何上游,以子进程方式运行本地 Antigravity CLI 二进制(`agy`)。 |
+| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` \| `antigravity_cli` | 上游协议 / 适配器。`anthropic` = Messages API(透传,可选择重新设置密钥);`responses` = Anthropic Messages 转换为 OpenAI Responses API;`cursor` = 原生 Cursor ConnectRPC/protobuf AgentService 适配器;`gemini` = Anthropic Messages 转换为 Google Code Assist 后端的 Gemini `generateContent`/`streamGenerateContent`;`antigravity` = 通过 HTTP 连接 Google Antigravity 后端,与 `gemini` 使用相同的 Code Assist 协议,但以 Antigravity 订阅令牌认证,并在项目发现时以 `ideType: ANTIGRAVITY` 标识自身;`antigravity_cli` = **已弃用** —— 没有任何上游,以子进程方式运行本地 Antigravity CLI 二进制(`agy`)。由于 `agy` 自行解析工具调用，永远不会返回 `tool_use` 块，因此真正要求工具调用的请求——非空的 `tools` 数组，或值为 `any`、`tool` 的 `tool_choice`——会被 `400 invalid_request_error` 拒绝，而不是静默地以文本形式作答。`tool_choice: none`（即使与 `tools` 同时出现）、没有工具时的 `tool_choice: auto` 以及空的 `tools: []` 都不会强制工具调用，因此均被接受。 |
 | `base_url` | URL | 上游 base；shunt 追加端点路径。对于 `kind = "cursor"`，它仅用于登录/令牌刷新接口，不会选择代理/推理主机。 |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough` 转发客户端自己的 credential;`api_key` 从 `api_key_env` 注入一个密钥;`chatgpt_oauth` 复用 `~/.codex/auth.json`;`claude_oauth` 从显式 Anthropic 账户中选择;`xai_oauth` 复用来自 `shunt login xai` 的 `~/.shunt/xai-auth.json`(仅经由 HTTPS 发送到 x.ai/grok.com 主机);`cursor_oauth` 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`);`google_oauth` 复用 gemini CLI 登录的 `~/.gemini/oauth_creds.json`,仅在 `kind = "gemini"` 下有效;`antigravity_oauth` 复用来自 `shunt login antigravity` 的 `~/.shunt/antigravity-auth.json`,仅在 `kind = "antigravity"` 下有效,且与 `google_oauth` **不可互换** —— Antigravity 会请求 Gemini CLI 令牌所没有的两个 scope(`cclog`、`experimentsandconfigs`);`none` 完全不发送 credential,用于没有上游需要认证的适配器(`kind = "antigravity_cli"`)。 |
 | `api_key_env` | 环境变量名 | 当 `auth = "api_key"` 时,从何处读取密钥。该值自身也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。 |
 | `api_key_header` | `bearer`(默认) \| `x_api_key` | 注入的密钥在哪个头部中发送。 |
-| `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。 |
+| `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。也适用于 `kind = "antigravity"`,会作为目录的 effort 后缀追加到不带后缀的 `gemini-*` `upstream_model` 上。 |
 | `count_tokens` | `tiktoken`(默认) \| `estimate` | `responses` 与 `cursor` provider:本地 tiktoken 计数 vs. `501 not_supported` 回退([详情](/zh-cn/guides/effort-and-context/#token-counting-count_tokens))。 |
 | `tool_search` | 未设置("auto",默认) \| `true` \| `false` | 在模型为 GPT-5.4+ 且风格不是 xAI/Grok 时,为 Claude Code 的工具搜索使用原生的客户端执行 `tool_search` 协议。未设置时仅对已验证支持的主机 —— ChatGPT/Codex 后端与 `api.openai.com` —— 默认使用原生协议,LiteLLM、vLLM、OpenRouter、自托管代理等其他所有 OpenAI 兼容端点都保留文本 shim。设为 `true` 可让已验证的自定义端点选择加入原生协议;设为 `false` 则始终强制使用 shim。见 [Codex → 工具搜索](/zh-cn/guides/codex/#原生协议)。 |
 
@@ -327,7 +330,7 @@ codex-fallback = "gpt-5.2"
 | `model` | ✅ | Claude Code 发送的精确 `model` id |
 | `provider` | ✅ | 已配置的上游名称 |
 | `upstream_model` | — | 重写转发给上游的模型 id |
-| `effort` | — | 按路由的推理力度覆盖 |
+| `effort` | — | 按路由的推理力度覆盖。在 `antigravity` 路由上,它会固定合成到不带后缀的 `gemini-*` `upstream_model` 上的 effort 后缀。 |
 
 ## `[[route_prefixes]]`
 

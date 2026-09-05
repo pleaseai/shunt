@@ -10,7 +10,7 @@ use crate::{
     accounts::{self, FailoverAction},
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{
-        self, claude::auth::ClaudeAuthStore, resolve_claude_account, resolve_credential,
+        self, claude::auth::ClaudeAuthStore, resolve_claude_account_classified, resolve_credential,
         resolve_kimi_account, Credential,
     },
     config::{ApiKeyHeader, AuthMode},
@@ -209,19 +209,32 @@ async fn forward_claude_oauth(
 
         let credential = {
             let _guard = refresh_lock.lock().await;
-            match resolve_claude_account(account, &state.http_client).await {
+            match resolve_claude_account_classified(account, &state.http_client).await {
                 Ok(credential) => credential,
-                Err(error) => {
+                Err(failure) => {
                     state.accounts.cooldown(
                         &route.provider,
                         account,
                         Duration::from_secs(5 * 60),
                         "auth",
                     );
+                    // The dominant steady state for a dead account: once its
+                    // access token expires, the refresh is rejected here rather
+                    // than after a 401, so the mark has to be set on this path
+                    // too or the account cycles through this cooldown forever
+                    // with nothing durable for an operator to see.
+                    if failure.terminal {
+                        state.accounts.mark_needs_relogin(
+                            &route.provider,
+                            account,
+                            accounts::ReloginCause::RefreshGrant,
+                        );
+                    }
                     tracing::warn!(
                         provider = %route.provider,
                         account = %account.name,
-                        error = %error.message,
+                        error = %failure.detail,
+                        terminal = failure.terminal,
                         "failed to resolve Claude OAuth account"
                     );
                     continue;
@@ -299,6 +312,26 @@ async fn forward_claude_oauth(
                     });
             }
             FailoverAction::Rotate => {
+                if status == StatusCode::TOO_MANY_REQUESTS {
+                    // A quota rejection is proof the bearer authenticated: the
+                    // provider read the credential, then refused on quota. That
+                    // disproves any needs-re-login mark left from an earlier 401,
+                    // which would otherwise survive until some later non-429
+                    // response and tell the operator to re-login over what is
+                    // only an exhausted quota. Deliberately narrowed to 429 —
+                    // this arm also takes 5xx, which can come from an edge before
+                    // the credential is ever read and proves nothing. Only the
+                    // mark is cleared; the cooldown below still runs, because
+                    // this change adds a signal and must not alter routing.
+                    //
+                    // A status check suffices *here* because this arm is entered
+                    // only for `FailoverAction::Rotate`, and the sole 429 that
+                    // classifies as `Rotate` is the quota-rejected one — a
+                    // headerless 429 goes to `PauseSame` and never arrives. The
+                    // post-refresh arm groups three actions and therefore needs
+                    // the classification checked explicitly.
+                    state.accounts.clear_needs_relogin(&route.provider, account);
+                }
                 let cooldown = if status == StatusCode::TOO_MANY_REQUESTS {
                     accounts::retry_after(upstream.headers())
                         .unwrap_or(Duration::from_secs(60))
@@ -397,8 +430,16 @@ async fn forward_claude_oauth(
                     );
                     // A static credential (token_env or a long-lived setup token)
                     // cannot be refreshed, so a 401 here means it is expired or
-                    // revoked. Log it — otherwise the account cycles in and out of
-                    // this cooldown indefinitely with no operator-visible signal.
+                    // revoked — terminal by definition, with no grant left to
+                    // retry. Mark it so the operator sees a dead account on the
+                    // admin dashboard; without the mark it just cycles in and out
+                    // of this cooldown indefinitely, indistinguishable from a
+                    // quota cooldown that will clear on its own.
+                    state.accounts.mark_needs_relogin(
+                        &route.provider,
+                        account,
+                        accounts::ReloginCause::ServedRequest,
+                    );
                     tracing::warn!(
                         provider = %route.provider,
                         account = %account.name,
@@ -440,6 +481,14 @@ async fn forward_claude_oauth(
                         .force_refresh_if_access_token(failed_access_token)
                         .await
                     {
+                        // A successful refresh grant proves the *refresh token*
+                        // is alive, which is not the same as the account being
+                        // able to serve traffic: the retry below can still come
+                        // back 401 (a revoked subscription, a withdrawn scope),
+                        // and that branch cools down and rotates. Clearing the
+                        // mark here would unflag an account in exactly that
+                        // state, so the clear is deferred to the retry's
+                        // `mark_healthy_scoped` on a successful response.
                         Ok(token) => token,
                         Err(error) => {
                             state.accounts.cooldown(
@@ -448,10 +497,26 @@ async fn forward_claude_oauth(
                                 Duration::from_secs(5 * 60),
                                 "auth",
                             );
+                            // Only a *terminal* rejection means the account is
+                            // dead: the provider will never accept this refresh
+                            // token again, so the 5-minute retry loop can only
+                            // repeat the same rejected grant forever. A transient
+                            // failure (5xx, network, timeout) must not set the
+                            // mark — that would report a healthy account as dead
+                            // on a momentary provider blip.
+                            let terminal = auth::claude::auth::is_terminal_refresh_failure(&error);
+                            if terminal {
+                                state.accounts.mark_needs_relogin(
+                                    &route.provider,
+                                    account,
+                                    accounts::ReloginCause::RefreshGrant,
+                                );
+                            }
                             tracing::warn!(
                                 provider = %route.provider,
                                 account = %account.name,
                                 error = %error,
+                                terminal,
                                 "failed to force-refresh Claude OAuth account"
                             );
                             last_response = Some(upstream);
@@ -489,6 +554,20 @@ async fn forward_claude_oauth(
                         Duration::from_secs(5 * 60),
                         "auth",
                     );
+                    // A live refresh grant that yields a bearer the API still
+                    // rejects is not something the next attempt can fix: the
+                    // account is de-authorized upstream, not momentarily unlucky.
+                    // Without the mark it cycles through this cooldown forever,
+                    // reported as plain `cooling` — the exact indistinguishable
+                    // state this change exists to remove. The mark is deliberately
+                    // set *here* rather than kept from before the refresh, because
+                    // the refresh itself succeeded and the success path clears on a
+                    // served response, never on the grant alone.
+                    state.accounts.mark_needs_relogin(
+                        &route.provider,
+                        account,
+                        accounts::ReloginCause::ServedRequest,
+                    );
                     last_response = Some(retry);
                     continue;
                 }
@@ -506,6 +585,16 @@ async fn forward_claude_oauth(
                                 true,
                                 is_fable,
                             );
+                        } else {
+                            // A relayed non-401 4xx is the client's error, not the
+                            // account's: auth failures come back 401, so reaching a
+                            // validation error proves the refreshed bearer was
+                            // accepted. A mark left from an earlier failure is now
+                            // stale. Only the mark is cleared — unlike the initial
+                            // Relay arm this deliberately leaves the cooldown in
+                            // place, because this change adds a signal and must not
+                            // alter routing.
+                            state.accounts.clear_needs_relogin(&route.provider, account);
                         }
                         return relay_response(&state, &route, retry, Some(&account.name))
                             .await
@@ -520,9 +609,28 @@ async fn forward_claude_oauth(
                     // forces a decision here. RefreshRetry cannot recur (a 401 is
                     // special-cased just above), but listing it keeps this
                     // compiler-checked without a panic-on-invariant-break arm.
-                    FailoverAction::Rotate
+                    action @ (FailoverAction::Rotate
                     | FailoverAction::PauseSame
-                    | FailoverAction::RefreshRetry => {
+                    | FailoverAction::RefreshRetry) => {
+                        if retry_status == StatusCode::TOO_MANY_REQUESTS
+                            && matches!(action, FailoverAction::Rotate)
+                        {
+                            // Same reasoning as the initial Rotate arm: a
+                            // *quota-rejected* 429 proves the refreshed bearer
+                            // was accepted, so a mark left from before is stale.
+                            //
+                            // Both halves of the condition are load-bearing here,
+                            // where the initial arm needs only one. This arm
+                            // groups three actions, so it also takes 5xx (proves
+                            // nothing — the response can come from an edge before
+                            // the credential is read) and a *headerless* 429,
+                            // which `classify` sends to `PauseSame`: a generic
+                            // throttle with no account-scoped quota verdict, so
+                            // it does not establish that the credential was
+                            // identified either. Only the `rejected` quota status
+                            // does, and that is exactly what routes to `Rotate`.
+                            state.accounts.clear_needs_relogin(&route.provider, account);
+                        }
                         let cooldown = if retry_status == StatusCode::TOO_MANY_REQUESTS {
                             accounts::retry_after(retry.headers())
                                 .unwrap_or(Duration::from_secs(60))

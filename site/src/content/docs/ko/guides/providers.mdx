@@ -23,10 +23,14 @@ description: 내장 프로바이더와 TOML 테이블로 Anthropic 호환 백엔
 | [`grok`](/ko/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai`를 통한 SuperGrok / X Premium+ 구독 |
 | [`cursor`](/ko/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json` 재사용 (`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — `~/.gemini/oauth_creds.json` 재사용 |
-| [`antigravity`](/ko/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `cloudcode-pa.googleapis.com` — `~/.shunt/antigravity-auth.json` 재사용 (`shunt login antigravity`) |
+| [`antigravity`](/ko/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` — `~/.shunt/antigravity-auth.json` 재사용 (`shunt login antigravity`) |
 | `antigravity-cli` | `antigravity_cli` | `none` | **더 이상 사용되지 않습니다.** 로컬 `agy` CLI — 서브프로세스를 통해 동일한 백엔드 |
 
 각 이름은 전체 설정을 설명하는 해당 프로바이더의 전용 페이지로 연결됩니다. `shunt add upstream <name>`은 모든 내장 프로바이더의 단계별 블루프린트를 출력합니다. 이를 코딩 에이전트에 파이프로 전달하면(`shunt add upstream codex --print | claude`) 에이전트가 구성을 연결하도록 할 수 있습니다. [CLI 레퍼런스](/ko/reference/cli/#shunt-add)를 참고하세요.
+
+`gemini` 프로바이더의 도구 선언은 `antigravity` 프로바이더와 동일한 스키마 조정을 거칩니다. 두 전송이 하나의 Gemini 어댑터를
+공유하므로, [Antigravity 프로바이더 페이지](/ko/providers/antigravity/)의 **어댑터가 전달하는 것**에서 설명한 튜플 접기와 타입
+없는 요소 폴백이 `gemini` 라우트에도 적용됩니다.
 
 ### antigravity 프로바이더 (Google Antigravity)
 
@@ -46,11 +50,29 @@ display_name = "[AGY ] Gemini-3.6-Flash"
 [[routes]]
 model = "claude-gemini-3.6-flash-via-antigravity"
 provider = "antigravity"
-upstream_model = "gemini-3.6-flash"
+upstream_model = "gemini-3.6-flash-medium"
 ```
+
+Antigravity는 Gemini 모델을 effort가 id에 담긴 형태로 게시하며, 접미사가 없는 슬러그는 제공하지
+않습니다. 형태는 두 가지입니다 — `-low` / `-medium` / `-high` 접미사, 또는 effort를 요청 필드로 받는
+단일 `-tiered` id. 계정이 어느 형태를 받는지는 시간이 지나며 바뀌므로, shunt는 계정 자신의 카탈로그를
+읽어 실제로 게시된 id를 고릅니다. 접미사가 없는 `gemini-*` id는 `effort`나 요청에서, 그것도 없으면
+`medium`으로 등급이 정해지고, 계정이 더 이상 게시하지 않는 접미사는 그대로 보내는 대신 다시 해석됩니다.
+어느 표기든 동작합니다.
 
 전체 설정 — 로그인과 스코프, 프로젝트 디스커버리, 모델 슬러그, thinking, 어댑터가 전달하는 것 — 은 전용
 [Antigravity 프로바이더 페이지](/ko/providers/antigravity/)를 참고하세요.
+
+<Aside type="caution" title="Antigravity 약관">
+
+Google의 [Antigravity 약관](https://antigravity.google/terms)은 이 사용 방식을 직접 지목합니다. "서드파티 소프트웨어, 도구,
+서비스로 서비스에 접근하는 것(예: OpenClaw를 Antigravity OAuth와 함께 사용)은 본 계약 위반"이며,
+그러한 위반은 "Antigravity 및/또는 Gemini CLI 계정의 정지 또는 해지 사유가 될 수 있다"고 명시합니다.
+shunt는 Antigravity OAuth를 사용하는 서드파티 소프트웨어이므로, 이 프로바이더로 라우팅하는 것은 그
+조항에 그대로 해당합니다. 구독이 그 위험을 감수할 만한지는 본인의 판단이며, 여기 있는 어떤 것도 계정을
+보호해 주지 못합니다.
+
+</Aside>
 
 <Aside type="caution" title="`antigravity`의 의미가 바뀌었습니다">
 
@@ -70,8 +92,14 @@ upstream_model = "gemini-3.6-flash"
 ### 더 이상 사용되지 않는 `antigravity_cli` 전송
 
 `antigravity-cli` 경로는 요청마다 `agy` CLI 서브프로세스를 하나씩 에이전트 모드로 실행합니다. `agy`는 자신의 도구 호출을
-스스로 해결하므로, 요청의 `tools` 배열은 전달되지 않고 응답에도 `tool_use` 블록이 담기지 않습니다. 도구 루프를 직접
-구동해야 하는 클라이언트는 `gemini` 프로바이더를 사용하세요.
+스스로 해결하므로 이 어댑터는 `tool_use` 블록을 반환할 수 없고, 도구 호출을 요구하는 요청은 거부됩니다. 비어 있지 않은
+`tools` 배열 또는 `any`/`tool`인 `tool_choice`는 이 제약을 명시한 `400 invalid_request_error`로 거부됩니다. 예전에는
+이런 요청이 조용히 버려지고 `stop_reason: "end_turn"`인 텍스트 전용 `200`이 반환됐는데, 이는 에이전트 호출자가 활용할 수
+없는 응답이며 `tool_choice: {"type": "any"}`를 정면으로 위반하면서도 성공으로 보고하는 것이었습니다. 도구 호출을 강제하지
+않는 두 가지 형태는 예외입니다. `tools`가 함께 있어도 `tool_choice: {"type": "none"}`은 예외이고, 도구가 없는
+`tool_choice: {"type": "auto"}`도 많은 클라이언트가 매 요청에 직렬화하는 Anthropic SDK 기본값이므로 예외입니다. 빈
+`tools: []`도 도구 요청이 아닙니다. 도구 루프를 직접 구동해야 하는 클라이언트는 도구를 전달하는 `antigravity` 또는
+`gemini` 프로바이더를 사용하세요.
 
 비대화형 실행에서는 권한 프롬프트에 응답할 수 없으므로, `agy`는 `--dangerously-skip-permissions`로, 그리고 기본적으로
 `--sandbox`와 함께 실행됩니다. 그러므로 **이 프로바이더는 shunt를 실행하는 사용자 권한의 임의 코드 실행으로 취급하세요.**
@@ -120,7 +148,7 @@ codex login
 
 <Aside type="caution" title="모델 슬러그">
 
-ChatGPT 계정 Codex 백엔드는 `gpt-*-codex` 슬러그를 **거부**합니다 — 계정에 실시간으로 부여된(live-entitled) 슬러그만 받아들입니다. 권위 있는 카탈로그는 openai/codex의 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)입니다. 현재 슬러그는 `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`(프런티어)와 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`입니다. 오래된 계정은 이전 슬러그만 부여받았을 수 있습니다. 라우트에서 `upstream_model`을 사용하면 임의의 별칭을 부여된 슬러그로 매핑할 수 있습니다.
+ChatGPT 계정 Codex 백엔드는 `gpt-*-codex` 슬러그를 **거부**합니다 — 계정에 실시간으로 부여된(live-entitled) 슬러그만 받아들입니다. 권위 있는 카탈로그는 openai/codex의 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)입니다. 현재 슬러그는 `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`(프런티어)와 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`입니다. 오래된 계정은 이전 슬러그만 부여받았을 수 있습니다. 라우트에서 `upstream_model`을 사용하면 임의의 별칭을 부여된 슬러그로 매핑할 수 있습니다.
 
 </Aside>
 
@@ -161,10 +189,12 @@ OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`
 | 프로바이더 | `base_url` | 예시 모델 ID |
 | :-- | :-- | :-- |
 | [Kimi (Moonshot)](/ko/providers/kimi/) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
-| [Kimi Code(구독, OAuth)](/ko/providers/kimi/#kimi-code-oauth-subscription) | `https://api.kimi.com/coding` | 구독이 노출하는 모델 ID 사용 |
+| [Kimi Code(구독, OAuth)](/ko/providers/kimi/#kimi-code-oauth-구독) | `https://api.kimi.com/coding` | 구독이 노출하는 모델 ID 사용 |
 | [DeepSeek](/ko/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | [Z.ai (GLM)](/ko/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
+| [Zhipu (GLM 중국)](/ko/providers/zhipu/) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | [MiniMax](/ko/providers/minimax/) | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
+| [MiniMax 중국](/ko/providers/minimax-cn/) | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | [Mimo (Xiaomi)](/ko/providers/mimo/) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — [Mimo 문서](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) 참고 |
 | [OpenRouter](/ko/providers/openrouter/) | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | [Vercel AI Gateway](/ko/providers/vercel-ai-gateway/) | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8`(`x_api_key`를 받아들임) |
@@ -197,7 +227,7 @@ model = "<model-id-your-subscription-exposes>"
 provider = "kimi-code"
 ```
 
-`kimi_oauth`는 `claude_oauth`/`chatgpt_oauth`처럼 풀링을 지원합니다 — `account` 대신 `accounts = [...]`를 사용해 저장된 여러 Kimi 계정으로 부하를 분산할 수 있습니다. 전체 안내는 [Kimi → Kimi Code (OAuth subscription)](/ko/providers/kimi/#kimi-code-oauth-subscription)를 참고하세요.
+`kimi_oauth`는 `claude_oauth`/`chatgpt_oauth`처럼 풀링을 지원합니다 — `account` 대신 `accounts = [...]`를 사용해 저장된 여러 Kimi 계정으로 부하를 분산할 수 있습니다. 전체 안내는 [Kimi → Kimi Code (OAuth 구독)](/ko/providers/kimi/#kimi-code-oauth-구독)를 참고하세요.
 
 예를 들어, Kimi(Moonshot)의 모델을 shunt를 통해 라우팅하려면:
 

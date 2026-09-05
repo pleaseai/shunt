@@ -106,12 +106,27 @@ fn unique_temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
+fn future_expiry_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .saturating_add(3_600_000) as i64
+}
+
 /// Write a refreshable store account file whose access token is valid far into
 /// the future, so it is used verbatim on the first upstream POST (the 401 is
 /// what drives the RefreshRetry path) rather than being refreshed on read.
-fn write_store_account(dir: &std::path::Path, name: &str, access: &str, refresh: &str, uuid: &str) {
+fn write_store_account(
+    dir: &std::path::Path,
+    name: &str,
+    access: &str,
+    refresh: &str,
+    uuid: &str,
+    expires_at_ms: i64,
+) {
     let body = format!(
-        r#"{{"claudeAiOauth":{{"accessToken":"{access}","refreshToken":"{refresh}","expiresAt":4102444800000}},"shuntAccountUuid":"{uuid}"}}"#
+        r#"{{"claudeAiOauth":{{"accessToken":"{access}","refreshToken":"{refresh}","expiresAt":{expires_at_ms}}},"shuntAccountUuid":"{uuid}"}}"#
     );
     fs::write(dir.join(format!("{name}.json")), body).unwrap();
 }
@@ -153,6 +168,61 @@ async fn start_gateway_with(mut config: Config) -> TestGateway {
         base_url: format!("http://{addr}"),
         task,
     }
+}
+
+/// Like [`start_gateway_with`], but also hands back the request `AppState` so a
+/// test can inspect process-lifetime pool health (the needs-re-login mark) that
+/// no response header reports.
+async fn start_gateway_with_state(mut config: Config) -> (TestGateway, shunt::server::AppState) {
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    (
+        TestGateway {
+            base_url: format!("http://{addr}"),
+            task,
+        },
+        state,
+    )
+}
+
+/// The `AccountConfig` shape `resolve_pool_accounts` hands the request path for
+/// a name-only pool entry backed by the shunt account store: the store family
+/// is stamped inline, and the UUID stays `None` because such an entry carries
+/// neither a `credentials` path nor a `token_env` for `inline_identity_key` to
+/// key on. Pool health is keyed off exactly this, so a test asserting on the
+/// mark must reconstruct it rather than reusing the pre-resolution config.
+///
+/// Every caller pairs its assertion with a `has_state` check, which fails loudly
+/// if this reconstruction ever stops matching the key selection actually
+/// created — a silently wrong key would otherwise read as "not marked".
+fn resolved_store_account(name: &str) -> AccountConfig {
+    AccountConfig {
+        name: name.to_string(),
+        store_family: Some(shunt::accounts::StoreFamily::Claude),
+        ..Default::default()
+    }
+}
+
+/// Assert the pool actually observed this account, so a `needs_relogin`
+/// assertion below can never pass or fail against a key nothing ever wrote.
+fn assert_pool_observed(state: &shunt::server::AppState, account: &AccountConfig) {
+    let snapshots = state
+        .accounts
+        .snapshot("anthropic", std::slice::from_ref(account), None, None);
+    assert!(
+        snapshots[0].has_state,
+        "the pool must hold health for {:?} — the reconstructed account key does not match \
+         the one the request path created",
+        account.name
+    );
 }
 
 fn can_bind_loopback() -> bool {
@@ -267,6 +337,222 @@ async fn account_uuid_is_rewritten_for_each_account_during_rotation() {
 
     std::env::remove_var("SHUNT_TEST_MULTI_UUID_A");
     std::env::remove_var("SHUNT_TEST_MULTI_UUID_B");
+}
+
+/// A quota `429` is proof the bearer authenticated: the provider read the
+/// credential and then refused on quota. That disproves a needs-re-login mark
+/// left by an earlier 401, which would otherwise survive until some later
+/// non-429 response and tell the operator to re-login over an exhausted quota.
+#[tokio::test]
+async fn an_authenticated_quota_429_clears_a_stale_relogin_mark() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-oauth-", "quotaclear-a"].concat();
+    let token_b = ["fake-oauth-", "quotaclear-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_QUOTACLEAR_A", &token_a);
+    std::env::set_var("SHUNT_TEST_MULTI_QUOTACLEAR_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .insert_header("anthropic-ratelimit-unified-5h-status", "rejected")
+                .set_body_string(r#"{"error":"account a quota exhausted"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let account_a = account("account-a", "SHUNT_TEST_MULTI_QUOTACLEAR_A", "uuid-a");
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account("account-b", "SHUNT_TEST_MULTI_QUOTACLEAR_B", "uuid-b"),
+    ))
+    .await;
+
+    // Stand in for an earlier 401 that condemned the account, with the stronger
+    // cause: nothing short of proof the credential authenticated may clear it.
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &account_a,
+        shunt::accounts::ReloginCause::ServedRequest,
+    );
+    assert!(state.accounts.needs_relogin("anthropic", &account_a));
+
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    assert!(
+        !state.accounts.needs_relogin("anthropic", &account_a),
+        "a quota 429 proves the bearer authenticated, so the stale \
+         needs-re-login mark must be cleared rather than telling the operator to \
+         re-login over an exhausted quota"
+    );
+
+    upstream.verify().await;
+    std::env::remove_var("SHUNT_TEST_MULTI_QUOTACLEAR_A");
+    std::env::remove_var("SHUNT_TEST_MULTI_QUOTACLEAR_B");
+}
+
+/// The retry arm's negative twin. It groups `Rotate | PauseSame | RefreshRetry`,
+/// so a *headerless* 429 — which `classify` sends to `PauseSame` — reaches it
+/// too. A generic throttle carries no account-scoped quota verdict, so unlike
+/// the `rejected` variant it does not establish that the credential was
+/// identified, and it must leave the terminal marker standing.
+#[tokio::test]
+async fn a_headerless_429_after_refresh_leaves_the_relogin_mark_standing() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = ["fake-oauth-", "throttlekeep-stale"].concat();
+    let rotated = ["fake-oauth-", "throttlekeep-rotated"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_THROTTLEKEEP_B", "unused");
+
+    let accounts_dir = unique_temp_dir("throttlekeep");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "live-refresh-token",
+        "uuid-a",
+        future_expiry_ms(),
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": rotated,
+            "refresh_token": "rotated-refresh-token",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    // No quota-status header: a generic throttle, not an account quota verdict.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(rotated.clone()))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .set_body_string(r#"{"error":"slow down"}"#),
+        )
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_THROTTLEKEEP_B", "uuid-b"),
+    ))
+    .await;
+
+    let live = resolved_store_account("account-a");
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &live,
+        shunt::accounts::ReloginCause::ServedRequest,
+    );
+
+    post_messages(&gateway, None).await;
+
+    assert!(
+        state.accounts.needs_relogin("anthropic", &live),
+        "a headerless 429 is a generic throttle with no account-scoped quota \
+         verdict, so it does not prove the credential was identified and must \
+         not erase the terminal marker"
+    );
+
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_THROTTLEKEEP_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// The negative twin, and the reason the clear is narrowed to 429 rather than
+/// applied to the whole rotate arm: a 5xx can come from an edge before the
+/// credential is ever read, so it proves nothing about the bearer and must
+/// leave the verdict standing.
+#[tokio::test]
+async fn a_5xx_rotation_leaves_the_relogin_mark_standing() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-oauth-", "quotakeep-a"].concat();
+    let token_b = ["fake-oauth-", "quotakeep-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_QUOTAKEEP_A", &token_a);
+    std::env::set_var("SHUNT_TEST_MULTI_QUOTAKEEP_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(503).set_body_string(r#"{"error":"upstream down"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let account_a = account("account-a", "SHUNT_TEST_MULTI_QUOTAKEEP_A", "uuid-a");
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account("account-b", "SHUNT_TEST_MULTI_QUOTAKEEP_B", "uuid-b"),
+    ))
+    .await;
+
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &account_a,
+        shunt::accounts::ReloginCause::ServedRequest,
+    );
+
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    assert!(
+        state.accounts.needs_relogin("anthropic", &account_a),
+        "a 5xx says nothing about whether the credential authenticated, so \
+         clearing on it would report a dead account as recovered"
+    );
+
+    upstream.verify().await;
+    std::env::remove_var("SHUNT_TEST_MULTI_QUOTAKEEP_A");
+    std::env::remove_var("SHUNT_TEST_MULTI_QUOTAKEEP_B");
 }
 
 #[tokio::test]
@@ -490,6 +776,7 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
     let _env = REFRESH_ENV_LOCK.lock().await;
     let stale = ["fake-oauth-", "refresh-stale"].concat();
     let fresh = ["fake-oauth-", "refresh-fresh"].concat();
+    let expires_at_ms = future_expiry_ms();
 
     let accounts_dir = unique_temp_dir("succeeds");
     write_store_account(
@@ -498,6 +785,7 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
         &stale,
         "refresh-token-a",
         "uuid-a",
+        expires_at_ms,
     );
     std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
@@ -564,6 +852,7 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
     let stale = ["fake-oauth-", "rotate-stale"].concat();
     let fresh = ["fake-oauth-", "rotate-fresh"].concat();
     let token_b = ["fake-oauth-", "rotate-b"].concat();
+    let expires_at_ms = future_expiry_ms();
     std::env::set_var("SHUNT_TEST_MULTI_ROTATE_B", &token_b);
 
     let accounts_dir = unique_temp_dir("rotates");
@@ -573,6 +862,7 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
         &stale,
         "refresh-token-a",
         "uuid-a",
+        expires_at_ms,
     );
     std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
@@ -747,6 +1037,7 @@ async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
     let stale = ["fake-oauth-", "still401-stale"].concat();
     let fresh = ["fake-oauth-", "still401-fresh"].concat();
     let token_b = ["fake-oauth-", "still401-b"].concat();
+    let expires_at_ms = future_expiry_ms();
     std::env::set_var("SHUNT_TEST_MULTI_STILL401_B", &token_b);
 
     let accounts_dir = unique_temp_dir("still401");
@@ -756,6 +1047,7 @@ async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
         &stale,
         "refresh-token-a",
         "uuid-a",
+        expires_at_ms,
     );
     std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
@@ -919,9 +1211,9 @@ async fn pause_same_retry_succeeds_and_relays_without_rotating() {
 /// Write a store account file marked as a long-lived, non-refreshable setup token
 /// (`shuntCredentialKind: "setup_token"`, no refreshToken) with a far-future
 /// expiry so its access token is used verbatim on the upstream POST.
-fn write_setup_token_account(dir: &std::path::Path, name: &str, access: &str) {
+fn write_setup_token_account(dir: &std::path::Path, name: &str, access: &str, expires_at_ms: i64) {
     let body = format!(
-        r#"{{"claudeAiOauth":{{"accessToken":"{access}","expiresAt":4102444800000,"shuntCredentialKind":"setup_token"}}}}"#
+        r#"{{"claudeAiOauth":{{"accessToken":"{access}","expiresAt":{expires_at_ms},"shuntCredentialKind":"setup_token"}}}}"#
     );
     fs::write(dir.join(format!("{name}.json")), body).unwrap();
 }
@@ -938,10 +1230,11 @@ async fn static_setup_token_account_cools_down_without_refreshing() {
     let _env = REFRESH_ENV_LOCK.lock().await;
     let setup = ["fake-oauth-", "setup-static"].concat();
     let token_b = ["fake-oauth-", "setupstatic-b"].concat();
+    let expires_at_ms = future_expiry_ms();
     std::env::set_var("SHUNT_TEST_MULTI_SETUPSTATIC_B", &token_b);
 
     let accounts_dir = unique_temp_dir("setupstatic");
-    write_setup_token_account(&accounts_dir, "account-a", &setup);
+    write_setup_token_account(&accounts_dir, "account-a", &setup, expires_at_ms);
     std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     // The refresh endpoint must never be called for a setup token.
@@ -1354,4 +1647,726 @@ async fn classifier_gate_is_re_evaluated_for_each_candidate_during_rotation() {
 
     std::env::remove_var("SHUNT_TEST_MULTI_CLASSIFIER_ROT_A");
     std::env::remove_var("SHUNT_TEST_MULTI_CLASSIFIER_ROT_B");
+}
+
+/// A dead refresh token (`invalid_grant`) must leave a **durable** mark on the
+/// account, not just a 5-minute cooldown. Without it, the account cycles
+/// forever: select → 401 → refresh rejected → 5-minute cooldown → expiry →
+/// select again, at one 401 plus one already-rejected refresh POST every five
+/// minutes, and the admin dashboard reports only "cooling", which is
+/// indistinguishable from a quota pause that will clear on its own.
+#[tokio::test]
+async fn terminal_invalid_grant_marks_the_account_as_needing_relogin() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = ["fake-oauth-", "terminal-stale"].concat();
+    let token_b = ["fake-oauth-", "terminal-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_TERMINAL_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("terminalgrant");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "dead-refresh-token",
+        "uuid-a",
+        future_expiry_ms(),
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_string(r#"{"error":"invalid_grant","error_description":"revoked"}"#),
+        )
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let dead = store_account("account-a");
+    let live = account("account-b", "SHUNT_TEST_MULTI_TERMINAL_B", "uuid-b");
+    let (gateway, state) =
+        start_gateway_with_state(test_config(&upstream.uri(), dead.clone(), live.clone())).await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    // `store_account` carries no uuid, so pool health keys it by store entry —
+    // resolve it the same way the request path did.
+    let dead_resolved = resolved_store_account("account-a");
+    assert_pool_observed(&state, &dead_resolved);
+    assert!(
+        state.accounts.needs_relogin("anthropic", &dead_resolved),
+        "a terminal invalid_grant must set the needs-re-login mark"
+    );
+    assert!(
+        !state.accounts.needs_relogin("anthropic", &live),
+        "the account that served the request must stay unmarked"
+    );
+
+    // Survival across a config re-snapshot is pinned separately, in
+    // `server::tests::needs_relogin_mark_survives_a_config_re_snapshot`
+    // (`AppState::refreshed` is crate-private).
+
+    upstream.verify().await;
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_TERMINAL_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// The mirror of the test above, and the one that constrains the
+/// implementation: a **transient** refresh failure (503) cools the account down
+/// exactly as before but must leave no mark. Marking here would report a
+/// perfectly healthy account as permanently dead after a momentary provider
+/// outage — the failure mode that makes the whole signal untrustworthy.
+#[tokio::test]
+async fn transient_refresh_failure_does_not_mark_the_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = ["fake-oauth-", "transient-stale"].concat();
+    let token_b = ["fake-oauth-", "transient-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_TRANSIENT_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("transientgrant");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "live-refresh-token",
+        "uuid-a",
+        future_expiry_ms(),
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("upstream unavailable"))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_TRANSIENT_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let cooled = resolved_store_account("account-a");
+    assert_pool_observed(&state, &cooled);
+    assert!(
+        !state.accounts.needs_relogin("anthropic", &cooled),
+        "a 503 is transient: the account must cool down without being condemned"
+    );
+    // The cooldown itself is unchanged — this change adds a signal, it does not
+    // alter routing. `snapshot` reports the same cooling account it always did.
+    let snapshots = state
+        .accounts
+        .snapshot("anthropic", std::slice::from_ref(&cooled), None, None);
+    assert!(
+        snapshots[0].cooldown_secs_remaining.is_some(),
+        "the transient failure must still cool the account down"
+    );
+    assert!(!snapshots[0].needs_relogin);
+
+    upstream.verify().await;
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_TRANSIENT_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// A 401 on a credential that cannot be refreshed at all (a long-lived setup
+/// token) is terminal by definition: there is no grant left to retry, so the
+/// five-minute cooldown can only repeat the same 401 forever.
+#[tokio::test]
+async fn unrefreshable_setup_token_401_marks_the_account_as_needing_relogin() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let setup = ["fake-oauth-", "markstatic"].concat();
+    let token_b = ["fake-oauth-", "markstatic-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_MARKSTATIC_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("markstatic");
+    write_setup_token_account(&accounts_dir, "account-a", &setup, future_expiry_ms());
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(setup.clone()))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_string(r#"{"error":"revoked setup token"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_MARKSTATIC_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let dead = resolved_store_account("account-a");
+    assert_pool_observed(&state, &dead);
+    assert!(
+        state.accounts.needs_relogin("anthropic", &dead),
+        "an unrefreshable credential's 401 is terminal and must be marked"
+    );
+    let snapshots = state
+        .accounts
+        .snapshot("anthropic", std::slice::from_ref(&dead), None, None);
+    assert!(
+        snapshots[0].needs_relogin,
+        "the mark must reach the admin snapshot"
+    );
+
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_MARKSTATIC_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// The mark is cleared by `mark_healthy_scoped` — the exact call the relay
+/// makes on a served response (`adapters/anthropic/mod.rs`) — so the flag
+/// tracks the credential's current liveness rather than the fact that it once
+/// failed. The 401 that sets the mark is driven end to end; the clear is
+/// asserted at that seam rather than through a second served request, because
+/// the failing account is left in a five-minute auth cooldown and the pool
+/// would route the follow-up request to the healthy account instead.
+#[tokio::test]
+async fn mark_healthy_clears_the_needs_relogin_mark() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let setup = ["fake-oauth-", "clearmark"].concat();
+    let token_b = ["fake-oauth-", "clearmark-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_CLEARMARK_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("clearmark");
+    write_setup_token_account(&accounts_dir, "account-a", &setup, future_expiry_ms());
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(setup.clone()))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_string(r#"{"error":"revoked setup token"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_CLEARMARK_B", "uuid-b"),
+    ))
+    .await;
+
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+    let dead = resolved_store_account("account-a");
+    assert_pool_observed(&state, &dead);
+    assert!(state.accounts.needs_relogin("anthropic", &dead));
+
+    // The account answers a request again (an operator re-logged in out of
+    // band). This is the relay's own success call, arguments included.
+    state
+        .accounts
+        .mark_healthy_scoped("anthropic", &dead, true, false);
+    assert!(
+        !state.accounts.needs_relogin("anthropic", &dead),
+        "a served response proves the credential is alive again"
+    );
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_CLEARMARK_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// Write a refreshable store account whose access token is already **expired**,
+/// so credential resolution refreshes it on read and the upstream is never
+/// reached with it. This is the steady state of a dead account: its access
+/// token outlives its usefulness by hours at most, after which every request
+/// fails during resolution rather than on a 401.
+fn write_expired_store_account(
+    dir: &std::path::Path,
+    name: &str,
+    access: &str,
+    refresh: &str,
+    uuid: &str,
+) {
+    let body = format!(
+        r#"{{"claudeAiOauth":{{"accessToken":"{access}","refreshToken":"{refresh}","expiresAt":1000}},"shuntAccountUuid":"{uuid}"}}"#
+    );
+    fs::write(dir.join(format!("{name}.json")), body).unwrap();
+}
+
+/// The 401 → force-refresh path is only reachable while the dead account's
+/// *access* token is still inside its validity window. Once it expires — within
+/// hours, and permanently thereafter — the refresh is rejected during
+/// credential resolution instead, and the upstream is never called at all. That
+/// path must mark the account too, or the dominant real-world shape of a dead
+/// credential still cycles through the five-minute cooldown forever with
+/// nothing durable on the dashboard.
+#[tokio::test]
+async fn terminal_invalid_grant_during_resolution_marks_the_account_as_needing_relogin() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let expired = ["fake-oauth-", "resolve-expired"].concat();
+    let token_b = ["fake-oauth-", "resolve-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_RESOLVE_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("resolvegrant");
+    write_expired_store_account(
+        &accounts_dir,
+        "account-a",
+        &expired,
+        "dead-refresh-token",
+        "uuid-a",
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_string(r#"{"error":"invalid_grant","error_description":"revoked"}"#),
+        )
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    // The expired token never reaches the upstream: resolution fails first.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(expired.clone()))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_RESOLVE_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    let dead = resolved_store_account("account-a");
+    assert_pool_observed(&state, &dead);
+    assert!(
+        state.accounts.needs_relogin("anthropic", &dead),
+        "a terminal invalid_grant seen during resolution must set the needs-re-login mark"
+    );
+    assert!(
+        state
+            .accounts
+            .snapshot("anthropic", std::slice::from_ref(&dead), None, None)[0]
+            .needs_relogin,
+        "the mark must reach the /admin/pool snapshot"
+    );
+
+    upstream.verify().await;
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_RESOLVE_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// The mirror that constrains the implementation: a transient failure during
+/// resolution (503) cools the account down exactly as before and must leave no
+/// mark, or a momentary provider outage would condemn every healthy account
+/// whose access token happened to be due for a refresh.
+#[tokio::test]
+async fn transient_resolution_failure_does_not_mark_the_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let expired = ["fake-oauth-", "resolve-transient"].concat();
+    let token_b = ["fake-oauth-", "resolve-transient-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_RESOLVE_TRANSIENT_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("resolvetransient");
+    write_expired_store_account(
+        &accounts_dir,
+        "account-a",
+        &expired,
+        "live-refresh-token",
+        "uuid-a",
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("upstream unavailable"))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account(
+            "account-b",
+            "SHUNT_TEST_MULTI_RESOLVE_TRANSIENT_B",
+            "uuid-b",
+        ),
+    ))
+    .await;
+
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    let cooled = resolved_store_account("account-a");
+    assert_pool_observed(&state, &cooled);
+    assert!(
+        !state.accounts.needs_relogin("anthropic", &cooled),
+        "a 503 during resolution is transient: the account must cool down without being condemned"
+    );
+    let snapshots = state
+        .accounts
+        .snapshot("anthropic", std::slice::from_ref(&cooled), None, None);
+    assert!(
+        snapshots[0].cooldown_secs_remaining.is_some(),
+        "the transient failure must still cool the account down"
+    );
+
+    upstream.verify().await;
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_RESOLVE_TRANSIENT_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// The refresh grant succeeds but the bearer it produces is *still* rejected by
+/// `/v1/messages`. The account is de-authorized upstream, not momentarily
+/// unlucky, and the adapter already treats it as broken (a five-minute cooldown
+/// plus rotation) — so it must carry the durable mark too. Without it the
+/// account cycles through that cooldown forever, reported as plain `cooling`.
+#[tokio::test]
+async fn a_post_refresh_401_marks_the_account_as_needing_relogin() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = ["fake-oauth-", "postrefresh-stale"].concat();
+    let rotated = ["fake-oauth-", "postrefresh-rotated"].concat();
+    let token_b = ["fake-oauth-", "postrefresh-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_POSTREFRESH_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("postrefresh");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "live-refresh-token",
+        "uuid-a",
+        future_expiry_ms(),
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    // The grant itself is healthy: it hands back a fresh access token.
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": rotated,
+            "refresh_token": "live-refresh-token",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    // The rotated bearer is rejected too — this is the branch under test.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(rotated.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"account disabled"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_POSTREFRESH_B", "uuid-b"),
+    ))
+    .await;
+
+    // The client is served by the healthy account: routing is unchanged.
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    let dead = resolved_store_account("account-a");
+    assert_pool_observed(&state, &dead);
+    assert!(
+        state.accounts.needs_relogin("anthropic", &dead),
+        "a refresh that succeeds into a still-rejected bearer must condemn the \
+         account — otherwise it cools down and retries forever with no signal"
+    );
+    // The cooldown is still there and still independent of the mark.
+    let snapshots = state
+        .accounts
+        .snapshot("anthropic", std::slice::from_ref(&dead), None, None);
+    assert!(
+        snapshots[0].cooldown_secs_remaining.is_some(),
+        "the mark must be additive: the auth cooldown is unchanged"
+    );
+    assert!(snapshots[0].needs_relogin);
+
+    upstream.verify().await;
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_POSTREFRESH_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// A refreshed retry that relays a non-401 4xx proves the bearer was accepted:
+/// auth failures come back 401, so reaching a validation error means the
+/// credential authenticated. A mark left from an earlier failure is stale and
+/// must go — otherwise a working account stays branded dead until it happens to
+/// serve a 2xx.
+///
+/// Scope: this drives the *clear* end to end. It cannot also assert that the
+/// clear leaves a cooldown standing, because nothing in this flow cools the
+/// account and seeding one up front removes it from selection entirely, so the
+/// branch is never reached. That asymmetry is pinned directly instead, in
+/// `accounts::tests::clearing_the_mark_alone_leaves_the_cooldown_standing`.
+#[tokio::test]
+async fn a_relayed_client_error_after_refresh_clears_a_stale_mark() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = ["fake-oauth-", "relayclear-stale"].concat();
+    let rotated = ["fake-oauth-", "relayclear-rotated"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_RELAYCLEAR_B", "unused");
+
+    let accounts_dir = unique_temp_dir("relayclear");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "live-refresh-token",
+        "uuid-a",
+        future_expiry_ms(),
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": rotated,
+            "refresh_token": "rotated-refresh-token",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    // The refreshed bearer is accepted; the *request* is what the API rejects.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(rotated.clone()))
+        .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"error":"bad request"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_RELAYCLEAR_B", "uuid-b"),
+    ))
+    .await;
+
+    let live = resolved_store_account("account-a");
+    // Stand in for an earlier failure that condemned the account. Deliberately
+    // the *stronger* cause: a served 400 is itself a served response, so it
+    // clears even a mark that a successful refresh grant alone could not.
+    state.accounts.mark_needs_relogin(
+        "anthropic",
+        &live,
+        shunt::accounts::ReloginCause::ServedRequest,
+    );
+    assert!(state.accounts.needs_relogin("anthropic", &live));
+
+    // The 400 is relayed straight back — a client error is not the pool's to retry.
+    assert_eq!(
+        post_messages(&gateway, None).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    assert!(
+        !state.accounts.needs_relogin("anthropic", &live),
+        "a relayed 400 proves the refreshed bearer authenticated, so the stale \
+         needs-re-login mark must be cleared"
+    );
+
+    upstream.verify().await;
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_RELAYCLEAR_B");
+    fs::remove_dir_all(&accounts_dir).ok();
 }

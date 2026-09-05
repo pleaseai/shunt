@@ -1,0 +1,122 @@
+---
+title: OpenAI
+description: マッピングしたモデルを、OPENAI_API_KEY を使って OpenAI Responses API へルーティングする — 変換、エフォート、トークンカウント、ツール検索。
+---
+
+組み込みの **`openai`** プロバイダーは、マッピングされたモデルの推論を **OpenAI プラットフォーム API**
+(`api.openai.com`) へルーティングし、`OPENAI_API_KEY` に対してトークン単位で課金されます。これは
+**`kind = "responses"`** のプロバイダーです。shunt は Claude Code の Anthropic Messages リクエストを
+OpenAI の **Responses API** へ変換し、応答をストリーミングで返しながら再び変換します — ツール、画像、
+ストリーミングを含みます。
+
+
+
+<Aside type="note" title="API キー vs. ChatGPT サブスクリプション">
+
+`openai` は従量制の **API クレジット**を消費します。代わりに **ChatGPT / Codex サブスクリプション**を
+消費したい場合（`codex login` を再利用し、トークン単位の課金なし）は、[`codex` プロバイダー](/ja/guides/codex/)を
+使ってください — 変換パスは同じで、バックエンドと認証が異なります。
+
+</Aside>
+
+
+
+## クイックスタート
+
+コーディングエージェントにセットアップを任せることもできます — `shunt add` は組み込みのセットアップ
+ブループリントを出力します（オフラインかつ読み取り専用で、設定を編集するのはエージェントです。この
+コマンド自体は編集しません）。
+
+```bash
+shunt add upstream openai --print | claude
+```
+
+または、以下の手順に沿って手動で設定してください。
+
+## upstream を設定する
+
+`openai` プリセットは `kind = "responses"`、`base_url = "https://api.openai.com/v1"`（shunt が後ろに
+`/responses` を追加します）、および `OPENAI_API_KEY` からの API キー認証を提供します。
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # ルーティングされないモデル（例 claude-*）のデフォルトとして Anthropic を残す
+
+[[upstreams]]
+name = "openai"
+provider = "openai"
+# effort = "high"          # オプション: デフォルトの推論エフォート
+# count_tokens = "tiktoken" # デフォルト。"estimate" にするとローカルカウントを使わない
+```
+
+順序付きの `[[upstreams]]` は shunt の組み込みプロバイダーを置き換えるため、設定側でフォールバック先の
+`anthropic` デフォルトも宣言する必要があります（`server.default_provider` のデフォルトは `anthropic`）。
+
+明示的に指定したフィールドはプリセットのデフォルトを上書きします。従来の `[providers.openai]` テーブル形式も
+引き続きサポートされます — ただし `[[upstreams]]` と `[providers.*]` を 1 つのファイルで混在させないで
+ください。
+
+## 認証情報
+
+キーは shunt を起動する環境でエクスポートしてください — 設定ファイルには決して書き込まないこと。
+
+```bash
+export OPENAI_API_KEY='...'
+```
+
+`shunt check` は設定の構造を検証しますが、キーの値は読み取りません — `OPENAI_API_KEY` が未設定の場合、
+`openai` へルーティングされた最初のリクエストが認証エラーを返します。
+
+## モデルとルーティング
+
+id を厳密に、あるいはプレフィックスでルーティングするか、[model discovery](/ja/guides/model-discovery/) へ
+Claude 名のエイリアスを広告します。
+
+```toml
+# 推奨: 広告 + ルーティング + 変換を 1 つの宣言で
+[[models]]
+id = "claude-gpt-5-4-via-openai"
+display_name = "GPT-5.4 (via OpenAI)"
+
+[models.upstream_model]
+openai = "gpt-5.4"
+
+# または、クライアントが送るすべての gpt-* id を受け止める
+[[route_prefixes]]
+prefix = "gpt-"
+provider = "openai"
+```
+
+スラッグを選ぶ前に、あなたの OpenAI アカウントで現在利用できるモデルを確認してください。ChatGPT アカウントの
+Codex バックエンドとは異なり、プラットフォーム API は通常の公開スラッグを受け入れます。
+
+## 推論エフォート、コンテキスト、トークンカウント
+
+Responses の変換は、プロバイダー単位またはルート単位の推論エフォートダイヤル（`low` … `max`）と、Claude Code の
+コンテキスト会計が機能し続けるようローカルの tiktoken ベースの `count_tokens` をサポートします。どちらも他の
+Responses プロバイダーと共通で、[Effort & Context](/ja/guides/effort-and-context/) に記載されています。
+
+**ツール検索。** Claude Code の `ENABLE_TOOL_SEARCH=true` を設定すると、shunt は Responses パスの遅延ツール
+ディスカバリーを、GPT-5.4 以降のモデルにおけるネイティブなクライアント実行 `tool_search` プロトコルへ
+マッピングします。このプロバイダーは `api.openai.com` を対象としており、これは未設定（"auto"）のデフォルトが
+`tool_search` アイテムを実装していると既に信頼している 2 つのホストのうちの 1 つです — もう 1 つは
+ChatGPT / Codex バックエンドです — そのためネイティブが自動的に有効になります。カスタムの OpenAI 互換
+エンドポイント（LiteLLM、vLLM、OpenRouter、自己ホスト）は同じようには自動有効化されないため、オプトインに
+`tool_search = true` が必要です。ここで `tool_search = false` を設定すると、代わりにテキストシムを強制します。
+[ツール検索](/ja/guides/codex/#ツール検索)を参照してください。
+
+## 検証
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/models
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-gpt-5-4-via-openai","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+レスポンスの `x-gateway-upstream` ヘッダーが `openai` を示すことを確認したら、
+[Claude Code を shunt へ向け](/ja/guides/connect-claude-code/)てください。

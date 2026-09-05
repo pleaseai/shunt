@@ -112,7 +112,7 @@ provider = "codex"
 <Aside type="caution" title="モデルスラッグ — `-codex` は不可">
 
 ChatGPT アカウントのバックエンドは `gpt-*-codex` スラッグ（例 `gpt-5.2-codex`）を `400` で**拒否**します。アカウントが**ライブで entitle されている**スラッグのみを受け入れます。信頼できるカタログ（および各スラッグが受け入れる reasoning レベル）は openai/codex の
-[`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) です。現在のスラッグ: `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`（フロンティア）と
+[`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) です。現在のスラッグ: `gpt-6-astra`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`（フロンティア）と
 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`。古いアカウントでは以前のものにしか entitle されていない場合があります（無料アカウントは `gpt-5.5` に解決されています）。shunt はバックエンド自身のエラー `detail` を表面化するため、間違ったスラッグは本当の理由を返します。
 
 </Aside>
@@ -123,7 +123,7 @@ ChatGPT アカウントのバックエンドは `gpt-*-codex` スラッグ（例
 
 <Aside type="note" title="`Model not found <slug>` は entitlement ではなくクライアントバージョンのゲーティング">
 
-一部のスラッグは `minimal_client_version` を持ちます（例 `gpt-5.6-luna` は ≥ 0.144.0 が必要）。リクエストのクライアント identity が欠落しているか古すぎる場合、バックエンドは `Model not found <slug>` と応答します。shunt は固定された Codex CLI の identity ヘッダー（`originator: codex_cli_rs`、`user-agent`、`version`）を **openai/codex rust-v0.148.0** に固定して送ることで、これを回避します。[openai/codex#31967](https://github.com/openai/codex/issues/31967) を参照してください。
+一部のスラッグは `minimal_client_version` を持ちます（例 `gpt-6-astra` は ≥ 0.153.0 が必要）。リクエストのクライアント identity が欠落しているか古すぎる場合、バックエンドは `Model not found <slug>` と応答します。shunt は固定された Codex CLI の identity ヘッダー（`originator: codex_cli_rs`、`user-agent`、`version`）を **openai/codex rust-v0.153.3** に固定して送ることで、これを回避します。[openai/codex#31967](https://github.com/openai/codex/issues/31967) を参照してください。
 
 </Aside>
 
@@ -235,7 +235,7 @@ provider = "codex"
 
 ## 5. 推論エフォート
 
-エフォートは Claude Code の通常のコントロール（`/effort`、`/model` のスライダー、`--effort`）で設定します。shunt はそれを Responses の `reasoning.effort` へマッピングし、`max` をサポートしないスラッグでは `max → xhigh` に折りたたみます（サポートするのは **gpt-5.6** ファミリーのみ）。
+エフォートは Claude Code の通常のコントロール（`/effort`、`/model` のスライダー、`--effort`）で設定します。shunt はそれを Responses の `reasoning.effort` へマッピングし、`max` をサポートしないスラッグでは `max → xhigh` に折りたたみます（サポートするのは **gpt-5.6** と **gpt-6** ファミリーのみ）。
 
 
 

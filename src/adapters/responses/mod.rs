@@ -7,7 +7,10 @@ mod error;
 mod http;
 pub(crate) mod inbound;
 mod pool;
-mod request;
+// `pub(crate)` (not private): `crate::auth::codex::usage` reuses `CODEX_USER_AGENT`/
+// `CODEX_CLIENT_VERSION` for the wham/usage poller so the CLI identity headers on
+// that endpoint can never drift from the ones the Responses adapter itself sends.
+pub(crate) mod request;
 mod websocket;
 mod ws_stream;
 
