@@ -92,8 +92,14 @@ shunt는 Antigravity OAuth를 사용하는 서드파티 소프트웨어이므로
 ### 더 이상 사용되지 않는 `antigravity_cli` 전송
 
 `antigravity-cli` 경로는 요청마다 `agy` CLI 서브프로세스를 하나씩 에이전트 모드로 실행합니다. `agy`는 자신의 도구 호출을
-스스로 해결하므로, 요청의 `tools` 배열은 전달되지 않고 응답에도 `tool_use` 블록이 담기지 않습니다. 도구 루프를 직접
-구동해야 하는 클라이언트는 `gemini` 프로바이더를 사용하세요.
+스스로 해결하므로 이 어댑터는 `tool_use` 블록을 반환할 수 없고, 도구 호출을 요구하는 요청은 거부됩니다. 비어 있지 않은
+`tools` 배열 또는 `any`/`tool`인 `tool_choice`는 이 제약을 명시한 `400 invalid_request_error`로 거부됩니다. 예전에는
+이런 요청이 조용히 버려지고 `stop_reason: "end_turn"`인 텍스트 전용 `200`이 반환됐는데, 이는 에이전트 호출자가 활용할 수
+없는 응답이며 `tool_choice: {"type": "any"}`를 정면으로 위반하면서도 성공으로 보고하는 것이었습니다. 도구 호출을 강제하지
+않는 두 가지 형태는 예외입니다. `tools`가 함께 있어도 `tool_choice: {"type": "none"}`은 예외이고, 도구가 없는
+`tool_choice: {"type": "auto"}`도 많은 클라이언트가 매 요청에 직렬화하는 Anthropic SDK 기본값이므로 예외입니다. 빈
+`tools: []`도 도구 요청이 아닙니다. 도구 루프를 직접 구동해야 하는 클라이언트는 도구를 전달하는 `antigravity` 또는
+`gemini` 프로바이더를 사용하세요.
 
 비대화형 실행에서는 권한 프롬프트에 응답할 수 없으므로, `agy`는 `--dangerously-skip-permissions`로, 그리고 기본적으로
 `--sandbox`와 함께 실행됩니다. 그러므로 **이 프로바이더는 shunt를 실행하는 사용자 권한의 임의 코드 실행으로 취급하세요.**
