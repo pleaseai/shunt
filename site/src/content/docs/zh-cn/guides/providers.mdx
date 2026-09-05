@@ -86,8 +86,13 @@ OpenClaw 与 Antigravity OAuth 配合使用)即违反本协议",且此类违约"
 
 ### 已废弃的 `antigravity_cli` 传输
 
-`antigravity-cli` 这条路径按每个请求以 agent 模式启动一个 `agy` CLI 子进程。`agy` 自己解析自己的工具调用,因此请求中的
-`tools` 数组不会被转发,响应里也永远不会包含 `tool_use` 块。需要自行驱动工具循环的客户端应改用 `gemini` 提供方。
+`antigravity-cli` 这条路径按每个请求以 agent 模式启动一个 `agy` CLI 子进程。`agy` 自己解析自己的工具调用,因此该适配器
+永远无法返回 `tool_use` 块,真正要求调用工具的请求会被拒绝:非空的 `tools` 数组,或值为 `any`/`tool` 的 `tool_choice`,
+会以指明这一限制的 `400 invalid_request_error` 拒绝。此类请求过去会被悄悄丢弃,返回 `stop_reason: "end_turn"` 的纯文本
+`200` —— 这是 agent 式调用方无法据以行动的响应,并且在直接违反 `tool_choice: {"type": "any"}` 的同时仍报告成功。有两种
+形式不受此限制,因为它们都不强制调用工具:即使同时提供了 `tools`,`tool_choice: {"type": "none"}` 也不受限制;没有工具的
+`tool_choice: {"type": "auto"}` 同样不受限制,它是许多客户端在每个请求中都会序列化的 Anthropic SDK 默认值。空的
+`tools: []` 同样不算工具请求。需要自行驱动工具循环的客户端应改用会转发工具的 `antigravity` 或 `gemini` 提供方。
 
 由于非交互式运行无法回答权限提示,`agy` 会带 `--dangerously-skip-permissions` 运行,并且默认带 `--sandbox`,所以**请把该
 提供方视为以运行 shunt 的用户身份执行任意代码**。
