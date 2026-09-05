@@ -638,7 +638,7 @@ async fn responses_post_2xx_backend_error_stops_without_replaying_turn() {
         "event: response.created\n",
         "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
         "event: response.failed\n",
-        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"first upstream accepted then failed\"}}}\n\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"first upstream accepted then failed\"}}}\n\n",
     );
     Mock::given(method("POST"))
         .and(path("/responses"))
@@ -675,6 +675,58 @@ async fn responses_post_2xx_backend_error_stops_without_replaying_turn() {
         body["error"]["message"],
         "first upstream accepted then failed"
     );
+    responses.verify().await;
+    skipped.verify().await;
+}
+
+/// An in-stream `rate_limit_exceeded` is classified as `429 rate_limit_error`
+/// for the client, but it still arrived after a 2xx acceptance: the turn is not
+/// replayed on the next upstream (§3 of `docs/upstreams-failover.md`).
+#[tokio::test]
+async fn responses_post_2xx_rate_limit_event_returns_429_without_replaying_turn() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let responses = MockServer::start().await;
+    let skipped = MockServer::start().await;
+    let throttled_turn = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached\"}}}\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(throttled_turn))
+        .expect(1)
+        .mount(&responses)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("must not replay"))
+        .expect(0)
+        .mount(&skipped)
+        .await;
+    let config = chain_config(
+        vec![
+            upstream(
+                "responses",
+                responses.uri(),
+                ProviderKind::Responses,
+                UpstreamAuth::Shorthand(AuthMode::Passthrough),
+            ),
+            passthrough("skipped", skipped.uri()),
+        ],
+        &[("responses", "gpt-test"), ("skipped", "claude-test")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_gateway_headers(&response, "responses", "gpt-test");
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "rate_limit_error");
+    assert_eq!(body["error"]["message"], "Rate limit reached");
     responses.verify().await;
     skipped.verify().await;
 }

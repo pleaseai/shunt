@@ -107,17 +107,23 @@ pub(super) fn own_error(message: String) -> AdapterError {
     }
 }
 
-/// Build the gateway-error response for a backend-sent `error` /
-/// `response.failed` event captured by the machine on a non-streaming JSON path
-/// (issue #113). `error` is the already-mapped Anthropic error envelope
-/// ([`crate::model::responses::AnthropicSseMachine::take_backend_error`]); it
-/// becomes the response body with a `502` status — SSE error events carry no upstream
-/// HTTP status to preserve, and the machine mapped the envelope's `error.type`
-/// against `502` to match. Emits a warning for operational visibility. The
-/// streaming paths surface the same envelope inline as an SSE `error` event
-/// instead. Shared by the HTTP ([`super::http::json_response`]) and websocket
+/// Build the gateway error for a backend-sent `error` / `response.failed` event
+/// captured by the machine on a non-streaming JSON path (issue #113). `error` is
+/// the already-mapped Anthropic error envelope and `status` the client-facing
+/// status it was mapped against
+/// ([`crate::model::responses::AnthropicSseMachine::take_backend_error`]):
+/// `502` by default — SSE error events carry no upstream HTTP status to
+/// preserve — or `429` for an in-stream `rate_limit_exceeded`, so the client
+/// sees the same `rate_limit_error` envelope an HTTP 429 produces. Either way
+/// the error is terminal (`failure: None`): the event arrived after the upstream
+/// accepted the turn with 2xx headers, and a post-acceptance failure is never
+/// replayed on the next upstream (`docs/upstreams-failover.md` §3 — the turn is
+/// not idempotent). Emits a warning for operational visibility. The streaming
+/// paths surface the same envelope inline as an SSE `error` event instead.
+/// Shared by the HTTP
+/// ([`super::http::json_response`]) and websocket
 /// ([`super::ws_stream::json_events_response`]) non-streaming collectors.
-pub(super) fn backend_error_response(error: Value) -> axum::response::Response {
+pub(super) fn backend_error(status: StatusCode, error: Value) -> AdapterError {
     // Borrow `error` for the log line only; the borrow ends with the macro so
     // the envelope can move into the response body below without a clone. Use the
     // `error_message` field name (not the reserved `message`, which collides with
@@ -130,7 +136,11 @@ pub(super) fn backend_error_response(error: Value) -> axum::response::Response {
             .unwrap_or("upstream request failed"),
         "responses backend sent an error event on the non-streaming JSON path"
     );
-    (StatusCode::BAD_GATEWAY, axum::Json(error)).into_response()
+    AdapterError {
+        message: "responses backend error event".into(),
+        response: Box::new((status, axum::Json(error)).into_response()),
+        failure: None,
+    }
 }
 
 #[cfg(test)]
