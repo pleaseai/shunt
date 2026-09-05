@@ -126,6 +126,16 @@ work — file edits included. Four consequences follow:
   tool steps become SSE `ping` frames, so a long agent turn keeps producing bytes
   instead of going silent until it finishes. Token usage is Google's reported count,
   not an estimate.
+- **An undelivered `send_message` handoff does not fail a finished turn.** Print mode
+  advertises `agy`'s full interactive tool surface, including `send_message`, but registers
+  no inbox. A subagent-style prompt ("report your findings back to the main agent") is
+  enough for the model to hand its reply to `main`, `team-lead` or `user`; the call fails
+  and `agy` marks the run `ERROR` with `recipient "<name>" not found` — after the answer
+  has already streamed. shunt ends that turn normally (`end_turn`, HTTP `200`) when
+  assistant text was streamed, and keeps failing it when nothing was, since the reply
+  then only existed inside the undelivered message. Every other late failure still ends
+  the turn with an SSE `error`. This is a compatibility shim keyed on an upstream error
+  string; see [`docs/notes/agy-print-mode-tool-surface.md`](https://github.com/pleaseai/shunt/blob/main/docs/notes/agy-print-mode-tool-surface.md) in the repository.
 - **Gateway shutdown ends the turn on Unix.** Each run has an isolated process group,
   so shunt terminates the agent and its tool subprocesses when shutdown starts instead
   of letting an unattended turn hold the graceful drain open.

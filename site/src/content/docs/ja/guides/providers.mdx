@@ -101,6 +101,15 @@ Google の [Antigravity 利用規約](https://antigravity.google/terms)は、こ
 ため例外です。空の `tools: []` も同様にツール要求ではありません。ツールループを自分で回す必要があるクライアントは、
 ツールを転送する `antigravity` または `gemini` プロバイダーを使用してください。
 
+配信されなかった `send_message` のハンドオフは、完了したターンを失敗にしません。print モードは `send_message` を含む
+`agy` の対話用ツール一式を公開しますが、inbox は登録しません。サブエージェント風のプロンプト（「結果をメインエージェントに
+報告せよ」）だけで、モデルは返答を `main`、`team-lead`、`user` に渡そうとし、その呼び出しは失敗して、`agy` は — 返答が
+すでにストリーミングされた後で — `recipient "<name>" not found` エラーとともに実行を `ERROR` にします。shunt は
+アシスタントのテキストがストリーミングされていればそのターンを通常どおり終了（`end_turn`、HTTP `200`）し、何も
+ストリーミングされていなければ返答は配信されなかったメッセージの中にしか存在しなかったため、引き続き失敗として扱います。
+それ以外の遅い失敗は今までどおり SSE `error` でターンを終えます。これは upstream のエラー文字列に依存する互換性の
+ための処理です。リポジトリの [`docs/notes/agy-print-mode-tool-surface.md`](https://github.com/pleaseai/shunt/blob/main/docs/notes/agy-print-mode-tool-surface.md) を参照してください。
+
 非対話実行では権限プロンプトに応答できないため、`agy` は `--dangerously-skip-permissions` 付きで、さらにデフォルトでは
 `--sandbox` 付きで実行されます。したがって **このプロバイダーは shunt を実行しているユーザー権限での任意コード実行として
 扱ってください。**
