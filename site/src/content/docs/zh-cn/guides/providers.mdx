@@ -94,6 +94,13 @@ OpenClaw 与 Antigravity OAuth 配合使用)即违反本协议",且此类违约"
 `tool_choice: {"type": "auto"}` 同样不受限制,它是许多客户端在每个请求中都会序列化的 Anthropic SDK 默认值。空的
 `tools: []` 同样不算工具请求。需要自行驱动工具循环的客户端应改用会转发工具的 `antigravity` 或 `gemini` 提供方。
 
+未能送达的 `send_message` 交接不会让已完成的轮次失败。print 模式会暴露 `agy` 的全部交互式工具面(包括 `send_message`),
+却不会注册任何收件箱。一条子 agent 式的提示("把结果汇报给主 agent")就足以让模型把回复交给 `main`、`team-lead` 或
+`user`;该调用失败,`agy` 会在回答已经流式输出之后,以 `recipient "<name>" not found` 错误把本次运行标记为 `ERROR`。
+只要已经流式输出了助手文本,shunt 就把这一轮正常结束(`end_turn`、HTTP `200`);若什么都没有输出,则回复只存在于那条
+未送达的消息里,shunt 仍按失败处理。其他所有晚到的失败依旧以 SSE `error` 结束轮次。这是一个依赖上游错误字符串的兼容性
+处理,详见仓库中的 [`docs/notes/agy-print-mode-tool-surface.md`](https://github.com/pleaseai/shunt/blob/main/docs/notes/agy-print-mode-tool-surface.md)。
+
 由于非交互式运行无法回答权限提示,`agy` 会带 `--dangerously-skip-permissions` 运行,并且默认带 `--sandbox`,所以**请把该
 提供方视为以运行 shunt 的用户身份执行任意代码**。
 

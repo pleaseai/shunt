@@ -61,6 +61,29 @@ fn sse(event: &str, data: &Value) -> String {
     format!("event: {event}\ndata: {data}\n\n")
 }
 
+/// Does this `agy` error report a handoff to a recipient print mode never had?
+///
+/// The CLI's tool surface includes `send_message`, and a subagent-style prompt
+/// ("report your findings back to the main agent") is enough for the model to
+/// use it to deliver its reply. Print mode registers no inbox, so the call
+/// fails and `agy` marks the whole run `ERROR` — after the answer has already
+/// been streamed in full. Shunt's caller then sees a complete response closed
+/// by an SSE `error`, which reads as a truncated turn.
+///
+/// Matched by shape rather than by name: `main`, `team-lead` and `user` have
+/// all been observed, sometimes behind a `CORTEX_STEP_TYPE_GENERIC:` wrapper.
+/// Deliberately narrow — a run that failed for any other reason after emitting
+/// some text really is partial, and must keep failing. Keyed on an upstream
+/// error string, so it should be dropped once `agy` offers a way to withhold
+/// the tool at spawn time.
+fn is_undelivered_handoff(message: &str) -> bool {
+    let Some((_, rest)) = message.split_once("recipient \"") else {
+        return false;
+    };
+    rest.split_once('"')
+        .is_some_and(|(_, tail)| tail.trim_start().starts_with("not found"))
+}
+
 /// Incremental `agy` stream-json → Anthropic SSE translator.
 ///
 /// Feed it one JSON line at a time with [`Translator::on_line`] and flush with
@@ -221,8 +244,16 @@ impl Translator {
                         .and_then(Value::as_str)
                         .unwrap_or("agy reported a failed run")
                         .to_string();
-                    self.end = Some(AgyEnd::Failed(message));
-                    return String::new();
+                    // An undelivered handoff is bookkeeping that failed after
+                    // the reply itself was streamed, so failing the turn would
+                    // report a complete answer as a server error. Text is
+                    // required: with nothing but whitespace streamed the reply
+                    // only ever existed inside the message that could not be
+                    // delivered, and the run genuinely produced nothing.
+                    if self.text.trim().is_empty() || !is_undelivered_handoff(&message) {
+                        self.end = Some(AgyEnd::Failed(message));
+                        return String::new();
+                    }
                 }
                 self.end = Some(AgyEnd::Success);
                 // `result.response` repeats text already delivered through

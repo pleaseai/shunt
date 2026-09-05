@@ -101,6 +101,14 @@ shunt는 Antigravity OAuth를 사용하는 서드파티 소프트웨어이므로
 `tools: []`도 도구 요청이 아닙니다. 도구 루프를 직접 구동해야 하는 클라이언트는 도구를 전달하는 `antigravity` 또는
 `gemini` 프로바이더를 사용하세요.
 
+전달되지 못한 `send_message` 핸드오프는 완료된 턴을 실패시키지 않습니다. print 모드는 `send_message`를 포함한 `agy`의
+전체 대화형 도구 목록을 노출하지만 인박스를 등록하지 않습니다. 서브에이전트 형태의 프롬프트("결과를 메인 에이전트에게
+보고하라")만으로도 모델은 답변을 `main`, `team-lead`, `user`에게 넘기려 하고, 호출은 실패하며 `agy`는 — 답변이 이미
+스트리밍된 뒤에 — `recipient "<name>" not found` 오류로 실행을 `ERROR`로 표시합니다. shunt는 어시스턴트 텍스트가
+스트리밍된 경우 그 턴을 정상 종료(`end_turn`, HTTP `200`)하고, 아무것도 스트리밍되지 않았으면 답변이 전달되지 못한
+메시지 안에만 존재했던 것이므로 계속 실패로 처리합니다. 그 밖의 뒤늦은 실패는 여전히 SSE `error`로 턴을 끝냅니다.
+이는 업스트림 오류 문자열에 기댄 호환성 처리이며, 저장소의 [`docs/notes/agy-print-mode-tool-surface.md`](https://github.com/pleaseai/shunt/blob/main/docs/notes/agy-print-mode-tool-surface.md)를 참고하세요.
+
 비대화형 실행에서는 권한 프롬프트에 응답할 수 없으므로, `agy`는 `--dangerously-skip-permissions`로, 그리고 기본적으로
 `--sandbox`와 함께 실행됩니다. 그러므로 **이 프로바이더는 shunt를 실행하는 사용자 권한의 임의 코드 실행으로 취급하세요.**
 

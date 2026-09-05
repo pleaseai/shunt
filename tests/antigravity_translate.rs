@@ -246,6 +246,82 @@ fn test_translator_reports_failed_runs() {
     );
 }
 
+/// `agy` exposes `send_message` in print mode, where no inbox recipient
+/// exists. A subagent-style prompt makes the model use it to hand its reply
+/// back to "main", the call fails, and the run is marked ERROR — after the
+/// answer was streamed in full. The caller has the whole response, so this
+/// must end as a normal turn rather than an SSE error.
+#[test]
+fn test_undelivered_handoff_after_a_full_reply_ends_the_turn() {
+    for error in [
+        r#"recipient \"main\" not found"#,
+        r#"recipient \"main\"not found"#,
+        r#"recipient \"main\"   not found"#,
+    ] {
+        let mut t = Translator::new("gemini", "msg_test");
+        t.on_line(
+            r#"{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"the whole answer"}}"#,
+        );
+        t.on_line(&format!(
+            r#"{{"event":"result","result":{{"status":"ERROR","response":"","error":"error executing cascade step: CORTEX_STEP_TYPE_GENERIC: {error}"}}}}"#,
+        ));
+
+        assert_eq!(t.end(), Some(&AgyEnd::Success), "error: {error}");
+        assert_eq!(t.text(), "the whole answer", "error: {error}");
+
+        let out = t.finish();
+        assert!(out.contains("end_turn"), "error: {error}");
+        assert!(!out.contains("event: error"), "error: {error}");
+    }
+}
+
+/// Only the handoff itself is forgiven. Any other late failure leaves a
+/// genuinely partial answer and has to keep failing the turn.
+#[test]
+fn test_other_failures_after_text_still_fail_the_turn() {
+    let mut t = Translator::new("gemini", "msg_test");
+    t.on_line(
+        r#"{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"half an answer"}}"#,
+    );
+    t.on_line(
+        r#"{"event":"result","result":{"status":"ERROR","response":"","error":"Eligibility check failed: UNAVAILABLE (code 503)"}}"#,
+    );
+
+    assert_eq!(
+        t.end(),
+        Some(&AgyEnd::Failed(
+            "Eligibility check failed: UNAVAILABLE (code 503)".to_string()
+        ))
+    );
+}
+
+/// With no text streamed, the reply only ever existed inside the message that
+/// could not be delivered: the run produced nothing, and saying otherwise
+/// would report an empty turn as a success.
+#[test]
+fn test_undelivered_handoff_without_text_still_fails() {
+    for streamed in [None, Some("\n  \n")] {
+        let mut t = Translator::new("gemini", "msg_test");
+        if let Some(whitespace) = streamed {
+            t.on_line(&format!(
+                r#"{{"event":"step_update","step_update":{{"step_type":"agent_response","text_delta":{}}}}}"#,
+                serde_json::to_string(whitespace).unwrap()
+            ));
+        }
+        t.on_line(
+            r#"{"event":"result","result":{"status":"ERROR","response":"","error":"recipient \"team-lead\" not found"}}"#,
+        );
+
+        assert_eq!(
+            t.end(),
+            Some(&AgyEnd::Failed(
+                "recipient \"team-lead\" not found".to_string()
+            )),
+            "streamed: {streamed:?}"
+        );
+    }
+}
+
 #[test]
 fn test_translator_tolerates_garbage_lines() {
     let mut t = Translator::new("gemini", "msg_test");
