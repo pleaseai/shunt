@@ -56,10 +56,14 @@ provider = "cursor"
 
 ## 3. モデル ID とエージェントモード
 
-プレフィックスが Cursor のエージェントモード（Agent / Plan / Ask）を選び、サフィックスが Cursor のモデル
+プレフィックスが Cursor のエージェントモード（Agent / Plan / Ask）を選び、サフィックスは通常 Cursor のモデル
 id です。`cursor-agent models` に出る表示名ではなく、**ワイヤー**上の id を使ってください: Auto は
 `default` です（`cursor:auto` をルーティングすると `Unknown model ID: auto` で失敗します）。名前付きモデル
 （例 `cursor:gpt-5.2`）にはそれを entitle する有料プランが必要で、無料プランは `cursor:default` に限られます。
+
+Cursor のモデル選択画面にある `composer-2.5-fast` はワイヤー id ではなく、パラメーター付きのエイリアスです。
+`cursor:composer-2.5-fast`（または `cursor:composer-2.5[fast=true]`）をルーティングすると、shunt は公式 CLI と
+同じく `composer-2.5` ワイヤー id を `fast=true` モデルメタデータ付きで送信します。
 
 | 形式 | エージェントモード | 例 |
 | :-- | :-- | :-- |
