@@ -15,7 +15,7 @@
 
 この名前が仕組みそのものを表しています。電気回路や鉄道の *shunt*（分岐器）が、選んだ一部の流れを並行した経路へ振り分けるのと同じように、ここではマッピングされたモデルの推論を別のプロバイダーへ振り分けつつ、Claude Code のツールやスキルはそのまま保たれます。
 
-**OpenAI**、**ChatGPT/Codex**（`codex login` でサブスクリプションを再利用）、**xAI**（API キー）、**Grok**（`shunt login xai` で SuperGrok / X Premium+ サブスクリプションを再利用）、**Cursor**（`shunt login cursor` でサブスクリプションを再利用）、**Kimi Code**（`shunt login kimi` でサブスクリプションを再利用）、**Gemini / Google Code Assist**（`~/.gemini/oauth_creds.json` でサブスクリプションを再利用。shunt は有効なアクセストークンをそのまま使用し、自前でのリフレッシュには `SHUNT_GOOGLE_CLIENT_ID` と `SHUNT_GOOGLE_CLIENT_SECRET` が必要です）、そして **Anthropic** パススルーが標準搭載されており、さらに Anthropic Messages 互換のバックエンド（Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway、…）は TOML テーブルまたは YAML マッピングを 1 つ書くだけで、コード変更なしに追加できます。
+**OpenAI**、**ChatGPT/Codex**（`codex login` でサブスクリプションを再利用）、**xAI**（API キー）、**Grok**（`shunt login xai` で SuperGrok / X Premium+ サブスクリプションを再利用）、**Cursor**（`shunt login cursor` でサブスクリプションを再利用）、**Kimi Code**（`shunt login kimi` でサブスクリプションを再利用）、**Zhipu** と **MiniMax 中国版**（API キー）、**Gemini / Google Code Assist**（`~/.gemini/oauth_creds.json` でサブスクリプションを再利用。shunt は有効なアクセストークンをそのまま使用し、自前でのリフレッシュには `SHUNT_GOOGLE_CLIENT_ID` と `SHUNT_GOOGLE_CLIENT_SECRET` が必要です）、そして **Anthropic** パススルーが標準搭載されており、さらに Anthropic Messages 互換のバックエンド（Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway、…）は TOML テーブルまたは YAML マッピングを 1 つ書くだけで、コード変更なしに追加できます。
 
 > [!NOTE]
 > `shunt` は活発に開発中の 1.0 未満（pre-1.0）ソフトウェアです。[SemVer](https://semver.org/lang/ja/#spec) の慣例に従い、`0.x` リリースには設定キー・CLI・動作に対する破壊的変更（breaking change）が含まれる場合があります。アップグレード前に[リリースノート](https://github.com/pleaseai/shunt/releases)を確認してください。
@@ -211,7 +211,9 @@ provider = "cursor"
 | Kimi Code（サブスクリプション、OAuth） | `https://api.kimi.com/coding` | サブスクリプションが提供する ID を使用 |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
+| Zhipu（GLM 中国版） | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | MiniMax | `https://api.minimax.io/anthropic` | [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) を参照 |
+| MiniMax 中国版 | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 

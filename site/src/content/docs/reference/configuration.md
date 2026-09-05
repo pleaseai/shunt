@@ -415,6 +415,8 @@ Available presets:
 | `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
 | `kimi-code` | `anthropic` | `https://api.kimi.com/coding` | `kimi_oauth` |
+| `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
+| `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 
 A bare string such as `auth = "claude_oauth"` is shorthand for `auth = { mode = "claude_oauth" }`. `api_key` maps accept `env` (required unless the preset supplies it) and `header` (`bearer` by default, or `x_api_key`). `claude_oauth`, `chatgpt_oauth`, and `kimi_oauth` maps may select `account = "name"` or `accounts = [...]`, but not both. `accounts` accepts bare store-entry names and full account tables; an explicitly empty `accounts = []` is rejected, while omitting both scope fields scans the whole store. If the ChatGPT store is empty, `chatgpt_oauth` retains its `~/.codex/auth.json` fallback. `passthrough`, `xai_oauth`, `cursor_oauth`, and `antigravity_oauth` maps take only `mode`; unknown mode-specific keys are errors.
 

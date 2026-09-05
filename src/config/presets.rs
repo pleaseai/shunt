@@ -73,6 +73,20 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         auth: AuthMode::KimiOauth,
         api_key_env: None,
     },
+    ProviderPreset {
+        name: "zhipu",
+        kind: ProviderKind::Anthropic,
+        base_url: "https://open.bigmodel.cn/api/anthropic",
+        auth: AuthMode::ApiKey,
+        api_key_env: Some("ZHIPUAI_API_KEY"),
+    },
+    ProviderPreset {
+        name: "minimax-cn",
+        kind: ProviderKind::Anthropic,
+        base_url: "https://api.minimax.cn/anthropic",
+        auth: AuthMode::ApiKey,
+        api_key_env: Some("MINIMAX_API_KEY"),
+    },
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static ProviderPreset> {
@@ -112,12 +126,14 @@ mod tests {
                 "grok",
                 "kimi",
                 "cursor",
-                "kimi-code"
+                "kimi-code",
+                "zhipu",
+                "minimax-cn"
             ]
         );
         assert_eq!(
             available_names(),
-            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code"
+            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn"
         );
     }
 
@@ -155,5 +171,23 @@ mod tests {
         let kimi = find("kimi").unwrap();
         assert_eq!(kimi.base_url, "https://api.moonshot.ai/anthropic");
         assert_eq!(kimi.auth, AuthMode::ApiKey);
+    }
+
+    #[test]
+    fn zhipu_preset_uses_the_bigmodel_anthropic_surface() {
+        let zhipu = find("zhipu").unwrap();
+        assert_eq!(zhipu.kind, ProviderKind::Anthropic);
+        assert_eq!(zhipu.base_url, "https://open.bigmodel.cn/api/anthropic");
+        assert_eq!(zhipu.auth, AuthMode::ApiKey);
+        assert_eq!(zhipu.api_key_env, Some("ZHIPUAI_API_KEY"));
+    }
+
+    #[test]
+    fn minimax_cn_preset_uses_the_china_anthropic_surface() {
+        let minimax_cn = find("minimax-cn").unwrap();
+        assert_eq!(minimax_cn.kind, ProviderKind::Anthropic);
+        assert_eq!(minimax_cn.base_url, "https://api.minimax.cn/anthropic");
+        assert_eq!(minimax_cn.auth, AuthMode::ApiKey);
+        assert_eq!(minimax_cn.api_key_env, Some("MINIMAX_API_KEY"));
     }
 }
