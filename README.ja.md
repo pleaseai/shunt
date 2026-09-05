@@ -201,7 +201,7 @@ model = "cursor:default"                             # "default" is the wire id 
 provider = "cursor"
 ```
 
-`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` プレフィックスが Cursor のエージェントモード（Agent / Plan / Ask）を選択し、サフィックスが Cursor の**ワイヤー**モデル id です（Auto は `auto` ではなく `default`）。アダプターはアシスタントのテキストと reasoning をストリーミングし、クライアントのツールをネイティブな Cursor MCP ツール呼び出しとしてブリッジし、インライン画像を転送します（issue #170）。詳細は [プロバイダー → Cursor](https://shunt.dev/ja/providers/cursor/) を参照してください。
+`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` プレフィックスが Cursor のエージェントモード（Agent / Plan / Ask）を選択し、サフィックスが Cursor の**ワイヤー**モデル id です（Auto は `auto` ではなく `default`）。ただし、Cursor のモデル選択画面にある `composer-2.5-fast` エイリアスは例外で、shunt は `composer-2.5` ワイヤー id と `fast=true` モデルメタデータを送信します。アダプターはアシスタントのテキストと reasoning をストリーミングし、クライアントのツールをネイティブな Cursor MCP ツール呼び出しとしてブリッジし、インライン画像を転送します（issue #170）。詳細は [プロバイダー → Cursor](https://shunt.dev/ja/providers/cursor/) を参照してください。
 
 **あらゆる Anthropic 互換バックエンド**が、テーブルを 1 つ書くだけで使えます。コード変更は不要です。
 

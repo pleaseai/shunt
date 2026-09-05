@@ -55,10 +55,14 @@ provider = "cursor"
 
 ## 3. 模型 id 与 agent 模式
 
-前缀选择 Cursor 的 agent 模式(Agent / Plan / Ask),后缀是 Cursor 的模型
+前缀选择 Cursor 的 agent 模式(Agent / Plan / Ask),后缀通常是 Cursor 的模型
 id。请使用 **wire** id,而不是 `cursor-agent models` 中的显示名:Auto 是 `default`
 (路由 `cursor:auto` 会以 `Unknown model ID: auto` 失败)。具名模型(例如 `cursor:gpt-5.2`)
 需要一个授予其权限的付费套餐;免费套餐仅限 `cursor:default`。
+
+Cursor 模型选择器中的 `composer-2.5-fast` 条目是一个参数化别名,而不是 wire id。
+路由 `cursor:composer-2.5-fast`(或 `cursor:composer-2.5[fast=true]`)时,shunt 会发送
+`composer-2.5` wire id 和 `fast=true` 模型元数据,与官方 CLI 一致。
 
 | 形式 | Agent 模式 | 示例 |
 | :-- | :-- | :-- |

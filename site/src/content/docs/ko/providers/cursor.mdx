@@ -55,10 +55,14 @@ provider = "cursor"
 
 ## 3. 모델 id와 에이전트 모드
 
-프리픽스가 Cursor의 에이전트 모드(Agent / Plan / Ask)를 선택하고, 접미사가 Cursor 모델 id입니다.
+프리픽스가 Cursor의 에이전트 모드(Agent / Plan / Ask)를 선택하고, 접미사는 보통 Cursor 모델 id입니다.
 `cursor-agent models`의 표시 이름이 아니라 **와이어** id를 사용하세요: Auto는 `default`입니다
 (`cursor:auto`를 라우팅하면 `Unknown model ID: auto`로 실패합니다). 이름이 있는 모델(예: `cursor:gpt-5.2`)은
 해당 모델에 대한 자격을 부여하는 유료 플랜이 필요하며, 무료 플랜은 `cursor:default`로 제한됩니다.
+
+Cursor 선택기의 `composer-2.5-fast` 항목은 와이어 id가 아니라 매개변수화된 별칭입니다.
+`cursor:composer-2.5-fast`(또는 `cursor:composer-2.5[fast=true]`)를 라우팅하면 shunt는 공식 CLI와
+동일하게 `composer-2.5` 와이어 id를 `fast=true` 모델 메타데이터와 함께 전송합니다.
 
 | 형식 | 에이전트 모드 | 예시 |
 | :-- | :-- | :-- |

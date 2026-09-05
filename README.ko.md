@@ -198,7 +198,7 @@ model = "cursor:default"                             # "default"는 Auto의 wire
 provider = "cursor"
 ```
 
-`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 프리픽스는 Cursor의 에이전트 모드(Agent / Plan / Ask)를 선택하며, 접미사는 Cursor의 **wire** 모델 id입니다(Auto는 `auto`가 아니라 `default`입니다). 어댑터는 어시스턴트 텍스트와 추론을 스트리밍하고, 클라이언트의 도구를 네이티브 Cursor MCP 도구 호출로 브리지하며, 인라인 이미지를 전달합니다(issue #170). 자세한 내용은 [프로바이더 → Cursor](https://shunt.dev/ko/providers/cursor/)를 참고하세요.
+`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 프리픽스는 Cursor의 에이전트 모드(Agent / Plan / Ask)를 선택하며, 접미사는 Cursor의 **wire** 모델 id입니다(Auto는 `auto`가 아니라 `default`입니다). 단, Cursor의 `composer-2.5-fast` 선택기 별칭은 예외로, shunt는 `composer-2.5` wire id와 `fast=true` 모델 메타데이터를 전송합니다. 어댑터는 어시스턴트 텍스트와 추론을 스트리밍하고, 클라이언트의 도구를 네이티브 Cursor MCP 도구 호출로 브리지하며, 인라인 이미지를 전달합니다(issue #170). 자세한 내용은 [프로바이더 → Cursor](https://shunt.dev/ko/providers/cursor/)를 참고하세요.
 
 **Anthropic 호환 백엔드**라면 무엇이든 테이블 하나만 추가하면 됩니다. 코드 변경은 없습니다.
 

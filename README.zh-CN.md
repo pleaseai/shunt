@@ -196,7 +196,7 @@ model = "cursor:default"                             # "default" 是 Auto 的 wi
 provider = "cursor"
 ```
 
-`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 前缀用于选择 Cursor 的 agent 模式(Agent / Plan / Ask);后缀是 Cursor 的 **wire** 模型 id(Auto 是 `default`,不是 `auto`)。该适配器会流式传输助手文本和推理内容,把你客户端的工具桥接为原生 Cursor MCP 工具调用,并转发内联图片(issue #170)。详情见 [提供方 → Cursor](https://shunt.dev/zh-cn/providers/cursor/)。
+`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 前缀用于选择 Cursor 的 agent 模式(Agent / Plan / Ask);后缀是 Cursor 的 **wire** 模型 id(Auto 是 `default`,不是 `auto`)。Cursor 模型选择器中的 `composer-2.5-fast` 别名是个例外:shunt 会发送 `composer-2.5` wire id 和 `fast=true` 模型元数据。该适配器会流式传输助手文本和推理内容,把你客户端的工具桥接为原生 Cursor MCP 工具调用,并转发内联图片(issue #170)。详情见 [提供方 → Cursor](https://shunt.dev/zh-cn/providers/cursor/)。
 
 **任何兼容 Anthropic 的后端**只需一个表即可接入 —— 无需改动代码:
 

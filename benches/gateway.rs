@@ -122,6 +122,7 @@ fn cursor_run_params(prompt_bytes: usize, tool_count: usize) -> AgentRunParams {
     AgentRunParams {
         prompt: "p".repeat(prompt_bytes),
         model_id: "claude-sonnet-4-5".to_string(),
+        fast: false,
         cwd: "/workspace/project".to_string(),
         mode: 1,
         images: Vec::new(),
