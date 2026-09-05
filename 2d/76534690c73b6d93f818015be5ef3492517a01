@@ -1,0 +1,19 @@
+src/adapters/antigravity/mod.rs
+  s_188bd990f53bc9::t_bcc23e35ebf77a 924,1039,1052
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2d76534690c73b6d93f818015be5ef3492517a01",
+  "prompts": {},
+  "sessions": {
+    "s_188bd990f53bc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "10fc8320-7223-41c8-bafb-5822ba05c800",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
