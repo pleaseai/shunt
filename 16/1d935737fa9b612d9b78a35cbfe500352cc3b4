@@ -1,0 +1,21 @@
+docs/running.md
+  s_a725e6e5f664a6::t_1b9c516137224e 798-799
+docs/codex-configuration.md
+  s_a725e6e5f664a6::t_1b9c516137224e 271-272
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "161d935737fa9b612d9b78a35cbfe500352cc3b4",
+  "prompts": {},
+  "sessions": {
+    "s_a725e6e5f664a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2b9374b9-7135-4a54-9f21-e0e7ac1f6738",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
