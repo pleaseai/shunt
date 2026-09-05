@@ -300,17 +300,26 @@ fn test_other_failures_after_text_still_fail_the_turn() {
 /// would report an empty turn as a success.
 #[test]
 fn test_undelivered_handoff_without_text_still_fails() {
-    let mut t = Translator::new("gemini", "msg_test");
-    t.on_line(
-        r#"{"event":"result","result":{"status":"ERROR","response":"","error":"recipient \"team-lead\" not found"}}"#,
-    );
+    for streamed in [None, Some("\n  \n")] {
+        let mut t = Translator::new("gemini", "msg_test");
+        if let Some(whitespace) = streamed {
+            t.on_line(&format!(
+                r#"{{"event":"step_update","step_update":{{"step_type":"agent_response","text_delta":{}}}}}"#,
+                serde_json::to_string(whitespace).unwrap()
+            ));
+        }
+        t.on_line(
+            r#"{"event":"result","result":{"status":"ERROR","response":"","error":"recipient \"team-lead\" not found"}}"#,
+        );
 
-    assert_eq!(
-        t.end(),
-        Some(&AgyEnd::Failed(
-            "recipient \"team-lead\" not found".to_string()
-        ))
-    );
+        assert_eq!(
+            t.end(),
+            Some(&AgyEnd::Failed(
+                "recipient \"team-lead\" not found".to_string()
+            )),
+            "streamed: {streamed:?}"
+        );
+    }
 }
 
 #[test]

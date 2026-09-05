@@ -247,10 +247,10 @@ impl Translator {
                     // An undelivered handoff is bookkeeping that failed after
                     // the reply itself was streamed, so failing the turn would
                     // report a complete answer as a server error. Text is
-                    // required: with nothing streamed the reply only ever
-                    // existed inside the message that could not be delivered,
-                    // and the run genuinely produced nothing.
-                    if self.text.is_empty() || !is_undelivered_handoff(&message) {
+                    // required: with nothing but whitespace streamed the reply
+                    // only ever existed inside the message that could not be
+                    // delivered, and the run genuinely produced nothing.
+                    if self.text.trim().is_empty() || !is_undelivered_handoff(&message) {
                         self.end = Some(AgyEnd::Failed(message));
                         return String::new();
                     }

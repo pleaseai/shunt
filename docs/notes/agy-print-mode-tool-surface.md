@@ -47,7 +47,7 @@ curl -sN -X POST http://localhost:3001/v1/messages \
 
 `Translator::on_line` (`src/adapters/antigravity/stream.rs`) treats a non-`SUCCESS`
 terminal result as `AgyEnd::Success` when the error has the
-`recipient "<name>" not found` shape **and** assistant text was already
+`recipient "<name>" not found` shape **and** non-whitespace assistant text was already
 streamed. Everything else keeps failing the turn.
 
 Both conditions matter:
