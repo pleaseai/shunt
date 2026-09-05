@@ -143,7 +143,7 @@ impl Adapter for AntigravityAdapter {
             }
             let workspace = resolve_workspace(request, &roots)?;
 
-            let matrix = models::effort_matrix(&agy_bin).await;
+            let matrix = models::effort_matrix(&agy_bin, &route.upstream_model).await;
             let effort = match models::resolve_effort(
                 &matrix,
                 &route.upstream_model,
