@@ -795,10 +795,10 @@ an accurate window, one model at a time. (Subagents are a separate path — see 
 > `gpt-5.2-codex`) — it only accepts the account's live-entitled slugs. The authoritative catalog
 > of Codex slugs (and the reasoning levels each accepts) is openai/codex's
 > [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-> The current listed slugs are **`gpt-5.6-sol`**, **`gpt-5.6-terra`**, **`gpt-5.6-luna`** (latest,
-> frontier), and **`gpt-5.5`** / **`gpt-5.4`** / **`gpt-5.4-mini`** / **`gpt-5.2`**; older accounts
-> may only be entitled to the earlier ones. Use `upstream_model` in a route, or pass an entitled
-> slug via `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
+> The current listed slugs are **`gpt-6-astra`**, **`gpt-5.6-sol`**, **`gpt-5.6-terra`**,
+> **`gpt-5.6-luna`** (latest, frontier), and **`gpt-5.5`** / **`gpt-5.4`** / **`gpt-5.4-mini`** /
+> **`gpt-5.2`**; older accounts may only be entitled to the earlier ones. Use `upstream_model` in
+> a route, or pass an entitled slug via `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
 
 > **Client-version gating:** some slugs additionally carry a `minimal_client_version` (e.g.
 > `gpt-6-astra` requires ≥ 0.153.0) and the backend answers **`Model not found <slug>`** — not
@@ -925,9 +925,9 @@ it to the Responses `reasoning.effort` for mapped models:
 Which reasoning levels a Codex slug accepts is listed per-model in openai/codex's
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)
 (`supported_reasoning_levels`): `gpt-5.6-sol`/`-terra`/`-luna` and the gpt-6 slugs (e.g.
-`gpt-6-astra`) accept up to `max` (sol/terra even `ultra`, which Claude Code never sends), while
-`gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds `max → xhigh` only for slugs that don't
-support it.
+`gpt-6-astra`) accept up to `max` — `sol`/`terra`/`astra` even `ultra`, which Claude Code never
+sends and `gpt-5.6-luna` does not list — while `gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds
+`max → xhigh` only for slugs that don't support it.
 
 **A custom gateway id like `gpt-5.6-sol` carries effort on its own.** Verified on the wire against Claude Code v2.1.224: the request already
 includes `output_config.effort` with `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` unset, and setting it to `1`

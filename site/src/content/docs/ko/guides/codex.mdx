@@ -109,7 +109,7 @@ provider = "codex"
 
 <Aside type="caution" title="모델 슬러그 — `-codex` 금지">
 
-ChatGPT 계정 백엔드는 `gpt-*-codex` 슬러그(예: `gpt-5.2-codex`)를 `400`으로 **거부**합니다. 계정에 **실시간으로 부여된** 슬러그만 받아들입니다. 권위 있는 카탈로그(및 각 슬러그가 받아들이는 추론 레벨)는 openai/codex의 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)입니다. 현재 슬러그: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`(프런티어)와 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`. 오래된 계정은 이전 슬러그만 부여받았을 수 있습니다(무료 계정은 `gpt-5.5`로 해석된 바 있습니다). shunt는 백엔드 자체의 오류 `detail`을 노출하므로, 잘못된 슬러그는 실제 이유를 반환합니다.
+ChatGPT 계정 백엔드는 `gpt-*-codex` 슬러그(예: `gpt-5.2-codex`)를 `400`으로 **거부**합니다. 계정에 **실시간으로 부여된** 슬러그만 받아들입니다. 권위 있는 카탈로그(및 각 슬러그가 받아들이는 추론 레벨)는 openai/codex의 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)입니다. 현재 슬러그: `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`(프런티어)와 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`. 오래된 계정은 이전 슬러그만 부여받았을 수 있습니다(무료 계정은 `gpt-5.5`로 해석된 바 있습니다). shunt는 백엔드 자체의 오류 `detail`을 노출하므로, 잘못된 슬러그는 실제 이유를 반환합니다.
 
 </Aside>
 

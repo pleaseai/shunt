@@ -268,10 +268,10 @@ to**, and **rejects the `gpt-*-codex` slugs** (e.g. `gpt-5.2-codex`) with a `400
 
 - The authoritative catalog of Codex slugs (and the reasoning levels each accepts) is openai/codex's
   [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-- Current listed slugs: **`gpt-5.6-sol`**, **`gpt-5.6-terra`**, **`gpt-5.6-luna`** (latest,
-  frontier), and **`gpt-5.5`** / **`gpt-5.4`** / **`gpt-5.4-mini`** / **`gpt-5.2`**. Older
-  accounts may only be entitled to the earlier ones; a **free** account has resolved to `gpt-5.5`
-  in testing.
+- Current listed slugs: **`gpt-6-astra`**, **`gpt-5.6-sol`**, **`gpt-5.6-terra`**,
+  **`gpt-5.6-luna`** (latest, frontier), and **`gpt-5.5`** / **`gpt-5.4`** / **`gpt-5.4-mini`** /
+  **`gpt-5.2`**. Older accounts may only be entitled to the earlier ones; a **free** account has
+  resolved to `gpt-5.5` in testing.
 - To see what your account can use, look at what the `codex` CLI itself sends, or the live
   `/models` fetch it performs at startup.
 
