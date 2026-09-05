@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.1](https://github.com/pleaseai/shunt/compare/v0.41.0...v0.41.1) (2026-09-05)
+
+
+### Bug Fixes
+
+* **antigravity:** keep an undelivered agy handoff from failing a completed turn ([#414](https://github.com/pleaseai/shunt/issues/414)) ([07ac6d4](https://github.com/pleaseai/shunt/commit/07ac6d4605fbe0953fc7a89fb23b74b85c728abc))
+
 ## [0.41.0](https://github.com/pleaseai/shunt/compare/v0.40.2...v0.41.0) (2026-09-05)
 
 
