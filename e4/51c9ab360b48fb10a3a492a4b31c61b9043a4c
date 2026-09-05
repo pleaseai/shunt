@@ -1,0 +1,23 @@
+docs/init-command.md
+  s_f8d17da7b2b9eb::t_36b71a40f0617d 9
+docs/upstreams-failover.md
+  s_f8d17da7b2b9eb::t_36b71a40f0617d 46-47
+  s_f8d17da7b2b9eb::t_654ad292d190f9 60-61
+  s_f8d17da7b2b9eb::t_c94b8d1eaa9d19 59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e451c9ab360b48fb10a3a492a4b31c61b9043a4c",
+  "prompts": {},
+  "sessions": {
+    "s_f8d17da7b2b9eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b606f05e-f17a-4d0c-92d0-f649fa92e279",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
