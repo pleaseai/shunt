@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.2](https://github.com/pleaseai/shunt/compare/v0.41.1...v0.41.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* **gateway:** allow the device page's SSO form to redirect to the identity provider ([#473](https://github.com/pleaseai/shunt/issues/473)) ([0890922](https://github.com/pleaseai/shunt/commit/08909221a7004373911827636519edcce157d385))
+
 ## [0.41.1](https://github.com/pleaseai/shunt/compare/v0.41.0...v0.41.1) (2026-09-07)
 
 
