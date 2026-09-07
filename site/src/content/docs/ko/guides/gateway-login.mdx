@@ -106,7 +106,7 @@ Claude Code를 시작하고 `/login`을 실행하세요. CLI가 디바이스 코
 2. SSO 버튼(Google은 **Sign in with Google**, 그 외 프로바이더는 **Sign in with SSO**)을 선택한 뒤 프로바이더 로그인을 마칩니다. 정적 사용자도 함께 구성되어 있다면, 이메일과 시크릿을 입력하고 **Approve device**를 선택하는 방법도 계속 사용할 수 있습니다.
 3. 성공 페이지가 나타나면 Claude Code로 돌아갑니다.
 
-코드를 미리 채워 넣어도 자동 승인되지는 않습니다. 비밀번호 승인 POST는 same-origin으로 보호됩니다. 외부 callback은 대신 일회용 10분짜리 OAuth state와 PKCE로 교차 사이트 리디렉션을 바인딩하며, 프로바이더 오류가 페이지에 그대로 출력되는 일은 없습니다.
+코드를 미리 채워 넣어도 자동 승인되지는 않습니다. 비밀번호 승인 POST는 same-origin으로 보호됩니다. 게이트웨이는 브라우저의 `Sec-Fetch-Site: same-origin` Fetch Metadata 신호를 신뢰하는데, 페이지의 `Referrer-Policy: no-referrer` 때문에 브라우저가 자기 폼 제출에도 `Origin: null`을 보내기 때문입니다. 따라서 `Sec-Fetch-*` 헤더를 제거하는 리버스 프록시를 거치면 모든 승인이 "This request came from another site and was blocked."로 차단됩니다. 외부 callback은 대신 일회용 10분짜리 OAuth state와 PKCE로 교차 사이트 리디렉션을 바인딩하며, 프로바이더 오류가 페이지에 그대로 출력되는 일은 없습니다.
 
 ## 터미널에서 로그인하기
 

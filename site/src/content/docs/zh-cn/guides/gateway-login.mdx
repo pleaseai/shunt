@@ -100,7 +100,7 @@ Google 使用默认的 `openid email profile` scope。shunt 要求 Google UserIn
 2. 选择 SSO 按钮(Google 为 **Sign in with Google**,其他提供方为 **Sign in with SSO**),然后完成提供方登录。如果同时配置了静态用户,输入 email 与 secret 并选择 **Approve device** 的方式依然可用。
 3. 出现成功页面后返回 Claude Code。
 
-预填设备码绝不会自动批准它。密码批准的 POST 受同源保护。而外部 callback 则用一次性、十分钟有效的 OAuth state 与 PKCE 绑定这次跨站重定向;提供方的错误绝不会被回显到页面上。
+预填设备码绝不会自动批准它。密码批准的 POST 受同源保护：网关信任浏览器的 `Sec-Fetch-Site: same-origin` Fetch Metadata 信号，因为页面的 `Referrer-Policy: no-referrer` 使浏览器在提交自己的表单时也发送 `Origin: null`。因此，经过会剥离 `Sec-Fetch-*` 头的反向代理时，所有批准都会被 "This request came from another site and was blocked." 拒绝。而外部 callback 则用一次性、十分钟有效的 OAuth state 与 PKCE 绑定这次跨站重定向;提供方的错误绝不会被回显到页面上。
 
 ## 改用终端登录
 

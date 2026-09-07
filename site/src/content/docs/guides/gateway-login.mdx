@@ -106,7 +106,7 @@ Start Claude Code and run `/login`. The CLI shows a device code and opens the ga
 2. Select the SSO button (**Sign in with Google** for Google, **Sign in with SSO** for other providers), then finish the provider login. If static users are also configured, entering an email and secret and selecting **Approve device** remains available.
 3. Return to Claude Code after the success page appears.
 
-Pre-filling the code never auto-approves it. The password approval POST is same-origin protected. The external callback instead binds the cross-site redirect with a single-use, ten-minute OAuth state and PKCE; provider errors are never echoed into the page.
+Pre-filling the code never auto-approves it. The password approval POST is same-origin protected: the gateway trusts the browser's `Sec-Fetch-Site: same-origin` Fetch Metadata signal, because the page's `Referrer-Policy: no-referrer` makes the browser send `Origin: null` on its own form submission. A reverse proxy that strips `Sec-Fetch-*` headers therefore blocks every approval with "This request came from another site and was blocked.". The external callback instead binds the cross-site redirect with a single-use, ten-minute OAuth state and PKCE; provider errors are never echoed into the page.
 
 ## Sign in from the terminal instead
 
