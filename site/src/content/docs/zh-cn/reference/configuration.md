@@ -119,6 +119,8 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | `model` | 是 | 客户端或 upstream 模型 id,匹配时不区分大小写 |
 | `input`、`output`、`cache_read`、`cache_write` | 是 | 每百万 token 的 USD,各自最小 `0.001` |
 
+费率以每 token 的整数 femto-USD(1e-15 USD)存储。这两个下限的乘积恰好是每 token 1 femto-USD,即计量器能表示的最小非零费率;任何一项低于下限都会被量化为 `0`,看起来像有效折扣,实际却把请求计价为 0。
+
 ```toml
 [server.spend.pricing]
 multiplier = 0.85
@@ -132,7 +134,9 @@ cache_read = 0.33
 cache_write = 4.125
 ```
 
-超出范围的 multiplier、缺失或超出范围的费率、空的 `upstream`、指向未配置 upstream 的 `upstream`,以及在同一个 upstream 上为同一模型配置的两行,都会导致启动时校验失败。两行冲突的判定依据是指向同一个模型,而非字符串相同:`claude-sonnet-4-6` 与 `claude-sonnet-4-6-20260217` 是同一个模型。若 `model` 既不是内置模型,也不是任何 `[[models]]`、`[[routes]]` 条目能够请求的模型,则只记录警告。
+超出范围的 multiplier、缺失或超出范围的费率、空的 `upstream`、指向未配置 upstream 的 `upstream`,以及在同一个 upstream 上为同一模型配置的两行,都会导致启动时校验失败。两行冲突的判定依据是指向同一个模型,而非字符串相同:`claude-sonnet-4-6` 与 `claude-sonnet-4-6-20260217` 是同一个模型。若 `model` 既不是内置模型,也不是**在该行自己的 `upstream` 上**任何 `[[models]]`、`[[routes]]`、`[[route_prefixes]]` 条目能够请求的模型,则只记录警告。该检查按 upstream 进行,并涵盖前缀路由:仅作为其他 upstream 的 `upstream_model` 映射的模型仍会告警,而由该行 upstream 上的 `[[route_prefixes]]` 条目提供的模型则不会。
+
+模型 id 在匹配前会被规范化:Claude Code 的 `[1m]` 上下文窗口提示、Bedrock 区域前缀与 `anthropic.` 命名空间、Bedrock 的 `-v<major>:<minor>` 版本后缀、日期快照后缀(`-20260217`、`@20251101`),以及 OpenRouter / Vercel AI Gateway 形式——后者会去掉 `anthropic/` 命名空间并把点号版本改为连字符,因此 `anthropic/claude-opus-4.8` 按 `claude-opus-4-8` 计价;而 `~anthropic/claude-sonnet-latest` 这类浮动别名未指定版本,仍无法计价。
 
 费率按 upstream 逐一匹配,从最具体的开始:匹配 upstream 模型 id 的 override,其次是匹配客户端模型 id 的 override,再次是以其他 id(日期快照、Bedrock id)指向同一内置模型的 override,然后是 upstream 模型的内置标价(不使用客户端模型的标价,因此把内置客户端 id 重映射到非 Anthropic 的 upstream 模型时不会按 Anthropic 费率计费),最后是无 — 该请求无法计价。服务端网页搜索按请求计费(`$0.01`)而非按 token,因此只有 multiplier 生效。所有金额均为 USD **估算值**,由上报的 token 数按公开标价计算得出,不会与账单精确到分。
 

@@ -180,6 +180,8 @@ Each `[[server.spend.pricing.overrides]]` row replaces the list price for one mo
 | `model` | yes | Client or upstream model id, matched case-insensitively |
 | `input`, `output`, `cache_read`, `cache_write` | yes | USD per million tokens, each at least `0.001` |
 
+Rates are stored as whole femto-USD (1e-15 USD) per token. The two floors are set so their product is exactly 1 femto-USD per token, the smallest nonzero rate the meter can carry; anything below either floor would quantize to `0` and price requests at nothing while looking like a valid discount.
+
 ```toml
 [server.spend.pricing]
 multiplier = 0.85
@@ -193,7 +195,9 @@ cache_read = 0.33
 cache_write = 4.125
 ```
 
-An out-of-range multiplier, a missing or out-of-range rate, a blank `upstream`, an `upstream` naming no configured upstream, and two rows pricing the same model on one upstream all fail validation at boot. Two rows collide when they name the same model, not merely the same string: `claude-sonnet-4-6` and `claude-sonnet-4-6-20260217` are one model. A `model` that is neither a built-in nor a model any `[[models]]` or `[[routes]]` entry can request logs a warning instead.
+An out-of-range multiplier, a missing or out-of-range rate, a blank `upstream`, an `upstream` naming no configured upstream, and two rows pricing the same model on one upstream all fail validation at boot. Two rows collide when they name the same model, not merely the same string: `claude-sonnet-4-6` and `claude-sonnet-4-6-20260217` are one model. A `model` that is neither a built-in nor a model any `[[models]]`, `[[routes]]`, or `[[route_prefixes]]` entry can request **on that row's own `upstream`** logs a warning instead: the check is per upstream and covers prefix routes, so a model mapped only as another upstream's `upstream_model` still warns, while one served by a `[[route_prefixes]]` entry on the row's upstream does not.
+
+Model ids are normalized before matching: Claude Code's `[1m]` context-window hint, a Bedrock region prefix and `anthropic.` namespace, a Bedrock `-v<major>:<minor>` version suffix, a dated snapshot suffix (`-20260217`, `@20251101`), and the OpenRouter / Vercel AI Gateway form — the `anthropic/` namespace is stripped and the dotted version hyphenated, so `anthropic/claude-opus-4.8` prices as `claude-opus-4-8`, while a floating alias such as `~anthropic/claude-sonnet-latest` names no version and stays unpriceable.
 
 Rates are matched most-specific-first for one upstream: an override matching the upstream model id, then one matching the client model id, then one naming the same built-in by a different id (a dated snapshot, a Bedrock id), then the built-in list price of the upstream model (never of the client model, so a built-in client id remapped to a non-Anthropic upstream model is not billed at Anthropic rates), then nothing — an unpriceable request. Server-side web search is priced per request (`$0.01`), so only the multiplier applies. All amounts are USD **estimates** computed from reported token counts against published list prices; they will not reconcile to the cent with a provider invoice.
 

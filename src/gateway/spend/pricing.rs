@@ -6,19 +6,28 @@
 //! meter that will is not implemented (see `docs/gateway-spend-limits.md`) —
 //! so this module owns no state and reads no request.
 //!
-//! Money is carried as **nano-USD** (1e-9 USD) in `u64` rather than as a float:
-//! rates are multiplied by token counts and summed across many requests, and a
-//! float accumulator would drift against the whole-cent caps the spend API
-//! stores. A rate is nano-USD *per token*, i.e. USD-per-million × 1000.
+//! Money is carried as **femto-USD** (1e-15 USD) in `u64` rather than as a
+//! float: rates are multiplied by token counts and summed across many requests,
+//! and a float accumulator would drift against the whole-cent caps the spend API
+//! stores. A rate is femto-USD *per token*, i.e. USD-per-million × 1e9.
+//!
+//! The unit has to be this fine because both configured floors apply at once:
+//! [`MIN_USD_PER_MILLION`] × [`MIN_MULTIPLIER`] is exactly 1 femto-USD per
+//! token, the smallest nonzero rate the type can carry. A coarser unit —
+//! nano-USD, say — quantizes that combination to zero, so a config stating a
+//! positive discount on a positive rate would price every request at $0. The
+//! headroom at the other end is ample: `u64::MAX` femto-USD is about $18,446,
+//! both per token and per request, far above any rate or request cost that
+//! exists.
 
 pub mod catalog;
 
 use crate::config::{PricingConfig, PricingOverride};
 
 use catalog::builtin_row;
-pub use catalog::{canonical_builtin_id, LIST_PRICES, WEB_SEARCH_LIST_PRICE_NANO_USD};
+pub use catalog::{canonical_builtin_id, LIST_PRICES, WEB_SEARCH_LIST_PRICE_FEMTO_USD};
 
-/// One model's four rates, in nano-USD per token.
+/// One model's four rates, in femto-USD per token.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Rates {
     pub input: u64,
@@ -48,29 +57,34 @@ impl Rates {
         cache_write: f64,
     ) -> Self {
         Self {
-            input: nano_usd_per_token(input),
-            output: nano_usd_per_token(output),
-            cache_read: nano_usd_per_token(cache_read),
-            cache_write: nano_usd_per_token(cache_write),
+            input: femto_usd_per_token(input),
+            output: femto_usd_per_token(output),
+            cache_read: femto_usd_per_token(cache_read),
+            cache_write: femto_usd_per_token(cache_write),
         }
     }
 
-    /// Total cost of `usage` in nano-USD, saturating at `u64::MAX`.
-    pub fn cost_nano_usd(&self, usage: &Usage) -> u64 {
-        let total = u128::from(self.input) * u128::from(usage.input_tokens)
-            + u128::from(self.output) * u128::from(usage.output_tokens)
-            + u128::from(self.cache_read) * u128::from(usage.cache_read_input_tokens)
-            + u128::from(self.cache_write) * u128::from(usage.cache_creation_input_tokens);
+    /// Total cost of `usage` in femto-USD, saturating at `u64::MAX`.
+    ///
+    /// Each product fits `u128`, but four of them summed do not, so the sum
+    /// saturates too: `u64::MAX * u64::MAX` is already most of the `u128` range.
+    pub fn cost_femto_usd(&self, usage: &Usage) -> u64 {
+        let total = (u128::from(self.input) * u128::from(usage.input_tokens))
+            .saturating_add(u128::from(self.output) * u128::from(usage.output_tokens))
+            .saturating_add(u128::from(self.cache_read) * u128::from(usage.cache_read_input_tokens))
+            .saturating_add(
+                u128::from(self.cache_write) * u128::from(usage.cache_creation_input_tokens),
+            );
         u64::try_from(total).unwrap_or(u64::MAX)
     }
 
     /// Every rate scaled by `ppm` parts per million, rounding down.
     pub fn scaled(&self, ppm: u32) -> Self {
         Self {
-            input: scale_nano_usd(self.input, ppm),
-            output: scale_nano_usd(self.output, ppm),
-            cache_read: scale_nano_usd(self.cache_read, ppm),
-            cache_write: scale_nano_usd(self.cache_write, ppm),
+            input: scale_femto_usd(self.input, ppm),
+            output: scale_femto_usd(self.output, ppm),
+            cache_read: scale_femto_usd(self.cache_read, ppm),
+            cache_write: scale_femto_usd(self.cache_write, ppm),
         }
     }
 }
@@ -140,10 +154,10 @@ impl PriceTable {
         Some(rates.scaled(self.multiplier_ppm))
     }
 
-    /// The cost of one server-side web search, in nano-USD. Priced per request
+    /// The cost of one server-side web search, in femto-USD. Priced per request
     /// rather than per token, so only the multiplier applies.
-    pub fn web_search_cost_nano_usd(&self) -> u64 {
-        scale_nano_usd(WEB_SEARCH_LIST_PRICE_NANO_USD, self.multiplier_ppm)
+    pub fn web_search_cost_femto_usd(&self) -> u64 {
+        scale_femto_usd(WEB_SEARCH_LIST_PRICE_FEMTO_USD, self.multiplier_ppm)
     }
 
     fn literal_override(&self, upstream: &str, model: &str) -> Option<Rates> {
@@ -167,7 +181,11 @@ const ONE_MILLION: u32 = 1_000_000;
 fn resolve_override(row: &PricingOverride) -> Override {
     Override {
         upstream: row.upstream.clone(),
-        model: row.model.trim().to_string(),
+        // The stored key must be normalized exactly as `literal_override`
+        // normalizes the request's model, or a row whose `model` carries the
+        // `[1m]` context-window hint could never match: the lookup strips the
+        // hint from the request and the stored key would still carry it.
+        model: crate::routing::strip_context_window_hint(row.model.trim()).to_string(),
         canonical: canonical_builtin_id(&row.model),
         rates: Rates::from_usd_per_million(row.input, row.output, row.cache_read, row.cache_write),
     }
@@ -178,10 +196,17 @@ fn list_price(row: &'static (&'static str, f64, f64, f64, f64)) -> Rates {
     Rates::from_usd_per_million(*input, *output, *cache_read, *cache_write)
 }
 
-/// The smallest multiplier that does not round every rate to zero, and the
-/// smallest USD-per-million rate that does not quantize to zero nano-USD per
-/// token. `Config::validate_pricing` rejects anything below these so a positive
-/// number in the config can never silently price requests at $0.
+/// The smallest multiplier the parts-per-million scale can carry, and the
+/// smallest USD-per-million rate the config accepts.
+/// `Config::validate_pricing` rejects anything below these so a positive number
+/// in the config can never silently price requests at $0.
+///
+/// They remain the right floors under the femto-USD unit because they are the
+/// floors that unit was chosen for: `MIN_USD_PER_MILLION` is 1e6 femto-USD per
+/// token, and scaling that by `MIN_MULTIPLIER` (1 part per million) leaves
+/// exactly 1 femto-USD per token — the smallest representable nonzero rate.
+/// Both floors can therefore be taken at once and the resolved rate is still
+/// positive.
 pub const MIN_MULTIPLIER: f64 = 1.0 / ONE_MILLION as f64;
 pub const MIN_USD_PER_MILLION: f64 = 0.001;
 
@@ -192,21 +217,24 @@ fn multiplier_ppm(multiplier: f64) -> u32 {
     (multiplier * f64::from(ONE_MILLION)).round() as u32
 }
 
-fn nano_usd_per_token(usd_per_million: f64) -> u64 {
+fn femto_usd_per_token(usd_per_million: f64) -> u64 {
     if !usd_per_million.is_finite() || usd_per_million <= 0.0 {
         return 0;
     }
-    (usd_per_million * 1_000.0).round() as u64
+    (usd_per_million * 1_000_000_000.0).round() as u64
 }
 
-fn scale_nano_usd(value: u64, ppm: u32) -> u64 {
+fn scale_femto_usd(value: u64, ppm: u32) -> u64 {
     let scaled = u128::from(value) * u128::from(ppm) / u128::from(ONE_MILLION);
     u64::try_from(scaled).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PriceTable, Rates, Usage, WEB_SEARCH_LIST_PRICE_NANO_USD};
+    use super::{
+        PriceTable, Rates, Usage, LIST_PRICES, MIN_MULTIPLIER, MIN_USD_PER_MILLION,
+        WEB_SEARCH_LIST_PRICE_FEMTO_USD,
+    };
     use crate::config::{PricingConfig, PricingOverride};
 
     fn override_row(upstream: &str, model: &str, input: f64) -> PricingOverride {
@@ -262,26 +290,26 @@ mod tests {
         let rates = table
             .resolve("bedrock-eu", "sonnet-alias", ARN)
             .expect("an override matches the upstream model");
-        assert_eq!(rates.input, 3_000);
+        assert_eq!(rates.input, 3_000_000_000);
 
         // Client-model literal match beats the canonical match.
         let rates = table
             .resolve("bedrock-eu", "sonnet-alias", "claude-sonnet-4-6-20260217")
             .expect("an override matches the client model");
-        assert_eq!(rates.input, 2_000);
+        assert_eq!(rates.input, 2_000_000_000);
 
         // Neither literal matches: the dated snapshot is the same built-in.
         let rates = table
             .resolve("bedrock-eu", "unknown-alias", "claude-sonnet-4-6-20260217")
             .expect("an override matches the canonical built-in");
-        assert_eq!(rates.input, 1_000);
+        assert_eq!(rates.input, 1_000_000_000);
 
         // A different upstream sees none of those rows, only the list price.
         let rates = table
             .resolve("bedrock-us", "sonnet-alias", "claude-sonnet-4-6")
             .expect("the list price prices a built-in");
-        assert_eq!(rates.input, 3_000);
-        assert_eq!(rates.output, 15_000);
+        assert_eq!(rates.input, 3_000_000_000);
+        assert_eq!(rates.output, 15_000_000_000);
     }
 
     /// A built-in client id remapped to a non-Anthropic upstream model must
@@ -295,6 +323,24 @@ mod tests {
             .is_some());
     }
 
+    /// The lookup strips Claude Code's `[1m]` hint from the request's model, so
+    /// a row that spells its `model` with the hint has to be stored stripped
+    /// too — otherwise it can never match anything.
+    #[test]
+    fn override_model_carrying_the_context_window_hint_still_matches() {
+        let pricing = PricingConfig {
+            multiplier: 1.0,
+            overrides: vec![override_row("bedrock-eu", " custom[1m] ", 6.0)],
+        };
+        let table = PriceTable::from_config(Some(&pricing));
+        for model in ["custom", "custom[1m]", "CUSTOM[1M]"] {
+            let rates = table
+                .resolve("bedrock-eu", model, "unknown")
+                .unwrap_or_else(|| panic!("the override matches {model}"));
+            assert_eq!(rates.input, 6_000_000_000);
+        }
+    }
+
     #[test]
     fn override_and_model_matching_are_case_insensitive() {
         let pricing = PricingConfig {
@@ -306,12 +352,12 @@ mod tests {
         let rates = table
             .resolve("bedrock-eu", "SONNET-alias", "unknown")
             .expect("the override matches regardless of case");
-        assert_eq!(rates.input, 4_000);
+        assert_eq!(rates.input, 4_000_000_000);
 
         let rates = table
             .resolve("bedrock-us", "haiku", "CLAUDE-Haiku-4-5")
             .expect("the list price matches regardless of case");
-        assert_eq!(rates.input, 1_000);
+        assert_eq!(rates.input, 1_000_000_000);
     }
 
     #[test]
@@ -325,20 +371,20 @@ mod tests {
         let list = table
             .resolve("bedrock-us", "claude-opus-4-1", "claude-opus-4-1")
             .expect("built-in");
-        assert_eq!(list.input, 12_750); // 15 USD/M -> 15_000 nano -> x0.85
-        assert_eq!(list.output, 63_750);
+        assert_eq!(list.input, 12_750_000_000); // 15 USD/M -> 15e9 femto -> x0.85
+        assert_eq!(list.output, 63_750_000_000);
 
         let overridden = table
             .resolve("bedrock-eu", "claude-opus-4-1", "claude-opus-4-1")
             .expect("override");
-        assert_eq!(overridden.input, 8_500); // 10 USD/M -> 10_000 nano -> x0.85
+        assert_eq!(overridden.input, 8_500_000_000); // 10 USD/M -> 10e9 femto -> x0.85
 
-        assert_eq!(table.web_search_cost_nano_usd(), 8_500_000);
+        assert_eq!(table.web_search_cost_femto_usd(), 8_500_000_000_000);
 
         let unscaled = PriceTable::from_config(None);
         assert_eq!(
-            unscaled.web_search_cost_nano_usd(),
-            WEB_SEARCH_LIST_PRICE_NANO_USD
+            unscaled.web_search_cost_femto_usd(),
+            WEB_SEARCH_LIST_PRICE_FEMTO_USD
         );
     }
 
@@ -368,19 +414,86 @@ mod tests {
             cache_read_input_tokens: 10_000,
             cache_creation_input_tokens: 500,
         };
-        // 1000*3000 + 200*15000 + 10000*300 + 500*3750 = 10_875_000 nano-USD
-        assert_eq!(rates.cost_nano_usd(&usage), 10_875_000);
+        // (1000*3 + 200*15 + 10000*0.3 + 500*3.75) USD/M -> 10_875e9 femto-USD
+        assert_eq!(rates.cost_femto_usd(&usage), 10_875_000_000_000);
 
+        // Every class at its maximum: each product alone nearly fills `u128`,
+        // so the four summed overflow it. The sum must saturate rather than
+        // panic on the debug build CI runs.
         let huge = Rates {
             input: u64::MAX,
-            ..Rates::default()
+            output: u64::MAX,
+            cache_read: u64::MAX,
+            cache_write: u64::MAX,
         };
         assert_eq!(
-            huge.cost_nano_usd(&Usage {
-                input_tokens: 2,
-                ..Usage::default()
+            huge.cost_femto_usd(&Usage {
+                input_tokens: u64::MAX,
+                output_tokens: u64::MAX,
+                cache_read_input_tokens: u64::MAX,
+                cache_creation_input_tokens: u64::MAX,
             }),
             u64::MAX
         );
+    }
+
+    /// The two floors `Config::validate_pricing` enforces are the reason money
+    /// is carried in femto-USD: taken together they must still leave a positive
+    /// rate. Under a coarser unit the smallest catalog rate at the smallest
+    /// multiplier, and an override at the rate floor under any discount, both
+    /// quantize to zero — a config that reads as a valid discount pricing every
+    /// request at $0.
+    #[test]
+    fn the_configured_floors_never_resolve_to_a_zero_rate() {
+        let table = PriceTable::from_config(Some(&PricingConfig {
+            multiplier: MIN_MULTIPLIER,
+            overrides: Vec::new(),
+        }));
+        for (id, ..) in LIST_PRICES {
+            let rates = table
+                .resolve("anthropic", id, id)
+                .unwrap_or_else(|| panic!("{id} is a built-in"));
+            for (class, rate) in [
+                ("input", rates.input),
+                ("output", rates.output),
+                ("cache_read", rates.cache_read),
+                ("cache_write", rates.cache_write),
+            ] {
+                assert!(
+                    rate > 0,
+                    "{id} {class} priced at zero at the min multiplier"
+                );
+            }
+        }
+
+        // The rate floor under a real discount, and the rate floor under the
+        // multiplier floor — the latter is exactly 1 femto-USD per token, the
+        // smallest nonzero rate, which is why these are the right floors.
+        for (multiplier, expected) in [(0.85, 850_000), (MIN_MULTIPLIER, 1)] {
+            let table = PriceTable::from_config(Some(&PricingConfig {
+                multiplier,
+                overrides: vec![PricingOverride {
+                    upstream: "bedrock-eu".into(),
+                    model: "vendor-alias".into(),
+                    input: MIN_USD_PER_MILLION,
+                    output: MIN_USD_PER_MILLION,
+                    cache_read: MIN_USD_PER_MILLION,
+                    cache_write: MIN_USD_PER_MILLION,
+                }],
+            }));
+            let rates = table
+                .resolve("bedrock-eu", "vendor-alias", "vendor-alias")
+                .expect("the override prices the alias");
+            assert_eq!(
+                rates,
+                Rates {
+                    input: expected,
+                    output: expected,
+                    cache_read: expected,
+                    cache_write: expected,
+                },
+                "multiplier {multiplier}"
+            );
+        }
     }
 }

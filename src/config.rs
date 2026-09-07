@@ -3205,9 +3205,16 @@ impl Config {
                         .join(", "),
                 });
             }
+            // The key has to normalize exactly as the resolver's stored key
+            // does — trimmed and stripped of the `[1m]` context-window hint,
+            // lowercased because the resolver compares case-insensitively.
+            // Otherwise `"alias"`, `" alias "`, and `"alias[1m]"` all pass
+            // validation as distinct rows and then shadow each other.
             let model_key = crate::gateway::spend::pricing::canonical_builtin_id(&row.model)
                 .map(str::to_string)
-                .unwrap_or_else(|| row.model.to_ascii_lowercase());
+                .unwrap_or_else(|| {
+                    crate::routing::strip_context_window_hint(row.model.trim()).to_ascii_lowercase()
+                });
             if !seen.insert((row.upstream.as_str(), model_key)) {
                 return Err(ConfigError::DuplicatePricingOverride {
                     index,
@@ -3215,31 +3222,38 @@ impl Config {
                     model: row.model.clone(),
                 });
             }
-            if !self.pricing_model_is_requestable(&row.model) {
+            if !self.pricing_model_is_requestable(row) {
                 tracing::warn!(
                     upstream = %row.upstream,
                     model = %row.model,
                     "server.spend.pricing.overrides[{index}].model is neither a built-in model id \
-                     nor a model any [[models]] or [[routes]] entry can request; the row will \
-                     never price anything"
+                     nor a model any [[models]], [[routes]], or [[route_prefixes]] entry can \
+                     request on that upstream; the row will never price anything"
                 );
             }
         }
         Ok(())
     }
 
-    /// Whether some request could actually be priced by an override row naming
-    /// `model`: it is a built-in, or it is a model id or upstream model name
-    /// that `[[models]]` or `[[routes]]` can produce.
+    /// Whether some request could actually be priced by `row`: its `model` is a
+    /// built-in, or it is a model id or upstream model name that `[[models]]`,
+    /// `[[routes]]`, or `[[route_prefixes]]` can produce **on that row's own
+    /// upstream**.
     ///
-    /// A config with neither table forwards the client's raw model string to the
-    /// default provider, so *every* string is requestable there and the caller's
-    /// "will never match" warning would be a false positive.
-    fn pricing_model_is_requestable(&self, model: &str) -> bool {
+    /// The upstream scope matters because a row prices one upstream: a model
+    /// mapped only as the `codex` upstream model does not make an `anthropic`
+    /// row usable. A client model *id*, by contrast, is forwarded as-is to
+    /// whichever upstream serves it, so it is not scoped.
+    ///
+    /// A config with none of the three tables forwards the client's raw model
+    /// string to the default provider, so *every* string is requestable there
+    /// and the caller's "will never match" warning would be a false positive.
+    fn pricing_model_is_requestable(&self, row: &PricingOverride) -> bool {
+        let model = row.model.as_str();
         if crate::gateway::spend::pricing::canonical_builtin_id(model).is_some() {
             return true;
         }
-        if self.models.is_empty() && self.routes.is_empty() {
+        if self.models.is_empty() && self.routes.is_empty() && self.route_prefixes.is_empty() {
             return true;
         }
         let matches = |candidate: &str| candidate.eq_ignore_ascii_case(model);
@@ -3247,11 +3261,17 @@ impl Config {
             matches(&entry.id)
                 || entry
                     .upstream_model
-                    .iter()
-                    .flatten()
-                    .any(|(_, upstream_model)| matches(upstream_model))
+                    .as_ref()
+                    .and_then(|map| map.get(&row.upstream))
+                    .is_some_and(|upstream_model| matches(upstream_model))
         }) || self.routes.iter().any(|route| {
-            matches(&route.model) || route.upstream_model.as_deref().is_some_and(matches)
+            route.provider == row.upstream
+                && (matches(&route.model) || route.upstream_model.as_deref().is_some_and(matches))
+        }) || self.route_prefixes.iter().any(|route| {
+            route.provider == row.upstream
+                && model.len() >= route.prefix.len()
+                && model.as_bytes()[..route.prefix.len()]
+                    .eq_ignore_ascii_case(route.prefix.as_bytes())
         })
     }
 
@@ -4176,8 +4196,8 @@ mod tests {
         GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
         GatewayTelemetryDestination, InboundAuthConfig, ModelConfig, OauthUsageConfig,
         OidcProviderConfig, PoolConfig, PricingConfig, PricingOverride, ProviderConfig,
-        ProviderKind, ResponsesFlavor, RetryConfig, RouteConfig, Secret, SpendConfig, StatusConfig,
-        StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
+        ProviderKind, ResponsesFlavor, RetryConfig, RouteConfig, RoutePrefixConfig, Secret,
+        SpendConfig, StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -5872,6 +5892,27 @@ mod tests {
             ],
         });
         config.validate().expect("one row per upstream validates");
+
+        // The resolver stores each row's model trimmed and stripped of the
+        // `[1m]` hint, and compares case-insensitively, so spellings that
+        // differ only in those are one row at runtime: without the same
+        // normalization here they both validate and then shadow each other.
+        for second in [" alias ", "alias[1m]", " ALIAS[1M] "] {
+            let config = pricing_config(PricingConfig {
+                multiplier: 1.0,
+                overrides: vec![
+                    pricing_override("anthropic", "alias", 1.0),
+                    pricing_override("anthropic", second, 2.0),
+                ],
+            });
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::DuplicatePricingOverride { index: 1, .. })
+                ),
+                "{second:?} must collide with \"alias\""
+            );
+        }
     }
 
     #[test]
@@ -5922,8 +5963,9 @@ cache_write = 4.125
     }
 
     /// The unusable-row warning must fire on an alias no request can carry, and
-    /// stay quiet for a built-in or a model some `[[models]]`/`[[routes]]`
-    /// entry can actually produce.
+    /// stay quiet for a built-in or a model some `[[models]]`/`[[routes]]`/
+    /// `[[route_prefixes]]` entry can actually produce **on that row's own
+    /// upstream**.
     #[test]
     fn pricing_override_model_is_requestable_only_via_builtins_models_and_routes() {
         let config = Config {
@@ -5938,28 +5980,62 @@ cache_write = 4.125
                 effort: None,
                 service_tier: None,
             }],
+            route_prefixes: vec![RoutePrefixConfig {
+                prefix: "vendor-".to_string(),
+                provider: "anthropic".to_string(),
+            }],
             ..Config::default()
         };
 
-        for model in [
-            "claude-sonnet-4-6",
-            "us.anthropic.claude-sonnet-4-6-20260217-v1:0",
-            "team-sonnet",
-            "GPT-5.2",
-            "legacy-alias",
-            "vendor-sonnet",
+        let requestable = |upstream: &str, model: &str| {
+            config.pricing_model_is_requestable(&pricing_override(upstream, model, 1.0))
+        };
+
+        for (upstream, model) in [
+            ("anthropic", "claude-sonnet-4-6"),
+            ("codex", "us.anthropic.claude-sonnet-4-6-20260217-v1:0"),
+            // A client model id is forwarded as-is to whichever upstream serves
+            // it, so it is requestable on any of them.
+            ("anthropic", "team-sonnet"),
+            // The `[[models]]` upstream_model map entry is keyed by upstream.
+            ("codex", "GPT-5.2"),
+            ("anthropic", "legacy-alias"),
+            ("anthropic", "vendor-sonnet"),
+            // A prefix route on this row's upstream serves the model.
+            ("anthropic", "vendor-anything"),
+            ("anthropic", "VENDOR-anything"),
         ] {
             assert!(
-                config.pricing_model_is_requestable(model),
-                "{model} is requestable"
+                requestable(upstream, model),
+                "{model} is requestable on {upstream}"
             );
         }
-        for model in ["my-sonnet-alias", "gpt-5.3"] {
+        for (upstream, model) in [
+            ("anthropic", "my-sonnet-alias"),
+            ("anthropic", "gpt-5.3"),
+            // Mapped only as the `codex` upstream model: an `anthropic` row
+            // naming it prices nothing.
+            ("anthropic", "gpt-5.2"),
+            // Route and prefix both belong to `anthropic`, so a `codex` row
+            // naming what they serve prices nothing either.
+            ("codex", "legacy-alias"),
+            ("codex", "vendor-sonnet"),
+            ("codex", "vendor-anything"),
+        ] {
             assert!(
-                !config.pricing_model_is_requestable(model),
-                "{model} is not requestable"
+                !requestable(upstream, model),
+                "{model} is not requestable on {upstream}"
             );
         }
+
+        // With none of the three tables configured the client's raw model
+        // string is forwarded to the default provider, so nothing warns.
+        let passthrough = Config::default();
+        assert!(passthrough.pricing_model_is_requestable(&pricing_override(
+            "anthropic",
+            "my-sonnet-alias",
+            1.0
+        )));
     }
 
     /// `Config` derives `Debug`, and shunt's convention elsewhere is to keep only

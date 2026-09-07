@@ -25,9 +25,9 @@ pub const LIST_PRICES: &[(&str, f64, f64, f64, f64)] = &[
     ("claude-opus-4-1", 15.0, 75.0, 1.5, 18.75),
 ];
 
-/// List price of one server-side web search, in nano-USD ($0.01 per request).
+/// List price of one server-side web search, in femto-USD ($0.01 per request).
 /// Per-request rather than per-token, so overrides never touch it.
-pub const WEB_SEARCH_LIST_PRICE_NANO_USD: u64 = 10_000_000;
+pub const WEB_SEARCH_LIST_PRICE_FEMTO_USD: u64 = 10_000_000_000_000;
 
 /// The built-in catalog id a provider-decorated model id refers to, or `None`
 /// when the string is not a built-in at all.
@@ -35,9 +35,11 @@ pub const WEB_SEARCH_LIST_PRICE_NANO_USD: u64 = 10_000_000;
 /// Normalizes the decorations shunt actually sees: the `[1m]` context-window
 /// hint Claude Code appends to the *client* model id, a Bedrock region prefix
 /// and `anthropic.` namespace (`us.anthropic.claude-…`), a Bedrock
-/// `-v<major>:<minor>` model-version suffix, and a dated snapshot suffix in
-/// either the Anthropic (`-20260217`) or Vertex (`@20251101`) form. It
-/// deliberately does not fuzzy-match: an operator alias like
+/// `-v<major>:<minor>` model-version suffix, a dated snapshot suffix in
+/// either the Anthropic (`-20260217`) or Vertex (`@20251101`) form, and the
+/// OpenRouter / Vercel AI Gateway form (`anthropic/claude-opus-4.8`), whose
+/// `anthropic/` namespace is stripped and whose dotted version is hyphenated.
+/// It deliberately does not fuzzy-match: an operator alias like
 /// `my-sonnet-alias` resolves to `None` so the caller can tell "unpriceable"
 /// from "priced by guess".
 pub fn canonical_builtin_id(model: &str) -> Option<&'static str> {
@@ -54,6 +56,15 @@ pub(super) fn builtin_row(model: &str) -> Option<&'static (&'static str, f64, f6
     // — a string real clients send — would price at nothing.
     let lowered = crate::routing::strip_context_window_hint(model.trim()).to_ascii_lowercase();
     let mut rest = lowered.as_str();
+
+    // OpenRouter and the Vercel AI Gateway namespace the model as
+    // `anthropic/claude-opus-4.8` — the form README.md and docs/running.md
+    // document for both. OpenRouter's `~anthropic/claude-sonnet-latest` names a
+    // floating alias rather than a version, so it keeps its `~`, matches no
+    // catalog row, and stays unpriceable.
+    if let Some(tail) = rest.strip_prefix("anthropic/") {
+        rest = tail;
+    }
 
     // `us.anthropic.`, `eu.anthropic.`, `us-gov.anthropic.`, `anthropic.` —
     // every segment before `anthropic.` must be a bare region label. AWS region
@@ -88,6 +99,22 @@ pub(super) fn builtin_row(model: &str) -> Option<&'static (&'static str, f64, f6
         let suffix = &rest[index + 1..];
         if suffix.len() == 8 && is_ascii_digits(suffix) {
             rest = &rest[..index];
+        }
+    }
+
+    // Those same gateways spell the version with a dot (`claude-opus-4.8`)
+    // where the catalog hyphenates it. Convert only a `<digit>.<digit>` pair,
+    // so an id whose dot is not a version separator keeps it and simply does
+    // not match.
+    let hyphenated;
+    if let Some(index) = rest.find('.') {
+        let bytes = rest.as_bytes();
+        if index > 0
+            && bytes[index - 1].is_ascii_digit()
+            && bytes.get(index + 1).is_some_and(u8::is_ascii_digit)
+        {
+            hyphenated = format!("{}-{}", &rest[..index], &rest[index + 1..]);
+            rest = &hyphenated;
         }
     }
 
@@ -149,6 +176,28 @@ mod tests {
         );
         // A bare word ending in `anthropic.` is still not a region prefix.
         assert_eq!(canonical_builtin_id("myanthropic.claude-opus-5"), None);
+    }
+
+    /// OpenRouter and the Vercel AI Gateway are documented with
+    /// `anthropic/claude-opus-4.8` (README.md, docs/running.md): a namespace
+    /// prefix plus a dotted version. Both must normalize, or every override row
+    /// and list price for those upstreams misses.
+    #[test]
+    fn canonical_id_normalizes_the_openrouter_and_vercel_namespace() {
+        assert_eq!(
+            canonical_builtin_id("anthropic/claude-opus-4.8"),
+            Some("claude-opus-4-8")
+        );
+        assert_eq!(
+            canonical_builtin_id("anthropic/claude-sonnet-4.6"),
+            Some("claude-sonnet-4-6")
+        );
+        // A floating alias names no version, so it stays unpriceable rather
+        // than resolving to whichever model is current.
+        assert_eq!(
+            canonical_builtin_id("~anthropic/claude-sonnet-latest"),
+            None
+        );
     }
 
     /// A duplicated id would make the first row silently shadow the second, and
