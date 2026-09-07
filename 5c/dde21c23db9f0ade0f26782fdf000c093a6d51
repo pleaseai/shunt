@@ -1,0 +1,33 @@
+src/model/inbound_responses/mod.rs
+  s_dc4231ac81f910::t_b2429d3dbdc2aa 1-27
+src/model/inbound_responses/reasoning.rs
+  s_dc4231ac81f910::t_b2429d3dbdc2aa 1-110
+src/model/inbound_responses/chat_stream.rs
+  s_dc4231ac81f910::t_b2429d3dbdc2aa 1
+src/model/inbound_responses/messages_request.rs
+  s_dc4231ac81f910::t_b2429d3dbdc2aa 1
+src/model/inbound_responses/events.rs
+  s_dc4231ac81f910::t_b2429d3dbdc2aa 1
+src/model/inbound_responses/messages_stream.rs
+  s_dc4231ac81f910::t_b2429d3dbdc2aa 1
+src/model/inbound_responses/chat_request.rs
+  s_dc4231ac81f910::t_b2429d3dbdc2aa 1
+src/model/mod.rs
+  s_dc4231ac81f910::t_b2429d3dbdc2aa 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5cdde21c23db9f0ade0f26782fdf000c093a6d51",
+  "prompts": {},
+  "sessions": {
+    "s_dc4231ac81f910": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c97f5ae-9b7c-4bf5-b575-8d87d101811c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
