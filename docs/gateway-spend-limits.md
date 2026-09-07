@@ -24,6 +24,39 @@ fail_closed_on_error = false
 
 The retention settings, `blocked_message`, `group_limit_mode`, and `fail_closed_on_error` are parsed now for configuration compatibility. Stage 1 does not run a retention sweep, resolve group limits, customize an enforcement error, or perform enforcement.
 
+### Pricing
+
+`[server.spend.pricing]` states what a request costs. The section is optional; omitting it means the built-in list prices at multiplier 1.
+
+```toml
+[server.spend.pricing]
+multiplier = 0.85            # optional, default 1
+
+[[server.spend.pricing.overrides]]
+upstream = "bedrock-eu"      # must name a configured upstream
+model = "claude-sonnet-4-6"
+input = 3.30                 # USD per million tokens
+output = 16.50
+cache_read = 0.33
+cache_write = 4.125
+```
+
+`multiplier` scales every resolved rate, list price and override alike, and models a discount: it must be a finite number greater than `0` and at most `1`. Each override row supplies all four rates in USD per million tokens, and each must be finite and greater than `0`. A missing rate is a parse error; a non-positive or non-finite one, an out-of-range multiplier, a blank `upstream`, an `upstream` that names no configured upstream (the error lists the ones that exist), and two rows pricing the same model on one upstream all fail configuration validation at boot. Two rows collide when they name the same model, not merely the same string: `claude-sonnet-4-6` and `claude-sonnet-4-6-20260217` are one model on one upstream. A row whose `model` is neither a built-in nor a model that any `[[models]]` or `[[routes]]` entry can request is a warning rather than an error — the row is kept, but nothing will ever match it.
+
+Rates are matched most-specific-first, for one upstream at a time:
+
+1. an override row whose `model` equals the **upstream** model id (case-insensitively);
+2. otherwise an override row whose `model` equals the **client** model id;
+3. otherwise an override row naming the same built-in model by a different id — a dated snapshot (`claude-opus-4-5@20251101`), a Bedrock id (`us.anthropic.claude-sonnet-4-6-20260217-v1:0`) — matched against the upstream model first, then the client model;
+4. otherwise the built-in list price for that model;
+5. otherwise nothing: the request cannot be priced, and the meter decides what that means.
+
+The built-in list-price catalog is the fallback, in USD per million tokens, and covers the Claude models shunt routes to. Server-side web search is priced per request ($0.01) rather than per token, and override rows never change it; only the multiplier applies.
+
+All amounts are USD **estimates**. They are computed from the token counts an upstream reports against published list prices, not read back from a provider invoice, so they will not reconcile to the cent with a bill.
+
+The pricing table and its resolver are implemented and validated at boot, but nothing calls them yet: the spend meter that will price requests is not implemented (see [Not yet implemented](#not-yet-implemented)).
+
 ### Credentials
 
 The credential comes from `[server.admin]`, which resolves three sets — the legacy `name:token` pairs plus two key arrays:
@@ -77,7 +110,7 @@ Every response includes `request-id`. Error bodies use:
 ## Not yet implemented
 
 - Spend enforcement on `/v1/messages`, including `429 billing_error`
-- Token usage metering and model pricing
+- Token usage metering — the pricing table and rate resolver (`[server.spend.pricing]`) are in place and validated at boot, but no meter reads token usage or prices a request yet, so nothing calls them
 - `GET /v1/organizations/spend_limits/effective`
 - `GET /v1/organizations/spend_limits/audit`
 - Hourly retention sweeps
