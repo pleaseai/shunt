@@ -1,0 +1,37 @@
+docs/m9-admin-surface.md
+  s_25dd5bf0273ae1::t_6b419e3af63a2c 157-158
+src/gateway/idp_client.rs
+  s_25dd5bf0273ae1::t_6b419e3af63a2c 280-291,296-297,307,327-362
+  s_25dd5bf0273ae1::t_e03048c12400f4 363
+docs/gateway-login.md
+  s_25dd5bf0273ae1::t_6b419e3af63a2c 126,140-142,185-190
+site/src/content/docs/ko/guides/gateway-login.mdx
+  s_25dd5bf0273ae1::t_6b419e3af63a2c 75-76
+site/src/content/docs/zh-cn/guides/gateway-login.mdx
+  s_25dd5bf0273ae1::t_6b419e3af63a2c 72-73
+src/config.rs
+  s_25dd5bf0273ae1::t_6b419e3af63a2c 1206-1213,1226,5757-5769
+  s_25dd5bf0273ae1::t_cc52bc39162d9b 5770
+site/src/content/docs/guides/gateway-login.mdx
+  s_25dd5bf0273ae1::t_6b419e3af63a2c 75-76
+site/src/content/docs/ja/guides/gateway-login.mdx
+  s_25dd5bf0273ae1::t_6b419e3af63a2c 75-76
+site/src/content/docs/reference/configuration.md
+  s_25dd5bf0273ae1::t_6b419e3af63a2c 136,142-144,222,228-230
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a807976ef8cf3d2f5a81becc60222abd6f6f21b3",
+  "prompts": {},
+  "sessions": {
+    "s_25dd5bf0273ae1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1416aa98-d8f7-408c-89af-f3ac8f853989",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
