@@ -355,8 +355,8 @@ shunt this way — shunt supplies the account from its own pool, not the CLI's l
   `websocket = true`; wiring the inbound path onto the
   [Codex WebSocket v2 transport](codex-websocket-v2-protocol.md) is a separate follow-up.
 - **Chat-Completions-only upstreams.** A route may only name an upstream that natively implements
-  the **Responses** API. There is no Responses → Chat Completions adapter: the endpoint relays raw
-  Responses bytes, so a provider that speaks only `/chat/completions` cannot serve them. Vendors
+  the **Responses** API. The endpoint relays raw Responses bytes, so a provider that speaks only
+  `/chat/completions` cannot serve them yet (the adapter exists, see the translation bullet below). Vendors
   that document a native Responses endpoint for the Codex CLI (Z.ai GLM, DeepSeek, Kimi Code,
   MiniMax, Mimo, OpenRouter, Vercel AI Gateway) are the supported shape; anything else is not.
 - **Model discovery for the Codex CLI.** shunt serves no Codex model catalog. Its `GET /v1/models`
@@ -364,5 +364,9 @@ shunt this way — shunt supplies the account from its own pool, not the CLI's l
   non-OpenAI slugs the way these vendors document it — a `~/.codex/models.json` catalog referenced
   by `model_catalog_json` in `~/.codex/config.toml` — while the CLI's own `model` setting is what
   selects a shunt route. See [`codex-configuration.md` §17.5](codex-configuration.md#175-route-models-to-third-party-upstreams).
+- **Translation for non-Responses upstreams.** The translation core for routing an inbound
+  Responses request to an Anthropic-Messages or Chat-Completions upstream exists under
+  `src/model/inbound_responses/` ([M16](m16-codex-inbound-translation.md)) but is not yet
+  dispatched to; wiring it behind the per-model routes above is the follow-up for #477.
 - **Admin surface integration.** [M9's](m9-admin-surface.md) dashboard reports `claude_oauth` pool
   health only; extending it to show inbound-Codex-endpoint traffic is a separate follow-up.
