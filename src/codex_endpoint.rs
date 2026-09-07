@@ -239,12 +239,27 @@ async fn forward(
     // it must never match a route: `UNKNOWN_MODEL` is a shunt-authored sentinel
     // an operator could otherwise capture by declaring a route for the literal
     // model `unknown`.
-    let parsed_model = resolve_model(&headers, &body, max_request_bytes).await;
-    let model = parsed_model.as_deref().unwrap_or(UNKNOWN_MODEL).to_string();
+    //
+    // The decoded body is kept only when a route could actually match: the pool
+    // path forwards the original (possibly zstd) bytes, so with no routes
+    // configured the decoded copy would be allocated and dropped unused.
+    let resolved = resolve_model(
+        &headers,
+        &body,
+        max_request_bytes,
+        !codex_endpoint.routes.is_empty(),
+    )
+    .await;
+    let model = resolved
+        .model
+        .as_deref()
+        .unwrap_or(UNKNOWN_MODEL)
+        .to_string();
     crate::observability::record_requested_model(&model);
     // Cloned out of the config snapshot so the borrow ends before `state` moves
     // into the forwarder below.
-    let matched = parsed_model
+    let matched = resolved
+        .model
         .as_deref()
         .and_then(|model| codex_endpoint.route_for(model))
         .cloned();
@@ -266,6 +281,7 @@ async fn forward(
                 pool_key,
                 headers,
                 body,
+                resolved.decoded,
                 max_request_bytes,
             )
             .await?
@@ -307,6 +323,10 @@ async fn forward(
 /// [`responses::forward_codex_routed`], which sends a single credential over a
 /// fresh header allowlist. Only the routed provider's `upstream_model` can
 /// differ from what the client asked for, so the body is rewritten only then.
+///
+/// `decoded` is the decoded body `resolve_model` already produced for a zstd
+/// request, threaded through so the routed path does not decode the same body a
+/// second time (PR #478 review, P2).
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_routed(
     state: AppState,
@@ -315,6 +335,7 @@ async fn dispatch_routed(
     pool_key: Option<String>,
     mut headers: HeaderMap,
     body: Bytes,
+    decoded: Option<Bytes>,
     max_request_bytes: usize,
 ) -> Result<
     (
@@ -337,6 +358,18 @@ async fn dispatch_routed(
         service_tier: None,
     };
 
+    if rewrite.is_some() {
+        // The Codex CLI sends `x-codex-routing-hint: model=<public id>`, and the
+        // pool passthrough forwards the client's headers verbatim. Once the body
+        // names the route's `upstream_model` instead, that hint contradicts it —
+        // a routing signal the ChatGPT backend reads, pointing at a model the
+        // request no longer asks for. shunt cannot re-derive the hint (it does
+        // not own the upstream's grammar for the routed id), so drop it and let
+        // the backend route on the body alone. The routed third-party path
+        // builds a fresh allowlist that never carried it.
+        headers.remove("x-codex-routing-hint");
+    }
+
     // The ChatGPT backend accepts the inbound encoding as-is, so it only needs a
     // materialized body when the `model` actually changes. A third-party
     // Responses API does not accept a zstd-encoded request, so that path always
@@ -344,10 +377,11 @@ async fn dispatch_routed(
     let body = if chatgpt_backend && rewrite.is_none() {
         body
     } else {
-        let prepared = match identity_body(&headers, &body, rewrite, max_request_bytes).await {
-            Ok(prepared) => prepared,
-            Err(error) => return Err(routed_body_error(error, &route_config.provider).await),
-        };
+        let prepared =
+            match identity_body(&headers, &body, decoded, rewrite, max_request_bytes).await {
+                Ok(prepared) => prepared,
+                Err(error) => return Err(routed_body_error(error, &route_config.provider).await),
+            };
         // The prepared body is identity-encoded; leaving the inbound
         // `content-encoding` on would tell the upstream to inflate plain bytes.
         headers.remove(axum::http::header::CONTENT_ENCODING);

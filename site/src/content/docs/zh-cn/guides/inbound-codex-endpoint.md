@@ -129,7 +129,7 @@ model = "deepseek-v4-flash"
 provider = "deepseek"
 ```
 
-`upstream_model` 是可选的，默认等于 `model`；当 CLI 中填写的 id 与厂商实际提供的 id 不同时再设置它。shunt 内置的 `kimi` 预设是 `kind = "anthropic"`，因此指向 Kimi Code 的 Codex 路由需要另建一个 `kind = "responses"` 的提供方 —— 把 Codex 模型路由到 Anthropic 类型的预设会在启动时被拒绝。
+`upstream_model` 是可选的，默认等于 `model`；当 CLI 中填写的 id 与厂商实际提供的 id 不同时再设置它。被路由到的提供方必须带有真实凭据 —— 客户端自己的 `Authorization` 总是会被剥离，因此不携带凭据的认证模式（`passthrough` 或 `none`）会在启动时被拒绝。shunt 内置的 `kimi` 预设是 `kind = "anthropic"`，因此指向 Kimi Code 的 Codex 路由需要另建一个 `kind = "responses"` 的提供方 —— 把 Codex 模型路由到 Anthropic 类型的预设会在启动时被拒绝。
 
 在 CLI 一侧，把 Codex 指向 **shunt**，并用 `model` 选择路由：
 
@@ -149,7 +149,7 @@ shunt 不提供 Codex 的模型目录 —— 它的 `GET /v1/models` 发现列�
 
 路由到**非 ChatGPT** 上游的请求有以下不同：
 
-- **请求头白名单。** 只有 `content-type` 和 `accept` 取自客户端，另加 `OpenAI-Beta: responses=experimental`（xAI/Grok 除外）。`authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`x-codex-*`、`x-shunt-*` 都不会到达第三方。
+- **请求头白名单。** 只有 `content-type` 和 `accept` 取自客户端，另加解析出的凭据以及被路由到的上游自身所要求的 identity —— `OpenAI-Beta: responses=experimental`（xAI/Grok 除外），以及 `xai_oauth` 路由所需的 Grok CLI identity 请求头。`authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`x-codex-*`、`x-shunt-*` 都不会到达第三方。
 - **改写请求体的 `model`。** 当 `upstream_model` 与请求的模型不同时，shunt 只改写顶层的 `model`，其余字段原样保留。不是 JSON 对象的请求体会以 `400` 拒绝，而不会被继续转发。
 - **identity 编码。** zstd 请求体会先解码（原生 Responses API 不接受该编码），且不转发 `content-encoding`。
 - **单一凭据，无故障转移。** 被路由到的第三方背后没有账号池，因此 429 或 5xx 会连同 `retry-after` 原样转发，不会触发轮换。
@@ -169,4 +169,4 @@ shunt 不提供 Codex 的模型目录 —— 它的 `GET /v1/models` 发现列�
 
 - 在回环之外的任何场景都请用 `[server.auth]` 为该端点设置门控 —— 提供方会在每个请求上注入一个真实的 Codex bearer。
 - 客户端自己的凭据不会有任何部分到达 Codex 后端;该透传逐字转发 Codex CLI 自己的请求头部,并只换入所选池账户的 bearer 与 `chatgpt-account-id`(shunt 客户端 token 头部、`[server.admin]` 凭据头部、整个 `cookie` 头部、内部的 `x-shunt-inbound-client` 标签、客户端的 `Authorization`/`chatgpt-account-id`,以及 `x-api-key` 都会被剥除,绝不转发)。
-- 路由集合在启动时一次性确定。在运行时开启或关闭 `[server.codex_endpoint]` 会记录一条需要重启的警告;而 reload 仍可以改变它所指向的提供方。
+- 启动时一次性确定的只有该端点的 **HTTP 路由注册**:在运行时开启或关闭 `[server.codex_endpoint]` 会记录一条警告,说明需要重启才能添加或移除这些路径。该表*所包含*的内容全部支持热重载 —— 目标 `provider` 和整个 `[[server.codex_endpoint.routes]]` 模型表都会在每次请求时从实时配置读取,因此添加、修改或删除路由都会在 reload 时生效。

@@ -129,7 +129,7 @@ model = "deepseek-v4-flash"
 provider = "deepseek"
 ```
 
-`upstream_model` は省略可能で、既定値は `model` です。CLI に入力する id とベンダーが実際に提供する id が異なる場合に指定します。shunt 内蔵の `kimi` プリセットは `kind = "anthropic"` なので、Kimi Code への Codex ルートには別途 `kind = "responses"` のプロバイダーが必要です — Anthropic 種別のプリセットへ Codex モデルをルーティングすると起動時に拒否されます。
+`upstream_model` は省略可能で、既定値は `model` です。CLI に入力する id とベンダーが実際に提供する id が異なる場合に指定します。ルーティング先のプロバイダーは実際の資格情報を持つ必要があります — クライアント自身の `Authorization` は常に削除されるため、資格情報を持たない認証モード（`passthrough` または `none`）は起動時に拒否されます。shunt 内蔵の `kimi` プリセットは `kind = "anthropic"` なので、Kimi Code への Codex ルートには別途 `kind = "responses"` のプロバイダーが必要です — Anthropic 種別のプリセットへ Codex モデルをルーティングすると起動時に拒否されます。
 
 CLI 側では Codex を **shunt** に向け、`model` でルートを選びます:
 
@@ -149,7 +149,7 @@ shunt は Codex 用のモデルカタログを提供しません — `GET /v1/mo
 
 **ChatGPT 以外**のアップストリームへルーティングされたリクエストで変わる点:
 
-- **ヘッダーの許可リスト。** クライアントから引き継ぐのは `content-type` と `accept` のみで、これに `OpenAI-Beta: responses=experimental` が加わります(xAI/Grok では省略)。`authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`x-codex-*`、`x-shunt-*` はいずれもサードパーティに届きません。
+- **ヘッダーの許可リスト。** クライアントから引き継ぐのは `content-type` と `accept` のみで、これに解決された資格情報と、ルーティング先のアップストリーム自身が要求する identity が加わります — `OpenAI-Beta: responses=experimental`(xAI/Grok では省略)、および `xai_oauth` ルートの場合は Grok CLI の identity ヘッダー。`authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`x-codex-*`、`x-shunt-*` はいずれもサードパーティに届きません。
 - **ボディの `model` 書き換え。** `upstream_model` が要求されたモデルと異なる場合、shunt はトップレベルの `model` だけを書き換え、他のフィールドはそのまま残します。JSON オブジェクトでないボディはそのまま送らず `400` で拒否します。
 - **identity エンコーディング。** zstd のリクエストボディはまずデコードされ(純正の Responses API はそのエンコーディングを受け付けません)、`content-encoding` は転送されません。
 - **資格情報は 1 つ、フェイルオーバーなし。** ルーティング先のサードパーティの背後にプールはないため、429 や 5xx はローテーションを起こさず `retry-after` とともにそのままリレーされます。
@@ -169,4 +169,4 @@ shunt は Codex 用のモデルカタログを提供しません — `GET /v1/mo
 
 - ループバックを超えるものでは、このエンドポイントを `[server.auth]` でゲートしてください — プロバイダーはリクエストごとに実際の Codex ベアラーを注入します。
 - クライアント自身の認証情報が Codex バックエンドへ届くことはありません。パススルーは Codex CLI 自身のリクエストヘッダーをそのまま転送し、差し替えるのは選択されたプールアカウントのベアラーと `chatgpt-account-id` だけです（shunt のクライアントトークンヘッダー、`[server.admin]` の認証情報ヘッダー、`cookie` ヘッダー全体、内部用の `x-shunt-inbound-client` ラベル、クライアントの `Authorization`/`chatgpt-account-id`、そして `x-api-key` はすべて取り除かれ、転送されることはありません）。
-- ルートの集合は起動時に一度だけ決まります。`[server.codex_endpoint]` の実行時のオン/オフ切り替えは、再起動が必要である旨の警告をログに出力します。リロードでも、どのプロバイダーを対象にするかは変更できます。
+- 起動時に一度だけ決まるのは、エンドポイントの **HTTP ルート登録**だけです。`[server.codex_endpoint]` の実行時のオン/オフ切り替えは、それらのパスを追加・削除するには再起動が必要である旨の警告をログに出力します。テーブルが*保持している*内容はすべてホットリロードされます — 対象の `provider` と `[[server.codex_endpoint.routes]]` のモデルテーブル全体はリクエストごとにライブ設定から読まれるため、ルートの追加・編集・削除はリロードで反映されます。

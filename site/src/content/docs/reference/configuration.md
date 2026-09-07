@@ -297,10 +297,10 @@ Each entry sends one model to a different Responses-compatible upstream, instead
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
 | `model` | *(required)* | Public model id the Codex client sends in the Responses body. Matched **exactly** and **case-sensitively** — no prefix match, no `[1m]` stripping, and no charset restriction, so vendor slugs like `MiniMax-M3`, `openai/gpt-5.6-sol`, and `~openai/gpt-latest` route as written |
-| `provider` | *(required)* | Configured provider that serves this model; must be `kind = "responses"` and must not use `auth = "passthrough"` |
+| `provider` | *(required)* | Configured provider that serves this model; must be `kind = "responses"` and must not use a credential-free auth mode (`passthrough` or `none`) |
 | `upstream_model` | `model` | Model id sent upstream. When it differs from `model`, shunt rewrites the body's top-level `model` and leaves every other field intact |
 
-Validation rejects a route to an unknown provider, to a non-`responses` provider, to a `passthrough`-auth provider, and rejects duplicate `model` entries or blank fields. Routes are read from the live config snapshot, so adding, editing, or removing one takes effect on **reload**; only toggling the `[server.codex_endpoint]` table itself needs a restart. A routed request to a non-ChatGPT provider sends a fresh header allowlist (`content-type`, `accept`, plus the flavor-gated `OpenAI-Beta`), an identity-encoded body, and one credential with no pool or failover.
+Validation rejects a route to an unknown provider, to a non-`responses` provider, to a provider whose auth mode carries no credential (`passthrough` or `none`), and rejects duplicate `model` entries or blank fields. Routes are read from the live config snapshot, so adding, editing, or removing one takes effect on **reload**; only toggling the `[server.codex_endpoint]` table itself needs a restart. A routed request to a non-ChatGPT provider sends a fresh header allowlist (`content-type`, `accept`, plus the flavor-gated `OpenAI-Beta` and, for an `xai_oauth` route, the Grok-CLI identity headers), an identity-encoded body, and one credential with no pool or failover.
 
 ## `[server.usage]` (optional)
 

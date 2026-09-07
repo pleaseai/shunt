@@ -129,7 +129,7 @@ model = "deepseek-v4-flash"
 provider = "deepseek"
 ```
 
-`upstream_model` is optional and defaults to `model`; set it when the id the CLI types differs from the id the vendor serves. shunt's built-in `kimi` preset is `kind = "anthropic"`, so a Codex route to Kimi Code needs a separate `kind = "responses"` provider — routing a Codex model at the Anthropic-kind preset is rejected at boot.
+`upstream_model` is optional and defaults to `model`; set it when the id the CLI types differs from the id the vendor serves. The routed provider must carry a real credential — a credential-free auth mode (`passthrough` or `none`) is rejected at boot, since the client's own `Authorization` is always stripped. shunt's built-in `kimi` preset is `kind = "anthropic"`, so a Codex route to Kimi Code needs a separate `kind = "responses"` provider — routing a Codex model at the Anthropic-kind preset is rejected at boot.
 
 On the CLI side, point Codex at **shunt** and select the route by `model`:
 
@@ -149,7 +149,7 @@ shunt serves no Codex model catalog — its `GET /v1/models` discovery list is A
 
 What changes for a routed request to a **non-ChatGPT** upstream:
 
-- **Header allowlist.** Only `content-type` and `accept` are taken from the client, plus `OpenAI-Beta: responses=experimental` (skipped for xAI/Grok). No `authorization`, `x-api-key`, `chatgpt-account-id`, `originator`, `version`, `user-agent`, `session-id`, `x-codex-*`, or `x-shunt-*` reaches a third party.
+- **Header allowlist.** Only `content-type` and `accept` are taken from the client, plus the resolved credential and whatever identity the routed upstream itself requires — `OpenAI-Beta: responses=experimental` (skipped for xAI/Grok), and the Grok-CLI identity headers for an `xai_oauth` route. No `authorization`, `x-api-key`, `chatgpt-account-id`, `originator`, `version`, `user-agent`, `session-id`, `x-codex-*`, or `x-shunt-*` reaches a third party.
 - **Body `model` rewrite.** When `upstream_model` differs from the requested model, shunt rewrites the top-level `model` and leaves every other field intact. A body that is not a JSON object is rejected with a `400` rather than sent on.
 - **Identity encoding.** A zstd request body is decoded first — a stock Responses API does not accept that encoding — and `content-encoding` is not forwarded.
 - **One credential, no failover.** There is no pool behind a routed third party, so a 429 or 5xx relays verbatim with its `retry-after` instead of triggering rotation.
@@ -169,4 +169,4 @@ Matching is exact and case-sensitive with no charset restriction, so vendor slug
 
 - Gate this endpoint with `[server.auth]` on anything beyond loopback — the provider injects a real Codex bearer on every request.
 - Nothing about the client's own credential reaches the Codex backend; the passthrough forwards the Codex CLI's own request headers verbatim and swaps in only the selected pool account's bearer + `chatgpt-account-id` (the shunt client-token header, the `[server.admin]` credential header, the whole `cookie` header, the internal `x-shunt-inbound-client` label, the client's `Authorization`/`chatgpt-account-id`, and `x-api-key` are all stripped, never forwarded).
-- The route set is decided once at boot. Toggling `[server.codex_endpoint]` on or off at runtime logs a warning that a restart is required; a reload can still change which provider it targets.
+- Only the endpoint's **HTTP route registration** is decided once at boot: toggling `[server.codex_endpoint]` on or off at runtime logs a warning that a restart is required to add or drop those paths. Everything the table *contains* hot-reloads — the target `provider` and the whole `[[server.codex_endpoint.routes]]` model table are read from the live config on every request, so adding, editing, or removing a route takes effect on reload.

@@ -472,7 +472,11 @@ pub(super) fn apply_credential(
 }
 
 pub(super) fn send_error(error: SendError<reqwest::Error>) -> AdapterError {
-    error.into_adapter_error(|error| own_error(error.to_string()))
+    // `without_url`: a `reqwest::Error`'s `Display` embeds the URL it was
+    // attempting, and this message goes into the client-facing 502 body — so a
+    // transport failure would disclose the operator's configured upstream
+    // (host, path, and any query it carries) to whoever sent the request.
+    error.into_adapter_error(|error| own_error(error.without_url().to_string()))
 }
 
 /// Relay an upstream Responses response to the inbound client **verbatim**:

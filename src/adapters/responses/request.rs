@@ -125,6 +125,23 @@ pub(super) fn routing_hint(route: &Route) -> Option<HeaderValue> {
     }
 }
 
+/// The Grok-CLI identity the subscription chat proxy gates on, sent alongside
+/// an `XaiOauth` bearer. `accept: text/event-stream` matches the real Grok CLI;
+/// that upstream is always consumed as SSE.
+///
+/// Shared with `super::inbound_routed`: a `[[server.codex_endpoint.routes]]`
+/// entry may name an `xai_oauth` provider, and a routed request that carried
+/// only the bearer would be answered as if the caller were an unentitled API
+/// client. One owner, or the two call sites drift apart the next time the CLI
+/// version moves.
+pub(super) fn grok_identity_headers(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    request
+        .header("accept", "text/event-stream")
+        .header("x-xai-token-auth", "xai-grok-cli")
+        .header("x-grok-client-identifier", GROK_CLIENT_IDENTIFIER)
+        .header("x-grok-client-version", GROK_CLIENT_VERSION)
+}
+
 pub(super) fn request_builder(
     state: &AppState,
     route: &Route,
@@ -179,15 +196,9 @@ pub(super) fn request_builder(
         }
         // xAI subscription OAuth: the subscription bearer plus the Grok-CLI
         // identity headers the CLI chat proxy expects (no ChatGPT/Codex
-        // account-id/originator headers). `accept: text/event-stream` matches
-        // the real Grok CLI; the upstream is always consumed as SSE.
+        // account-id/originator headers).
         Credential::XaiOauth { access_token } => {
-            request = request
-                .bearer_auth(access_token)
-                .header("accept", "text/event-stream")
-                .header("x-xai-token-auth", "xai-grok-cli")
-                .header("x-grok-client-identifier", GROK_CLIENT_IDENTIFIER)
-                .header("x-grok-client-version", GROK_CLIENT_VERSION);
+            request = grok_identity_headers(request.bearer_auth(access_token));
         }
         Credential::ClaudeOauth { access_token, .. }
         | Credential::GoogleOauth { access_token, .. } => {

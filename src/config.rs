@@ -1280,7 +1280,9 @@ pub struct CodexRouteConfig {
     /// Public model id the Codex client sends in the Responses body `model`.
     pub model: String,
     /// Configured provider that serves this model. Must be `kind = "responses"`
-    /// and must not use `auth = "passthrough"`.
+    /// and must carry a credential — a credential-free auth mode
+    /// (`passthrough` or `none`) is rejected, since the inbound client's own
+    /// `Authorization` is always stripped.
     pub provider: String,
     /// Model id sent upstream; defaults to `model`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2217,8 +2219,12 @@ pub enum ConfigError {
     UnknownCodexRouteProvider { model: String, provider: String },
     #[error("[server.codex_endpoint] route for model {model} targets provider {provider}, which is not kind = \"responses\"; the inbound endpoint relays raw OpenAI Responses bytes")]
     CodexRouteWrongKind { model: String, provider: String },
-    #[error("[server.codex_endpoint] route for model {model} targets provider {provider}, which uses auth = \"passthrough\"; the inbound client's own Authorization is always stripped, so no credential would be sent")]
-    CodexRoutePassthroughAuth { model: String, provider: String },
+    #[error("[server.codex_endpoint] route for model {model} targets provider {provider}, which uses the credential-free auth = \"{auth}\"; the inbound client's own Authorization is always stripped, so no credential would be sent")]
+    CodexRouteNoCredential {
+        model: String,
+        provider: String,
+        auth: &'static str,
+    },
     #[error("[server.codex_endpoint] declares more than one route for model {model}")]
     DuplicateCodexRoute { model: String },
     #[error("[server.codex_endpoint] route field `{field}` is empty for model {model}")]
@@ -3788,10 +3794,21 @@ impl Config {
                             provider: route.provider.clone(),
                         });
                     }
-                    Some(provider) if provider.auth == AuthMode::Passthrough => {
-                        return Err(ConfigError::CodexRoutePassthroughAuth {
+                    // Both credential-free modes: `passthrough` would forward
+                    // the caller's own credential, which this endpoint always
+                    // strips, and `none` sends nothing at all. Either way the
+                    // routed request would reach the upstream unauthenticated.
+                    Some(provider)
+                        if matches!(provider.auth, AuthMode::Passthrough | AuthMode::None) =>
+                    {
+                        return Err(ConfigError::CodexRouteNoCredential {
                             model: route.model.clone(),
                             provider: route.provider.clone(),
+                            auth: if provider.auth == AuthMode::Passthrough {
+                                "passthrough"
+                            } else {
+                                "none"
+                            },
                         });
                     }
                     Some(_) => {}
@@ -5500,22 +5517,32 @@ mod tests {
     }
 
     #[test]
-    fn codex_endpoint_rejects_a_route_to_a_passthrough_auth_provider() {
-        // The client's own Authorization is always stripped, so a passthrough
-        // provider would be sent no credential at all.
-        let mut config = Config::default();
-        config.providers.insert(
-            "relay".to_string(),
-            ProviderConfig::responses("https://relay.example/v1", AuthMode::Passthrough, None),
-        );
-        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
-            "glm-5.3", "relay", None,
-        )]));
-        assert!(matches!(
-            config.validate().unwrap_err(),
-            ConfigError::CodexRoutePassthroughAuth { model, provider }
-                if model == "glm-5.3" && provider == "relay"
-        ));
+    fn codex_endpoint_rejects_a_route_to_a_credential_free_provider() {
+        // The client's own Authorization is always stripped, so neither
+        // `passthrough` (forward the caller's) nor `none` (send nothing) leaves
+        // the routed request with a credential.
+        for (auth, name) in [
+            (AuthMode::Passthrough, "passthrough"),
+            (AuthMode::None, "none"),
+        ] {
+            let mut config = Config::default();
+            config.providers.insert(
+                "relay".to_string(),
+                ProviderConfig::responses("https://relay.example/v1", auth, None),
+            );
+            config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+                "glm-5.3", "relay", None,
+            )]));
+            let error = config.validate().unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    ConfigError::CodexRouteNoCredential { model, provider, auth }
+                        if model == "glm-5.3" && provider == "relay" && *auth == name
+                ),
+                "expected a credential-free rejection naming `{name}`, got {error}"
+            );
+        }
     }
 
     #[test]

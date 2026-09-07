@@ -120,6 +120,32 @@ fn test_config(
     config
 }
 
+/// [`test_config`] plus a second `chatgpt_oauth` provider (`codex-work`, cloned
+/// from the `codex` preset) that `route` points at.
+fn second_chatgpt_config(
+    codex_url: &str,
+    codex_token_env: &str,
+    third_party_key_env: &str,
+    work_url: &str,
+    work_token_env: &str,
+    route: CodexRouteConfig,
+) -> Config {
+    let mut config = test_config(
+        codex_url,
+        codex_token_env,
+        "http://127.0.0.1:1",
+        third_party_key_env,
+        vec![route],
+    );
+    let mut work_provider = config.providers.get("codex").unwrap().clone();
+    work_provider.base_url = work_url.to_string();
+    work_provider.accounts = vec![account("work-account", work_token_env)];
+    config
+        .providers
+        .insert("codex-work".to_string(), work_provider);
+    config
+}
+
 async fn start_gateway_with(mut config: Config) -> TestGateway {
     config.server.bind = "127.0.0.1:0".to_string();
     let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
@@ -165,6 +191,8 @@ async fn post_responses(gateway: &TestGateway, body: String) -> reqwest::Respons
         .header("version", "0.153.3")
         .header("session-id", "sess-routed")
         .header("x-codex-window-id", "sess-routed:0")
+        // The CLI's own routing hint, naming the *public* model it asked for.
+        .header("x-codex-routing-hint", "model=routing-hint-probe")
         .header("x-shunt-token", "client-shunt-token")
         .body(body)
         .send()
@@ -340,6 +368,94 @@ async fn route_to_a_second_chatgpt_oauth_provider_uses_its_pool() {
     assert_eq!(sent["model"], "gpt-5.6-terra");
     work.verify().await;
     default_codex.verify().await;
+}
+
+#[tokio::test]
+async fn a_rewritten_model_drops_the_clients_stale_routing_hint() {
+    // `x-codex-routing-hint` names the model the client asked for and is
+    // forwarded verbatim by the pool passthrough. Once the body names the
+    // route's `upstream_model` instead, that hint points the ChatGPT backend at
+    // a model the request no longer asks for, so it must be dropped.
+    if !can_bind_loopback() {
+        return;
+    }
+    let work_token = chatgpt_token(FAR_FUTURE_EXP, "acct-hint");
+    std::env::set_var(
+        "SHUNT_TEST_ROUTED_CODEX_J",
+        chatgpt_token(FAR_FUTURE_EXP, "acct-j"),
+    );
+    std::env::set_var("SHUNT_TEST_ROUTED_WORK_J", &work_token);
+    std::env::set_var("SHUNT_TEST_ROUTED_KEY_J", "unused-key");
+
+    let work = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(HeaderAbsent("x-codex-routing-hint"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("{}", "application/json"))
+        .expect(1)
+        .mount(&work)
+        .await;
+
+    let gateway = start_gateway_with(second_chatgpt_config(
+        "http://127.0.0.1:1",
+        "SHUNT_TEST_ROUTED_CODEX_J",
+        "SHUNT_TEST_ROUTED_KEY_J",
+        &work.uri(),
+        "SHUNT_TEST_ROUTED_WORK_J",
+        // The rewrite is what invalidates the hint.
+        route("work-model", "codex-work", Some("gpt-5.6-terra")),
+    ))
+    .await;
+
+    let response = post_responses(&gateway, inbound_body("work-model")).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = work.received_requests().await.unwrap();
+    let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(sent["model"], "gpt-5.6-terra");
+    work.verify().await;
+}
+
+#[tokio::test]
+async fn an_unrewritten_route_still_forwards_the_routing_hint() {
+    // The positive twin: the hint is dropped because it went stale, not because
+    // routing happened. With `upstream_model == model` it still describes the
+    // body, so the pool passthrough forwards it as before.
+    if !can_bind_loopback() {
+        return;
+    }
+    let work_token = chatgpt_token(FAR_FUTURE_EXP, "acct-hint-kept");
+    std::env::set_var(
+        "SHUNT_TEST_ROUTED_CODEX_K",
+        chatgpt_token(FAR_FUTURE_EXP, "acct-k"),
+    );
+    std::env::set_var("SHUNT_TEST_ROUTED_WORK_K", &work_token);
+    std::env::set_var("SHUNT_TEST_ROUTED_KEY_K", "unused-key");
+
+    let work = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(header("x-codex-routing-hint", "model=routing-hint-probe"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("{}", "application/json"))
+        .expect(1)
+        .mount(&work)
+        .await;
+
+    let gateway = start_gateway_with(second_chatgpt_config(
+        "http://127.0.0.1:1",
+        "SHUNT_TEST_ROUTED_CODEX_K",
+        "SHUNT_TEST_ROUTED_KEY_K",
+        &work.uri(),
+        "SHUNT_TEST_ROUTED_WORK_K",
+        // No `upstream_model`, so nothing about the body changes.
+        route("work-model", "codex-work", None),
+    ))
+    .await;
+
+    let response = post_responses(&gateway, inbound_body("work-model")).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    work.verify().await;
 }
 
 #[tokio::test]

@@ -155,31 +155,46 @@ pub(super) const UNKNOWN_MODEL: &str = "unknown";
 /// `serde_json::from_slice` over a document that size is itself worker-blocking
 /// work — a 400 KiB document alone is already milliseconds, far past Tokio's
 /// ~100 µs budget. Doing both inside the same blocking task means the admission
-/// permit covers the parse too, and only the extracted [`ParsedModel`] (never
-/// the decoded bytes) crosses back to the async side (issue #291 follow-up).
-/// The identity/`Other` branches below have the same worker-blocking parse
-/// property but predate this fix — see the comment at their call site for why
-/// they are deliberately left as-is.
+/// permit covers the parse too (issue #291 follow-up). The identity/`Other`
+/// branches below have the same worker-blocking parse property but predate this
+/// fix — see the comment at their call site for why they are deliberately left
+/// as-is.
+///
+/// `keep_decoded` asks that branch to also hand the decoded [`Bytes`] back in
+/// [`ResolvedModel::decoded`]. The rule the paragraph above states is about not
+/// *parsing* a large body on the async executor — not about the bytes
+/// themselves — and the routed path (`super::routing::identity_body`) never
+/// parses them inline either: it either forwards them untouched or hands them
+/// to another bounded blocking task. They are already materialized inside this
+/// task and were already resident for the parse, so returning them costs no
+/// extra CPU and no extra peak memory, and it saves the routed path a second
+/// full decode of the same body (PR #478 review, P2). The caller passes `true`
+/// only when a route could actually match (`!routes.is_empty()`); with no
+/// routes configured the pool path forwards the original compressed bytes and
+/// the decoded copy would be dropped unused.
 pub(super) async fn resolve_model(
     headers: &HeaderMap,
     body: &Bytes,
     max_request_bytes: usize,
-) -> Option<String> {
+    keep_decoded: bool,
+) -> ResolvedModel {
     match crate::compression::body_encoding(headers) {
         BodyEncoding::Zstd => {
             match crate::compression::decode_zstd_and_parse(
                 body.clone(),
                 max_request_bytes,
-                |decoded| {
+                move |decoded| {
                     let decoded_bytes = decoded.len();
-                    (parse_model(&decoded), decoded_bytes)
+                    let parsed = parse_model(&decoded);
+                    (parsed, decoded_bytes, keep_decoded.then_some(decoded))
                 },
             )
             .await
             {
-                Ok(Some((parsed, decoded_bytes))) => {
-                    model_from_parsed(parsed, decoded_bytes, body.len())
-                }
+                Ok(Some((parsed, decoded_bytes, decoded))) => ResolvedModel {
+                    model: model_from_parsed(parsed, decoded_bytes, body.len()),
+                    decoded,
+                },
                 Ok(None) => {
                     tracing::warn!(
                         wire_bytes = body.len(),
@@ -187,7 +202,7 @@ pub(super) async fn resolve_model(
                         "inbound codex body decodes past the request size limit or the \
                          compressed-to-decoded ratio bound; model label unavailable"
                     );
-                    None
+                    ResolvedModel::default()
                 }
                 Err(error) => {
                     // `error` here is a libzstd-authored message (allocation/format
@@ -199,7 +214,7 @@ pub(super) async fn resolve_model(
                         error = %error,
                         "failed to decode zstd inbound codex body; model label unavailable"
                     );
-                    None
+                    ResolvedModel::default()
                 }
             }
         }
@@ -219,16 +234,41 @@ pub(super) async fn resolve_model(
             // still runs synchronously on the async executor. Left as-is
             // deliberately so that asymmetry with the zstd branch above is legible
             // rather than accidental.
-            model_from_parsed(parse_model(body), body.len(), body.len())
+            //
+            // `decoded` stays `None` here: the body is already identity bytes
+            // (or an encoding shunt cannot decode), so there is nothing a
+            // caller could reuse that it does not already hold.
+            ResolvedModel {
+                model: model_from_parsed(parse_model(body), body.len(), body.len()),
+                decoded: None,
+            }
         }
         BodyEncoding::Identity => {
             // Pre-existing (predates issue #291's fix, which only fuses the new
             // zstd decode with its parse — see the doc comment above): this parse
             // runs synchronously on the async executor rather than the blocking
             // pool. Left as-is deliberately, out of scope for the zstd-only fix.
-            model_from_parsed(parse_model(body), body.len(), body.len())
+            ResolvedModel {
+                model: model_from_parsed(parse_model(body), body.len(), body.len()),
+                decoded: None,
+            }
         }
     }
+}
+
+/// What [`resolve_model`] read out of the inbound body.
+///
+/// `decoded` carries the decoded body **only** on the zstd branch and only when
+/// the caller asked for it (`keep_decoded`); it is `None` for an identity or
+/// undecodable body, where the caller already holds everything there is.
+#[derive(Default)]
+pub(super) struct ResolvedModel {
+    /// The body's `model`, or `None` when it could not be read (a missing,
+    /// non-string, or unparseable field, or an undecodable body). Never the
+    /// [`UNKNOWN_MODEL`] sentinel — that is a label, not a model id.
+    pub(super) model: Option<String>,
+    /// The decoded body, reusable as identity-encoded input.
+    pub(super) decoded: Option<Bytes>,
 }
 
 /// The metrics/logging label for a request: [`resolve_model`]'s model, or
@@ -242,8 +282,9 @@ pub(super) async fn model_label(
     body: &Bytes,
     max_request_bytes: usize,
 ) -> String {
-    resolve_model(headers, body, max_request_bytes)
+    resolve_model(headers, body, max_request_bytes, false)
         .await
+        .model
         .unwrap_or_else(|| UNKNOWN_MODEL.to_string())
 }
 

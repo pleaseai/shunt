@@ -129,7 +129,7 @@ model = "deepseek-v4-flash"
 provider = "deepseek"
 ```
 
-`upstream_model`은 선택 사항이며 기본값은 `model`입니다. CLI에 입력하는 id와 벤더가 실제로 제공하는 id가 다를 때 지정하세요. shunt에 내장된 `kimi` 프리셋은 `kind = "anthropic"`이므로, Kimi Code로 향하는 Codex 라우트에는 별도의 `kind = "responses"` 프로바이더가 필요합니다 — Anthropic 종류의 프리셋으로 Codex 모델을 라우팅하면 부팅 시 거부됩니다.
+`upstream_model`은 선택 사항이며 기본값은 `model`입니다. CLI에 입력하는 id와 벤더가 실제로 제공하는 id가 다를 때 지정하세요. 라우팅 대상 프로바이더는 실제 자격 증명을 가져야 합니다 — 클라이언트 자신의 `Authorization`은 항상 제거되므로, 자격 증명이 없는 인증 모드(`passthrough` 또는 `none`)는 부팅 시 거부됩니다. shunt에 내장된 `kimi` 프리셋은 `kind = "anthropic"`이므로, Kimi Code로 향하는 Codex 라우트에는 별도의 `kind = "responses"` 프로바이더가 필요합니다 — Anthropic 종류의 프리셋으로 Codex 모델을 라우팅하면 부팅 시 거부됩니다.
 
 CLI 쪽에서는 Codex가 **shunt**를 바라보게 하고 `model`로 라우트를 선택합니다:
 
@@ -149,7 +149,7 @@ shunt는 Codex용 모델 카탈로그를 제공하지 않습니다 — `GET /v1/
 
 **ChatGPT가 아닌** 업스트림으로 라우팅된 요청에서 달라지는 점:
 
-- **헤더 허용 목록.** 클라이언트에서 가져오는 것은 `content-type`과 `accept`뿐이고, 여기에 `OpenAI-Beta: responses=experimental`이 추가됩니다(xAI/Grok에서는 생략). `authorization`, `x-api-key`, `chatgpt-account-id`, `originator`, `version`, `user-agent`, `session-id`, `x-codex-*`, `x-shunt-*`는 어느 것도 서드파티에 닿지 않습니다.
+- **헤더 허용 목록.** 클라이언트에서 가져오는 것은 `content-type`과 `accept`뿐이고, 여기에 해석된 자격 증명과 라우팅 대상 업스트림이 요구하는 identity만 더해집니다 — `OpenAI-Beta: responses=experimental`(xAI/Grok에서는 생략), 그리고 `xai_oauth` 라우트의 경우 Grok CLI identity 헤더. `authorization`, `x-api-key`, `chatgpt-account-id`, `originator`, `version`, `user-agent`, `session-id`, `x-codex-*`, `x-shunt-*`는 어느 것도 서드파티에 닿지 않습니다.
 - **본문 `model` 재작성.** `upstream_model`이 요청된 모델과 다르면 shunt가 최상위 `model`만 바꾸고 나머지 필드는 그대로 둡니다. JSON 객체가 아닌 본문은 그대로 보내지 않고 `400`으로 거부합니다.
 - **identity 인코딩.** zstd 요청 본문은 먼저 디코딩되며 — 순정 Responses API는 그 인코딩을 받지 않습니다 — `content-encoding`은 전달되지 않습니다.
 - **자격 증명 하나, 페일오버 없음.** 라우팅된 서드파티 뒤에는 풀이 없으므로 429나 5xx는 회전을 유발하지 않고 `retry-after`와 함께 그대로 릴레이됩니다.
@@ -169,4 +169,4 @@ shunt는 Codex용 모델 카탈로그를 제공하지 않습니다 — `GET /v1/
 
 - 루프백을 넘어서는 모든 경우에 `[server.auth]`로 이 엔드포인트를 게이팅하세요 — 프로바이더가 매 요청마다 실제 Codex bearer를 주입합니다.
 - 클라이언트 자신의 자격 증명은 어떤 것도 Codex 백엔드에 닿지 않습니다. 패스스루는 Codex CLI 자체의 요청 헤더를 그대로 전달하고 선택된 풀 계정의 bearer와 `chatgpt-account-id`만 바꿔 넣습니다(shunt 클라이언트 토큰 헤더, `[server.admin]` 자격 증명 헤더, `cookie` 헤더 전체, 내부용 `x-shunt-inbound-client` 라벨, 클라이언트의 `Authorization`/`chatgpt-account-id`, 그리고 `x-api-key`는 모두 제거되며 전달되지 않습니다).
-- 라우트 집합은 부팅 시 한 번 결정됩니다. 런타임에 `[server.codex_endpoint]`를 켜거나 끄면 재시작이 필요하다는 경고가 로깅됩니다. 다만 리로드로 대상 프로바이더를 바꾸는 것은 가능합니다.
+- 부팅 시 한 번 결정되는 것은 엔드포인트의 **HTTP 라우트 등록**뿐입니다. 런타임에 `[server.codex_endpoint]`를 켜거나 끄면 해당 경로를 추가·제거하려면 재시작이 필요하다는 경고가 로깅됩니다. 테이블이 *담고 있는* 내용은 모두 핫 리로드됩니다 — 대상 `provider`와 `[[server.codex_endpoint.routes]]` 모델 테이블 전체를 매 요청마다 라이브 config에서 읽으므로, 라우트를 추가·수정·삭제하면 리로드 시점에 반영됩니다.

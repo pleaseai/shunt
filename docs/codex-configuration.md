@@ -885,7 +885,8 @@ upstream_model = "deepseek-v4-flash"
 
 `upstream_model` is optional and defaults to `model`; set it when the id you want the CLI to type
 differs from the id the vendor serves. Config validation rejects a route to an unknown provider, to
-one that is not `kind = "responses"`, or to one using `auth = "passthrough"`, and rejects duplicate
+one that is not `kind = "responses"`, or to one using a credential-free auth mode (`passthrough`
+or `none`), and rejects duplicate
 or blank entries. Note that shunt's built-in `kimi` preset is `kind = "anthropic"` (the
 Anthropic-shaped coding endpoint), so a Codex route needs a **separate** `kind = "responses"`
 provider:
@@ -926,9 +927,10 @@ slash- or `~`-qualified vendor slugs (`MiniMax-M3`, `openai/gpt-5.6-sol`, `~open
 route as written.
 
 A routed request to a non-ChatGPT upstream sends only `content-type` and `accept` from the client
-(no `authorization`, `x-api-key`, `originator`, `session-id`, `x-codex-*`, or `x-shunt-*`), an
-identity-encoded body with `model` rewritten to `upstream_model`, and one credential — no pool and
-no failover, so a 429 relays verbatim with its `retry-after`. Routes hot-reload; only toggling
+(no `authorization`, `x-api-key`, `originator`, `session-id`, `x-codex-*`, or `x-shunt-*`), plus the
+identity the routed upstream itself requires (`OpenAI-Beta`, or the Grok-CLI headers for an
+`xai_oauth` route), an identity-encoded body with `model` rewritten to `upstream_model`, and one
+credential — no pool and no failover, so a 429 relays verbatim with its `retry-after`. Routes hot-reload; only toggling
 `[server.codex_endpoint]` itself needs a restart.
 
 ---

@@ -9,10 +9,25 @@
 //! the decoded JSON once and hand back plain bytes — so they share one entry
 //! point, [`identity_body`].
 
+use std::sync::OnceLock;
+
 use axum::{body::Bytes, http::HeaderMap};
 use serde_json::Value;
 
-use crate::compression::BodyEncoding;
+use crate::compression::{BodyEncoding, INLINE_ZSTD_OUTPUT_BYTES};
+
+/// Admission slots for the routed-body rewrite (parse + `model` replacement +
+/// re-serialize). Its own class, per `offload`'s module doc: a burst of large
+/// routed rewrites must not consume the decode pool's permits and stall every
+/// zstd request on the gateway, and vice versa.
+///
+/// A permit bounds *concurrency*, not the size of any one rewrite — that is
+/// bounded upstream by `max_request_bytes` and, on the zstd path, by the
+/// compressed-to-decoded ratio.
+fn rewrite_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    SLOTS.get_or_init(crate::offload::cpu_sized_semaphore)
+}
 
 /// Why a routed request's body could not be prepared. Both arms are
 /// gateway-owned failures the caller turns into a response; on the inbound
@@ -32,15 +47,27 @@ pub(super) enum BodyError {
 /// the top-level `model` with `rewrite_model` when one is given.
 ///
 /// `rewrite_model` is `None` when the route's `upstream_model` equals the model
-/// the client asked for; the body is then only decoded, never re-serialized, so
-/// a route that merely redirects a model reaches the upstream byte-for-byte as
-/// the client wrote it.
+/// the client asked for; the body is then never re-serialized, so a route that
+/// merely redirects a model reaches the upstream byte-for-byte as the client
+/// wrote it.
 ///
-/// The zstd branch fuses the decode with the rewrite inside one bounded
-/// blocking task via [`crate::compression::decode_zstd_and_parse`], for the same
-/// reason the model label does: the decoded body can be large enough that
-/// parsing it is itself worker-blocking work, so it must run under the decode's
-/// admission permit rather than on the async executor afterwards.
+/// `decoded` short-circuits the decode entirely. `super::model::resolve_model`
+/// already decoded a zstd body inside a bounded blocking task to read `model`,
+/// and that same buffer is exactly what this function would otherwise produce —
+/// so when the caller hands it over, this decodes nothing at all, whatever
+/// `content-encoding` claims (PR #478 review, P2). The branches below are the
+/// fallback for when there is nothing to reuse.
+///
+/// The rewrite itself never runs unbounded on the async executor. Inside the
+/// zstd fallback it is fused with the decode in that one bounded blocking task
+/// (`decode_zstd_and_parse`). Everywhere else — the reuse path and the identity
+/// fallback — it runs inline only for a body within
+/// [`INLINE_ZSTD_OUTPUT_BYTES`], the same calibrated gate the decode uses for
+/// its own inline fast path, and is otherwise offloaded to the blocking pool
+/// under [`rewrite_slots`]: a `serde_json` round trip over a multi-megabyte
+/// client-controlled document is milliseconds of worker-blocking work, far past
+/// Tokio's ~100 µs budget (PR #478 review, P1). With no rewrite there is no
+/// parse, so there is nothing to offload and the bytes return directly.
 ///
 /// A content coding shunt cannot decode fails the request rather than
 /// forwarding the opaque bytes: the routed path never forwards
@@ -49,9 +76,13 @@ pub(super) enum BodyError {
 pub(super) async fn identity_body(
     headers: &HeaderMap,
     body: &Bytes,
+    decoded: Option<Bytes>,
     rewrite_model: Option<&str>,
     max_request_bytes: usize,
 ) -> Result<Bytes, BodyError> {
+    if let Some(decoded) = decoded {
+        return apply_model_bounded(decoded, rewrite_model).await;
+    }
     match crate::compression::body_encoding(headers) {
         BodyEncoding::Zstd => {
             let rewrite_model = rewrite_model.map(ToOwned::to_owned);
@@ -84,7 +115,7 @@ pub(super) async fn identity_body(
                 }
             }
         }
-        BodyEncoding::Identity => apply_model(body.clone(), rewrite_model),
+        BodyEncoding::Identity => apply_model_bounded(body.clone(), rewrite_model).await,
         BodyEncoding::Other => {
             tracing::warn!(
                 content_encoding = ?headers.get(axum::http::header::CONTENT_ENCODING),
@@ -96,11 +127,47 @@ pub(super) async fn identity_body(
     }
 }
 
+/// [`apply_model`] under bounded admission: inline for a body within
+/// [`INLINE_ZSTD_OUTPUT_BYTES`], on the blocking pool under [`rewrite_slots`]
+/// above it.
+///
+/// Only the rewriting case is ever offloaded — without a `rewrite_model` there
+/// is no parse and no serialize, just the bytes themselves, so the gate is
+/// skipped rather than paying a permit and a task hop to return them.
+///
+/// A `spawn_bounded` failure (a closed semaphore, or a panic inside the task)
+/// is reported as [`BodyError::Invalid`]: the body could not be prepared, which
+/// is precisely what that arm means to the caller.
+async fn apply_model_bounded(
+    decoded: Bytes,
+    rewrite_model: Option<&str>,
+) -> Result<Bytes, BodyError> {
+    let Some(rewrite_model) = rewrite_model else {
+        return Ok(decoded);
+    };
+    if decoded.len() <= INLINE_ZSTD_OUTPUT_BYTES {
+        return apply_model(decoded, Some(rewrite_model));
+    }
+    let rewrite_model = rewrite_model.to_string();
+    crate::offload::spawn_bounded(rewrite_slots(), move || {
+        apply_model(decoded, Some(&rewrite_model))
+    })
+    .await
+    .unwrap_or_else(|error| {
+        tracing::warn!(
+            error = %error,
+            "failed to offload the routed inbound codex body rewrite"
+        );
+        Err(BodyError::Invalid)
+    })
+}
+
 /// Replace the decoded body's top-level `model`, or hand the decoded bytes back
 /// untouched when there is nothing to rewrite.
 ///
-/// Runs inside the zstd branch's blocking task, so it takes and returns owned
-/// [`Bytes`] rather than borrowing the decoded buffer.
+/// Runs inside a blocking task — the zstd branch's decode task, or the one
+/// [`apply_model_bounded`] spawns — so it takes and returns owned [`Bytes`]
+/// rather than borrowing the decoded buffer.
 ///
 /// The parse error is deliberately not logged: `serde_json::Error`'s `Display`
 /// embeds the offending value, so recording it would echo the
@@ -162,7 +229,7 @@ mod tests {
     async fn rewrites_the_model_and_keeps_every_other_field() {
         let body =
             Bytes::from_static(br#"{"model":"glm-5.3","instructions":"be brief","stream":true}"#);
-        let out = identity_body(&HeaderMap::new(), &body, Some("gpt-5.6-sol"), LIMIT)
+        let out = identity_body(&HeaderMap::new(), &body, None, Some("gpt-5.6-sol"), LIMIT)
             .await
             .unwrap_or_else(|_| panic!("a plain JSON object should rewrite"));
         let value: Value = serde_json::from_slice(&out).unwrap();
@@ -174,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn returns_a_plain_body_untouched_without_a_rewrite() {
         let body = Bytes::from_static(br#"{"model":"glm-5.3"}"#);
-        let out = identity_body(&HeaderMap::new(), &body, None, LIMIT)
+        let out = identity_body(&HeaderMap::new(), &body, None, None, LIMIT)
             .await
             .unwrap_or_else(|_| panic!("a plain body needs no work"));
         assert_eq!(out, body);
@@ -191,14 +258,20 @@ mod tests {
             .unwrap()
             .expect("the fixture should be large enough to compress");
 
-        let out = identity_body(&zstd_headers(), &compressed, None, LIMIT)
+        let out = identity_body(&zstd_headers(), &compressed, None, None, LIMIT)
             .await
             .unwrap_or_else(|_| panic!("a zstd body should decode"));
         assert_eq!(out, plain);
 
-        let rewritten = identity_body(&zstd_headers(), &compressed, Some("gpt-5.6-sol"), LIMIT)
-            .await
-            .unwrap_or_else(|_| panic!("a zstd body should decode and rewrite"));
+        let rewritten = identity_body(
+            &zstd_headers(),
+            &compressed,
+            None,
+            Some("gpt-5.6-sol"),
+            LIMIT,
+        )
+        .await
+        .unwrap_or_else(|_| panic!("a zstd body should decode and rewrite"));
         let value: Value = serde_json::from_slice(&rewritten).unwrap();
         assert_eq!(value["model"], "gpt-5.6-sol");
     }
@@ -210,6 +283,7 @@ mod tests {
                 identity_body(
                     &HeaderMap::new(),
                     &Bytes::from_static(body),
+                    None,
                     Some("m"),
                     LIMIT
                 )
@@ -227,7 +301,61 @@ mod tests {
             "gzip".parse().unwrap(),
         );
         assert!(matches!(
-            identity_body(&headers, &Bytes::from_static(b"{}"), None, LIMIT).await,
+            identity_body(&headers, &Bytes::from_static(b"{}"), None, None, LIMIT).await,
+            Err(BodyError::Invalid)
+        ));
+    }
+    /// A rewrite over a body past the inline gate takes the offloaded path
+    /// (`apply_model_bounded` -> `spawn_bounded`), which must produce exactly
+    /// the same result as the inline one — the gate is about *where* the parse
+    /// runs, never about what it produces.
+    #[tokio::test]
+    async fn rewrites_a_body_larger_than_the_inline_gate() {
+        let filler = "x".repeat(200 * 1024);
+        let body = Bytes::from(
+            serde_json::json!({"model": "glm-5.3", "input": filler, "stream": true}).to_string(),
+        );
+        assert!(
+            body.len() > INLINE_ZSTD_OUTPUT_BYTES,
+            "the fixture must exceed the inline gate to exercise the offload"
+        );
+
+        let out = identity_body(&HeaderMap::new(), &body, None, Some("gpt-5.6-sol"), LIMIT)
+            .await
+            .unwrap_or_else(|_| panic!("a large JSON object should rewrite"));
+
+        let value: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["model"], "gpt-5.6-sol");
+        assert_eq!(value["stream"], true);
+        assert_eq!(value["input"].as_str().unwrap().len(), 200 * 1024);
+    }
+
+    /// A supplied `decoded` skips the decode entirely, whatever
+    /// `content-encoding` claims. Proven the only way it can be: the `body` is
+    /// garbage that no zstd decode could survive, so a successful rewrite is
+    /// possible only if that decode never ran.
+    #[tokio::test]
+    async fn reuses_a_supplied_decoded_body_instead_of_decoding() {
+        let garbage = Bytes::from_static(b"this is not zstd and never was");
+        let decoded = Bytes::from_static(br#"{"model":"glm-5.3","instructions":"be brief"}"#);
+
+        let out = identity_body(
+            &zstd_headers(),
+            &garbage,
+            Some(decoded),
+            Some("gpt-5.6-sol"),
+            LIMIT,
+        )
+        .await
+        .unwrap_or_else(|_| panic!("the supplied decoded body should be used as-is"));
+
+        let value: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["model"], "gpt-5.6-sol");
+        assert_eq!(value["instructions"], "be brief");
+
+        // Control: without the reuse, the same call fails on the decode.
+        assert!(matches!(
+            identity_body(&zstd_headers(), &garbage, None, Some("gpt-5.6-sol"), LIMIT).await,
             Err(BodyError::Invalid)
         ));
     }

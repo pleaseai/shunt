@@ -36,7 +36,7 @@ provider = "codex"   # default; the target chatgpt_oauth provider
 # Optional: per-model routing to other Responses-compatible upstreams.
 [[server.codex_endpoint.routes]]
 model = "glm-5.3"          # what the Codex CLI asks for
-provider = "glm"           # kind = "responses", not auth = "passthrough"
+provider = "glm"           # kind = "responses", with a real credential
 upstream_model = "glm-5.3" # optional; defaults to `model`
 ```
 
@@ -54,10 +54,11 @@ provider has the Codex OAuth injection this endpoint depends on.
 Each `[[server.codex_endpoint.routes]]` entry is validated at boot too: the named provider must
 exist, be `kind = "responses"` (the endpoint relays raw Responses bytes, so an Anthropic-kind
 provider cannot serve them — pointing a route at the built-in `kimi` preset, which is
-`kind = "anthropic"`, is rejected for exactly this reason), and must not use `auth = "passthrough"`
-(the inbound client's own `Authorization` is always stripped, so there would be no credential to
-send). Every other auth mode a `kind = "responses"` provider can legally carry — `api_key`,
-`chatgpt_oauth`, `xai_oauth` — is accepted. Duplicate `model` entries and blank fields are rejected.
+`kind = "anthropic"`, is rejected for exactly this reason), and must not use a credential-free auth
+mode (`passthrough` or `none`) — the inbound client's own `Authorization` is always stripped, so
+`passthrough` would have nothing to forward and `none` sends nothing by design, leaving the routed
+request unauthenticated either way. Every other auth mode a `kind = "responses"` provider can
+legally carry — `api_key`, `chatgpt_oauth`, `xai_oauth` — is accepted. Duplicate `model` entries and blank fields are rejected.
 Routes are read from the live config snapshot on every request, so adding, editing, or removing one
 takes effect on **reload**; only toggling the `[server.codex_endpoint]` table itself on or off needs
 a restart (it registers the HTTP routes).
@@ -121,7 +122,11 @@ model the client asked for; only the wire body and `upstream_model` carry the up
 
 A route naming another `chatgpt_oauth` provider keeps the whole passthrough described below — its
 own account pool, session-sticky selection, failover, refresh, `x-shunt-account`, and verbatim
-header forwarding. A route naming any other provider (a native Responses API such as Z.ai GLM,
+header forwarding. One header is the exception: when the route rewrites `upstream_model`, the
+client's `x-codex-routing-hint` (which names the *public* model it asked for) no longer describes
+the body, so it is dropped rather than forwarded contradicting it. shunt does not re-synthesize the
+hint — it does not own that grammar for a routed id — and lets the backend route on the body alone.
+A route naming any other provider (a native Responses API such as Z.ai GLM,
 DeepSeek, Kimi Code, MiniMax, OpenRouter, Vercel AI Gateway, or stock OpenAI) takes a deliberately
 narrower path:
 
@@ -130,10 +135,12 @@ narrower path:
   `originator`, `version`, `user-agent`, `session-id`, or `x-codex-*`, and forwarding an inbound
   `authorization` / `x-api-key` would leak a caller's own secret to a host it was never issued for.
   So the routed request is built from scratch: only `content-type` (defaulted to
-  `application/json`) and `accept` come from the client, plus `OpenAI-Beta: responses=experimental`
-  under the same flavor gate the outbound path uses (skipped for xAI/Grok). Everything else is
-  dropped by construction, so a header added later cannot start reaching a third party because
-  nobody remembered to deny it.
+  `application/json`) and `accept` come from the client. Added to that are the resolved credential
+  and whatever identity the *routed upstream itself* gates on: `OpenAI-Beta: responses=experimental`
+  under the same flavor gate the outbound path uses (skipped for xAI/Grok), and — for an
+  `xai_oauth` route — the four Grok-CLI headers the subscription chat proxy requires, shared with
+  the outbound path so the two cannot drift. Everything else is dropped by construction, so a header
+  added later cannot start reaching a third party because nobody remembered to deny it.
 - **Body `model` rewrite.** When the route's `upstream_model` differs from what the client asked
   for, shunt parses the body, replaces the top-level `model`, and re-serializes it. Every other
   field is preserved. A body that is not a JSON object cannot be rewritten and is rejected with a
@@ -143,7 +150,11 @@ narrower path:
 - **Identity encoding.** The routed body is always sent uncompressed — a zstd request body is a
   ChatGPT/Codex-backend convention that a stock Responses API does not accept — so a compressed
   inbound body is decoded even when nothing needs rewriting, and `content-encoding` is not
-  forwarded.
+  forwarded. The decode is not repeated: when any route is configured, the bounded blocking task
+  that already decoded the body to read its `model` hands that same buffer to the routed path. The
+  rewrite itself is bounded too — inline for a small body, on the blocking pool under its own
+  admission slots above the calibrated inline gate — so a multi-megabyte `serde_json` round trip
+  never runs on the async executor.
 - **One credential, no pool, no failover.** shunt resolves the routed provider's single credential
   (`api_key` from its `api_key_env`, or an OAuth bearer) and sends exactly one request. There is no
   account rotation to fall back to.
@@ -163,7 +174,9 @@ decodes an in-memory copy first (bounded by the same 64 MiB cap the endpoint alr
 uncompressed body). If the body still cannot be read — an undecodable frame, an over-cap expansion,
 or a content coding shunt does not decode — the request relays normally and only the label degrades
 to `unknown`, with a `warn` naming the reason. It is never silently swallowed: an unexplained
-`model="unknown"` on every metric, log line, and span was the original symptom.
+`model="unknown"` on every metric, log line, and span was the original symptom. With no routes
+configured that decoded copy is dropped as soon as the label is read; with routes configured it is
+kept and handed to the routed path, which would otherwise decode the same body a second time.
 
 ## Raw passthrough
 
