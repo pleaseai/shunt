@@ -1,0 +1,57 @@
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_13b7e9055e0ea5::t_49032d51dd889e 101-158,163
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_13b7e9055e0ea5::t_af702da5a532ea 291
+site/src/content/docs/ja/reference/configuration.md
+  s_13b7e9055e0ea5::t_af702da5a532ea 291
+site/src/content/docs/ko/guides/inbound-codex-endpoint.md
+  s_13b7e9055e0ea5::t_49032d51dd889e 101-158,163
+README.ja.md
+  s_13b7e9055e0ea5::t_44d99b62a71a12 163
+site/src/content/docs/ja/guides/inbound-codex-endpoint.md
+  s_13b7e9055e0ea5::t_96bca9da2db8a7 163
+  s_13b7e9055e0ea5::t_49032d51dd889e 101-158
+docs/m11-inbound-codex-endpoint.md
+  s_13b7e9055e0ea5::t_de4297a8b09157 22,35-40,45-46,54-64,98,100-104,107-157,344-353
+site/src/content/docs/ja/reference/endpoints.md
+  s_13b7e9055e0ea5::t_693e60bd5034d3 49
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_13b7e9055e0ea5::t_693e60bd5034d3 49
+site/src/content/docs/reference/endpoints.md
+  s_13b7e9055e0ea5::t_693e60bd5034d3 74
+README.md
+  s_13b7e9055e0ea5::t_44d99b62a71a12 163
+README.zh-CN.md
+  s_13b7e9055e0ea5::t_44d99b62a71a12 158
+site/src/content/docs/ko/reference/endpoints.md
+  s_13b7e9055e0ea5::t_693e60bd5034d3 49
+docs/codex-configuration.md
+  s_13b7e9055e0ea5::t_8a59117415dc45 817-818
+  s_13b7e9055e0ea5::t_791e625f9fdeb2 836-932
+  s_13b7e9055e0ea5::t_8d11c9206b65c0 933
+site/src/content/docs/ko/reference/configuration.md
+  s_13b7e9055e0ea5::t_af702da5a532ea 192-193,197-208,333
+site/src/content/docs/reference/configuration.md
+  s_13b7e9055e0ea5::t_af702da5a532ea 288-289,293-304,448
+README.ko.md
+  s_13b7e9055e0ea5::t_44d99b62a71a12 160
+site/src/content/docs/zh-cn/guides/inbound-codex-endpoint.md
+  s_13b7e9055e0ea5::t_96bca9da2db8a7 163
+  s_13b7e9055e0ea5::t_49032d51dd889e 101-158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fcfc9c3570c6ccaa5ff6c1d614d827611c6262f2",
+  "prompts": {},
+  "sessions": {
+    "s_13b7e9055e0ea5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "558cc728-62d7-40c9-b65a-973cc42c9e4e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
