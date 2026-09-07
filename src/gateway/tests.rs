@@ -1263,6 +1263,35 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
     assert_eq!(response.status(), StatusCode::OK);
     let html = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     assert!(String::from_utf8_lossy(&html).contains("another site"));
+
+    // What a real browser sends when it submits the device page's own form:
+    // `Origin: null` (the page is served with `Referrer-Policy: no-referrer`)
+    // plus `Sec-Fetch-Site: same-origin`. The guard must let it through to
+    // credential verification instead of blocking it as cross-site.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/device")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::ORIGIN, "null")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(format!(
+                    "user_code={user_code}&login=dev%40example.com&secret=wrong"
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8_lossy(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+        .into_owned();
+    assert!(!html.contains("another site"), "{html}");
+    assert!(
+        html.contains("The login or secret was not accepted."),
+        "{html}"
+    );
     assert!(state.gateway_stores.device_grants.approve(
         user_code,
         Identity {
