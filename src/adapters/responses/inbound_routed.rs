@@ -88,10 +88,10 @@ pub(crate) async fn forward_codex_routed(
 /// receive an OpenAI-only header.
 ///
 /// [`ShuntCredentials::strip_reserved_slots`] runs last even though an allowlist
-/// makes it a no-op. This is forward site 4 of the enumeration in `auth::slots`,
-/// and the invariant that file documents — every forward site mirrors the accept
-/// set — is worth stating in code rather than in a comment that a future
-/// allowlist entry could quietly invalidate.
+/// makes it a no-op today. This is deliberately *not* a forward site in the
+/// `auth::slots` enumeration — nothing caller-supplied that could carry a
+/// credential is a candidate here — but the strip states the invariant in code
+/// rather than in a comment a future allowlist entry could quietly invalidate.
 fn routed_request_headers(state: &AppState, route: &Route, client: &HeaderMap) -> HeaderMap {
     let mut out = HeaderMap::new();
     out.insert(
