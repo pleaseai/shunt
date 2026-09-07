@@ -69,6 +69,8 @@ Google 使用默认的 `openid email profile` scope。shunt 要求 Google UserIn
 
 对于 GitHub、SAML 或其他不暴露 shunt 所需标准 OIDC 界面的提供方,请在其前面放一个诸如 [Dex](https://dexidp.io/docs/connectors/) 的 OIDC 身份提供方,并在此处配置 Dex 的 issuer。直接对接特定提供方的 OAuth2 集成不在范围内。
 
+issuer 和每个 endpoint 都必须使用 HTTPS。明文 HTTP 仅在 `localhost` 或 `127.0.0.1` 上被接受：批准页面的 Content Security Policy 只能点名这两个回环主机，因此位于 `[::1]` 或其他 `127.0.0.0/8` 地址上的 IdP 会在启动时被拒绝，而不是之后在浏览器中被拦截。
+
 `allowed_domains` 或 `allowed_emails` 至少需要一个非空条目;缺少它时 shunt 拒绝启动。配置了 `[server.gateway.oidc]` 后,`users_env` 变为可选。保留 `SHUNT_GATEWAY_USERS` 会同时显示 SSO 和密码登录,取消设置则只显示提供方按钮。
 
 所有非回环部署都请使用 HTTPS。默认情况下,`/device` 忽略 `X-Forwarded-For` 与 `X-Real-IP`,并按 socket 对端限流。如果 shunt 只能通过一个可信的反向代理触达,可以设置 `trust_forwarded_for = true`,并把该代理配置为先移除客户端提供的转发头部,再写入它自己可信的客户端地址。绝不要在直接暴露的网关上启用这个选项。

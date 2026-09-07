@@ -72,6 +72,8 @@ GitHub, SAML 등 shunt가 기대하는 표준 OIDC 화면을 노출하지 않는
 앞단에 두고 여기에 Dex issuer를 구성하세요. 프로바이더별 직접 OAuth2
 통합은 범위 밖입니다.
 
+issuer와 모든 endpoint는 HTTPS를 써야 합니다. 평문 HTTP는 `localhost` 또는 `127.0.0.1`에서만 허용됩니다. 승인 페이지의 Content Security Policy가 이름 붙일 수 있는 loopback 호스트가 그 둘뿐이므로, `[::1]`이나 다른 `127.0.0.0/8` 주소의 IdP는 나중에 브라우저에서 막히는 대신 시작 시점에 거부됩니다.
+
 비어 있지 않은 `allowed_domains` 또는 `allowed_emails` 항목이 최소 하나 필요하며,
 없으면 shunt는 시작을 거부합니다. `[server.gateway.oidc]`가 구성되면
 `users_env`는 선택이 됩니다. SSO와 비밀번호 로그인을 함께 보여주려면

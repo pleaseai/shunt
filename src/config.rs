@@ -1203,7 +1203,14 @@ fn validate_idp_url(
     let url = reqwest::Url::parse(raw)
         .map_err(|error| section.invalid(format!("{key} is not a valid URL: {error}")))?;
     let invalid_issuer_parts = issuer && url.query().is_some();
-    if !url_uses_safe_transport(&url)
+    // Narrower than `url_uses_safe_transport`: an IdP URL is also a browser
+    // redirect target, and the device and admin login pages can only name
+    // `localhost` and `127.0.0.1` in their CSP `form-action`, so any other
+    // loopback host must fail here rather than in the browser.
+    let safe_transport = url.scheme() == "https"
+        || url.scheme() == "http"
+            && crate::gateway::idp_client::host_is_csp_loopback(url.host_str().unwrap_or_default());
+    if !safe_transport
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
@@ -1216,7 +1223,7 @@ fn validate_idp_url(
             "userinfo or fragment"
         };
         return Err(section.invalid(format!(
-            "{key} must use https (or http on loopback), include a host, and contain no {parts}"
+            "{key} must use https (or http on localhost or 127.0.0.1), include a host, and contain no {parts}"
         )));
     }
     Ok(url)
@@ -5746,6 +5753,20 @@ mod tests {
             Err(ConfigError::InvalidGatewayOidc { .. })
         ));
         oidc.provider.authorization_endpoint = Some("http://127.0.0.1:8787/authorize".into());
+        assert!(oidc.resolve().is_ok());
+        // Loopback hosts a CSP host-source cannot name are refused at
+        // configuration time, so the browser never sees the blocked redirect.
+        for blocked in [
+            "http://[::1]:8787/authorize",
+            "http://127.0.0.2:8787/authorize",
+        ] {
+            oidc.provider.authorization_endpoint = Some(blocked.into());
+            assert!(
+                matches!(oidc.resolve(), Err(ConfigError::InvalidGatewayOidc { .. })),
+                "{blocked}"
+            );
+        }
+        oidc.provider.authorization_endpoint = Some("http://localhost:8787/authorize".into());
         assert!(oidc.resolve().is_ok());
         std::env::remove_var(secret_env);
     }

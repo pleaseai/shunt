@@ -277,19 +277,24 @@ fn sanitize_error_description(value: &str) -> Option<String> {
     (!sanitized.trim().is_empty()).then_some(sanitized)
 }
 
+/// The loopback hosts a CSP host-source can name. CSP's host-source grammar
+/// admits only letters, digits, and hyphens in a host, so an IPv6 literal such
+/// as `[::1]` cannot be expressed at all, and a port wildcard does not widen
+/// `127.0.0.1` to the rest of `127.0.0.0/8`. Plain-`http` identity-provider
+/// URLs are therefore accepted only on these two hosts, so that everything
+/// [`validate_endpoint`] admits is also reachable through
+/// [`IDP_REDIRECT_FORM_ACTION`]; an IdP on any other loopback address fails at
+/// configuration or discovery time instead of silently in the browser.
+pub(crate) fn host_is_csp_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1"
+}
+
 /// CSP `form-action` source list for a page whose form POST answers with a
 /// redirect to the identity provider. Chrome and WebKit enforce `form-action`
 /// against that post-submission redirect chain (w3c/webappsec-csp#8), and the
 /// authorization endpoint is not known when such a page renders, so this
-/// approximates the set `validate_endpoint` accepts: any `https` origin plus
-/// loopback `http`.
-///
-/// The approximation is deliberately not exact. `validate_endpoint` accepts
-/// every loopback host, but CSP's host-source grammar cannot express an IPv6
-/// literal and a port wildcard does not widen the address, so an IdP served
-/// from `http://[::1]:…` or another `127.0.0.0/8` address passes validation
-/// and is still blocked by the browser. Such a deployment must front the IdP
-/// with `https`, `localhost`, or `127.0.0.1`.
+/// allows exactly the set `validate_endpoint` accepts: any `https` origin plus
+/// `http` on the hosts [`host_is_csp_loopback`] names.
 pub(crate) const IDP_REDIRECT_FORM_ACTION: &str =
     "'self' https: http://127.0.0.1:* http://localhost:*";
 
@@ -299,8 +304,7 @@ pub(crate) const SELF_FORM_ACTION: &str = "'self'";
 fn validate_endpoint(raw: &str, name: &str) -> Result<()> {
     let url = Url::parse(raw).with_context(|| format!("discovered {name} is not a valid URL"))?;
     let safe_transport = url.scheme() == "https"
-        || url.scheme() == "http"
-            && crate::config::host_is_loopback(url.host_str().unwrap_or_default());
+        || url.scheme() == "http" && host_is_csp_loopback(url.host_str().unwrap_or_default());
     if !safe_transport
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -319,6 +323,43 @@ fn local_part(email: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The transport rule and the CSP source list must admit the same set:
+    /// an endpoint that validates but that the browser's `form-action` blocks
+    /// is the failure this pairing exists to prevent.
+    #[test]
+    fn endpoint_transport_rule_matches_csp_form_action() {
+        for accepted in [
+            "https://accounts.example.com/authorize",
+            "http://localhost:5556/dex/auth",
+            "http://LOCALHOST:5556/dex/auth",
+            "http://127.0.0.1:5556/dex/auth",
+        ] {
+            assert!(
+                validate_endpoint(accepted, "authorization_endpoint").is_ok(),
+                "{accepted}"
+            );
+        }
+        for rejected in [
+            "http://[::1]:5556/dex/auth",
+            "http://127.0.0.2:5556/dex/auth",
+            "http://idp.example/authorize",
+        ] {
+            assert!(
+                validate_endpoint(rejected, "authorization_endpoint").is_err(),
+                "{rejected}"
+            );
+        }
+        for host in ["localhost", "127.0.0.1"] {
+            assert!(host_is_csp_loopback(host));
+            assert!(
+                IDP_REDIRECT_FORM_ACTION.contains(&format!("http://{host}:*")),
+                "{host} is accepted by validation but absent from the CSP source list"
+            );
+        }
+        assert!(!host_is_csp_loopback("[::1]"));
+        assert!(!host_is_csp_loopback("127.0.0.2"));
+    }
 
     #[test]
     fn error_fields_are_sanitized_and_bounded() {

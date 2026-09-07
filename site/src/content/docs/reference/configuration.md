@@ -133,15 +133,15 @@ Presence of this subtable adds an OIDC/SSO button to the admin browser login pag
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
 | `public_url` | required | Externally reachable bare HTTPS origin for the admin surface; loopback HTTP is allowed. The redirect URI is `{public_url}/admin/oidc/callback` |
-| `issuer` | required | OIDC discovery issuer. Must use HTTPS, except HTTP on loopback; a path is allowed |
+| `issuer` | required | OIDC discovery issuer. Must use HTTPS, except HTTP on `localhost` or `127.0.0.1`; a path is allowed |
 | `client_id` | required | OIDC client id |
 | `client_secret_env` | `SHUNT_ADMIN_OIDC_SECRET` | Env var holding the non-empty client secret |
 | `allowed_domains` | `[]` | Case-insensitive email domains allowed to administer shunt |
 | `allowed_emails` | `[]` | Case-insensitive full email addresses allowed to administer shunt |
 | `scopes` | `openid email profile` | Scopes sent to the authorization endpoint |
-| `authorization_endpoint` | discovery | Advanced authorization URL override; HTTPS or loopback HTTP only |
-| `token_endpoint` | discovery | Advanced token URL override; HTTPS or loopback HTTP only |
-| `userinfo_endpoint` | discovery | Advanced OIDC UserInfo URL override; HTTPS or loopback HTTP only |
+| `authorization_endpoint` | discovery | Advanced authorization URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
+| `token_endpoint` | discovery | Advanced token URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
+| `userinfo_endpoint` | discovery | Advanced OIDC UserInfo URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
 
 At least one non-empty `allowed_domains` or `allowed_emails` entry is mandatory. Startup also fails closed for an invalid `public_url`, empty issuer/client id, or missing client secret. shunt accepts only a non-empty UserInfo email with `email_verified = true`. The browser flow uses PKCE and a `pending_ttl_secs`-bound, single-use state; callback/token/UserInfo failures produce generic browser messages without echoing provider input. The callback re-checks the current hot-reloaded allowlist before minting the same HttpOnly admin session cookie as token login, then redirects to the fixed `/admin` target.
 
@@ -219,15 +219,15 @@ Presence of this subtable replaces or supplements the password approval form wit
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `issuer` | required | OIDC discovery issuer. Must use HTTPS, except HTTP on loopback; a path is allowed |
+| `issuer` | required | OIDC discovery issuer. Must use HTTPS, except HTTP on `localhost` or `127.0.0.1`; a path is allowed |
 | `client_id` | required | OIDC client id |
 | `client_secret_env` | `SHUNT_GATEWAY_OIDC_SECRET` | Env var holding the non-empty client secret |
 | `allowed_domains` | `[]` | Case-insensitive email domains allowed to approve a device |
 | `allowed_emails` | `[]` | Case-insensitive full email addresses allowed to approve a device |
 | `scopes` | `openid email profile` | Scopes sent to the authorization endpoint; custom values must include `openid` and `email` |
-| `authorization_endpoint` | discovery | Advanced authorization URL override; HTTPS or loopback HTTP only |
-| `token_endpoint` | discovery | Advanced token URL override; HTTPS or loopback HTTP only |
-| `userinfo_endpoint` | discovery | Advanced OIDC UserInfo URL override; HTTPS or loopback HTTP only |
+| `authorization_endpoint` | discovery | Advanced authorization URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
+| `token_endpoint` | discovery | Advanced token URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
+| `userinfo_endpoint` | discovery | Advanced OIDC UserInfo URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
 
 At least one non-empty `allowed_domains` or `allowed_emails` entry is mandatory. shunt accepts only a non-empty UserInfo email with `email_verified = true`. The browser flow uses a single-use ten-minute state and PKCE, and callback/token/UserInfo failures produce generic browser messages without echoing provider input. The redirect URI registered at the provider is `{public_url}/device/callback`. For GitHub, SAML, or another non-OIDC provider, use an OIDC broker such as Dex; direct provider-specific OAuth2 integrations are out of scope.
 

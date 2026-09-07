@@ -154,7 +154,8 @@ allowed_domains = ["example.com"]
 The registered redirect URI is
 `{public_url}/admin/oidc/callback`. `public_url` must be a bare HTTPS origin
 (loopback HTTP is allowed for local development). The issuer and optional endpoint
-overrides use HTTPS or loopback HTTP only. Startup also fails closed for an empty
+overrides use HTTPS, or HTTP on `localhost`/`127.0.0.1` only (the loopback
+hosts the login page's CSP `form-action` can name). Startup also fails closed for an empty
 issuer/client id, missing or empty client-secret environment variable, or an empty
 email/domain allowlist.
 
