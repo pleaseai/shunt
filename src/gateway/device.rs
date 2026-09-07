@@ -142,6 +142,15 @@ pub(super) fn same_origin(headers: &HeaderMap, public_url: &str) -> bool {
     if fetch_site.is_some_and(|site| site.eq_ignore_ascii_case("cross-site")) {
         return false;
     }
+    // Fetch Metadata is set by the browser, never by page content, so a
+    // `same-origin` verdict is decisive on its own. It must also be checked
+    // before `Origin`: the device page is served with
+    // `Referrer-Policy: no-referrer`, and under that policy browsers send
+    // `Origin: null` on the page's own form POST (Fetch, "append a request
+    // `Origin` header"), which would never equal `public_url`.
+    if fetch_site.is_some_and(|site| site.eq_ignore_ascii_case("same-origin")) {
+        return true;
+    }
 
     let mut has_origin_signal = false;
     if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
@@ -417,5 +426,25 @@ mod tests {
         navigation.insert("sec-fetch-site", HeaderValue::from_static("none"));
         assert!(same_origin(&navigation, "https://gateway.example"));
         assert!(!same_origin(&HeaderMap::new(), "https://gateway.example"));
+    }
+
+    /// A browser submitting the device page's own form sends `Origin: null`
+    /// because the page carries `Referrer-Policy: no-referrer`; the
+    /// `Sec-Fetch-Site: same-origin` signal it sends alongside is what proves
+    /// the request is legitimate.
+    #[test]
+    fn csrf_accepts_null_origin_when_fetch_metadata_says_same_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, HeaderValue::from_static("null"));
+        headers.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        assert!(same_origin(&headers, "https://gateway.example"));
+
+        // Without Fetch Metadata a `null` origin proves nothing, so it stays
+        // rejected; and Fetch Metadata saying cross-site still wins.
+        let mut bare = HeaderMap::new();
+        bare.insert(header::ORIGIN, HeaderValue::from_static("null"));
+        assert!(!same_origin(&bare, "https://gateway.example"));
+        bare.insert("sec-fetch-site", HeaderValue::from_static("cross-site"));
+        assert!(!same_origin(&bare, "https://gateway.example"));
     }
 }

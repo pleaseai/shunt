@@ -164,10 +164,15 @@ form remains available when `users_env` is populated; when it is absent, only th
 SSO button is rendered.
 
 The browser form is server-rendered and uses no client-side script. Its mutation
-is accepted only with a same-origin `Origin` or `Referer`, a same-origin/same-site
-Fetch Metadata signal, or a browser-navigation `Sec-Fetch-Site: none` request
-without contradictory cross-site hints. A rejected request returns a human-readable
-HTML error page with a non-success HTTP status.
+is accepted with a `Sec-Fetch-Site: same-origin` Fetch Metadata signal (decisive
+on its own), a same-origin `Origin` or `Referer`, a same-site Fetch Metadata
+signal, or a browser-navigation `Sec-Fetch-Site: none` request without
+contradictory cross-site hints. Fetch Metadata is consulted before `Origin`
+because the page is served with `Referrer-Policy: no-referrer`, under which
+browsers send `Origin: null` on the page's own form submission. A rejected
+request re-renders the approval page carrying a human-readable message:
+`POST /device` answers `200 OK` so the form stays available for a retry, while
+`POST /device/authorize` answers `403 Forbidden`.
 
 ## State and operational boundary
 

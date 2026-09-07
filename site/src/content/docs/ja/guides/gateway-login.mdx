@@ -106,7 +106,7 @@ Claude Code を起動して `/login` を実行します。CLI がデバイスコ
 2. SSO ボタン（Google なら **Sign in with Google**、その他のプロバイダーなら **Sign in with SSO**）を選び、プロバイダーのログインを完了します。静的ユーザーも設定されている場合は、メールアドレスとシークレットを入力して **Approve device** を選ぶ方法も引き続き利用できます。
 3. 成功ページが表示されたら Claude Code に戻ります。
 
-コードが事前入力されていても、それによって自動承認されることはありません。パスワード承認の POST は same-origin で保護されます。外部コールバックは代わりに、使い捨てで 10 分間有効な OAuth state と PKCE によってクロスサイトのリダイレクトを束縛します。プロバイダーのエラーがページへそのまま出力されることはありません。
+コードが事前入力されていても、それによって自動承認されることはありません。パスワード承認の POST は same-origin で保護されます。ゲートウェイはブラウザーの `Sec-Fetch-Site: same-origin` Fetch Metadata シグナルを信頼します。ページの `Referrer-Policy: no-referrer` により、ブラウザーは自身のフォーム送信でも `Origin: null` を送るためです。したがって `Sec-Fetch-*` ヘッダーを取り除くリバースプロキシを経由すると、すべての承認が "This request came from another site and was blocked." で拒否されます。外部コールバックは代わりに、使い捨てで 10 分間有効な OAuth state と PKCE によってクロスサイトのリダイレクトを束縛します。プロバイダーのエラーがページへそのまま出力されることはありません。
 
 ## ターミナルからサインインする
 
