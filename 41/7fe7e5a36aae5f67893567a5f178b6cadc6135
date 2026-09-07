@@ -1,0 +1,30 @@
+src/admin/mod.rs
+  s_25dd5bf0273ae1::t_6576c8475ce5fb 1661,1668-1670,1677,1679
+docs/gateway-login.md
+  s_25dd5bf0273ae1::t_11bad8c772b4a2 178-188
+src/gateway/idp_client.rs
+  s_25dd5bf0273ae1::t_e4bb2f1adf7fce 280-298
+src/gateway/device.rs
+  s_25dd5bf0273ae1::t_672f204ec7ca4c 130-132,134-135,140,142
+  s_25dd5bf0273ae1::t_007381ed82904f 301-309,314-320,334-336,338-339
+  s_25dd5bf0273ae1::t_cc61ce33d2c270 13-14,373-382,385,393,412-413,427-428,436
+  s_25dd5bf0273ae1::t_8874d1857207bc 329-333,416-422,429-435
+  s_25dd5bf0273ae1::t_5b09dde744108e 358-362
+  s_25dd5bf0273ae1::t_9dd111a201885c 275-281,290
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "417fe7e5a36aae5f67893567a5f178b6cadc6135",
+  "prompts": {},
+  "sessions": {
+    "s_25dd5bf0273ae1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1416aa98-d8f7-408c-89af-f3ac8f853989",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
