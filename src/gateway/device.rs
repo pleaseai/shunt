@@ -119,18 +119,40 @@ pub async fn post(
     ))
 }
 
-pub(super) fn device_page(body: String) -> Response {
-    const CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; \
-base-uri 'none'; frame-ancestors 'none'";
+/// A rendered approval page plus the one fact the response headers depend on:
+/// whether it carries the SSO form. That form's `POST /device/authorize`
+/// answers with a `302` to the identity provider, and Chrome and WebKit
+/// enforce CSP `form-action` against that post-submission redirect chain
+/// (w3c/webappsec-csp#8), so a strict `'self'` policy blocks the SSO hop in
+/// the browser before the request is ever sent.
+pub(super) struct DevicePage {
+    pub(super) body: String,
+    pub(super) sso_form: bool,
+}
+
+pub(super) fn device_page(page: DevicePage) -> Response {
+    // The discovered authorization endpoint is not known when this page
+    // renders, so when the SSO form is present allow what
+    // `idp_client::validate_endpoint` accepts: any `https` origin plus
+    // loopback `http`. Every other rendering keeps the strict policy.
+    let form_action = if page.sso_form {
+        "'self' https: http://127.0.0.1:* http://localhost:*"
+    } else {
+        "'self'"
+    };
+    let csp = format!(
+        "default-src 'none'; style-src 'unsafe-inline'; form-action {form_action}; \
+base-uri 'none'; frame-ancestors 'none'"
+    );
     (
         [
-            (header::CONTENT_SECURITY_POLICY, CSP),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (header::X_FRAME_OPTIONS, "DENY"),
-            (header::REFERRER_POLICY, "no-referrer"),
-            (header::CACHE_CONTROL, "no-store"),
+            (header::CONTENT_SECURITY_POLICY, csp),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            (header::X_FRAME_OPTIONS, "DENY".to_string()),
+            (header::REFERRER_POLICY, "no-referrer".to_string()),
+            (header::CACHE_CONTROL, "no-store".to_string()),
         ],
-        Html(body),
+        Html(page.body),
     )
         .into_response()
 }
@@ -248,14 +270,21 @@ pub(super) fn auth_page(
     user_code: &str,
     notice: Option<&str>,
     success: bool,
-) -> String {
-    page(
-        user_code,
-        notice,
-        success,
-        auth.oidc().map(super::ResolvedIdp::button_label),
-        auth.approval_provider().is_some(),
-    )
+) -> DevicePage {
+    let oidc_label = auth.oidc().map(super::ResolvedIdp::button_label);
+    // `page` renders no forms at all on the success view, so the SSO form is
+    // present exactly when an IdP is configured and this is not that view.
+    let sso_form = !success && oidc_label.is_some();
+    DevicePage {
+        body: page(
+            user_code,
+            notice,
+            success,
+            oidc_label,
+            auth.approval_provider().is_some(),
+        ),
+        sso_form,
+    }
 }
 
 pub(super) fn page(
@@ -340,7 +369,7 @@ mod tests {
 
     use axum::http::{header, HeaderMap, HeaderValue};
 
-    use super::{client_ip, device_page, normalize_user_code, page, same_origin};
+    use super::{client_ip, device_page, normalize_user_code, page, same_origin, DevicePage};
 
     #[test]
     fn page_escapes_prefilled_code_and_never_auto_submits() {
@@ -352,7 +381,10 @@ mod tests {
 
     #[test]
     fn device_page_sets_browser_security_headers() {
-        let response = device_page(page("ABCD-EFGH", None, false, None, true));
+        let response = device_page(DevicePage {
+            body: page("ABCD-EFGH", None, false, None, true),
+            sso_form: false,
+        });
         let headers = response.headers();
 
         assert_eq!(
@@ -366,6 +398,36 @@ mod tests {
         assert_eq!(headers.get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
         assert_eq!(headers.get(header::REFERRER_POLICY).unwrap(), "no-referrer");
         assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
+    }
+
+    /// The SSO form's POST answers with a redirect to the identity provider,
+    /// which Chrome and WebKit check against `form-action`; the page that
+    /// renders that form must therefore allow the IdP origin, while every
+    /// other rendering keeps the strict `'self'` policy.
+    #[test]
+    fn device_page_widens_form_action_only_when_sso_form_is_rendered() {
+        let csp = |page: DevicePage| {
+            device_page(page)
+                .headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
+        let sso = csp(DevicePage {
+            body: page("ABCD-EFGH", None, false, Some("Sign in with SSO"), false),
+            sso_form: true,
+        });
+        assert!(
+            sso.contains("form-action 'self' https: http://127.0.0.1:* http://localhost:*;"),
+            "{sso}"
+        );
+        let strict = csp(DevicePage {
+            body: page("ABCD-EFGH", None, false, None, true),
+            sso_form: false,
+        });
+        assert!(strict.contains("form-action 'self';"), "{strict}");
     }
 
     #[test]

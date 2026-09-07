@@ -284,6 +284,25 @@ async fn oidc_device_page_modes_and_disabled_password_post() {
     assert!(html.contains("method=\"post\" action=\"/device/authorize\""));
     assert!(!html.contains("Approve device"));
 
+    // The SSO form's POST redirects to the IdP, and browsers enforce CSP
+    // `form-action` against that redirect, so the page carrying the form must
+    // allow the IdP origin rather than only `'self'`.
+    let response = router
+        .clone()
+        .oneshot(get_request("/device?user_code=BCDF-GHJK"))
+        .await
+        .unwrap();
+    let csp = response
+        .headers()
+        .get(header::CONTENT_SECURITY_POLICY)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        csp.contains("form-action 'self' https: http://127.0.0.1:* http://localhost:*;"),
+        "{csp}"
+    );
+
     let (_, html) = html_response(
         router,
         Request::builder()

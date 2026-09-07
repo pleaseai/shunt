@@ -174,6 +174,13 @@ request re-renders the approval page carrying a human-readable message:
 `POST /device` answers `200 OK` so the form stays available for a retry, while
 `POST /device/authorize` answers `403 Forbidden`.
 
+The page ships a strict Content Security Policy (`form-action 'self'`). When the
+SSO form is rendered, `form-action` is widened to any `https` origin plus
+loopback `http`, matching what the IdP endpoint validation accepts: Chrome and
+WebKit enforce `form-action` against the post-submission redirect chain, so the
+strict policy would block the `POST /device/authorize` → `302` → IdP hop in the
+browser before it is sent. Pages without the SSO form keep `'self'`.
+
 ## State and operational boundary
 
 Device grants, IdP states, discovery results, and rate-limit counters are
