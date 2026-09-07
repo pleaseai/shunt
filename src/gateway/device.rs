@@ -10,6 +10,8 @@ use serde::Deserialize;
 
 use crate::server::AppState;
 
+use super::idp_client;
+
 #[derive(Default, Deserialize)]
 pub struct DeviceQuery {
     #[serde(default)]
@@ -125,20 +127,19 @@ pub async fn post(
 /// enforce CSP `form-action` against that post-submission redirect chain
 /// (w3c/webappsec-csp#8), so a strict `'self'` policy blocks the SSO hop in
 /// the browser before the request is ever sent.
+///
+/// `sso_form` is set by [`page`] itself, from the branch that emits the form,
+/// so the policy cannot drift away from the markup it protects.
 pub(super) struct DevicePage {
-    pub(super) body: String,
-    pub(super) sso_form: bool,
+    body: String,
+    sso_form: bool,
 }
 
 pub(super) fn device_page(page: DevicePage) -> Response {
-    // The discovered authorization endpoint is not known when this page
-    // renders, so when the SSO form is present allow what
-    // `idp_client::validate_endpoint` accepts: any `https` origin plus
-    // loopback `http`. Every other rendering keeps the strict policy.
     let form_action = if page.sso_form {
-        "'self' https: http://127.0.0.1:* http://localhost:*"
+        idp_client::IDP_REDIRECT_FORM_ACTION
     } else {
-        "'self'"
+        idp_client::SELF_FORM_ACTION
     };
     let csp = format!(
         "default-src 'none'; style-src 'unsafe-inline'; form-action {form_action}; \
@@ -271,20 +272,13 @@ pub(super) fn auth_page(
     notice: Option<&str>,
     success: bool,
 ) -> DevicePage {
-    let oidc_label = auth.oidc().map(super::ResolvedIdp::button_label);
-    // `page` renders no forms at all on the success view, so the SSO form is
-    // present exactly when an IdP is configured and this is not that view.
-    let sso_form = !success && oidc_label.is_some();
-    DevicePage {
-        body: page(
-            user_code,
-            notice,
-            success,
-            oidc_label,
-            auth.approval_provider().is_some(),
-        ),
-        sso_form,
-    }
+    page(
+        user_code,
+        notice,
+        success,
+        auth.oidc().map(super::ResolvedIdp::button_label),
+        auth.approval_provider().is_some(),
+    )
 }
 
 pub(super) fn page(
@@ -293,7 +287,7 @@ pub(super) fn page(
     success: bool,
     oidc_label: Option<&str>,
     password_enabled: bool,
-) -> String {
+) -> DevicePage {
     let user_code = escape_html(user_code);
     let notice = notice
         .map(|message| {
@@ -304,24 +298,26 @@ pub(super) fn page(
             )
         })
         .unwrap_or_default();
-    let forms = if success {
-        String::new()
-    } else {
-        let sso_form = oidc_label
-            .map(|label| {
-                format!(
-                    r#"<form method="post" action="/device/authorize">
+    // The success view renders no forms at all, so the SSO form is present
+    // exactly when an IdP is configured and this is not that view. `sso_form`
+    // on the returned page is read straight off this value, which is also what
+    // gates the markup below.
+    let sso_label = if success { None } else { oidc_label };
+    let sso_form = sso_label
+        .map(|label| {
+            format!(
+                r#"<form method="post" action="/device/authorize">
 <label for="sso-user-code">Device code</label>
 <input id="sso-user-code" name="user_code" value="{user_code}" autocomplete="one-time-code" spellcheck="false" required autofocus>
 <button type="submit">{}</button>
 </form>"#,
-                    escape_html(label)
-                )
-            })
-            .unwrap_or_default();
-        let password_form = if password_enabled {
-            format!(
-                r#"<form method="post" action="/device">
+                escape_html(label)
+            )
+        })
+        .unwrap_or_default();
+    let password_form = if password_enabled && !success {
+        format!(
+            r#"<form method="post" action="/device">
 <label for="user-code">Device code</label>
 <input id="user-code" name="user_code" value="{user_code}" autocomplete="one-time-code" spellcheck="false" required{}>
 <label for="login">Email</label>
@@ -330,18 +326,17 @@ pub(super) fn page(
 <input id="current-password" name="secret" type="password" autocomplete="current-password" required enterkeyhint="done">
 <button type="submit">Approve device</button>
 </form>"#,
-                if oidc_label.is_none() {
-                    " autofocus"
-                } else {
-                    ""
-                }
-            )
-        } else {
-            String::new()
-        };
-        format!("{sso_form}{password_form}")
+            if sso_label.is_none() {
+                " autofocus"
+            } else {
+                ""
+            }
+        )
+    } else {
+        String::new()
     };
-    format!(
+    let forms = format!("{sso_form}{password_form}");
+    let body = format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>shunt gateway — approve device</title><style>
@@ -360,7 +355,11 @@ input:focus-visible, button:focus-visible {{ outline: 3px solid #315ee8; outline
 </style></head><body><main><div class="card"><h1>Approve this device</h1>
 <p>Enter the code shown by Claude Code, then sign in with a gateway account.</p>
 {notice}{forms}</div></main></body></html>"#
-    )
+    );
+    DevicePage {
+        body,
+        sso_form: sso_label.is_some(),
+    }
 }
 
 #[cfg(test)]
@@ -371,9 +370,19 @@ mod tests {
 
     use super::{client_ip, device_page, normalize_user_code, page, same_origin, DevicePage};
 
+    fn csp(page: DevicePage) -> String {
+        device_page(page)
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
     #[test]
     fn page_escapes_prefilled_code_and_never_auto_submits() {
-        let html = page("<script>", None, false, None, true);
+        let html = page("<script>", None, false, None, true).body;
         assert!(html.contains("&lt;script&gt;"));
         assert!(!html.contains("<script"));
         assert!(html.contains("method=\"post\""));
@@ -381,10 +390,7 @@ mod tests {
 
     #[test]
     fn device_page_sets_browser_security_headers() {
-        let response = device_page(DevicePage {
-            body: page("ABCD-EFGH", None, false, None, true),
-            sso_form: false,
-        });
+        let response = device_page(page("ABCD-EFGH", None, false, None, true));
         let headers = response.headers();
 
         assert_eq!(
@@ -403,31 +409,31 @@ mod tests {
     /// The SSO form's POST answers with a redirect to the identity provider,
     /// which Chrome and WebKit check against `form-action`; the page that
     /// renders that form must therefore allow the IdP origin, while every
-    /// other rendering keeps the strict `'self'` policy.
+    /// other rendering keeps the strict `'self'` policy. The success view
+    /// renders no forms even with an IdP configured, so it must stay strict.
     #[test]
     fn device_page_widens_form_action_only_when_sso_form_is_rendered() {
-        let csp = |page: DevicePage| {
-            device_page(page)
-                .headers()
-                .get(header::CONTENT_SECURITY_POLICY)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string()
-        };
-        let sso = csp(DevicePage {
-            body: page("ABCD-EFGH", None, false, Some("Sign in with SSO"), false),
-            sso_form: true,
-        });
+        let sso = csp(page(
+            "ABCD-EFGH",
+            None,
+            false,
+            Some("Sign in with SSO"),
+            false,
+        ));
         assert!(
             sso.contains("form-action 'self' https: http://127.0.0.1:* http://localhost:*;"),
             "{sso}"
         );
-        let strict = csp(DevicePage {
-            body: page("ABCD-EFGH", None, false, None, true),
-            sso_form: false,
-        });
-        assert!(strict.contains("form-action 'self';"), "{strict}");
+        let no_idp = csp(page("ABCD-EFGH", None, false, None, true));
+        assert!(no_idp.contains("form-action 'self';"), "{no_idp}");
+        let success = csp(page(
+            "ABCD-EFGH",
+            None,
+            true,
+            Some("Sign in with SSO"),
+            true,
+        ));
+        assert!(success.contains("form-action 'self';"), "{success}");
     }
 
     #[test]

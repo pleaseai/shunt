@@ -277,6 +277,25 @@ fn sanitize_error_description(value: &str) -> Option<String> {
     (!sanitized.trim().is_empty()).then_some(sanitized)
 }
 
+/// CSP `form-action` source list for a page whose form POST answers with a
+/// redirect to the identity provider. Chrome and WebKit enforce `form-action`
+/// against that post-submission redirect chain (w3c/webappsec-csp#8), and the
+/// authorization endpoint is not known when such a page renders, so this
+/// approximates the set `validate_endpoint` accepts: any `https` origin plus
+/// loopback `http`.
+///
+/// The approximation is deliberately not exact. `validate_endpoint` accepts
+/// every loopback host, but CSP's host-source grammar cannot express an IPv6
+/// literal and a port wildcard does not widen the address, so an IdP served
+/// from `http://[::1]:…` or another `127.0.0.0/8` address passes validation
+/// and is still blocked by the browser. Such a deployment must front the IdP
+/// with `https`, `localhost`, or `127.0.0.1`.
+pub(crate) const IDP_REDIRECT_FORM_ACTION: &str =
+    "'self' https: http://127.0.0.1:* http://localhost:*";
+
+/// CSP `form-action` source list for a page whose forms all post same-origin.
+pub(crate) const SELF_FORM_ACTION: &str = "'self'";
+
 fn validate_endpoint(raw: &str, name: &str) -> Result<()> {
     let url = Url::parse(raw).with_context(|| format!("discovered {name} is not a valid URL"))?;
     let safe_transport = url.scheme() == "https"
