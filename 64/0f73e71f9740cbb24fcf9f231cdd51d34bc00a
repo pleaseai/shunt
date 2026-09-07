@@ -1,0 +1,76 @@
+src/adapters/responses/inbound.rs
+  s_13b7e9055e0ea5::t_bbd96453d8eb24 475-479
+site/src/content/docs/zh-cn/guides/inbound-codex-endpoint.md
+  s_13b7e9055e0ea5::t_8a53836e5bc9b0 172
+  s_13b7e9055e0ea5::t_0d9c2697a705f7 132
+  s_13b7e9055e0ea5::t_d58be5cc4928ae 152
+site/src/content/docs/ja/guides/inbound-codex-endpoint.md
+  s_13b7e9055e0ea5::t_8a53836e5bc9b0 172
+  s_13b7e9055e0ea5::t_0d9c2697a705f7 132
+  s_13b7e9055e0ea5::t_d58be5cc4928ae 152
+site/src/content/docs/ko/guides/inbound-codex-endpoint.md
+  s_13b7e9055e0ea5::t_0d9c2697a705f7 132
+  s_13b7e9055e0ea5::t_8a53836e5bc9b0 172
+  s_13b7e9055e0ea5::t_d58be5cc4928ae 152
+src/codex_endpoint.rs
+  s_13b7e9055e0ea5::t_8a3e37dcda93bc 361-372
+  s_13b7e9055e0ea5::t_03d954b81f2a7d 242-257,261-262,284,326-329,338,380-384
+tests/inbound_codex_routes.rs
+  s_13b7e9055e0ea5::t_3ba56478fb8198 123-148,194-195,373-459
+  s_13b7e9055e0ea5::t_4ef773ccd7d506 460
+src/adapters/responses/inbound_routed.rs
+  s_13b7e9055e0ea5::t_d3db9ac66a460e 232-240,243,247-303
+  s_13b7e9055e0ea5::t_bbbd9dd5c90081 61,64,73-97,99-100,107,112
+  s_13b7e9055e0ea5::t_af8545a4c13fa0 241-242,244-246
+  s_13b7e9055e0ea5::t_f27549d578f243 15-21,37-40,45,108-111
+  s_13b7e9055e0ea5::t_009f90abe59586 98,101-102
+  s_13b7e9055e0ea5::t_8046f64b09c035 103-106,113-114
+docs/m11-inbound-codex-endpoint.md
+  s_13b7e9055e0ea5::t_30b36c565d0215 177-179
+  s_13b7e9055e0ea5::t_0d9c2697a705f7 39,57-61
+  s_13b7e9055e0ea5::t_d58be5cc4928ae 138-143
+  s_13b7e9055e0ea5::t_08161ac9d28f30 125-129,153-157
+src/codex_endpoint/routing.rs
+  s_13b7e9055e0ea5::t_447e46a7de1be9 273,286,305-358
+  s_13b7e9055e0ea5::t_8324251b8309d0 12-13,17-30,50-59,61-70,79,83-85,118,130-164,168-170
+  s_13b7e9055e0ea5::t_4d10c18c0f7511 232,244,261,266-270,272,304
+  s_13b7e9055e0ea5::t_169a91b5a97ae7 271,274
+src/config.rs
+  s_13b7e9055e0ea5::t_a8bf72e47f2240 2222-2227,3797-3804,3807-3811,5520-5545
+  s_13b7e9055e0ea5::t_9cc2bfc8ff6baf 1283-1285
+src/codex_endpoint/model.rs
+  s_13b7e9055e0ea5::t_3e7a86045114a7 158-174,179-180,186,188-189,194-197,205,217,237-244,251-254,259-273,285,287
+docs/codex-configuration.md
+  s_13b7e9055e0ea5::t_7b902cbfa73901 930-933
+  s_13b7e9055e0ea5::t_0d9c2697a705f7 888-889
+site/src/content/docs/ko/reference/configuration.md
+  s_13b7e9055e0ea5::t_7b902cbfa73901 207
+  s_13b7e9055e0ea5::t_0d9c2697a705f7 204
+src/adapters/responses/request.rs
+  s_13b7e9055e0ea5::t_9406d360e6dee5 128-144,199,201
+site/src/content/docs/reference/configuration.md
+  s_13b7e9055e0ea5::t_0d9c2697a705f7 300
+  s_13b7e9055e0ea5::t_7b902cbfa73901 303
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_13b7e9055e0ea5::t_0d9c2697a705f7 132
+  s_13b7e9055e0ea5::t_d58be5cc4928ae 152
+  s_13b7e9055e0ea5::t_8a53836e5bc9b0 172
+src/codex_endpoint/tests.rs
+  s_13b7e9055e0ea5::t_f2c8fb3563f473 70-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "640f73e71f9740cbb24fcf9f231cdd51d34bc00a",
+  "prompts": {},
+  "sessions": {
+    "s_13b7e9055e0ea5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "558cc728-62d7-40c9-b65a-973cc42c9e4e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
