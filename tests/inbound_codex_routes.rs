@@ -337,19 +337,14 @@ async fn route_to_a_second_chatgpt_oauth_provider_uses_its_pool() {
         .mount(&default_codex)
         .await;
 
-    let mut config = test_config(
+    let config = second_chatgpt_config(
         &default_codex.uri(),
         "SHUNT_TEST_ROUTED_CODEX_C",
-        "http://127.0.0.1:1",
         "SHUNT_TEST_ROUTED_KEY_C",
-        vec![route("work-model", "codex-work", Some("gpt-5.6-terra"))],
+        &work.uri(),
+        "SHUNT_TEST_ROUTED_WORK_C",
+        route("work-model", "codex-work", Some("gpt-5.6-terra")),
     );
-    let mut work_provider = config.providers.get("codex").unwrap().clone();
-    work_provider.base_url = work.uri();
-    work_provider.accounts = vec![account("work-account", "SHUNT_TEST_ROUTED_WORK_C")];
-    config
-        .providers
-        .insert("codex-work".to_string(), work_provider);
 
     let gateway = start_gateway_with(config).await;
     let response = post_responses(&gateway, inbound_body("work-model")).await;

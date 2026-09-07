@@ -287,6 +287,11 @@ async fn forward(
             .await?
         }
         None => {
+            // Nothing below reads the decoded copy: the pool path forwards the
+            // original bytes. Release it now rather than holding up to
+            // `max_request_bytes` per in-flight request for the upstream round
+            // trip (PR #478 review, P2).
+            drop(resolved.decoded);
             // The body-`model` picks no provider here: the endpoint is pinned to
             // its configured `chatgpt_oauth` provider and the body forwards
             // verbatim. `request_builder` only reads `route.provider`, so
