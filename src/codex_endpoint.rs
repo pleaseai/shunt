@@ -380,6 +380,10 @@ async fn dispatch_routed(
     // Responses API does not accept a zstd-encoded request, so that path always
     // sends identity bytes — decoded even when nothing is rewritten.
     let body = if chatgpt_backend && rewrite.is_none() {
+        // The original bytes forward as-is, so the decoded copy is dead weight
+        // for the whole upstream round trip — release it, as the unrouted path
+        // does (PR #478 review, P2).
+        drop(decoded);
         body
     } else {
         let prepared =
