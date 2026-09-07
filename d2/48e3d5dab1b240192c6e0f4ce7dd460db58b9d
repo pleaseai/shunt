@@ -1,0 +1,24 @@
+src/gateway/device.rs
+  s_25dd5bf0273ae1::t_00ff1dff2319c4 122-146,149-153,155,273-287,372,384-387,403-431
+  s_25dd5bf0273ae1::t_4fcf9b78fbdc64 432
+docs/gateway-login.md
+  s_25dd5bf0273ae1::t_ead7f93c5e7db9 177-183
+src/gateway/tests.rs
+  s_25dd5bf0273ae1::t_ead7f93c5e7db9 287-305
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d248e3d5dab1b240192c6e0f4ce7dd460db58b9d",
+  "prompts": {},
+  "sessions": {
+    "s_25dd5bf0273ae1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1416aa98-d8f7-408c-89af-f3ac8f853989",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
