@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.42.0](https://github.com/pleaseai/shunt/compare/v0.41.3...v0.42.0) (2026-09-07)
+
+
+### Features
+
+* **codex:** support model-routed third-party upstreams on the inbound Responses endpoint ([#478](https://github.com/pleaseai/shunt/issues/478)) ([42f63b2](https://github.com/pleaseai/shunt/commit/42f63b29fdd56790239ca923e5ce36c710396186))
+
 ## [0.41.3](https://github.com/pleaseai/shunt/compare/v0.41.2...v0.41.3) (2026-09-07)
 
 
