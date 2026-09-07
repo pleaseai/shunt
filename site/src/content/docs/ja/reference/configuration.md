@@ -103,6 +103,43 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 
 管理認証情報は設定された `[server.admin] header` または `x-api-key` で送信します。`read_keys` の認証情報は `GET` のみ使用できます。状態ファイルは変更のたびに非公開の一時ファイルを使ってアトミックに置換されます。ホームディレクトリを解決できない場合、デフォルトはメモリのみです。テーブルの追加・削除と状態パスはどちらも起動時に固定され、設定のリロードでは適用されず警告が記録されます。
 
+### `[server.spend.pricing]`（オプション）
+
+リクエストのコストを定義します。テーブルを省略すると、組み込みの定価に multiplier 1 が適用されます。テーブルとリゾルバーは起動時に検証されますが、stage 1 にはトークン使用量を読むメーターがないため、まだリクエストの価格計算は行われません。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `multiplier` | `1` | 定価・override を問わず、解決されたすべての rate に乗算されます。割引を表すため最小 `0.000001`、最大 `1` |
+
+各 `[[server.spend.pricing.overrides]]` 行は、1 つの upstream の 1 つのモデルについて定価を置き換えます。
+
+| キー | 必須 | 意味 |
+| :-- | :-- | :-- |
+| `upstream` | はい | 構成済みの upstream 名である必要があります |
+| `model` | はい | クライアントまたは upstream のモデル id。大文字小文字を区別せずに一致 |
+| `input`, `output`, `cache_read`, `cache_write` | はい | 100 万トークンあたりの USD。それぞれ最小 `0.001` |
+
+rate はトークンあたりの整数 femto-USD（1e-15 USD）として保持されます。2 つの下限は、その積がちょうどトークンあたり 1 femto-USD ―― メーターが表現できる最小の非ゼロ rate ―― になるように決められています。どちらかが下限を下回ると `0` に量子化され、有効な割引に見えながら実際にはリクエストの価格が 0 になります。
+
+```toml
+[server.spend.pricing]
+multiplier = 0.85
+
+[[server.spend.pricing.overrides]]
+upstream = "bedrock-eu"
+model = "claude-sonnet-4-6"
+input = 3.30
+output = 16.50
+cache_read = 0.33
+cache_write = 4.125
+```
+
+範囲外の multiplier、欠落または範囲外の rate、空の `upstream`、構成されていない upstream を指す `upstream`、1 つの upstream で同じモデルを指す 2 行は、いずれも起動時の検証で失敗します。2 行が衝突するのは文字列が同じときではなく、同じモデルを指すときです。`claude-sonnet-4-6` と `claude-sonnet-4-6-20260217` は 1 つのモデルです。組み込みモデルでもなく、**その行の `upstream`** でどの `[[models]]`・`[[routes]]`・`[[route_prefixes]]` エントリーからも要求できない `model` は、エラーではなく警告を記録します。この検査は upstream 単位で、プレフィックスルートも対象です。別の upstream の `upstream_model` としてのみマッピングされたモデルは依然として警告され、その行の upstream にある `[[route_prefixes]]` エントリーが処理するモデルは警告されません。
+
+モデル id は照合前に正規化されます。Claude Code の `[1m]` コンテキストウィンドウヒント、Bedrock のリージョン接頭辞と `anthropic.` 名前空間、Bedrock の `-v<major>:<minor>` バージョン接尾辞、日付スナップショット接尾辞（`-20260217`、`@20251101`）、そして OpenRouter・Vercel AI Gateway 形式が対象です。後者は `anthropic/` 名前空間を取り除き、ドット区切りのバージョンをハイフンに変換するため、`anthropic/claude-opus-4.8` は `claude-opus-4-8` として価格計算されます。`~anthropic/claude-sonnet-latest` のような浮動エイリアスはバージョンを指定しないため、価格を計算できないままです。
+
+rate は upstream ごとに、最も具体的なものから順に一致します。upstream モデル id に一致する override、次にクライアントモデル id に一致する override、次に同じ組み込みモデルを別の id（日付スナップショット、Bedrock id）で指す override、次に upstream モデルの組み込み定価（クライアントモデルの定価は使わないため、組み込みのクライアント id を Anthropic 以外の upstream モデルに再マッピングしても Anthropic の料金では課金されません）、そして該当なし — 価格を計算できないリクエストです。サーバーサイドのウェブ検索はトークンではなくリクエスト単位（`$0.01`）で課金されるため、multiplier のみが適用されます。すべての金額は USD の**推定値**であり、報告されたトークン数を公開定価に当てはめて計算するため、実際の請求書とセント単位までは一致しません。
+
 ### `[server.spend.enforcement]`（オプション）
 
 | キー | デフォルト | 意味 |

@@ -103,6 +103,43 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 
 관리자 자격 증명은 구성된 `[server.admin] header` 또는 `x-api-key`로 보냅니다. `read_keys` 자격 증명은 `GET`만 사용할 수 있습니다. 상태 파일은 변경할 때마다 비공개 임시 파일로 원자적으로 교체됩니다. 홈 디렉터리를 확인할 수 없으면 기본값은 메모리 전용입니다. 테이블의 추가·제거와 상태 경로는 모두 부팅 시 고정되며, 구성 리로드는 적용 대신 경고를 기록합니다.
 
+### `[server.spend.pricing]` (선택)
+
+요청의 비용을 정의합니다. 테이블을 생략하면 내장 정가에 multiplier 1이 적용됩니다. 테이블과 resolver는 부팅 시 검증되지만, stage 1에는 토큰 사용량을 읽는 meter가 없으므로 아직 어떤 요청도 가격이 매겨지지 않습니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `multiplier` | `1` | 정가와 override를 가리지 않고 확정된 모든 rate에 곱해집니다. 할인을 표현하므로 최소 `0.000001`, 최대 `1` |
+
+각 `[[server.spend.pricing.overrides]]` 행은 한 upstream의 한 모델에 대해 정가를 대체합니다.
+
+| 키 | 필수 | 의미 |
+| :-- | :-- | :-- |
+| `upstream` | 예 | 구성된 upstream 이름이어야 함 |
+| `model` | 예 | 클라이언트 또는 upstream 모델 id. 대소문자 구분 없이 매칭 |
+| `input`, `output`, `cache_read`, `cache_write` | 예 | 100만 토큰당 USD. 각각 최소 `0.001` |
+
+rate는 토큰당 정수 femto-USD(1e-15 USD)로 저장됩니다. 두 하한은 그 곱이 정확히 토큰당 1 femto-USD, 즉 meter가 표현할 수 있는 가장 작은 0이 아닌 rate가 되도록 정해져 있습니다. 어느 한쪽이라도 하한 아래면 `0`으로 양자화되어, 유효한 할인처럼 보이면서 실제로는 요청 가격이 0이 됩니다.
+
+```toml
+[server.spend.pricing]
+multiplier = 0.85
+
+[[server.spend.pricing.overrides]]
+upstream = "bedrock-eu"
+model = "claude-sonnet-4-6"
+input = 3.30
+output = 16.50
+cache_read = 0.33
+cache_write = 4.125
+```
+
+범위를 벗어난 multiplier, 누락되었거나 범위를 벗어난 rate, 비어 있는 `upstream`, 구성되지 않은 upstream을 가리키는 `upstream`, 한 upstream에서 같은 모델을 가리키는 두 행은 모두 부팅 시 검증에 실패합니다. 두 행은 문자열이 같을 때가 아니라 같은 모델을 가리킬 때 충돌합니다. `claude-sonnet-4-6`과 `claude-sonnet-4-6-20260217`은 하나의 모델입니다. 내장 모델도 아니고, **해당 행의 `upstream`에서** 어떤 `[[models]]`·`[[routes]]`·`[[route_prefixes]]` 항목으로도 요청할 수 없는 `model`은 오류 대신 경고를 기록합니다. 이 검사는 upstream 단위이며 prefix 라우트도 포함합니다. 다른 upstream의 `upstream_model`로만 매핑된 모델은 여전히 경고 대상이고, 해당 행의 upstream에 있는 `[[route_prefixes]]` 항목이 서빙하는 모델은 경고하지 않습니다.
+
+모델 id는 매칭 전에 정규화됩니다. Claude Code의 `[1m]` 컨텍스트 윈도 힌트, Bedrock 리전 접두사와 `anthropic.` 네임스페이스, Bedrock `-v<major>:<minor>` 버전 접미사, 날짜 스냅샷 접미사(`-20260217`, `@20251101`), 그리고 OpenRouter·Vercel AI Gateway 형식이 대상입니다. 후자는 `anthropic/` 네임스페이스를 제거하고 점으로 쓴 버전을 하이픈으로 바꾸므로 `anthropic/claude-opus-4.8`은 `claude-opus-4-8`로 가격이 매겨집니다. `~anthropic/claude-sonnet-latest` 같은 부동 별칭은 버전을 지정하지 않으므로 가격을 매길 수 없는 상태로 남습니다.
+
+rate는 upstream 단위로 가장 구체적인 것부터 매칭됩니다. upstream 모델 id와 일치하는 override, 다음으로 클라이언트 모델 id와 일치하는 override, 다음으로 같은 내장 모델을 다른 id(날짜 스냅샷, Bedrock id)로 가리키는 override, 다음으로 upstream 모델의 내장 정가(클라이언트 모델의 정가는 쓰지 않으므로, 내장 클라이언트 id를 Anthropic이 아닌 upstream 모델로 재매핑해도 Anthropic 요금으로 과금되지 않음), 그다음은 없음 — 가격을 매길 수 없는 요청입니다. 서버 측 웹 검색은 토큰이 아니라 요청 단위(`$0.01`)로 과금되므로 multiplier만 적용됩니다. 모든 금액은 USD **추정치**로, 보고된 토큰 수를 공개 정가에 대입해 계산하므로 실제 청구서와 센트 단위까지 일치하지는 않습니다.
+
 ### `[server.spend.enforcement]` (선택)
 
 | 키 | 기본값 | 의미 |
