@@ -5,8 +5,16 @@
 //! account pool. Unlike the Anthropic Messages path (`/v1/messages`), this is a
 //! **raw passthrough**: the inbound Responses body is forwarded upstream
 //! unchanged and the upstream response is relayed verbatim — only the M10
-//! account-pool machinery (selection, failover, refresh) is reused. See
-//! `docs/m11-inbound-codex-endpoint.md`.
+//! account-pool machinery (selection, failover, refresh) is reused.
+//!
+//! Two dispatch modes share that shape (issue #436). By default every inbound
+//! request goes to the one configured `chatgpt_oauth` provider and the body
+//! `model` is a metrics label only. When `[[server.codex_endpoint.routes]]`
+//! declares an entry for the model the client asked for, the request instead
+//! goes to that entry's provider — another ChatGPT/Codex pool, or a third-party
+//! Responses-compatible upstream via [`responses::forward_codex_routed`] — with
+//! the body `model` rewritten to the route's `upstream_model` when they differ.
+//! See `docs/m11-inbound-codex-endpoint.md`.
 
 use std::time::Instant;
 
@@ -16,16 +24,23 @@ use axum::{
     http::{HeaderMap, Method, StatusCode},
     response::IntoResponse,
 };
-use serde::Deserialize;
 use tracing::Instrument;
 
 use crate::{
     adapters::{responses, AdapterError},
-    compression::BodyEncoding,
+    config::CodexRouteConfig,
     error::ShuntError,
     routing::{AdapterKind, Route},
     server::AppState,
 };
+
+mod model;
+mod routing;
+
+#[cfg(test)]
+use self::model::model_label;
+use self::model::{resolve_model, UNKNOWN_MODEL};
+use self::routing::{identity_body, BodyError};
 
 /// Inbound Responses routes this handler serves, registered by
 /// [`crate::server::build_router`] when `[server.codex_endpoint]` is set.
@@ -40,111 +55,6 @@ pub(crate) const PATHS: [&str; 3] = [
     "/responses",
     "/v1/responses",
 ];
-
-/// Minimal view of the inbound Responses body: the `model` is read only for
-/// metrics/logging labels — the body itself forwards upstream byte-for-byte, so
-/// a missing or malformed model never blocks the request (the upstream rejects it).
-/// `model` is deserialized as a [`ModelField`] rather than `Option<String>` so
-/// [`parse_model`] can tell "field absent" apart from "field present but not a
-/// string" instead of both silently becoming `None`.
-#[derive(Debug, Deserialize)]
-struct ModelView {
-    model: Option<ModelField>,
-}
-
-/// What the inbound body's `model` field turned out to be, classified *without*
-/// materializing it.
-///
-/// Deliberately not `serde_json::Value`: only a string is ever used, and every
-/// other shape is used solely to name the type in a log line. Deserializing into
-/// a `Value` would make serde allocate and retain the field's entire contents
-/// first — so a client sending `"model": [ ...megabytes... ]` would turn this
-/// best-effort labels-only parse into a large client-controlled heap allocation,
-/// on top of the arrival buffer and (on the zstd path) the decoded copy that are
-/// already resident (issue #291 follow-up). The non-string arms below drain their
-/// contents through [`IgnoredAny`], which walks the input without building it.
-#[derive(Debug)]
-enum ModelField {
-    Str(String),
-    /// A JSON type name (`"array"`, `"object"`, ...) — never any client content.
-    Other(&'static str),
-}
-
-impl<'de> Deserialize<'de> for ModelField {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_any(ModelFieldVisitor)
-    }
-}
-
-struct ModelFieldVisitor;
-
-impl<'de> serde::de::Visitor<'de> for ModelFieldVisitor {
-    type Value = ModelField;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("a JSON value")
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
-        Ok(ModelField::Str(value.to_string()))
-    }
-
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
-        Ok(ModelField::Str(value))
-    }
-
-    fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
-        Ok(ModelField::Other("boolean"))
-    }
-
-    fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
-        Ok(ModelField::Other("number"))
-    }
-
-    fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
-        Ok(ModelField::Other("number"))
-    }
-
-    fn visit_i128<E>(self, _: i128) -> Result<Self::Value, E> {
-        Ok(ModelField::Other("number"))
-    }
-
-    fn visit_u128<E>(self, _: u128) -> Result<Self::Value, E> {
-        Ok(ModelField::Other("number"))
-    }
-
-    fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
-        Ok(ModelField::Other("number"))
-    }
-
-    fn visit_unit<E>(self) -> Result<Self::Value, E> {
-        Ok(ModelField::Other("null"))
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: serde::de::SeqAccess<'de>,
-    {
-        // Drain rather than collect: the elements are never read, and building
-        // them is the allocation this type exists to avoid.
-        while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
-        Ok(ModelField::Other("array"))
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: serde::de::MapAccess<'de>,
-    {
-        while map
-            .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
-            .is_some()
-        {}
-        Ok(ModelField::Other("object"))
-    }
-}
 
 /// Handler for the inbound Responses routes (`/backend-api/codex/responses`,
 /// `/responses`, `/v1/responses`). Mirrors `proxy::post`'s shape: snapshot the
@@ -323,20 +233,21 @@ async fn forward(
             response,
         })?;
 
-    // Read the model for metrics/logging only; the body forwards verbatim.
-    let model = model_label(&headers, &body, max_request_bytes).await;
+    // Read the model both for metrics/logging labels and — when it parses — as
+    // the key `[[server.codex_endpoint.routes]]` is matched against. A body
+    // whose `model` cannot be read still relays (the upstream rejects it), but
+    // it must never match a route: `UNKNOWN_MODEL` is a shunt-authored sentinel
+    // an operator could otherwise capture by declaring a route for the literal
+    // model `unknown`.
+    let parsed_model = resolve_model(&headers, &body, max_request_bytes).await;
+    let model = parsed_model.as_deref().unwrap_or(UNKNOWN_MODEL).to_string();
     crate::observability::record_requested_model(&model);
-    // The body-`model` does not pick a provider (the endpoint is pinned to one
-    // `chatgpt_oauth` provider). `request_builder` only reads `route.provider`,
-    // so `model`/`upstream_model` are labels, not routing inputs.
-    let route = Route {
-        provider: provider.clone(),
-        adapter: AdapterKind::Responses,
-        model: model.clone(),
-        upstream_model: model.clone(),
-        effort: None,
-        service_tier: None,
-    };
+    // Cloned out of the config snapshot so the borrow ends before `state` moves
+    // into the forwarder below.
+    let matched = parsed_model
+        .as_deref()
+        .and_then(|model| codex_endpoint.route_for(model))
+        .cloned();
 
     // Namespace the account-pool sticky key with the authenticated client so that,
     // in a multi-tenant deployment, one client cannot pin another client's Codex
@@ -346,10 +257,153 @@ async fn forward(
     // span records above; only the pool key is namespaced.
     let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id);
 
-    // Pass the client's inbound headers through so the passthrough can forward the
-    // Codex CLI's own request headers verbatim (swapping only the credential); the
-    // shunt client-token header is stripped inside `forward_codex_inbound`.
-    let result = responses::forward_codex_inbound(state, route, pool_key, headers, body).await;
+    let (provider, result) = match matched {
+        Some(route) => {
+            dispatch_routed(
+                state,
+                route,
+                model.clone(),
+                pool_key,
+                headers,
+                body,
+                max_request_bytes,
+            )
+            .await?
+        }
+        None => {
+            // The body-`model` picks no provider here: the endpoint is pinned to
+            // its configured `chatgpt_oauth` provider and the body forwards
+            // verbatim. `request_builder` only reads `route.provider`, so
+            // `model`/`upstream_model` are labels, not routing inputs.
+            let route = Route {
+                provider: provider.clone(),
+                adapter: AdapterKind::Responses,
+                model: model.clone(),
+                upstream_model: model.clone(),
+                effort: None,
+                service_tier: None,
+            };
+            // Pass the client's inbound headers through so the passthrough can
+            // forward the Codex CLI's own request headers verbatim (swapping only
+            // the credential); the shunt client-token header is stripped inside
+            // `forward_codex_inbound`.
+            let result =
+                responses::forward_codex_inbound(state, route, pool_key, headers, body).await;
+            (provider, result)
+        }
+    };
+
+    record_outcome(provider, model, started_at, result)
+}
+
+/// Dispatch a request whose `model` matched a `[[server.codex_endpoint.routes]]`
+/// entry. Returns the provider the observability tail should label the request
+/// with (the *routed* provider, not the endpoint's configured default) alongside
+/// the forwarder's result.
+///
+/// A ChatGPT/Codex-backed route keeps the full pool passthrough
+/// (`forward_codex_inbound`: selection, failover, refresh, `x-shunt-account`)
+/// and forwards the client's own headers; every other provider goes through
+/// [`responses::forward_codex_routed`], which sends a single credential over a
+/// fresh header allowlist. Only the routed provider's `upstream_model` can
+/// differ from what the client asked for, so the body is rewritten only then.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_routed(
+    state: AppState,
+    route_config: CodexRouteConfig,
+    model: String,
+    pool_key: Option<String>,
+    mut headers: HeaderMap,
+    body: Bytes,
+    max_request_bytes: usize,
+) -> Result<
+    (
+        String,
+        Result<(StatusCode, axum::response::Response), AdapterError>,
+    ),
+    ForwardError,
+> {
+    let upstream_model = route_config.upstream_model().to_string();
+    let chatgpt_backend = state.config.is_chatgpt_backend(&route_config.provider);
+    let rewrite = (upstream_model != model).then_some(upstream_model.as_str());
+    let route = Route {
+        provider: route_config.provider.clone(),
+        adapter: AdapterKind::Responses,
+        // The public, client-requested id labels metrics and spans; only the
+        // wire body and `upstream_model` carry the route's upstream id.
+        model: model.clone(),
+        upstream_model: upstream_model.clone(),
+        effort: None,
+        service_tier: None,
+    };
+
+    // The ChatGPT backend accepts the inbound encoding as-is, so it only needs a
+    // materialized body when the `model` actually changes. A third-party
+    // Responses API does not accept a zstd-encoded request, so that path always
+    // sends identity bytes — decoded even when nothing is rewritten.
+    let body = if chatgpt_backend && rewrite.is_none() {
+        body
+    } else {
+        let prepared = match identity_body(&headers, &body, rewrite, max_request_bytes).await {
+            Ok(prepared) => prepared,
+            Err(error) => return Err(routed_body_error(error, &route_config.provider).await),
+        };
+        // The prepared body is identity-encoded; leaving the inbound
+        // `content-encoding` on would tell the upstream to inflate plain bytes.
+        headers.remove(axum::http::header::CONTENT_ENCODING);
+        prepared
+    };
+
+    let result = if chatgpt_backend {
+        responses::forward_codex_inbound(state, route, pool_key, headers, body).await
+    } else {
+        responses::forward_codex_routed(state, route, headers, body).await
+    };
+    Ok((route_config.provider, result))
+}
+
+/// Turn a routed body failure into the gateway-owned response the client sees.
+/// Both arms are re-shaped into the OpenAI error envelope by [`post`].
+async fn routed_body_error(error: BodyError, provider: &str) -> ForwardError {
+    match error {
+        BodyError::TooLarge => ForwardError {
+            message: "request body exceeds the configured limit".to_string(),
+            response: Box::new(crate::http_tuning::request_too_large(true).await),
+        },
+        BodyError::Invalid => {
+            tracing::warn!(
+                provider = %provider,
+                "routed inbound codex request rejected: its body could not be prepared"
+            );
+            ForwardError {
+                message: "routed request body could not be prepared".to_string(),
+                response: Box::new(
+                    ShuntError::new(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request_error",
+                        "the request body could not be read as a JSON object, so its `model` \
+                         could not be rewritten for the configured \
+                         [[server.codex_endpoint.routes]] entry"
+                            .to_string(),
+                    )
+                    .into_response(),
+                ),
+            }
+        }
+    }
+}
+
+/// Record the request's outcome on the span, Sentry, and the metrics registry,
+/// then wrap the response in the streaming-metrics observer. Shared by both
+/// dispatch modes so a routed request is observed exactly like a fixed one —
+/// labeled with the provider that actually served it and the model the client
+/// asked for.
+fn record_outcome(
+    provider: String,
+    model: String,
+    started_at: Instant,
+    result: Result<(StatusCode, axum::response::Response), AdapterError>,
+) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     let status_code = match &result {
         Ok((status, _)) => *status,
         Err(error) => error.response.status(),
@@ -374,190 +428,6 @@ async fn forward(
             (status, response)
         })
         .map_err(ForwardError::from)
-}
-
-/// The label used when the request's model cannot be read (see [`model_label`]).
-const UNKNOWN_MODEL: &str = "unknown";
-
-/// Read the `model` for metrics/logging labels only — the body itself forwards
-/// upstream byte-for-byte, so a body this cannot read never blocks the request
-/// (the upstream rejects it).
-///
-/// Current Codex releases zstd-compress the Responses request body whenever both
-/// of their gates pass, which includes the documented `chatgpt_base_url` client
-/// shape pointed at this endpoint (issue #285). The compressed bytes relay
-/// upstream fine — `content-encoding` is forwarded verbatim — but a plain
-/// `from_slice` on them fails, which would silently label every metric, log line,
-/// and span for the request `unknown`. So decode a zstd body for the label, and
-/// log (rather than swallow) anything that still leaves the model unreadable.
-///
-/// [`MAX_REQUEST_BODY_BYTES`] is passed as [`decode_zstd_and_parse`]'s `cap`, the
-/// same absolute limit this endpoint already applies to the arrival buffer — so
-/// the arrival buffer and the decoded copy can be transiently resident together,
-/// at worst two buffers each up to that cap (not one, as compressing surely
-/// shrinks the wire size). What actually bounds the *decode work itself* for a
-/// small, hostile body is `compression::MAX_DECODE_RATIO`, not this cap: it ties
-/// worst-case decoded size to a multiple of what the peer actually uploaded
-/// (issue #291). A small absolute cap here instead would be unsound for the
-/// opposite reason — `serde_json::from_slice` needs a *complete* document, so any
-/// truncation-style cap below a real turn's size would silently relabel every
-/// large legitimate turn `unknown`, regressing issue #285's fix. The ratio bound
-/// is what makes keeping the large absolute cap here safe.
-///
-/// The zstd branch fuses the decode with the `model` extraction inside one
-/// bounded blocking task via [`decode_zstd_and_parse`], rather than decoding to
-/// a [`Bytes`] here and parsing it afterward on the async executor: the decoded
-/// body can be as large as [`MAX_REQUEST_BODY_BYTES`] (a ~1 MiB compressed
-/// upload already buys a 64 MiB budget via the ratio bound), and a
-/// `serde_json::from_slice` over a document that size is itself worker-blocking
-/// work — a 400 KiB document alone is already milliseconds, far past Tokio's
-/// ~100 µs budget. Doing both inside the same blocking task means the admission
-/// permit covers the parse too, and only the extracted [`ParsedModel`] (never
-/// the decoded bytes) crosses back to the async side (issue #291 follow-up).
-/// The identity/`Other` branches below have the same worker-blocking parse
-/// property but predate this fix — see the comment at their call site for why
-/// they are deliberately left as-is.
-async fn model_label(headers: &HeaderMap, body: &Bytes, max_request_bytes: usize) -> String {
-    match crate::compression::body_encoding(headers) {
-        BodyEncoding::Zstd => {
-            match crate::compression::decode_zstd_and_parse(
-                body.clone(),
-                max_request_bytes,
-                |decoded| {
-                    let decoded_bytes = decoded.len();
-                    (parse_model(&decoded), decoded_bytes)
-                },
-            )
-            .await
-            {
-                Ok(Some((parsed, decoded_bytes))) => {
-                    label_from_parsed(parsed, decoded_bytes, body.len())
-                }
-                Ok(None) => {
-                    tracing::warn!(
-                        wire_bytes = body.len(),
-                        limit = max_request_bytes,
-                        "inbound codex body decodes past the request size limit or the \
-                         compressed-to-decoded ratio bound; model label unavailable"
-                    );
-                    UNKNOWN_MODEL.to_string()
-                }
-                Err(error) => {
-                    // `error` here is a libzstd-authored message (allocation/format
-                    // failure), not client-controlled content — unlike the parse
-                    // error handled in `label_from_parsed`, so logging it verbatim
-                    // does not risk echoing the request body.
-                    tracing::warn!(
-                        wire_bytes = body.len(),
-                        error = %error,
-                        "failed to decode zstd inbound codex body; model label unavailable"
-                    );
-                    UNKNOWN_MODEL.to_string()
-                }
-            }
-        }
-        // A coding shunt does not decode (anything other than zstd/identity) is
-        // not fatal to the label: fall through and attempt a best-effort plain
-        // parse below, same as `Identity`. Returning `unknown` unconditionally
-        // here would let a client suppress its own model label by sending a
-        // bogus `content-encoding` header on an otherwise-plain body.
-        BodyEncoding::Other => {
-            tracing::warn!(
-                content_encoding = ?headers.get(axum::http::header::CONTENT_ENCODING),
-                "inbound codex body uses an unsupported content-encoding; \
-                 attempting a best-effort plain-JSON parse for the model label"
-            );
-            // Pre-existing (predates issue #291's fix, which only fuses the new
-            // zstd decode with its parse — see the doc comment above): this parse
-            // still runs synchronously on the async executor. Left as-is
-            // deliberately so that asymmetry with the zstd branch above is legible
-            // rather than accidental.
-            label_from_parsed(parse_model(body), body.len(), body.len())
-        }
-        BodyEncoding::Identity => {
-            // Pre-existing (predates issue #291's fix, which only fuses the new
-            // zstd decode with its parse — see the doc comment above): this parse
-            // runs synchronously on the async executor rather than the blocking
-            // pool. Left as-is deliberately, out of scope for the zstd-only fix.
-            label_from_parsed(parse_model(body), body.len(), body.len())
-        }
-    }
-}
-
-/// Turn a [`ParsedModel`] into the label string, logging *why* the label is
-/// `unknown` when it is. Shared by every [`model_label`] branch so the log
-/// shape is identical regardless of which path produced the [`ParsedModel`].
-///
-/// The `Malformed` arm deliberately logs only the error's classification
-/// (`line`/`column`/`classify()`), never `error.to_string()` /
-/// `error = %error`: `serde_json::Error`'s `Display` embeds the offending
-/// value it choked on (e.g. `invalid type: string "<entire body>", expected
-/// struct ModelView`), so logging it verbatim would echo the client-controlled
-/// request body — up to `MAX_REQUEST_BODY_BYTES` of it — into `warn!`, which
-/// becomes a Sentry breadcrumb (`observability`) and is exported by the OTel
-/// logs bridge (`telemetry`). Do not "helpfully" restore `error = %error` here.
-fn label_from_parsed(parsed: ParsedModel, decoded_bytes: usize, wire_bytes: usize) -> String {
-    match parsed {
-        ParsedModel::Model(model) => model,
-        ParsedModel::Malformed(error) => {
-            tracing::warn!(
-                decoded_bytes,
-                wire_bytes,
-                error_line = error.line(),
-                error_column = error.column(),
-                error_kind = ?error.classify(),
-                "inbound codex body is not valid JSON; labeling metrics and logs `unknown`"
-            );
-            UNKNOWN_MODEL.to_string()
-        }
-        ParsedModel::Missing => {
-            tracing::warn!(
-                decoded_bytes,
-                wire_bytes,
-                "inbound codex body has no `model` field; labeling metrics and logs `unknown`"
-            );
-            UNKNOWN_MODEL.to_string()
-        }
-        ParsedModel::NotAString(model_type) => {
-            tracing::warn!(
-                decoded_bytes,
-                wire_bytes,
-                model_type,
-                "inbound codex body's `model` field is not a string; labeling metrics and logs `unknown`"
-            );
-            UNKNOWN_MODEL.to_string()
-        }
-    }
-}
-
-/// The distinguishable outcomes of reading `model` out of a decoded body, so
-/// [`model_label`] can log *why* the label is unavailable instead of folding
-/// malformed JSON, a missing field, and a wrong-typed field into one silent
-/// `None` (as a bare `.ok().and_then(..)` chain over `Option<String>` would).
-enum ParsedModel {
-    Model(String),
-    /// The body is not valid JSON at all.
-    Malformed(serde_json::Error),
-    /// Valid JSON with no `model` field (or an explicit `null`).
-    Missing,
-    /// Valid JSON with a `model` field that is not a string. Carries only the
-    /// JSON type name, never the client-controlled value — see [`ModelField`].
-    NotAString(&'static str),
-}
-
-fn parse_model(body: &[u8]) -> ParsedModel {
-    match serde_json::from_slice::<ModelView>(body) {
-        Ok(ModelView {
-            model: Some(ModelField::Str(model)),
-        }) => ParsedModel::Model(model),
-        // `Option`'s deserializer maps an explicit `null` to `None` before
-        // `ModelFieldVisitor` runs, so absent and `null` arrive here alike.
-        Ok(ModelView { model: None }) => ParsedModel::Missing,
-        Ok(ModelView {
-            model: Some(ModelField::Other(model_type)),
-        }) => ParsedModel::NotAString(model_type),
-        Err(error) => ParsedModel::Malformed(error),
-    }
 }
 
 /// Namespace the account-pool sticky key with the authenticated inbound client so

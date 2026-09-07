@@ -5606,11 +5606,10 @@ mod tests {
 
     #[test]
     fn parses_codex_endpoint_routes_from_toml() {
-        let config: Config = figment::Figment::from(figment::providers::Serialized::defaults(
-            Config::default(),
-        ))
-        .merge(figment::providers::Toml::string(
-            r#"
+        let config: Config =
+            figment::Figment::from(figment::providers::Serialized::defaults(Config::default()))
+                .merge(figment::providers::Toml::string(
+                    r#"
 [server.codex_endpoint]
 provider = "codex"
 
@@ -5623,9 +5622,9 @@ upstream_model = "glm-5.3"
 model = "deepseek-v4"
 provider = "deepseek"
 "#,
-        ))
-        .extract()
-        .expect("routes table should parse");
+                ))
+                .extract()
+                .expect("routes table should parse");
         let endpoint = config
             .server
             .codex_endpoint
