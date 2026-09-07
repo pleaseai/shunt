@@ -1,0 +1,21 @@
+tests/inbound_codex_routes.rs
+  s_13b7e9055e0ea5::t_1f82a976426892 340,344-346
+src/codex_endpoint.rs
+  s_13b7e9055e0ea5::t_1f82a976426892 290-294
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a2bcff1a829ab722ccb7b4a7196b8b6bd164d931",
+  "prompts": {},
+  "sessions": {
+    "s_13b7e9055e0ea5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "558cc728-62d7-40c9-b65a-973cc42c9e4e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
