@@ -182,6 +182,29 @@ headers = { "x-api-key" = "..." }
 
 デフォルトでは `/device` は forwarding header を無視し、socket peer を rate limit します。shunt が、client 提供の forwarding header を削除して自分の値を設定する trusted reverse proxy からのみ到達可能な場合に限り、`trust_forwarded_for = true` を設定してください。直接公開された gateway では有効化しないでください。
 
+## `[server.codex_endpoint]`（オプション）
+
+このテーブルは inbound の OpenAI Responses passthrough を有効にし、**Codex CLI** が `base_url` を shunt に向けて ChatGPT/Codex OAuth アカウントプール間で load balancing できるようにします（[詳細](/ja/guides/inbound-codex-endpoint/)）。テーブルがなければ、ルートは登録されません。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `provider` | `codex` | どの route にも `model` が一致しない inbound request を処理する `[providers.<name>]` テーブル名。`auth = "chatgpt_oauth"` を使う必要があります |
+| `routes` | `[]` | オプションのモデル単位ルーティング（下記参照） |
+
+`POST /backend-api/codex/responses`、`POST /responses`、`POST /v1/responses` を登録し、いずれも指定した provider のアカウントプールが処理します。`[server.auth]` があれば、他のサーバー側 credential ルートと同様に有効なクライアントトークンを要求します。`[server.auth]` がなければ、オペレーターの Codex credential を注入しつつ到達可能な誰にでも**開放**された状態になるため、loopback 以外の環境では必ず保護してください。`/v1/messages` と異なり、request は Anthropic Messages へ変換したりその逆を行ったりせず、アップストリームへそのまま relay されます。
+
+### `[[server.codex_endpoint.routes]]`（オプション）
+
+各エントリは、上記の固定 `provider` の代わりに、特定のモデル 1 つを別の Responses 互換アップストリームへ送ります。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `model` | *(必須)* | Codex クライアントが Responses 本文で送る公開モデル id。**完全一致**かつ**大文字小文字を区別**します — prefix マッチも `[1m]` の除去も文字集合の制限もないため、`MiniMax-M3`、`openai/gpt-5.6-sol`、`~openai/gpt-latest` のようなベンダーのスラッグも書いたとおりにルーティングされます |
+| `provider` | *(必須)* | このモデルを提供する provider。`kind = "responses"` でなければならず、credential を持たない auth モード（`passthrough` または `none`）は使えません |
+| `upstream_model` | `model` | アップストリームへ送るモデル id。`model` と異なる場合、shunt は本文トップレベルの `model` だけを書き換え、他のフィールドはそのまま残します |
+
+未知の provider、`responses` 以外の provider、credential を持たない auth モード（`passthrough` または `none`）の provider へ向かう route は検証で拒否され、重複した `model` や空のフィールドも拒否されます。route はライブの設定スナップショットから読み込まれるため、追加・編集・削除は**リロード**時に反映されます。再起動が必要なのは `[server.codex_endpoint]` テーブル自体を有効化・無効化するときだけです。ChatGPT 以外の provider へルーティングされた request は、新しく組み立てたヘッダー許可リスト（`content-type`、`accept`、flavor ゲートを通過した `OpenAI-Beta`、そして `xai_oauth` route の場合は Grok CLI の identity ヘッダー）と identity エンコードの本文、credential 1 つだけを使い、プールもフェイルオーバーもありません。
+
 ## `[server.usage]`（オプション）
 
 このテーブルの存在により、共有アカウントプールのクォータ状態をサニタイズして集約した `GET /usage` が登録されます。管理サーフェスを使わずに、クライアントがスロットリングを予測するためのエンドポイントです（[エンドポイントの詳細](/ja/reference/endpoints/)）。テーブルがなければ、ルートは登録されません。

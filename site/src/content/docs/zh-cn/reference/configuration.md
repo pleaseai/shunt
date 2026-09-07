@@ -182,6 +182,29 @@ headers = { "x-api-key" = "..." }
 
 默认情况下,`/device` 忽略 forwarding header 并按 socket peer 做 rate limit。只有在 shunt 仅能通过会删除 client 所提供 forwarding header 并设置自身值的 trusted reverse proxy 访问时,才设置 `trust_forwarded_for = true`。不要在直接暴露的 gateway 上启用。
 
+## `[server.codex_endpoint]`(可选)
+
+此表启用入站 OpenAI Responses passthrough,让 **Codex CLI** 可以把 `base_url` 指向 shunt,并在 ChatGPT/Codex OAuth 账户池之间做 load balancing([详情](/zh-cn/guides/inbound-codex-endpoint/))。没有此表时,该路由不会注册。
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `provider` | `codex` | 处理所有未被任何 route 的 `model` 匹配的入站请求的 `[providers.<name>]` 表名。必须使用 `auth = "chatgpt_oauth"` |
+| `routes` | `[]` | 可选的按模型路由(见下文) |
+
+注册 `POST /backend-api/codex/responses`、`POST /responses` 和 `POST /v1/responses`,均由指定 provider 的账户池处理。存在 `[server.auth]` 时,与其他服务端凭证路由一样要求有效的客户端 token。没有 `[server.auth]` 时,端点会注入操作者的 Codex 凭证,却对任何能访问的人**开放**,因此在 loopback 之外的环境务必加以保护。与 `/v1/messages` 不同,请求不会转换为 Anthropic Messages 或反向转换,而是原样 relay 到上游。
+
+### `[[server.codex_endpoint.routes]]`(可选)
+
+每个条目把某一个模型送往另一个 Responses 兼容的上游,而不是上面固定的 `provider`。
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `model` | *(必填)* | Codex 客户端在 Responses 请求体中发送的公开模型 id。**精确匹配**且**区分大小写** — 没有前缀匹配、不剥离 `[1m]`、也不限制字符集,因此 `MiniMax-M3`、`openai/gpt-5.6-sol`、`~openai/gpt-latest` 这类厂商 slug 都按原样路由 |
+| `provider` | *(必填)* | 提供该模型的 provider。必须是 `kind = "responses"`,且不能使用不携带凭证的 auth 模式(`passthrough` 或 `none`) |
+| `upstream_model` | `model` | 发送给上游的模型 id。与 `model` 不同时,shunt 只改写请求体顶层的 `model`,其余字段保持不变 |
+
+指向未知 provider、非 `responses` provider,或使用不携带凭证的 auth 模式(`passthrough` 或 `none`)的 provider 的 route 会在校验时被拒绝;重复的 `model` 或空字段同样被拒绝。route 从实时配置快照读取,因此新增、修改、删除会在**重新加载**时生效;只有开关 `[server.codex_endpoint]` 表本身才需要重启。路由到非 ChatGPT provider 的请求使用全新组装的头部允许列表(`content-type`、`accept`、通过 flavor 门控的 `OpenAI-Beta`,以及 `xai_oauth` route 的 Grok CLI identity 头部)、identity 编码的请求体和单个凭证,没有池也没有故障转移。
+
 ## `[server.usage]`(可选)
 
 存在此表会注册面向客户端的 `GET /usage`,返回共享账户池配额状态的**净化聚合**视图,使非管理员客户端无需管理界面也能预判限流([端点详情](/zh-cn/reference/endpoints/))。没有此表时,该路由不会注册。
