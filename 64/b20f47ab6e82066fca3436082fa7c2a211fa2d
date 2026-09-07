@@ -1,0 +1,47 @@
+src/config.rs
+  s_fd663a4c0c71df::t_195aaef368125c 3225,3230-3231,3238-3246,3248-3252,3256,3264-3266,3268-3270
+  s_fd663a4c0c71df::t_61c2b53e5d86d3 3208-3212,3215,3217,5900-5915
+  s_fd663a4c0c71df::t_4225719e427c68 3271-3274
+  s_fd663a4c0c71df::t_34ce4c5bf54c90 3216,5896-5899
+  s_fd663a4c0c71df::t_6336d3c1bbc2db 6034-6038
+  s_fd663a4c0c71df::t_24cec7994f0fc3 5895,5966-5968,5983-5986,5990-6006,6009-6010,6013-6024,6026-6027,6030-6033
+  s_fd663a4c0c71df::t_856a52d5844a81 4199-4200
+site/src/content/docs/ko/reference/configuration.md
+  s_fd663a4c0c71df::t_eb0ee413d29cc6 122-123,137-139
+src/gateway/spend/pricing/catalog.rs
+  s_fd663a4c0c71df::t_2f0269e7b76889 28,30,38-42,60-68,105-120,181-201
+  s_fd663a4c0c71df::t_215908d250eee4 202
+docs/gateway-spend-limits.md
+  s_fd663a4c0c71df::t_092295240070e8 44,46
+site/src/content/docs/reference/configuration.md
+  s_fd663a4c0c71df::t_eb0ee413d29cc6 183-184,198-200
+site/src/content/docs/ja/reference/configuration.md
+  s_fd663a4c0c71df::t_eb0ee413d29cc6 122-123,137-139
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_fd663a4c0c71df::t_eb0ee413d29cc6 122-123,137-139
+src/gateway/spend/pricing.rs
+  s_fd663a4c0c71df::t_2f0269e7b76889 462-465
+  s_fd663a4c0c71df::t_5bebbf931937fe 469-484,486-497
+  s_fd663a4c0c71df::t_61c2b53e5d86d3 184-188,326-341
+  s_fd663a4c0c71df::t_05e077604ceb22 234-237,293,299,305,311-312,355,360,374-375,380,382,386-387,417-418,420-422,425-427,430-434,439-461,466-468,485
+  s_fd663a4c0c71df::t_77e401e7bc24af 9-21
+  s_fd663a4c0c71df::t_c3efa6cdd8f44d 28,30,60-63,67-71,84-87,157,159-160,199-209,220,224,227
+  s_fd663a4c0c71df::t_a0e3936ddb135f 72-77
+  s_fd663a4c0c71df::t_d39451ab28f68c 342-343,498
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "64b20f47ab6e82066fca3436082fa7c2a211fa2d",
+  "prompts": {},
+  "sessions": {
+    "s_fd663a4c0c71df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "27f91ae9-2921-44db-8aa0-996c83a4befb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
