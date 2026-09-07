@@ -32,25 +32,42 @@ pub const WEB_SEARCH_LIST_PRICE_NANO_USD: u64 = 10_000_000;
 /// The built-in catalog id a provider-decorated model id refers to, or `None`
 /// when the string is not a built-in at all.
 ///
-/// Normalizes the three decorations shunt actually sees upstream: a Bedrock
-/// region prefix and `anthropic.` namespace (`us.anthropic.claude-…`), a
-/// Bedrock `-v<major>:<minor>` model-version suffix, and a dated snapshot
-/// suffix in either the Anthropic (`-20260217`) or Vertex (`@20251101`) form.
-/// It deliberately does not fuzzy-match: an operator alias like
+/// Normalizes the decorations shunt actually sees: the `[1m]` context-window
+/// hint Claude Code appends to the *client* model id, a Bedrock region prefix
+/// and `anthropic.` namespace (`us.anthropic.claude-…`), a Bedrock
+/// `-v<major>:<minor>` model-version suffix, and a dated snapshot suffix in
+/// either the Anthropic (`-20260217`) or Vertex (`@20251101`) form. It
+/// deliberately does not fuzzy-match: an operator alias like
 /// `my-sonnet-alias` resolves to `None` so the caller can tell "unpriceable"
 /// from "priced by guess".
 pub fn canonical_builtin_id(model: &str) -> Option<&'static str> {
-    let lowered = model.trim().to_ascii_lowercase();
+    builtin_row(model).map(|(id, ..)| *id)
+}
+
+/// The whole `LIST_PRICES` row a decorated model id refers to. [`
+/// canonical_builtin_id`] and the list-price lookup share this one scan rather
+/// than each walking the table.
+pub(super) fn builtin_row(model: &str) -> Option<&'static (&'static str, f64, f64, f64, f64)> {
+    // The client model id can carry Claude Code's `[1m]` context-window hint,
+    // which `routing::strip_context_window_hint` removes before route matching
+    // and before forwarding upstream. Strip it here too, or `claude-opus-5[1m]`
+    // — a string real clients send — would price at nothing.
+    let lowered = crate::routing::strip_context_window_hint(model.trim()).to_ascii_lowercase();
     let mut rest = lowered.as_str();
 
-    // `us.anthropic.`, `eu.anthropic.`, `global.anthropic.`, `anthropic.` —
-    // every segment before `anthropic.` must be a bare alphabetic label.
+    // `us.anthropic.`, `eu.anthropic.`, `us-gov.anthropic.`, `anthropic.` —
+    // every segment before `anthropic.` must be a bare region label. AWS region
+    // labels are alphanumeric and may be hyphenated (`us-gov`), so accepting
+    // only `[a-z]` left GovCloud inference-profile ids unnormalized.
     if let Some(index) = rest.find("anthropic.") {
         let prefix = &rest[..index];
         let region_prefix = prefix.is_empty()
             || (prefix.ends_with('.')
                 && prefix.split_terminator('.').all(|segment| {
-                    !segment.is_empty() && segment.chars().all(|c| c.is_ascii_alphabetic())
+                    !segment.is_empty()
+                        && segment
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-')
                 }));
         if region_prefix {
             rest = &rest[index + "anthropic.".len()..];
@@ -74,10 +91,7 @@ pub fn canonical_builtin_id(model: &str) -> Option<&'static str> {
         }
     }
 
-    LIST_PRICES
-        .iter()
-        .find(|(id, ..)| *id == rest)
-        .map(|(id, ..)| *id)
+    LIST_PRICES.iter().find(|(id, ..)| *id == rest)
 }
 
 fn is_ascii_digits(value: &str) -> bool {
@@ -108,6 +122,33 @@ mod tests {
         );
         assert_eq!(canonical_builtin_id("my-sonnet-alias"), None);
         assert_eq!(canonical_builtin_id(""), None);
+    }
+
+    /// Claude Code appends `[1m]` to the client model id as a context-window
+    /// hint. Routing strips it before matching; pricing must too, or every
+    /// request made with the documented `[1m]` lever prices at nothing.
+    #[test]
+    fn canonical_id_strips_the_context_window_hint() {
+        assert_eq!(
+            canonical_builtin_id("claude-opus-5[1m]"),
+            Some("claude-opus-5")
+        );
+        assert_eq!(
+            canonical_builtin_id("claude-sonnet-4-6-20260217[1M]"),
+            Some("claude-sonnet-4-6")
+        );
+    }
+
+    /// AWS region labels may be hyphenated. Accepting only `[a-z]` segments left
+    /// GovCloud cross-region inference-profile ids unpriceable.
+    #[test]
+    fn canonical_id_strips_hyphenated_region_prefixes() {
+        assert_eq!(
+            canonical_builtin_id("us-gov.anthropic.claude-sonnet-4-6-v1:0"),
+            Some("claude-sonnet-4-6")
+        );
+        // A bare word ending in `anthropic.` is still not a region prefix.
+        assert_eq!(canonical_builtin_id("myanthropic.claude-opus-5"), None);
     }
 
     /// A duplicated id would make the first row silently shadow the second, and

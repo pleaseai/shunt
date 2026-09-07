@@ -2282,9 +2282,9 @@ pub enum ConfigError {
     LiteralAdminKey { path: String },
     #[error("[server.spend] requires [server.admin]: the spend-limit API authenticates with the admin credential")]
     SpendRequiresAdmin,
-    #[error("[server.spend.pricing].multiplier must be a finite number greater than 0 and at most 1, got {multiplier}")]
+    #[error("[server.spend.pricing].multiplier must be a finite number of at least 0.000001 and at most 1, got {multiplier}")]
     InvalidPricingMultiplier { multiplier: f64 },
-    #[error("server.spend.pricing.overrides[{index}].{field} must be a finite number greater than 0, got {value}")]
+    #[error("server.spend.pricing.overrides[{index}].{field} must be a finite USD-per-million rate of at least 0.001, got {value}")]
     InvalidPricingRate {
         index: usize,
         field: &'static str,
@@ -3162,7 +3162,9 @@ impl Config {
         else {
             return Ok(());
         };
-        if !pricing.multiplier.is_finite() || pricing.multiplier <= 0.0 || pricing.multiplier > 1.0
+        if !pricing.multiplier.is_finite()
+            || pricing.multiplier < crate::gateway::spend::pricing::MIN_MULTIPLIER
+            || pricing.multiplier > 1.0
         {
             return Err(ConfigError::InvalidPricingMultiplier {
                 multiplier: pricing.multiplier,
@@ -3179,7 +3181,8 @@ impl Config {
                 ("cache_read", row.cache_read),
                 ("cache_write", row.cache_write),
             ] {
-                if !value.is_finite() || value <= 0.0 {
+                if !value.is_finite() || value < crate::gateway::spend::pricing::MIN_USD_PER_MILLION
+                {
                     return Err(ConfigError::InvalidPricingRate {
                         index,
                         field,
@@ -3228,8 +3231,15 @@ impl Config {
     /// Whether some request could actually be priced by an override row naming
     /// `model`: it is a built-in, or it is a model id or upstream model name
     /// that `[[models]]` or `[[routes]]` can produce.
+    ///
+    /// A config with neither table forwards the client's raw model string to the
+    /// default provider, so *every* string is requestable there and the caller's
+    /// "will never match" warning would be a false positive.
     fn pricing_model_is_requestable(&self, model: &str) -> bool {
         if crate::gateway::spend::pricing::canonical_builtin_id(model).is_some() {
+            return true;
+        }
+        if self.models.is_empty() && self.routes.is_empty() {
             return true;
         }
         let matches = |candidate: &str| candidate.eq_ignore_ascii_case(model);

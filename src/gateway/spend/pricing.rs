@@ -15,6 +15,7 @@ pub mod catalog;
 
 use crate::config::{PricingConfig, PricingOverride};
 
+use catalog::builtin_row;
 pub use catalog::{canonical_builtin_id, LIST_PRICES, WEB_SEARCH_LIST_PRICE_NANO_USD};
 
 /// One model's four rates, in nano-USD per token.
@@ -78,7 +79,7 @@ impl Rates {
 #[derive(Debug, Clone)]
 struct Override {
     upstream: String,
-    /// `model` lowercased, for the literal match.
+    /// `model` as configured; matched ASCII-case-insensitively.
     model: String,
     /// `model` as a built-in catalog id, when it names one.
     canonical: Option<&'static str>,
@@ -115,26 +116,27 @@ impl PriceTable {
     ///
     /// Most specific wins: an override naming the upstream model, then one
     /// naming the client model, then one naming the same built-in by a
-    /// different id (a dated snapshot, a Bedrock id), then the list price.
+    /// different id (a dated snapshot, a Bedrock id), then the list price of
+    /// the upstream model. The client model never selects a list price.
     pub fn resolve(
         &self,
         upstream: &str,
         client_model: &str,
         upstream_model: &str,
     ) -> Option<Rates> {
+        // Canonicalizing allocates a normalized `String`, so do it once per
+        // model rather than once per fallback rung.
+        let upstream_row = builtin_row(upstream_model);
+        let client_row = builtin_row(client_model);
         let rates = self
             .literal_override(upstream, upstream_model)
             .or_else(|| self.literal_override(upstream, client_model))
-            .or_else(|| {
-                canonical_builtin_id(upstream_model)
-                    .and_then(|id| self.canonical_override(upstream, id))
-            })
-            .or_else(|| {
-                canonical_builtin_id(client_model)
-                    .and_then(|id| self.canonical_override(upstream, id))
-            })
-            .or_else(|| list_price(upstream_model))
-            .or_else(|| list_price(client_model))?;
+            .or_else(|| upstream_row.and_then(|(id, ..)| self.canonical_override(upstream, id)))
+            .or_else(|| client_row.and_then(|(id, ..)| self.canonical_override(upstream, id)))
+            // The list price keys on the model the upstream actually served:
+            // a built-in client id remapped to a non-Anthropic upstream model
+            // must not bill that provider's tokens at Anthropic rates.
+            .or_else(|| upstream_row.map(list_price))?;
         Some(rates.scaled(self.multiplier_ppm))
     }
 
@@ -145,10 +147,10 @@ impl PriceTable {
     }
 
     fn literal_override(&self, upstream: &str, model: &str) -> Option<Rates> {
-        let model = model.to_ascii_lowercase();
+        let model = crate::routing::strip_context_window_hint(model.trim());
         self.overrides
             .iter()
-            .find(|row| row.upstream == upstream && row.model == model)
+            .find(|row| row.upstream == upstream && row.model.eq_ignore_ascii_case(model))
             .map(|row| row.rates)
     }
 
@@ -165,23 +167,26 @@ const ONE_MILLION: u32 = 1_000_000;
 fn resolve_override(row: &PricingOverride) -> Override {
     Override {
         upstream: row.upstream.clone(),
-        model: row.model.to_ascii_lowercase(),
+        model: row.model.trim().to_string(),
         canonical: canonical_builtin_id(&row.model),
         rates: Rates::from_usd_per_million(row.input, row.output, row.cache_read, row.cache_write),
     }
 }
 
-fn list_price(model: &str) -> Option<Rates> {
-    let canonical = canonical_builtin_id(model)?;
-    LIST_PRICES.iter().find(|(id, ..)| *id == canonical).map(
-        |(_, input, output, cache_read, cache_write)| {
-            Rates::from_usd_per_million(*input, *output, *cache_read, *cache_write)
-        },
-    )
+fn list_price(row: &'static (&'static str, f64, f64, f64, f64)) -> Rates {
+    let (_, input, output, cache_read, cache_write) = row;
+    Rates::from_usd_per_million(*input, *output, *cache_read, *cache_write)
 }
 
+/// The smallest multiplier that does not round every rate to zero, and the
+/// smallest USD-per-million rate that does not quantize to zero nano-USD per
+/// token. `Config::validate_pricing` rejects anything below these so a positive
+/// number in the config can never silently price requests at $0.
+pub const MIN_MULTIPLIER: f64 = 1.0 / ONE_MILLION as f64;
+pub const MIN_USD_PER_MILLION: f64 = 0.001;
+
 fn multiplier_ppm(multiplier: f64) -> u32 {
-    if !multiplier.is_finite() || multiplier <= 0.0 {
+    if !multiplier.is_finite() || multiplier <= 0.0 || multiplier > 1.0 {
         return ONE_MILLION;
     }
     (multiplier * f64::from(ONE_MILLION)).round() as u32
@@ -216,39 +221,58 @@ mod tests {
     }
 
     /// The rows are declared least-specific first, so a resolver that took the
-    /// first matching row would return the snapshot row for every lookup.
+    /// first matching row would return the built-in row for every lookup. The
+    /// literal rows name an alias and an inference-profile ARN — strings that
+    /// are not built-ins — because two spellings of one built-in on one
+    /// upstream are a duplicate `Config::validate` rejects.
     #[test]
     fn resolve_prefers_the_most_specific_override_row_not_the_first_declared() {
+        const ARN: &str = "arn:aws:bedrock:eu-west-1:123456789012:inference-profile/eu.anthropic.claude-sonnet-4-6-20260217-v1:0";
         let pricing = PricingConfig {
             multiplier: 1.0,
             overrides: vec![
-                override_row("bedrock-eu", "claude-sonnet-4-6-20260217", 1.0),
+                override_row("bedrock-eu", "claude-sonnet-4-6", 1.0),
                 override_row("bedrock-eu", "sonnet-alias", 2.0),
-                override_row("bedrock-eu", "eu.anthropic.claude-sonnet-4-6-v1:0", 3.0),
+                override_row("bedrock-eu", ARN, 3.0),
             ],
         };
+        let config_rows = pricing.overrides.clone();
         let table = PriceTable::from_config(Some(&pricing));
 
+        // The three rows must coexist in a bootable config: none canonicalizes
+        // to the same key as another.
+        let mut keys: Vec<String> = config_rows
+            .iter()
+            .map(|row| {
+                super::canonical_builtin_id(&row.model)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| row.model.to_ascii_lowercase())
+            })
+            .collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(
+            keys.len(),
+            3,
+            "rows must not collide under duplicate detection"
+        );
+
         // Upstream-model literal match beats the client-model literal match and
-        // the canonical (snapshot-id) match.
+        // the canonical (built-in) match.
         let rates = table
-            .resolve(
-                "bedrock-eu",
-                "sonnet-alias",
-                "eu.anthropic.claude-sonnet-4-6-v1:0",
-            )
+            .resolve("bedrock-eu", "sonnet-alias", ARN)
             .expect("an override matches the upstream model");
         assert_eq!(rates.input, 3_000);
 
         // Client-model literal match beats the canonical match.
         let rates = table
-            .resolve("bedrock-eu", "sonnet-alias", "claude-sonnet-4-6")
+            .resolve("bedrock-eu", "sonnet-alias", "claude-sonnet-4-6-20260217")
             .expect("an override matches the client model");
         assert_eq!(rates.input, 2_000);
 
-        // Neither literal matches: the snapshot row is the same built-in.
+        // Neither literal matches: the dated snapshot is the same built-in.
         let rates = table
-            .resolve("bedrock-eu", "unknown-alias", "claude-sonnet-4-6")
+            .resolve("bedrock-eu", "unknown-alias", "claude-sonnet-4-6-20260217")
             .expect("an override matches the canonical built-in");
         assert_eq!(rates.input, 1_000);
 
@@ -258,6 +282,17 @@ mod tests {
             .expect("the list price prices a built-in");
         assert_eq!(rates.input, 3_000);
         assert_eq!(rates.output, 15_000);
+    }
+
+    /// A built-in client id remapped to a non-Anthropic upstream model must
+    /// not fall back to the Anthropic list price for that client id.
+    #[test]
+    fn list_price_keys_on_the_upstream_model_not_the_client_model() {
+        let table = PriceTable::from_config(None);
+        assert_eq!(table.resolve("codex", "claude-sonnet-4-6", "gpt-5.2"), None);
+        assert!(table
+            .resolve("codex", "gpt-5.2", "claude-sonnet-4-6")
+            .is_some());
     }
 
     #[test]
@@ -274,7 +309,7 @@ mod tests {
         assert_eq!(rates.input, 4_000);
 
         let rates = table
-            .resolve("bedrock-us", "CLAUDE-Haiku-4-5", "unknown")
+            .resolve("bedrock-us", "haiku", "CLAUDE-Haiku-4-5")
             .expect("the list price matches regardless of case");
         assert_eq!(rates.input, 1_000);
     }

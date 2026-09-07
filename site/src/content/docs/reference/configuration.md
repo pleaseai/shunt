@@ -164,6 +164,39 @@ Presence of this table registers the spend-limit Admin API under `/v1/organizati
 
 Send the admin credential in the configured `[server.admin] header` or in `x-api-key`; a `read_keys` credential can use `GET` only. The state file is replaced atomically with private permissions after each mutation. When no home directory resolves, the default is memory-only. Adding or removing the table, and the state path itself, are both fixed at boot; configuration reloads log a warning instead of applying them.
 
+### `[server.spend.pricing]` (optional)
+
+States what a request costs. Omitting the table means the built-in list prices at multiplier 1. The table and its resolver are validated at boot, but stage 1 has no meter that reads token usage, so nothing prices a request yet.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `multiplier` | `1` | Scales every resolved rate, list price and override alike. Models a discount: at least `0.000001` and at most `1` |
+
+Each `[[server.spend.pricing.overrides]]` row replaces the list price for one model on one upstream:
+
+| Key | Required | Meaning |
+| :-- | :-- | :-- |
+| `upstream` | yes | Must name a configured upstream |
+| `model` | yes | Client or upstream model id, matched case-insensitively |
+| `input`, `output`, `cache_read`, `cache_write` | yes | USD per million tokens, each at least `0.001` |
+
+```toml
+[server.spend.pricing]
+multiplier = 0.85
+
+[[server.spend.pricing.overrides]]
+upstream = "bedrock-eu"
+model = "claude-sonnet-4-6"
+input = 3.30
+output = 16.50
+cache_read = 0.33
+cache_write = 4.125
+```
+
+An out-of-range multiplier, a missing or out-of-range rate, a blank `upstream`, an `upstream` naming no configured upstream, and two rows pricing the same model on one upstream all fail validation at boot. Two rows collide when they name the same model, not merely the same string: `claude-sonnet-4-6` and `claude-sonnet-4-6-20260217` are one model. A `model` that is neither a built-in nor a model any `[[models]]` or `[[routes]]` entry can request logs a warning instead.
+
+Rates are matched most-specific-first for one upstream: an override matching the upstream model id, then one matching the client model id, then one naming the same built-in by a different id (a dated snapshot, a Bedrock id), then the built-in list price of the upstream model (never of the client model, so a built-in client id remapped to a non-Anthropic upstream model is not billed at Anthropic rates), then nothing — an unpriceable request. Server-side web search is priced per request (`$0.01`), so only the multiplier applies. All amounts are USD **estimates** computed from reported token counts against published list prices; they will not reconcile to the cent with a provider invoice.
+
 ### `[server.spend.enforcement]` (optional)
 
 | Key | Default | Meaning |

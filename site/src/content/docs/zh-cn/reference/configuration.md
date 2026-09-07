@@ -103,6 +103,39 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 
 请通过配置的 `[server.admin] header` 或 `x-api-key` 发送管理员凭据;`read_keys` 凭据只能使用 `GET`。每次修改都会通过私有临时文件原子替换状态文件。无法解析 home 目录时,默认仅使用内存。该表的增删与状态路径都在启动时固定,配置重载只会记录警告而不会应用。
 
+### `[server.spend.pricing]`(可选)
+
+定义一次请求的成本。省略该表表示使用内置标价并以 multiplier 1 计算。该表及其解析器会在启动时校验,但 stage 1 没有读取 token 用量的计量器,因此尚不会对任何请求计价。
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `multiplier` | `1` | 对解析出的所有费率生效,无论标价还是 override。用于表示折扣,最小 `0.000001`,最大 `1` |
+
+每个 `[[server.spend.pricing.overrides]]` 行为某个 upstream 上的某个模型替换标价:
+
+| 键 | 必填 | 含义 |
+| :-- | :-- | :-- |
+| `upstream` | 是 | 必须是已配置的 upstream 名称 |
+| `model` | 是 | 客户端或 upstream 模型 id,匹配时不区分大小写 |
+| `input`、`output`、`cache_read`、`cache_write` | 是 | 每百万 token 的 USD,各自最小 `0.001` |
+
+```toml
+[server.spend.pricing]
+multiplier = 0.85
+
+[[server.spend.pricing.overrides]]
+upstream = "bedrock-eu"
+model = "claude-sonnet-4-6"
+input = 3.30
+output = 16.50
+cache_read = 0.33
+cache_write = 4.125
+```
+
+超出范围的 multiplier、缺失或超出范围的费率、空的 `upstream`、指向未配置 upstream 的 `upstream`,以及在同一个 upstream 上为同一模型配置的两行,都会导致启动时校验失败。两行冲突的判定依据是指向同一个模型,而非字符串相同:`claude-sonnet-4-6` 与 `claude-sonnet-4-6-20260217` 是同一个模型。若 `model` 既不是内置模型,也不是任何 `[[models]]`、`[[routes]]` 条目能够请求的模型,则只记录警告。
+
+费率按 upstream 逐一匹配,从最具体的开始:匹配 upstream 模型 id 的 override,其次是匹配客户端模型 id 的 override,再次是以其他 id(日期快照、Bedrock id)指向同一内置模型的 override,然后是 upstream 模型的内置标价(不使用客户端模型的标价,因此把内置客户端 id 重映射到非 Anthropic 的 upstream 模型时不会按 Anthropic 费率计费),最后是无 — 该请求无法计价。服务端网页搜索按请求计费(`$0.01`)而非按 token,因此只有 multiplier 生效。所有金额均为 USD **估算值**,由上报的 token 数按公开标价计算得出,不会与账单精确到分。
+
 ### `[server.spend.enforcement]`(可选)
 
 | 键 | 默认 | 含义 |

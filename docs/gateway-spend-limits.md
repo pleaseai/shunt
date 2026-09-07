@@ -41,14 +41,16 @@ cache_read = 0.33
 cache_write = 4.125
 ```
 
-`multiplier` scales every resolved rate, list price and override alike, and models a discount: it must be a finite number greater than `0` and at most `1`. Each override row supplies all four rates in USD per million tokens, and each must be finite and greater than `0`. A missing rate is a parse error; a non-positive or non-finite one, an out-of-range multiplier, a blank `upstream`, an `upstream` that names no configured upstream (the error lists the ones that exist), and two rows pricing the same model on one upstream all fail configuration validation at boot. Two rows collide when they name the same model, not merely the same string: `claude-sonnet-4-6` and `claude-sonnet-4-6-20260217` are one model on one upstream. A row whose `model` is neither a built-in nor a model that any `[[models]]` or `[[routes]]` entry can request is a warning rather than an error — the row is kept, but nothing will ever match it.
+`multiplier` scales every resolved rate, list price and override alike, and models a discount: it must be a finite number of at least `0.000001` and at most `1`. Each override row supplies all four rates in USD per million tokens, and each must be finite and at least `0.001`. Both floors exist because rates are stored as whole nano-USD per token: a smaller positive number quantizes to `0`, which would price requests at nothing while looking like a valid discount. A missing rate is a parse error; an out-of-range rate, an out-of-range multiplier, a blank `upstream`, an `upstream` that names no configured upstream (the error lists the ones that exist), and two rows pricing the same model on one upstream all fail configuration validation at boot. Two rows collide when they name the same model, not merely the same string: `claude-sonnet-4-6` and `claude-sonnet-4-6-20260217` are one model on one upstream. A row whose `model` is neither a built-in nor a model that any `[[models]]` or `[[routes]]` entry can request is a warning rather than an error — the row is kept, but nothing will ever match it. A configuration with neither table forwards the client's model string as-is, so no row is warned about there.
+
+Model ids are normalized before matching: Claude Code's `[1m]` context-window hint, a Bedrock region prefix and `anthropic.` namespace (including hyphenated regions such as `us-gov.`), a Bedrock `-v<major>:<minor>` version suffix, and a dated snapshot suffix in either the Anthropic (`-20260217`) or Vertex (`@20251101`) form are all stripped.
 
 Rates are matched most-specific-first, for one upstream at a time:
 
 1. an override row whose `model` equals the **upstream** model id (case-insensitively);
 2. otherwise an override row whose `model` equals the **client** model id;
 3. otherwise an override row naming the same built-in model by a different id — a dated snapshot (`claude-opus-4-5@20251101`), a Bedrock id (`us.anthropic.claude-sonnet-4-6-20260217-v1:0`) — matched against the upstream model first, then the client model;
-4. otherwise the built-in list price for that model;
+4. otherwise the built-in list price of the **upstream** model — never of the client model, so a built-in client id remapped to a non-Anthropic upstream model is not billed at Anthropic rates;
 5. otherwise nothing: the request cannot be priced, and the meter decides what that means.
 
 The built-in list-price catalog is the fallback, in USD per million tokens, and covers the Claude models shunt routes to. Server-side web search is priced per request ($0.01) rather than per token, and override rows never change it; only the multiplier applies.
