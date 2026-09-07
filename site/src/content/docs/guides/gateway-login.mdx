@@ -72,6 +72,8 @@ surface shunt expects, put an OIDC identity provider such as [Dex](https://dexid
 in front of it and configure the Dex issuer here. Direct provider-specific OAuth2
 integrations are out of scope.
 
+The issuer and every endpoint must use HTTPS. Plain HTTP is accepted only at `localhost` or `127.0.0.1`: those are the only loopback hosts the approval page's Content Security Policy can name, so an IdP on `[::1]` or another `127.0.0.0/8` address is refused at startup rather than blocked later in the browser.
+
 At least one non-empty `allowed_domains` or `allowed_emails` entry is required;
 shunt refuses to start without it. `users_env` becomes optional when
 `[server.gateway.oidc]` is configured. Leave `SHUNT_GATEWAY_USERS` set to show

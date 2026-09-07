@@ -123,7 +123,7 @@ allowed_domains = ["example.com"]
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `issuer` | required | OIDC discovery issuer; HTTPS is required except for loopback HTTP |
+| `issuer` | required | OIDC discovery issuer; HTTPS is required except for HTTP on `localhost` or `127.0.0.1` |
 | `client_id` | required | Non-empty OIDC client identifier |
 | `client_secret_env` | `SHUNT_GATEWAY_OIDC_SECRET` | Environment variable holding the non-empty client secret |
 | `allowed_domains` | `[]` | Case-insensitive email domains allowed to approve a device |
@@ -137,7 +137,9 @@ At least one `allowed_domains` or `allowed_emails` entry is required. When an
 endpoint override is omitted, shunt resolves it from
 `{issuer}/.well-known/openid-configuration` and requires the returned issuer to
 match the configured issuer exactly. Every configured or discovered endpoint
-must use HTTPS, except that HTTP is accepted on loopback. Providers that do not
+must use HTTPS, except that HTTP is accepted on `localhost` and `127.0.0.1`, the
+only loopback hosts a browser Content Security Policy can name (see below); an
+IdP on `[::1]` or another `127.0.0.0/8` address is refused. Providers that do not
 expose standard OIDC, including GitHub or a SAML identity provider, should be
 connected through an OIDC broker such as Dex; direct OAuth2 integrations are
 out of scope.
@@ -173,6 +175,19 @@ browsers send `Origin: null` on the page's own form submission. A rejected
 request re-renders the approval page carrying a human-readable message:
 `POST /device` answers `200 OK` so the form stays available for a retry, while
 `POST /device/authorize` answers `403 Forbidden`.
+
+The page ships a strict Content Security Policy (`form-action 'self'`). When the
+SSO form is rendered, `form-action` is widened to
+`'self' https: http://127.0.0.1:* http://localhost:*`: Chrome and WebKit enforce
+`form-action` against the post-submission redirect chain, so the strict policy
+would block the `POST /device/authorize` → `302` → IdP hop in the browser before
+it is sent. Pages without the SSO form — including the approved-device view —
+keep `'self'`. That list admits exactly what the IdP URL validation admits:
+CSP's host-source grammar cannot express an IPv6 literal, and a port wildcard
+does not widen `127.0.0.1` to the rest of `127.0.0.0/8`, so plain-`http` IdP
+URLs are accepted only on `localhost` and `127.0.0.1`. An IdP on another
+loopback address fails at startup (configured override) or at discovery
+(discovered endpoint) instead of silently in the browser.
 
 ## State and operational boundary
 

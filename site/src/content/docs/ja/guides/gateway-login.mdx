@@ -72,6 +72,8 @@ GitHub、SAML、その他 shunt が期待する標準の OIDC
 アイデンティティプロバイダーを前段に置き、その Dex の issuer をここに設定してください。プロバイダー固有の
 OAuth2 を直接統合することはスコープ外です。
 
+issuer とすべてのエンドポイントは HTTPS を使う必要があります。平文の HTTP は `localhost` または `127.0.0.1` でのみ許可されます。承認ページの Content Security Policy が名前で指定できるループバックホストはその 2 つだけなので、`[::1]` やその他の `127.0.0.0/8` アドレス上の IdP は、後でブラウザーにブロックされる代わりに起動時に拒否されます。
+
 空でない `allowed_domains` または `allowed_emails` のエントリが少なくとも 1 つ必要です。それがないと
 shunt は起動を拒否します。`[server.gateway.oidc]` を設定すると `users_env`
 は任意になります。`SHUNT_GATEWAY_USERS` を設定したままにすると SSO

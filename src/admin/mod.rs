@@ -1658,26 +1658,25 @@ pub(super) fn html_page(body: String) -> Response {
 }
 
 pub(super) fn html_body(body: String) -> Response {
-    html_body_with_form_action(body, "'self'")
+    html_body_with_form_action(body, crate::gateway::idp_client::SELF_FORM_ACTION)
 }
 
 /// The login page, with the CSP `form-action` widened to the identity provider
 /// when the SSO form is present: Chrome and WebKit enforce `form-action`
 /// against the post-submission redirect chain (w3c/webappsec-csp#8), so the
 /// strict `'self'` policy would block the
-/// `POST /admin/oidc/start` -> `302` -> IdP hop. The discovered authorization
-/// endpoint is not known when this page renders, so allow what
-/// `idp_client::validate_endpoint` accepts: any `https` origin plus loopback
-/// `http` (IPv6 loopback is not expressible as a CSP host-source).
+/// `POST /admin/oidc/start` -> `302` -> IdP hop. See
+/// [`IDP_REDIRECT_FORM_ACTION`](crate::gateway::idp_client) for the source
+/// list and the loopback hosts it cannot express.
 pub(super) fn login_response(
     status: StatusCode,
     error: Option<&str>,
     sso_label: Option<&str>,
 ) -> Response {
     let form_action = if sso_label.is_some() {
-        "'self' https: http://127.0.0.1:* http://localhost:*"
+        crate::gateway::idp_client::IDP_REDIRECT_FORM_ACTION
     } else {
-        "'self'"
+        crate::gateway::idp_client::SELF_FORM_ACTION
     };
     let mut response = html_body_with_form_action(html::login_page(error, sso_label), form_action);
     *response.status_mut() = status;
