@@ -1,0 +1,48 @@
+src/config/pricing.rs
+  s_fd663a4c0c71df::t_49b1bb51e4e4fc 1-46
+src/gateway/spend/pricing/catalog.rs
+  s_fd663a4c0c71df::t_a58daadede94b2 1-51,55-129
+  s_fd663a4c0c71df::t_ac8d030b857253 52-54
+src/gateway/spend/pricing.rs
+  s_fd663a4c0c71df::t_fc2ca5df13bd4e 1-42,49-175,178,181-351
+  s_fd663a4c0c71df::t_ac8d030b857253 43-48,176-177,179-180
+README.zh-CN.md
+  s_fd663a4c0c71df::t_f2e1d2f6a33227 164
+src/config.rs
+  s_fd663a4c0c71df::t_1b2c632b58233e 4168-4170,4181-4191,5737-5740,5857
+  s_fd663a4c0c71df::t_ac8d030b857253 2293-2295,3157-3161,3165,3244,5864
+  s_fd663a4c0c71df::t_610d8df2176b24 5919-5932
+  s_fd663a4c0c71df::t_d037e7bffb1525 2285-2292,2296-2308
+  s_fd663a4c0c71df::t_aed12f35f26a12 3153-3156,3162-3164,3166-3243,3245-3247
+  s_fd663a4c0c71df::t_7651d9294b0cf6 3307-3310
+  s_fd663a4c0c71df::t_016faaa2a6e150 5732-5736,5741-5856,5858-5863,5865-5918,5933-5954
+  s_fd663a4c0c71df::t_cd2b9ebd9a809b 17,28
+src/config/spend.rs
+  s_fd663a4c0c71df::t_108dcf7ba7543d 16-17,49-52,65
+README.ko.md
+  s_fd663a4c0c71df::t_f2e1d2f6a33227 166
+src/gateway/spend/mod.rs
+  s_fd663a4c0c71df::t_cd2b9ebd9a809b 9
+docs/gateway-spend-limits.md
+  s_fd663a4c0c71df::t_1d5473fcc3cad9 27-59,113
+README.md
+  s_fd663a4c0c71df::t_f2e1d2f6a33227 169
+README.ja.md
+  s_fd663a4c0c71df::t_f2e1d2f6a33227 169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "55d0dface0d6946ad0ed396b99b847b061ed20fb",
+  "prompts": {},
+  "sessions": {
+    "s_fd663a4c0c71df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "27f91ae9-2921-44db-8aa0-996c83a4befb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
