@@ -182,6 +182,29 @@ headers = { "x-api-key" = "..." }
 
 デフォルトでは `/device` は forwarding header を無視し、socket peer を rate limit します。shunt が、client 提供の forwarding header を削除して自分の値を設定する trusted reverse proxy からのみ到達可能な場合に限り、`trust_forwarded_for = true` を設定してください。直接公開された gateway では有効化しないでください。
 
+## `[server.codex_endpoint]`（オプション）
+
+このテーブルは inbound の OpenAI Responses passthrough を有効にし、**Codex CLI** が `base_url` を shunt に向けて ChatGPT/Codex OAuth アカウントプール間で load balancing できるようにします（[詳細](/ja/guides/inbound-codex-endpoint/)）。テーブルがなければ、ルートは登録されません。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `provider` | `codex` | どの route にも `model` が一致しない inbound request を処理する `[providers.<name>]` テーブル名。`auth = "chatgpt_oauth"` を使う必要があります |
+| `routes` | `[]` | オプションのモデル単位ルーティング（下記参照） |
+
+`POST /backend-api/codex/responses`、`POST /responses`、`POST /v1/responses` を登録し、いずれも指定した provider のアカウントプールが処理します。`[server.auth]` があれば、他のサーバー側 credential ルートと同様に有効なクライアントトークンを要求します。`[server.auth]` がなければ、オペレーターの Codex credential を注入しつつ到達可能な誰にでも**開放**された状態になるため、loopback 以外の環境では必ず保護してください。`/v1/messages` と異なり、request は Anthropic Messages へ変換したりその逆を行ったりせず、アップストリームへそのまま relay されます。
+
+### `[[server.codex_endpoint.routes]]`（オプション）
+
+各エントリは、上記の固定 `provider` の代わりに、特定のモデル 1 つを別の Responses 互換アップストリームへ送ります。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `model` | *(必須)* | Codex クライアントが Responses 本文で送る公開モデル id。**完全一致**かつ**大文字小文字を区別**します — prefix マッチも `[1m]` の除去も文字集合の制限もないため、`MiniMax-M3`、`openai/gpt-5.6-sol`、`~openai/gpt-latest` のようなベンダーのスラッグも書いたとおりにルーティングされます |
+| `provider` | *(必須)* | このモデルを提供する provider。`kind = "responses"` でなければならず、credential を持たない auth モード（`passthrough` または `none`）は使えません |
+| `upstream_model` | `model` | アップストリームへ送るモデル id。`model` と異なる場合、shunt は本文トップレベルの `model` だけを書き換え、他のフィールドはそのまま残します |
+
+未知の provider、`responses` 以外の provider、credential を持たない auth モード（`passthrough` または `none`）の provider へ向かう route は検証で拒否され、重複した `model` や空のフィールドも拒否されます。route はライブの設定スナップショットから読み込まれるため、追加・編集・削除は**リロード**時に反映されます。再起動が必要なのは `[server.codex_endpoint]` テーブル自体を有効化・無効化するときだけです。ChatGPT 以外の provider へルーティングされた request は、新しく組み立てたヘッダー許可リスト（`content-type`、`accept`、flavor ゲートを通過した `OpenAI-Beta`、そして `xai_oauth` route の場合は Grok CLI の identity ヘッダー）と identity エンコードの本文、credential 1 つだけを使い、プールもフェイルオーバーもありません。
+
 ## `[server.usage]`（オプション）
 
 このテーブルの存在により、共有アカウントプールのクォータ状態をサニタイズして集約した `GET /usage` が登録されます。管理サーフェスを使わずに、クライアントがスロットリングを予測するためのエンドポイントです（[エンドポイントの詳細](/ja/reference/endpoints/)）。テーブルがなければ、ルートは登録されません。
@@ -288,7 +311,7 @@ codex-fallback = "gpt-5.2"
 
 origin に関係なく、保持された各スロットはそのスロットが実際に保持している値でもチェックされます。`authorization` と `x-api-key` は、そのスロット自身の値が shunt 自身が発行した JWT と**形が一致する**場合 — 3 セグメント構造で、ペイロードの `aud` クレームが `"shunt"` であるか、`iss` クレームがこのゲートウェイのアイデンティティと一致するか、`shunt_token_use` クレームが `"gateway-session"`（shunt だけが発行する専用マーカー）である場合 — または設定済みの `[server.auth]` クライアントトークンと一致する場合にのみクリアされます。この JWT チェックは意図的に「今このトークンが認証されるか」ではなく「形が一致するか」で判定します: 期限切れのトークン、別の `public_url` を持つ兄弟インスタンスが発行したトークン、`jwt_secret` のローテーション後に検証できなくなったトークンも、依然として shunt 自身の認証情報であるため引き続きクリアされます。このマーカーは形状チェックに追加された分岐であり、必須条件ではありません: マーカー導入前に発行されたトークンも `aud`/`iss` で引き続き一致し、`verify` 自体もマーカーを要求しないため、古いバージョンの shunt が発行したトークンは TTL 内であれば引き続き認証されます。`apiKeyHelper` は両方のスロットを同じ値で埋めるため、どちらの認証情報も一方または両方のスロットに入り得ます。もう一方のスロットがゲートウェイ JWT や静的なクライアントトークンを保持していても、本物のアップストリーム認証情報を保持しているスロットはそのまま転送されます。クリアされるのはゲート用認証情報を保持しているスロットだけです。`[server.auth] header` には `authorization` 自体を含め任意のヘッダー名を指定でき、そう設定した場合クライアントはプレフィックスなしの `Authorization: <token>` で認証します。そのためこのスロットは `Bearer` ペイロードだけでなく値全体としてもチェックされ、そうしたトークンがアップストリームへ転送されることはありません。 この設定には注意点があります: 推論リクエストでは shunt がルーティング前に設定されたヘッダーを無条件に除去するため、そのスロットは上流へ何も運びません — ゲートトークンだけでなく、呼び出し元自身の認証情報も落ちます。`header` を既定の専用 `x-shunt-token` のままにすればこの衝突を避けられます。
 
-プロキシされた成功レスポンスと最終失敗には、`x-gateway-upstream`（選択したアップストリーム名）、`x-gateway-model`（クライアントが要求した id）、`x-gateway-upstream-model`（マッピング後のバックエンド id）が必ず含まれます。`count_tokens` はチェーンの最初の要素だけを使い、フェイルオーバーしません。`[server.codex_endpoint]` は設定された単一アップストリームに固定され、このチェーンには参加しません。
+プロキシされた成功レスポンスと最終失敗には、`x-gateway-upstream`（選択したアップストリーム名）、`x-gateway-model`（クライアントが要求した id）、`x-gateway-upstream-model`（マッピング後のバックエンド id）が必ず含まれます。`count_tokens` はチェーンの最初の要素だけを使い、フェイルオーバーしません。`[server.codex_endpoint]` は `[[server.codex_endpoint.routes]]` のエントリがないモデルについては設定された単一アップストリームに固定され、いずれにせよこのチェーンには参加しません。
 
 ### 既存設定の移行
 

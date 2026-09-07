@@ -189,9 +189,22 @@ headers = { "x-api-key" = "..." }
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
-| `provider` | `codex` | inbound request를 처리할 `[providers.<name>]` 테이블 이름. `auth = "chatgpt_oauth"`를 사용해야 함 |
+| `provider` | `codex` | 어떤 route에도 `model`이 일치하지 않는 inbound request를 처리할 `[providers.<name>]` 테이블 이름. `auth = "chatgpt_oauth"`를 사용해야 함 |
+| `routes` | `[]` | 선택적인 모델별 라우팅(아래 참고) |
 
 `POST /backend-api/codex/responses`, `POST /responses`, `POST /v1/responses`를 등록하며, 모두 지정한 provider의 account pool이 처리합니다. `[server.auth]`가 있으면 다른 server-side credential route처럼 유효한 client token을 요구합니다. `[server.auth]`가 없으면 operator의 Codex credential을 주입하면서도 접근 가능한 누구에게나 **open** 상태이므로 loopback 외 환경에서는 반드시 보호하세요. `/v1/messages`와 달리 request는 Anthropic Messages로 변환하거나 그 반대로 변환하지 않고 upstream과 verbatim relay합니다.
+
+### `[[server.codex_endpoint.routes]]` (선택)
+
+각 항목은 위의 고정 `provider` 대신 특정 모델 하나를 다른 Responses 호환 upstream으로 보냅니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `model` | *(필수)* | Codex 클라이언트가 Responses 본문에 보내는 공개 모델 id. **정확 일치**이며 **대소문자를 구분**합니다 — prefix 매칭도, `[1m]` 제거도, 문자 집합 제한도 없으므로 `MiniMax-M3`, `openai/gpt-5.6-sol`, `~openai/gpt-latest` 같은 벤더 슬러그도 적은 그대로 라우팅됩니다 |
+| `provider` | *(필수)* | 이 모델을 제공할 provider. `kind = "responses"`여야 하며 자격 증명이 없는 auth 모드(`passthrough` 또는 `none`)를 쓰면 안 됩니다 |
+| `upstream_model` | `model` | upstream으로 보낼 모델 id. `model`과 다르면 shunt가 본문 최상위 `model`만 바꾸고 나머지 필드는 그대로 둡니다 |
+
+알 수 없는 provider, `responses`가 아닌 provider, 자격 증명이 없는 인증 모드(`passthrough` 또는 `none`)를 쓰는 provider로 향하는 route는 검증에서 거부되며 중복된 `model`이나 빈 필드도 거부됩니다. route는 라이브 config 스냅샷에서 읽으므로 추가·수정·삭제가 **리로드** 시점에 반영됩니다. 재시작이 필요한 것은 `[server.codex_endpoint]` 테이블 자체를 켜고 끌 때뿐입니다. ChatGPT가 아닌 provider로 라우팅된 request는 새로 만든 헤더 허용 목록(`content-type`, `accept`, flavor 게이트를 통과한 `OpenAI-Beta`, 그리고 `xai_oauth` 라우트의 경우 Grok CLI identity 헤더)과 identity 인코딩 본문, 자격 증명 하나만 사용하며 풀도 페일오버도 없습니다.
 
 ## `[server.usage]` (선택)
 
@@ -317,7 +330,7 @@ codex-fallback = "gpt-5.2"
 
 origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 있는 값으로도 검사됩니다. `authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체가 발급한 JWT와 **모양이 같거나** — `aud` 클레임이 `"shunt"`이거나, `iss` 클레임이 이 게이트웨이의 아이덴티티이거나, `shunt_token_use` 클레임이 `"gateway-session"`(shunt만 발급하는 전용 마커)인 세 세그먼트 구조 — 설정된 `[server.auth]` 클라이언트 토큰과 일치할 때에만 제거됩니다. JWT 검사는 의도적으로 "지금 이 토큰이 인증되는가"가 아니라 "모양이 같은가"로 판단합니다: 만료된 토큰, 다른 `public_url`을 쓰는 형제 인스턴스가 발급한 토큰, `jwt_secret` 로테이션 이후 더 이상 검증되지 않는 토큰도 여전히 shunt 자신의 크리덴셜이므로 여전히 제거됩니다. 이 마커는 모양 검사에 추가된 분기일 뿐 필수 조건이 아닙니다: 마커가 존재하기 전에 발급된 토큰도 `aud`/`iss`로 여전히 일치하며, `verify` 자체도 마커를 요구하지 않으므로 이전 버전의 shunt가 발급한 토큰은 TTL 내에 있는 한 계속 인증됩니다. `apiKeyHelper`는 두 슬롯을 같은 값으로 채우므로 어느 크리덴셜이든 한쪽 또는 양쪽 슬롯에 들어올 수 있습니다. 다른 슬롯이 게이트웨이 JWT나 정적 클라이언트 토큰을 담고 있어도, 진짜 업스트림 크리덴셜을 담은 슬롯은 그대로 전달됩니다. 게이트 크리덴셜을 담은 슬롯만 제거됩니다. `[server.auth] header`에는 `authorization` 자신을 포함해 어떤 헤더 이름이든 지정할 수 있으며, 그렇게 설정하면 클라이언트는 접두사 없는 `Authorization: <token>` 형태로 인증합니다. 따라서 이 슬롯은 `Bearer` 페이로드뿐 아니라 값 전체로도 검사되며, 그런 토큰은 업스트림으로 전달되지 않습니다. 이 설정에는 한 가지 유의점이 있습니다: 추론 요청에서 shunt는 라우팅 전에 설정된 헤더를 조건 없이 제거하므로, 그 슬롯은 업스트림으로 아무것도 싣지 않습니다 — 게이트 토큰뿐 아니라 호출자 자신의 크리덴셜도 함께 사라집니다. `header`를 기본값인 전용 `x-shunt-token`으로 두면 이 충돌을 피할 수 있습니다.
 
-프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다. `count_tokens`는 체인의 첫 항목만 사용하며 페일오버하지 않습니다. `[server.codex_endpoint]`는 설정된 업스트림 하나에 고정되며 이 체인에 참여하지 않습니다.
+프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다. `count_tokens`는 체인의 첫 항목만 사용하며 페일오버하지 않습니다. `[server.codex_endpoint]`는 `[[server.codex_endpoint.routes]]` 항목이 없는 모든 모델에 대해 설정된 업스트림 하나에 고정되며, 어느 쪽이든 이 체인에 참여하지 않습니다.
 
 ### 기존 설정 마이그레이션
 

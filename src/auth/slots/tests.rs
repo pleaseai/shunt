@@ -797,7 +797,7 @@ async fn stripping_the_cookie_header_leaves_the_callers_own_credential_alone() {
 /// would slip through. Files named `tests.rs` are skipped so fixtures need no
 /// entry; an in-file `#[cfg(test)] mod tests` helper is *not* skipped and is
 /// listed below as noise.
-const HEADER_PRODUCER_ALLOWLIST: [&str; 9] = [
+const HEADER_PRODUCER_ALLOWLIST: [&str; 11] = [
     // noise — `#[cfg(test)] mod tests` fixture builder.
     "src/accounts.rs",
     // registered forward site — consumes the map `headers_for_route` produced
@@ -808,8 +808,14 @@ const HEADER_PRODUCER_ALLOWLIST: [&str; 9] = [
     "src/adapters/responses/codex_ws.rs",
     // registered forward site — site 3, the inbound Codex passthrough.
     "src/adapters/responses/inbound.rs",
+    // allowlist-built, not a forward site — a routed inbound Codex request to a
+    // third party keeps only `content-type`/`accept` from the caller, so no
+    // credential slot is a candidate to leak (issue #436).
+    "src/adapters/responses/inbound_routed.rs",
     // noise — `#[cfg(test)] mod tests` fixture builder.
     "src/admin/mod.rs",
+    // noise — `#[cfg(test)] mod tests` fixture builder.
+    "src/codex_endpoint/routing.rs",
     // registered forward site — site 2, discovery's passthrough branch.
     "src/discovery/upstream.rs",
     // allowlist-built, not a forward site — the OTLP relay forwards only

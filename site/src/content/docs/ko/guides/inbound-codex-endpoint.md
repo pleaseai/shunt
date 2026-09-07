@@ -98,11 +98,69 @@ name = "main"
 
 `[[providers.codex.accounts]]`가 구성되지 않았고 **shunt 계정 스토어도 비어 있으면**, 엔드포인트는 기본 `~/.codex/auth.json` 자격 증명 하나로 폴백합니다 — 풀링도 페일오버도 없습니다 — 따라서 `[server.codex_endpoint]`를 설정하는 즉시 Codex 로그인 하나만으로도 동작합니다. (핸들러는 먼저 계정 스토어를 스캔해 발견한 계정을 풀에 넣으므로, 가져온 스토어 계정은 여전히 풀링을 활성화합니다.)
 
+## 모델을 다른 업스트림으로 라우팅하기
+
+기본적으로 모든 요청은 `[server.codex_endpoint]`에 지정된 프로바이더 하나로 갑니다. 선택적인 `[[server.codex_endpoint.routes]]` 테이블을 쓰면 Codex CLI가 모델 id로 **다른** Responses 호환 업스트림을 고를 수 있습니다. 라우트가 없는 모델은 기존의 고정 프로바이더 동작을 그대로 유지합니다.
+
+여러 벤더가 Codex CLI용 네이티브 Responses 엔드포인트를 문서화하고 있습니다: Z.ai GLM(`https://api.z.ai/api/v1`), DeepSeek(`https://api.deepseek.com`), Kimi Code(`https://api.kimi.com/coding/v1`), MiniMax(`https://api.minimax.io/v1`), Mimo(`https://api.xiaomimimo.com/v1`), OpenRouter(`https://openrouter.ai/api/v1`), Vercel AI Gateway(`https://ai-gateway.vercel.sh/codex/v1`), 그리고 순정 OpenAI. shunt는 프로바이더의 `base_url` 뒤에 `/responses`를 붙이므로, 벤더가 Codex용으로 안내하는 그 base URL을 그대로 적으면 됩니다. 업스트림은 Responses API를 네이티브로 구현해야 합니다 — Responses → Chat Completions 어댑터는 없습니다.
+
+```toml
+[providers.glm]
+kind = "responses"
+auth = "api_key"
+api_key_env = "GLM_API_KEY"
+base_url = "https://api.z.ai/api/v1"
+
+[providers.deepseek]
+kind = "responses"
+auth = "api_key"
+api_key_env = "DEEPSEEK_API_KEY"
+base_url = "https://api.deepseek.com"
+
+[server.codex_endpoint]
+provider = "codex"
+
+[[server.codex_endpoint.routes]]
+model = "glm-5.3"
+provider = "glm"
+
+[[server.codex_endpoint.routes]]
+model = "deepseek-v4-flash"
+provider = "deepseek"
+```
+
+`upstream_model`은 선택 사항이며 기본값은 `model`입니다. CLI에 입력하는 id와 벤더가 실제로 제공하는 id가 다를 때 지정하세요. 라우팅 대상 프로바이더는 실제 자격 증명을 가져야 합니다 — 클라이언트 자신의 `Authorization`은 항상 제거되므로, 자격 증명이 없는 인증 모드(`passthrough` 또는 `none`)는 부팅 시 거부됩니다. shunt에 내장된 `kimi` 프리셋은 `kind = "anthropic"`이므로, Kimi Code로 향하는 Codex 라우트에는 별도의 `kind = "responses"` 프로바이더가 필요합니다 — Anthropic 종류의 프리셋으로 Codex 모델을 라우팅하면 부팅 시 거부됩니다.
+
+CLI 쪽에서는 Codex가 **shunt**를 바라보게 하고 `model`로 라우트를 선택합니다:
+
+```toml
+# ~/.codex/config.toml
+model = "glm-5.3"
+model_provider = "shunt"
+model_catalog_json = "~/.codex/models.json"
+
+[model_providers.shunt]
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"
+env_key = "SHUNT_TOKEN"
+```
+
+shunt는 Codex용 모델 카탈로그를 제공하지 않습니다 — `GET /v1/models` 디스커버리 목록은 Anthropic 형태이며 Codex 라우트를 노출하지 않습니다. CLI는 이들 벤더가 안내하는 대로 `model_catalog_json`이 가리키는 `~/.codex/models.json` 카탈로그에서 슬러그 메타데이터를 얻습니다. shunt 라우트를 고르는 것은 오직 `model` 값입니다.
+
+**ChatGPT가 아닌** 업스트림으로 라우팅된 요청에서 달라지는 점:
+
+- **헤더 허용 목록.** 클라이언트에서 가져오는 것은 `content-type`과 `accept`뿐이고, 여기에 해석된 자격 증명과 라우팅 대상 업스트림이 요구하는 identity만 더해집니다 — `OpenAI-Beta: responses=experimental`(xAI/Grok에서는 생략), 그리고 `xai_oauth` 라우트의 경우 Grok CLI identity 헤더. `authorization`, `x-api-key`, `chatgpt-account-id`, `originator`, `version`, `user-agent`, `session-id`, `x-codex-*`, `x-shunt-*`는 어느 것도 서드파티에 닿지 않습니다.
+- **본문 `model` 재작성.** `upstream_model`이 요청된 모델과 다르면 shunt가 최상위 `model`만 바꾸고 나머지 필드는 그대로 둡니다. JSON 객체가 아닌 본문은 그대로 보내지 않고 `400`으로 거부합니다.
+- **identity 인코딩.** zstd 요청 본문은 먼저 디코딩되며 — 순정 Responses API는 그 인코딩을 받지 않습니다 — `content-encoding`은 전달되지 않습니다.
+- **자격 증명 하나, 페일오버 없음.** 라우팅된 서드파티 뒤에는 풀이 없으므로 429나 5xx는 회전을 유발하지 않고 `retry-after`와 함께 그대로 릴레이됩니다.
+
+매칭은 정확 일치이며 대소문자를 구분하고 문자 집합 제한이 없습니다. 따라서 `MiniMax-M3`, `openai/gpt-5.6-sol`, `~openai/gpt-latest` 같은 벤더 슬러그도 적은 그대로 라우팅됩니다. 다른 `chatgpt_oauth` 프로바이더로 향하는 라우트라면 전체 풀 패스스루가 그대로 유지됩니다. 라우트는 라이브 구성에서 읽으므로 리로드 시점에 반영됩니다.
+
 ## `/v1/messages`와 다른 점
 
 - **변환이 없습니다.** 인바운드 Responses 본문은 바이트 단위로 그대로 업스트림에 전달되고, 업스트림 응답도 — SSE든 JSON이든, 성공이든 오류든 — 그대로 릴레이됩니다(status와 `content-type` 보존). Anthropic Messages ⇄ Responses 변환 단계는 아예 없습니다.
 - **압축된 요청 본문도 그대로 통과합니다.** 현재 Codex 릴리스는 ChatGPT 백엔드와 통신할 때 요청 본문을 zstd로 압축하며, 여기에는 이 엔드포인트를 가리키는 `chatgpt_base_url` 형태도 포함됩니다. 바이트와 그 `content-encoding: zstd` 헤더는 변경 없이 전달되고, shunt는 메트릭·로그·스팬에 쓸 요청의 `model`을 읽기 위해 메모리에서 사본만 추가로 디코딩합니다. shunt가 디코딩할 수 없는 본문도 릴레이에는 문제가 없으며 — `model` 레이블만 `unknown`으로 낮아지고, 그 이유를 밝히는 경고가 남습니다.
-- **모델 기반 라우팅이 없습니다.** 모든 요청은 `[server.codex_endpoint]`에 지정된 단 하나의 프로바이더로 갑니다. 본문의 `model` 필드는 그대로 전달될 뿐 프로바이더를 선택하지 않습니다.
+- **모델 기반 라우팅은 선택 기능입니다.** 기본적으로 모든 요청은 `[server.codex_endpoint]`에 지정된 단 하나의 프로바이더로 가고 본문의 `model`은 그대로 전달됩니다. `[[server.codex_endpoint.routes]]`를 쓰면 정확히 일치하는 `model`이 해당 항목의 프로바이더를 선택합니다 — [모델을 다른 업스트림으로 라우팅하기](#모델을-다른-업스트림으로-라우팅하기) 참고.
 - **소진 시에도 그대로 릴레이합니다.** 풀링된 모든 계정을 시도했고 업스트림 응답이 최소 한 번 돌아왔다면, shunt는 그것을 Anthropic 형식의 오류로 다시 만들지 않고 마지막 응답을 변경 없이 릴레이합니다. Responses 클라이언트는 실제 ChatGPT 백엔드에서 받았을 원시 형태를 기대하기 때문입니다.
 - **게이트웨이 소유 오류는 OpenAI 형식입니다.** 실패가 shunt 자신의 것일 때 — 잘못됐거나 없는 클라이언트 토큰(`401`), 업스트림 응답 없이 풀을 해석할 수 없는 경우(`502`), 지나치게 큰 요청 본문, 구성되지 않은 엔드포인트 — shunt는 이를 동일한 status 코드와 함께 OpenAI Responses 오류 형태(`{"error":{"message":…,"type":…,"code":null}}`)로 반환합니다. 그러면 Codex CLI가 Anthropic의 `{"type":"error",…}` 봉투가 아니라 자체 오류 경로로 이를 해석합니다. 릴레이되는 *업스트림* 오류(백엔드의 429/4xx/5xx)는 여전히 그대로 통과합니다.
 - **HTTP/SSE 전용입니다.** 대상 프로바이더에 `websocket = true`가 설정되어 있어도 이 엔드포인트는 항상 HTTP 전송을 사용합니다.
@@ -111,4 +169,4 @@ name = "main"
 
 - 루프백을 넘어서는 모든 경우에 `[server.auth]`로 이 엔드포인트를 게이팅하세요 — 프로바이더가 매 요청마다 실제 Codex bearer를 주입합니다.
 - 클라이언트 자신의 자격 증명은 어떤 것도 Codex 백엔드에 닿지 않습니다. 패스스루는 Codex CLI 자체의 요청 헤더를 그대로 전달하고 선택된 풀 계정의 bearer와 `chatgpt-account-id`만 바꿔 넣습니다(shunt 클라이언트 토큰 헤더, `[server.admin]` 자격 증명 헤더, `cookie` 헤더 전체, 내부용 `x-shunt-inbound-client` 라벨, 클라이언트의 `Authorization`/`chatgpt-account-id`, 그리고 `x-api-key`는 모두 제거되며 전달되지 않습니다).
-- 라우트 집합은 부팅 시 한 번 결정됩니다. 런타임에 `[server.codex_endpoint]`를 켜거나 끄면 재시작이 필요하다는 경고가 로깅됩니다. 다만 리로드로 대상 프로바이더를 바꾸는 것은 가능합니다.
+- 부팅 시 한 번 결정되는 것은 엔드포인트의 **HTTP 라우트 등록**뿐입니다. 런타임에 `[server.codex_endpoint]`를 켜거나 끄면 해당 경로를 추가·제거하려면 재시작이 필요하다는 경고가 로깅됩니다. 테이블이 *담고 있는* 내용은 모두 핫 리로드됩니다 — 대상 `provider`와 `[[server.codex_endpoint.routes]]` 모델 테이블 전체를 매 요청마다 라이브 config에서 읽으므로, 라우트를 추가·수정·삭제하면 리로드 시점에 반영됩니다.

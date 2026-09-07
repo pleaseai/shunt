@@ -1238,12 +1238,63 @@ fn validate_idp_url(
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CodexEndpointConfig {
     /// Which `chatgpt_oauth` provider's account pool serves inbound Responses
-    /// requests. Every inbound request is routed to this one provider (the body
-    /// `model` is forwarded upstream verbatim, not used to pick a provider), so
-    /// it must exist and use `auth = "chatgpt_oauth"`. Defaults to the built-in
-    /// `codex` provider.
+    /// requests whose `model` matches no [`routes`](Self::routes) entry. It must
+    /// exist and use `auth = "chatgpt_oauth"`. Defaults to the built-in `codex`
+    /// provider.
     #[serde(default = "default_codex_endpoint_provider")]
     pub provider: String,
+    /// Opt-in per-model routing to other Responses-compatible upstreams
+    /// (`[[server.codex_endpoint.routes]]`). Empty ⇒ today's behavior: every
+    /// inbound request goes to [`provider`](Self::provider) with its body
+    /// forwarded verbatim. A matching entry instead sends the request to that
+    /// entry's provider, rewriting the body `model` when `upstream_model`
+    /// differs. Read from the live config snapshot, so edits hot-reload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<CodexRouteConfig>,
+}
+
+impl Default for CodexEndpointConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_codex_endpoint_provider(),
+            routes: Vec::new(),
+        }
+    }
+}
+
+impl CodexEndpointConfig {
+    /// The route serving `model`, matched **exactly**. Deliberately not the
+    /// prefix/`[1m]`-stripping match `routing.rs` applies to `/v1/messages`: the
+    /// Codex CLI sends the model id from its own config verbatim and never
+    /// appends the `[1m]` context-window hint, so anything looser would only
+    /// widen what an operator's route captures.
+    pub fn route_for(&self, model: &str) -> Option<&CodexRouteConfig> {
+        self.routes.iter().find(|route| route.model == model)
+    }
+}
+
+/// One `[[server.codex_endpoint.routes]]` entry: a public model id the inbound
+/// Codex client asks for, and the Responses-compatible provider that serves it.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CodexRouteConfig {
+    /// Public model id the Codex client sends in the Responses body `model`.
+    pub model: String,
+    /// Configured provider that serves this model. Must be `kind = "responses"`
+    /// and must carry a credential — a credential-free auth mode
+    /// (`passthrough` or `none`) is rejected, since the inbound client's own
+    /// `Authorization` is always stripped.
+    pub provider: String,
+    /// Model id sent upstream; defaults to `model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_model: Option<String>,
+}
+
+impl CodexRouteConfig {
+    /// The model id put on the wire — `upstream_model` when set, else the public
+    /// [`model`](Self::model).
+    pub fn upstream_model(&self) -> &str {
+        self.upstream_model.as_deref().unwrap_or(&self.model)
+    }
 }
 
 fn default_codex_endpoint_provider() -> String {
@@ -2162,6 +2213,22 @@ pub enum ConfigError {
     UnknownCodexEndpointProvider(String),
     #[error("[server.codex_endpoint] provider {0} must use auth = \"chatgpt_oauth\"; the inbound Responses endpoint injects the operator's Codex bearer")]
     CodexEndpointWrongAuth(String),
+    #[error(
+        "[server.codex_endpoint] route for model {model} references unknown provider: {provider}"
+    )]
+    UnknownCodexRouteProvider { model: String, provider: String },
+    #[error("[server.codex_endpoint] route for model {model} targets provider {provider}, which is not kind = \"responses\"; the inbound endpoint relays raw OpenAI Responses bytes")]
+    CodexRouteWrongKind { model: String, provider: String },
+    #[error("[server.codex_endpoint] route for model {model} targets provider {provider}, which uses the credential-free auth = \"{auth}\"; the inbound client's own Authorization is always stripped, so no credential would be sent")]
+    CodexRouteNoCredential {
+        model: String,
+        provider: String,
+        auth: &'static str,
+    },
+    #[error("[server.codex_endpoint] declares more than one route for model {model}")]
+    DuplicateCodexRoute { model: String },
+    #[error("[server.codex_endpoint] route field `{field}` is empty for model {model}")]
+    EmptyCodexRouteField { model: String, field: &'static str },
     #[error("[server.usage] requires [server.auth]: the usage endpoint must identify a non-admin caller by client token")]
     UsageEndpointRequiresAuth,
     #[error("[server.oauth_usage] on a non-loopback [server.bind] requires [server.auth] or [server.gateway]: without one, Claude subscription quota telemetry would be served to any caller on the network")]
@@ -3689,6 +3756,64 @@ impl Config {
                 }
                 Some(_) => {}
             }
+            // Opt-in per-model routing: an entry may name any provider that can
+            // actually serve raw Responses bytes with a shunt-owned credential.
+            // Every auth mode a `kind = "responses"` provider can legally carry
+            // (`api_key`, `chatgpt_oauth`, `xai_oauth`) is accepted; only
+            // `passthrough` is not, since the inbound client's own Authorization
+            // is stripped and nothing would be left to send.
+            let mut seen_models = std::collections::HashSet::new();
+            for route in &codex_endpoint.routes {
+                for (field, value) in [
+                    ("model", Some(route.model.as_str())),
+                    ("provider", Some(route.provider.as_str())),
+                    ("upstream_model", route.upstream_model.as_deref()),
+                ] {
+                    if value.is_some_and(|value| value.trim().is_empty()) {
+                        return Err(ConfigError::EmptyCodexRouteField {
+                            model: route.model.clone(),
+                            field,
+                        });
+                    }
+                }
+                if !seen_models.insert(route.model.as_str()) {
+                    return Err(ConfigError::DuplicateCodexRoute {
+                        model: route.model.clone(),
+                    });
+                }
+                match self.provider(&route.provider) {
+                    None => {
+                        return Err(ConfigError::UnknownCodexRouteProvider {
+                            model: route.model.clone(),
+                            provider: route.provider.clone(),
+                        });
+                    }
+                    Some(provider) if provider.kind != ProviderKind::Responses => {
+                        return Err(ConfigError::CodexRouteWrongKind {
+                            model: route.model.clone(),
+                            provider: route.provider.clone(),
+                        });
+                    }
+                    // Both credential-free modes: `passthrough` would forward
+                    // the caller's own credential, which this endpoint always
+                    // strips, and `none` sends nothing at all. Either way the
+                    // routed request would reach the upstream unauthenticated.
+                    Some(provider)
+                        if matches!(provider.auth, AuthMode::Passthrough | AuthMode::None) =>
+                    {
+                        return Err(ConfigError::CodexRouteNoCredential {
+                            model: route.model.clone(),
+                            provider: route.provider.clone(),
+                            auth: if provider.auth == AuthMode::Passthrough {
+                                "passthrough"
+                            } else {
+                                "none"
+                            },
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
         }
         // The client-facing usage endpoint identifies its caller by client token,
         // so it is only meaningful — and only safe to register — when inbound auth
@@ -4044,11 +4169,12 @@ mod tests {
     use super::{
         config_file_candidates, default_auth_header, host_is_chatgpt, host_is_kimi,
         identity_collisions, AccountConfig, AdminConfig, AdminKey, AdminOidcConfig, AuthMode,
-        CodexEndpointConfig, Config, ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig,
-        GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
-        GatewayTelemetryDestination, InboundAuthConfig, ModelConfig, OauthUsageConfig,
-        OidcProviderConfig, PoolConfig, ProviderConfig, ProviderKind, ResponsesFlavor, RetryConfig,
-        Secret, SpendConfig, StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
+        CodexEndpointConfig, CodexRouteConfig, Config, ConfigError, ConfigFormat, GatewayConfig,
+        GatewayOidcConfig, GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig,
+        GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, ModelConfig,
+        OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderConfig, ProviderKind,
+        ResponsesFlavor, RetryConfig, Secret, SpendConfig, StatusConfig, StatusSource,
+        UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -5285,6 +5411,7 @@ mod tests {
         let mut config = Config::default();
         config.server.codex_endpoint = Some(CodexEndpointConfig {
             provider: "codex".to_string(),
+            ..Default::default()
         });
         config.validate().unwrap();
     }
@@ -5294,6 +5421,7 @@ mod tests {
         let mut config = Config::default();
         config.server.codex_endpoint = Some(CodexEndpointConfig {
             provider: "nope".to_string(),
+            ..Default::default()
         });
         assert!(matches!(
             config.validate().unwrap_err(),
@@ -5309,11 +5437,232 @@ mod tests {
         let mut config = Config::default();
         config.server.codex_endpoint = Some(CodexEndpointConfig {
             provider: "anthropic".to_string(),
+            ..Default::default()
         });
         assert!(matches!(
             config.validate().unwrap_err(),
             ConfigError::CodexEndpointWrongAuth(provider) if provider == "anthropic"
         ));
+    }
+
+    fn codex_route(model: &str, provider: &str, upstream_model: Option<&str>) -> CodexRouteConfig {
+        CodexRouteConfig {
+            model: model.to_string(),
+            provider: provider.to_string(),
+            upstream_model: upstream_model.map(ToOwned::to_owned),
+        }
+    }
+
+    fn codex_endpoint_with(routes: Vec<CodexRouteConfig>) -> CodexEndpointConfig {
+        CodexEndpointConfig {
+            provider: "codex".to_string(),
+            routes,
+        }
+    }
+
+    #[test]
+    fn codex_endpoint_accepts_an_api_key_responses_route() {
+        // The built-in `openai` preset is `kind = "responses"`, `auth = "api_key"`
+        // — the shape a GLM/DeepSeek/OpenRouter route takes.
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "glm-5.3",
+            "openai",
+            Some("gpt-5.6-sol"),
+        )]));
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn codex_endpoint_accepts_a_route_to_a_second_chatgpt_oauth_provider() {
+        let mut config = Config::default();
+        let second = config.providers.get("codex").unwrap().clone();
+        config.providers.insert("codex-work".to_string(), second);
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "work",
+            "codex-work",
+            None,
+        )]));
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_a_route_to_an_unknown_provider() {
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "glm-5.3", "nope", None,
+        )]));
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::UnknownCodexRouteProvider { model, provider }
+                if model == "glm-5.3" && provider == "nope"
+        ));
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_a_route_to_a_non_responses_provider() {
+        // The endpoint relays raw Responses bytes; an Anthropic-kind provider
+        // cannot serve them.
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "glm-5.3",
+            "anthropic",
+            None,
+        )]));
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::CodexRouteWrongKind { model, provider }
+                if model == "glm-5.3" && provider == "anthropic"
+        ));
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_a_route_to_a_credential_free_provider() {
+        // The client's own Authorization is always stripped, so neither
+        // `passthrough` (forward the caller's) nor `none` (send nothing) leaves
+        // the routed request with a credential.
+        for (auth, name) in [
+            (AuthMode::Passthrough, "passthrough"),
+            (AuthMode::None, "none"),
+        ] {
+            let mut config = Config::default();
+            config.providers.insert(
+                "relay".to_string(),
+                ProviderConfig::responses("https://relay.example/v1", auth, None),
+            );
+            config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+                "glm-5.3", "relay", None,
+            )]));
+            let error = config.validate().unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    ConfigError::CodexRouteNoCredential { model, provider, auth }
+                        if model == "glm-5.3" && provider == "relay" && *auth == name
+                ),
+                "expected a credential-free rejection naming `{name}`, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_duplicate_routes_for_one_model() {
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![
+            codex_route("glm-5.3", "openai", None),
+            codex_route("glm-5.3", "codex", None),
+        ]));
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateCodexRoute { model } if model == "glm-5.3"
+        ));
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_blank_route_fields() {
+        for (route, field) in [
+            (codex_route("   ", "openai", None), "model"),
+            (codex_route("glm-5.3", "", None), "provider"),
+            (
+                codex_route("glm-5.3", "openai", Some(" ")),
+                "upstream_model",
+            ),
+        ] {
+            let mut config = Config::default();
+            config.server.codex_endpoint = Some(codex_endpoint_with(vec![route]));
+            let error = config.validate().unwrap_err();
+            assert!(
+                matches!(&error, ConfigError::EmptyCodexRouteField { field: got, .. } if *got == field),
+                "expected an empty `{field}` rejection, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_route_lookup_is_an_exact_match() {
+        let endpoint = codex_endpoint_with(vec![codex_route("glm-5.3", "openai", None)]);
+        assert_eq!(endpoint.route_for("glm-5.3").unwrap().provider, "openai");
+        // No prefix matching and no `[1m]` stripping — the Codex CLI never
+        // appends that hint, so a looser match would only over-capture.
+        assert!(endpoint.route_for("glm-5.3[1m]").is_none());
+        assert!(endpoint.route_for("glm-5").is_none());
+        assert!(endpoint.route_for("glm-5.3-air").is_none());
+    }
+
+    #[test]
+    fn codex_route_lookup_is_case_sensitive() {
+        // Vendors ship mixed-case slugs (MiniMax's `MiniMax-M3`), so the match
+        // is byte-exact: a lowercased request is a different model id.
+        let endpoint = codex_endpoint_with(vec![codex_route("MiniMax-M3", "minimax", None)]);
+        assert!(endpoint.route_for("minimax-m3").is_none());
+        assert!(endpoint.route_for("MiniMax-M3").is_some());
+    }
+
+    #[test]
+    fn codex_route_accepts_a_slash_qualified_model_id() {
+        // Vercel AI Gateway publishes provider-qualified slugs
+        // (`openai/gpt-5.6-sol`); the id is opaque, with no charset restriction.
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "openai/gpt-5.6-sol",
+            "openai",
+            Some("gpt-5.6-sol"),
+        )]));
+        let endpoint = config.server.codex_endpoint.clone().unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            endpoint
+                .route_for("openai/gpt-5.6-sol")
+                .unwrap()
+                .upstream_model(),
+            "gpt-5.6-sol"
+        );
+    }
+
+    #[test]
+    fn codex_route_upstream_model_defaults_to_the_public_model() {
+        assert_eq!(
+            codex_route("glm-5.3", "openai", None).upstream_model(),
+            "glm-5.3"
+        );
+        assert_eq!(
+            codex_route("glm-5.3", "openai", Some("glm-5.3-turbo")).upstream_model(),
+            "glm-5.3-turbo"
+        );
+    }
+
+    #[test]
+    fn parses_codex_endpoint_routes_from_toml() {
+        let config: Config =
+            figment::Figment::from(figment::providers::Serialized::defaults(Config::default()))
+                .merge(figment::providers::Toml::string(
+                    r#"
+[server.codex_endpoint]
+provider = "codex"
+
+[[server.codex_endpoint.routes]]
+model = "glm-5.3"
+provider = "glm"
+upstream_model = "glm-5.3"
+
+[[server.codex_endpoint.routes]]
+model = "deepseek-v4"
+provider = "deepseek"
+"#,
+                ))
+                .extract()
+                .expect("routes table should parse");
+        let endpoint = config
+            .server
+            .codex_endpoint
+            .expect("endpoint is configured");
+        assert_eq!(endpoint.provider, "codex");
+        assert_eq!(endpoint.routes.len(), 2);
+        assert_eq!(endpoint.routes[0].provider, "glm");
+        assert_eq!(endpoint.routes[0].upstream_model(), "glm-5.3");
+        assert_eq!(endpoint.routes[1].model, "deepseek-v4");
+        // Absent `upstream_model` falls back to the public model id.
+        assert_eq!(endpoint.routes[1].upstream_model(), "deepseek-v4");
     }
 
     #[test]

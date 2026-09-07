@@ -182,6 +182,29 @@ headers = { "x-api-key" = "..." }
 
 默认情况下,`/device` 忽略 forwarding header 并按 socket peer 做 rate limit。只有在 shunt 仅能通过会删除 client 所提供 forwarding header 并设置自身值的 trusted reverse proxy 访问时,才设置 `trust_forwarded_for = true`。不要在直接暴露的 gateway 上启用。
 
+## `[server.codex_endpoint]`(可选)
+
+此表启用入站 OpenAI Responses passthrough,让 **Codex CLI** 可以把 `base_url` 指向 shunt,并在 ChatGPT/Codex OAuth 账户池之间做 load balancing([详情](/zh-cn/guides/inbound-codex-endpoint/))。没有此表时,该路由不会注册。
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `provider` | `codex` | 处理所有未被任何 route 的 `model` 匹配的入站请求的 `[providers.<name>]` 表名。必须使用 `auth = "chatgpt_oauth"` |
+| `routes` | `[]` | 可选的按模型路由(见下文) |
+
+注册 `POST /backend-api/codex/responses`、`POST /responses` 和 `POST /v1/responses`,均由指定 provider 的账户池处理。存在 `[server.auth]` 时,与其他服务端凭证路由一样要求有效的客户端 token。没有 `[server.auth]` 时,端点会注入操作者的 Codex 凭证,却对任何能访问的人**开放**,因此在 loopback 之外的环境务必加以保护。与 `/v1/messages` 不同,请求不会转换为 Anthropic Messages 或反向转换,而是原样 relay 到上游。
+
+### `[[server.codex_endpoint.routes]]`(可选)
+
+每个条目把某一个模型送往另一个 Responses 兼容的上游,而不是上面固定的 `provider`。
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `model` | *(必填)* | Codex 客户端在 Responses 请求体中发送的公开模型 id。**精确匹配**且**区分大小写** — 没有前缀匹配、不剥离 `[1m]`、也不限制字符集,因此 `MiniMax-M3`、`openai/gpt-5.6-sol`、`~openai/gpt-latest` 这类厂商 slug 都按原样路由 |
+| `provider` | *(必填)* | 提供该模型的 provider。必须是 `kind = "responses"`,且不能使用不携带凭证的 auth 模式(`passthrough` 或 `none`) |
+| `upstream_model` | `model` | 发送给上游的模型 id。与 `model` 不同时,shunt 只改写请求体顶层的 `model`,其余字段保持不变 |
+
+指向未知 provider、非 `responses` provider,或使用不携带凭证的 auth 模式(`passthrough` 或 `none`)的 provider 的 route 会在校验时被拒绝;重复的 `model` 或空字段同样被拒绝。route 从实时配置快照读取,因此新增、修改、删除会在**重新加载**时生效;只有开关 `[server.codex_endpoint]` 表本身才需要重启。路由到非 ChatGPT provider 的请求使用全新组装的头部允许列表(`content-type`、`accept`、通过 flavor 门控的 `OpenAI-Beta`,以及 `xai_oauth` route 的 Grok CLI identity 头部)、identity 编码的请求体和单个凭证,没有池也没有故障转移。
+
 ## `[server.usage]`(可选)
 
 存在此表会注册面向客户端的 `GET /usage`,返回共享账户池配额状态的**净化聚合**视图,使非管理员客户端无需管理界面也能预判限流([端点详情](/zh-cn/reference/endpoints/))。没有此表时,该路由不会注册。
@@ -288,7 +311,7 @@ codex-fallback = "gpt-5.2"
 
 与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值与 shunt 自己签发的 JWT **形状相符**——三段式结构，且载荷的 `aud` 声明为 `"shunt"`、`iss` 声明与本网关的身份一致，或 `shunt_token_use` 声明为 `"gateway-session"`（仅由 shunt 签发的专用标记）——或匹配配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除。这项 JWT 检查刻意按“形状是否相符”而非“该令牌现在是否能通过认证”来判定：一个已过期的令牌、由使用不同 `public_url` 的兄弟实例签发的令牌，或在 `jwt_secret` 轮换后已不再能通过校验的令牌，仍然是 shunt 自己的凭据，因此仍会被清除。该标记只是形状检查新增的一个分支，而非必要条件：在该标记出现之前签发的令牌仍会按 `aud`/`iss` 匹配，`verify` 本身也不要求该标记，因此旧版本 shunt 签发的令牌只要仍在其 TTL 内就仍能通过认证 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或静态客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。`[server.auth] header` 可以是任意头名称，包括 `authorization` 本身；这样配置时客户端使用不带前缀的 `Authorization: <token>` 进行认证，因此该槽位除了按 `Bearer` 载荷检查外还会按整个值检查，此类令牌绝不会被转发到上游。该配置有一个注意事项：在推理请求上 shunt 会在路由前无条件移除配置的头部，因此该槽位不会向上游携带任何东西 —— 不只是门控令牌，调用方自己的凭据也会一并被丢弃。把 `header` 保持为默认的专用 `x-shunt-token` 可以避免这种冲突。
 
-每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）。`count_tokens` 只使用链中第一个条目，且不会故障转移。`[server.codex_endpoint]` 仍固定到所配置的单一上游，不参与此链。
+每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）。`count_tokens` 只使用链中第一个条目，且不会故障转移。对于没有 `[[server.codex_endpoint.routes]]` 条目的模型，`[server.codex_endpoint]` 仍固定到所配置的单一上游；无论哪种情况都不参与此链。
 
 ### 迁移现有配置
 

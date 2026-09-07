@@ -814,8 +814,8 @@ auto-discovered accounts, so imported store logins still get pooling.)
 
 ### 17.4 What's different from the outbound path
 
-- No model-based routing — every inbound request goes to the one configured provider, regardless
-  of the `model` field in the body.
+- No model-based routing **by default** — every inbound request goes to the one configured
+  provider, regardless of the `model` field in the body. §17.5 opts specific models out of that.
 - **Verbatim header passthrough.** The outbound path *synthesizes* the Codex identity headers of
   §4.4 (pinned `originator`/`user-agent=codex_cli_rs/0.153.3`/`version=0.153.3`, `OpenAI-Beta`, session
   headers). The inbound endpoint does **not** — the client already *is* a Codex CLI, so its own
@@ -832,6 +832,106 @@ auto-discovered accounts, so imported store logins still get pooling.)
 
 See [`m11-inbound-codex-endpoint.md`](m11-inbound-codex-endpoint.md) for the full spec, including
 the exact failover/cooldown table and reload semantics.
+
+### 17.5 Route models to third-party upstreams
+
+By default every inbound request goes to the one `chatgpt_oauth` provider of §17.1. An optional
+`[[server.codex_endpoint.routes]]` table lets a Codex CLI select a **different**
+Responses-compatible upstream by model id, while every model with no route keeps today's behavior.
+
+Several vendors document a native Responses endpoint for the Codex CLI — these are the shape this
+feature targets (base URLs as the vendor documents them for Codex):
+
+| Upstream | `base_url` | Example slugs |
+| :-- | :-- | :-- |
+| Z.ai GLM Coding Plan | `https://api.z.ai/api/v1` | `glm-5.3` |
+| DeepSeek | `https://api.deepseek.com` | `deepseek-v4-flash`, `deepseek-v4-pro` |
+| Kimi Code | `https://api.kimi.com/coding/v1` | `k3`, `k3-256k` |
+| MiniMax Token Plan | `https://api.minimax.io/v1` | `MiniMax-M3` |
+| Mimo Token Plan | `https://api.xiaomimimo.com/v1` | `mimo-v2.5-pro`, `mimo-v2.5` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `~openai/gpt-latest` |
+| Vercel AI Gateway | `https://ai-gateway.vercel.sh/codex/v1` | `openai/gpt-5.6-sol` |
+| OpenAI | `https://api.openai.com/v1` | `gpt-5.6-sol` |
+
+shunt appends `/responses` to a provider's `base_url`, so give it the **same** base URL the vendor
+documents for Codex. The provider must expose a native Responses API — there is no Responses → Chat
+Completions adapter.
+
+```toml
+[providers.glm]
+kind = "responses"
+auth = "api_key"
+api_key_env = "GLM_API_KEY"
+base_url = "https://api.z.ai/api/v1"
+
+[providers.deepseek]
+kind = "responses"
+auth = "api_key"
+api_key_env = "DEEPSEEK_API_KEY"
+base_url = "https://api.deepseek.com"
+
+[server.codex_endpoint]
+provider = "codex"
+
+[[server.codex_endpoint.routes]]
+model = "glm-5.3"
+provider = "glm"
+
+[[server.codex_endpoint.routes]]
+model = "deepseek-v4-flash"
+provider = "deepseek"
+upstream_model = "deepseek-v4-flash"
+```
+
+`upstream_model` is optional and defaults to `model`; set it when the id you want the CLI to type
+differs from the id the vendor serves. Config validation rejects a route to an unknown provider, to
+one that is not `kind = "responses"`, or to one using a credential-free auth mode (`passthrough`
+or `none`), and rejects duplicate
+or blank entries. Note that shunt's built-in `kimi` preset is `kind = "anthropic"` (the
+Anthropic-shaped coding endpoint), so a Codex route needs a **separate** `kind = "responses"`
+provider:
+
+```toml
+[providers.kimi-responses]
+kind = "responses"
+auth = "api_key"
+api_key_env = "KIMI_API_KEY"
+base_url = "https://api.kimi.com/coding/v1"
+```
+
+Routing a Codex model at the Anthropic-kind `kimi` preset instead is rejected at boot by the kind
+check.
+
+On the CLI side, point Codex at **shunt** (not at the vendor) and select the route by `model`:
+
+```toml
+# ~/.codex/config.toml
+model = "glm-5.3"
+model_provider = "shunt"
+model_catalog_json = "~/.codex/models.json"
+
+[model_providers.shunt]
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"
+env_key = "SHUNT_TOKEN"   # when [server.auth] is configured
+```
+
+shunt does not serve a Codex model catalog: its `GET /v1/models` discovery list is Anthropic-shaped
+and does not advertise Codex routes. The CLI learns metadata for non-OpenAI slugs the way these
+vendors document — a `~/.codex/models.json` catalog referenced by `model_catalog_json` (Mimo ships
+its own at `~/.codex/model-catalogs/model-catalogs.json`). Only the `model` value selects the shunt
+route.
+
+Route matching is **exact and case-sensitive**, with no charset restriction, so mixed-case and
+slash- or `~`-qualified vendor slugs (`MiniMax-M3`, `openai/gpt-5.6-sol`, `~openai/gpt-latest`)
+route as written.
+
+A routed request to a non-ChatGPT upstream sends only `content-type` and `accept` from the client
+(no `authorization`, `x-api-key`, `originator`, `session-id`, `x-codex-*`, or `x-shunt-*`), plus the
+identity the routed upstream itself requires (`OpenAI-Beta`, or the Grok-CLI headers for an
+`xai_oauth` route), an identity-encoded body with `model` rewritten to `upstream_model`, and one
+credential — no pool and no failover, so a 429 relays verbatim with its `retry-after`. Routes hot-reload; only toggling
+`[server.codex_endpoint]` itself needs a restart.
 
 ---
 
