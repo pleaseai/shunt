@@ -170,7 +170,9 @@ signal, or a browser-navigation `Sec-Fetch-Site: none` request without
 contradictory cross-site hints. Fetch Metadata is consulted before `Origin`
 because the page is served with `Referrer-Policy: no-referrer`, under which
 browsers send `Origin: null` on the page's own form submission. A rejected
-request returns a human-readable HTML error page with a non-success HTTP status.
+request re-renders the approval page carrying a human-readable message:
+`POST /device` answers `200 OK` so the form stays available for a retry, while
+`POST /device/authorize` answers `403 Forbidden`.
 
 ## State and operational boundary
 
