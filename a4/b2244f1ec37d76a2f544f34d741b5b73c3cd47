@@ -1,0 +1,19 @@
+src/codex_endpoint.rs
+  s_13b7e9055e0ea5::t_b40db61327bf1c 383-386
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a4b2244f1ec37d76a2f544f34d741b5b73c3cd47",
+  "prompts": {},
+  "sessions": {
+    "s_13b7e9055e0ea5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "558cc728-62d7-40c9-b65a-973cc42c9e4e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
