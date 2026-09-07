@@ -1,0 +1,40 @@
+src/codex_endpoint/model.rs
+  s_13b7e9055e0ea5::t_b10f75dfdfd238 1-10,12-194,196-261,267-328
+  s_13b7e9055e0ea5::t_32f797321d3e86 195
+  s_13b7e9055e0ea5::t_a82854078bf5fe 11,262-266
+src/adapters/responses/mod.rs
+  s_13b7e9055e0ea5::t_a82854078bf5fe 9,37
+src/codex_endpoint/routing.rs
+  s_13b7e9055e0ea5::t_a82854078bf5fe 131-143,154-157,163-164,210-216,225-228
+  s_13b7e9055e0ea5::t_ef3164a9d80061 186-187
+  s_13b7e9055e0ea5::t_a970b52a98c97a 1-130,144-153,158-162,165-185,188-209,217-224,229-234
+src/adapters/responses/inbound.rs
+  s_13b7e9055e0ea5::t_f30ab549916e20 1-9,331-341,416-419,427,431-450,455-458,474
+  s_13b7e9055e0ea5::t_a709cf5ddf4c98 461,470,488
+src/codex_endpoint.rs
+  s_13b7e9055e0ea5::t_205e315afd6fb7 348-350,367,371
+  s_13b7e9055e0ea5::t_164b3b3efd6b77 8-17,31,37-41,44,236-242,245-250,260-261,272-346,351-366,368-370,372-406
+  s_13b7e9055e0ea5::t_34e841e6944cc0 347
+  s_13b7e9055e0ea5::t_a82854078bf5fe 42-43,243,262-271
+src/adapters/responses/inbound_routed.rs
+  s_13b7e9055e0ea5::t_f3e8d9f9b0505f 1-170,175-198
+  s_13b7e9055e0ea5::t_a82854078bf5fe 171-174
+src/config.rs
+  s_13b7e9055e0ea5::t_a82854078bf5fe 5609-5612,5625-5627
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7ae8a13b3ece51ca1beb01fd035f518f87c07d96",
+  "prompts": {},
+  "sessions": {
+    "s_13b7e9055e0ea5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "558cc728-62d7-40c9-b65a-973cc42c9e4e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
