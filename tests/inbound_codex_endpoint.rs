@@ -176,6 +176,7 @@ fn test_config(upstream_base_url: &str, accounts: Vec<AccountConfig>) -> Config 
     provider.accounts = accounts;
     config.server.codex_endpoint = Some(CodexEndpointConfig {
         provider: "codex".to_string(),
+        ..Default::default()
     });
     config
 }
