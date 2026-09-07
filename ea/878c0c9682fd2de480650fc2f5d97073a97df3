@@ -1,0 +1,21 @@
+docs/m11-inbound-codex-endpoint.md
+  s_dc4231ac81f910::t_f118edf360acf8 279-282
+docs/m16-codex-inbound-translation.md
+  s_dc4231ac81f910::t_8518be4019a108 1-172
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "ea878c0c9682fd2de480650fc2f5d97073a97df3",
+  "prompts": {},
+  "sessions": {
+    "s_dc4231ac81f910": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c97f5ae-9b7c-4bf5-b575-8d87d101811c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
