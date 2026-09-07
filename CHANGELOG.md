@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.3](https://github.com/pleaseai/shunt/compare/v0.41.2...v0.41.3) (2026-09-07)
+
+
+### Bug Fixes
+
+* **grok:** keep a product with no usagePercent from blanking the quota row ([#469](https://github.com/pleaseai/shunt/issues/469)) ([209b1dd](https://github.com/pleaseai/shunt/commit/209b1ddd9ea149568c7b9f4bdc1f2ae25f87c0d4))
+
 ## [0.41.2](https://github.com/pleaseai/shunt/compare/v0.41.1...v0.41.2) (2026-09-07)
 
 
