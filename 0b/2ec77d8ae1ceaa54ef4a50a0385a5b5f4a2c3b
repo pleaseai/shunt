@@ -1,0 +1,27 @@
+src/model/inbound_responses/messages_request.rs
+  s_dc4231ac81f910::t_b4f856f1f850c1 426-427,433-437
+src/model/inbound_responses/chat_request/tests.rs
+  s_dc4231ac81f910::t_b4f856f1f850c1 305-319
+docs/m16-codex-inbound-translation.md
+  s_dc4231ac81f910::t_b4f856f1f850c1 87,131
+src/model/inbound_responses/chat_request.rs
+  s_dc4231ac81f910::t_b4f856f1f850c1 307-314
+src/model/inbound_responses/messages_request/tests.rs
+  s_dc4231ac81f910::t_b4f856f1f850c1 369-381
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0b2ec77d8ae1ceaa54ef4a50a0385a5b5f4a2c3b",
+  "prompts": {},
+  "sessions": {
+    "s_dc4231ac81f910": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c97f5ae-9b7c-4bf5-b575-8d87d101811c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
