@@ -29,6 +29,9 @@ site is only built on deploy, and `deploy-docs` does not run on PRs.
 check (`diff <(grep '^#' en) <(grep '^#' ko)`), and treat a *count* mismatch on
 `reference/configuration.md` as the canary for a config key that shipped English-only. When
 reporting an anchor fix, take the replacement id from the locale file's own heading — never invent
-it, and never point a locale page at an English fragment.
+it. An English fragment is wrong only when the target page has a real locale source file that
+lacks the section id; it is correct on a fallback route (no locale source file), and when the
+locale page exists but has no counterpart section, AGENTS.md says to link the English page rather
+than invent a locale anchor.
 
 Related: [[site-anchor-validation]]

@@ -54,10 +54,12 @@ already 600–1600 lines). Leave the box unchecked and explain the split under
 "Notes for reviewers" rather than checking it blind — AGENTS.md says
 "preferably under 500 lines", so it is a soft limit.
 
-**Docs-only PRs and the cargo checklist (PR #486)**: the template's four cargo
-boxes have no honest state on a docs-only change. Leave them unchecked and
-append `— n/a, no Rust sources changed` to each line rather than checking them
-(false) or deleting them (drops the template's shape). Checking the remaining
+**Docs-only PRs and the cargo checklist (PR #486)**: the four cargo boxes
+record whether the checks *ran and passed*, not whether Rust changed. If they
+were run on the docs-only branch and passed, check them normally. If they were
+**not run**, leave them unchecked and append `— n/a, not run: no Rust sources
+changed` to each line rather than checking them (false) or deleting them (drops
+the template's shape). Checking the remaining
 boxes and adding a one-line "docs-only change" preamble above the checklist
 keeps it readable. Also state the `AGENTS.md` docs-surface sweep explicitly
 (README / docs/ / site/ en+ko+ja+zh-cn / wiki generated) — that repo rule asks
