@@ -280,13 +280,21 @@ async fn count_tokens_response(
         AdapterKind::Responses
             | AdapterKind::Cursor
             | AdapterKind::Gemini
+            | AdapterKind::OpenAiChat
             | AdapterKind::AntigravityCli
     ) {
-        let mode = state
-            .config
-            .provider(&provider)
-            .map(|provider| provider.count_tokens)
-            .unwrap_or(CountTokens::Estimate);
+        let mode = if matches!(route.adapter, AdapterKind::OpenAiChat) {
+            // tiktoken counting is calibrated for the Anthropic/Responses
+            // tokenizers, and no Chat-specific counter exists yet; the honest
+            // answer for this slice is the estimator, not a wrong exact count.
+            CountTokens::Estimate
+        } else {
+            state
+                .config
+                .provider(&provider)
+                .map(|provider| provider.count_tokens)
+                .unwrap_or(CountTokens::Estimate)
+        };
         Ok(match mode {
             CountTokens::Tiktoken => {
                 // Count over the tree the inbound parse already produced instead of
@@ -361,6 +369,11 @@ async fn dispatch(
         }
         AdapterKind::Gemini => {
             crate::adapters::gemini::GeminiAdapter
+                .forward(state, route, uri, headers, body)
+                .await
+        }
+        AdapterKind::OpenAiChat => {
+            crate::adapters::openai_chat::OpenAiChatAdapter
                 .forward(state, route, uri, headers, body)
                 .await
         }
