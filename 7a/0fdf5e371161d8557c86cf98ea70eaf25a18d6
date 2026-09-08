@@ -1,0 +1,89 @@
+site/src/content/docs/ja/reference/endpoints.md
+  s_0eca637f7ab76e::t_fec31befb3b556 14,57
+site/src/content/docs/ko/getting-started/why-shunt.md
+  s_0eca637f7ab76e::t_fec31befb3b556 36
+site/src/content/docs/zh-cn/getting-started/why-shunt.md
+  s_0eca637f7ab76e::t_fec31befb3b556 36
+site/src/content/docs/ko/reference/endpoints.md
+  s_0eca637f7ab76e::t_fec31befb3b556 14,57
+site/src/content/docs/ko/getting-started/comparison.mdx
+  s_0eca637f7ab76e::t_9f62e1f62c5902 72,74
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_0eca637f7ab76e::t_fec31befb3b556 36
+site/src/content/docs/zh-cn/guides/effort-and-context.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 56,62
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 94,300,315
+site/src/content/docs/ja/reference/cli.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 83
+site/src/content/docs/ja/reference/configuration.md
+  s_0eca637f7ab76e::t_fec31befb3b556 23,340
+site/src/content/docs/guides/connect-codex-cli.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 31
+site/src/content/docs/ja/getting-started/comparison.mdx
+  s_0eca637f7ab76e::t_9f62e1f62c5902 72,74
+site/src/content/docs/zh-cn/guides/model-discovery.md
+  s_0eca637f7ab76e::t_fec31befb3b556 52,71
+docs/running.md
+  s_0eca637f7ab76e::t_f7dab87eb4cd52 17,337
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_0eca637f7ab76e::t_fec31befb3b556 14,57
+site/src/content/docs/ko/guides/codex.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 82,243,253
+site/src/content/docs/ko/guides/effort-and-context.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 56,62
+site/src/content/docs/ko/guides/model-discovery.md
+  s_0eca637f7ab76e::t_fec31befb3b556 52,71
+site/src/content/docs/ja/guides/connect-claude-code.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 158
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_0eca637f7ab76e::t_fec31befb3b556 23,340
+site/src/content/docs/ko/guides/connect-claude-code.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 158
+site/src/content/docs/zh-cn/guides/connect-claude-code.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 158
+site/src/content/docs/ja/guides/codex.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 83,257,269
+site/src/content/docs/ko/reference/configuration.md
+  s_0eca637f7ab76e::t_fec31befb3b556 23,360
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 83
+site/src/content/docs/ja/guides/effort-and-context.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 56,62
+docs/m7-codex-websocket.md
+  s_0eca637f7ab76e::t_9f62e1f62c5902 43,51
+docs/plans/usage-bars/DESIGN.md
+  s_0eca637f7ab76e::t_f7dab87eb4cd52 647
+site/src/content/docs/guides/codex.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 98,326
+site/src/content/docs/ja/guides/model-discovery.md
+  s_0eca637f7ab76e::t_fec31befb3b556 52,71
+docs/m11-inbound-codex-endpoint.md
+  s_0eca637f7ab76e::t_f7dab87eb4cd52 300,356
+site/src/content/docs/getting-started/comparison.mdx
+  s_0eca637f7ab76e::t_9f62e1f62c5902 72,74
+site/src/content/docs/zh-cn/getting-started/comparison.mdx
+  s_0eca637f7ab76e::t_9f62e1f62c5902 72,74
+site/src/content/docs/ko/reference/cli.mdx
+  s_0eca637f7ab76e::t_fec31befb3b556 83
+.please/docs/knowledge/tech-stack.md
+  s_0eca637f7ab76e::t_9f62e1f62c5902 28
+docs/comparison.md
+  s_0eca637f7ab76e::t_fcb69c1d1481bc 147,161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7a0fdf5e371161d8557c86cf98ea70eaf25a18d6",
+  "prompts": {},
+  "sessions": {
+    "s_0eca637f7ab76e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "502686f3-920a-4e16-8d34-3a822afaad7e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
