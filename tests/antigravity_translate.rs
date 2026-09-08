@@ -464,3 +464,48 @@ fn test_stderr_truncation_never_splits_a_utf8_character() {
     // Short input is returned intact.
     assert_eq!(truncate("short", 2000), "short");
 }
+
+/// `profile_dir` is what gives each Antigravity provider its own Google
+/// account: the `agy` CLI resolves its whole credential tree through `HOME`,
+/// so an isolated `HOME` is what lets several accounts be pooled at once.
+#[test]
+fn test_profile_dir_parses_and_expands_tilde() {
+    let dir = std::env::temp_dir().join(format!("shunt-profile-cfg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("shunt.toml");
+    std::fs::write(
+        &path,
+        r#"
+[server]
+default_provider = "antigravity-a"
+
+[[upstreams]]
+name = "antigravity-a"
+kind = "antigravity_cli"
+base_url = "http://localhost"
+profile_dir = "~/.shunt/antigravity/account-a"
+
+[[upstreams]]
+name = "antigravity-b"
+kind = "antigravity_cli"
+base_url = "http://localhost"
+"#,
+    )
+    .unwrap();
+
+    let config = shunt::config::Config::load(Some(&path)).unwrap();
+
+    let expanded = config
+        .provider_profile_dir("antigravity-a")
+        .expect("configured profile_dir is exposed to the adapter");
+    assert!(
+        !expanded.starts_with('~'),
+        "a leading ~ must be expanded before it reaches Command::env: {expanded}"
+    );
+    assert!(expanded.ends_with("/.shunt/antigravity/account-a"));
+
+    // Unset means the previous behavior: inherit the gateway's ambient profile.
+    assert_eq!(config.provider_profile_dir("antigravity-b"), None);
+
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -60,6 +60,21 @@ use self::{
 /// The CLI's own default is 5 minutes, which truncates genuine multi-step
 /// agent runs and surfaces to the caller as a turn that delivered nothing.
 const PRINT_TIMEOUT: &str = "30m";
+/// Ambient Google/Gemini credentials removed from the `agy` child environment
+/// when a provider runs with its own [`profile_dir`](shunt::config::ProviderConfig).
+/// Without this the gateway host's configuration could override the profile's
+/// own sign-in, defeating the per-provider account isolation.
+const STRIPPED_ENV_KEYS: &[&str] = &[
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_CLOUD_QUOTA_PROJECT",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GCLOUD_PROJECT",
+    "CLOUDSDK_CORE_PROJECT",
+];
 
 /// Outer cap shunt enforces itself, independent of `--print-timeout`.
 ///
@@ -193,6 +208,28 @@ impl Adapter for AntigravityAdapter {
             // Without this the agent inherits the gateway process's directory
             // and operates on whatever tree shunt happened to be started in.
             cmd.current_dir(&workspace);
+            // Per-account isolation. `agy` resolves its whole state tree —
+            // credentials included — through `HOME`, so a private `HOME` gives
+            // each provider entry its own Google account and lets several be
+            // pooled concurrently. Verified against the real CLI: a fresh
+            // `HOME` makes it rebuild the profile and demand its own sign-in
+            // rather than reusing the ambient one.
+            if let Some(profile_dir) = state.config.provider_profile_dir(&route.provider) {
+                std::fs::create_dir_all(profile_dir).map_err(|err| {
+                    adapter_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("could not create the Antigravity profile directory {profile_dir}: {err}"),
+                    )
+                })?;
+                cmd.env("HOME", profile_dir);
+                // Windows resolves the home directory through USERPROFILE.
+                cmd.env("USERPROFILE", profile_dir);
+                // Otherwise the gateway host's own credentials could silently
+                // decide which account — and whose billing — serves a request.
+                for key in STRIPPED_ENV_KEYS {
+                    cmd.env_remove(key);
+                }
+            }
             cmd.stdin(Stdio::null());
             cmd.stdout(Stdio::piped());
             cmd.stderr(Stdio::piped());

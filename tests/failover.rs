@@ -98,6 +98,7 @@ fn upstream(
         retry: disabled_retry(),
         workspace_roots: Vec::new(),
         sandbox: true,
+        profile_dir: None,
     }
 }
 

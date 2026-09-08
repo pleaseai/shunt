@@ -840,6 +840,7 @@ mod tests {
                 retry: Default::default(),
                 workspace_roots: Vec::new(),
                 sandbox: true,
+                profile_dir: None,
             },
         );
         let state = AppState::new(config, reqwest::Client::new()).unwrap();
@@ -901,6 +902,7 @@ mod tests {
                     retry: Default::default(),
                     workspace_roots: Vec::new(),
                     sandbox: true,
+                    profile_dir: None,
                 },
             );
         }
@@ -970,6 +972,7 @@ mod tests {
             retry: Default::default(),
             workspace_roots: Vec::new(),
             sandbox: true,
+            profile_dir: None,
         };
         let mut config = Config::default();
         config
@@ -1159,6 +1162,7 @@ mod tests {
                 retry: Default::default(),
                 workspace_roots: Vec::new(),
                 sandbox: true,
+                profile_dir: None,
             },
         );
         let state = AppState::new(config, reqwest::Client::new()).unwrap();
@@ -2612,6 +2616,7 @@ mod tests {
                 retry: Default::default(),
                 workspace_roots: Vec::new(),
                 sandbox: true,
+                profile_dir: None,
             },
         );
         {
