@@ -33,7 +33,7 @@ shunt は受け取ったモデル id を尊重するだけです — エージ�
 - **ChatGPT サブスクリプションの再利用** — `codex` プロバイダーは Codex CLI の `~/.codex/auth.json` ログインを再利用（かつ自動リフレッシュ）します。
 - **`GET /v1/models`** — Claude 命名のエイリアス向けの [model discovery](/ja/guides/model-discovery/)。
 - **トークンカウント** — 変換されるプロバイダーにはローカルの tiktoken カウント、パススルーには上流の正確なカウント。
-- **ストリーミングの堅牢性** — [SSE キープアライブ ping](/ja/guides/shared-gateway/#sse-keepalive-pings) により、Cloudflare のようなプロキシが長い推論の合間を切断しないようにします。
+- **ストリーミングの堅牢性** — [SSE キープアライブ ping](/ja/guides/shared-gateway/#sse-キープアライブ-ping) により、Cloudflare のようなプロキシが長い推論の合間を切断しないようにします。
 - **オプションのインバウンド認証** — 共有デプロイ向けの[クライアント単位トークン](/ja/guides/shared-gateway/)。
 
 試す準備はできましたか？ [Installation](/ja/getting-started/installation/) へ進んでください。

@@ -40,7 +40,7 @@ flag, with a conservative fallback that never sends wrong context.
 
 - A `websocket = true` flag on the `codex` provider (`config.rs`), effective only
   when the backend is ChatGPT/Codex (`Config::codex_websocket_enabled`).
-- A WebSocket transport (`src/adapters/codex_ws.rs`): handshake, the
+- A WebSocket transport (`src/adapters/responses/codex_ws.rs`): handshake, the
   `response.create` frame envelope, event streaming re-encoded through the existing
   [`AnthropicSseMachine`], and handshake-error re-shaping identical to the HTTP
   path.
@@ -48,7 +48,7 @@ flag, with a conservative fallback that never sends wrong context.
   connection-owned reader task that keeps each pooled socket responsive to
   upstream keepalive pings, a `Pong`-verified liveness probe on reuse, and
   invalidation on any error.
-- `previous_response_id` continuation (`src/adapters/codex_continuation.rs`): the
+- `previous_response_id` continuation (`src/adapters/responses/codex_continuation.rs`): the
   pure decision layer that decides whether the current input is an append-only
   extension of the previous turn and, if so, computes the delta.
 

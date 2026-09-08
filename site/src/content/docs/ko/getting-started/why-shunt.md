@@ -33,7 +33,7 @@ shunt는 받은 model id만 그대로 존중합니다. 취약한 에이전트별
 - **ChatGPT 구독 재사용** — `codex` 프로바이더는 Codex CLI의 `~/.codex/auth.json` 로그인을 재사용(및 자동 갱신)합니다.
 - **`GET /v1/models`** — Claude 이름 별칭에 대한 [모델 디스커버리](/ko/guides/model-discovery/).
 - **토큰 카운팅** — 변환 프로바이더에 대한 로컬 tiktoken 카운트, 패스스루에 대한 정확한 업스트림 카운트.
-- **스트리밍 복원력** — Cloudflare 같은 프록시가 긴 추론 구간을 끊지 않도록 하는 [SSE keepalive ping](/ko/guides/shared-gateway/#sse-keepalive-pings).
+- **스트리밍 복원력** — Cloudflare 같은 프록시가 긴 추론 구간을 끊지 않도록 하는 [SSE keepalive ping](/ko/guides/shared-gateway/#sse-keepalive-ping).
 - **선택적 인바운드 인증** — 공유 배포를 위한 [클라이언트별 토큰](/ko/guides/shared-gateway/).
 
 사용해 볼 준비가 되셨나요? [설치](/ko/getting-started/installation/)로 이동하세요.

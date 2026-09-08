@@ -33,7 +33,7 @@ shunt 只是遵从它收到的 model id —— 没有脆弱的按 agent 系统�
 - **ChatGPT 订阅复用** —— `codex` 提供方复用(并自动刷新)Codex CLI 的 `~/.codex/auth.json` 登录。
 - **`GET /v1/models`** —— 面向 Claude 命名别名的 [模型发现](/zh-cn/guides/model-discovery/)。
 - **Token 计数** —— 转换类提供方用本地 tiktoken 计数,透传时用上游的精确计数。
-- **流式韧性** —— [SSE keepalive ping](/zh-cn/guides/shared-gateway/#sse-keepalive-pings),使 Cloudflare 之类的代理不会中断长时间的推理过程。
+- **流式韧性** —— [SSE keepalive ping](/zh-cn/guides/shared-gateway/#sse-keepalive-ping),使 Cloudflare 之类的代理不会中断长时间的推理过程。
 - **可选的入站认证** —— 面向共享部署的 [按客户端 token](/zh-cn/guides/shared-gateway/)。
 
 准备好试试了?前往 [安装](/zh-cn/getting-started/installation/)。

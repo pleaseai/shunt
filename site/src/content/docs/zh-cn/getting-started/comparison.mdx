@@ -69,9 +69,9 @@ shunt 是一个**符合规范的 Claude Code LLM 网关**:它实现 Claude Code 
 
 - **Claude Code 原生保真度。** shunt 实现*官方*网关契约,而不是老一代 CC 代理用的"对子代理系统提示词做哈希"启发式;会话留在 Claude Code 的运行框架内(同样的工具循环、技能、脚本路径) —— 只有 token 生成被外包(`README.md:97-131`)。多数通用路由器和网关以 OpenAI chat-completions 为中心,不尊重 Claude Code 的发现/归属面。
 
-- ***转换*路径上的上传裁剪。** 因为 shunt 在 Anthropic ⇄ Responses 之间转换(Claude Code 从不发送 `previous_response_id`),它*合成*续传:把会话记录存在池化连接上,用类型感知的规范化将下一个请求与之做差分,再注入 `previous_response_id` + 输入增量 —— 在 Claude→Codex 路径上实现真正的上传裁剪(`src/adapters/codex_continuation.rs:79-114`)。这**并非**独有:**raine/claude-code-proxy 做同一类事情**(可选启用的 `CCP_CODEX_PREVIOUS_RESPONSE_ID`,按会话键控,只追加)。这两个 Rust 订阅代理共享它 —— 真正的反差在于 **CLIProxyAPI** 这类**透传**代理:它的 Codex WS 不存会话记录/response-id,依赖 Codex CLI 客户端发送 `previous_response_id`,因此在*它的*转换路径上每一轮都重发全部输入(另有一个工具输出"修复"缓存来保持 tool-call 配对一致)。
+- ***转换*路径上的上传裁剪。** 因为 shunt 在 Anthropic ⇄ Responses 之间转换(Claude Code 从不发送 `previous_response_id`),它*合成*续传:把会话记录存在池化连接上,用类型感知的规范化将下一个请求与之做差分,再注入 `previous_response_id` + 输入增量 —— 在 Claude→Codex 路径上实现真正的上传裁剪(`src/adapters/responses/codex_continuation.rs`)。这**并非**独有:**raine/claude-code-proxy 做同一类事情**(可选启用的 `CCP_CODEX_PREVIOUS_RESPONSE_ID`,按会话键控,只追加)。这两个 Rust 订阅代理共享它 —— 真正的反差在于 **CLIProxyAPI** 这类**透传**代理:它的 Codex WS 不存会话记录/response-id,依赖 Codex CLI 客户端发送 `previous_response_id`,因此在*它的*转换路径上每一轮都重发全部输入(另有一个工具输出"修复"缓存来保持 tool-call 配对一致)。
 
-- **规范化深度 + reasoning 保真度(相对最近的同类)。** 在共享续传的这对之中,shunt 在两个轴上比 raine/claude-code-proxy 走得更远:(1) 它的续传规范化会解析 `function_call.arguments` 并往返 reasoning 的 `encrypted_content`/signature,因此在只比形状就会中断的工具轮次之间,续传仍持续触发(`src/adapters/codex_continuation.rs:11-48`);(2) 它**把 Codex reasoning 作为 `thinking` 转发给 Claude Code**,而 raine/claude-code-proxy **完全丢弃 Codex reasoning 块**(其 README 将此列为限制)。任何未预见的形状仍会回退到全量输入 —— 绝不会有错误的上下文,只会错过一次优化。
+- **规范化深度 + reasoning 保真度(相对最近的同类)。** 在共享续传的这对之中,shunt 在两个轴上比 raine/claude-code-proxy 走得更远:(1) 它的续传规范化会解析 `function_call.arguments` 并往返 reasoning 的 `encrypted_content`/signature,因此在只比形状就会中断的工具轮次之间,续传仍持续触发(`src/adapters/responses/codex_continuation.rs`);(2) 它**把 Codex reasoning 作为 `thinking` 转发给 Claude Code**,而 raine/claude-code-proxy **完全丢弃 Codex reasoning 块**(其 README 将此列为限制)。任何未预见的形状仍会回退到全量输入 —— 绝不会有错误的上下文,只会错过一次优化。
 
 - **小而可审计的体积。** 单个 Rust 二进制,TOML+env 配置带安全失败(fail-closed)的启动校验和热重载;没有需要保护的运行时插件面。
 
