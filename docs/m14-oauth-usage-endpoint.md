@@ -64,20 +64,22 @@ user-facing wording of this same caveat.
 | Caller | Operator (browser/admin token) | Any `[server.auth]` client | Claude Code CLI itself (or any client hitting the same path the CLI does) |
 | Auth | `[server.admin]` | `[server.auth]` client token | Bind-topology-gated — see "Auth gating" |
 | Providers included | All | All | **Claude (`claude_oauth`) only** |
-| Aggregation | Per account, full detail | Pool-wide least-utilized | **Routing-aware, priority-tiered worst case** — see "Aggregation policy" |
+| Aggregation | Per account, full detail | Pool-wide mean headroom (originally least-utilized, changed in #482) | **Routing-aware, priority-tiered worst case** — see "Aggregation policy" |
 | Wire shape | shunt's own admin JSON | shunt's own `pool`/`windows` JSON | **Anthropic's own `/api/oauth/usage` schema** (the CLI parses it as such) |
 
-M14 deliberately does not reuse `usage::aggregate` (M12's pool-wide least-utilized aggregate)
-for two reasons — both required, both deviations from M12:
+M14 deliberately does not reuse `usage::aggregate` (M12's pool-wide aggregate — least-utilized
+when this was written, mean headroom since #482) for two reasons — both required, both deviations
+from M12:
 
 **Deviation 1 — Claude-only.** M12's pool aggregate spans every configured provider
 (Anthropic, Codex/ChatGPT, Cursor, Grok...). The CLI is asking specifically about its own
 Claude subscription; blending in a different backend's utilization would misreport it. M14's
 handler filters to `AuthMode::ClaudeOauth` providers only, before any aggregation happens.
 
-**Deviation 2 — routing-aware, priority-tiered worst case, not pool-wide least-utilized.** A
-pool-wide least-utilized aggregate is *optimistic*: a priority-1 (preferred) account at 95%
-utilization plus a priority-100 (backup) account at 5% would report "~5% used", while real
+**Deviation 2 — routing-aware, priority-tiered worst case, not a pool-wide aggregate.** A
+pool-wide aggregate is *optimistic* about admission: a priority-1 (preferred) account at 95%
+utilization plus a priority-100 (backup) account at 5% would report "~5% used" under M12's
+original least-utilized rule and "~50% used" under its current mean rule (#482), while real
 traffic keeps hitting the priority-1 account until it is actually exhausted or cooling. That
 is not a rounding error — it answers a different question than the one the CLI's own label
 ("Current session") implies. M14 instead computes, per window:
@@ -193,8 +195,9 @@ account store cannot be read) use the Anthropic error shape, like the rest of th
 - **Claude-only, routing-aware, not pool-wide optimistic aggregate.** See "Deviation 1" and
   "Deviation 2" above; this is a deliberate, tested divergence from `GET /usage` (M12), not an
   oversight.
-- **`GET /usage` (M12) is unchanged.** M14 does not call `usage::aggregate` and does not modify
-  M12's handler, tests, or wire shape.
+- **`GET /usage` (M12) is not touched by M14.** M14 does not call `usage::aggregate` and does not
+  modify M12's handler, tests, or wire shape. (M12's own `remaining` formula later moved from the
+  least-utilized account to the pool mean in #482, independently of this milestone.)
 - **The Precondition caveat is load-bearing, not decorative.** Do not describe this feature as
   working "out of the box" for every documented shunt credential setup — see "Precondition"
   above for exactly which login modes trigger the CLI's own fetch.

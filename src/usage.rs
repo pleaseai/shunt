@@ -6,7 +6,10 @@
 //! (a `[server.auth]` token holder) can anticipate throttling without the admin
 //! surface. Unlike `GET /admin/pool`, it never reveals account identities,
 //! counts, priorities, disabled flags, thresholds, or burn-rate headroom: the
-//! response carries only aggregate numbers derived across the pool.
+//! response carries only aggregate numbers derived across the pool, plus the
+//! same aggregate computed per pooled provider (keyed by the provider's config
+//! name) so a client that routes to one provider can read that provider's
+//! headroom instead of the blended pool-wide figure.
 //!
 //! The endpoint requires `[server.auth]` (a non-admin caller must be
 //! identifiable); the pairing is enforced at config validation, and the handler
@@ -19,11 +22,15 @@ use axum::{
     Json,
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
+
+use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 
 use crate::{
-    accounts::AccountSnapshot, auth::claude::store as claude_store, config::AuthMode,
-    error::ShuntError, server::AppState,
+    accounts::{account_key, AccountKey, AccountSnapshot},
+    auth::claude::store as claude_store,
+    config::{AccountConfig, AuthMode},
+    error::ShuntError,
+    server::AppState,
 };
 
 /// Sanitized aggregate returned by `GET /usage`.
@@ -58,107 +65,208 @@ pub struct Windows {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct WindowStatus {
-    /// `1 - min(utilization)` over non-disabled accounts reporting this window
-    /// — the least reported utilization among non-disabled accounts, clamped to
-    /// `0.0..=1.0` and rounded to four decimals. This is a pool-wide aggregate,
-    /// not a prediction of which account the next request will actually route
-    /// to (routing also weighs availability, model, session affinity, and
-    /// priority). `None` when no non-disabled account reports the window.
+    /// `mean(1 - utilization)` over non-disabled accounts reporting this
+    /// window — the fraction of the pool's combined capacity still unused,
+    /// clamped to `0.0..=1.0` and rounded to four decimals. Nine exhausted
+    /// accounts plus one fresh one report `0.1`, not `1.0`. This is a
+    /// pool-wide aggregate, not a prediction of whether the next request will
+    /// be admitted (routing also weighs availability, model, session affinity,
+    /// and priority). `None` when no non-disabled account reports the window.
     /// ChatGPT/Codex accounts populate the 5-hour and shared weekly windows
     /// from `x-codex-*` response headers; Codex has no Fable-scoped (`7d_oi`)
     /// signal, although another provider in a mixed pool may still supply
     /// that aggregate window.
     pub remaining: Option<f64>,
-    /// Reset time (unix epoch seconds) of the least-utilized account's window,
-    /// when the backend reported one.
+    /// Earliest reported reset time (unix epoch seconds) among the accounts
+    /// counted in `remaining` — the soonest moment the aggregate can change.
+    /// `None` when none of them reported one.
     pub resets_at: Option<u64>,
 }
 
-/// Collapse per-provider account snapshots into the sanitized response: the
-/// pool-wide aggregate over every snapshot, plus one aggregate per provider
-/// over that provider's snapshots only. Pure: the I/O (store scan) and locking
-/// happen in the caller. Reads only aggregate numbers and availability
-/// booleans — no account name, priority, `disabled` flag, threshold, or
-/// headroom leaves this function; the only identifier emitted is the
-/// configured provider name.
-pub fn aggregate<N, S>(by_provider: &[(N, S)]) -> UsageResponse
-where
-    N: AsRef<str>,
-    S: AsRef<[AccountSnapshot]>,
-{
-    let all: Vec<&AccountSnapshot> = by_provider
+/// One pooled provider's snapshot rows, split the way the aggregates read
+/// them: `status` is every configured row (each alias's own threshold verdict
+/// counts), `pool_window` is the subset the pool-wide window means count
+/// (aliases collapsed across providers, see [`representative_positions`]),
+/// and `own_window` is the subset this provider's own entry counts (aliases
+/// collapsed within the provider only, so an identity configured under two
+/// providers still votes once in each provider's entry).
+pub struct ProviderRows<'a> {
+    pub name: &'a str,
+    pub status: Vec<AccountSnapshot>,
+    pub pool_window: Vec<AccountSnapshot>,
+    pub own_window: Vec<AccountSnapshot>,
+}
+
+/// Collapse per-provider snapshots into the sanitized response: the pool-wide
+/// aggregate over every provider's rows, plus one aggregate per provider over
+/// that provider's rows only. Pure: the I/O (store scan) and locking happen in
+/// the caller. Reads only aggregate numbers and availability booleans — no
+/// account name, priority, `disabled` flag, threshold, or headroom leaves this
+/// function; the only identifier emitted is the configured provider name.
+pub fn aggregate_rows(providers: &[ProviderRows<'_>]) -> UsageResponse {
+    let status_all: Vec<AccountSnapshot> = providers
         .iter()
-        .flat_map(|(_, snapshots)| snapshots.as_ref().iter())
+        .flat_map(|provider| provider.status.iter().cloned())
+        .collect();
+    let window_all: Vec<AccountSnapshot> = providers
+        .iter()
+        .flat_map(|provider| provider.pool_window.iter().cloned())
         .collect();
     UsageResponse {
-        pool: pool_aggregate(&all),
-        providers: by_provider
+        pool: pool_aggregate(&status_all, &window_all),
+        providers: providers
             .iter()
-            .map(|(name, snapshots)| {
-                let refs: Vec<&AccountSnapshot> = snapshots.as_ref().iter().collect();
-                (name.as_ref().to_string(), pool_aggregate(&refs))
+            .map(|provider| {
+                (
+                    provider.name.to_string(),
+                    pool_aggregate(&provider.status, &provider.own_window),
+                )
             })
             .collect(),
     }
 }
 
-/// The sanitized aggregate for one set of snapshots (the whole pool, or one
-/// provider's slice of it).
-fn pool_aggregate(snapshots: &[&AccountSnapshot]) -> PoolStatus {
+/// [`aggregate_rows`] for rows with no aliases to collapse: every row of every
+/// provider counts for status and for both window means.
+pub fn aggregate<N, S>(by_provider: &[(N, S)]) -> UsageResponse
+where
+    N: AsRef<str>,
+    S: AsRef<[AccountSnapshot]>,
+{
+    let providers: Vec<ProviderRows<'_>> = by_provider
+        .iter()
+        .map(|(name, rows)| ProviderRows {
+            name: name.as_ref(),
+            status: rows.as_ref().to_vec(),
+            pool_window: rows.as_ref().to_vec(),
+            own_window: rows.as_ref().to_vec(),
+        })
+        .collect();
+    aggregate_rows(&providers)
+}
+
+/// The sanitized aggregate for one set of rows (the whole pool, or one
+/// provider's slice of it): `status` reads every row, the window means read
+/// only the representative subset.
+fn pool_aggregate(
+    status_snapshots: &[AccountSnapshot],
+    window_snapshots: &[AccountSnapshot],
+) -> PoolStatus {
     PoolStatus {
-        status: pool_status(snapshots),
+        status: pool_status(status_snapshots),
         windows: Windows {
-            five_hour: window_status(snapshots, |s| s.utilization_5h, |s| s.reset_5h),
-            seven_day: window_status(snapshots, |s| s.utilization_7d, |s| s.reset_7d),
-            fable: window_status(snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
+            five_hour: window_status(window_snapshots, |s| s.utilization_5h, |s| s.reset_5h),
+            seven_day: window_status(window_snapshots, |s| s.utilization_7d, |s| s.reset_7d),
+            fable: window_status(window_snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
         },
     }
 }
 
-/// Aggregate headroom for one window: `1 - utilization` of the non-disabled
-/// account reporting the least utilization for this window (and that
-/// account's reset time), not a guarantee about which account the next
-/// request will actually route to.
+/// Aggregate headroom for one window: the mean `1 - utilization` over the
+/// non-disabled accounts reporting a finite utilization for it (the fraction of
+/// the pool's combined capacity still unused), and the earliest reset any of
+/// them reported. Not a guarantee about which account the next request will
+/// actually route to.
 fn window_status(
-    snapshots: &[&AccountSnapshot],
+    snapshots: &[AccountSnapshot],
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
     reset: impl Fn(&AccountSnapshot) -> Option<u64>,
 ) -> WindowStatus {
-    let least_utilized = snapshots
-        .iter()
-        .copied()
-        .filter(|snapshot| !snapshot.disabled)
-        .filter_map(|snapshot| {
-            utilization(snapshot)
-                .filter(|used| used.is_finite())
-                .map(|used| (used, reset(snapshot)))
-        })
-        .min_by(|(a, _), (b, _)| a.total_cmp(b));
-    match least_utilized {
-        Some((used, resets_at)) => WindowStatus {
-            remaining: Some(round4((1.0 - used).clamp(0.0, 1.0))),
-            resets_at,
-        },
-        None => WindowStatus {
+    let mut reporting = 0usize;
+    let mut headroom_sum = 0.0;
+    let mut earliest_reset: Option<u64> = None;
+    for snapshot in snapshots.iter().filter(|snapshot| !snapshot.disabled) {
+        let Some(used) = utilization(snapshot).filter(|used| used.is_finite()) else {
+            continue;
+        };
+        reporting += 1;
+        headroom_sum += (1.0 - used).clamp(0.0, 1.0);
+        if let Some(at) = reset(snapshot) {
+            earliest_reset = Some(earliest_reset.unwrap_or(at).min(at));
+        }
+    }
+    if reporting == 0 {
+        return WindowStatus {
             remaining: None,
             resets_at: None,
-        },
+        };
     }
+    WindowStatus {
+        remaining: Some(round4(headroom_sum / reporting as f64)),
+        resets_at: earliest_reset,
+    }
+}
+
+/// Pick one representative per physical account across every provider, and
+/// return the chosen entries' positions per provider (both indexed like
+/// `resolved`; `AccountPool::snapshot` emits one row per entry in input order,
+/// so a position identifies a row where a name may not — a scoped store entry
+/// and an inline entry can share a name). Config
+/// entries that alias one account (same `account_key`, e.g. two names sharing
+/// a `uuid`) are one account to the pool (`collapse_representatives`), yet
+/// `AccountPool::snapshot` emits one identical quota row per entry, so the mean
+/// would otherwise give that subscription one vote per alias. The key carries
+/// the store family and stable identity but not the provider name, so the same
+/// identity configured under two providers is one account too — hence one pass
+/// over all providers. An enabled alias wins over a disabled one so a disabled
+/// first alias does not hide an identity that still serves; order is otherwise
+/// first-seen. Only the window aggregates use this subset — `status` keeps
+/// reading every row, so each alias's own threshold verdict still counts.
+fn representative_positions(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<HashSet<usize>> {
+    let mut by_key: HashMap<AccountKey, (usize, usize)> = HashMap::new();
+    // One slot per input entry, so a slot index *is* the entry's position.
+    let mut chosen: Vec<Vec<Option<&AccountConfig>>> = Vec::with_capacity(resolved.len());
+    for (provider_index, (provider, accounts)) in resolved.iter().enumerate() {
+        let mut kept: Vec<Option<&AccountConfig>> = Vec::with_capacity(accounts.len());
+        for (position, account) in accounts.iter().enumerate() {
+            let mut keep = false;
+            match by_key.entry(account_key(provider, account)) {
+                Entry::Occupied(mut entry) => {
+                    let (seen_provider, seen_index) = *entry.get();
+                    let seen_disabled = if seen_provider == provider_index {
+                        kept[seen_index].is_some_and(|seen| seen.disabled)
+                    } else {
+                        chosen[seen_provider][seen_index].is_some_and(|seen| seen.disabled)
+                    };
+                    if seen_disabled && !account.disabled {
+                        if seen_provider == provider_index {
+                            kept[seen_index] = None;
+                        } else {
+                            chosen[seen_provider][seen_index] = None;
+                        }
+                        entry.insert((provider_index, position));
+                        keep = true;
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert((provider_index, position));
+                    keep = true;
+                }
+            }
+            kept.push(keep.then_some(account));
+        }
+        chosen.push(kept);
+    }
+    chosen
+        .into_iter()
+        .map(|kept| {
+            kept.into_iter()
+                .enumerate()
+                .filter_map(|(position, account)| account.map(|_| position))
+                .collect()
+        })
+        .collect()
 }
 
 /// Coarse pool health derived purely from availability booleans (no numbers):
 /// `exhausted` when every selectable account is unavailable, `degraded` when any
 /// is near quota, else `ok`. Disabled accounts never count as selectable.
-fn pool_status(snapshots: &[&AccountSnapshot]) -> &'static str {
+fn pool_status(snapshots: &[AccountSnapshot]) -> &'static str {
     let mut any_selectable = false;
     let mut any_available = false;
     let mut any_near_quota = false;
 
-    for snapshot in snapshots
-        .iter()
-        .copied()
-        .filter(|snapshot| !snapshot.disabled)
-    {
+    for snapshot in snapshots.iter().filter(|snapshot| !snapshot.disabled) {
         any_selectable = true;
         any_available |= snapshot.available;
         any_near_quota |= snapshot.near_quota;
@@ -205,7 +313,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     tracing::info!(client = %client, "inbound client authenticated for GET /usage");
 
-    let mut by_provider: Vec<(&str, Vec<AccountSnapshot>)> = Vec::new();
+    let mut resolved_by_provider: Vec<(&str, Vec<AccountConfig>)> = Vec::new();
     for (name, provider) in &state.config.providers {
         if !matches!(
             provider.auth,
@@ -261,14 +369,35 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 .into_response();
             }
         };
-        by_provider.push((
-            name.as_str(),
-            state
-                .accounts
-                .snapshot(name, &resolved, None, state.config.server.pool.as_ref()),
-        ));
+        resolved_by_provider.push((name.as_str(), resolved));
     }
-    Json(aggregate(&by_provider)).into_response()
+    // Aliases collapse across providers for the pool-wide means, and within
+    // each provider for that provider's own entry.
+    let pool_representatives = representative_positions(&resolved_by_provider);
+    let mut providers: Vec<ProviderRows<'_>> = Vec::with_capacity(resolved_by_provider.len());
+    for (entry, pool_chosen) in resolved_by_provider.iter().zip(&pool_representatives) {
+        let (name, accounts) = entry;
+        let own_chosen = representative_positions(std::slice::from_ref(entry))
+            .pop()
+            .unwrap_or_default();
+        let rows = state
+            .accounts
+            .snapshot(name, accounts, None, state.config.server.pool.as_ref());
+        let select = |chosen: &HashSet<usize>| -> Vec<AccountSnapshot> {
+            rows.iter()
+                .enumerate()
+                .filter(|(position, _)| chosen.contains(position))
+                .map(|(_, snapshot)| snapshot.clone())
+                .collect()
+        };
+        providers.push(ProviderRows {
+            name,
+            pool_window: select(pool_chosen),
+            own_window: select(&own_chosen),
+            status: rows,
+        });
+    }
+    Json(aggregate_rows(&providers)).into_response()
 }
 
 #[cfg(test)]
