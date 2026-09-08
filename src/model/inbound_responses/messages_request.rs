@@ -394,35 +394,55 @@ fn tool_result_block(item: &Value) -> Value {
 /// hosted web-search tool maps to Anthropic's own; every other built-in
 /// (`code_interpreter`, `file_search`, …) has no Anthropic equivalent and is
 /// dropped rather than registered as a function the client cannot run. An
-/// `allowed_tools` choice narrows the function tools to the names it lists.
+/// `allowed_tools` choice narrows every declared tool, web search included,
+/// to the entries it lists.
 fn tools(request: &Value) -> Vec<Value> {
     let Some(tools) = request.get("tools").and_then(Value::as_array) else {
         return Vec::new();
     };
-    let allowed = allowed_tool_names(request);
+    let allowed = Allowlist::from_request(request);
     tools
         .iter()
+        .filter(|tool| allowed.as_ref().is_none_or(|allowed| allowed.admits(tool)))
         .filter_map(|tool| match tool.get("type").and_then(Value::as_str) {
-            Some("function") if is_allowed(tool, allowed.as_deref()) => Some(function_tool(tool)),
+            Some("function") => Some(function_tool(tool)),
             Some(kind) if WEB_SEARCH_TYPES.contains(&kind) => Some(web_search_tool(tool)),
             _ => None,
         })
         .collect()
 }
 
-/// The function names an `allowed_tools` choice narrows the callable set to,
-/// or None when the request set no such choice. Built-in entries in the list
-/// carry no name to match a declared tool on and are ignored -- an allowlist
-/// made only of them therefore admits no function tool.
-fn allowed_tool_names(request: &Value) -> Option<Vec<&str>> {
-    let choice = request.get("tool_choice")?;
-    if choice.get("type").and_then(Value::as_str)? != "allowed_tools" {
-        return None;
+/// What an `allowed_tools` choice narrows the callable set to: the function
+/// names it lists, and whether it lists a web-search entry. Other built-ins
+/// have no Anthropic counterpart, so listing them admits nothing extra.
+struct Allowlist<'a> {
+    functions: Vec<&'a str>,
+    web_search: bool,
+}
+
+impl<'a> Allowlist<'a> {
+    /// None when the request set no `allowed_tools` choice. An empty list is
+    /// still an allowlist: it admits nothing, so the caller ends up sending
+    /// neither `tools` nor `tool_choice`.
+    fn from_request(request: &'a Value) -> Option<Self> {
+        let choice = request.get("tool_choice")?;
+        if choice.get("type").and_then(Value::as_str)? != "allowed_tools" {
+            return None;
+        }
+        let entries = choice.get("tools").and_then(Value::as_array)?;
+        Some(Self {
+            functions: entries.iter().filter_map(named_function).collect(),
+            web_search: entries.iter().any(is_web_search),
+        })
     }
-    // An empty list is still an allowlist: it admits nothing, so the caller
-    // ends up sending neither `tools` nor `tool_choice`.
-    let entries = choice.get("tools").and_then(Value::as_array)?;
-    Some(entries.iter().filter_map(named_function).collect())
+
+    /// Whether a declared tool survives the allowlist.
+    fn admits(&self, tool: &Value) -> bool {
+        match named_function(tool) {
+            Some(name) => self.functions.contains(&name),
+            None => self.web_search && is_web_search(tool),
+        }
+    }
 }
 
 fn named_function(tool: &Value) -> Option<&str> {
@@ -432,12 +452,10 @@ fn named_function(tool: &Value) -> Option<&str> {
     tool.get("name").and_then(Value::as_str)
 }
 
-/// Whether a declared function tool survives the allowlist.
-fn is_allowed(tool: &Value, allowed: Option<&[&str]>) -> bool {
-    let Some(allowed) = allowed else {
-        return true;
-    };
-    named_function(tool).is_some_and(|name| allowed.contains(&name))
+fn is_web_search(tool: &Value) -> bool {
+    tool.get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| WEB_SEARCH_TYPES.contains(&kind))
 }
 
 fn function_tool(tool: &Value) -> Value {

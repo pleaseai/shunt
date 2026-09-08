@@ -369,6 +369,38 @@ fn an_allowed_tools_choice_narrows_the_forwarded_tools() {
 }
 
 #[test]
+fn an_allowed_tools_choice_also_narrows_web_search() {
+    let request = |allowed: Value| {
+        with_input(json!({
+            "tools": [{"type": "function", "name": "bash"}, {"type": "web_search"}],
+            "tool_choice": {"type": "allowed_tools", "mode": "auto", "tools": allowed},
+        }))
+    };
+    let names = |out: &Value| -> Vec<String> {
+        out["tools"]
+            .as_array()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .map(|tool| tool["name"].as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // A list of function names alone excludes the hosted web search.
+    let out = translate(request(json!([{"type": "function", "name": "bash"}])));
+    assert_eq!(names(&out), vec!["bash"]);
+
+    // Listing the built-in admits it, under any of its Responses spellings.
+    let out = translate(request(json!([{"type": "web_search_preview"}])));
+    assert_eq!(names(&out), vec!["web_search"]);
+    assert!(out["tools"][0]["type"]
+        .as_str()
+        .is_some_and(|kind| kind.starts_with("web_search_")));
+}
+
+#[test]
 fn a_file_url_with_an_unfetchable_scheme_is_dropped() {
     let out = translate(json!({
         "input": [{"type": "message", "role": "user", "content": [
