@@ -1,0 +1,30 @@
+docs/m14-oauth-usage-endpoint.md
+  s_1c15b41fe7776b::t_3a9a77f32402fc 67,79-82,198-200
+  s_1c15b41fe7776b::t_9706e690d55e74 70-72
+docs/m12-client-usage-endpoint.md
+  s_1c15b41fe7776b::t_3a9a77f32402fc 55-61,64-65
+src/usage/tests.rs
+  s_1c15b41fe7776b::t_926a80c8e0cf81 42-44,51-54,60-74,357-359,456
+site/src/content/docs/reference/configuration.md
+  s_1c15b41fe7776b::t_3a9a77f32402fc 311,319
+site/src/content/docs/reference/endpoints.md
+  s_1c15b41fe7776b::t_3a9a77f32402fc 76,91
+src/usage.rs
+  s_1c15b41fe7776b::t_35ee0e1f809aa9 55-61,67-69,90-94,100-114,117-121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "47b266d20c497a1a07afaffe6816f1ba4b41d0f8",
+  "prompts": {},
+  "sessions": {
+    "s_1c15b41fe7776b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29af0668-f326-4d4e-844c-0eb6a404177b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
