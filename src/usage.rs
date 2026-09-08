@@ -91,14 +91,12 @@ where
         .flat_map(|(_, snapshots)| snapshots.as_ref().iter())
         .collect();
     UsageResponse {
-        pool: pool_aggregate(all.iter().copied()),
+        pool: pool_aggregate(&all),
         providers: by_provider
             .iter()
             .map(|(name, snapshots)| {
-                (
-                    name.as_ref().to_string(),
-                    pool_aggregate(snapshots.as_ref().iter()),
-                )
+                let refs: Vec<&AccountSnapshot> = snapshots.as_ref().iter().collect();
+                (name.as_ref().to_string(), pool_aggregate(&refs))
             })
             .collect(),
     }
@@ -106,14 +104,13 @@ where
 
 /// The sanitized aggregate for one set of snapshots (the whole pool, or one
 /// provider's slice of it).
-fn pool_aggregate<'a>(snapshots: impl Iterator<Item = &'a AccountSnapshot>) -> PoolStatus {
-    let snapshots: Vec<&AccountSnapshot> = snapshots.collect();
+fn pool_aggregate(snapshots: &[&AccountSnapshot]) -> PoolStatus {
     PoolStatus {
-        status: pool_status(&snapshots),
+        status: pool_status(snapshots),
         windows: Windows {
-            five_hour: window_status(&snapshots, |s| s.utilization_5h, |s| s.reset_5h),
-            seven_day: window_status(&snapshots, |s| s.utilization_7d, |s| s.reset_7d),
-            fable: window_status(&snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
+            five_hour: window_status(snapshots, |s| s.utilization_5h, |s| s.reset_5h),
+            seven_day: window_status(snapshots, |s| s.utilization_7d, |s| s.reset_7d),
+            fable: window_status(snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
         },
     }
 }

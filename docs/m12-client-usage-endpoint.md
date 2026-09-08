@@ -69,8 +69,13 @@ every selectable (non-disabled) account is unavailable, `degraded` when any is n
 client whose traffic goes to one provider: `pool.windows.5h.remaining` is the best window across
 both, and `pool.status` is `ok` as long as any account of any provider is available. So the response
 also carries `providers` — the same aggregate, computed over each provider's accounts only, keyed by
-the configured provider name (issue #480). The key is the upstream name that `/v1/models` routing
-already exposes, not an account identity. Providers whose auth mode is not pooled (`passthrough`,
+the configured provider name (issue #480), not an account identity. The key is always the provider's
+own config-table name — the `<name>` in `[providers.<name>]`, or the `name` of a `[[upstreams]]`
+entry — for every provider with a pooled auth mode, whether or not any route names it. Mapping a
+model to that key is the client's job: `GET /routes` returns the `[[routes]]` table and so covers
+only models explicitly listed there, no endpoint exposes the `[[models]].upstream_model`,
+`[[route_prefixes]]`, or `server.default_provider` mappings, and `GET /v1/models` entries carry no
+provider field. Providers whose auth mode is not pooled (`passthrough`,
 `api_key`, …) are omitted, matching the filter `pool` already applies; with no pooled provider the
 map is empty.
 

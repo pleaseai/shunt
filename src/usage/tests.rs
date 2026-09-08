@@ -144,7 +144,10 @@ fn aggregate_never_exposes_account_identity_or_capacity() {
 /// reports `exhausted` with zero 5h headroom and a `null` Fable window.
 #[test]
 fn aggregate_breaks_the_pool_down_per_provider() {
-    let claude = vec![snapshot("claude-a", Some(0.20), Some(100), Some(0.30))];
+    let mut claude_a = snapshot("claude-a", Some(0.20), Some(100), Some(0.30));
+    claude_a.utilization_7d_oi = Some(0.10);
+    claude_a.reset_7d_oi = Some(700);
+    let claude = vec![claude_a];
     let mut codex_a = snapshot("codex-a", Some(1.0), Some(500), Some(0.90));
     codex_a.available = false;
     let mut codex_b = snapshot("codex-b", Some(1.0), Some(600), Some(0.95));
@@ -170,10 +173,12 @@ fn aggregate_breaks_the_pool_down_per_provider() {
     assert_eq!(codex["windows"]["5h"]["resets_at"], json!(500));
     assert_eq!(codex["windows"]["7d"]["remaining"], json!(0.10));
     // Codex has no Fable-scoped signal: null per provider even though the
-    // pool-wide Fable window is populated by Claude.
+    // pool-wide Fable window (and Claude's own entry) is populated by Claude.
     assert_eq!(codex["windows"]["fable"]["remaining"], Value::Null);
     assert_eq!(codex["windows"]["fable"]["resets_at"], Value::Null);
-    assert_eq!(body["pool"]["windows"]["fable"]["remaining"], Value::Null);
+    assert_eq!(anthropic["windows"]["fable"]["remaining"], json!(0.90));
+    assert_eq!(body["pool"]["windows"]["fable"]["remaining"], json!(0.90));
+    assert_eq!(body["pool"]["windows"]["fable"]["resets_at"], json!(700));
 
     // Exactly the configured providers, no extra keys.
     let keys: Vec<&String> = body["providers"].as_object().unwrap().keys().collect();
