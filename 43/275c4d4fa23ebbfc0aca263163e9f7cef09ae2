@@ -1,0 +1,51 @@
+docs/m12-client-usage-endpoint.md
+  s_e183b4b286cc6f::t_1600f20db78f0d 67-76,84-102,108-110,117-119
+site/src/content/docs/ja/reference/endpoints.md
+  s_e183b4b286cc6f::t_eada8dbb322c0b 41,51
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_e183b4b286cc6f::t_eada8dbb322c0b 216-217
+README.md
+  s_e183b4b286cc6f::t_1600f20db78f0d 175
+site/src/content/docs/ko/reference/endpoints.md
+  s_e183b4b286cc6f::t_eada8dbb322c0b 41,51
+site/src/content/docs/ko/reference/configuration.md
+  s_e183b4b286cc6f::t_eada8dbb322c0b 217-218
+site/src/content/docs/ja/reference/configuration.md
+  s_e183b4b286cc6f::t_eada8dbb322c0b 216-217
+README.ko.md
+  s_e183b4b286cc6f::t_1600f20db78f0d 172
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_e183b4b286cc6f::t_eada8dbb322c0b 41,51
+src/usage/tests.rs
+  s_e183b4b286cc6f::t_da0cf5dae6437f 48,62,91,100,116-117,120-122,124,141-180
+  s_e183b4b286cc6f::t_ec5b34c8b25053 74,82
+  s_e183b4b286cc6f::t_4e0316b2659f6d 118-119,382-397
+  s_e183b4b286cc6f::t_79c7f340b223c1 181-182
+README.zh-CN.md
+  s_e183b4b286cc6f::t_eada8dbb322c0b 170
+site/src/content/docs/reference/endpoints.md
+  s_e183b4b286cc6f::t_eada8dbb322c0b 45,76,85-103
+site/src/content/docs/reference/configuration.md
+  s_e183b4b286cc6f::t_eada8dbb322c0b 313-314
+README.ja.md
+  s_e183b4b286cc6f::t_1600f20db78f0d 175
+src/usage.rs
+  s_e183b4b286cc6f::t_9163c22bb401ad 22,32,34-37,77-92,94-116,126,132,155,211,267-268,274
+  s_e183b4b286cc6f::t_4e0316b2659f6d 160-164,269-271
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "43275c4d4fa23ebbfc0aca263163e9f7cef09ae2",
+  "prompts": {},
+  "sessions": {
+    "s_e183b4b286cc6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "294f58ad-e302-4d25-845c-857f2dd69562",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
