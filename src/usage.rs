@@ -87,7 +87,7 @@ pub fn aggregate(snapshots: &[AccountSnapshot]) -> UsageResponse {
 /// configured row (so `status` keeps seeing each alias's own threshold verdict,
 /// exactly as before), while `window_snapshots` is the alias-collapsed subset
 /// so the mean gives each physical account one vote (see
-/// [`representative_names`]).
+/// [`representative_positions`]).
 pub fn aggregate_split(
     status_snapshots: &[AccountSnapshot],
     window_snapshots: &[AccountSnapshot],
@@ -140,7 +140,10 @@ fn window_status(
 }
 
 /// Pick one representative per physical account across every provider, and
-/// return the chosen names per provider (indexed like `resolved`). Config
+/// return the chosen entries' positions per provider (both indexed like
+/// `resolved`; `AccountPool::snapshot` emits one row per entry in input order,
+/// so a position identifies a row where a name may not — a scoped store entry
+/// and an inline entry can share a name). Config
 /// entries that alias one account (same `account_key`, e.g. two names sharing
 /// a `uuid`) are one account to the pool (`collapse_representatives`), yet
 /// `AccountPool::snapshot` emits one identical quota row per entry, so the mean
@@ -151,31 +154,38 @@ fn window_status(
 /// first alias does not hide an identity that still serves; order is otherwise
 /// first-seen. Only the window aggregates use this subset — `status` keeps
 /// reading every row, so each alias's own threshold verdict still counts.
-fn representative_names(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<HashSet<String>> {
+fn representative_positions(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<HashSet<usize>> {
     let mut by_key: HashMap<AccountKey, (usize, usize)> = HashMap::new();
+    // One slot per input entry, so a slot index *is* the entry's position.
     let mut chosen: Vec<Vec<Option<&AccountConfig>>> = Vec::with_capacity(resolved.len());
     for (provider_index, (provider, accounts)) in resolved.iter().enumerate() {
         let mut kept: Vec<Option<&AccountConfig>> = Vec::with_capacity(accounts.len());
-        for account in accounts {
+        for (position, account) in accounts.iter().enumerate() {
+            let mut keep = false;
             match by_key.entry(account_key(provider, account)) {
                 Entry::Occupied(mut entry) => {
                     let (seen_provider, seen_index) = *entry.get();
-                    let seen = if seen_provider == provider_index {
-                        &mut kept[seen_index]
+                    let seen_disabled = if seen_provider == provider_index {
+                        kept[seen_index].is_some_and(|seen| seen.disabled)
                     } else {
-                        &mut chosen[seen_provider][seen_index]
+                        chosen[seen_provider][seen_index].is_some_and(|seen| seen.disabled)
                     };
-                    if seen.is_some_and(|seen| seen.disabled) && !account.disabled {
-                        *seen = None;
-                        entry.insert((provider_index, kept.len()));
-                        kept.push(Some(account));
+                    if seen_disabled && !account.disabled {
+                        if seen_provider == provider_index {
+                            kept[seen_index] = None;
+                        } else {
+                            chosen[seen_provider][seen_index] = None;
+                        }
+                        entry.insert((provider_index, position));
+                        keep = true;
                     }
                 }
                 Entry::Vacant(entry) => {
-                    entry.insert((provider_index, kept.len()));
-                    kept.push(Some(account));
+                    entry.insert((provider_index, position));
+                    keep = true;
                 }
             }
+            kept.push(keep.then_some(account));
         }
         chosen.push(kept);
     }
@@ -183,8 +193,8 @@ fn representative_names(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<HashSet<
         .into_iter()
         .map(|kept| {
             kept.into_iter()
-                .flatten()
-                .map(|account| account.name.clone())
+                .enumerate()
+                .filter_map(|(position, account)| account.map(|_| position))
                 .collect()
         })
         .collect()
@@ -303,16 +313,15 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         };
         resolved_by_provider.push((name.as_str(), resolved));
     }
-    let representatives = representative_names(&resolved_by_provider);
+    let representatives = representative_positions(&resolved_by_provider);
     let mut status_snapshots = Vec::new();
     let mut window_snapshots = Vec::new();
     for ((name, accounts), chosen) in resolved_by_provider.iter().zip(&representatives) {
-        for snapshot in
-            state
-                .accounts
-                .snapshot(name, accounts, None, state.config.server.pool.as_ref())
-        {
-            if chosen.contains(&snapshot.name) {
+        let rows = state
+            .accounts
+            .snapshot(name, accounts, None, state.config.server.pool.as_ref());
+        for (position, snapshot) in rows.into_iter().enumerate() {
+            if chosen.contains(&position) {
                 window_snapshots.push(snapshot.clone());
             }
             status_snapshots.push(snapshot);

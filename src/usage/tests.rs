@@ -474,13 +474,16 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(reset_5h));
 }
 
-/// Two config entries sharing a `uuid` are one physical account to the pool
+/// Config entries sharing a `uuid` are one physical account to the pool
 /// (`collapse_representatives`), and `AccountPool::snapshot` emits one row per
 /// entry, so without collapsing them the mean would give that subscription
 /// extra votes. The fresh identity is configured three times here — twice on
 /// the built-in `codex` provider and once more on a second `chatgpt_oauth`
 /// provider (the key carries no provider name) — plus one exhausted identity:
 /// uncollapsed that reads `0.75`, collapsed it reads the pool-capacity `0.5`.
+/// (A repeated `account_scope` store reference yields two rows with one name;
+/// config validation rejects that for explicit entries, so it is not built
+/// here — representatives are matched by row position, which covers it.)
 #[tokio::test]
 async fn aggregate_counts_an_aliased_identity_once() {
     use crate::accounts::StoreFamily;
