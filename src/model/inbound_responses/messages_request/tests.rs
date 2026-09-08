@@ -366,6 +366,19 @@ fn an_allowed_tools_choice_narrows_the_forwarded_tools() {
     let out = translate(request(json!([])));
     assert!(out.get("tools").is_none());
     assert!(out.get("tool_choice").is_none());
+
+    // So is a `tools` field that is missing or not a list: the allowlist fails
+    // closed rather than forwarding everything.
+    for allowed in [Value::Null, json!("bash")] {
+        let out = translate(request(allowed));
+        assert!(out.get("tools").is_none());
+        assert!(out.get("tool_choice").is_none());
+    }
+    let out = translate(with_input(json!({
+        "tools": [{"type": "function", "name": "bash"}],
+        "tool_choice": {"type": "allowed_tools", "mode": "auto"},
+    })));
+    assert!(out.get("tools").is_none());
 }
 
 #[test]

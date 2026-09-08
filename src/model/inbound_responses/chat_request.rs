@@ -304,8 +304,14 @@ fn allowed_tool_names(request: &Value) -> Option<Vec<&str>> {
         return None;
     }
     // An empty list is still an allowlist: it admits nothing, so the caller
-    // ends up sending neither `tools` nor `tool_choice`.
-    let entries = choice.get("tools").and_then(Value::as_array)?;
+    // ends up sending neither `tools` nor `tool_choice`. A `tools` field that
+    // is missing or not an array is read the same way rather than widening
+    // the callable set.
+    let entries = choice
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     Some(entries.iter().filter_map(named_function).collect())
 }
 

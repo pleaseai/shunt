@@ -423,13 +423,18 @@ struct Allowlist<'a> {
 impl<'a> Allowlist<'a> {
     /// None when the request set no `allowed_tools` choice. An empty list is
     /// still an allowlist: it admits nothing, so the caller ends up sending
-    /// neither `tools` nor `tool_choice`.
+    /// neither `tools` nor `tool_choice`. A `tools` field that is missing or
+    /// not an array is read the same way rather than widening the callable set.
     fn from_request(request: &'a Value) -> Option<Self> {
         let choice = request.get("tool_choice")?;
         if choice.get("type").and_then(Value::as_str)? != "allowed_tools" {
             return None;
         }
-        let entries = choice.get("tools").and_then(Value::as_array)?;
+        let entries = choice
+            .get("tools")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         Some(Self {
             functions: entries.iter().filter_map(named_function).collect(),
             web_search: entries.iter().any(is_web_search),
