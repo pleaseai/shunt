@@ -191,6 +191,74 @@ fn a_length_finish_reason_yields_response_incomplete() {
 }
 
 #[test]
+fn a_content_filter_finish_reason_yields_response_incomplete() {
+    let mut machine = ChatSseMachine::new("chat-test");
+    let frames = drive(
+        &mut machine,
+        &[
+            r#"{"choices":[{"index":0,"delta":{"content":"cut"}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}]}"#,
+            "[DONE]",
+        ],
+    );
+    let response = frame(&frames, "response.incomplete")["response"].clone();
+    assert_eq!(response["status"], "incomplete");
+    assert_eq!(
+        response["incomplete_details"],
+        json!({"reason": "content_filter"})
+    );
+    assert!(!names(&frames).contains(&"response.completed".to_string()));
+}
+
+#[test]
+fn interleaved_parallel_tool_call_fragments_reach_their_own_call() {
+    let mut machine = ChatSseMachine::new("chat-test");
+    let frames = drive(
+        &mut machine,
+        &[
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"ls","arguments":"{\"dir\":"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"cat","arguments":"{\"file\":\"a\"}"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\".\"}"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            "[DONE]",
+        ],
+    );
+    // Opening index 1 must not close index 0, so the fragment that follows is
+    // a real delta rather than the empty frame a closed item returns.
+    let deltas: Vec<String> = parsed(&frames)
+        .into_iter()
+        .filter(|(name, _)| name == "response.function_call_arguments.delta")
+        .map(|(_, data)| data["delta"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(deltas, vec!["{\"dir\":", "{\"file\":\"a\"}", "\".\"}"]);
+    assert!(frames.iter().all(|frame| !frame.is_empty()));
+    let response = frame(&frames, "response.completed")["response"].clone();
+    let output = response["output"].as_array().expect("output is an array");
+    assert_eq!(output[0]["call_id"], "call_a");
+    assert_eq!(output[0]["arguments"], "{\"dir\":\".\"}");
+    assert_eq!(output[1]["call_id"], "call_b");
+    assert_eq!(output[1]["arguments"], "{\"file\":\"a\"}");
+}
+
+#[test]
+fn finish_emits_the_startup_frames_before_failing_an_empty_stream() {
+    let mut machine = ChatSseMachine::new("chat-test");
+    let frames = machine.finish();
+    assert_eq!(
+        names(&frames),
+        vec![
+            "response.created",
+            "response.in_progress",
+            "response.failed",
+        ]
+    );
+    assert_eq!(
+        frame(&frames, "response.failed")["response"]["error"]["code"],
+        TRUNCATED_CODE
+    );
+}
+
+#[test]
 fn an_error_chunk_fails_the_response_and_ends_the_turn() {
     let mut machine = ChatSseMachine::new("chat-test");
     let frames = drive(
@@ -312,6 +380,35 @@ fn translate_response_reports_a_length_completion_as_incomplete() {
         response["incomplete_details"],
         json!({"reason": "max_output_tokens"})
     );
+}
+
+#[test]
+fn translate_response_reports_a_content_filter_completion_as_incomplete() {
+    let response = translate_response(
+        &json!({
+            "choices": [{"finish_reason": "content_filter", "message": {"content": "cut"}}],
+        }),
+        "chat-test",
+    );
+    assert_eq!(response["status"], "incomplete");
+    assert_eq!(
+        response["incomplete_details"],
+        json!({"reason": "content_filter"})
+    );
+}
+
+#[test]
+fn translate_error_always_reports_a_string_message() {
+    // A body that named no message at all still owes the client one.
+    let missing = translate_error(&json!({"error": {"type": "rate_limit_error"}}));
+    assert_eq!(missing["error"]["type"], "rate_limit_error");
+    assert!(missing["error"]["message"].is_string());
+    // So does one that wrote something other than a string there — and the
+    // fields it did name survive.
+    let null = translate_error(&json!({"error": {"message": null, "code": 429}}));
+    assert!(null["error"]["message"].is_string());
+    assert_eq!(null["error"]["type"], "api_error");
+    assert_eq!(null["error"]["code"], 429);
 }
 
 #[test]

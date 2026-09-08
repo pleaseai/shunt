@@ -15,7 +15,7 @@
 //! `index`, which the machine maps to the `output_index` the emitter
 //! allocated.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use serde_json::{json, Value};
 
@@ -34,6 +34,11 @@ const TRUNCATED_CODE: &str = "upstream_stream_truncated";
 /// `code` nor a `type` produces.
 const UPSTREAM_ERROR_CODE: &str = "upstream_error";
 
+/// The `message` a failure reports when the upstream named none. A client
+/// reads `message` as a string, so both the in-stream and the error-envelope
+/// path fall back to it.
+const UPSTREAM_ERROR_MESSAGE: &str = "the upstream reported an error";
+
 #[derive(Debug, Clone)]
 pub struct ChatSseMachine {
     emitter: ResponsesEmitter,
@@ -46,8 +51,10 @@ pub struct ChatSseMachine {
     /// so a later chunk carrying only `function.arguments` for that index still
     /// reaches the right item.
     calls: HashMap<usize, usize>,
-    /// The one function call open at a time; opening another closes it.
-    open_call: Option<usize>,
+    /// The `output_index`es of the function calls still open. Parallel calls
+    /// stay open alongside each other: only a text or reasoning delta, or the
+    /// end of the turn, closes them.
+    open_calls: BTreeSet<usize>,
     usage: Usage,
     finish_reason: Option<String>,
 }
@@ -60,7 +67,7 @@ impl ChatSseMachine {
             message: None,
             reasoning: None,
             calls: HashMap::new(),
-            open_call: None,
+            open_calls: BTreeSet::new(),
             usage: Usage::default(),
             finish_reason: None,
         }
@@ -137,7 +144,8 @@ impl ChatSseMachine {
         if self.is_terminal() {
             return Vec::new();
         }
-        let mut frames = self.close_open_items();
+        let mut frames = self.created();
+        frames.extend(self.close_open_items());
         frames.push(self.emitter.failed(
             TRUNCATED_CODE,
             "the upstream stream ended before the completion finished",
@@ -158,12 +166,9 @@ impl ChatSseMachine {
         let mut frames = self.created();
         frames.extend(self.close_open_items());
         let usage = self.usage.clone();
-        // `length` is the one Chat Completions finish reason that is not a
-        // clean end of turn: Responses reports it as an incomplete response.
-        frames.push(if self.finish_reason.as_deref() == Some("length") {
-            self.emitter.incomplete("max_output_tokens", usage)
-        } else {
-            self.emitter.completed(usage)
+        frames.push(match incomplete_reason(self.finish_reason.as_deref()) {
+            Some(reason) => self.emitter.incomplete(reason, usage),
+            None => self.emitter.completed(usage),
         });
         frames
     }
@@ -178,16 +183,16 @@ impl ChatSseMachine {
                     .map(str::to_string)
             })
             .unwrap_or_else(|| UPSTREAM_ERROR_CODE.to_string());
-        let message = error
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("the upstream reported an error");
+        let message = error_message(error);
         frames.push(self.emitter.failed(&code, message));
         frames
     }
 
     fn reasoning_delta(&mut self, text: &str) -> Vec<String> {
-        let mut frames = Vec::new();
+        // Text of any kind ends the tool calls that preceded it: Chat
+        // Completions has no block boundaries, so a delta of another kind is
+        // the only signal their arguments are complete.
+        let mut frames = self.close_calls();
         let output_index = match self.reasoning {
             Some(output_index) => output_index,
             None => {
@@ -205,7 +210,8 @@ impl ChatSseMachine {
         // Reasoning runs ahead of the answer, so the first visible token ends
         // it. Chat Completions never signs its reasoning, so nothing
         // round-trips as `encrypted_content`.
-        let mut frames = self.close_reasoning();
+        let mut frames = self.close_calls();
+        frames.extend(self.close_reasoning());
         let output_index = match self.message {
             Some(output_index) => output_index,
             None => {
@@ -234,13 +240,12 @@ impl ChatSseMachine {
         if (call_id.is_some() || name.is_some()) && !self.calls.contains_key(&index) {
             frames.extend(self.close_reasoning());
             frames.extend(self.close_message());
-            frames.extend(self.close_call());
             let (output_index, opened) = self
                 .emitter
                 .open_function_call(call_id.unwrap_or_default(), name.unwrap_or_default());
             frames.extend(opened);
             self.calls.insert(index, output_index);
-            self.open_call = Some(output_index);
+            self.open_calls.insert(output_index);
         }
         if let Some(arguments) = text_field(entry.get("function").unwrap_or(entry), "arguments") {
             if let Some(&output_index) = self.calls.get(&index) {
@@ -269,11 +274,12 @@ impl ChatSseMachine {
             .unwrap_or_default()
     }
 
-    fn close_call(&mut self) -> Vec<String> {
-        self.open_call
-            .take()
-            .map(|output_index| self.emitter.close_function_call(output_index))
-            .unwrap_or_default()
+    /// Close every function call still open, lowest `output_index` first.
+    fn close_calls(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.open_calls)
+            .into_iter()
+            .flat_map(|output_index| self.emitter.close_function_call(output_index))
+            .collect()
     }
 
     /// Close every item still open, lowest `output_index` first, so a
@@ -287,8 +293,8 @@ impl ChatSseMachine {
                     self.close_reasoning()
                 } else if self.message == Some(output_index) {
                     self.close_message()
-                } else if self.open_call == Some(output_index) {
-                    self.close_call()
+                } else if self.open_calls.remove(&output_index) {
+                    self.emitter.close_function_call(output_index)
                 } else {
                     Vec::new()
                 }
@@ -331,14 +337,19 @@ pub fn translate_response(completion: &Value, model: &str) -> Value {
     }
 
     let usage = completion.get("usage").map(read_usage).unwrap_or_default();
-    let truncated = choice
-        .and_then(|choice| choice.get("finish_reason"))
-        .and_then(Value::as_str)
-        == Some("length");
-    let status = if truncated { "incomplete" } else { "completed" };
+    let reason = incomplete_reason(
+        choice
+            .and_then(|choice| choice.get("finish_reason"))
+            .and_then(Value::as_str),
+    );
+    let status = if reason.is_some() {
+        "incomplete"
+    } else {
+        "completed"
+    };
     let mut response = emitter.response_object(status, Some(&usage));
-    if truncated {
-        response["incomplete_details"] = json!({"reason": "max_output_tokens"});
+    if let Some(reason) = reason {
+        response["incomplete_details"] = json!({"reason": reason});
     }
     response
 }
@@ -350,15 +361,39 @@ pub fn translate_response(completion: &Value, model: &str) -> Value {
 /// rather than echoed back — an unrecognised body may be an intermediary's
 /// HTML or a provider payload the client should not be handed.
 pub fn translate_error(chat_error: &Value) -> Value {
-    let Some(error) = chat_error.get("error").and_then(Value::as_object) else {
+    let source = chat_error.get("error").unwrap_or(&Value::Null);
+    let Some(error) = source.as_object() else {
         return generic_error();
     };
     let mut error = error.clone();
+    // A client reads `message` as a string, so a body that omitted it — or
+    // wrote something else there — gets the same fallback `fail()` uses.
+    error.insert("message".to_string(), json!(error_message(source)));
     error.entry("type").or_insert_with(|| json!("api_error"));
-    for key in ["message", "code", "param"] {
+    for key in ["code", "param"] {
         error.entry(key).or_insert(Value::Null);
     }
     json!({"error": error})
+}
+
+/// The Responses `incomplete_details.reason` a Chat Completions finish reason
+/// justifies. `length` and `content_filter` are the two that are not a clean
+/// end of turn; every other reason completes the response.
+fn incomplete_reason(finish_reason: Option<&str>) -> Option<&'static str> {
+    match finish_reason? {
+        "length" => Some("max_output_tokens"),
+        "content_filter" => Some("content_filter"),
+        _ => None,
+    }
+}
+
+/// The `message` of an error object, or the fallback when it named none as a
+/// string.
+fn error_message(error: &Value) -> &str {
+    error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or(UPSTREAM_ERROR_MESSAGE)
 }
 
 fn generic_error() -> Value {

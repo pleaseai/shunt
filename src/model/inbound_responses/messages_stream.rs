@@ -58,6 +58,7 @@ enum Block {
 #[derive(Debug, Clone)]
 pub struct MessagesSseMachine {
     emitter: ResponsesEmitter,
+    created: bool,
     blocks: HashMap<usize, Block>,
     usage: Usage,
     stop_reason: Option<String>,
@@ -67,6 +68,7 @@ impl MessagesSseMachine {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             emitter: ResponsesEmitter::new(model),
+            created: false,
             blocks: HashMap::new(),
             usage: Usage::default(),
             stop_reason: None,
@@ -83,13 +85,17 @@ impl MessagesSseMachine {
         if self.is_terminal() {
             return Vec::new();
         }
+        // An upstream that failed before it sent `message_start` still owes the
+        // client the startup frames, so they lead every event this machine
+        // relays rather than only that one.
+        let mut frames = self.created();
         let data = &event.data;
-        match event.event.as_deref().unwrap_or("") {
+        frames.extend(match event.event.as_deref().unwrap_or("") {
             "message_start" => {
                 if let Some(usage) = data.pointer("/message/usage") {
                     self.read_input_usage(usage);
                 }
-                self.emitter.created()
+                Vec::new()
             }
             "content_block_start" => self.block_start(data),
             "content_block_delta" => self.block_delta(data),
@@ -110,13 +116,9 @@ impl MessagesSseMachine {
             "message_stop" => {
                 let mut frames = self.close_open_blocks();
                 let usage = self.usage.clone();
-                // `max_tokens` is the one Anthropic stop reason that is not a
-                // clean end of turn: Responses reports it as an incomplete
-                // response, not a completed one.
-                frames.push(if self.stop_reason.as_deref() == Some("max_tokens") {
-                    self.emitter.incomplete("max_output_tokens", usage)
-                } else {
-                    self.emitter.completed(usage)
+                frames.push(match incomplete_reason(self.stop_reason.as_deref()) {
+                    Some(reason) => self.emitter.incomplete(reason, usage),
+                    None => self.emitter.completed(usage),
                 });
                 frames
             }
@@ -137,7 +139,8 @@ impl MessagesSseMachine {
                 frames
             }
             _ => Vec::new(),
-        }
+        });
+        frames
     }
 
     /// The upstream stream ended without `message_stop`. Close whatever is open
@@ -147,12 +150,22 @@ impl MessagesSseMachine {
         if self.is_terminal() {
             return Vec::new();
         }
-        let mut frames = self.close_open_blocks();
+        let mut frames = self.created();
+        frames.extend(self.close_open_blocks());
         frames.push(self.emitter.failed(
             TRUNCATED_CODE,
             "the upstream stream ended before the message completed",
         ));
         frames
+    }
+
+    /// `response.created` + `response.in_progress`, emitted once, on the first
+    /// event the upstream sent.
+    fn created(&mut self) -> Vec<String> {
+        if std::mem::replace(&mut self.created, true) {
+            return Vec::new();
+        }
+        self.emitter.created()
     }
 
     fn block_start(&mut self, data: &Value) -> Vec<String> {
@@ -399,13 +412,28 @@ pub fn translate_response(message: &Value, model: &str) -> Value {
         .get("usage")
         .map(|usage| input_usage(usage, 0))
         .unwrap_or_default();
-    let truncated = message.get("stop_reason").and_then(Value::as_str) == Some("max_tokens");
-    let status = if truncated { "incomplete" } else { "completed" };
+    let reason = incomplete_reason(message.get("stop_reason").and_then(Value::as_str));
+    let status = if reason.is_some() {
+        "incomplete"
+    } else {
+        "completed"
+    };
     let mut response = emitter.response_object(status, Some(&usage));
-    if truncated {
-        response["incomplete_details"] = json!({"reason": "max_output_tokens"});
+    if let Some(reason) = reason {
+        response["incomplete_details"] = json!({"reason": reason});
     }
     response
+}
+
+/// The Responses `incomplete_details.reason` an Anthropic stop reason
+/// justifies. `max_tokens` and `model_context_window_exceeded` are the two that
+/// are not a clean end of turn; every other reason completes the response.
+fn incomplete_reason(stop_reason: Option<&str>) -> Option<&'static str> {
+    match stop_reason? {
+        "max_tokens" => Some("max_output_tokens"),
+        "model_context_window_exceeded" => Some("model_context_window_exceeded"),
+        _ => None,
+    }
 }
 
 /// An Anthropic error envelope → the OpenAI error envelope the inbound Codex

@@ -257,6 +257,54 @@ fn a_max_tokens_stop_reason_yields_response_incomplete() {
 }
 
 #[test]
+fn a_context_window_stop_reason_yields_response_incomplete() {
+    let mut machine = MessagesSseMachine::new("claude-test");
+    let frames = drive(
+        &mut machine,
+        concat!(
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"model_context_window_exceeded\"}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ),
+    );
+    let response = frame(&frames, "response.incomplete")["response"].clone();
+    assert_eq!(response["status"], "incomplete");
+    assert_eq!(
+        response["incomplete_details"],
+        json!({"reason": "model_context_window_exceeded"})
+    );
+    assert!(!names(&frames).contains(&"response.completed".to_string()));
+}
+
+#[test]
+fn an_error_before_message_start_still_emits_the_startup_frames() {
+    let mut machine = MessagesSseMachine::new("claude-test");
+    let frames = drive(
+        &mut machine,
+        "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+    );
+    // The client is owed the startup frames even when the turn never began.
+    assert_eq!(
+        names(&frames),
+        vec![
+            "response.created",
+            "response.in_progress",
+            "response.failed",
+        ]
+    );
+}
+
+#[test]
+fn a_repeated_message_start_emits_the_startup_frames_once() {
+    let mut machine = MessagesSseMachine::new("claude-test");
+    let start = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n";
+    let frames = drive(&mut machine, &format!("{start}{start}"));
+    assert_eq!(
+        names(&frames),
+        vec!["response.created", "response.in_progress"]
+    );
+}
+
+#[test]
 fn an_error_event_fails_the_response_and_ends_the_turn() {
     let mut machine = MessagesSseMachine::new("claude-test");
     let frames = drive(
@@ -357,6 +405,22 @@ fn translate_response_reports_a_max_tokens_message_as_incomplete() {
     assert_eq!(
         response["incomplete_details"],
         json!({"reason": "max_output_tokens"})
+    );
+}
+
+#[test]
+fn translate_response_reports_a_context_window_message_as_incomplete() {
+    let response = translate_response(
+        &json!({
+            "stop_reason": "model_context_window_exceeded",
+            "content": [{"type": "text", "text": "cut"}],
+        }),
+        "claude-test",
+    );
+    assert_eq!(response["status"], "incomplete");
+    assert_eq!(
+        response["incomplete_details"],
+        json!({"reason": "model_context_window_exceeded"})
     );
 }
 

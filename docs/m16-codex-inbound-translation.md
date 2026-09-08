@@ -95,15 +95,19 @@ Errors: `NotAnObject`, `MissingInput` (no message survived). Error text never qu
 
 | Anthropic event | Emitter call |
 | :-- | :-- |
-| `message_start` | `created()`; `usage.input_tokens + cache_read + cache_creation` → `input_tokens`, `cache_read_input_tokens` → `cached_tokens` (the exact inverse of `AnthropicSseMachine::read_usage`, so `cached ≤ input`). |
+| `message_start` | `usage.input_tokens + cache_read + cache_creation` → `input_tokens`, `cache_read_input_tokens` → `cached_tokens` (the exact inverse of `AnthropicSseMachine::read_usage`, so `cached ≤ input`). |
 | `content_block_start` `text` / `thinking` / `tool_use` | `open_message` / `open_reasoning` / `open_function_call(id, name)`; the Anthropic block `index` maps to the emitter's output index. |
 | `content_block_start` `redacted_thinking` | reasoning item opened and closed at once with `encode_thinking(Redacted)`. |
 | `content_block_start` `server_tool_use` | query buffered from `input_json_delta`; `web_search_call` emitted at `content_block_stop`. `web_search_tool_result` is ignored. |
 | `text_delta` / `thinking_delta` / `input_json_delta` | `text_delta` / `reasoning_delta` / `arguments_delta`. `signature_delta` is retained and packed with the thinking text into `encrypted_content` at close via `encode_thinking(Signed)`. |
 | `message_delta` | `stop_reason` and `usage.output_tokens` recorded. |
-| `message_stop` | open blocks closed, then `completed(usage)`, or `incomplete("max_output_tokens", usage)` when `stop_reason == "max_tokens"`. |
+| `message_stop` | open blocks closed, then `completed(usage)`, or `incomplete(reason, usage)` when `stop_reason` names one: `max_tokens` → `max_output_tokens`, `model_context_window_exceeded` → `model_context_window_exceeded`. |
 | `error` | open blocks closed, `failed(error.type, error.message)`; terminal. |
 | `ping`, others | nothing. |
+
+`created()` runs once, ahead of the first event the machine relays rather than only on
+`message_start`, so an upstream that failed before it opened the message still emits
+`response.created` + `response.in_progress` before its terminal.
 
 `finish()` handles an upstream body that ended without a terminal: open blocks are closed and
 `response.failed` with code `upstream_stream_truncated` is emitted. `translate_response` builds
@@ -140,16 +144,20 @@ Follow-up, not implemented: echoing a dropped `reasoning` item back as DeepSeek'
   closed when the first text or tool call arrives, without `encrypted_content`.
 - `content` → a message item; text resuming after a tool call opens a new message item.
 - `tool_calls[]` keyed by `index`: an entry with `id` / `function.name` opens a function call
-  (closing whatever is open), later entries for the same index append `function.arguments`.
-- `finish_reason` is remembered (`length` → incomplete `max_output_tokens`), not emitted, because
-  the usage chunk may still follow.
+  (closing any open message or reasoning item, but not the other calls — parallel calls stay open
+  alongside each other), later entries for the same index append `function.arguments`. Open calls
+  close together on the next text or reasoning delta, or at the end of the turn.
+- `finish_reason` is remembered, not emitted, because the usage chunk may still follow. `length` →
+  incomplete `max_output_tokens`, `content_filter` → incomplete `content_filter`.
 - `usage` → `prompt_tokens`, `prompt_tokens_details.cached_tokens`, `completion_tokens`,
   `completion_tokens_details.reasoning_tokens`.
 - `[DONE]` → open items closed, then the remembered terminal. A streamed `{"error": …}` chunk →
   `response.failed`. Unparsable chunks are ignored without being logged verbatim.
 
-`finish()`, `translate_response`, and `translate_error` mirror §4; Chat errors are already
-OpenAI-shaped and pass through with `type` / `message` / `code` / `param` defaulted when missing.
+`finish()` emits the startup frames first when the stream failed before any of them were sent.
+`translate_response` and `translate_error` mirror §4; Chat errors are already OpenAI-shaped and
+pass through with `type` / `code` / `param` defaulted when missing, and `message` replaced by the
+same fixed string the in-stream failure path uses when the body named none as a string.
 
 ## 7. Wiring (follow-up on #436)
 
