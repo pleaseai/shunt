@@ -1,0 +1,23 @@
+site/src/content/docs/ja/reference/endpoints.md
+  s_1c15b41fe7776b::t_d6d0f9777f9d4d 51
+site/src/content/docs/ko/reference/endpoints.md
+  s_1c15b41fe7776b::t_5bf7c0ed2b7ca3 51
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_1c15b41fe7776b::t_849a1e985a7c9d 51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "62f129d2597cbff4efeb914f471ad67222ab4ab9",
+  "prompts": {},
+  "sessions": {
+    "s_1c15b41fe7776b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29af0668-f326-4d4e-844c-0eb6a404177b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
