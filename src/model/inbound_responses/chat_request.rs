@@ -303,10 +303,9 @@ fn allowed_tool_names(request: &Value) -> Option<Vec<&str>> {
     if choice.get("type").and_then(Value::as_str)? != "allowed_tools" {
         return None;
     }
+    // An empty list is still an allowlist: it admits nothing, so the caller
+    // ends up sending neither `tools` nor `tool_choice`.
     let entries = choice.get("tools").and_then(Value::as_array)?;
-    if entries.is_empty() {
-        return None;
-    }
     Some(entries.iter().filter_map(named_function).collect())
 }
 

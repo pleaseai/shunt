@@ -297,6 +297,11 @@ fn an_allowed_tools_choice_narrows_the_forwarded_tools() {
         .expect("request translates");
     assert!(out.get("tools").is_none());
     assert!(out.get("tool_choice").is_none());
+
+    // An explicitly empty list is the same restriction, not its absence.
+    let out = translate_request(&request(json!([])), "m").expect("request translates");
+    assert!(out.get("tools").is_none());
+    assert!(out.get("tool_choice").is_none());
 }
 
 #[test]

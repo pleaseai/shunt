@@ -252,7 +252,7 @@ fn tool_choice_variants_map_to_anthropic_shapes() {
             json!({"type": "tool", "name": "bash"}),
         ),
         (
-            json!({"type": "allowed_tools", "mode": "required", "tools": []}),
+            json!({"type": "allowed_tools", "mode": "required", "tools": [{"type": "function", "name": "bash"}]}),
             json!({"type": "any"}),
         ),
     ] {
@@ -359,6 +359,11 @@ fn an_allowed_tools_choice_narrows_the_forwarded_tools() {
 
     // Nothing declared is on the list -> neither tools nor tool_choice is sent.
     let out = translate(request(json!([{"type": "function", "name": "grep"}])));
+    assert!(out.get("tools").is_none());
+    assert!(out.get("tool_choice").is_none());
+
+    // An explicitly empty list is the same restriction, not its absence.
+    let out = translate(request(json!([])));
     assert!(out.get("tools").is_none());
     assert!(out.get("tool_choice").is_none());
 }
