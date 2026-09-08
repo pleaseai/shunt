@@ -457,6 +457,78 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(reset_5h));
 }
 
+/// Two config entries sharing a `uuid` are one physical account to the pool
+/// (`collapse_representatives`), and `AccountPool::snapshot` emits one row per
+/// entry, so without collapsing them the mean would give that subscription two
+/// votes: a fresh identity configured twice plus one exhausted identity would
+/// read `0.6667` instead of the pool-capacity `0.5`.
+#[tokio::test]
+async fn aggregate_counts_an_aliased_identity_once() {
+    use crate::accounts::StoreFamily;
+
+    let env = format!("SHUNT_USAGE_TEST_TOKENS_{}_alias", std::process::id());
+    std::env::set_var(&env, "tester:tok-secret");
+    let reset_5h = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+
+    let mut config = crate::config::Config::default();
+    config.server.auth = Some(InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: env.clone(),
+    });
+    config.server.usage = Some(UsageEndpointConfig::default());
+    let fresh = AccountConfig {
+        name: "fresh".to_string(),
+        uuid: Some("shared-identity".to_string()),
+        ..AccountConfig::default()
+    };
+    let fresh_alias = AccountConfig {
+        name: "fresh-alias".to_string(),
+        ..fresh.clone()
+    };
+    let spent = AccountConfig {
+        name: "spent".to_string(),
+        uuid: Some("other-identity".to_string()),
+        ..AccountConfig::default()
+    };
+    config
+        .providers
+        .get_mut("codex")
+        .expect("built-in codex provider")
+        .accounts = vec![fresh.clone(), fresh_alias, spent.clone()];
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let seeded = |account: &AccountConfig| AccountConfig {
+        store_family: Some(StoreFamily::Chatgpt),
+        ..account.clone()
+    };
+    for (account, utilization) in [(&fresh, 0.0), (&spent, 1.0)] {
+        state.accounts.note_usage(
+            "codex",
+            &seeded(account),
+            &UsageSnapshot {
+                five_hour: Some(UsageWindow {
+                    utilization,
+                    resets_at: Some(reset_5h),
+                }),
+                seven_day: None,
+                seven_day_oi: None,
+            },
+        );
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", "tok-secret".parse().unwrap());
+    let response = get(State(state), headers).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = body_json(response).await;
+    std::env::remove_var(&env);
+
+    assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.5));
+}
+
 #[tokio::test]
 async fn rejects_a_request_without_a_valid_client_token() {
     let (state, env, _) = state_with_auth_and_seeded_pool("tok-secret", "rejects");

@@ -20,9 +20,14 @@ use axum::{
 };
 use serde::Serialize;
 
+use std::collections::HashMap;
+
 use crate::{
-    accounts::AccountSnapshot, auth::claude::store as claude_store, config::AuthMode,
-    error::ShuntError, server::AppState,
+    accounts::{account_key, AccountKey, AccountSnapshot},
+    auth::claude::store as claude_store,
+    config::{AccountConfig, AuthMode},
+    error::ShuntError,
+    server::AppState,
 };
 
 /// Sanitized aggregate returned by `GET /usage`.
@@ -120,6 +125,33 @@ fn window_status(
         remaining: Some(round4(headroom_sum / reporting as f64)),
         resets_at: earliest_reset,
     }
+}
+
+/// Collapse config entries that alias one physical account (same
+/// `account_key`, e.g. two names sharing a `uuid`) into a single entry, so the
+/// mean gives each subscription one vote rather than one per alias. The pool
+/// already treats such aliases as one account (`collapse_representatives`),
+/// and `AccountPool::snapshot` would otherwise emit one identical quota row per
+/// alias. An enabled alias wins over a disabled one so a disabled first alias
+/// does not hide an identity that still serves; order is otherwise preserved.
+fn collapse_aliases(provider: &str, accounts: Vec<AccountConfig>) -> Vec<AccountConfig> {
+    let mut by_key: HashMap<AccountKey, usize> = HashMap::new();
+    let mut collapsed: Vec<AccountConfig> = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        let key = account_key(provider, &account);
+        match by_key.get(&key) {
+            Some(&index) => {
+                if collapsed[index].disabled && !account.disabled {
+                    collapsed[index] = account;
+                }
+            }
+            None => {
+                by_key.insert(key, collapsed.len());
+                collapsed.push(account);
+            }
+        }
+    }
+    collapsed
 }
 
 /// Coarse pool health derived purely from availability booleans (no numbers):
@@ -235,7 +267,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         };
         snapshots.extend(state.accounts.snapshot(
             name,
-            &resolved,
+            &collapse_aliases(name, resolved),
             None,
             state.config.server.pool.as_ref(),
         ));
