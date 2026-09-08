@@ -79,7 +79,7 @@ auth = "chatgpt_oauth"                          # ~/.codex/auth.json 읽기 + �
 # count_tokens = "tiktoken"                      # 기본값; "estimate"로 옵트아웃
 ```
 
-일반적인 오버라이드: 모든 Codex 트래픽에 대한 기본 `effort` 고정, 또는 `count_tokens = "estimate"` 설정. `api_key_env` / `api_key_header`는 `chatgpt_oauth`에 적용되지 않습니다 — 자격 증명은 인증 파일에서 옵니다. 모든 키는 [구성 레퍼런스](/ko/reference/configuration/#providersname)를 참고하세요.
+일반적인 오버라이드: 모든 Codex 트래픽에 대한 기본 `effort` 고정, 또는 `count_tokens = "estimate"` 설정. `api_key_env` / `api_key_header`는 `chatgpt_oauth`에 적용되지 않습니다 — 자격 증명은 인증 파일에서 옵니다. 모든 키는 [구성 레퍼런스](/ko/reference/configuration/#providersname-레거시)를 참고하세요.
 
 
 
@@ -240,7 +240,7 @@ export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
 
 
 
-전체 우선순위와 effort 테이블: [노력 & 컨텍스트](/ko/guides/effort-and-context/#reasoning-effort).
+전체 우선순위와 effort 테이블: [노력 & 컨텍스트](/ko/guides/effort-and-context/#추론-노력).
 
 ## 6. 컨텍스트 윈도우
 
@@ -250,7 +250,7 @@ Claude Code는 매핑된 id에 대해 컨텍스트 바를 고정된 **200k**로 
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
 ```
 
-이 값은 **전역**이며(세션당 하나의 값), 실제 윈도우보다 크게 설정하면 `prompt is too long` 오버플로 churn을 유발합니다 — 매핑된 모델 중 가장 작은 실제 윈도우에 맞추세요. shunt는 그 오버플로를 다시 써서 Claude Code가 자동 압축(auto-compact)하고 재시도하도록 하지만, 각 왕복은 낭비되는 지연입니다. 자세한 내용, 실시간 검증된 경계, `count_tokens` 동작: [노력 & 컨텍스트](/ko/guides/effort-and-context/#context--usage-display-for-mapped-models).
+이 값은 **전역**이며(세션당 하나의 값), 실제 윈도우보다 크게 설정하면 `prompt is too long` 오버플로 churn을 유발합니다 — 매핑된 모델 중 가장 작은 실제 윈도우에 맞추세요. shunt는 그 오버플로를 다시 써서 Claude Code가 자동 압축(auto-compact)하고 재시도하도록 하지만, 각 왕복은 낭비되는 지연입니다. 자세한 내용, 실시간 검증된 경계, `count_tokens` 동작: [노력 & 컨텍스트](/ko/guides/effort-and-context/#매핑된-모델의-컨텍스트--사용량-표시).
 
 ## 전체 예시
 

@@ -53,13 +53,13 @@ Claude Code 从助手消息的 token `usage` 除以模型的上下文窗口大�
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
 ```
 
-由于该覆盖**只**适用于不以 `claude-` 开头的 id,一个 [发现别名](/zh-cn/guides/model-discovery/)(它*必须*以 `claude-` 开头)无法接收它 —— 其窗口保持钉在 200k 默认值上。在选择器中很方便,但当你需要准确窗口时,请用一个非 `claude-` id(通过 `ANTHROPIC_CUSTOM_MODEL_OPTION`,或通过 [重映射分层别名](/zh-cn/guides/codex/#remap-the-tier-aliases-to-codex))。当两个映射的层共享一个窗口时 —— `gpt-5.6-sol` 和 `gpt-5.6-luna` 都是 372k —— 一个全局值即可覆盖两者。
+由于该覆盖**只**适用于不以 `claude-` 开头的 id,一个 [发现别名](/zh-cn/guides/model-discovery/)(它*必须*以 `claude-` 开头)无法接收它 —— 其窗口保持钉在 200k 默认值上。在选择器中很方便,但当你需要准确窗口时,请用一个非 `claude-` id(通过 `ANTHROPIC_CUSTOM_MODEL_OPTION`,或通过 [重映射分层别名](/zh-cn/guides/codex/#将分层别名重映射到-codex))。当两个映射的层共享一个窗口时 —— `gpt-5.6-sol` 和 `gpt-5.6-luna` 都是 372k —— 一个全局值即可覆盖两者。
 
 
 
 <Aside type="caution">
 
-该值是**全局**的 —— 会话中每个非 `claude-` 模型都用同一个值 —— 而将它设置得大于真实上游窗口会把自动压缩推迟到请求溢出真实上限之时。shunt 会 [重写该溢出错误](#context-overflow-recovery),使 Claude Code 自动压缩并重试,但每次溢出往返都是浪费的延迟 —— 请把该值匹配到你映射模型中最小的真实窗口。
+该值是**全局**的 —— 会话中每个非 `claude-` 模型都用同一个值 —— 而将它设置得大于真实上游窗口会把自动压缩推迟到请求溢出真实上限之时。shunt 会 [重写该溢出错误](#上下文溢出恢复),使 Claude Code 自动压缩并重试,但每次溢出往返都是浪费的延迟 —— 请把该值匹配到你映射模型中最小的真实窗口。
 
 `gpt-5.6-sol`(真实窗口 372k)的实测边界:365k 输入 token 正常应答;在 372k+ 时流式请求返回一个 `prompt is too long` 错误,触发自动压缩(`gpt-5.5` 是 272000)。而一个*非*流式请求则退化为一个带 `input_tokens: 0` 的空 `200`,但 Claude Code 的主循环始终使用流式。
 

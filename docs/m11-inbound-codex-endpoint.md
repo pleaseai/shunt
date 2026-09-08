@@ -297,7 +297,7 @@ outbound path. A user with one Codex login therefore works out of the box the mo
 ## Transport: HTTP/SSE only
 
 Even if the configured provider sets `websocket = true`, this endpoint always uses the HTTP path.
-The experimental [Codex WebSocket v2 transport](codex-websocket-v2-protocol.md) is out of scope for
+The experimental [Codex WebSocket v2 transport](m7-codex-websocket.md) is out of scope for
 M11 and is tracked as a follow-up (see below).
 
 ## Reload behavior
@@ -353,7 +353,7 @@ shunt this way — shunt supplies the account from its own pool, not the CLI's l
 
 - **WebSocket transport.** This endpoint is HTTP/SSE-only even when the target provider has
   `websocket = true`; wiring the inbound path onto the
-  [Codex WebSocket v2 transport](codex-websocket-v2-protocol.md) is a separate follow-up.
+  [Codex WebSocket v2 transport](m7-codex-websocket.md) is a separate follow-up.
 - **Chat-Completions-only upstreams.** A route may only name an upstream that natively implements
   the **Responses** API. There is no Responses → Chat Completions adapter: the endpoint relays raw
   Responses bytes, so a provider that speaks only `/chat/completions` cannot serve them. Vendors

@@ -20,7 +20,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | `bind` | `127.0.0.1:3001` | shunt 监听的地址 |
 | `default_provider` | `anthropic` | 面向任何无匹配路由的模型的提供方 |
 | `max_concurrent_requests` | `1024` | 入站并发请求上限，请求会一直计数到响应正文结束。超出上限的请求不会排队，而是立即以 `503` 和 `Retry-After: 1` 拒绝。`0` 表示禁用限制，`/` 和 `/health` 不受限制。更改此键后需要重启 |
-| `sse_keepalive_seconds` | `30` | 注入 SSE `ping` 前的闲置秒数;`0` 禁用([详情](/zh-cn/guides/shared-gateway/#sse-keepalive-pings)) |
+| `sse_keepalive_seconds` | `30` | 注入 SSE `ping` 前的闲置秒数;`0` 禁用([详情](/zh-cn/guides/shared-gateway/#sse-keepalive-ping)) |
 
 ## HTTP 调优表
 
@@ -337,7 +337,7 @@ codex-fallback = "gpt-5.2"
 | `api_key_env` | 环境变量名 | 当 `auth = "api_key"` 时,从何处读取密钥。该值自身也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。 |
 | `api_key_header` | `bearer`(默认) \| `x_api_key` | 注入的密钥在哪个头部中发送。 |
 | `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。也适用于 `kind = "antigravity"`,会作为目录的 effort 后缀追加到不带后缀的 `gemini-*` `upstream_model` 上。 |
-| `count_tokens` | `tiktoken`(默认) \| `estimate` | `responses` 与 `cursor` provider:本地 tiktoken 计数 vs. `501 not_supported` 回退([详情](/zh-cn/guides/effort-and-context/#token-counting-count_tokens))。 |
+| `count_tokens` | `tiktoken`(默认) \| `estimate` | `responses` 与 `cursor` provider:本地 tiktoken 计数 vs. `501 not_supported` 回退([详情](/zh-cn/guides/effort-and-context/#token-计数count_tokens))。 |
 | `tool_search` | 未设置("auto",默认) \| `true` \| `false` | 在模型为 GPT-5.4+ 且风格不是 xAI/Grok 时,为 Claude Code 的工具搜索使用原生的客户端执行 `tool_search` 协议。未设置时仅对已验证支持的主机 —— ChatGPT/Codex 后端与 `api.openai.com` —— 默认使用原生协议,LiteLLM、vLLM、OpenRouter、自托管代理等其他所有 OpenAI 兼容端点都保留文本 shim。设为 `true` 可让已验证的自定义端点选择加入原生协议;设为 `false` 则始终强制使用 shim。见 [Codex → 工具搜索](/zh-cn/guides/codex/#原生协议)。 |
 
 只带名称的条目读取 `~/.shunt/accounts/claude/<name>.json`,该文件由 `shunt login claude --name <name> --mode oauth|import|setup-token` 创建。交互式 CLI 会提示选择这三种 mode,并推荐可刷新的 OAuth。`--long-lived` 保留为 `--mode setup-token` 的 deprecated alias。`SHUNT_CLAUDE_ACCOUNTS_DIR` 可覆盖存储目录。可刷新的 OAuth/import 文件会在 provider 轮换 refresh token 时原地更新,因此每个文件只能有一个正在运行的 owner。不要在多个 shunt 进程之间共享或独立复制该文件。请为每个进程分别预配,或在适合时使用静态 setup token。

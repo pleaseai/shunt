@@ -80,7 +80,7 @@ auth = "chatgpt_oauth"                          # read + auto-refresh ~/.codex/a
 # count_tokens = "tiktoken"                      # default; "estimate" opts out
 ```
 
-よくあるオーバーライド: すべての Codex トラフィックに対してデフォルトの `effort` を固定する、または `count_tokens = "estimate"` を設定する。`api_key_env` / `api_key_header` は `chatgpt_oauth` には適用されません — 認証情報は認証ファイルから来ます。すべてのキーについては [Configuration Reference](/ja/reference/configuration/#providersname) を参照してください。
+よくあるオーバーライド: すべての Codex トラフィックに対してデフォルトの `effort` を固定する、または `count_tokens = "estimate"` を設定する。`api_key_env` / `api_key_header` は `chatgpt_oauth` には適用されません — 認証情報は認証ファイルから来ます。すべてのキーについては [Configuration Reference](/ja/reference/configuration/#providersnameレガシー) を参照してください。
 
 
 
@@ -254,7 +254,7 @@ export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
 
 
 
-完全な優先順位とエフォートの表: [Effort & Context](/ja/guides/effort-and-context/#reasoning-effort)。
+完全な優先順位とエフォートの表: [Effort & Context](/ja/guides/effort-and-context/#reasoning-エフォート)。
 
 ## 6. コンテキストウィンドウ
 
@@ -266,7 +266,7 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
 
 これは**グローバル**（セッションごとに 1 つの値）で、実際のウィンドウより大きく設定すると
 `prompt is too long` のオーバーフローによる無駄なやり取りが発生します — マッピングされたモデルのうち最も小さい実ウィンドウに合わせてください。shunt はそのオーバーフローを書き換えて Claude Code が自動コンパクトして再試行するようにしますが、各ラウンドトリップは無駄なレイテンシです。詳細、ライブ検証された境界、`count_tokens` の挙動:
-[Effort & Context](/ja/guides/effort-and-context/#context--usage-display-for-mapped-models)。
+[Effort & Context](/ja/guides/effort-and-context/#マッピングされたモデルのコンテキスト--使用量表示)。
 
 ## 完全な例
 

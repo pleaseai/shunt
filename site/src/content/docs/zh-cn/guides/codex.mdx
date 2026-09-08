@@ -91,7 +91,7 @@ auth = "chatgpt_oauth"                          # 读取 + 自动刷新 ~/.codex
 
 常见覆盖:为所有 Codex 流量固定一个默认 `effort`,或设置
 `count_tokens = "estimate"`。`api_key_env` / `api_key_header` 不适用于 `chatgpt_oauth` ——
-凭据来自 auth 文件。每个键见 [配置参考](/zh-cn/reference/configuration/#providersname)。
+凭据来自 auth 文件。每个键见 [配置参考](/zh-cn/reference/configuration/#providersname旧式)。
 
 
 
@@ -297,7 +297,7 @@ export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
 
 
 
-完整优先级和力度表:[力度与上下文](/zh-cn/guides/effort-and-context/#reasoning-effort)。
+完整优先级和力度表:[力度与上下文](/zh-cn/guides/effort-and-context/#推理力度)。
 
 ## 6. 上下文窗口
 
@@ -312,7 +312,7 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
 `prompt is too long` 溢出反复折腾 —— 请把它匹配到你映射模型中最小的真实窗口。
 shunt 会重写该溢出,使 Claude Code 自动压缩并重试,但每次往返
 都是浪费的延迟。详情、实测边界以及 `count_tokens` 行为见:
-[力度与上下文](/zh-cn/guides/effort-and-context/#context--usage-display-for-mapped-models)。
+[力度与上下文](/zh-cn/guides/effort-and-context/#映射模型的上下文--用量显示)。
 
 ## 完整示例
 

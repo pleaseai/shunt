@@ -14,7 +14,7 @@ subscription). Everything else passes through to Anthropic unchanged.
 ## 1. Prerequisites
 
 - **Rust** (stable) with `cargo` — see `Cargo.toml`. Build with `cargo build`.
-- **Claude Code** v2.1.129+ (only if you want [model discovery](#54-optional-model-discovery);
+- **Claude Code** v2.1.129+ (only if you want [model discovery](#55-optional-model-discovery);
   the primary `ANTHROPIC_CUSTOM_MODEL_OPTION` path works on any recent version).
 - A credential for whichever provider you map:
   - **OpenAI API key** for the `openai` provider, or
@@ -334,7 +334,7 @@ The optional `[server.admin]` dashboard can provision full-OAuth or setup-token 
 
 Refreshable files contain rotating credentials. A successful refresh can replace the refresh token and invalidate its previous value, so give each file exactly one active shunt owner. Do not share the same file across processes or independently run copied snapshots on multiple hosts; provision each process separately. Setup-token accounts are non-refreshable and do not have this rotation hazard.
 
-See [`m8-anthropic-multi-account.md`](m8-anthropic-multi-account.md), [`m9-admin-surface.md`](m9-admin-surface.md), and the user-facing [CLI reference](../site/src/content/docs/reference/cli.md) for the complete pool and provisioning behavior.
+See [`m8-anthropic-multi-account.md`](m8-anthropic-multi-account.md), [`m9-admin-surface.md`](m9-admin-surface.md), and the user-facing [CLI reference](../site/src/content/docs/reference/cli.mdx) for the complete pool and provisioning behavior.
 
 ### 3.4 Validate the config
 

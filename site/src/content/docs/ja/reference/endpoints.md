@@ -11,7 +11,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `GET` | `/v1/models` | [Model discovery](/ja/guides/model-discovery/) — あなたの `[[models]]` エントリを返す |
 | `GET` | `/routes` | shunt ネイティブのルート discovery — 設定された `[[routes]]` テーブルをそのまま返す（model → provider/upstream_model/effort のマッピング、claude プレフィックスの discovery エイリアスを含む）。`/v1/models` とは別物で、後者はより狭い Anthropic プロトコルの discovery レスポンス（`id`、`display_name`、およびアップストリームのモデルメタデータ）を提供する |
 | `POST` | `/v1/messages` | 推論 — リクエストの `model` id に従ってルーティング |
-| `POST` | `/v1/messages/count_tokens` | [トークンカウント](/ja/guides/effort-and-context/#token-counting-count_tokens) |
+| `POST` | `/v1/messages/count_tokens` | [トークンカウント](/ja/guides/effort-and-context/#トークンカウントcount_tokens) |
 | `GET` | `/managed/settings` | ゲートウェイ JWT ごとの Claude Code managed settings。`ETag`、`If-None-Match`、`304 Not Modified` に対応 |
 | `GET` | `/v1/organizations/spend_limits` | 保存された支出上限を方向付きカーソルページネーションで一覧表示 |
 | `POST` | `/v1/organizations/spend_limits` | 1 つの `(scope, period)` に対する支出上限を作成または置換 |
@@ -54,4 +54,4 @@ Inbound Codex Responses と analytics のルートは [`[server.codex_endpoint]`
 
 ## ゲートウェイプロトコル
 
-shunt は公式の [Claude Code LLM ゲートウェイプロトコル](https://code.claude.com/docs/en/llm-gateway-protocol)を実装します: 正しいヘッダーとボディフィールドの転送、機能のパススルー、システムプロンプトのアトリビューション処理。ゲートウェイ所有のエラーは Anthropic のエラー形で返され、上流のコンテキストオーバーフローエラーは Anthropic の `prompt is too long` の文言へ書き換えられて Claude Code の[コンパクト＆リトライ](/ja/guides/effort-and-context/#context-overflow-recovery)が発火し、ストリーミングレスポンスはバッファリングなしで中継されます（オプションで[キープアライブ ping](/ja/guides/shared-gateway/#sse-keepalive-pings) 付き）。
+shunt は公式の [Claude Code LLM ゲートウェイプロトコル](https://code.claude.com/docs/en/llm-gateway-protocol)を実装します: 正しいヘッダーとボディフィールドの転送、機能のパススルー、システムプロンプトのアトリビューション処理。ゲートウェイ所有のエラーは Anthropic のエラー形で返され、上流のコンテキストオーバーフローエラーは Anthropic の `prompt is too long` の文言へ書き換えられて Claude Code の[コンパクト＆リトライ](/ja/guides/effort-and-context/#コンテキストオーバーフローの回復)が発火し、ストリーミングレスポンスはバッファリングなしで中継されます（オプションで[キープアライブ ping](/ja/guides/shared-gateway/#sse-キープアライブ-ping) 付き）。

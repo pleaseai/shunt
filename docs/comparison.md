@@ -144,7 +144,7 @@ short of CLIProxyAPI's full management API + quota/usage manager.
   *synthesizes* continuation: it stores the transcript on the pooled connection,
   diffs the next request against it with type-aware normalization, and injects
   `previous_response_id` + input-delta — real upload trimming on the Claude→Codex
-  path (`src/adapters/responses/codex_continuation.rs:79-114`). This is **not** unique:
+  path (`src/adapters/responses/codex_continuation.rs`). This is **not** unique:
   **raine/claude-code-proxy does the same class of thing** (opt-in
   `CCP_CODEX_PREVIOUS_RESPONSE_ID`, session-keyed, append-only). The two Rust
   subscription proxies share it — the real contrast is with **passthrough** proxies
@@ -158,7 +158,7 @@ short of CLIProxyAPI's full management API + quota/usage manager.
   axes: (1) its continuation normalization parses `function_call.arguments` and
   round-trips reasoning `encrypted_content`/signature, so continuation keeps firing
   across tool turns where a shape-only comparison would drop it
-  (`src/adapters/responses/codex_continuation.rs:11-48`); and (2) it **forwards Codex reasoning
+  (`src/adapters/responses/codex_continuation.rs`); and (2) it **forwards Codex reasoning
   to Claude Code as `thinking`**, whereas raine/claude-code-proxy **drops Codex
   reasoning blocks entirely** (its README lists this as a limitation). Any unforeseen
   shape still falls back to full input — never wrong context, only a missed

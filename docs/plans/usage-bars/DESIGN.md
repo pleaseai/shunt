@@ -644,7 +644,7 @@ which does not apply here — this route serves an Anthropic-protocol client):
   loopback-vs-non-loopback auth distinction and the self-poll-loop warning below.
 - `site/src/content/docs/reference/endpoints.md` — new endpoint entry for
   `GET /api/oauth/usage`.
-- `site/src/content/docs/guides/anthropic-multi-account.md` — note the exact preconditions
+- `site/src/content/docs/guides/anthropic-multi-account.mdx` — note the exact preconditions
   (login type, single-vs-multi-account aggregation behavior) instead of "works out of the
   box"; add: never point a `claude_oauth` provider's `base_url` at this gateway's own bind —
   doing so with `[server.oauth_usage]` enabled makes the outbound usage poller read back its
