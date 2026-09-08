@@ -1,0 +1,70 @@
+docs/plans/usage-bars/DESIGN.md
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 202-204,208-209
+.release-please-manifest.json
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 2
+site/src/content/docs/reference/configuration.md
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 311,321
+  s_e183b4b286cc6f::t_3d12d70e9dc122 313
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 214
+  s_e183b4b286cc6f::t_3d12d70e9dc122 216
+src/usage.rs
+  s_e183b4b286cc6f::t_3e42ed89289ca1 9-12,25-26,86-97,100-111,113,116-117,119-123,129-151,154,156,158-160,374-382,386-398,400
+  s_e183b4b286cc6f::t_9be5ebf735d6d4 171,264,269
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 29-33,68-74,80-82,98-99,152-153,165-169,175-189,192,194-258,316,372-373,383-385
+README.ja.md
+  s_e183b4b286cc6f::t_3d12d70e9dc122 175
+docs/m12-client-usage-endpoint.md
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 55-61,64-65
+  s_e183b4b286cc6f::t_3d12d70e9dc122 72-73,90-91
+README.md
+  s_e183b4b286cc6f::t_3d12d70e9dc122 175
+src/usage/tests.rs
+  s_e183b4b286cc6f::t_da1868f631228f 69,83-89,92-96,98,187-189,205,207,219-220
+  s_e183b4b286cc6f::t_3e42ed89289ca1 10
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 42-44,51-54,60-68,70-82,90-91,97,99-101,457-459,556,560-641
+  s_e183b4b286cc6f::t_f48a663b44c376 102,642
+site/src/content/docs/ja/reference/configuration.md
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 214
+  s_e183b4b286cc6f::t_3d12d70e9dc122 216
+site/src/content/docs/ko/reference/endpoints.md
+  s_e183b4b286cc6f::t_3d12d70e9dc122 51
+README.ko.md
+  s_e183b4b286cc6f::t_3d12d70e9dc122 172
+site/src/content/docs/ko/reference/configuration.md
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 215
+  s_e183b4b286cc6f::t_3d12d70e9dc122 217
+Cargo.toml
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 10
+site/src/content/docs/reference/endpoints.md
+  s_e183b4b286cc6f::t_3d12d70e9dc122 76,83-84
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 109
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_e183b4b286cc6f::t_3d12d70e9dc122 51
+README.zh-CN.md
+  s_e183b4b286cc6f::t_3d12d70e9dc122 170
+site/src/content/docs/ja/reference/endpoints.md
+  s_e183b4b286cc6f::t_3d12d70e9dc122 51
+CHANGELOG.md
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 3-9
+docs/m14-oauth-usage-endpoint.md
+  s_e183b4b286cc6f::t_52dd9bac05f2ea 67,70-72,79-82,198-200
+Cargo.lock
+  s_e183b4b286cc6f::t_edbd6c09d9a2f0 2732
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "457e465b71436444aec2d35b85d488cf377c499d",
+  "prompts": {},
+  "sessions": {
+    "s_e183b4b286cc6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "294f58ad-e302-4d25-845c-857f2dd69562",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
