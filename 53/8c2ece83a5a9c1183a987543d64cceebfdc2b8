@@ -1,0 +1,47 @@
+src/model/inbound_responses/chat_stream.rs
+  s_dc4231ac81f910::t_f46dd5571df586 396-404
+  s_dc4231ac81f910::t_fd20dae1ff883f 33-40,68-71,85,108-109,163-170,186-191
+src/model/inbound_responses/chat_request/tests.rs
+  s_dc4231ac81f910::t_5a382ccf5c9645 281-285
+  s_dc4231ac81f910::t_087d606839e29d 269-280,286-326
+  s_dc4231ac81f910::t_84d0a7d011a222 268,444-457
+src/model/inbound_responses/events.rs
+  s_dc4231ac81f910::t_f46dd5571df586 47-48,52-54
+src/model/inbound_responses/events/tests.rs
+  s_dc4231ac81f910::t_ccdcdcdeda79ad 170-183
+  s_dc4231ac81f910::t_1722c8dc873450 169
+src/model/inbound_responses/chat_request.rs
+  s_dc4231ac81f910::t_84d0a7d011a222 38-41,43-46,213-216
+  s_dc4231ac81f910::t_e0b641b91f6330 143-148,154-158,160,163-165,167,169,172,283-284,289-326,365-367
+docs/m16-codex-inbound-translation.md
+  s_dc4231ac81f910::t_4b65e88bce4d5f 92,135-137
+  s_dc4231ac81f910::t_5976f58b6f5e34 160-162
+  s_dc4231ac81f910::t_1ac24429afb801 156-157
+  s_dc4231ac81f910::t_56d3aa309c98ac 138
+src/model/inbound_responses/messages_request.rs
+  s_dc4231ac81f910::t_60842d695bd4c6 332-333,343-344,396-397,402,406,413-443,486-488
+src/model/inbound_responses/messages_request/tests.rs
+  s_dc4231ac81f910::t_0c7f3ca1ea2de0 341-380
+src/model/inbound_responses/messages_stream/tests.rs
+  s_dc4231ac81f910::t_f46dd5571df586 194-196,198-199,201,204,214-216
+src/model/inbound_responses/chat_stream/tests.rs
+  s_dc4231ac81f910::t_0c7f3ca1ea2de0 308,311-322,327-328,332-339,447
+  s_dc4231ac81f910::t_f46dd5571df586 424-427,431,436-446
+  s_dc4231ac81f910::t_ad3183ee799076 448
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "538c2ece83a5a9c1183a987543d64cceebfdc2b8",
+  "prompts": {},
+  "sessions": {
+    "s_dc4231ac81f910": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c97f5ae-9b7c-4bf5-b575-8d87d101811c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
