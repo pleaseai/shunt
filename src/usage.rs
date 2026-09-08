@@ -20,7 +20,7 @@ use axum::{
 };
 use serde::Serialize;
 
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 
 use crate::{
     accounts::{account_key, AccountKey, AccountSnapshot},
@@ -80,13 +80,25 @@ pub struct WindowStatus {
 /// numbers and availability booleans — no account name, priority, `disabled`
 /// flag, threshold, or headroom leaves this function.
 pub fn aggregate(snapshots: &[AccountSnapshot]) -> UsageResponse {
+    aggregate_split(snapshots, snapshots)
+}
+
+/// [`aggregate`] with the two inputs separated: `status_snapshots` is every
+/// configured row (so `status` keeps seeing each alias's own threshold verdict,
+/// exactly as before), while `window_snapshots` is the alias-collapsed subset
+/// so the mean gives each physical account one vote (see
+/// [`representative_names`]).
+pub fn aggregate_split(
+    status_snapshots: &[AccountSnapshot],
+    window_snapshots: &[AccountSnapshot],
+) -> UsageResponse {
     UsageResponse {
         pool: PoolStatus {
-            status: pool_status(snapshots),
+            status: pool_status(status_snapshots),
             windows: Windows {
-                five_hour: window_status(snapshots, |s| s.utilization_5h, |s| s.reset_5h),
-                seven_day: window_status(snapshots, |s| s.utilization_7d, |s| s.reset_7d),
-                fable: window_status(snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
+                five_hour: window_status(window_snapshots, |s| s.utilization_5h, |s| s.reset_5h),
+                seven_day: window_status(window_snapshots, |s| s.utilization_7d, |s| s.reset_7d),
+                fable: window_status(window_snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
             },
         },
     }
@@ -127,31 +139,55 @@ fn window_status(
     }
 }
 
-/// Collapse config entries that alias one physical account (same
-/// `account_key`, e.g. two names sharing a `uuid`) into a single entry, so the
-/// mean gives each subscription one vote rather than one per alias. The pool
-/// already treats such aliases as one account (`collapse_representatives`),
-/// and `AccountPool::snapshot` would otherwise emit one identical quota row per
-/// alias. An enabled alias wins over a disabled one so a disabled first alias
-/// does not hide an identity that still serves; order is otherwise preserved.
-fn collapse_aliases(provider: &str, accounts: Vec<AccountConfig>) -> Vec<AccountConfig> {
-    let mut by_key: HashMap<AccountKey, usize> = HashMap::new();
-    let mut collapsed: Vec<AccountConfig> = Vec::with_capacity(accounts.len());
-    for account in accounts {
-        let key = account_key(provider, &account);
-        match by_key.get(&key) {
-            Some(&index) => {
-                if collapsed[index].disabled && !account.disabled {
-                    collapsed[index] = account;
+/// Pick one representative per physical account across every provider, and
+/// return the chosen names per provider (indexed like `resolved`). Config
+/// entries that alias one account (same `account_key`, e.g. two names sharing
+/// a `uuid`) are one account to the pool (`collapse_representatives`), yet
+/// `AccountPool::snapshot` emits one identical quota row per entry, so the mean
+/// would otherwise give that subscription one vote per alias. The key carries
+/// the store family and stable identity but not the provider name, so the same
+/// identity configured under two providers is one account too — hence one pass
+/// over all providers. An enabled alias wins over a disabled one so a disabled
+/// first alias does not hide an identity that still serves; order is otherwise
+/// first-seen. Only the window aggregates use this subset — `status` keeps
+/// reading every row, so each alias's own threshold verdict still counts.
+fn representative_names(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<HashSet<String>> {
+    let mut by_key: HashMap<AccountKey, (usize, usize)> = HashMap::new();
+    let mut chosen: Vec<Vec<Option<&AccountConfig>>> = Vec::with_capacity(resolved.len());
+    for (provider_index, (provider, accounts)) in resolved.iter().enumerate() {
+        let mut kept: Vec<Option<&AccountConfig>> = Vec::with_capacity(accounts.len());
+        for account in accounts {
+            match by_key.entry(account_key(provider, account)) {
+                Entry::Occupied(mut entry) => {
+                    let (seen_provider, seen_index) = *entry.get();
+                    let seen = if seen_provider == provider_index {
+                        &mut kept[seen_index]
+                    } else {
+                        &mut chosen[seen_provider][seen_index]
+                    };
+                    if seen.is_some_and(|seen| seen.disabled) && !account.disabled {
+                        *seen = None;
+                        entry.insert((provider_index, kept.len()));
+                        kept.push(Some(account));
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert((provider_index, kept.len()));
+                    kept.push(Some(account));
                 }
             }
-            None => {
-                by_key.insert(key, collapsed.len());
-                collapsed.push(account);
-            }
         }
+        chosen.push(kept);
     }
-    collapsed
+    chosen
+        .into_iter()
+        .map(|kept| {
+            kept.into_iter()
+                .flatten()
+                .map(|account| account.name.clone())
+                .collect()
+        })
+        .collect()
 }
 
 /// Coarse pool health derived purely from availability booleans (no numbers):
@@ -209,7 +245,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     tracing::info!(client = %client, "inbound client authenticated for GET /usage");
 
-    let mut snapshots = Vec::new();
+    let mut resolved_by_provider: Vec<(&str, Vec<AccountConfig>)> = Vec::new();
     for (name, provider) in &state.config.providers {
         if !matches!(
             provider.auth,
@@ -265,14 +301,24 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 .into_response();
             }
         };
-        snapshots.extend(state.accounts.snapshot(
-            name,
-            &collapse_aliases(name, resolved),
-            None,
-            state.config.server.pool.as_ref(),
-        ));
+        resolved_by_provider.push((name.as_str(), resolved));
     }
-    Json(aggregate(&snapshots)).into_response()
+    let representatives = representative_names(&resolved_by_provider);
+    let mut status_snapshots = Vec::new();
+    let mut window_snapshots = Vec::new();
+    for ((name, accounts), chosen) in resolved_by_provider.iter().zip(&representatives) {
+        for snapshot in
+            state
+                .accounts
+                .snapshot(name, accounts, None, state.config.server.pool.as_ref())
+        {
+            if chosen.contains(&snapshot.name) {
+                window_snapshots.push(snapshot.clone());
+            }
+            status_snapshots.push(snapshot);
+        }
+    }
+    Json(aggregate_split(&status_snapshots, &window_snapshots)).into_response()
 }
 
 #[cfg(test)]

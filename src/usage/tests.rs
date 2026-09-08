@@ -7,7 +7,7 @@ use crate::{
     server::AppState,
 };
 
-use super::{aggregate, get};
+use super::{aggregate, aggregate_split, get};
 
 /// A seen account snapshot with the given per-window utilization; all other
 /// fields default to an available, non-disabled account.
@@ -70,6 +70,23 @@ fn aggregate_counts_exhausted_accounts_against_pool_capacity() {
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.1));
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(500));
     assert_eq!(body["pool"]["windows"]["7d"]["remaining"], json!(0.0));
+}
+
+#[test]
+fn aggregate_split_reads_status_from_every_row_and_windows_from_representatives() {
+    // An alias flagged near-quota (its own threshold) still degrades `status`
+    // even though only the representative's row feeds the mean.
+    let representative = snapshot("acct", Some(0.20), Some(50), None);
+    let mut alias = snapshot("acct-alias", Some(0.20), Some(50), None);
+    alias.near_quota = true;
+    let all = vec![representative.clone(), alias];
+    let body = serde_json::to_value(aggregate_split(&all, &[representative])).unwrap();
+    assert_eq!(body["pool"]["status"], "degraded");
+    assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.8));
+    // The same rows fed to both sides give the alias a second vote.
+    let both = serde_json::to_value(aggregate(&all)).unwrap();
+    assert_eq!(both["pool"]["windows"]["5h"]["remaining"], json!(0.8));
+    assert_eq!(both["pool"]["status"], "degraded");
 }
 
 #[test]
@@ -459,9 +476,11 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
 
 /// Two config entries sharing a `uuid` are one physical account to the pool
 /// (`collapse_representatives`), and `AccountPool::snapshot` emits one row per
-/// entry, so without collapsing them the mean would give that subscription two
-/// votes: a fresh identity configured twice plus one exhausted identity would
-/// read `0.6667` instead of the pool-capacity `0.5`.
+/// entry, so without collapsing them the mean would give that subscription
+/// extra votes. The fresh identity is configured three times here — twice on
+/// the built-in `codex` provider and once more on a second `chatgpt_oauth`
+/// provider (the key carries no provider name) — plus one exhausted identity:
+/// uncollapsed that reads `0.75`, collapsed it reads the pool-capacity `0.5`.
 #[tokio::test]
 async fn aggregate_counts_an_aliased_identity_once() {
     use crate::accounts::StoreFamily;
@@ -499,6 +518,12 @@ async fn aggregate_counts_an_aliased_identity_once() {
         .get_mut("codex")
         .expect("built-in codex provider")
         .accounts = vec![fresh.clone(), fresh_alias, spent.clone()];
+    let mut second = config.providers["codex"].clone();
+    second.accounts = vec![AccountConfig {
+        name: "fresh-elsewhere".to_string(),
+        ..fresh.clone()
+    }];
+    config.providers.insert("codex-2".to_string(), second);
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let seeded = |account: &AccountConfig| AccountConfig {
         store_family: Some(StoreFamily::Chatgpt),
