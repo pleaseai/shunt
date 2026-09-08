@@ -104,22 +104,18 @@ pub struct ProviderRows<'a> {
 /// account name, priority, `disabled` flag, threshold, or headroom leaves this
 /// function; the only identifier emitted is the configured provider name.
 pub fn aggregate_rows(providers: &[ProviderRows<'_>]) -> UsageResponse {
-    let status_all: Vec<AccountSnapshot> = providers
+    let status_all = providers.iter().flat_map(|provider| provider.status.iter());
+    let window_all = providers
         .iter()
-        .flat_map(|provider| provider.status.iter().cloned())
-        .collect();
-    let window_all: Vec<AccountSnapshot> = providers
-        .iter()
-        .flat_map(|provider| provider.pool_window.iter().cloned())
-        .collect();
+        .flat_map(|provider| provider.pool_window.iter());
     UsageResponse {
-        pool: pool_aggregate(&status_all, &window_all),
+        pool: pool_aggregate(status_all, window_all),
         providers: providers
             .iter()
             .map(|provider| {
                 (
                     provider.name.to_string(),
-                    pool_aggregate(&provider.status, &provider.own_window),
+                    pool_aggregate(provider.status.iter(), provider.own_window.iter()),
                 )
             })
             .collect(),
@@ -148,15 +144,23 @@ where
 /// The sanitized aggregate for one set of rows (the whole pool, or one
 /// provider's slice of it): `status` reads every row, the window means read
 /// only the representative subset.
-fn pool_aggregate(
-    status_snapshots: &[AccountSnapshot],
-    window_snapshots: &[AccountSnapshot],
+fn pool_aggregate<'a>(
+    status_snapshots: impl Iterator<Item = &'a AccountSnapshot>,
+    window_snapshots: impl Iterator<Item = &'a AccountSnapshot> + Clone,
 ) -> PoolStatus {
     PoolStatus {
         status: pool_status(status_snapshots),
         windows: Windows {
-            five_hour: window_status(window_snapshots, |s| s.utilization_5h, |s| s.reset_5h),
-            seven_day: window_status(window_snapshots, |s| s.utilization_7d, |s| s.reset_7d),
+            five_hour: window_status(
+                window_snapshots.clone(),
+                |s| s.utilization_5h,
+                |s| s.reset_5h,
+            ),
+            seven_day: window_status(
+                window_snapshots.clone(),
+                |s| s.utilization_7d,
+                |s| s.reset_7d,
+            ),
             fable: window_status(window_snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
         },
     }
@@ -167,15 +171,15 @@ fn pool_aggregate(
 /// the pool's combined capacity still unused), and the earliest reset any of
 /// them reported. Not a guarantee about which account the next request will
 /// actually route to.
-fn window_status(
-    snapshots: &[AccountSnapshot],
+fn window_status<'a>(
+    snapshots: impl Iterator<Item = &'a AccountSnapshot>,
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
     reset: impl Fn(&AccountSnapshot) -> Option<u64>,
 ) -> WindowStatus {
     let mut reporting = 0usize;
     let mut headroom_sum = 0.0;
     let mut earliest_reset: Option<u64> = None;
-    for snapshot in snapshots.iter().filter(|snapshot| !snapshot.disabled) {
+    for snapshot in snapshots.filter(|snapshot| !snapshot.disabled) {
         let Some(used) = utilization(snapshot).filter(|used| used.is_finite()) else {
             continue;
         };
@@ -261,12 +265,12 @@ fn representative_positions(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<Hash
 /// Coarse pool health derived purely from availability booleans (no numbers):
 /// `exhausted` when every selectable account is unavailable, `degraded` when any
 /// is near quota, else `ok`. Disabled accounts never count as selectable.
-fn pool_status(snapshots: &[AccountSnapshot]) -> &'static str {
+fn pool_status<'a>(snapshots: impl Iterator<Item = &'a AccountSnapshot>) -> &'static str {
     let mut any_selectable = false;
     let mut any_available = false;
     let mut any_near_quota = false;
 
-    for snapshot in snapshots.iter().filter(|snapshot| !snapshot.disabled) {
+    for snapshot in snapshots.filter(|snapshot| !snapshot.disabled) {
         any_selectable = true;
         any_available |= snapshot.available;
         any_near_quota |= snapshot.near_quota;
