@@ -6,7 +6,10 @@
 //! (a `[server.auth]` token holder) can anticipate throttling without the admin
 //! surface. Unlike `GET /admin/pool`, it never reveals account identities,
 //! counts, priorities, disabled flags, thresholds, or burn-rate headroom: the
-//! response carries only aggregate numbers derived across the pool.
+//! response carries only aggregate numbers derived across the pool, plus the
+//! same aggregate computed per pooled provider (keyed by the provider's config
+//! name) so a client that routes to one provider can read that provider's
+//! headroom instead of the blended pool-wide figure.
 //!
 //! The endpoint requires `[server.auth]` (a non-admin caller must be
 //! identifiable); the pairing is enforced at config validation, and the handler
@@ -20,7 +23,7 @@ use axum::{
 };
 use serde::Serialize;
 
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 
 use crate::{
     accounts::{account_key, AccountKey, AccountSnapshot},
@@ -33,7 +36,12 @@ use crate::{
 /// Sanitized aggregate returned by `GET /usage`.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct UsageResponse {
+    /// Aggregate across every pooled provider (the original, pool-wide view).
     pub pool: PoolStatus,
+    /// The same aggregate scoped to each pooled provider, keyed by the
+    /// configured provider name. Providers whose auth mode is not pooled are
+    /// omitted, exactly as they are from `pool`. Empty when no provider pools.
+    pub providers: BTreeMap<String, PoolStatus>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -75,31 +83,85 @@ pub struct WindowStatus {
     pub resets_at: Option<u64>,
 }
 
-/// Collapse per-account snapshots into the sanitized pool aggregate. Pure: the
-/// I/O (store scan) and locking happen in the caller. Reads only aggregate
-/// numbers and availability booleans — no account name, priority, `disabled`
-/// flag, threshold, or headroom leaves this function.
-pub fn aggregate(snapshots: &[AccountSnapshot]) -> UsageResponse {
-    aggregate_split(snapshots, snapshots)
+/// One pooled provider's snapshot rows, split the way the aggregates read
+/// them: `status` is every configured row (each alias's own threshold verdict
+/// counts), `pool_window` is the subset the pool-wide window means count
+/// (aliases collapsed across providers, see [`representative_positions`]),
+/// and `own_window` is the subset this provider's own entry counts (aliases
+/// collapsed within the provider only, so an identity configured under two
+/// providers still votes once in each provider's entry).
+pub struct ProviderRows<'a> {
+    pub name: &'a str,
+    pub status: Vec<AccountSnapshot>,
+    pub pool_window: Vec<AccountSnapshot>,
+    pub own_window: Vec<AccountSnapshot>,
 }
 
-/// [`aggregate`] with the two inputs separated: `status_snapshots` is every
-/// configured row (so `status` keeps seeing each alias's own threshold verdict,
-/// exactly as before), while `window_snapshots` is the alias-collapsed subset
-/// so the mean gives each physical account one vote (see
-/// [`representative_positions`]).
-pub fn aggregate_split(
-    status_snapshots: &[AccountSnapshot],
-    window_snapshots: &[AccountSnapshot],
-) -> UsageResponse {
+/// Collapse per-provider snapshots into the sanitized response: the pool-wide
+/// aggregate over every provider's rows, plus one aggregate per provider over
+/// that provider's rows only. Pure: the I/O (store scan) and locking happen in
+/// the caller. Reads only aggregate numbers and availability booleans — no
+/// account name, priority, `disabled` flag, threshold, or headroom leaves this
+/// function; the only identifier emitted is the configured provider name.
+pub fn aggregate_rows(providers: &[ProviderRows<'_>]) -> UsageResponse {
+    let status_all = providers.iter().flat_map(|provider| provider.status.iter());
+    let window_all = providers
+        .iter()
+        .flat_map(|provider| provider.pool_window.iter());
     UsageResponse {
-        pool: PoolStatus {
-            status: pool_status(status_snapshots),
-            windows: Windows {
-                five_hour: window_status(window_snapshots, |s| s.utilization_5h, |s| s.reset_5h),
-                seven_day: window_status(window_snapshots, |s| s.utilization_7d, |s| s.reset_7d),
-                fable: window_status(window_snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
-            },
+        pool: pool_aggregate(status_all, window_all),
+        providers: providers
+            .iter()
+            .map(|provider| {
+                (
+                    provider.name.to_string(),
+                    pool_aggregate(provider.status.iter(), provider.own_window.iter()),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// [`aggregate_rows`] for rows with no aliases to collapse: every row of every
+/// provider counts for status and for both window means.
+pub fn aggregate<N, S>(by_provider: &[(N, S)]) -> UsageResponse
+where
+    N: AsRef<str>,
+    S: AsRef<[AccountSnapshot]>,
+{
+    let providers: Vec<ProviderRows<'_>> = by_provider
+        .iter()
+        .map(|(name, rows)| ProviderRows {
+            name: name.as_ref(),
+            status: rows.as_ref().to_vec(),
+            pool_window: rows.as_ref().to_vec(),
+            own_window: rows.as_ref().to_vec(),
+        })
+        .collect();
+    aggregate_rows(&providers)
+}
+
+/// The sanitized aggregate for one set of rows (the whole pool, or one
+/// provider's slice of it): `status` reads every row, the window means read
+/// only the representative subset.
+fn pool_aggregate<'a>(
+    status_snapshots: impl Iterator<Item = &'a AccountSnapshot>,
+    window_snapshots: impl Iterator<Item = &'a AccountSnapshot> + Clone,
+) -> PoolStatus {
+    PoolStatus {
+        status: pool_status(status_snapshots),
+        windows: Windows {
+            five_hour: window_status(
+                window_snapshots.clone(),
+                |s| s.utilization_5h,
+                |s| s.reset_5h,
+            ),
+            seven_day: window_status(
+                window_snapshots.clone(),
+                |s| s.utilization_7d,
+                |s| s.reset_7d,
+            ),
+            fable: window_status(window_snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
         },
     }
 }
@@ -109,15 +171,15 @@ pub fn aggregate_split(
 /// the pool's combined capacity still unused), and the earliest reset any of
 /// them reported. Not a guarantee about which account the next request will
 /// actually route to.
-fn window_status(
-    snapshots: &[AccountSnapshot],
+fn window_status<'a>(
+    snapshots: impl Iterator<Item = &'a AccountSnapshot>,
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
     reset: impl Fn(&AccountSnapshot) -> Option<u64>,
 ) -> WindowStatus {
     let mut reporting = 0usize;
     let mut headroom_sum = 0.0;
     let mut earliest_reset: Option<u64> = None;
-    for snapshot in snapshots.iter().filter(|snapshot| !snapshot.disabled) {
+    for snapshot in snapshots.filter(|snapshot| !snapshot.disabled) {
         let Some(used) = utilization(snapshot).filter(|used| used.is_finite()) else {
             continue;
         };
@@ -203,12 +265,12 @@ fn representative_positions(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<Hash
 /// Coarse pool health derived purely from availability booleans (no numbers):
 /// `exhausted` when every selectable account is unavailable, `degraded` when any
 /// is near quota, else `ok`. Disabled accounts never count as selectable.
-fn pool_status(snapshots: &[AccountSnapshot]) -> &'static str {
+fn pool_status<'a>(snapshots: impl Iterator<Item = &'a AccountSnapshot>) -> &'static str {
     let mut any_selectable = false;
     let mut any_available = false;
     let mut any_near_quota = false;
 
-    for snapshot in snapshots.iter().filter(|snapshot| !snapshot.disabled) {
+    for snapshot in snapshots.filter(|snapshot| !snapshot.disabled) {
         any_selectable = true;
         any_available |= snapshot.available;
         any_near_quota |= snapshot.near_quota;
@@ -313,21 +375,33 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         };
         resolved_by_provider.push((name.as_str(), resolved));
     }
-    let representatives = representative_positions(&resolved_by_provider);
-    let mut status_snapshots = Vec::new();
-    let mut window_snapshots = Vec::new();
-    for ((name, accounts), chosen) in resolved_by_provider.iter().zip(&representatives) {
+    // Aliases collapse across providers for the pool-wide means, and within
+    // each provider for that provider's own entry.
+    let pool_representatives = representative_positions(&resolved_by_provider);
+    let mut providers: Vec<ProviderRows<'_>> = Vec::with_capacity(resolved_by_provider.len());
+    for (entry, pool_chosen) in resolved_by_provider.iter().zip(&pool_representatives) {
+        let (name, accounts) = entry;
+        let own_chosen = representative_positions(std::slice::from_ref(entry))
+            .pop()
+            .unwrap_or_default();
         let rows = state
             .accounts
             .snapshot(name, accounts, None, state.config.server.pool.as_ref());
-        for (position, snapshot) in rows.into_iter().enumerate() {
-            if chosen.contains(&position) {
-                window_snapshots.push(snapshot.clone());
-            }
-            status_snapshots.push(snapshot);
-        }
+        let select = |chosen: &HashSet<usize>| -> Vec<AccountSnapshot> {
+            rows.iter()
+                .enumerate()
+                .filter(|(position, _)| chosen.contains(position))
+                .map(|(_, snapshot)| snapshot.clone())
+                .collect()
+        };
+        providers.push(ProviderRows {
+            name,
+            pool_window: select(pool_chosen),
+            own_window: select(&own_chosen),
+            status: rows,
+        });
     }
-    Json(aggregate_split(&status_snapshots, &window_snapshots)).into_response()
+    Json(aggregate_rows(&providers)).into_response()
 }
 
 #[cfg(test)]

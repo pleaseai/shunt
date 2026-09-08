@@ -7,7 +7,7 @@ use crate::{
     server::AppState,
 };
 
-use super::{aggregate, aggregate_split, get};
+use super::{aggregate, aggregate_rows, get, ProviderRows};
 
 /// A seen account snapshot with the given per-window utilization; all other
 /// fields default to an available, non-disabled account.
@@ -46,7 +46,7 @@ fn aggregate_reports_mean_headroom_and_earliest_reset_per_window() {
         snapshot("acct-a", Some(0.60), Some(111), Some(0.40)),
         snapshot("acct-b", Some(0.25), Some(222), Some(0.90)),
     ];
-    let body = serde_json::to_value(aggregate(&snapshots)).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &snapshots)])).unwrap();
     assert_eq!(body["pool"]["status"], "ok");
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.575));
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(111));
@@ -66,7 +66,7 @@ fn aggregate_counts_exhausted_accounts_against_pool_capacity() {
         .map(|i| snapshot(&format!("spent-{i}"), Some(1.0), Some(500), Some(1.0)))
         .collect();
     snapshots.push(snapshot("fresh", Some(0.0), None, None));
-    let body = serde_json::to_value(aggregate(&snapshots)).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &snapshots)])).unwrap();
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.1));
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(500));
     assert_eq!(body["pool"]["windows"]["7d"]["remaining"], json!(0.0));
@@ -80,11 +80,22 @@ fn aggregate_split_reads_status_from_every_row_and_windows_from_representatives(
     let mut alias = snapshot("acct-alias", Some(0.20), Some(50), None);
     alias.near_quota = true;
     let all = vec![representative.clone(), alias];
-    let body = serde_json::to_value(aggregate_split(&all, &[representative])).unwrap();
+    let rows = ProviderRows {
+        name: "anthropic",
+        status: all.clone(),
+        pool_window: vec![representative.clone()],
+        own_window: vec![representative],
+    };
+    let body = serde_json::to_value(aggregate_rows(&[rows])).unwrap();
     assert_eq!(body["pool"]["status"], "degraded");
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.8));
+    assert_eq!(body["providers"]["anthropic"]["status"], "degraded");
+    assert_eq!(
+        body["providers"]["anthropic"]["windows"]["5h"]["remaining"],
+        json!(0.8)
+    );
     // The same rows fed to both sides give the alias a second vote.
-    let both = serde_json::to_value(aggregate(&all)).unwrap();
+    let both = serde_json::to_value(aggregate(&[("anthropic", &all)])).unwrap();
     assert_eq!(both["pool"]["windows"]["5h"]["remaining"], json!(0.8));
     assert_eq!(both["pool"]["status"], "degraded");
 }
@@ -92,7 +103,7 @@ fn aggregate_split_reads_status_from_every_row_and_windows_from_representatives(
 #[test]
 fn aggregate_ignores_non_finite_window_utilization() {
     let snapshots = [snapshot("acct-a", Some(f64::NAN), Some(111), None)];
-    let body = serde_json::to_value(aggregate(&snapshots)).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &snapshots)])).unwrap();
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], Value::Null);
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], Value::Null);
 }
@@ -104,7 +115,7 @@ fn aggregate_excludes_disabled_accounts_and_null_windows() {
     let mut disabled = snapshot("backup", Some(0.10), Some(1), None);
     disabled.disabled = true;
     let unreported = snapshot("live", None, None, None);
-    let body = serde_json::to_value(aggregate(&[disabled, unreported])).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[disabled, unreported])])).unwrap();
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], Value::Null);
 }
 
@@ -112,7 +123,7 @@ fn aggregate_excludes_disabled_accounts_and_null_windows() {
 fn aggregate_status_is_exhausted_when_no_selectable_account_exists() {
     let mut disabled = snapshot("acct-a", Some(0.10), None, None);
     disabled.disabled = true;
-    let body = serde_json::to_value(aggregate(&[disabled])).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[disabled])])).unwrap();
     assert_eq!(body["pool"]["status"], "exhausted");
 }
 
@@ -121,7 +132,7 @@ fn aggregate_status_is_exhausted_when_no_account_available() {
     let mut a = snapshot("acct-a", Some(0.99), None, None);
     a.available = false;
     a.near_quota = true;
-    let body = serde_json::to_value(aggregate(&[a])).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[a])])).unwrap();
     assert_eq!(body["pool"]["status"], "exhausted");
 }
 
@@ -130,7 +141,7 @@ fn aggregate_status_is_degraded_when_near_quota_but_available() {
     let mut a = snapshot("acct-a", Some(0.90), None, None);
     a.near_quota = true; // still available (a backup remains), but flagged
     let b = snapshot("acct-b", Some(0.10), None, None);
-    let body = serde_json::to_value(aggregate(&[a, b])).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[a, b])])).unwrap();
     assert_eq!(body["pool"]["status"], "degraded");
 }
 
@@ -146,8 +157,15 @@ fn aggregate_never_exposes_account_identity_or_capacity() {
         snapshot("secret-primary", Some(0.30), Some(9), Some(0.50)),
         disabled,
     ];
-    let text = serde_json::to_string(&aggregate(&snapshots)).unwrap();
+    // A second provider's entry must be sanitized the same way as `pool`.
+    let codex = vec![snapshot("secret-codex", Some(0.70), Some(3), None)];
+    let text =
+        serde_json::to_string(&aggregate(&[("anthropic", &snapshots), ("codex", &codex)])).unwrap();
+    // The provider key is the configured upstream name, not an account.
+    assert!(text.contains("\"providers\":{\"anthropic\":"), "{text}");
+    assert!(text.contains("\"codex\":{\"status\":"), "{text}");
     for leak in [
+        "secret-codex",
         "secret-primary",
         "secret-backup",
         "name",
@@ -162,6 +180,55 @@ fn aggregate_never_exposes_account_identity_or_capacity() {
             "usage response leaked {leak:?}: {text}"
         );
     }
+}
+
+/// The per-provider breakdown answers the question `pool` cannot: on a mixed
+/// pool where every Codex account is at its 5h wall and only Claude is fresh,
+/// `pool` still reports `ok` and a blended mean headroom, while
+/// `providers.codex` reports `exhausted` with zero 5h headroom and a `null`
+/// Fable window.
+#[test]
+fn aggregate_breaks_the_pool_down_per_provider() {
+    let mut claude_a = snapshot("claude-a", Some(0.20), Some(100), Some(0.30));
+    claude_a.utilization_7d_oi = Some(0.10);
+    claude_a.reset_7d_oi = Some(700);
+    let claude = vec![claude_a];
+    let mut codex_a = snapshot("codex-a", Some(1.0), Some(500), Some(0.90));
+    codex_a.available = false;
+    let mut codex_b = snapshot("codex-b", Some(1.0), Some(600), Some(0.95));
+    codex_b.available = false;
+    let codex = vec![codex_a, codex_b];
+
+    let body =
+        serde_json::to_value(aggregate(&[("anthropic", &claude), ("codex", &codex)])).unwrap();
+
+    // Pool-wide view blends both providers: mean(0.8, 0.0, 0.0), earliest reset.
+    assert_eq!(body["pool"]["status"], "ok");
+    assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.2667));
+    assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(100));
+
+    let anthropic = &body["providers"]["anthropic"];
+    assert_eq!(anthropic["status"], "ok");
+    assert_eq!(anthropic["windows"]["5h"]["remaining"], json!(0.80));
+    assert_eq!(anthropic["windows"]["7d"]["remaining"], json!(0.70));
+
+    let codex = &body["providers"]["codex"];
+    assert_eq!(codex["status"], "exhausted");
+    assert_eq!(codex["windows"]["5h"]["remaining"], json!(0.0));
+    assert_eq!(codex["windows"]["5h"]["resets_at"], json!(500));
+    // mean(1 - 0.90, 1 - 0.95)
+    assert_eq!(codex["windows"]["7d"]["remaining"], json!(0.075));
+    // Codex has no Fable-scoped signal: null per provider even though the
+    // pool-wide Fable window (and Claude's own entry) is populated by Claude.
+    assert_eq!(codex["windows"]["fable"]["remaining"], Value::Null);
+    assert_eq!(codex["windows"]["fable"]["resets_at"], Value::Null);
+    assert_eq!(anthropic["windows"]["fable"]["remaining"], json!(0.90));
+    assert_eq!(body["pool"]["windows"]["fable"]["remaining"], json!(0.90));
+    assert_eq!(body["pool"]["windows"]["fable"]["resets_at"], json!(700));
+
+    // Exactly the configured providers, no extra keys.
+    let keys: Vec<&String> = body["providers"].as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["anthropic", "codex"]);
 }
 
 /// Config with `[server.auth]` bound to a unique env var and `[server.usage]`
@@ -363,6 +430,22 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
         body["pool"]["windows"]["fable"]["resets_at"],
         json!(reset_fable)
     );
+
+    // Per-provider breakdown, keyed by the configured provider name: only the
+    // two pooled providers appear (the built-in non-pooled ones are omitted),
+    // and each carries only its own windows.
+    let keys: Vec<&String> = body["providers"].as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["claude-oauth", "codex"]);
+    let codex = &body["providers"]["codex"];
+    assert_eq!(codex["status"], "ok");
+    assert_eq!(codex["windows"]["5h"]["remaining"], json!(0.75));
+    assert_eq!(codex["windows"]["7d"]["remaining"], json!(0.60));
+    assert_eq!(codex["windows"]["fable"]["remaining"], Value::Null);
+    let claude = &body["providers"]["claude-oauth"];
+    assert_eq!(claude["windows"]["5h"]["remaining"], Value::Null);
+    assert_eq!(claude["windows"]["7d"]["remaining"], Value::Null);
+    assert_eq!(claude["windows"]["fable"]["remaining"], json!(0.85));
+    assert_eq!(claude["windows"]["fable"]["resets_at"], json!(reset_fable));
 }
 
 /// `GET /usage` must cover a `kimi_oauth` pool, not just Claude and Codex.

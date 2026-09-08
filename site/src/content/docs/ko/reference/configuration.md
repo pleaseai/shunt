@@ -214,6 +214,8 @@ headers = { "x-api-key" = "..." }
 
 `GET /usage`는 `/v1/messages`와 같은 클라이언트 토큰(구성된 헤더, `x-api-key`, `Authorization: Bearer`)으로 인증하고 창별 잔여 여유(해당 창을 보고한 비활성 아님 계정들의 `mean(1 - utilization)`, 즉 풀 전체 용량 중 아직 쓰지 않은 비율 — 소진된 계정 9개와 새 계정 1개면 `0.1` — 풀 전체 집계이지 다음 요청이 통과될지에 대한 예측은 아님), 그 계정들이 보고한 리셋 시각 중 가장 이른 값, `ok`/`degraded`/`exhausted` 상태를 반환합니다. 계정 이름, 수, priority, `disabled`, 임계값, 계정별 수치는 노출하지 않습니다. 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 창이 `null`입니다. Codex 응답의 `x-codex-*` 헤더는 5시간 및 공유 주간 창을 채웁니다. Codex 자체에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다. 양수 `usage_refresh_seconds`를 설정하면 선택적인 `wham/usage` 폴러도 imported이며 갱신 가능한 `chatgpt_oauth` 계정의 해당 창을 채웁니다. 폴링은 기본적으로 꺼져 있습니다.
 
+응답은 풀 전체 집계를 `pool`에 담고, `providers`에는 풀링되는 프로바이더별로 같은 정제된 집계를 구성된 프로바이더 이름(`[providers.<name>]`의 `<name>` 또는 `[[upstreams]]` 항목의 `name`이며, 계정 신원이 아님)을 키로 담습니다. 모델을 그 키에 대응시키는 것은 클라이언트의 몫입니다. [`GET /routes`](/ko/reference/endpoints/)는 `[[routes]]`에 명시된 모델만 다루고, `[[models]].upstream_model`, `[[route_prefixes]]`, `server.default_provider` 매핑을 노출하는 엔드포인트는 없으며, `GET /v1/models` 항목에는 프로바이더 필드가 없습니다. 혼합 풀에서 `pool`은 모든 프로바이더의 계정을 하나의 평균으로 섞어 보고하므로, 특정 프로바이더로 라우팅하는 클라이언트는 해당 프로바이더의 여유분과 상태를 `providers.<name>`에서 읽어야 합니다. 풀링되지 않는 인증 모드의 프로바이더는 생략되며, Fable 범위 신호가 없는 프로바이더의 `fable` 창은 `pool`이 값을 보고하더라도 `null`입니다. 전체 형태는 [엔드포인트 레퍼런스](/ko/reference/endpoints/)를 참고하세요.
+
 ## `[server.pool]` (선택)
 
 계정 풀을 위한 쿼터 인지 로드 밸런싱 튜닝 — Claude(Anthropic)([상세](/ko/guides/anthropic-multi-account/#선택-튜닝-serverpool))와, 이슈 #195부터는 Codex/ChatGPT([상세](/ko/guides/codex-multi-account/)). 테이블이 없으면 선택은 이 테이블이 존재하기 이전과 동일하게 단일 내장 `0.98` 임계값을 사용합니다.

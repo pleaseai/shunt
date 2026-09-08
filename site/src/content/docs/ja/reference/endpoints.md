@@ -38,7 +38,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/v1/responses` | Inbound Codex CLI パススルー — `/v1` サフィックスの `base_url` 形式 |
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI analytics sink — 受理して破棄し、サニタイズ済みイベント名のカウンターのみ記録 |
 | `POST` | `/codex/analytics-events/events` | Codex CLI analytics sink — ルート形式の `chatgpt_base_url` |
-| `GET` | `/usage` | クライアント向けのサニタイズ済みプール使用量 — 共有アカウントプールのウィンドウごとの残り余裕とリセット。アカウントの身元や容量は返さない |
+| `GET` | `/usage` | クライアント向けのサニタイズ済みプール使用量 — 共有アカウントプールのウィンドウごとの残り余裕とリセットに加え、プールされるプロバイダーごとの同じ集計。アカウントの身元や容量は返さない |
 
 `/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作では `403` で、`POST /admin/login` では `401` で拒否されます。
 
@@ -48,7 +48,7 @@ spend-limit ルートは、起動時に [`[server.spend]`](/ja/reference/configu
 
 Inbound Codex Responses と analytics のルートは [`[server.codex_endpoint]`](/ja/reference/configuration/) が設定されている場合にのみ存在します。Responses ルートは OpenAI Responses のリクエストとレスポンスをそのまま中継し、`[[server.codex_endpoint.routes]]` によってモデルごとに別の Responses 互換アップストリームへルーティングすることもできます。2 つの analytics ルートは同じ inbound auth ポリシーを適用し、クライアント payload を転送または保持せず、認証後は不正な JSON やサイズ超過の body にも `200 {}` を返します。サニタイズ済みイベント名だけを `shunt.codex_client_events` に記録し、metric sink がなければ純粋な破棄 sink として動作します。
 
-`/usage` ルートは [`[server.usage]`](/ja/reference/configuration/#serverusageオプション) を設定した場合にのみ存在し、同じく [`[server.auth]`](/ja/guides/shared-gateway/) の設定を必要とします。`GET /v1/messages` と同じクライアントトークンで認証し、共有アカウントプールのウィンドウごとの残り余裕（そのウィンドウを報告した無効化されていないアカウントの `mean(1 - utilization)`、つまりプール全体の容量のうちまだ使われていない割合）、それらのアカウントが報告した最も早いリセット時刻、`ok`／`degraded`／`exhausted` ステータスを返します。アカウントの身元、件数、優先度、`disabled`、しきい値、アカウント単位の数値は公開しません。無効化されていないアカウントがそのウィンドウを報告していない場合だけ `null` になります。Codex の `x-codex-*` レスポンスヘッダーとオプションの `wham/usage` ポーリングは、5 時間と共有週次ウィンドウを埋めます。Codex には Fable スコープ（`7d_oi`）のシグナルがありませんが、混在プロバイダーのプールでは別のプロバイダーが集約 Fable 値を提供できます。
+`/usage` ルートは [`[server.usage]`](/ja/reference/configuration/#serverusageオプション) を設定した場合にのみ存在し、同じく [`[server.auth]`](/ja/guides/shared-gateway/) の設定を必要とします。`GET /v1/messages` と同じクライアントトークンで認証し、共有アカウントプールのウィンドウごとの残り余裕（そのウィンドウを報告した無効化されていないアカウントの `mean(1 - utilization)`、つまりプール全体の容量のうちまだ使われていない割合）、それらのアカウントが報告した最も早いリセット時刻、`ok`／`degraded`／`exhausted` ステータスを返します。アカウントの身元、件数、優先度、`disabled`、しきい値、アカウント単位の数値は公開しません。無効化されていないアカウントがそのウィンドウを報告していない場合だけ `null` になります。Codex の `x-codex-*` レスポンスヘッダーとオプションの `wham/usage` ポーリングは、5 時間と共有週次ウィンドウを埋めます。Codex には Fable スコープ（`7d_oi`）のシグナルがありませんが、混在プロバイダーのプールでは別のプロバイダーが集約 Fable 値を提供できます。`pool` はプールされるすべてのプロバイダーを通じた集計で、`providers` は同じサニタイズ済み集計をプールされるプロバイダーごとに、設定されたプロバイダー名をキーとして持ちます。そのため特定のプロバイダーにルーティングするクライアントは、プール全体の平均ではなく、そのプロバイダーの余裕とステータスを読み取れます。プールされない認証モードのプロバイダーは省略されます。完全なレスポンス形は[英語版エンドポイントリファレンス](/reference/endpoints/)を参照してください。
 
 `GET /` と `GET /health` は、[`[server.auth]`](/ja/guides/shared-gateway/) が有効なときも開いたままです（ヘルスチェックツールは通常トークンを付けられません）。機密情報は何も公開しません — ステータス、バージョン、およびすでに公開されているエンドポイント一覧のみです。
 

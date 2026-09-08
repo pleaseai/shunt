@@ -42,7 +42,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/v1/responses` | Inbound Codex CLI passthrough — `/v1`-suffixed `base_url` form |
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI analytics sink — accept and discard; record sanitized event-name counters only |
 | `POST` | `/codex/analytics-events/events` | Codex CLI analytics sink — root-style `chatgpt_base_url` form |
-| `GET` | `/usage` | Client-facing sanitized pool usage — per-window remaining headroom and reset for the shared account pool; never account identity or capacity |
+| `GET` | `/usage` | Client-facing sanitized pool usage — per-window remaining headroom and reset for the shared account pool, plus the same aggregate per pooled provider; never account identity or capacity |
 | `GET` | `/api/oauth/usage` | Claude Code CLI's own native usage-bar fetch path — sanitized, Claude-only, routing-aware worst-case pool usage in Anthropic's own wire shape |
 | `GET` | `/.well-known/oauth-authorization-server` | Gateway OAuth discovery metadata |
 | `POST` | `/oauth/device_authorization` | Start a gateway device authorization grant |
@@ -73,16 +73,34 @@ The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration
 
 The `/backend-api/codex/responses`, `/responses`, `/v1/responses`, `/backend-api/codex/analytics-events/events`, and `/codex/analytics-events/events` routes exist only when [`[server.codex_endpoint]`](/reference/configuration/#servercodex_endpoint-optional) is configured; without that table, none of them are registered. The three Responses paths relay raw OpenAI Responses requests and responses — optionally routed per model to other Responses-compatible upstreams via `[[server.codex_endpoint.routes]]` — unlike the Anthropic-Messages-translating `/v1/messages` above. The two analytics paths use the same inbound-auth policy, never forward or retain the client payload, and return `200 {}` after authentication even for malformed or oversized bodies. Only sanitized event names are counted in `shunt.codex_client_events`; with no metric sink configured they are pure discard sinks. See the [inbound Codex endpoint guide](/guides/inbound-codex-endpoint/).
 
-The `/usage` route exists only when [`[server.usage]`](/reference/configuration/#serverusage-optional) is configured, which itself requires [`[server.auth]`](/guides/shared-gateway/). It authenticates the same client token as `GET /v1/messages` (configured header, `x-api-key`, or `Authorization: Bearer`) and returns a **sanitized, aggregated** view of the shared account pool — per-window remaining headroom (`mean(1 - utilization)` across non-disabled accounts reporting the window, i.e. the fraction of the pool's combined capacity still unused) and the earliest reset among those accounts, plus a coarse `ok`/`degraded`/`exhausted` status — so a non-admin caller can anticipate throttling. It never exposes account names, counts, priorities, `disabled` flags, thresholds, or per-account numbers; the full per-account detail stays behind admin-only `GET /admin/pool`. A window is `null` only when no non-disabled account reports it. Codex response `x-codex-*` headers and optional `wham/usage` polling populate the observed 5-hour and shared weekly windows; an unobserved window alone is `null`. Codex has no Fable-scoped (`7d_oi`) signal, although another provider in a mixed pool may supply the aggregate Fable window. Response shape:
+The `/usage` route exists only when [`[server.usage]`](/reference/configuration/#serverusage-optional) is configured, which itself requires [`[server.auth]`](/guides/shared-gateway/). It authenticates the same client token as `GET /v1/messages` (configured header, `x-api-key`, or `Authorization: Bearer`) and returns a **sanitized, aggregated** view of the shared account pool — per-window remaining headroom (`mean(1 - utilization)` across non-disabled accounts reporting the window, i.e. the fraction of the pool's combined capacity still unused) and the earliest reset among those accounts, plus a coarse `ok`/`degraded`/`exhausted` status — so a non-admin caller can anticipate throttling. It never exposes account names, counts, priorities, `disabled` flags, thresholds, or per-account numbers; the full per-account detail stays behind admin-only `GET /admin/pool`. A window is `null` only when no non-disabled account reports it. Codex response `x-codex-*` headers and optional `wham/usage` polling populate the observed 5-hour and shared weekly windows; an unobserved window alone is `null`. Codex has no Fable-scoped (`7d_oi`) signal, although another provider in a mixed pool may supply the aggregate Fable window. `pool` is the aggregate across every pooled provider; `providers` carries the same sanitized aggregate per pooled provider, keyed by the configured provider name, so a client that routes to one provider can read that provider's headroom and status instead of the blended pool-wide mean. Providers whose auth mode is not pooled are omitted. Response shape:
 
 ```json
 {
   "pool": {
     "status": "ok",
     "windows": {
-      "5h":    { "remaining": 0.42, "resets_at": 1752000000 },
-      "7d":    { "remaining": 0.61, "resets_at": 1752500000 },
-      "fable": { "remaining": null, "resets_at": null }
+      "5h":    { "remaining": 0.21, "resets_at": 1751990000 },
+      "7d":    { "remaining": 0.37, "resets_at": 1752400000 },
+      "fable": { "remaining": 0.85, "resets_at": 1753000000 }
+    }
+  },
+  "providers": {
+    "claude": {
+      "status": "ok",
+      "windows": {
+        "5h":    { "remaining": 0.42, "resets_at": 1752000000 },
+        "7d":    { "remaining": 0.61, "resets_at": 1752500000 },
+        "fable": { "remaining": 0.85, "resets_at": 1753000000 }
+      }
+    },
+    "codex": {
+      "status": "exhausted",
+      "windows": {
+        "5h":    { "remaining": 0.0,  "resets_at": 1751990000 },
+        "7d":    { "remaining": 0.12, "resets_at": 1752400000 },
+        "fable": { "remaining": null, "resets_at": null }
+      }
     }
   }
 }

@@ -213,6 +213,8 @@ headers = { "x-api-key" = "..." }
 
 `GET /usage` 使用与 `/v1/messages` 相同的客户端 token(配置的头部、`x-api-key` 或 `Authorization: Bearer`)进行认证,并返回每个窗口的剩余余量(报告该窗口的未禁用账户的 `mean(1 - utilization)`,即整个池的总容量中尚未使用的比例 —— 九个耗尽账户加一个全新账户读作 `0.1` —— 这是池级聚合值,不预测下一个请求是否会被放行)、这些账户报告的最早重置时间,以及 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户名称、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充 5 小时和共享每周窗口。Codex 本身没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。正的 `usage_refresh_seconds` 只轮询 imported 且可刷新的 `chatgpt_oauth` 账户;轮询默认关闭,获取或解析失败会保留既有状态。
 
+响应在 `pool` 下给出池级聚合,并在 `providers` 下以配置的提供方名称(即 `[providers.<name>]` 中的 `<name>` 或 `[[upstreams]]` 条目的 `name`,而非账户身份)为键,为每个参与池化的提供方给出同样经过净化的聚合。将模型对应到该键是客户端的职责:[`GET /routes`](/zh-cn/reference/endpoints/) 只覆盖 `[[routes]]` 中明确列出的模型,没有端点公开 `[[models]].upstream_model`、`[[route_prefixes]]` 或 `server.default_provider` 的映射,而 `GET /v1/models` 条目不包含提供方字段。在混合池中,`pool` 报告的是把所有提供方账户混在一起的平均值,因此路由到某一提供方的客户端应从 `providers.<name>` 读取该提供方自身的余量和状态。认证模式不参与池化的提供方会被省略;没有 Fable 范围信号的提供方,其 `fable` 窗口即使在 `pool` 报告了值时也是 `null`。完整形态见[端点参考](/zh-cn/reference/endpoints/)。
+
 ## `[server.pool]`(可选)
 
 迁移时,没有 `observed_at_status` 的聚合 `status` 会捕获已保存的 `reset_5h`、`reset_7d`、`reset_7d_oi` 中最早的重置作为不可变期限。若该重置已经过去,则在同一次 import 中同时删除已过期的重置、无时间戳的聚合 `status` 及其合成时间戳。超过合理七天范围的未来重置会保守地限制在启动时间加七天;没有重置时则从启动时间开始七天上限。已有 v2 时间戳不会根据重置重新解释,但正常 import 仍会规范化孤立元数据、使已过去的信号失效、将未来时间钳制到启动时间,并在必要时为仍存活且无时间戳的聚合补上启动时间。后续 reset-only 或 usage 更新不会延长期限,重写为 v3 并第二次恢复后结果仍保持等价。
