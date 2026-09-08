@@ -1,0 +1,18 @@
+.claude/agent-memory/gardening-gardening-doc-gardener/locale-anchor-parity-drift.md
+  h_9ee0685e8f5c3a 32-35
+.claude/agent-memory/gardening-gardening-doc-gardener/site-anchor-validation.md
+  h_9ee0685e8f5c3a 13-16,22-26
+.claude/agent-memory/github-pr-manager/reference_shunt-pr-template-and-quirks.md
+  h_9ee0685e8f5c3a 57-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a425599b370383b78aafd22ac8a79b90e156a96d",
+  "prompts": {},
+  "humans": {
+    "h_9ee0685e8f5c3a": {
+      "author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
