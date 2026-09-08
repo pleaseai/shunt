@@ -19,6 +19,7 @@ use axum::{
     Json,
 };
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 use crate::{
     accounts::AccountSnapshot, auth::claude::store as claude_store, config::AuthMode,
@@ -28,7 +29,12 @@ use crate::{
 /// Sanitized aggregate returned by `GET /usage`.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct UsageResponse {
+    /// Aggregate across every pooled provider (the original, pool-wide view).
     pub pool: PoolStatus,
+    /// The same aggregate scoped to each pooled provider, keyed by the
+    /// configured provider name. Providers whose auth mode is not pooled are
+    /// omitted, exactly as they are from `pool`. Empty when no provider pools.
+    pub providers: BTreeMap<String, PoolStatus>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -68,19 +74,46 @@ pub struct WindowStatus {
     pub resets_at: Option<u64>,
 }
 
-/// Collapse per-account snapshots into the sanitized pool aggregate. Pure: the
-/// I/O (store scan) and locking happen in the caller. Reads only aggregate
-/// numbers and availability booleans — no account name, priority, `disabled`
-/// flag, threshold, or headroom leaves this function.
-pub fn aggregate(snapshots: &[AccountSnapshot]) -> UsageResponse {
+/// Collapse per-provider account snapshots into the sanitized response: the
+/// pool-wide aggregate over every snapshot, plus one aggregate per provider
+/// over that provider's snapshots only. Pure: the I/O (store scan) and locking
+/// happen in the caller. Reads only aggregate numbers and availability
+/// booleans — no account name, priority, `disabled` flag, threshold, or
+/// headroom leaves this function; the only identifier emitted is the
+/// configured provider name.
+pub fn aggregate<N, S>(by_provider: &[(N, S)]) -> UsageResponse
+where
+    N: AsRef<str>,
+    S: AsRef<[AccountSnapshot]>,
+{
+    let all: Vec<&AccountSnapshot> = by_provider
+        .iter()
+        .flat_map(|(_, snapshots)| snapshots.as_ref().iter())
+        .collect();
     UsageResponse {
-        pool: PoolStatus {
-            status: pool_status(snapshots),
-            windows: Windows {
-                five_hour: window_status(snapshots, |s| s.utilization_5h, |s| s.reset_5h),
-                seven_day: window_status(snapshots, |s| s.utilization_7d, |s| s.reset_7d),
-                fable: window_status(snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
-            },
+        pool: pool_aggregate(all.iter().copied()),
+        providers: by_provider
+            .iter()
+            .map(|(name, snapshots)| {
+                (
+                    name.as_ref().to_string(),
+                    pool_aggregate(snapshots.as_ref().iter()),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// The sanitized aggregate for one set of snapshots (the whole pool, or one
+/// provider's slice of it).
+fn pool_aggregate<'a>(snapshots: impl Iterator<Item = &'a AccountSnapshot>) -> PoolStatus {
+    let snapshots: Vec<&AccountSnapshot> = snapshots.collect();
+    PoolStatus {
+        status: pool_status(&snapshots),
+        windows: Windows {
+            five_hour: window_status(&snapshots, |s| s.utilization_5h, |s| s.reset_5h),
+            seven_day: window_status(&snapshots, |s| s.utilization_7d, |s| s.reset_7d),
+            fable: window_status(&snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
         },
     }
 }
@@ -90,12 +123,13 @@ pub fn aggregate(snapshots: &[AccountSnapshot]) -> UsageResponse {
 /// account's reset time), not a guarantee about which account the next
 /// request will actually route to.
 fn window_status(
-    snapshots: &[AccountSnapshot],
+    snapshots: &[&AccountSnapshot],
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
     reset: impl Fn(&AccountSnapshot) -> Option<u64>,
 ) -> WindowStatus {
     let least_utilized = snapshots
         .iter()
+        .copied()
         .filter(|snapshot| !snapshot.disabled)
         .filter_map(|snapshot| {
             utilization(snapshot)
@@ -118,12 +152,16 @@ fn window_status(
 /// Coarse pool health derived purely from availability booleans (no numbers):
 /// `exhausted` when every selectable account is unavailable, `degraded` when any
 /// is near quota, else `ok`. Disabled accounts never count as selectable.
-fn pool_status(snapshots: &[AccountSnapshot]) -> &'static str {
+fn pool_status(snapshots: &[&AccountSnapshot]) -> &'static str {
     let mut any_selectable = false;
     let mut any_available = false;
     let mut any_near_quota = false;
 
-    for snapshot in snapshots.iter().filter(|snapshot| !snapshot.disabled) {
+    for snapshot in snapshots
+        .iter()
+        .copied()
+        .filter(|snapshot| !snapshot.disabled)
+    {
         any_selectable = true;
         any_available |= snapshot.available;
         any_near_quota |= snapshot.near_quota;
@@ -170,7 +208,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     tracing::info!(client = %client, "inbound client authenticated for GET /usage");
 
-    let mut snapshots = Vec::new();
+    let mut by_provider: Vec<(&str, Vec<AccountSnapshot>)> = Vec::new();
     for (name, provider) in &state.config.providers {
         if !matches!(
             provider.auth,
@@ -226,14 +264,14 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 .into_response();
             }
         };
-        snapshots.extend(state.accounts.snapshot(
-            name,
-            &resolved,
-            None,
-            state.config.server.pool.as_ref(),
+        by_provider.push((
+            name.as_str(),
+            state
+                .accounts
+                .snapshot(name, &resolved, None, state.config.server.pool.as_ref()),
         ));
     }
-    Json(aggregate(&snapshots)).into_response()
+    Json(aggregate(&by_provider)).into_response()
 }
 
 #[cfg(test)]

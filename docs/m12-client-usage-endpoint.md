@@ -64,6 +64,16 @@ the Fable-scoped weekly window (`fable` / `7d_oi`):
 Plus a pool-level `status` derived purely from availability booleans (no numbers): `exhausted` when
 every selectable (non-disabled) account is unavailable, `degraded` when any is near quota, else `ok`.
 
+`pool` is the aggregate across **every** pooled provider. On a mixed pool (an Anthropic
+`claude_oauth` upstream next to a Codex `chatgpt_oauth` one) that answers the wrong question for a
+client whose traffic goes to one provider: `pool.windows.5h.remaining` is the best window across
+both, and `pool.status` is `ok` as long as any account of any provider is available. So the response
+also carries `providers` — the same aggregate, computed over each provider's accounts only, keyed by
+the configured provider name (issue #480). The key is the upstream name that `/v1/models` routing
+already exposes, not an account identity. Providers whose auth mode is not pooled (`passthrough`,
+`api_key`, …) are omitted, matching the filter `pool` already applies; with no pooled provider the
+map is empty.
+
 ```json
 {
   "pool": {
@@ -71,11 +81,32 @@ every selectable (non-disabled) account is unavailable, `degraded` when any is n
     "windows": {
       "5h":    { "remaining": 0.42, "resets_at": 1752000000 },
       "7d":    { "remaining": 0.61, "resets_at": 1752500000 },
-      "fable": { "remaining": null, "resets_at": null }
+      "fable": { "remaining": 0.85, "resets_at": 1753000000 }
+    }
+  },
+  "providers": {
+    "claude": {
+      "status": "ok",
+      "windows": {
+        "5h":    { "remaining": 0.42, "resets_at": 1752000000 },
+        "7d":    { "remaining": 0.61, "resets_at": 1752500000 },
+        "fable": { "remaining": 0.85, "resets_at": 1753000000 }
+      }
+    },
+    "codex": {
+      "status": "exhausted",
+      "windows": {
+        "5h":    { "remaining": 0.0,  "resets_at": 1751990000 },
+        "7d":    { "remaining": 0.12, "resets_at": 1752400000 },
+        "fable": { "remaining": null, "resets_at": null }
+      }
     }
   }
 }
 ```
+
+A per-provider `fable` window is `null` for a provider that has no Fable-scoped signal (Codex), even
+when `pool.windows.fable` is populated by another provider.
 
 Gateway-owned errors (a `401` for a missing/invalid client token, a `500` if the account store
 cannot be read) use the Anthropic error shape, like the rest of the gateway.
@@ -83,7 +114,9 @@ cannot be read) use the Anthropic error shape, like the rest of the gateway.
 ## Boundaries
 
 - **Sanitization is a test-enforced invariant.** A unit test asserts the serialized response never
-  contains an account name, `priority`, `disabled`, `threshold`, `headroom`, or `cooldown`.
+  contains an account name, `priority`, `disabled`, `threshold`, `headroom`, or `cooldown` — in the
+  nested `providers.<name>` entries as well as in `pool`. The only identifier a `providers` entry
+  adds is its key, the configured provider name.
 - **No per-client accounting.** The aggregate is pool-wide; it does not attribute usage to the
   calling client.
 - **Codex usage is response- and poller-derived in this branch.** ChatGPT/Codex response

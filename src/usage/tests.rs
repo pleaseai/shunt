@@ -45,7 +45,7 @@ fn aggregate_reports_least_utilized_headroom_per_window() {
         snapshot("acct-a", Some(0.60), Some(111), Some(0.40)),
         snapshot("acct-b", Some(0.25), Some(222), Some(0.90)),
     ];
-    let body = serde_json::to_value(aggregate(&snapshots)).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &snapshots)])).unwrap();
     assert_eq!(body["pool"]["status"], "ok");
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.75));
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(222));
@@ -59,7 +59,7 @@ fn aggregate_reports_least_utilized_headroom_per_window() {
 #[test]
 fn aggregate_ignores_non_finite_window_utilization() {
     let snapshots = [snapshot("acct-a", Some(f64::NAN), Some(111), None)];
-    let body = serde_json::to_value(aggregate(&snapshots)).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &snapshots)])).unwrap();
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], Value::Null);
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], Value::Null);
 }
@@ -71,7 +71,7 @@ fn aggregate_excludes_disabled_accounts_and_null_windows() {
     let mut disabled = snapshot("backup", Some(0.10), Some(1), None);
     disabled.disabled = true;
     let unreported = snapshot("live", None, None, None);
-    let body = serde_json::to_value(aggregate(&[disabled, unreported])).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[disabled, unreported])])).unwrap();
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], Value::Null);
 }
 
@@ -79,7 +79,7 @@ fn aggregate_excludes_disabled_accounts_and_null_windows() {
 fn aggregate_status_is_exhausted_when_no_selectable_account_exists() {
     let mut disabled = snapshot("acct-a", Some(0.10), None, None);
     disabled.disabled = true;
-    let body = serde_json::to_value(aggregate(&[disabled])).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[disabled])])).unwrap();
     assert_eq!(body["pool"]["status"], "exhausted");
 }
 
@@ -88,7 +88,7 @@ fn aggregate_status_is_exhausted_when_no_account_available() {
     let mut a = snapshot("acct-a", Some(0.99), None, None);
     a.available = false;
     a.near_quota = true;
-    let body = serde_json::to_value(aggregate(&[a])).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[a])])).unwrap();
     assert_eq!(body["pool"]["status"], "exhausted");
 }
 
@@ -97,7 +97,7 @@ fn aggregate_status_is_degraded_when_near_quota_but_available() {
     let mut a = snapshot("acct-a", Some(0.90), None, None);
     a.near_quota = true; // still available (a backup remains), but flagged
     let b = snapshot("acct-b", Some(0.10), None, None);
-    let body = serde_json::to_value(aggregate(&[a, b])).unwrap();
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[a, b])])).unwrap();
     assert_eq!(body["pool"]["status"], "degraded");
 }
 
@@ -113,8 +113,15 @@ fn aggregate_never_exposes_account_identity_or_capacity() {
         snapshot("secret-primary", Some(0.30), Some(9), Some(0.50)),
         disabled,
     ];
-    let text = serde_json::to_string(&aggregate(&snapshots)).unwrap();
+    // A second provider's entry must be sanitized the same way as `pool`.
+    let codex = vec![snapshot("secret-codex", Some(0.70), Some(3), None)];
+    let text =
+        serde_json::to_string(&aggregate(&[("anthropic", &snapshots), ("codex", &codex)])).unwrap();
+    // The provider key is the configured upstream name, not an account.
+    assert!(text.contains("\"providers\":{\"anthropic\":"), "{text}");
+    assert!(text.contains("\"codex\":{\"status\":"), "{text}");
     for leak in [
+        "secret-codex",
         "secret-primary",
         "secret-backup",
         "name",
@@ -129,6 +136,48 @@ fn aggregate_never_exposes_account_identity_or_capacity() {
             "usage response leaked {leak:?}: {text}"
         );
     }
+}
+
+/// The per-provider breakdown answers the question `pool` cannot: on a mixed
+/// pool where every Codex account is at its 5h wall and only Claude is fresh,
+/// `pool` still reports the Claude headroom and `ok`, while `providers.codex`
+/// reports `exhausted` with zero 5h headroom and a `null` Fable window.
+#[test]
+fn aggregate_breaks_the_pool_down_per_provider() {
+    let claude = vec![snapshot("claude-a", Some(0.20), Some(100), Some(0.30))];
+    let mut codex_a = snapshot("codex-a", Some(1.0), Some(500), Some(0.90));
+    codex_a.available = false;
+    let mut codex_b = snapshot("codex-b", Some(1.0), Some(600), Some(0.95));
+    codex_b.available = false;
+    let codex = vec![codex_a, codex_b];
+
+    let body =
+        serde_json::to_value(aggregate(&[("anthropic", &claude), ("codex", &codex)])).unwrap();
+
+    // Pool-wide view is unchanged: best across both providers.
+    assert_eq!(body["pool"]["status"], "ok");
+    assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.80));
+    assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(100));
+
+    let anthropic = &body["providers"]["anthropic"];
+    assert_eq!(anthropic["status"], "ok");
+    assert_eq!(anthropic["windows"]["5h"]["remaining"], json!(0.80));
+    assert_eq!(anthropic["windows"]["7d"]["remaining"], json!(0.70));
+
+    let codex = &body["providers"]["codex"];
+    assert_eq!(codex["status"], "exhausted");
+    assert_eq!(codex["windows"]["5h"]["remaining"], json!(0.0));
+    assert_eq!(codex["windows"]["5h"]["resets_at"], json!(500));
+    assert_eq!(codex["windows"]["7d"]["remaining"], json!(0.10));
+    // Codex has no Fable-scoped signal: null per provider even though the
+    // pool-wide Fable window is populated by Claude.
+    assert_eq!(codex["windows"]["fable"]["remaining"], Value::Null);
+    assert_eq!(codex["windows"]["fable"]["resets_at"], Value::Null);
+    assert_eq!(body["pool"]["windows"]["fable"]["remaining"], Value::Null);
+
+    // Exactly the configured providers, no extra keys.
+    let keys: Vec<&String> = body["providers"].as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["anthropic", "codex"]);
 }
 
 /// Config with `[server.auth]` bound to a unique env var and `[server.usage]`
@@ -330,6 +379,22 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
         body["pool"]["windows"]["fable"]["resets_at"],
         json!(reset_fable)
     );
+
+    // Per-provider breakdown, keyed by the configured provider name: only the
+    // two pooled providers appear (the built-in non-pooled ones are omitted),
+    // and each carries only its own windows.
+    let keys: Vec<&String> = body["providers"].as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["claude-oauth", "codex"]);
+    let codex = &body["providers"]["codex"];
+    assert_eq!(codex["status"], "ok");
+    assert_eq!(codex["windows"]["5h"]["remaining"], json!(0.75));
+    assert_eq!(codex["windows"]["7d"]["remaining"], json!(0.60));
+    assert_eq!(codex["windows"]["fable"]["remaining"], Value::Null);
+    let claude = &body["providers"]["claude-oauth"];
+    assert_eq!(claude["windows"]["5h"]["remaining"], Value::Null);
+    assert_eq!(claude["windows"]["7d"]["remaining"], Value::Null);
+    assert_eq!(claude["windows"]["fable"]["remaining"], json!(0.85));
+    assert_eq!(claude["windows"]["fable"]["resets_at"], json!(reset_fable));
 }
 
 /// `GET /usage` must cover a `kimi_oauth` pool, not just Claude and Codex.
