@@ -52,14 +52,17 @@ table is present; a config reload only re-resolves the client tokens it authenti
 Per tracked window — the rolling 5-hour session window (`5h`), the shared weekly window (`7d`), and
 the Fable-scoped weekly window (`fable` / `7d_oi`):
 
-- `remaining` — `1 - min(utilization)` over **non-disabled** accounts that report the window: the
-  least reported utilization among non-disabled accounts, clamped to `0.0..=1.0` and rounded to four
-  decimals. This is a pool-wide aggregate, not a prediction of which account the next request will
-  actually route to (routing also weighs availability, model, session affinity, and priority).
-  `null` only when no non-disabled account reports the window. ChatGPT/Codex response headers can
+- `remaining` — `mean(1 - utilization)` over **non-disabled** accounts that report the window: the
+  fraction of the pool's combined capacity still unused, clamped to `0.0..=1.0` and rounded to four
+  decimals. Nine exhausted accounts plus one fresh one read `0.1`, not `1.0`. This is a pool-wide
+  aggregate, not a prediction of whether the next request will be admitted (routing also weighs
+  availability, model, session affinity, and priority); for that question use the routing-aware
+  worst case `GET /api/oauth/usage` ([M14](m14-oauth-usage-endpoint.md)) reports. `null` only when
+  no non-disabled account reports the window. ChatGPT/Codex response headers can
   populate the 5-hour and shared weekly windows; Codex has no Fable-scoped (`7d_oi`) signal, though
   another provider in a mixed pool may supply the aggregate Fable window.
-- `resets_at` — the least-utilized account's window reset (unix epoch seconds), when reported.
+- `resets_at` — the earliest window reset (unix epoch seconds) reported by the accounts counted in
+  `remaining`: the soonest moment the aggregate can change. `null` when none of them reported one.
 
 Plus a pool-level `status` derived purely from availability booleans (no numbers): `exhausted` when
 every selectable (non-disabled) account is unavailable, `degraded` when any is near quota, else `ok`.

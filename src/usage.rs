@@ -52,19 +52,21 @@ pub struct Windows {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct WindowStatus {
-    /// `1 - min(utilization)` over non-disabled accounts reporting this window
-    /// — the least reported utilization among non-disabled accounts, clamped to
-    /// `0.0..=1.0` and rounded to four decimals. This is a pool-wide aggregate,
-    /// not a prediction of which account the next request will actually route
-    /// to (routing also weighs availability, model, session affinity, and
-    /// priority). `None` when no non-disabled account reports the window.
+    /// `mean(1 - utilization)` over non-disabled accounts reporting this
+    /// window — the fraction of the pool's combined capacity still unused,
+    /// clamped to `0.0..=1.0` and rounded to four decimals. Nine exhausted
+    /// accounts plus one fresh one report `0.1`, not `1.0`. This is a
+    /// pool-wide aggregate, not a prediction of whether the next request will
+    /// be admitted (routing also weighs availability, model, session affinity,
+    /// and priority). `None` when no non-disabled account reports the window.
     /// ChatGPT/Codex accounts populate the 5-hour and shared weekly windows
     /// from `x-codex-*` response headers; Codex has no Fable-scoped (`7d_oi`)
     /// signal, although another provider in a mixed pool may still supply
     /// that aggregate window.
     pub remaining: Option<f64>,
-    /// Reset time (unix epoch seconds) of the least-utilized account's window,
-    /// when the backend reported one.
+    /// Earliest reported reset time (unix epoch seconds) among the accounts
+    /// counted in `remaining` — the soonest moment the aggregate can change.
+    /// `None` when none of them reported one.
     pub resets_at: Option<u64>,
 }
 
@@ -85,33 +87,38 @@ pub fn aggregate(snapshots: &[AccountSnapshot]) -> UsageResponse {
     }
 }
 
-/// Aggregate headroom for one window: `1 - utilization` of the non-disabled
-/// account reporting the least utilization for this window (and that
-/// account's reset time), not a guarantee about which account the next
-/// request will actually route to.
+/// Aggregate headroom for one window: the mean `1 - utilization` over the
+/// non-disabled accounts reporting a finite utilization for it (the fraction of
+/// the pool's combined capacity still unused), and the earliest reset any of
+/// them reported. Not a guarantee about which account the next request will
+/// actually route to.
 fn window_status(
     snapshots: &[AccountSnapshot],
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
     reset: impl Fn(&AccountSnapshot) -> Option<u64>,
 ) -> WindowStatus {
-    let least_utilized = snapshots
-        .iter()
-        .filter(|snapshot| !snapshot.disabled)
-        .filter_map(|snapshot| {
-            utilization(snapshot)
-                .filter(|used| used.is_finite())
-                .map(|used| (used, reset(snapshot)))
-        })
-        .min_by(|(a, _), (b, _)| a.total_cmp(b));
-    match least_utilized {
-        Some((used, resets_at)) => WindowStatus {
-            remaining: Some(round4((1.0 - used).clamp(0.0, 1.0))),
-            resets_at,
-        },
-        None => WindowStatus {
+    let mut reporting = 0usize;
+    let mut headroom_sum = 0.0;
+    let mut earliest_reset: Option<u64> = None;
+    for snapshot in snapshots.iter().filter(|snapshot| !snapshot.disabled) {
+        let Some(used) = utilization(snapshot).filter(|used| used.is_finite()) else {
+            continue;
+        };
+        reporting += 1;
+        headroom_sum += (1.0 - used).clamp(0.0, 1.0);
+        if let Some(at) = reset(snapshot) {
+            earliest_reset = Some(earliest_reset.map_or(at, |current| current.min(at)));
+        }
+    }
+    if reporting == 0 {
+        return WindowStatus {
             remaining: None,
             resets_at: None,
-        },
+        };
+    }
+    WindowStatus {
+        remaining: Some(round4((headroom_sum / reporting as f64).clamp(0.0, 1.0))),
+        resets_at: earliest_reset,
     }
 }
 
