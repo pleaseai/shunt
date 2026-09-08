@@ -211,7 +211,7 @@ headers = { "x-api-key" = "..." }
 
 此表目前没有键,仅凭存在即启用。它**要求 [`[server.auth]`](#serverauth可选)**:端点通过客户端 token 识别调用方,因此配置 `[server.usage]` 却没有 `[server.auth]` 时启动会失败,不会在未认证的情况下提供池遥测。
 
-`GET /usage` 使用与 `/v1/messages` 相同的客户端 token(配置的头部、`x-api-key` 或 `Authorization: Bearer`)进行认证,并返回每个窗口的剩余余量、重置时间以及 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户名称、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充 5 小时和共享每周窗口。Codex 本身没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。正的 `usage_refresh_seconds` 只轮询 imported 且可刷新的 `chatgpt_oauth` 账户;轮询默认关闭,获取或解析失败会保留既有状态。
+`GET /usage` 使用与 `/v1/messages` 相同的客户端 token(配置的头部、`x-api-key` 或 `Authorization: Bearer`)进行认证,并返回每个窗口的剩余余量(报告该窗口的未禁用账户的 `mean(1 - utilization)`,即整个池的总容量中尚未使用的比例 —— 九个耗尽账户加一个全新账户读作 `0.1` —— 这是池级聚合值,不预测下一个请求是否会被放行)、这些账户报告的最早重置时间,以及 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户名称、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充 5 小时和共享每周窗口。Codex 本身没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。正的 `usage_refresh_seconds` 只轮询 imported 且可刷新的 `chatgpt_oauth` 账户;轮询默认关闭,获取或解析失败会保留既有状态。
 
 ## `[server.pool]`(可选)
 
