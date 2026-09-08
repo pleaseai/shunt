@@ -205,7 +205,8 @@ routing-blind, so the argument below holds unchanged), ignoring `priority`, `ava
 `AccountPool::select_order` (`src/accounts.rs`) actually weighs when picking which account
 serves the *next* request. Reused verbatim, that produces exactly the failure the critique
 flagged: a priority-1 (preferred) account at 95% utilization plus a priority-100 (backup)
-account at 5% utilization would report "~5% used" — an optimistic number — while real
+account at 5% utilization would report "~5% used" (or "~50% used" under the #482 mean) —
+an optimistic number either way — while real
 traffic keeps hitting the priority-1 account until it is actually exhausted or cooling.
 That is not a rounding error, it is the aggregate answering a different question than the
 one the label implies.
