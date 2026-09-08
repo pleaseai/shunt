@@ -1,0 +1,33 @@
+src/model/inbound_responses/messages_stream/tests.rs
+  s_dc4231ac81f910::t_16ad3e694d4f9c 74-77,85-88,180-183,206-209,229-232,272-275,304-307,343-346
+  s_dc4231ac81f910::t_688105f7ea6822 1-73,78-84,89-179,184-205,210-228,233-271,276-303,308-342,347-380
+src/model/inbound_responses/messages_stream.rs
+  s_dc4231ac81f910::t_ffc836a37f7f86 1-216,221-239,243-246,250-280,287,290-416,420-431
+  s_dc4231ac81f910::t_16ad3e694d4f9c 217-220,240-242,247-249,281-286,288-289,417-419
+src/model/inbound_responses/events/tests.rs
+  s_dc4231ac81f910::t_439dda07f03a8e 1-87,92-180,185-199
+  s_dc4231ac81f910::t_16ad3e694d4f9c 88-91,181-184
+src/model/inbound_responses/events/items.rs
+  s_dc4231ac81f910::t_073f45d701ac38 1-77
+src/model/inbound_responses/events.rs
+  s_dc4231ac81f910::t_e1d50f33231c8c 1-29,34-166,170-267,271-342,346-415,424-485,499-526
+  s_dc4231ac81f910::t_bfd72564ca9746 486-498
+  s_dc4231ac81f910::t_16ad3e694d4f9c 167-169,268-270,343-345,416-423
+  s_dc4231ac81f910::t_073f45d701ac38 30-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8003494dc74453aac8dd2d9d9bfe6be17003cda1",
+  "prompts": {},
+  "sessions": {
+    "s_dc4231ac81f910": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c97f5ae-9b7c-4bf5-b575-8d87d101811c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
