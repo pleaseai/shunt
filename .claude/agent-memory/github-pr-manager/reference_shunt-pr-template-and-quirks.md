@@ -53,3 +53,13 @@ unsatisfiable for new subsystems in this repo (existing `src/auth/*.rs` are
 already 600–1600 lines). Leave the box unchecked and explain the split under
 "Notes for reviewers" rather than checking it blind — AGENTS.md says
 "preferably under 500 lines", so it is a soft limit.
+
+**Docs-only PRs and the cargo checklist (PR #486)**: the template's four cargo
+boxes have no honest state on a docs-only change. Leave them unchecked and
+append `— n/a, no Rust sources changed` to each line rather than checking them
+(false) or deleting them (drops the template's shape). Checking the remaining
+boxes and adding a one-line "docs-only change" preamble above the checklist
+keeps it readable. Also state the `AGENTS.md` docs-surface sweep explicitly
+(README / docs/ / site/ en+ko+ja+zh-cn / wiki generated) — that repo rule asks
+for each surface to be *considered*, so naming the no-change ones is the
+evidence.
