@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.43.0](https://github.com/pleaseai/shunt/compare/v0.42.0...v0.43.0) (2026-09-08)
+
+
+### Features
+
+* **usage:** per-provider breakdown on GET /usage ([#483](https://github.com/pleaseai/shunt/issues/483)) ([3e5262b](https://github.com/pleaseai/shunt/commit/3e5262b6ee64b151789206da163a34e1199f4b23))
+* **usage:** report mean pool headroom instead of the least-utilized account on GET /usage ([#484](https://github.com/pleaseai/shunt/issues/484)) ([efe6ddd](https://github.com/pleaseai/shunt/commit/efe6ddda0be334adc0ffa99888fe529e58e0f606))
+
 ## [0.42.0](https://github.com/pleaseai/shunt/compare/v0.41.3...v0.42.0) (2026-09-07)
 
 
