@@ -6,10 +6,10 @@
 >
 > **Status: translation core only.** The modules under `src/model/inbound_responses/` are
 > complete and unit-tested, but nothing dispatches to them yet. #436's routed path
-> (`[[server.codex_endpoint.routes]]`) is the dispatch point: once it lands, a route whose
-> provider is `kind = "anthropic"` (or a Chat-Completions backend) selects the matching pair
-> below instead of the byte-faithful relay. Until then the inbound Codex endpoint behaves exactly
-> as M11 documents.
+> (`[[server.codex_endpoint.routes]]`, merged as #478) is the dispatch point: the follow-up
+> lets a route whose provider is `kind = "anthropic"` (or a Chat-Completions backend) select the
+> matching pair below instead of the byte-faithful relay. Until then the inbound Codex endpoint
+> behaves exactly as M11 documents.
 
 ## 0. Why
 
@@ -154,10 +154,10 @@ OpenAI-shaped and pass through with `type` / `message` / `code` / `param` defaul
 ## 7. Wiring (follow-up on #436)
 
 The dispatch that selects these adapters is deliberately not in this change: #436's routed
-path is being built alongside it, and both edit the same `codex_endpoint` files. Once #436 is
-merged, the follow-up:
+path (#478) landed while this translation core was being built, and both touch the same
+`codex_endpoint` files. The follow-up:
 
-1. Relaxes #436's "route must target `kind = "responses"`" validation to also accept
+1. Relaxes #478's "route must target `kind = "responses"`" validation to also accept
    `kind = "anthropic"` (and a Chat-Completions kind or flag, to be decided there).
 2. In the routed forward, matches on the provider kind: translate the request, POST to the
    provider's `/v1/messages` or `/chat/completions` with the provider's credential (adding the
