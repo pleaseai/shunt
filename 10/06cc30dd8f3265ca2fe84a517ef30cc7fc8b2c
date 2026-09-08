@@ -1,0 +1,31 @@
+src/model/inbound_responses/messages_stream/tests.rs
+  s_dc4231ac81f910::t_8a68f8f589738c 259-306,411-425
+  s_dc4231ac81f910::t_2f96e5d0bd2969 426
+docs/m16-codex-inbound-translation.md
+  s_dc4231ac81f910::t_19f40026a68417 98,104,108-111,147-151,157-160
+src/model/inbound_responses/chat_stream.rs
+  s_dc4231ac81f910::t_b43ebf5f8d62c2 18,37-41,54-57,70,147-148,169-171,186,192-195,213-214,248,277-282,296-297,340-349,351-352,364-365,369-371,373,379-397
+  s_dc4231ac81f910::t_e8142b757f348a 398
+src/model/inbound_responses/chat_stream/tests.rs
+  s_dc4231ac81f910::t_8a68f8f589738c 193-260,385-412
+  s_dc4231ac81f910::t_f77d80a40b7be4 413
+src/model/inbound_responses/messages_stream.rs
+  s_dc4231ac81f910::t_e7a99f7b4ab03d 61,71,88-91,93,98,119-121,142-143,153-154,162-170,415-420,422-423,428-436
+  s_dc4231ac81f910::t_0eb832e8a2e755 437-438
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1006cc30dd8f3265ca2fe84a517ef30cc7fc8b2c",
+  "prompts": {},
+  "sessions": {
+    "s_dc4231ac81f910": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c97f5ae-9b7c-4bf5-b575-8d87d101811c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
