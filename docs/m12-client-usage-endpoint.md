@@ -57,7 +57,7 @@ the Fable-scoped weekly window (`fable` / `7d_oi`):
   decimals. Nine exhausted accounts plus one fresh one read `0.1`, not `1.0`. This is a pool-wide
   aggregate, not a prediction of whether the next request will be admitted (routing also weighs
   availability, model, session affinity, and priority); for that question use the routing-aware
-  worst case `GET /api/oauth/usage` ([M14](m14-oauth-usage-endpoint.md)) reports. `null` only when
+  worst case that `GET /api/oauth/usage` ([M14](m14-oauth-usage-endpoint.md)) reports. `null` only when
   no non-disabled account reports the window. ChatGPT/Codex response headers can
   populate the 5-hour and shared weekly windows; Codex has no Fable-scoped (`7d_oi`) signal, though
   another provider in a mixed pool may supply the aggregate Fable window.

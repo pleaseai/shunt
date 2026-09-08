@@ -199,8 +199,9 @@ bar tracks Codex traffic). M-A's snapshot loop therefore filters providers to
 `AuthMode::ClaudeOauth` only — worth its own regression test (see Tests).
 
 **Deviation 2 — routing-aware, priority-tiered worst case, not pool-wide least-utilized.**
-`usage::window_status` reports `1 - min(utilization)` across every non-disabled account,
-ignoring `priority`, `available` (cooldown/near-quota), and everything else
+`usage::window_status` reports `1 - min(utilization)` across every non-disabled account
+(as of #482 it reports `mean(1 - utilization)` instead — a pool-capacity figure that is still
+routing-blind, so the argument below holds unchanged), ignoring `priority`, `available` (cooldown/near-quota), and everything else
 `AccountPool::select_order` (`src/accounts.rs`) actually weighs when picking which account
 serves the *next* request. Reused verbatim, that produces exactly the failure the critique
 flagged: a priority-1 (preferred) account at 95% utilization plus a priority-100 (backup)

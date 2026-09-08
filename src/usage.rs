@@ -107,7 +107,7 @@ fn window_status(
         reporting += 1;
         headroom_sum += (1.0 - used).clamp(0.0, 1.0);
         if let Some(at) = reset(snapshot) {
-            earliest_reset = Some(earliest_reset.map_or(at, |current| current.min(at)));
+            earliest_reset = Some(earliest_reset.unwrap_or(at).min(at));
         }
     }
     if reporting == 0 {
@@ -117,7 +117,7 @@ fn window_status(
         };
     }
     WindowStatus {
-        remaining: Some(round4((headroom_sum / reporting as f64).clamp(0.0, 1.0))),
+        remaining: Some(round4(headroom_sum / reporting as f64)),
         resets_at: earliest_reset,
     }
 }
