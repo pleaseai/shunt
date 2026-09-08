@@ -44,10 +44,14 @@ impl Usage {
     /// The `usage` object of a Responses envelope. `total_tokens` sums the
     /// prompt and completion totals; the cached and reasoning counts are
     /// subsets reported in the details objects, so they are not added again.
+    /// A cached count is clamped to `input_tokens`, so an upstream that
+    /// reports more cached than prompt tokens cannot break that invariant.
     pub fn to_value(&self) -> Value {
         json!({
             "input_tokens": self.input_tokens,
-            "input_tokens_details": {"cached_tokens": self.cached_input_tokens},
+            "input_tokens_details": {
+                "cached_tokens": self.cached_input_tokens.min(self.input_tokens)
+            },
             "output_tokens": self.output_tokens,
             "output_tokens_details": {"reasoning_tokens": self.reasoning_tokens},
             "total_tokens": self.input_tokens.saturating_add(self.output_tokens),

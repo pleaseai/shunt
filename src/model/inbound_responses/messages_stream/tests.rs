@@ -191,13 +191,17 @@ fn interleaved_blocks_keep_their_order_in_the_completed_output() {
     let frames = drive(
         &mut machine,
         concat!(
+            // Blocks 0 and 1 are both open while their deltas arrive, and
+            // block 2 opens before block 1 closes, so every delta and stop
+            // has to be routed by `index` rather than to "the current block".
             "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
-            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"plan\"}}\n\n",
-            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
             "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
-            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"running it\"}}\n\n",
-            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"running\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"plan\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\" it\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
             "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_2\",\"name\":\"bash\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
             "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ),
@@ -207,6 +211,9 @@ fn interleaved_blocks_keep_their_order_in_the_completed_output() {
         output_types(&response),
         vec!["reasoning", "message", "function_call"]
     );
+    // Each delta landed on its own item, not on whichever block opened last.
+    assert_eq!(response["output"][1]["content"][0]["text"], "running it");
+    assert_eq!(response["output"][0]["summary"][0]["text"], "plan");
 }
 
 #[test]

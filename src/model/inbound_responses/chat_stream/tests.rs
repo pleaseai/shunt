@@ -305,19 +305,38 @@ fn finish_closes_open_items_and_fails_a_truncated_stream() {
 }
 
 #[test]
-fn an_unparsable_chunk_is_ignored() {
+fn an_unparsable_chunk_relays_the_rest_of_the_turn() {
     let mut machine = ChatSseMachine::new("chat-test");
     assert!(drive(&mut machine, &["{not json"]).is_empty());
-    // The turn continues as if the chunk had never arrived.
+    // The chunks that do parse still reach the client.
+    let frames = drive(
+        &mut machine,
+        &[r#"{"choices":[{"index":0,"delta":{"content":"ok"}}]}"#],
+    );
+    assert_eq!(names(&frames)[0], "response.created");
+    assert_eq!(frame(&frames, "response.output_text.delta")["delta"], "ok");
+}
+
+#[test]
+fn an_unparsable_chunk_fails_the_turn_at_done() {
+    let mut machine = ChatSseMachine::new("chat-test");
     let frames = drive(
         &mut machine,
         &[
             r#"{"choices":[{"index":0,"delta":{"content":"ok"}}]}"#,
+            "{not json",
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
             "[DONE]",
         ],
     );
-    assert_eq!(names(&frames)[0], "response.created");
-    assert_eq!(frame(&frames, "response.output_text.done")["text"], "ok");
+
+    // The lost chunk outranks the `stop`: a turn missing a piece is a failure,
+    // not a completion.
+    assert!(!names(&frames).contains(&"response.completed".to_string()));
+    let response = frame(&frames, "response.failed")["response"].clone();
+    assert_eq!(response["error"]["code"], MALFORMED_CODE);
+    assert_eq!(output_types(&response), vec!["message"]);
+    assert!(machine.is_terminal());
 }
 
 #[test]
@@ -402,13 +421,29 @@ fn translate_error_always_reports_a_string_message() {
     // A body that named no message at all still owes the client one.
     let missing = translate_error(&json!({"error": {"type": "rate_limit_error"}}));
     assert_eq!(missing["error"]["type"], "rate_limit_error");
-    assert!(missing["error"]["message"].is_string());
+    assert_eq!(
+        missing["error"]["message"],
+        "the upstream reported an error"
+    );
     // So does one that wrote something other than a string there — and the
     // fields it did name survive.
     let null = translate_error(&json!({"error": {"message": null, "code": 429}}));
-    assert!(null["error"]["message"].is_string());
+    assert_eq!(null["error"]["message"], "the upstream reported an error");
     assert_eq!(null["error"]["type"], "api_error");
     assert_eq!(null["error"]["code"], 429);
+}
+
+#[test]
+fn translate_error_replaces_an_unusable_type() {
+    // A `type` the client cannot read as a non-empty string is not passed
+    // through; it becomes the generic `api_error`.
+    for body in [
+        json!({"error": {"message": "nope", "type": ""}}),
+        json!({"error": {"message": "nope", "type": 500}}),
+        json!({"error": {"message": "nope", "type": null}}),
+    ] {
+        assert_eq!(translate_error(&body)["error"]["type"], "api_error");
+    }
 }
 
 #[test]

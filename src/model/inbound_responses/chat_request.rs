@@ -35,8 +35,15 @@ pub fn translate_request(request: &Value, upstream_model: &str) -> Result<Value,
     let mut out = Map::new();
     out.insert("model".to_string(), json!(upstream_model));
 
+    // A turn made only of `system` messages (bare `instructions`, or an
+    // `input` that folded entirely into system/developer items) is rejected
+    // here rather than upstream: Chat Completions backends 400 on it, and the
+    // sibling Messages translator refuses the same shape.
     let messages = messages(request);
-    if messages.is_empty() {
+    let has_conversation = messages
+        .iter()
+        .any(|message| message.get("role").and_then(Value::as_str) != Some("system"));
+    if !has_conversation {
         return Err(TranslateError::MissingInput);
     }
     out.insert("messages".to_string(), Value::Array(messages));
@@ -133,24 +140,36 @@ fn push_message(item: &Value, messages: &mut Vec<Value>) {
         "system" | "developer" => "system",
         other => other,
     };
-    messages.push(json!({"role": role, "content": message_content(item.get("content"))}));
+    // A message whose parts all dropped carries nothing the backend can see,
+    // so it is skipped rather than sent as an empty turn.
+    let Some(content) = message_content(item.get("content")) else {
+        return;
+    };
+    messages.push(json!({"role": role, "content": content}));
 }
 
 /// Message content: a string passes through, and a part array is translated
 /// part by part. An all-text array collapses back to a plain string -- many OSS
 /// backends reject a part array outright, especially on assistant messages.
-fn message_content(content: Option<&Value>) -> Value {
+///
+/// None means the message had parts but none of them survived, which is not the
+/// same as an empty string: forwarding `""` there would tell the backend the
+/// client said nothing.
+fn message_content(content: Option<&Value>) -> Option<Value> {
     match content {
-        Some(Value::String(text)) => json!(text),
+        Some(Value::String(text)) => Some(json!(text)),
         Some(Value::Array(items)) => {
             let parts: Vec<Value> = items.iter().filter_map(content_part).collect();
+            if parts.is_empty() && !items.is_empty() {
+                return None;
+            }
             if parts.iter().all(is_text_part) {
-                json!(join_text(&parts))
+                Some(json!(join_text(&parts)))
             } else {
-                Value::Array(parts)
+                Some(Value::Array(parts))
             }
         }
-        _ => json!(""),
+        _ => Some(json!("")),
     }
 }
 
@@ -191,6 +210,10 @@ fn content_part(part: &Value) -> Option<Value> {
                 file.insert("filename".to_string(), filename.clone());
             }
             file.insert("file_data".to_string(), json!(file_data));
+            // The `file` part is the documented Chat Completions shape for
+            // PDF input. Backends that only speak `text`/`image_url` reject
+            // it with a 400 the client can see, which beats silently
+            // dropping the user's attachment.
             Some(json!({"type": "file", "file": Value::Object(file)}))
         }
         _ => None,
@@ -257,12 +280,50 @@ fn output_text(output: Option<&Value>) -> String {
 
 /// Responses declares a function tool flat; Chat Completions nests it under
 /// `function`. Built-in tool types (`web_search`, `local_shell`, ...) have no
-/// Chat Completions equivalent and are dropped.
+/// Chat Completions equivalent and are dropped, and an `allowed_tools` choice
+/// narrows what is left.
 fn tools(request: &Value) -> Vec<Value> {
     let Some(tools) = request.get("tools").and_then(Value::as_array) else {
         return Vec::new();
     };
-    tools.iter().filter_map(function_tool).collect()
+    let allowed = allowed_tool_names(request);
+    tools
+        .iter()
+        .filter(|tool| is_allowed(tool, allowed.as_deref()))
+        .filter_map(function_tool)
+        .collect()
+}
+
+/// The function names an `allowed_tools` choice narrows the callable set to,
+/// or None when the request set no such choice. Built-in entries in the list
+/// carry no name to match a declared tool on and are ignored -- an allowlist
+/// made only of them therefore admits nothing.
+fn allowed_tool_names(request: &Value) -> Option<Vec<&str>> {
+    let choice = present(request.get("tool_choice"))?;
+    if choice.get("type").and_then(Value::as_str)? != "allowed_tools" {
+        return None;
+    }
+    let entries = choice.get("tools").and_then(Value::as_array)?;
+    if entries.is_empty() {
+        return None;
+    }
+    Some(entries.iter().filter_map(named_function).collect())
+}
+
+fn named_function(tool: &Value) -> Option<&str> {
+    if tool.get("type").and_then(Value::as_str) != Some("function") {
+        return None;
+    }
+    tool.get("name").and_then(Value::as_str)
+}
+
+/// Whether a declared tool survives the allowlist. Chat Completions can only
+/// carry function tools, so the name is the whole test.
+fn is_allowed(tool: &Value, allowed: Option<&[&str]>) -> bool {
+    let Some(allowed) = allowed else {
+        return true;
+    };
+    named_function(tool).is_some_and(|name| allowed.contains(&name))
 }
 
 fn function_tool(tool: &Value) -> Option<Value> {
@@ -301,9 +362,9 @@ fn tool_choice(request: &Value) -> Option<Value> {
                 let name = choice.get("name").and_then(Value::as_str)?;
                 Some(json!({"type": "function", "function": {"name": name}}))
             }
-            // `allowed_tools` narrows the callable set, which Chat Completions
-            // cannot express; its `mode` ("auto"/"required") is the part that
-            // survives.
+            // Chat Completions has no allowlist of its own, so the narrowing
+            // is applied to `tools` in [`tools`] and only the `mode`
+            // ("auto"/"required") survives here.
             "allowed_tools" => Some(json!(choice.get("mode").and_then(Value::as_str)?)),
             _ => None,
         },

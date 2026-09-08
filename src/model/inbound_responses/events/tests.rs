@@ -167,6 +167,21 @@ fn completed_reports_every_finished_item_and_the_usage_totals() {
 }
 
 #[test]
+fn usage_clamps_cached_tokens_to_the_input_total() {
+    // An upstream that counts more cached than prompt tokens would otherwise
+    // hand the client a usage object that contradicts itself.
+    let usage = Usage {
+        input_tokens: 40,
+        cached_input_tokens: 64,
+        output_tokens: 1,
+        reasoning_tokens: 0,
+    }
+    .to_value();
+    assert_eq!(usage["input_tokens_details"]["cached_tokens"], 40);
+    assert_eq!(usage["input_tokens"], 40);
+}
+
+#[test]
 fn a_terminal_event_after_failed_is_suppressed() {
     let mut emitter = ResponsesEmitter::new("claude-test");
     let failed = emitter.failed("rate_limit_error", "slow down");

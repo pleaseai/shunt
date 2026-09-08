@@ -266,6 +266,65 @@ fn tool_choice_forms_map_and_need_tools() {
 }
 
 #[test]
+fn an_allowed_tools_choice_narrows_the_forwarded_tools() {
+    let request = |allowed: Value| {
+        json!({
+            "input": "hi",
+            "tools": [
+                {"type": "function", "name": "read"},
+                {"type": "function", "name": "write"},
+            ],
+            "tool_choice": {"type": "allowed_tools", "mode": "auto", "tools": allowed},
+        })
+    };
+
+    let out = translate_request(
+        &request(json!([{"type": "function", "name": "write"}])),
+        "m",
+    )
+    .expect("request translates");
+    assert_eq!(
+        out["tools"],
+        json!([{
+            "type": "function",
+            "function": {"name": "write", "parameters": {"type": "object", "properties": {}}}
+        }])
+    );
+    assert_eq!(out["tool_choice"], "auto");
+
+    // Nothing declared is on the list -> neither tools nor tool_choice is sent.
+    let out = translate_request(&request(json!([{"type": "function", "name": "grep"}])), "m")
+        .expect("request translates");
+    assert!(out.get("tools").is_none());
+    assert!(out.get("tool_choice").is_none());
+}
+
+#[test]
+fn a_message_whose_parts_all_drop_is_not_sent() {
+    let unrepresentable = json!({
+        "role": "user",
+        "content": [{"type": "input_file", "file_id": "f_1"}],
+    });
+
+    // Alone, it leaves the request with no conversation at all.
+    let request = json!({"input": [unrepresentable.clone()]});
+    assert!(matches!(
+        translate_request(&request, "m"),
+        Err(TranslateError::MissingInput)
+    ));
+
+    // Beside a message that does translate, only that message is emitted.
+    let request = json!({
+        "input": [
+            unrepresentable,
+            {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+        ]
+    });
+    let out = translate_request(&request, "m").expect("request translates");
+    assert_eq!(out["messages"], json!([{"role": "user", "content": "hi"}]));
+}
+
+#[test]
 fn text_format_maps_to_response_format() {
     let schema = json!({
         "input": "hi",
@@ -380,5 +439,19 @@ fn a_request_with_no_translatable_input_is_rejected() {
 
     let dropped_only = json!({"input": [{"type": "reasoning", "id": "rs_1"}]});
     let error = translate_request(&dropped_only, "m").unwrap_err();
+    assert!(matches!(error, TranslateError::MissingInput));
+}
+
+#[test]
+fn a_request_with_only_system_messages_is_rejected() {
+    let instructions_only = json!({"instructions": "Be terse"});
+    let error = translate_request(&instructions_only, "m").unwrap_err();
+    assert!(matches!(error, TranslateError::MissingInput));
+
+    let developer_only = json!({
+        "instructions": "Be terse",
+        "input": [{"type": "message", "role": "developer", "content": "Use JSON"}]
+    });
+    let error = translate_request(&developer_only, "m").unwrap_err();
     assert!(matches!(error, TranslateError::MissingInput));
 }

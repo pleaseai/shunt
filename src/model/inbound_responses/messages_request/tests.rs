@@ -339,6 +339,46 @@ fn thinking_drops_the_sampling_parameters_anthropic_rejects() {
 }
 
 #[test]
+fn an_allowed_tools_choice_narrows_the_forwarded_tools() {
+    let request = |allowed: Value| {
+        with_input(json!({
+            "tools": [
+                {"type": "function", "name": "bash"},
+                {"type": "function", "name": "edit"},
+            ],
+            "tool_choice": {"type": "allowed_tools", "mode": "auto", "tools": allowed},
+        }))
+    };
+
+    let out = translate(request(json!([{"type": "function", "name": "edit"}])));
+    assert_eq!(
+        out["tools"],
+        json!([{"name": "edit", "input_schema": {"type": "object", "properties": {}}}])
+    );
+    assert_eq!(out["tool_choice"], json!({"type": "auto"}));
+
+    // Nothing declared is on the list -> neither tools nor tool_choice is sent.
+    let out = translate(request(json!([{"type": "function", "name": "grep"}])));
+    assert!(out.get("tools").is_none());
+    assert!(out.get("tool_choice").is_none());
+}
+
+#[test]
+fn a_file_url_with_an_unfetchable_scheme_is_dropped() {
+    let out = translate(json!({
+        "input": [{"type": "message", "role": "user", "content": [
+            {"type": "input_file", "file_url": "file:///etc/passwd"},
+            {"type": "input_file", "file_url": "https://example.com/a.pdf"}
+        ]}]
+    }));
+
+    assert_eq!(
+        out["messages"][0]["content"],
+        json!([{"type": "document", "source": {"type": "url", "url": "https://example.com/a.pdf"}}])
+    );
+}
+
+#[test]
 fn a_forced_tool_choice_wins_over_thinking() {
     for choice in [
         json!("required"),

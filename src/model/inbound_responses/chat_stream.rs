@@ -30,6 +30,14 @@ const DONE: &str = "[DONE]";
 /// produces.
 const TRUNCATED_CODE: &str = "upstream_stream_truncated";
 
+/// The `code` on the `response.failed` a stream that carried a chunk the
+/// machine could not parse produces, however it then terminated.
+const MALFORMED_CODE: &str = "upstream_stream_malformed";
+
+/// The `message` that failure reports. Fixed, because the payload that failed
+/// to parse is client-visible content and never leaves this module.
+const MALFORMED_MESSAGE: &str = "the upstream stream contained an unreadable chunk";
+
 /// The `code` on the `response.failed` an in-stream error that named neither a
 /// `code` nor a `type` produces.
 const UPSTREAM_ERROR_CODE: &str = "upstream_error";
@@ -57,6 +65,10 @@ pub struct ChatSseMachine {
     open_calls: BTreeSet<usize>,
     usage: Usage,
     finish_reason: Option<String>,
+    /// Whether a `data:` payload failed to parse. A turn that lost a chunk
+    /// cannot be reported as complete: the client would take a truncated
+    /// answer for the whole one.
+    damaged: bool,
 }
 
 impl ChatSseMachine {
@@ -70,6 +82,7 @@ impl ChatSseMachine {
             open_calls: BTreeSet::new(),
             usage: Usage::default(),
             finish_reason: None,
+            damaged: false,
         }
     }
 
@@ -92,7 +105,8 @@ impl ChatSseMachine {
         let Ok(chunk) = serde_json::from_str::<Value>(data) else {
             // Upstream chunks reach logs and Sentry, so the payload that failed
             // to parse is described, never quoted.
-            tracing::debug!("ignoring an unparsable chat completions chunk");
+            tracing::debug!("an unparsable chat completions chunk damaged the stream");
+            self.damaged = true;
             return Vec::new();
         };
         let mut frames = self.created();
@@ -146,10 +160,14 @@ impl ChatSseMachine {
         }
         let mut frames = self.created();
         frames.extend(self.close_open_items());
-        frames.push(self.emitter.failed(
-            TRUNCATED_CODE,
-            "the upstream stream ended before the completion finished",
-        ));
+        frames.push(if self.damaged {
+            self.emitter.failed(MALFORMED_CODE, MALFORMED_MESSAGE)
+        } else {
+            self.emitter.failed(
+                TRUNCATED_CODE,
+                "the upstream stream ended before the completion finished",
+            )
+        });
         frames
     }
 
@@ -165,6 +183,12 @@ impl ChatSseMachine {
     fn complete(&mut self) -> Vec<String> {
         let mut frames = self.created();
         frames.extend(self.close_open_items());
+        // `[DONE]` says the upstream finished sending, not that what arrived
+        // was whole: a chunk shunt could not read makes this turn a failure.
+        if self.damaged {
+            frames.push(self.emitter.failed(MALFORMED_CODE, MALFORMED_MESSAGE));
+            return frames;
+        }
         let usage = self.usage.clone();
         frames.push(match incomplete_reason(self.finish_reason.as_deref()) {
             Some(reason) => self.emitter.incomplete(reason, usage),
@@ -369,7 +393,15 @@ pub fn translate_error(chat_error: &Value) -> Value {
     // A client reads `message` as a string, so a body that omitted it — or
     // wrote something else there — gets the same fallback `fail()` uses.
     error.insert("message".to_string(), json!(error_message(source)));
-    error.entry("type").or_insert_with(|| json!("api_error"));
+    // The same holds for `type`: a missing, non-string, or empty one becomes
+    // the generic `api_error` rather than reaching the client as-is.
+    if !error
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| !kind.is_empty())
+    {
+        error.insert("type".to_string(), json!("api_error"));
+    }
     for key in ["code", "param"] {
         error.entry(key).or_insert(Value::Null);
     }

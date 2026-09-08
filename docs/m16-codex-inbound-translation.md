@@ -89,7 +89,7 @@ the open item intact.
 | `text.format` `json_schema` | `output_format` | `{type: "json_schema", schema}`. The dispatching caller is responsible for the structured-outputs beta header. `json_object` / `text` → nothing. |
 | everything else | — | Dropped: `store`, `include`, `prompt_cache_key`, `previous_response_id`, `truncation`, `service_tier`, `text.verbosity`, `reasoning.summary`, `safety_identifier`, `user`. |
 
-Errors: `NotAnObject`, `MissingInput` (no message survived). Error text never quotes the request.
+Errors: `NotAnObject`, `MissingInput` (no user or assistant message survived). Error text never quotes the request.
 
 ## 4. Anthropic Messages → Responses (`messages_stream`)
 
@@ -132,6 +132,10 @@ message rather than an echo of the upstream body.
 | `text.format` | `response_format` | `json_schema` (needs `name` and `schema`) → `{json_schema: {name, schema, strict?, description?}}`; `json_object` → `{type: json_object}`; `text` → nothing. |
 | everything else | — | Dropped: `store`, `include`, `prompt_cache_key`, `previous_response_id`, `truncation`, `service_tier`, `reasoning.summary`, `background`. |
 
+Errors: `NotAnObject`, `MissingInput` (no user, assistant, or tool message survived; a turn that
+folds entirely into `system` messages, such as bare `instructions`, is rejected here rather than
+by the backend). Error text never quotes the request.
+
 Follow-up, not implemented: echoing a dropped `reasoning` item back as DeepSeek's
 `reasoning_content` on the next assistant message.
 
@@ -149,10 +153,13 @@ Follow-up, not implemented: echoing a dropped `reasoning` item back as DeepSeek'
   close together on the next text or reasoning delta, or at the end of the turn.
 - `finish_reason` is remembered, not emitted, because the usage chunk may still follow. `length` →
   incomplete `max_output_tokens`, `content_filter` → incomplete `content_filter`.
-- `usage` → `prompt_tokens`, `prompt_tokens_details.cached_tokens`, `completion_tokens`,
+- `usage` → `prompt_tokens`, `prompt_tokens_details.cached_tokens` (clamped to `input_tokens`, so
+  a provider that over-reports cached tokens cannot break `cached ≤ input`), `completion_tokens`,
   `completion_tokens_details.reasoning_tokens`.
 - `[DONE]` → open items closed, then the remembered terminal. A streamed `{"error": …}` chunk →
-  `response.failed`. Unparsable chunks are ignored without being logged verbatim.
+  `response.failed`. An unparsable chunk is never logged verbatim; it marks the stream damaged, so
+  the terminal becomes `response.failed` with code `upstream_stream_malformed` however the stream
+  then ends.
 
 `finish()` emits the startup frames first when the stream failed before any of them were sent.
 `translate_response` and `translate_error` mirror §4; Chat errors are already OpenAI-shaped and

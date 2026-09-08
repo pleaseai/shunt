@@ -329,7 +329,8 @@ fn image_block(part: &Value) -> Option<Value> {
 }
 
 /// Responses `input_file` -> Anthropic `document`. `file_data` holds a data URL
-/// (a PDF, in practice), `file_url` a fetchable one.
+/// (a PDF, in practice), `file_url` an http(s) one; any other scheme is dropped
+/// rather than forwarded as a source the upstream cannot fetch.
 fn document_block(part: &Value) -> Option<Value> {
     if let Some(file_data) = part.get("file_data").and_then(Value::as_str) {
         let (media_type, data) = split_data_url(file_data)?;
@@ -339,7 +340,8 @@ fn document_block(part: &Value) -> Option<Value> {
         }));
     }
     let url = part.get("file_url").and_then(Value::as_str)?;
-    Some(json!({"type": "document", "source": {"type": "url", "url": url}}))
+    (url.starts_with("https://") || url.starts_with("http://"))
+        .then(|| json!({"type": "document", "source": {"type": "url", "url": url}}))
 }
 
 /// Responses `function_call` -> Anthropic `tool_use`. `arguments` is a
@@ -391,19 +393,52 @@ fn tool_result_block(item: &Value) -> Value {
 /// Responses `tools` -> Anthropic `tools`. Function tools carry over; the
 /// hosted web-search tool maps to Anthropic's own; every other built-in
 /// (`code_interpreter`, `file_search`, …) has no Anthropic equivalent and is
-/// dropped rather than registered as a function the client cannot run.
+/// dropped rather than registered as a function the client cannot run. An
+/// `allowed_tools` choice narrows the function tools to the names it lists.
 fn tools(request: &Value) -> Vec<Value> {
     let Some(tools) = request.get("tools").and_then(Value::as_array) else {
         return Vec::new();
     };
+    let allowed = allowed_tool_names(request);
     tools
         .iter()
         .filter_map(|tool| match tool.get("type").and_then(Value::as_str) {
-            Some("function") => Some(function_tool(tool)),
+            Some("function") if is_allowed(tool, allowed.as_deref()) => Some(function_tool(tool)),
             Some(kind) if WEB_SEARCH_TYPES.contains(&kind) => Some(web_search_tool(tool)),
             _ => None,
         })
         .collect()
+}
+
+/// The function names an `allowed_tools` choice narrows the callable set to,
+/// or None when the request set no such choice. Built-in entries in the list
+/// carry no name to match a declared tool on and are ignored -- an allowlist
+/// made only of them therefore admits no function tool.
+fn allowed_tool_names(request: &Value) -> Option<Vec<&str>> {
+    let choice = request.get("tool_choice")?;
+    if choice.get("type").and_then(Value::as_str)? != "allowed_tools" {
+        return None;
+    }
+    let entries = choice.get("tools").and_then(Value::as_array)?;
+    if entries.is_empty() {
+        return None;
+    }
+    Some(entries.iter().filter_map(named_function).collect())
+}
+
+fn named_function(tool: &Value) -> Option<&str> {
+    if tool.get("type").and_then(Value::as_str) != Some("function") {
+        return None;
+    }
+    tool.get("name").and_then(Value::as_str)
+}
+
+/// Whether a declared function tool survives the allowlist.
+fn is_allowed(tool: &Value, allowed: Option<&[&str]>) -> bool {
+    let Some(allowed) = allowed else {
+        return true;
+    };
+    named_function(tool).is_some_and(|name| allowed.contains(&name))
 }
 
 fn function_tool(tool: &Value) -> Value {
@@ -448,9 +483,9 @@ fn tool_choice(request: &Value) -> Option<Value> {
                     .get("name")
                     .and_then(Value::as_str)
                     .map(|name| json!({"type": "tool", "name": name})),
-                // `allowed_tools` restricts the callable set, which Anthropic
-                // cannot express; its `mode` still carries the auto/required
-                // decision, so keep that much.
+                // Anthropic has no allowlist of its own, so the narrowing is
+                // applied to `tools` in [`tools`] and only the `mode`'s
+                // auto/required decision survives here.
                 "allowed_tools" => {
                     named_choice(choice.get("mode").and_then(Value::as_str).unwrap_or("auto"))
                 }
