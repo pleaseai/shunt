@@ -107,11 +107,19 @@ impl OpenAiChatSseMachine {
         &mut self,
         chunk: &Value,
     ) -> Result<Vec<SseEvent>, OpenAiChatSemanticError> {
-        if self.terminal != TerminalState::Open {
+        match self.terminal {
+            TerminalState::Open => {}
+            // With stream_options.include_usage the official stream appends a
+            // usage-only chunk (empty choices) after the finish_reason chunk
+            // and before [DONE]. Accept exactly that shape; content, a second
+            // finish, or any other payload after finish_reason fails closed.
+            TerminalState::SuccessPending => return self.process_trailing_usage_chunk(chunk),
+            _ => {
             self.terminal = TerminalState::ProtocolFailed;
             return Err(OpenAiChatSemanticError::protocol(
                 "OpenAI Chat semantic data arrived after a terminal outcome",
             ));
+            }
         }
 
         let checked = match self.validate_chunk(chunk) {
@@ -161,6 +169,58 @@ impl OpenAiChatSseMachine {
             self.terminal = TerminalState::SuccessPending;
         }
         Ok(events)
+    }
+
+    fn process_trailing_usage_chunk(
+        &mut self,
+        chunk: &Value,
+    ) -> Result<Vec<SseEvent>, OpenAiChatSemanticError> {
+        let chunk = chunk
+            .as_object()
+            .ok_or_else(|| {
+                OpenAiChatSemanticError::protocol("OpenAI Chat chunk must be an object")
+            })?;
+        if chunk.contains_key("error") {
+            self.terminal = TerminalState::ProviderFailed;
+            let message = chunk
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("OpenAI Chat backend error");
+            return Ok(vec![SseEvent {
+                event: "error".to_string(),
+                data: json!({
+                    "type": "error",
+                    "error": {"type": "api_error", "message": message}
+                }),
+            }]);
+        }
+        if let Some(choices) = chunk.get("choices") {
+            let choices = choices.as_array().ok_or_else(|| {
+                OpenAiChatSemanticError::protocol("OpenAI Chat choices must be an array")
+            })?;
+            let carries_payload = choices.iter().any(|choice| {
+                choice
+                    .get("delta")
+                    .and_then(|delta| delta.get("content"))
+                    .is_some_and(|content| !content.is_null())
+                    || choice.get("finish_reason").is_some()
+            });
+            if carries_payload {
+                self.terminal = TerminalState::ProtocolFailed;
+                return Err(OpenAiChatSemanticError::protocol(
+                    "content or a second finish_reason arrived after the finish_reason chunk",
+                ));
+            }
+        }
+        let (input_tokens, output_tokens) = validate_usage(chunk.get("usage"))?;
+        if let Some(tokens) = input_tokens {
+            self.input_tokens = tokens;
+        }
+        if let Some(tokens) = output_tokens {
+            self.output_tokens = tokens;
+        }
+        Ok(Vec::new())
     }
 
     fn validate_chunk(&self, chunk: &Value) -> Result<CheckedChunk, OpenAiChatSemanticError> {
