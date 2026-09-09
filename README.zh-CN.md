@@ -187,11 +187,11 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 | Codex 多账号池化 —— `x-codex-*` 窗口跟踪、慢启动爬坡、重新探测 | 拥有两个及以上账号的 `auth = "chatgpt_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.dev/zh-cn/guides/codex-multi-account/) |
 | 入站 Codex 端点 —— 把 **Codex CLI** 指向 shunt 并纳入同一个池,还可按模型选择性路由 | `[server.codex_endpoint]` | [指南](https://shunt.dev/zh-cn/guides/inbound-codex-endpoint/) |
 | Claude 应用网关登录 —— OAuth 设备流、managed settings、按用户策略 | `[server.gateway]` | [指南](https://shunt.dev/zh-cn/guides/gateway-login/) |
-| 网关遥测接收 —— 原样转发受管客户端的 OTLP | `[server.gateway.telemetry]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#servergatewaytelemetry可选) |
+| 网关遥测接收 —— 原样转发受管客户端的 OTLP | 已配置的 `[server.gateway]`,以及 `forward_to` 非空的 `[server.gateway.telemetry]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#servergatewaytelemetry可选) |
 | 管理 Web 界面 —— 账号与用量看板、浏览器预配 | `[server.admin]`、`shunt dashboard setup` | [指南](https://shunt.dev/zh-cn/guides/admin-remote-provisioning/) |
 | 支出上限 Admin API —— 组织级和用户级上限(stage 1 只存储,尚未实施) | `[server.admin]` + `[server.spend]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#serverspend可选) |
 | 客户端用量端点 —— `GET /usage` 返回脱敏聚合后的池余量 | `[server.auth]` + `[server.usage]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#serverusage可选) |
-| Claude Code CLI 原生用量条 —— 提供 `GET /api/oauth/usage` | `[server.oauth_usage]` | [参考(英文)](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
+| Claude Code CLI 原生用量条 —— 提供 `GET /api/oauth/usage` | `[server.oauth_usage]`;非回环 bind 还需 `[server.auth]` 或 `[server.gateway]` | [参考(英文)](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
 | 上游状态轮询 —— 在看板和指标中展示 Statuspage 指示灯 | `[server.status]` | [参考(英文)](https://shunt.dev/reference/configuration/#serverstatus-optional) |
 | 有界的上游重试 —— **默认开启**,保守,且绝不在流中途重试 | `[providers.<name>.retry]` | [参考(英文)](https://shunt.dev/reference/configuration/#providersnameretry) |
 | 共享部署限制 —— **默认启用**(并发 1024、请求体 32 MiB、TTFB 120 秒、设备流限速),CIDR、请求头与 URL 限制需显式配置 | `[server] max_concurrent_requests`、`[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [指南](https://shunt.dev/zh-cn/guides/shared-gateway/) |

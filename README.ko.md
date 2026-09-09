@@ -188,11 +188,11 @@ OpenAI의 Thibault Sottiaux는 다른 코딩 하네스를 통해 Codex를 실행
 | Codex 멀티 계정 풀링 — `x-codex-*` 윈도우 추적, 슬로우 스타트 램프, 재프로브 | 계정 2개 이상인 `auth = "chatgpt_oauth"`; `[server.pool]`은 선택적 튜닝 | [가이드](https://shunt.dev/ko/guides/codex-multi-account/) |
 | 인바운드 Codex 엔드포인트 — **Codex CLI**를 shunt로 향하게 해 같은 풀에 태우고, 모델별 라우팅도 선택할 수 있음 | `[server.codex_endpoint]` | [가이드](https://shunt.dev/ko/guides/inbound-codex-endpoint/) |
 | Claude 앱 게이트웨이 로그인 — OAuth device flow, managed settings, 사용자별 정책 | `[server.gateway]` | [가이드](https://shunt.dev/ko/guides/gateway-login/) |
-| 게이트웨이 텔레메트리 인제스트 — 관리 클라이언트의 OTLP를 그대로 릴레이 | `[server.gateway.telemetry]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#servergatewaytelemetry-선택) |
+| 게이트웨이 텔레메트리 인제스트 — 관리 클라이언트의 OTLP를 그대로 릴레이 | 구성된 `[server.gateway]`와 `forward_to`가 비어 있지 않은 `[server.gateway.telemetry]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#servergatewaytelemetry-선택) |
 | 관리자 웹 화면 — 계정·사용량 대시보드, 브라우저 프로비저닝 | `[server.admin]`, `shunt dashboard setup` | [가이드](https://shunt.dev/ko/guides/admin-remote-provisioning/) |
 | 지출 한도 Admin API — 조직·사용자 단위 상한(1단계는 저장만 하고 아직 적용하지 않음) | `[server.admin]` + `[server.spend]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverspend-선택) |
 | 클라이언트 사용량 엔드포인트 — `GET /usage`가 정제·집계된 풀 여유를 반환 | `[server.auth]` + `[server.usage]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverusage-선택) |
-| Claude Code CLI 네이티브 사용량 막대 — `GET /api/oauth/usage` 제공 | `[server.oauth_usage]` | [레퍼런스(영문)](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
+| Claude Code CLI 네이티브 사용량 막대 — `GET /api/oauth/usage` 제공 | `[server.oauth_usage]`, 루프백이 아닌 bind에서는 `[server.auth]` 또는 `[server.gateway]` 추가 필요 | [레퍼런스(영문)](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
 | 업스트림 상태 폴링 — 대시보드와 메트릭에 Statuspage 지표 노출 | `[server.status]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverstatus-선택) |
 | 제한된 업스트림 재시도 — **기본 활성**, 보수적이며 스트림 도중에는 재시도하지 않음 | `[providers.<name>.retry]` | [레퍼런스(영문)](https://shunt.dev/reference/configuration/#providersnameretry) |
 | 공유 배포 제한 — **기본 활성**(동시 1024, 본문 32 MiB, TTFB 120초, device-flow 레이트 리밋), CIDR·헤더·URL 제한은 선택 | `[server] max_concurrent_requests`, `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [가이드](https://shunt.dev/ko/guides/shared-gateway/) |

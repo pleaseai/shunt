@@ -188,11 +188,11 @@ OpenAI の Thibault Sottiaux は、他のコーディングハーネスを通じ
 | Codex マルチアカウントプーリング — `x-codex-*` ウィンドウの追跡、スロースタートのランプ、再プローブ | アカウント 2 つ以上の `auth = "chatgpt_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.dev/ja/guides/codex-multi-account/) |
 | 受信 Codex エンドポイント — **Codex CLI** 自体を shunt に向けて同じプールに載せ、モデル単位のルーティングも選択可能 | `[server.codex_endpoint]` | [ガイド](https://shunt.dev/ja/guides/inbound-codex-endpoint/) |
 | Claude アプリ向けゲートウェイログイン — OAuth デバイスフロー、managed settings、ユーザー単位のポリシー | `[server.gateway]` | [ガイド](https://shunt.dev/ja/guides/gateway-login/) |
-| ゲートウェイテレメトリの受信 — 管理対象クライアントの OTLP をそのままリレー | `[server.gateway.telemetry]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#servergatewaytelemetryオプション) |
+| ゲートウェイテレメトリの受信 — 管理対象クライアントの OTLP をそのままリレー | 構成済みの `[server.gateway]` と、`forward_to` が空でない `[server.gateway.telemetry]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#servergatewaytelemetryオプション) |
 | 管理 Web 画面 — アカウントと使用量のダッシュボード、ブラウザーからのプロビジョニング | `[server.admin]`、`shunt dashboard setup` | [ガイド](https://shunt.dev/ja/guides/admin-remote-provisioning/) |
 | 支出上限 Admin API — 組織単位・ユーザー単位の上限（ステージ 1 は保存のみで、まだ適用しません） | `[server.admin]` + `[server.spend]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#serverspendオプション) |
 | クライアント向け使用量エンドポイント — `GET /usage` がサニタイズ・集計されたプールの余裕を返す | `[server.auth]` + `[server.usage]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#serverusageオプション) |
-| Claude Code CLI ネイティブ使用量バー — `GET /api/oauth/usage` を提供 | `[server.oauth_usage]` | [リファレンス（英語）](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
+| Claude Code CLI ネイティブ使用量バー — `GET /api/oauth/usage` を提供 | `[server.oauth_usage]`。ループバック以外の bind では `[server.auth]` または `[server.gateway]` も必要 | [リファレンス（英語）](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
 | アップストリームのステータスポーリング — Statuspage の指標をダッシュボードとメトリクスに表示 | `[server.status]` | [リファレンス（英語）](https://shunt.dev/reference/configuration/#serverstatus-optional) |
 | 上限付きのアップストリームリトライ — **デフォルトで有効**、保守的で、ストリーム途中では決してリトライしません | `[providers.<name>.retry]` | [リファレンス（英語）](https://shunt.dev/reference/configuration/#providersnameretry) |
 | 共有デプロイの制限 — **デフォルトで有効**（同時 1024、ボディ 32 MiB、TTFB 120 秒、デバイスフローのレートリミット）。CIDR・ヘッダー・URL 制限はオプトイン | `[server] max_concurrent_requests`、`[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [ガイド](https://shunt.dev/ja/guides/shared-gateway/) |
