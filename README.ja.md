@@ -184,19 +184,19 @@ OpenAI の Thibault Sottiaux は、他のコーディングハーネスを通じ
 
 | 機能 | 有効化 | ドキュメント |
 | :-- | :-- | :-- |
-| Anthropic マルチアカウントプーリング — スティッキーセッション、クォータを考慮したローテーション、予測的回避 | `auth = "claude_oauth"`、`[server.pool]` | [ガイド](https://shunt.dev/ja/guides/anthropic-multi-account/) |
-| Codex マルチアカウントプーリング — `x-codex-*` ウィンドウの追跡、スロースタートのランプ、再プローブ | `auth = "chatgpt_oauth"`、`[server.pool]` | [ガイド](https://shunt.dev/ja/guides/codex-multi-account/) |
+| Anthropic マルチアカウントプーリング — スティッキーセッション、クォータを考慮したローテーション、予測的回避 | アカウント 2 つ以上の `auth = "claude_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.dev/ja/guides/anthropic-multi-account/) |
+| Codex マルチアカウントプーリング — `x-codex-*` ウィンドウの追跡、スロースタートのランプ、再プローブ | アカウント 2 つ以上の `auth = "chatgpt_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.dev/ja/guides/codex-multi-account/) |
 | 受信 Codex エンドポイント — **Codex CLI** 自体を shunt に向けて同じプールに載せ、モデル単位のルーティングも選択可能 | `[server.codex_endpoint]` | [ガイド](https://shunt.dev/ja/guides/inbound-codex-endpoint/) |
 | Claude アプリ向けゲートウェイログイン — OAuth デバイスフロー、managed settings、ユーザー単位のポリシー | `[server.gateway]` | [ガイド](https://shunt.dev/ja/guides/gateway-login/) |
 | ゲートウェイテレメトリの受信 — 管理対象クライアントの OTLP をそのままリレー | `[server.gateway.telemetry]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#servergatewaytelemetryオプション) |
 | 管理 Web 画面 — アカウントと使用量のダッシュボード、ブラウザーからのプロビジョニング | `[server.admin]`、`shunt dashboard setup` | [ガイド](https://shunt.dev/ja/guides/admin-remote-provisioning/) |
-| 支出上限 Admin API — 組織単位・ユーザー単位の上限（ステージ 1 は保存のみで、まだ適用しません） | `[server.spend]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#serverspendオプション) |
-| クライアント向け使用量エンドポイント — `GET /usage` がサニタイズ・集計されたプールの余裕を返す | `[server.usage]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#serverusageオプション) |
+| 支出上限 Admin API — 組織単位・ユーザー単位の上限（ステージ 1 は保存のみで、まだ適用しません） | `[server.admin]` + `[server.spend]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#serverspendオプション) |
+| クライアント向け使用量エンドポイント — `GET /usage` がサニタイズ・集計されたプールの余裕を返す | `[server.auth]` + `[server.usage]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#serverusageオプション) |
 | Claude Code CLI ネイティブ使用量バー — `GET /api/oauth/usage` を提供 | `[server.oauth_usage]` | [リファレンス（英語）](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
 | アップストリームのステータスポーリング — Statuspage の指標をダッシュボードとメトリクスに表示 | `[server.status]` | [リファレンス（英語）](https://shunt.dev/reference/configuration/#serverstatus-optional) |
 | 上限付きのアップストリームリトライ — **デフォルトで有効**、保守的で、ストリーム途中では決してリトライしません | `[providers.<name>.retry]` | [リファレンス（英語）](https://shunt.dev/reference/configuration/#providersnameretry) |
-| 共有デプロイの制限 — 同時実行の上限、CIDR ルール、サイズ・タイムアウト制限、デバイスフローのレートリミット | `[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [ガイド](https://shunt.dev/ja/guides/shared-gateway/) |
-| シークレット参照 — 任意の文字列値で `${VAR}` または `${file:/abs/path}` を使え、ホットリロードごとに再解決 | 設定内の任意の文字列（**常に有効**） | [リファレンス](https://shunt.dev/ja/reference/configuration/) |
+| 共有デプロイの制限 — **デフォルトで有効**（同時 1024、ボディ 32 MiB、TTFB 120 秒、デバイスフローのレートリミット）。CIDR・ヘッダー・URL 制限はオプトイン | `[server] max_concurrent_requests`、`[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [ガイド](https://shunt.dev/ja/guides/shared-gateway/) |
+| シークレット参照 — 任意の文字列値で `${VAR}` または `${file:/abs/path}` を使え、ホットリロードごとに再解決（`[sentry]`・`[otel]` を除く。起動時に一度だけ構築されるため再起動が必要） | 設定内の任意の文字列（**常に有効**） | [リファレンス](https://shunt.dev/ja/reference/configuration/) |
 | OpenTelemetry のメトリクスとトレース | `[otel]` | [ガイド](https://shunt.dev/ja/guides/opentelemetry/) |
 
 ## ドキュメント

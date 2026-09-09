@@ -184,19 +184,19 @@ Unless a row says otherwise, these are **off by default** — absent its config 
 
 | Feature | Enable with | Documentation |
 | :-- | :-- | :-- |
-| Anthropic multi-account pooling — sticky sessions, quota-aware rotation, predictive avoidance | `auth = "claude_oauth"`, `[server.pool]` | [How-to](https://shunt.dev/guides/anthropic-multi-account/) |
-| Codex multi-account pooling — `x-codex-*` window tracking, slow-start ramp, re-probing | `auth = "chatgpt_oauth"`, `[server.pool]` | [How-to](https://shunt.dev/guides/codex-multi-account/) |
+| Anthropic multi-account pooling — sticky sessions, quota-aware rotation, predictive avoidance | `auth = "claude_oauth"` with two or more accounts; `[server.pool]` is optional tuning | [How-to](https://shunt.dev/guides/anthropic-multi-account/) |
+| Codex multi-account pooling — `x-codex-*` window tracking, slow-start ramp, re-probing | `auth = "chatgpt_oauth"` with two or more accounts; `[server.pool]` is optional tuning | [How-to](https://shunt.dev/guides/codex-multi-account/) |
 | Inbound Codex endpoint — point the **Codex CLI** at shunt and pool it, with opt-in per-model routing | `[server.codex_endpoint]` | [How-to](https://shunt.dev/guides/inbound-codex-endpoint/) |
 | Claude apps gateway login — OAuth device flow, managed settings, per-user policy | `[server.gateway]` | [How-to](https://shunt.dev/guides/gateway-login/) |
 | Gateway telemetry ingest — verbatim OTLP relay for managed clients | `[server.gateway.telemetry]` | [Reference](https://shunt.dev/reference/configuration/#servergatewaytelemetry-optional) |
 | Admin web surface — accounts and usage dashboard, browser provisioning | `[server.admin]`, `shunt dashboard setup` | [How-to](https://shunt.dev/guides/admin-remote-provisioning/) |
-| Spend-limit Admin API — organization- and user-scoped caps (stage 1 stores, does not enforce) | `[server.spend]` | [Reference](https://shunt.dev/reference/configuration/#serverspend-optional) |
-| Client usage endpoint — sanitized, aggregated pool headroom at `GET /usage` | `[server.usage]` | [Reference](https://shunt.dev/reference/configuration/#serverusage-optional) |
+| Spend-limit Admin API — organization- and user-scoped caps (stage 1 stores, does not enforce) | `[server.admin]` + `[server.spend]` | [Reference](https://shunt.dev/reference/configuration/#serverspend-optional) |
+| Client usage endpoint — sanitized, aggregated pool headroom at `GET /usage` | `[server.auth]` + `[server.usage]` | [Reference](https://shunt.dev/reference/configuration/#serverusage-optional) |
 | Claude Code CLI native usage bars — serves `GET /api/oauth/usage` | `[server.oauth_usage]` | [Reference](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
 | Upstream status polling — Statuspage indicators in the dashboard and as a metric | `[server.status]` | [Reference](https://shunt.dev/reference/configuration/#serverstatus-optional) |
 | Bounded upstream retry — **on by default**, conservative, never mid-stream | `[providers.<name>.retry]` | [Reference](https://shunt.dev/reference/configuration/#providersnameretry) |
-| Shared-deployment limits — concurrency cap, CIDR rules, size/timeout limits, device-flow rate limits | `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [How-to](https://shunt.dev/guides/shared-gateway/) |
-| Secret references — `${VAR}` or `${file:/abs/path}` in any string value, re-resolved on hot reload | any config string (**always on**) | [Reference](https://shunt.dev/reference/configuration/) |
+| Shared-deployment limits — **on by default** (1024 concurrent, 32 MiB bodies, 120 s TTFB, device-flow rate limits); CIDR, header, and URL limits are opt-in | `[server] max_concurrent_requests`, `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [How-to](https://shunt.dev/guides/shared-gateway/) |
+| Secret references — `${VAR}` or `${file:/abs/path}` in any string value, re-resolved on hot reload (not `[sentry]`/`[otel]`, built once at startup — rotating those needs a restart) | any config string (**always on**) | [Reference](https://shunt.dev/reference/configuration/) |
 | OpenTelemetry metrics and traces | `[otel]` | [How-to](https://shunt.dev/guides/opentelemetry/) |
 
 ## Documentation

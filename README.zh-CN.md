@@ -183,19 +183,19 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 
 | 功能 | 启用方式 | 文档 |
 | :-- | :-- | :-- |
-| Anthropic 多账号池化 —— 粘性会话、配额感知轮换、预测性规避 | `auth = "claude_oauth"`、`[server.pool]` | [指南](https://shunt.dev/zh-cn/guides/anthropic-multi-account/) |
-| Codex 多账号池化 —— `x-codex-*` 窗口跟踪、慢启动爬坡、重新探测 | `auth = "chatgpt_oauth"`、`[server.pool]` | [指南](https://shunt.dev/zh-cn/guides/codex-multi-account/) |
+| Anthropic 多账号池化 —— 粘性会话、配额感知轮换、预测性规避 | 拥有两个及以上账号的 `auth = "claude_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.dev/zh-cn/guides/anthropic-multi-account/) |
+| Codex 多账号池化 —— `x-codex-*` 窗口跟踪、慢启动爬坡、重新探测 | 拥有两个及以上账号的 `auth = "chatgpt_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.dev/zh-cn/guides/codex-multi-account/) |
 | 入站 Codex 端点 —— 把 **Codex CLI** 指向 shunt 并纳入同一个池,还可按模型选择性路由 | `[server.codex_endpoint]` | [指南](https://shunt.dev/zh-cn/guides/inbound-codex-endpoint/) |
 | Claude 应用网关登录 —— OAuth 设备流、managed settings、按用户策略 | `[server.gateway]` | [指南](https://shunt.dev/zh-cn/guides/gateway-login/) |
 | 网关遥测接收 —— 原样转发受管客户端的 OTLP | `[server.gateway.telemetry]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#servergatewaytelemetry可选) |
 | 管理 Web 界面 —— 账号与用量看板、浏览器预配 | `[server.admin]`、`shunt dashboard setup` | [指南](https://shunt.dev/zh-cn/guides/admin-remote-provisioning/) |
-| 支出上限 Admin API —— 组织级和用户级上限(stage 1 只存储,尚未实施) | `[server.spend]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#serverspend可选) |
-| 客户端用量端点 —— `GET /usage` 返回脱敏聚合后的池余量 | `[server.usage]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#serverusage可选) |
+| 支出上限 Admin API —— 组织级和用户级上限(stage 1 只存储,尚未实施) | `[server.admin]` + `[server.spend]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#serverspend可选) |
+| 客户端用量端点 —— `GET /usage` 返回脱敏聚合后的池余量 | `[server.auth]` + `[server.usage]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#serverusage可选) |
 | Claude Code CLI 原生用量条 —— 提供 `GET /api/oauth/usage` | `[server.oauth_usage]` | [参考(英文)](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
 | 上游状态轮询 —— 在看板和指标中展示 Statuspage 指示灯 | `[server.status]` | [参考(英文)](https://shunt.dev/reference/configuration/#serverstatus-optional) |
 | 有界的上游重试 —— **默认开启**,保守,且绝不在流中途重试 | `[providers.<name>.retry]` | [参考(英文)](https://shunt.dev/reference/configuration/#providersnameretry) |
-| 共享部署限制 —— 并发上限、CIDR 规则、大小与超时限制、设备流限速 | `[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [指南](https://shunt.dev/zh-cn/guides/shared-gateway/) |
-| 密钥引用 —— 任意字符串值可写成 `${VAR}` 或 `${file:/abs/path}`,每次热重载重新解析 | 配置中的任意字符串(**始终启用**) | [参考](https://shunt.dev/zh-cn/reference/configuration/) |
+| 共享部署限制 —— **默认启用**(并发 1024、请求体 32 MiB、TTFB 120 秒、设备流限速),CIDR、请求头与 URL 限制需显式配置 | `[server] max_concurrent_requests`、`[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [指南](https://shunt.dev/zh-cn/guides/shared-gateway/) |
+| 密钥引用 —— 任意字符串值可写成 `${VAR}` 或 `${file:/abs/path}`,每次热重载重新解析(`[sentry]`/`[otel]` 除外,启动时构建一次,需重启) | 配置中的任意字符串(**始终启用**) | [参考](https://shunt.dev/zh-cn/reference/configuration/) |
 | OpenTelemetry 指标与链路追踪 | `[otel]` | [指南](https://shunt.dev/zh-cn/guides/opentelemetry/) |
 
 ## 文档
@@ -222,7 +222,7 @@ Claude Code 会把每一轮都发送到 Anthropic API。`shunt` 位于前面(通
 Claude Code 在 `ANTHROPIC_BASE_URL` 后暴露了一个**一等公民的网关契约**。`shunt` 实现的正是这个契约,而不是早期 Claude Code 代理所依赖的“对子 agent 的系统提示做哈希”这种脆弱启发式。
 
 - [LLM 网关协议](https://code.claude.com/docs/en/llm-gateway-protocol) —— 该 API 契约规定了端点、需要转发与需要消费的头部和 body 字段、功能透传以及归属信息。运行中的网关会在 `GET /protocol` 提供机器可读的规范。Claude Code 会在系统提示前加上客户端版本和会话指纹;是否抑制它是开发者通过 `CLAUDE_CODE_ATTRIBUTION_HEADER=0` 决定的事,因此 shunt 原样转发该归属块。
-- [模型发现](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) —— Claude Code 在启动时查询 `GET /v1/models?limit=1000`(通过 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 选择加入),并把返回的模型加入 `/model` 选择器。shunt 会返回精选的 `[[models]]` 条目,并在 `auto_include_builtin_models` 仍为 `true` 时附上从 `server.default_provider` 拉取的实时目录。**约束:** `id` 不以 `claude`/`anthropic` 开头的条目会被忽略 —— 非 Claude 模型必须做别名或手动添加。参见[模型发现](https://shunt.dev/zh-cn/guides/model-discovery/)。
+- [模型发现](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) —— Claude Code 在启动时查询 `GET /v1/models?limit=1000`(通过 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 选择加入),并把返回的模型加入 `/model` 选择器。shunt 会返回精选的 `[[models]]` 条目,并在 `auto_include_builtin_models` 仍为 `true` 时附上从 `server.default_provider` 拉取的实时目录。**约束:** `id` 不以 `claude`/`anthropic` 开头的条目会被忽略 —— 非 Claude 模型必须设置别名或手动添加。参见[模型发现](https://shunt.dev/zh-cn/guides/model-discovery/)。
 - [添加自定义模型选项](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) —— `ANTHROPIC_CUSTOM_MODEL_OPTION` 会在不替换内置别名的前提下,向 `/model` 选择器添加一个经网关路由的条目;该 ID 不做校验,因此网关接受的任何字符串都可用。鉴于上面的发现约束,**这是选择非 Claude 模型的主要方式**(例如 `gpt-5.6-sol`)。
 - **工具搜索**(`ENABLE_TOOL_SEARCH`)—— Claude Code 会延迟加载 MCP/LSP 工具 schema,按需揭示,从而回收上下文。由于 shunt 不是 Anthropic 第一方主机,除非你主动开启,Claude Code 会保持其**关闭**。开启后延迟能否保留取决于上游而不只是设置:`claude*` 和 `anthropic/*` id 会逐字节保留该协议,其他 id 的 `defer_loading` 标记会被剥离(因为这些主机会拒绝),而 Responses 路径有自己的三态 `tool_search` 设置。参见[工具搜索](https://shunt.dev/zh-cn/guides/codex/#工具搜索)。
 
