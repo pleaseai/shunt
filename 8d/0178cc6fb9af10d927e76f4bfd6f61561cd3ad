@@ -1,0 +1,65 @@
+docs/plans/usage-bars/DESIGN.md
+  s_8cb9d2d9768c87::t_8a15f5ed098251 33-35
+site/src/content/docs/reference/configuration.md
+  s_8cb9d2d9768c87::t_69934043f97ef3 342
+src/accounts.rs
+  s_8cb9d2d9768c87::t_9546973351358e 1197-1198
+  s_8cb9d2d9768c87::t_eb2feca620dbb2 1221-1223
+src/auth/codex/usage.rs
+  s_8cb9d2d9768c87::t_8a15f5ed098251 12
+  s_8cb9d2d9768c87::t_eb2feca620dbb2 104-106
+src/adapters/responses/codex_ws.rs
+  s_8cb9d2d9768c87::t_c9055e8980bc47 1001-1002
+  s_8cb9d2d9768c87::t_4a1952ab2dcbdd 1396-1397
+site/src/content/docs/ko/reference/configuration.md
+  s_8cb9d2d9768c87::t_69934043f97ef3 238
+site/src/content/docs/ko/guides/codex-multi-account.mdx
+  s_8cb9d2d9768c87::t_16b79adb1698c0 131,133
+  s_8cb9d2d9768c87::t_2e6dfd4075cf1d 172
+README.zh-CN.md
+  s_8cb9d2d9768c87::t_eb2feca620dbb2 156
+site/src/content/docs/guides/codex-multi-account.mdx
+  s_8cb9d2d9768c87::t_16b79adb1698c0 131,133
+  s_8cb9d2d9768c87::t_2e6dfd4075cf1d 172
+site/src/content/docs/ja/guides/codex-multi-account.mdx
+  s_8cb9d2d9768c87::t_2e6dfd4075cf1d 172
+  s_8cb9d2d9768c87::t_16b79adb1698c0 131,133
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_8cb9d2d9768c87::t_69934043f97ef3 239
+docs/m7-codex-websocket.md
+  s_8cb9d2d9768c87::t_cca316f1afcdb1 319
+site/src/content/docs/zh-cn/guides/codex-multi-account.mdx
+  s_8cb9d2d9768c87::t_16b79adb1698c0 131,133
+  s_8cb9d2d9768c87::t_2e6dfd4075cf1d 172
+README.md
+  s_8cb9d2d9768c87::t_eb2feca620dbb2 160
+README.ko.md
+  s_8cb9d2d9768c87::t_eb2feca620dbb2 158
+README.ja.md
+  s_8cb9d2d9768c87::t_eb2feca620dbb2 161
+docs/m12-client-usage-endpoint.md
+  s_8cb9d2d9768c87::t_853238124f350f 140-141,144-145
+  s_8cb9d2d9768c87::t_3295b66a171fd1 138-139,143
+docs/m10-codex-multi-account.md
+  s_8cb9d2d9768c87::t_b1204d3ef38ee6 116
+  s_8cb9d2d9768c87::t_69934043f97ef3 202
+  s_8cb9d2d9768c87::t_588ba13963b16b 168
+site/src/content/docs/ja/reference/configuration.md
+  s_8cb9d2d9768c87::t_69934043f97ef3 239
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8d0178cc6fb9af10d927e76f4bfd6f61561cd3ad",
+  "prompts": {},
+  "sessions": {
+    "s_8cb9d2d9768c87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc5be1da-2f3b-49d0-bcb9-755449ec145c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
