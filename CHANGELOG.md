@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.44.0](https://github.com/pleaseai/shunt/compare/v0.43.0...v0.44.0) (2026-09-09)
+
+
+### Features
+
+* **codex:** translate routed inbound Responses requests for Anthropic and Chat Completions upstreams ([#481](https://github.com/pleaseai/shunt/issues/481)) ([078c6fe](https://github.com/pleaseai/shunt/commit/078c6fead6573f66975c87f601cdf1810e7d0382))
+
+
+### Bug Fixes
+
+* **codex:** record the in-stream codex.rate_limits event on the WebSocket transport ([#491](https://github.com/pleaseai/shunt/issues/491)) ([dbe7168](https://github.com/pleaseai/shunt/commit/dbe7168362bfd75938fc337e5b1cd1ee77e0f22e))
+* **responses:** drop tool-schema regex patterns the OpenAI validator cannot compile ([#488](https://github.com/pleaseai/shunt/issues/488)) ([5821280](https://github.com/pleaseai/shunt/commit/5821280f44cc4ea42d7823b01df7ad9f5766a39d))
+
 ## [0.43.0](https://github.com/pleaseai/shunt/compare/v0.42.0...v0.43.0) (2026-09-08)
 
 
