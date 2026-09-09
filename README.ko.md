@@ -4,7 +4,7 @@
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/pleaseai/shunt?utm_source=badge)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
 [![codecov](https://codecov.io/gh/pleaseai/shunt/graph/badge.svg)](https://codecov.io/gh/pleaseai/shunt)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#라이선스)
 [![Greptile: The War on Bugs](https://www.greptile.com/badge.svg)](https://www.greptile.com/?utm_source=oss_badge&utm_medium=readme&utm_campaign=greptile_for_open_source)
 
 [English](README.md) · **한국어** · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
@@ -15,7 +15,7 @@
 
 이름 자체가 동작 방식을 나타냅니다. 전기/철도의 *shunt*는 흐름의 일부를 선택해 병렬 경로로 우회시킵니다. 여기서는 매핑된 모델의 추론이 다른 프로바이더로 우회되는 동안 Claude Code의 도구와 스킬은 그대로 유지됩니다.
 
-**OpenAI**, **ChatGPT/Codex**(`codex login`으로 구독을 재사용), **xAI**(API 키), **Grok**(`shunt login xai`로 SuperGrok / X Premium+ 구독을 재사용), **Cursor**(`shunt login cursor`로 구독을 재사용), **Kimi Code**(`shunt login kimi`로 구독을 재사용), **Zhipu**와 **MiniMax 중국**(API 키), **Gemini / Google Code Assist**(`~/.gemini/oauth_creds.json`으로 구독을 재사용. shunt는 유효한 액세스 토큰을 그대로 사용하며, 자체 갱신에는 `SHUNT_GOOGLE_CLIENT_ID`와 `SHUNT_GOOGLE_CLIENT_SECRET`가 필요합니다), **Anthropic** 패스스루가 기본 내장되어 있으며, Anthropic Messages 호환 백엔드(Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway 등)라면 무엇이든 TOML 테이블 하나 또는 YAML 매핑 하나만 추가하면 됩니다. 코드 변경은 필요 없습니다.
+OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax 중국, Gemini, Antigravity, Anthropic 패스스루가 기본 내장되어 있고, 이 가운데 여럿은 이미 결제 중인 구독을 그대로 재사용합니다. Anthropic Messages 호환 백엔드라면 무엇이든 구성 테이블 하나로 붙일 수 있으며, 코드 변경은 필요 없습니다. [프로바이더](#프로바이더)를 참고하세요.
 
 > [!NOTE]
 > `shunt`는 활발히 개발 중인 1.0 미만(pre-1.0) 소프트웨어입니다. [SemVer](https://semver.org/lang/ko/#spec) 관례에 따라 `0.x` 릴리스에는 설정 키, CLI, 동작에 대한 호환성이 깨지는 변경(breaking change)이 포함될 수 있으니, 업그레이드 전에 [릴리스 노트](https://github.com/pleaseai/shunt/releases)를 확인하세요.
@@ -85,24 +85,6 @@ shunt add upstream https://provider.example/docs --print | claude
 
 이 명령은 오프라인이고 읽기 전용입니다. 안내만 출력하며 파일을 수정하거나 설치하거나 네트워크에 접근하지 않습니다. 완전히 새로운 provider protocol 지원에 기여하려면 `shunt add provider <absolute-url>`을 사용하세요.
 
-공유 배포에서는 `[server] max_concurrent_requests`(기본값 `1024`)로 처리 중인 인바운드 요청 수를
-제한합니다. 초과 요청은 `503`과 `Retry-After: 1`로 즉시 흘려보내며, 스트리밍 요청은 응답 본문이
-끝나거나 클라이언트가 연결을 끊을 때까지 자리를 유지합니다. 값을 `0`으로 설정하면 제한이 해제됩니다.
-`/`와 `/health`는 liveness probe를 위해 항상 사용할 수 있습니다. 공유 게이트웨이는 `[server.access_control]`,
-`[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` 아래에서 CIDR 허용/거부 규칙, 요청·헤더·URL
-크기 제한, 스트리밍 본문에는 상한을 두지 않는 업스트림 응답 헤더 타임아웃, 그리고 독립적인 device-flow
-레이트 리밋을 구성할 수도 있습니다. Anthropic Messages와 인바운드 Codex Responses 요청 본문은 기본적으로
-32 MiB로 제한되며, 더 큰 파일이나 이미지 요청에는 `max_request_bytes`를 올리세요. 그 외 게이트웨이, 어드민,
-텔레메트리, 애널리틱스 라우트는 각 엔드포인트별 본문 제한을 그대로 유지합니다.
-[구성 레퍼런스](https://shunt.dev/ko/reference/configuration/#server)를 참고하세요.
-
-시크릿 성격의 값은 구성 파일에 리터럴로 둘 필요가 없습니다. 어떤 문자열이든 `${VAR}`(환경 변수, 예:
-`"Bearer ${TOKEN}"`) 또는 `${file:/abs/path}`(파일의 공백을 제거한 내용 전체가 해당 필드의 값)로 작성할 수
-있으며, 구성을 읽을 때마다 새로 확인됩니다 — [핫 리로드](docs/config-reload.md) 시에도 마찬가지이므로
-`${file:}` 기반 시크릿은 shunt를 재시작하지 않고 회전할 수 있습니다. 다만 새 값이 실제로 적용되는지는 각
-필드 자체의 리로드 동작을 따릅니다. `[sentry]`와 `[otel]`은 기동 시 한 번만 구성되므로, 이 두 섹션의
-시크릿을 회전하려면 여전히 재시작이 필요합니다. [구성 시크릿 참조](docs/config-secrets.md)를 참고하세요.
-
 ## 프로바이더
 
 프로바이더는 순서가 있는 `[[upstreams]]` 항목 또는 레거시 `[providers.<name>]` TOML 테이블입니다(YAML에서는 각각 해당 sequence 또는 mapping의 항목). 두 가지 어댑터 종류가 대부분의 업스트림을 커버합니다. `kind = "anthropic"`(업스트림이 Anthropic Messages를 사용하며, 필요하면 다른 키로 패스스루)와 `kind = "responses"`(업스트림이 OpenAI Responses API를 사용하며, shunt가 Anthropic Messages ⇄ Responses를 스트리밍 포함하여 변환)입니다. 세 번째 네이티브 종류인 `kind = "cursor"`는 Cursor의 ConnectRPC/protobuf AgentService를 브리지하여 Cursor 구독을 동일한 Anthropic-Messages 인터페이스로 사용할 수 있게 합니다.
@@ -131,7 +113,9 @@ codex-fallback = "gpt-5.6-sol"
 
 이 체인은 `anthropic-primary`를 먼저 시도한 다음 `codex-fallback`을 시도합니다. `auth`는 mode 문자열 또는 맵을 받으며, `claude_oauth`와 `chatgpt_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 자격 증명 범위를 좁힐 수 있습니다. 레거시 `[providers.<name>]`는 계속 지원되며 이름순의 암시적 업스트림이 됩니다. 구성 파일에서 두 형식을 함께 선언하지 마세요. `[[upstreams]]`와 `[providers.*]`를 혼합하면 구성 오류입니다. preset, 실패 클래스, 마이그레이션 세부 사항은 [구성 레퍼런스](https://shunt.dev/reference/configuration/)를 참고하세요.
 
-**기본 내장:**
+### 기본 내장
+
+다음 프로바이더는 기본으로 시드되어 있어, 직접 작성한 `[providers.*]` 테이블 없이 `provider = "<이름>"`만으로 라우팅됩니다 — **단 `[[upstreams]]`를 선언하지 않은 경우에만** 해당합니다. 순서가 있는 `[[upstreams]]` 목록은 프로바이더 맵을 통째로 대체하므로, 그 형식에서는 프리셋을 포함해 라우팅 대상 프로바이더를 모두 거기에 선언해야 합니다.
 
 | 이름 | 종류 | 인증 | 백엔드 |
 | :-- | :-- | :-- | :-- |
@@ -145,62 +129,16 @@ codex-fallback = "gpt-5.6-sol"
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — HTTP로 통신하는 Google Antigravity 백엔드, `~/.shunt/antigravity-auth.json`(`shunt login antigravity`)을 사용 |
 | `antigravity-cli` | `antigravity_cli` | 없음(로컬 CLI) | **Deprecated.** 로컬 `agy` 바이너리 — 서브프로세스로 동일한 백엔드를 사용하며, 위의 `antigravity`로 대체되었습니다 |
 
-xAI는 구독 등급에 따라 OAuth 접근을 제한할 수 있습니다. `grok`이 403을 반환하면 `xai` API 키 프로바이더를 대신 사용하세요. 자세한 내용은 [`docs/m6-xai-provider.md`](docs/m6-xai-provider.md)를 참고하세요.
+순서가 있는 `[[upstreams]]` 항목은 여기에 더해 `kimi`, `kimi-code`, `zhipu`, `minimax-cn` 프리셋도 받으며, 각 백엔드의 `kind`, `base_url`, 기본 인증을 채워 넣습니다.
 
-**Antigravity에는 두 가지 전송 방식이 있습니다.** `antigravity` 프로바이더는 HTTP로 Google Antigravity 백엔드와 통신하며 `shunt login antigravity`로 인증합니다. 이는 Antigravity 자체의 OAuth 클라이언트와 스코프를 사용하는 Google authorization-code 플로이므로, Gemini CLI 로그인을 재사용할 수 없습니다. `gemini` 프로바이더와 동일한 Code Assist 프로토콜을 사용하며 현재는 Gemini 계열 Antigravity 모델을 제공합니다. Antigravity가 함께 제공하는 Claude 모델은 아직 구현되지 않은 요청 재작성이 필요합니다(#368). 로그인과 스코프, 프로젝트 탐색, 모델 슬러그, thinking, 어댑터가 전달하는 내용 등 전체 설정은 [프로바이더 → Antigravity](https://shunt.dev/ko/providers/antigravity/)를 참고하세요.
+프로바이더별 설정과 모델 id, 주의 사항은 [프로바이더](https://shunt.dev/ko/guides/providers/)에 정리되어 있습니다. xAI의 OAuth 등급 제한([xAI / Grok](https://shunt.dev/ko/guides/xai/)), Cursor의 에이전트 모드 프리픽스([Cursor](https://shunt.dev/ko/providers/cursor/)), Antigravity의 두 가지 전송 방식과 `kind = "antigravity"` 마이그레이션([Antigravity](https://shunt.dev/ko/providers/antigravity/))도 그곳에 있습니다.
 
-**`antigravity-cli`는 더 이상 권장되지 않으며 임의 코드 실행에 해당합니다.** 이 프로바이더는 로컬 `agy` 바이너리를 에이전트 모드로 실행합니다. CLI가 자체 도구로 작업하고 shunt는 진행 상황을 Anthropic SSE로 스트리밍합니다. 따라서 `tool_use` 블록을 반환할 수 없으므로, 실제로 도구 호출을 요구하는 요청, 즉 비어 있지 않은 `tools` 배열 또는 `any`/`tool`인 `tool_choice`는 텍스트로 조용히 응답되는 대신 `400`으로 거부됩니다. `tool_choice: none`은 `tools`가 함께 있어도 예외이며, 도구가 없는 `auto`도 도구 호출을 강제하지 않으므로 예외입니다. 비대화형 실행에서는 권한 프롬프트에 응답할 수 없기 때문에 `agy`는 `--dangerously-skip-permissions`로 실행됩니다. 따라서 **이 프로바이더를 shunt를 실행하는 사용자 권한의 임의 코드 실행으로 취급하세요**. 두 가지 설정으로 범위를 제한할 수 있습니다. `sandbox`(기본값 `true`)는 `--sandbox`를 전달하여 읽기와 쓰기를 워크스페이스 안으로 제한하며, 이것이 에이전트를 실제로 격리하는 설정입니다. `workspace_roots`는 에이전트가 *시작할* 수 있는 위치만 결정하며, 요청의 시스템 프롬프트에 있는 `Working directory:` 경로(클라이언트가 제어하는 텍스트)를 지정한 루트 아래의 정규화된 경로로 제한합니다. 샌드박스를 켜 두고 루프백에만 바인딩하세요. 이러한 위험이 없는 `antigravity` 프로바이더를 권장합니다. 자세한 내용은 [프로바이더 가이드](https://shunt.dev/ko/guides/providers/)를 참고하세요.
+> [!WARNING]
+> `antigravity-cli`는 더 이상 권장되지 않으며 **임의 코드 실행**입니다. 로컬 `agy` 바이너리를 `--dangerously-skip-permissions`와 함께 에이전트 모드로, shunt를 실행한 사용자 권한으로 구동합니다. `sandbox` 설정을 켠 채로 두고 바인드는 루프백에 두세요. 이런 것이 전혀 필요 없는 위의 `antigravity` 프로바이더를 권장합니다. [더 이상 사용되지 않는 전송 방식](https://shunt.dev/ko/guides/providers/#더-이상-사용되지-않는-antigravity_cli-전송)을 참고하세요.
 
-**기존 `antigravity`에서 마이그레이션하기.** 예전에는 `kind = "antigravity"`가 로컬 CLI를 의미했습니다. 그 의미로 작성된 구성은 조용히 다른 대상으로 바뀌지 않고 이름을 근거로 거부되며, 자격 증명이 없는 상태로 라우팅된 `antigravity` 프로바이더는 기동을 거부합니다. 기동은 정상인데 그 아래에서 전송 방식과 자격 증명, 이그레스가 바뀌는 편이 실패하는 것보다 나쁘기 때문입니다. `shunt check`도 같은 가드를 실행하므로, CI와 배포 스크립트는 자격 증명이 저장되지 않은 `antigravity` 라우트를 기동 시점이 아니라 롤아웃 전에 잡아냅니다. 이 검사는 존재 여부만 확인합니다. 자격 증명을 열어 보지는 않으므로 비어 있거나 오래된 자격 증명도 통과한 뒤 요청 경로에서 실패합니다. `shunt login antigravity`를 실행하거나 라우트를 `antigravity-cli`로 지정하세요.
+### Anthropic 호환 백엔드
 
-**Anthropic 멀티 계정.** `auth = "claude_oauth"`인 Anthropic 프로바이더는 Claude Code 자격 증명 파일이나 setup-token 환경 변수에서 명시적 계정을 불러오거나, `shunt login claude --name <name>`으로 만든 비공개 스토어 관리 계정을 사용할 수 있습니다. Claude 로그인에는 세 가지 모드가 있습니다. `--mode oauth`는 shunt 자체의 갱신 가능한 OAuth 플로를 실행하고(터미널 기본값), `--mode import`는 현재 Claude Code 로그인을 복사하며, `--mode setup-token`은 1년 동안 사용하는 추론 전용 토큰을 생성합니다(`--long-lived`는 계속 deprecated alias로 남아 있습니다). OAuth는 먼저 자동 `127.0.0.1` 콜백을 사용하고 숨겨진 수동 붙여넣기로 폴백합니다. 콜백을 건너뛰려면 `--manual`을 사용하세요. OAuth 범위 동작은 선언 형식에 따라 다릅니다. 레거시 `[providers.*].accounts = []`는 계정 스토어를 검색하지만, 순서가 있는 `[[upstreams]]`는 전체 스토어를 검색하려면 `account`와 `accounts`를 모두 생략해야 하며 명시적인 `accounts = []`는 거부됩니다. shunt는 정상인 `x-claude-code-session-id` 세션을 고정하고, 그 외에는 프로바이더별 라운드 로빈을 사용하며, 가능한 경우 모델을 반영한 5시간/주간 쿼터 상태에 따라 쿼터에 가까워진 고정 계정을 한도에 도달하기 전에 선제적으로 교체합니다. 선택 동작은 선택 사항인 `[server.pool]` 테이블로 조정할 수 있습니다(issue #135). 여기에는 계정별 재정의를 지원하는 윈도우별 소프트 쿼터 임계값(낮은 임계값은 백업 계정으로 표시), 번 레이트를 고려한 순서 지정, 리셋 전에 윈도우가 소진될 것으로 예측되는 계정을 선택적으로 피하는 기능, 계정별 `priority`와 `disabled` 설정이 포함됩니다. `usage_refresh_seconds`를 활성화하면 가져온(갱신 가능한) 계정의 Anthropic OAuth 사용량 API를 폴링해 외부에서 발생한 사용량을 반영할 수 있으며, 폴링은 기본적으로 꺼져 있습니다. `state_path`를 설정하면 계정별 쿼터를 디스크에 저장하므로 재시작 후 빈 풀 대신 마지막으로 관측한 사용량에서 시작합니다(최선 노력 캐시이며 쿼터는 이와 관계없이 업스트림에서 다시 계산됩니다). 리셋 시각이 없는 윈도우도 자체 마지막 관측 시각으로 수명을 제한하므로 영구히 남을 수 없으며, 영속화는 기본적으로 꺼져 있습니다. 쿼터로 거부된 429, 401, 5xx 응답의 반응형 처리는 계속해서 페일오버의 최저 안전선으로 작동합니다. 스톰 제어는 이후 후속 작업입니다. [사용 방법](https://shunt.dev/guides/anthropic-multi-account/), [구성 레퍼런스](https://shunt.dev/reference/configuration/), [M8 동작 사양](docs/m8-anthropic-multi-account.md)을 참고하세요.
-
-**Codex 멀티 계정.** `chatgpt_oauth` 프로바이더(기본 제공 `codex` 프로바이더 또는 해당 인증 모드를 사용하는 모든 `responses` 프로바이더)도 여러 ChatGPT 계정을 풀링할 수 있습니다. 계정은 `codex login` 자격 증명을 `shunt login codex --name <name>`으로 가져오거나, [관리자 웹 화면](https://shunt.dev/guides/admin-remote-provisioning/)에서 ChatGPT OAuth를 실행하거나, 명시적인 `credentials`/`token_env` 계정 항목으로 구성할 수 있습니다. OAuth 범위 동작은 선언 형식에 따라 다릅니다. 레거시 `[providers.*].accounts = []`는 계정 스토어를 검색하지만, 순서가 있는 `[[upstreams]]`는 전체 스토어를 검색하려면 `account`와 `accounts`를 모두 생략해야 하며 명시적인 `accounts = []`는 거부됩니다. shunt는 백엔드의 `x-codex-*` 5시간/7일 사용량 윈도우를 기록하고 이를 Claude 풀과 같은 **쿼터 인식 선제 선택**에 반영합니다. WebSocket 전송에서는 백엔드가 같은 윈도우를 스트림 안의 `codex.rate_limits` 이벤트로 보고하므로, 새 핸드셰이크가 없어 헤더를 볼 수 없는 재사용 연결의 턴을 포함해 모든 턴이 관측을 갱신합니다. 쿼터에 가까워진 고정 계정은 429를 반환하기 전에 양보하며, 업스트림 리셋 헤더가 비어 있어도 관측 시각만으로 표시의 수명을 제한하므로 `[server.pool]` 임계값과 번 레이트 순서 지정이 적용됩니다. 쿨다운 기반 반응형 페일오버(429, 401, 5xx, 자격 증명 확인 실패)는 안전선으로 유지됩니다. 선택 사항인 `[server.pool] ramp_initial_concurrency` 슬로 스타트 게이트는 페일오버 뒤 새로 선택된 계정에 동시 진행 중인 요청이 한꺼번에 몰리는 일을 막습니다. `[server.pool]`이 설정되어 있으면 `reprobe_seconds`(기본 900초, `0`이면 비활성)는 오래된 근접 쿼터 계정 하나를 간격마다 선택 순서 맨 앞으로 승격하고 예약합니다. admission이나 자격 증명 확인에 실패하면 예약을 취소하고, 첫 실제 HTTP 전송이 시작될 때 재탐침 시각을 커밋합니다. 신선도를 판단하는 네 관측 stamp는 5h, 공유 7d, Fable 7d_oi, aggregate status입니다. 비WS outbound Responses 선택과 선택형 inbound Codex HTTP 엔드포인트는 재탐침을 유지합니다. WebSocket 전송을 켠 프로바이더의 outbound Responses 풀은 스트림 내부 rate-limit 이벤트를 안전하게 회전시키지 못하므로 예약을 만들지 않고 재탐침을 억제하며, 해당 프로바이더의 `shunt.pool.reprobes`는 inbound 탐침만 셉니다. 양수 `usage_refresh_seconds`는 private, unofficial `wham/usage` 엔드포인트를 폴링해 imported이며 refreshable인 `chatgpt_oauth` 계정의 외부 사용량을 Anthropic 풀이 자체 usage API와 대조하는 것처럼 반영합니다. 폴링은 기본적으로 꺼져 있고 엔드포인트는 예고 없이 바뀔 수 있으며, 폴러는 해당 계정에만 조기 복구를 제공합니다. 보고된 창에서는 리셋 메타데이터가 응답에서 나옵니다. `x-codex-*` 리셋 헤더와, WebSocket 전송에서는 `codex.rate_limits` 이벤트의 `reset_at`이 같은 적용 단계를 공유합니다. 응답이 리셋을 주면 저장된 값을 대체하고, 주지 않았을 때만 미래의 저장된 리셋이 유지되며 이미 지난 저장된 리셋은 새 사용률을 쓰기 전에 지웁니다. wham의 `reset_at`은 실제 리셋 메타데이터로 채택하지 않습니다. 폴러가 없거나 계정이 대상이 아니면 제외된 outbound 마크는 관측시각 기반 창 수명 경계에서 만료될 때까지 남습니다. [사용 방법](https://shunt.dev/guides/codex-multi-account/)과 [M10 동작 사양](docs/m10-codex-multi-account.md)을 참고하세요.
-
-**인바운드 Codex 엔드포인트.** shunt는 반대 방향으로도 동작할 수 있습니다. 선택 기능인 `[server.codex_endpoint]` 테이블을 구성하면 raw OpenAI Responses 패스스루(`/responses`, `/v1/responses`, `/backend-api/codex/responses`)가 등록되므로, **Codex CLI 자체**가 `base_url`을 shunt로 지정해 같은 ChatGPT/Codex OAuth 계정 풀에서 부하 분산을 받을 수 있습니다. 이는 위의 Anthropic 변환 경로가 아니라 바이트 단위 그대로의 릴레이입니다. 또한 CLI의 두 애널리틱스 경로를 프라이버시를 지키는 폐기 싱크로 받아들여, 정제된 이벤트 이름 카운터만 기록하고 페이로드는 절대 업스트림으로 전달하지 않습니다. 선택 기능인 `[[server.codex_endpoint.routes]]` 테이블을 쓰면 모델별 라우팅을 켤 수 있어, 특정 모델 id를 ChatGPT 풀 대신 서드파티 Responses 호환 업스트림(Z.ai GLM, DeepSeek, Kimi Code, MiniMax, OpenRouter, Vercel AI Gateway, 순정 OpenAI)이 처리하게 하고 본문의 `model`을 그 라우트의 업스트림 id로 바꿔 보낼 수 있습니다. 기본적으로 꺼져 있으며, 테이블이 없으면 해당 라우트는 하나도 등록되지 않습니다. [사용 방법](https://shunt.dev/ko/guides/inbound-codex-endpoint/)과 [M11 동작 사양](docs/m11-inbound-codex-endpoint.md)을 참고하세요.
-
-**제한된 업스트림 재시도.** 프로바이더의 단일 자격 증명 경로에서 발생한 일시적 업스트림 실패는, 클라이언트에 바이트가 도달하기 전에(스트림 도중에는 절대 아님) 지수 백오프와 무작위 지터로 재시도됩니다. 연결 수준의 전송 오류(connect reset/refused, 타임아웃)는 항상 재시도합니다. 이 오류가 확정되기 전에는 아무것도 수락되지 않았기 때문입니다. 일시적 응답 *상태*(`429`/`502`/`503`/`504`/`529`, Anthropic의 "Overloaded")는 멱등한 Cursor 경로에서만 재시도합니다. 멱등하지 않은 Anthropic Messages와 단일 자격 증명 Responses POST는 이를 즉시 노출하는데, 응답이 왔다는 것은 업스트림이 이미 과금 대상 생성을 수락했을 수 있다는 뜻이기 때문입니다(issue #126). 그 외 `4xx`는 절대 재시도하지 않습니다. 재시도는 `Retry-After`(delta-seconds와 HTTP-date 형식 모두)를 존중하고, `count_tokens`에서는 비활성이며, `[providers.<name>.retry]` 아래에서 프로바이더별로 구성할 수 있습니다(기본적으로 켜져 있고 보수적입니다. `max_retries = 0`으로 끌 수 있습니다). `claude_oauth`/`chatgpt_oauth` 계정 풀은 대신 자체 계정 순환 페일오버를 사용합니다. [구성 레퍼런스](https://shunt.dev/reference/configuration/#providersnameretry)를 참고하세요.
-
-**선택 기능인 Claude 앱 게이트웨이 로그인 및 정책.** `[server.gateway]`를 구성하면, 공유 정적 토큰 하나를 배포하는 대신 관리 대상 Claude Code 클라이언트가 OAuth device flow(`forceLoginMethod: "gateway"` + `forceLoginGatewayUrl`)로 로그인하게 할 수 있습니다. 브라우저 승인에는 환경 변수 기반 정적 사용자나 `[server.gateway.oidc]`를 통해 허용 목록에 올린 OIDC 프로바이더(예: Google)를 쓸 수 있으며, 두 방식을 함께 제공할 수도 있습니다. shunt는 OAuth discovery, 브라우저 승인, device/refresh 그랜트, HS256 액세스 JWT, 회전하는 불투명 refresh token, 그리고 `ETag` 캐싱과 텔레메트리 환경 변수 푸시, `availableModels` 강제를 갖춘 사용자별 `GET /managed/settings`를 제공합니다. 발급된 bearer는 `/v1/models`와, 선택된 프로바이더가 서버 측 자격 증명을 주입하는 추론 경로를 보호하며 passthrough 프로바이더는 그대로 열려 있습니다. `[server.auth]`와 조합할 수 있습니다. 이 기능은 기본적으로 꺼져 있습니다. refresh 세션은 기본적으로 재시작 후에도 유지됩니다(이슈 #194). `state_path`(기본값 `~/.shunt/gateway-sessions.json`)는 refresh token을 SHA-256 해시로, 원자적으로 기록되는 소유자 전용(Unix에서 0600) 파일에 저장하고 부팅 시 복원하므로, 사용자는 브라우저 플로우를 다시 거치지 않고 조용히 갱신을 이어갑니다. 메모리 전용 세션을 쓰려면 `state_path = ""`로 설정하세요. 이 경우 재시작하면 refresh 세션이 무효화되며, 이미 발급된 액세스 JWT는 만료될 때까지 유효하고 그 뒤에는 다시 로그인해야 합니다. device 그랜트는 항상 메모리 전용입니다. 클라이언트는 Claude Code 안에서가 아니라 터미널에서 로그인할 수도 있습니다. `shunt gateway login <url>`은 같은 device flow를 실행해 세션을 로컬(`~/.shunt/gateway/session.json`, 소유자 전용)에 저장하고, `shunt gateway token`은 `apiKeyHelper`로 쓸 액세스 토큰을 출력하며, `shunt gateway claude`는 그 연결 설정을 단일 프로세스에만 적용한 채 Claude Code를 실행합니다 — `~/.claude/settings.json`을 수정하지 않고, 클라이언트를 로그인된 게이트웨이 세션 상태로 만들지도 않으므로 그 게이트에 따르는 기능 트레이드오프를 떠안지 않습니다(모든 `apiKeyHelper`가 걸리는 일반적인 자격 증명 종류 게이트는 그대로 적용됩니다). `shunt login <provider>`와 `shunt token`은 변경되지 않았으며 여전히 shunt를 업스트림에 인증합니다. [설정 가이드](https://shunt.dev/guides/gateway-login/), [구성 레퍼런스](https://shunt.dev/reference/configuration/#servergateway-optional), [M-A 로그인 노트](docs/gateway-login.md), [M-B managed-settings 노트](docs/gateway-managed-settings.md), [M-C 텔레메트리 노트](docs/gateway-telemetry.md)를 참고하세요.
-
-**선택 기능인 지출 한도 Admin API.** `[server.spend]`를 구성하면 조직 단위 및 사용자 단위 한도를 위한 인증된 CRUD 라우트가 `/v1/organizations/spend_limits` 아래에 등록됩니다. 1단계에서는 한도와 감사 기록을 저장하지만 아직 추론 트래픽에 한도를 강제하지는 않습니다. 이 라우트는 `[server.admin]` 자격 증명으로 인증합니다. `[server.spend]`는 키 자료를 담지 않는 최상위 정책 섹션이므로, 지출 한도를 활성화하는 데 `[server.gateway]` 로그인이 필요하지 않습니다. 상태는 기본적으로 원자적으로 기록되는 비공개 JSON 파일에 저장됩니다. 설정, API 동작, 보류된 기능은 [1단계 가이드](docs/gateway-spend-limits.md)를 참고하세요.
-
-**선택 기능인 게이트웨이 텔레메트리 인제스트.** 비어 있지 않은 `[server.gateway.telemetry].forward_to` 목록은 두 가지 일을 합니다. 텔레메트리 활성화 플래그와 다섯 개의 `OTEL_*` 환경 값을 managed settings로 푸시해(관리 대상 클라이언트의 익스포터를 모두 shunt로 향하게 하고), 그 클라이언트들이 전송할 인바운드 OTLP/HTTP 라우트의 그대로 릴레이를 켭니다 — `POST /v1/metrics`, `POST /v1/logs`, `POST /v1/traces`이며, `[server.gateway]` 표면의 나머지와 함께 등록되고 `GET /managed/settings`와 동일한 게이트웨이 bearer로 보호됩니다. 페이로드는 **그대로** 릴레이됩니다 — 요청 바이트 그대로, 인바운드 `content-type`과 `content-encoding`을 유지하며, 클라이언트의 `Authorization` 헤더는 절대 전달하지 않습니다. 그래서 `application/x-protobuf`와 `application/json` 익스포터가 모두 동작하고 Claude Code의 클라이언트 측 어트리뷰션 속성도 보존됩니다. 각 목적지는 시그널별로 옵트인합니다. `metrics`는 기본으로 켜져 있고, `logs`와 `traces`는 Claude Code의 로그 레코드와 스팬이 명령줄, 프롬프트, 파일 경로를 담을 수 있어 꺼져 있습니다. 옵트인한 목적지가 없는 시그널은 수락 후 폐기되며, 릴레이는 분리되어 실행되므로 컬렉터가 느리거나 다운되어도 클라이언트는 항상 즉시 `200`을 받습니다. 기본적으로 꺼져 있으며, 목적지가 없으면 라우트는 수락 후 폐기합니다. [Claude Code 모니터링](https://code.claude.com/docs/en/monitoring-usage), [구성 레퍼런스](https://shunt.dev/reference/configuration/#servergatewaytelemetry-optional), [M-C 텔레메트리 노트](docs/gateway-telemetry.md)를 참고하세요.
-
-**선택 기능인 관리자 웹 화면.** `[server.admin]`을 구성하면 관리자 인증이 필요한 **계정 및 사용량** 화면이 추가되어, 지원되는 호스트 로그인을 자동으로 관측하고 알아볼 수 있게 마스킹된 신원과 프로바이더 고유의 쿼터 윈도우를 보여줍니다. 대상은 Claude Code(자격 증명 파일 또는 macOS 키체인), Codex CLI(응답에서 도출한 `x-codex-*` 윈도우), Gemini CLI(모든 Code Assist 모델 버킷), Kimi Code(주간 및 5시간 한도), Grok CLI(크레딧/제품 사용량), Cursor.app(빌링 사이클, Auto + Composer, 이름이 지정된 모델 사용량)입니다. 관측은 읽기 전용입니다. shunt는 그 원본 자격 증명을 절대 갱신하거나 복사하거나 기록하지 않으며, Cursor.app 상태는 읽기 전용으로 열어 메모리 상의 퍼스트파티 웹 세션을 도출하는 데만 사용합니다. Claude 사용량은 60초 동안 캐시되고, 나머지 프로바이더 리더는 대시보드 데이터가 요청될 때 실행됩니다. 관리 대상 풀 프로비저닝은 Claude와 Codex 계정에 대해 접힌 고급 섹션에서 계속 제공됩니다. 별도로 저장되는 이 계정들이 shunt가 로드 밸런싱을 위해 소유하고 갱신하는 자격 증명입니다. 운영자 개입 없이는 어떤 재시도로도 되살릴 수 없는 관리 대상 계정은 `cooling`이 아니라 **Needs re-login**으로 표시되어, 영구히 죽은 로그인을 쿼터 일시정지와 구분할 수 있습니다 — 5분마다 영원히 재시도하는 대신입니다. `imported` 행에는 **Refresh** 버튼(`POST /admin/accounts/claude/{name}/refresh`)도 있어, 해당 계정의 refresh 그랜트를 즉시 실행해 로그인이 아직 살아 있는지 알려줍니다. 관리 대상 풀의 `/admin/pool` 화면은 계정별 선택 항목인 `plan`(구독 등급)도 함께 표시합니다. 가능한 경우 파일에서 도출하며, Claude 계정에 대해서는 제한적이고 캐시된 라이브 백필로 보강합니다 — 이는 누락된 plan을 채울 수도 있고, 배수 정보가 없는 파일 기반 값을 더 정확한 값으로 다듬을 수도 있습니다. plan을 확정할 수 없으면 그 키는 그냥 없습니다. 이 화면은 기본적으로 꺼져 있으며(테이블이 없으면 `/admin*` 라우트가 하나도 등록되지 않습니다), `[server.auth]`와는 별개의 자격 증명을 사용합니다. 한 번에 활성화하려면 `shunt dashboard setup`을 실행하세요. 이 명령은 `~/.shunt/admin-token`(소유자 전용)에 관리자 토큰을 생성하고, `[server.admin].tokens_file`로 연결해 실행 환경 변수에 시크릿이 남지 않게 하며, `[server.oauth_usage]`를 활성화하고 대시보드 URL을 출력합니다 — 그 뒤 shunt를 재시작하세요. 관리자 토큰은 `SHUNT_ADMIN_TOKENS`에서 가져올 수도 있습니다. 두 가지 접근 등급이 있습니다. `[[server.admin.write_keys]]` 항목과 `tokens_env`/`tokens_file`의 `name:token` 쌍은 전체 접근 권한을 가지며, `[[server.admin.read_keys]]` 항목은 관리자 화면과 지출 한도 API를 통틀어 모든 `GET`을 통과하고 모든 변경 요청에서는 거부되며 브라우저 로그인 폼도 마찬가지입니다. 배열 형태의 키는 `${VAR}` / `${file:...}` 또는 `SHUNT_*` 오버라이드로 제공해야 하며, 구성 파일에 리터럴로 적으면 로드 시점에 거부됩니다. [사용 방법](https://shunt.dev/ko/guides/admin-remote-provisioning/)과 [M9 설계 노트](docs/m9-admin-surface.md)를 참고하세요.
-
-**선택 기능인 클라이언트 사용량 엔드포인트.** `[server.usage]`를 구성하면 읽기 전용 `GET /usage`가 등록되어 공유 계정 풀 쿼터의 **정제·집계된** 뷰를 반환합니다 — 윈도우별 남은 여유분, 리셋 시각, 그리고 대략적인 `ok`/`degraded`/`exhausted` 상태이며, 관리자 화면 없이도 비관리자 클라이언트가 스로틀링을 예측할 수 있습니다. 인증은 `/v1/messages`와 동일한 `[server.auth]` 클라이언트 토큰을 사용하며(해당 테이블이 필요합니다), 계정 이름, 개수, 우선순위, `disabled` 플래그, 임계값은 절대 노출하지 않습니다. 계정별 전체 세부 정보는 관리자 전용 `/admin/pool`에만 남습니다. 윈도우는 비활성이 아닌 계정 중 어느 것도 보고하지 않았을 때만 `null`입니다. Codex 응답의 `x-codex-*` 헤더와 선택적인 `wham/usage` 폴링이 관측한 5시간 및 공유 7일 윈도우를 채우며, 관측되지 않은 윈도우만 `null`입니다. WebSocket 전송에서는 스트림 안의 `codex.rate_limits` 이벤트가 재사용 연결을 포함한 모든 턴에서 같은 윈도우를 채웁니다. Codex에는 Fable 전용(`7d_oi`) 신호가 없지만, 혼합 프로바이더 풀에서는 다른 프로바이더가 Fable 집계값을 제공할 수 있습니다. 풀 전체 집계인 `pool`과 함께, `providers` 맵이 풀링되는 프로바이더별로 같은 정제된 집계를 구성된 프로바이더 이름을 키로 담으므로, 특정 프로바이더로 라우팅하는 클라이언트는 풀 전체 평균이 아니라 해당 프로바이더의 여유분과 상태를 읽을 수 있습니다. 기본적으로 꺼져 있으며, 테이블이 없으면 라우트가 등록되지 않습니다. [구성 레퍼런스](https://shunt.dev/reference/configuration/#serverusage-optional)와 [M12 설계 노트](docs/m12-client-usage-endpoint.md)를 참고하세요.
-
-**선택 기능인 Claude Code CLI 네이티브 사용량 막대.** `[server.oauth_usage]`를 구성하면 `GET /api/oauth/usage`가 등록됩니다. 이는 Claude Code CLI 자체의 `Current session`/`Current week` 사용량 막대가 가져오는 바로 그 경로이므로, CLI를 `ANTHROPIC_BASE_URL`로 shunt에 연결했을 때 수정되지 않은 UI가 404로 빈 막대를 띄우는 대신 Claude만을 대상으로 한, 우선순위 등급을 반영한 최악 기준의 실제 풀 수치를 렌더링할 수 있습니다. **전제 조건, 일부만 검증됨:** `claude setup-token`이나 공유 게이트웨이 클라이언트 토큰으로 `ANTHROPIC_AUTH_TOKEN`을 설정한 경우 — 문서화된 나머지 두 가지 shunt 자격 증명 구성입니다 — 에는 이 경로를 가져오지 **않는다는 점**이 확인되었습니다. 완전한 대화형 `claude login`(구독) 세션이 이를 실제로 가져온다는 것은 CLI 바이너리 정적 분석과 정황상의 UI 근거에서 추정한 것이며 직접 관측하지는 못했습니다(정찰 환경에서 실제 구독 로그인을 안전하게 스크립트로 실행할 수 없었습니다). 따라서 이는 모든 구성에서 "설치 즉시 동작"하는 기능이 아닙니다. 전제 조건에 대한 전체 근거와 검증되지 않은 한 갈래는 [M14 설계 노트](docs/m14-oauth-usage-endpoint.md)를 참고하세요. 인증은 바인드 토폴로지에 따라 결정됩니다(루프백에서는 인증 없음. 루프백이 아닌 바인드에서는 유효한 클라이언트 토큰 또는 게이트웨이 JWT가 필요하며 — 헤더가 있는지만 보는 것이 아니라 `/v1/messages`와 정확히 동일하게 검사합니다 — 이 경우 `[server.auth]`나 `[server.gateway]` 구성도 함께 필요합니다). 기본적으로 꺼져 있으며, 테이블이 없으면 라우트가 등록되지 않습니다. [구성 레퍼런스](https://shunt.dev/reference/configuration/#serveroauth_usage-optional)를 참고하세요.
-
-**선택 기능인 업스트림 상태 폴링.** `[server.status]`에 하나 이상의 Statuspage `summary.json` 소스를 구성하면 각 프로바이더의 공개 상태 피드를 일정 주기(기본 5분)로 폴링해, 마지막으로 관측한 지표를 관리자 대시보드의 "Upstream status" 스트립과 `shunt.upstream.status` 게이지 메트릭으로 노출합니다. 이는 엄격하게 관측 전용입니다. 여기서 읽은 내용은 라우팅, 페일오버, 풀/쿨다운 결정에 절대 반영되지 않습니다. 가져오기에 실패하거나 2xx가 아닌 응답을 반환하거나 shunt가 인식하지 못하는 지표를 보고하는 소스는 조용히 정상으로 간주되지 않고 `unknown`으로 저장·보고됩니다. 기본적으로 꺼져 있으며, 테이블이 없으면 백그라운드 폴링이 시작되지 않습니다. [구성 레퍼런스](https://shunt.dev/reference/configuration/#serverstatus-optional)와 [설계 노트](docs/upstream-status.md)를 참고하세요.
-
-OpenAI의 Thibault Sottiaux는 다른 코딩 하네스를 통해 Codex를 실행하는 것을 공개적으로 환영했습니다.
-
-> Share the recipe. People want to know how to use GPT-5.6 Sol in CC. We don't discriminate on the harness. ([출처](https://x.com/thsottiaux/status/2075830097488249060))
-
-그는 [후속 글](https://x.com/thsottiaux/status/2076119366647894371)에서 Claude Code("당신의 주황색 게")를 GPT-5.6 Sol에 직접 연결하는 과정을 설명했습니다. `shunt`가 수행하는 추론 계층 교체와 정확히 같으며, 별도의 앱이 필요 없습니다.
-
-다만, 비공식 클라이언트에서 ChatGPT/Codex나 SuperGrok 구독(또는 Kimi, Cursor 등 다른 백엔드)을 재사용하는 것은 본인의 판단입니다. 공개적인 환영이 향후 정책이나 계정 제재가 없음을 보장하지는 않습니다. 사용에 따른 책임은 본인에게 있습니다.
-
-**Antigravity는 약관이 이를 명시한 예외입니다.** Google의 [Antigravity 약관](https://antigravity.google/terms)은 "서드파티 소프트웨어, 도구, 서비스로 서비스에 접근하는 것(예: OpenClaw를 Antigravity OAuth와 함께 사용)은 본 계약 위반"이며, 그러한 위반은 "Antigravity 및/또는 Gemini CLI 계정의 정지 또는 해지 사유가 될 수 있다"고 명시합니다. shunt의 `antigravity` 프로바이더가 바로 그것 — Antigravity OAuth를 사용하는 서드파티 소프트웨어 — 이므로, 이 프로바이더로 라우팅하는 것은 그 조항에 그대로 해당합니다. `shunt login antigravity`를 실행하기 전에 이를 감안해 결정하세요.
-
-**Cursor**도 같은 방식으로 동작합니다. 한 번 로그인한 뒤 `cursor:*` 모델 id를 라우팅하세요:
-
-```bash
-shunt login cursor                                  # OAuth -> ~/.shunt/cursor-auth.json
-```
-
-```toml
-# shunt.toml — cursor:<id>를 Cursor 구독으로 라우팅
-[[routes]]
-model = "cursor:default"                             # "default"는 Auto의 wire id입니다. 유료 플랜은 이름이 지정된 id를 쓸 수 있습니다
-provider = "cursor"
-```
-
-`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 프리픽스는 Cursor의 에이전트 모드(Agent / Plan / Ask)를 선택하며, 접미사는 Cursor의 **wire** 모델 id입니다(Auto는 `auto`가 아니라 `default`입니다). 단, Cursor의 `composer-2.5-fast` 선택기 별칭은 예외로, shunt는 `composer-2.5` wire id와 `fast=true` 모델 메타데이터를 전송합니다. 어댑터는 어시스턴트 텍스트와 추론을 스트리밍하고, 클라이언트의 도구를 네이티브 Cursor MCP 도구 호출로 브리지하며, 인라인 이미지를 전달합니다(issue #170). 자세한 내용은 [프로바이더 → Cursor](https://shunt.dev/ko/providers/cursor/)를 참고하세요.
-
-**Anthropic 호환 백엔드**라면 무엇이든 테이블 하나만 추가하면 됩니다. 코드 변경은 없습니다.
+테이블 하나면 되고, 코드 변경은 필요 없습니다.
 
 | 프로바이더 | `base_url` | 예시 모델 ID |
 | :-- | :-- | :-- |
@@ -214,33 +152,6 @@ provider = "cursor"
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 
-위 표의 행은 대부분 `auth = "api_key"`를 사용합니다. 예외는 **Kimi Code**로, 바로 위 행의 종량제 Moonshot API와는 별개의 구독형 Kimi 서비스입니다 — 호스트가 다르고, API 키 대신 OAuth를 사용합니다. `kind = "anthropic"`, `base_url = "https://api.kimi.com/coding"`, `auth = "kimi_oauth"`를 제공하는 전용 내장 `kimi-code` 프리셋이 있어, `provider = "kimi-code"`와 로그인한 계정만 있으면 별도의 `[providers.*]`/`[[upstreams]]` 테이블 작성이 필요 없습니다:
-
-```bash
-shunt login kimi --name <account-name>                # RFC 8628 디바이스 플로우 -> ~/.shunt/accounts/kimi/<account-name>.json
-```
-
-```toml
-# shunt.toml — Kimi Code 구독으로 라우팅
-[[upstreams]]
-name = "kimi-code"
-provider = "kimi-code"
-auth = { mode = "kimi_oauth", account = "<account-name>" }
-
-# [[upstreams]]를 선언하면 내장 provider 세트가 대체되므로 마지막에 anthropic
-# passthrough를 남겨 둡니다. 없으면 `shunt check`가 기본 server.default_provider를
-# 찾지 못해 실패합니다. `shunt init`이 덧붙이는 항목과 동일합니다.
-[[upstreams]]
-name = "anthropic"
-provider = "anthropic"
-
-[[routes]]
-model = "<model-id-your-subscription-exposes>"
-provider = "kimi-code"
-```
-
-`kimi_oauth`는 `claude_oauth`/`chatgpt_oauth`와 마찬가지로 풀링이 가능합니다 — `account` 대신 `accounts = [...]`를 사용하면 여러 개의 저장된 Kimi 계정에 부하를 분산할 수 있습니다. 어드민/`/usage` 풀 화면을 포함한 전체 안내는 [Kimi → Kimi Code (OAuth subscription)](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription)를 참고하세요. 디바이스 플로우·토큰 저장소·검증 내부 구조는 [M15 설계 노트](docs/m15-kimi-oauth.md)를 참고하세요.
-
 ```toml
 [providers.kimi]
 kind = "anthropic"
@@ -251,30 +162,51 @@ api_key_env = "MOONSHOT_API_KEY"
 [[routes]]
 model = "kimi-k3[1m]"
 provider = "kimi"
-
-[[routes]]
-model = "kimi-k2.7-code"
-provider = "kimi"
 ```
 
-전체 목록과 프로바이더별 참고 사항은 [프로바이더](https://shunt.dev/guides/providers/)를 참고하세요.
+위 표의 행은 대부분 `auth = "api_key"`를 사용합니다. **Kimi Code**만 예외입니다. 종량 과금인 Moonshot API와는 별개인 구독 기반 서비스로, 호스트가 다르고 API 키 대신 OAuth를 쓰며, 내장 `kimi-code` 프리셋이 있습니다. 이 프리셋은 순서가 있는 `[[upstreams]]` 항목 안에서만 해석되므로(시드된 프로바이더 맵에는 없습니다) 거기에 선언한 뒤 로그인하세요. [Kimi Code](https://shunt.dev/ko/providers/kimi/#kimi-code-oauth-구독)를 참고하세요.
+
+### 구독 재사용
+
+OpenAI의 Thibault Sottiaux는 다른 코딩 하네스를 통해 Codex를 실행하는 것을 공개적으로 환영했습니다.
+
+> Share the recipe. People want to know how to use GPT-5.6 Sol in CC. We don't discriminate on the harness. ([출처](https://x.com/thsottiaux/status/2075830097488249060))
+
+그는 [후속 글](https://x.com/thsottiaux/status/2076119366647894371)에서 Claude Code("당신의 주황색 게")를 GPT-5.6 Sol에 직접 연결하는 과정을 설명했습니다. `shunt`가 수행하는 추론 계층 교체와 정확히 같으며, 별도의 앱이 필요 없습니다.
+
+다만, 비공식 클라이언트에서 ChatGPT/Codex나 SuperGrok 구독(또는 Kimi, Cursor 등 다른 백엔드)을 재사용하는 것은 본인의 판단입니다. 공개적인 환영이 향후 정책이나 계정 제재가 없음을 보장하지는 않습니다. 사용에 따른 책임은 본인에게 있습니다.
+
+**Antigravity는 약관이 이를 명시한 예외입니다.** Google의 [Antigravity 약관](https://antigravity.google/terms)은 "서드파티 소프트웨어, 도구, 서비스로 서비스에 접근하는 것(예: OpenClaw를 Antigravity OAuth와 함께 사용)은 본 계약 위반"이며, 그러한 위반은 "Antigravity 및/또는 Gemini CLI 계정의 정지 또는 해지 사유가 될 수 있다"고 명시합니다. shunt의 `antigravity` 프로바이더가 바로 그것 — Antigravity OAuth를 사용하는 서드파티 소프트웨어 — 이므로, 이 프로바이더로 라우팅하는 것은 그 조항에 그대로 해당합니다. `shunt login antigravity`를 실행하기 전에 이를 감안해 결정하세요.
+
+## 선택 기능
+
+행에 별도 표기가 없으면 **기본 비활성**입니다. 해당 구성 테이블이 없으면 라우트도 등록되지 않고 백그라운드 작업도 시작되지 않습니다.
+
+| 기능 | 활성화 키 | 문서 |
+| :-- | :-- | :-- |
+| Anthropic 멀티 계정 풀링 — 스티키 세션, 쿼터 인식 로테이션, 예측 회피 | 계정 2개 이상인 `auth = "claude_oauth"`; `[server.pool]`은 선택적 튜닝 | [가이드](https://shunt.dev/ko/guides/anthropic-multi-account/) |
+| Codex 멀티 계정 풀링 — `x-codex-*` 윈도우 추적, 슬로우 스타트 램프, 재프로브 | 계정 2개 이상인 `auth = "chatgpt_oauth"`; `[server.pool]`은 선택적 튜닝 | [가이드](https://shunt.dev/ko/guides/codex-multi-account/) |
+| 인바운드 Codex 엔드포인트 — **Codex CLI**를 shunt로 향하게 해 같은 풀에 태우고, 모델별 라우팅도 선택할 수 있음 | `[server.codex_endpoint]` | [가이드](https://shunt.dev/ko/guides/inbound-codex-endpoint/) |
+| Claude 앱 게이트웨이 로그인 — OAuth device flow, managed settings, 사용자별 정책 | `public_url`, 32바이트 이상 JWT 시크릿, 정적 사용자 또는 `[server.gateway.oidc]`를 갖춘 `[server.gateway]` | [가이드](https://shunt.dev/ko/guides/gateway-login/) |
+| 게이트웨이 텔레메트리 인제스트 — 관리 클라이언트의 OTLP를 그대로 릴레이 | 구성된 `[server.gateway]`와 `forward_to`가 비어 있지 않은 `[server.gateway.telemetry]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#servergatewaytelemetry-선택) |
+| 관리자 웹 화면 — 계정·사용량 대시보드, 브라우저 프로비저닝 | `[server.admin]`, `shunt dashboard setup` | [가이드](https://shunt.dev/ko/guides/admin-remote-provisioning/) |
+| 지출 한도 Admin API — 조직·사용자 단위 상한(1단계는 저장만 하고 아직 적용하지 않음) | `[server.admin]` + `[server.spend]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverspend-선택) |
+| 클라이언트 사용량 엔드포인트 — `GET /usage`가 정제·집계된 풀 여유를 반환 | `[server.auth]` + `[server.usage]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverusage-선택) |
+| Claude Code CLI 네이티브 사용량 막대 — `GET /api/oauth/usage` 제공 | `[server.oauth_usage]`, 루프백이 아닌 bind에서는 `[server.auth]` 또는 `[server.gateway]` 추가 필요 | [레퍼런스(영문)](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
+| 업스트림 상태 폴링 — 대시보드와 메트릭에 Statuspage 지표 노출 | `[[server.status.sources]]` 항목이 하나 이상 있는 `[server.status]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverstatus-선택) |
+| 제한된 업스트림 재시도 — **기본 활성**, 보수적이며 스트림 도중에는 재시도하지 않음 | `[providers.<name>.retry]` | [레퍼런스(영문)](https://shunt.dev/reference/configuration/#providersnameretry) |
+| 공유 배포 제한 — **기본 활성**(동시 1024, 본문 32 MiB, TTFB 120초, device-flow 레이트 리밋), CIDR·헤더·URL 제한은 선택 | `[server] max_concurrent_requests`, `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [가이드](https://shunt.dev/ko/guides/shared-gateway/) |
+| 시크릿 참조 — 모든 문자열 값에 `${VAR}` 또는 `${file:/abs/path}`, 핫 리로드마다 다시 확인(`[sentry]`·`[otel]` 제외 — 기동 시 1회 구성이라 재시작 필요) | 구성의 모든 문자열(**항상 활성**) | [레퍼런스](https://shunt.dev/ko/reference/configuration/) |
+| OpenTelemetry 메트릭과 트레이스 | `endpoint`가 비어 있지 않은 `[otel]` | [가이드](https://shunt.dev/ko/guides/opentelemetry/) |
 
 ## 문서
 
-모든 내용은 **[shunt.dev](https://shunt.dev)**에 있습니다.
+사용자 문서는 모두 **[shunt.dev](https://shunt.dev)**에 있습니다.
 
 - [빠른 시작](https://shunt.dev/getting-started/quickstart/) · [왜 shunt인가?](https://shunt.dev/getting-started/why-shunt/) · [프로바이더](https://shunt.dev/guides/providers/) · [구성](https://shunt.dev/guides/configuration/) · [문제 해결](https://shunt.dev/reference/troubleshooting/)
 - **에이전트용:** 모든 페이지에는 Markdown 쌍둥이 페이지가 있으며(임의의 URL에 `.md`를 붙이거나 페이지의 *Copy Markdown* / *Open in AI* 버튼 사용), 사이트는 [llms.txt 스펙](https://llmstxt.org/)에 따라 [`/llms.txt`](https://shunt.dev/llms.txt), [`/llms-small.txt`](https://shunt.dev/llms-small.txt), [`/llms-full.txt`](https://shunt.dev/llms-full.txt)를 게시합니다.
 
-설계 노트와 마일스톤 스펙은 [`docs/`](docs/)에 있습니다([`docs/implementation-plan.md`](docs/implementation-plan.md)부터 시작하세요). Claude Code를 ChatGPT/Codex 구독으로 라우팅하려면 [Codex 구성 레퍼런스](docs/codex-configuration.md)를 참고하세요.
-
-### 관측성 메트릭
-
-| 시리즈 | 종류 | 속성 | 의미 |
-| :-- | :-- | :-- | :-- |
-| `shunt.failover` | Counter | `provider`, `state` | 순서가 있는 업스트림의 페일오버 전이: `attempted`, `advanced`, `exhausted`. |
-
-전체 메트릭 표와 익스포트 구성은 [OpenTelemetry 가이드](https://shunt.dev/ko/guides/opentelemetry/)를 참고하세요.
+기여자를 위한 설계 노트와 마일스톤 스펙은 [`docs/`](docs/)에 있습니다. [`docs/implementation-plan.md`](docs/implementation-plan.md)부터 보세요.
 
 ## 왜
 
@@ -288,15 +220,14 @@ Claude Code는 모든 턴을 Anthropic API로 보냅니다. `shunt`는 그 앞(`
 
 ## Claude Code 통합(공식 표면)
 
-Claude Code는 `ANTHROPIC_BASE_URL` 뒤에 **1급 게이트웨이 계약**을 노출합니다. `shunt`는 이전 Claude Code 프록시들이 의존하던 취약한 "서브에이전트 시스템 프롬프트 해시" 휴리스틱 대신 이 계약을 구현합니다.
+Claude Code는 `ANTHROPIC_BASE_URL` 뒤에 **1급 게이트웨이 계약**을 공개합니다. `shunt`는 이전 Claude Code 프록시들이 기대던 "서브에이전트 시스템 프롬프트 해싱"이라는 취약한 휴리스틱 대신 이 계약을 구현합니다.
 
-- [LLM Gateway Protocol](https://code.claude.com/docs/en/llm-gateway-protocol) — API 계약입니다. 엔드포인트, 전달 대 소비할 헤더/바디 필드, 기능 패스스루, 어트리뷰션을 정의합니다. 실행 중인 게이트웨이는 `GET /protocol`에서 기계 판독 가능한 스펙을 제공합니다.
-  - [모델 디스커버리](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code는 시작 시 `GET /v1/models?limit=1000`을 쿼리하고(`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`로 옵트인), 반환된 모델을 `/model` 선택기에 추가합니다. 기본값인 `auto_include_builtin_models = true`는 자동으로 발견된 모델을 선별된 `[[models]]` 항목 뒤에 id 기준으로 중복을 제거해 덧붙입니다. 엄격하게 선별된 목록만 원하면 `false`로 설정하세요. 이 모델들은 `server.default_provider`가 Anthropic 계열일 때 그 프로바이더에 대한 실시간 `GET /v1/models` 호출에서 오며, 해당 프로바이더의 인증 모드를 사용합니다. `passthrough`는 호출자의 자격 증명을 전달하므로 호출자마다 자신이 권한을 가진 목록을 보게 되고, `api_key`는 구성된 키를 사용하며, `claude_oauth`는 추론과 동일한 유효 계정 집합에서 — `account_scope` 순서의 스토어 검색 계정을 포함해 — 처음으로 확인 가능하고 비활성화되지 않은 계정을 풀 선택, 쿨다운, 쿼터 집계 없이 사용합니다. 뒤의 두 모드는 게이트웨이 자격 증명 범위의 공유 카탈로그를 노출합니다. shunt는 아무것도 캐시하지 않으며, 기본 프로바이더가 Anthropic 계열이 아니거나 자격 증명이 없거나 호출이 실패하면(2초 상한) 내장 Claude 카탈로그 스냅샷으로 폴백합니다. 선별된 항목에는 `[models.upstream_model]` 맵을 포함할 수도 있는데(순서가 있는 `[[upstreams]]`에서는 여러 항목, 레거시 프로바이더에서는 한 항목), 이 경우 광고된 id가 매핑된 업스트림을 통해 라우팅 가능해지고 별도의 `[[routes]]` 항목 없이 각 매핑 백엔드 id로 변환됩니다. **제약:** `id`가 `claude`/`anthropic`으로 시작하지 않는 항목은 무시됩니다. Claude가 아닌 모델은 별칭을 붙이거나 수동으로 추가해야 합니다.
-  - **시스템 프롬프트 어트리뷰션 블록** — Claude Code는 클라이언트 버전 + 대화 지문을 시스템 프롬프트 앞에 추가하며, 대화 수명 동안 안정적으로 유지됩니다(v2.1.181+). `shunt`는 이를 변경 없이 전달합니다(절대 제거하지 않으며, 그것은 `CLAUDE_CODE_ATTRIBUTION_HEADER=0`을 통한 개발자의 선택입니다).
-- [커스텀 모델 옵션 추가](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION`은 내장 별칭을 대체하지 않고 게이트웨이로 라우팅되는 항목을 `/model` 선택기에 추가합니다. 이 ID는 검증을 건너뛰므로 게이트웨이가 받아들이는 문자열이면 무엇이든 동작합니다. 디스커버리가 `claude`/`anthropic`으로 시작하지 않는 id를 무시하므로, **이것이 Claude가 아닌 모델을 선택하는 기본 방법**입니다(예: `gpt-5.6-sol`).
-- **도구 검색**(`ENABLE_TOOL_SEARCH`) — Claude Code는 MCP/LSP 도구 스키마를 지연시켜 두었다가 `ToolSearch` 도구로 필요할 때 드러내며, 모델이 호출하지도 않을 도구에 쓰였을 컨텍스트를 되찾습니다. shunt는 퍼스트파티 Anthropic 호스트가 아니므로, `ENABLE_TOOL_SEARCH=true`로 옵트인하지 않는 한 Claude Code는 이 기능을 **꺼 둡니다**. Messages 경로에서 지연이 유지되는지는 설정이 아니라 업스트림 모델이 결정합니다. `claude*`와 `anthropic/*` id는 프로토콜을 바이트 단위로 유지하지만, Anthropic이 아닌 id(OpenRouter의 스텔스 슬러그, Kimi 등)는 `defer_loading` 마커와 `tool_search_tool_*` 항목이 제거됩니다. 그런 호스트는 이를 그대로 거부하기 때문입니다(`400 Deferred custom tools are only supported on Anthropic models...`). 도구 자체는 여전히 전달되지만 전체 스키마와 함께 즉시 전달되므로, 그런 모델에서는 도구 검색이 컨텍스트를 되찾아 주지 못합니다. Codex/Responses 경로에서 `[providers.<name>]` 아래의 `tool_search`는 세 가지 상태를 갖는 설정입니다. 설정하지 않으면(기본값 "auto") 이미 구현한 것으로 알려진 업스트림 — ChatGPT/Codex 백엔드와 `api.openai.com` — 에 대해서만 Responses API 자체의 네이티브 클라이언트 실행 `tool_search` 프로토콜에 매핑하고, 그 외 모든 OpenAI 호환 엔드포인트(LiteLLM, vLLM, OpenRouter, 자체 호스팅 프록시 등)에는 #43 텍스트 shim을 유지합니다. `tool_search = true`는 업스트림의 flavor와 모델이 조건을 만족하면(xAI/Grok이 아니고 gpt-5.4 이상) 네이티브를 강제하므로 검증한 커스텀 엔드포인트를 옵트인할 수 있습니다. `tool_search = false`는 항상 shim을 강제하며, 이 shim은 드러난 도구를 캐시된 `tools` 프리픽스에 추가하고 드러날 때마다 프리픽스를 무효화합니다. [도구 검색](https://shunt.dev/ko/guides/codex/#tool-search) 가이드를 참고하세요.
+- [LLM Gateway Protocol](https://code.claude.com/docs/en/llm-gateway-protocol) — 엔드포인트, 전달할 헤더·본문 필드와 소비할 필드, 기능 패스스루, 어트리뷰션을 규정한 API 계약입니다. 실행 중인 게이트웨이는 `GET /protocol`에서 기계가 읽을 수 있는 스펙을 제공합니다. Claude Code는 클라이언트 버전과 대화 지문을 시스템 프롬프트 앞에 붙이는데, 이를 없앨지는 `CLAUDE_CODE_ATTRIBUTION_HEADER=0`으로 개발자가 정할 몫이므로 shunt는 그 어트리뷰션 블록을 그대로 전달합니다.
+- [모델 디스커버리](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code는 시작 시 `GET /v1/models?limit=1000`을 조회해(`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`로 옵트인) 반환된 모델을 `/model` 선택기에 추가합니다. shunt는 큐레이션된 `[[models]]` 항목에 더해, `auto_include_builtin_models`가 `true`인 동안에는 호출자의 라이브 카탈로그로 응답합니다 — 이 조회는 `server.default_provider`가 Anthropic 종류일 때만 이뤄지며, 그렇지 않거나 크리덴셜이 없거나 조회가 실패하면 내장 스냅샷으로 대체됩니다. **제약:** `id`가 `claude`/`anthropic`으로 시작하지 않는 항목은 무시되므로, Claude 계열이 아닌 모델은 별칭을 만들거나 수동으로 추가해야 합니다. [모델 디스커버리](https://shunt.dev/ko/guides/model-discovery/)를 참고하세요.
+- [커스텀 모델 옵션 추가](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION`은 내장 별칭을 대체하지 않으면서 게이트웨이로 라우팅되는 항목을 `/model` 선택기에 추가합니다. ID는 검증을 거치지 않으므로 게이트웨이가 받아들이는 문자열이면 무엇이든 됩니다. 위의 디스커버리 제약 때문에 **Claude 계열이 아닌 모델을 고르는 주된 방법**입니다(예: `gpt-5.6-sol`).
+- **도구 검색**(`ENABLE_TOOL_SEARCH`) — Claude Code는 MCP/LSP 도구 스키마를 지연시켰다가 필요할 때 드러내어 컨텍스트를 회수합니다. shunt는 Anthropic 1급 호스트가 아니므로 직접 옵트인하지 않는 한 이 기능은 **꺼진 상태**입니다. 옵트인 후 지연이 유지되는지는 설정이 아니라 업스트림이 결정합니다. `claude*`와 `anthropic/*` id는 프로토콜을 바이트 단위로 유지하고, 그 외 id는 해당 호스트가 거부하므로 `defer_loading` 표식이 제거되며, Responses 경로에는 자체적인 3-상태 `tool_search` 설정이 있습니다. [도구 검색](https://shunt.dev/ko/guides/codex/#도구-검색)을 참고하세요.
 
-**설계 원칙:** 스펙을 준수하는 Anthropic-Messages 게이트웨이가 되고(`/v1/messages`, `/v1/models`, 올바른 헤더/어트리뷰션 패스스루), 요청의 `model` id로 라우팅하며, 매핑된 모델에 대해 Anthropic Messages ⇄ OpenAI Responses API를 변환합니다. Claude Code 프롬프트가 바뀔 때마다 깨지는 프롬프트 형태 휴리스틱은 없습니다.
+**설계 원칙:** 스펙을 준수하는 Anthropic-Messages 게이트웨이가 되고(`/v1/messages`, `/v1/models`, 올바른 헤더·어트리뷰션 패스스루), 요청의 `model` id로 라우팅하며, 매핑된 모델에 대해 Anthropic Messages ⇄ OpenAI Responses API를 번역합니다. Claude Code 프롬프트가 바뀔 때마다 깨지는 프롬프트 형태 휴리스틱은 쓰지 않습니다.
 
 ## 관련 작업 / 선행 사례
 
