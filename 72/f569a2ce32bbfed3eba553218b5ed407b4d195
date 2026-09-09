@@ -1,0 +1,19 @@
+tests/codex_websocket_fallback.rs
+  s_9b6ca20e896a6e::t_ce39c3243bbc99 654-657
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "72f569a2ce32bbfed3eba553218b5ed407b4d195",
+  "prompts": {},
+  "sessions": {
+    "s_9b6ca20e896a6e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7ddfba78-5ab8-4da6-9bd7-7649f0bd67c0",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
