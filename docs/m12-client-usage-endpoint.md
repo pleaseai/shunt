@@ -59,7 +59,9 @@ the Fable-scoped weekly window (`fable` / `7d_oi`):
   availability, model, session affinity, and priority); for that question use the routing-aware
   worst case that `GET /api/oauth/usage` ([M14](m14-oauth-usage-endpoint.md)) reports. `null` only when
   no non-disabled account reports the window. ChatGPT/Codex response headers can
-  populate the 5-hour and shared weekly windows; Codex has no Fable-scoped (`7d_oi`) signal, though
+  populate the 5-hour and shared weekly windows, as does the WebSocket transport's in-stream
+  `codex.rate_limits` event ([M7](m7-codex-websocket.md)), which reports them on every turn
+  including turns on a reused connection; Codex has no Fable-scoped (`7d_oi`) signal, though
   another provider in a mixed pool may supply the aggregate Fable window.
 - `resets_at` — the earliest window reset (unix epoch seconds) reported by the accounts counted in
   `remaining`: the soonest moment the aggregate can change. `null` when none of them reported one.
@@ -128,8 +130,11 @@ cannot be read) use the Anthropic error shape, like the rest of the gateway.
 - **No per-client accounting.** The aggregate is pool-wide; it does not attribute usage to the
   calling client.
 - **Codex usage is response- and poller-derived in this branch.** ChatGPT/Codex response
-  `x-codex-*` headers and the optional `GET /wham/usage` poller populate the 5-hour and shared
-  weekly windows, and a window is `null` only when no non-disabled account has reported it. The
+  `x-codex-*` headers, the WebSocket transport's in-stream `codex.rate_limits` event
+  ([M7](m7-codex-websocket.md)), and the optional `GET /wham/usage` poller populate the 5-hour and
+  shared weekly windows, and a window is `null` only when no non-disabled account has reported it.
+  The headers only appear on a fresh WebSocket handshake, so on that transport the event is what
+  keeps a reused connection's turns observed. The
   poller uses imported, refreshable accounts. For Codex, reset metadata remains header-derived:
   a future header reset is preserved, while an elapsed stored reset for a reported window is
   cleared before fresh utilization is written; the wham report's parsed `reset_at` is not adopted

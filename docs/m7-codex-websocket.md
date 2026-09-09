@@ -301,6 +301,31 @@ The issue frames this as "prewarm". Two separable things:
   plain HTTP; only a failure after the first event has streamed is surfaced to the
   client (it is then too late to fall back).
 
+### Quota observation
+
+Two sources feed the observed Codex account's quota windows in `AccountPool`, and
+the WebSocket transport needs both:
+
+- **Handshake headers.** The upgrade response's `x-codex-*` groups are recorded by
+  `AccountPool::note_codex_quota`, exactly as on the HTTP path. Only a *fresh*
+  connection performs a handshake, so a reused or prewarmed pooled connection
+  carries no header signal — replaying the original handshake's headers would
+  overwrite fresher state with stale values.
+- **The in-stream `codex.rate_limits` event.** The backend reports its rate limits
+  as a normal stream event carrying `rate_limits.primary` / `.secondary`
+  (`used_percent`, `window_minutes`, `reset_at`; every field optional). The reader
+  hands it to the turn's `RecordPlan::rate_limits` tap, which calls
+  `AccountPool::note_codex_rate_limits`, and still forwards the event downstream
+  for the inbound Codex passthrough clients. This arrives on *every* turn, so a
+  pool that only ever reuses connections still reports live windows to
+  `GET /admin/pool` and `GET /usage`.
+
+Both sources share one per-window apply step, so a window's bucket is always
+identified by its `window_minutes` (~300 → 5h, ~10080 → weekly) and never by its
+primary/secondary position; an unrecognized duration is skipped rather than
+guessed at. The event carries no rate-limit-reached type, so `quota.status` stays
+header-driven.
+
 ## 9. Config & validation
 
 ```toml
