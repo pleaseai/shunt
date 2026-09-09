@@ -1,0 +1,28 @@
+README.ja.md
+  s_a4ac39561e5833::t_50729cf11a25f5 226
+  s_a4ac39561e5833::t_272e8f4c6aa4e2 118
+README.ko.md
+  s_a4ac39561e5833::t_272e8f4c6aa4e2 118
+  s_a4ac39561e5833::t_50729cf11a25f5 226
+README.md
+  s_a4ac39561e5833::t_272e8f4c6aa4e2 118,226
+README.zh-CN.md
+  s_a4ac39561e5833::t_50729cf11a25f5 225
+  s_a4ac39561e5833::t_272e8f4c6aa4e2 117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4db65bce13a8dbdadd11150456f225fd4570e6b2",
+  "prompts": {},
+  "sessions": {
+    "s_a4ac39561e5833": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "533f926a-e2fc-4934-8ab8-ce814f25a011",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
