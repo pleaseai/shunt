@@ -998,8 +998,8 @@ async fn run_turn(
                 capture_continuation(&event, &mut response_id, &mut output_items, &mut turn_state);
                 // The backend reports rate limits as an in-stream event, which is
                 // the only quota signal a reused connection ever sees. Observe it
-                // here and still forward it: the inbound Codex passthrough clients
-                // consume the event themselves.
+                // here and still forward it: the event stays part of the turn's
+                // response stream rather than being consumed by the tap.
                 if event.event.as_deref() == Some(RATE_LIMITS_EVENT) {
                     if let Some(tap) = &record.rate_limits {
                         tap(&event.data);
@@ -1393,7 +1393,8 @@ mod tests {
     /// The backend reports quota in-stream as `codex.rate_limits`, the only quota
     /// signal a reused connection ever gets. The reader must hand that event's
     /// payload to [`RecordPlan::rate_limits`] exactly once *and* still forward the
-    /// event downstream, which the inbound Codex passthrough clients consume.
+    /// event downstream, so observing it does not consume it from the turn's
+    /// response stream.
     #[tokio::test]
     async fn rate_limits_event_taps_and_still_forwards() {
         use tokio::net::TcpListener;

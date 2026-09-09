@@ -1194,7 +1194,8 @@ impl AccountPool {
     /// 5h/7d windows, so the Codex parser can mark a bucket's utilization as
     /// authoritatively absent. Such a bucket's utilization and observation
     /// timestamp are cleared before reported windows are applied. For a
-    /// reported bucket, reset metadata remains header-derived: a future stored
+    /// reported bucket, reset metadata stays response-derived (the `x-codex-*`
+    /// headers and the websocket `codex.rate_limits` event): a future stored
     /// reset survives, while an elapsed stored reset is dropped so it cannot
     /// immediately expire the fresh utilization. The parser's `resets_at` is
     /// ignored, and status metadata remains owned by response headers. The
@@ -1217,7 +1218,9 @@ impl AccountPool {
             {
                 let quota = &mut health.quota;
                 // wham/usage reports only reconcile Codex utilization. Keep
-                // reset and status metadata header-derived, including when a
+                // reset metadata response-derived (the `x-codex-*` headers and
+                // the websocket `codex.rate_limits` event) and status metadata
+                // header-derived, including when a
                 // recognized window is absent from the report. This also
                 // prevents a stale signal in one bucket from expiring or
                 // rewriting unrelated fields during another bucket's poll.

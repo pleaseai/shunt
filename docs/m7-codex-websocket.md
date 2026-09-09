@@ -316,7 +316,7 @@ the WebSocket transport needs both:
   (`used_percent`, `window_minutes`, `reset_at`; every field optional). The reader
   hands it to the turn's `RecordPlan::rate_limits` tap, which calls
   `AccountPool::note_codex_rate_limits`, and still forwards the event downstream
-  for the inbound Codex passthrough clients. This arrives on *every* turn, so a
+  through the outbound WebSocket response path. This arrives on *every* turn, so a
   pool that only ever reuses connections still reports live windows to
   `GET /admin/pool` and `GET /usage`.
 

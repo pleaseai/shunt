@@ -9,7 +9,7 @@
 //! even after the upstream window has long since reset. Codex CLI itself
 //! polls this endpoint every 60 seconds for the same reason: to know an
 //! account's headroom without waiting on live traffic. The poller
-//! ([`crate::usage_poll`]) reuses it to reconcile header-derived state the
+//! ([`crate::usage_poll`]) reuses it to reconcile response-derived state the
 //! same way [`crate::auth::claude::usage`] does for Claude.
 //!
 //! **This is an unofficial, private API.** It is not part of any published
@@ -101,8 +101,9 @@ pub(crate) async fn fetch_usage_report(
 
 /// A parsed wham report plus the buckets whose utilization the response
 /// authoritatively omitted. Unlike Claude's usage API, wham enumerates the
-/// account's 5h/7d windows, so a missing bucket can clear stale header-derived
-/// utilization. Reset and status metadata remain header-derived. An
+/// account's 5h/7d windows, so a missing bucket can clear stale response-derived
+/// utilization. Reset metadata stays response-derived (headers and the websocket
+/// `codex.rate_limits` event) and status metadata header-derived. An
 /// unknown-duration window suppresses both clear decisions because its bucket
 /// cannot be inferred safely.
 #[derive(Debug, Clone, PartialEq)]

@@ -135,10 +135,14 @@ cannot be read) use the Anthropic error shape, like the rest of the gateway.
   shared weekly windows, and a window is `null` only when no non-disabled account has reported it.
   The headers only appear on a fresh WebSocket handshake, so on that transport the event is what
   keeps a reused connection's turns observed. The
-  poller uses imported, refreshable accounts. For Codex, reset metadata remains header-derived:
-  a future header reset is preserved, while an elapsed stored reset for a reported window is
+  poller uses imported, refreshable accounts. For Codex, reset metadata is response-derived —
+  from the `x-codex-*` reset headers and from the event's `reset_at`, which share one apply step:
+  a response-supplied reset replaces the stored one, and when the response omits it a future
+  stored reset survives while an elapsed stored reset for a reported window is
   cleared before fresh utilization is written; the wham report's parsed `reset_at` is not adopted
-  as live reset metadata, and status metadata remains header-derived. An authoritatively absent
+  as live reset metadata. Status metadata is header-only: the event carries no rate-limit-reached
+  type, so the event path never writes `status` — though a status already stale by its own reset
+  or observation bound still expires when that path runs. An authoritatively absent
   bucket still clears only its utilization and observation timestamp. Codex has no Fable-scoped (`7d_oi`) signal, although
   another provider in a mixed pool may supply the aggregate Fable value. The private endpoint is
   unofficial and opt-in through `usage_refresh_seconds`; fetch and parse failures preserve the
