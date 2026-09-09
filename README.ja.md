@@ -115,7 +115,7 @@ codex-fallback = "gpt-5.6-sol"
 
 ### 標準搭載
 
-以下のプロバイダーはデフォルトでシードされているため、独自の `[providers.*]` テーブルなしに `provider = "<name>"` だけでルーティングできます。
+以下のプロバイダーはデフォルトでシードされているため、独自の `[providers.*]` テーブルなしに `provider = "<name>"` だけでルーティングできます。**ただし `[[upstreams]]` を宣言していない場合に限ります。** 順序付きの `[[upstreams]]` はプロバイダーマップ全体を置き換えるため、その形式ではプリセットを含め、ルーティング先のプロバイダーをすべてそこに宣言する必要があります。
 
 | 名前 | Kind | 認証 | バックエンド |
 | :-- | :-- | :-- | :-- |
@@ -223,7 +223,7 @@ Claude Code はすべてのターンを Anthropic API へ送信します。`shun
 Claude Code は `ANTHROPIC_BASE_URL` の背後に**ファーストクラスのゲートウェイ契約**を公開しています。`shunt` は、これまでの Claude Code プロキシが頼ってきた「サブエージェントのシステムプロンプトをハッシュする」という脆いヒューリスティックではなく、この契約を実装します。
 
 - [LLM Gateway Protocol](https://code.claude.com/docs/en/llm-gateway-protocol) — エンドポイント、転送すべきヘッダー・ボディフィールドと消費すべきフィールド、機能のパススルー、アトリビューションを定めた API 契約です。稼働中のゲートウェイは `GET /protocol` で機械可読な仕様を提供します。Claude Code はクライアントバージョンと会話のフィンガープリントをシステムプロンプトの先頭に付加しますが、それを抑制するかは `CLAUDE_CODE_ATTRIBUTION_HEADER=0` による開発者の判断であるため、shunt はそのアトリビューションブロックをそのまま転送します。
-- [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code は起動時に `GET /v1/models?limit=1000` を照会し（`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` でオプトイン）、返されたモデルを `/model` ピッカーに追加します。shunt はキュレーションされた `[[models]]` エントリーに加え、`auto_include_builtin_models` が `true` の間は `server.default_provider` から取得したライブカタログを返します。**制約:** `id` が `claude`/`anthropic` で始まらないエントリーは無視されるため、Claude 系以外のモデルはエイリアスを作るか手動で追加する必要があります。[モデルディスカバリー](https://shunt.dev/ja/guides/model-discovery/)を参照してください。
+- [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code は起動時に `GET /v1/models?limit=1000` を照会し（`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` でオプトイン）、返されたモデルを `/model` ピッカーに追加します。shunt はキュレーションされた `[[models]]` エントリーに加え、`auto_include_builtin_models` が `true` の間は呼び出し元のライブカタログを返します。この取得は `server.default_provider` が Anthropic 種別のときのみ行われ、そうでない場合・認証情報がない場合・取得に失敗した場合は組み込みスナップショットにフォールバックします。**制約:** `id` が `claude`/`anthropic` で始まらないエントリーは無視されるため、Claude 系以外のモデルはエイリアスを作るか手動で追加する必要があります。[モデルディスカバリー](https://shunt.dev/ja/guides/model-discovery/)を参照してください。
 - [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` は組み込みエイリアスを置き換えずに、ゲートウェイ経由のエントリーを `/model` ピッカーへ追加します。ID は検証を通らないため、ゲートウェイが受け付ける文字列なら何でも使えます。上記のディスカバリー制約があるため、これが **Claude 系以外のモデルを選ぶ主な方法**です（例: `gpt-5.6-sol`）。
 - **ツール検索**（`ENABLE_TOOL_SEARCH`） — Claude Code は MCP/LSP のツールスキーマを遅延させ、必要になったときに開示してコンテキストを回収します。shunt は Anthropic のファーストパーティホストではないため、自分でオプトインしない限りこの機能は**無効**のままです。オプトイン後に遅延が維持されるかは設定だけでなくアップストリームが決めます。`claude*` と `anthropic/*` の id はプロトコルをバイト単位で維持し、それ以外の id はホストが拒否するため `defer_loading` マーカーが除去され、Responses 経路には独自の 3 状態の `tool_search` 設定があります。[ツール検索](https://shunt.dev/ja/guides/codex/#ツール検索)を参照してください。
 
