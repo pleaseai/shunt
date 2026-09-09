@@ -72,7 +72,10 @@ regenerate it.
   meta-schema with `format: regex` checked by Python, and one JavaScript-only regex
   (`\p{Cc}`, `(?<name>…)`, `\u{…}`, `\z`) fails the whole request with
   `Invalid schema for function '…': '…' is not a 'regex'`. Claude Code's `Artifact` tool
-  ships such a pattern. Lookaheads and everything else Python accepts are kept; outside strict
+  ships such a pattern. Lookaheads and everything else Python accepts are kept, the one deliberate
+  exception being `\N{…}`, which names a character in Python but is a literal `N` in
+  JavaScript — the engines disagree on its meaning, so it is dropped rather than
+  forwarded. Outside strict
   mode a dropped `pattern` is an advisory hint lost, not a capability
   (`src/model/responses_schema.rs`).
 - **tool_choice map:** `auto→"auto"`, `none→"none"`, `any→"required"`,

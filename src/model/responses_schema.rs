@@ -21,17 +21,22 @@
 //! strict mode a `pattern` is advisory — the model reads it, nothing enforces
 //! it — so a dropped one costs a hint, not a capability; the `description`
 //! usually restates the constraint anyway. Patterns Python accepts (lookahead
-//! included) are kept.
+//! included) are kept, except `\N{…}`: Python reads it as a named character and
+//! JavaScript as a literal `N`, so the two never agree on what it matches.
 
 use serde_json::Value;
 
 /// Remove every `pattern` keyword, and every `patternProperties` entry, whose
 /// regex Python's `re` would refuse to compile.
 ///
-/// Walks schema positions only: `properties`, `$defs` and the other keyed maps
-/// hold schemas under names the *tool* chose, so a property called `pattern`
-/// is neither a keyword nor a regex; `default`, `enum`, `const` and the
-/// example keywords hold instances and are left verbatim.
+/// Walks the applicator keywords and nothing else, mirroring where the
+/// validator itself looks: the meta-schema recognizes a subschema only under
+/// those keywords, so a `pattern` sitting anywhere else is never format-checked
+/// and dropping it would corrupt forwarded data to buy nothing. That covers a
+/// property called `pattern` (`properties` and the other keyed maps hold
+/// schemas under names the *tool* chose), the instance keywords `default`,
+/// `enum` and `const`, and annotations or `x-` extensions, whose values are
+/// arbitrary data that may legitimately contain a `pattern` field.
 pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -67,7 +72,26 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
                     }
                     "dependentRequired" | "default" | "example" | "examples" | "enum" | "const" => {
                     }
-                    _ => strip_unsupported_patterns(child),
+                    // Applicators whose value is a schema, or an array of them
+                    // — the `Value::Array` arm below walks the elements.
+                    "items"
+                    | "additionalItems"
+                    | "prefixItems"
+                    | "contains"
+                    | "unevaluatedItems"
+                    | "additionalProperties"
+                    | "propertyNames"
+                    | "unevaluatedProperties"
+                    | "allOf"
+                    | "anyOf"
+                    | "oneOf"
+                    | "not"
+                    | "if"
+                    | "then"
+                    | "else"
+                    | "contentSchema" => strip_unsupported_patterns(child),
+                    // Everything else is data, not a schema position.
+                    _ => {}
                 }
             }
         }
@@ -87,11 +111,11 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
 ///
 /// Outside a character class an escaped ASCII letter must be one Python
 /// defines (`\d \D \s \S \w \W \b \B \A \Z` and the C escapes `\a \f \n \r
-/// \t \v`), or `\x`/`\u`/`\U` followed by exactly 2/4/8 hex digits, or a
-/// `\N{name}`; `(?<` must open a lookbehind (`(?<=`, `(?<!`), never a named
-/// group (Python spells that `(?P<`). Inside a class the accepted set is
-/// narrower — `\A \Z \B` are `bad escape` there — and a range endpoint may
-/// not be a category escape (`[\w-.]` is `bad character range`).
+/// \t \v`), or `\x`/`\u`/`\U` followed by exactly 2/4/8 hex digits; `(?<`
+/// must open a lookbehind (`(?<=`, `(?<!`), never a named group (Python
+/// spells that `(?P<`). Inside a class the accepted set is narrower — `\A \Z
+/// \B` are `bad escape` there — and a range endpoint may not be a category
+/// escape (`[\w-.]` is `bad character range`).
 fn python_re_accepts(pattern: &str) -> bool {
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0;
@@ -154,6 +178,13 @@ fn python_re_accepts(pattern: &str) -> bool {
                     // far and fails to compile when there is no such group;
                     // JavaScript reads an unmatched `\8` as a literal `8`.
                     if reference > groups {
+                        return false;
+                    }
+                    // `sre` cannot compute a group reference's width, so any
+                    // backreference inside a lookbehind is "look-behind
+                    // requires fixed-width pattern" — `(a+)(?<=\1)b` compiles
+                    // under ECMAScript and not under Python.
+                    if open_groups.contains(&true) {
                         return false;
                     }
                     i += 1 + digits;
@@ -267,11 +298,28 @@ fn shared_escape_accepted(escaped: char, rest: &[char]) -> bool {
         'x' => hex_run(2),
         'u' => hex_run(4),
         'U' => hex_run(8),
-        'N' => rest.first() == Some(&'{'),
+        // `\N{name}` is a *named* character in Python and a plain identity
+        // escape (a literal `N`) in JavaScript, so the two never agree on what
+        // the pattern means, and validating the name would need the Unicode
+        // name table. Reject it: the asymmetry above prefers a dropped hint.
+        'N' => false,
+        // A legacy octal escape runs to three digits and Python caps its value
+        // at `0o377`; JavaScript reads `\400` as `\40` then `0`.
+        c if c.is_digit(8) => octal_escape_in_range(c, rest),
         c if c.is_ascii_alphabetic() => false,
-        // Digits (octal) and punctuation escape to themselves.
+        // The remaining digits and punctuation escape to themselves.
         _ => true,
     }
+}
+
+/// Whether the octal escape opening at `escaped` — up to three digits, the
+/// other two taken from `rest` — is within Python's `0o377` ceiling.
+fn octal_escape_in_range(escaped: char, rest: &[char]) -> bool {
+    let mut value = escaped.to_digit(8).unwrap_or(0);
+    for digit in rest.iter().take(2).map_while(|c| c.to_digit(8)) {
+        value = value * 8 + digit;
+    }
+    value <= 0o377
 }
 
 #[cfg(test)]
@@ -314,7 +362,21 @@ mod tests {
             // Python requires a fixed-width lookbehind; ES2018 does not.
             r"(?<=a|bc)d",
             r"(?<=ab+)c",
+            r"(?<=a*)b",
+            r"(?<=a+)b",
             r"(?<=(a+))b",
+            // `sre` cannot size a group reference, so a backreference inside a
+            // lookbehind is rejected even when the group is fixed width.
+            r"(a+)(?<=\1)b",
+            r"(a)(?<=\1)b",
+            // An octal escape may not exceed `0o377`; JavaScript reads `\400`
+            // as `\40` followed by `0`.
+            r"\400",
+            r"[\400]",
+            // `\N{…}` names a character in Python and is a literal `N` in
+            // JavaScript, so the two never agree on what the pattern means.
+            r"\N{BULLET}",
+            r"\N{NOT_A_UNICODE_NAME}",
             // Unbalanced structure.
             r"(a",
             r"[a",
@@ -334,12 +396,16 @@ mod tests {
             r"(?P<name>a)",
             r"^[\]a]+$",
             r"\d\w\s\b\B\A\Z\n\t",
-            r"\u0041\x41\U00000041\N{BULLET}",
+            r"\u0041\x41\U00000041",
             r"\.\-\/",
             // A backreference to a group that exists, and three octal digits
             // (which Python reads as a character, not a group reference).
             r"(a)\1",
             r"\101",
+            // The top of the octal range, and a lookbehind that is fixed
+            // width and carries no backreference.
+            r"\377",
+            r"(a)(?<=b)c",
             // `\b` is a backspace inside a class, and `\1` an octal escape.
             r"[\b]",
             r"[\1]",
@@ -378,6 +444,56 @@ mod tests {
                     "either": {"anyOf": [{}, {"pattern": "^ok$"}]},
                     "keyed": {"patternProperties": {"^[a-z]+$": {}}}
                 }
+            })
+        );
+    }
+
+    /// The walk mirrors the validator: a `pattern` under an applicator keyword
+    /// is stripped, while one under an annotation or an `x-` extension is data
+    /// the meta-schema never treats as a schema, so it survives untouched.
+    #[test]
+    fn walks_applicators_and_leaves_extension_data_alone() {
+        let bad = r"\p{L}";
+        let mut schema = json!({
+            "items": {"pattern": bad},
+            "prefixItems": [{"pattern": bad}],
+            "contains": {"pattern": bad},
+            "unevaluatedItems": {"pattern": bad},
+            "additionalItems": {"pattern": bad},
+            "additionalProperties": {"pattern": bad},
+            "unevaluatedProperties": {"pattern": bad},
+            "propertyNames": {"pattern": bad},
+            "allOf": [{"pattern": bad}],
+            "oneOf": [{"pattern": bad}],
+            "not": {"pattern": bad},
+            "if": {"pattern": bad},
+            "then": {"pattern": bad},
+            "else": {"pattern": bad},
+            "contentSchema": {"pattern": bad},
+            "x-metadata": {"pattern": bad},
+            "x-vendor": {"nested": {"pattern": bad}}
+        });
+        strip_unsupported_patterns(&mut schema);
+        assert_eq!(
+            schema,
+            json!({
+                "items": {},
+                "prefixItems": [{}],
+                "contains": {},
+                "unevaluatedItems": {},
+                "additionalItems": {},
+                "additionalProperties": {},
+                "unevaluatedProperties": {},
+                "propertyNames": {},
+                "allOf": [{}],
+                "oneOf": [{}],
+                "not": {},
+                "if": {},
+                "then": {},
+                "else": {},
+                "contentSchema": {},
+                "x-metadata": {"pattern": bad},
+                "x-vendor": {"nested": {"pattern": bad}}
             })
         );
     }
