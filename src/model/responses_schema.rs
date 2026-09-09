@@ -42,13 +42,17 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
             {
                 map.remove("pattern");
             }
-            if let Some(Value::Object(entries)) = map.get_mut("patternProperties") {
-                entries.retain(|key, _| python_re_accepts(key));
-            }
             for (key, child) in map.iter_mut() {
                 match key.as_str() {
-                    "properties" | "$defs" | "definitions" | "patternProperties"
-                    | "dependentSchemas" => {
+                    // Keys are regexes here, values are schemas: filter the
+                    // keys, then recurse into what survived.
+                    "patternProperties" => {
+                        if let Value::Object(entries) = child {
+                            entries.retain(|key, _| python_re_accepts(key));
+                            entries.values_mut().for_each(strip_unsupported_patterns);
+                        }
+                    }
+                    "properties" | "$defs" | "definitions" | "dependentSchemas" => {
                         if let Value::Object(schemas) = child {
                             schemas.values_mut().for_each(strip_unsupported_patterns);
                         }
@@ -74,41 +78,189 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
 
 /// Whether Python's `re.compile` accepts `pattern`.
 ///
-/// This is not a regex parser; it flags the escapes and group openers that
+/// This is not a regex parser; it tracks just enough state — character-class
+/// context, capture-group count, lookbehind nesting — to flag the constructs
 /// `sre_parse` rejects and JavaScript-authored schemas actually use, and
-/// accepts everything else. An escaped ASCII letter must be one Python
+/// accepts everything else. The two failure directions are not symmetric: a
+/// pattern wrongly kept fails the *whole* upstream request, while one wrongly
+/// dropped costs an advisory hint, so every judgement call here rejects.
+///
+/// Outside a character class an escaped ASCII letter must be one Python
 /// defines (`\d \D \s \S \w \W \b \B \A \Z` and the C escapes `\a \f \n \r
 /// \t \v`), or `\x`/`\u`/`\U` followed by exactly 2/4/8 hex digits, or a
 /// `\N{name}`; `(?<` must open a lookbehind (`(?<=`, `(?<!`), never a named
-/// group (Python spells that `(?P<`).
+/// group (Python spells that `(?P<`). Inside a class the accepted set is
+/// narrower — `\A \Z \B` are `bad escape` there — and a range endpoint may
+/// not be a category escape (`[\w-.]` is `bad character range`).
 fn python_re_accepts(pattern: &str) -> bool {
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0;
+    // `Some(first)` while inside `[…]`, where `first` is the index a literal
+    // `]` may still occupy (`[]]`, `[^]]`).
+    let mut class_start: Option<usize> = None;
+    // Whether the previous class member was a category escape (`\d`, `\w`, …),
+    // which cannot be the endpoint of a range.
+    let mut prev_class_category = false;
+    let mut groups = 0usize;
+    // One entry per open group; `true` marks a lookbehind, whose body Python
+    // requires to be fixed width.
+    let mut open_groups: Vec<bool> = Vec::new();
+
     while i < chars.len() {
-        match chars[i] {
+        let c = chars[i];
+        if let Some(first) = class_start {
+            match c {
+                '\\' => {
+                    let Some(&escaped) = chars.get(i + 1) else {
+                        return false;
+                    };
+                    if !class_escape_accepted(escaped, &chars[i + 2..]) {
+                        return false;
+                    }
+                    prev_class_category = matches!(escaped, 'd' | 'D' | 's' | 'S' | 'w' | 'W');
+                    i += 2;
+                }
+                ']' if i > first => {
+                    class_start = None;
+                    prev_class_category = false;
+                    i += 1;
+                }
+                '-' if i > first && chars.get(i + 1).is_some_and(|&next| next != ']') => {
+                    let next_is_category = chars.get(i + 1) == Some(&'\\')
+                        && chars
+                            .get(i + 2)
+                            .is_some_and(|&e| matches!(e, 'd' | 'D' | 's' | 'S' | 'w' | 'W'));
+                    if prev_class_category || next_is_category {
+                        return false;
+                    }
+                    prev_class_category = false;
+                    i += 1;
+                }
+                _ => {
+                    prev_class_category = false;
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        match c {
             '\\' => {
                 let Some(&escaped) = chars.get(i + 1) else {
                     // A trailing backslash: "bad escape (end of pattern)".
                     return false;
                 };
-                if !escape_accepted(escaped, &chars[i + 2..]) {
-                    return false;
+                if let Some((reference, digits)) = group_reference(&chars[i + 1..]) {
+                    // Python resolves `\1`…`\99` against the groups opened so
+                    // far and fails to compile when there is no such group;
+                    // JavaScript reads an unmatched `\8` as a literal `8`.
+                    if reference > groups {
+                        return false;
+                    }
+                    i += 1 + digits;
+                } else {
+                    if !escape_accepted(escaped, &chars[i + 2..]) {
+                        return false;
+                    }
+                    i += 2;
                 }
-                i += 2;
             }
-            '(' if chars.get(i + 1) == Some(&'?') && chars.get(i + 2) == Some(&'<') => {
-                if !matches!(chars.get(i + 3), Some('=') | Some('!')) {
+            '[' => {
+                let first = if chars.get(i + 1) == Some(&'^') {
+                    i + 2
+                } else {
+                    i + 1
+                };
+                class_start = Some(first);
+                prev_class_category = false;
+                i = first;
+            }
+            '(' => {
+                let mut width = 1;
+                let mut capturing = true;
+                let mut lookbehind = false;
+                if chars.get(i + 1) == Some(&'?') {
+                    capturing = false;
+                    width = 3;
+                    match chars.get(i + 2) {
+                        Some('<') => match chars.get(i + 3) {
+                            Some('=') | Some('!') => {
+                                lookbehind = true;
+                                width = 4;
+                            }
+                            // JavaScript's named group; Python spells it `(?P<`.
+                            _ => return false,
+                        },
+                        // `(?P<name>…)` captures; `(?P=name)` back-references.
+                        Some('P') => capturing = chars.get(i + 3) == Some(&'<'),
+                        Some(_) => {}
+                        None => return false,
+                    }
+                }
+                if capturing {
+                    groups += 1;
+                }
+                open_groups.push(lookbehind);
+                i += width;
+            }
+            ')' => {
+                if open_groups.pop().is_none() {
+                    // "unbalanced parenthesis".
                     return false;
                 }
-                i += 3;
+                i += 1;
+            }
+            '|' | '*' | '+' | '?' | '{' if open_groups.contains(&true) => {
+                // "look-behind requires fixed-width pattern"; JavaScript has
+                // allowed a variable-width lookbehind since ES2018.
+                return false;
             }
             _ => i += 1,
         }
     }
-    true
+    // An unterminated class or group is a compile error of its own.
+    class_start.is_none() && open_groups.is_empty()
+}
+
+/// A `\1`…`\99` group reference at the start of `rest` (which begins at the
+/// digit), as `(group, digit count)`. `None` when the escape is not a
+/// reference: `\0…`, or three octal digits, which Python reads as a character.
+fn group_reference(rest: &[char]) -> Option<(usize, usize)> {
+    let digits: Vec<u32> = rest
+        .iter()
+        .take_while(|c| c.is_ascii_digit())
+        .filter_map(|c| c.to_digit(10))
+        .collect();
+    if *digits.first()? == 0 {
+        return None;
+    }
+    if digits.len() >= 3 && digits[..3].iter().all(|digit| *digit < 8) {
+        return None;
+    }
+    let count = digits.len().min(2);
+    let group = digits[..count]
+        .iter()
+        .fold(0usize, |value, digit| value * 10 + *digit as usize);
+    Some((group, count))
 }
 
 fn escape_accepted(escaped: char, rest: &[char]) -> bool {
+    match escaped {
+        'a' | 'f' | 'n' | 'r' | 't' | 'v' | 'b' | 'B' | 'd' | 'D' | 's' | 'S' | 'w' | 'W' | 'A'
+        | 'Z' => true,
+        _ => shared_escape_accepted(escaped, rest),
+    }
+}
+
+/// The narrower set `sre_parse._class_escape` accepts: the anchors `\A`, `\Z`
+/// and `\B` are `bad escape` inside a class, and `\b` is a backspace there.
+fn class_escape_accepted(escaped: char, rest: &[char]) -> bool {
+    match escaped {
+        'a' | 'f' | 'n' | 'r' | 't' | 'v' | 'b' | 'd' | 'D' | 's' | 'S' | 'w' | 'W' => true,
+        _ => shared_escape_accepted(escaped, rest),
+    }
+}
+
+fn shared_escape_accepted(escaped: char, rest: &[char]) -> bool {
     let hex_run =
         |count: usize| rest.len() >= count && rest[..count].iter().all(|c| c.is_ascii_hexdigit());
     match escaped {
@@ -116,11 +268,8 @@ fn escape_accepted(escaped: char, rest: &[char]) -> bool {
         'u' => hex_run(4),
         'U' => hex_run(8),
         'N' => rest.first() == Some(&'{'),
-        'a' | 'f' | 'n' | 'r' | 't' | 'v' | 'b' | 'B' | 'd' | 'D' | 's' | 'S' | 'w' | 'W' | 'A'
-        | 'Z' => true,
         c if c.is_ascii_alphabetic() => false,
-        // Digits (group references, octal) and punctuation escape to
-        // themselves or a group; Python accepts all of them syntactically.
+        // Digits (octal) and punctuation escape to themselves.
         _ => true,
     }
 }
@@ -148,6 +297,28 @@ mod tests {
             r"\h",
             r"\x4",
             r"trailing\",
+            // A range endpoint cannot be a category escape: "bad character
+            // range". JavaScript reads `[\w-.]` as a three-member class.
+            r"[\w-.]",
+            r"[a-\d]",
+            // `\A`, `\Z` and `\B` are anchors outside a class and "bad
+            // escape" inside one.
+            r"[\A]",
+            r"[\Z]",
+            // Group references Python cannot resolve; JavaScript reads an
+            // unmatched `\8` as a literal `8`.
+            r"\1",
+            r"\.\-\/\1",
+            r"\8",
+            r"(a)\12",
+            // Python requires a fixed-width lookbehind; ES2018 does not.
+            r"(?<=a|bc)d",
+            r"(?<=ab+)c",
+            r"(?<=(a+))b",
+            // Unbalanced structure.
+            r"(a",
+            r"[a",
+            r"abc)",
         ] {
             assert!(!python_re_accepts(pattern), "should reject {pattern:?}");
         }
@@ -164,7 +335,19 @@ mod tests {
             r"^[\]a]+$",
             r"\d\w\s\b\B\A\Z\n\t",
             r"\u0041\x41\U00000041\N{BULLET}",
-            r"\.\-\/\1",
+            r"\.\-\/",
+            // A backreference to a group that exists, and three octal digits
+            // (which Python reads as a character, not a group reference).
+            r"(a)\1",
+            r"\101",
+            // `\b` is a backspace inside a class, and `\1` an octal escape.
+            r"[\b]",
+            r"[\1]",
+            // `-` as the last member, and a class that merely lists `(?<`.
+            r"[a-z-.]",
+            r"[\-a]",
+            r"[(?<]",
+            r"[]]",
             "",
         ] {
             assert!(python_re_accepts(pattern), "should accept {pattern:?}");
