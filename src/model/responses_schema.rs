@@ -26,6 +26,9 @@
 
 use serde_json::Value;
 
+/// Python's repetition ceiling; `sre` rejects a bound at or above it.
+const MAXREPEAT: u64 = 4_294_967_295;
+
 /// Remove every `pattern` keyword, and every `patternProperties` entry, whose
 /// regex Python's `re` would refuse to compile.
 ///
@@ -128,6 +131,10 @@ fn python_re_accepts(pattern: &str) -> bool {
     // which cannot be the endpoint of a range.
     let mut prev_class_category = false;
     let mut groups = 0usize;
+    // Whether the previous token was a zero-width anchor, which Python refuses
+    // to quantify ("nothing to repeat") and JavaScript happily reads as a
+    // literal (`\A` is an identity escape there).
+    let mut prev_anchor = false;
     // One entry per open group; `true` marks a lookbehind, whose body Python
     // requires to be fixed width.
     let mut open_groups: Vec<bool> = Vec::new();
@@ -189,11 +196,13 @@ fn python_re_accepts(pattern: &str) -> bool {
                     if open_groups.contains(&true) {
                         return false;
                     }
+                    prev_anchor = false;
                     i += 1 + digits;
                 } else {
                     if !escape_accepted(escaped, &chars[i + 2..]) {
                         return false;
                     }
+                    prev_anchor = matches!(escaped, 'A' | 'Z' | 'b' | 'B');
                     i += 2;
                 }
             }
@@ -205,6 +214,7 @@ fn python_re_accepts(pattern: &str) -> bool {
                 };
                 class_start = Some(first);
                 prev_class_category = false;
+                prev_anchor = false;
                 i = first;
             }
             '(' => {
@@ -233,6 +243,7 @@ fn python_re_accepts(pattern: &str) -> bool {
                     groups += 1;
                 }
                 open_groups.push(lookbehind);
+                prev_anchor = false;
                 i += width;
             }
             ')' => {
@@ -240,6 +251,7 @@ fn python_re_accepts(pattern: &str) -> bool {
                     // "unbalanced parenthesis".
                     return false;
                 }
+                prev_anchor = false;
                 i += 1;
             }
             '|' | '*' | '+' | '?' | '{' if open_groups.contains(&true) => {
@@ -247,13 +259,28 @@ fn python_re_accepts(pattern: &str) -> bool {
                 // allowed a variable-width lookbehind since ES2018.
                 return false;
             }
+            '*' | '+' | '?' if prev_anchor => {
+                // "nothing to repeat": Python cannot quantify a zero-width
+                // anchor, while `\A*` is a valid `A*` in JavaScript.
+                return false;
+            }
             '{' => {
-                if !repetition_bounds_ok(&chars, i) {
-                    return false;
+                if let Some(bounds) = braced_quantifier(&chars, i) {
+                    if prev_anchor || bounds.iter().any(|bound| *bound >= MAXREPEAT) {
+                        return false;
+                    }
                 }
+                prev_anchor = false;
                 i += 1;
             }
-            _ => i += 1,
+            '^' | '$' => {
+                prev_anchor = true;
+                i += 1;
+            }
+            _ => {
+                prev_anchor = false;
+                i += 1;
+            }
         }
     }
     // An unterminated class or group is a compile error of its own.
@@ -331,12 +358,10 @@ fn hex_value(digits: &[char]) -> u32 {
         .fold(0u32, |value, c| value * 16 + c.to_digit(16).unwrap_or(0))
 }
 
-/// Whether the braced quantifier opening at `chars[open]` is within Python's
-/// repetition ceiling. `sre` rejects a bound at or above `MAXREPEAT`, and reads
-/// a brace that does not parse as `{m}`, `{m,}`, `{,n}` or `{m,n}` — `a{foo}`,
-/// a trailing `a{` — as a literal `{`, which is what the `true` returns are.
-fn repetition_bounds_ok(chars: &[char], open: usize) -> bool {
-    const MAXREPEAT: u64 = 4_294_967_295;
+/// The bounds of the braced quantifier opening at `chars[open]`, or `None`
+/// when the brace is not a quantifier at all — `a{foo}`, a trailing `a{`, `{}`
+/// — which Python reads as a literal `{` and keeps.
+fn braced_quantifier(chars: &[char], open: usize) -> Option<Vec<u64>> {
     let mut bounds: Vec<u64> = Vec::new();
     let mut current: Option<u64> = None;
     let mut seen_comma = false;
@@ -360,13 +385,12 @@ fn repetition_bounds_ok(chars: &[char], open: usize) -> bool {
             }
             '}' => {
                 bounds.extend(current.take());
-                // `{}` and `{,}` carry no bound: a literal brace.
-                return bounds.is_empty() || bounds.iter().all(|bound| *bound < MAXREPEAT);
+                return (!bounds.is_empty()).then_some(bounds);
             }
-            _ => return true,
+            _ => return None,
         }
     }
-    true
+    None
 }
 
 /// Whether the octal escape opening at `escaped` — up to three digits, the
@@ -442,6 +466,14 @@ mod tests {
             // At or above `MAXREPEAT` the repetition number is too large.
             r"a{4294967295}",
             r"a{4294967296}",
+            // Python cannot quantify a zero-width anchor ("nothing to
+            // repeat"); `\A` is a literal `A` in JavaScript.
+            r"\A*",
+            r"\Z+",
+            r"\b?",
+            r"\A{2}",
+            r"^*",
+            r"$*",
             // Unbalanced structure.
             r"(a",
             r"[a",
@@ -479,6 +511,14 @@ mod tests {
             r"a{2,}",
             r"a{foo}",
             r"a{",
+            // An anchor is fine unquantified, a brace after one is a literal,
+            // and Python does allow a quantified lookahead.
+            r"\Aa",
+            r"a\Z",
+            r"\A{foo}",
+            r"(?=a)*",
+            r"\d*",
+            r"[\b]*",
             // `\b` is a backspace inside a class, and `\1` an octal escape.
             r"[\b]",
             r"[\1]",
