@@ -1,0 +1,29 @@
+src/model/responses_schema.rs
+  s_c493c8c2697d4f::t_1c848e14d4911a 47-55
+  s_c493c8c2697d4f::t_0c2895e8bd8e04 81-82,84-88,92-94,98-108,110-146,152-200,202-203,205-207,210-215,220-243,247-263,272
+  s_c493c8c2697d4f::t_ecc4b806fa8552 300-321,338-350
+site/src/content/docs/reference/troubleshooting.md
+  s_c493c8c2697d4f::t_ee0b77015f2b7d 23
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_c493c8c2697d4f::t_ee0b77015f2b7d 19
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_c493c8c2697d4f::t_ee0b77015f2b7d 19
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_c493c8c2697d4f::t_ee0b77015f2b7d 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "289a361eb56a52d740885e66f245d5931f2b2761",
+  "prompts": {},
+  "sessions": {
+    "s_c493c8c2697d4f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "58cd3c04-6580-4e4b-946b-76ae98ec39f4",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
