@@ -593,10 +593,6 @@ async fn websocket_drop_before_first_event_falls_back_to_http() {
     let _ = std::fs::remove_file(auth_path);
 }
 
-/// A websocket that drops *after* a first event has streamed must NOT restart the
-/// turn (that would duplicate the tokens already sent). The tokens streamed so far
-/// reach the client, the drop surfaces as a clean Anthropic `error` event, and no
-/// HTTP fallback is attempted (issue #46).
 /// End-to-end: a completed websocket turn whose stream carries the backend's
 /// in-stream `codex.rate_limits` event records the reported window against the
 /// observed Codex account, so `GET /usage` no longer reports `null` for a
@@ -655,6 +651,10 @@ async fn websocket_rate_limits_event_records_account_quota() {
     let _ = std::fs::remove_file(auth_path);
 }
 
+/// A websocket that drops *after* a first event has streamed must NOT restart the
+/// turn (that would duplicate the tokens already sent). The tokens streamed so far
+/// reach the client, the drop surfaces as a clean Anthropic `error` event, and no
+/// HTTP fallback is attempted (issue #46).
 #[tokio::test]
 async fn websocket_drop_after_first_event_surfaces_clean_error() {
     if !can_bind_loopback() {
