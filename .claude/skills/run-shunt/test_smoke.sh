@@ -6,6 +6,8 @@
 #                   at bind and the driver names which one died.
 #   run_wrong_port  shunt is alive on a port the driver never asked for; the
 #                   pid-derived readiness check is what catches it.
+#   run_live_impostor  the impostor answers on the requested port while shunt
+#                   is alive on another, the strongest form of the class.
 #   run_bad_port    a port outside 0..65535 is refused at the guard, by name.
 #
 # The impostor answers every assertion smoke.sh makes. That is what gives the
@@ -186,6 +188,31 @@ run_bad_port() {
   }
 }
 
+# The sharpest form of the class: the impostor answers on the requested port
+# while shunt is alive on another. A driver that trusted $SHUNT_PORT would
+# assert against the impostor and pass every check it makes.
+run_live_impostor() {
+  local occupied_port
+  local output
+
+  : > "$PORT_FILE"
+  start_impostor
+  occupied_port="$(<"$PORT_FILE")"
+  if output="$(SHUNT_PORT="$occupied_port" MOCK_PORT=0 SHUNT_SERVER__BIND=127.0.0.1:0 \
+    timeout 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
+    printf 'smoke asserted against a live impostor on the requested port\n%s\n' "$output" >&2
+    exit 1
+  fi
+  [[ $output == *"shunt listened on unexpected port"* ]] || {
+    printf 'smoke rejected the live impostor without naming the port\n%s\n' "$output" >&2
+    exit 1
+  }
+
+  kill "$IMPOSTOR_PID"
+  wait "$IMPOSTOR_PID" 2>/dev/null || true
+  IMPOSTOR_PID=""
+}
+
 run_wrong_port() {
   local output
   # SHUNT_SERVER__BIND outranks the config file, so shunt binds an ephemeral
@@ -205,6 +232,7 @@ run_bad_port
 run_collision mock
 run_collision shunt
 run_wrong_port
+run_live_impostor
 
 if ! positive_output="$(SHUNT_PORT=0 MOCK_PORT=0 \
   timeout 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
