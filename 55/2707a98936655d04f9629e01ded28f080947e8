@@ -1,0 +1,38 @@
+site/src/content/docs/reference/troubleshooting.md
+  s_0b4bf16dd9a181::t_de44c97e6e6ad8 23
+tests/responses_translate.rs
+  s_0b4bf16dd9a181::t_ee64a3e5078176 61-93
+  s_0b4bf16dd9a181::t_f19565f1472018 60
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_0b4bf16dd9a181::t_de44c97e6e6ad8 19
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_0b4bf16dd9a181::t_de44c97e6e6ad8 19
+src/model/mod.rs
+  s_0b4bf16dd9a181::t_1fccb86737297d 7
+src/model/responses_schema.rs
+  s_0b4bf16dd9a181::t_6578e472175aa0 1-63,66-111,114-118,121-136,138-214
+  s_0b4bf16dd9a181::t_54c0d344dae4b3 64-65,112-113,119-120,137
+docs/m1-responses-translation.md
+  s_0b4bf16dd9a181::t_de44c97e6e6ad8 70-77
+src/model/responses_request.rs
+  s_0b4bf16dd9a181::t_1fccb86737297d 852-856
+  s_0b4bf16dd9a181::t_ee64a3e5078176 8
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_0b4bf16dd9a181::t_de44c97e6e6ad8 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "552707a98936655d04f9629e01ded28f080947e8",
+  "prompts": {},
+  "sessions": {
+    "s_0b4bf16dd9a181": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "768a572d-681f-4145-b741-a7a5af9a1828",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
