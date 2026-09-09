@@ -162,10 +162,6 @@ api_key_env = "MOONSHOT_API_KEY"
 [[routes]]
 model = "kimi-k3[1m]"
 provider = "kimi"
-
-[[routes]]
-model = "kimi-k2.7-code"
-provider = "kimi"
 ```
 
 上の表の行はほとんどが `auth = "api_key"` を使います。**Kimi Code** だけが例外です。従量課金の Moonshot API とは別のサブスクリプション課金サービスで、ホストが異なり、API キーではなく OAuth を使います。組み込みの `kimi-code` プリセットがあるため、`provider = "kimi-code"` とログイン済みアカウントだけで済みます。[Kimi Code](https://shunt.dev/ja/providers/kimi/#kimi-codeoauth-サブスクリプション)を参照してください。
