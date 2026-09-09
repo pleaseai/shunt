@@ -111,11 +111,13 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
 ///
 /// Outside a character class an escaped ASCII letter must be one Python
 /// defines (`\d \D \s \S \w \W \b \B \A \Z` and the C escapes `\a \f \n \r
-/// \t \v`), or `\x`/`\u`/`\U` followed by exactly 2/4/8 hex digits; `(?<`
-/// must open a lookbehind (`(?<=`, `(?<!`), never a named group (Python
-/// spells that `(?P<`). Inside a class the accepted set is narrower — `\A \Z
-/// \B` are `bad escape` there — and a range endpoint may not be a category
-/// escape (`[\w-.]` is `bad character range`).
+/// \t \v`), or `\x`/`\u`/`\U` followed by exactly 2/4/8 hex digits, with `\U`
+/// also decoding within `0x10FFFF`; `(?<` must open a lookbehind (`(?<=`,
+/// `(?<!`), never a named group (Python spells that `(?P<`). Inside a class
+/// the accepted set is narrower — `\A \Z \B` are `bad escape` there, as are
+/// the non-octal digits `\8` and `\9` — and a range endpoint may not be a
+/// category escape (`[\w-.]` is `bad character range`). A braced quantifier's
+/// bounds must stay below `MAXREPEAT`.
 fn python_re_accepts(pattern: &str) -> bool {
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0;
@@ -245,6 +247,12 @@ fn python_re_accepts(pattern: &str) -> bool {
                 // allowed a variable-width lookbehind since ES2018.
                 return false;
             }
+            '{' => {
+                if !repetition_bounds_ok(&chars, i) {
+                    return false;
+                }
+                i += 1;
+            }
             _ => i += 1,
         }
     }
@@ -287,6 +295,9 @@ fn escape_accepted(escaped: char, rest: &[char]) -> bool {
 fn class_escape_accepted(escaped: char, rest: &[char]) -> bool {
     match escaped {
         'a' | 'f' | 'n' | 'r' | 't' | 'v' | 'b' | 'd' | 'D' | 's' | 'S' | 'w' | 'W' => true,
+        // Not octal, and a class has no group references for them to be, so
+        // Python calls these `bad escape`; JavaScript reads them as digits.
+        '8' | '9' => false,
         _ => shared_escape_accepted(escaped, rest),
     }
 }
@@ -297,7 +308,9 @@ fn shared_escape_accepted(escaped: char, rest: &[char]) -> bool {
     match escaped {
         'x' => hex_run(2),
         'u' => hex_run(4),
-        'U' => hex_run(8),
+        // Python builds the character with `chr()`, so anything above
+        // `0x10FFFF` is `bad escape`. Four hex digits cannot reach it.
+        'U' => hex_run(8) && hex_value(&rest[..8]) <= 0x0010_FFFF,
         // `\N{name}` is a *named* character in Python and a plain identity
         // escape (a literal `N`) in JavaScript, so the two never agree on what
         // the pattern means, and validating the name would need the Unicode
@@ -310,6 +323,50 @@ fn shared_escape_accepted(escaped: char, rest: &[char]) -> bool {
         // The remaining digits and punctuation escape to themselves.
         _ => true,
     }
+}
+
+fn hex_value(digits: &[char]) -> u32 {
+    digits
+        .iter()
+        .fold(0u32, |value, c| value * 16 + c.to_digit(16).unwrap_or(0))
+}
+
+/// Whether the braced quantifier opening at `chars[open]` is within Python's
+/// repetition ceiling. `sre` rejects a bound at or above `MAXREPEAT`, and reads
+/// a brace that does not parse as `{m}`, `{m,}`, `{,n}` or `{m,n}` — `a{foo}`,
+/// a trailing `a{` — as a literal `{`, which is what the `true` returns are.
+fn repetition_bounds_ok(chars: &[char], open: usize) -> bool {
+    const MAXREPEAT: u64 = 4_294_967_295;
+    let mut bounds: Vec<u64> = Vec::new();
+    let mut current: Option<u64> = None;
+    let mut seen_comma = false;
+    let mut i = open + 1;
+    while i < chars.len() {
+        match chars[i] {
+            c if c.is_ascii_digit() => {
+                let digit = u64::from(c.to_digit(10).unwrap_or(0));
+                let next = current
+                    .unwrap_or(0)
+                    .saturating_mul(10)
+                    .saturating_add(digit);
+                // Pin past the ceiling so a long digit run cannot wrap back in.
+                current = Some(next.min(MAXREPEAT + 1));
+                i += 1;
+            }
+            ',' if !seen_comma => {
+                seen_comma = true;
+                bounds.extend(current.take());
+                i += 1;
+            }
+            '}' => {
+                bounds.extend(current.take());
+                // `{}` and `{,}` carry no bound: a literal brace.
+                return bounds.is_empty() || bounds.iter().all(|bound| *bound < MAXREPEAT);
+            }
+            _ => return true,
+        }
+    }
+    true
 }
 
 /// Whether the octal escape opening at `escaped` — up to three digits, the
@@ -377,6 +434,14 @@ mod tests {
             // JavaScript, so the two never agree on what the pattern means.
             r"\N{BULLET}",
             r"\N{NOT_A_UNICODE_NAME}",
+            // `chr()` caps a `\U` escape at `0x10FFFF`.
+            r"\U00110000",
+            // `\8`/`\9` are not octal, and a class has no group references.
+            r"[\8]",
+            r"[\9]",
+            // At or above `MAXREPEAT` the repetition number is too large.
+            r"a{4294967295}",
+            r"a{4294967296}",
             // Unbalanced structure.
             r"(a",
             r"[a",
@@ -406,6 +471,14 @@ mod tests {
             // width and carries no backreference.
             r"\377",
             r"(a)(?<=b)c",
+            // The top `\U` code point, the largest legal bound, and braces
+            // Python reads as literals rather than quantifiers.
+            r"\U0010FFFF",
+            r"a{4294967294}",
+            r"a{1,3}",
+            r"a{2,}",
+            r"a{foo}",
+            r"a{",
             // `\b` is a backspace inside a class, and `\1` an octal escape.
             r"[\b]",
             r"[\1]",
