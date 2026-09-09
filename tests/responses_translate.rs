@@ -58,6 +58,40 @@ fn parsed_value_entry_point_matches_byte_wrapper_across_flavors() {
 }
 
 #[test]
+fn drops_tool_schema_patterns_the_openai_validator_cannot_compile() {
+    // Claude Code's `Artifact` tool: `field` carries Unicode property escapes
+    // (rejected by the backend's Python `re` check, failing the whole request
+    // with "is not a 'regex'"); `collection` carries a lookahead, which passes.
+    let field = r#"^(?!__.*__$)[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}"\\./[\]]{1,200}$"#;
+    let collection = r"^(?!\.\.?(?:\/|$))[A-Za-z0-9_\-.~:@+]{1,200}$";
+    let input = json!({
+        "model": "gpt-5.2-codex",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{
+            "name": "Artifact",
+            "description": "Publish",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string", "pattern": field},
+                    "collection": {"type": "string", "pattern": collection}
+                }
+            }
+        }]
+    });
+
+    let output = translate(input);
+    assert_eq!(
+        output["tools"][0]["parameters"]["properties"],
+        json!({
+            "field": {"type": "string"},
+            "collection": {"type": "string", "pattern": collection}
+        })
+    );
+}
+
+#[test]
 fn translates_plain_text_request() {
     let actual = translate(json!({
         "model": "gpt-5.2-codex",

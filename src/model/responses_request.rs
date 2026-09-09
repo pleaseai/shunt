@@ -5,6 +5,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Map, Value};
 
 use crate::config::ResponsesFlavor;
+use crate::model::responses_schema;
 use crate::routing::Route;
 
 /// Claude Code's name for its tool-search tool (`ENABLE_TOOL_SEARCH`). Under the
@@ -848,7 +849,11 @@ fn normalize_schema(schema: Value) -> Value {
     object
         .entry("additionalProperties".to_string())
         .or_insert_with(|| json!(true));
-    Value::Object(object)
+    let mut schema = Value::Object(object);
+    // The backend compiles every `pattern` with Python's `re`; a JavaScript-only
+    // regex (Claude Code's `Artifact` tool carries `\p{Cc}`) fails the request.
+    responses_schema::strip_unsupported_patterns(&mut schema);
+    schema
 }
 
 /// Whether the request registered a hosted web-search tool under `name`,

@@ -67,7 +67,14 @@ regenerate it.
 
 - **Tool:** `{ type:"function", name, description, parameters: normalize(input_schema) }`.
   `normalize`: ensure `type:"object"`, ensure `properties:{}`, drop non-array `required`,
-  default `additionalProperties:true`.
+  default `additionalProperties:true`, and drop any `pattern` (or `patternProperties` key)
+  Python's `re` cannot compile — the backend validates `parameters` against the JSON Schema
+  meta-schema with `format: regex` checked by Python, and one JavaScript-only regex
+  (`\p{Cc}`, `(?<name>…)`, `\u{…}`, `\z`) fails the whole request with
+  `Invalid schema for function '…': '…' is not a 'regex'`. Claude Code's `Artifact` tool
+  ships such a pattern. Lookaheads and everything else Python accepts are kept; outside strict
+  mode a dropped `pattern` is an advisory hint lost, not a capability
+  (`src/model/responses_schema.rs`).
 - **tool_choice map:** `auto→"auto"`, `none→"none"`, `any→"required"`,
   `tool{name}→{type:"function",name}`. If absent but tools present → `"auto"`; if no tools →
   omit.
