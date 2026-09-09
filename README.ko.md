@@ -164,7 +164,7 @@ model = "kimi-k3[1m]"
 provider = "kimi"
 ```
 
-위 표의 행은 대부분 `auth = "api_key"`를 사용합니다. **Kimi Code**만 예외입니다. 종량 과금인 Moonshot API와는 별개인 구독 기반 서비스로, 호스트가 다르고 API 키 대신 OAuth를 쓰며, 내장 `kimi-code` 프리셋이 있어 `provider = "kimi-code"`와 로그인된 계정만 있으면 됩니다. [Kimi Code](https://shunt.dev/ko/providers/kimi/#kimi-code-oauth-구독)를 참고하세요.
+위 표의 행은 대부분 `auth = "api_key"`를 사용합니다. **Kimi Code**만 예외입니다. 종량 과금인 Moonshot API와는 별개인 구독 기반 서비스로, 호스트가 다르고 API 키 대신 OAuth를 쓰며, 내장 `kimi-code` 프리셋이 있습니다. 이 프리셋은 순서가 있는 `[[upstreams]]` 항목 안에서만 해석되므로(시드된 프로바이더 맵에는 없습니다) 거기에 선언한 뒤 로그인하세요. [Kimi Code](https://shunt.dev/ko/providers/kimi/#kimi-code-oauth-구독)를 참고하세요.
 
 ### 구독 재사용
 
@@ -193,11 +193,11 @@ OpenAI의 Thibault Sottiaux는 다른 코딩 하네스를 통해 Codex를 실행
 | 지출 한도 Admin API — 조직·사용자 단위 상한(1단계는 저장만 하고 아직 적용하지 않음) | `[server.admin]` + `[server.spend]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverspend-선택) |
 | 클라이언트 사용량 엔드포인트 — `GET /usage`가 정제·집계된 풀 여유를 반환 | `[server.auth]` + `[server.usage]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverusage-선택) |
 | Claude Code CLI 네이티브 사용량 막대 — `GET /api/oauth/usage` 제공 | `[server.oauth_usage]`, 루프백이 아닌 bind에서는 `[server.auth]` 또는 `[server.gateway]` 추가 필요 | [레퍼런스(영문)](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
-| 업스트림 상태 폴링 — 대시보드와 메트릭에 Statuspage 지표 노출 | `[server.status]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverstatus-선택) |
+| 업스트림 상태 폴링 — 대시보드와 메트릭에 Statuspage 지표 노출 | `[[server.status.sources]]` 항목이 하나 이상 있는 `[server.status]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverstatus-선택) |
 | 제한된 업스트림 재시도 — **기본 활성**, 보수적이며 스트림 도중에는 재시도하지 않음 | `[providers.<name>.retry]` | [레퍼런스(영문)](https://shunt.dev/reference/configuration/#providersnameretry) |
 | 공유 배포 제한 — **기본 활성**(동시 1024, 본문 32 MiB, TTFB 120초, device-flow 레이트 리밋), CIDR·헤더·URL 제한은 선택 | `[server] max_concurrent_requests`, `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [가이드](https://shunt.dev/ko/guides/shared-gateway/) |
 | 시크릿 참조 — 모든 문자열 값에 `${VAR}` 또는 `${file:/abs/path}`, 핫 리로드마다 다시 확인(`[sentry]`·`[otel]` 제외 — 기동 시 1회 구성이라 재시작 필요) | 구성의 모든 문자열(**항상 활성**) | [레퍼런스](https://shunt.dev/ko/reference/configuration/) |
-| OpenTelemetry 메트릭과 트레이스 | `[otel]` | [가이드](https://shunt.dev/ko/guides/opentelemetry/) |
+| OpenTelemetry 메트릭과 트레이스 | `endpoint`가 비어 있지 않은 `[otel]` | [가이드](https://shunt.dev/ko/guides/opentelemetry/) |
 
 ## 문서
 

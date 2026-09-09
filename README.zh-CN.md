@@ -163,7 +163,7 @@ model = "kimi-k3[1m]"
 provider = "kimi"
 ```
 
-上表中的行大多使用 `auth = "api_key"`。**Kimi Code** 是例外:它与按量计费的 Moonshot API 是两个服务,按订阅计费,主机不同,并且用 OAuth 而非 API 密钥。它有内置的 `kimi-code` 预设,因此只需 `provider = "kimi-code"` 加一个已登录的账号。参见 [Kimi Code](https://shunt.dev/zh-cn/providers/kimi/#kimi-codeoauth-订阅)。
+上表中的行大多使用 `auth = "api_key"`。**Kimi Code** 是例外:它与按量计费的 Moonshot API 是两个服务,按订阅计费,主机不同,并且用 OAuth 而非 API 密钥。它有内置的 `kimi-code` 预设。该预设仅在有序的 `[[upstreams]]` 条目中生效(它不在已内置的提供方映射里),因此请在那里声明并登录。参见 [Kimi Code](https://shunt.dev/zh-cn/providers/kimi/#kimi-codeoauth-订阅)。
 
 ### 复用订阅
 
@@ -192,11 +192,11 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 | 支出上限 Admin API —— 组织级和用户级上限(stage 1 只存储,尚未实施) | `[server.admin]` + `[server.spend]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#serverspend可选) |
 | 客户端用量端点 —— `GET /usage` 返回脱敏聚合后的池余量 | `[server.auth]` + `[server.usage]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#serverusage可选) |
 | Claude Code CLI 原生用量条 —— 提供 `GET /api/oauth/usage` | `[server.oauth_usage]`;非回环 bind 还需 `[server.auth]` 或 `[server.gateway]` | [参考(英文)](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
-| 上游状态轮询 —— 在看板和指标中展示 Statuspage 指示灯 | `[server.status]` | [参考(英文)](https://shunt.dev/reference/configuration/#serverstatus-optional) |
+| 上游状态轮询 —— 在看板和指标中展示 Statuspage 指示灯 | 至少含一个 `[[server.status.sources]]` 条目的 `[server.status]` | [参考(英文)](https://shunt.dev/reference/configuration/#serverstatus-optional) |
 | 有界的上游重试 —— **默认开启**,保守,且绝不在流中途重试 | `[providers.<name>.retry]` | [参考(英文)](https://shunt.dev/reference/configuration/#providersnameretry) |
 | 共享部署限制 —— **默认启用**(并发 1024、请求体 32 MiB、TTFB 120 秒、设备流限速),CIDR、请求头与 URL 限制需显式配置 | `[server] max_concurrent_requests`、`[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [指南](https://shunt.dev/zh-cn/guides/shared-gateway/) |
 | 密钥引用 —— 任意字符串值可写成 `${VAR}` 或 `${file:/abs/path}`,每次热重载重新解析(`[sentry]`/`[otel]` 除外,启动时构建一次,需重启) | 配置中的任意字符串(**始终启用**) | [参考](https://shunt.dev/zh-cn/reference/configuration/) |
-| OpenTelemetry 指标与链路追踪 | `[otel]` | [指南](https://shunt.dev/zh-cn/guides/opentelemetry/) |
+| OpenTelemetry 指标与链路追踪 | `endpoint` 非空的 `[otel]` | [指南](https://shunt.dev/zh-cn/guides/opentelemetry/) |
 
 ## 文档
 

@@ -164,7 +164,7 @@ model = "kimi-k3[1m]"
 provider = "kimi"
 ```
 
-Every row above but one takes `auth = "api_key"`. **Kimi Code** is the exception: a separate, subscription-billed service from the metered Moonshot API — different host, OAuth instead of an API key, and a built-in `kimi-code` preset, so it needs only `provider = "kimi-code"` plus a logged-in account. See [Kimi Code](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription).
+Every row above but one takes `auth = "api_key"`. **Kimi Code** is the exception: a separate, subscription-billed service from the metered Moonshot API — different host, OAuth instead of an API key, and a built-in `kimi-code` preset. That preset resolves only inside an ordered `[[upstreams]]` entry, so declare it there (it is not in the seeded provider map) and log in. See [Kimi Code](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription).
 
 ### Reusing a subscription
 
@@ -193,11 +193,11 @@ Unless a row says otherwise, these are **off by default** — absent its config 
 | Spend-limit Admin API — organization- and user-scoped caps (stage 1 stores, does not enforce) | `[server.admin]` + `[server.spend]` | [Reference](https://shunt.dev/reference/configuration/#serverspend-optional) |
 | Client usage endpoint — sanitized, aggregated pool headroom at `GET /usage` | `[server.auth]` + `[server.usage]` | [Reference](https://shunt.dev/reference/configuration/#serverusage-optional) |
 | Claude Code CLI native usage bars — serves `GET /api/oauth/usage` | `[server.oauth_usage]`, plus `[server.auth]` or `[server.gateway]` on a non-loopback bind | [Reference](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
-| Upstream status polling — Statuspage indicators in the dashboard and as a metric | `[server.status]` | [Reference](https://shunt.dev/reference/configuration/#serverstatus-optional) |
+| Upstream status polling — Statuspage indicators in the dashboard and as a metric | `[server.status]` with at least one `[[server.status.sources]]` entry | [Reference](https://shunt.dev/reference/configuration/#serverstatus-optional) |
 | Bounded upstream retry — **on by default**, conservative, never mid-stream | `[providers.<name>.retry]` | [Reference](https://shunt.dev/reference/configuration/#providersnameretry) |
 | Shared-deployment limits — **on by default** (1024 concurrent, 32 MiB bodies, 120 s TTFB, device-flow rate limits); CIDR, header, and URL limits are opt-in | `[server] max_concurrent_requests`, `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [How-to](https://shunt.dev/guides/shared-gateway/) |
 | Secret references — `${VAR}` or `${file:/abs/path}` in any string value, re-resolved on hot reload (not `[sentry]`/`[otel]`, built once at startup — rotating those needs a restart) | any config string (**always on**) | [Reference](https://shunt.dev/reference/configuration/) |
-| OpenTelemetry metrics and traces | `[otel]` | [How-to](https://shunt.dev/guides/opentelemetry/) |
+| OpenTelemetry metrics and traces | `[otel]` with a non-empty `endpoint` | [How-to](https://shunt.dev/guides/opentelemetry/) |
 
 ## Documentation
 
