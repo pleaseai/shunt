@@ -128,9 +128,9 @@ Codex 没有可配置的显式 `uuid` 字段。作为替代,shunt 对每个账�
 
 ## 用量轮询器
 
-正的 [`usage_refresh_seconds`](/zh-cn/reference/configuration/#serverpool可选) 还会对每个 imported(可刷新)的 `chatgpt_oauth` 账户轮询 `GET /wham/usage`,以 Anthropic 账户池对 `GET /api/oauth/usage` 相同的方式,对账校正基于头部推导出的 5h/周配额状态。它填补的正是 `reprobe_seconds` 用实际请求填补的那个缺口:账户池因某账户接近配额而将其排除后,该账户就再也不会收到代理请求,它的 `x-codex-*` 头部也就永远不会刷新 —— 即便该账户的窗口早已实际重置也是如此。轮询器改为在带外读取权威用量。
+正的 [`usage_refresh_seconds`](/zh-cn/reference/configuration/#serverpool可选) 还会对每个 imported(可刷新)的 `chatgpt_oauth` 账户轮询 `GET /wham/usage`,以 Anthropic 账户池对 `GET /api/oauth/usage` 相同的方式,对账校正基于响应推导出的 5h/周配额状态。它填补的正是 `reprobe_seconds` 用实际请求填补的那个缺口:账户池因某账户接近配额而将其排除后,该账户就再也不会收到代理请求,它的 `x-codex-*` 头部也就永远不会刷新 —— 即便该账户的窗口早已实际重置也是如此。轮询器改为在带外读取权威用量。
 
-**这不是一个有文档记录的 OpenAI/ChatGPT API。** 支撑其格式的证据来自 Codex CLI 自身观测到的 60 秒轮询行为,而非已发布的文档,因此它可能在没有任何预告的情况下变化或消失。解析从头到尾都刻意宽松且 fail-soft。成功解析且非空的 wham 响应会权威地反映它列出的窗口。当至少存在一个可用的 5h 或 7d 窗口时,完全没有候选窗口的 bucket 会清除其用量和用量观测时间戳,但会保留来自 header 的重置时间和状态元数据。对于已报告的窗口,未来的 header 重置时间会保留;已经过期的存储重置时间会在写入新用量前被清除。wham 的 `reset_at` 不会被采用为实际重置元数据。`null` 窗口表示不存在,但无法识别时长的候选属于未知,会抑制清除。获取或解析错误,以及没有可用已识别窗口的空快照,都会保留既有状态。这一点不同于 Claude 的 `/api/oauth/usage` 路径:该路径省略窗口时会保留原有值。某一个窗口格式损坏,不会阻止其相邻窗口照常生效。这里的任何解析失败都不会把账户标记为不健康,也不会影响请求路由,只会让基于头部的状态继续作为后备。
+**这不是一个有文档记录的 OpenAI/ChatGPT API。** 支撑其格式的证据来自 Codex CLI 自身观测到的 60 秒轮询行为,而非已发布的文档,因此它可能在没有任何预告的情况下变化或消失。解析从头到尾都刻意宽松且 fail-soft。成功解析且非空的 wham 响应会权威地反映它列出的窗口。当至少存在一个可用的 5h 或 7d 窗口时,完全没有候选窗口的 bucket 会清除其用量和用量观测时间戳,但会保留来自响应的重置时间元数据(`x-codex-*` header 与 WebSocket 的 `codex.rate_limits` 事件)和来自 header 的状态元数据。对于已报告的窗口,未来的存储重置时间会保留;已经过期的存储重置时间会在写入新用量前被清除。wham 的 `reset_at` 不会被采用为实际重置元数据。`null` 窗口表示不存在,但无法识别时长的候选属于未知,会抑制清除。获取或解析错误,以及没有可用已识别窗口的空快照,都会保留既有状态。这一点不同于 Claude 的 `/api/oauth/usage` 路径:该路径省略窗口时会保留原有值。某一个窗口格式损坏,不会阻止其相邻窗口照常生效。这里的任何解析失败都不会把账户标记为不健康,也不会影响请求路由,只会让基于头部的状态继续作为后备。
 
 资格条件与 Claude 一侧一致:只有 imported 登录(存储管理的账户,或带 `tokens.refresh_token` 的内联 `credentials` 路径)才会被轮询 —— 原始的 `token_env` bearer 是静态的,会被跳过。
 
@@ -169,7 +169,7 @@ x-shunt-account: backup
 
 ### WebSocket 传输
 
-如果提供方还设置了 `websocket = true`(参见 [ChatGPT / Codex](/zh-cn/guides/codex/)),连接缓存的 key 会按账户加前缀,这样两个账户绝不会共用一个 socket 或它的 `previous_response_id` 续接状态。在任何 token 流出**之前**发生的 WebSocket 失败会在**同一个**账户上回退到 HTTP(而不是池轮换);只有 HTTP 路径的失败才会触发上面的故障转移。一次全新的 WebSocket 升级会记录其握手中的限流头部;被复用/预热的连接不会再次握手,因此它们的仪表板用量要等到建立新连接时才刷新。
+如果提供方还设置了 `websocket = true`(参见 [ChatGPT / Codex](/zh-cn/guides/codex/)),连接缓存的 key 会按账户加前缀,这样两个账户绝不会共用一个 socket 或它的 `previous_response_id` 续接状态。在任何 token 流出**之前**发生的 WebSocket 失败会在**同一个**账户上回退到 HTTP(而不是池轮换);只有 HTTP 路径的失败才会触发上面的故障转移。一次全新的 WebSocket 升级会记录其握手中的限流头部;被复用/预热的连接不会再次握手,因此没有头部信号 —— 但后端也会以流内的 `codex.rate_limits` 事件报告同样的窗口,shunt 每一轮都会观测它,因此它们的仪表板用量每一轮都会刷新。
 
 ## 安全约束
 

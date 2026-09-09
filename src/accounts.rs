@@ -1097,26 +1097,7 @@ impl AccountPool {
                 // below is unconditional — `observed_at_X` must not depend on
                 // whether the reset happened to be present this time.
                 let reset = header_value::<u64>(headers, reset_header);
-                match window {
-                    CodexWindow::FiveHour => {
-                        if let Some(utilization) = utilization {
-                            quota.utilization_5h = Some(utilization / 100.0);
-                            quota.observed_at_5h = Some(now);
-                            quota.reset_5h = preserve_future_reset(quota.reset_5h, reset, now);
-                        } else if let Some(reset) = reset {
-                            quota.reset_5h = Some(reset);
-                        }
-                    }
-                    CodexWindow::Weekly => {
-                        if let Some(utilization) = utilization {
-                            quota.utilization_7d = Some(utilization / 100.0);
-                            quota.observed_at_7d = Some(now);
-                            quota.reset_7d = preserve_future_reset(quota.reset_7d, reset, now);
-                        } else if let Some(reset) = reset {
-                            quota.reset_7d = Some(reset);
-                        }
-                    }
-                }
+                apply_codex_window(quota, window, utilization, reset, now);
             }
 
             if let Some(status) = headers
@@ -1126,6 +1107,60 @@ impl AccountPool {
                 quota.status = Some(status.to_string());
                 quota.observed_at_status = Some(now);
             }
+            // The post-lock dirty mark below covers both this observation and
+            // any expiry found while recomputing the provider metric.
+            let (utilization, _quota_expired) =
+                self.pool_utilization_for(provider, &mut entries, now);
+            record_pool_utilization(provider, utilization);
+        }
+        self.mark_dirty();
+    }
+
+    /// Record the Codex backend's in-stream `codex.rate_limits` event. The
+    /// websocket transport only sees quota headers on a fresh handshake, so a
+    /// reused connection depends on this event for a per-turn observation. As
+    /// with the headers, a window's `window_minutes` identifies its bucket and
+    /// the primary/secondary position does not; a window with an unrecognized
+    /// duration is skipped rather than guessed at. The event carries no
+    /// rate-limit-reached type, so `status` stays header-driven.
+    pub fn note_codex_rate_limits(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        event: &serde_json::Value,
+    ) {
+        {
+            let mut entries = self.entries.lock().expect("account health lock poisoned");
+            let health = entries.entry(account_key(provider, account)).or_default();
+            health.observed = true;
+            let quota = &mut health.quota;
+            let now = unix_now();
+
+            expire_stale_quota(quota, now);
+
+            for position in ["primary", "secondary"] {
+                let Some(reported) = event
+                    .get("rate_limits")
+                    .and_then(|limits| limits.get(position))
+                    .filter(|window| window.is_object())
+                else {
+                    continue;
+                };
+                let Some(window) = reported
+                    .get("window_minutes")
+                    .and_then(serde_json::Value::as_i64)
+                    .and_then(codex_window_bucket)
+                else {
+                    continue;
+                };
+                let utilization = reported
+                    .get("used_percent")
+                    .and_then(serde_json::Value::as_f64)
+                    .filter(|value| value.is_finite() && (0.0..=100.0).contains(value));
+                let reset = reported.get("reset_at").and_then(serde_json::Value::as_u64);
+                apply_codex_window(quota, window, utilization, reset, now);
+            }
+
             // The post-lock dirty mark below covers both this observation and
             // any expiry found while recomputing the provider metric.
             let (utilization, _quota_expired) =
@@ -1159,7 +1194,8 @@ impl AccountPool {
     /// 5h/7d windows, so the Codex parser can mark a bucket's utilization as
     /// authoritatively absent. Such a bucket's utilization and observation
     /// timestamp are cleared before reported windows are applied. For a
-    /// reported bucket, reset metadata remains header-derived: a future stored
+    /// reported bucket, reset metadata stays response-derived (the `x-codex-*`
+    /// headers and the websocket `codex.rate_limits` event): a future stored
     /// reset survives, while an elapsed stored reset is dropped so it cannot
     /// immediately expire the fresh utilization. The parser's `resets_at` is
     /// ignored, and status metadata remains owned by response headers. The
@@ -1182,7 +1218,9 @@ impl AccountPool {
             {
                 let quota = &mut health.quota;
                 // wham/usage reports only reconcile Codex utilization. Keep
-                // reset and status metadata header-derived, including when a
+                // reset metadata response-derived (the `x-codex-*` headers and
+                // the websocket `codex.rate_limits` event) and status metadata
+                // header-derived, including when a
                 // recognized window is absent from the report. This also
                 // prevents a stale signal in one bucket from expiring or
                 // rewriting unrelated fields during another bucket's poll.
@@ -2487,6 +2525,41 @@ fn update_string_header(headers: &HeaderMap, name: &str, field: &mut Option<Stri
 /// cleared, `observed_at_X` alone governs this window's expiry.
 fn preserve_future_reset(stored: Option<u64>, polled: Option<u64>, now: u64) -> Option<u64> {
     polled.or_else(|| stored.filter(|&reset| reset > now))
+}
+
+/// Apply one Codex rate-limit window observation to an account's quota state.
+/// Shared by [`AccountPool::note_codex_quota`] (response headers) and
+/// [`AccountPool::note_codex_rate_limits`] (the websocket `codex.rate_limits`
+/// event) so the two sources cannot drift. `utilization` is the backend's
+/// 0-100 used-percent, already validated by the caller; `reset` is best-effort,
+/// so a window without a fresh utilization only refreshes the reset.
+fn apply_codex_window(
+    quota: &mut QuotaState,
+    window: CodexWindow,
+    utilization: Option<f64>,
+    reset: Option<u64>,
+    now: u64,
+) {
+    match window {
+        CodexWindow::FiveHour => {
+            if let Some(utilization) = utilization {
+                quota.utilization_5h = Some(utilization / 100.0);
+                quota.observed_at_5h = Some(now);
+                quota.reset_5h = preserve_future_reset(quota.reset_5h, reset, now);
+            } else if let Some(reset) = reset {
+                quota.reset_5h = Some(reset);
+            }
+        }
+        CodexWindow::Weekly => {
+            if let Some(utilization) = utilization {
+                quota.utilization_7d = Some(utilization / 100.0);
+                quota.observed_at_7d = Some(now);
+                quota.reset_7d = preserve_future_reset(quota.reset_7d, reset, now);
+            } else if let Some(reset) = reset {
+                quota.reset_7d = Some(reset);
+            }
+        }
+    }
 }
 
 /// `pub(crate)`: shared with `crate::auth::codex::usage`'s wham/usage parser —
@@ -4602,6 +4675,97 @@ mod tests {
         let snaps = pool.snapshot("codex", &accounts, None, None);
         assert!(snaps[0].has_state);
         assert_eq!(snaps[0].utilization_5h, Some(0.4));
+    }
+
+    /// The websocket transport's `codex.rate_limits` event carries the same two
+    /// windows the headers do, so both must land with their resets.
+    #[test]
+    fn codex_rate_limits_event_records_both_windows() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        let weekly_reset = unix_now() + 508_740;
+        let five_hour_reset = unix_now() + 3_600;
+        let event = serde_json::json!({
+            "type": "codex.rate_limits",
+            "rate_limits": {
+                "primary": {
+                    "used_percent": 26,
+                    "window_minutes": 10080,
+                    "reset_at": weekly_reset,
+                },
+                "secondary": {
+                    "used_percent": 40,
+                    "window_minutes": 300,
+                    "reset_at": five_hour_reset,
+                },
+            },
+        });
+
+        pool.note_codex_rate_limits("codex", &accounts[0], &event);
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert!(snaps[0].has_state);
+        assert_eq!(snaps[0].utilization_7d, Some(0.26));
+        assert_eq!(snaps[0].reset_7d, Some(weekly_reset));
+        assert_eq!(snaps[0].utilization_5h, Some(0.4));
+        assert_eq!(snaps[0].reset_5h, Some(five_hour_reset));
+    }
+
+    /// `window_minutes` identifies a window's bucket; `primary`/`secondary` is
+    /// only a position, so swapping the two must not swap the recorded windows.
+    #[test]
+    fn codex_rate_limits_event_maps_by_minutes_not_position() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        let event = serde_json::json!({
+            "rate_limits": {
+                "primary": {"used_percent": 40, "window_minutes": 300},
+                "secondary": {"used_percent": 26, "window_minutes": 10080},
+            },
+        });
+
+        pool.note_codex_rate_limits("codex", &accounts[0], &event);
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert_eq!(snaps[0].utilization_5h, Some(0.4));
+        assert_eq!(snaps[0].utilization_7d, Some(0.26));
+    }
+
+    /// A missing `rate_limits`, a null window, an unrecognized duration, or an
+    /// out-of-range percentage leaves the affected window alone — and must not
+    /// disturb a window an earlier observation already recorded.
+    #[test]
+    fn codex_rate_limits_event_ignores_unusable_windows() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        pool.note_codex_rate_limits(
+            "codex",
+            &accounts[0],
+            &serde_json::json!({
+                "rate_limits": {"primary": {"used_percent": 26, "window_minutes": 10080}},
+            }),
+        );
+
+        for event in [
+            serde_json::json!({"type": "codex.rate_limits"}),
+            serde_json::json!({"rate_limits": {"primary": null, "secondary": null}}),
+            serde_json::json!({
+                "rate_limits": {"primary": {"used_percent": 75, "window_minutes": 1440}},
+            }),
+            serde_json::json!({
+                "rate_limits": {"primary": {"used_percent": 150, "window_minutes": 300}},
+            }),
+        ] {
+            pool.note_codex_rate_limits("codex", &accounts[0], &event);
+        }
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert_eq!(snaps[0].utilization_5h, None);
+        assert_eq!(
+            snaps[0].utilization_7d,
+            Some(0.26),
+            "an unusable event must not clear an earlier observation"
+        );
     }
 
     #[test]

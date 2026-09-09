@@ -40,6 +40,8 @@ static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 struct TestGateway {
     base_url: String,
+    /// The router's state, so a test can inspect the account pool a turn fed.
+    state: server::AppState,
     task: JoinHandle<()>,
 }
 
@@ -85,11 +87,13 @@ async fn start_gateway_with(mut config: Config) -> TestGateway {
     let addr: SocketAddr = listener.local_addr().unwrap();
     let (app, _shared, state) = server::build_router(config).unwrap();
     shunt::state_persist::restore(&state).await;
+    let state = state.clone();
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
     TestGateway {
         base_url: format!("http://{addr}"),
+        state,
         task,
     }
 }
@@ -349,11 +353,14 @@ async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
 /// When the mock websocket drops the socket: before it has emitted any event
 /// (nothing has reached the client, so the turn is safely re-driven over HTTP),
 /// or after a first event (streaming has begun, so a restart would duplicate
-/// output — the drop must surface as a clean error instead).
+/// output — the drop must surface as a clean error instead). `CompleteTurn`
+/// drops nothing: it streams a whole turn, including the backend's in-stream
+/// `codex.rate_limits` event.
 #[derive(Clone, Copy)]
 enum WsDrop {
     BeforeFirstEvent,
     AfterFirstEvent,
+    CompleteTurn,
 }
 
 /// Build a codex-provider config with the websocket transport enabled, pointing
@@ -466,6 +473,22 @@ async fn serve_ws(socket: TcpStream, drop: WsDrop) {
         return;
     };
     let _ = ws.next().await; // the client's response.create frame
+    if let WsDrop::CompleteTurn = drop {
+        for event in [
+            r#"{"type":"response.created","response":{"id":"resp_ws"}}"#,
+            r#"{"type":"response.output_item.added","item":{"type":"message"}}"#,
+            r#"{"type":"response.output_text.delta","delta":"served over websocket"}"#,
+            r#"{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":26.0,"window_minutes":10080}}}"#,
+            r#"{"type":"response.output_text.done"}"#,
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":2}}}"#,
+        ] {
+            ws.send(Message::Text(event.to_string().into()))
+                .await
+                .expect("mock upstream should stream the whole turn");
+        }
+        let _ = ws.send(Message::Close(None)).await;
+        return;
+    }
     if let WsDrop::AfterFirstEvent = drop {
         for event in [
             r#"{"type":"response.created","response":{"id":"resp_ws"}}"#,
@@ -564,6 +587,64 @@ async fn websocket_drop_before_first_event_falls_back_to_http() {
         http_hits.load(Ordering::SeqCst),
         1,
         "the fallback POSTs the turn to the HTTP endpoint exactly once (no double-send)"
+    );
+
+    std::env::remove_var("CODEX_AUTH_FILE");
+    let _ = std::fs::remove_file(auth_path);
+}
+
+/// End-to-end: a completed websocket turn whose stream carries the backend's
+/// in-stream `codex.rate_limits` event records the reported window against the
+/// observed Codex account, so `GET /usage` no longer reports `null` for a
+/// websocket-only pool (the handshake headers alone miss every reused turn).
+#[tokio::test]
+async fn websocket_rate_limits_event_records_account_quota() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = ENV_LOCK.lock().await;
+
+    let (base_url, http_hits) = spawn_dual_upstream(WsDrop::CompleteTurn).await;
+    let auth_path = write_fake_codex_auth();
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            r#"{"model":"codex-fallback-model","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(
+        body.contains("served over websocket"),
+        "the turn streamed over the websocket; got: {body}"
+    );
+    assert_eq!(
+        http_hits.load(Ordering::SeqCst),
+        0,
+        "a completed websocket turn never falls back to HTTP"
+    );
+
+    // The unpooled Codex CLI credential is still an observed account, keyed by
+    // the auth file's account id (see `write_fake_codex_auth`).
+    let observed = vec![AccountConfig {
+        name: "local-codex".to_string(),
+        uuid: Some("acct_fallback".to_string()),
+        ..Default::default()
+    }];
+    let snaps = gateway
+        .state
+        .accounts
+        .snapshot("codex", &observed, None, None);
+    assert_eq!(
+        snaps[0].utilization_7d,
+        Some(0.26),
+        "the in-stream rate-limit event feeds the account pool"
     );
 
     std::env::remove_var("CODEX_AUTH_FILE");

@@ -30,7 +30,9 @@ weekly windows, while its Fable-scoped (`7d_oi`) window remains unreported; a mi
 may still supply Fable data. PR #430 now adds an optional out-of-band poller for imported,
 refreshable Codex accounts through the private, undocumented `GET /wham/usage` endpoint. The
 poller updates utilization and observation timestamps. Codex reset metadata remains
-header-derived: future header boundaries survive, while an elapsed stored reset is dropped for a
+response-derived (the `x-codex-*` headers and, since the WebSocket rate-limit tap, the in-stream
+`codex.rate_limits` event): a response-supplied reset replaces the stored one, and when the
+response omits it a future stored boundary survives while an elapsed stored reset is dropped for a
 reported window before fresh utilization is written; parsed wham `reset_at` is not adopted as
 live reset metadata. Status metadata remains header-derived, and failed or unrecognized
 observations preserve prior state. The historical M12
