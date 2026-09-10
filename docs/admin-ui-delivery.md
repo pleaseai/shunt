@@ -31,7 +31,11 @@ elsewhere, and three of them are load-bearing:
   routes.
 - **Namespace.** `/admin` already mixes HTML pages and JSON API on the same
   prefix. An SPA that wants `/admin/pool` as a deep link collides with the
-  `GET /admin/pool` JSON endpoint that exists today.
+  `GET /admin/pool` JSON endpoint M9 shipped on that prefix. Decision 3 resolves
+  it by moving the JSON to `/admin/api/*`; the paths written here are
+  deliberately the **pre-split** ones, because the collision between them is the
+  motivation — rewriting them to `/admin/api/*` would describe a state in which
+  there is nothing to decide.
 - **Assets.** The current UI is HTML/CSS/JS inside Rust string literals
   (`src/admin/html.rs`, `src/admin/script.rs`) — ~770 lines when this record was
   written on 2026-08-15, and 1,525 by 2026-09-10. There is no build step, no
@@ -50,7 +54,7 @@ baseline for any new route.
 | always | `GET` | `/health` — unauthenticated, exempt from the concurrency gate |
 | always | `GET` | `/protocol`, `/v1/models`, `/routes` |
 | always | `POST` | `/v1/messages`, `/v1/messages/count_tokens` |
-| `[server.admin]` | — | 16 paths under `/admin`, 18 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them — all except `GET /admin/status` |
+| `[server.admin]` | — | 16 paths under `/admin`, 18 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which this change moved to `/admin/api/status` |
 | `[server.gateway]` | `GET` | `/.well-known/oauth-authorization-server`, `/device`, `/device/callback`, `/managed/settings` |
 | `[server.gateway]` | `POST` | `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize` |
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |
@@ -91,7 +95,7 @@ here because a dashboard is the surface where an operator first notices it.
 | Pending login (`PendingStore`) | in-process, single-use, TTL-bound | Provisioning **breaks**: start on A, complete on B ⇒ expired/absent. |
 | Admin OIDC state (`OidcStateStore`, `src/admin/session.rs:265`) | in-process | Authorize on A, callback on B ⇒ state mismatch. |
 | Admin rate limiters | in-process, documented as process-global | Effective limit relaxes to N× the configured value. |
-| `AccountPool` quota/cooldown | memory + optional `[server.pool] state_path` | Per-instance view. `/admin/pool` reports one replica, not the fleet. |
+| `AccountPool` quota/cooldown | memory + optional `[server.pool] state_path` | Per-instance view. `/admin/api/pool` reports one replica, not the fleet. |
 | Gateway refresh tokens (`GatewayStores.refresh_tokens`) | memory + optional `[server.gateway] state_path` | Per-instance view. The **only** thing that `state_path` persists — `PersistedSessions` carries `refresh_tokens` and nothing else (`src/gateway/persist.rs:35-37`). |
 | Gateway device grants (`GatewayStores.device_grants`) | in-process, **no persistence path at all** | Device login **breaks**: `/oauth/device_authorization` on A, `/device` on B ⇒ unknown code. Survives no restart either. |
 | Gateway OIDC state (`GatewayStores.oidc_states`) | in-process, no persistence | A separate store from the admin one above; same split-brain failure on `/device/callback`. |
@@ -190,7 +194,7 @@ API over HTTP, holding an admin token, to render anything — a proxy in front o
 proxy, with a second copy of the auth surface to keep correct.
 
 The corollary, from the topology section: the dashboard renders **one process's**
-view. Under several instances `/admin/pool` describes that replica's pool, not
+view. Under several instances `/admin/api/pool` describes that replica's pool, not
 the fleet's. A fleet-wide dashboard is not a UI feature — it presupposes a shared
 state store that does not exist yet.
 
@@ -291,8 +295,8 @@ Any of them works — the load-bearing constraint is *one* call, fanned out.
 ### Why the UI and the JSON API must split
 
 `GET /admin/pool`, `/admin/status`, `/admin/accounts`, and `/admin/observed`
-return JSON today. Those are exactly the paths an SPA wants as browsable deep
-links. Serving both meanings from one path requires content negotiation on
+returned JSON on the prefix the SPA wants for its own routes. Those are exactly
+the paths an SPA wants as browsable deep links. Serving both meanings from one path requires content negotiation on
 `Accept`, which breaks bookmarking and is fragile under any intermediary that
 rewrites headers.
 
@@ -316,8 +320,10 @@ the JSON `GET`s.** A `fallback` answers unmatched *paths*; a request whose path
 matches a route registered for other methods gets axum's `405 Method Not Allowed`
 instead, so a POST-only or DELETE-only path is just as unavailable to the SPA as
 a `GET` alias is. Reading `admin_router` (`src/admin/mod.rs:221-257`), these are
-the registered paths that move, and why each would have blocked a deep link had
-it stayed:
+the paths that moved, written as they were **before** the split because they are
+its inputs — rewriting this column to `/admin/api/*` would name the destinations
+and lose the inventory — and why each would have blocked a deep link had it
+stayed:
 
 | Path | Registered | Why it would have blocked a deep link |
 | :-- | :-- | :-- |
@@ -597,7 +603,7 @@ The seven questions this document originally left open are now decided:
   `shunt dashboard setup`.
 - [`m9-admin-surface.md`](m9-admin-surface.md) — its endpoint table becomes the
   pre-split record; add a pointer here rather than rewriting it. It is also
-  missing `GET /admin/status`, which `admin_router` has registered since the
+  missing `GET /admin/status`, which `admin_router` had registered since the
   route was added — an existing drift, worth a one-row fix independently of this
   design.
 - `docs/running.md` — the single-instance topology statement belongs in the

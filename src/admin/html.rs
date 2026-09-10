@@ -116,7 +116,7 @@ pub fn login_page(error: Option<&str>, sso_label: Option<&str>) -> String {
     };
     let sso_form = sso_label.map_or_else(String::new, |label| {
         format!(
-            r#"<form method="post" action="/admin/oidc/start" style="margin-top:.8rem">
+            r#"<form method="post" action="/admin/api/oidc/start" style="margin-top:.8rem">
 <button class="secondary" type="submit">{}</button>
 </form>"#,
             escape_html(label)
@@ -158,7 +158,7 @@ pub fn dashboard_page(csrf: &str) -> String {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>shunt admin</title><style>{STYLE}</style></head><body><main>
 <header><h1>shunt admin</h1>
-<form method="post" action="/admin/logout"><button class="secondary" type="submit">Sign out</button></form>
+<form method="post" action="/admin/api/logout"><button class="secondary" type="submit">Sign out</button></form>
 </header>
 
 <div id="status-section" style="display:none">
@@ -263,7 +263,7 @@ mod tests {
     fn observed_usage_uses_user_facing_provider_native_labels() {
         let page = dashboard_page("csrf");
 
-        assert!(page.contains("/admin/observed"));
+        assert!(page.contains("/admin/api/observed"));
         assert!(page.contains("<th>Status</th><th>Usage</th>"));
         assert!(page.contains("Usage integration in progress"));
         assert!(page.contains("Waiting for traffic"));
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn claude_uuid_coalescing_is_scoped_to_the_claude_oauth_auth_kind() {
-        // uuidByName is built from the Claude account store (/admin/accounts).
+        // uuidByName is built from the Claude account store (/admin/api/accounts).
         // Gating on the pool account's auth kind (not its provider table's
         // display name) means a chatgpt_oauth provider named "claude" is
         // never matched against it, and a claude_oauth provider under any

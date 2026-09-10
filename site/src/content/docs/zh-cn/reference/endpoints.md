@@ -22,17 +22,17 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/v1/traces` | 入站 OTLP/HTTP span —— 只中继到 `traces = true` 的目标 |
 | `GET` | `/admin` | 管理仪表盘(HTML);未登录时重定向到 `/admin/login` |
 | `GET`, `POST` | `/admin/login` | 管理员 token 登录表单与浏览器会话创建 |
-| `POST` | `/admin/logout` | 清除浏览器会话 |
-| `GET` | `/admin/accounts` | Claude 账户存储元数据:名称、类型、过期时间和 UUID;绝不返回 token 材料 |
-| `GET` | `/admin/accounts/codex` | Codex 账户存储元数据:名称、过期时间和 ChatGPT 账户 ID;绝不返回 token 材料 |
-| `GET` | `/admin/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider 的池状态;每个 account 对象可能包含可选的 `plan` 字符串;文件中读取的值之后可能通过 profile 查询被修正为更精确的值;Codex 行包含已上报的 5h/7d 用量,`7d_oi` 没有对应的 Codex 字段;每个 account 还带有布尔字段 `needs_relogin`:凭据被终结性拒绝(`invalid_grant`)、根本不带刷新令牌,或轮换出的令牌对未能写入而丢失 —— 任何重试都无法恢复,只有运维人员重新登录才行。它与冷却字段**相互独立**上报 —— 冷却会自行到期,而该标记不会 —— 仪表盘的两个表格都会显示为 **needs re-login**,而不是配额暂停时的 `cooling`。仅存于内存:重启后清空,该账户的下一次终结性失败会重新置位。即使某个账户从未被任何 provider 表选中过,它也会被上报 —— 与 `has_state: false` 并列 —— 因为 admin 的 refresh 探测按存储名记录其判定。 |
-| `POST` | `/admin/accounts/claude` | 用 `{name, mode}` 开始 Claude 浏览器预配;`mode` 为 `oauth` 或 `setup_token`,省略时默认为 `setup_token`;返回 `{authorize_url}` |
-| `POST` | `/admin/accounts/claude/{name}/complete` | 用包含 `<code>#<state>` 的 `{code}` 完成 Claude 预配;存储账户并报告其是否生效 |
-| `POST` | `/admin/accounts/claude/{name}/refresh` | 按需执行 **imported** Claude 账户的 refresh 授权,报告该登录是否仍然有效。因为会请求提供方的令牌端点,所以受限流保护;并且始终经由共享凭据存储,不会与代理路径自身的刷新竞争。仅返回新的 `expires_at`,绝不返回任何令牌材料;并附带在该探测自身清除之后从池中重新读取的 `needs_relogin` —— 对池仍视为已死的账户,授权本身也可能成功,因此响应如实报告,而不会宣称与 `/admin/pool` 矛盾的恢复。对 `setup_token` 账户(不含 refresh 授权)或任何终结性判定返回 `400`,对非终结性失败返回 `502` |
-| `DELETE` | `/admin/accounts/claude/{name}` | 删除指定 Claude 账户的存储文件 |
-| `POST` | `/admin/accounts/codex` | 用 `{name}` 开始 ChatGPT OAuth;返回 `{authorize_url}` |
-| `POST` | `/admin/accounts/codex/{name}/complete` | 用包含完整 localhost redirect URL 或 `<code>#<state>` 的 `{code}` 完成 Codex 预配 |
-| `DELETE` | `/admin/accounts/codex/{name}` | 删除指定 Codex 账户的存储文件 |
+| `POST` | `/admin/api/logout` | 清除浏览器会话 |
+| `GET` | `/admin/api/accounts` | Claude 账户存储元数据:名称、类型、过期时间和 UUID;绝不返回 token 材料 |
+| `GET` | `/admin/api/accounts/codex` | Codex 账户存储元数据:名称、过期时间和 ChatGPT 账户 ID;绝不返回 token 材料 |
+| `GET` | `/admin/api/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider 的池状态;每个 account 对象可能包含可选的 `plan` 字符串;文件中读取的值之后可能通过 profile 查询被修正为更精确的值;Codex 行包含已上报的 5h/7d 用量,`7d_oi` 没有对应的 Codex 字段;每个 account 还带有布尔字段 `needs_relogin`:凭据被终结性拒绝(`invalid_grant`)、根本不带刷新令牌,或轮换出的令牌对未能写入而丢失 —— 任何重试都无法恢复,只有运维人员重新登录才行。它与冷却字段**相互独立**上报 —— 冷却会自行到期,而该标记不会 —— 仪表盘的两个表格都会显示为 **needs re-login**,而不是配额暂停时的 `cooling`。仅存于内存:重启后清空,该账户的下一次终结性失败会重新置位。即使某个账户从未被任何 provider 表选中过,它也会被上报 —— 与 `has_state: false` 并列 —— 因为 admin 的 refresh 探测按存储名记录其判定。 |
+| `POST` | `/admin/api/accounts/claude` | 用 `{name, mode}` 开始 Claude 浏览器预配;`mode` 为 `oauth` 或 `setup_token`,省略时默认为 `setup_token`;返回 `{authorize_url}` |
+| `POST` | `/admin/api/accounts/claude/{name}/complete` | 用包含 `<code>#<state>` 的 `{code}` 完成 Claude 预配;存储账户并报告其是否生效 |
+| `POST` | `/admin/api/accounts/claude/{name}/refresh` | 按需执行 **imported** Claude 账户的 refresh 授权,报告该登录是否仍然有效。因为会请求提供方的令牌端点,所以受限流保护;并且始终经由共享凭据存储,不会与代理路径自身的刷新竞争。仅返回新的 `expires_at`,绝不返回任何令牌材料;并附带在该探测自身清除之后从池中重新读取的 `needs_relogin` —— 对池仍视为已死的账户,授权本身也可能成功,因此响应如实报告,而不会宣称与 `/admin/api/pool` 矛盾的恢复。对 `setup_token` 账户(不含 refresh 授权)或任何终结性判定返回 `400`,对非终结性失败返回 `502` |
+| `DELETE` | `/admin/api/accounts/claude/{name}` | 删除指定 Claude 账户的存储文件 |
+| `POST` | `/admin/api/accounts/codex` | 用 `{name}` 开始 ChatGPT OAuth;返回 `{authorize_url}` |
+| `POST` | `/admin/api/accounts/codex/{name}/complete` | 用包含完整 localhost redirect URL 或 `<code>#<state>` 的 `{code}` 完成 Codex 预配 |
+| `DELETE` | `/admin/api/accounts/codex/{name}` | 删除指定 Codex 账户的存储文件 |
 | `POST` | `/backend-api/codex/responses` | 入站 Codex CLI 透传 —— 镜像真实 ChatGPT 后端路径 |
 | `POST` | `/responses` | 入站 Codex CLI 透传 —— 裸 `base_url` 形式 |
 | `POST` | `/v1/responses` | 入站 Codex CLI 透传 —— 带 `/v1` 后缀的 `base_url` 形式 |
@@ -41,6 +41,36 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/usage` | 面向客户端的净化池用量 —— 返回共享账户池按窗口的剩余余量和重置时间,以及每个参与池化的提供方的同样聚合,绝不返回账户身份或容量 |
 
 `/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作上会被 `403` 拒绝,在 `POST /admin/login` 上会被 `401` 拒绝。
+
+### 管理路径迁移
+
+**破坏性变更。** 所有管理 JSON 路由与修改类路由都从 `/admin/*` 迁移到了 `/admin/api/*`。
+旧路径**已被移除,而不是保留为别名**,现在会返回 `404`。
+
+`/admin` 仍然是仪表盘外壳,`/admin/login` 和 `/admin/oidc/callback` 也保持原位 —— 它们是服务端
+渲染的页面,不是 API 路由。其余全部迁移,是为了让仪表盘可以把 `/admin/*` 用作可浏览的深层链接:
+一个路径不可能既是 JSON 端点又是客户端路由,所以没有保留任何兼容别名。
+
+脚本调用方只需机械地改写一次 —— 路径只是在 `/admin` 之后多了一个 `/api` 段:
+
+| 变更前 | 变更后 |
+| :-- | :-- |
+| `GET /admin/accounts` | `GET /admin/api/accounts` |
+| `GET /admin/accounts/codex` | `GET /admin/api/accounts/codex` |
+| `GET /admin/observed` | `GET /admin/api/observed` |
+| `GET /admin/pool` | `GET /admin/api/pool` |
+| `GET /admin/status` | `GET /admin/api/status` |
+| `POST /admin/accounts/claude` | `POST /admin/api/accounts/claude` |
+| `POST /admin/accounts/claude/{name}/complete` | `POST /admin/api/accounts/claude/{name}/complete` |
+| `POST /admin/accounts/claude/{name}/refresh` | `POST /admin/api/accounts/claude/{name}/refresh` |
+| `DELETE /admin/accounts/claude/{name}` | `DELETE /admin/api/accounts/claude/{name}` |
+| `POST /admin/accounts/codex` | `POST /admin/api/accounts/codex` |
+| `POST /admin/accounts/codex/{name}/complete` | `POST /admin/api/accounts/codex/{name}/complete` |
+| `DELETE /admin/accounts/codex/{name}` | `DELETE /admin/api/accounts/codex/{name}` |
+| `POST /admin/oidc/start` | `POST /admin/api/oidc/start` |
+| `POST /admin/logout` | `POST /admin/api/logout` |
+
+认证未变:仍是同一份管理员凭据,通过同样的头部或 `x-api-key` 提交,读/写分级也相同。
 
 spend-limit 路由仅在启动时配置了 [`[server.spend]`](/zh-cn/reference/configuration/#serverspend可选) 的情况下存在;它们使用 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 凭据认证,因此与 `[server.gateway]` 无关。请通过配置的管理员头部(默认 `x-shunt-admin-token`)或 `x-api-key` 发送该凭据 —— 两个槽位都被接受。write 凭据(`write_keys` 条目,或 `tokens_env`/`tokens_file` 对)可使用全部操作;`read_keys` 凭据只能使用 GET,在修改操作上会收到 `403`。`POST` 接受 `user` 和 `organization` scope、`daily`/`weekly`/`monthly` period、user scope 中 1–256 字节的 `user_id`，以及 1–19 位非负 USD 美分整数字符串或 `null` 的 `amount`，并按 `(scope, period)` 执行 upsert。列表分页接受 `limit`（1–1000，默认 20）、`after_id`、`before_id` 和 `scope_type`；两个游标不能同时使用。每个响应都包含 `request-id`，错误采用 Anthropic 错误形状。限制与修改审计记录一起保存到所配置的带版本 JSON 状态文件中,每次修改归属于 `admin-key:<id>` 或 `admin-token:<name>` —— 当两个槽位携带同一层级的不同凭据时，归属于配置的管理员头部那一个。stage 1 不公开 `/effective` 或 `/audit`，也不对推理请求实施限制。
 

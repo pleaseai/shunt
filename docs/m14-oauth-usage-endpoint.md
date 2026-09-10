@@ -57,9 +57,9 @@ a different tool) calls it directly. Do not represent this as "works out of the 
 supported shunt credential setup — see README.md and the multi-account guide for the
 user-facing wording of this same caveat.
 
-## Contrast with `GET /usage` (M12) and `GET /admin/pool` (M9)
+## Contrast with `GET /usage` (M12) and `GET /admin/api/pool` (M9)
 
-| | `GET /admin/pool` (M9) | `GET /usage` (M12) | `GET /api/oauth/usage` (this milestone) |
+| | `GET /admin/api/pool` (M9) | `GET /usage` (M12) | `GET /api/oauth/usage` (this milestone) |
 | :-- | :-- | :-- | :-- |
 | Caller | Operator (browser/admin token) | Any `[server.auth]` client | Claude Code CLI itself (or any client hitting the same path the CLI does) |
 | Auth | `[server.admin]` | `[server.auth]` client token | Bind-topology-gated — see "Auth gating" |
