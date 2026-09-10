@@ -71,15 +71,41 @@ pub(super) async fn asset(Path(path): Path<String>) -> Response {
     }
 }
 
+/// The SPA shell's Content-Security-Policy.
+///
+/// Tighter than the server-rendered pages' policy
+/// (`super::html_body_with_form_action`), and deliberately so: those pages
+/// inline their script and style, so their policy has to allow
+/// `'unsafe-inline'`. Vite emits the bundle as an external module script and an
+/// external stylesheet under `/admin/assets/`, with nothing inline, so `'self'`
+/// is enough for both — verified against the emitted `ui/dist/index.html`, not
+/// assumed. `form-action 'none'` because the shell posts no forms; the
+/// server-rendered login flow that does is a different response.
+const SHELL_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
+connect-src 'self'; img-src 'self'; form-action 'none'; base-uri 'none'; \
+frame-ancestors 'none'";
+
 /// `GET /admin/{*path}` — the bundle's `index.html` as the SPA shell for an
-/// unmatched path under the mount, so a client-side route survives a reload. It
-/// carries `nosniff` for the same reason the assets do.
+/// unmatched path under the mount, so a client-side route survives a reload.
+///
+/// Carries the same defense-in-depth header set as every other admin HTML
+/// response (`super::html_body_with_form_action`): a tight CSP, the
+/// clickjacking and sniffing guards, the admin surface's referrer policy, and
+/// `no-store`. `Referrer-Policy` is `strict-origin-when-cross-origin` to match
+/// the admin pages rather than the `no-referrer` used on the gateway device
+/// page — under `no-referrer` a browser sends `Origin: null` even on a
+/// same-origin form POST, which is what broke that page's CSRF guard
+/// (`src/gateway/device.rs:171`).
 pub(super) async fn shell() -> Response {
     match Bundle::get(INDEX) {
         Some(file) => (
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (header::CONTENT_SECURITY_POLICY, SHELL_CSP),
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (header::X_FRAME_OPTIONS, "DENY"),
+                (header::REFERRER_POLICY, "strict-origin-when-cross-origin"),
+                (header::CACHE_CONTROL, "no-store"),
             ],
             file.data.into_owned(),
         )

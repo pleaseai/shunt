@@ -69,7 +69,7 @@ You can also run straight from the source tree with `cargo run -- <args>`.
 
 A default build needs no Node toolchain and ships no admin dashboard bundle. To
 build the binary with the embedded admin SPA, build the bundle first and enable
-the `ui` feature:
+the `ui` feature. The bundle build requires Node.js 22.12 or newer:
 
 ```bash
 cd ui && npm ci && npm run build && cd ..

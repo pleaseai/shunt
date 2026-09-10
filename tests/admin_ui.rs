@@ -11,9 +11,11 @@
 
 #![cfg(feature = "ui")]
 
+use std::sync::{Mutex, MutexGuard};
+
 use axum::{
     body::Body,
-    http::{header, Request, StatusCode},
+    http::{header, Method, Request, StatusCode},
     Router,
 };
 use shunt::{
@@ -23,12 +25,28 @@ use shunt::{
 };
 use tower::ServiceExt;
 
+/// Serializes every test in this binary that touches the process environment.
+///
+/// Unique variable names per test stop two tests from clobbering *each other's
+/// variable*, but they do not make `set_var` safe: the hazard is a writer
+/// racing a **reader**, and `build_router` reads the environment while a
+/// sibling test may be writing it. So the lock has to span the write, the
+/// `build_router` that reads, and the [`EnvVar`] cleanup — holding it for the
+/// writes alone would exclude nothing. The tests here run in microseconds, so
+/// serializing them costs nothing measurable.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
 /// A router with `[server.admin]` enabled, which is what registers the UI
 /// routes. The env-backed credential gets a name unique to the process *and*
-/// the calling test: the process environment is shared across the test binary,
-/// so a name shared between two tests lets one test's [`EnvVar`] drop clear the
-/// variable another is still building against.
+/// the calling test, and the returned [`EnvVar`] holds [`ENV_LOCK`] for the rest
+/// of the test body so no sibling reads the environment mid-write.
 fn admin_router(label: &str) -> (Router, EnvVar) {
+    // A poisoned lock only means some other test panicked while holding it; the
+    // environment is still ours to use, so recover rather than cascade.
+    let guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let name = format!("SHUNT_ADMIN_UI_TOKENS_{}_{label}", std::process::id());
     std::env::set_var(&name, "admin:admin-secret");
 
@@ -45,21 +63,39 @@ fn admin_router(label: &str) -> (Router, EnvVar) {
     });
 
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
-    (router, EnvVar(name))
+    (
+        router,
+        EnvVar {
+            name,
+            _guard: guard,
+        },
+    )
 }
 
 /// Removes the variable on drop, at the end of the test body — never at its
-/// start, which is what would break a neighbour mid-run.
-struct EnvVar(String);
+/// start, which is what would break a neighbour mid-run — and releases
+/// [`ENV_LOCK`] only after that removal.
+///
+/// `_guard` is never read: it is held for its `Drop`, which is the whole point,
+/// and the leading underscore is what tells `dead_code` so.
+struct EnvVar {
+    name: String,
+    _guard: MutexGuard<'static, ()>,
+}
 
 impl Drop for EnvVar {
     fn drop(&mut self) {
-        std::env::remove_var(&self.0);
+        std::env::remove_var(&self.name);
     }
 }
 
 async fn get(router: &Router, path: &str) -> axum::response::Response {
+    request_with(router, Method::GET, path).await
+}
+
+async fn request_with(router: &Router, method: Method, path: &str) -> axum::response::Response {
     let request = Request::builder()
+        .method(method)
         .uri(path)
         .body(Body::empty())
         .expect("request builds");
@@ -129,6 +165,59 @@ async fn an_asset_is_served_with_its_own_bytes_and_type() {
     assert!(!body_bytes(response).await.is_empty());
 }
 
+/// The shell is an admin HTML response, so it carries the same defense-in-depth
+/// header set the server-rendered pages do
+/// (`src/admin/mod.rs`'s `html_body_with_form_action`). Asserted per header
+/// rather than as one blob: dropping any single one is a separate regression,
+/// and the CSP is pinned to `'self'` for script and style because the bundle is
+/// external — a later change that inlines script would have to loosen this
+/// value, and should have to say so here.
+#[tokio::test]
+async fn the_shell_carries_the_admin_security_headers() {
+    let (router, _env) = admin_router("shell-headers");
+
+    let response = get(&router, "/admin/pool").await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let headers = response.headers();
+    for (name, expected) in [
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::X_FRAME_OPTIONS, "DENY"),
+        (header::REFERRER_POLICY, "strict-origin-when-cross-origin"),
+        (header::CACHE_CONTROL, "no-store"),
+    ] {
+        assert_eq!(
+            headers.get(&name).map(|v| v.to_str().unwrap()),
+            Some(expected),
+            "the SPA shell must carry {name}: {expected}"
+        );
+    }
+
+    let csp = headers
+        .get(header::CONTENT_SECURITY_POLICY)
+        .expect("the SPA shell must carry a Content-Security-Policy")
+        .to_str()
+        .unwrap();
+    for directive in [
+        "default-src 'none'",
+        "script-src 'self'",
+        "style-src 'self'",
+        "connect-src 'self'",
+        "form-action 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+    ] {
+        assert!(
+            csp.contains(directive),
+            "the shell CSP is missing `{directive}`; it reads {csp:?}"
+        );
+    }
+    assert!(
+        !csp.contains("unsafe-inline"),
+        "the bundle is external, so the shell CSP must not allow inline code; it reads {csp:?}"
+    );
+}
+
 /// An unmatched path under the mount is a client-side route, so it must survive
 /// a reload as the shell rather than `404`.
 #[tokio::test]
@@ -166,6 +255,64 @@ async fn an_unmatched_path_under_the_json_namespace_is_a_json_404() {
     let body: serde_json::Value =
         serde_json::from_slice(&body_bytes(response).await).expect("the body is JSON");
     assert_eq!(body["error"]["type"], "not_found_error");
+}
+
+/// The JSON catch-all is registered with `any`, and that is load-bearing: under
+/// a method-specific registration an unmatched `/admin/api/*` path would answer
+/// `405` for every other method instead of the `404` contract — and `405` is
+/// what the SPA fallback was separated from this namespace to avoid.
+///
+/// The `404`-vs-`405` probe in `tests/router_surface.rs` cannot see this: to
+/// that oracle a path answering `404` for every method is indistinguishable
+/// from an unregistered one, which is why the catch-all is excluded from its
+/// method-aware inventory. Probing the methods directly is what covers the gap.
+#[tokio::test]
+async fn the_json_namespace_catch_all_answers_every_method() {
+    let (router, _env) = admin_router("json404methods");
+
+    for method in [
+        Method::GET,
+        Method::POST,
+        Method::PUT,
+        Method::PATCH,
+        Method::DELETE,
+    ] {
+        let response = request_with(&router, method.clone(), "/admin/api/nope").await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{method} /admin/api/nope must be a 404, not a 405 or the shell"
+        );
+        assert!(
+            content_type(&response).starts_with("application/json"),
+            "{method} /admin/api/nope expected JSON, got {}",
+            content_type(&response)
+        );
+    }
+}
+
+/// The namespace *root* is the case a single `/admin/api/{*path}` catch-all
+/// misses: a wildcard segment must match at least one character, so `/admin/api`
+/// and `/admin/api/` fall through to the broader `/admin/{*path}` and would
+/// answer HTML `200`. That is the same failure the test above rules out, one
+/// path segment shorter, so the roots are registered explicitly.
+#[tokio::test]
+async fn the_json_namespace_root_is_a_json_404_too() {
+    let (router, _env) = admin_router("json404root");
+
+    for path in ["/admin/api", "/admin/api/"] {
+        let response = get(&router, path).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{path} must not answer the SPA shell"
+        );
+        assert!(
+            content_type(&response).starts_with("application/json"),
+            "{path} expected JSON, got {}",
+            content_type(&response)
+        );
+    }
 }
 
 /// The fallback is confined to its mount: `/v1/` has externally-specified

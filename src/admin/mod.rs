@@ -270,6 +270,12 @@ pub fn admin_router() -> Router<AppState> {
     #[cfg(feature = "ui")]
     let router = router
         .route("/admin/assets/{*path}", get(ui::asset))
+        // The namespace root needs its own registration: a `{*path}` segment
+        // must match at least one character, so `/admin/api` and `/admin/api/`
+        // would otherwise fall through to `/admin/{*path}` and answer the HTML
+        // shell — the failure the separate JSON catch-all exists to prevent.
+        .route("/admin/api", any(ui::api_not_found))
+        .route("/admin/api/", any(ui::api_not_found))
         .route("/admin/api/{*path}", any(ui::api_not_found))
         .route("/admin/{*path}", get(ui::shell));
 

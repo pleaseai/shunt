@@ -67,7 +67,7 @@ cargo build --release   # -> target/release/shunt
 `cargo run -- <args>`로 소스 트리에서 바로 실행할 수도 있습니다.
 
 기본 빌드는 Node 툴체인이 필요 없고 관리자 대시보드 번들도 포함하지 않습니다.
-관리자 SPA를 내장한 바이너리를 만들려면 번들을 먼저 빌드한 뒤 `ui` 기능을 켭니다:
+관리자 SPA를 내장한 바이너리를 만들려면 번들을 먼저 빌드한 뒤 `ui` 기능을 켭니다. 번들 빌드에는 Node.js 22.12 이상이 필요합니다:
 
 ```bash
 cd ui && npm ci && npm run build && cd ..

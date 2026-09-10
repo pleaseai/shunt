@@ -42,7 +42,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/codex/analytics-events/events` | Codex CLI 分析 sink —— 根路径式 `chatgpt_base_url` 形式 |
 | `GET` | `/usage` | 面向客户端的净化池用量 —— 返回共享账户池按窗口的剩余余量和重置时间,以及每个参与池化的提供方的同样聚合,绝不返回账户身份或容量 |
 
-`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作上会被 `403` 拒绝,在 `POST /admin/login` 上会被 `401` 拒绝。
+`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作上会被 `403` 拒绝,在 `POST /admin/login` 上会被 `401` 拒绝。但 SPA 外壳与前端包文件是例外:`GET /admin/{*path}` 与 `GET /admin/assets/{*path}` 无需管理员认证即可获取。这样是安全的,因为它们不包含任何运维数据,而 SPA 读取的一切都在 `/admin/api/*` 之后,后者对每个请求都做认证;这两个路由同样仅在配置了 `[server.admin]` 且二进制使用 `--features ui` 构建时才存在。
 
 ### 管理 SPA 包(`--features ui`)
 

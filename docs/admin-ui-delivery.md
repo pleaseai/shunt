@@ -68,8 +68,13 @@ baseline for any new route.
 
 Two properties of this table matter downstream:
 
-- **The router has no wildcard or fallback route anywhere** outside the `/admin`
-  mount, which `--features ui` gives the three catch-alls above. An unmatched path
+- **The router has no catch-all for otherwise-unmatched paths** outside the
+  `/admin` mount, which `--features ui` gives the three catch-alls above. Two
+  things that do exist are not that: `[server.spend]` attaches a
+  `MethodRouter::fallback` to each of its two paths
+  (`src/gateway/spend/mod.rs:20-32`), which shapes the response to a wrong
+  *method* on a path that matched — it never sees an unmatched path; and the
+  `/admin` catch-alls are scoped to their mount. An unmatched path
   therefore gets axum's built-in `404` with an **empty body** — not a
   `ShuntError` envelope, since nothing constructs one for a path that reached no
   handler. The status is the part clients depend on, and it is what makes an

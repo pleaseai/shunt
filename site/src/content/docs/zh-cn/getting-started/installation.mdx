@@ -66,7 +66,8 @@ cargo build --release   # -> target/release/shunt
 你也可以用 `cargo run -- <args>` 直接从源码树运行。
 
 默认构建不需要 Node 工具链,也不包含管理仪表盘的前端包。若要构建内嵌管理 SPA 的
-二进制,请先构建前端包,再启用 `ui` 特性:
+二进制,请先构建前端包,再启用 `ui` 特性。构建前端包需要 Node.js 22.12 或更高
+版本:
 
 ```bash
 cd ui && npm ci && npm run build && cd ..

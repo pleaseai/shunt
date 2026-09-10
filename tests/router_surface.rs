@@ -101,25 +101,35 @@ const ADMIN_PATHS: [(&str, &str); 16] = [
     ("/admin/api/accounts/codex/{name}", "DELETE"),
 ];
 
-/// The three catch-alls `--features ui` adds inside the `/admin` mount, spelled
-/// as `src/admin/mod.rs` registers them. They are literals in that source
-/// whether or not the feature is on, so the source scans below read them
+/// The five routes `--features ui` adds inside the `/admin` mount, spelled as
+/// `src/admin/mod.rs` registers them. They are literals in that source whether
+/// or not the feature is on, so the source scans below read them
 /// unconditionally — [`UI_PROBE_PATHS`] is the subset the *runtime* probes can
 /// see, and it exists only when the routes do.
-const UI_LITERAL_PATHS: [&str; 3] = [
+///
+/// `/admin/api` and `/admin/api/` are registered separately from
+/// `/admin/api/{*path}` because a wildcard segment must match at least one
+/// character: without them the namespace root falls through to `/admin/{*path}`
+/// and answers the HTML shell.
+const UI_LITERAL_PATHS: [&str; 5] = [
     "/admin/assets/{*path}",
+    "/admin/api",
+    "/admin/api/",
     "/admin/api/{*path}",
     "/admin/{*path}",
 ];
 
-/// The two UI catch-alls the `404`-vs-`405` oracle can read back. The third,
-/// `/admin/api/{*path}`, is registered with `any` and answers `404` for every
+/// The two UI catch-alls the `404`-vs-`405` oracle can read back. The three
+/// `/admin/api` ones are registered with `any` and answer `404` for every
 /// method — deliberately, so an unmatched path in the JSON namespace stays a
-/// `404` instead of becoming the HTML shell — which makes it indistinguishable
-/// from an unregistered path to this probe. `tests/admin_ui.rs` asserts its
-/// behavior directly instead, and [`no_undocumented_path_is_registered`] keeps
-/// probing `/admin/api/*` near-misses exactly as before, because that catch-all
-/// does not change their answer.
+/// `404` instead of becoming the HTML shell — which makes them indistinguishable
+/// from an unregistered path to this probe. `tests/admin_ui.rs` asserts their
+/// behavior directly instead (including
+/// `the_json_namespace_catch_all_answers_every_method`, which is what stops a
+/// method-specific regression from hiding here), and
+/// [`no_undocumented_path_is_registered`] keeps probing `/admin/api/*`
+/// near-misses exactly as before, because that catch-all does not change their
+/// answer.
 #[cfg(feature = "ui")]
 const UI_PROBE_PATHS: [(&str, &str); 2] = [
     ("/admin/assets/{*path}", "GET,HEAD"),
@@ -640,13 +650,13 @@ fn the_source_scan_finds_every_literal_registration() {
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
     // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 16 admin plus
-    // the 3 UI catch-alls, 7 gateway (its 3 OTLP paths come from
-    // `Signal::path()`), 2 spend. The UI three are counted unconditionally:
-    // this scan reads source text, and `#[cfg(feature = "ui")]` does not
-    // remove the `.route("…"` literals from it.
+    // the 5 UI routes, 7 gateway (its 3 OTLP paths come from `Signal::path()`),
+    // 2 spend. The UI five are counted unconditionally: this scan reads source
+    // text, and `#[cfg(feature = "ui")]` does not remove the `.route("…"`
+    // literals from it.
     assert_eq!(
-        found, 37,
-        "the literal-path scan found {found} registrations, not 37; either a route was added or \
+        found, 39,
+        "the literal-path scan found {found} registrations, not 39; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }
