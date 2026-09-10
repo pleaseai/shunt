@@ -594,39 +594,85 @@ fn the_indirect_scan_finds_every_definition() {
     );
 }
 
+/// How many router trees each scanned source composes in, as
+/// `(file, merges, nests)`. Only `build_router` composes anything today: the
+/// four `.merge(` calls that bring in `admin_router`, `gateway_router`,
+/// `spend_router`, and the liveness tree built in `src/server.rs` itself.
+const COMPOSITION_COUNTS: [(&str, usize, usize); 4] = [
+    ("src/server.rs", 4, 0),
+    ("src/admin/mod.rs", 0, 0),
+    ("src/gateway/mod.rs", 0, 0),
+    ("src/gateway/spend/mod.rs", 0, 0),
+];
+
 /// The outer edge of the two scans above. They read paths out of four fixed
 /// source files, which covers everything registered *in* them — but a future
-/// module could register its own tree and have `build_router` compose it in,
-/// and nothing here would notice, because that module's source is never read.
+/// module could register its own tree and have one of these files compose it in,
+/// and nothing would notice, because that module's source is never read. A child
+/// router counts as much as `build_router` here: `gateway_router` merging a new
+/// module hides it just as effectively.
 ///
 /// This is a boundary guard, not a discovery mechanism: it does not find the new
-/// module. It fails when one is composed in, so the addition gets the path-split
-/// review `docs/admin-ui-delivery.md` asks for and `ROUTER_SOURCES` gets extended
-/// in the same change. A bare `.route(` added directly to `build_router` needs no
-/// guard — `src/server.rs` is itself scanned.
+/// module. It fails when one is composed in anywhere in the scanned set, so the
+/// addition gets the path-split review `docs/admin-ui-delivery.md` asks for and
+/// `ROUTER_SOURCES` gets extended in the same change. A bare `.route(` added to
+/// any of these files needs no guard — they are all scanned.
 #[test]
 fn no_router_tree_is_composed_in_from_an_unscanned_module() {
-    let server = ROUTER_SOURCES
-        .iter()
-        .find(|(file, _)| *file == "src/server.rs")
-        .map(|(_, source)| *source)
-        .expect("src/server.rs is one of the scanned router sources");
+    for (file, source) in ROUTER_SOURCES {
+        let (_, merges, nests) = COMPOSITION_COUNTS
+            .iter()
+            .find(|(name, _, _)| *name == file)
+            .unwrap_or_else(|| panic!("{file} has no entry in COMPOSITION_COUNTS"));
 
-    // `admin_router`, `gateway_router`, `spend_router`, and the liveness tree
-    // built in `src/server.rs` itself.
+        assert_eq!(
+            source.matches(".merge(").count(),
+            *merges,
+            "{file} composes a different number of router trees than the {merges} this test knows \
+             about. If a new one was added, add its source file to ROUTER_SOURCES so its paths are \
+             scanned, and review the routes it brings against the /admin, /admin/api and reserved \
+             /v1/organizations path split in docs/admin-ui-delivery.md."
+        );
+        assert_eq!(
+            source.matches(".nest(").count(),
+            *nests,
+            "{file} now nests a router tree. Nesting rewrites the paths its routes answer on, so \
+             neither the literal scan nor the inventory above describes the served surface any \
+             more — extend both before adopting it."
+        );
+    }
+}
+
+/// The last way a registration can go unseen: [`registered_literal_paths`] skips
+/// any `.route(` whose first argument is not a string literal, and skipping
+/// *silently* is the hazard — a future `.route(NEW_PATH, ...)` would change
+/// neither the literal count nor the inventory.
+///
+/// Counting the skips closes that. Together with the two count assertions above
+/// and the composition guard, the invariant across the scanned files is that no
+/// registration is silently dropped: every `.route(` either resolves to a literal
+/// path that must appear in the inventory, or is one of these five indirect sites
+/// whose definitions [`INDIRECT_PATH_SOURCES`] reads.
+#[test]
+fn every_nonliteral_route_call_is_one_this_test_already_tracks() {
+    let calls: usize = ROUTER_SOURCES
+        .iter()
+        .map(|(_, source)| source.matches(".route(").count())
+        .sum();
+    let literals: usize = ROUTER_SOURCES
+        .iter()
+        .map(|(_, source)| registered_literal_paths(source).len())
+        .sum();
+
+    // The two `codex_endpoint::PATHS` / `codex_analytics::PATHS` loops in
+    // `build_router`, and the three `Signal::path()` calls in `gateway_router`.
     assert_eq!(
-        server.matches(".merge(").count(),
-        4,
-        "src/server.rs composes a different number of router trees than the four this test knows \
-         about. If a new one was added, add its source file to ROUTER_SOURCES so its paths are \
-         scanned, and review the routes it brings against the /admin, /admin/api and reserved \
-         /v1/organizations path split in docs/admin-ui-delivery.md."
-    );
-    assert_eq!(
-        server.matches(".nest(").count(),
-        0,
-        "src/server.rs now nests a router tree. Nesting rewrites the paths its routes answer on, \
-         so neither the literal scan nor the inventory below describes the served surface any \
-         more — extend both before adopting it."
+        calls - literals,
+        5,
+        "the scanned sources make {calls} `.route(` calls of which {literals} pass a string \
+         literal, so {} are registered indirectly — not the 5 this test tracks through \
+         INDIRECT_PATH_SOURCES. A new indirect registration must be added there, or its paths go \
+         unscanned.",
+        calls - literals
     );
 }
