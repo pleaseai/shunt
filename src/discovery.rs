@@ -138,7 +138,7 @@ fn authentication_error(state: &AppState, headers: &HeaderMap) -> Option<Respons
         && gateway_identity.is_none()
     {
         tracing::warn!(
-            "inbound auth failed for model discovery: missing or invalid client credential"
+            "inbound auth failed for GET /v1/models: missing or invalid client credential"
         );
         let message = match (&state.inbound_auth, &state.gateway_auth) {
             (Some(auth), Some(_)) => format!(
@@ -161,9 +161,9 @@ fn authentication_error(state: &AppState, headers: &HeaderMap) -> Option<Respons
         );
     }
     if let Some(client) = static_client {
-        tracing::info!(client = %client, "inbound client authenticated for model discovery");
+        tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
     } else if let Some(identity) = gateway_identity.as_ref() {
-        tracing::info!(client = %identity.email, "gateway user authenticated for model discovery");
+        tracing::info!(client = %identity.email, "gateway user authenticated for GET /v1/models");
     }
     None
 }
@@ -277,14 +277,6 @@ mod tests {
     };
 
     use super::get;
-
-    struct OwnedEnvGuard(String);
-
-    impl Drop for OwnedEnvGuard {
-        fn drop(&mut self) {
-            std::env::remove_var(&self.0);
-        }
-    }
 
     #[tokio::test]
     async fn returns_configured_models_with_optional_display_name() {
@@ -508,7 +500,10 @@ mod tests {
             }],
             ..crate::config::Config::default()
         };
-        config.server.codex_endpoint = Some(CodexEndpointConfig::default());
+        config.server.codex_endpoint = Some(CodexEndpointConfig {
+            provider: "codex".to_string(),
+            collaboration: false,
+        });
         config
     }
 
@@ -629,7 +624,6 @@ mod tests {
             CODEX_AUTH_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         std::env::set_var(&env, "tester:catalog-secret");
-        let _env_guard = OwnedEnvGuard(env.clone());
         let mut config = codex_enabled_config();
         config.server.auth = Some(InboundAuthConfig {
             header: "x-shunt-token".to_string(),
@@ -670,6 +664,8 @@ mod tests {
             assert_eq!(authorized.status(), StatusCode::OK, "path: {path}");
             assert_eq!(response_json(authorized).await, json!({"models": []}));
         }
+
+        std::env::remove_var(env);
     }
 
     const ADMIN_WRITE_KEY: &str = "admin-write-key-0123456789abcdef0";
