@@ -95,7 +95,19 @@ The fallback is confined to the `/admin` mount:
 ### Admin path migration
 
 **Breaking.** Every admin JSON and mutation route moved from `/admin/*` to
-`/admin/api/*`. The old paths are **removed, not aliased**, and now answer `404`.
+`/admin/api/*`. The old paths are **removed, not aliased** — no request to one
+reaches an admin handler any more.
+
+What a caller sees at an old path depends on the build, so do not treat a `200`
+there as success:
+
+- **default build** — the path is registered nowhere and answers `404`.
+- **`--features ui`** (what the prebuilt releases ship) — a `GET` falls through
+  to the `/admin/{*path}` SPA fallback like any other deep link under the mount
+  and returns the `200 text/html` shell. Every other method still answers `404`.
+
+So a script left on an old `GET` URL gets HTML rather than a migration signal.
+Move it to `/admin/api/*`; a response's `Content-Type` is the reliable check.
 
 `/admin` stays the dashboard shell, and `/admin/login` and `/admin/oidc/callback`
 stay where they are — they are server-rendered pages, not API routes. Everything
