@@ -1,0 +1,84 @@
+ui/src/index.css
+  s_e9fd5f53eebc34::t_15816b9436e298 1-14
+.github/workflows/ci.yml
+  s_e9fd5f53eebc34::t_3cf5ab0e1b1795 48-65,107-123
+  s_e9fd5f53eebc34::t_17038ed44d3760 124
+.github/workflows/release.yml
+  s_e9fd5f53eebc34::t_78d67e37973f21 69-71
+  s_e9fd5f53eebc34::t_3cf5ab0e1b1795 72-86,88
+site/src/content/docs/reference/endpoints.md
+  s_e9fd5f53eebc34::t_291534772818dd 40-41,76-93
+  s_e9fd5f53eebc34::t_0ce25b96707b70 94
+.gitignore
+  s_e9fd5f53eebc34::t_2535dba54d6839 15-18
+ui/src/main.tsx
+  s_e9fd5f53eebc34::t_15816b9436e298 1-14
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_e9fd5f53eebc34::t_291534772818dd 36-37,47-62
+  s_e9fd5f53eebc34::t_0a87976423ff9d 63
+site/src/content/docs/zh-cn/getting-started/installation.mdx
+  s_e9fd5f53eebc34::t_511cef7bbcd0f9 68-78
+ui/src/App.tsx
+  s_e9fd5f53eebc34::t_15816b9436e298 1-14
+site/src/content/docs/ja/reference/endpoints.md
+  s_e9fd5f53eebc34::t_291534772818dd 36-37,47-64
+  s_e9fd5f53eebc34::t_e96d1cb3c74162 65
+ui/tsconfig.json
+  s_e9fd5f53eebc34::t_15816b9436e298 1-17
+site/src/content/docs/ko/reference/endpoints.md
+  s_e9fd5f53eebc34::t_291534772818dd 36-37,47-63
+  s_e9fd5f53eebc34::t_7c543b57ba1144 64
+AGENTS.md
+  s_e9fd5f53eebc34::t_0ce3941764882c 28
+src/admin/ui.rs
+  s_e9fd5f53eebc34::t_d3003eb277c4ff 1-30,32-73,77-103,105-126
+  s_e9fd5f53eebc34::t_e09557e3771200 31,74-76,104
+tests/router_surface.rs
+  s_e9fd5f53eebc34::t_9742a9bba8dac4 104-128,172-175,180,186-203,450-462,471-475,507,522-545,620,642-646,648-649,712
+Cargo.toml
+  s_e9fd5f53eebc34::t_abf7ab15aad81d 29-36,57-59,82-83
+  s_e9fd5f53eebc34::t_82ce08c609fcbf 84-86
+ui/index.html
+  s_e9fd5f53eebc34::t_15816b9436e298 1-12
+ui/README.md
+  s_e9fd5f53eebc34::t_2535dba54d6839 1-31
+site/src/content/docs/ja/getting-started/installation.mdx
+  s_e9fd5f53eebc34::t_511cef7bbcd0f9 69-81
+site/src/content/docs/ko/getting-started/installation.mdx
+  s_e9fd5f53eebc34::t_511cef7bbcd0f9 69-80
+ui/package.json
+  s_e9fd5f53eebc34::t_d75d0814bff05e 1-26
+src/admin/mod.rs
+  s_e9fd5f53eebc34::t_82ce08c609fcbf 26-27,227-232,234,268-276
+  s_e9fd5f53eebc34::t_180e5dedd52392 31-32,56-57
+tests/admin_ui.rs
+  s_e9fd5f53eebc34::t_26801a4026a7a9 27-32,106,136,156,176,188-191,194,197-203
+  s_e9fd5f53eebc34::t_ad3c2b1b8bd3ab 1-26,33-105,107-135,137-155,157-175,177-187,192-193,195-196,204-206
+site/src/content/docs/getting-started/installation.mdx
+  s_e9fd5f53eebc34::t_511cef7bbcd0f9 70-82
+ui/vite.config.ts
+  s_e9fd5f53eebc34::t_15816b9436e298 1-15
+docs/admin-ui-delivery.md
+  s_e9fd5f53eebc34::t_e69f9d801443e5 67
+  s_e9fd5f53eebc34::t_c32315e8f2b9fe 71-72
+Cargo.lock
+  s_e9fd5f53eebc34::t_5fe75c16c920ec 292-300,521-526,580-588,635-636,640-650,1036,1095-1103,1499-1508,2374-2408,2790,2801-2812,2851,2864,2870,3424-3429
+ui/package-lock.json
+  s_e9fd5f53eebc34::t_cc867555b48b13 1-1886
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1bd77bca21dfc444e8aeedec362f2f10df069f05",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
