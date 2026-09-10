@@ -593,3 +593,40 @@ fn the_indirect_scan_finds_every_definition() {
          removed, or one of these sets is no longer spelled the way the scan expects"
     );
 }
+
+/// The outer edge of the two scans above. They read paths out of four fixed
+/// source files, which covers everything registered *in* them — but a future
+/// module could register its own tree and have `build_router` compose it in,
+/// and nothing here would notice, because that module's source is never read.
+///
+/// This is a boundary guard, not a discovery mechanism: it does not find the new
+/// module. It fails when one is composed in, so the addition gets the path-split
+/// review `docs/admin-ui-delivery.md` asks for and `ROUTER_SOURCES` gets extended
+/// in the same change. A bare `.route(` added directly to `build_router` needs no
+/// guard — `src/server.rs` is itself scanned.
+#[test]
+fn no_router_tree_is_composed_in_from_an_unscanned_module() {
+    let server = ROUTER_SOURCES
+        .iter()
+        .find(|(file, _)| *file == "src/server.rs")
+        .map(|(_, source)| *source)
+        .expect("src/server.rs is one of the scanned router sources");
+
+    // `admin_router`, `gateway_router`, `spend_router`, and the liveness tree
+    // built in `src/server.rs` itself.
+    assert_eq!(
+        server.matches(".merge(").count(),
+        4,
+        "src/server.rs composes a different number of router trees than the four this test knows \
+         about. If a new one was added, add its source file to ROUTER_SOURCES so its paths are \
+         scanned, and review the routes it brings against the /admin, /admin/api and reserved \
+         /v1/organizations path split in docs/admin-ui-delivery.md."
+    );
+    assert_eq!(
+        server.matches(".nest(").count(),
+        0,
+        "src/server.rs now nests a router tree. Nesting rewrites the paths its routes answer on, \
+         so neither the literal scan nor the inventory below describes the served surface any \
+         more — extend both before adopting it."
+    );
+}
