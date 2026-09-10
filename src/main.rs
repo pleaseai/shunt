@@ -647,6 +647,7 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     if routes_to_antigravity(&config) {
         shunt::auth::antigravity::version::spawn_refresher(reqwest::Client::new());
     }
+    let shutdown_timeout = std::time::Duration::from_secs(config.server.shutdown_timeout_seconds);
     let (router, shared, state) =
         server::build_router(config).context("failed to initialize gateway")?;
     // Reload triggers (SIGHUP and config-file watch) run as background tasks and
@@ -675,17 +676,28 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // ChatGPT/Codex OAuth usage APIs in the background, sharing the router's
     // account pool. A no-op when the key is unset.
     shunt::usage_poll::spawn_usage_poller(state);
-    axum::serve(
+    let (drain_started_tx, drain_started_rx) = tokio::sync::oneshot::channel();
+    let server = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    // Stops accepting new connections on the first shutdown trigger but lets
-    // in-flight ones (including open SSE streams) finish before this call
-    // returns, so `run` returns Ok and drops the sentry/telemetry guards
-    // normally (flushing buffered events on exit) rather than the process
-    // being hard-killed mid-request.
-    .with_graceful_shutdown(shutdown::shutdown_signal())
-    .await?;
+    // Stops accepting new connections on the first shutdown trigger and lets
+    // in-flight ones (including open SSE streams) finish until the configured
+    // deadline. The bounded drain drops the server future on timeout, then
+    // `run` returns normally so runtime teardown cancels remaining tasks and
+    // the sentry/telemetry guards get their ordinary drop path.
+    .with_graceful_shutdown(shutdown::shutdown_signal(drain_started_tx));
+    match shutdown::await_bounded_drain(server, drain_started_rx, shutdown_timeout).await? {
+        shutdown::DrainOutcome::Drained => {
+            tracing::info!("graceful shutdown drain completed");
+        }
+        shutdown::DrainOutcome::TimedOut => {
+            tracing::warn!(
+                timeout_seconds = shutdown_timeout.as_secs(),
+                "graceful shutdown deadline expired; cancelling remaining work"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1593,5 +1605,66 @@ mod tests {
             .expect("serve returns before the test deadline")
             .expect("serve task join")
             .expect("graceful shutdown returns Ok once drained");
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_timed_out_cancels_work_and_returns() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::sync::{oneshot, Notify};
+
+        let started = Arc::new(Notify::new());
+        let finish = Arc::new(Notify::new());
+        let app = axum::Router::new().route(
+            "/slow",
+            axum::routing::get({
+                let started = started.clone();
+                let finish = finish.clone();
+                move || {
+                    let started = started.clone();
+                    let finish = finish.clone();
+                    async move {
+                        started.notify_one();
+                        finish.notified().await;
+                        "done"
+                    }
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("read bound address");
+
+        let (drain_started_tx, drain_started_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server = tokio::spawn(async move {
+            let s = axum::serve(listener, app).with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+                let _ = drain_started_tx.send(());
+            });
+            shutdown::await_bounded_drain(s, drain_started_rx, Duration::from_millis(50)).await
+        });
+
+        let _request = tokio::spawn(async move {
+            let _ = reqwest::Client::new()
+                .get(format!("http://{addr}/slow"))
+                .send()
+                .await;
+        });
+
+        started.notified().await;
+        shutdown_tx.send(()).unwrap();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("serve returns before test deadline")
+            .expect("serve task join")
+            .expect("bounded drain result");
+        assert_eq!(outcome, shutdown::DrainOutcome::TimedOut);
+
+        finish.notify_one();
     }
 }

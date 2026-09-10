@@ -147,6 +147,11 @@ pub struct ServerConfig {
     /// `0` disables injection (M5).
     #[serde(default = "default_sse_keepalive_seconds")]
     pub sse_keepalive_seconds: u64,
+    /// Seconds to wait for in-flight requests and connections to drain after
+    /// the first shutdown signal before forcing termination. `0` and values
+    /// above 3600 are rejected by validation.
+    #[serde(default = "default_shutdown_timeout_seconds")]
+    pub shutdown_timeout_seconds: u64,
     /// Maximum inbound client requests in flight at once on the limited routes
     /// (`/` and `/health` are merged outside the gate and always answer). `0`
     /// disables the limit. Over-limit requests are shed with 503 rather than
@@ -178,6 +183,12 @@ fn default_sse_keepalive_seconds() -> u64 {
 fn default_max_concurrent_requests() -> usize {
     1024
 }
+
+fn default_shutdown_timeout_seconds() -> u64 {
+    30
+}
+
+pub(crate) const MAX_SHUTDOWN_TIMEOUT_SECONDS: u64 = 3600;
 
 /// Upper bound accepted for `[server] max_concurrent_requests`, mirroring
 /// `tokio::sync::Semaphore::MAX_PERMITS` (`usize::MAX >> 3`). Tokio's
@@ -2390,6 +2401,8 @@ pub enum ConfigError {
         max_concurrent_requests: usize,
         limit: usize,
     },
+    #[error("server.shutdown_timeout_seconds must be between 1 and {limit}, got {seconds}")]
+    InvalidShutdownTimeout { seconds: u64, limit: u64 },
     #[error("server.access_control.{field}[{index}] is not a valid CIDR `{value}`: {message}")]
     InvalidAccessControlCidr {
         field: &'static str,
@@ -2650,6 +2663,7 @@ impl Default for Config {
                 status: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
                 max_concurrent_requests: default_max_concurrent_requests(),
+                shutdown_timeout_seconds: default_shutdown_timeout_seconds(),
                 access_control: AccessControlConfig::default(),
                 limits: LimitsConfig::default(),
                 timeouts: TimeoutsConfig::default(),
@@ -3214,6 +3228,12 @@ impl Config {
             return Err(ConfigError::InvalidMaxConcurrentRequests {
                 max_concurrent_requests: self.server.max_concurrent_requests,
                 limit: MAX_CONCURRENT_REQUESTS_LIMIT,
+            });
+        }
+        if !(1..=MAX_SHUTDOWN_TIMEOUT_SECONDS).contains(&self.server.shutdown_timeout_seconds) {
+            return Err(ConfigError::InvalidShutdownTimeout {
+                seconds: self.server.shutdown_timeout_seconds,
+                limit: MAX_SHUTDOWN_TIMEOUT_SECONDS,
             });
         }
         self.server.access_control.validate()?;
@@ -4174,7 +4194,7 @@ mod tests {
         GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, ModelConfig,
         OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderConfig, ProviderKind,
         ResponsesFlavor, RetryConfig, Secret, SpendConfig, StatusConfig, StatusSource,
-        UsageEndpointConfig, CONFIG_ENV_LOCK,
+        UsageEndpointConfig, CONFIG_ENV_LOCK, MAX_SHUTDOWN_TIMEOUT_SECONDS,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -4376,6 +4396,34 @@ mod tests {
             .validate()
             .expect("the boundary value itself is valid");
         let _ = tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS_LIMIT);
+    }
+
+    #[test]
+    fn shutdown_timeout_is_finite_by_default_and_validated() {
+        assert_eq!(Config::default().server.shutdown_timeout_seconds, 30);
+
+        for seconds in [0, MAX_SHUTDOWN_TIMEOUT_SECONDS + 1] {
+            let mut config = Config::default();
+            config.server.shutdown_timeout_seconds = seconds;
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::InvalidShutdownTimeout {
+                        seconds: rejected,
+                        limit: MAX_SHUTDOWN_TIMEOUT_SECONDS,
+                    }) if rejected == seconds
+                ),
+                "shutdown timeout {seconds} must fail closed"
+            );
+        }
+
+        for seconds in [1, MAX_SHUTDOWN_TIMEOUT_SECONDS] {
+            let mut config = Config::default();
+            config.server.shutdown_timeout_seconds = seconds;
+            config
+                .validate()
+                .unwrap_or_else(|error| panic!("boundary {seconds} rejected: {error}"));
+        }
     }
 
     #[test]

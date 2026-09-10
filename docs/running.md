@@ -76,6 +76,7 @@ cp shunt.yaml.example shunt.yaml  # YAML
 bind = "127.0.0.1:3001"        # address shunt listens on
 default_provider = "anthropic" # provider for any model with no route (pass-through)
 max_concurrent_requests = 1024  # shed excess in-flight requests with 503; 0 disables
+shutdown_timeout_seconds = 30   # drain deadline after first SIGTERM/SIGINT; 1..=3600
 
 # Each provider is a [providers.<name>] table (see §3.2 for every key).
 [providers.anthropic]
@@ -376,15 +377,18 @@ Installed via Homebrew, shunt can run under `brew services` instead of a foregro
 ```bash
 brew services start shunt    # launches `shunt run` in the background
 brew services restart shunt  # e.g. after a binary upgrade
-brew services stop shunt     # sends SIGTERM; shunt drains in-flight requests, then exits
+brew services stop shunt     # sends SIGTERM; shunt drains to its deadline, then exits
 brew services info shunt
 ```
 
-`SIGTERM` and ctrl-c both start the same drain. On Unix, Antigravity `agy` runs are the exception:
-shunt terminates their isolated process groups as soon as shutdown starts, because gateway signals do
-not reach those groups and an unattended agent must not hold the drain open. Other in-flight requests
-continue draining with no deadline — an open SSE stream keeps the process alive for as long as its
-client keeps reading. Send a **second** signal (another ctrl-c, or `kill` again) to skip the drain and
+`SIGTERM` and ctrl-c both stop new admission and start the same bounded drain. Active HTTP responses,
+SSE streams, and upgraded WebSocket sessions may finish within `[server] shutdown_timeout_seconds`
+(default `30`, valid `1..=3600`). One absolute deadline starts at the first signal and covers every
+connection; when it expires, shunt cancels the remaining server work and returns normally so Rust
+drop cleanup and telemetry flushing still run. See [Bounded shutdown](bounded-shutdown.md).
+On Unix, Antigravity `agy` runs are the exception: shunt terminates their isolated process groups as soon
+as shutdown starts, because gateway signals do not reach those groups and an unattended agent must not hold
+the drain open. Send a **second** signal (another ctrl-c, or `kill` again) to skip the drain and
 exit immediately with the conventional 128+signal exit status: 143 for a second `SIGTERM`, 130 for
 a second ctrl-c/`SIGINT`. The immediate-exit path also terminates any Antigravity groups before the
 process exits.
