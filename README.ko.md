@@ -1,5 +1,7 @@
 # shunt
 
+오프라인 자격 증명 가져오기: `shunt import opencodex --dry-run`으로 호환 API 키와 Cursor/Command Code 액세스 토큰을 미리 확인합니다. 기존 설정이나 갱신 토큰을 변경·복사하지 않고 새 비공개 스냅샷을 생성합니다. [가져오기 안내(영문)](docs/credential-import.md)를 참고하세요.
+
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/pleaseai/shunt?utm_source=badge)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
