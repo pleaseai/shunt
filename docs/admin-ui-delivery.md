@@ -48,7 +48,7 @@ baseline for any new route.
 | always | `GET` | `/health` — unauthenticated, exempt from the concurrency gate |
 | always | `GET` | `/protocol`, `/v1/models`, `/routes` |
 | always | `POST` | `/v1/messages`, `/v1/messages/count_tokens` |
-| `[server.admin]` | — | 15 paths under `/admin`, 17 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents all of them except `GET /admin/status` |
+| `[server.admin]` | — | 16 paths under `/admin`, 18 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them — all except `GET /admin/status` |
 | `[server.gateway]` | `GET` | `/.well-known/oauth-authorization-server`, `/device`, `/device/callback`, `/managed/settings` |
 | `[server.gateway]` | `POST` | `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize` |
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |
@@ -311,7 +311,7 @@ looks at most. The clean break removes the collision instead of deferring it.
 the JSON `GET`s.** A `fallback` answers unmatched *paths*; a request whose path
 matches a route registered for other methods gets axum's `405 Method Not Allowed`
 instead, so a POST-only or DELETE-only path is just as unavailable to the SPA as
-a `GET` alias is. Reading `admin_router` (`src/admin/mod.rs:115-146`), these are
+a `GET` alias is. Reading `admin_router` (`src/admin/mod.rs:221-257`), these are
 the registered paths that move, and why each would have blocked a deep link had
 it stayed:
 
@@ -322,6 +322,7 @@ it stayed:
 | `/admin/accounts/claude/{name}`, `/admin/accounts/codex/{name}` | `DELETE` only | `405`, not the shell. An account **detail view** is the most natural deep link the UI will want, and both of its path shapes are taken. |
 | `/admin/accounts/claude` | `POST` only | `405` on the "add account" screen's natural URL. |
 | `/admin/accounts/claude/{name}/complete`, `/admin/accounts/codex/{name}/complete` | `POST` only | `405`. |
+| `/admin/accounts/claude/{name}/refresh` | `POST` only | `405`; Claude-only, as Codex has no refresh route. |
 | `/admin/oidc/start`, `/admin/logout` | `POST` only | `405`; unlikely SPA routes, listed for completeness. |
 
 `/admin` (`GET`) is the shell itself and `/admin/login` (`GET`+`POST`) and
