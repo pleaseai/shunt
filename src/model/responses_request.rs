@@ -549,7 +549,10 @@ fn tool_search_output_item(call_id: &str, block: &Value, context: &ToolSearchCon
 /// A loadable `{type:"function", …, defer_loading:true}` spec for a revealed tool,
 /// or `None` when `name` is not a known tool (so an unknown reference is dropped
 /// rather than emitted as a malformed spec). Mirrors the wire shape codex puts in
-/// `tool_search_output.tools`, including the full normalized parameter schema.
+/// `tool_search_output.tools`, including the full normalized parameter schema;
+/// `strict:false` is shunt's addition on top of that shape (the same
+/// optional-preservation reason as `function_tool`), and the surface accepts it —
+/// measured 2026-09-10 against the ChatGPT/Codex backend, 3 reveal turns.
 fn loadable_tool_spec(name: &str, context: &ToolSearchContext) -> Option<Value> {
     let (description, input_schema) = context.schema_map.get(name)?;
     Some(json!({
@@ -557,6 +560,7 @@ fn loadable_tool_spec(name: &str, context: &ToolSearchContext) -> Option<Value> 
         "name": name,
         "description": description,
         "defer_loading": true,
+        "strict": false,
         "parameters": normalize_schema((*input_schema).clone()),
     }))
 }
@@ -773,20 +777,35 @@ fn web_search_tool(tool: &Value) -> Value {
     out
 }
 
-fn function_tool(tool: &Value) -> Value {
-    json!({
+fn function_tool(tool: &Value, flavor: ResponsesFlavor) -> Value {
+    let mut out = json!({
         "type": "function",
         "name": tool.get("name").and_then(Value::as_str).unwrap_or(""),
         "description": tool.get("description").and_then(Value::as_str).unwrap_or(""),
         "parameters": normalize_schema(tool.get("input_schema").cloned().unwrap_or_else(|| json!({})))
-    })
+    });
+    // `strict:false` keeps the schema's optional properties optional: omitted,
+    // the field is normalized toward strict mode upstream and a closed
+    // parameter object behaves as if every property were required. Withheld on
+    // xAI/Grok, which reject several standard Responses fields (`text`,
+    // `service_tier`, `reasoning.summary`) and whose acceptance of `strict` is
+    // unverified — the same rule as the web-search gate below.
+    if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
+        out["strict"] = json!(false);
+    }
+    out
 }
 
 /// Claude Code's ToolSearch tool definition -> the Responses native
 /// client-executed `tool_search` tool. It has no `name` (the `type` is its
 /// identity), `execution` is always `"client"`, and description/parameters carry
 /// through — normalized like any function tool — so the model sees the same
-/// search contract Claude Code executes.
+/// search contract Claude Code executes. Unlike a function tool it carries no
+/// `strict`: that tool kind rejects the field (`400 Unknown parameter:
+/// 'tools[0].strict'`, measured 2026-09-10 against the ChatGPT/Codex backend),
+/// and the omission costs nothing — the ToolSearch schema has no optional
+/// properties (captured 2026-09-10: `query` and `max_results` are both
+/// required), so strict normalization cannot inflate its calls.
 fn tool_search_tool_def(tool: &Value) -> Value {
     json!({
         "type": "tool_search",
@@ -827,7 +846,7 @@ fn tools(request: &Value, flavor: ResponsesFlavor, context: &ToolSearchContext) 
                         _ => Some(web_search_tool(tool)),
                     }
                 } else {
-                    Some(function_tool(tool))
+                    Some(function_tool(tool, flavor))
                 }
             })
             .collect(),
