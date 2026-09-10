@@ -20,18 +20,31 @@ function errorMessage(payload: unknown): string | null {
 }
 
 /**
- * A GET whose failure modes an operator can act on: a transport failure and an
- * error status are both reported, and the gateway's own error message is
- * preferred over the generic one when the response carries it.
+ * A GET whose failure modes an operator can act on. Three are distinguished,
+ * because the caller does different things with them: a transport failure
+ * (no answer, so no status), an answer whose body is not JSON (the status is
+ * all that survived, and `App` needs it to route a 401 to the sign-in page),
+ * and an error status with a readable body — where the gateway's own error
+ * message is preferred over the generic one.
  */
 export async function readJson<T>(path: string, fallback: string): Promise<Fetched<T>> {
   let response: Response;
-  let payload: unknown;
   try {
     response = await fetch(path);
+  } catch {
+    // No answer at all: there is no status to report.
+    return { ok: false, message: fallback };
+  }
+  let payload: unknown;
+  try {
     payload = await response.json();
   } catch {
-    return { ok: false, message: fallback };
+    // The status is the part of the answer that survived, and it is the part
+    // callers act on — `App` sends the operator to `/admin/login` on a 401. A
+    // proxy in front of the admin surface answers with an HTML error page, so
+    // folding a parse failure into the transport failure above would drop the
+    // 401 and strand the page on its loading state instead.
+    return { ok: false, message: fallback, status: response.status };
   }
   if (!response.ok) {
     return { ok: false, message: errorMessage(payload) ?? fallback, status: response.status };

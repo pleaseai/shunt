@@ -64,7 +64,7 @@ baseline for any new route.
 | `[server.spend]` | `GET`, `DELETE` | `/v1/organizations/spend_limits/{id}` |
 | `[server.usage]` | `GET` | `/usage` |
 | `[server.oauth_usage]` | `GET` | `/api/oauth/usage` |
-| `[server.admin]` + `--features ui` | `GET` | `/admin/assets/{*path}` and `/admin/{*path}` — the embedded SPA bundle and the shell fallback; plus `/admin/api/{*path}`, registered for **every** method so an unmatched JSON path answers `404` rather than the shell (Decision 3). Absent from a default build, which embeds no bundle |
+| `[server.admin]` + `--features ui` | `GET` | `/admin/assets/{*path}` and `/admin/{*path}` — the embedded SPA bundle and the shell fallback. Both are registered with `get`, so `GET`/`HEAD` answer and every other method answers `405` with `Allow: GET,HEAD` rather than falling through; plus `/admin/api/{*path}`, registered for **every** method so an unmatched JSON path answers `404` rather than the shell (Decision 3). Absent from a default build, which embeds no bundle |
 
 Two properties of this table matter downstream:
 

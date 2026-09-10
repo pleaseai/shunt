@@ -1,6 +1,6 @@
 ---
 name: admin-spa-react-port-pr508
-description: PR #508 ported src/admin/script.rs (646-line inline JS) to ui/ React/TS; verification method and outcome for a pure-port PR.
+description: PR #508 ported src/admin/script.rs (646-line inline JS) to ui/ React/TS; one extraction logic error was missed by this review, caught later and fixed before merge; verification method and its blind spot for a pure-port PR.
 metadata:
   type: project
 ---

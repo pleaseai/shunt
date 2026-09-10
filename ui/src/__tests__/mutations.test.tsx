@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../App';
-import { mockApi, renderDashboard, reply, rowOf, tbody } from '../test/harness';
+import { mockApi, renderDashboard, reply, rowOf, tbody, unreadable } from '../test/harness';
 
 const ACCOUNTS = {
   accounts: [{ name: 'pool-a', kind: 'imported', uuid: 'uuid-a' }],
@@ -58,7 +58,40 @@ describe('a store mutation re-reads the grouped table too', () => {
     await waitFor(() =>
       expect(api.callsTo('GET', '/admin/api/observed').length).toBeGreaterThan(before),
     );
-    expect(api.callsTo('GET', '/admin/api/pool').length).toBeGreaterThan(before);
+  });
+
+  /**
+   * The pool table has its own read, and request counting cannot prove it ran:
+   * `reloadObserved` fetches `/admin/api/pool` too (for the coalescing), so the
+   * endpoint's call count rises either way. Only `reloadPool` writes the
+   * `pool` loadable the "Managed pool health" table renders from, so the
+   * question is answered by what that table shows, not by who was called.
+   */
+  it('re-reads the managed pool health table after a store mutation', async () => {
+    let plan = 'max';
+    const user = userEvent.setup();
+    await renderDashboard(
+      { ...ACCOUNTS, pool: [] },
+      {
+        'GET /admin/api/pool': () =>
+          reply({
+            providers: [
+              { provider: 'claude', auth: 'claude_oauth', accounts: [{ name: 'pool-a', plan }] },
+            ],
+          }),
+        'DELETE /admin/api/accounts/claude/pool-a': () => {
+          // The server's answer to the *next* pool read differs, so a table
+          // still showing "Max" is one that never re-read.
+          plan = 'team';
+          return reply({});
+        },
+      },
+    );
+    expect(tbody('pool').getByText('Max')).toBeInTheDocument();
+
+    await user.click(action('accounts', 'pool-a', 'Remove'));
+
+    await waitFor(() => expect(tbody('pool').getByText('Team')).toBeInTheDocument());
   });
 
   /**
@@ -133,6 +166,25 @@ describe('the session bootstrap', () => {
     mockApi({
       'GET /admin/api/session': () => reply({ error: { message: 'unauthorized' } }, 401),
     });
+    render(<App />);
+
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('/admin/login'));
+  });
+
+  /**
+   * The same redirect, with the body a reverse proxy in front of the admin
+   * surface actually sends: an HTML 401 page. The status is the only part of
+   * that answer the page can act on, so losing it to the body parse is what
+   * would strand an unauthenticated operator on the loading state forever.
+   */
+  it('sends the visitor to sign in even when the 401 body is not JSON', async () => {
+    const assign = vi.fn();
+    vi.spyOn(window, 'location', 'get').mockReturnValue({
+      ...window.location,
+      assign,
+    } as unknown as Location);
+
+    mockApi({ 'GET /admin/api/session': () => unreadable(401) });
     render(<App />);
 
     await waitFor(() => expect(assign).toHaveBeenCalledWith('/admin/login'));

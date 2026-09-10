@@ -25,7 +25,7 @@ npm run test:watch
 | `src/App.tsx` | Fetches `GET /admin/api/session` — the CSRF token and the refresh buffer — then renders the dashboard |
 | `src/Dashboard.tsx` | Page layout: usage first, pool management behind a disclosure |
 | `src/accounts.ts` | Folding managed pool accounts and local observations into one row set, and the single effective state each row renders from |
-| `src/useDashboard.ts` | The five reads, each guarded so an older response cannot repaint over a newer one |
+| `src/useDashboard.ts` | The four reloadable reads, each sequenced so an older response cannot repaint over a newer one, plus the one-shot `[server.status]` read |
 | `src/useProvisioningFlow.ts` | One add-account form's start → authorize → complete flow, and the two guards that keep a superseded request from writing its result back |
 | `src/components/` | The tables and the two add-account forms |
 | `src/__tests__/` | The behavioral suite |

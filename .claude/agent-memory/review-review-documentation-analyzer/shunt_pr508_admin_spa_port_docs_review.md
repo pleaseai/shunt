@@ -50,8 +50,10 @@ All 7 specific claims verified TRUE against the implementation:
 
 Net: this PR, unlike #503, shows no doc/code drift — every symbol, path, and
 behavioral claim added in the diff was independently verified true. Useful
-contrast for [[shunt-admin-spa-scaffold-503]] pattern-tracking: a large diff
-with heavy prose-in-comments density is not automatically defect-prone: this
-one's authors evidently grepped/traced every claim before writing it.
+contrast for pattern-tracking: a large diff with heavy prose-in-comments
+density is not automatically defect-prone: this one's authors evidently
+grepped/traced every claim before writing it.
 
-See also [[admin-spa-scaffold-503]] for the #503 defect pattern this PR avoided.
+No memory note exists for the #503 docs review, so the contrast above stands on
+this note's own description of it (4 defects, 3 of them introduced while fixing
+the prior one) rather than on a link.
