@@ -78,15 +78,10 @@ async fn a_tiered_only_catalog_decides_the_model_id_and_the_thinking_level() {
         .mount(&backend)
         .await;
     Mock::given(method("POST"))
-        .and(path("/v1internal:generateContent"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "response": {
-                "candidates": [{
-                    "content": {"parts": [{"text": "OK"}]},
-                    "finishReason": "STOP"
-                }]
-            }
-        })))
+        .and(path("/v1internal:streamGenerateContent"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"OK\"}]},\"finishReason\":\"STOP\"}]}}\n\ndata: [DONE]\n\n",
+        ))
         .mount(&backend)
         .await;
 
@@ -158,7 +153,7 @@ async fn a_tiered_only_catalog_decides_the_model_id_and_the_thinking_level() {
         .await
         .unwrap()
         .into_iter()
-        .find(|request| request.url.path() == "/v1internal:generateContent")
+        .find(|request| request.url.path() == "/v1internal:streamGenerateContent")
         .expect("the gateway must have reached the inference endpoint");
     let body: Value = serde_json::from_slice(&inference.body).unwrap();
 

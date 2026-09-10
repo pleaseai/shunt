@@ -16,8 +16,8 @@ use crate::{
     },
     config::AuthMode,
     model::antigravity_request::{
-        antigravity_model_needs_catalog, antigravity_request_id, antigravity_session_id,
-        antigravity_upstream_model_with, wrap_antigravity_envelope, AntigravityCatalog,
+        antigravity_model_needs_catalog, antigravity_request_id, antigravity_upstream_model_with,
+        wrap_antigravity_envelope, AntigravityCatalog,
     },
     model::gemini::{map_gemini_error, GeminiSseMachine},
     model::gemini_request::{translate_request_for_model, wrap_code_assist_envelope},
@@ -49,6 +49,14 @@ impl Adapter for GeminiAdapter {
 fn antigravity_endpoint(base_url: &str, method: &str) -> String {
     let base_url = inference_base_url(base_url);
     format!("{base_url}/v1internal:{method}")
+}
+
+fn gemini_method(auth: AuthMode, streaming: bool) -> &'static str {
+    if streaming || auth == AuthMode::AntigravityOauth {
+        "streamGenerateContent?alt=sse"
+    } else {
+        "generateContent"
+    }
 }
 
 /// Carry the effort tier a `-tiered` catalog id does not name into the request
@@ -118,6 +126,58 @@ fn append_sse_events(events: Vec<crate::model::gemini::SseEvent>, output: &mut V
     }
 }
 
+async fn collect_antigravity_sse(
+    response: reqwest::Response,
+    route_model: &str,
+) -> Result<GeminiSseMachine, AdapterError> {
+    let mut bytes = response.bytes_stream();
+    let mut machine = GeminiSseMachine::new(route_model);
+    let mut buffer = Vec::new();
+
+    while let Some(chunk) = bytes.next().await {
+        let chunk = chunk.map_err(|error| AdapterError {
+            message: format!("failed to read response body: {error}"),
+            response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
+            failure: None,
+        })?;
+        buffer.extend_from_slice(&chunk);
+
+        while let Some(pos) = buffer.windows(2).position(|w| w == b"\n\n") {
+            let block: Vec<u8> = buffer.drain(..pos + 2).collect();
+            if let Ok(text) = std::str::from_utf8(&block) {
+                for line in text.lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        let data = data.trim();
+                        if data == "[DONE]" {
+                            continue;
+                        }
+                        if let Ok(val) = serde_json::from_str::<Value>(data) {
+                            machine.process_chunk(&val);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !buffer.is_empty() {
+        if let Ok(text) = std::str::from_utf8(&buffer) {
+            for line in text.lines() {
+                if let Some(data) = line.strip_prefix("data: ") {
+                    let data = data.trim();
+                    if data != "[DONE]" {
+                        if let Ok(val) = serde_json::from_str::<Value>(data) {
+                            machine.process_chunk(&val);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut events = Vec::new();
+    machine.finish(&mut events);
+    Ok(machine)
+}
+
 async fn forward(
     state: AppState,
     route: Route,
@@ -162,11 +222,7 @@ async fn forward(
 
     let base_url = provider.base_url.trim_end_matches('/');
 
-    let method = if is_streaming {
-        "streamGenerateContent?alt=sse"
-    } else {
-        "generateContent"
-    };
+    let method = gemini_method(provider.auth, is_streaming);
     // Both subscription paths speak the Code Assist protocol: the same
     // `v1internal` methods under the `{model,project,request}` envelope. Only
     // the credential and the client identity differ, so the envelope is gated
@@ -227,7 +283,10 @@ async fn forward(
         if let Some(level) = model.thinking_level {
             set_thinking_level(&mut inner_req, level);
         }
-        let session_id = antigravity_session_id(&inner_req);
+        let session_id = crate::model::antigravity_request::antigravity_scoped_session_id(
+            &project_id,
+            &inner_req,
+        );
         let envelope = wrap_antigravity_envelope(
             &model.id,
             &project_id,
@@ -247,7 +306,17 @@ async fn forward(
     };
 
     let policy = provider.retry.policy();
-    let http_client = state.http_client.clone();
+    let http_client = if provider.auth == AuthMode::AntigravityOauth {
+        crate::auth::shared::antigravity_inference_client(&inference_base_url(base_url)).map_err(
+            |error| AdapterError {
+                message: error.to_string(),
+                response: Box::new(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+                failure: None,
+            },
+        )?
+    } else {
+        state.http_client.clone()
+    };
     let payload_clone = payload.clone();
     let endpoint_clone = endpoint.clone();
     let is_google_oauth = is_code_assist;
@@ -374,6 +443,15 @@ async fn forward(
             })?;
 
         Ok((StatusCode::OK, response_res))
+    } else if provider.auth == AuthMode::AntigravityOauth {
+        let machine = collect_antigravity_sse(response, &route.model).await?;
+        let final_json = machine.final_json();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+
+        let response_res = (StatusCode::OK, headers, axum::Json(final_json)).into_response();
+        Ok((StatusCode::OK, response_res))
     } else {
         let full_text = response.text().await.map_err(|error| AdapterError {
             message: format!("failed to read response body: {error}"),
@@ -401,6 +479,19 @@ async fn forward(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn antigravity_native_sse_uses_always_sse_for_both_downstream_modes() {
+        assert_eq!(
+            gemini_method(AuthMode::AntigravityOauth, true),
+            "streamGenerateContent?alt=sse"
+        );
+        assert_eq!(
+            gemini_method(AuthMode::AntigravityOauth, false),
+            "streamGenerateContent?alt=sse"
+        );
+        assert_eq!(gemini_method(AuthMode::ApiKey, false), "generateContent");
+    }
 
     #[test]
     fn a_production_pinned_antigravity_base_url_sends_inference_to_the_daily_host() {
