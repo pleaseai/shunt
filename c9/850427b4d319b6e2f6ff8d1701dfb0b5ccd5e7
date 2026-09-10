@@ -1,0 +1,32 @@
+ui/src/__tests__/mutations.test.tsx
+  s_e9fd5f53eebc34::t_86aace548ff85f 64-94
+  s_e9fd5f53eebc34::t_96ec0a7e62f0b7 6,63,174-187
+  s_e9fd5f53eebc34::t_d011c4458272d7 61-62,188-192
+.claude/agent-memory/review-review-code-reviewer/admin-spa-react-port-pr508.md
+  s_e9fd5f53eebc34::t_2c38177125b771 3
+ui/README.md
+  s_e9fd5f53eebc34::t_921b0a65c4e7db 28
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr508_admin_spa_port_docs_review.md
+  s_e9fd5f53eebc34::t_2c38177125b771 53-55,57-59
+docs/admin-ui-delivery.md
+  s_e9fd5f53eebc34::t_a9a3c76e3b0aeb 67
+ui/src/api.ts
+  s_e9fd5f53eebc34::t_40e7d16ce15bd8 35,38-47
+  s_e9fd5f53eebc34::t_f8e061cb4bf544 23-28,48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c9850427b4d319b6e2f6ff8d1701dfb0b5ccd5e7",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
