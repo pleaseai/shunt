@@ -41,7 +41,7 @@ Source schema inspected at OpenCodex revision
   credentials or `{activeAccountId, accounts:[{id, credential, needsReauth}]}`.
   The selected active account must be unique and not need reauthentication.
   Only `cursor` and `command-code` are exported as
-  `SHUNT_CURSOR_AUTH_TOKEN` and `SHUNT_COMMAND_CODE_TOKEN` respectively.
+  `SHUNT_CURSOR_AUTH_TOKEN` and `SHUNT_COMMANDCODE_API_KEY` respectively.
   `credential.access` must be header-safe; `expires` is epoch milliseconds
   and must be at least one minute in the future. No refresh tokens are copied.
 
