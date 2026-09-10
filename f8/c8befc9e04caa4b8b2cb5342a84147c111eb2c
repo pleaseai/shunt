@@ -1,0 +1,22 @@
+tests/router_surface.rs
+  s_e9fd5f53eebc34::t_a6e439e25673ad 2,15,23-30,51-53,57-61,66-73,77-95,98-108,111,117-119,128-133,136,144-145,157-173
+  s_e9fd5f53eebc34::t_e8dd437339e264 112-116
+  s_e9fd5f53eebc34::t_afd6a6f69febb4 34,44,174,317-364,366
+  s_e9fd5f53eebc34::t_9aacd8020b6f84 175,365,367
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f8c8befc9e04caa4b8b2cb5342a84147c111eb2c",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
