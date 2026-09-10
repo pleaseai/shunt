@@ -76,23 +76,29 @@ const BASE_PATHS: [(&str, &str); 7] = [
 /// 16 paths / 18 method+path pairs — the count `docs/admin-ui-delivery.md`
 /// records in its "Current surface" table. Counting the `allow` column here
 /// (ignoring the `HEAD` axum adds to every `GET`) is what reproduces the 18.
+///
+/// Only the three server-rendered entry points keep their `/admin` spelling; the
+/// JSON reads and every mutation answer under `/admin/api` after this change. The
+/// method sets are unchanged by the move — the same handlers are registered at
+/// new paths — and `every_registered_method_set_matches_the_inventory` proves it
+/// against the live router rather than taking it on trust.
 const ADMIN_PATHS: [(&str, &str); 16] = [
     ("/admin", "GET,HEAD"),
     ("/admin/login", "GET,HEAD,POST"),
-    ("/admin/oidc/start", "POST"),
+    ("/admin/api/oidc/start", "POST"),
     ("/admin/oidc/callback", "GET,HEAD"),
-    ("/admin/logout", "POST"),
-    ("/admin/accounts", "GET,HEAD"),
-    ("/admin/observed", "GET,HEAD"),
-    ("/admin/pool", "GET,HEAD"),
-    ("/admin/status", "GET,HEAD"),
-    ("/admin/accounts/claude", "POST"),
-    ("/admin/accounts/claude/{name}/complete", "POST"),
-    ("/admin/accounts/claude/{name}/refresh", "POST"),
-    ("/admin/accounts/claude/{name}", "DELETE"),
-    ("/admin/accounts/codex", "GET,HEAD,POST"),
-    ("/admin/accounts/codex/{name}/complete", "POST"),
-    ("/admin/accounts/codex/{name}", "DELETE"),
+    ("/admin/api/logout", "POST"),
+    ("/admin/api/accounts", "GET,HEAD"),
+    ("/admin/api/observed", "GET,HEAD"),
+    ("/admin/api/pool", "GET,HEAD"),
+    ("/admin/api/status", "GET,HEAD"),
+    ("/admin/api/accounts/claude", "POST"),
+    ("/admin/api/accounts/claude/{name}/complete", "POST"),
+    ("/admin/api/accounts/claude/{name}/refresh", "POST"),
+    ("/admin/api/accounts/claude/{name}", "DELETE"),
+    ("/admin/api/accounts/codex", "GET,HEAD,POST"),
+    ("/admin/api/accounts/codex/{name}/complete", "POST"),
+    ("/admin/api/accounts/codex/{name}", "DELETE"),
 ];
 
 const GATEWAY_PATHS: [(&str, &str); 10] = [
@@ -402,8 +408,8 @@ async fn no_undocumented_path_is_registered() {
         "/nope",
         "/v1/nope",
         "/admin/nope",
-        "/admin/accounts/gemini",
-        "/admin/accounts/codex/acct/refresh",
+        "/admin/api/accounts/gemini",
+        "/admin/api/accounts/codex/acct/refresh",
         "/oauth/authorize",
         "/v1/organizations/spend_limits/spl_1/effective",
         "/v1/organizations/spend_limits/spl_1/audit",
@@ -411,6 +417,59 @@ async fn no_undocumented_path_is_registered() {
         assert!(
             !path_is_registered(&router, path).await,
             "{path} answers but is not in the documented inventory"
+        );
+    }
+}
+
+/// The 13 paths that moved to `/admin/api/*`, spelled as they were **before**
+/// the move. Resolution 6 of `docs/admin-ui-delivery.md` removes them rather
+/// than aliasing them — an alias and an SPA deep link cannot share a path — so
+/// each one answering `404` is the migration's actual contract, not a detail.
+const LEGACY_ADMIN_PATHS: [&str; 13] = [
+    "/admin/oidc/start",
+    "/admin/logout",
+    "/admin/accounts",
+    "/admin/observed",
+    "/admin/pool",
+    "/admin/status",
+    "/admin/accounts/claude",
+    "/admin/accounts/claude/{name}/complete",
+    "/admin/accounts/claude/{name}/refresh",
+    "/admin/accounts/claude/{name}",
+    "/admin/accounts/codex",
+    "/admin/accounts/codex/{name}/complete",
+    "/admin/accounts/codex/{name}",
+];
+
+/// Every pre-split admin path is gone, so the SPA can claim `/admin/*` as deep
+/// links. A compatibility shim reintroduced later would fail here, which is the
+/// point: the whole reason the move is one breaking change is that a surviving
+/// alias blocks the deep link of the same name.
+#[tokio::test]
+async fn no_legacy_admin_path_survives_the_api_split() {
+    let (config, _env) = all_surfaces_config("legacy");
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
+
+    for path in LEGACY_ADMIN_PATHS {
+        assert!(
+            !path_is_registered(&router, &probe_path(path)).await,
+            "{path} still answers; Resolution 6 removes the legacy admin paths rather than \
+             aliasing them, because an alias blocks the SPA deep link of the same name"
+        );
+    }
+}
+
+/// The three paths Resolution 6 keeps: `/admin` is the shell the SPA takes over,
+/// and the other two are server-rendered pages the SPA does not replace.
+#[tokio::test]
+async fn the_server_rendered_login_flow_stays_outside_the_api_namespace() {
+    let (config, _env) = all_surfaces_config("survivors");
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
+
+    for path in ["/admin", "/admin/login", "/admin/oidc/callback"] {
+        assert!(
+            path_is_registered(&router, path).await,
+            "{path} must stay where it is — it is a page, not JSON"
         );
     }
 }

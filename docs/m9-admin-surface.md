@@ -251,6 +251,16 @@ process-lifetime state:
 
 ## Endpoints (registered only when `[server.admin]` is set)
 
+> **Pre-split record.** The paths below are the ones M9 shipped. Every JSON and
+> mutation route among them has since moved to `/admin/api/*`; only `/admin`,
+> `/admin/login`, and `/admin/oidc/callback` still answer on the paths written
+> here. This table is deliberately left as the pre-split record rather than
+> rewritten — see [`admin-ui-delivery.md`](admin-ui-delivery.md) (Decision 3 and
+> Resolution 6) for why the namespace split happened, and
+> [`docs/reference/endpoints.md`](../site/src/content/docs/reference/endpoints.md)
+> for the current paths and the before/after migration table.
+
+
 | Method | Path | Purpose |
 | :-- | :-- | :-- |
 | `GET` | `/admin` | Dashboard (HTML); redirects to `/admin/login` when not signed in |

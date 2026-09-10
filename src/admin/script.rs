@@ -119,7 +119,7 @@ function accountGroups(observed, pool, accounts) {
         utilization_7d_oi: a.utilization_7d_oi, reset_7d_oi: a.reset_7d_oi };
       groupFor(provider).push(row);
       // uuidByName is sourced from the Claude account store only (see
-      // /admin/accounts), so only claude_oauth accounts may be matched
+      // /admin/api/accounts), so only claude_oauth accounts may be matched
       // against it. Gate on the account's actual auth kind (p.auth), not the
       // provider's display name/group key: a provider table can be named
       // anything, so a chatgpt_oauth provider named "claude" would otherwise
@@ -201,7 +201,7 @@ let observedLoadSeq = 0;
 async function loadObserved() {
   const seq = ++observedLoadSeq;
   let data, res, failure = null;
-  try { res = await fetch("/admin/observed"); data = await res.json(); }
+  try { res = await fetch("/admin/api/observed"); data = await res.json(); }
   catch (e) { failure = "Failed to observe local accounts"; }
   if (seq !== observedLoadSeq) return;
   if (failure || !res.ok) { const body = $("observed"); body.textContent = ""; const r = body.insertRow(); const c = cell(r, failure || (data && data.error && data.error.message) || "Failed to observe local accounts"); c.colSpan = 4; return; }
@@ -212,8 +212,8 @@ async function loadObserved() {
     // Per-fetch catch, not one around Promise.all: a transient failure on one
     // endpoint must not discard the other's result.
     const [poolRes, accountsRes] = await Promise.all([
-      fetch("/admin/pool").catch(() => null),
-      fetch("/admin/accounts").catch(() => null)
+      fetch("/admin/api/pool").catch(() => null),
+      fetch("/admin/api/accounts").catch(() => null)
     ]);
     if (poolRes && poolRes.ok) pool = await poolRes.json();
     if (accountsRes && accountsRes.ok) accounts = await accountsRes.json();
@@ -274,7 +274,7 @@ async function loadObserved() {
 async function loadAccounts() {
   const body = $("accounts"); body.textContent = "";
   let data, res;
-  try { res = await fetch("/admin/accounts"); data = await res.json(); }
+  try { res = await fetch("/admin/api/accounts"); data = await res.json(); }
   catch (e) { const r = body.insertRow(); const c = cell(r, "Failed to load accounts"); c.colSpan = 5; return; }
   if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load accounts"); c.colSpan = 5; return; }
   const list = (data && data.accounts) || [];
@@ -329,7 +329,7 @@ function reloginAccount(name, kind) {
 async function loadCodexAccounts() {
   const body = $("codex-accounts"); body.textContent = "";
   let data, res;
-  try { res = await fetch("/admin/accounts/codex"); data = await res.json(); }
+  try { res = await fetch("/admin/api/accounts/codex"); data = await res.json(); }
   catch (e) { const r = body.insertRow(); const c = cell(r, "Failed to load Codex accounts"); c.colSpan = 4; return; }
   if (!res.ok) { const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load Codex accounts"); c.colSpan = 4; return; }
   const list = (data && data.accounts) || [];
@@ -359,7 +359,7 @@ async function loadCodexAccounts() {
 }
 
 // The Codex counterpart of `reloginAccount`, and safe for the same reason:
-// `POST /admin/accounts/codex` has no duplicate-name guard, and completion
+// `POST /admin/api/accounts/codex` has no duplicate-name guard, and completion
 // captures the pre-store identity, overwrites the account in place, and hands
 // both identities to `cleanup_reprovisioned_pool_health` (src/admin/codex.rs).
 // There is no login method to preselect here -- ChatGPT OAuth is the only way
@@ -384,7 +384,7 @@ let poolLoadSeq = 0;
 async function loadPool() {
   const seq = ++poolLoadSeq;
   let data, res, failure = null;
-  try { res = await fetch("/admin/pool"); data = await res.json(); }
+  try { res = await fetch("/admin/api/pool"); data = await res.json(); }
   catch (e) { failure = "Failed to load pool"; }
   if (seq !== poolLoadSeq) return;
   const body = $("pool"); body.textContent = "";
@@ -424,7 +424,7 @@ function statusLabel(indicator) {
 async function loadStatus() {
   const section = $("status-section");
   let data, res;
-  try { res = await fetch("/admin/status"); data = await res.json(); }
+  try { res = await fetch("/admin/api/status"); data = await res.json(); }
   catch (e) { section.style.display = "none"; return; }
   if (!res.ok) { section.style.display = "none"; return; }
   const sources = (data && data.sources) || [];
@@ -494,7 +494,7 @@ $("start").onclick = async () => {
   const epoch = ++claudeFlowEpoch;
   try {
     const mode = selectedMode();
-    const res = await fetch("/admin/accounts/claude", { method: "POST", headers: H, body: JSON.stringify({ name, mode }) });
+    const res = await fetch("/admin/api/accounts/claude", { method: "POST", headers: H, body: JSON.stringify({ name, mode }) });
     const data = await res.json();
     if (epoch !== claudeFlowEpoch) return;
     if (!res.ok) { showMsg("addmsg", (data.error && data.error.message) || "Failed to start", false); return; }
@@ -519,7 +519,7 @@ $("complete").onclick = async () => {
   const abort = new AbortController();
   const bound = setTimeout(() => abort.abort(), COMPLETE_TIMEOUT_MS);
   try {
-    const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(currentName) + "/complete",
+    const res = await fetch("/admin/api/accounts/claude/" + encodeURIComponent(currentName) + "/complete",
       { method: "POST", headers: H, body: JSON.stringify({ code }), signal: abort.signal });
     const data = await res.json();
     if (!res.ok) { if (epoch === claudeFlowEpoch) showMsg("addmsg", (data.error && data.error.message) || "Failed to complete", false); return; }
@@ -550,7 +550,7 @@ $("complete").onclick = async () => {
 async function removeAccount(name) {
   if (!confirm("Remove account '" + name + "'? This deletes its stored token file.")) return;
   try {
-    const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(name), { method: "DELETE", headers: H });
+    const res = await fetch("/admin/api/accounts/claude/" + encodeURIComponent(name), { method: "DELETE", headers: H });
     if (!res.ok) { const data = await res.json().catch(() => ({})); showMsg("addmsg", (data.error && data.error.message) || "Failed to remove", false); return; }
     loadObserved(); loadAccounts(); loadPool();
   } catch (e) { showMsg("addmsg", "Request failed", false); }
@@ -558,7 +558,7 @@ async function removeAccount(name) {
 
 async function refreshAccount(name) {
   try {
-    const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(name) + "/refresh", { method: "POST", headers: H });
+    const res = await fetch("/admin/api/accounts/claude/" + encodeURIComponent(name) + "/refresh", { method: "POST", headers: H });
     const data = await res.json().catch(() => ({}));
     // `loadObserved()` too, matching every other mutation handler: it is the
     // only path that rebuilds the primary Accounts table, which now renders
@@ -581,7 +581,7 @@ $("start-codex").onclick = async () => {
   $("codex-addmsg").className = ""; $("codex-addmsg").textContent = "";
   const epoch = ++codexFlowEpoch;
   try {
-    const res = await fetch("/admin/accounts/codex", { method: "POST", headers: H, body: JSON.stringify({ name }) });
+    const res = await fetch("/admin/api/accounts/codex", { method: "POST", headers: H, body: JSON.stringify({ name }) });
     const data = await res.json();
     if (epoch !== codexFlowEpoch) return;
     if (!res.ok) { showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to start Codex login", false); return; }
@@ -606,7 +606,7 @@ $("complete-codex").onclick = async () => {
   const abort = new AbortController();
   const bound = setTimeout(() => abort.abort(), COMPLETE_TIMEOUT_MS);
   try {
-    const res = await fetch("/admin/accounts/codex/" + encodeURIComponent(currentCodexName) + "/complete",
+    const res = await fetch("/admin/api/accounts/codex/" + encodeURIComponent(currentCodexName) + "/complete",
       { method: "POST", headers: H, body: JSON.stringify({ code }), signal: abort.signal });
     const data = await res.json();
     if (!res.ok) { if (epoch === codexFlowEpoch) showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to complete Codex login", false); return; }
@@ -637,7 +637,7 @@ $("complete-codex").onclick = async () => {
 async function removeCodexAccount(name) {
   if (!confirm("Remove Codex account '" + name + "'? This deletes its stored token file.")) return;
   try {
-    const res = await fetch("/admin/accounts/codex/" + encodeURIComponent(name), { method: "DELETE", headers: H });
+    const res = await fetch("/admin/api/accounts/codex/" + encodeURIComponent(name), { method: "DELETE", headers: H });
     if (!res.ok) { const data = await res.json().catch(() => ({})); showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to remove Codex account", false); return; }
     loadObserved(); loadCodexAccounts(); loadPool();
   } catch (e) { showMsg("codex-addmsg", "Request failed", false); }

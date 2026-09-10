@@ -56,13 +56,13 @@ fn can_bind_loopback() -> bool {
 }
 
 /// A config with `[server.admin]` enabled: `anthropic` is flipped to
-/// `claude_oauth` with an empty accounts list, so `/admin/pool` enumerates
+/// `claude_oauth` with an empty accounts list, so `/admin/api/pool` enumerates
 /// the store and a completed add is "live now"; `codex` instead gets an
 /// explicit placeholder account (see [`nonexistent_credentials_path`]), so
 /// it does not scan the real store by default.
 ///
 /// Rule: `anthropic` still defaults to an empty accounts list, so any test
-/// that calls `/admin/pool` against a config built from this function must
+/// that calls `/admin/api/pool` against a config built from this function must
 /// itself choose one of: give the provider an explicit account, or isolate
 /// `SHUNT_CLAUDE_ACCOUNTS_DIR`/`SHUNT_CODEX_ACCOUNTS_DIR` before starting
 /// the gateway. A test that means to exercise the real store-scan path
@@ -76,7 +76,7 @@ fn can_bind_loopback() -> bool {
 /// OAuth credentials. For Claude, a real credential file with no
 /// `subscriptionType` but a still-valid access token (eligible per
 /// `refreshable_valid_access_token`, `src/auth/claude/auth.rs`) lets a
-/// completed `/admin/pool` request's profile backfill read that on-disk
+/// completed `/admin/api/pool` request's profile backfill read that on-disk
 /// token (never refreshing or writing it back) and send it to the real
 /// Claude API.
 fn admin_config(tokens_env: &str) -> Config {
@@ -180,7 +180,7 @@ fn unique_dir() -> PathBuf {
 /// (`src/admin/plan.rs`) does a plain `std::fs::read` on this path (via
 /// `read_json`), which fails the same way (`NotFound`) whether or not the
 /// parent directory exists, so no still-valid access token is ever
-/// extracted and a live `/admin/pool` profile backfill never reaches the
+/// extracted and a live `/admin/api/pool` profile backfill never reaches the
 /// real Claude API.
 fn nonexistent_credentials_path() -> String {
     let counter = UNIQUE_DIR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -255,7 +255,7 @@ fn response_cookie(response: &reqwest::Response) -> Option<String> {
 
 async fn oidc_state(client: &reqwest::Client, gateway: &Gateway) -> (reqwest::Url, String) {
     let response = client
-        .post(format!("{}/admin/oidc/start", gateway.base_url))
+        .post(format!("{}/admin/api/oidc/start", gateway.base_url))
         .header("sec-fetch-site", "same-origin")
         .send()
         .await
@@ -303,7 +303,7 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
         &idp,
     );
     // An explicit, never-existing credentials path keeps the later
-    // `/admin/pool` request off the real on-disk store (see the
+    // `/admin/api/pool` request off the real on-disk store (see the
     // `admin_config` doc comment).
     config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
         name: "oidc-flow".to_string(),
@@ -334,7 +334,7 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
     );
     let login = response.text().await.unwrap();
     assert!(login.contains("Sign in with SSO"));
-    assert!(login.contains("action=\"/admin/oidc/start\""));
+    assert!(login.contains("action=\"/admin/api/oidc/start\""));
 
     let (location, state) = oidc_state(&client, &gateway).await;
     let params: std::collections::HashMap<_, _> = location.query_pairs().into_owned().collect();
@@ -384,7 +384,7 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
     );
 
     let header_response = client
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "admin-secret")
         .send()
         .await
@@ -430,7 +430,7 @@ async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_ori
         .unwrap();
 
     let response = client
-        .post(format!("{}/admin/oidc/start", gateway.base_url))
+        .post(format!("{}/admin/api/oidc/start", gateway.base_url))
         .header("sec-fetch-site", "cross-site")
         .send()
         .await
@@ -539,11 +539,11 @@ async fn admin_routes_are_absent_without_the_block() {
     for route in [
         "/admin",
         "/admin/login",
-        "/admin/oidc/start",
+        "/admin/api/oidc/start",
         "/admin/oidc/callback",
-        "/admin/observed",
-        "/admin/pool",
-        "/admin/status",
+        "/admin/api/observed",
+        "/admin/api/pool",
+        "/admin/api/status",
     ] {
         let response = client
             .get(format!("{}{route}", gateway.base_url))
@@ -596,7 +596,7 @@ async fn admin_pool_repeats_shared_physical_state_per_upstream() {
     state.accounts.note_quota("primary", &account, &quota);
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "shared-secret")
         .send()
         .await
@@ -617,7 +617,7 @@ async fn admin_pool_repeats_shared_physical_state_per_upstream() {
 
 #[tokio::test]
 async fn admin_pool_never_refreshes_or_writes_back_an_expired_on_disk_token() {
-    // Regression pin for the review-response fix: the `/admin/pool` plan
+    // Regression pin for the review-response fix: the `/admin/api/pool` plan
     // backfill path must never call the token-refresh endpoint or write
     // back to the credential file, even when the on-disk access token has
     // expired. Eligibility for a live profile-backfill attempt requires
@@ -695,7 +695,7 @@ async fn admin_pool_never_refreshes_or_writes_back_an_expired_on_disk_token() {
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "no-refresh-secret")
         .send()
         .await
@@ -798,7 +798,7 @@ async fn admin_pool_reports_plan_when_credential_file_carries_one() {
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "plan-secret")
         .send()
         .await
@@ -884,7 +884,7 @@ async fn admin_pool_reports_plan_for_a_name_only_account_via_its_store_path() {
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "store-plan-secret")
         .send()
         .await
@@ -917,7 +917,7 @@ async fn admin_pool_reports_plan_for_a_name_only_account_via_its_store_path() {
 #[tokio::test]
 async fn admin_pool_bounds_profile_backfill_when_claude_endpoint_stalls() {
     // D2 regression: the profile GET has no outer bound of its own, so a
-    // stalled Claude endpoint could hang `GET /admin/pool` indefinitely if
+    // stalled Claude endpoint could hang `GET /admin/api/pool` indefinitely if
     // the backfill step it's part of weren't itself time-boxed. The account
     // fixture here deliberately satisfies every condition that makes it an
     // eligible backfill candidate per `refreshable_valid_access_token`
@@ -984,7 +984,7 @@ async fn admin_pool_bounds_profile_backfill_when_claude_endpoint_stalls() {
 
     let started = std::time::Instant::now();
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "stall-secret")
         .send()
         .await
@@ -994,7 +994,7 @@ async fn admin_pool_bounds_profile_backfill_when_claude_endpoint_stalls() {
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
         elapsed < std::time::Duration::from_secs(10),
-        "GET /admin/pool took {elapsed:?}; the production BackfillBudgets \
+        "GET /admin/api/pool took {elapsed:?}; the production BackfillBudgets \
          default (8s total / 5s per_account) should bound this to roughly 5s \
          against a profile endpoint that never responds within the budget"
     );
@@ -1030,7 +1030,7 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
     let mut misnamed_chatgpt = chatgpt_oauth_template;
     // An explicit, never-existing credentials path keeps this chatgpt_oauth
     // provider (named "claude" here, deliberately) off the real on-disk
-    // Codex store when the later `/admin/pool` request runs — the same
+    // Codex store when the later `/admin/api/pool` request runs — the same
     // real-credential risk the `admin_config` doc comment describes for
     // Claude, just against Codex's own store instead.
     misnamed_chatgpt.accounts = vec![AccountConfig {
@@ -1044,7 +1044,7 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
 
     let mut custom_named_claude = claude_oauth_template;
     // An explicit, never-existing credentials path keeps the later
-    // `/admin/pool` request off the real on-disk Claude store (see the
+    // `/admin/api/pool` request off the real on-disk Claude store (see the
     // `admin_config` doc comment) -- this provider is claude_oauth, so it is
     // the one the live profile backfill would otherwise reach.
     custom_named_claude.accounts = vec![AccountConfig {
@@ -1063,7 +1063,7 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "auth-kind-secret")
         .send()
         .await
@@ -1089,7 +1089,7 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
 
 /// The read-only pool dashboard resolves and lists `kimi_oauth` accounts the
 /// same way it already does for `claude_oauth`/`chatgpt_oauth`: this only
-/// covers listing (`/admin/pool`) -- Kimi's device-flow login has no
+/// covers listing (`/admin/api/pool`) -- Kimi's device-flow login has no
 /// browser-based provisioning UI in this pass, unlike Claude/Codex's
 /// redirect-style add-account flow (see `shunt login kimi`).
 #[tokio::test]
@@ -1114,7 +1114,7 @@ async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "kimi-pool-secret")
         .send()
         .await
@@ -1133,7 +1133,7 @@ async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
     std::env::remove_var("SHUNT_TEST_ADMIN_KIMI_TOKEN");
 }
 
-/// `[server.status]` is absent from `admin_config`, so `/admin/status` must
+/// `[server.status]` is absent from `admin_config`, so `/admin/api/status` must
 /// report an empty `sources` list -- the shape the dashboard reads as "hide
 /// the whole section" rather than an empty table.
 #[tokio::test]
@@ -1145,7 +1145,7 @@ async fn admin_status_reports_no_sources_when_unconfigured() {
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_STATUS_EMPTY")).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/status", gateway.base_url))
+        .get(format!("{}/admin/api/status", gateway.base_url))
         .header("x-shunt-admin-token", "status-empty-secret")
         .send()
         .await
@@ -1177,7 +1177,7 @@ async fn admin_status_reports_configured_source_before_first_poll() {
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/status", gateway.base_url))
+        .get(format!("{}/admin/api/status", gateway.base_url))
         .header("x-shunt-admin-token", "status-unpolled-secret")
         .send()
         .await
@@ -1226,7 +1226,7 @@ async fn admin_status_reports_observed_sources() {
     );
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/status", gateway.base_url))
+        .get(format!("{}/admin/api/status", gateway.base_url))
         .header("x-shunt-admin-token", "status-seeded-secret")
         .send()
         .await
@@ -1275,7 +1275,7 @@ async fn admin_header_and_x_api_key_both_authenticate_every_credential_kind() {
     let env = "SHUNT_TEST_ADMIN_TOKENS_SLOTS";
     std::env::set_var(env, "ops:secret-slots");
     let mut config = admin_config_with_keys(env);
-    // An explicit, never-existing credentials path keeps the `/admin/pool`
+    // An explicit, never-existing credentials path keeps the `/admin/api/pool`
     // requests below off the real on-disk store (see the `admin_config` doc
     // comment).
     config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
@@ -1290,7 +1290,7 @@ async fn admin_header_and_x_api_key_both_authenticate_every_credential_kind() {
     for credential in ["secret-slots", ADMIN_WRITE_KEY, ADMIN_READ_KEY] {
         for slot in ["x-shunt-admin-token", "x-api-key"] {
             let response = client
-                .get(format!("{}/admin/pool", gateway.base_url))
+                .get(format!("{}/admin/api/pool", gateway.base_url))
                 .header(slot, credential)
                 .send()
                 .await
@@ -1319,7 +1319,7 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
     let env = "SHUNT_TEST_ADMIN_TOKENS_READONLY";
     std::env::set_var(env, "ops:secret-readonly");
     let mut config = admin_config_with_keys(env);
-    // An explicit, never-existing credentials path keeps the `/admin/pool`
+    // An explicit, never-existing credentials path keeps the `/admin/api/pool`
     // request below off the real on-disk store (see the `admin_config` doc
     // comment).
     config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
@@ -1334,7 +1334,11 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
         .build()
         .unwrap();
 
-    for route in ["/admin/pool", "/admin/status", "/admin/accounts"] {
+    for route in [
+        "/admin/api/pool",
+        "/admin/api/status",
+        "/admin/api/accounts",
+    ] {
         let response = client
             .get(format!("{}{route}", gateway.base_url))
             .header("x-api-key", ADMIN_READ_KEY)
@@ -1346,9 +1350,9 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
             StatusCode::OK,
             "read key must pass {route}"
         );
-        if route == "/admin/accounts" {
-            // A decisive gate for the isolation set up above: `/admin/accounts`
-            // scans a real on-disk store the same way `/admin/pool` did before
+        if route == "/admin/api/accounts" {
+            // A decisive gate for the isolation set up above: `/admin/api/accounts`
+            // scans a real on-disk store the same way `/admin/api/pool` did before
             // the earlier fix, so an empty array here proves the isolated
             // `SHUNT_CLAUDE_ACCOUNTS_DIR` actually took effect rather than the
             // request silently falling back to a real, possibly non-empty
@@ -1362,7 +1366,7 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
     // write key, so the 403 is about privilege and not about the route.
     let post_account = |credential: &'static str| {
         client
-            .post(format!("{}/admin/accounts/claude", gateway.base_url))
+            .post(format!("{}/admin/api/accounts/claude", gateway.base_url))
             .header("x-api-key", credential)
             .header("content-type", "application/json")
             .body(r#"{"name":"main","mode":"setup-token"}"#)
@@ -1374,7 +1378,10 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
 
     let response = client
-        .delete(format!("{}/admin/accounts/claude/main", gateway.base_url))
+        .delete(format!(
+            "{}/admin/api/accounts/claude/main",
+            gateway.base_url
+        ))
         .header("x-api-key", ADMIN_READ_KEY)
         .send()
         .await
@@ -1424,7 +1431,7 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
     });
-    // An explicit, never-existing credentials path keeps the `/admin/pool`
+    // An explicit, never-existing credentials path keeps the `/admin/api/pool`
     // requests below off the real on-disk store (see the `admin_config` doc
     // comment).
     config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
@@ -1439,7 +1446,7 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
     // The credentials really are valid admin credentials.
     for credential in ["secret-inference", ADMIN_WRITE_KEY, ADMIN_READ_KEY] {
         let response = client
-            .get(format!("{}/admin/pool", gateway.base_url))
+            .get(format!("{}/admin/api/pool", gateway.base_url))
             .header("x-api-key", credential)
             .send()
             .await
@@ -1504,7 +1511,11 @@ async fn admin_api_requires_authentication() {
     let client = reqwest::Client::new();
 
     // No credential at all.
-    for route in ["/admin/observed", "/admin/pool", "/admin/status"] {
+    for route in [
+        "/admin/api/observed",
+        "/admin/api/pool",
+        "/admin/api/status",
+    ] {
         let response = client
             .get(format!("{}{route}", gateway.base_url))
             .send()
@@ -1515,7 +1526,7 @@ async fn admin_api_requires_authentication() {
 
     // Wrong admin token.
     let response = client
-        .post(format!("{}/admin/accounts/claude", gateway.base_url))
+        .post(format!("{}/admin/api/accounts/claude", gateway.base_url))
         .header("x-shunt-admin-token", "nope")
         .header("content-type", "application/json")
         .body(r#"{"name":"main"}"#)
@@ -1567,7 +1578,7 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     };
 
     // Start: returns an inference-only authorize URL carrying the OAuth state.
-    let response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/claude", gateway.base_url)))
         .body(r#"{"name":"main"}"#)
         .send()
         .await
@@ -1588,7 +1599,7 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
 
     // Complete: paste `<code>#<state>`; the account is stored and live immediately.
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/main/complete",
+        "{}/admin/api/accounts/claude/main/complete",
         gateway.base_url
     )))
     .body(format!(r#"{{"code":"the-auth-code#{state}"}}"#))
@@ -1611,7 +1622,7 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     assert!(stored.contains("acct-uuid-123"));
 
     // List reports metadata only (kind, not the token).
-    let response = auth(client.get(format!("{}/admin/accounts", gateway.base_url)))
+    let response = auth(client.get(format!("{}/admin/api/accounts", gateway.base_url)))
         .send()
         .await
         .unwrap();
@@ -1621,7 +1632,7 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     assert!(!body.to_string().contains("SECRET-SETUP-TOKEN"));
 
     // Pool enumerates the scanned account.
-    let response = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
+    let response = auth(client.get(format!("{}/admin/api/pool", gateway.base_url)))
         .send()
         .await
         .unwrap();
@@ -1629,10 +1640,13 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     assert!(body.to_string().contains("\"main\""));
 
     // Delete removes the store file.
-    let response = auth(client.delete(format!("{}/admin/accounts/claude/main", gateway.base_url)))
-        .send()
-        .await
-        .unwrap();
+    let response = auth(client.delete(format!(
+        "{}/admin/api/accounts/claude/main",
+        gateway.base_url
+    )))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert!(!dir.join("main.json").exists());
 
@@ -1683,7 +1697,7 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/claude", gateway.base_url)))
         .body(r#"{"name":"oauthy","mode":"oauth"}"#)
         .send()
         .await
@@ -1706,7 +1720,7 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
         .expect("authorize URL carries the OAuth state");
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/oauthy/complete",
+        "{}/admin/api/accounts/claude/oauthy/complete",
         gateway.base_url
     )))
     .body(format!(r#"{{"code":"oauth-code#{state}"}}"#))
@@ -1746,7 +1760,7 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
     assert!(stored["claudeAiOauth"].get("shuntCredentialKind").is_none());
     assert_eq!(stored["shuntAccountUuid"], "acct-oauth-123");
 
-    let response = auth(client.get(format!("{}/admin/accounts", gateway.base_url)))
+    let response = auth(client.get(format!("{}/admin/api/accounts", gateway.base_url)))
         .send()
         .await
         .unwrap();
@@ -1861,7 +1875,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
     };
 
     // First provisioning: account-a -> identity "acct-old".
-    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/claude")))
         .body(r#"{"name":"account-a","mode":"oauth"}"#)
         .send()
         .await
@@ -1869,7 +1883,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state1) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/claude/account-a/complete"
+        "{base_url}/admin/api/accounts/claude/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
     .send()
@@ -1902,7 +1916,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
 
     // Reprovision account-a onto "shared-id" -- the same identity as
     // "other-account".
-    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/claude")))
         .body(r#"{"name":"account-a","mode":"oauth"}"#)
         .send()
         .await
@@ -1910,7 +1924,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state2) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/claude/account-a/complete"
+        "{base_url}/admin/api/accounts/claude/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-2#{state2}")}).to_string())
     .send()
@@ -2027,7 +2041,7 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     };
 
     // First provisioning: account-a stored with no UUID at all.
-    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/claude")))
         .body(r#"{"name":"account-a","mode":"oauth"}"#)
         .send()
         .await
@@ -2035,7 +2049,7 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state1) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/claude/account-a/complete"
+        "{base_url}/admin/api/accounts/claude/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
     .send()
@@ -2069,7 +2083,7 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     );
 
     // Reprovision account-a onto a real UUID ("new-id").
-    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/claude")))
         .body(r#"{"name":"account-a","mode":"oauth"}"#)
         .send()
         .await
@@ -2077,7 +2091,7 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state2) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/claude/account-a/complete"
+        "{base_url}/admin/api/accounts/claude/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-2#{state2}")}).to_string())
     .send()
@@ -2170,7 +2184,7 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
 
     // Removing "alias-a" must not clear "shared-id" health: "alias-b" still
     // resolves to it.
-    let response = auth(client.delete(format!("{base_url}/admin/accounts/claude/alias-a")))
+    let response = auth(client.delete(format!("{base_url}/admin/api/accounts/claude/alias-a")))
         .send()
         .await
         .unwrap();
@@ -2188,7 +2202,7 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
     );
 
     // Removing "alias-b" (the last remaining alias) must now clear it.
-    let response = auth(client.delete(format!("{base_url}/admin/accounts/claude/alias-b")))
+    let response = auth(client.delete(format!("{base_url}/admin/api/accounts/claude/alias-b")))
         .send()
         .await
         .unwrap();
@@ -2307,7 +2321,7 @@ async fn claude_remove_preserves_a_configured_providers_health_the_store_scan_ca
         request.header("x-shunt-admin-token", "secret-claude-configured")
     };
 
-    let response = auth(client.delete(format!("{base_url}/admin/accounts/claude/account-a")))
+    let response = auth(client.delete(format!("{base_url}/admin/api/accounts/claude/account-a")))
         .send()
         .await
         .unwrap();
@@ -2389,7 +2403,7 @@ async fn full_oauth_completion_rejects_missing_refresh_token() {
             .header("x-shunt-admin-token", "secret-no-refresh")
             .header("content-type", "application/json")
     };
-    let response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/claude", gateway.base_url)))
         .body(r#"{"name":"missing-refresh","mode":"oauth"}"#)
         .send()
         .await
@@ -2403,7 +2417,7 @@ async fn full_oauth_completion_rejects_missing_refresh_token() {
         .unwrap();
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/missing-refresh/complete",
+        "{}/admin/api/accounts/claude/missing-refresh/complete",
         gateway.base_url
     )))
     .body(format!(r#"{{"code":"oauth-code#{state}"}}"#))
@@ -2454,7 +2468,7 @@ async fn cookie_session_mutations_require_a_csrf_token() {
 
     // A cookie-authenticated mutation without the CSRF token is rejected.
     let response = client
-        .post(format!("{}/admin/accounts/claude", gateway.base_url))
+        .post(format!("{}/admin/api/accounts/claude", gateway.base_url))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "same-origin")
@@ -2527,7 +2541,7 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
     // A cookie mutation WITH the matching CSRF token + same-origin is accepted
     // (the accept branch of check_csrf, complementing the reject-path test).
     let response = client
-        .post(format!("{}/admin/accounts/claude", gateway.base_url))
+        .post(format!("{}/admin/api/accounts/claude", gateway.base_url))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "same-origin")
@@ -2544,7 +2558,7 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
 
     // Cross-site logout is rejected by the same-origin guard.
     let response = client
-        .post(format!("{}/admin/logout", gateway.base_url))
+        .post(format!("{}/admin/api/logout", gateway.base_url))
         .header("cookie", &cookie)
         .header("sec-fetch-site", "cross-site")
         .send()
@@ -2558,7 +2572,7 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
 
     // Same-origin logout clears the cookie and invalidates the session.
     let response = client
-        .post(format!("{}/admin/logout", gateway.base_url))
+        .post(format!("{}/admin/api/logout", gateway.base_url))
         .header("cookie", &cookie)
         .header("sec-fetch-site", "same-origin")
         .send()
@@ -2615,7 +2629,7 @@ async fn completion_reports_bad_gateway_when_token_exchange_fails() {
     };
 
     // Start to obtain a valid pending OAuth state.
-    let response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/claude", gateway.base_url)))
         .body(r#"{"name":"main"}"#)
         .send()
         .await
@@ -2631,7 +2645,7 @@ async fn completion_reports_bad_gateway_when_token_exchange_fails() {
 
     // Complete with a well-formed `<code>#<state>` but a failing upstream.
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/main/complete",
+        "{}/admin/api/accounts/claude/main/complete",
         gateway.base_url
     )))
     .body(format!(r#"{{"code":"the-auth-code#{state}"}}"#))
@@ -2689,7 +2703,7 @@ async fn admin_negative_paths_are_rejected() {
         .contains("Invalid admin token."));
 
     // add_account with a malformed JSON body → 400.
-    let response = hdr(client.post(format!("{base}/admin/accounts/claude")))
+    let response = hdr(client.post(format!("{base}/admin/api/accounts/claude")))
         .body("not json")
         .send()
         .await
@@ -2697,7 +2711,7 @@ async fn admin_negative_paths_are_rejected() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     // add_account with an invalid account name → 400.
-    let response = hdr(client.post(format!("{base}/admin/accounts/claude")))
+    let response = hdr(client.post(format!("{base}/admin/api/accounts/claude")))
         .body(r#"{"name":"BAD_NAME"}"#)
         .send()
         .await
@@ -2705,7 +2719,7 @@ async fn admin_negative_paths_are_rejected() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     // add_account with an invalid mode → 400.
-    let response = hdr(client.post(format!("{base}/admin/accounts/claude")))
+    let response = hdr(client.post(format!("{base}/admin/api/accounts/claude")))
         .body(r#"{"name":"valid-name","mode":"bogus"}"#)
         .send()
         .await
@@ -2713,7 +2727,7 @@ async fn admin_negative_paths_are_rejected() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     // complete with no pending login for the name → 400.
-    let response = hdr(client.post(format!("{base}/admin/accounts/claude/ghost/complete")))
+    let response = hdr(client.post(format!("{base}/admin/api/accounts/claude/ghost/complete")))
         .body(r#"{"code":"the-code#the-state"}"#)
         .send()
         .await
@@ -2738,7 +2752,7 @@ async fn admin_negative_paths_are_rejected() {
         .map(|value| value.split(';').next().unwrap().to_string())
         .expect("login sets a session cookie");
     let response = client
-        .post(format!("{base}/admin/accounts/claude"))
+        .post(format!("{base}/admin/api/accounts/claude"))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "cross-site")
@@ -2780,7 +2794,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     );
 
     let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX");
-    // Opt codex back into the store scan: the `/admin/pool` assertion below
+    // Opt codex back into the store scan: the `/admin/api/pool` assertion below
     // needs the scanned result, and `forget_pool_health_if_absent`'s
     // `draws_from_store` check (`src/admin/mod.rs:344`) also needs an empty
     // `accounts` list to treat this as a store-backed account. The
@@ -2788,7 +2802,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     // this test's own directory.
     config.providers.get_mut("codex").unwrap().accounts = Vec::new();
     // An explicit, never-existing credentials path on the untouched
-    // `anthropic` provider keeps the later `/admin/pool` request off the
+    // `anthropic` provider keeps the later `/admin/api/pool` request off the
     // real on-disk Claude store (see the `admin_config` doc comment); this
     // test only isolates `SHUNT_CODEX_ACCOUNTS_DIR` for its own Codex flow.
     config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
@@ -2805,7 +2819,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"codex-a"}"#)
         .send()
         .await
@@ -2831,7 +2845,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     }
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/codex-a/complete",
+        "{}/admin/api/accounts/codex/codex-a/complete",
         gateway.base_url
     )))
     .body(serde_json::json!({"code": format!("oauth-code#{state}")}).to_string())
@@ -2851,7 +2865,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     assert_eq!(stored["tokens"]["refresh_token"], "SECRET-CODEX-REFRESH");
     assert_eq!(stored["tokens"]["account_id"], "acct-codex");
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"codex-url"}"#)
         .send()
         .await
@@ -2864,7 +2878,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     )
     .unwrap();
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/codex-url/complete",
+        "{}/admin/api/accounts/codex/codex-url/complete",
         gateway.base_url
     )))
     .body(serde_json::json!({"code": callback.to_string()}).to_string())
@@ -2890,7 +2904,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
         assert!(body.contains("code_verifier="));
     }
 
-    let response = auth(client.get(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.get(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .send()
         .await
         .unwrap();
@@ -2905,7 +2919,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
         .iter()
         .all(|account| account["account_id"] == "acct-codex"));
 
-    let response = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
+    let response = auth(client.get(format!("{}/admin/api/pool", gateway.base_url)))
         .send()
         .await
         .unwrap();
@@ -2922,11 +2936,13 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
         .iter()
         .any(|account| account["name"] == "codex-a"));
 
-    let response =
-        auth(client.delete(format!("{}/admin/accounts/codex/codex-a", gateway.base_url)))
-            .send()
-            .await
-            .unwrap();
+    let response = auth(client.delete(format!(
+        "{}/admin/api/accounts/codex/codex-a",
+        gateway.base_url
+    )))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert!(!dir.join("codex-a.json").exists());
 
@@ -3007,7 +3023,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     // `draws_from_store` check (`src/admin/mod.rs:344`) so a reprovisioned
     // or removed identity here is treated as store-backed. The pool-plan
     // machinery in `src/admin/plan.rs` never runs in this test at all --
-    // this handler never calls `/admin/pool`. The store reads and writes
+    // this handler never calls `/admin/api/pool`. The store reads and writes
     // this reprovision/remove handler does perform are safely isolated:
     // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
     // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
@@ -3047,7 +3063,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     };
 
     // First provisioning: account-a -> identity "acct-old".
-    let response = auth(client.post(format!("{base_url}/admin/accounts/codex")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/codex")))
         .body(r#"{"name":"account-a"}"#)
         .send()
         .await
@@ -3055,7 +3071,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state1) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/codex/account-a/complete"
+        "{base_url}/admin/api/accounts/codex/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
     .send()
@@ -3086,7 +3102,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
 
     // Reprovision account-a onto "shared-id" -- the same identity as
     // "other-account".
-    let response = auth(client.post(format!("{base_url}/admin/accounts/codex")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/codex")))
         .body(r#"{"name":"account-a"}"#)
         .send()
         .await
@@ -3094,7 +3110,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state2) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/codex/account-a/complete"
+        "{base_url}/admin/api/accounts/codex/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-2#{state2}")}).to_string())
     .send()
@@ -3196,7 +3212,7 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     // `draws_from_store` check (`src/admin/mod.rs:344`) so a reprovisioned
     // or removed identity here is treated as store-backed. The pool-plan
     // machinery in `src/admin/plan.rs` never runs in this test at all --
-    // this handler never calls `/admin/pool`. The store reads and writes
+    // this handler never calls `/admin/api/pool`. The store reads and writes
     // this reprovision/remove handler does perform are safely isolated:
     // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
     // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
@@ -3246,7 +3262,7 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     };
 
     // Reprovision account-a onto a real identity ("new-id").
-    let response = auth(client.post(format!("{base_url}/admin/accounts/codex")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/codex")))
         .body(r#"{"name":"account-a"}"#)
         .send()
         .await
@@ -3254,7 +3270,7 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state1) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/codex/account-a/complete"
+        "{base_url}/admin/api/accounts/codex/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
     .send()
@@ -3321,7 +3337,7 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
     // `draws_from_store` check (`src/admin/mod.rs:344`) so a reprovisioned
     // or removed identity here is treated as store-backed. The pool-plan
     // machinery in `src/admin/plan.rs` never runs in this test at all --
-    // this handler never calls `/admin/pool`. The store reads and writes
+    // this handler never calls `/admin/api/pool`. The store reads and writes
     // this reprovision/remove handler does perform are safely isolated:
     // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
     // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
@@ -3359,7 +3375,7 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
 
     // Removing "alias-a" must not clear "shared-id" health: "alias-b" still
     // resolves to it.
-    let response = auth(client.delete(format!("{base_url}/admin/accounts/codex/alias-a")))
+    let response = auth(client.delete(format!("{base_url}/admin/api/accounts/codex/alias-a")))
         .send()
         .await
         .unwrap();
@@ -3375,7 +3391,7 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
     );
 
     // Removing "alias-b" (the last remaining alias) must now clear it.
-    let response = auth(client.delete(format!("{base_url}/admin/accounts/codex/alias-b")))
+    let response = auth(client.delete(format!("{base_url}/admin/api/accounts/codex/alias-b")))
         .send()
         .await
         .unwrap();
@@ -3431,7 +3447,7 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"BAD_NAME"}"#)
         .send()
         .await
@@ -3439,7 +3455,7 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/ghost/complete",
+        "{}/admin/api/accounts/codex/ghost/complete",
         gateway.base_url
     )))
     .body(r#"{"code":"code#state"}"#)
@@ -3448,7 +3464,7 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
     .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"no-refresh"}"#)
         .send()
         .await
@@ -3456,7 +3472,7 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/no-refresh/complete",
+        "{}/admin/api/accounts/codex/no-refresh/complete",
         gateway.base_url
     )))
     .body(serde_json::json!({"code": format!("code#{state}")}).to_string())
@@ -3508,7 +3524,7 @@ async fn codex_completion_rejects_oauth_state_mismatch_before_exchange() {
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"state-mismatch"}"#)
         .send()
         .await
@@ -3519,7 +3535,7 @@ async fn codex_completion_rejects_oauth_state_mismatch_before_exchange() {
     assert_ne!(state, "WRONG-state");
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/state-mismatch/complete",
+        "{}/admin/api/accounts/codex/state-mismatch/complete",
         gateway.base_url
     )))
     .body(r#"{"code":"the-code#WRONG-state"}"#)
@@ -3572,7 +3588,7 @@ async fn codex_completion_rejects_access_token_without_account_id() {
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"no-account-id"}"#)
         .send()
         .await
@@ -3582,7 +3598,7 @@ async fn codex_completion_rejects_access_token_without_account_id() {
     let (_, state) = authorize_state(&body);
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/no-account-id/complete",
+        "{}/admin/api/accounts/codex/no-account-id/complete",
         gateway.base_url
     )))
     .body(serde_json::json!({"code": format!("the-code#{state}")}).to_string())
@@ -3635,7 +3651,7 @@ async fn codex_completion_reports_generic_bad_gateway_when_token_exchange_fails(
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"exchange-failure"}"#)
         .send()
         .await
@@ -3645,7 +3661,7 @@ async fn codex_completion_reports_generic_bad_gateway_when_token_exchange_fails(
     let (_, state) = authorize_state(&body);
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/exchange-failure/complete",
+        "{}/admin/api/accounts/codex/exchange-failure/complete",
         gateway.base_url
     )))
     .body(serde_json::json!({"code": format!("the-code#{state}")}).to_string())
@@ -3725,7 +3741,7 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
         .expect("dashboard embeds the CSRF token");
 
     let response = client
-        .post(format!("{base}/admin/accounts/codex"))
+        .post(format!("{base}/admin/api/accounts/codex"))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "same-origin")
@@ -3736,7 +3752,9 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     let response = client
-        .post(format!("{base}/admin/accounts/codex/codex-csrf/complete"))
+        .post(format!(
+            "{base}/admin/api/accounts/codex/codex-csrf/complete"
+        ))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "same-origin")
@@ -3747,7 +3765,7 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     let response = client
-        .delete(format!("{base}/admin/accounts/codex/codex-csrf"))
+        .delete(format!("{base}/admin/api/accounts/codex/codex-csrf"))
         .header("cookie", &cookie)
         .header("sec-fetch-site", "same-origin")
         .send()
@@ -3756,7 +3774,7 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     let response = client
-        .post(format!("{base}/admin/accounts/codex"))
+        .post(format!("{base}/admin/api/accounts/codex"))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "same-origin")
@@ -3836,7 +3854,7 @@ async fn refresh_probe_rotates_an_imported_account_without_returning_token_mater
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_PROBE_OK")).await;
     let response = reqwest::Client::new()
         .post(format!(
-            "{}/admin/accounts/claude/importee/refresh",
+            "{}/admin/api/accounts/claude/importee/refresh",
             gateway.base_url
         ))
         .header("x-shunt-admin-token", "secret-probe-ok")
@@ -3931,7 +3949,7 @@ async fn refresh_probe_never_attempts_a_grant_for_a_setup_token_account() {
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_PROBE_SETUP")).await;
     let response = reqwest::Client::new()
         .post(format!(
-            "{}/admin/accounts/claude/statik/refresh",
+            "{}/admin/api/accounts/claude/statik/refresh",
             gateway.base_url
         ))
         .header("x-shunt-admin-token", "secret-probe-st")
@@ -3959,7 +3977,7 @@ async fn refresh_probe_never_attempts_a_grant_for_a_setup_token_account() {
 }
 
 /// A terminal `invalid_grant` from the probe marks the pool account, and a
-/// re-login through `POST /admin/accounts/claude/{name}/complete` clears the
+/// re-login through `POST /admin/api/accounts/claude/{name}/complete` clears the
 /// mark again. Also pins that the failure response carries no provider detail.
 #[tokio::test]
 async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
@@ -4042,7 +4060,7 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
     assert!(!state.accounts.needs_relogin("anthropic", &account));
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/deadone/refresh",
+        "{}/admin/api/accounts/claude/deadone/refresh",
         gateway.base_url
     )))
     .send()
@@ -4063,7 +4081,7 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
             .accounts
             .snapshot("anthropic", std::slice::from_ref(&account), None, None)[0]
             .needs_relogin,
-        "the mark must reach the /admin/pool snapshot"
+        "the mark must reach the /admin/api/pool snapshot"
     );
 
     // A second store account resolving to the *same* upstream identity. This is
@@ -4086,16 +4104,17 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
     .unwrap();
 
     // Re-login through the ordinary provisioning flow clears it again.
-    let start_response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
-        .body(r#"{"name":"deadone","mode":"oauth"}"#)
-        .send()
-        .await
-        .unwrap();
+    let start_response =
+        auth(client.post(format!("{}/admin/api/accounts/claude", gateway.base_url)))
+            .body(r#"{"name":"deadone","mode":"oauth"}"#)
+            .send()
+            .await
+            .unwrap();
     assert_eq!(start_response.status(), StatusCode::OK);
     let start_body: serde_json::Value = start_response.json().await.unwrap();
     let (_url, oauth_state) = authorize_state(&start_body);
     let complete = auth(client.post(format!(
-        "{}/admin/accounts/claude/deadone/complete",
+        "{}/admin/api/accounts/claude/deadone/complete",
         gateway.base_url
     )))
     .body(format!(r#"{{"code":"relogin-code#{oauth_state}"}}"#))
@@ -4122,7 +4141,7 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Issue #439: the account is in the store and enumerated by `/admin/pool`, but
+/// Issue #439: the account is in the store and enumerated by `/admin/api/pool`, but
 /// no provider table has ever selected it, so the pool holds no health entry for
 /// it. A terminal probe verdict used to update nothing and the row kept
 /// reporting `unseen` — the operator clicked Refresh, was told the credential is
@@ -4188,20 +4207,21 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
                     .into_iter()
             })
             .find(|account| account["name"] == "neverpicked")
-            .expect("the store account is enumerated by /admin/pool");
+            .expect("the store account is enumerated by /admin/api/pool");
         (
             row["needs_relogin"] == serde_json::Value::Bool(true),
             row["has_state"] == serde_json::Value::Bool(true),
         )
     };
 
-    let before: serde_json::Value = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let before: serde_json::Value =
+        auth(client.get(format!("{}/admin/api/pool", gateway.base_url)))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
     assert_eq!(
         relogin_state(&before),
         (false, false),
@@ -4210,7 +4230,7 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
     );
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/neverpicked/refresh",
+        "{}/admin/api/accounts/claude/neverpicked/refresh",
         gateway.base_url
     )))
     .send()
@@ -4222,7 +4242,7 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
         "the grant is terminally rejected"
     );
 
-    let after: serde_json::Value = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
+    let after: serde_json::Value = auth(client.get(format!("{}/admin/api/pool", gateway.base_url)))
         .send()
         .await
         .unwrap()
@@ -4232,7 +4252,7 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
     let (needs_relogin, has_state) = relogin_state(&after);
     assert!(
         needs_relogin,
-        "the probe's terminal verdict never reached /admin/pool for an account \
+        "the probe's terminal verdict never reached /admin/api/pool for an account \
          the pool has no health entry for: {after}"
     );
     assert!(
@@ -4315,7 +4335,7 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
 
     let response = client
         .post(format!(
-            "{}/admin/accounts/claude/servedmark/refresh",
+            "{}/admin/api/accounts/claude/servedmark/refresh",
             gateway.base_url
         ))
         .header("x-shunt-admin-token", "secret-probe-served")
@@ -4337,7 +4357,7 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
          never the broken part"
     );
     // The response must agree with the pool. Reporting `needs_relogin: false`
-    // and "this login is alive" while `/admin/pool` still demands a re-login
+    // and "this login is alive" while `/admin/api/pool` still demands a re-login
     // would hand the dashboard and API callers contradictory answers.
     assert_eq!(
         body["needs_relogin"],
@@ -4369,7 +4389,7 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
     assert!(state.accounts.needs_relogin("anthropic", &account));
     let response = client
         .post(format!(
-            "{}/admin/accounts/claude/servedmark/refresh",
+            "{}/admin/api/accounts/claude/servedmark/refresh",
             gateway.base_url
         ))
         .header("x-shunt-admin-token", "secret-probe-served")

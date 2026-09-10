@@ -222,36 +222,36 @@ pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/admin", get(dashboard))
         .route("/admin/login", get(login_page).post(login_submit))
-        .route("/admin/oidc/start", post(oidc::start))
+        .route("/admin/api/oidc/start", post(oidc::start))
         .route("/admin/oidc/callback", get(oidc::callback))
-        .route("/admin/logout", post(logout))
-        .route("/admin/accounts", get(list_accounts))
-        .route("/admin/observed", get(observed_accounts))
-        .route("/admin/pool", get(pool))
-        .route("/admin/status", get(status))
-        .route("/admin/accounts/claude", post(add_account))
+        .route("/admin/api/logout", post(logout))
+        .route("/admin/api/accounts", get(list_accounts))
+        .route("/admin/api/observed", get(observed_accounts))
+        .route("/admin/api/pool", get(pool))
+        .route("/admin/api/status", get(status))
+        .route("/admin/api/accounts/claude", post(add_account))
         .route(
-            "/admin/accounts/claude/{name}/complete",
+            "/admin/api/accounts/claude/{name}/complete",
             post(complete_account),
         )
         .route(
-            "/admin/accounts/claude/{name}/refresh",
+            "/admin/api/accounts/claude/{name}/refresh",
             post(refresh_account),
         )
         .route(
-            "/admin/accounts/claude/{name}",
+            "/admin/api/accounts/claude/{name}",
             delete(remove_account_handler),
         )
         .route(
-            "/admin/accounts/codex",
+            "/admin/api/accounts/codex",
             get(codex::list_codex_accounts).post(codex::add_codex_account),
         )
         .route(
-            "/admin/accounts/codex/{name}/complete",
+            "/admin/api/accounts/codex/{name}/complete",
             post(codex::complete_codex_account),
         )
         .route(
-            "/admin/accounts/codex/{name}",
+            "/admin/api/accounts/codex/{name}",
             delete(codex::remove_codex_account_handler),
         )
 }
@@ -1502,7 +1502,7 @@ async fn refresh_account(
             );
             // Report the state the pool is actually in, not the state the grant
             // implies. A `ServedRequest` mark survives the clear above, and
-            // saying "this login is alive" while `/admin/pool` still demands a
+            // saying "this login is alive" while `/admin/api/pool` still demands a
             // re-login would hand callers two contradictory answers.
             let still_marked = state.accounts.store_account_needs_relogin(
                 crate::accounts::StoreFamily::Claude,
@@ -1665,7 +1665,7 @@ pub(super) fn html_body(body: String) -> Response {
 /// when the SSO form is present: Chrome and WebKit enforce `form-action`
 /// against the post-submission redirect chain (w3c/webappsec-csp#8), so the
 /// strict `'self'` policy would block the
-/// `POST /admin/oidc/start` -> `302` -> IdP hop. See
+/// `POST /admin/api/oidc/start` -> `302` -> IdP hop. See
 /// [`IDP_REDIRECT_FORM_ACTION`](crate::gateway::idp_client) for the source
 /// list and the loopback hosts it cannot express.
 pub(super) fn login_response(
