@@ -1,0 +1,25 @@
+tests/router_surface.rs
+  s_e9fd5f53eebc34::t_21a6d2bc4aa141 415-503
+  s_e9fd5f53eebc34::t_9d56d31c0aa9f3 103-106,377-382
+  s_e9fd5f53eebc34::t_c57dd1b2271758 144,155-161,223-250,280,287-288,303-304,330-331
+.please/docs/decisions/0003-admin-dashboard-extension.md
+  s_e9fd5f53eebc34::t_48402dcfabb448 48-52
+docs/admin-ui-delivery.md
+  s_e9fd5f53eebc34::t_afcfd0e46b06cd 57-58,287,372-382,505-506
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fcebba64762def9a45db70ef648a412ff154aae7",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
