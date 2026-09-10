@@ -745,10 +745,15 @@ it is a raw Responses-to-Responses passthrough. Full behavior spec:
 provider = "codex"   # default; must be a chatgpt_oauth provider (e.g. the built-in codex)
 ```
 
-Absent ⇒ none of the routes exist. Present ⇒ shunt registers three routes at boot — `POST
-/backend-api/codex/responses`, `POST /responses`, `POST /v1/responses` — all served by the named
-provider's account pool. Config validation rejects an unknown provider or one not using `auth =
-"chatgpt_oauth"` at startup.
+Absent ⇒ none of the Codex-specific routes exist. Present ⇒ shunt registers three inference
+routes at boot — `POST /backend-api/codex/responses`, `POST /responses`, `POST /v1/responses` — all
+served by the named provider's account pool, plus `GET /models` and `GET
+/backend-api/codex/models` model-catalog aliases. Codex catalog requests receive the valid empty
+fallback `{"models":[]}` rather than fabricated partial model rows. The shared `GET /v1/models`
+also returns this Codex shape when its query contains `client_version`; otherwise its Anthropic
+discovery bytes are unchanged. These catalog variants use the existing model-discovery auth gate.
+Config validation rejects an unknown provider or one not using `auth = "chatgpt_oauth"` at
+startup.
 
 ### 17.2 Point the Codex CLI at shunt
 

@@ -72,6 +72,8 @@ When opted in, shunt registers three routes, all mapping to one passthrough hand
 | `POST` | `/backend-api/codex/responses` |
 | `POST` | `/responses` |
 | `POST` | `/v1/responses` |
+| `GET` | `/models` |
+| `GET` | `/backend-api/codex/models` |
 
 Three Responses paths exist because the Codex CLI always appends `/responses` to whatever `base_url` it is
 pointed at: a base ending in `/backend-api/codex` produces `/backend-api/codex/responses` (the
@@ -79,6 +81,14 @@ literal path the real ChatGPT backend uses), a base ending in `/v1` produces `/v
 a bare base produces `/responses`. Registering all three lets an operator use either CLI setup
 style (§ "Codex CLI setup" below) without shunt needing to know which one a given client chose.
 
+Codex 0.152 and later also requests `<base>/models?client_version=...` and requires a Codex
+`{"models":[...]}` envelope. shunt does not synthesize partial `ModelInfo` records: the two
+Codex-only paths above return the valid fallback `{"models":[]}`. A request to the shared
+`/v1/models` path returns that same Codex fallback when the `client_version` query field is
+present, with the query marker taking precedence over Anthropic-looking headers. Without that
+query field, `/v1/models` preserves the existing Anthropic discovery response unchanged. All
+three variants pass the existing model-discovery authentication gate first, and the Codex-only
+paths remain absent when `[server.codex_endpoint]` was not enabled at boot.
 ### Client analytics sink
 
 The same opt-in also registers `POST /backend-api/codex/analytics-events/events` and

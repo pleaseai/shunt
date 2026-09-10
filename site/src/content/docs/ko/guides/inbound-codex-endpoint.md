@@ -23,6 +23,8 @@ shunt run
 
 시작 검증은 알 수 없는 `provider`나 `auth = "chatgpt_oauth"`를 쓰지 않는 프로바이더를 거부합니다 — 이 엔드포인트는 운영자의 Codex bearer를 주입하므로 `chatgpt_oauth` 프로바이더만 자격이 있습니다. 모든 키와 기본값은 [구성 레퍼런스](/ko/reference/configuration/#servercodex_endpoint-선택)를, 등록된 라우트는 [HTTP 엔드포인트](/ko/reference/endpoints/)를 참고하세요.
 
+이 옵트인은 Codex CLI 모델 탐색도 파싱 가능하게 만듭니다. `GET /models`와 `GET /backend-api/codex/models`는 유효한 폴백 `{"models":[]}`를 반환합니다. 공유 `GET /v1/models` 경로에서는 `client_version` 쿼리 필드가 Anthropic 형태의 헤더보다 우선하여 Codex 형태를 선택하고, 그 필드가 없으면 기존 Anthropic 탐색 응답은 변경되지 않습니다. 이 요청들은 기존 모델 탐색 인증 게이트를 거치며, shunt는 불완전한 Codex 모델 행을 만들지 않습니다.
+
 ## 클라이언트 analytics sink
 
 Codex CLI는 제품 analytics도 base URL로 전송합니다. shunt는 CLI가 만들 수 있는 두 경로를 모두 받아들입니다:

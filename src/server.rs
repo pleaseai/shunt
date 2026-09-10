@@ -215,9 +215,14 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let liveness_router = Router::new()
         .route("/", get(root_index))
         .route("/health", get(health));
+    let model_discovery = if codex_endpoint_enabled {
+        get(discovery::get_negotiated)
+    } else {
+        get(discovery::get)
+    };
     let mut router = Router::new()
         .route("/protocol", get(protocol::get))
-        .route("/v1/models", get(discovery::get))
+        .route("/v1/models", model_discovery)
         .route("/routes", get(routes::get))
         .route("/v1/messages", post(proxy::post))
         .route("/v1/messages/count_tokens", post(proxy::post));
@@ -253,6 +258,9 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // discarded locally after recording sanitized counters. Both are gated by
     // `[server.auth]` like the other injected-credential routes.
     if codex_endpoint_enabled {
+        for path in discovery::CODEX_PATHS {
+            router = router.route(path, get(discovery::get_codex));
+        }
         // Register from the same constants `concurrency::is_codex_path`
         // classifies against, so a route cannot be added here without also
         // getting the OpenAI-shaped gateway errors its clients expect.
