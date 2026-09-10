@@ -32,10 +32,12 @@ elsewhere, and three of them are load-bearing:
 - **Namespace.** `/admin` already mixes HTML pages and JSON API on the same
   prefix. An SPA that wants `/admin/pool` as a deep link collides with the
   `GET /admin/pool` JSON endpoint that exists today.
-- **Assets.** The current UI is ~770 lines of HTML/CSS/JS inside Rust string
-  literals (`src/admin/html.rs`, `src/admin/script.rs`). There is no build step,
-  no type checking, and no component model. `src/AGENTS.md` asks for files under
-  500 lines; two of these are already near that on presentation code alone.
+- **Assets.** The current UI is HTML/CSS/JS inside Rust string literals
+  (`src/admin/html.rs`, `src/admin/script.rs`) — ~770 lines when this record was
+  written on 2026-08-15, and 1,525 by 2026-09-10. There is no build step, no
+  type checking, and no component model. `src/AGENTS.md` asks for files under
+  500 lines; both files were near that then and both are past it now (879 and
+  646), on presentation code alone.
 
 ## Current surface
 
