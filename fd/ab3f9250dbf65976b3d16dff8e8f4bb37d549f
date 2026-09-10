@@ -1,0 +1,42 @@
+ui/src/test/harness.tsx
+  s_e9fd5f53eebc34::t_1467865d93e540 22-35
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr508_admin_spa_port_docs_review.md
+  s_e9fd5f53eebc34::t_b4c2837550cf27 1-57
+ui/src/useProvisioningFlow.ts
+  s_e9fd5f53eebc34::t_70f80e25f5d0e8 14-22,114-117,151-163,192
+ui/src/__tests__/unreadable-answers.test.tsx
+  s_e9fd5f53eebc34::t_ec9f0694780d47 36
+  s_e9fd5f53eebc34::t_e107be622f1b49 1-35,37-72,76-79,81-89
+  s_e9fd5f53eebc34::t_8305899ce7d34d 73-75,80
+ui/src/__tests__/pool-health.test.tsx
+  s_e9fd5f53eebc34::t_42cff0b028b9d9 1-78
+ui/src/api.ts
+  s_e9fd5f53eebc34::t_2ce81848281fe1 58-71,86,88-94,96-97,99
+ui/src/components/AddCodexAccount.tsx
+  s_e9fd5f53eebc34::t_5d86d94050a7b1 12
+.claude/agent-memory/review-review-code-reviewer/admin-spa-react-port-pr508.md
+  s_e9fd5f53eebc34::t_4fdea779e01a12 1-33,56-57
+  s_e9fd5f53eebc34::t_784be7c6d25103 34-55
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_e9fd5f53eebc34::t_8bea3852009298 17
+ui/src/components/AddClaudeAccount.tsx
+  s_e9fd5f53eebc34::t_5d86d94050a7b1 57
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_e9fd5f53eebc34::t_784be7c6d25103 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fdab3f9250dbf65976b3d16dff8e8f4bb37d549f",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
