@@ -42,6 +42,7 @@ use shunt::{
     server,
 };
 use std::collections::BTreeSet;
+use std::sync::{Mutex, MutexGuard};
 use tower::ServiceExt;
 
 /// A method no route in the crate registers, so a response distinguishes
@@ -232,6 +233,17 @@ fn method_set(allow: &str) -> BTreeSet<&str> {
         .collect()
 }
 
+/// Serializes every test in this binary that touches the process environment.
+///
+/// The per-test-unique names in [`all_surfaces_config`] stop one test's value
+/// from satisfying another test's config, but they do not make `set_var` safe
+/// on their own: the hazard is a writer racing a **reader**, and
+/// `server::build_router` reads the environment while a sibling test may be
+/// writing it. So the lock has to span the writes, the `build_router` that
+/// reads them, and the [`EnvVars`] cleanup — holding it for the writes alone
+/// would exclude nothing.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
 /// `Config::default()` with **every** optional surface enabled at once.
 ///
 /// Env-backed credentials get per-process-unique names because the process
@@ -242,6 +254,12 @@ fn method_set(allow: &str) -> BTreeSet<&str> {
 /// — so building a router never reads or writes the operator's real
 /// `~/.shunt` state.
 fn all_surfaces_config(label: &str) -> (Config, EnvVars) {
+    // A poisoned lock only means another test panicked while holding it; the
+    // environment is still ours to use, so recover rather than cascade.
+    let guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let suffix = format!("{}_{label}", std::process::id());
     let admin_env = format!("SHUNT_ROUTER_SURFACE_ADMIN_{suffix}");
     let client_env = format!("SHUNT_ROUTER_SURFACE_CLIENT_{suffix}");
@@ -322,29 +340,37 @@ fn all_surfaces_config(label: &str) -> (Config, EnvVars) {
 
     (
         config,
-        EnvVars(vec![
-            admin_env_name,
-            client_env_name,
-            jwt_env_name,
-            users_env_name,
-        ]),
+        EnvVars {
+            names: vec![
+                admin_env_name,
+                client_env_name,
+                jwt_env_name,
+                users_env_name,
+            ],
+            _guard: guard,
+        },
     )
 }
 
 /// Removes the env vars [`all_surfaces_config`] set once the test holding it
-/// finishes. The per-process-unique names already stop one test's value from
-/// satisfying another's config, so this is hygiene rather than isolation — but
+/// finishes, and holds [`ENV_LOCK`] until then so no sibling test reads the
+/// environment mid-write. The per-process-unique names already stop one test's
+/// value from satisfying another's config, so the removal itself is hygiene
+/// rather than isolation — the lock is what provides isolation — but
 /// it matches the set/remove pairing every other test file here uses
 /// (`tests/admin_surface.rs` pairs all 91 of its `set_var` calls), and keeps the
 /// variables from outliving their test for the rest of the binary's run.
 ///
 /// Removal happens on drop, at the end of the test body, never at its start:
 /// clearing shared globals on entry is what breaks a neighbour mid-run.
-struct EnvVars(Vec<String>);
+struct EnvVars {
+    names: Vec<String>,
+    _guard: MutexGuard<'static, ()>,
+}
 
 impl Drop for EnvVars {
     fn drop(&mut self) {
-        for name in &self.0 {
+        for name in &self.names {
             std::env::remove_var(name);
         }
     }

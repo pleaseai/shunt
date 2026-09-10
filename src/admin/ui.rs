@@ -149,4 +149,28 @@ mod tests {
         let response = asset(Path("does-not-exist.js".to_string())).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+
+    /// `Bundle::get` is a lookup in a map generated at compile time, not a file
+    /// read: `rust-embed`'s `debug-embed` feature (`Cargo.toml`) embeds the
+    /// bundle in debug builds too, so no build of this crate reaches the
+    /// filesystem here and a traversal segment is simply a key that is absent.
+    /// Pinned as a test rather than left to the comment, because the property
+    /// belongs to that feature flag — drop `debug-embed` and a debug build
+    /// starts reading `ui/dist` from disk, which is what this would catch.
+    #[tokio::test]
+    async fn a_traversal_path_finds_nothing() {
+        for probe in [
+            "../../../../etc/passwd",
+            "..%2f..%2fetc%2fpasswd",
+            "/etc/passwd",
+            "....//....//etc/passwd",
+        ] {
+            let response = asset(Path(probe.to_string())).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "traversal probe {probe} must not resolve to a file"
+            );
+        }
+    }
 }

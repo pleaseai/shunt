@@ -14,7 +14,7 @@
 use std::sync::{Mutex, MutexGuard};
 
 use axum::{
-    body::Body,
+    body::{to_bytes, Body},
     http::{header, Method, Request, StatusCode},
     Router,
 };
@@ -350,4 +350,39 @@ async fn the_mount_root_still_serves_the_server_rendered_dashboard() {
         Some("/admin/login"),
         "/admin must keep serving the string-literal dashboard, not the SPA shell"
     );
+}
+
+/// The router-level twin of `admin::ui::tests::a_traversal_path_finds_nothing`.
+///
+/// The unit test proves the handler resolves nothing for a traversal segment;
+/// this proves the same probe cannot reach a *different* handler on the way in.
+/// Both matter: a router that normalized `/admin/assets/../..` before matching
+/// would leave the unit test green while serving something else entirely, and
+/// what a caller actually sends is a URI, not a `Path` extractor argument.
+#[tokio::test]
+async fn a_traversal_probe_under_the_asset_mount_never_serves_a_file() {
+    let (router, _env) = admin_router("traversal");
+
+    for probe in [
+        "/admin/assets/../../../../etc/passwd",
+        "/admin/assets/..%2f..%2f..%2fetc%2fpasswd",
+        "/admin/assets/%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+        "/admin/assets/....//....//etc/passwd",
+    ] {
+        let response = get(&router, probe).await;
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+
+        assert!(
+            !body.windows(5).any(|window| window == b"root:"),
+            "{probe} answered {status} with something that looks like /etc/passwd"
+        );
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "{probe} must resolve to nothing, not to a file"
+        );
+    }
 }
