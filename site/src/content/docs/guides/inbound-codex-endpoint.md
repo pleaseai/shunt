@@ -147,7 +147,7 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"
 ```
 
-shunt serves no Codex model catalog — its `GET /v1/models` discovery list is Anthropic-shaped and does not advertise Codex routes. The CLI gets slug metadata from a `~/.codex/models.json` catalog referenced by `model_catalog_json`, exactly as these vendors document; only the `model` value selects the shunt route.
+While shunt responds to Codex CLI discovery requests with the valid fallback `{"models":[]}`, it does not advertise Codex routes in its model list. The CLI gets slug metadata from a `~/.codex/models.json` catalog referenced by `model_catalog_json`, exactly as these vendors document; only the `model` value selects the shunt route.
 
 What changes for a routed request to a **non-ChatGPT** upstream:
 

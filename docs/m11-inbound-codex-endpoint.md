@@ -65,21 +65,26 @@ a restart (it registers the HTTP routes).
 
 ## Routes
 
-When opted in, shunt registers three routes, all mapping to one passthrough handler:
+When opted in, shunt registers three Responses routes mapping to one passthrough handler:
 
 | Method | Path |
 | :-- | :-- |
 | `POST` | `/backend-api/codex/responses` |
 | `POST` | `/responses` |
 | `POST` | `/v1/responses` |
-| `GET` | `/models` |
-| `GET` | `/backend-api/codex/models` |
 
 Three Responses paths exist because the Codex CLI always appends `/responses` to whatever `base_url` it is
 pointed at: a base ending in `/backend-api/codex` produces `/backend-api/codex/responses` (the
 literal path the real ChatGPT backend uses), a base ending in `/v1` produces `/v1/responses`, and
 a bare base produces `/responses`. Registering all three lets an operator use either CLI setup
 style (§ "Codex CLI setup" below) without shunt needing to know which one a given client chose.
+
+In addition, shunt registers dedicated Codex model discovery routes:
+
+| Method | Path |
+| :-- | :-- |
+| `GET` | `/models` |
+| `GET` | `/backend-api/codex/models` |
 
 Codex 0.152 and later also requests `<base>/models?client_version=...` and requires a Codex
 `{"models":[...]}` envelope. shunt does not synthesize partial `ModelInfo` records: the two
@@ -369,11 +374,12 @@ shunt this way — shunt supplies the account from its own pool, not the CLI's l
   `/chat/completions` cannot serve them yet (the adapter exists, see the translation bullet below). Vendors
   that document a native Responses endpoint for the Codex CLI (Z.ai GLM, DeepSeek, Kimi Code,
   MiniMax, Mimo, OpenRouter, Vercel AI Gateway) are the supported shape; anything else is not.
-- **Model discovery for the Codex CLI.** shunt serves no Codex model catalog. Its `GET /v1/models`
-  discovery list is Anthropic-shaped and does not advertise Codex routes. The Codex CLI learns
-  non-OpenAI slugs the way these vendors document it — a `~/.codex/models.json` catalog referenced
-  by `model_catalog_json` in `~/.codex/config.toml` — while the CLI's own `model` setting is what
-  selects a shunt route. See [`codex-configuration.md` §17.5](codex-configuration.md#175-route-models-to-third-party-upstreams).
+- **Custom model discovery records for the Codex CLI.** shunt serves the valid empty fallback
+  `{"models":[]}` for Codex CLI discovery but does not synthesize custom `ModelInfo` records or
+  advertise third-party Codex routes. The Codex CLI learns non-OpenAI slugs the way these vendors
+  document it — a `~/.codex/models.json` catalog referenced by `model_catalog_json` in
+  `~/.codex/config.toml` — while the CLI's own `model` setting is what selects a shunt route.
+  See [`codex-configuration.md` §17.5](codex-configuration.md#175-route-models-to-third-party-upstreams).
 - **Translation for non-Responses upstreams.** The translation core for routing an inbound
   Responses request to an Anthropic-Messages or Chat-Completions upstream exists under
   `src/model/inbound_responses/` ([M16](m16-codex-inbound-translation.md)) but is not yet

@@ -147,7 +147,7 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"
 ```
 
-shunt は Codex 用のモデルカタログを提供しません — `GET /v1/models` のディスカバリー一覧は Anthropic 形式で、Codex のルートを公開しません。CLI はこれらのベンダーが案内するとおり、`model_catalog_json` が指す `~/.codex/models.json` カタログからスラッグのメタデータを取得します。shunt のルートを選ぶのは `model` の値だけです。
+shunt は Codex CLI のディスカバリー要求に対して有効なフォールバック `{"models":[]}` で応答しますが、Codex のルートをディスカバリー一覧で公開しません。CLI はこれらのベンダーが案内するとおり、`model_catalog_json` が指す `~/.codex/models.json` カタログからスラッグのメタデータを取得します。shunt のルートを選ぶのは `model` の値だけです。
 
 **ChatGPT 以外**のアップストリームへルーティングされたリクエストで変わる点:
 

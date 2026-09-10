@@ -147,7 +147,7 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"
 ```
 
-shunt는 Codex용 모델 카탈로그를 제공하지 않습니다 — `GET /v1/models` 디스커버리 목록은 Anthropic 형태이며 Codex 라우트를 노출하지 않습니다. CLI는 이들 벤더가 안내하는 대로 `model_catalog_json`이 가리키는 `~/.codex/models.json` 카탈로그에서 슬러그 메타데이터를 얻습니다. shunt 라우트를 고르는 것은 오직 `model` 값입니다.
+shunt는 Codex CLI 디스커버리 요청에 유효한 폴백인 `{"models":[]}`로 응답하지만, 디스커버리 목록에 Codex 라우트를 노출하지는 않습니다. CLI는 이들 벤더가 안내하는 대로 `model_catalog_json`이 가리키는 `~/.codex/models.json` 카탈로그에서 슬러그 메타데이터를 얻습니다. shunt 라우트를 고르는 것은 오직 `model` 값입니다.
 
 **ChatGPT가 아닌** 업스트림으로 라우팅된 요청에서 달라지는 점:
 

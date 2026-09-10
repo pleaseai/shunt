@@ -921,8 +921,8 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"   # when [server.auth] is configured
 ```
 
-shunt does not serve a Codex model catalog: its `GET /v1/models` discovery list is Anthropic-shaped
-and does not advertise Codex routes. The CLI learns metadata for non-OpenAI slugs the way these
+While shunt responds to Codex CLI discovery requests with the valid empty fallback `{"models":[]}`,
+it does not advertise Codex routes in its model list. The CLI learns metadata for non-OpenAI slugs the way these
 vendors document — a `~/.codex/models.json` catalog referenced by `model_catalog_json` (Mimo ships
 its own at `~/.codex/model-catalogs/model-catalogs.json`). Only the `model` value selects the shunt
 route.

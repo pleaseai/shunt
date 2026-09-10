@@ -147,7 +147,7 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"
 ```
 
-shunt 不提供 Codex 的模型目录 —— 它的 `GET /v1/models` 发现列表是 Anthropic 形态的，不会公布 Codex 路由。CLI 按这些厂商记载的方式，从 `model_catalog_json` 指向的 `~/.codex/models.json` 目录获取模型标识的元数据；真正选中 shunt 路由的只有 `model` 的取值。
+shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，但不会在模型列表中公布 Codex 路由。CLI 按这些厂商记载的方式，从 `model_catalog_json` 指向的 `~/.codex/models.json` 目录获取模型标识的元数据；真正选中 shunt 路由的只有 `model` 的取值。
 
 路由到**非 ChatGPT** 上游的请求有以下不同：
 
