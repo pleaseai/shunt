@@ -640,6 +640,20 @@ fn no_router_tree_is_composed_in_from_an_unscanned_module() {
              neither the literal scan nor the inventory above describes the served surface any \
              more — extend both before adopting it."
         );
+
+        // `.route(` is not a substring of `.route_service(`, so the counts above
+        // see neither of axum's service-based registrations. They register paths
+        // exactly like their handler-based twins, which is why they are pinned at
+        // zero here rather than left out.
+        for api in [".route_service(", ".nest_service("] {
+            assert_eq!(
+                source.matches(api).count(),
+                0,
+                "{file} now registers a path with `{api}`, which none of the scans above read. \
+                 Its paths would be served without appearing in the inventory — add it to the \
+                 scans before adopting it."
+            );
+        }
     }
 }
 
@@ -652,7 +666,16 @@ fn no_router_tree_is_composed_in_from_an_unscanned_module() {
 /// and the composition guard, the invariant across the scanned files is that no
 /// registration is silently dropped: every `.route(` either resolves to a literal
 /// path that must appear in the inventory, or is one of these five indirect sites
-/// whose definitions [`INDIRECT_PATH_SOURCES`] reads.
+/// whose definitions [`INDIRECT_PATH_SOURCES`] reads, and the four remaining ways
+/// axum can register a path — `.route_service(`, `.nest(`, `.nest_service(`, and
+/// composing another tree in with `.merge(` — are each counted.
+///
+/// `Router::fallback` needs no count of its own: it claims no path, and a
+/// catch-all would make [`path_is_registered`] answer something other than `404`
+/// or `405` for an unrouted path, which it panics on. The two `.fallback(` calls
+/// in `spend_router` are `MethodRouter::fallback`, a different thing — they
+/// answer an unregistered *method* on a path that does exist, which the `Allow`
+/// probe already covers.
 #[test]
 fn every_nonliteral_route_call_is_one_this_test_already_tracks() {
     let calls: usize = ROUTER_SOURCES
