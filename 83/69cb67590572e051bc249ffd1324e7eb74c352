@@ -1,0 +1,121 @@
+ui/src/session.ts
+  s_e9fd5f53eebc34::t_33253fbaf3e372 1-23
+ui/src/useDashboard.ts
+  s_e9fd5f53eebc34::t_cb409d105bdfb2 30,36-37,57-62,64-72,74-82
+  s_e9fd5f53eebc34::t_10008ded70b9d0 1-29,31-35,38-56,63,73,83-144
+ui/src/accounts.ts
+  s_e9fd5f53eebc34::t_ca885b8d26a873 2-46,48-251
+  s_e9fd5f53eebc34::t_cb409d105bdfb2 1,47
+ui/src/index.css
+  s_e9fd5f53eebc34::t_8c749fc19bb241 1-13,16-19,21-88,90-93,95
+site/src/content/docs/ko/reference/endpoints.md
+  s_e9fd5f53eebc34::t_5bc8a78462c73d 26
+docs/admin-ui-delivery.md
+  s_e9fd5f53eebc34::t_49a8ca9b3c2c6d 57,459-491,627-632
+ui/vite.config.ts
+  s_e9fd5f53eebc34::t_1da692841c9dd1 24-27
+  s_e9fd5f53eebc34::t_08d8163580284a 1,16-23
+  s_e9fd5f53eebc34::t_83cfa19511b540 28
+tests/router_surface.rs
+  s_e9fd5f53eebc34::t_a46bad789013ab 77,79,86,92,679,685-686
+ui/src/test/setup.ts
+  s_e9fd5f53eebc34::t_08d8163580284a 1-5
+ui/src/providers.tsx
+  s_e9fd5f53eebc34::t_d98537f75aa095 1-51
+ui/src/components/UsageBar.tsx
+  s_e9fd5f53eebc34::t_ec8a4e10a6fbb9 1-45
+ui/src/components/CodexAccounts.tsx
+  s_e9fd5f53eebc34::t_9555abf7a0bd68 1-123
+tests/admin_surface.rs
+  s_e9fd5f53eebc34::t_c5849d436ea3bd 4418-4531
+  s_e9fd5f53eebc34::t_009c19edff33ed 547
+ui/src/format.ts
+  s_e9fd5f53eebc34::t_80191ca692dab9 1-40
+ui/src/useProvisioningFlow.ts
+  s_e9fd5f53eebc34::t_dba93ff726e6da 1-192
+ui/src/__tests__/coalescing.test.tsx
+  s_e9fd5f53eebc34::t_20c2c2ff983374 31-42,44,64-66,78-80
+  s_e9fd5f53eebc34::t_b2a85d42037eac 1,5,26
+  s_e9fd5f53eebc34::t_557a101d2df44e 2-4,6-25,27-30,43,45-63,67-77,81-147
+ui/src/components/AddClaudeAccount.tsx
+  s_e9fd5f53eebc34::t_974d6e984acbbe 1-145
+ui/src/__tests__/claude-accounts.test.tsx
+  s_e9fd5f53eebc34::t_543a3522bd26ec 2-89,93,95-155
+  s_e9fd5f53eebc34::t_612cc91c14c0b5 1,90-92,94
+ui/src/__tests__/provisioning-races.test.tsx
+  s_e9fd5f53eebc34::t_3ac62650327b97 1-163,175-209,214,216-231
+  s_e9fd5f53eebc34::t_cd15858d3ed7b5 164-174,210-213,215
+src/admin/html.rs
+  s_e9fd5f53eebc34::t_762f607ce3661e 25-32
+ui/README.md
+  s_e9fd5f53eebc34::t_762f607ce3661e 13-14,21-44,55-57
+  s_e9fd5f53eebc34::t_86e810554e33ee 58
+.github/workflows/ci.yml
+  s_e9fd5f53eebc34::t_54ada149d0077c 66-72
+ui/src/test/harness.tsx
+  s_e9fd5f53eebc34::t_543a3522bd26ec 1,99-116
+  s_e9fd5f53eebc34::t_6aef772529b3a0 2-94,98,117-133
+  s_e9fd5f53eebc34::t_37321755f33a95 95-97
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_e9fd5f53eebc34::t_5bc8a78462c73d 26
+ui/src/api.ts
+  s_e9fd5f53eebc34::t_ec8a4e10a6fbb9 10-12,36-38
+  s_e9fd5f53eebc34::t_33253fbaf3e372 1-9,13-35,39-78
+src/admin/mod.rs
+  s_e9fd5f53eebc34::t_94196b97049758 244,654-693
+  s_e9fd5f53eebc34::t_f220c97a487498 694
+ui/package.json
+  s_e9fd5f53eebc34::t_08d8163580284a 13-15
+  s_e9fd5f53eebc34::t_66a3c9a7621f68 22-25,29,31
+  s_e9fd5f53eebc34::t_5f4ad355a863ea 32
+src/admin/ui.rs
+  s_e9fd5f53eebc34::t_762f607ce3661e 22-24
+site/src/content/docs/ja/reference/endpoints.md
+  s_e9fd5f53eebc34::t_5bc8a78462c73d 26
+ui/src/App.tsx
+  s_e9fd5f53eebc34::t_0faee12728e025 1-7,9-16,18-63,65-67
+ui/src/__tests__/layout.test.tsx
+  s_e9fd5f53eebc34::t_cd7d2daec35890 1-86
+ui/src/components/AddCodexAccount.tsx
+  s_e9fd5f53eebc34::t_cb409d105bdfb2 39
+  s_e9fd5f53eebc34::t_974d6e984acbbe 1-38,40-120
+ui/src/components/ObservedAccounts.tsx
+  s_e9fd5f53eebc34::t_cce97b2d751b4f 1-198
+ui/src/components/PoolHealth.tsx
+  s_e9fd5f53eebc34::t_5230d9d6859f52 1-118
+ui/src/components/UpstreamStatus.tsx
+  s_e9fd5f53eebc34::t_5230d9d6859f52 1-60
+ui/tsconfig.json
+  s_e9fd5f53eebc34::t_08d8163580284a 4-8,18-22,24-27
+ui/src/types.ts
+  s_e9fd5f53eebc34::t_80191ca692dab9 1-101
+ui/src/components/ClaudeAccounts.tsx
+  s_e9fd5f53eebc34::t_9555abf7a0bd68 1-160
+ui/src/Dashboard.tsx
+  s_e9fd5f53eebc34::t_0faee12728e025 1-102
+ui/src/__tests__/codex-accounts.test.tsx
+  s_e9fd5f53eebc34::t_612cc91c14c0b5 1-90
+ui/src/__tests__/mutations.test.tsx
+  s_e9fd5f53eebc34::t_a42a72cb69e36a 2-4,7-150
+  s_e9fd5f53eebc34::t_1da692841c9dd1 1,5-6
+site/src/content/docs/reference/endpoints.md
+  s_e9fd5f53eebc34::t_5bc8a78462c73d 28
+ui/package-lock.json
+  s_e9fd5f53eebc34::t_2403a3f2990f81 15-18,22,24-25,31-99,334-343,392-531,974-991,1458-1553,1599-1616,1665-1755,1769-1778,1834-1843,1851-1854,1856-1930,1947-1970,1978-1997,2050-2069,2113-2170,2178-2217,2254-2290,2327-2353,2403-2427,2449-2455,2466-2489,2536-2548,2565-2571,2582-2635,2653-2698,2819-3004
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8369cb67590572e051bc249ffd1324e7eb74c352",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
