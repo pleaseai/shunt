@@ -70,7 +70,8 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 
 - **默认构建** —— 该路径未在任何位置注册,返回 `404`。
 - **`--features ui`**(预构建的发布二进制即为此类)—— `GET` 会像挂载点下的其他深层链接一样
-  落到 `/admin/{*path}` SPA 回退,返回 `200 text/html` 的外壳。其余方法仍返回 `404`。
+  落到 `/admin/{*path}` SPA 回退,返回 `200 text/html` 的外壳;`HEAD` 同理。其余方法返回 `405`
+  并带上 `Allow: GET,HEAD`,因为该回退是用 `get` 而非 `any` 注册的。
 
 因此仍停留在旧 `GET` URL 的脚本收到的是 HTML,而不是迁移信号。请迁移到 `/admin/api/*`;
 响应的 `Content-Type` 是可靠的判别依据。

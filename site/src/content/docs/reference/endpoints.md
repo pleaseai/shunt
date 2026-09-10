@@ -104,7 +104,9 @@ there as success:
 - **default build** — the path is registered nowhere and answers `404`.
 - **`--features ui`** (what the prebuilt releases ship) — a `GET` falls through
   to the `/admin/{*path}` SPA fallback like any other deep link under the mount
-  and returns the `200 text/html` shell. Every other method still answers `404`.
+  and returns the `200 text/html` shell — `HEAD` likewise. Every other method
+  answers `405` with `Allow: GET,HEAD`, because the fallback is registered with
+  `get`, not `any`.
 
 So a script left on an old `GET` URL gets HTML rather than a migration signal.
 Move it to `/admin/api/*`; a response's `Content-Type` is the reliable check.
