@@ -226,9 +226,9 @@ fn tool_reference_result_becomes_loaded_tool_text() {
 fn defer_loading_field_never_reaches_upstream_tools() {
     // With tool search enabled, discovered deferred tools carry
     // defer_loading:true. The Responses API doesn't know the field; the tools()
-    // rebuild must emit only type/name/description/parameters. Mark the deferred
-    // tool loaded so progressive filtering forwards it and this test stays focused
-    // on stripping the unsupported field.
+    // rebuild must emit only type/name/description/strict/parameters. Mark the
+    // deferred tool loaded so progressive filtering forwards it and this test
+    // stays focused on stripping the unsupported field.
     let actual = translate(json!({
         "model": "gpt-5.2-codex",
         "messages": [
