@@ -100,8 +100,10 @@ const SPEND_PATHS: [&str; 2] = [
 
 /// Mirrors `codex_endpoint::PATHS` and `codex_analytics::PATHS`, which are
 /// `pub(crate)` and so cannot be imported here. Duplicating them is deliberate:
-/// a change to either constant must fail this test and be re-reviewed against
-/// the path split, which is exactly the guard being installed.
+/// `every_indirectly_registered_path_is_documented` reads both constants back
+/// out of their defining source and compares them against this list, so a
+/// change to either one fails this test and gets re-reviewed against the path
+/// split — which is exactly the guard being installed.
 const CODEX_ENDPOINT_PATHS: [&str; 5] = [
     "/backend-api/codex/responses",
     "/responses",
@@ -139,7 +141,7 @@ fn all_registered_paths() -> Vec<&'static str> {
 /// Both `state_path` values are set to an empty path — the documented opt-out
 /// — so building a router never reads or writes the operator's real
 /// `~/.shunt` state.
-fn all_surfaces_config(label: &str) -> Config {
+fn all_surfaces_config(label: &str) -> (Config, EnvVars) {
     let suffix = format!("{}_{label}", std::process::id());
     let admin_env = format!("SHUNT_ROUTER_SURFACE_ADMIN_{suffix}");
     let client_env = format!("SHUNT_ROUTER_SURFACE_CLIENT_{suffix}");
@@ -149,6 +151,13 @@ fn all_surfaces_config(label: &str) -> Config {
     std::env::set_var(&client_env, "tester:client-secret");
     std::env::set_var(&jwt_env, "0123456789abcdef0123456789abcdef");
     std::env::set_var(&users_env, "dev@example.com:password");
+
+    // The config takes ownership of these names below, so the guard needs its
+    // own copies to remove them by.
+    let admin_env_name = admin_env.clone();
+    let client_env_name = client_env.clone();
+    let jwt_env_name = jwt_env.clone();
+    let users_env_name = users_env.clone();
 
     let mut config = Config::default();
 
@@ -211,7 +220,34 @@ fn all_surfaces_config(label: &str) -> Config {
         ..AccountConfig::default()
     }];
 
-    config
+    (
+        config,
+        EnvVars(vec![
+            admin_env_name,
+            client_env_name,
+            jwt_env_name,
+            users_env_name,
+        ]),
+    )
+}
+
+/// Removes the env vars [`all_surfaces_config`] set once the test holding it
+/// finishes. The per-process-unique names already stop one test's value from
+/// satisfying another's config, so this is hygiene rather than isolation — but
+/// it matches the set/remove pairing every other test file here uses
+/// (`tests/admin_surface.rs` pairs all 91 of its `set_var` calls), and keeps the
+/// variables from outliving their test for the rest of the binary's run.
+///
+/// Removal happens on drop, at the end of the test body, never at its start:
+/// clearing shared globals on entry is what breaks a neighbour mid-run.
+struct EnvVars(Vec<String>);
+
+impl Drop for EnvVars {
+    fn drop(&mut self) {
+        for name in &self.0 {
+            std::env::remove_var(name);
+        }
+    }
 }
 
 /// `true` when the router has any route registered at `path`.
@@ -241,15 +277,15 @@ async fn path_is_registered(router: &Router, path: &str) -> bool {
 /// panics on a duplicate path+method, but only when both trees are registered.
 #[tokio::test]
 async fn every_optional_surface_can_be_enabled_at_once() {
-    let config = all_surfaces_config("builds");
+    let (config, _env) = all_surfaces_config("builds");
     let (_router, _shared, _state) =
         server::build_router(config).expect("a config enabling every optional surface builds");
 }
 
 #[tokio::test]
 async fn every_documented_path_is_registered_when_all_surfaces_are_enabled() {
-    let (router, _shared, _state) =
-        server::build_router(all_surfaces_config("registered")).expect("router builds");
+    let (config, _env) = all_surfaces_config("registered");
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for path in all_registered_paths() {
         assert!(
@@ -264,8 +300,8 @@ async fn every_documented_path_is_registered_when_all_surfaces_are_enabled() {
 /// the test above would pass just as well against a catch-all fallback.
 #[tokio::test]
 async fn no_undocumented_path_is_registered() {
-    let (router, _shared, _state) =
-        server::build_router(all_surfaces_config("undocumented")).expect("router builds");
+    let (config, _env) = all_surfaces_config("undocumented");
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     // Deliberately near-misses of registered paths, plus `/v1/organizations/*`
     // members shunt does not implement (`docs/admin-ui-delivery.md` reserves
@@ -291,8 +327,8 @@ async fn no_undocumented_path_is_registered() {
 /// that later claims a path must leave its `HEAD` answer intact.
 #[tokio::test]
 async fn root_still_answers_head_with_every_surface_enabled() {
-    let (router, _shared, _state) =
-        server::build_router(all_surfaces_config("head")).expect("router builds");
+    let (config, _env) = all_surfaces_config("head");
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     let request = Request::builder()
         .method(Method::HEAD)
@@ -338,11 +374,12 @@ fn registered_literal_paths(source: &str) -> Vec<&str> {
 /// back out of the source closes that, which is what makes the inventory an
 /// actual gate rather than a spot check.
 ///
-/// Residual gap, stated rather than hidden: a route whose path is not a string
-/// literal at the call site is invisible here. There are two such sites today —
-/// the OTLP signals in `gateway_router` and the `codex_endpoint::PATHS` /
-/// `codex_analytics::PATHS` loops in `build_router` — and both are pinned by
-/// `every_documented_path_is_registered_when_all_surfaces_are_enabled`.
+/// A route whose path is not a string literal at the call site is invisible to
+/// this scan. There are two such sites today — the OTLP signals in
+/// `gateway_router` and the `codex_endpoint::PATHS` / `codex_analytics::PATHS`
+/// loops in `build_router`. `every_documented_path_is_registered_when_all_surfaces_are_enabled`
+/// catches a removal or rename in either set but **not** an addition, so
+/// [`INDIRECT_PATH_SOURCES`] scans those definitions to close that direction.
 #[test]
 fn every_registered_literal_path_is_documented() {
     let inventory = all_registered_paths();
@@ -373,5 +410,94 @@ fn the_source_scan_finds_every_literal_registration() {
         found, 34,
         "the literal-path scan found {found} registrations, not 34; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
+    );
+}
+
+/// The path sets `build_router` and `gateway_router` register *indirectly*,
+/// paired with the marker that opens their definition and the marker that
+/// closes it. `registered_literal_paths` cannot see these — the call site
+/// passes a loop variable or a method call, not a literal — so an **addition**
+/// to one of them would otherwise register a live route while every other test
+/// in this file stayed green.
+const INDIRECT_PATH_SOURCES: [(&str, &str, &str, &str); 3] = [
+    (
+        "src/codex_endpoint.rs",
+        include_str!("../src/codex_endpoint.rs"),
+        "const PATHS: [&str; ",
+        "];",
+    ),
+    (
+        "src/codex_analytics.rs",
+        include_str!("../src/codex_analytics.rs"),
+        "const PATHS: [&str; ",
+        "];",
+    ),
+    (
+        "src/gateway/telemetry_ingest.rs",
+        include_str!("../src/gateway/telemetry_ingest.rs"),
+        "const fn path(self) -> &'static str {",
+        "\n    }",
+    ),
+];
+
+/// Extract every string literal between `open` and the first `close` after it.
+fn string_literals_in_block<'a>(source: &'a str, open: &str, close: &str) -> Vec<&'a str> {
+    let start = source
+        .find(open)
+        .unwrap_or_else(|| panic!("marker {open:?} not found; the definition was reshaped"))
+        + open.len();
+    let end = start
+        + source[start..]
+            .find(close)
+            .unwrap_or_else(|| panic!("terminator {close:?} not found after {open:?}"));
+
+    let mut literals = Vec::new();
+    let mut rest = &source[start..end];
+    while let Some(open_quote) = rest.find('"') {
+        rest = &rest[open_quote + 1..];
+        let Some(close_quote) = rest.find('"') else {
+            break;
+        };
+        literals.push(&rest[..close_quote]);
+        rest = &rest[close_quote + 1..];
+    }
+    literals
+}
+
+/// The direction `every_documented_path_is_registered_when_all_surfaces_are_enabled`
+/// cannot cover. That test proves each *documented* path is live, so removing or
+/// renaming a member of one of these sets fails it — but appending a member
+/// leaves it green, because nothing probes a path this file has never heard of.
+/// Reading the definitions back out of their own source closes that direction.
+#[test]
+fn every_indirectly_registered_path_is_documented() {
+    let inventory = all_registered_paths();
+    for (file, source, open, close) in INDIRECT_PATH_SOURCES {
+        for path in string_literals_in_block(source, open, close) {
+            assert!(
+                inventory.contains(&path),
+                "{file} registers {path} indirectly, which is not in this test's inventory. \
+                 Adding a path to one of these sets means adding it here too — and, per \
+                 docs/admin-ui-delivery.md, reviewing it against the /admin, /admin/api and \
+                 reserved /v1/organizations path split first."
+            );
+        }
+    }
+}
+
+/// The indirect scan is only a gate while it actually finds the definitions; a
+/// refactor that reshaped one of them would otherwise leave
+/// `every_indirectly_registered_path_is_documented` vacuously green.
+#[test]
+fn the_indirect_scan_finds_every_definition() {
+    let found: usize = INDIRECT_PATH_SOURCES
+        .iter()
+        .map(|(_, source, open, close)| string_literals_in_block(source, open, close).len())
+        .sum();
+    // 3 `codex_endpoint::PATHS` + 2 `codex_analytics::PATHS` + 3 OTLP signals.
+    assert_eq!(
+        found, 8,
+        "the indirect-path scan found {found} definitions, not 8; either a path was added or \
+         removed, or one of these sets is no longer spelled the way the scan expects"
     );
 }

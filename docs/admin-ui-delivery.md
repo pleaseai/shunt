@@ -54,6 +54,8 @@ baseline for any new route.
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |
 | `[server.codex_endpoint]` | `POST` | `/backend-api/codex/responses`, `/responses`, `/v1/responses` |
 | `[server.codex_endpoint]` | `POST` | `/backend-api/codex/analytics-events/events`, `/codex/analytics-events/events` |
+| `[server.spend]` | `GET`, `POST` | `/v1/organizations/spend_limits` — the only shunt-owned routes inside the otherwise reserved `/v1/organizations/*` namespace ([below](#reserved-namespace--v1organizations)) |
+| `[server.spend]` | `GET`, `DELETE` | `/v1/organizations/spend_limits/{id}` |
 | `[server.usage]` | `GET` | `/usage` |
 | `[server.oauth_usage]` | `GET` | `/api/oauth/usage` |
 
@@ -282,7 +284,7 @@ Any of them works — the load-bearing constraint is *one* call, fanned out.
 | :-- | :-- | :-- |
 | `/admin/*` | operator UI: HTML shell, SPA client routes, `/admin/assets/*` — minus the server-rendered pages that stay (`/admin/login`, `/admin/oidc/callback`), below | shunt |
 | `/admin/api/*` | shunt-specific JSON: pool, status, accounts, observed, provisioning | shunt |
-| `/v1/organizations/*` | **reserved** — see below | Anthropic |
+| `/v1/organizations/*` | **reserved**, minus the two spend-limit paths `[server.spend]` already serves — see below | Anthropic |
 
 ### Why the UI and the JSON API must split
 
@@ -367,11 +369,17 @@ retarget it by changing base URL alone. Its conventions — `type` on every obje
 `{type, error:{type,message}, request_id}` envelope, a `request-id` header on
 every response — are fixed by that contract.
 
-shunt does not implement this today, and this document does not put it in scope.
-Spend limits are out of scope for epic #186. The namespace is recorded here so
-that:
+shunt implements a **two-path subset** of this today, registered only when
+`[server.spend]` is set (`src/gateway/spend/mod.rs`): `GET`/`POST
+/v1/organizations/spend_limits` and `GET`/`DELETE
+/v1/organizations/spend_limits/{id}`. Those carry limit *policy* and its
+mutation audit — not spend counters. `/effective`, `/audit`, and the metering
+they presuppose are unimplemented, and the wider Admin API stays out of scope
+for epic #186. The namespace is recorded here so that:
 
-- No shunt-owned route ever claims `/v1/organizations/*`.
+- No shunt-owned route claims `/v1/organizations/*` **outside** that
+  spend-limit subset, and any extension of the subset follows the upstream
+  contract's shapes rather than inventing shunt's own.
 - The operator UI's own JSON stays at `/admin/api/*`, where shunt owns the shape,
   rather than being retrofitted into an Anthropic-shaped path later.
 
@@ -494,8 +502,8 @@ The seven questions this document originally left open are now decided:
    surface is not configured it does not silently edit config: it offers to run
    `shunt dashboard setup` and proceeds only on confirmation.
 5. **Single-instance is a limitation, not a decision.** Scaling out stays on the
-   roadmap and is owned by [`storage.md`](storage.md); the `/v1/organizations/*`
-   reservation is accordingly a roadmap item, not a non-goal.
+   roadmap and is owned by [`storage.md`](storage.md); the reservation over the
+   rest of `/v1/organizations/*` is accordingly a roadmap item, not a non-goal.
 6. **No aliases — the admin JSON moves in one breaking change.** Every JSON
    endpoint and every mutation under `/admin/*` outside the server-rendered
    login flow (`/admin/login`, `/admin/oidc/callback`) moves to `/admin/api/*`

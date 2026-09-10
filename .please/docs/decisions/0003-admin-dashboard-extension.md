@@ -45,8 +45,11 @@ three facts:
    are discarded when the stream finishes (`src/stream_metrics.rs:142-199`), and
    current per-account quota snapshots. `[server.pool] state_path` persists only
    the current `QuotaState` (`src/state_persist.rs:52-64`).
-2. **Nothing computes monetary cost.** No pricing table, no currency field, on
-   any path.
+2. **Nothing computes monetary cost.** There is no pricing table on any path,
+   and nothing multiplies usage by a rate. The one `currency` field that exists
+   is limit *policy*, not accounting: the spend-limit API stores it on
+   `SpendLimit` and rejects anything but `USD` (`src/gateway/spend/store.rs:54`,
+   `src/gateway/spend/api.rs:43`).
 3. **`[server.spend]` meters nothing.** `SpendStore` holds limit *policy* and an
    append-only mutation audit (`src/gateway/spend/store.rs:49-103`); it records
    no tokens, requests, or consumption. Ingested OTLP telemetry is relayed
