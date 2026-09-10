@@ -37,7 +37,11 @@ pub(crate) struct Entry {
 pub fn run(options: Options) -> anyhow::Result<()> {
     let source = options
         .source
-        .or_else(|| std::env::var_os("OPENCODEX_HOME").map(PathBuf::from))
+        .or_else(|| {
+            std::env::var_os("OPENCODEX_HOME")
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from)
+        })
         .or_else(|| crate::auth::shared::home_dir().map(|p| p.join(".opencodex")))
         .context("Cannot determine OpenCodex home; pass --from")?;
     let source = source
@@ -74,7 +78,7 @@ pub fn run(options: Options) -> anyhow::Result<()> {
         io::stdout().flush()?;
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
-        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+        if !is_confirmed(&answer) {
             bail!("Import cancelled; no files written");
         }
     }
@@ -86,4 +90,32 @@ pub fn run(options: Options) -> anyhow::Result<()> {
     println!("Created private credential snapshot: {}", file.display());
     println!("Source the credentials.env file in your shell before starting shunt. API-key variables must match api_key_env in your existing config. Subscription snapshots expire; re-import or log in separately. Existing settings and credentials were not modified.");
     Ok(())
+}
+
+fn is_confirmed(answer: &str) -> bool {
+    let trimmed = answer.trim();
+    trimmed.eq_ignore_ascii_case("y") || trimmed.eq_ignore_ascii_case("yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirmation_prompt_accepts_case_insensitive_affirmation() {
+        let affirmatives = ["y", "Y", "yes", "YES", "Yes", "yEs", "  YES \n"];
+        for affirmative in affirmatives {
+            assert!(
+                is_confirmed(affirmative),
+                "{affirmative:?} should be confirmed"
+            );
+        }
+        let negatives = ["n", "N", "no", "NO", "", "other", "ye"];
+        for negative in negatives {
+            assert!(
+                !is_confirmed(negative),
+                "{negative:?} should not be confirmed"
+            );
+        }
+    }
 }

@@ -147,7 +147,7 @@ fn imports_active_oauth_only_without_refresh_tokens() {
     assert!(out.status.success());
     assert!(f.files().iter().any(|p| fs::read_to_string(p)
         .unwrap()
-        .contains("SHUNT_COMMAND_CODE_TOKEN='fixture-command'")));
+        .contains("SHUNT_COMMANDCODE_API_KEY='fixture-command'")));
 }
 
 #[test]
@@ -236,4 +236,25 @@ fn respects_environment_source_and_ignores_gateway_keys_and_inactive_pools() {
         assert!(!env.contains(excluded));
         assert!(!transcript(&out).contains(excluded));
     }
+}
+
+#[test]
+fn empty_environment_source_falls_through_to_default_home() {
+    let f = Fixture::new(key_config(), json!({}));
+    let isolated_home = f.root.join("isolated_home");
+    let ocx = isolated_home.join(".opencodex");
+    fs::create_dir_all(&ocx).unwrap();
+    fs::write(ocx.join("config.json"), key_config().to_string()).unwrap();
+    fs::write(ocx.join("auth.json"), "{}").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_shunt"))
+        .args(["import", "opencodex", "--yes", "--output-dir"])
+        .arg(&f.output)
+        .env("OPENCODEX_HOME", "")
+        .env("HOME", &isolated_home)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", transcript(&out));
+    let env = fs::read_to_string(&f.files()[0]).unwrap();
+    assert!(env.contains("SHUNT_IMPORTED_DEMO_API_KEY"));
 }

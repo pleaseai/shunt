@@ -21,7 +21,7 @@ fn api_variable(provider: &str) -> String {
     match provider {
         "openai" => "OPENAI_API_KEY".into(),
         "xai" => "XAI_API_KEY".into(),
-        "commandcode" => "SHUNT_COMMANDCODE_API_KEY".into(),
+        "commandcode" | "command-code" => "SHUNT_COMMANDCODE_API_KEY".into(),
         _ => format!(
             "SHUNT_IMPORTED_{}_API_KEY",
             provider.to_ascii_uppercase().replace('-', "_")
@@ -100,7 +100,7 @@ pub(super) fn discover(
             }
             let variable = match name.as_str() {
                 "cursor" => "SHUNT_CURSOR_AUTH_TOKEN",
-                "command-code" => "SHUNT_COMMAND_CODE_TOKEN",
+                "command-code" | "commandcode" => "SHUNT_COMMANDCODE_API_KEY",
                 _ => {
                     notes.push(format!(
                         "Skipped {name}: subscription format not supported; use shunt login"

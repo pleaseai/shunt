@@ -17,7 +17,7 @@ Imports the active API key for `anthropic`, `openai-chat` and `openai-responses`
 
 `--from` selects the source home (default: `OPENCODEX_HOME`, then `~/.opencodex`). Repeat `--provider` to select several providers; without it, all compatible active credentials are selected. `--output-dir` chooses the snapshot parent (default: `~/.shunt/imports`). Every export creates a unique directory (0700) and `credentials.env` (0600), preserving earlier snapshots. macOS/Linux export only.
 
-Source the printed file path before starting Shunt. Cursor and Command Code use their existing token variables. API keys use `OPENAI_API_KEY`, `XAI_API_KEY`, `SHUNT_COMMANDCODE_API_KEY`, or `SHUNT_IMPORTED_<PROVIDER>_API_KEY` (uppercase, hyphens become underscores); match this variable in your existing `api_key_env`. No config or routing is generated. Snapshots are not refreshed; re-import when access tokens expire. Importing a key does not admit an unsupported provider such as OpenCode Go.
+Source the printed file path before starting Shunt. Cursor uses `SHUNT_CURSOR_AUTH_TOKEN`. API keys and Command Code access tokens use `OPENAI_API_KEY`, `XAI_API_KEY`, `SHUNT_COMMANDCODE_API_KEY`, or `SHUNT_IMPORTED_<PROVIDER>_API_KEY` (uppercase, hyphens become underscores); match this variable in your existing `api_key_env`. No config or routing is generated. Snapshots are not refreshed; re-import when access tokens expire. Importing a key does not admit an unsupported provider such as OpenCode Go.
 
 ## `shunt run`
 
