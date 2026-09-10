@@ -449,6 +449,22 @@ mod tests {
     }
 
     #[test]
+    fn fractional_retry_after_rounds_up_before_budget_check() {
+        let policy = policy();
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "0.1".parse().unwrap());
+        assert!(matches!(
+            next_backoff(&policy, 0, Some(&headers)),
+            Backoff::Sleep(delay) if delay == Duration::from_secs(1)
+        ));
+        headers.insert("retry-after", "3600".parse().unwrap());
+        assert!(matches!(
+            next_backoff(&policy, 0, Some(&headers)),
+            Backoff::ExceedsBudget
+        ));
+    }
+
+    #[test]
     fn cursor_error_transient_classification_follows_status() {
         // A transient status is retried; a request error is not. Uses the same
         // status set as HTTP responses, exercised here via a stand-in impl.

@@ -3137,20 +3137,44 @@ pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverActio
 
 pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
-    // RFC 7231 allows two forms: delta-seconds or an HTTP-date. Try the cheap
-    // numeric form first, then fall back to the date form — a server that sends
-    // `Retry-After: <HTTP-date>` would otherwise be silently ignored.
-    if let Ok(seconds) = value.trim().parse::<u64>() {
-        return Some(Duration::from_secs(seconds));
+    retry_after_value(value)
+}
+
+/// Parse one bounded `Retry-After` value. Delta-seconds are rounded upward
+/// to whole seconds so a fractional value can never cause an early retry;
+/// dates in the past retain their zero-delay policy meaning. Both forms are
+/// capped to keep untrusted headers from creating unbounded sleeps.
+fn retry_after_value(value: &str) -> Option<Duration> {
+    const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
+    if value.len() > 128 {
+        return None;
     }
-    let deadline = httpdate::parse_http_date(value.trim()).ok()?;
-    // Honor the wait until that instant; a deadline already in the past means
-    // "retry now" (zero wait) rather than falling through to computed backoff.
-    Some(
-        deadline
-            .duration_since(SystemTime::now())
-            .unwrap_or(Duration::ZERO),
-    )
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    // RFC delta-seconds are decimal digits; accepting only this grammar avoids
+    // f64's exponent and sign forms while still supporting provider decimals.
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        && value.bytes().filter(|&byte| byte == b'.').count() <= 1
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+    {
+        let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+        let seconds = whole.parse::<u64>().ok()?;
+        let has_fraction = !fraction.is_empty() && fraction.bytes().any(|byte| byte != b'0');
+        let rounded = seconds.checked_add(u64::from(has_fraction))?;
+        return Some(Duration::from_secs(rounded).min(MAX_RETRY_AFTER));
+    }
+
+    let deadline = httpdate::parse_http_date(value).ok()?;
+    let wait = deadline
+        .duration_since(SystemTime::now())
+        .unwrap_or(Duration::ZERO);
+    Some(wait.min(MAX_RETRY_AFTER))
 }
 
 #[cfg(test)]
@@ -8059,6 +8083,33 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static("42"));
         assert_eq!(retry_after(&headers), Some(Duration::from_secs(42)));
+    }
+
+    #[test]
+    fn parses_decimal_retry_after_with_upward_rounding_and_clamp() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static(" 1.01 "));
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(2)));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("999999999999"));
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(3600)));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("0"));
+        assert_eq!(retry_after(&headers), Some(Duration::ZERO));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("0.0"));
+        assert_eq!(retry_after(&headers), Some(Duration::ZERO));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("0.5"));
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn rejects_malformed_and_overlong_retry_after() {
+        let mut headers = HeaderMap::new();
+        for value in ["1e3", ".5", "1.", "-1", "nan", ""] {
+            headers.insert(RETRY_AFTER, HeaderValue::from_static(value));
+            assert_eq!(retry_after(&headers), None, "{value} must be rejected");
+        }
+        let long = "1".repeat(129);
+        headers.insert(RETRY_AFTER, HeaderValue::from_str(&long).unwrap());
+        assert_eq!(retry_after(&headers), None);
     }
 
     #[test]
