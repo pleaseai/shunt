@@ -13,6 +13,9 @@ tests/admin_surface.rs
   s_e9fd5f53eebc34::t_ea58efa76e82f9 1337-1341,1381-1384,1514-1518,1643-1649,2939-2945,3755-3757,4107-4112,4217-4224
 docs/admin-ui-delivery.md
   s_e9fd5f53eebc34::t_f639942e785cee 98,197
+  s_e9fd5f53eebc34::t_8ece5e02fe6c05 34-38
+  s_e9fd5f53eebc34::t_67deeffe1a1a11 606
+  s_e9fd5f53eebc34::t_3974c47102eade 57,298-299,323-326
 src/admin/mod.rs
   s_e9fd5f53eebc34::t_a5a9135fe7ad0e 225,227-232,234,238,242,246,250,254,1505,1668
 docs/m7-codex-websocket.md
@@ -27,6 +30,8 @@ docs/upstream-status.md
 tests/router_surface.rs
   s_e9fd5f53eebc34::t_a5a9135fe7ad0e 411-412
   s_e9fd5f53eebc34::t_5bc3bc0b6e68a3 424-449,452-465,468-476
+  s_e9fd5f53eebc34::t_5de5200fc3cc14 79-84,88,90-101
+  s_e9fd5f53eebc34::t_67deeffe1a1a11 450-451,466-467
 src/admin/plan.rs
   s_e9fd5f53eebc34::t_84978e3ba7758d 1,38,134,376,812,1845,2471
 docs/m14-oauth-usage-endpoint.md
