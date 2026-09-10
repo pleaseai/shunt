@@ -241,6 +241,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/admin/api/oidc/start", post(oidc::start))
         .route("/admin/oidc/callback", get(oidc::callback))
         .route("/admin/api/logout", post(logout))
+        .route("/admin/api/session", get(session_bootstrap))
         .route("/admin/api/accounts", get(list_accounts))
         .route("/admin/api/observed", get(observed_accounts))
         .route("/admin/api/pool", get(pool))
@@ -649,6 +650,47 @@ async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Respons
 }
 
 // --- JSON API routes -----------------------------------------------------------
+
+/// `GET /admin/api/session` — the two per-session values the dashboard needs
+/// before it can render, for a client that cannot have them interpolated into
+/// its own source.
+///
+/// `dashboard_page` substitutes both into the server-rendered page it emits.
+/// The SPA shell (`ui::shell`) cannot be served that way: it is one static file
+/// embedded at compile time and served without a credential, so it is identical
+/// for every visitor and knows nothing about the session that requested it.
+///
+/// Returning the CSRF token over a cookie-authenticated `GET` does not weaken
+/// the guard it belongs to. A cross-origin page can *send* this request with the
+/// browser's cookie, but no response header on this surface permits it to read
+/// the reply: there is no CORS layer anywhere on the admin router, so the
+/// same-origin policy stops the read. That is the same property the
+/// server-rendered dashboard already relies on — a cross-origin page cannot read
+/// `GET /admin` either.
+///
+/// A header-credential caller gets an empty `csrf`, matching `dashboard`: it has
+/// no ambient cookie, so [`check_csrf`] exempts it and there is no token to
+/// hand out.
+async fn session_bootstrap(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = state.refreshed();
+    let Some(authok) = authenticate(&state, &headers) else {
+        return unauthorized();
+    };
+    let csrf = match authok.kind {
+        Authenticated::Session { csrf } => csrf,
+        Authenticated::Header => String::new(),
+    };
+    json_secure(json!({
+        "csrf": csrf,
+        // Served rather than duplicated in the bundle for the same reason
+        // `dashboard_page` substitutes it: the dashboard reports a setup token
+        // as expired once it is inside this buffer, and routing refuses one on
+        // the same boundary (`Tokens::is_valid_at`). A copy in TypeScript could
+        // drift from the Rust constant; a served value cannot.
+        "expiry_buffer_ms": u64::try_from(claude_auth::EXPIRY_BUFFER.as_millis())
+            .unwrap_or(u64::MAX),
+    }))
+}
 
 async fn list_accounts(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let state = state.refreshed();

@@ -19,7 +19,9 @@
 //!   an unmatched path outside `/admin` still `404`s.
 //!
 //! `GET /admin` itself is untouched — it still serves the server-rendered
-//! dashboard (`super::dashboard`). Porting those views onto this bundle is the
+//! dashboard (`super::dashboard`). The bundle now carries the ported views, so
+//! any other path under the mount (say `/admin/ui`) already renders them;
+//! flipping `/admin` itself and deleting the string-literal dashboard is the
 //! next step of the track.
 //!
 //! The shell and the assets carry no operator data, so they are served without

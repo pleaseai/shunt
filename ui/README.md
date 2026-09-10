@@ -10,11 +10,37 @@ npm ci        # npm install when changing dependencies
 npm run dev
 npm run build
 npm run typecheck
+npm test      # vitest, once
+npm run test:watch
 ```
 
 `npm run build` writes the bundle to `ui/dist`. `vite.config.ts` sets
 `base: '/admin/'`, so the emitted asset URLs are `/admin/assets/...` — the paths
 `src/admin/ui.rs` serves them on.
+
+## Layout
+
+| Path | What lives there |
+| :-- | :-- |
+| `src/App.tsx` | Fetches `GET /admin/api/session` — the CSRF token and the refresh buffer — then renders the dashboard |
+| `src/Dashboard.tsx` | Page layout: usage first, pool management behind a disclosure |
+| `src/accounts.ts` | Folding managed pool accounts and local observations into one row set, and the single effective state each row renders from |
+| `src/useDashboard.ts` | The five reads, each guarded so an older response cannot repaint over a newer one |
+| `src/useProvisioningFlow.ts` | One add-account form's start → authorize → complete flow, and the two guards that keep a superseded request from writing its result back |
+| `src/components/` | The tables and the two add-account forms |
+| `src/__tests__/` | The behavioral suite |
+
+## Tests
+
+`npm test` renders components and asserts on what an operator sees. That is the
+point of the suite rather than an incidental choice: the server-rendered
+dashboard it replaces could only be tested by matching substrings of its emitted
+JavaScript, which cannot distinguish a guard that runs from one that is merely
+present.
+
+When adding a test for a guard, check it is falsifiable — delete the guard and
+confirm the test fails. Several properties here (the provisioning-flow epochs in
+particular) are easy to write green against code that does nothing.
 
 ## Relationship to the Rust build
 
@@ -25,6 +51,10 @@ with `--all-features`) — run `npm ci && npm run build` here first. Release CI
 does exactly that.
 
 `ui/dist` and `ui/node_modules` are generated and not committed.
+
+`GET /admin` still serves the server-rendered dashboard
+(`src/admin/html.rs`). Any other path under the mount — `/admin/ui`, say —
+already renders this bundle, which is how to try it before that route flips.
 
 The toolchain is deliberately separate from `site/`'s Astro/Nimbus one: the two
 serve different purposes and upgrade on different schedules

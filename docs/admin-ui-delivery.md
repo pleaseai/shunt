@@ -54,7 +54,7 @@ baseline for any new route.
 | always | `GET` | `/health` — unauthenticated, exempt from the concurrency gate |
 | always | `GET` | `/protocol`, `/v1/models`, `/routes` |
 | always | `POST` | `/v1/messages`, `/v1/messages/count_tokens` |
-| `[server.admin]` | — | 16 paths under `/admin`, 18 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which this change moved to `/admin/api/status` |
+| `[server.admin]` | — | 17 paths under `/admin`, 19 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which moved to `/admin/api/status`, and `GET /admin/api/session` ([Decision 5](#decision-5--the-spa-bootstraps-its-session-over-the-api)) |
 | `[server.gateway]` | `GET` | `/.well-known/oauth-authorization-server`, `/device`, `/device/callback`, `/managed/settings` |
 | `[server.gateway]` | `POST` | `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize` |
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |
@@ -456,6 +456,39 @@ verify-the-download problem. Offline builds also need the fetch to be skippable.
 crates.io packaging is not a constraint: the crate is already `publish = false`
 (issue #292).
 
+## Decision 5 — the SPA bootstraps its session over the API
+
+The server-rendered dashboard interpolates two per-session values into the page
+it emits: the session's CSRF token, and `claude::auth::EXPIRY_BUFFER` in
+milliseconds. The SPA cannot be built that way. Its shell is one file embedded
+at compile time and served, unauthenticated, to every visitor alike
+(`src/admin/ui.rs`) — it knows nothing about the request that fetched it, and
+making it session-aware would mean rendering it per request, which is exactly
+the server-rendered page this track is replacing.
+
+`GET /admin/api/session` returns both, authenticated like every other route in
+that namespace.
+
+**Returning a CSRF token over a `GET` does not weaken the guard it belongs to.**
+A cross-origin page can *send* this request with the browser's ambient cookie,
+but nothing on this surface lets it read the reply: there is no CORS layer
+anywhere on the admin router, so the same-origin policy stops the read. That is
+the same property the server-rendered dashboard already depends on — a
+cross-origin page cannot read `GET /admin` either. The guard that would fail is
+the one that never existed: were a permissive `Access-Control-Allow-Origin` ever
+added to this surface, this endpoint would hand the token to any origin. Adding
+one is therefore a change that has to be reviewed against this decision.
+
+A header-credential caller receives an empty `csrf`, matching what `dashboard`
+renders for one: it carries no ambient cookie, so `check_csrf` exempts it and
+there is no token to hand out.
+
+The refresh buffer is served rather than duplicated in the bundle for a
+different reason: the dashboard reports a setup token as expired once it is
+inside that buffer, and routing refuses one on the same boundary
+(`Tokens::is_valid_at`). A copy in TypeScript could drift from the Rust
+constant; a served value cannot.
+
 ## Desktop
 
 [`desktop-app.md`](desktop-app.md) already fixed the desktop framework decision:
@@ -591,6 +624,12 @@ The seven questions this document originally left open are now decided:
   inheritance that must not fail open must not silently lock the operator out
   either, and only asserting both halves distinguishes the two.
 - Graceful shutdown drains both listeners from a single signal.
+- The ported views carry their own suite in `ui/` (`npm test`, vitest +
+  Testing Library), which renders components and asserts on what an operator
+  sees. It replaces the substring assertions the string-literal dashboard could
+  only support: those matched emitted JavaScript source, so they could not tell
+  a guard that runs from one that is merely present. Each property there was
+  checked by deleting the guard it covers and confirming the test fails.
 - Embedded assets: the bundle is non-empty (a build that silently embedded
   nothing must fail, not serve a blank page), `/admin/assets/*` returns the
   file's bytes, and each response carries the `Content-Type` its extension

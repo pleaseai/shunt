@@ -22,6 +22,14 @@ fn escape_html(input: &str) -> String {
     out
 }
 
+/// The admin pages' stylesheet, inlined because these pages are single HTML
+/// strings with no asset route of their own.
+///
+/// `ui/src/index.css` is a copy of this, for the embedded SPA bundle, which
+/// serves it as an external stylesheet instead — that is what lets the shell's
+/// Content-Security-Policy drop `'unsafe-inline'` for styles (`ui.rs`). Keep the
+/// two in step: a change here that the bundle does not get makes the sign-in
+/// page and the dashboard look like two products.
 const STYLE: &str = r#"
 :root {
   color-scheme: light dark;

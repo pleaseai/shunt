@@ -23,6 +23,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/admin` | 管理仪表盘(HTML);未登录时重定向到 `/admin/login` |
 | `GET`, `POST` | `/admin/login` | 管理员 token 登录表单与浏览器会话创建 |
 | `POST` | `/admin/api/logout` | 清除浏览器会话 |
+| `GET` | `/admin/api/session` | 管理 SPA 渲染前所需的两个会话级值：会话的 `csrf` 令牌与 `expiry_buffer_ms`（`claude::auth::EXPIRY_BUFFER` 的毫秒值，即 setup token 失效的边界）。使用请求头凭据的调用方免除 CSRF，因此收到空的 `csrf`。该表面没有 CORS 层，跨源页面能发出请求却读不到响应，所以通过 `GET` 返回令牌是安全的 |
 | `GET` | `/admin/api/accounts` | Claude 账户存储元数据:名称、类型、过期时间和 UUID;绝不返回 token 材料 |
 | `GET` | `/admin/api/accounts/codex` | Codex 账户存储元数据:名称、过期时间和 ChatGPT 账户 ID;绝不返回 token 材料 |
 | `GET` | `/admin/api/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider 的池状态;每个 account 对象可能包含可选的 `plan` 字符串;文件中读取的值之后可能通过 profile 查询被修正为更精确的值;Codex 行包含已上报的 5h/7d 用量,`7d_oi` 没有对应的 Codex 字段;每个 account 还带有布尔字段 `needs_relogin`:凭据被终结性拒绝(`invalid_grant`)、根本不带刷新令牌,或轮换出的令牌对未能写入而丢失 —— 任何重试都无法恢复,只有运维人员重新登录才行。它与冷却字段**相互独立**上报 —— 冷却会自行到期,而该标记不会 —— 仪表盘的两个表格都会显示为 **needs re-login**,而不是配额暂停时的 `cooling`。仅存于内存:重启后清空,该账户的下一次终结性失败会重新置位。即使某个账户从未被任何 provider 表选中过,它也会被上报 —— 与 `has_state: false` 并列 —— 因为 admin 的 refresh 探测按存储名记录其判定。 |
