@@ -296,6 +296,14 @@ mod tests {
 
     use super::get;
 
+    struct OwnedEnvGuard(String);
+
+    impl Drop for OwnedEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(&self.0);
+        }
+    }
+
     #[tokio::test]
     async fn returns_configured_models_with_optional_display_name() {
         let config = crate::config::Config {
@@ -651,6 +659,7 @@ mod tests {
             CODEX_AUTH_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         std::env::set_var(&env, "tester:catalog-secret");
+        let _env_guard = OwnedEnvGuard(env.clone());
         let mut config = codex_enabled_config();
         config.server.auth = Some(InboundAuthConfig {
             header: "x-shunt-token".to_string(),
@@ -721,8 +730,6 @@ mod tests {
                 }
             })
         );
-
-        std::env::remove_var(env);
     }
 
     const ADMIN_WRITE_KEY: &str = "admin-write-key-0123456789abcdef0";
