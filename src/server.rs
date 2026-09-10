@@ -160,6 +160,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let http_tuning = HttpTuningLayer::new(
         config.server.access_control.clone(),
         config.server.limits.clone(),
+        config.server.codex_endpoint.is_some(),
     );
     let http_tuning_enabled = config.server.access_control.enabled()
         || config.server.limits.max_request_header_bytes.is_some()
