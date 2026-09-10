@@ -1,5 +1,5 @@
 //! Cross-surface router invariants: every optional surface can be enabled at
-//! once, and the registered path set stays exactly the one
+//! once, and the registered method+path set stays exactly the one
 //! `docs/admin-ui-delivery.md` documents.
 //!
 //! `axum::Router::merge` panics at boot on a duplicate path+method, which is a
@@ -12,7 +12,7 @@
 //! `docs/admin-ui-delivery.md`; these tests close it *before* any UI route
 //! claims a path, which is the order that document's "Testing" section asks for.
 //!
-//! **How path existence is probed.** `Router` exposes no route table, so the
+//! **How the router is probed.** `Router` exposes no route table, so the
 //! inventory is read back with a method no shunt route registers. axum answers
 //! `405` when the path matches a route registered for other methods and `404`
 //! when no route matches it at all — the very path-vs-method distinction
@@ -20,10 +20,18 @@
 //! subtlety is that `spend_router` attaches its own `fallback` to each
 //! `MethodRouter`; that fallback also answers `405`, so the oracle holds
 //! uniformly.
+//!
+//! That same `405` carries an `Allow` header listing exactly the methods the
+//! path *is* registered for, so the one probe that answers "does this path
+//! exist" also answers "with which methods" — no extra request, and no handler
+//! ever runs. That is what lets the inventory below pin method+path pairs
+//! rather than bare paths: adding or removing a method on an existing path
+//! moves the `Allow` value and fails
+//! `every_registered_method_set_matches_the_inventory`.
 
 use axum::{
     body::Body,
-    http::{Method, Request, StatusCode},
+    http::{header, Method, Request, StatusCode},
     Router,
 };
 use shunt::{
@@ -33,69 +41,82 @@ use shunt::{
     },
     server,
 };
+use std::collections::BTreeSet;
 use tower::ServiceExt;
 
 /// A method no route in the crate registers, so a response distinguishes
 /// "path exists" (`405`) from "path does not exist" (`404`).
 const UNREGISTERED_METHOD: Method = Method::PATCH;
 
-/// Every path the router registers with all optional surfaces enabled, grouped
-/// by the config table that gates it. This list **is** the inventory assertion:
-/// adding a route without adding it here fails
+/// Every `(path, allow)` pair the router registers with all optional surfaces
+/// enabled, grouped by the config table that gates it. This list **is** the
+/// inventory assertion: adding a route without adding it here fails
 /// `no_undocumented_path_is_registered`, which is what forces the conflict
 /// review `docs/admin-ui-delivery.md` asks for.
+///
+/// The second element is the method set the path answers, written the way axum
+/// spells it in the `Allow` header of a `405` — which means `GET` always brings
+/// `HEAD` with it, because axum derives one from the other. Ordering inside the
+/// string is not significant; the pairs are compared as sets.
 ///
 /// Paths are written **exactly as the source registers them**, placeholders
 /// included, so `every_registered_literal_path_is_documented` can compare
 /// against them directly; [`probe_path`] substitutes a concrete segment for the
 /// runtime probes.
-const BASE_PATHS: [&str; 7] = [
-    "/",
-    "/health",
-    "/protocol",
-    "/v1/models",
-    "/routes",
-    "/v1/messages",
-    "/v1/messages/count_tokens",
+const BASE_PATHS: [(&str, &str); 7] = [
+    ("/", "GET,HEAD"),
+    ("/health", "GET,HEAD"),
+    ("/protocol", "GET,HEAD"),
+    ("/v1/models", "GET,HEAD"),
+    ("/routes", "GET,HEAD"),
+    ("/v1/messages", "POST"),
+    ("/v1/messages/count_tokens", "POST"),
 ];
 
 /// 16 paths / 18 method+path pairs — the count `docs/admin-ui-delivery.md`
-/// records in its "Current surface" table.
-const ADMIN_PATHS: [&str; 16] = [
-    "/admin",
-    "/admin/login",
-    "/admin/oidc/start",
-    "/admin/oidc/callback",
-    "/admin/logout",
-    "/admin/accounts",
-    "/admin/observed",
-    "/admin/pool",
-    "/admin/status",
-    "/admin/accounts/claude",
-    "/admin/accounts/claude/{name}/complete",
-    "/admin/accounts/claude/{name}/refresh",
-    "/admin/accounts/claude/{name}",
-    "/admin/accounts/codex",
-    "/admin/accounts/codex/{name}/complete",
-    "/admin/accounts/codex/{name}",
+/// records in its "Current surface" table. Counting the `allow` column here
+/// (ignoring the `HEAD` axum adds to every `GET`) is what reproduces the 18.
+const ADMIN_PATHS: [(&str, &str); 16] = [
+    ("/admin", "GET,HEAD"),
+    ("/admin/login", "GET,HEAD,POST"),
+    ("/admin/oidc/start", "POST"),
+    ("/admin/oidc/callback", "GET,HEAD"),
+    ("/admin/logout", "POST"),
+    ("/admin/accounts", "GET,HEAD"),
+    ("/admin/observed", "GET,HEAD"),
+    ("/admin/pool", "GET,HEAD"),
+    ("/admin/status", "GET,HEAD"),
+    ("/admin/accounts/claude", "POST"),
+    ("/admin/accounts/claude/{name}/complete", "POST"),
+    ("/admin/accounts/claude/{name}/refresh", "POST"),
+    ("/admin/accounts/claude/{name}", "DELETE"),
+    ("/admin/accounts/codex", "GET,HEAD,POST"),
+    ("/admin/accounts/codex/{name}/complete", "POST"),
+    ("/admin/accounts/codex/{name}", "DELETE"),
 ];
 
-const GATEWAY_PATHS: [&str; 10] = [
-    "/.well-known/oauth-authorization-server",
-    "/oauth/device_authorization",
-    "/oauth/token",
-    "/device",
-    "/device/authorize",
-    "/device/callback",
-    "/managed/settings",
-    "/v1/metrics",
-    "/v1/logs",
-    "/v1/traces",
+const GATEWAY_PATHS: [(&str, &str); 10] = [
+    ("/.well-known/oauth-authorization-server", "GET,HEAD"),
+    ("/oauth/device_authorization", "POST"),
+    ("/oauth/token", "POST"),
+    ("/device", "GET,HEAD,POST"),
+    ("/device/authorize", "POST"),
+    ("/device/callback", "GET,HEAD"),
+    ("/managed/settings", "GET,HEAD"),
+    ("/v1/metrics", "POST"),
+    ("/v1/logs", "POST"),
+    ("/v1/traces", "POST"),
 ];
 
-const SPEND_PATHS: [&str; 2] = [
-    "/v1/organizations/spend_limits",
-    "/v1/organizations/spend_limits/{id}",
+/// The two paths whose `MethodRouter` carries a custom
+/// `.fallback(api::method_not_allowed)`. That fallback supplies the `405` body
+/// in place of axum's own and sets no header itself
+/// (`src/gateway/spend/api.rs:295`); axum attaches the `Allow` header around it
+/// regardless, which the probe confirms. So these pairs are gated exactly like
+/// the rest.
+const SPEND_PATHS: [(&str, &str); 2] = [
+    ("/v1/organizations/spend_limits", "GET,HEAD,POST"),
+    ("/v1/organizations/spend_limits/{id}", "GET,HEAD,DELETE"),
 ];
 
 /// Mirrors `codex_endpoint::PATHS` and `codex_analytics::PATHS`, which are
@@ -104,15 +125,15 @@ const SPEND_PATHS: [&str; 2] = [
 /// out of their defining source and compares them against this list, so a
 /// change to either one fails this test and gets re-reviewed against the path
 /// split — which is exactly the guard being installed.
-const CODEX_ENDPOINT_PATHS: [&str; 5] = [
-    "/backend-api/codex/responses",
-    "/responses",
-    "/v1/responses",
-    "/backend-api/codex/analytics-events/events",
-    "/codex/analytics-events/events",
+const CODEX_ENDPOINT_PATHS: [(&str, &str); 5] = [
+    ("/backend-api/codex/responses", "POST"),
+    ("/responses", "POST"),
+    ("/v1/responses", "POST"),
+    ("/backend-api/codex/analytics-events/events", "POST"),
+    ("/codex/analytics-events/events", "POST"),
 ];
 
-const USAGE_PATHS: [&str; 2] = ["/usage", "/api/oauth/usage"];
+const USAGE_PATHS: [(&str, &str); 2] = [("/usage", "GET,HEAD"), ("/api/oauth/usage", "GET,HEAD")];
 
 /// Substitute a concrete segment for each path placeholder, so a template from
 /// the inventory can be sent as a real request.
@@ -120,7 +141,8 @@ fn probe_path(template: &str) -> String {
     template.replace("{name}", "acct").replace("{id}", "spl_1")
 }
 
-fn all_registered_paths() -> Vec<&'static str> {
+/// Every inventory entry, in the order the groups above declare them.
+fn all_registered_entries() -> Vec<(&'static str, &'static str)> {
     BASE_PATHS
         .iter()
         .chain(ADMIN_PATHS.iter())
@@ -129,6 +151,25 @@ fn all_registered_paths() -> Vec<&'static str> {
         .chain(CODEX_ENDPOINT_PATHS.iter())
         .chain(USAGE_PATHS.iter())
         .copied()
+        .collect()
+}
+
+/// Just the paths of [`all_registered_entries`], for the source scans — they
+/// read path literals out of the source and have no method to compare against.
+fn all_registered_paths() -> Vec<&'static str> {
+    all_registered_entries()
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect()
+}
+
+/// Split an `Allow` value into a set, so a difference in the order axum happens
+/// to list the methods in is not a difference in what the router allows.
+fn method_set(allow: &str) -> BTreeSet<&str> {
+    allow
+        .split(',')
+        .map(str::trim)
+        .filter(|method| !method.is_empty())
         .collect()
 }
 
@@ -270,6 +311,57 @@ async fn path_is_registered(router: &Router, path: &str) -> bool {
             "probing {path} with {UNREGISTERED_METHOD} answered {other}; the 404-vs-405 oracle \
              only holds while no route accepts that method and no layer answers ahead of routing"
         ),
+    }
+}
+
+/// The `Allow` header axum puts on the `405` answer to [`UNREGISTERED_METHOD`],
+/// listing the methods the path is registered for.
+async fn allowed_methods(router: &Router, path: &str) -> String {
+    let request = Request::builder()
+        .method(UNREGISTERED_METHOD)
+        .uri(path)
+        .body(Body::empty())
+        .expect("probe request builds");
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("router answers the probe");
+    assert_eq!(
+        response.status(),
+        StatusCode::METHOD_NOT_ALLOWED,
+        "probing {path} with {UNREGISTERED_METHOD} did not answer 405, so it carries no Allow \
+         header to read the registered methods off"
+    );
+    response
+        .headers()
+        .get(header::ALLOW)
+        .unwrap_or_else(|| panic!("the 405 for {path} carries an Allow header"))
+        .to_str()
+        .expect("Allow is ASCII")
+        .to_string()
+}
+
+/// The direction the path-only inventory left open: adding or removing a method
+/// on a path that already exists changes no path string, so every other test in
+/// this file stays green while the surface has actually moved. The `405` probe
+/// already names the registered methods in its `Allow` header, so pinning them
+/// costs no extra request and runs no handler.
+#[tokio::test]
+async fn every_registered_method_set_matches_the_inventory() {
+    let (config, _env) = all_surfaces_config("methods");
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
+
+    for (path, documented) in all_registered_entries() {
+        let allowed = allowed_methods(&router, &probe_path(path)).await;
+        assert_eq!(
+            method_set(&allowed),
+            method_set(documented),
+            "{path} answers {allowed:?} but this test's inventory documents {documented:?}. \
+             Adding or removing a method on an existing path means updating it here too — and, \
+             per docs/admin-ui-delivery.md, reviewing it against the /admin, /admin/api and \
+             reserved /v1/organizations path split first."
+        );
     }
 }
 
