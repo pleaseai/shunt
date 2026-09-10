@@ -37,7 +37,7 @@ ui = ["dep:rust-embed", "dep:mime_guess"]
 [dependencies]
 anyhow = "1"
 arc-swap = "1.9.2"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }

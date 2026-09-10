@@ -84,6 +84,10 @@ http_headers = { "x-shunt-token" = "<token>" }
 
 没有 `[server.auth]` 时,该端点对任何能触达它的人开放 —— 对回环或个人使用可以接受,对共享网关则不行。客户端提供的凭据**仅**用于向 shunt 认证:它(以及 CLI 碰巧发送的任何 `Authorization`)都会被剥除,绝不转发到上游。`[server.admin]` 的凭据头部 —— 默认 `x-shunt-admin-token`,或 `[server.admin] header` 指定的名字 —— 同样会被剥除,因为管理面正是在该槽位上认证,而管理凭据可以开通上游账户。整个 `cookie` 头部也会被剥除:管理面同样在该槽位接受写入级会话 cookie,而 shunt 不保留 cookie jar,上游不会依赖它。`x-api-key` 也会被无条件剥除 —— 即使未配置 `[server.auth]` 也是如此,因为目标提供方在启动时就被校验为仅 `chatgpt_oauth`,所以入站的 `x-api-key` 值永远不可能是该上游的有效凭据;像 Claude Code 的 `apiKeyHelper` 那样在 `Authorization` 和 `x-api-key` 中填入同一个密钥的客户端,也不会因为第二个槽位而泄露该密钥。由于入站客户端是真正的 Codex CLI,该透传会逐字转发它的请求头部(`version`、`originator`、`OpenAI-Beta`、`x-codex-*` 等),并**只**换入所选池账户的 `Authorization` bearer 与 `chatgpt-account-id`。完整的认证演练见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#3-提供-shunt-客户端-token当配置了-serverauth-时)。
 
+## WebSocket 传输
+
+这三个 Responses 路径同时接受 HTTP `POST` 和经过身份验证的 WebSocket `GET` 升级。身份验证在 `101 Switching Protocols` 之前完成。在套接字上，`generate: false` 预热在本地完成；常规的 `response.create` 帧复用 HTTP 账户池，强制上游流式传输，并在第一个终端事件之前将每个 SSE `data:` 有效载荷作为 WebSocket 文本帧转发。替换轮次或关闭套接字将取消活动的上游请求体。客户端帧和 SSE 事件限制为 4 MiB，发送应用有界背压，协议/上游故障使用仅包含安全响应元数据的独立 `type: "error"` 帧。
+
 ## 账户预配
 
 复用与 [Codex 多账户](/zh-cn/guides/codex-multi-account/#配置账户池)相同的账户池:
@@ -165,7 +169,7 @@ shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，�
 - **基于模型的路由是可选项。**默认情况下每个请求都发往 `[server.codex_endpoint]` 中指定的那一个提供方,请求体的 `model` 字段原样转发。配置 `[[server.codex_endpoint.routes]]` 后,精确匹配的 `model` 会改为选中该条目的提供方 —— 参见[把模型路由到其他上游](#把模型路由到其他上游)。
 - **耗尽时逐字中继。**如果所有池化账户都已尝试过,并且至少收到过一个上游响应,shunt 会原样中继最后那个响应,而不是把它重新塑形成 Anthropic 风格的错误 —— 因为 Responses 客户端期待的是它从真实 ChatGPT 后端会得到的原始形态。
 - **网关自身的错误使用 OpenAI 形态。**当失败源自 shunt 自己时 —— 客户端 token 错误或缺失(`401`)、账户池不可用且没有任何上游响应(`502`)、请求体过大,或端点未配置 —— shunt 会以 OpenAI Responses 的错误形态(`{"error":{"message":…,"type":…,"code":null}}`)返回,并保持相同的状态码,这样 Codex CLI 就能走它自己的错误解析路径,而不是 Anthropic 的 `{"type":"error",…}` 信封。被中继的*上游*错误(来自后端的 429/4xx/5xx)仍然逐字透传。
-- **仅 HTTP/SSE。**即使目标提供方设置了 `websocket = true`,这个端点也始终使用 HTTP 传输。
+- **两种入站传输。** HTTP `POST` 保持字节级保真；WebSocket `GET` 添加了有界事件交付，且不依赖于提供方的出站 `websocket = true` 设置。
 
 ## 安全
 
