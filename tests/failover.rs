@@ -198,6 +198,16 @@ async fn post_path(
     request.send().await.unwrap()
 }
 
+async fn post_body(gateway: &TestGateway, body: Value) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap()
+}
+
 fn assert_gateway_headers(response: &reqwest::Response, upstream: &str, upstream_model: &str) {
     assert_eq!(response.headers()["x-gateway-upstream"], upstream);
     assert_eq!(response.headers()["x-gateway-model"], CLIENT_MODEL);
@@ -241,6 +251,119 @@ async fn chain_order_stops_at_first_healthy_upstream() {
     assert_eq!(response.text().await.unwrap(), r#"{"winner":"first"}"#);
     first.verify().await;
     second.verify().await;
+}
+
+#[tokio::test]
+async fn capability_filter_skips_incompatible_target_and_reaches_compatible_fallback() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let primary = MockServer::start().await;
+    let incompatible = MockServer::start().await;
+    let compatible = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("advance"))
+        .expect(1)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&incompatible)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("compatible"))
+        .expect(1)
+        .mount(&compatible)
+        .await;
+    let config = chain_config(
+        vec![
+            passthrough("primary", primary.uri()),
+            upstream(
+                "responses",
+                incompatible.uri(),
+                ProviderKind::Responses,
+                UpstreamAuth::Shorthand(AuthMode::Passthrough),
+            ),
+            passthrough("anthropic", compatible.uri()),
+        ],
+        &[
+            ("primary", "primary-model"),
+            ("responses", "responses-model"),
+            ("anthropic", "anthropic-model"),
+        ],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post_body(
+        &gateway,
+        json!({
+            "model":CLIENT_MODEL,
+            "max_tokens":16,
+            "messages":[{"role":"user","content":"json please"}],
+            "output_config":{"format":{"type":"json_schema","schema":{"type":"object"}}}
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_gateway_headers(&response, "anthropic", "anthropic-model");
+    assert_eq!(response.text().await.unwrap(), "compatible");
+    primary.verify().await;
+    incompatible.verify().await;
+    compatible.verify().await;
+}
+
+#[tokio::test]
+async fn capability_filter_keeps_primary_but_suppresses_fallback_for_1m_requirement() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("primary-only"))
+        .expect(1)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&fallback)
+        .await;
+    let config = chain_config(
+        vec![
+            passthrough("primary", primary.uri()),
+            passthrough("fallback", fallback.uri()),
+        ],
+        &[("primary", "large-model-a"), ("fallback", "large-model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post_body(
+        &gateway,
+        json!({
+            "model":format!("{CLIENT_MODEL}[1m]"),
+            "max_tokens":16,
+            "messages":[{"role":"user","content":"long context"}]
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.headers()["x-gateway-upstream"], "primary");
+    assert_eq!(
+        response.headers()["x-gateway-model"],
+        format!("{CLIENT_MODEL}[1m]")
+    );
+    assert_eq!(
+        response.headers()["x-gateway-upstream-model"],
+        "large-model-a"
+    );
+    assert_eq!(response.text().await.unwrap(), "primary-only");
+    primary.verify().await;
+    fallback.verify().await;
 }
 
 #[tokio::test]

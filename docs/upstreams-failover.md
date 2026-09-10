@@ -121,9 +121,18 @@ strict per-provider auth objects.
 - The `[1m]` context-window-hint stripping and effort defaulting apply per
   chain element as today.
 
+- After the chain is resolved, later elements may be dropped when the request
+  needs a feature that adapter is known not to serve (tools, images,
+  structured output, explicit reasoning effort, or a `[1m]`/`[1M]`
+  context hint). The primary is always kept. A `[1m]`/`[1M]` hint currently
+  excludes every fallback because no adapter advertises a verified 1M path.
+  Exclusions are logged and counted as `capability_excluded`; they are not
+  remembered as best failures.
+
 ## 3. Failover loop (proxy) — reference contract
 
-Wraps adapter dispatch in `forward()`. Per attempt, in chain order:
+After routing, `filter_fallbacks` may shrink the remaining list. `forward()` then
+walks that list in chain order:
 
 1. Dispatch to the element's adapter. The response status is known before the
    body streams (lazy body), so inspecting it buffers nothing.
@@ -300,6 +309,7 @@ Documented user-facing in the site guide; summarized here.
 | Schema, presets, auth map, validation, implicit upstreams | `src/config.rs` (split new modules if it would exceed the 500-line file guidance: e.g. `src/config/upstreams.rs`, `src/config/presets.rs`) |
 | Chain resolution | `src/routing.rs` |
 | Failover loop, headers, gating, metrics | `src/proxy.rs`, `src/metrics.rs`, `src/adapters/mod.rs`, `src/adapters/responses/error.rs`, `src/adapters/cursor/mod.rs`, `src/model/responses.rs` |
+| Capability-aware fallback filter | `src/proxy/capability.rs` |
 | Account-state re-keying, auth-map credential resolution, persistence version bump | `src/accounts.rs`, `src/state_persist.rs`, `src/usage_poll.rs`, `src/adapters/anthropic/mod.rs`, `src/adapters/responses/pool.rs`, `src/auth/mod.rs`, `src/admin/` |
 | Tests | config/routing unit tests; `tests/passthrough.rs`-style wiremock integration tests for chain order, advance classes, best-failure preference, header parity, gating, raw status/failure-class propagation through every adapter path |
 

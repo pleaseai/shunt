@@ -60,6 +60,7 @@ pub(super) async fn forward(
                 response: Box::new(error.into_response()),
             }
         })?;
+    super::capability::filter_fallbacks(&mut routes, body.json(), &requested_model);
     crate::observability::record_requested_model(&requested_model);
     // Records the request's final outcome exactly once, at whichever terminal
     // return point below is taken — the intermediate per-attempt failover
