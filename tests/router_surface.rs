@@ -42,6 +42,7 @@ use shunt::{
     server,
 };
 use std::collections::BTreeSet;
+use std::sync::{Mutex, MutexGuard};
 use tower::ServiceExt;
 
 /// A method no route in the crate registers, so a response distinguishes
@@ -101,6 +102,41 @@ const ADMIN_PATHS: [(&str, &str); 16] = [
     ("/admin/api/accounts/codex/{name}", "DELETE"),
 ];
 
+/// The five routes `--features ui` adds inside the `/admin` mount, spelled as
+/// `src/admin/mod.rs` registers them. They are literals in that source whether
+/// or not the feature is on, so the source scans below read them
+/// unconditionally — [`UI_PROBE_PATHS`] is the subset the *runtime* probes can
+/// see, and it exists only when the routes do.
+///
+/// `/admin/api` and `/admin/api/` are registered separately from
+/// `/admin/api/{*path}` because a wildcard segment must match at least one
+/// character: without them the namespace root falls through to `/admin/{*path}`
+/// and answers the HTML shell.
+const UI_LITERAL_PATHS: [&str; 5] = [
+    "/admin/assets/{*path}",
+    "/admin/api",
+    "/admin/api/",
+    "/admin/api/{*path}",
+    "/admin/{*path}",
+];
+
+/// The two UI catch-alls the `404`-vs-`405` oracle can read back. The three
+/// `/admin/api` ones are registered with `any` and answer `404` for every
+/// method — deliberately, so an unmatched path in the JSON namespace stays a
+/// `404` instead of becoming the HTML shell — which makes them indistinguishable
+/// from an unregistered path to this probe. `tests/admin_ui.rs` asserts their
+/// behavior directly instead (including
+/// `the_json_namespace_catch_all_answers_every_method`, which is what stops a
+/// method-specific regression from hiding here), and
+/// [`no_undocumented_path_is_registered`] keeps probing `/admin/api/*`
+/// near-misses exactly as before, because that catch-all does not change their
+/// answer.
+#[cfg(feature = "ui")]
+const UI_PROBE_PATHS: [(&str, &str); 2] = [
+    ("/admin/assets/{*path}", "GET,HEAD"),
+    ("/admin/{*path}", "GET,HEAD"),
+];
+
 const GATEWAY_PATHS: [(&str, &str); 10] = [
     ("/.well-known/oauth-authorization-server", "GET,HEAD"),
     ("/oauth/device_authorization", "POST"),
@@ -144,20 +180,38 @@ const USAGE_PATHS: [(&str, &str); 2] = [("/usage", "GET,HEAD"), ("/api/oauth/usa
 /// Substitute a concrete segment for each path placeholder, so a template from
 /// the inventory can be sent as a real request.
 fn probe_path(template: &str) -> String {
-    template.replace("{name}", "acct").replace("{id}", "spl_1")
+    template
+        .replace("{name}", "acct")
+        .replace("{id}", "spl_1")
+        .replace("{*path}", "probe")
 }
 
 /// Every inventory entry, in the order the groups above declare them.
 fn all_registered_entries() -> Vec<(&'static str, &'static str)> {
-    BASE_PATHS
+    let entries = BASE_PATHS
         .iter()
         .chain(ADMIN_PATHS.iter())
         .chain(GATEWAY_PATHS.iter())
         .chain(SPEND_PATHS.iter())
         .chain(CODEX_ENDPOINT_PATHS.iter())
-        .chain(USAGE_PATHS.iter())
-        .copied()
-        .collect()
+        .chain(USAGE_PATHS.iter());
+    #[cfg(feature = "ui")]
+    let entries = entries.chain(UI_PROBE_PATHS.iter());
+    entries.copied().collect()
+}
+
+/// Every path the *source* registers as a literal, which is a superset of the
+/// runtime inventory: the UI catch-alls are written in `src/admin/mod.rs`
+/// whether or not `--features ui` compiles them in, so the scans below must
+/// recognise them either way.
+fn documented_literal_paths() -> Vec<&'static str> {
+    let mut paths = all_registered_paths();
+    for path in UI_LITERAL_PATHS {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
 }
 
 /// Just the paths of [`all_registered_entries`], for the source scans — they
@@ -179,6 +233,17 @@ fn method_set(allow: &str) -> BTreeSet<&str> {
         .collect()
 }
 
+/// Serializes every test in this binary that touches the process environment.
+///
+/// The per-test-unique names in [`all_surfaces_config`] stop one test's value
+/// from satisfying another test's config, but they do not make `set_var` safe
+/// on their own: the hazard is a writer racing a **reader**, and
+/// `server::build_router` reads the environment while a sibling test may be
+/// writing it. So the lock has to span the writes, the `build_router` that
+/// reads them, and the [`EnvVars`] cleanup — holding it for the writes alone
+/// would exclude nothing.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
 /// `Config::default()` with **every** optional surface enabled at once.
 ///
 /// Env-backed credentials get per-process-unique names because the process
@@ -189,6 +254,12 @@ fn method_set(allow: &str) -> BTreeSet<&str> {
 /// — so building a router never reads or writes the operator's real
 /// `~/.shunt` state.
 fn all_surfaces_config(label: &str) -> (Config, EnvVars) {
+    // A poisoned lock only means another test panicked while holding it; the
+    // environment is still ours to use, so recover rather than cascade.
+    let guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let suffix = format!("{}_{label}", std::process::id());
     let admin_env = format!("SHUNT_ROUTER_SURFACE_ADMIN_{suffix}");
     let client_env = format!("SHUNT_ROUTER_SURFACE_CLIENT_{suffix}");
@@ -269,29 +340,37 @@ fn all_surfaces_config(label: &str) -> (Config, EnvVars) {
 
     (
         config,
-        EnvVars(vec![
-            admin_env_name,
-            client_env_name,
-            jwt_env_name,
-            users_env_name,
-        ]),
+        EnvVars {
+            names: vec![
+                admin_env_name,
+                client_env_name,
+                jwt_env_name,
+                users_env_name,
+            ],
+            _guard: guard,
+        },
     )
 }
 
 /// Removes the env vars [`all_surfaces_config`] set once the test holding it
-/// finishes. The per-process-unique names already stop one test's value from
-/// satisfying another's config, so this is hygiene rather than isolation — but
+/// finishes, and holds [`ENV_LOCK`] until then so no sibling test reads the
+/// environment mid-write. The per-process-unique names already stop one test's
+/// value from satisfying another's config, so the removal itself is hygiene
+/// rather than isolation — the lock is what provides isolation — but
 /// it matches the set/remove pairing every other test file here uses
 /// (`tests/admin_surface.rs` pairs all 91 of its `set_var` calls), and keeps the
 /// variables from outliving their test for the rest of the binary's run.
 ///
 /// Removal happens on drop, at the end of the test body, never at its start:
 /// clearing shared globals on entry is what breaks a neighbour mid-run.
-struct EnvVars(Vec<String>);
+struct EnvVars {
+    names: Vec<String>,
+    _guard: MutexGuard<'static, ()>,
+}
 
 impl Drop for EnvVars {
     fn drop(&mut self) {
-        for name in &self.0 {
+        for name in &self.names {
             std::env::remove_var(name);
         }
     }
@@ -404,16 +483,32 @@ async fn no_undocumented_path_is_registered() {
     // Deliberately near-misses of registered paths, plus `/v1/organizations/*`
     // members shunt does not implement (`docs/admin-ui-delivery.md` reserves
     // that namespace for the Anthropic-shaped Admin API).
+    //
+    // The two `/admin/api/*` near-misses stay here with `--features ui` on:
+    // that namespace's catch-all answers `404` for every method, which is the
+    // whole point of registering it separately from the SPA fallback, so the
+    // oracle still reads them as unregistered. `/admin/nope` is the one that
+    // moves — under the feature it is a deep link and must return the shell,
+    // which `an_unmatched_path_under_the_mount_returns_the_shell` in
+    // `tests/admin_ui.rs` asserts.
+    #[cfg(not(feature = "ui"))]
+    let unmatched_under_the_mount: &[&str] = &["/admin/nope"];
+    #[cfg(feature = "ui")]
+    let unmatched_under_the_mount: &[&str] = &[];
+
     for path in [
         "/nope",
         "/v1/nope",
-        "/admin/nope",
         "/admin/api/accounts/gemini",
         "/admin/api/accounts/codex/acct/refresh",
         "/oauth/authorize",
         "/v1/organizations/spend_limits/spl_1/effective",
         "/v1/organizations/spend_limits/spl_1/audit",
-    ] {
+    ]
+    .iter()
+    .chain(unmatched_under_the_mount)
+    .copied()
+    {
         assert!(
             !path_is_registered(&router, path).await,
             "{path} answers but is not in the documented inventory"
@@ -445,6 +540,7 @@ const LEGACY_ADMIN_PATHS: [&str; 13] = [
 /// links. A compatibility shim reintroduced later would fail here, which is the
 /// point: the whole reason the move is one breaking change is that a surviving
 /// alias blocks the deep link of the same name.
+#[cfg(not(feature = "ui"))]
 #[tokio::test]
 async fn no_legacy_admin_path_survives_the_api_split() {
     let (config, _env) = all_surfaces_config("legacy");
@@ -455,6 +551,30 @@ async fn no_legacy_admin_path_survives_the_api_split() {
             !path_is_registered(&router, &probe_path(path)).await,
             "{path} still answers; Resolution 6 removes the legacy admin paths rather than \
              aliasing them, because an alias blocks the SPA deep link of the same name"
+        );
+    }
+}
+
+/// The same invariant once the SPA fallback exists: every legacy path is now a
+/// deep link, so it answers — but only as the fallback does, `GET`/`HEAD` and
+/// nothing else. That is the assertion the plain "does not answer" form cannot
+/// make here: a surviving `POST`-only mutation or `DELETE` alias would widen the
+/// `Allow` set, and a surviving `GET` handler would have to be registered on the
+/// exact path, which `every_registered_literal_path_is_documented` would fail
+/// first. Resolution 6's promise is that these paths belong to the UI now.
+#[cfg(feature = "ui")]
+#[tokio::test]
+async fn every_legacy_admin_path_is_now_only_an_spa_deep_link() {
+    let (config, _env) = all_surfaces_config("legacy");
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
+
+    for path in LEGACY_ADMIN_PATHS {
+        let allowed = allowed_methods(&router, &probe_path(path)).await;
+        assert_eq!(
+            method_set(&allowed),
+            method_set("GET,HEAD"),
+            "{path} answers {allowed:?}; after Resolution 6 it is an SPA deep link served by the \
+             `/admin/{{*path}}` fallback, so any other method means a legacy handler survived"
         );
     }
 }
@@ -533,7 +653,7 @@ fn registered_literal_paths(source: &str) -> Vec<&str> {
 /// [`INDIRECT_PATH_SOURCES`] scans those definitions to close that direction.
 #[test]
 fn every_registered_literal_path_is_documented() {
-    let inventory = all_registered_paths();
+    let inventory = documented_literal_paths();
     for (file, source) in ROUTER_SOURCES {
         for path in registered_literal_paths(source) {
             assert!(
@@ -555,11 +675,14 @@ fn the_source_scan_finds_every_literal_registration() {
         .iter()
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
-    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 16 admin,
-    // 7 gateway (its 3 OTLP paths come from `Signal::path()`), 2 spend.
+    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 16 admin plus
+    // the 5 UI routes, 7 gateway (its 3 OTLP paths come from `Signal::path()`),
+    // 2 spend. The UI five are counted unconditionally: this scan reads source
+    // text, and `#[cfg(feature = "ui")]` does not remove the `.route("…"`
+    // literals from it.
     assert_eq!(
-        found, 34,
-        "the literal-path scan found {found} registrations, not 34; either a route was added or \
+        found, 39,
+        "the literal-path scan found {found} registrations, not 39; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }
@@ -622,7 +745,7 @@ fn string_literals_in_block<'a>(source: &'a str, open: &str, close: &str) -> Vec
 /// Reading the definitions back out of their own source closes that direction.
 #[test]
 fn every_indirectly_registered_path_is_documented() {
-    let inventory = all_registered_paths();
+    let inventory = documented_literal_paths();
     for (file, source, open, close) in INDIRECT_PATH_SOURCES {
         for path in string_literals_in_block(source, open, close) {
             assert!(

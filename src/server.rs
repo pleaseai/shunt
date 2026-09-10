@@ -224,7 +224,10 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
 
     // Opt-in admin surface (M9): registered only when `[server.admin]` is set,
     // so the default HTTP surface is unchanged. Its handlers authenticate every
-    // request against the separate `[server.admin]` credential.
+    // request against the separate `[server.admin]` credential, with two
+    // deliberate exceptions: the server-rendered login flow, and — under
+    // `--features ui` — the SPA shell and its bundle files, which carry no
+    // operator data (`crate::admin::ui`).
     if admin_enabled {
         router = router.merge(admin::admin_router());
     }

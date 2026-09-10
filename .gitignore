@@ -12,6 +12,10 @@ site/.astro/
 site/dist/
 site/.wrangler/
 
+# Admin SPA (`--features ui` embeds ui/dist) build artifacts
+ui/node_modules/
+ui/dist/
+
 # Local worktrees created by the worktree workflow (per-branch, not shared)
 .claude/worktrees/
 

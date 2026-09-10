@@ -12,6 +12,10 @@
 //! or a `[[server.admin.write_keys]]`/`[[server.admin.read_keys]]` entry; the
 //! read tier passes every GET and is refused on every mutation, the login form
 //! included.
+//! Built with `--features ui`, the SPA shell and its bundle files are the one
+//! part of this surface served without any admin credential — they carry no
+//! operator data, and everything the SPA reads sits behind `/admin/api/*`,
+//! which authenticates normally (see [`ui`]).
 //! The provisioning flow reuses provider OAuth internals for Claude full/setup
 //! logins and refreshable ChatGPT/Codex logins; token values are never returned
 //! to the browser or logged. See `docs/m9-admin-surface.md`.
@@ -23,9 +27,13 @@ mod html;
 mod oidc;
 mod plan;
 mod script;
+#[cfg(feature = "ui")]
+mod ui;
 
 use std::{collections::HashSet, io, sync::Arc, time::Duration};
 
+#[cfg(feature = "ui")]
+use axum::routing::any;
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
     http::{header, HeaderMap, HeaderName, StatusCode},
@@ -49,6 +57,8 @@ use crate::{
 
 pub use plan::reset_profile_cache;
 pub use session::AdminStores;
+#[cfg(feature = "ui")]
+pub use ui::embedded_file_count;
 
 use session::{PendingAttempt, PendingKind};
 
@@ -218,8 +228,14 @@ fn keep_higher(
 }
 
 /// The admin route tree, merged into the main router only when admin is enabled.
+///
+/// With `--features ui` the tree also carries the three embedded-SPA routes (see
+/// [`ui`]). They are catch-alls, and matchit prefers a static or `{param}`
+/// segment over one, so every exact route above keeps answering; `/admin/api/`
+/// gets its own catch-all so an unmatched JSON path stays a `404` rather than
+/// becoming the HTML shell (`docs/admin-ui-delivery.md`, Decision 3).
 pub fn admin_router() -> Router<AppState> {
-    Router::new()
+    let router = Router::new()
         .route("/admin", get(dashboard))
         .route("/admin/login", get(login_page).post(login_submit))
         .route("/admin/api/oidc/start", post(oidc::start))
@@ -253,7 +269,21 @@ pub fn admin_router() -> Router<AppState> {
         .route(
             "/admin/api/accounts/codex/{name}",
             delete(codex::remove_codex_account_handler),
-        )
+        );
+
+    #[cfg(feature = "ui")]
+    let router = router
+        .route("/admin/assets/{*path}", get(ui::asset))
+        // The namespace root needs its own registration: a `{*path}` segment
+        // must match at least one character, so `/admin/api` and `/admin/api/`
+        // would otherwise fall through to `/admin/{*path}` and answer the HTML
+        // shell — the failure the separate JSON catch-all exists to prevent.
+        .route("/admin/api", any(ui::api_not_found))
+        .route("/admin/api/", any(ui::api_not_found))
+        .route("/admin/api/{*path}", any(ui::api_not_found))
+        .route("/admin/{*path}", get(ui::shell));
+
+    router
 }
 
 /// How a request authenticated, which decides whether CSRF applies.

@@ -33,6 +33,8 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/admin/api/accounts/codex` | `{name}` で ChatGPT OAuth を開始し、`{authorize_url}` を返す |
 | `POST` | `/admin/api/accounts/codex/{name}/complete` | localhost の redirect URL 全体または `<code>#<state>` を含む `{code}` で Codex プロビジョニングを完了 |
 | `DELETE` | `/admin/api/accounts/codex/{name}` | 指定した Codex アカウントのストアファイルを削除 |
+| `GET` | `/admin/assets/{*path}` | 埋め込まれた管理 SPA バンドルのファイル。拡張子に応じた `Content-Type` と `X-Content-Type-Options: nosniff` を付けて返します。`--features ui` でビルドしたバイナリにのみ存在 |
+| `GET` | `/admin/{*path}` | `/admin` マウント配下でどのルートにも一致しないパスに対する SPA シェル。クライアント側のディープリンクがリロード後も維持されます。`--features ui` でビルドしたバイナリにのみ存在 |
 | `POST` | `/backend-api/codex/responses` | Inbound Codex CLI パススルー — 実際の ChatGPT バックエンドパスをミラー |
 | `POST` | `/responses` | Inbound Codex CLI パススルー — bare `base_url` 形式 |
 | `POST` | `/v1/responses` | Inbound Codex CLI パススルー — `/v1` サフィックスの `base_url` 形式 |
@@ -40,12 +42,43 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/codex/analytics-events/events` | Codex CLI analytics sink — ルート形式の `chatgpt_base_url` |
 | `GET` | `/usage` | クライアント向けのサニタイズ済みプール使用量 — 共有アカウントプールのウィンドウごとの残り余裕とリセットに加え、プールされるプロバイダーごとの同じ集計。アカウントの身元や容量は返さない |
 
-`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作では `403` で、`POST /admin/login` では `401` で拒否されます。
+`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作では `403` で、`POST /admin/login` では `401` で拒否されます。ただし SPA シェルとバンドルファイルは例外で、`GET /admin/{*path}` と `GET /admin/assets/{*path}` は管理認証なしで配信されます。これらは運用者のデータを含まず、SPA が読み取る値はすべて、リクエストごとに認証する `/admin/api/*` の背後にあるため安全です。この 2 つのルートも、`[server.admin]` が設定され、かつ `--features ui` でビルドしたバイナリでのみ存在します。
+
+### 管理 SPA バンドル（`--features ui`）
+
+`/admin/assets/{*path}` と `/admin/{*path}` の SPA フォールバックは、
+`--features ui` でビルドしたバイナリにのみ存在します。このビルドは `ui/`
+パッケージから生成したバンドルをバイナリに埋め込みます。既定の `cargo build` は
+Node ツールチェーンを必要とせず、バンドルも持たず、どちらのルートも登録しません。
+配布されているリリースバイナリはこの機能を有効にしてビルドされています。
+
+フォールバックは `/admin` マウント配下に限定されます。
+
+- `/admin/` 配下でどのルートにも一致しないパスは、`200` と `text/html` で SPA
+  シェルを返すため、クライアント側のディープリンクがリロード後も維持されます。
+- `/admin/api/` 配下で一致しないパスは、Anthropic のエラー形状で `404` を返します。
+  この名前空間は UI ではなく JSON であり、HTML を返すとクライアントのエラー処理が
+  壊れるためです。
+- マウントの外側のパスは影響を受けず、これまでどおり `404` を返します。
+
+`GET /admin` は引き続きサーバーレンダリングのダッシュボードを返します。
 
 ### 管理パスの移行
 
 **破壊的変更です。** すべての管理 JSON ルートと変更系ルートが `/admin/*` から `/admin/api/*` へ
-移動しました。古いパスは**エイリアスを残さず削除**され、現在は `404` を返します。
+移動しました。古いパスは**エイリアスを残さず削除**され、どのリクエストも admin ハンドラーには
+到達しなくなりました。
+
+古いパスで何が返るかはビルドによって異なるため、そこでの `200` を成功と見なさないでください:
+
+- **デフォルトビルド** — パスがどこにも登録されておらず、`404` を返します。
+- **`--features ui`**(ビルド済みリリースバイナリはこちら)— `GET` はマウント配下の他のディープ
+  リンクと同様に `/admin/{*path}` の SPA フォールバックへ落ち、`200 text/html` のシェルを返します。
+  `HEAD` も同じです。それ以外のメソッドは `Allow: GET,HEAD` を伴う `405` を返します — フォールバックが
+  `any` ではなく `get` で登録されているためです。
+
+そのため古い `GET` URL のままのスクリプトは、移行を示すシグナルではなく HTML を受け取ります。
+`/admin/api/*` へ移してください。レスポンスの `Content-Type` が確実な判別基準です。
 
 `/admin` はダッシュボードのシェルとして残り、`/admin/login` と `/admin/oidc/callback` もそのままです
 — これらは API ルートではなく、サーバー側でレンダリングされるページだからです。それ以外はすべて

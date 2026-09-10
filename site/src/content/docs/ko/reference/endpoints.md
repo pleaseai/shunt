@@ -33,6 +33,8 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/admin/api/accounts/codex` | `{name}`으로 ChatGPT OAuth 시작; `{authorize_url}` 반환 |
 | `POST` | `/admin/api/accounts/codex/{name}/complete` | 전체 localhost redirect URL 또는 `<code>#<state>`가 담긴 `{code}`로 Codex 프로비저닝 완료 |
 | `DELETE` | `/admin/api/accounts/codex/{name}` | 해당 이름 Codex 계정의 스토어 파일 제거 |
+| `GET` | `/admin/assets/{*path}` | 내장된 관리자 SPA 번들 파일. 확장자에 해당하는 `Content-Type`과 `X-Content-Type-Options: nosniff`를 함께 반환합니다. `--features ui`로 빌드한 바이너리에만 존재 |
+| `GET` | `/admin/{*path}` | `/admin` 마운트 아래에서 다른 라우트에 걸리지 않은 경로에 대한 SPA 셸. 클라이언트 측 딥링크가 새로고침에도 유지됩니다. `--features ui`로 빌드한 바이너리에만 존재 |
 | `POST` | `/backend-api/codex/responses` | 인바운드 Codex CLI 패스스루 — 실제 ChatGPT 백엔드 경로 미러 |
 | `POST` | `/responses` | 인바운드 Codex CLI 패스스루 — bare `base_url` 형식 |
 | `POST` | `/v1/responses` | 인바운드 Codex CLI 패스스루 — `/v1` 접미 `base_url` 형식 |
@@ -40,12 +42,42 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/codex/analytics-events/events` | Codex CLI 분석 sink — 루트형 `chatgpt_base_url` 형식 |
 | `GET` | `/usage` | 클라이언트용 정제된 풀 사용량 — 공유 계정 풀의 창별 잔여 여유와 리셋, 그리고 풀링되는 프로바이더별 동일 집계를 반환하며 계정 신원이나 용량은 반환하지 않음 |
 
-`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로, `POST /admin/login`에서는 `401`로 거부됩니다.
+`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로, `POST /admin/login`에서는 `401`로 거부됩니다. 다만 SPA 셸과 번들 파일은 예외로, `GET /admin/{*path}`와 `GET /admin/assets/{*path}`는 관리자 인증 없이 제공됩니다. 이 둘은 운영자 데이터를 담지 않고, SPA가 읽는 값은 모두 요청마다 인증하는 `/admin/api/*` 뒤에 있으므로 안전합니다. 두 라우트 역시 `[server.admin]`이 구성되고 `--features ui`로 빌드한 바이너리에서만 존재합니다.
+
+### 관리자 SPA 번들(`--features ui`)
+
+`/admin/assets/{*path}`와 `/admin/{*path}` SPA 폴백은 `--features ui`로 빌드한
+바이너리에만 존재하며, 이 빌드는 `ui/` 패키지에서 만든 번들을 바이너리에
+내장합니다. 기본 `cargo build`는 Node 툴체인이 필요 없고 번들도 없으며 두 라우트
+모두 등록하지 않습니다. 미리 빌드된 릴리스 바이너리는 이 기능을 켜고 빌드합니다.
+
+폴백은 `/admin` 마운트 안으로 한정됩니다:
+
+- `/admin/` 아래에서 다른 라우트에 걸리지 않은 경로는 `200`과 `text/html`로 SPA
+  셸을 반환하므로, 클라이언트 측 딥링크가 새로고침에도 유지됩니다.
+- `/admin/api/` 아래에서 걸리지 않은 경로는 Anthropic 오류 형태의 `404`를
+  반환합니다 — 이 네임스페이스는 UI가 아니라 JSON이며, HTML로 답하면 클라이언트의
+  오류 처리가 깨집니다.
+- 마운트 밖의 경로는 영향을 받지 않고 그대로 `404`입니다.
+
+`GET /admin`은 계속해서 서버 렌더링 대시보드를 제공합니다.
 
 ### 관리자 경로 마이그레이션
 
 **호환성이 깨지는 변경입니다.** 모든 관리자 JSON 라우트와 변경 라우트가 `/admin/*`에서
-`/admin/api/*`로 이동했습니다. 이전 경로는 **별칭으로 남지 않고 제거되어** 이제 `404`를 반환합니다.
+`/admin/api/*`로 이동했습니다. 이전 경로는 **별칭으로 남지 않고 제거되어** 이제 어떤 요청도
+admin 핸들러에 도달하지 않습니다.
+
+이전 경로에서 무엇이 돌아오는지는 빌드에 따라 다르므로, 그곳의 `200`을 성공으로 취급하면 안 됩니다:
+
+- **기본 빌드** — 경로가 어디에도 등록되지 않아 `404`를 반환합니다.
+- **`--features ui`** (미리 빌드된 릴리스 바이너리가 이쪽입니다) — `GET`은 마운트 하위의 다른 딥링크와
+  마찬가지로 `/admin/{*path}` SPA 폴백으로 넘어가 `200 text/html` 셸을 반환합니다. `HEAD`도
+  같습니다. 그 외 메서드는 `Allow: GET,HEAD`와 함께 `405`를 반환합니다 — 폴백이 `any`가 아니라
+  `get`으로 등록돼 있기 때문입니다.
+
+따라서 이전 `GET` URL에 남아 있는 스크립트는 마이그레이션 신호가 아니라 HTML을 받습니다.
+`/admin/api/*`로 옮기세요. 응답의 `Content-Type`이 확실한 판별 기준입니다.
 
 `/admin`은 대시보드 셸로 남고, `/admin/login`과 `/admin/oidc/callback`도 그대로입니다 — 이들은
 API 라우트가 아니라 서버에서 렌더링되는 페이지입니다. 나머지는 모두 이동했으며, 이는 대시보드가
