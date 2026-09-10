@@ -12,6 +12,10 @@
 //! or a `[[server.admin.write_keys]]`/`[[server.admin.read_keys]]` entry; the
 //! read tier passes every GET and is refused on every mutation, the login form
 //! included.
+//! Built with `--features ui`, the SPA shell and its bundle files are the one
+//! part of this surface served without any admin credential — they carry no
+//! operator data, and everything the SPA reads sits behind `/admin/api/*`,
+//! which authenticates normally (see [`ui`]).
 //! The provisioning flow reuses provider OAuth internals for Claude full/setup
 //! logins and refreshable ChatGPT/Codex logins; token values are never returned
 //! to the browser or logged. See `docs/m9-admin-surface.md`.
