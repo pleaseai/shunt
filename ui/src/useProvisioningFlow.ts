@@ -11,6 +11,15 @@ import { useSession } from './session';
  */
 const COMPLETE_TIMEOUT_MS = 120_000;
 
+/**
+ * Said whenever the completion's outcome is genuinely unknown: the request was
+ * abandoned without an answer, or the answer could not be read as one. The code
+ * is single-use, so an operator sent to retry an exchange that already stored
+ * the account gets a confusing second failure — the table is the authority.
+ */
+const UNKNOWN_COMPLETION =
+  'No answer from the server — the account may still have been stored; recheck the table before retrying';
+
 export interface FlowMessage {
   text: string;
   ok: boolean;
@@ -102,7 +111,10 @@ export function useProvisioningFlow({
           body: JSON.stringify(body),
         });
         if (issued !== epoch.current) return;
-        if (!result.ok) {
+        // `!answered` is a failure too: without a readable `authorize_url` the
+        // form has nothing to show, so reporting nothing would leave the
+        // operator staring at a step that never opened.
+        if (!result.ok || !result.answered) {
           setMessage({ text: result.message ?? copy.startFailure, ok: false });
           return;
         }
@@ -136,6 +148,19 @@ export function useProvisioningFlow({
         csrf,
         { method: 'POST', body: JSON.stringify({ code: code.trim() }), signal: abort.signal },
       );
+      // The answer could not be read as JSON, and every admin mutation sends
+      // JSON — so it came from something else (a proxy's error page, a
+      // truncated body) and says nothing about whether the code was exchanged.
+      // That is the same unknown the abandoned-request path below reports, and
+      // it is reported the same way rather than as the definite failure `ok`
+      // alone would make it. `src/admin/script.rs` draws the same line: its
+      // completion handler's `await res.json()` is bare so an unreadable answer
+      // reaches this path, while remove and refresh use `.catch(() => ({}))`.
+      if (!result.answered) {
+        onStored();
+        if (issued === epoch.current) setMessage({ text: UNKNOWN_COMPLETION, ok: false });
+        return;
+      }
       if (!result.ok) {
         if (issued === epoch.current) {
           setMessage({ text: result.message ?? copy.completeFailure, ok: false });
@@ -164,10 +189,7 @@ export function useProvisioningFlow({
       // this surface does not have (issue #440).
       onStored();
       if (issued === epoch.current) {
-        setMessage({
-          text: 'No answer from the server — the account may still have been stored; recheck the table before retrying',
-          ok: false,
-        });
+        setMessage({ text: UNKNOWN_COMPLETION, ok: false });
       }
     } finally {
       clearTimeout(bound);

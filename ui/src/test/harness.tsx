@@ -19,6 +19,20 @@ export function reply(body: unknown, status = 200): Response {
   } as unknown as Response;
 }
 
+/**
+ * A stand-in for an answer this surface cannot read — a proxy's error page, a
+ * truncated body. `json()` rejects the way `Response.json()` does on one.
+ */
+export function unreadable(status = 502): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => {
+      throw new SyntaxError('Unexpected token < in JSON at position 0');
+    },
+  } as unknown as Response;
+}
+
 export type Route = (init: RequestInit | undefined) => Response | Promise<Response>;
 /** Keyed `"<METHOD> <path>"`, e.g. `"GET /admin/api/pool"`. */
 export type Routes = Record<string, Route>;

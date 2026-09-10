@@ -55,6 +55,20 @@ export interface MutationResult {
   ok: boolean;
   message: string | null;
   payload: Record<string, unknown>;
+  /**
+   * Whether the body parsed as a JSON object. Every `/admin/api/*` mutation
+   * answers with one — no admin handler returns a body-less 204 — so `false`
+   * means the answer did not come from the gateway (a proxy's error page, a
+   * truncated body) and so reports nothing about what the request actually did.
+   *
+   * Only a caller whose request is unsafe to retry needs this. The rest may
+   * ignore it and treat an uninterpretable answer as the failure `ok` already
+   * says it is, which is what `src/admin/script.rs` does: its remove and
+   * refresh handlers read the body through `.catch(() => ({}))`, while the
+   * completion handler's `await res.json()` is deliberately bare so an
+   * unreadable answer escalates to its unknown-outcome path.
+   */
+  answered: boolean;
 }
 
 export async function mutate(
@@ -69,10 +83,18 @@ export async function mutate(
     signal: init.signal,
   });
   let payload: Record<string, unknown> = {};
+  let answered = false;
   try {
-    payload = (await response.json()) as Record<string, unknown>;
+    const parsed: unknown = await response.json();
+    // A JSON `null`, array, or bare primitive parses without throwing but is
+    // not an answer this surface can read a field off, so it is not one.
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      payload = parsed as Record<string, unknown>;
+      answered = true;
+    }
   } catch {
-    // A body-less or unparseable answer is still a verdict; `response.ok` carries it.
+    // A body-less or unparseable answer is still a verdict; `response.ok`
+    // carries it, and `answered` tells the callers that need more than that.
   }
-  return { ok: response.ok, message: errorMessage(payload), payload };
+  return { ok: response.ok, message: errorMessage(payload), payload, answered };
 }

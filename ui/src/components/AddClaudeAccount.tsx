@@ -54,7 +54,7 @@ export const AddClaudeAccount = forwardRef<
       nameInput.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
     },
     report: flow.report,
-  }));
+  }), [flow.prime, flow.report]);
 
   return (
     <>

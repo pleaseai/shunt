@@ -9,7 +9,7 @@ import type { AddAccountHandle } from './AddClaudeAccount';
  * The Codex counterpart of the Claude form, and safe for the same reason:
  * `POST /admin/api/accounts/codex` has no duplicate-name guard, and completion
  * captures the pre-store identity, overwrites the account in place, and hands
- * both identities to `cleanup_reprovisioned_pool_health` (`src/admin/codex.rs`).
+ * both identities to `cleanup_reprovisioned_pool_health` (`src/admin/mod.rs`).
  * There is no login method to preselect here — ChatGPT OAuth is the only way
  * into this store.
  */
