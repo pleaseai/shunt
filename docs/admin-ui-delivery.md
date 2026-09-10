@@ -64,10 +64,12 @@ baseline for any new route.
 | `[server.spend]` | `GET`, `DELETE` | `/v1/organizations/spend_limits/{id}` |
 | `[server.usage]` | `GET` | `/usage` |
 | `[server.oauth_usage]` | `GET` | `/api/oauth/usage` |
+| `[server.admin]` + `--features ui` | `GET` | `/admin/assets/{*path}` and `/admin/{*path}` — the embedded SPA bundle and the shell fallback; plus `/admin/api/{*path}`, registered for **every** method so an unmatched JSON path answers `404` rather than the shell (Decision 3). Absent from a default build, which embeds no bundle |
 
 Two properties of this table matter downstream:
 
-- **The router has no wildcard or fallback route anywhere.** An unmatched path
+- **The router has no wildcard or fallback route anywhere** outside the `/admin`
+  mount, which `--features ui` gives the three catch-alls above. An unmatched path
   therefore gets axum's built-in `404` with an **empty body** — not a
   `ShuntError` envelope, since nothing constructs one for a path that reached no
   handler. The status is the part clients depend on, and it is what makes an

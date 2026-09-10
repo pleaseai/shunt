@@ -66,6 +66,19 @@ cargo build --release   # -> target/release/shunt
 
 `cargo run -- <args>` でソースツリーから直接実行することもできます。
 
+既定のビルドは Node ツールチェーンを必要とせず、管理ダッシュボードのバンドルも
+含みません。管理 SPA を埋め込んだバイナリをビルドするには、先にバンドルをビルド
+してから `ui` フィーチャーを有効にします。
+
+```bash
+cd ui && npm ci && npm run build && cd ..
+cargo build --release --features ui
+```
+
+上記の配布リリースバイナリはこの方法でビルドされているため、この手順が必要なのは
+ソースからビルドする場合だけです。このフィーチャーが何を追加するかは
+[エンドポイント](/ja/reference/endpoints/)を参照してください。
+
 ## Claude Code に接続するための前提条件
 
 - **Claude Code** — 最近のバージョンならどれでも。[model discovery](/ja/guides/model-discovery/) が必要な場合のみ v2.1.129+。

@@ -65,6 +65,17 @@ cargo build --release   # -> target/release/shunt
 
 你也可以用 `cargo run -- <args>` 直接从源码树运行。
 
+默认构建不需要 Node 工具链,也不包含管理仪表盘的前端包。若要构建内嵌管理 SPA 的
+二进制,请先构建前端包,再启用 `ui` 特性:
+
+```bash
+cd ui && npm ci && npm run build && cd ..
+cargo build --release --features ui
+```
+
+上面提供的预构建发布二进制就是这样构建的,因此这一步只与从源码构建有关。该特性
+新增了什么,参见[端点](/zh-cn/reference/endpoints/)。
+
 ## 连接 Claude Code 的前置条件
 
 - **Claude Code** —— 任何近期版本;仅当你想使用 [模型发现](/zh-cn/guides/model-discovery/) 时才需要 v2.1.129+。

@@ -33,6 +33,8 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/admin/api/accounts/codex` | 用 `{name}` 开始 ChatGPT OAuth;返回 `{authorize_url}` |
 | `POST` | `/admin/api/accounts/codex/{name}/complete` | 用包含完整 localhost redirect URL 或 `<code>#<state>` 的 `{code}` 完成 Codex 预配 |
 | `DELETE` | `/admin/api/accounts/codex/{name}` | 删除指定 Codex 账户的存储文件 |
+| `GET` | `/admin/assets/{*path}` | 内嵌的管理 SPA 包文件,按扩展名对应的 `Content-Type` 返回,并附带 `X-Content-Type-Options: nosniff`。仅存在于使用 `--features ui` 构建的二进制中 |
+| `GET` | `/admin/{*path}` | `/admin` 挂载点下未匹配任何路由的路径所返回的 SPA 外壳,使客户端深链接在刷新后依然可用。仅存在于使用 `--features ui` 构建的二进制中 |
 | `POST` | `/backend-api/codex/responses` | 入站 Codex CLI 透传 —— 镜像真实 ChatGPT 后端路径 |
 | `POST` | `/responses` | 入站 Codex CLI 透传 —— 裸 `base_url` 形式 |
 | `POST` | `/v1/responses` | 入站 Codex CLI 透传 —— 带 `/v1` 后缀的 `base_url` 形式 |
@@ -41,6 +43,23 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/usage` | 面向客户端的净化池用量 —— 返回共享账户池按窗口的剩余余量和重置时间,以及每个参与池化的提供方的同样聚合,绝不返回账户身份或容量 |
 
 `/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作上会被 `403` 拒绝,在 `POST /admin/login` 上会被 `401` 拒绝。
+
+### 管理 SPA 包(`--features ui`)
+
+`/admin/assets/{*path}` 与 `/admin/{*path}` SPA 回退仅存在于使用 `--features ui`
+构建的二进制中,该构建会把 `ui/` 包产出的前端包内嵌进二进制。默认的 `cargo build`
+不需要 Node 工具链,不包含前端包,也不会注册这两个路由;预构建的发布二进制则启用了
+该特性。
+
+回退被限制在 `/admin` 挂载点之内:
+
+- `/admin/` 下未匹配任何路由的路径会以 `200` 和 `text/html` 返回 SPA 外壳,使客户端
+  深链接在刷新后依然可用;
+- `/admin/api/` 下未匹配的路径会以 Anthropic 错误结构返回 `404` —— 该命名空间是
+  JSON 而不是 UI,用 HTML 作答会破坏客户端的错误处理;
+- 挂载点之外的路径不受影响,仍然返回 `404`。
+
+`GET /admin` 继续提供服务端渲染的仪表盘。
 
 ### 管理路径迁移
 

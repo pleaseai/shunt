@@ -37,6 +37,8 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/admin/api/accounts/codex` | Start ChatGPT OAuth with `{name}`; returns `{authorize_url}` |
 | `POST` | `/admin/api/accounts/codex/{name}/complete` | Complete Codex provisioning with `{code}` containing the full localhost redirect URL or `<code>#<state>`; stores the account and reports whether it is live |
 | `DELETE` | `/admin/api/accounts/codex/{name}` | Remove the named Codex account's store file |
+| `GET` | `/admin/assets/{*path}` | Embedded admin SPA bundle files, each served with the `Content-Type` its extension implies plus `X-Content-Type-Options: nosniff`. Only in a binary built with `--features ui` |
+| `GET` | `/admin/{*path}` | SPA shell for any unmatched path under the `/admin` mount, so a client-side deep link survives a reload. Only in a binary built with `--features ui` |
 | `POST` | `/backend-api/codex/responses` | Inbound Codex CLI passthrough — mirrors the real ChatGPT backend path |
 | `POST` | `/responses` | Inbound Codex CLI passthrough — bare `base_url` form |
 | `POST` | `/v1/responses` | Inbound Codex CLI passthrough — `/v1`-suffixed `base_url` form |
@@ -70,6 +72,25 @@ The `POST /v1/{metrics,logs,traces}` telemetry-ingest routes exist only when [`[
 The spend-limit routes exist only when [`[server.spend]`](/reference/configuration/#serverspend-optional) was configured at boot — independently of `[server.gateway]`, since they authenticate with the [`[server.admin]`](/reference/configuration/#serveradmin-optional) credential. Send that credential in the configured admin header (`x-shunt-admin-token` by default) or in `x-api-key`; both slots are accepted. A write credential (a `write_keys` entry, or a `tokens_env`/`tokens_file` pair) can use every operation, while a `read_keys` credential can use GET only and receives `403` on mutations. `POST` accepts `user` and `organization` scopes, a `daily`/`weekly`/`monthly` period, a `user_id` of 1–256 bytes for user scopes, and an `amount` that is either a 1–19 digit whole-number string of USD cents or `null`. It upserts by `(scope, period)`. List pagination accepts `limit` (1–1000, default 20), `after_id`, `before_id`, and `scope_type`; the two cursors are mutually exclusive. Every response includes `request-id`, and errors use the Anthropic error shape. Caps and mutation audit records persist together in the configured versioned JSON state file, each mutation attributed to `admin-key:<id>` or `admin-token:<name>` — when both slots carry a different credential of the same tier, the configured header is the attributed one. Stage 1 does not expose `/effective` or `/audit` and does not enforce caps on inference requests.
 
 The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration/#serveradmin-optional) is configured; without that table, none of them are registered. They accept the admin credential in the configured header or `x-api-key`, and a `read_keys` credential passes every GET below while being refused with `403` on every mutation and with `401` on `POST /admin/login`. `GET /admin/api/observed` auto-discovers supported Claude Code, Codex CLI, Gemini CLI, Kimi Code, Grok CLI, and Cursor.app credentials on the gateway host. It never refreshes or writes those sources. Claude usage is cached for 60 seconds; Codex usage is response-derived and remains unavailable until traffic through this shunt returns `x-codex-*` headers; the other providers use their first-party read-only quota surfaces. Managed account CRUD and `/admin/api/pool` remain the separate shunt-owned credential lane.
+
+### Admin SPA bundle (`--features ui`)
+
+`/admin/assets/{*path}` and the `/admin/{*path}` SPA fallback exist only in a
+binary built with `--features ui`, which embeds the bundle built from the `ui/`
+package. A default `cargo build` needs no Node toolchain, carries no bundle, and
+registers neither route; the prebuilt release binaries are built with the
+feature.
+
+The fallback is confined to the `/admin` mount:
+
+- an unmatched path under `/admin/` returns the SPA shell as `text/html` with
+  `200`, so a client-side deep link survives a reload;
+- an unmatched path under `/admin/api/` returns `404` in the Anthropic error
+  shape — that namespace is JSON, not UI, and answering it with HTML would break
+  a client's error handling;
+- an unmatched path outside the mount is unaffected and still returns `404`.
+
+`GET /admin` continues to serve the server-rendered dashboard.
 
 ### Admin path migration
 
