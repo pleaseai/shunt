@@ -1,7 +1,9 @@
 //! Gemini adapter implementation for Google Code Assist / Gemini endpoints.
 
+mod sse;
+
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, Response, StatusCode, Uri},
     response::IntoResponse,
 };
@@ -25,6 +27,10 @@ use crate::{
     routing::Route,
     server::AppState,
 };
+
+use self::sse::{Decoder as GeminiSseDecoder, Item as GeminiSseItem};
+
+const MAX_GEMINI_UNARY_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 pub struct GeminiAdapter;
 
@@ -95,27 +101,91 @@ fn set_thinking_level(inner_req: &mut Value, level: &str) {
     }
 }
 
-fn append_gemini_events(line: &[u8], machine: &mut GeminiSseMachine, output: &mut Vec<u8>) {
-    let Ok(line) = std::str::from_utf8(line) else {
-        return;
-    };
-    let line = line.trim();
-    let Some(json_str) = line.strip_prefix("data: ").map(str::trim) else {
-        return;
-    };
-    if json_str.is_empty() || json_str == "[DONE]" {
-        return;
-    }
-    if let Ok(parsed) = serde_json::from_str::<Value>(json_str) {
-        append_sse_events(machine.process_chunk(&parsed), output);
-    }
-}
-
 fn append_sse_events(events: Vec<crate::model::gemini::SseEvent>, output: &mut Vec<u8>) {
     for event in events {
         let formatted = format!("event: {}\ndata: {}\n\n", event.event, event.data);
         output.extend_from_slice(formatted.as_bytes());
     }
+}
+
+fn append_protocol_error(message: impl Into<String>, output: &mut Vec<u8>) {
+    append_sse_events(
+        vec![crate::model::gemini::SseEvent {
+            event: "error".to_string(),
+            data: serde_json::json!({
+                "type": "error",
+                "error": {"type": "api_error", "message": message.into()}
+            }),
+        }],
+        output,
+    );
+}
+
+fn local_gemini_error(message: impl Into<String>) -> AdapterError {
+    let message = message.into();
+    let body = serde_json::json!({
+        "type": "error",
+        "error": {"type": "api_error", "message": message}
+    });
+    AdapterError {
+        message,
+        response: Box::new((StatusCode::BAD_GATEWAY, axum::Json(body)).into_response()),
+        failure: None,
+    }
+}
+
+fn embedded_gemini_error(data: Value) -> AdapterError {
+    let error_type = data
+        .pointer("/error/type")
+        .and_then(Value::as_str)
+        .unwrap_or("api_error");
+    let status = if error_type == "rate_limit_error" {
+        StatusCode::TOO_MANY_REQUESTS
+    } else {
+        StatusCode::BAD_GATEWAY
+    };
+    let message = data
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("Gemini backend error")
+        .to_string();
+    AdapterError {
+        message,
+        response: Box::new((status, axum::Json(data)).into_response()),
+        failure: None,
+    }
+}
+
+async fn collect_unary_response(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, AdapterError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(local_gemini_error(format!(
+            "Gemini response exceeded {max_bytes} bytes"
+        )));
+    }
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| {
+            local_gemini_error(format!("failed to read Gemini response body: {error}"))
+        })?;
+        let new_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| local_gemini_error("Gemini response size overflow"))?;
+        if new_len > max_bytes {
+            return Err(local_gemini_error(format!(
+                "Gemini response exceeded {max_bytes} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 async fn forward(
@@ -259,100 +329,174 @@ async fn forward(
     let token = access_token.clone();
 
     let ttfb_ms = state.config.server.timeouts.upstream_ttfb_ms;
-    let response = crate::retry::send_with_retry(policy, &route.provider, || {
-        let client = http_client.clone();
-        let payload = payload_clone.clone();
-        let endpoint = endpoint_clone.clone();
-        let token = token.clone();
-        let user_agent = user_agent.clone();
-        async move {
-            let mut req = client
-                .post(&endpoint)
-                .header("Content-Type", "application/json");
+    let retry_safety = retry_safety_for_auth(provider.auth);
+    let response =
+        crate::retry::send_with_retry_with_safety(policy, &route.provider, retry_safety, || {
+            let client = http_client.clone();
+            let payload = payload_clone.clone();
+            let endpoint = endpoint_clone.clone();
+            let token = token.clone();
+            let user_agent = user_agent.clone();
+            async move {
+                let mut req = client
+                    .post(&endpoint)
+                    .header("Content-Type", "application/json");
 
-            if let Some(user_agent) = user_agent {
-                req = req.header("User-Agent", user_agent);
+                if let Some(user_agent) = user_agent {
+                    req = req.header("User-Agent", user_agent);
+                }
+
+                if is_google_oauth {
+                    req = req.bearer_auth(&token);
+                } else {
+                    req = req.header("x-goog-api-key", &token);
+                }
+
+                crate::upstream_timeout::wait(ttfb_ms, req.json(&payload).send()).await
             }
-
-            if is_google_oauth {
-                req = req.bearer_auth(&token);
-            } else {
-                req = req.header("x-goog-api-key", &token);
-            }
-
-            crate::upstream_timeout::wait(ttfb_ms, req.json(&payload).send()).await
-        }
-    })
-    .await
-    .map_err(|error| {
-        error.into_adapter_error(|error| AdapterError {
-            message: format!("network error calling Gemini backend: {error}"),
-            response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
-            failure: None,
         })
-    })?;
+        .await
+        .map_err(|error| {
+            error.into_adapter_error(|error| AdapterError {
+                message: format!("network error calling Gemini backend: {error}"),
+                response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
+                failure: None,
+            })
+        })?;
 
     let status = response.status();
     if !status.is_success() {
-        let body_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "failed to read error response".to_string());
-        return Err(map_gemini_error(status, &body_text));
+        let body = collect_unary_response(response, MAX_GEMINI_UNARY_RESPONSE_BYTES).await?;
+        let body_text = std::str::from_utf8(&body)
+            .map_err(|_| local_gemini_error("invalid UTF-8 in Gemini error response"))?;
+        return Err(map_gemini_error(status, body_text));
     }
 
     if is_streaming {
         let byte_stream = response.bytes_stream();
-        let machine = GeminiSseMachine::new(&route.model);
+        let machine =
+            GeminiSseMachine::new_streaming_for_upstream(&route.model, &route.upstream_model);
+        let decoder = GeminiSseDecoder::default();
 
         let sse_stream = futures_util::stream::unfold(
-            (byte_stream, Vec::<u8>::new(), machine, false),
-            |(mut bytes, mut line_buffer, mut machine, finished)| async move {
+            (
+                byte_stream,
+                decoder,
+                machine,
+                false,
+                None::<Bytes>,
+                None::<Bytes>,
+            ),
+            |(
+                mut bytes,
+                mut decoder,
+                mut machine,
+                finished,
+                mut pending,
+                mut deferred_terminal,
+            )| async move {
                 if finished {
                     return None;
                 }
                 loop {
-                    let mut sse_bytes = Vec::new();
-                    while let Some(pos) = line_buffer.iter().position(|byte| *byte == b'\n') {
-                        let line = line_buffer.drain(..=pos).collect::<Vec<_>>();
-                        append_gemini_events(&line[..line.len() - 1], &mut machine, &mut sse_bytes);
-                    }
+                    if let Some(chunk) = pending.take() {
+                        let (consumed, item) = match decoder.push_one(&chunk) {
+                            Ok(step) => step,
+                            Err(error) => {
+                                let mut output = Vec::new();
+                                append_protocol_error(error, &mut output);
+                                return Some((
+                                    Ok::<_, std::convert::Infallible>(Bytes::from(output)),
+                                    (bytes, decoder, machine, true, None, None),
+                                ));
+                            }
+                        };
+                        if consumed < chunk.len() {
+                            pending = Some(chunk.slice(consumed..));
+                        }
+                        let Some(item) = item else {
+                            continue;
+                        };
 
-                    if !sse_bytes.is_empty() {
-                        return Some((
-                            Ok::<_, std::io::Error>(axum::body::Bytes::from(sse_bytes)),
-                            (bytes, line_buffer, machine, false),
-                        ));
+                        let is_done = item == GeminiSseItem::Done;
+                        let result = match item {
+                            GeminiSseItem::Json(value) => machine.process_chunk_checked(&value),
+                            GeminiSseItem::Done => machine.transport_close_checked(),
+                        };
+                        let result_succeeded = result.is_ok();
+                        let mut output = Vec::new();
+                        let terminal = match result {
+                            Ok(events) => {
+                                let terminal = events.iter().any(|event| {
+                                    event.event == "error" || event.event == "message_stop"
+                                });
+                                append_sse_events(events, &mut output);
+                                terminal
+                            }
+                            Err(error) => {
+                                append_protocol_error(error.to_string(), &mut output);
+                                true
+                            }
+                        };
+                        if is_done && !terminal {
+                            unreachable!("[DONE] completion must be terminal");
+                        }
+                        if is_done && terminal && result_succeeded {
+                            deferred_terminal = Some(Bytes::from(output));
+                            continue;
+                        }
+                        if !output.is_empty() {
+                            return Some((
+                                Ok(Bytes::from(output)),
+                                (
+                                    bytes,
+                                    decoder,
+                                    machine,
+                                    terminal,
+                                    pending,
+                                    deferred_terminal,
+                                ),
+                            ));
+                        }
+                        continue;
                     }
 
                     match bytes.next().await {
-                        Some(Ok(chunk)) => line_buffer.extend_from_slice(&chunk),
+                        Some(Ok(chunk)) => {
+                            pending = Some(chunk);
+                        }
                         Some(Err(error)) => {
+                            let mut output = Vec::new();
+                            append_protocol_error(
+                                format!("Gemini response stream failed: {error}"),
+                                &mut output,
+                            );
                             return Some((
-                                Err(std::io::Error::other(format!(
-                                    "Gemini response stream failed: {error}"
-                                ))),
-                                (bytes, line_buffer, machine, true),
+                                Ok(Bytes::from(output)),
+                                (bytes, decoder, machine, true, None, None),
                             ));
                         }
                         None => {
-                            let mut terminal_bytes = Vec::new();
-                            if !line_buffer.is_empty() {
-                                append_gemini_events(
-                                    &line_buffer,
-                                    &mut machine,
-                                    &mut terminal_bytes,
-                                );
-                            }
-                            let mut events = Vec::new();
-                            machine.finish(&mut events);
-                            append_sse_events(events, &mut terminal_bytes);
-                            if terminal_bytes.is_empty() {
-                                return None;
+                            let mut output = Vec::new();
+                            match decoder.finish() {
+                                Err(error) => append_protocol_error(error, &mut output),
+                                Ok(()) => {
+                                    if let Some(terminal) = deferred_terminal {
+                                        output.extend_from_slice(&terminal);
+                                    } else {
+                                        match machine.transport_close_checked() {
+                                            Ok(events) => append_sse_events(events, &mut output),
+                                            Err(error) => append_protocol_error(
+                                                error.to_string(),
+                                                &mut output,
+                                            ),
+                                        }
+                                    }
+                                }
                             }
                             return Some((
-                                Ok::<_, std::io::Error>(axum::body::Bytes::from(terminal_bytes)),
-                                (bytes, Vec::new(), machine, true),
+                                Ok(Bytes::from(output)),
+                                (bytes, decoder, machine, true, None, None),
                             ));
                         }
                     }
@@ -375,20 +519,23 @@ async fn forward(
 
         Ok((StatusCode::OK, response_res))
     } else {
-        let full_text = response.text().await.map_err(|error| AdapterError {
-            message: format!("failed to read response body: {error}"),
-            response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
-            failure: None,
+        let full_body = collect_unary_response(response, MAX_GEMINI_UNARY_RESPONSE_BYTES).await?;
+        let parsed = serde_json::from_slice::<Value>(&full_body).map_err(|error| {
+            local_gemini_error(format!("invalid JSON from Gemini backend: {error}"))
         })?;
-
-        let parsed = serde_json::from_str::<Value>(&full_text).map_err(|error| AdapterError {
-            message: format!("invalid JSON from Gemini backend: {error}"),
-            response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
-            failure: None,
-        })?;
-        let mut machine = GeminiSseMachine::new(&route.model);
-        let _ = machine.process_chunk(&parsed);
-        let final_json = machine.final_json();
+        let mut machine = GeminiSseMachine::new_for_upstream(&route.model, &route.upstream_model);
+        let events = machine
+            .process_chunk_checked(&parsed)
+            .map_err(|error| local_gemini_error(error.to_string()))?;
+        if let Some(error) = events.into_iter().find(|event| event.event == "error") {
+            return Err(embedded_gemini_error(error.data));
+        }
+        machine
+            .transport_close_checked()
+            .map_err(|error| local_gemini_error(error.to_string()))?;
+        let final_json = machine
+            .final_json_checked()
+            .map_err(|error| local_gemini_error(error.to_string()))?;
 
         let mut headers = HeaderMap::new();
         headers.insert("content-type", HeaderValue::from_static("application/json"));
@@ -398,9 +545,29 @@ async fn forward(
     }
 }
 
+fn retry_safety_for_auth(auth: AuthMode) -> crate::retry::RetrySafety {
+    if auth == AuthMode::AntigravityOauth {
+        crate::retry::RetrySafety::Idempotent
+    } else {
+        crate::retry::RetrySafety::NonIdempotentPost
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn antigravity_retry_safety_remains_idempotent_until_phase_11() {
+        assert_eq!(
+            retry_safety_for_auth(AuthMode::AntigravityOauth),
+            crate::retry::RetrySafety::Idempotent
+        );
+        assert_eq!(
+            retry_safety_for_auth(AuthMode::ApiKey),
+            crate::retry::RetrySafety::NonIdempotentPost
+        );
+    }
 
     #[test]
     fn a_production_pinned_antigravity_base_url_sends_inference_to_the_daily_host() {
@@ -488,33 +655,34 @@ mod tests {
 
     #[test]
     fn complete_utf8_line_survives_arbitrary_byte_chunking() {
-        let line = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Olá 🌊\"}]}}]}";
+        let line = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Olá 🌊\"}]}}]}\n\n";
         let split = line.find('🌊').unwrap() + 1;
-        let mut buffered = line.as_bytes()[..split].to_vec();
-        buffered.extend_from_slice(&line.as_bytes()[split..]);
-        let mut machine = GeminiSseMachine::new("gemini-test");
-        let mut output = Vec::new();
+        let mut decoder = GeminiSseDecoder::default();
 
-        append_gemini_events(&buffered, &mut machine, &mut output);
-
-        let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("Olá 🌊"));
-        assert!(!output.contains('�'));
+        assert_eq!(
+            decoder.push_one(&line.as_bytes()[..split]).unwrap(),
+            (split, None)
+        );
+        let (_, Some(GeminiSseItem::Json(value))) =
+            decoder.push_one(&line.as_bytes()[split..]).unwrap()
+        else {
+            panic!("expected JSON event")
+        };
+        assert_eq!(
+            value.pointer("/candidates/0/content/parts/0/text"),
+            Some(&Value::String("Olá 🌊".to_string()))
+        );
     }
 
     #[test]
-    fn unterminated_final_data_line_is_processed() {
-        let mut machine = GeminiSseMachine::new("gemini-test");
-        let mut output = Vec::new();
+    fn unterminated_final_data_line_is_rejected() {
+        let mut decoder = GeminiSseDecoder::default();
 
-        append_gemini_events(
-            br#"data: {"candidates":[{"content":{"parts":[{"text":"final"}]},"finishReason":"STOP"}]}"#,
-            &mut machine,
-            &mut output,
-        );
-
-        let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("final"));
-        assert!(output.contains("event: message_stop"));
+        assert!(decoder
+            .push_one(br#"data: {"candidates":[{"finishReason":"STOP"}]}"#)
+            .unwrap()
+            .1
+            .is_none());
+        assert!(decoder.finish().unwrap_err().contains("unterminated"));
     }
 }

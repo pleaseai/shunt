@@ -3,15 +3,15 @@
 use axum::response::IntoResponse;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::adapters::AdapterError;
 
 const MAX_SCHEMA_DEPTH: usize = 64;
 const GEMINI_3_MODEL_PREFIX: &str = "gemini-3";
 const GEMINI_TOOL_USE_ID_PREFIX: &str = "call_gemini_v1_";
-// Google documents this exact value for imported/custom Gemini 3 function-call history.
-const GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER: &str = "context_engineering_is_the_way to_go";
+const MAX_TOOL_SIGNATURE_BYTES: usize = 64 * 1024;
+const MAX_TOOL_USE_ID_BYTES: usize = 96 * 1024;
 /// Budget an enabled `thinking` block asks for when it names none. Shared with
 /// `crate::model::antigravity_request`, which reads the same block to pick an
 /// effort tier — the two must not drift apart on what "enabled, no budget"
@@ -112,17 +112,128 @@ fn translate_messages(request: &Value, model: &str) -> Result<Vec<Value>, Adapte
     };
 
     let mut contents = Vec::new();
-    let mut tool_names = HashMap::new();
+    let mut seen_tool_ids = HashSet::new();
+    let mut outstanding_batches: VecDeque<VecDeque<(String, String)>> = VecDeque::new();
 
     for message in messages {
-        let role = match message.get("role").and_then(Value::as_str) {
-            Some("user") => "user",
-            Some("assistant") => "model",
-            _ => "user",
+        let source_role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .ok_or_else(|| bad_request("message role must be present"))?;
+        let role = match source_role {
+            "user" => "user",
+            "assistant" => "model",
+            // Claude Code can insert mid-conversation system reminders. Keep
+            // their established user-turn compatibility mapping explicit.
+            "system" => "user",
+            other => return Err(bad_request(format!("unsupported message role {other}"))),
         };
-
+        let has_tool_result = message
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+            });
+        if !outstanding_batches.is_empty() {
+            match source_role {
+                "system"
+                    if match message.get("content") {
+                        Some(Value::String(_)) => true,
+                        Some(Value::Array(blocks)) => blocks
+                            .iter()
+                            .all(|block| block.get("type").and_then(Value::as_str) == Some("text")),
+                        _ => false,
+                    } => {}
+                "user" if has_tool_result => {}
+                _ => {
+                    return Err(bad_request(
+                        "Gemini tool results must immediately follow their assistant tool-use batch",
+                    ));
+                }
+            }
+        }
         let mut parts = Vec::new();
-        let mut saw_function_call = false;
+        let mut function_call_index = 0usize;
+        let mut saw_tool_result = false;
+        let mut message_tools = VecDeque::new();
+        let mut ordered_tool_results = if has_tool_result {
+            let blocks = message
+                .get("content")
+                .and_then(Value::as_array)
+                .expect("has_tool_result requires array content");
+            let expected = match outstanding_batches.front() {
+                Some(expected) => expected,
+                None => {
+                    let tool_use_id = blocks
+                        .iter()
+                        .find(|block| {
+                            block.get("type").and_then(Value::as_str) == Some("tool_result")
+                        })
+                        .and_then(|block| block.get("tool_use_id"))
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| bad_request("tool_result tool_use_id must be non-empty"))?;
+                    return Err(bad_request(format!(
+                        "tool_result references unknown tool_use_id {tool_use_id} or one already consumed"
+                    )));
+                }
+            };
+            let mut matched = HashMap::with_capacity(expected.len());
+            for block in blocks
+                .iter()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+            {
+                let tool_use_id = block
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| bad_request("tool_result tool_use_id must be non-empty"))?;
+                let Some((_, name)) = expected.iter().find(|(id, _)| id == tool_use_id) else {
+                    return Err(bad_request(format!(
+                        "tool_result references unknown tool_use_id {tool_use_id} or one already consumed"
+                    )));
+                };
+                let output = extract_tool_result_content(block)?;
+                let mut response = Map::new();
+                response.insert("output".to_string(), output);
+                if block.get("is_error").and_then(Value::as_bool) == Some(true) {
+                    response.insert("error".to_string(), Value::Bool(true));
+                }
+                let function_response = json!({
+                    "functionResponse": {
+                        "name": name,
+                        "response": response
+                    }
+                });
+                if matched
+                    .insert(tool_use_id.to_string(), function_response)
+                    .is_some()
+                {
+                    return Err(bad_request(format!(
+                        "duplicate tool_result for tool_use_id {tool_use_id}"
+                    )));
+                }
+            }
+            if matched.len() != expected.len() {
+                return Err(bad_request(
+                    "Gemini tool-result batch must answer every parallel call exactly once",
+                ));
+            }
+            Some(
+                expected
+                    .iter()
+                    .map(|(id, _)| {
+                        matched
+                            .remove(id)
+                            .expect("complete identity mapping was validated")
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
 
         if let Some(content) = message.get("content") {
             match content {
@@ -179,53 +290,72 @@ fn translate_messages(request: &Value, model: &str) -> Result<Vec<Value>, Adapte
                                 }
                             }
                             "tool_use" => {
-                                let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+                                if role != "model" {
+                                    return Err(bad_request(
+                                        "tool_use blocks are only valid in assistant messages",
+                                    ));
+                                }
+                                let name = block
+                                    .get("name")
+                                    .and_then(Value::as_str)
+                                    .filter(|name| !name.trim().is_empty())
+                                    .ok_or_else(|| {
+                                        bad_request("tool_use name must be non-blank")
+                                    })?;
                                 let input =
                                     block.get("input").cloned().unwrap_or_else(|| json!({}));
-                                if !name.is_empty() {
-                                    let id = block.get("id").and_then(Value::as_str).unwrap_or("");
-                                    if !id.is_empty() {
-                                        tool_names.insert(id.to_string(), name.to_string());
-                                    }
-                                    let signature = decode_tool_use_signature(id).or_else(|| {
-                                        (!saw_function_call
-                                            && model.starts_with(GEMINI_3_MODEL_PREFIX))
-                                        .then(|| GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER.to_string())
-                                    });
-                                    let mut part = json!({
-                                        "functionCall": {
-                                            "name": name,
-                                            "args": input
-                                        }
-                                    });
-                                    if let Some(signature) = signature {
-                                        part["thoughtSignature"] = Value::String(signature);
-                                    }
-                                    parts.push(part);
-                                    saw_function_call = true;
+                                if !input.is_object() {
+                                    return Err(bad_request("tool_use input must be an object"));
                                 }
+                                let id = block
+                                    .get("id")
+                                    .and_then(Value::as_str)
+                                    .filter(|id| !id.is_empty())
+                                    .ok_or_else(|| bad_request("tool_use id must be non-empty"))?;
+                                if id.len() > MAX_TOOL_USE_ID_BYTES {
+                                    return Err(bad_request("Gemini tool_use id exceeds limit"));
+                                }
+                                if !seen_tool_ids.insert(id.to_string()) {
+                                    return Err(bad_request(
+                                        "duplicate Gemini tool_use id is ambiguous",
+                                    ));
+                                }
+                                let signature = decode_tool_use_signature(id)?;
+                                if model.starts_with(GEMINI_3_MODEL_PREFIX)
+                                    && function_call_index == 0
+                                    && signature.is_none()
+                                {
+                                    return Err(bad_request(
+                                        "Gemini 3 tool history requires an authentic thought signature",
+                                    ));
+                                }
+                                let mut part = json!({
+                                    "functionCall": {
+                                        "name": name,
+                                        "args": input
+                                    }
+                                });
+                                if let Some(signature) = signature {
+                                    part["thoughtSignature"] = Value::String(signature);
+                                }
+                                parts.push(part);
+                                message_tools.push_back((id.to_string(), name.to_string()));
+                                function_call_index += 1;
                             }
                             "tool_result" => {
-                                let tool_use_id = block
-                                    .get("tool_use_id")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("unknown_tool");
-                                let name = tool_names
-                                    .get(tool_use_id)
-                                    .map(String::as_str)
-                                    .unwrap_or("unknown_tool");
-                                let output_val = extract_tool_result_content(block)?;
-                                let mut response = Map::new();
-                                response.insert("output".to_string(), output_val);
-                                if block.get("is_error").and_then(Value::as_bool) == Some(true) {
-                                    response.insert("error".to_string(), Value::Bool(true));
+                                if source_role != "user" {
+                                    return Err(bad_request(
+                                        "tool_result blocks are only valid in user messages",
+                                    ));
                                 }
-                                parts.push(json!({
-                                    "functionResponse": {
-                                        "name": name,
-                                        "response": response
-                                    }
-                                }));
+                                if !saw_tool_result {
+                                    parts.extend(
+                                        ordered_tool_results
+                                            .take()
+                                            .expect("tool-result batch was prevalidated"),
+                                    );
+                                    saw_tool_result = true;
+                                }
                             }
                             _ => {}
                         }
@@ -238,6 +368,23 @@ fn translate_messages(request: &Value, model: &str) -> Result<Vec<Value>, Adapte
         if !parts.is_empty() {
             push_content(&mut contents, role, parts);
         }
+        if !message_tools.is_empty() {
+            if !outstanding_batches.is_empty() {
+                return Err(bad_request(
+                    "Gemini tool-use batches cannot overlap before results are returned",
+                ));
+            }
+            outstanding_batches.push_back(message_tools);
+        }
+        if saw_tool_result {
+            outstanding_batches.pop_front();
+        }
+    }
+
+    if !outstanding_batches.is_empty() {
+        return Err(bad_request(
+            "Gemini request ends with an unanswered tool-use batch",
+        ));
     }
 
     Ok(contents)
@@ -267,12 +414,27 @@ fn push_content(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
     contents.push(json!({ "role": role, "parts": parts }));
 }
 
-fn decode_tool_use_signature(id: &str) -> Option<String> {
-    let encoded = id.strip_prefix(GEMINI_TOOL_USE_ID_PREFIX)?;
-    let bytes = URL_SAFE_NO_PAD.decode(encoded).ok()?;
-    String::from_utf8(bytes)
-        .ok()
-        .filter(|signature| !signature.is_empty())
+fn decode_tool_use_signature(id: &str) -> Result<Option<String>, AdapterError> {
+    let Some(encoded) = id.strip_prefix(GEMINI_TOOL_USE_ID_PREFIX) else {
+        return Ok(None);
+    };
+    if encoded.is_empty() || encoded.len() > MAX_TOOL_USE_ID_BYTES - GEMINI_TOOL_USE_ID_PREFIX.len()
+    {
+        return Err(bad_request(
+            "malformed Gemini thought-signature tool_use id",
+        ));
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| bad_request("malformed Gemini thought-signature tool_use id"))?;
+    if bytes.is_empty() || bytes.len() > MAX_TOOL_SIGNATURE_BYTES {
+        return Err(bad_request(
+            "Gemini thought signature is empty or exceeds limit",
+        ));
+    }
+    let signature = String::from_utf8(bytes)
+        .map_err(|_| bad_request("Gemini thought signature is not valid UTF-8"))?;
+    Ok(Some(signature))
 }
 
 fn extract_tool_result_content(block: &Value) -> Result<Value, AdapterError> {
