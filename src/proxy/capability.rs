@@ -13,6 +13,7 @@ struct Requirements {
     tools: bool,
     base64_images: bool,
     url_images: bool,
+    tool_result_images: bool,
     structured_output: bool,
     explicit_effort: bool,
     million_context: bool,
@@ -39,9 +40,9 @@ impl Requirements {
         };
         let mut content = messages
             .iter()
-            .filter_map(|message| message.get("content"))
+            .filter_map(|message| message.get("content").map(|c| (c, false)))
             .collect::<Vec<_>>();
-        while let Some(value) = content.pop() {
+        while let Some((value, in_tool_result)) = content.pop() {
             let Some(blocks) = value.as_array() else {
                 continue;
             };
@@ -50,19 +51,24 @@ impl Requirements {
                     continue;
                 };
                 match block.get("type").and_then(Value::as_str) {
-                    Some("image") => match block
-                        .get("source")
-                        .and_then(Value::as_object)
-                        .and_then(|source| source.get("type"))
-                        .and_then(Value::as_str)
-                    {
-                        Some("base64") => requirements.base64_images = true,
-                        Some("url") => requirements.url_images = true,
-                        _ => {}
-                    },
+                    Some("image") => {
+                        if in_tool_result {
+                            requirements.tool_result_images = true;
+                        }
+                        match block
+                            .get("source")
+                            .and_then(Value::as_object)
+                            .and_then(|source| source.get("type"))
+                            .and_then(Value::as_str)
+                        {
+                            Some("base64") => requirements.base64_images = true,
+                            Some("url") => requirements.url_images = true,
+                            _ => {}
+                        }
+                    }
                     Some("tool_result") => {
                         if let Some(nested) = block.get("content") {
-                            content.push(nested);
+                            content.push((nested, true));
                         }
                     }
                     _ => {}
@@ -72,19 +78,33 @@ impl Requirements {
         requirements
     }
 
-    fn incompatibilities(self, adapter: &AdapterKind) -> Vec<&'static str> {
+    fn incompatibilities(self, route: &Route) -> Vec<&'static str> {
         if self.million_context {
             return vec!["1m-context-unknown"];
         }
         let mut reasons = Vec::new();
-        match adapter {
+        match route.adapter {
             AdapterKind::Anthropic => {}
             AdapterKind::Responses => {
                 if self.structured_output {
                     reasons.push("structured-output");
                 }
             }
-            AdapterKind::Gemini | AdapterKind::Cursor => {
+            AdapterKind::Gemini => {
+                if self.url_images {
+                    reasons.push("url-images");
+                }
+                if self.tool_result_images {
+                    reasons.push("tool-result-images");
+                }
+                if self.structured_output {
+                    reasons.push("structured-output");
+                }
+                if self.explicit_effort && !is_native_antigravity(route) {
+                    reasons.push("reasoning-effort");
+                }
+            }
+            AdapterKind::Cursor => {
                 if self.url_images {
                     reasons.push("url-images");
                 }
@@ -114,26 +134,30 @@ impl Requirements {
     }
 }
 
+fn is_native_antigravity(route: &Route) -> bool {
+    route.adapter == AdapterKind::Gemini
+        && (route.provider == "antigravity" || route.provider.starts_with("antigravity-"))
+}
+
 pub(super) fn filter_fallbacks(routes: &mut Vec<Route>, request: &Value, requested_model: &str) {
     if routes.len() < 2 {
         return;
     }
     let requirements = Requirements::extract(request, requested_model);
-    let mut index = 1;
-    while index < routes.len() {
-        let reasons = requirements.incompatibilities(&routes[index].adapter);
+    let fallbacks: Vec<Route> = routes.drain(1..).collect();
+    for route in fallbacks {
+        let reasons = requirements.incompatibilities(&route);
         if reasons.is_empty() {
-            index += 1;
-            continue;
+            routes.push(route);
+        } else {
+            tracing::warn!(
+                provider = %route.provider,
+                model = %route.upstream_model,
+                reasons = %reasons.join(","),
+                "fallback excluded by request capabilities"
+            );
+            crate::metrics::record_failover(&route.provider, "capability_excluded");
         }
-        let route = routes.remove(index);
-        tracing::warn!(
-            provider = %route.provider,
-            model = %route.upstream_model,
-            reasons = %reasons.join(","),
-            "fallback excluded by request capabilities"
-        );
-        crate::metrics::record_failover(&route.provider, "capability_excluded");
     }
 }
 
@@ -172,6 +196,7 @@ mod tests {
                 tools: true,
                 base64_images: true,
                 url_images: true,
+                tool_result_images: true,
                 structured_output: true,
                 explicit_effort: true,
                 million_context: true,
@@ -189,26 +214,60 @@ mod tests {
             tools: true,
             base64_images: true,
             url_images: true,
+            tool_result_images: true,
             structured_output: true,
             explicit_effort: true,
             million_context: false,
         };
-        assert!(all.incompatibilities(&AdapterKind::Anthropic).is_empty());
+        assert!(all
+            .incompatibilities(&route("anthropic", AdapterKind::Anthropic))
+            .is_empty());
         assert_eq!(
-            all.incompatibilities(&AdapterKind::Responses),
+            all.incompatibilities(&route("responses", AdapterKind::Responses)),
             vec!["structured-output"]
         );
         assert_eq!(
-            all.incompatibilities(&AdapterKind::Gemini),
+            all.incompatibilities(&route("gemini", AdapterKind::Gemini)),
+            vec![
+                "url-images",
+                "tool-result-images",
+                "structured-output",
+                "reasoning-effort"
+            ]
+        );
+        assert_eq!(
+            all.incompatibilities(&route("antigravity", AdapterKind::Gemini)),
+            vec!["url-images", "tool-result-images", "structured-output"]
+        );
+        assert_eq!(
+            all.incompatibilities(&route("cursor", AdapterKind::Cursor)),
             vec!["url-images", "structured-output", "reasoning-effort"]
         );
         assert_eq!(
-            all.incompatibilities(&AdapterKind::Cursor),
-            vec!["url-images", "structured-output", "reasoning-effort"]
-        );
-        assert_eq!(
-            all.incompatibilities(&AdapterKind::AntigravityCli),
+            all.incompatibilities(&route("antigravity-cli", AdapterKind::AntigravityCli)),
             vec!["tools", "images", "structured-output", "reasoning-effort"]
+        );
+    }
+
+    #[test]
+    fn native_antigravity_fallback_is_kept_for_explicit_effort() {
+        let mut routes = vec![
+            route("primary", AdapterKind::Anthropic),
+            route("gemini", AdapterKind::Gemini),
+            route("antigravity", AdapterKind::Gemini),
+            route("antigravity-backup", AdapterKind::Gemini),
+        ];
+        filter_fallbacks(
+            &mut routes,
+            &json!({"output_config":{"effort":"high"}}),
+            "alias",
+        );
+        assert_eq!(
+            routes
+                .iter()
+                .map(|route| route.provider.as_str())
+                .collect::<Vec<_>>(),
+            vec!["primary", "antigravity", "antigravity-backup"]
         );
     }
 
