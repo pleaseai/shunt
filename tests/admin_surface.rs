@@ -27,8 +27,11 @@ use wiremock::{
 static CLAUDE_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Serializes tests that mutate the shared `SHUNT_CODEX_*` process env.
 static CODEX_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-/// Serializes admin OIDC tests because their config resolves process environment.
-static ADMIN_OIDC_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Serializes admin tests whose config resolves process environment. Holding it
+/// is what keeps one test's `set_var` from landing while another is reading the
+/// env to build its config — the variable names are already distinct, so this
+/// guards the read/write race, not a name collision.
+static ADMIN_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Gateway {
     base_url: String,
@@ -276,7 +279,7 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = ADMIN_OIDC_ENV_LOCK.lock().await;
+    let _lock = ADMIN_ENV_LOCK.lock().await;
     let idp = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/token"))
@@ -400,7 +403,7 @@ async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_ori
     if !can_bind_loopback() {
         return;
     }
-    let _lock = ADMIN_OIDC_ENV_LOCK.lock().await;
+    let _lock = ADMIN_ENV_LOCK.lock().await;
     let idp = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/token"))
@@ -493,7 +496,7 @@ async fn admin_oidc_discovery_builds_authorization_redirect() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = ADMIN_OIDC_ENV_LOCK.lock().await;
+    let _lock = ADMIN_ENV_LOCK.lock().await;
     let idp = MockServer::start().await;
     Mock::given(path("/.well-known/openid-configuration"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -4429,6 +4432,9 @@ async fn admin_session_bootstrap_serves_the_live_csrf_token_and_refresh_buffer()
     if !can_bind_loopback() {
         return;
     }
+    // This test resolves its admin credential out of the process env, so it
+    // takes the same lock the other admin env tests do.
+    let _lock = ADMIN_ENV_LOCK.lock().await;
     std::env::set_var("SHUNT_TEST_ADMIN_SESSION_BOOTSTRAP", "ops:session-secret");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_SESSION_BOOTSTRAP")).await;
     let base = &gateway.base_url;
