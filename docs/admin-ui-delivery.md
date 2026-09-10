@@ -457,12 +457,16 @@ independent decision.
 
 ## Risks
 
-- **Duplicate-route panics are untested.** `axum::Router::merge` panics at boot
-  on a duplicate path+method — a real safety net for new UI routes, but it only
-  fires when both trees are registered. No test builds a router with
+- **Duplicate-route panics were untested; they are covered now.**
+  `axum::Router::merge` panics at boot on a duplicate path+method — a real safety
+  net for new UI routes, but it only fires when both trees are registered. Until
+  `tests/router_surface.rs` landed, no test built a router with
   `[server.admin]`, `[server.gateway]`, and `[server.codex_endpoint]` enabled
-  together, so a collision would surface on an operator's machine rather than in
-  CI. This is a gap today, independent of the UI work.
+  together, so a collision would have surfaced on an operator's machine rather
+  than in CI. `every_optional_surface_can_be_enabled_at_once` now builds that
+  router in CI, and the inventory tests beside it pin the method+path set it
+  registers. Recorded rather than deleted, because the hazard is why the test
+  exists and why it must keep every surface enabled.
 - **Breaking migration.** Removing the legacy `/admin/*` JSON and mutation paths
   breaks every scripted caller M9 documented. The path-migration table lives in
   `endpoints.md`, and the breaking change must be declared in a commit
