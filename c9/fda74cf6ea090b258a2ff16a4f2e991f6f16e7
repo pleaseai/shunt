@@ -1,0 +1,31 @@
+ui/src/useProvisioningFlow.ts
+  s_e9fd5f53eebc34::t_9d615a33577485 23-36,165
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_48409dba92cd6c 74
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_48409dba92cd6c 50
+ui/src/components/AddClaudeAccount.tsx
+  s_e9fd5f53eebc34::t_48409dba92cd6c 124
+docs/m9-admin-surface.md
+  s_e9fd5f53eebc34::t_48409dba92cd6c 793-806
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_48409dba92cd6c 50
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_48409dba92cd6c 50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c9fda74cf6ea090b258a2ff16a4f2e991f6f16e7",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
