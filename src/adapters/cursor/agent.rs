@@ -314,6 +314,9 @@ impl CursorAgentTurn {
                     // Clean EOF: the turn ended. Validate the decoder finished on
                     // a frame boundary so a truncated body is an error, not a
                     // partial/empty success.
+                    // EOF is not an authoritative terminal. A wire terminal
+                    // marks `finished` in ingest and never reaches this branch.
+                    // Preserve framing errors; otherwise report premature EOF.
                     Ok(None) => {
                         state.finished = true;
                         state.pending.push_back(terminal_event(
@@ -357,6 +360,9 @@ fn terminal_event(
         ));
     }
     match finish {
+        Ok(()) if !timed_out => Err(CursorError::internal(
+            "cursor: upstream EOF without an authoritative terminal",
+        )),
         Ok(()) => Ok(CursorStreamEvent::End),
         Err(error) => Err(CursorError::internal(format!("cursor frame: {error}"))),
     }
@@ -416,10 +422,20 @@ impl ReadState {
             // call as a tool_use pause and re-runs with the result in history, so
             // finish the turn here rather than sending an exec-result back.
             if let Some((name, input_json)) = extract_tool_call(&payload) {
+                let Some(id) = extract_tool_call_id(&payload) else {
+                    self.finished = true;
+                    self.pending.push_back(Err(CursorError::internal(
+                        "cursor: native MCP call has no authentic tool_call_id",
+                    )));
+                    return;
+                };
                 self.got_text = true;
                 self.finished = true;
-                self.pending
-                    .push_back(Ok(CursorStreamEvent::ToolCall { name, input_json }));
+                self.pending.push_back(Ok(CursorStreamEvent::ToolCall {
+                    id,
+                    name,
+                    input_json,
+                }));
                 return;
             }
             // A built-in tool call cannot be bridged. Fail loudly rather than
@@ -811,6 +827,21 @@ fn extract_tool_call(payload: &[u8]) -> Option<(String, String)> {
     None
 }
 
+/// AgentService Run: McpArgs.tool_call_id is field 3 (OpenCodex schema
+/// 055c3ecf0de6c35f59195fc434d6b08525182b7f, inspected 2026-09-07).
+/// A missing identity cannot be replaced by a gateway-generated UUID.
+fn extract_tool_call_id(payload: &[u8]) -> Option<String> {
+    let exec = iter_fields(payload).find(|f| f.field == 2 && f.wire == 2)?;
+    let args = iter_fields(exec.data).find(|f| f.field == 11 && f.wire == 2)?;
+    let mut ids = iter_fields(args.data).filter(|f| f.field == 3);
+    let field = ids.next()?;
+    if field.wire != 2 || ids.next().is_some() {
+        return None;
+    }
+    let id = std::str::from_utf8(field.data).ok()?;
+    (!id.is_empty() && id.len() <= 512).then(|| id.to_owned())
+}
+
 /// Detect a tool call Cursor issued through one of its OWN built-in tools rather
 /// than through a bridged MCP tool.
 ///
@@ -1134,11 +1165,10 @@ mod tests {
     }
 
     #[test]
-    fn terminal_event_clean_eof_ends_even_without_output() {
-        assert!(matches!(
-            super::terminal_event(false, false, Ok(())),
-            Ok(CursorStreamEvent::End)
-        ));
+    fn cursor_terminal_tracer_clean_eof_requires_authoritative_terminal() {
+        for got_output in [false, true] {
+            assert!(super::terminal_event(false, got_output, Ok(())).is_err());
+        }
     }
 
     #[test]
@@ -1450,6 +1480,7 @@ mod tests {
 
     fn tool_call_frame(name: &str, args: &[(&str, serde_json::Value)]) -> Bytes {
         let mut mcp_args = field_str(5, name);
+        mcp_args.extend(field_str(3, "call_authentic_fixture"));
         for (key, value) in args {
             let mut entry = field_str(1, key);
             entry.extend(field_ld(2, &encode_protobuf_value(value)));
@@ -1526,7 +1557,9 @@ mod tests {
         let (name, input_json) = events
             .iter()
             .find_map(|event| match event {
-                Ok(CursorStreamEvent::ToolCall { name, input_json }) => Some((name, input_json)),
+                Ok(CursorStreamEvent::ToolCall {
+                    name, input_json, ..
+                }) => Some((name, input_json)),
                 _ => None,
             })
             .expect("tool call event should be present");
@@ -1534,6 +1567,23 @@ mod tests {
         let input: serde_json::Value = serde_json::from_str(input_json).unwrap();
         assert_eq!(input["file_path"], serde_json::json!("/tmp/x"));
         assert_eq!(input["limit"].as_f64(), Some(5.0));
+    }
+
+    #[tokio::test]
+    async fn cursor_history_identity_missing_wire_id_is_not_invented() {
+        let args = field_str(5, "Read");
+        let frame = connect_frame(&field_ld(2, &field_ld(11, &args)));
+        let events: Vec<_> = turn_from_frames(frame.to_vec())
+            .await
+            .into_event_stream()
+            .collect()
+            .await;
+        assert_eq!(events.len(), 1);
+        assert!(events[0]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("authentic tool_call_id"));
     }
 
     #[tokio::test]
@@ -1566,7 +1616,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn event_stream_treats_clean_eof_as_end() {
+    async fn cursor_terminal_tracer_event_stream_rejects_clean_eof() {
         let events: Vec<_> = turn_from_frames(Vec::new())
             .await
             .into_event_stream()
@@ -1574,7 +1624,11 @@ mod tests {
             .await;
 
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Ok(CursorStreamEvent::End)));
+        assert!(events[0]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("EOF without an authoritative terminal"));
     }
 
     #[tokio::test]
