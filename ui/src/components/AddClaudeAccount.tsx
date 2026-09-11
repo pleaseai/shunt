@@ -56,11 +56,13 @@ export const AddClaudeAccount = forwardRef<
     report: flow.report,
   }), [flow.prime, flow.report]);
 
-  // The authorization step is open exactly while `authorizeUrl` is non-null,
-  // and that is what locks the login method: the mode the server's pending
-  // entry was created under is fixed at start, so a radio that stayed live
-  // would let the form read one method while the pending login is the other.
-  const locked = flow.authorizeUrl !== null;
+  // The mode the server's pending entry is created under is fixed at start, so
+  // a radio that stayed live would let the form read one method while the
+  // pending login is the other. The lock therefore spans the whole flow, not
+  // just its visible half: `start` clears `authorizeUrl` before it sends, so
+  // `authorizeUrl` alone would reopen the radios for the length of the request
+  // that has already captured `mode`.
+  const locked = flow.starting || flow.authorizeUrl !== null;
 
   return (
     <>
@@ -118,8 +120,8 @@ export const AddClaudeAccount = forwardRef<
               moment the radios go dead is the one moment that region is empty. */}
           {locked ? (
             <p id="modelock" role="status" className="muted">
-              Locked while the authorization step below is open — the pending login was started
-              for this method. Start another login to change it.
+              Locked while this login is in progress — the server's pending entry is fixed to the
+              method selected at Start. Start another login to change it.
             </p>
           ) : null}
         </fieldset>

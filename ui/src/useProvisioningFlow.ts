@@ -32,6 +32,9 @@ export interface Flow {
   setCode: (value: string) => void;
   /** Non-null exactly while the authorization step is open. */
   authorizeUrl: string | null;
+  /** True while a start request is in flight, i.e. after the step closed but
+   *  before the next one opens. */
+  starting: boolean;
   message: FlowMessage | null;
   completing: boolean;
   start: (body: Record<string, unknown>) => Promise<void>;
@@ -71,6 +74,7 @@ export function useProvisioningFlow({
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
   const [message, setMessage] = useState<FlowMessage | null>(null);
   const [completing, setCompleting] = useState(false);
 
@@ -97,6 +101,7 @@ export function useProvisioningFlow({
     epoch.current += 1;
     currentName.current = null;
     setAuthorizeUrl(null);
+    setStarting(false);
     setCode('');
     setMessage(null);
   }, []);
@@ -112,6 +117,17 @@ export function useProvisioningFlow({
       // the operator is looking at is never replaced by the one they asked for.
       setAuthorizeUrl(null);
       currentName.current = null;
+      // The code belongs to the flow being closed. `complete` clears it only on
+      // success, so a failed exchange leaves it in the box, and it would be
+      // submitted against the new pending entry — which fails on a state
+      // mismatch, blaming the operator's fresh paste for a stale one.
+      setCode('');
+      // `authorizeUrl` alone cannot carry the login-method lock: it is null from
+      // here until the response lands, so the radios would reopen for exactly as
+      // long as the request that already captured `mode` is in flight. Released
+      // only by the epoch's owner — a superseded start leaves it to the newer
+      // start or to `prime`, either of which sets it as it takes over.
+      setStarting(true);
       const issued = (epoch.current += 1);
       try {
         const result = await mutate(`${API}${endpoints.start}`, csrf, {
@@ -119,6 +135,7 @@ export function useProvisioningFlow({
           body: JSON.stringify(body),
         });
         if (issued !== epoch.current) return;
+        setStarting(false);
         // `!answered` is a failure too: without a readable `authorize_url` the
         // form has nothing to show, so reporting nothing would leave the
         // operator staring at a step that never opened.
@@ -129,7 +146,10 @@ export function useProvisioningFlow({
         currentName.current = (result.payload.name as string | undefined) ?? null;
         setAuthorizeUrl((result.payload.authorize_url as string | undefined) ?? null);
       } catch {
-        if (issued === epoch.current) setMessage({ text: 'Request failed', ok: false });
+        if (issued === epoch.current) {
+          setStarting(false);
+          setMessage({ text: 'Request failed', ok: false });
+        }
       }
     },
     [csrf, endpoints, copy.startFailure],
@@ -212,6 +232,7 @@ export function useProvisioningFlow({
     code,
     setCode,
     authorizeUrl,
+    starting,
     message,
     completing,
     start,
