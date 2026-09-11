@@ -36,9 +36,9 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `DELETE` | `/admin/api/accounts/codex/{name}` | 删除指定 Codex 账户的存储文件 |
 | `GET` | `/admin/assets/{*path}` | 内嵌的管理 SPA 包文件,按扩展名对应的 `Content-Type` 返回,并附带 `X-Content-Type-Options: nosniff`。仅存在于使用 `--features ui` 构建的二进制中 |
 | `GET` | `/admin/{*path}` | `/admin` 挂载点下未匹配任何路由的路径所返回的 SPA 外壳,使客户端深链接在刷新后依然可用。仅存在于使用 `--features ui` 构建的二进制中 |
-| `POST` | `/backend-api/codex/responses` | 入站 Codex CLI 透传 —— 镜像真实 ChatGPT 后端路径 |
-| `POST` | `/responses` | 入站 Codex CLI 透传 —— 裸 `base_url` 形式 |
-| `POST` | `/v1/responses` | 入站 Codex CLI 透传 —— 带 `/v1` 后缀的 `base_url` 形式 |
+| `GET`, `POST` | `/backend-api/codex/responses` | 入站 Codex CLI 透传 —— 镜像真实 ChatGPT 后端路径 |
+| `GET`, `POST` | `/responses` | 入站 Codex CLI 透传 —— 裸 `base_url` 形式 |
+| `GET`, `POST` | `/v1/responses` | 入站 Codex CLI 透传 —— 带 `/v1` 后缀的 `base_url` 形式 |
 | `GET` | `/models` | Codex CLI 模型目录回退 —— 返回 `{"models":[]}` |
 | `GET` | `/backend-api/codex/models` | Codex CLI 模型目录回退 —— ChatGPT 式基础路径 |
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI 分析 sink —— 接收后丢弃，仅记录净化后的事件名称计数器 |

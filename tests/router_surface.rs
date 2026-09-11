@@ -176,9 +176,9 @@ const SPEND_PATHS: [(&str, &str); 2] = [
 /// change to either one fails this test and gets re-reviewed against the path
 /// split — which is exactly the guard being installed.
 const CODEX_ENDPOINT_PATHS: [(&str, &str); 7] = [
-    ("/backend-api/codex/responses", "POST"),
-    ("/responses", "POST"),
-    ("/v1/responses", "POST"),
+    ("/backend-api/codex/responses", "GET,HEAD,POST"),
+    ("/responses", "GET,HEAD,POST"),
+    ("/v1/responses", "GET,HEAD,POST"),
     ("/backend-api/codex/analytics-events/events", "POST"),
     ("/codex/analytics-events/events", "POST"),
     ("/models", "GET,HEAD"),

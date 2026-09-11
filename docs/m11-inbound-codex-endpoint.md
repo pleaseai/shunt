@@ -69,9 +69,9 @@ When opted in, shunt registers three Responses routes mapping to one passthrough
 
 | Method | Path |
 | :-- | :-- |
-| `POST` | `/backend-api/codex/responses` |
-| `POST` | `/responses` |
-| `POST` | `/v1/responses` |
+| `GET`, `POST` | `/backend-api/codex/responses` |
+| `GET`, `POST` | `/responses` |
+| `GET`, `POST` | `/v1/responses` |
 
 Three Responses paths exist because the Codex CLI always appends `/responses` to whatever `base_url` it is
 pointed at: a base ending in `/backend-api/codex` produces `/backend-api/codex/responses` (the
@@ -366,9 +366,6 @@ shunt this way — shunt supplies the account from its own pool, not the CLI's l
 
 ## Out of scope / follow-up
 
-- **WebSocket transport.** This endpoint is HTTP/SSE-only even when the target provider has
-  `websocket = true`; wiring the inbound path onto the
-  [Codex WebSocket v2 transport](m7-codex-websocket.md) is a separate follow-up.
 - **Chat-Completions-only upstreams.** A route may only name an upstream that natively implements
   the **Responses** API. The endpoint relays raw Responses bytes, so a provider that speaks only
   `/chat/completions` cannot serve them yet (the adapter exists, see the translation bullet below). Vendors

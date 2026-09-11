@@ -1,13 +1,13 @@
 use std::{
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
 use axum::{
     body::{Body, Bytes, HttpBody},
     extract::{Request, State},
-    http::{header::RETRY_AFTER, HeaderValue, StatusCode, Uri},
+    http::{header, header::RETRY_AFTER, HeaderValue, StatusCode, Uri},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -24,6 +24,8 @@ pub(crate) struct ConcurrencyLimit {
     codex_endpoint_enabled: bool,
 }
 
+pub(crate) type WebSocketPermit = Arc<Mutex<Option<OwnedSemaphorePermit>>>;
+
 impl ConcurrencyLimit {
     pub(crate) fn new(max_concurrent_requests: usize, codex_endpoint_enabled: bool) -> Self {
         Self {
@@ -39,7 +41,7 @@ impl ConcurrencyLimit {
 /// but any owner dropping the body releases the permit just the same.
 pub(crate) async fn limit_requests(
     State(limit): State<ConcurrencyLimit>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let path = request.uri().path();
@@ -60,6 +62,18 @@ pub(crate) async fn limit_requests(
             return overloaded_response(codex_shape).await;
         }
     };
+
+    let websocket_upgrade = request.method() == axum::http::Method::GET
+        && request
+            .headers()
+            .get(header::UPGRADE)
+            .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"));
+    if websocket_upgrade && is_codex_path(path) {
+        request
+            .extensions_mut()
+            .insert(Arc::new(Mutex::new(Some(permit))) as WebSocketPermit);
+        return next.run(request).await;
+    }
 
     next.run(request)
         .await

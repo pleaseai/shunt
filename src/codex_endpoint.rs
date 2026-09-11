@@ -34,8 +34,10 @@ use crate::{
     server::AppState,
 };
 
+pub mod frame;
 mod model;
 mod routing;
+pub mod websocket;
 
 #[cfg(test)]
 use self::model::model_label;
@@ -72,12 +74,7 @@ pub async fn post(
     // The Codex CLI keys a conversation with a `session-id` header; fall back to
     // Claude Code's header for parity. Used both for the tracing span and as the
     // account-pool sticky key so one conversation stays on one account.
-    let session_id = headers
-        .get("session-id")
-        .or_else(|| headers.get("x-claude-code-session-id"))
-        .and_then(|value| value.to_str().ok())
-        .filter(|session_id| !session_id.is_empty())
-        .map(ToOwned::to_owned);
+    let session_id = extract_session_id(&headers);
     // Withhold the request-derived id from exported spans unless the operator
     // opted in per backend (same rule as `proxy::post`).
     let span_session_id = if crate::telemetry::withhold_session_id() {
@@ -138,11 +135,11 @@ pub async fn post(
 /// (mirrors `proxy::ForwardError`). An upstream error response relayed verbatim is
 /// an `Ok`, not this — only shunt-owned failures (config, auth, body read, account
 /// resolution/transport) surface here.
-struct ForwardError {
-    message: String,
+pub(crate) struct ForwardError {
+    pub(crate) message: String,
     /// Boxed to keep `Result<_, ForwardError>` small: an `axum` `Response` alone
     /// is 128 bytes, which trips `clippy::result_large_err` on [`forward`].
-    response: Box<axum::response::Response>,
+    pub(crate) response: Box<axum::response::Response>,
 }
 
 impl From<AdapterError> for ForwardError {
@@ -175,44 +172,11 @@ async fn forward(
     };
     let provider = codex_endpoint.provider.clone();
 
-    // Inbound client auth (M4): the target provider injects a server-side Codex
-    // bearer, so a configured `[server.auth]` gates this endpoint. The passthrough
-    // forwards the Codex CLI's own request headers verbatim but swaps in the pool
-    // account's credential and strips the shunt client-token header (in
-    // `forward_codex_inbound`), so neither the client's own credential nor the
-    // shunt token ever reaches the Codex backend.
-    // The authenticated inbound client's name, used below to namespace the
-    // account-pool sticky key. `None` when no `[server.auth]` is configured
-    // (single-tenant: the bare session id keys the pool).
-    let inbound_client = if let Some(auth) = &state.inbound_auth {
-        // Accept the shunt token via the configured header OR an OpenAI-style
-        // `Authorization: Bearer <token>` (the `OPENAI_API_KEY` / `env_key` idiom
-        // the Codex CLI and llmgateway/LiteLLM setups use), so no custom header is
-        // required. The client's Bearer is only checked here — it is stripped and
-        // never forwarded upstream (see `forward_codex_inbound`).
-        match auth.authenticate_bearer(&headers) {
-            Some(client) => Some(client.to_string()),
-            None => {
-                tracing::warn!(
-                    provider = %provider,
-                    "inbound codex auth failed: missing or invalid client token"
-                );
-                let message = format!(
-                    "missing or invalid client token for the inbound codex endpoint: provide it via the `{}` header or `Authorization: Bearer <token>` (e.g. OPENAI_API_KEY); ask the operator for one",
-                    auth.header()
-                );
-                return Err(ForwardError {
-                    message: "inbound authentication failed".to_string(),
-                    response: Box::new(
-                        ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-                            .into_response(),
-                    ),
-                });
-            }
-        }
-    } else {
-        None
-    };
+    let inbound_client = authenticate_inbound(state.inbound_auth.as_deref(), &headers, &provider)
+        .map_err(|err| ForwardError {
+        message: "inbound authentication failed".to_string(),
+        response: Box::new(err.into_response()),
+    })?;
 
     let max_request_bytes = state.config.server.limits.max_request_bytes;
     if crate::http_tuning::content_length_exceeds(&headers, max_request_bytes) {
@@ -233,88 +197,131 @@ async fn forward(
             response,
         })?;
 
-    // Read the model both for metrics/logging labels and — when it parses — as
-    // the key `[[server.codex_endpoint.routes]]` is matched against. A body
-    // whose `model` cannot be read still relays (the upstream rejects it), but
-    // it must never match a route: `UNKNOWN_MODEL` is a shunt-authored sentinel
-    // an operator could otherwise capture by declaring a route for the literal
-    // model `unknown`.
-    //
-    // The decoded body is kept only when a route could actually match: the pool
-    // path forwards the original (possibly zstd) bytes, so with no routes
-    // configured the decoded copy would be allocated and dropped unused.
-    let resolved = resolve_model(
-        &headers,
-        &body,
-        max_request_bytes,
-        !codex_endpoint.routes.is_empty(),
-    )
-    .await;
-    let model = resolved
-        .model
-        .as_deref()
-        .unwrap_or(UNKNOWN_MODEL)
-        .to_string();
-    crate::observability::record_requested_model(&model);
-    // Cloned out of the config snapshot so the borrow ends before `state` moves
-    // into the forwarder below.
-    let matched = resolved
-        .model
-        .as_deref()
-        .and_then(|model| codex_endpoint.route_for(model))
-        .cloned();
-
-    // Namespace the account-pool sticky key with the authenticated client so that,
-    // in a multi-tenant deployment, one client cannot pin another client's Codex
-    // session onto a chosen pool account by replaying its `session-id` header. This
-    // mirrors the outbound Responses path's `{client}:{session_id}` pool key (see
-    // `adapters/responses/mod.rs`). The raw `session_id` is still what the tracing
-    // span records above; only the pool key is namespaced.
     let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id);
+    forward_turn(state, None, pool_key, headers, body, started_at).await
+}
+
+pub(crate) fn extract_session_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("session-id")
+        .or_else(|| headers.get("x-claude-code-session-id"))
+        .and_then(|value| value.to_str().ok())
+        .filter(|session_id| !session_id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+pub(crate) fn authenticate_inbound(
+    auth: Option<&crate::auth::inbound::InboundAuth>,
+    headers: &HeaderMap,
+    provider: &str,
+) -> Result<Option<String>, ShuntError> {
+    if let Some(auth) = auth {
+        match auth.authenticate_bearer(headers) {
+            Some(client) => Ok(Some(client.to_string())),
+            None => {
+                tracing::warn!(
+                    provider = %provider,
+                    "inbound codex auth failed: missing or invalid client token"
+                );
+                let message = format!(
+                    "missing or invalid client token for the inbound codex endpoint: provide it via the `{}` header or `Authorization: Bearer <token>` (e.g. OPENAI_API_KEY); ask the operator for one",
+                    auth.header()
+                );
+                Err(ShuntError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "authentication_error",
+                    message,
+                ))
+            }
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+pub(crate) async fn forward_turn(
+    state: AppState,
+    model: Option<String>,
+    pool_key: Option<String>,
+    headers: HeaderMap,
+    body: Bytes,
+    started_at: Instant,
+) -> Result<(StatusCode, axum::response::Response), ForwardError> {
+    let Some(codex_endpoint) = &state.config.server.codex_endpoint else {
+        return Err(ForwardError {
+            message: "codex endpoint is not configured".to_string(),
+            response: Box::new(
+                ShuntError::bad_gateway("codex endpoint is not configured".to_string())
+                    .into_response(),
+            ),
+        });
+    };
+    let default_provider = codex_endpoint.provider.clone();
+    let max_request_bytes = state.config.server.limits.max_request_bytes;
+    if body.len() > max_request_bytes {
+        return Err(ForwardError {
+            message: "request body exceeds the configured limit".to_string(),
+            response: Box::new(crate::http_tuning::request_too_large(true).await),
+        });
+    }
+
+    let (matched, model_name, decoded) = if let Some(m) = model {
+        let matched = codex_endpoint.route_for(&m).cloned();
+        (matched, m, None)
+    } else {
+        let resolved = resolve_model(
+            &headers,
+            &body,
+            max_request_bytes,
+            !codex_endpoint.routes.is_empty(),
+        )
+        .await;
+        let matched = resolved
+            .model
+            .as_deref()
+            .and_then(|m| codex_endpoint.route_for(m))
+            .cloned();
+        let name = resolved
+            .model
+            .as_deref()
+            .unwrap_or(UNKNOWN_MODEL)
+            .to_string();
+        (matched, name, resolved.decoded)
+    };
+
+    crate::observability::record_requested_model(&model_name);
 
     let (provider, result) = match matched {
         Some(route) => {
             dispatch_routed(
                 state,
                 route,
-                model.clone(),
+                model_name.clone(),
                 pool_key,
                 headers,
                 body,
-                resolved.decoded,
+                decoded,
                 max_request_bytes,
             )
             .await?
         }
         None => {
-            // Nothing below reads the decoded copy: the pool path forwards the
-            // original bytes. Release it now rather than holding up to
-            // `max_request_bytes` per in-flight request for the upstream round
-            // trip (PR #478 review, P2).
-            drop(resolved.decoded);
-            // The body-`model` picks no provider here: the endpoint is pinned to
-            // its configured `chatgpt_oauth` provider and the body forwards
-            // verbatim. `request_builder` only reads `route.provider`, so
-            // `model`/`upstream_model` are labels, not routing inputs.
+            drop(decoded);
             let route = Route {
-                provider: provider.clone(),
+                provider: default_provider.clone(),
                 adapter: AdapterKind::Responses,
-                model: model.clone(),
-                upstream_model: model.clone(),
+                model: model_name.clone(),
+                upstream_model: model_name.clone(),
                 effort: None,
                 service_tier: None,
             };
-            // Pass the client's inbound headers through so the passthrough can
-            // forward the Codex CLI's own request headers verbatim (swapping only
-            // the credential); the shunt client-token header is stripped inside
-            // `forward_codex_inbound`.
             let result =
                 responses::forward_codex_inbound(state, route, pool_key, headers, body).await;
-            (provider, result)
+            (default_provider, result)
         }
     };
 
-    record_outcome(provider, model, started_at, result)
+    record_outcome(provider, model_name, started_at, result)
 }
 
 /// Dispatch a request whose `model` matched a `[[server.codex_endpoint.routes]]`
@@ -480,7 +487,7 @@ fn record_outcome(
 /// With no inbound auth (`client == None`) the bare session id is used — single-tenant,
 /// there is no client identity to bind. Returns `None` when the request carries no
 /// session id (nothing to key the pool on).
-fn pool_sticky_key(client: Option<&str>, session_id: Option<String>) -> Option<String> {
+pub(crate) fn pool_sticky_key(client: Option<&str>, session_id: Option<String>) -> Option<String> {
     session_id.map(|session_id| match client {
         Some(client) => format!("{client}:{session_id}"),
         None => session_id,
