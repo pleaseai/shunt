@@ -1,6 +1,6 @@
 ---
 name: shunt-admin-spa-cutover-coverage
-description: PR #526 (admin SPA cutover, deletes html.rs dashboard_page + its 15 tests) gap analysis
+description: PR #526 (admin SPA cutover, deletes html.rs dashboard_page + its 15 tests) coverage analysis; all 15 properties land on real RTL tests and the cfg(not(ui)) route test is run by ci.yml's default-build step
 metadata:
   type: project
 ---
@@ -18,19 +18,21 @@ branches, correctly deriving `state` through `effectiveState`/`observedRow`
 there's no managed match, so the fixture's `state`/`signal` overrides land on
 the branch the test names).
 
-One real gap found: `tests/router_surface.rs`'s new
+No CI gap, and the reason is worth keeping: `tests/router_surface.rs`'s new
 `the_mount_root_without_the_ui_feature_explains_the_missing_bundle` is
-`#[cfg(not(feature = "ui"))]`, but `.github/workflows/ci.yml` has exactly one
-test job and it always runs `cargo test --all-features --workspace` (which
-turns on `ui`). Confirmed by direct build: the test compiles and passes when
-run locally without `--all-features`, but per grep of the workflow file there
-is no job that ever invokes `cargo test` without `--all-features`, so this
-`#[cfg]`-gated test body is never compiled in CI — pattern also present
-pre-existing in the same file (`router_surface.rs:498,547,615`), so it's a
-known/accepted repo-wide gap (see `docs/admin-ui-delivery.md`'s
-default-build-has-no-dashboard resolution), not something newly introduced,
-but still worth flagging per-PR since new `cfg(not(feature="ui"))` tests keep
-being added under the same CI blind spot.
+`#[cfg(not(feature = "ui"))]`, and `.github/workflows/ci.yml`'s main test step
+always runs `cargo test --all-features --workspace`, which turns `ui` on and
+compiles that arm out. This PR closed that blind spot in the same commit: a
+second step, `Test default build (no ui feature)`, runs
+`cargo test --test router_surface` with default features, and `ui` is not a
+default feature (`Cargo.toml`), so this test (`router_surface.rs:615`) and the
+two pre-existing `#[cfg(not(feature = "ui"))]` arms beside it
+(`router_surface.rs:498,547`) are compiled and executed in CI.
+
+The remaining exposure is the step's scope, not this test: it names one test
+binary. A `#[cfg(not(feature = "ui"))]` arm added to any *other* test file is
+still dead source as far as CI is concerned until that binary is named in the
+step too — which is what the step's own comment says.
 
 The `upstream-status.test.tsx` omission of a "failed status read hides the
 section" test is *correctly* reasoned as untestable via DOM: traced

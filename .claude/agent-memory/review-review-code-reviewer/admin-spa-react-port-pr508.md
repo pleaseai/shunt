@@ -61,9 +61,13 @@ deletion this note anticipated.** Deletes `src/admin/script.rs` and
 `html::dashboard_page`; `GET /admin` now answers `ui::shell()` under
 `--features ui` and a `404` naming the feature without it, via one `dashboard()`
 fn with two `#[cfg]` bodies. Verified: `cargo check` clean both with and without
-`--features ui`; no leftover references to `dashboard_page`/`html_page`/
-`html_body`/`mod script` anywhere in `src/` or `tests/`. This PR also further
-split `accountGroups` in `ui/src/accounts.ts` into `managedState`/`managedRow`/
+`--features ui`; no leftover *code* references to the deleted `dashboard_page`/
+`html_page`/`html_body`/`mod script` anywhere in `src/` or `tests/`. Two things
+that grep still finds, both expected: `src/admin/ui.rs:26-27` names
+`super::html::dashboard_page` and `super::script` in module docs to say they are
+deleted, and `html_body` is a substring of the still-live
+`html_body_with_form_action`, the login page's renderer (5 hits).
+This PR also further split `accountGroups` in `ui/src/accounts.ts` into `managedState`/`managedRow`/
 `observedRow`/`foldObservation`/`uuidsByAccountName` — diffed old vs. new
 line-by-line, exactly behaviour-preserving (including ordering: managed rows
 laid down before observations are folded in, so a coalesced row keeps its

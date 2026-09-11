@@ -45,7 +45,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/codex/analytics-events/events` | Codex CLI 분석 sink — 루트형 `chatgpt_base_url` 형식 |
 | `GET` | `/usage` | 클라이언트용 정제된 풀 사용량 — 공유 계정 풀의 창별 잔여 여유와 리셋, 그리고 풀링되는 프로바이더별 동일 집계를 반환하며 계정 신원이나 용량은 반환하지 않음 |
 
-`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로, `POST /admin/login`에서는 `401`로 거부됩니다. 다만 SPA 셸과 번들 파일은 예외로, `GET /admin/{*path}`와 `GET /admin/assets/{*path}`는 관리자 인증 없이 제공됩니다. 이 둘은 운영자 데이터를 담지 않고, SPA가 읽는 값은 모두 요청마다 인증하는 `/admin/api/*` 뒤에 있으므로 안전합니다. 두 라우트 역시 `[server.admin]`이 구성되고 `--features ui`로 빌드한 바이너리에서만 존재합니다.
+`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로, `POST /admin/login`에서는 `401`로 거부됩니다. 다만 SPA 셸과 번들 파일은 예외로, `GET /admin`, `GET /admin/{*path}`, `GET /admin/assets/{*path}`는 관리자 인증 없이 제공됩니다. 이들은 운영자 데이터를 담지 않고, SPA가 읽는 값은 모두 요청마다 인증하는 `/admin/api/*` 뒤에 있으므로 안전합니다. 와일드카드 라우트 둘은 `[server.admin]`이 구성되고 `--features ui`로 빌드한 바이너리에서만 존재합니다.
 
 ### 관리자 SPA 번들(`--features ui`)
 
