@@ -10,7 +10,7 @@ use axum::{
         ws::{rejection::WebSocketUpgradeRejection, Message, WebSocket, WebSocketUpgrade},
         Extension, State,
     },
-    http::{header, HeaderMap, HeaderName},
+    http::{header, HeaderMap, HeaderName, StatusCode},
     response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, StreamExt};
@@ -56,6 +56,18 @@ pub async fn get(
             .into_response();
     };
     let provider = codex_endpoint.provider.clone();
+
+    if state.inbound_auth.is_none() && !same_origin_or_non_browser(&headers) {
+        return crate::error::into_openai_error_shape(
+            ShuntError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "WebSocket upgrades from a different browser origin require inbound authentication",
+            )
+            .into_response(),
+        )
+        .await;
+    }
 
     let inbound_client =
         match authenticate_inbound(state.inbound_auth.as_deref(), &headers, &provider) {
@@ -244,6 +256,16 @@ async fn run_turn(context: TurnContext) {
     // one immutable runtime snapshot while later turns observe newer config.
     let state = state.refreshed();
     let Some(codex_endpoint) = state.config.server.codex_endpoint.as_ref() else {
+        let err_frame = build_ws_error_frame(
+            502,
+            "api_error",
+            "configuration_error",
+            "codex endpoint is no longer configured",
+            None,
+        );
+        let _ = out_tx
+            .send((turn_gen, Message::Text(err_frame.into())))
+            .await;
         return;
     };
     if crate::codex_endpoint::authenticate_inbound(
@@ -524,4 +546,43 @@ async fn run_turn(context: TurnContext) {
             .send((turn_gen, Message::Text(err_frame.into())))
             .await;
     }
+}
+
+fn same_origin_or_non_browser(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return true;
+    };
+    let Some(host) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let Ok(origin) = url::Url::parse(origin) else {
+        return false;
+    };
+    let Some(origin_host) = origin.host_str() else {
+        return false;
+    };
+    let origin_port = origin.port_or_known_default();
+    let host_without_port = host.rsplit_once(':').map_or(host, |(host, port)| {
+        if port.parse::<u16>().is_ok() {
+            host.trim_matches(['[', ']'])
+        } else {
+            host
+        }
+    });
+    let host_port = host
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok());
+    origin_host.eq_ignore_ascii_case(host_without_port)
+        && origin_port
+            == host_port.or_else(|| match origin.scheme() {
+                "http" => Some(80),
+                "https" => Some(443),
+                _ => None,
+            })
 }

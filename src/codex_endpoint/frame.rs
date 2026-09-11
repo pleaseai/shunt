@@ -705,6 +705,10 @@ pub mod tests {
                 terminal_status_from_type("response.incomplete"),
                 Some(TerminalStatus::Incomplete)
             );
+            assert_eq!(
+                terminal_status_from_type("error"),
+                Some(TerminalStatus::Failed)
+            );
             assert_eq!(terminal_status_from_type("response.created"), None);
         }
     }
