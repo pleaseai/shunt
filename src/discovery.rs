@@ -6,7 +6,11 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::{auth::slots::ShuntCredentials, error::ShuntError, server::AppState};
+use crate::{
+    auth::slots::ShuntCredentials,
+    error::{into_openai_error_shape, ShuntError},
+    server::AppState,
+};
 
 pub(crate) mod upstream;
 
@@ -124,7 +128,11 @@ impl ModelEntry {
 /// enabled at boot.
 pub(crate) const CODEX_PATHS: [&str; 2] = ["/models", "/backend-api/codex/models"];
 
-fn authentication_error(state: &AppState, headers: &HeaderMap) -> Option<Response> {
+async fn authentication_error(
+    state: &AppState,
+    headers: &HeaderMap,
+    codex_shape: bool,
+) -> Option<Response> {
     let static_client = state
         .inbound_auth
         .as_ref()
@@ -138,7 +146,7 @@ fn authentication_error(state: &AppState, headers: &HeaderMap) -> Option<Respons
         && gateway_identity.is_none()
     {
         tracing::warn!(
-            "inbound auth failed for model discovery: missing or invalid client credential"
+            "inbound auth failed for GET /v1/models: missing or invalid client credential"
         );
         let message = match (&state.inbound_auth, &state.gateway_auth) {
             (Some(auth), Some(_)) => format!(
@@ -155,15 +163,18 @@ fn authentication_error(state: &AppState, headers: &HeaderMap) -> Option<Respons
             }
             (None, None) => unreachable!("authentication gate requires configured auth"),
         };
-        return Some(
-            ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-                .into_response(),
-        );
+        let response = ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+            .into_response();
+        return Some(if codex_shape {
+            into_openai_error_shape(response).await
+        } else {
+            response
+        });
     }
     if let Some(client) = static_client {
-        tracing::info!(client = %client, "inbound client authenticated for model discovery");
+        tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
     } else if let Some(identity) = gateway_identity.as_ref() {
-        tracing::info!(client = %identity.email, "gateway user authenticated for model discovery");
+        tracing::info!(client = %identity.email, "gateway user authenticated for GET /v1/models");
     }
     None
 }
@@ -216,7 +227,7 @@ async fn anthropic_models(state: AppState, headers: HeaderMap) -> Response {
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Snapshot the live config so this response reflects the latest reload.
     let state = state.refreshed();
-    if let Some(response) = authentication_error(&state, &headers) {
+    if let Some(response) = authentication_error(&state, &headers, false).await {
         return response;
     }
     anthropic_models(state, headers).await
@@ -232,12 +243,10 @@ pub async fn get_negotiated(
     RawQuery(raw_query): RawQuery,
 ) -> Response {
     let state = state.refreshed();
-    if let Some(response) = authentication_error(&state, &headers) {
+    let is_codex = has_client_version_query(raw_query.as_deref());
+    if let Some(response) = authentication_error(&state, &headers, is_codex).await {
         return response;
     }
-    let is_codex = raw_query.as_deref().is_some_and(|query| {
-        url::form_urlencoded::parse(query.as_bytes()).any(|(key, _)| key == "client_version")
-    });
     if is_codex {
         return codex_models_response();
     }
@@ -248,10 +257,19 @@ pub async fn get_negotiated(
 /// the strict Codex schema and avoids inventing incomplete `ModelInfo` rows.
 pub async fn get_codex(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let state = state.refreshed();
-    if let Some(response) = authentication_error(&state, &headers) {
+    if let Some(response) = authentication_error(&state, &headers, true).await {
         return response;
     }
     codex_models_response()
+}
+
+/// Whether an URL-form query contains the Codex catalog negotiation key.
+/// Values are deliberately ignored: empty and duplicate fields still identify
+/// a Codex request, matching the CLI's presence-based negotiation contract.
+pub(crate) fn has_client_version_query(raw_query: Option<&str>) -> bool {
+    raw_query.is_some_and(|query| {
+        url::form_urlencoded::parse(query.as_bytes()).any(|(key, _)| key == "client_version")
+    })
 }
 
 fn codex_models_response() -> Response {
@@ -524,19 +542,31 @@ mod tests {
     #[tokio::test]
     async fn client_version_negotiates_codex_shape_before_header_hints() {
         let (router, _, _) = server::build_router(codex_enabled_config()).unwrap();
-        let response = router
-            .oneshot(
-                Request::get("/v1/models?client_version=0.152.0")
-                    .header("anthropic-version", "2023-06-01")
-                    .header("user-agent", "claude-code/2.1.0")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        for query in [
+            "client_version=0.152.0",
+            "client_version=",
+            "client_version&client_version=0.152.0",
+            "%63lient_version=0.152.0",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(format!("/v1/models?{query}"))
+                        .header("anthropic-version", "2023-06-01")
+                        .header("user-agent", "claude-code/2.1.0")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response_json(response).await, json!({"models": []}));
+            assert_eq!(response.status(), StatusCode::OK, "query: {query}");
+            assert_eq!(
+                response_json(response).await,
+                json!({"models": []}),
+                "query: {query}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -639,6 +669,9 @@ mod tests {
 
         for path in [
             "/v1/models?client_version=0.152.0",
+            "/v1/models?client_version=",
+            "/v1/models?client_version=one&client_version=two",
+            "/v1/models?%63lient_version=0.152.0",
             "/models",
             "/backend-api/codex/models",
         ] {
@@ -653,8 +686,15 @@ mod tests {
                 "unauthorized path: {path}"
             );
             assert_eq!(
-                response_json(unauthorized).await["error"]["type"],
-                "authentication_error"
+                response_json(unauthorized).await,
+                json!({
+                    "error": {
+                        "message": "missing or invalid credential: this gateway requires a client token (via x-shunt-token, x-api-key, or Authorization: Bearer) for model discovery; ask the operator for one",
+                        "type": "authentication_error",
+                        "code": null
+                    }
+                }),
+                "unauthorized path: {path}"
             );
 
             let authorized = router
@@ -670,6 +710,26 @@ mod tests {
             assert_eq!(authorized.status(), StatusCode::OK, "path: {path}");
             assert_eq!(response_json(authorized).await, json!({"models": []}));
         }
+
+        let unauthorized = router
+            .oneshot(
+                Request::get("/v1/models?limit=1000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response_json(unauthorized).await,
+            json!({
+                "type": "error",
+                "error": {
+                    "type": "authentication_error",
+                    "message": "missing or invalid credential: this gateway requires a client token (via x-shunt-token, x-api-key, or Authorization: Bearer) for model discovery; ask the operator for one"
+                }
+            })
+        );
     }
 
     const ADMIN_WRITE_KEY: &str = "admin-write-key-0123456789abcdef0";

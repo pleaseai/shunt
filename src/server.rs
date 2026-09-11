@@ -160,6 +160,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let http_tuning = HttpTuningLayer::new(
         config.server.access_control.clone(),
         config.server.limits.clone(),
+        config.server.codex_endpoint.is_some(),
     );
     let http_tuning_enabled = config.server.access_control.enabled()
         || config.server.limits.max_request_header_bytes.is_some()
@@ -298,7 +299,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // zero value preserves the previous unlimited behavior without a layer.
     if max_concurrent_requests > 0 {
         router = router.layer(middleware::from_fn_with_state(
-            ConcurrencyLimit::new(max_concurrent_requests),
+            ConcurrencyLimit::new(max_concurrent_requests, codex_endpoint_enabled),
             limit_requests,
         ));
     }
