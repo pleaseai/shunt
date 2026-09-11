@@ -16,6 +16,7 @@ use serde_json::Value;
 use crate::{
     adapters::{Adapter, AdapterError, AdapterFailure, AdapterFuture},
     auth::{resolve_credential, Credential},
+    config::ApiKeyHeader,
     model::openai_chat_request::translate_request,
     model::openai_chat_response::OpenAiChatSseMachine,
     request::RequestBody,
@@ -86,8 +87,13 @@ fn map_openai_chat_error(status: StatusCode, body: &str) -> AdapterError {
                 .or_else(|| value.get("message"))
         })
         .and_then(Value::as_str)
-        .unwrap_or(body)
+        .unwrap_or("OpenAI Chat backend returned a non-JSON error")
         .to_string();
+    let message = if message.len() > 4096 {
+        format!("{}…", &message[..message.floor_char_boundary(4096)])
+    } else {
+        message
+    };
     let error_type = match status {
         StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "authentication_error",
@@ -205,15 +211,11 @@ async fn forward(
         let payload = payload.clone();
         let endpoint = endpoint.clone();
         async move {
-            crate::upstream_timeout::wait(
-                ttfb_ms,
-                client
-                    .post(&endpoint)
-                    .bearer_auth(&token)
-                    .json(&payload)
-                    .send(),
-            )
-            .await
+            let request = match provider.api_key_header {
+                ApiKeyHeader::Bearer => client.post(&endpoint).bearer_auth(&token),
+                ApiKeyHeader::XApiKey => client.post(&endpoint).header("x-api-key", &token),
+            };
+            crate::upstream_timeout::wait(ttfb_ms, request.json(&payload).send()).await
         }
     };
     let response = crate::retry::send_with_retry_with_safety(
@@ -314,7 +316,7 @@ async fn stream_sse_response(
             None::<Bytes>,
             None::<Bytes>,
         ),
-        |(mut bytes, mut decoder, mut machine, finished, mut pending, mut deferred_terminal)| {
+        |(mut bytes, mut decoder, mut machine, finished, mut pending, deferred_terminal)| {
             async move {
                 if finished {
                     return None;
@@ -362,12 +364,15 @@ async fn stream_sse_response(
                         if is_done && !terminal {
                             unreachable!("[DONE] completion must be terminal");
                         }
-                        // The framing [DONE] only closes a provider-declared
-                        // success; the authoritative terminal is deferred to
-                        // EOF so residual frames cannot emit success-then-error.
+                        // [DONE] is the provider's authoritative stream
+                        // boundary. Return the terminal immediately so a
+                        // backend that leaves the HTTP body open cannot hang
+                        // the client indefinitely.
                         if is_done && terminal && result_succeeded {
-                            deferred_terminal = Some(Bytes::from(output));
-                            continue;
+                            return Some((
+                                Ok(Bytes::from(output)),
+                                (bytes, decoder, machine, true, None, None),
+                            ));
                         }
                         if !output.is_empty() {
                             return Some((

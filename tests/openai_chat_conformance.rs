@@ -1,4 +1,13 @@
-use std::{io::ErrorKind, net::SocketAddr, sync::OnceLock};
+mod openai_chat_support;
+
+use std::{
+    io::ErrorKind,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        OnceLock,
+    },
+};
 
 use reqwest::StatusCode;
 use serde_json::{json, Value};
@@ -8,6 +17,8 @@ use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
 };
+
+use openai_chat_support::*;
 
 struct EnvVarGuard {
     key: &'static str,
@@ -32,6 +43,7 @@ impl Drop for EnvVarGuard {
 }
 
 static OPENAI_CHAT_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static OPENAI_CHAT_ENV_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 async fn lock_openai_chat_env() -> tokio::sync::MutexGuard<'static, ()> {
     OPENAI_CHAT_ENV_LOCK
@@ -72,9 +84,14 @@ fn openai_chat_provider(base_url: &str, api_key_env: &str) -> Value {
     })
 }
 
-fn single_provider_config(base_url: &str) -> Config {
+fn unique_env_name(prefix: &str) -> &'static str {
+    let id = OPENAI_CHAT_ENV_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Box::leak(format!("{prefix}_{id}").into_boxed_str())
+}
+
+fn single_provider_config(base_url: &str, api_key_env: &'static str) -> Config {
     config_with_openai_chat_providers(
-        json!({ "openai-chat-test": openai_chat_provider(base_url, "SHUNT_OPENAI_CHAT_CONFORMANCE_KEY") }),
+        json!({ "openai-chat-test": openai_chat_provider(base_url, api_key_env) }),
         json!([{
             "model": "claude-via-chat",
             "provider": "openai-chat-test",
@@ -110,103 +127,14 @@ async fn start_gateway(mut config: Config) -> Gateway {
     }
 }
 
-fn anthropic_request(model: &str) -> String {
-    json!({
-        "model": model,
-        "max_tokens": 64,
-        "stream": false,
-        "messages": [{"role": "user", "content": "fixture"}]
-    })
-    .to_string()
-}
-
-fn anthropic_streaming_request(model: &str) -> String {
-    let mut value: Value = serde_json::from_str(&anthropic_request(model)).unwrap();
-    value["stream"] = json!(true);
-    value.to_string()
-}
-
-fn chat_completion_upstream() -> Value {
-    json!({
-        "id": "chatcmpl-fixture",
-        "object": "chat.completion",
-        "created": 1,
-        "model": "gpt-5",
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": "fixture reply"},
-            "finish_reason": "stop"
-        }],
-        "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
-    })
-}
-
-/// Collect the gateway SSE relay into (event, data) frames for assertions.
-async fn collect_sse_events(response: reqwest::Response) -> Vec<(String, Value)> {
-    use futures_util::StreamExt;
-    let mut buffer = Vec::new();
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        buffer.extend_from_slice(&chunk.unwrap());
-    }
-    let text = String::from_utf8(buffer).expect("SSE relay must be UTF-8");
-    let mut events = Vec::new();
-    for frame in text.split("\n\n") {
-        let frame = frame.trim();
-        if frame.is_empty() {
-            continue;
-        }
-        let mut event = "message".to_string();
-        let mut data = String::new();
-        for line in frame.lines() {
-            if let Some(rest) = line.strip_prefix("event: ") {
-                event = rest.to_string();
-            }
-            if let Some(rest) = line.strip_prefix("data: ") {
-                data.push_str(rest);
-            }
-        }
-        if data.is_empty() {
-            continue;
-        }
-        let value = serde_json::from_str(&data).unwrap_or(Value::Null);
-        events.push((event, value));
-    }
-    events
-}
-
-fn sse_body(frames: &[String]) -> ResponseTemplate {
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        // Real upstreams terminate the final frame with a blank line; EOF on
-        // an unterminated frame is its own fail-closed case elsewhere.
-        .set_body_raw(
-            frames
-                .iter()
-                .map(|frame| format!("data: {frame}\n\n"))
-                .collect::<String>(),
-            "text/event-stream",
-        )
-}
-
-fn chat_delta(delta: Value, finish: Option<&str>) -> String {
-    let mut choice = json!({ "index": 0, "delta": delta });
-    if let Some(finish) = finish {
-        choice["finish_reason"] = json!(finish);
-    }
-    json!({ "choices": [choice] }).to_string()
-}
-
-const CHAT_USAGE_CHUNK: &str =
-    r#"{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}"#;
-
 #[tokio::test]
 async fn openai_chat_tracer_unary_happy_path() {
     if !can_bind_loopback() {
         return;
     }
     let _env_lock = lock_openai_chat_env().await;
-    let _key = EnvVarGuard::set("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY", "fixture-openai-key");
+    let api_key_env = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY");
+    let _key = EnvVarGuard::set(api_key_env, "fixture-openai-key");
 
     let backend = MockServer::start().await;
     Mock::given(method("POST"))
@@ -216,7 +144,7 @@ async fn openai_chat_tracer_unary_happy_path() {
         .mount(&backend)
         .await;
 
-    let gateway = start_gateway(single_provider_config(&backend.uri())).await;
+    let gateway = start_gateway(single_provider_config(&backend.uri(), api_key_env)).await;
     let response = reqwest::Client::new()
         .post(format!("{}/v1/messages", gateway.base_url))
         .header("x-api-key", "inbound-slot-key")
@@ -270,8 +198,10 @@ async fn openai_chat_tracer_unary_isolation() {
         return;
     }
     let _env_lock = lock_openai_chat_env().await;
-    let _key_a = EnvVarGuard::set("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY_A", "fixture-key-a");
-    let _key_b = EnvVarGuard::set("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY_B", "fixture-key-b");
+    let api_key_env_a = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY_A");
+    let api_key_env_b = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY_B");
+    let _key_a = EnvVarGuard::set(api_key_env_a, "fixture-key-a");
+    let _key_b = EnvVarGuard::set(api_key_env_b, "fixture-key-b");
 
     let backend = MockServer::start().await;
     Mock::given(method("POST"))
@@ -283,8 +213,8 @@ async fn openai_chat_tracer_unary_isolation() {
 
     let config = config_with_openai_chat_providers(
         json!({
-            "openai-chat-a": openai_chat_provider(&backend.uri(), "SHUNT_OPENAI_CHAT_CONFORMANCE_KEY_A"),
-            "openai-chat-b": openai_chat_provider(&backend.uri(), "SHUNT_OPENAI_CHAT_CONFORMANCE_KEY_B")
+            "openai-chat-a": openai_chat_provider(&backend.uri(), api_key_env_a),
+            "openai-chat-b": openai_chat_provider(&backend.uri(), api_key_env_b)
         }),
         json!([
             {
@@ -385,7 +315,8 @@ async fn openai_chat_tracer_streaming_relay() {
         return;
     }
     let _env_lock = lock_openai_chat_env().await;
-    let _key = EnvVarGuard::set("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY", "fixture-openai-key");
+    let api_key_env = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY");
+    let _key = EnvVarGuard::set(api_key_env, "fixture-openai-key");
 
     let backend = MockServer::start().await;
     Mock::given(method("POST"))
@@ -401,7 +332,7 @@ async fn openai_chat_tracer_streaming_relay() {
         .mount(&backend)
         .await;
 
-    let gateway = start_gateway(single_provider_config(&backend.uri())).await;
+    let gateway = start_gateway(single_provider_config(&backend.uri(), api_key_env)).await;
     let response = reqwest::Client::new()
         .post(format!("{}/v1/messages", gateway.base_url))
         .body(anthropic_streaming_request("claude-via-chat"))
@@ -452,7 +383,8 @@ async fn openai_chat_tracer_streaming_eof_failclosed() {
         return;
     }
     let _env_lock = lock_openai_chat_env().await;
-    let _key = EnvVarGuard::set("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY", "fixture-openai-key");
+    let api_key_env = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY");
+    let _key = EnvVarGuard::set(api_key_env, "fixture-openai-key");
 
     let backend = MockServer::start().await;
     Mock::given(method("POST"))
@@ -465,7 +397,7 @@ async fn openai_chat_tracer_streaming_eof_failclosed() {
         .mount(&backend)
         .await;
 
-    let gateway = start_gateway(single_provider_config(&backend.uri())).await;
+    let gateway = start_gateway(single_provider_config(&backend.uri(), api_key_env)).await;
     let response = reqwest::Client::new()
         .post(format!("{}/v1/messages", gateway.base_url))
         .body(anthropic_streaming_request("claude-via-chat"))
@@ -492,7 +424,8 @@ async fn openai_chat_tracer_streaming_duplicate_terminal() {
         return;
     }
     let _env_lock = lock_openai_chat_env().await;
-    let _key = EnvVarGuard::set("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY", "fixture-openai-key");
+    let api_key_env = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY");
+    let _key = EnvVarGuard::set(api_key_env, "fixture-openai-key");
 
     let backend = MockServer::start().await;
     Mock::given(method("POST"))
@@ -507,7 +440,7 @@ async fn openai_chat_tracer_streaming_duplicate_terminal() {
         .mount(&backend)
         .await;
 
-    let gateway = start_gateway(single_provider_config(&backend.uri())).await;
+    let gateway = start_gateway(single_provider_config(&backend.uri(), api_key_env)).await;
     let response = reqwest::Client::new()
         .post(format!("{}/v1/messages", gateway.base_url))
         .body(anthropic_streaming_request("claude-via-chat"))
@@ -517,13 +450,16 @@ async fn openai_chat_tracer_streaming_duplicate_terminal() {
     assert_eq!(response.status(), StatusCode::OK);
     let events = collect_sse_events(response).await;
 
-    let errors = events.iter().filter(|(event, _)| event == "error").count();
     assert_eq!(
-        errors, 1,
-        "a duplicate [DONE] terminal must fail closed: {events:?}"
+        events
+            .iter()
+            .filter(|(event, _)| event == "message_stop")
+            .count(),
+        1,
+        "the first [DONE] must close the stream exactly once: {events:?}"
     );
     assert!(
-        events.iter().all(|(event, _)| event != "message_stop"),
-        "no success terminal may survive a duplicate [DONE]: {events:?}"
+        events.iter().all(|(event, _)| event != "error"),
+        "a duplicate [DONE] after the terminal is not read or surfaced: {events:?}"
     );
 }

@@ -48,14 +48,35 @@ pub fn translate_request(
     if stream {
         out.insert("stream_options".to_string(), json!({"include_usage": true}));
     }
-    if let Some(system) = request.get("system") {
-        out.insert("system".to_string(), translate_system(system)?);
+    if let Some(tools) = request.get("tools") {
+        if tools.as_array().is_some_and(|tools| !tools.is_empty()) {
+            return Err(bad_request(
+                "OpenAI Chat slice does not support Anthropic tools yet",
+            ));
+        }
+    }
+    if let Some(tool_choice) = request.get("tool_choice") {
+        if !tool_choice.is_null() && tool_choice != "auto" {
+            return Err(bad_request(
+                "OpenAI Chat slice does not support Anthropic tool_choice yet",
+            ));
+        }
+    }
+    if let Some(max_tokens) = request.get("max_tokens") {
+        let max_tokens = max_tokens
+            .as_u64()
+            .ok_or_else(|| bad_request("max_tokens must be an unsigned integer"))?;
+        out.insert("max_tokens".to_string(), json!(max_tokens));
     }
     let messages = request
         .get("messages")
         .and_then(Value::as_array)
         .ok_or_else(|| bad_request("messages must be an array"))?;
-    let mut translated = Vec::with_capacity(messages.len());
+    let mut translated =
+        Vec::with_capacity(messages.len() + usize::from(request.get("system").is_some()));
+    if let Some(system) = request.get("system") {
+        translated.push(translate_system(system)?);
+    }
     for message in messages {
         translated.push(translate_message(message)?);
     }

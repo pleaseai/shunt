@@ -138,16 +138,18 @@ impl OpenAiChatSseMachine {
             }]);
         }
 
-        self.retained_bytes = self
-            .retained_bytes
-            .checked_add(checked.retained_bytes)
-            .filter(|total| *total <= MAX_RETAINED_SEMANTIC_BYTES)
-            .ok_or_else(|| {
-                self.terminal = TerminalState::ProtocolFailed;
-                OpenAiChatSemanticError::protocol(
-                    "OpenAI Chat retained semantic state exceeds limit",
-                )
-            })?;
+        if self.accumulate_content {
+            self.retained_bytes = self
+                .retained_bytes
+                .checked_add(checked.retained_bytes)
+                .filter(|total| *total <= MAX_RETAINED_SEMANTIC_BYTES)
+                .ok_or_else(|| {
+                    self.terminal = TerminalState::ProtocolFailed;
+                    OpenAiChatSemanticError::protocol(
+                        "OpenAI Chat retained semantic state exceeds limit",
+                    )
+                })?;
+        }
 
         if let Some(tokens) = checked.input_tokens {
             self.input_tokens = tokens;
@@ -193,23 +195,19 @@ impl OpenAiChatSseMachine {
                 }),
             }]);
         }
-        if let Some(choices) = chunk.get("choices") {
-            let choices = choices.as_array().ok_or_else(|| {
-                OpenAiChatSemanticError::protocol("OpenAI Chat choices must be an array")
-            })?;
-            let carries_payload = choices.iter().any(|choice| {
-                choice
-                    .get("delta")
-                    .and_then(|delta| delta.get("content"))
-                    .is_some_and(|content| !content.is_null())
-                    || choice.get("finish_reason").is_some()
-            });
-            if carries_payload {
-                self.terminal = TerminalState::ProtocolFailed;
-                return Err(OpenAiChatSemanticError::protocol(
-                    "content or a second finish_reason arrived after the finish_reason chunk",
-                ));
-            }
+        let choices = chunk.get("choices").ok_or_else(|| {
+            OpenAiChatSemanticError::protocol(
+                "OpenAI Chat usage trailer must contain an empty choices array",
+            )
+        })?;
+        let choices = choices.as_array().ok_or_else(|| {
+            OpenAiChatSemanticError::protocol("OpenAI Chat choices must be an array")
+        })?;
+        if !choices.is_empty() {
+            self.terminal = TerminalState::ProtocolFailed;
+            return Err(OpenAiChatSemanticError::protocol(
+                "OpenAI Chat usage trailer choices must be empty",
+            ));
         }
         let (input_tokens, output_tokens) = validate_usage(chunk.get("usage"))?;
         if let Some(tokens) = input_tokens {
@@ -266,21 +264,23 @@ impl OpenAiChatSseMachine {
                     OpenAiChatSemanticError::protocol("OpenAI Chat choice must be an object")
                 })?;
                 if let Some(reason) = choice.get("finish_reason") {
-                    let reason = reason.as_str().ok_or_else(|| {
-                        OpenAiChatSemanticError::protocol(
-                            "OpenAI Chat finish_reason must be a string",
-                        )
-                    })?;
-                    let mapped = match reason {
-                        "stop" => "end_turn",
-                        "length" => "max_tokens",
-                        other => {
-                            return Err(OpenAiChatSemanticError::protocol(format!(
-                                "unsupported OpenAI Chat finish_reason {other}"
-                            )))
-                        }
-                    };
-                    finish_reason = Some(mapped);
+                    if let Some(reason) = reason.as_str() {
+                        let mapped = match reason {
+                            "stop" => "end_turn",
+                            "length" => "max_tokens",
+                            "content_filter" => "end_turn",
+                            other => {
+                                return Err(OpenAiChatSemanticError::protocol(format!(
+                                    "unsupported OpenAI Chat finish_reason {other}"
+                                )))
+                            }
+                        };
+                        finish_reason = Some(mapped);
+                    } else if !reason.is_null() {
+                        return Err(OpenAiChatSemanticError::protocol(
+                            "OpenAI Chat finish_reason must be a string or null",
+                        ));
+                    }
                 }
                 // Both output shapes share one field path check: a whole
                 // completion carries message content, a stream frame carries
@@ -467,7 +467,7 @@ impl OpenAiChatSseMachine {
 fn validate_usage(
     usage: Option<&Value>,
 ) -> Result<(Option<u64>, Option<u64>), OpenAiChatSemanticError> {
-    let Some(usage) = usage else {
+    let Some(usage) = usage.filter(|usage| !usage.is_null()) else {
         return Ok((None, None));
     };
     let usage = usage
