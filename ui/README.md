@@ -54,10 +54,11 @@ does exactly that.
 
 `GET /admin` serves this bundle, as does every other path under the mount. The
 server-rendered dashboard it replaced is gone; `src/admin/html.rs` now renders
-only the login page, which stays server-rendered because a sign-in screen cannot
-depend on a bundle only a signed-in session is meant to reach
-(`docs/admin-ui-delivery.md`, Resolution 6). Without `--features ui` there is no
-bundle, and `/admin` answers `404` with a body naming the feature.
+only the login page. That page stays server-rendered because this bundle exists
+only in a `--features ui` build: without the feature `/admin` answers `404` with
+a body naming it, and an admin surface that lost its *sign-in* page the same way
+would be unusable rather than merely dashboard-less. It is not an authentication
+boundary — the shell is served unauthenticated as well.
 
 The toolchain is deliberately separate from `site/`'s Astro/Nimbus one: the two
 serve different purposes and upgrade on different schedules

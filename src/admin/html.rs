@@ -2,11 +2,14 @@
 //! requests, no script: one HTML string with an inline stylesheet.
 //!
 //! This is all that remains server-rendered. The dashboard it used to sit
-//! beside moved to the embedded SPA bundle (`super::ui`, `ui/`), and the login
-//! flow stayed behind deliberately — `docs/admin-ui-delivery.md` Resolution 6
-//! keeps `/admin/login` and `/admin/oidc/callback` outside the SPA because a
-//! sign-in page cannot depend on a bundle only an authenticated session is
-//! meant to reach.
+//! beside moved to the embedded SPA bundle (`super::ui`, `ui/`); the login flow
+//! stayed here, for a reason that is not about authentication — the shell is
+//! served unauthenticated too (`super::ui`). It is about availability: the
+//! bundle exists only in a `--features ui` build, and an admin surface whose
+//! *sign-in* page vanished with that feature would be unusable rather than
+//! merely dashboard-less. `docs/admin-ui-delivery.md` Resolution 6 leaves
+//! `/admin/login` and `/admin/oidc/callback` on their original paths for the
+//! separate reason that they are pages, not JSON with somewhere to move to.
 
 /// Escape the few characters that matter when interpolating a value into HTML
 /// text or a double-quoted attribute. The login page has two such values — the
