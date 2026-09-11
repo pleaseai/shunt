@@ -46,9 +46,9 @@ review:
     # scope from the working tree — uncommitted changes when it is dirty, the
     # base branch when it is clean. A configured value overrides that choice
     # for every invocation, and the previous `"--json -b"` did so with a bare
-    # `-b`, which takes a string: it swallowed the following token, cubic
-    # failed internally to produce a diff, and it still exited 0 with an empty
-    # issue list — a false clean review (#514).
+    # `-b`. It takes a string and sat last on the command line, so it got no
+    # value at all: cubic failed internally to produce a diff and still exited
+    # 0 with an empty issue list — a false clean review (#514).
   agy:
     enabled: false
   coderabbit:
