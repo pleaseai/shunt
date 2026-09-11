@@ -56,6 +56,14 @@ export const AddClaudeAccount = forwardRef<
     report: flow.report,
   }), [flow.prime, flow.report]);
 
+  // The mode the server's pending entry is created under is fixed at start, so
+  // a radio that stayed live would let the form read one method while the
+  // pending login is the other. The lock therefore spans the whole flow, not
+  // just its visible half: `start` clears `authorizeUrl` before it sends, so
+  // `authorizeUrl` alone would reopen the radios for the length of the request
+  // that has already captured `mode`.
+  const locked = flow.starting || flow.authorizeUrl !== null;
+
   return (
     <>
       <h2>Add Claude account</h2>
@@ -76,7 +84,11 @@ export const AddClaudeAccount = forwardRef<
           value={flow.name}
           onChange={(event) => flow.setName(event.target.value)}
         />
-        <fieldset>
+        {/* The radios are the only controls this form disables on its own, so
+            the help text and the lock note are attached here rather than to
+            each input: a screen reader entering the group reads why the choice
+            is fixed, which a bare `disabled` attribute never says. */}
+        <fieldset aria-describedby={locked ? 'modehelp modelock' : 'modehelp'}>
           <legend>Login method</legend>
           <label className="choice">
             <input
@@ -85,6 +97,7 @@ export const AddClaudeAccount = forwardRef<
               name="mode"
               value="oauth"
               checked={mode === 'oauth'}
+              disabled={locked}
               onChange={() => setMode('oauth')}
             />
             <span>Full OAuth (refreshable)</span>
@@ -96,10 +109,21 @@ export const AddClaudeAccount = forwardRef<
               name="mode"
               value="setup_token"
               checked={mode === 'setup_token'}
+              disabled={locked}
               onChange={() => setMode('setup_token')}
             />
             <span>Setup token (1-year, inference-only)</span>
           </label>
+          {/* `role="status"` makes the lock announce itself the moment it
+              appears. The form's own live region (`#addmsg`) cannot carry this:
+              `start` clears it and a successful start never sets it, so the one
+              moment the radios go dead is the one moment that region is empty. */}
+          {locked ? (
+            <p id="modelock" role="status" className="muted">
+              Locked while this login is in progress — the server's pending entry is fixed to the
+              method selected at Start. Completing it, or reloading the page, releases the choice.
+            </p>
+          ) : null}
         </fieldset>
         <button
           id="start"

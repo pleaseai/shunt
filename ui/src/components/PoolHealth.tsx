@@ -11,8 +11,13 @@ function poolState(account: PoolAccount): string {
   if (account.disabled) return 'disabled';
   if (account.needs_relogin) return 'needs re-login';
   if (!account.has_state) return 'unseen';
-  if (account.near_quota) return 'near quota';
+  // The cooldown is checked before `near_quota`, matching `managedState` in
+  // `accounts.ts` so the two tables cannot report the same account differently:
+  // an account-wide cooldown is the fact that *all* of this account's traffic is
+  // gated right now, while `near_quota` is a threshold warning about what is
+  // coming. Reporting the warning while hiding the active gate is the defect.
   if (account.cooldown_secs_remaining) return 'cooling';
+  if (account.near_quota) return 'near quota';
   if (account.cooldown_fable_secs_remaining) return 'cooling (fable)';
   return 'available';
 }

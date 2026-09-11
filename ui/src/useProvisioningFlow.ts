@@ -20,6 +20,20 @@ const COMPLETE_TIMEOUT_MS = 120_000;
 const UNKNOWN_COMPLETION =
   'No answer from the server — the account may still have been stored; recheck the table before retrying';
 
+/**
+ * Said when the start request never produced an answer at all. Deliberately not
+ * `copy.startFailure`, which reports an answer the server *gave*: that one means
+ * the login was refused, this one that the request may never have arrived. The
+ * same line is already drawn on the completion path, and for the same reason —
+ * telling an operator their login was refused, when nothing is known to have
+ * reached the server, sends them to fix a request that was never read.
+ *
+ * Shared by both forms rather than added to `copy`, matching `UNKNOWN_COMPLETION`:
+ * neither says anything a caller could usefully word differently, because
+ * neither knows what happened.
+ */
+const START_UNANSWERED = 'No answer from the server — no authorization step opened, so start again';
+
 export interface FlowMessage {
   text: string;
   ok: boolean;
@@ -32,6 +46,9 @@ export interface Flow {
   setCode: (value: string) => void;
   /** Non-null exactly while the authorization step is open. */
   authorizeUrl: string | null;
+  /** True while a start request is in flight, i.e. after the step closed but
+   *  before the next one opens. */
+  starting: boolean;
   message: FlowMessage | null;
   completing: boolean;
   start: (body: Record<string, unknown>) => Promise<void>;
@@ -71,6 +88,7 @@ export function useProvisioningFlow({
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
   const [message, setMessage] = useState<FlowMessage | null>(null);
   const [completing, setCompleting] = useState(false);
 
@@ -97,6 +115,7 @@ export function useProvisioningFlow({
     epoch.current += 1;
     currentName.current = null;
     setAuthorizeUrl(null);
+    setStarting(false);
     setCode('');
     setMessage(null);
   }, []);
@@ -104,6 +123,25 @@ export function useProvisioningFlow({
   const start = useCallback(
     async (body: Record<string, unknown>) => {
       setMessage(null);
+      // The previous flow's authorization step is closed the moment a new start
+      // is issued. Left open it stays clickable, and its Complete button posts
+      // to the name captured for THAT flow — and because `complete` bumps the
+      // epoch itself, that click also strands the start now in flight: its
+      // response arrives under a superseded epoch and is dropped, so the link
+      // the operator is looking at is never replaced by the one they asked for.
+      setAuthorizeUrl(null);
+      currentName.current = null;
+      // The code belongs to the flow being closed. `complete` clears it only on
+      // success, so a failed exchange leaves it in the box, and it would be
+      // submitted against the new pending entry — which fails on a state
+      // mismatch, blaming the operator's fresh paste for a stale one.
+      setCode('');
+      // `authorizeUrl` alone cannot carry the login-method lock: it is null from
+      // here until the response lands, so the radios would reopen for exactly as
+      // long as the request that already captured `mode` is in flight. Released
+      // only by the epoch's owner — a superseded start leaves it to the newer
+      // start or to `prime`, either of which sets it as it takes over.
+      setStarting(true);
       const issued = (epoch.current += 1);
       try {
         const result = await mutate(`${API}${endpoints.start}`, csrf, {
@@ -111,6 +149,7 @@ export function useProvisioningFlow({
           body: JSON.stringify(body),
         });
         if (issued !== epoch.current) return;
+        setStarting(false);
         // `!answered` is a failure too: without a readable `authorize_url` the
         // form has nothing to show, so reporting nothing would leave the
         // operator staring at a step that never opened.
@@ -121,7 +160,10 @@ export function useProvisioningFlow({
         currentName.current = (result.payload.name as string | undefined) ?? null;
         setAuthorizeUrl((result.payload.authorize_url as string | undefined) ?? null);
       } catch {
-        if (issued === epoch.current) setMessage({ text: 'Request failed', ok: false });
+        if (issued === epoch.current) {
+          setStarting(false);
+          setMessage({ text: START_UNANSWERED, ok: false });
+        }
       }
     },
     [csrf, endpoints, copy.startFailure],
@@ -204,6 +246,7 @@ export function useProvisioningFlow({
     code,
     setCode,
     authorizeUrl,
+    starting,
     message,
     completing,
     start,

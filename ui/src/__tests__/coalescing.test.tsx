@@ -144,4 +144,26 @@ describe('folding managed accounts and local observations into one row', () => {
     expect(status).toHaveTextContent('Cooling (Fable)');
     expect(within(status).getByText(/^Fable retries in /)).toBeInTheDocument();
   });
+
+  /**
+   * Both cooldowns can run at once. The account-wide one is the effective state
+   * — all of the account's traffic is gated — but testing the two in sequence
+   * and returning on the first made the Fable deadline unreachable, so the row
+   * silently disagreed with the pool table, which names both.
+   */
+  it('names both deadlines when an account is cooling account-wide and for fable', async () => {
+    await renderDashboard({
+      accounts: [],
+      pool: poolWith('claude_oauth', 'anthropic', {
+        cooldown_secs_remaining: 600,
+        cooldown_fable_secs_remaining: 1800,
+      }),
+    });
+
+    const status = statusOf('pool-a');
+    expect(status).toHaveAttribute('data-state', 'cooling');
+    expect(status.querySelector('.status-note')).toHaveTextContent(
+      'retries in 10m · Fable retries in 30m',
+    );
+  });
 });

@@ -188,6 +188,159 @@ describe('a superseded provisioning response cannot restore a cleared flow', () 
     expect((document.getElementById('name') as HTMLInputElement).value).toBe('');
   });
 
+  /**
+   * `start` sends the selected mode and the server's pending entry is fixed from
+   * that moment, so radios that stay live while the authorization step is open
+   * let the form read "Setup token" over a pending OAuth login.
+   */
+  it('closes the login-method radios while an authorization step is open', async () => {
+    const user = userEvent.setup();
+    await renderDashboard(ACCOUNTS, {
+      'POST /admin/api/accounts/claude': () =>
+        reply({ name: 'first', authorize_url: 'https://auth.example/claude' }),
+    });
+
+    const oauth = document.getElementById('mode-oauth') as HTMLInputElement;
+    const setup = document.getElementById('mode-setup') as HTMLInputElement;
+    expect(oauth).toBeEnabled();
+    expect(setup).toBeEnabled();
+
+    await openClaudeFlow(user, 'first');
+
+    expect(oauth).toBeDisabled();
+    expect(setup).toBeDisabled();
+  });
+
+  /**
+   * A `disabled` attribute states no reason, and the form's own live region is
+   * empty at exactly this moment — `start` clears it and a successful start
+   * never sets one. The lock announces and names itself instead.
+   */
+  it('names the reason the login-method radios are locked', async () => {
+    const user = userEvent.setup();
+    await renderDashboard(ACCOUNTS, {
+      'POST /admin/api/accounts/claude': () =>
+        reply({ name: 'first', authorize_url: 'https://auth.example/claude' }),
+    });
+
+    const group = document.getElementById('mode-oauth')!.closest('fieldset')!;
+    expect(document.getElementById('modelock')).toBeNull();
+    expect(group.getAttribute('aria-describedby')).toBe('modehelp');
+
+    await openClaudeFlow(user, 'first');
+
+    const note = document.getElementById('modelock')!;
+    expect(note).toHaveAttribute('role', 'status');
+    expect(note.textContent).toMatch(/pending entry is fixed to the method selected at Start/i);
+    expect(group.getAttribute('aria-describedby')).toBe('modehelp modelock');
+  });
+
+  /**
+   * `start` clears `authorizeUrl` before it sends, so a lock keyed on that alone
+   * reopens the radios for the length of a request that has already captured
+   * `mode` — the server would hold one method while the form offers the other.
+   */
+  it('keeps the login-method radios locked while a start is still in flight', async () => {
+    const user = userEvent.setup();
+    const held = deferred<Response>();
+    await renderDashboard(ACCOUNTS, {
+      'POST /admin/api/accounts/claude': (() => held.promise) as Route,
+    });
+
+    const oauth = document.getElementById('mode-oauth') as HTMLInputElement;
+    await user.type(document.getElementById('name') as HTMLInputElement, 'first');
+    await user.click(document.getElementById('start') as HTMLButtonElement);
+
+    // No authorization step yet, and none of it is on screen — but the request
+    // carrying the mode is already gone.
+    expect(document.getElementById('step2')).toBeNull();
+    expect(oauth).toBeDisabled();
+
+    await act(async () => {
+      held.resolve(reply({ name: 'first', authorize_url: 'https://auth.example/claude' }));
+      await held.promise;
+    });
+    expect(oauth).toBeDisabled();
+  });
+
+  /**
+   * `complete` clears the code only when the exchange succeeds, so a failed one
+   * leaves it in the box. Carried into the next flow it is submitted against the
+   * new pending entry, which fails on a state mismatch.
+   */
+  it('clears a stale authorization code when a new start is issued', async () => {
+    const user = userEvent.setup();
+    let starts = 0;
+    const api = await renderDashboard(ACCOUNTS, {
+      'POST /admin/api/accounts/claude': () => {
+        starts += 1;
+        return reply({ name: `acct-${starts}`, authorize_url: 'https://auth.example/claude' });
+      },
+      'POST /admin/api/accounts/claude/acct-1/complete': () =>
+        reply({ error: { message: 'state mismatch' } }, 400),
+      'POST /admin/api/accounts/claude/acct-2/complete': () => reply({ stored: true }),
+    });
+
+    await openClaudeFlow(user, 'first');
+    const code = () => document.getElementById('code') as HTMLTextAreaElement;
+    await user.type(code(), 'stale#state');
+    await user.click(document.getElementById('complete') as HTMLButtonElement);
+    await waitFor(() => expect(document.getElementById('addmsg')).toHaveTextContent(/mismatch/i));
+    expect(code().value).toBe('stale#state');
+
+    await user.click(document.getElementById('start') as HTMLButtonElement);
+    await screen.findByRole('link', { name: 'https://auth.example/claude' });
+    expect(code().value).toBe('');
+
+    // Whatever the operator pastes next is the only code the new flow can send.
+    await user.type(code(), 'fresh#state');
+    await user.click(document.getElementById('complete') as HTMLButtonElement);
+    await waitFor(() =>
+      expect(api.callsTo('POST', '/admin/api/accounts/claude/acct-2/complete')).toHaveLength(1),
+    );
+    const sent = api.callsTo('POST', '/admin/api/accounts/claude/acct-2/complete')[0];
+    expect(JSON.parse(String(sent.body)).code).toBe('fresh#state');
+  });
+
+  /**
+   * A second start leaves the first authorization step on screen while it is in
+   * flight, and its Complete button posts to the name captured for the previous
+   * flow. The step is closed the moment the new start is issued instead.
+   */
+  it('clears the open authorization step as soon as a second start is issued', async () => {
+    const user = userEvent.setup();
+    const held = deferred<Response>();
+    let starts = 0;
+    await renderDashboard(ACCOUNTS, {
+      'POST /admin/api/accounts/claude': (() => {
+        starts += 1;
+        return starts === 1
+          ? reply({ name: 'first', authorize_url: 'https://auth.example/claude' })
+          : held.promise;
+      }) as Route,
+    });
+
+    await openClaudeFlow(user, 'first');
+
+    // The operator renames the account and starts again; the second start is
+    // still in flight.
+    await user.clear(document.getElementById('name') as HTMLInputElement);
+    await user.type(document.getElementById('name') as HTMLInputElement, 'second');
+    await user.click(document.getElementById('start') as HTMLButtonElement);
+
+    expect(document.getElementById('step2')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'https://auth.example/claude' })).toBeNull();
+
+    // The new flow's own step opens when its start lands.
+    await act(async () => {
+      held.resolve(reply({ name: 'second', authorize_url: 'https://auth.example/second' }));
+      await held.promise;
+    });
+    expect(
+      await screen.findByRole('link', { name: 'https://auth.example/second' }),
+    ).toBeInTheDocument();
+  });
+
   /** The Codex form carries the same two guards, on its own counter. */
   it('applies both guards to the Codex flow as well', async () => {
     const user = userEvent.setup();

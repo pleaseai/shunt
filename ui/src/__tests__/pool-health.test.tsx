@@ -62,6 +62,25 @@ describe('the pool table reports why an account is out, not just that it is', ()
     expect(stateOf('new-one')).toBe('unseen');
   });
 
+  /**
+   * An account-wide cooldown is the fact that *all* of this account's traffic is
+   * gated right now; `near_quota` is a threshold warning about what is coming.
+   * Reporting the warning while hiding the active gate is what let this table
+   * read "near quota" for an account the accounts table already called
+   * "Cooling" — the two ladders now share `managedState`'s ordering.
+   */
+  it('reports an account that is both near quota and cooling as cooling', async () => {
+    await renderDashboard(
+      poolWith({
+        name: 'gated-one',
+        has_state: true,
+        near_quota: true,
+        cooldown_secs_remaining: 300,
+      }),
+    );
+    expect(stateOf('gated-one')).toBe('cooling');
+  });
+
   /** Both cooldowns at once name both windows, so a Fable pause stays visible. */
   it('names the fable cooldown alongside the account-wide one', async () => {
     await renderDashboard(
