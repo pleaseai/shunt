@@ -1,0 +1,20 @@
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-multi-account-env-serialization.md
+  s_e9fd5f53eebc34::t_67ec57ff797fbe 3
+  s_e9fd5f53eebc34::t_b4aca68a5a1314 11-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0e94e9c7659fe93beefc2d5a0d4c0f1fb8916183",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
