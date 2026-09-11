@@ -1,0 +1,26 @@
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_e9fd5f53eebc34::t_0d2d87dd0c749b 19
+  s_e9fd5f53eebc34::t_38d3a528e24fc2 20
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-admin-trailing-slash-coverage.md
+  s_e9fd5f53eebc34::t_314ffc6c4451e2 1-18
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr528_admin_trailing_slash_docs_review.md
+  s_e9fd5f53eebc34::t_afd9ebdf18ffda 1-41
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_e9fd5f53eebc34::t_a7f09be0f0ed6d 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "cb905cf259249da9a8fe7d93ba1c8a0e770c11da",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
