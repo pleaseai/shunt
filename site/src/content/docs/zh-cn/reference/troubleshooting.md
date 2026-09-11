@@ -7,6 +7,9 @@ description: 常见的 shunt 错误及其修复方法。
 | :-- | :-- |
 | `ChatGPT auth not found; run codex login` | shunt 无法读取 `~/.codex/auth.json`。运行 `codex login`。 |
 | 映射模型上的 `authentication_error` | 提供方凭据过期/缺失 —— 重新运行 `codex login`,或 export `OPENAI_API_KEY`。shunt 会透出后端真实的 `detail` 消息。 |
+| <!-- shunt-contract: gemini-code-assist strict-terminal malformed-fails non-idempotent-preheader tool-result-roundtrip no-writeback ai-studio-web-excluded --> 当 Code Assist 关闭流时 Gemini 失败而不是完成 | Gemini 成功响应需要明确的 provider finish 和正常的 transport closure。没有该 finish 的 EOF 或 `[DONE]`、无效 UTF-8、格式错误 JSON 或不受支持字段、超大数据、多个 candidate、终端后的数据或截断的响应都会明确失败。流式和一元模式应用相同的终端和提供方错误语义，绝不将嵌入式提供方错误转换为合成成功。 |
+| Gemini 工具历史在调度前被拒绝 | 客户端可见的 `tool_use` ID 在 Gemini 3 上保留真实的 Code Assist 调用配对和 `thoughtSignature`。请在 `tool_result` 中返回匹配的 ID。外来、格式错误、重复或孤立的元数据，以及缺少必要签名的元数据均不予修复直接拒绝。有效结果成为下一个请求中的 `functionResponse`。shunt 不会持久化或回写此元数据。 |
+| Gemini 的瞬态状态不会重试到同一上游 | Gemini 生成是非幂等的。只有在响应标头之前证实发生的瞬态连接或超时故障，才会使用相同选定的令牌、项目和载荷进行重试。返回的状态和所有正文阶段故障都会立即显现，而不向同一上游重试。 |
 | `400 … model is not supported when using Codex with a ChatGPT account` | 你用了一个 `-codex` slug(或一个你账户未被授权的 slug)。使用 [models.json](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) 中一个已授权的 slug(例如 `gpt-5.6-sol`、`gpt-5.5`),或设置 `upstream_model`。 |
 | `/model` 没有列出你的模型 | 对于 `gpt-*` id 使用 `ANTHROPIC_CUSTOM_MODEL_OPTION`;[发现](/zh-cn/guides/model-discovery/) 只暴露 `claude`/`anthropic` 前缀的 id。 |
 | `opus` 选择 Opus 4.7 / `sonnet` 选择 Sonnet 4.6 | Claude Code 的内置别名表会为网关会话钉住这些层级。使用 `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5` 在客户端钉住层级,或在 shunt 中重映射 id —— 见[模型别名](/zh-cn/guides/model-aliases/#别名解析)。 |
