@@ -10,7 +10,7 @@ use axum::{
         ws::{rejection::WebSocketUpgradeRejection, Message, WebSocket, WebSocketUpgrade},
         State,
     },
-    http::{header, HeaderMap},
+    http::{header, HeaderMap, HeaderName},
     response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, StreamExt};
@@ -33,6 +33,7 @@ struct TurnContext {
     model: Option<String>,
     pool_key: Option<String>,
     headers: HeaderMap,
+    auth_header: Option<HeaderName>,
     body: Bytes,
     generation: u64,
     current_generation: Arc<AtomicU64>,
@@ -71,8 +72,12 @@ pub async fn get(
 
     let session_id = extract_session_id(&headers);
     let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id);
+    let auth_header = state
+        .inbound_auth
+        .as_ref()
+        .map(|auth| auth.header().clone());
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, pool_key, headers))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, pool_key, headers, auth_header))
 }
 
 async fn handle_socket(
@@ -80,6 +85,7 @@ async fn handle_socket(
     state: AppState,
     pool_key: Option<String>,
     handshake_headers: HeaderMap,
+    auth_header: Option<HeaderName>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<(u64, Message)>(1);
@@ -168,6 +174,7 @@ async fn handle_socket(
 
                         let state_clone = state.clone();
                         let pool_key_clone = pool_key.clone();
+                        let auth_header_clone = auth_header.clone();
                         let out_tx_clone = out_tx.clone();
                         let gen_clone = current_generation.clone();
 
@@ -177,6 +184,7 @@ async fn handle_socket(
                                 model,
                                 pool_key: pool_key_clone,
                                 headers: turn_headers,
+                                auth_header: auth_header_clone,
                                 body: body_bytes,
                                 generation: turn_gen,
                                 current_generation: gen_clone,
@@ -200,6 +208,7 @@ async fn run_turn(context: TurnContext) {
         model,
         pool_key,
         headers,
+        auth_header,
         body,
         generation: turn_gen,
         current_generation,
@@ -211,6 +220,49 @@ async fn run_turn(context: TurnContext) {
     // turn start (rather than once at upgrade time) so each live turn captures
     // one immutable runtime snapshot while later turns observe newer config.
     let state = state.refreshed();
+    let Some(codex_endpoint) = state.config.server.codex_endpoint.as_ref() else {
+        return;
+    };
+    if crate::codex_endpoint::authenticate_inbound(
+        state.inbound_auth.as_deref(),
+        &headers,
+        &codex_endpoint.provider,
+    )
+    .is_err()
+    {
+        let err_frame = build_ws_error_frame(
+            401,
+            "authentication_error",
+            "authentication_error",
+            "missing or invalid client token",
+            None,
+        );
+        let _ = out_tx
+            .send((turn_gen, Message::Text(err_frame.into())))
+            .await;
+        return;
+    }
+    let max_request_bytes = state.config.server.limits.max_request_bytes;
+    if body.len() > max_request_bytes {
+        let err_frame = build_ws_error_frame(
+            413,
+            "invalid_request_error",
+            "request_too_large",
+            "request body exceeds the configured limit",
+            None,
+        );
+        let _ = out_tx
+            .send((turn_gen, Message::Text(err_frame.into())))
+            .await;
+        return;
+    }
+    let mut headers = headers;
+    if let Some(header) = auth_header {
+        headers.remove(header);
+    }
+    if let Some(auth) = state.inbound_auth.as_ref() {
+        headers.remove(auth.header());
+    }
     let started_at = Instant::now();
     let dispatch_res = forward_turn(state, model, pool_key, headers, body, started_at).await;
 

@@ -148,7 +148,7 @@ async fn start_upstream(replies: Vec<Reply>) -> (RunningServer, UpstreamState) {
 async fn start_native_gateway(
     upstream: &RunningServer,
     suffix: &str,
-) -> (RunningServer, String, String, String) {
+) -> (RunningServer, String, String, String, EnvCleanup) {
     let account_env = format!("SHUNT_TEST_INBOUND_WS_ACCOUNT_{suffix}");
     let client_env = format!("SHUNT_TEST_INBOUND_WS_CLIENT_{suffix}");
     let api_env = format!("SHUNT_TEST_INBOUND_WS_API_{suffix}");
@@ -180,7 +180,14 @@ async fn start_native_gateway(
         tokens_env: client_env.clone(),
     });
     let (router, _, _) = server::build_router(config).unwrap();
-    (start_server(router).await, account_env, client_env, api_env)
+    let cleanup = EnvCleanup::new([account_env.clone(), client_env.clone(), api_env.clone()]);
+    (
+        start_server(router).await,
+        account_env,
+        client_env,
+        api_env,
+        cleanup,
+    )
 }
 
 fn access_token(account_id: &str) -> String {
@@ -199,7 +206,10 @@ fn access_token(account_id: &str) -> String {
     )
 }
 
-async fn start_gateway(upstream: &RunningServer, suffix: &str) -> (RunningServer, String, String) {
+async fn start_gateway(
+    upstream: &RunningServer,
+    suffix: &str,
+) -> (RunningServer, String, String, EnvCleanup) {
     let account_env = format!("SHUNT_TEST_INBOUND_WS_ACCOUNT_{suffix}");
     let client_env = format!("SHUNT_TEST_INBOUND_WS_CLIENT_{suffix}");
     std::env::set_var(&account_env, access_token("account-1"));
@@ -222,7 +232,8 @@ async fn start_gateway(upstream: &RunningServer, suffix: &str) -> (RunningServer
         tokens_env: client_env.clone(),
     });
     let (router, _, _) = server::build_router(config).unwrap();
-    (start_server(router).await, account_env, client_env)
+    let cleanup = EnvCleanup::new([account_env.clone(), client_env.clone()]);
+    (start_server(router).await, account_env, client_env, cleanup)
 }
 
 async fn connect(
@@ -278,6 +289,26 @@ async fn next_json(
     serde_json::from_str(message.to_text().unwrap()).unwrap()
 }
 
+struct EnvCleanup {
+    names: Vec<String>,
+}
+
+impl EnvCleanup {
+    fn new(names: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            names: names.into_iter().collect(),
+        }
+    }
+}
+
+impl Drop for EnvCleanup {
+    fn drop(&mut self) {
+        for name in &self.names {
+            std::env::remove_var(name);
+        }
+    }
+}
+
 fn cleanup(account_env: &str, client_env: &str) {
     std::env::remove_var(account_env);
     std::env::remove_var(client_env);
@@ -289,7 +320,7 @@ async fn disabled_and_unauthorized_upgrades_fail_before_websocket_open() {
     let (disabled_router, _, _) = server::build_router(Config::default()).unwrap();
     let disabled = start_server(disabled_router).await;
     let (upstream, _) = start_upstream(Vec::new()).await;
-    let (gateway, account_env, client_env) = start_gateway(&upstream, "AUTH").await;
+    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "AUTH").await;
     let client = reqwest::Client::new();
 
     for path in [
@@ -331,7 +362,7 @@ async fn disabled_and_unauthorized_upgrades_fail_before_websocket_open() {
 async fn warmup_is_local_and_all_registered_paths_upgrade() {
     let _env = ENV_LOCK.lock().await;
     let (upstream, state) = start_upstream(Vec::new()).await;
-    let (gateway, account_env, client_env) = start_gateway(&upstream, "PATHS").await;
+    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "PATHS").await;
 
     for path in [
         "/backend-api/codex/responses",
@@ -372,7 +403,7 @@ async fn streams_ordered_payloads_and_forces_streaming_upstream() {
         headers: Vec::new(),
     }])
     .await;
-    let (gateway, account_env, client_env) = start_gateway(&upstream, "STREAM").await;
+    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "STREAM").await;
     let mut socket = connect(&gateway, "/v1/responses").await;
     send_create(&mut socket, "live").await;
 
@@ -403,7 +434,8 @@ async fn omitted_generate_defaults_to_a_live_turn() {
         headers: Vec::new(),
     }])
     .await;
-    let (gateway, account_env, client_env) = start_gateway(&upstream, "DEFAULT_GENERATE").await;
+    let (gateway, account_env, client_env, _env_cleanup) =
+        start_gateway(&upstream, "DEFAULT_GENERATE").await;
     let mut socket = connect(&gateway, "/v1/responses").await;
 
     socket
@@ -448,7 +480,7 @@ async fn native_route_matches_http_and_websocket_provider_selection() {
         },
     ])
     .await;
-    let (gateway, account_env, client_env, api_env) =
+    let (gateway, account_env, client_env, api_env, _env_cleanup) =
         start_native_gateway(&upstream, "NATIVE_PARITY").await;
 
     let http = reqwest::Client::new()
@@ -512,6 +544,11 @@ async fn missing_model_websocket_uses_pinned_fallback_even_when_unknown_route_ex
     std::env::set_var(account_env, access_token("account-1"));
     std::env::set_var(client_env, "client:gateway-secret");
     std::env::set_var(api_env, "native-api-key");
+    let _env_cleanup = EnvCleanup::new([
+        account_env.to_string(),
+        client_env.to_string(),
+        api_env.to_string(),
+    ]);
 
     let mut config = Config::default();
     let codex = config.providers.get_mut("codex").unwrap();
@@ -662,7 +699,7 @@ async fn no_mid_stream_hop() {
         headers: Vec::new(),
     }])
     .await;
-    let (gateway, account_env, client_env) = start_gateway(&upstream, "NO_HOP").await;
+    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "NO_HOP").await;
     let mut socket = connect(&gateway, "/v1/responses").await;
     send_create(&mut socket, "no-hop").await;
     assert_eq!(next_json(&mut socket).await["type"], "response.created");
@@ -689,7 +726,7 @@ async fn responses_terminal_premature_done_and_malformed_sse_become_protocol_err
         },
     ];
     let (upstream, _) = start_upstream(replies).await;
-    let (gateway, account_env, client_env) = start_gateway(&upstream, "ERRORS").await;
+    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "ERRORS").await;
     let mut socket = connect(&gateway, "/v1/responses").await;
 
     send_create(&mut socket, "done").await;
@@ -724,7 +761,8 @@ async fn invalid_utf8_sse_becomes_an_immediate_protocol_error() {
         body,
     }])
     .await;
-    let (gateway, account_env, client_env) = start_gateway(&upstream, "INVALID_UTF8").await;
+    let (gateway, account_env, client_env, _env_cleanup) =
+        start_gateway(&upstream, "INVALID_UTF8").await;
     let mut socket = connect(&gateway, "/v1/responses").await;
 
     send_create(&mut socket, "invalid-utf8").await;
@@ -754,7 +792,8 @@ async fn upstream_error_projects_only_safe_headers() {
         ],
     }])
     .await;
-    let (gateway, account_env, client_env) = start_gateway(&upstream, "HEADERS").await;
+    let (gateway, account_env, client_env, _env_cleanup) =
+        start_gateway(&upstream, "HEADERS").await;
     let mut socket = connect(&gateway, "/v1/responses").await;
     send_create(&mut socket, "headers").await;
     let error = next_json(&mut socket).await;
@@ -794,7 +833,7 @@ async fn replacement_and_disconnect_drop_active_upstream_bodies() {
         },
     ];
     let (upstream, _) = start_upstream(replies).await;
-    let (gateway, account_env, client_env) = start_gateway(&upstream, "CANCEL").await;
+    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "CANCEL").await;
 
     let mut socket = connect(&gateway, "/v1/responses").await;
     send_create(&mut socket, "first").await;

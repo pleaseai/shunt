@@ -416,7 +416,11 @@ fn delimiter_length_at<F: Fn(usize) -> u8>(
     if index + 1 >= length {
         return None;
     }
-    if byte_at(index + 1) != b'\n' {
+    let second = byte_at(index + 1);
+    if second == b'\r' {
+        return Some(2);
+    }
+    if second != b'\n' {
         return Some(0);
     }
     if index + 2 >= length {
@@ -494,6 +498,19 @@ pub mod tests {
     fn parse_binary_frame_unsupported() {
         let msg = Message::Binary(vec![1, 2, 3].into());
         assert_eq!(parse_client_frame(&msg), ClientFrame::BinaryUnsupported);
+    }
+
+    #[test]
+    fn sse_framer_accepts_cr_only_blank_lines() {
+        let mut framer = BoundedSseFrameBuffer::new(64);
+        assert_eq!(
+            framer.feed(b"data: first\r\r").unwrap(),
+            vec![b"data: first".to_vec()]
+        );
+        assert_eq!(
+            framer.feed(b"data: second\r\r").unwrap(),
+            vec![b"data: second".to_vec()]
+        );
     }
 
     #[test]
