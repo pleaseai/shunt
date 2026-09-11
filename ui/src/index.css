@@ -38,7 +38,7 @@ legend { font-size: .85rem; margin-bottom: .25rem; }
 .choice input { flex: 0 0 auto; width: auto; margin: .2rem 0 0; }
 .choice span, .choice small { display: block; } .choice small { margin-top: .1rem; }
 .choice input:disabled { opacity: .55; cursor: not-allowed; }
-.choice:has(input:disabled) span { color: var(--text-secondary); }
+.choice input:disabled ~ span { color: var(--text-secondary); }
 textarea { min-height: 4.5rem; font-family: inherit; }
 button { min-height: 2.65rem; padding: .5rem .9rem; cursor: pointer; touch-action: manipulation;
   border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: #101521; }
