@@ -1,0 +1,72 @@
+src/auth/claude/auth.rs
+  s_e9fd5f53eebc34::t_9f3331c7d3f794 33-35
+ui/src/accounts.ts
+  s_e9fd5f53eebc34::t_7c1773b0f302fb 76-165,174-178,185,200,202-209,218,221
+  s_e9fd5f53eebc34::t_f18fdc271dd023 6
+tests/admin_ui.rs
+  s_e9fd5f53eebc34::t_0cc6b3f62ab944 335-347,349,354-387,389-391
+README.ja.md
+  s_e9fd5f53eebc34::t_c03bce005a4530 35-36,194
+docs/admin-ui-delivery.md
+  s_e9fd5f53eebc34::t_53b734814aeea1 39,41-46,70
+  s_e9fd5f53eebc34::t_a59022088953ac 643-654
+site/src/content/docs/reference/endpoints.md
+  s_e9fd5f53eebc34::t_4210e0f2b5d94a 23,96-101
+site/src/content/docs/ko/reference/endpoints.md
+  s_e9fd5f53eebc34::t_a9a887815b23eb 23,66
+README.ko.md
+  s_e9fd5f53eebc34::t_c03bce005a4530 35-36,194
+README.md
+  s_e9fd5f53eebc34::t_6fb8320f39c8ed 35-36,194
+tests/admin_surface.rs
+  s_e9fd5f53eebc34::t_819087a26c9996 364-370,375-379,2553-2556,3766-3769
+  s_e9fd5f53eebc34::t_34d4c7c08e7f22 2538-2544,2546,2552,3756-3757,3759,3765
+  s_e9fd5f53eebc34::t_80375b72045a62 2601-2611,2613,2619-2621
+tests/router_surface.rs
+  s_e9fd5f53eebc34::t_c0e3ed33df77e7 601-642
+src/admin/html.rs
+  s_e9fd5f53eebc34::t_c677d08cdb18a5 12-14,30-31,36-38
+  s_e9fd5f53eebc34::t_7c183be98a1d1c 1-9
+ui/src/__tests__/empty-usage.test.tsx
+  s_e9fd5f53eebc34::t_021e280e9140a2 1-86
+ui/src/test/harness.tsx
+  s_e9fd5f53eebc34::t_641a6066e5d1ed 112-122
+src/admin/mod.rs
+  s_e9fd5f53eebc34::t_3d0b3b3e46c17a 637-667
+  s_e9fd5f53eebc34::t_cdf3ddcf7a8e79 1769-1782
+  s_e9fd5f53eebc34::t_707c907f75eb97 676
+  s_e9fd5f53eebc34::t_9f3331c7d3f794 677-680,687,690-691,703-707
+ui/src/__tests__/upstream-status.test.tsx
+  s_e9fd5f53eebc34::t_827d29926153be 1-3,5-14,23-37,54-84
+  s_e9fd5f53eebc34::t_ca462d342672b6 15-22
+  s_e9fd5f53eebc34::t_39bc5e69523655 4,38-53
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_e9fd5f53eebc34::t_a9a887815b23eb 23,65
+README.zh-CN.md
+  s_e9fd5f53eebc34::t_c03bce005a4530 35-36,193
+src/admin/ui.rs
+  s_e9fd5f53eebc34::t_c7f68e195b8e29 10,12-15,25-31
+site/src/content/docs/ja/reference/endpoints.md
+  s_e9fd5f53eebc34::t_a9a887815b23eb 23,67
+docs/m9-admin-surface.md
+  s_e9fd5f53eebc34::t_6bded224aeb98d 257-264
+  s_e9fd5f53eebc34::t_b69f7c80930918 728-732
+ui/README.md
+  s_e9fd5f53eebc34::t_b69f7c80930918 55-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "195896c5ca5b2a77c82b4e651b3b3c26cd2d403c",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
