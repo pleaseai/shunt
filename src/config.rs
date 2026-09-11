@@ -1231,10 +1231,11 @@ fn validate_idp_url(
 
 /// `[server.codex_endpoint]` — opt-in inbound OpenAI Responses (Codex) endpoint.
 /// When present, shunt registers `POST /backend-api/codex/responses`,
-/// `POST /responses`, and `POST /v1/responses`, and proxies each request through
-/// the named provider's ChatGPT/Codex account pool without translating it to or
-/// from Anthropic Messages (a raw passthrough). Absent ⇒ none of those routes
-/// exist. See `docs/m11-inbound-codex-endpoint.md`.
+/// `POST /responses`, and `POST /v1/responses`, plus the Codex CLI model-catalog
+/// aliases, and proxies each inference request through the named provider's
+/// ChatGPT/Codex account pool without translating it to or from Anthropic
+/// Messages (a raw passthrough). Absent ⇒ none of those routes exist. See
+/// `docs/m11-inbound-codex-endpoint.md`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CodexEndpointConfig {
     /// Which `chatgpt_oauth` provider's account pool serves inbound Responses

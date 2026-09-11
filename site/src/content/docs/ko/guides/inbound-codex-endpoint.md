@@ -23,6 +23,8 @@ shunt run
 
 시작 검증은 알 수 없는 `provider`나 `auth = "chatgpt_oauth"`를 쓰지 않는 프로바이더를 거부합니다 — 이 엔드포인트는 운영자의 Codex bearer를 주입하므로 `chatgpt_oauth` 프로바이더만 자격이 있습니다. 모든 키와 기본값은 [구성 레퍼런스](/ko/reference/configuration/#servercodex_endpoint-선택)를, 등록된 라우트는 [HTTP 엔드포인트](/ko/reference/endpoints/)를 참고하세요.
 
+이 옵트인은 Codex CLI 모델 탐색도 파싱 가능하게 만듭니다. `GET /models`와 `GET /backend-api/codex/models`는 유효한 폴백 `{"models":[]}`를 반환합니다. 공유 `GET /v1/models` 경로에서는 `client_version` 쿼리 필드가 Anthropic 형태의 헤더보다 우선하여 Codex 형태를 선택하고, 그 필드가 없으면 기존 Anthropic 탐색 응답은 변경되지 않습니다. 이 요청들은 기존 모델 탐색 인증 게이트를 거치며, shunt는 불완전한 Codex 모델 행을 만들지 않습니다.
+
 ## 클라이언트 analytics sink
 
 Codex CLI는 제품 analytics도 base URL로 전송합니다. shunt는 CLI가 만들 수 있는 두 경로를 모두 받아들입니다:
@@ -145,7 +147,7 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"
 ```
 
-shunt는 Codex용 모델 카탈로그를 제공하지 않습니다 — `GET /v1/models` 디스커버리 목록은 Anthropic 형태이며 Codex 라우트를 노출하지 않습니다. CLI는 이들 벤더가 안내하는 대로 `model_catalog_json`이 가리키는 `~/.codex/models.json` 카탈로그에서 슬러그 메타데이터를 얻습니다. shunt 라우트를 고르는 것은 오직 `model` 값입니다.
+shunt는 Codex CLI 디스커버리 요청에 유효한 폴백인 `{"models":[]}`로 응답하지만, 디스커버리 목록에 Codex 라우트를 노출하지는 않습니다. CLI는 이들 벤더가 안내하는 대로 `model_catalog_json`이 가리키는 `~/.codex/models.json` 카탈로그에서 슬러그 메타데이터를 얻습니다. shunt 라우트를 고르는 것은 오직 `model` 값입니다.
 
 **ChatGPT가 아닌** 업스트림으로 라우팅된 요청에서 달라지는 점:
 

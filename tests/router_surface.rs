@@ -161,18 +161,21 @@ const SPEND_PATHS: [(&str, &str); 2] = [
     ("/v1/organizations/spend_limits/{id}", "GET,HEAD,DELETE"),
 ];
 
-/// Mirrors `codex_endpoint::PATHS` and `codex_analytics::PATHS`, which are
+/// Mirrors `codex_endpoint::PATHS`, `codex_analytics::PATHS`, and
+/// `discovery::CODEX_PATHS`, which are
 /// `pub(crate)` and so cannot be imported here. Duplicating them is deliberate:
 /// `every_indirectly_registered_path_is_documented` reads both constants back
 /// out of their defining source and compares them against this list, so a
 /// change to either one fails this test and gets re-reviewed against the path
 /// split — which is exactly the guard being installed.
-const CODEX_ENDPOINT_PATHS: [(&str, &str); 5] = [
+const CODEX_ENDPOINT_PATHS: [(&str, &str); 7] = [
     ("/backend-api/codex/responses", "POST"),
     ("/responses", "POST"),
     ("/v1/responses", "POST"),
     ("/backend-api/codex/analytics-events/events", "POST"),
     ("/codex/analytics-events/events", "POST"),
+    ("/models", "GET,HEAD"),
+    ("/backend-api/codex/models", "GET,HEAD"),
 ];
 
 const USAGE_PATHS: [(&str, &str); 2] = [("/usage", "GET,HEAD"), ("/api/oauth/usage", "GET,HEAD")];
@@ -646,10 +649,11 @@ fn registered_literal_paths(source: &str) -> Vec<&str> {
 /// actual gate rather than a spot check.
 ///
 /// A route whose path is not a string literal at the call site is invisible to
-/// this scan. There are two such sites today — the OTLP signals in
-/// `gateway_router` and the `codex_endpoint::PATHS` / `codex_analytics::PATHS`
-/// loops in `build_router`. `every_documented_path_is_registered_when_all_surfaces_are_enabled`
-/// catches a removal or rename in either set but **not** an addition, so
+/// this scan. There are three such sites today — the OTLP signals in
+/// `gateway_router`, and the `discovery::CODEX_PATHS` and
+/// `codex_endpoint::PATHS` / `codex_analytics::PATHS` loops in `build_router`.
+/// `every_documented_path_is_registered_when_all_surfaces_are_enabled`
+/// catches a removal or rename in any of those sets but **not** an addition, so
 /// [`INDIRECT_PATH_SOURCES`] scans those definitions to close that direction.
 #[test]
 fn every_registered_literal_path_is_documented() {
@@ -693,7 +697,13 @@ fn the_source_scan_finds_every_literal_registration() {
 /// passes a loop variable or a method call, not a literal — so an **addition**
 /// to one of them would otherwise register a live route while every other test
 /// in this file stayed green.
-const INDIRECT_PATH_SOURCES: [(&str, &str, &str, &str); 3] = [
+const INDIRECT_PATH_SOURCES: [(&str, &str, &str, &str); 4] = [
+    (
+        "src/discovery.rs",
+        include_str!("../src/discovery.rs"),
+        "const CODEX_PATHS: [&str; ",
+        "];",
+    ),
     (
         "src/codex_endpoint.rs",
         include_str!("../src/codex_endpoint.rs"),
@@ -768,10 +778,11 @@ fn the_indirect_scan_finds_every_definition() {
         .iter()
         .map(|(_, source, open, close)| string_literals_in_block(source, open, close).len())
         .sum();
-    // 3 `codex_endpoint::PATHS` + 2 `codex_analytics::PATHS` + 3 OTLP signals.
+    // 2 `discovery::CODEX_PATHS` + 3 `codex_endpoint::PATHS` + 2
+    // `codex_analytics::PATHS` + 3 OTLP signals.
     assert_eq!(
-        found, 8,
-        "the indirect-path scan found {found} definitions, not 8; either a path was added or \
+        found, 10,
+        "the indirect-path scan found {found} definitions, not 10; either a path was added or \
          removed, or one of these sets is no longer spelled the way the scan expects"
     );
 }
@@ -847,7 +858,7 @@ fn no_router_tree_is_composed_in_from_an_unscanned_module() {
 /// Counting the skips closes that. Together with the two count assertions above
 /// and the composition guard, the invariant across the scanned files is that no
 /// registration is silently dropped: every `.route(` either resolves to a literal
-/// path that must appear in the inventory, or is one of these five indirect sites
+/// path that must appear in the inventory, or is one of these six indirect sites
 /// whose definitions [`INDIRECT_PATH_SOURCES`] reads, and the four remaining ways
 /// axum can register a path — `.route_service(`, `.nest(`, `.nest_service(`, and
 /// composing another tree in with `.merge(` — are each counted.
@@ -869,13 +880,14 @@ fn every_nonliteral_route_call_is_one_this_test_already_tracks() {
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
 
-    // The two `codex_endpoint::PATHS` / `codex_analytics::PATHS` loops in
-    // `build_router`, and the three `Signal::path()` calls in `gateway_router`.
+    // The `discovery::CODEX_PATHS`, `codex_endpoint::PATHS` and
+    // `codex_analytics::PATHS` loops in `build_router`, and the three
+    // `Signal::path()` calls in `gateway_router`.
     assert_eq!(
         calls - literals,
-        5,
+        6,
         "the scanned sources make {calls} `.route(` calls of which {literals} pass a string \
-         literal, so {} are registered indirectly — not the 5 this test tracks through \
+         literal, so {} are registered indirectly — not the 6 this test tracks through \
          INDIRECT_PATH_SOURCES. A new indirect registration must be added there, or its paths go \
          unscanned.",
         calls - literals

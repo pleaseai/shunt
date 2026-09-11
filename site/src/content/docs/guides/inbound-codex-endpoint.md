@@ -23,6 +23,8 @@ shunt run
 
 Startup validation rejects an unknown `provider` or one that doesn't use `auth = "chatgpt_oauth"` — the endpoint injects the operator's Codex bearer, so only a `chatgpt_oauth` provider qualifies. See the [configuration reference](/reference/configuration/#servercodex_endpoint-optional) for every key and default, and [HTTP Endpoints](/reference/endpoints/) for the registered routes.
 
+The opt-in also makes Codex CLI model discovery parseable. `GET /models` and `GET /backend-api/codex/models` return the valid fallback `{"models":[]}`. On the shared `GET /v1/models` path, a `client_version` query field selects that Codex shape even when Anthropic-looking headers are present; without it, the existing Anthropic discovery response is unchanged. These requests pass the normal model-discovery auth gate, and shunt deliberately avoids fabricating incomplete Codex model rows.
+
 ## Client analytics sink
 
 The Codex CLI also posts product analytics to the base URL. shunt accepts both paths the CLI can produce:
@@ -145,7 +147,7 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"
 ```
 
-shunt serves no Codex model catalog — its `GET /v1/models` discovery list is Anthropic-shaped and does not advertise Codex routes. The CLI gets slug metadata from a `~/.codex/models.json` catalog referenced by `model_catalog_json`, exactly as these vendors document; only the `model` value selects the shunt route.
+While shunt responds to Codex CLI discovery requests with the valid fallback `{"models":[]}`, it does not advertise Codex routes in its model list. The CLI gets slug metadata from a `~/.codex/models.json` catalog referenced by `model_catalog_json`, exactly as these vendors document; only the `model` value selects the shunt route.
 
 What changes for a routed request to a **non-ChatGPT** upstream:
 
