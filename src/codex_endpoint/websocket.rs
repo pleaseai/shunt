@@ -35,6 +35,7 @@ struct TurnContext {
     pool_key: Option<String>,
     headers: HeaderMap,
     auth_header: Option<HeaderName>,
+    admin_header: Option<HeaderName>,
     body: Bytes,
     generation: u64,
     current_generation: Arc<AtomicU64>,
@@ -90,11 +91,12 @@ pub async fn get(
         .inbound_auth
         .as_ref()
         .map(|auth| auth.header().clone());
+    let admin_header = state.admin_auth.as_ref().map(|auth| auth.header().clone());
 
     ws.on_upgrade(move |socket| async move {
         let _ws_permit = ws_permit
             .and_then(|Extension(permit)| permit.lock().ok().and_then(|mut permit| permit.take()));
-        handle_socket(socket, state, pool_key, headers, auth_header).await;
+        handle_socket(socket, state, pool_key, headers, auth_header, admin_header).await;
     })
 }
 
@@ -104,6 +106,7 @@ async fn handle_socket(
     pool_key: Option<String>,
     handshake_headers: HeaderMap,
     auth_header: Option<HeaderName>,
+    admin_header: Option<HeaderName>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<(u64, Message)>(1);
@@ -210,6 +213,7 @@ async fn handle_socket(
                         let state_clone = state.clone();
                         let pool_key_clone = pool_key.clone();
                         let auth_header_clone = auth_header.clone();
+                        let admin_header_clone = admin_header.clone();
                         let out_tx_clone = out_tx.clone();
                         let gen_clone = current_generation.clone();
 
@@ -220,6 +224,7 @@ async fn handle_socket(
                                 pool_key: pool_key_clone,
                                 headers: turn_headers,
                                 auth_header: auth_header_clone,
+                                admin_header: admin_header_clone,
                                 body: body_bytes,
                                 generation: turn_gen,
                                 current_generation: gen_clone,
@@ -244,6 +249,7 @@ async fn run_turn(context: TurnContext) {
         pool_key,
         headers,
         auth_header,
+        admin_header,
         body,
         generation: turn_gen,
         current_generation,
@@ -307,6 +313,12 @@ async fn run_turn(context: TurnContext) {
     }
     if let Some(auth) = state.inbound_auth.as_ref() {
         headers.remove(auth.header());
+    }
+    if let Some(admin_header) = admin_header {
+        headers.remove(admin_header);
+    }
+    if let Some(admin_auth) = state.admin_auth.as_ref() {
+        headers.remove(admin_auth.header());
     }
     let started_at = Instant::now();
     let dispatch_res = forward_turn(state, model, pool_key, headers, body, started_at).await;
