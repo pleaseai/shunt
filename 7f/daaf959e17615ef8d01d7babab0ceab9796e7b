@@ -1,0 +1,55 @@
+.claude/agent-memory/review-review-code-reviewer/admin-spa-react-port-pr508.md
+  s_e9fd5f53eebc34::t_3a3c9e990c8421 58-75
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_e9fd5f53eebc34::t_cae46def4be7a9 11
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_53bb7ebbcccfea 32-35
+ui/README.md
+  s_e9fd5f53eebc34::t_0461a90a6e06c6 57-61
+README.ko.md
+  s_e9fd5f53eebc34::t_a31e6ecdad4c55 198
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_53bb7ebbcccfea 32-35
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr526_admin_spa_cutover_docs_review.md
+  s_e9fd5f53eebc34::t_4ac3dbcd1d041b 1-40
+.github/workflows/ci.yml
+  s_e9fd5f53eebc34::t_07f1496e65aebc 82-93
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_e9fd5f53eebc34::t_6e8f2697b85348 18
+.claude/agent-memory/review-review-security-reviewer/project_m9-admin-surface-security.md
+  s_e9fd5f53eebc34::t_8b2cd044ec1c2a 22-27
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_53bb7ebbcccfea 56-59
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_53bb7ebbcccfea 32-35
+README.ja.md
+  s_e9fd5f53eebc34::t_a31e6ecdad4c55 198
+README.zh-CN.md
+  s_e9fd5f53eebc34::t_a31e6ecdad4c55 197
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-admin-spa-cutover-coverage.md
+  s_e9fd5f53eebc34::t_9c312aa1b80edc 1-46
+README.md
+  s_e9fd5f53eebc34::t_a31e6ecdad4c55 198
+docs/desktop-app.md
+  s_e9fd5f53eebc34::t_a31e6ecdad4c55 162-168
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_e9fd5f53eebc34::t_6214934b8aaf45 19
+src/admin/html.rs
+  s_e9fd5f53eebc34::t_0461a90a6e06c6 5-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7fdaaf959e17615ef8d01d7babab0ceab9796e7b",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
