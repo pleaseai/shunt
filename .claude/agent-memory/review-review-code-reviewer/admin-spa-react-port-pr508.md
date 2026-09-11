@@ -66,8 +66,9 @@ fn with two `#[cfg]` bodies. Verified: `cargo check` clean both with and without
 that grep still finds, both expected: `src/admin/ui.rs:26-27` names
 `super::html::dashboard_page` and `super::script` in module docs to say they are
 deleted, and `html_body` is a substring of the still-live
-`html_body_with_form_action`, the login page's renderer (5 hits).
-This PR also further split `accountGroups` in `ui/src/accounts.ts` into `managedState`/`managedRow`/
+`html_body_with_form_action`, the login page's renderer (4 hits in `src/`, 1 in
+`tests/admin_ui.rs`). This PR also further split `accountGroups` in
+`ui/src/accounts.ts` into `managedState`/`managedRow`/
 `observedRow`/`foldObservation`/`uuidsByAccountName` — diffed old vs. new
 line-by-line, exactly behaviour-preserving (including ordering: managed rows
 laid down before observations are folded in, so a coalesced row keeps its
