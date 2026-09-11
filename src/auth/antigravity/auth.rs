@@ -1179,6 +1179,52 @@ pub fn inference_base_url(base_url: &str) -> String {
     base_url.trim_end_matches('/').to_string()
 }
 
+/// Admit only the exact Antigravity inference endpoint for this request.
+///
+/// Production requests must use one of the two exact HTTPS Code Assist hosts,
+/// with no explicit port. Hermetic tests may supply a loopback proxy, but only
+/// its exact origin is admitted; a loopback override never broadens production
+/// host admission. The full URL is checked (not merely its origin) so a
+/// redirect cannot move credentials to another path, query, or fragment.
+pub(crate) fn is_safe_inference_url(url: &reqwest::Url, configured_base: &str) -> bool {
+    let Ok(configured) = reqwest::Url::parse(configured_base) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let configured_host = configured.host_str().unwrap_or_default();
+    let configured_shape = configured.path() == "/"
+        && configured.query().is_none()
+        && configured.fragment().is_none()
+        && configured.username().is_empty()
+        && configured.password().is_none();
+    let exact_origin = url.scheme() == configured.scheme()
+        && url.host_str() == Some(configured_host)
+        && url.port() == configured.port();
+    let canonical_host = crate::config::host_is_google_codeassist(host)
+        || crate::config::host_is_antigravity_daily(host);
+    let configured_explicit_default_port = configured_base
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split('/').next())
+        .is_some_and(|authority| authority.ends_with(":443"));
+    let production_origin = canonical_host
+        && url.scheme() == "https"
+        && url.port().is_none()
+        // `Url::port()` normalizes an explicit default port to `None`; retain
+        // the fail-closed distinction from the configured spelling.
+        && !configured_explicit_default_port;
+    let loopback_origin = crate::config::host_is_loopback(configured_host)
+        && exact_origin
+        && (url.scheme() == "https" || url.scheme() == "http");
+    if !configured_shape || !(production_origin || loopback_origin) || !exact_origin {
+        return false;
+    }
+    url.path() == "/v1internal:streamGenerateContent"
+        && url.query() == Some("alt=sse")
+        && url.fragment().is_none()
+}
+
 /// Whether `endpoint` addresses the default Antigravity backend itself — the
 /// `daily-` control plane both [`DEFAULT_API_ENDPOINT`] and the seeded
 /// `antigravity` provider name.
@@ -1292,6 +1338,55 @@ mod tests {
             .unwrap()
             .as_millis()
             .saturating_sub(u128::from(secs).saturating_mul(1_000)) as u64
+    }
+
+    #[test]
+    fn antigravity_native_origin_accepts_only_exact_canonical_or_loopback_targets() {
+        let cases = [
+            ("https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse", DAILY_API_ENDPOINT, true),
+            ("https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse", API_ENDPOINT, true),
+            ("http://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse", DAILY_API_ENDPOINT, false),
+            ("https://daily-cloudcode-pa.googleapis.com.evil.test/v1internal:streamGenerateContent?alt=sse", DAILY_API_ENDPOINT, false),
+            ("https://daily-cloudcode-pa.googleapis.com:443/v1internal:streamGenerateContent?alt=sse", "https://daily-cloudcode-pa.googleapis.com:443", false),
+            ("https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse&x=1", DAILY_API_ENDPOINT, false),
+            ("https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent?alt=sse", DAILY_API_ENDPOINT, false),
+            ("http://127.0.0.1:43123/v1internal:streamGenerateContent?alt=sse", "http://127.0.0.1:43123", true),
+            ("http://127.0.0.1:43124/v1internal:streamGenerateContent?alt=sse", "http://127.0.0.1:43123", false),
+        ];
+        for (raw, configured, expected) in cases {
+            let url = reqwest::Url::parse(raw).unwrap();
+            assert_eq!(is_safe_inference_url(&url, configured), expected, "{raw}");
+        }
+    }
+
+    #[tokio::test]
+    async fn antigravity_native_origin_rejects_off_origin_redirect_before_bearer() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+        let source = MockServer::start().await;
+        let target = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(302).insert_header(
+                "location",
+                format!("{}/v1internal:streamGenerateContent?alt=sse", target.uri()),
+            ))
+            .mount(&source)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&target)
+            .await;
+
+        let client = crate::auth::shared::antigravity_inference_client(&source.uri()).unwrap();
+        let endpoint = format!("{}/v1internal:streamGenerateContent?alt=sse", source.uri());
+        let error = client
+            .post(endpoint)
+            .bearer_auth("synthetic-antigravity-token")
+            .send()
+            .await
+            .expect_err("off-origin redirect must be refused");
+        assert!(error.to_string().contains("redirect"));
+        assert!(target.received_requests().await.unwrap().is_empty());
     }
 
     fn write(path: &Path, stored: &StoredAuth) {
