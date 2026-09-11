@@ -226,9 +226,9 @@ fn tool_reference_result_becomes_loaded_tool_text() {
 fn defer_loading_field_never_reaches_upstream_tools() {
     // With tool search enabled, discovered deferred tools carry
     // defer_loading:true. The Responses API doesn't know the field; the tools()
-    // rebuild must emit only type/name/description/parameters. Mark the deferred
-    // tool loaded so progressive filtering forwards it and this test stays focused
-    // on stripping the unsupported field.
+    // rebuild must emit only type/name/description/strict/parameters. Mark the
+    // deferred tool loaded so progressive filtering forwards it and this test
+    // stays focused on stripping the unsupported field.
     let actual = translate(json!({
         "model": "gpt-5.2-codex",
         "messages": [
@@ -255,6 +255,7 @@ fn defer_loading_field_never_reaches_upstream_tools() {
             "type": "function",
             "name": "mcp__github__get_me",
             "description": "Get the authenticated user",
+            "strict": false,
             "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
         }])
     );
@@ -534,6 +535,7 @@ fn translates_tools_and_tool_choice_variants() {
             "type": "function",
             "name": "run",
             "description": "Run command",
+            "strict": false,
             "parameters": {
                 "type": "object",
                 "properties": {"cmd": {"type": "string"}},
@@ -563,6 +565,128 @@ fn translate_with_flavor(input: Value, flavor: ResponsesFlavor) -> Value {
 }
 
 #[test]
+fn responses_tools_explicitly_disable_strict_normalization() {
+    let input_schema = json!({
+        "type": "object",
+        "properties": {
+            "required_value": {"type": "string"},
+            "optional_value": {"type": "string"},
+            "nested": {
+                "type": "object",
+                "properties": {
+                    "required_child": {"type": "integer"},
+                    "optional_child": {"type": ["string", "null"]}
+                },
+                "required": ["required_child"],
+                "additionalProperties": false
+            },
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "required_item": {"type": "boolean"},
+                        "optional_item": {"type": "number"}
+                    },
+                    "required": ["required_item"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["required_value"],
+        "additionalProperties": false
+    });
+    let eager = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [],
+        "tools": [{
+            "name": "probe",
+            "description": "Probe",
+            "input_schema": input_schema
+        }]
+    }));
+    assert_eq!(eager["tools"][0]["strict"], json!(false));
+    assert_eq!(eager["tools"][0]["parameters"], input_schema);
+
+    let native = native_translate(json!({
+        "model": "gpt-5.6-sol",
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "probe"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_ts", "content": [
+                    {"type": "tool_reference", "tool_name": "probe"}
+                ]}
+            ]}
+        ],
+        "tools": [
+            {
+                "name": "ToolSearch",
+                "description": "Search",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "probe",
+                "description": "Probe",
+                "input_schema": input_schema,
+                "defer_loading": true
+            }
+        ]
+    }));
+    assert_eq!(
+        native["tools"],
+        json!([{
+            "type": "tool_search",
+            "execution": "client",
+            "description": "Search",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": true
+            }
+        }])
+    );
+    assert_eq!(native["input"][1]["tools"][0]["strict"], json!(false));
+    assert_eq!(native["input"][1]["tools"][0]["parameters"], input_schema);
+}
+
+#[test]
+fn xai_and_grok_withhold_strict_on_function_tools() {
+    // `strict:false` is pinned only where acceptance is established —
+    // ChatGPT/Codex (measured 2026-09-08) and stock OpenAI (its own field).
+    // xAI/Grok reject several standard Responses fields, so it is withheld
+    // there rather than risk a 400 on every tool-carrying request.
+    let input = json!({
+        "model": "grok-4.5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"name": "Bash", "input_schema": {}}]
+    });
+    let withheld = json!([{
+        "type": "function",
+        "name": "Bash",
+        "description": "",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
+    }]);
+    for flavor in [ResponsesFlavor::Xai, ResponsesFlavor::Grok] {
+        assert_eq!(
+            translate_with_flavor(input.clone(), flavor)["tools"],
+            withheld,
+            "strict should be withheld on {flavor:?}"
+        );
+    }
+    assert_eq!(
+        translate_with_flavor(input, ResponsesFlavor::OpenAi)["tools"][0]["strict"],
+        json!(false)
+    );
+}
+
+#[test]
 fn translates_hosted_web_search_tool_to_responses_web_search() {
     // Claude Code sends the hosted `web_search_20250305` tool when a user
     // enables web search. It must become the Responses hosted web-search tool,
@@ -585,6 +709,7 @@ fn translates_hosted_web_search_tool_to_responses_web_search() {
                     "type": "function",
                     "name": "Bash",
                     "description": "",
+                    "strict": false,
                     "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
                 },
                 {
@@ -2193,6 +2318,7 @@ fn native_tool_result_becomes_tool_search_output_with_ordered_schemas() {
                     "name": "find_issue",
                     "description": "Find an issue",
                     "defer_loading": true,
+                    "strict": false,
                     "parameters": {
                         "type": "object",
                         "properties": {"number": {"type": "integer"}},
@@ -2205,6 +2331,7 @@ fn native_tool_result_becomes_tool_search_output_with_ordered_schemas() {
                     "name": "list_issues",
                     "description": "List issues",
                     "defer_loading": true,
+                    "strict": false,
                     "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
                 }
             ]
@@ -2307,6 +2434,7 @@ fn tool_reveal_grows_shim_tools_but_leaves_native_tools_stable() {
             "name": "find_issue",
             "description": "Find an issue",
             "defer_loading": true,
+            "strict": false,
             "parameters": {
                 "type": "object",
                 "properties": {"number": {"type": "integer"}},

@@ -77,7 +77,7 @@ handling exists (zero matches for `defer_loading` / `tool_reference` / `tool_sea
 silently dropped — no 400, but no context saved; a `tool_reference` block in a
 ToolSearch result renders as `[unsupported content block omitted: tool_reference]`
 (`request.rs:836-842`) rather than the full schema shunt renders for a known
-reference (`src/model/responses_request.rs:623-643`) — shunt's `"Loaded tool: X"`
+reference (`src/model/responses_request.rs:637-661`) — shunt's `"Loaded tool: X"`
 is only the fallback for an unrecognized reference. Hence ○ (vs shunt's ◐):
 force-enabling `ENABLE_TOOL_SEARCH` against raine/ccp degrades the discovery-loop
 result to a placeholder. By default Claude Code's own gate keeps tool
@@ -234,9 +234,9 @@ toward being a fleet gateway and warrant a conscious decision first.
   xAI/Grok routes, gpt-5.2-and-below models, and custom OpenAI-compatible
   endpoints that haven't opted in all still fall back to the shim, which
   withholds an unloaded deferred tool from the `tools` array
-  (`src/model/responses_request.rs:791-797`) — so it does reclaim context for
+  (`src/model/responses_request.rs:819-830`) — so it does reclaim context for
   tools never revealed — but once Claude Code reveals a tool, the shim both
-  renders its full schema as `tool_reference` text (`:623-643`) *and*
+  renders its full schema as `tool_reference` text (`:637-661`) *and*
   re-adds the tool to `tools`, so each reveal re-sends the schema and
   invalidates the cached prompt prefix from that point on. The Responses API
   only lets the model call a tool it can see in `tools`, so this double-send
