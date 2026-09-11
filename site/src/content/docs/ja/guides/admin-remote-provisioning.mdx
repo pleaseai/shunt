@@ -29,6 +29,10 @@ shunt run
 
 すべてのキーとデフォルトは[設定リファレンス](/ja/reference/configuration/#serveradminオプション)を参照してください。ブラウザーおよび JSON のルートは[エンドポイントリファレンス](/ja/reference/endpoints/)に一覧があります。
 
+:::note
+`/admin` が返すダッシュボードは、`--features ui` でビルドしたバイナリだけが埋め込むバンドルから配信されます。ビルド済みリリースバイナリと Homebrew formula には含まれますが、素の `cargo build` や `cargo install` には含まれず、そのパスはこの機能名を含む本文とともに `404` を返します。ソースからのビルドは [インストール](/ja/getting-started/installation/) を参照してください。このページのそれ以外 — JSON API と設定 — はどちらでも同じです。
+:::
+
 ## ブラウザーで Claude アカウントをプロビジョニングする
 
 1. `/admin` を開き、管理トークンでサインインします。

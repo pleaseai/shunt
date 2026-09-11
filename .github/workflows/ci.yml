@@ -79,6 +79,18 @@ jobs:
       - name: Test
         run: cargo test --all-features --workspace
 
+      # `--all-features` compiles the `#[cfg(not(feature = "ui"))]` arms out
+      # entirely, so the default build's answers — `GET /admin` reporting that
+      # this binary embeds no bundle, and the two route-inventory arms beside it
+      # — were dead source as far as CI was concerned. Scoped to the one test
+      # binary that carries those arms rather than a second full suite: the
+      # marginal cost is this crate compiled once with default features, not
+      # every test binary rebuilt. A `#[cfg(not(feature = "ui"))]` arm added to
+      # any *other* test file is not covered by this and needs its binary named
+      # here too.
+      - name: Test default build (no ui feature)
+        run: cargo test --test router_surface
+
       - name: sccache stats
         if: always()
         run: sccache --show-stats

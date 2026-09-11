@@ -36,12 +36,14 @@ elsewhere, and three of them are load-bearing:
   deliberately the **pre-split** ones, because the collision between them is the
   motivation — rewriting them to `/admin/api/*` would describe a state in which
   there is nothing to decide.
-- **Assets.** The current UI is HTML/CSS/JS inside Rust string literals
+- **Assets.** The UI *was* HTML/CSS/JS inside Rust string literals
   (`src/admin/html.rs`, `src/admin/script.rs`) — ~770 lines when this record was
-  written on 2026-08-15, and 1,525 by 2026-09-10. There is no build step, no
-  type checking, and no component model. `src/AGENTS.md` asks for files under
-  500 lines; both files were near that then and both are past it now (879 and
-  646), on presentation code alone.
+  written on 2026-08-15, and 1,525 by 2026-09-10 (879 and 646), on presentation
+  code alone, with no build step, no type checking, and no component model, and
+  both files past the 500-line ceiling `src/AGENTS.md` asks for. Decision 4
+  resolved this and is now implemented: `script.rs` is deleted and `html.rs` is
+  down to the login page (150 lines), with the dashboard in `ui/` behind
+  `--features ui`.
 
 ## Current surface
 
@@ -65,6 +67,7 @@ baseline for any new route.
 | `[server.usage]` | `GET` | `/usage` |
 | `[server.oauth_usage]` | `GET` | `/api/oauth/usage` |
 | `[server.admin]` + `--features ui` | `GET` | `/admin/assets/{*path}` and `/admin/{*path}` — the embedded SPA bundle and the shell fallback. Both are registered with `get`, so `GET`/`HEAD` answer and every other method answers `405` with `Allow: GET,HEAD` rather than falling through; plus `/admin/api/{*path}`, registered for **every** method so an unmatched JSON path answers `404` rather than the shell (Decision 3). Absent from a default build, which embeds no bundle |
+| `[server.admin]` | `GET` | `/admin` — registered in **both** builds, and the only admin path whose *answer* depends on the feature: the SPA shell with `--features ui`, and without it a `404` naming the feature. Registered either way so the default build's answer is that sentence rather than axum's empty-bodied `404` for an unregistered path, which an operator cannot tell from an unconfigured `[server.admin]` |
 
 Two properties of this table matter downstream:
 
@@ -637,6 +640,18 @@ The seven questions this document originally left open are now decided:
   wrong or missing type is not cosmetic: browsers refuse a stylesheet or module
   script served as `text/plain`, and `X-Content-Type-Options: nosniff` removes
   the sniffing that would otherwise mask the bug.
+- `GET /admin` in **both** feature configurations, because it is the one path
+  whose answer depends on the feature: the shell (with the shell's strict CSP,
+  not the login page's `'unsafe-inline'` one) with `--features ui`, and a `404`
+  whose body names `--features ui` without it. Asserting the body, not just the
+  status, is the point of the second: an empty `404` is indistinguishable from
+  an unconfigured `[server.admin]`, and the two have different fixes.
+- Session properties are asserted against `/admin/api/session`, not `/admin`.
+  Once the shell is served unauthenticated, a `200` from `/admin` says nothing
+  about the caller's cookie — so the tests for "the OIDC callback minted a
+  usable session" and "logout invalidated it" had to move to the endpoint that
+  actually authenticates, or they would have gone on passing while testing
+  nothing.
 
 ## Documentation impact
 

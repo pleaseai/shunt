@@ -361,13 +361,22 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(response.headers()["location"], "/admin");
     let cookie = response_cookie(&response).expect("OIDC callback sets admin session cookie");
-    let dashboard = client
-        .get(format!("{}/admin", gateway.base_url))
+    // The minted cookie really authenticates, proven where authentication is
+    // actually decided. `GET /admin` would not prove it: the SPA shell is served
+    // to anyone, so its `200` says nothing about the cookie — and without
+    // `--features ui` that path answers `404` (no bundle in this build) while
+    // this test runs in both.
+    let bootstrap = client
+        .get(format!("{}/admin/api/session", gateway.base_url))
         .header("cookie", cookie)
         .send()
         .await
         .unwrap();
-    assert_eq!(dashboard.status(), StatusCode::OK);
+    assert_eq!(
+        bootstrap.status(),
+        StatusCode::OK,
+        "the OIDC-minted session cookie must authenticate the admin API"
+    );
 
     let requests = idp.received_requests().await.unwrap();
     let token = requests
@@ -2526,20 +2535,25 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
         .map(|value| value.split(';').next().unwrap().to_string())
         .expect("login sets a session cookie");
 
-    // The dashboard renders and embeds the session's CSRF token for its script.
+    // The session's CSRF token comes from the bootstrap endpoint. The
+    // server-rendered dashboard used to interpolate it into the page it emitted
+    // and this test used to scrape it back out; the SPA shell is one static file
+    // served to every visitor alike, so it cannot carry a per-session value and
+    // `GET /admin/api/session` serves it instead (`docs/admin-ui-delivery.md`,
+    // Decision 5). The subject of this test is unchanged — what `check_csrf`
+    // accepts on a cookie mutation — only where the browser gets the token.
     let response = client
-        .get(format!("{}/admin", gateway.base_url))
+        .get(format!("{}/admin/api/session", gateway.base_url))
         .header("cookie", &cookie)
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let html = response.text().await.unwrap();
-    let csrf = html
-        .split_once("const CSRF = \"")
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(token, _)| token.to_string())
-        .expect("dashboard embeds the CSRF token");
+    let body: serde_json::Value = response.json().await.unwrap();
+    let csrf = body["csrf"]
+        .as_str()
+        .expect("the bootstrap carries a csrf token")
+        .to_string();
     assert!(!csrf.is_empty());
 
     // A cookie mutation WITH the matching CSRF token + same-origin is accepted
@@ -2584,18 +2598,27 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
 
-    // After logout the old cookie no longer authenticates → redirect to login.
+    // After logout the old cookie no longer authenticates.
+    //
+    // Asserted against the bootstrap endpoint rather than `GET /admin`, for two
+    // reasons that both arrived with the SPA cutover. The shell is served
+    // unauthenticated, so `/admin` answers `200` to a logged-out browser and the
+    // `303` this used to assert now happens client-side, off the back of this
+    // very `401` (`ui/src/App.tsx`). And `/admin` is the one admin path whose
+    // answer depends on `--features ui` — the shell with it, a `404` naming the
+    // feature without — while this file runs in both builds; `/admin/api/*` is
+    // identical in both, so the authentication property is pinned where it is
+    // actually decided.
     let response = client
-        .get(format!("{}/admin", gateway.base_url))
+        .get(format!("{}/admin/api/session", gateway.base_url))
         .header("cookie", &cookie)
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(
-        response.headers().get("location").unwrap(),
-        "/admin/login",
-        "a logged-out session is redirected to the login page"
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "a logged-out session no longer authenticates"
     );
 
     std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_E");
@@ -3730,19 +3753,20 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
         .map(|value| value.split(';').next().unwrap().to_string())
         .expect("login sets a session cookie");
 
+    // As above: the token is served by the bootstrap endpoint, not interpolated
+    // into a page.
     let response = client
-        .get(format!("{base}/admin"))
+        .get(format!("{base}/admin/api/session"))
         .header("cookie", &cookie)
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let html = response.text().await.unwrap();
-    let csrf = html
-        .split_once("const CSRF = \"")
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(token, _)| token.to_string())
-        .expect("dashboard embeds the CSRF token");
+    let body: serde_json::Value = response.json().await.unwrap();
+    let csrf = body["csrf"]
+        .as_str()
+        .expect("the bootstrap carries a csrf token")
+        .to_string();
 
     let response = client
         .post(format!("{base}/admin/api/accounts/codex"))

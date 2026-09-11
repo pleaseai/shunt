@@ -20,7 +20,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/v1/metrics` | 管理された Claude Code クライアントからのインバウンド OTLP/HTTP メトリクス — opt-in したゲートウェイテレメトリー宛先へ verbatim 中継 |
 | `POST` | `/v1/logs` | インバウンド OTLP/HTTP log record — `logs = true` の宛先にのみ中継 |
 | `POST` | `/v1/traces` | インバウンド OTLP/HTTP span — `traces = true` の宛先にのみ中継 |
-| `GET` | `/admin` | 管理ダッシュボード（HTML）。未サインイン時は `/admin/login` へリダイレクト |
+| `GET` | `/admin` | 管理ダッシュボード — バンドルの他の部分と同じく認証なしで配信される SPA シェルです。`GET /admin/api/session` が `401` を返すと、バンドル自身が `/admin/login` へ遷移させます。`--features ui` なしでビルドしたバイナリでは、このパスはその機能名を含む本文とともに `404` を返します |
 | `GET`, `POST` | `/admin/login` | 管理トークンのログインフォームとブラウザーセッションの作成 |
 | `POST` | `/admin/api/logout` | ブラウザーセッションの破棄 |
 | `GET` | `/admin/api/session` | 管理 SPA がレンダリング前に必要とするセッション固有の 2 値: セッションの `csrf` トークンと `expiry_buffer_ms`(`claude::auth::EXPIRY_BUFFER` のミリ秒値で、setup token が使用不可になる境界)。ヘッダー資格情報の呼び出し元は CSRF 免除のため空の `csrf` を受け取る。このサーフェスには CORS レイヤーがないため、クロスオリジンのページはリクエストを送れても応答を読めない。したがって `GET` でトークンを返しても安全 |
@@ -45,7 +45,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/codex/analytics-events/events` | Codex CLI analytics sink — ルート形式の `chatgpt_base_url` |
 | `GET` | `/usage` | クライアント向けのサニタイズ済みプール使用量 — 共有アカウントプールのウィンドウごとの残り余裕とリセットに加え、プールされるプロバイダーごとの同じ集計。アカウントの身元や容量は返さない |
 
-`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作では `403` で、`POST /admin/login` では `401` で拒否されます。ただし SPA シェルとバンドルファイルは例外で、`GET /admin/{*path}` と `GET /admin/assets/{*path}` は管理認証なしで配信されます。これらは運用者のデータを含まず、SPA が読み取る値はすべて、リクエストごとに認証する `/admin/api/*` の背後にあるため安全です。この 2 つのルートも、`[server.admin]` が設定され、かつ `--features ui` でビルドしたバイナリでのみ存在します。
+`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作では `403` で、`POST /admin/login` では `401` で拒否されます。ただし SPA シェルとバンドルファイルは例外で、`GET /admin`、`GET /admin/{*path}`、`GET /admin/assets/{*path}` は管理認証なしで配信されます。これらは運用者のデータを含まず、SPA が読み取る値はすべて、リクエストごとに認証する `/admin/api/*` の背後にあるため安全です。ワイルドカードの 2 つのルートは、`[server.admin]` が設定され、かつ `--features ui` でビルドしたバイナリでのみ存在します。
 
 ### 管理 SPA バンドル（`--features ui`）
 
@@ -64,7 +64,7 @@ Node ツールチェーンを必要とせず、バンドルも持たず、どち
   壊れるためです。
 - マウントの外側のパスは影響を受けず、これまでどおり `404` を返します。
 
-`GET /admin` は引き続きサーバーレンダリングのダッシュボードを返します。
+`GET /admin` もシェルです。両方のビルドに登録されていながら応答が機能フラグ次第で変わる唯一の管理パスで、有効なら シェル、無効なら本文に `--features ui` を挙げた `404` を返します。どちらでも登録しておくのは、その `404` にこの案内文を持たせるためです — ルートごと外すと axum の本文なし `404` になり、運用者は `[server.admin]` 未設定と見分けられません。
 
 ### 管理パスの移行
 

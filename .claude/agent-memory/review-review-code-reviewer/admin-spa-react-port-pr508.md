@@ -55,3 +55,26 @@ which is where it was not applied.
 
 See [[shunt-codex-websocket-v2]] pattern of thorough memory for future admin
 SPA port PRs (the follow-up PR deleting the server-rendered path).
+
+**Follow-up — PR #526 (branch `amondnet/admin-spa-cutover`), merged the
+deletion this note anticipated.** Deletes `src/admin/script.rs` and
+`html::dashboard_page`; `GET /admin` now answers `ui::shell()` under
+`--features ui` and a `404` naming the feature without it, via one `dashboard()`
+fn with two `#[cfg]` bodies. Verified: `cargo check` clean both with and without
+`--features ui`; no leftover *code* references to the deleted `dashboard_page`/
+`html_page`/`html_body`/`mod script` anywhere in `src/` or `tests/`. Two things
+that grep still finds, both expected: `src/admin/ui.rs:26-27` names
+`super::html::dashboard_page` and `super::script` in module docs to say they are
+deleted, and `html_body` is a substring of the still-live
+`html_body_with_form_action`, the login page's renderer (4 hits in `src/`, 1 in
+`tests/admin_ui.rs`). This PR also further split `accountGroups` in
+`ui/src/accounts.ts` into `managedState`/`managedRow`/
+`observedRow`/`foldObservation`/`uuidsByAccountName` — diffed old vs. new
+line-by-line, exactly behaviour-preserving (including ordering: managed rows
+laid down before observations are folded in, so a coalesced row keeps its
+managed position). Tests moved the two source-text assertions that used to
+scrape `GET /admin`'s HTML for a CSRF token onto `GET /admin/api/session`
+instead, and a new `router_surface.rs` test pins the feature-off `404` body
+text. Breaking change (`GET /admin` now `200` unauthenticated instead of `303`
+to login) is documented in README (4 locales) and site endpoints reference (4
+locales) in the same PR. No findings.

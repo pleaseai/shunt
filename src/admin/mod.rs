@@ -26,7 +26,6 @@ mod codex;
 mod html;
 mod oidc;
 mod plan;
-mod script;
 #[cfg(feature = "ui")]
 mod ui;
 
@@ -635,18 +634,37 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
         .into_response()
 }
 
-async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let state = state.refreshed();
-    let Some(authok) = authenticate(&state, &headers) else {
-        return redirect("/admin/login");
-    };
-    // Header-token callers hitting the HTML page have no CSRF token; render with
-    // an empty one (mutations from the page then require a real session).
-    let csrf = match authok.kind {
-        Authenticated::Session { csrf } => csrf,
-        Authenticated::Header => String::new(),
-    };
-    html_page(html::dashboard_page(&csrf))
+/// `GET /admin` — the operator dashboard, now the SPA shell.
+///
+/// Unauthenticated, like every other path the shell answers (`ui::shell`): the
+/// shell is one static file embedded at compile time, identical for every
+/// visitor, and carries no operator data. The bundle bootstraps over
+/// `GET /admin/api/session`, which authenticates like the rest of the namespace
+/// and sends a `401` to `/admin/login` (`ui/src/App.tsx`) — the redirect the
+/// server-rendered page used to answer with directly.
+#[cfg(feature = "ui")]
+async fn dashboard() -> Response {
+    ui::shell().await
+}
+
+/// `GET /admin` without `--features ui` — there is no dashboard in this build.
+///
+/// A default `cargo build` needs no Node toolchain and so embeds no bundle
+/// (ADR-0003 / `docs/admin-ui-delivery.md` Resolution 1, which accepts exactly
+/// this gap for from-source builds; release binaries enable the feature). The
+/// route stays registered rather than disappearing, because axum's own `404`
+/// for an unregistered path has an empty body: an operator who typed the
+/// documented URL would get nothing back to explain why. The JSON API under
+/// `/admin/api/*` is unaffected by the feature and still serves this build.
+#[cfg(not(feature = "ui"))]
+async fn dashboard() -> Response {
+    ShuntError::new(
+        StatusCode::NOT_FOUND,
+        "not_found_error",
+        "this build has no embedded admin dashboard; rebuild with `--features ui` (see ui/README.md) \
+         or use the JSON API under /admin/api/*",
+    )
+    .into_response()
 }
 
 // --- JSON API routes -----------------------------------------------------------
@@ -655,22 +673,22 @@ async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Respons
 /// before it can render, for a client that cannot have them interpolated into
 /// its own source.
 ///
-/// `dashboard_page` substitutes both into the server-rendered page it emits.
-/// The SPA shell (`ui::shell`) cannot be served that way: it is one static file
-/// embedded at compile time and served without a credential, so it is identical
-/// for every visitor and knows nothing about the session that requested it.
+/// The server-rendered dashboard this replaced substituted both into the page
+/// it emitted. The SPA shell (`ui::shell`) cannot be served that way: it is one
+/// static file embedded at compile time and served without a credential, so it
+/// is identical for every visitor and knows nothing about the session that
+/// requested it.
 ///
 /// Returning the CSRF token over a cookie-authenticated `GET` does not weaken
 /// the guard it belongs to. A cross-origin page can *send* this request with the
 /// browser's cookie, but no response header on this surface permits it to read
 /// the reply: there is no CORS layer anywhere on the admin router, so the
 /// same-origin policy stops the read. That is the same property the
-/// server-rendered dashboard already relies on — a cross-origin page cannot read
+/// server-rendered dashboard relied on — a cross-origin page could not read
 /// `GET /admin` either.
 ///
-/// A header-credential caller gets an empty `csrf`, matching `dashboard`: it has
-/// no ambient cookie, so [`check_csrf`] exempts it and there is no token to
-/// hand out.
+/// A header-credential caller gets an empty `csrf`: it has no ambient cookie, so
+/// [`check_csrf`] exempts it and there is no token to hand out.
 async fn session_bootstrap(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let state = state.refreshed();
     let Some(authok) = authenticate(&state, &headers) else {
@@ -682,11 +700,11 @@ async fn session_bootstrap(State(state): State<AppState>, headers: HeaderMap) ->
     };
     json_secure(json!({
         "csrf": csrf,
-        // Served rather than duplicated in the bundle for the same reason
-        // `dashboard_page` substitutes it: the dashboard reports a setup token
-        // as expired once it is inside this buffer, and routing refuses one on
-        // the same boundary (`Tokens::is_valid_at`). A copy in TypeScript could
-        // drift from the Rust constant; a served value cannot.
+        // Served rather than duplicated in the bundle for the same reason the
+        // server-rendered page substituted it: the dashboard reports a setup
+        // token as expired once it is inside this buffer, and routing refuses
+        // one on the same boundary (`Tokens::is_valid_at`). A copy in
+        // TypeScript could drift from the Rust constant; a served value cannot.
         "expiry_buffer_ms": u64::try_from(claude_auth::EXPIRY_BUFFER.as_millis())
             .unwrap_or(u64::MAX),
     }))
@@ -1725,14 +1743,6 @@ fn admin_token_url() -> String {
 
 // --- response helpers ----------------------------------------------------------
 
-pub(super) fn html_page(body: String) -> Response {
-    html_body(body).into_response()
-}
-
-pub(super) fn html_body(body: String) -> Response {
-    html_body_with_form_action(body, crate::gateway::idp_client::SELF_FORM_ACTION)
-}
-
 /// The login page, with the CSP `form-action` widened to the identity provider
 /// when the SSO form is present: Chrome and WebKit enforce `form-action`
 /// against the post-submission redirect chain (w3c/webappsec-csp#8), so the
@@ -1756,11 +1766,20 @@ pub(super) fn login_response(
 }
 
 fn html_body_with_form_action(body: String, form_action: &str) -> Response {
-    // Defense-in-depth headers for the admin pages: a tight CSP (the pages use
-    // only same-origin fetch plus inline script/style, no external resources),
-    // clickjacking/sniffing guards, a conservative referrer policy, and
-    // `no-store` so the session-specific CSRF token and account data are never
-    // cached by the browser or a shared intermediary.
+    // Defense-in-depth headers for the one page still rendered here — the login
+    // form: a tight CSP, clickjacking/sniffing guards, a conservative referrer
+    // policy, and `no-store` so a submitted token is never cached by the browser
+    // or a shared intermediary.
+    //
+    // `script-src`/`connect-src` are wider than this page needs. They were sized
+    // for the server-rendered dashboard, which inlined a script that fetched
+    // `/admin/api/*`; the login page has neither a script nor a fetch, so both
+    // could now be `'none'`. Tightening them is deliberately not part of this
+    // change — it is a policy change on a live page, not part of deleting the
+    // dashboard literals — and is tracked separately. `style-src` genuinely
+    // still needs `'unsafe-inline'`: `html::STYLE` is inlined in a `<style>`
+    // element, which is the difference between this policy and the bundle's
+    // (`ui::SHELL_CSP`), whose stylesheet is an external asset.
     let csp = format!(
         "default-src 'none'; script-src 'unsafe-inline'; \
 style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action {form_action}; \

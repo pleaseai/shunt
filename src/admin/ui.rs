@@ -7,8 +7,12 @@
 //! has no Node toolchain and no bundle; release CI builds `ui/dist` and enables
 //! the feature.
 //!
-//! The three routes this module backs are registered in [`super::admin_router`]:
+//! The routes this module backs are registered in [`super::admin_router`]:
 //!
+//! - `/admin` — the mount root, which [`super::dashboard`] answers with
+//!   [`shell`] under this feature. Its `GET`/`HEAD` registration is shared with
+//!   the default build, where the same path reports that this binary embeds no
+//!   bundle rather than vanishing into an empty `404`.
 //! - `/admin/assets/{*path}` — the hashed bundle files, from `ui/dist/assets`.
 //! - `/admin/api/{*path}` — an unmatched JSON path, answered `404` in the
 //!   gateway's error shape. `/admin/api/*` is a different namespace from the
@@ -18,11 +22,13 @@
 //!   with the SPA shell so deep links survive a reload. Confined to the mount:
 //!   an unmatched path outside `/admin` still `404`s.
 //!
-//! `GET /admin` itself is untouched — it still serves the server-rendered
-//! dashboard (`super::dashboard`). The bundle now carries the ported views, so
-//! any other path under the mount (say `/admin/ui`) already renders them;
-//! flipping `/admin` itself and deleting the string-literal dashboard is the
-//! next step of the track.
+//! `GET /admin` now answers the shell as well, which completes the track: the
+//! string-literal dashboard (`super::html::dashboard_page` and
+//! `super::script`) is deleted, and the bundle is the only dashboard there is.
+//! An operator reaching `/admin` unauthenticated therefore gets a `200` shell
+//! rather than the old `303` to `/admin/login`; the bundle bootstraps over
+//! `GET /admin/api/session` and sends a `401` to the same login page
+//! (`ui/src/App.tsx`).
 //!
 //! The shell and the assets carry no operator data, so they are served without
 //! admin authentication, exactly like `/admin/login`. Everything the SPA will

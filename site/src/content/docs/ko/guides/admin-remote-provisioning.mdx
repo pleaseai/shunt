@@ -29,6 +29,10 @@ shunt run
 
 모든 키와 기본값은 [설정 레퍼런스](/ko/reference/configuration/#serveradmin-선택)를 참고하세요. 브라우저 라우트와 JSON 라우트는 [엔드포인트 레퍼런스](/ko/reference/endpoints/)에 나열되어 있습니다.
 
+:::note
+`/admin`이 제공하는 대시보드는 `--features ui`로 빌드한 바이너리만 임베드하는 번들에서 나옵니다. 사전 빌드 릴리스 바이너리와 Homebrew 포뮬러에는 포함되어 있지만, 그냥 `cargo build`나 `cargo install`로 빌드하면 포함되지 않고 해당 경로는 그 피처를 안내하는 본문과 함께 `404`를 반환합니다. 소스 빌드 방법은 [설치](/ko/getting-started/installation/)를 참고하세요. 이 페이지의 나머지 — JSON API와 설정 — 는 어느 쪽이든 동일합니다.
+:::
+
 ## 브라우저에서 Claude 계정 프로비저닝
 
 1. `/admin`을 열고 관리자 토큰으로 로그인합니다.

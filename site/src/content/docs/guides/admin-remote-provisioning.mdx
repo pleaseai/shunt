@@ -53,6 +53,10 @@ The login page retains the admin-token form and adds **Sign in with SSO** (or **
 
 See the [configuration reference](/reference/configuration/#serveradmin-optional) for every key and default. The [endpoint reference](/reference/endpoints/) lists the browser and JSON routes.
 
+:::note
+`/admin` serves the dashboard from a bundle only a `--features ui` build embeds. The prebuilt release binaries and the Homebrew formula have it; a plain `cargo build` or `cargo install` does not, and answers `404` there with a body naming the feature. See [Installation](/getting-started/installation/) for the from-source build. Everything else on this page — the JSON API and the config — is identical either way.
+:::
+
 ## Provision a Claude account in the browser
 
 1. Open `/admin` and sign in with an admin token.
