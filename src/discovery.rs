@@ -161,9 +161,9 @@ fn authentication_error(state: &AppState, headers: &HeaderMap) -> Option<Respons
         );
     }
     if let Some(client) = static_client {
-        tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
+        tracing::info!(client = %client, "inbound client authenticated for model discovery");
     } else if let Some(identity) = gateway_identity.as_ref() {
-        tracing::info!(client = %identity.email, "gateway user authenticated for GET /v1/models");
+        tracing::info!(client = %identity.email, "gateway user authenticated for model discovery");
     }
     None
 }
