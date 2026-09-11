@@ -1,0 +1,37 @@
+.claude/agent-memory/review-review-code-reviewer/admin-spa-react-port-pr508.md
+  s_e9fd5f53eebc34::t_a6c4e173b10e7f 64-69
+  s_e9fd5f53eebc34::t_82fb566e34cb7e 70
+site/src/content/docs/ja/reference/endpoints.md
+  s_e9fd5f53eebc34::t_dddd1a5b62b81e 48
+site/src/content/docs/ko/reference/endpoints.md
+  s_e9fd5f53eebc34::t_dddd1a5b62b81e 48
+ui/README.md
+  s_e9fd5f53eebc34::t_98683ce9e66dfa 60-62
+  s_e9fd5f53eebc34::t_42c163711af34e 55-59
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr526_admin_spa_cutover_docs_review.md
+  s_e9fd5f53eebc34::t_a6c4e173b10e7f 28-29
+  s_e9fd5f53eebc34::t_f12c27e3e82da5 3,20-22,27,37-38,40-47
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-admin-spa-cutover-coverage.md
+  s_e9fd5f53eebc34::t_f12c27e3e82da5 3,21,23-27,31-35
+  s_e9fd5f53eebc34::t_82fb566e34cb7e 28-30
+site/src/content/docs/reference/endpoints.md
+  s_e9fd5f53eebc34::t_dddd1a5b62b81e 77
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_e9fd5f53eebc34::t_dddd1a5b62b81e 48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9ea77f6566e07e4d450ba50505f717d96936406d",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
