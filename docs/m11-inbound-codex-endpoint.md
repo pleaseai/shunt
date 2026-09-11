@@ -69,9 +69,9 @@ When opted in, shunt registers three Responses routes mapping to one passthrough
 
 | Method | Path |
 | :-- | :-- |
-| `POST` | `/backend-api/codex/responses` |
-| `POST` | `/responses` |
-| `POST` | `/v1/responses` |
+| `GET`, `POST` | `/backend-api/codex/responses` |
+| `GET`, `POST` | `/responses` |
+| `GET`, `POST` | `/v1/responses` |
 
 Three Responses paths exist because the Codex CLI always appends `/responses` to whatever `base_url` it is
 pointed at: a base ending in `/backend-api/codex` produces `/backend-api/codex/responses` (the
