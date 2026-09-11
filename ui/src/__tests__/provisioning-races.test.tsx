@@ -188,6 +188,68 @@ describe('a superseded provisioning response cannot restore a cleared flow', () 
     expect((document.getElementById('name') as HTMLInputElement).value).toBe('');
   });
 
+  /**
+   * `start` sends the selected mode and the server's pending entry is fixed from
+   * that moment, so radios that stay live while the authorization step is open
+   * let the form read "Setup token" over a pending OAuth login.
+   */
+  it('closes the login-method radios while an authorization step is open', async () => {
+    const user = userEvent.setup();
+    await renderDashboard(ACCOUNTS, {
+      'POST /admin/api/accounts/claude': () =>
+        reply({ name: 'first', authorize_url: 'https://auth.example/claude' }),
+    });
+
+    const oauth = document.getElementById('mode-oauth') as HTMLInputElement;
+    const setup = document.getElementById('mode-setup') as HTMLInputElement;
+    expect(oauth).toBeEnabled();
+    expect(setup).toBeEnabled();
+
+    await openClaudeFlow(user, 'first');
+
+    expect(oauth).toBeDisabled();
+    expect(setup).toBeDisabled();
+  });
+
+  /**
+   * A second start leaves the first authorization step on screen while it is in
+   * flight, and its Complete button posts to the name captured for the previous
+   * flow. The step is closed the moment the new start is issued instead.
+   */
+  it('clears the open authorization step as soon as a second start is issued', async () => {
+    const user = userEvent.setup();
+    const held = deferred<Response>();
+    let starts = 0;
+    await renderDashboard(ACCOUNTS, {
+      'POST /admin/api/accounts/claude': (() => {
+        starts += 1;
+        return starts === 1
+          ? reply({ name: 'first', authorize_url: 'https://auth.example/claude' })
+          : held.promise;
+      }) as Route,
+    });
+
+    await openClaudeFlow(user, 'first');
+
+    // The operator renames the account and starts again; the second start is
+    // still in flight.
+    await user.clear(document.getElementById('name') as HTMLInputElement);
+    await user.type(document.getElementById('name') as HTMLInputElement, 'second');
+    await user.click(document.getElementById('start') as HTMLButtonElement);
+
+    expect(document.getElementById('step2')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'https://auth.example/claude' })).toBeNull();
+
+    // The new flow's own step opens when its start lands.
+    await act(async () => {
+      held.resolve(reply({ name: 'second', authorize_url: 'https://auth.example/second' }));
+      await held.promise;
+    });
+    expect(
+      await screen.findByRole('link', { name: 'https://auth.example/second' }),
+    ).toBeInTheDocument();
+  });
+
   /** The Codex form carries the same two guards, on its own counter. */
   it('applies both guards to the Codex flow as well', async () => {
     const user = userEvent.setup();

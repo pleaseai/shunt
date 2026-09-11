@@ -85,6 +85,12 @@ export const AddClaudeAccount = forwardRef<
               name="mode"
               value="oauth"
               checked={mode === 'oauth'}
+              // The mode the server's pending entry was created under is fixed
+              // at start, so a radio that stays live while the authorization
+              // step is open lets the form read one method while the pending
+              // login is the other. `authorizeUrl` is non-null exactly while
+              // that step is open.
+              disabled={flow.authorizeUrl !== null}
               onChange={() => setMode('oauth')}
             />
             <span>Full OAuth (refreshable)</span>
@@ -96,6 +102,7 @@ export const AddClaudeAccount = forwardRef<
               name="mode"
               value="setup_token"
               checked={mode === 'setup_token'}
+              disabled={flow.authorizeUrl !== null}
               onChange={() => setMode('setup_token')}
             />
             <span>Setup token (1-year, inference-only)</span>

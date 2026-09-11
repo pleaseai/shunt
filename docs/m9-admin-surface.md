@@ -410,6 +410,16 @@ An observed error (`expired`/`unavailable`) still surfaces over a merely idle
 managed state (`available`/`unseen`), which is the "Needs login" case this
 matching was built for.
 
+Within the managed states both tables run one ladder — `disabled`,
+`needs_relogin`, `!has_state`, account-wide cooldown, `near_quota`, Fable-only
+cooldown — so the same account cannot read `near quota` in the managed-pool
+table while the Accounts table calls it `Cooling` (issue #512). The cooldown is
+tested before `near_quota` because it is the fact that *all* of the account's
+traffic is gated right now, while `near_quota` warns about what is coming. When
+both cooldowns are running the row's state is the account-wide one, and its note
+names both deadlines (`retries in 10m · Fable retries in 30m`), the way the
+managed-pool table's Cooldown column already lists both (issue #511).
+
 Managed provisioning and store metadata remain available under a collapsed
 **Manage pool accounts (advanced)** section. `AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,
 serializable view per account: 5h/7d/7d_oi utilization + reset, unified status,

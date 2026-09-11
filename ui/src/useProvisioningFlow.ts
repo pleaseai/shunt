@@ -104,6 +104,14 @@ export function useProvisioningFlow({
   const start = useCallback(
     async (body: Record<string, unknown>) => {
       setMessage(null);
+      // The previous flow's authorization step is closed the moment a new start
+      // is issued. Left open it stays clickable, and its Complete button posts
+      // to the name captured for THAT flow — and because `complete` bumps the
+      // epoch itself, that click also strands the start now in flight: its
+      // response arrives under a superseded epoch and is dropped, so the link
+      // the operator is looking at is never replaced by the one they asked for.
+      setAuthorizeUrl(null);
+      currentName.current = null;
       const issued = (epoch.current += 1);
       try {
         const result = await mutate(`${API}${endpoints.start}`, csrf, {

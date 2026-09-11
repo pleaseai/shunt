@@ -22,13 +22,19 @@ function statusNote(row: AccountRow, state: string): string | null {
       break;
   }
   const now = Math.floor(Date.now() / 1000);
-  if (row.managed?.cooldown_secs_remaining) {
-    return `retries in ${untilShort(now + row.managed.cooldown_secs_remaining)}`;
-  }
-  if (row.managed?.cooldown_fable_secs_remaining) {
-    return `Fable retries in ${untilShort(now + row.managed.cooldown_fable_secs_remaining)}`;
-  }
-  return null;
+  // Both cooldowns can run at once, and each names a different window. Testing
+  // them in sequence and returning on the first made the Fable deadline
+  // unreachable whenever the account-wide one was set; they are joined here the
+  // way the pool table's `cooldownText` already joins them.
+  const notes = [
+    row.managed?.cooldown_secs_remaining
+      ? `retries in ${untilShort(now + row.managed.cooldown_secs_remaining)}`
+      : null,
+    row.managed?.cooldown_fable_secs_remaining
+      ? `Fable retries in ${untilShort(now + row.managed.cooldown_fable_secs_remaining)}`
+      : null,
+  ].filter(Boolean);
+  return notes.length ? notes.join(' · ') : null;
 }
 
 function identityTitle(row: AccountRow): string | undefined {
