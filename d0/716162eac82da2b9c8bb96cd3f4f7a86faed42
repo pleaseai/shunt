@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_e9fd5f53eebc34::t_9a46de045b7e46 21
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-multi-account-env-serialization.md
+  s_e9fd5f53eebc34::t_1743a8cb9e88ec 1-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d0716162eac82da2b9c8bb96cd3f4f7a86faed42",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
