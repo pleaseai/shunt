@@ -1,0 +1,25 @@
+ui/src/components/AddClaudeAccount.tsx
+  s_e9fd5f53eebc34::t_fead16816bae84 59-65,123-124
+ui/src/__tests__/provisioning-races.test.tsx
+  s_e9fd5f53eebc34::t_d8ce0b9932449f 234,238-279,281-303
+  s_e9fd5f53eebc34::t_6476d58884c1d7 280
+  s_e9fd5f53eebc34::t_9151a746e23a60 304
+ui/src/useProvisioningFlow.ts
+  s_e9fd5f53eebc34::t_fead16816bae84 35-37,77,104,120-130,138,149-152,235
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "65fcae52e3cd7606259f6b54e04d5fbd7604e1dc",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
