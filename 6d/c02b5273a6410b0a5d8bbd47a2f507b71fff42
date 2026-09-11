@@ -1,0 +1,33 @@
+ui/src/components/PoolHealth.tsx
+  s_e9fd5f53eebc34::t_d1048bd3d60b25 14-18,20
+ui/src/components/ObservedAccounts.tsx
+  s_e9fd5f53eebc34::t_d1048bd3d60b25 25-37
+ui/src/useProvisioningFlow.ts
+  s_e9fd5f53eebc34::t_d1048bd3d60b25 107-113
+ui/src/__tests__/pool-health.test.tsx
+  s_e9fd5f53eebc34::t_6e36ecf5ec0ef3 65-83
+ui/src/components/AddClaudeAccount.tsx
+  s_e9fd5f53eebc34::t_d1048bd3d60b25 88-93,105
+docs/m9-admin-surface.md
+  s_e9fd5f53eebc34::t_1e58de85d75e2b 413-422
+ui/src/__tests__/provisioning-races.test.tsx
+  s_e9fd5f53eebc34::t_6e36ecf5ec0ef3 191-252
+ui/src/__tests__/coalescing.test.tsx
+  s_e9fd5f53eebc34::t_6e36ecf5ec0ef3 147-168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "6dc02b5273a6410b0a5d8bbd47a2f507b71fff42",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
