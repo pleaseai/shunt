@@ -89,9 +89,21 @@ fn store_account(name: &str) -> AccountConfig {
     }
 }
 
-/// Serializes the refresh-path tests, which set the process-global
-/// `SHUNT_CLAUDE_ACCOUNTS_DIR` / `SHUNT_CLAUDE_TOKEN_URL` env vars.
-static REFRESH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Serializes **every** test in this file, because every one of them writes a
+/// process-global env var.
+///
+/// The hazard is not two tests sharing a variable name — it is `setenv` itself.
+/// It may reallocate the single global `environ` array, so a write to *any*
+/// variable can be observed by a concurrent `getenv` for an *unrelated* one as a
+/// missing value. The gateway calls `env::var(token_env)` per request while
+/// resolving a `token_env` account (`src/auth/mod.rs`), so an unsynchronized
+/// `set_var` in a sibling test makes that account look unconfigured, the pool
+/// run out of candidates, and the request fail with 502 (issue #507).
+///
+/// So the rule is not "hold this when you touch the refresh env vars"; it is
+/// **hold this for the whole body of any test that writes an env var at all**,
+/// including the per-test `SHUNT_TEST_MULTI_*` token variables.
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn unique_temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -291,6 +303,7 @@ async fn account_uuid_is_rewritten_for_each_account_during_rotation() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token_a = ["fake-oauth-", "uuid-a"].concat();
     let token_b = ["fake-oauth-", "uuid-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_UUID_A", &token_a);
@@ -348,6 +361,7 @@ async fn an_authenticated_quota_429_clears_a_stale_relogin_mark() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token_a = ["fake-oauth-", "quotaclear-a"].concat();
     let token_b = ["fake-oauth-", "quotaclear-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_QUOTACLEAR_A", &token_a);
@@ -415,7 +429,7 @@ async fn a_headerless_429_after_refresh_leaves_the_relogin_mark_standing() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let stale = ["fake-oauth-", "throttlekeep-stale"].concat();
     let rotated = ["fake-oauth-", "throttlekeep-rotated"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_THROTTLEKEEP_B", "unused");
@@ -507,6 +521,7 @@ async fn a_5xx_rotation_leaves_the_relogin_mark_standing() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token_a = ["fake-oauth-", "quotakeep-a"].concat();
     let token_b = ["fake-oauth-", "quotakeep-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_QUOTAKEEP_A", &token_a);
@@ -560,6 +575,7 @@ async fn quota_429_rotates_and_cools_down_the_rejected_account() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token_a = ["fake-oauth-", "quota-a"].concat();
     let token_b = ["fake-oauth-", "quota-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_QUOTA_A", &token_a);
@@ -618,6 +634,7 @@ async fn unauthorized_static_account_cools_down_and_rotates() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token_a = ["fake-oauth-", "unauth-a"].concat();
     let token_b = ["fake-oauth-", "unauth-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_UNAUTH_A", &token_a);
@@ -673,6 +690,7 @@ async fn plain_429_retries_the_same_account_without_rotating() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token_a = ["fake-oauth-", "throttle-a"].concat();
     let token_b = ["fake-oauth-", "throttle-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_THROTTLE_A", &token_a);
@@ -721,6 +739,7 @@ async fn exhausted_pool_relays_the_last_upstream_body_verbatim() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token_a = ["fake-oauth-", "exhaust-a"].concat();
     let token_b = ["fake-oauth-", "exhaust-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_EXHAUST_A", &token_a);
@@ -773,7 +792,7 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let stale = ["fake-oauth-", "refresh-stale"].concat();
     let fresh = ["fake-oauth-", "refresh-fresh"].concat();
     let expires_at_ms = future_expiry_ms();
@@ -848,7 +867,7 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let stale = ["fake-oauth-", "rotate-stale"].concat();
     let fresh = ["fake-oauth-", "rotate-fresh"].concat();
     let token_b = ["fake-oauth-", "rotate-b"].concat();
@@ -933,6 +952,7 @@ async fn unresolvable_account_cools_down_and_rotates() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     // account-a points at an env var that is never set; account-b is healthy.
     std::env::remove_var("SHUNT_TEST_MULTI_MISSING_A");
     let token_b = ["fake-oauth-", "resolve-b"].concat();
@@ -972,6 +992,7 @@ async fn server_error_rotates_and_cools_down_the_failing_account() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token_a = ["fake-oauth-", "server-a"].concat();
     let token_b = ["fake-oauth-", "server-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_SERVER_A", &token_a);
@@ -1033,7 +1054,7 @@ async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let stale = ["fake-oauth-", "still401-stale"].concat();
     let fresh = ["fake-oauth-", "still401-fresh"].concat();
     let token_b = ["fake-oauth-", "still401-b"].concat();
@@ -1118,6 +1139,7 @@ async fn all_accounts_unresolvable_returns_bad_gateway() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     std::env::remove_var("SHUNT_TEST_MULTI_MISSING_ALL_A");
     std::env::remove_var("SHUNT_TEST_MULTI_MISSING_ALL_B");
 
@@ -1149,6 +1171,7 @@ async fn pause_same_retry_succeeds_and_relays_without_rotating() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token_a = ["fake-oauth-", "pauseok-a"].concat();
     let token_b = ["fake-oauth-", "pauseok-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_PAUSEOK_A", &token_a);
@@ -1227,7 +1250,7 @@ async fn static_setup_token_account_cools_down_without_refreshing() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let setup = ["fake-oauth-", "setup-static"].concat();
     let token_b = ["fake-oauth-", "setupstatic-b"].concat();
     let expires_at_ms = future_expiry_ms();
@@ -1304,6 +1327,7 @@ async fn duplicate_identity_alias_is_never_retried_as_a_separate_account() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token_a = ["fake-oauth-", "dup-a"].concat();
     let token_a_dup = ["fake-oauth-", "dup-a-alias"].concat();
     let token_b = ["fake-oauth-", "dup-b"].concat();
@@ -1376,6 +1400,7 @@ async fn storm_control_spills_concurrent_request_to_next_account() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token_a = ["fake-oauth-", "storm-a"].concat();
     let token_b = ["fake-oauth-", "storm-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_STORM_A", &token_a);
@@ -1515,6 +1540,7 @@ async fn pool_classifier_request_on_a_subscription_oauth_account_gains_the_ident
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     let token = ["sk-ant-oat01-", "pool-classifier"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_CLASSIFIER_OAUTH", &token);
 
@@ -1552,6 +1578,7 @@ async fn pool_classifier_request_on_a_non_oauth_token_env_account_is_not_rewritt
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     // The pool resolves every account to `Credential::ClaudeOauth`, but the
     // `token_env` branch wraps whatever the variable holds without checking it
     // is a subscription token. An account pointed at an API key therefore faces
@@ -1595,6 +1622,7 @@ async fn classifier_gate_is_re_evaluated_for_each_candidate_during_rotation() {
     if !can_bind_loopback() {
         return;
     }
+    let _env = ENV_LOCK.lock().await;
     // The gate lives inside the candidate loop precisely because a pool can mix
     // token shapes. A single-account pool only proves it runs; this proves it
     // runs *per candidate* — the api-key account must relay unrewritten, and the
@@ -1660,7 +1688,7 @@ async fn terminal_invalid_grant_marks_the_account_as_needing_relogin() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let stale = ["fake-oauth-", "terminal-stale"].concat();
     let token_b = ["fake-oauth-", "terminal-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_TERMINAL_B", &token_b);
@@ -1755,7 +1783,7 @@ async fn transient_refresh_failure_does_not_mark_the_account() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let stale = ["fake-oauth-", "transient-stale"].concat();
     let token_b = ["fake-oauth-", "transient-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_TRANSIENT_B", &token_b);
@@ -1843,7 +1871,7 @@ async fn unrefreshable_setup_token_401_marks_the_account_as_needing_relogin() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let setup = ["fake-oauth-", "markstatic"].concat();
     let token_b = ["fake-oauth-", "markstatic-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_MARKSTATIC_B", &token_b);
@@ -1914,7 +1942,7 @@ async fn mark_healthy_clears_the_needs_relogin_mark() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let setup = ["fake-oauth-", "clearmark"].concat();
     let token_b = ["fake-oauth-", "clearmark-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_CLEARMARK_B", &token_b);
@@ -1998,7 +2026,7 @@ async fn terminal_invalid_grant_during_resolution_marks_the_account_as_needing_r
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let expired = ["fake-oauth-", "resolve-expired"].concat();
     let token_b = ["fake-oauth-", "resolve-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_RESOLVE_B", &token_b);
@@ -2091,7 +2119,7 @@ async fn transient_resolution_failure_does_not_mark_the_account() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let expired = ["fake-oauth-", "resolve-transient"].concat();
     let token_b = ["fake-oauth-", "resolve-transient-b"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_RESOLVE_TRANSIENT_B", &token_b);
@@ -2173,7 +2201,7 @@ async fn a_post_refresh_401_marks_the_account_as_needing_relogin() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let stale = ["fake-oauth-", "postrefresh-stale"].concat();
     let rotated = ["fake-oauth-", "postrefresh-rotated"].concat();
     let token_b = ["fake-oauth-", "postrefresh-b"].concat();
@@ -2283,7 +2311,7 @@ async fn a_relayed_client_error_after_refresh_clears_a_stale_mark() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
     let stale = ["fake-oauth-", "relayclear-stale"].concat();
     let rotated = ["fake-oauth-", "relayclear-rotated"].concat();
     std::env::set_var("SHUNT_TEST_MULTI_RELAYCLEAR_B", "unused");
