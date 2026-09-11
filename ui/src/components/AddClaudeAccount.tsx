@@ -56,6 +56,12 @@ export const AddClaudeAccount = forwardRef<
     report: flow.report,
   }), [flow.prime, flow.report]);
 
+  // The authorization step is open exactly while `authorizeUrl` is non-null,
+  // and that is what locks the login method: the mode the server's pending
+  // entry was created under is fixed at start, so a radio that stayed live
+  // would let the form read one method while the pending login is the other.
+  const locked = flow.authorizeUrl !== null;
+
   return (
     <>
       <h2>Add Claude account</h2>
@@ -76,7 +82,11 @@ export const AddClaudeAccount = forwardRef<
           value={flow.name}
           onChange={(event) => flow.setName(event.target.value)}
         />
-        <fieldset>
+        {/* The radios are the only controls this form disables on its own, so
+            the help text and the lock note are attached here rather than to
+            each input: a screen reader entering the group reads why the choice
+            is fixed, which a bare `disabled` attribute never says. */}
+        <fieldset aria-describedby={locked ? 'modehelp modelock' : 'modehelp'}>
           <legend>Login method</legend>
           <label className="choice">
             <input
@@ -85,12 +95,7 @@ export const AddClaudeAccount = forwardRef<
               name="mode"
               value="oauth"
               checked={mode === 'oauth'}
-              // The mode the server's pending entry was created under is fixed
-              // at start, so a radio that stays live while the authorization
-              // step is open lets the form read one method while the pending
-              // login is the other. `authorizeUrl` is non-null exactly while
-              // that step is open.
-              disabled={flow.authorizeUrl !== null}
+              disabled={locked}
               onChange={() => setMode('oauth')}
             />
             <span>Full OAuth (refreshable)</span>
@@ -102,11 +107,21 @@ export const AddClaudeAccount = forwardRef<
               name="mode"
               value="setup_token"
               checked={mode === 'setup_token'}
-              disabled={flow.authorizeUrl !== null}
+              disabled={locked}
               onChange={() => setMode('setup_token')}
             />
             <span>Setup token (1-year, inference-only)</span>
           </label>
+          {/* `role="status"` makes the lock announce itself the moment it
+              appears. The form's own live region (`#addmsg`) cannot carry this:
+              `start` clears it and a successful start never sets it, so the one
+              moment the radios go dead is the one moment that region is empty. */}
+          {locked ? (
+            <p id="modelock" role="status" className="muted">
+              Locked while the authorization step below is open — the pending login was started
+              for this method. Start another login to change it.
+            </p>
+          ) : null}
         </fieldset>
         <button
           id="start"

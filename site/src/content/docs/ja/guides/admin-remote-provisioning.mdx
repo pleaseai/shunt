@@ -47,7 +47,7 @@ shunt run
    name = "backup"
    ```
 
-開始されたフローは `pending_ttl_secs`（デフォルト 10 分）の間有効で、オペレーターが認可ページを開いて結果を貼り付ける時間を確保できます。サーバーは選択された mode を pending attempt とともに記録するため、completion リクエストで token の種類を切り替えることはできません。Full OAuth は access token と refresh token を保存し、credential kind は `imported` と表示されます。setup-token mode は kind が `setup_token` の静的 credential を保存します。完了レスポンスは、アカウントが保存されたか、そして現在の provider 設定でそれが有効（live）になるかを報告します。
+開始されたフローは `pending_ttl_secs`（デフォルト 10 分）の間有効で、オペレーターが認可ページを開いて結果を貼り付ける時間を確保できます。サーバーは選択された mode を pending attempt とともに記録するため、completion リクエストで token の種類を切り替えることはできません。認可ステップが開いている間、ダッシュボードはログイン方法のラジオボタンを無効化し、その理由も表示します。その pending attempt の mode はすでに固定されているためで、別のログインを開始すれば再び選べるようになります。Full OAuth は access token と refresh token を保存し、credential kind は `imported` と表示されます。setup-token mode は kind が `setup_token` の静的 credential を保存します。完了レスポンスは、アカウントが保存されたか、そして現在の provider 設定でそれが有効（live）になるかを報告します。
 
 アカウントストアの変更はリクエストごとに検出されるため、スキャンモードのプロバイダーはアカウントの追加・削除後に再起動する必要がありません。
 

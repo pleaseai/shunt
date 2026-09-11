@@ -212,6 +212,30 @@ describe('a superseded provisioning response cannot restore a cleared flow', () 
   });
 
   /**
+   * A `disabled` attribute states no reason, and the form's own live region is
+   * empty at exactly this moment — `start` clears it and a successful start
+   * never sets one. The lock announces and names itself instead.
+   */
+  it('names the reason the login-method radios are locked', async () => {
+    const user = userEvent.setup();
+    await renderDashboard(ACCOUNTS, {
+      'POST /admin/api/accounts/claude': () =>
+        reply({ name: 'first', authorize_url: 'https://auth.example/claude' }),
+    });
+
+    const group = document.getElementById('mode-oauth')!.closest('fieldset')!;
+    expect(document.getElementById('modelock')).toBeNull();
+    expect(group.getAttribute('aria-describedby')).toBe('modehelp');
+
+    await openClaudeFlow(user, 'first');
+
+    const note = document.getElementById('modelock')!;
+    expect(note).toHaveAttribute('role', 'status');
+    expect(note.textContent).toMatch(/authorization step/i);
+    expect(group.getAttribute('aria-describedby')).toBe('modehelp modelock');
+  });
+
+  /**
    * A second start leaves the first authorization step on screen while it is in
    * flight, and its Complete button posts to the name captured for the previous
    * flow. The step is closed the moment the new start is issued instead.
