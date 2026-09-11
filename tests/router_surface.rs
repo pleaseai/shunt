@@ -649,10 +649,11 @@ fn registered_literal_paths(source: &str) -> Vec<&str> {
 /// actual gate rather than a spot check.
 ///
 /// A route whose path is not a string literal at the call site is invisible to
-/// this scan. There are two such sites today — the OTLP signals in
-/// `gateway_router` and the `codex_endpoint::PATHS` / `codex_analytics::PATHS`
-/// loops in `build_router`. `every_documented_path_is_registered_when_all_surfaces_are_enabled`
-/// catches a removal or rename in either set but **not** an addition, so
+/// this scan. There are three such sites today — the OTLP signals in
+/// `gateway_router`, and the `discovery::CODEX_PATHS` and
+/// `codex_endpoint::PATHS` / `codex_analytics::PATHS` loops in `build_router`.
+/// `every_documented_path_is_registered_when_all_surfaces_are_enabled`
+/// catches a removal or rename in any of those sets but **not** an addition, so
 /// [`INDIRECT_PATH_SOURCES`] scans those definitions to close that direction.
 #[test]
 fn every_registered_literal_path_is_documented() {

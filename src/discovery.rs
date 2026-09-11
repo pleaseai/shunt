@@ -138,7 +138,7 @@ fn authentication_error(state: &AppState, headers: &HeaderMap) -> Option<Respons
         && gateway_identity.is_none()
     {
         tracing::warn!(
-            "inbound auth failed for GET /v1/models: missing or invalid client credential"
+            "inbound auth failed for model discovery: missing or invalid client credential"
         );
         let message = match (&state.inbound_auth, &state.gateway_auth) {
             (Some(auth), Some(_)) => format!(
