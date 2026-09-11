@@ -74,17 +74,23 @@ const BASE_PATHS: [(&str, &str); 7] = [
     ("/v1/messages/count_tokens", "POST"),
 ];
 
-/// 17 paths / 19 method+path pairs — the count `docs/admin-ui-delivery.md`
+/// 18 paths / 20 method+path pairs — the count `docs/admin-ui-delivery.md`
 /// records in its "Current surface" table. Counting the `allow` column here
-/// (ignoring the `HEAD` axum adds to every `GET`) is what reproduces the 19.
+/// (ignoring the `HEAD` axum adds to every `GET`) is what reproduces the 20.
 ///
-/// Only the three server-rendered entry points keep their `/admin` spelling; the
-/// JSON reads and every mutation answer under `/admin/api` after this change. The
+/// Only the three server-rendered entry points keep their `/admin` spelling —
+/// the mount root in both of its spellings, the login page, and the OIDC
+/// callback; the JSON reads and every mutation answer under `/admin/api`. The
 /// method sets are unchanged by the move — the same handlers are registered at
 /// new paths — and `every_registered_method_set_matches_the_inventory` proves it
 /// against the live router rather than taking it on trust.
-const ADMIN_PATHS: [(&str, &str); 17] = [
+const ADMIN_PATHS: [(&str, &str); 18] = [
     ("/admin", "GET,HEAD"),
+    // The same handler under the spelling a browser or proxy produces by
+    // appending a slash. A `{*path}` segment cannot match the empty string, so
+    // without its own registration `/admin/` falls through every route in this
+    // table and in `UI_LITERAL_PATHS` (#527).
+    ("/admin/", "GET,HEAD"),
     ("/admin/login", "GET,HEAD,POST"),
     ("/admin/api/oidc/start", "POST"),
     ("/admin/oidc/callback", "GET,HEAD"),
@@ -610,34 +616,41 @@ async fn the_server_rendered_login_flow_stays_outside_the_api_namespace() {
 /// Asserting the body names the feature is therefore the point of the test; the
 /// status alone is what both spellings share.
 ///
+/// Both spellings of the mount root are asserted, because they are two separate
+/// registrations answering one handler: `/admin/` would otherwise be free to
+/// regress to axum's empty `404` while `/admin` kept its sentence (#527).
+///
 /// The sibling assertion for the feature-on build is
-/// `admin_ui::the_mount_root_serves_the_spa_shell`.
+/// `admin_ui::the_mount_root_serves_the_spa_shell` and its trailing-slash twin.
 #[cfg(not(feature = "ui"))]
 #[tokio::test]
 async fn the_mount_root_without_the_ui_feature_explains_the_missing_bundle() {
     let (config, _env) = all_surfaces_config("no-ui-root");
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
-    let response = router
-        .oneshot(
-            Request::builder()
-                .uri("/admin")
-                .body(Body::empty())
-                .expect("request builds"),
-        )
-        .await
-        .expect("router answers");
+    for path in ["/admin", "/admin/"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router answers");
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body reads");
-    let body = String::from_utf8(body.to_vec()).expect("the error body is UTF-8");
-    assert!(
-        body.contains("--features ui"),
-        "the 404 must name the feature that would provide a dashboard, so it is \
-         distinguishable from an unconfigured admin surface; it reads {body:?}"
-    );
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let body = String::from_utf8(body.to_vec()).expect("the error body is UTF-8");
+        assert!(
+            body.contains("--features ui"),
+            "{path}: the 404 must name the feature that would provide a dashboard, so it is \
+             distinguishable from an unconfigured admin surface; it reads {body:?}"
+        );
+    }
 }
 
 /// `/` is a liveness probe target as well as a landing page, so any UI work
@@ -722,14 +735,14 @@ fn the_source_scan_finds_every_literal_registration() {
         .iter()
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
-    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 17 admin plus
+    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 18 admin plus
     // the 5 UI routes, 7 gateway (its 3 OTLP paths come from `Signal::path()`),
     // 2 spend. The UI five are counted unconditionally: this scan reads source
     // text, and `#[cfg(feature = "ui")]` does not remove the `.route("…"`
     // literals from it.
     assert_eq!(
-        found, 40,
-        "the literal-path scan found {found} registrations, not 40; either a route was added or \
+        found, 41,
+        "the literal-path scan found {found} registrations, not 41; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }

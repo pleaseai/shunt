@@ -20,7 +20,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/v1/metrics` | 관리형 Claude Code 클라이언트의 인바운드 OTLP/HTTP 메트릭 — opt-in한 게이트웨이 텔레메트리 목적지로 verbatim relay |
 | `POST` | `/v1/logs` | 인바운드 OTLP/HTTP log record — `logs = true`인 목적지에만 relay |
 | `POST` | `/v1/traces` | 인바운드 OTLP/HTTP span — `traces = true`인 목적지에만 relay |
-| `GET` | `/admin` | 관리자 대시보드 — 번들의 나머지와 마찬가지로 인증 없이 제공되는 SPA 셸입니다. `GET /admin/api/session`이 `401`을 반환하면 번들 자체가 `/admin/login`으로 이동시킵니다. `--features ui` 없이 빌드한 바이너리에서는 이 경로가 해당 피처를 안내하는 본문과 함께 `404`를 반환합니다 |
+| `GET` | `/admin`, `/admin/` | 관리자 대시보드 — 번들의 나머지와 마찬가지로 인증 없이 제공되는 SPA 셸입니다. `GET /admin/api/session`이 `401`을 반환하면 번들 자체가 `/admin/login`으로 이동시킵니다. 와일드카드 세그먼트는 빈 문자열에 매칭되지 않아 `/admin/`이 어떤 라우트에도 걸리지 않으므로, 마운트 루트는 두 표기를 모두 등록합니다. `--features ui` 없이 빌드한 바이너리에서는 두 경로 모두 해당 피처를 안내하는 본문과 함께 `404`를 반환합니다 |
 | `GET`, `POST` | `/admin/login` | 관리자 토큰 로그인 폼과 브라우저 세션 생성 |
 | `POST` | `/admin/api/logout` | 브라우저 세션 삭제 |
 | `GET` | `/admin/api/session` | 관리자 SPA가 렌더링 전에 필요한 세션별 값 두 가지: 세션의 `csrf` 토큰과 `expiry_buffer_ms`(`claude::auth::EXPIRY_BUFFER`의 밀리초 값으로, setup token이 사용 불가로 바뀌는 경계). 헤더 자격 증명 호출자는 CSRF 면제 대상이라 빈 `csrf`를 받는다. 이 표면에는 CORS 레이어가 없어 교차 출처 페이지가 요청은 보낼 수 있어도 응답은 읽지 못하므로, `GET`으로 토큰을 반환해도 안전하다 |
@@ -45,7 +45,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/codex/analytics-events/events` | Codex CLI 분석 sink — 루트형 `chatgpt_base_url` 형식 |
 | `GET` | `/usage` | 클라이언트용 정제된 풀 사용량 — 공유 계정 풀의 창별 잔여 여유와 리셋, 그리고 풀링되는 프로바이더별 동일 집계를 반환하며 계정 신원이나 용량은 반환하지 않음 |
 
-`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로, `POST /admin/login`에서는 `401`로 거부됩니다. 다만 SPA 셸과 번들 파일은 예외로, `GET /admin`, `GET /admin/{*path}`, `GET /admin/assets/{*path}`는 관리자 인증 없이 제공됩니다. 이들은 운영자 데이터를 담지 않고, SPA가 읽는 값은 모두 요청마다 인증하는 `/admin/api/*` 뒤에 있으므로 안전합니다. 와일드카드 라우트 둘은 `[server.admin]`이 구성되고 `--features ui`로 빌드한 바이너리에서만 존재합니다.
+`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로, `POST /admin/login`에서는 `401`로 거부됩니다. 다만 SPA 셸과 번들 파일은 예외로, `GET /admin`(두 표기 모두), `GET /admin/{*path}`, `GET /admin/assets/{*path}`는 관리자 인증 없이 제공됩니다. 이들은 운영자 데이터를 담지 않고, SPA가 읽는 값은 모두 요청마다 인증하는 `/admin/api/*` 뒤에 있으므로 안전합니다. 와일드카드 라우트 둘은 `[server.admin]`이 구성되고 `--features ui`로 빌드한 바이너리에서만 존재합니다.
 
 ### 관리자 SPA 번들(`--features ui`)
 
@@ -63,7 +63,9 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
   오류 처리가 깨집니다.
 - 마운트 밖의 경로는 영향을 받지 않고 그대로 `404`입니다.
 
-`GET /admin`도 셸입니다. 양쪽 빌드 모두에 등록되어 있으면서 응답이 피처에 따라 달라지는 유일한 관리자 경로로, 피처가 켜져 있으면 셸을, 꺼져 있으면 본문에 `--features ui`를 명시한 `404`를 반환합니다. 어느 쪽이든 등록해 두는 이유는 그 `404`가 해당 안내 문장을 담게 하기 위해서입니다 — 라우트를 아예 빼면 axum이 본문 없는 `404`를 돌려주고, 운영자는 그것을 `[server.admin]` 미설정과 구분할 수 없습니다.
+`GET /admin`도 셸이고, `GET /admin/`도 마찬가지입니다. 와일드카드 세그먼트는 빈 문자열에 매칭되지 않아 `/admin/`은 정확 일치 라우트에도 폴백에도 걸리지 않고 대시보드 자신의 루트에서 맨 `404`를 반환하게 되므로, 마운트 루트는 두 표기로 각각 등록합니다.
+
+이 둘은 양쪽 빌드 모두에 등록되어 있으면서 응답이 피처에 따라 달라지는 관리자 경로로, 피처가 켜져 있으면 셸을, 꺼져 있으면 본문에 `--features ui`를 명시한 `404`를 반환합니다. 어느 쪽이든 등록해 두는 이유는 그 `404`가 해당 안내 문장을 담게 하기 위해서입니다 — 라우트를 아예 빼면 axum이 본문 없는 `404`를 돌려주고, 운영자는 그것을 `[server.admin]` 미설정과 구분할 수 없습니다.
 
 ### 관리자 경로 마이그레이션
 

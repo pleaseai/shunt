@@ -20,7 +20,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/v1/metrics` | 来自托管 Claude Code 客户端的入站 OTLP/HTTP 指标 —— verbatim 中继到 opt-in 的网关遥测目标 |
 | `POST` | `/v1/logs` | 入站 OTLP/HTTP log record —— 只中继到 `logs = true` 的目标 |
 | `POST` | `/v1/traces` | 入站 OTLP/HTTP span —— 只中继到 `traces = true` 的目标 |
-| `GET` | `/admin` | 管理仪表盘 —— 与前端包的其余部分一样,无需认证即可获取的 SPA 外壳。当 `GET /admin/api/session` 返回 `401` 时,由前端包自身跳转到 `/admin/login`。在未启用 `--features ui` 构建的二进制中,该路径返回 `404`,响应体会点明该特性 |
+| `GET` | `/admin`、`/admin/` | 管理仪表盘 —— 与前端包的其余部分一样,无需认证即可获取的 SPA 外壳。当 `GET /admin/api/session` 返回 `401` 时,由前端包自身跳转到 `/admin/login`。由于通配符段无法匹配空字符串,`/admin/` 不会命中任何路由,因此挂载点根路径的两种写法都做了注册。在未启用 `--features ui` 构建的二进制中,两个路径都返回 `404`,响应体会点明该特性 |
 | `GET`, `POST` | `/admin/login` | 管理员 token 登录表单与浏览器会话创建 |
 | `POST` | `/admin/api/logout` | 清除浏览器会话 |
 | `GET` | `/admin/api/session` | 管理 SPA 渲染前所需的两个会话级值：会话的 `csrf` 令牌与 `expiry_buffer_ms`（`claude::auth::EXPIRY_BUFFER` 的毫秒值，即 setup token 失效的边界）。使用请求头凭据的调用方免除 CSRF，因此收到空的 `csrf`。该表面没有 CORS 层，跨源页面能发出请求却读不到响应，所以通过 `GET` 返回令牌是安全的 |
@@ -45,7 +45,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/codex/analytics-events/events` | Codex CLI 分析 sink —— 根路径式 `chatgpt_base_url` 形式 |
 | `GET` | `/usage` | 面向客户端的净化池用量 —— 返回共享账户池按窗口的剩余余量和重置时间,以及每个参与池化的提供方的同样聚合,绝不返回账户身份或容量 |
 
-`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作上会被 `403` 拒绝,在 `POST /admin/login` 上会被 `401` 拒绝。但 SPA 外壳与前端包文件是例外:`GET /admin`、`GET /admin/{*path}` 与 `GET /admin/assets/{*path}` 无需管理员认证即可获取。这样是安全的,因为它们不包含任何运维数据,而 SPA 读取的一切都在 `/admin/api/*` 之后,后者对每个请求都做认证;其中两个通配符路由同样仅在配置了 `[server.admin]` 且二进制使用 `--features ui` 构建时才存在。
+`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作上会被 `403` 拒绝,在 `POST /admin/login` 上会被 `401` 拒绝。但 SPA 外壳与前端包文件是例外:`GET /admin`(两种写法)、`GET /admin/{*path}` 与 `GET /admin/assets/{*path}` 无需管理员认证即可获取。这样是安全的,因为它们不包含任何运维数据,而 SPA 读取的一切都在 `/admin/api/*` 之后,后者对每个请求都做认证;其中两个通配符路由同样仅在配置了 `[server.admin]` 且二进制使用 `--features ui` 构建时才存在。
 
 ### 管理 SPA 包(`--features ui`)
 
@@ -62,7 +62,9 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
   JSON 而不是 UI,用 HTML 作答会破坏客户端的错误处理;
 - 挂载点之外的路径不受影响,仍然返回 `404`。
 
-`GET /admin` 同样是外壳。它是唯一在两种构建中都注册、但响应取决于该特性的管理路径:启用时返回外壳,未启用时返回响应体中点明 `--features ui` 的 `404`。两种构建都保留注册,是为了让那个 `404` 带上这句说明 —— 若直接不注册,得到的是 axum 没有响应体的 `404`,运维人员无法将其与未配置 `[server.admin]` 区分开。
+`GET /admin` 同样是外壳,`GET /admin/` 也是。由于通配符段无法匹配空字符串,`/admin/` 既不会命中精确路由,也不会命中回退,只会在仪表盘自己的根路径上返回一个没有响应体的 `404`,因此挂载点根路径的两种写法各自注册。
+
+这两者是在两种构建中都注册、但响应取决于该特性的管理路径:启用时返回外壳,未启用时返回响应体中点明 `--features ui` 的 `404`。两种构建都保留注册,是为了让那个 `404` 带上这句说明 —— 若直接不注册,得到的是 axum 没有响应体的 `404`,运维人员无法将其与未配置 `[server.admin]` 区分开。
 
 ### 管理路径迁移
 

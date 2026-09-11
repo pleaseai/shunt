@@ -20,7 +20,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/v1/metrics` | Inbound OTLP/HTTP metrics from managed Claude Code clients — relayed verbatim to opted-in gateway telemetry destinations |
 | `POST` | `/v1/logs` | Inbound OTLP/HTTP log records — relayed only to destinations with `logs = true` |
 | `POST` | `/v1/traces` | Inbound OTLP/HTTP spans — relayed only to destinations with `traces = true` |
-| `GET` | `/admin` | Admin dashboard — the SPA shell, served unauthenticated like the rest of the bundle; the bundle itself redirects to `/admin/login` after `GET /admin/api/session` answers `401`. In a binary built without `--features ui` this path answers `404` with a body naming the feature |
+| `GET` | `/admin`, `/admin/` | Admin dashboard — the SPA shell, served unauthenticated like the rest of the bundle; the bundle itself redirects to `/admin/login` after `GET /admin/api/session` answers `401`. The mount root is registered under both spellings, because a wildcard segment cannot match the empty string and `/admin/` would otherwise match no route at all. In a binary built without `--features ui` both answer `404` with a body naming the feature |
 | `GET`, `POST` | `/admin/login` | Admin-token login form, optional OIDC affordance, and browser-session creation |
 | `POST` | `/admin/api/oidc/start` | Start the optional same-origin admin OIDC/PKCE login |
 | `GET` | `/admin/oidc/callback` | Complete OIDC login, enforce the current allowlist, and create the browser session |
@@ -74,7 +74,7 @@ The `POST /v1/{metrics,logs,traces}` telemetry-ingest routes exist only when [`[
 
 The spend-limit routes exist only when [`[server.spend]`](/reference/configuration/#serverspend-optional) was configured at boot — independently of `[server.gateway]`, since they authenticate with the [`[server.admin]`](/reference/configuration/#serveradmin-optional) credential. Send that credential in the configured admin header (`x-shunt-admin-token` by default) or in `x-api-key`; both slots are accepted. A write credential (a `write_keys` entry, or a `tokens_env`/`tokens_file` pair) can use every operation, while a `read_keys` credential can use GET only and receives `403` on mutations. `POST` accepts `user` and `organization` scopes, a `daily`/`weekly`/`monthly` period, a `user_id` of 1–256 bytes for user scopes, and an `amount` that is either a 1–19 digit whole-number string of USD cents or `null`. It upserts by `(scope, period)`. List pagination accepts `limit` (1–1000, default 20), `after_id`, `before_id`, and `scope_type`; the two cursors are mutually exclusive. Every response includes `request-id`, and errors use the Anthropic error shape. Caps and mutation audit records persist together in the configured versioned JSON state file, each mutation attributed to `admin-key:<id>` or `admin-token:<name>` — when both slots carry a different credential of the same tier, the configured header is the attributed one. Stage 1 does not expose `/effective` or `/audit` and does not enforce caps on inference requests.
 
-The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration/#serveradmin-optional) is configured; without that table, none of them are registered. They accept the admin credential in the configured header or `x-api-key`, and a `read_keys` credential passes every GET below while being refused with `403` on every mutation and with `401` on `POST /admin/login`. The SPA shell and its bundle files are the exception: `GET /admin`, `GET /admin/{*path}`, and `GET /admin/assets/{*path}` are served without admin authentication. That is safe because they carry no operator data — everything the SPA reads sits behind `/admin/api/*`, which authenticates every request — and the two wildcard routes still exist only when `[server.admin]` is configured and the binary was built with `--features ui`. `GET /admin/api/observed` auto-discovers supported Claude Code, Codex CLI, Gemini CLI, Kimi Code, Grok CLI, and Cursor.app credentials on the gateway host. It never refreshes or writes those sources. Claude usage is cached for 60 seconds; Codex usage is response-derived and remains unavailable until traffic through this shunt returns `x-codex-*` headers; the other providers use their first-party read-only quota surfaces. Managed account CRUD and `/admin/api/pool` remain the separate shunt-owned credential lane.
+The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration/#serveradmin-optional) is configured; without that table, none of them are registered. They accept the admin credential in the configured header or `x-api-key`, and a `read_keys` credential passes every GET below while being refused with `403` on every mutation and with `401` on `POST /admin/login`. The SPA shell and its bundle files are the exception: `GET /admin` (both spellings), `GET /admin/{*path}`, and `GET /admin/assets/{*path}` are served without admin authentication. That is safe because they carry no operator data — everything the SPA reads sits behind `/admin/api/*`, which authenticates every request — and the two wildcard routes still exist only when `[server.admin]` is configured and the binary was built with `--features ui`. `GET /admin/api/observed` auto-discovers supported Claude Code, Codex CLI, Gemini CLI, Kimi Code, Grok CLI, and Cursor.app credentials on the gateway host. It never refreshes or writes those sources. Claude usage is cached for 60 seconds; Codex usage is response-derived and remains unavailable until traffic through this shunt returns `x-codex-*` headers; the other providers use their first-party read-only quota surfaces. Managed account CRUD and `/admin/api/pool` remain the separate shunt-owned credential lane.
 
 ### Admin SPA bundle (`--features ui`)
 
@@ -93,12 +93,16 @@ The fallback is confined to the `/admin` mount:
   a client's error handling;
 - an unmatched path outside the mount is unaffected and still returns `404`.
 
-`GET /admin` is the shell too. It is the one admin path registered in both
-builds whose answer depends on the feature — the shell with it, and without it a
-`404` whose body names `--features ui`. It stays registered either way so that
-`404` carries that sentence instead of being axum's empty-bodied `404` for an
-unregistered path, which an operator cannot tell apart from an unconfigured
-`[server.admin]`.
+`GET /admin` is the shell too, and so is `GET /admin/` — the mount root is
+registered under both spellings, because a wildcard segment cannot match the
+empty string, so `/admin/` matches neither the exact route nor the fallback and
+would answer a bare `404` on the dashboard's own root.
+
+Those two are the admin paths registered in both builds whose answer depends on
+the feature — the shell with it, and without it a `404` whose body names
+`--features ui`. They stay registered either way so that `404` carries that
+sentence instead of being axum's empty-bodied `404` for an unregistered path,
+which an operator cannot tell apart from an unconfigured `[server.admin]`.
 
 ### Admin path migration
 
