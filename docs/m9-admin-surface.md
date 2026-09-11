@@ -790,12 +790,20 @@ and because a completion bumps the epoch itself, that click also strands the
 start now in flight, whose response arrives superseded and is dropped. `start`
 therefore clears the authorization state before it bumps the epoch, so the link
 on screen always belongs to the login the operator last asked for (issue #513).
-While the step is open the login-method radios are disabled as well: the mode is
-fixed in the server's pending entry at start, so a live radio would let the form
-read one method while the pending login is the other. A `disabled` attribute
-states no reason, so the group carries a `role="status"` note naming the lock —
-the form's own live region is empty at exactly that moment, because `start`
-clears it and a successful start never sets it.
+The login-method radios are disabled for the same span: the mode is fixed in the
+server's pending entry when the request is issued, so a live radio would let the
+form read one method while the pending login is the other. The lock is keyed on
+`starting || authorizeUrl`, not on `authorizeUrl` alone — `start` nulls
+`authorizeUrl` before it sends, so the narrower key would reopen the radios for
+exactly the length of the request that had already captured the mode. A
+superseded start does not release the flag; `prime` and each newer start set it
+as they take over, so it always belongs to whichever call owns the current epoch.
+A `disabled` attribute states no reason, so the group carries a `role="status"`
+note naming the lock — the form's own live region is empty at exactly that
+moment, because `start` clears it and a successful start never sets it. Pressing
+Start again does **not** release the lock (the replacement start re-arms it
+before any render), so the note names the two things that do: completing the
+flow, or reloading the page.
 
 The epoch orders *starts*, where the later click is the live one, and must not
 be extended to order two completions of the same flow: a completion consumes the

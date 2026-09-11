@@ -20,6 +20,20 @@ const COMPLETE_TIMEOUT_MS = 120_000;
 const UNKNOWN_COMPLETION =
   'No answer from the server — the account may still have been stored; recheck the table before retrying';
 
+/**
+ * Said when the start request never produced an answer at all. Deliberately not
+ * `copy.startFailure`, which reports an answer the server *gave*: that one means
+ * the login was refused, this one that the request may never have arrived. The
+ * same line is already drawn on the completion path, and for the same reason —
+ * telling an operator their login was refused, when nothing is known to have
+ * reached the server, sends them to fix a request that was never read.
+ *
+ * Shared by both forms rather than added to `copy`, matching `UNKNOWN_COMPLETION`:
+ * neither says anything a caller could usefully word differently, because
+ * neither knows what happened.
+ */
+const START_UNANSWERED = 'No answer from the server — no authorization step opened, so start again';
+
 export interface FlowMessage {
   text: string;
   ok: boolean;
@@ -148,7 +162,7 @@ export function useProvisioningFlow({
       } catch {
         if (issued === epoch.current) {
           setStarting(false);
-          setMessage({ text: 'Request failed', ok: false });
+          setMessage({ text: START_UNANSWERED, ok: false });
         }
       }
     },

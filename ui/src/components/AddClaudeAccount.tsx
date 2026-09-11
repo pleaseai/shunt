@@ -121,7 +121,7 @@ export const AddClaudeAccount = forwardRef<
           {locked ? (
             <p id="modelock" role="status" className="muted">
               Locked while this login is in progress — the server's pending entry is fixed to the
-              method selected at Start. Start another login to change it.
+              method selected at Start. Completing it, or reloading the page, releases the choice.
             </p>
           ) : null}
         </fieldset>

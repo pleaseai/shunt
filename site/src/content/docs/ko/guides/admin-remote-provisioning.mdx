@@ -47,7 +47,7 @@ shunt run
    name = "backup"
    ```
 
-시작된 플로우는 `pending_ttl_secs`(기본 10분) 동안 유효해서 운영자가 인가 페이지를 열고 결과를 붙여 넣을 시간을 확보할 수 있습니다. 서버는 선택한 mode를 pending attempt와 함께 기록하므로 completion 요청에서 token 종류를 바꿀 수 없습니다. 인가 단계가 열려 있는 동안에는 대시보드가 로그인 방식 라디오 버튼을 비활성화하고 그 이유를 함께 보여 줍니다. 그 pending attempt의 mode는 이미 고정돼 있기 때문이며, 새 로그인을 시작하면 다시 선택할 수 있습니다. Full OAuth는 access token과 refresh token을 저장하며 credential kind는 `imported`로 표시됩니다. setup-token mode는 kind가 `setup_token`인 정적 credential을 저장합니다. 완료 응답은 계정이 저장됐는지, 그리고 현재 provider 구성에서 그 계정이 실제로 사용되는지(live)를 알려 줍니다.
+시작된 플로우는 `pending_ttl_secs`(기본 10분) 동안 유효해서 운영자가 인가 페이지를 열고 결과를 붙여 넣을 시간을 확보할 수 있습니다. 서버는 선택한 mode를 pending attempt와 함께 기록하므로 completion 요청에서 token 종류를 바꿀 수 없습니다. **Start**를 누른 순간부터 플로우가 끝날 때까지 대시보드는 로그인 방식 라디오 버튼을 비활성화하고 그 이유를 함께 보여 줍니다. pending attempt의 mode가 요청을 보내는 시점에 고정되기 때문입니다. **Start**를 다시 눌러도 잠금은 풀리지 않습니다. 플로우를 완료하거나 페이지를 새로고침해야 다시 선택할 수 있습니다. Full OAuth는 access token과 refresh token을 저장하며 credential kind는 `imported`로 표시됩니다. setup-token mode는 kind가 `setup_token`인 정적 credential을 저장합니다. 완료 응답은 계정이 저장됐는지, 그리고 현재 provider 구성에서 그 계정이 실제로 사용되는지(live)를 알려 줍니다.
 
 계정 스토어 변경은 요청마다 감지되므로, 스캔 모드 프로바이더는 계정이 추가되거나 제거된 뒤 재시작할 필요가 없습니다.
 
