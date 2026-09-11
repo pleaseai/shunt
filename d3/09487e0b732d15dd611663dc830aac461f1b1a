@@ -1,0 +1,20 @@
+.claude/agent-memory/review-review-code-reviewer/admin-spa-react-port-pr508.md
+  s_e9fd5f53eebc34::t_f30fdbeaf26585 69-70
+  s_e9fd5f53eebc34::t_a5ee2f0b7b1d04 71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d309487e0b732d15dd611663dc830aac461f1b1a",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
