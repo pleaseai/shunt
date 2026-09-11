@@ -258,6 +258,12 @@ pub(crate) async fn forward_turn(
     };
     let default_provider = codex_endpoint.provider.clone();
     let max_request_bytes = state.config.server.limits.max_request_bytes;
+    if body.len() > max_request_bytes {
+        return Err(ForwardError {
+            message: "request body exceeds the configured limit".to_string(),
+            response: Box::new(crate::http_tuning::request_too_large(true).await),
+        });
+    }
 
     let (matched, model_name, decoded) = if let Some(m) = model {
         let matched = codex_endpoint.route_for(&m).cloned();

@@ -221,6 +221,7 @@ pub fn terminal_status_from_type(type_str: &str) -> Option<TerminalStatus> {
         "response.completed" => Some(TerminalStatus::Completed),
         "response.failed" => Some(TerminalStatus::Failed),
         "response.incomplete" => Some(TerminalStatus::Incomplete),
+        "error" => Some(TerminalStatus::Failed),
         _ => None,
     }
 }

@@ -8,7 +8,7 @@ use axum::{
     body::Bytes,
     extract::{
         ws::{rejection::WebSocketUpgradeRejection, Message, WebSocket, WebSocketUpgrade},
-        State,
+        Extension, State,
     },
     http::{header, HeaderMap, HeaderName},
     response::{IntoResponse, Response},
@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     codex_endpoint::{authenticate_inbound, extract_session_id, forward_turn, pool_sticky_key},
+    concurrency::WebSocketPermit,
     error::ShuntError,
     server::AppState,
 };
@@ -45,6 +46,7 @@ struct TurnContext {
 /// Enforces client token authentication before returning HTTP 101 Switching Protocols.
 pub async fn get(
     State(state): State<AppState>,
+    ws_permit: Option<Extension<WebSocketPermit>>,
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
@@ -77,7 +79,11 @@ pub async fn get(
         .as_ref()
         .map(|auth| auth.header().clone());
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, pool_key, headers, auth_header))
+    ws.on_upgrade(move |socket| async move {
+        let _ws_permit = ws_permit
+            .and_then(|Extension(permit)| permit.lock().ok().and_then(|mut permit| permit.take()));
+        handle_socket(socket, state, pool_key, headers, auth_header).await;
+    })
 }
 
 async fn handle_socket(
@@ -142,13 +148,18 @@ async fn handle_socket(
 
                         if !generate {
                             let frames = build_warmup_completion_frames(model.as_deref());
+                            let mut send_failed = false;
                             for f in frames {
                                 if turn_gen == current_generation.load(Ordering::Relaxed) {
                                     if let Err(err) = ws_tx.send(Message::Text(f.into())).await {
                                         tracing::debug!(error = %err, "failed to send warmup frame");
+                                        send_failed = true;
                                         break;
                                     }
                                 }
+                            }
+                            if send_failed {
+                                break;
                             }
                             continue;
                         }
@@ -171,6 +182,18 @@ async fn handle_socket(
                         turn_headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
                         turn_headers.remove(header::CONTENT_LENGTH);
                         turn_headers.remove(header::CONTENT_ENCODING);
+                        turn_headers.remove(header::UPGRADE);
+                        turn_headers.remove(header::CONNECTION);
+                        turn_headers.remove("sec-websocket-key");
+                        turn_headers.remove("sec-websocket-version");
+                        turn_headers.remove("sec-websocket-extensions");
+                        turn_headers.remove("sec-websocket-protocol");
+                        if turn_headers.contains_key("openai-beta") {
+                            turn_headers.insert(
+                                "openai-beta",
+                                "responses=experimental".parse().unwrap(),
+                            );
+                        }
 
                         let state_clone = state.clone();
                         let pool_key_clone = pool_key.clone();
@@ -431,32 +454,60 @@ async fn run_turn(context: TurnContext) {
     }
 
     if !terminal_seen && is_current() {
-        if let Ok(Some(tail)) = framer.finish() {
-            let s = match std::str::from_utf8(&tail) {
-                Ok(s) => s,
-                Err(_) => {
-                    let err_frame = build_ws_error_frame(
-                        502,
-                        "protocol_error",
-                        "websocket_protocol_error",
-                        "Invalid UTF-8 in upstream SSE frame",
-                        None,
-                    );
-                    let _ = out_tx
-                        .send((turn_gen, Message::Text(err_frame.into())))
-                        .await;
-                    return;
-                }
-            };
-            if let Some(payload) = parse_sse_block(s) {
-                if payload != "[DONE]" {
-                    if let Some(p_type) = parse_payload_type(&payload) {
-                        let _ = out_tx.send((turn_gen, Message::Text(payload.into()))).await;
-                        if terminal_status_from_type(&p_type).is_some() {
-                            terminal_seen = true;
+        match framer.finish() {
+            Ok(Some(tail)) => {
+                let s = match std::str::from_utf8(&tail) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        let err_frame = build_ws_error_frame(
+                            502,
+                            "protocol_error",
+                            "websocket_protocol_error",
+                            "Invalid UTF-8 in upstream SSE frame",
+                            None,
+                        );
+                        let _ = out_tx
+                            .send((turn_gen, Message::Text(err_frame.into())))
+                            .await;
+                        return;
+                    }
+                };
+                if let Some(payload) = parse_sse_block(s) {
+                    if payload != "[DONE]" {
+                        if let Some(p_type) = parse_payload_type(&payload) {
+                            let _ = out_tx.send((turn_gen, Message::Text(payload.into()))).await;
+                            if terminal_status_from_type(&p_type).is_some() {
+                                terminal_seen = true;
+                            }
+                        } else {
+                            let err_frame = build_ws_error_frame(
+                                502,
+                                "protocol_error",
+                                "websocket_protocol_error",
+                                "Invalid JSON payload in upstream SSE frame",
+                                None,
+                            );
+                            let _ = out_tx
+                                .send((turn_gen, Message::Text(err_frame.into())))
+                                .await;
+                            return;
                         }
                     }
                 }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let err_frame = build_ws_error_frame(
+                    502,
+                    "protocol_error",
+                    "websocket_protocol_error",
+                    &err.to_string(),
+                    None,
+                );
+                let _ = out_tx
+                    .send((turn_gen, Message::Text(err_frame.into())))
+                    .await;
+                return;
             }
         }
     }
