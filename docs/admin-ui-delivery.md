@@ -31,11 +31,17 @@ elsewhere, and three of them are load-bearing:
   routes.
 - **Namespace.** `/admin` already mixes HTML pages and JSON API on the same
   prefix. An SPA that wants `/admin/pool` as a deep link collides with the
-  `GET /admin/pool` JSON endpoint that exists today.
-- **Assets.** The current UI is ~770 lines of HTML/CSS/JS inside Rust string
-  literals (`src/admin/html.rs`, `src/admin/script.rs`). There is no build step,
-  no type checking, and no component model. `src/AGENTS.md` asks for files under
-  500 lines; two of these are already near that on presentation code alone.
+  `GET /admin/pool` JSON endpoint M9 shipped on that prefix. Decision 3 resolves
+  it by moving the JSON to `/admin/api/*`; the paths written here are
+  deliberately the **pre-split** ones, because the collision between them is the
+  motivation — rewriting them to `/admin/api/*` would describe a state in which
+  there is nothing to decide.
+- **Assets.** The current UI is HTML/CSS/JS inside Rust string literals
+  (`src/admin/html.rs`, `src/admin/script.rs`) — ~770 lines when this record was
+  written on 2026-08-15, and 1,525 by 2026-09-10. There is no build step, no
+  type checking, and no component model. `src/AGENTS.md` asks for files under
+  500 lines; both files were near that then and both are past it now (879 and
+  646), on presentation code alone.
 
 ## Current surface
 
@@ -48,18 +54,27 @@ baseline for any new route.
 | always | `GET` | `/health` — unauthenticated, exempt from the concurrency gate |
 | always | `GET` | `/protocol`, `/v1/models`, `/routes` |
 | always | `POST` | `/v1/messages`, `/v1/messages/count_tokens` |
-| `[server.admin]` | — | 15 paths under `/admin`, 17 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents all of them except `GET /admin/status` |
+| `[server.admin]` | — | 16 paths under `/admin`, 18 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which this change moved to `/admin/api/status` |
 | `[server.gateway]` | `GET` | `/.well-known/oauth-authorization-server`, `/device`, `/device/callback`, `/managed/settings` |
 | `[server.gateway]` | `POST` | `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize` |
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |
 | `[server.codex_endpoint]` | `POST` | `/backend-api/codex/responses`, `/responses`, `/v1/responses` |
 | `[server.codex_endpoint]` | `POST` | `/backend-api/codex/analytics-events/events`, `/codex/analytics-events/events` |
+| `[server.spend]` | `GET`, `POST` | `/v1/organizations/spend_limits` — the only shunt-owned routes inside the otherwise reserved `/v1/organizations/*` namespace ([below](#reserved-namespace--v1organizations)) |
+| `[server.spend]` | `GET`, `DELETE` | `/v1/organizations/spend_limits/{id}` |
 | `[server.usage]` | `GET` | `/usage` |
 | `[server.oauth_usage]` | `GET` | `/api/oauth/usage` |
+| `[server.admin]` + `--features ui` | `GET` | `/admin/assets/{*path}` and `/admin/{*path}` — the embedded SPA bundle and the shell fallback; plus `/admin/api/{*path}`, registered for **every** method so an unmatched JSON path answers `404` rather than the shell (Decision 3). Absent from a default build, which embeds no bundle |
 
 Two properties of this table matter downstream:
 
-- **The router has no wildcard or fallback route anywhere.** An unmatched path
+- **The router has no catch-all for otherwise-unmatched paths** outside the
+  `/admin` mount, which `--features ui` gives the three catch-alls above. Two
+  things that do exist are not that: `[server.spend]` attaches a
+  `MethodRouter::fallback` to each of its two paths
+  (`src/gateway/spend/mod.rs:20-32`), which shapes the response to a wrong
+  *method* on a path that matched — it never sees an unmatched path; and the
+  `/admin` catch-alls are scoped to their mount. An unmatched path
   therefore gets axum's built-in `404` with an **empty body** — not a
   `ShuntError` envelope, since nothing constructs one for a path that reached no
   handler. The status is the part clients depend on, and it is what makes an
@@ -87,7 +102,7 @@ here because a dashboard is the surface where an operator first notices it.
 | Pending login (`PendingStore`) | in-process, single-use, TTL-bound | Provisioning **breaks**: start on A, complete on B ⇒ expired/absent. |
 | Admin OIDC state (`OidcStateStore`, `src/admin/session.rs:265`) | in-process | Authorize on A, callback on B ⇒ state mismatch. |
 | Admin rate limiters | in-process, documented as process-global | Effective limit relaxes to N× the configured value. |
-| `AccountPool` quota/cooldown | memory + optional `[server.pool] state_path` | Per-instance view. `/admin/pool` reports one replica, not the fleet. |
+| `AccountPool` quota/cooldown | memory + optional `[server.pool] state_path` | Per-instance view. `/admin/api/pool` reports one replica, not the fleet. |
 | Gateway refresh tokens (`GatewayStores.refresh_tokens`) | memory + optional `[server.gateway] state_path` | Per-instance view. The **only** thing that `state_path` persists — `PersistedSessions` carries `refresh_tokens` and nothing else (`src/gateway/persist.rs:35-37`). |
 | Gateway device grants (`GatewayStores.device_grants`) | in-process, **no persistence path at all** | Device login **breaks**: `/oauth/device_authorization` on A, `/device` on B ⇒ unknown code. Survives no restart either. |
 | Gateway OIDC state (`GatewayStores.oidc_states`) | in-process, no persistence | A separate store from the admin one above; same split-brain failure on `/device/callback`. |
@@ -186,7 +201,7 @@ API over HTTP, holding an admin token, to render anything — a proxy in front o
 proxy, with a second copy of the auth surface to keep correct.
 
 The corollary, from the topology section: the dashboard renders **one process's**
-view. Under several instances `/admin/pool` describes that replica's pool, not
+view. Under several instances `/admin/api/pool` describes that replica's pool, not
 the fleet's. A fleet-wide dashboard is not a UI feature — it presupposes a shared
 state store that does not exist yet.
 
@@ -282,13 +297,13 @@ Any of them works — the load-bearing constraint is *one* call, fanned out.
 | :-- | :-- | :-- |
 | `/admin/*` | operator UI: HTML shell, SPA client routes, `/admin/assets/*` — minus the server-rendered pages that stay (`/admin/login`, `/admin/oidc/callback`), below | shunt |
 | `/admin/api/*` | shunt-specific JSON: pool, status, accounts, observed, provisioning | shunt |
-| `/v1/organizations/*` | **reserved** — see below | Anthropic |
+| `/v1/organizations/*` | **reserved**, minus the two spend-limit paths `[server.spend]` already serves — see below | Anthropic |
 
 ### Why the UI and the JSON API must split
 
 `GET /admin/pool`, `/admin/status`, `/admin/accounts`, and `/admin/observed`
-return JSON today. Those are exactly the paths an SPA wants as browsable deep
-links. Serving both meanings from one path requires content negotiation on
+returned JSON on the prefix the SPA wants for its own routes. Those are exactly
+the paths an SPA wants as browsable deep links. Serving both meanings from one path requires content negotiation on
 `Accept`, which breaks bookmarking and is fragile under any intermediary that
 rewrites headers.
 
@@ -311,9 +326,11 @@ looks at most. The clean break removes the collision instead of deferring it.
 the JSON `GET`s.** A `fallback` answers unmatched *paths*; a request whose path
 matches a route registered for other methods gets axum's `405 Method Not Allowed`
 instead, so a POST-only or DELETE-only path is just as unavailable to the SPA as
-a `GET` alias is. Reading `admin_router` (`src/admin/mod.rs:115-146`), these are
-the registered paths that move, and why each would have blocked a deep link had
-it stayed:
+a `GET` alias is. Reading `admin_router` (`src/admin/mod.rs:221-257`), these are
+the paths that moved, written as they were **before** the split because they are
+its inputs — rewriting this column to `/admin/api/*` would name the destinations
+and lose the inventory — and why each would have blocked a deep link had it
+stayed:
 
 | Path | Registered | Why it would have blocked a deep link |
 | :-- | :-- | :-- |
@@ -322,6 +339,7 @@ it stayed:
 | `/admin/accounts/claude/{name}`, `/admin/accounts/codex/{name}` | `DELETE` only | `405`, not the shell. An account **detail view** is the most natural deep link the UI will want, and both of its path shapes are taken. |
 | `/admin/accounts/claude` | `POST` only | `405` on the "add account" screen's natural URL. |
 | `/admin/accounts/claude/{name}/complete`, `/admin/accounts/codex/{name}/complete` | `POST` only | `405`. |
+| `/admin/accounts/claude/{name}/refresh` | `POST` only | `405`; Claude-only, as Codex has no refresh route. |
 | `/admin/oidc/start`, `/admin/logout` | `POST` only | `405`; unlikely SPA routes, listed for completeness. |
 
 `/admin` (`GET`) is the shell itself and `/admin/login` (`GET`+`POST`) and
@@ -366,11 +384,17 @@ retarget it by changing base URL alone. Its conventions — `type` on every obje
 `{type, error:{type,message}, request_id}` envelope, a `request-id` header on
 every response — are fixed by that contract.
 
-shunt does not implement this today, and this document does not put it in scope.
-Spend limits are out of scope for epic #186. The namespace is recorded here so
-that:
+shunt implements a **two-path subset** of this today, registered only when
+`[server.spend]` is set (`src/gateway/spend/mod.rs`): `GET`/`POST
+/v1/organizations/spend_limits` and `GET`/`DELETE
+/v1/organizations/spend_limits/{id}`. Those carry limit *policy* and its
+mutation audit — not spend counters. `/effective`, `/audit`, and the metering
+they presuppose are unimplemented, and the wider Admin API stays out of scope
+for epic #186. The namespace is recorded here so that:
 
-- No shunt-owned route ever claims `/v1/organizations/*`.
+- No shunt-owned route claims `/v1/organizations/*` **outside** that
+  spend-limit subset, and any extension of the subset follows the upstream
+  contract's shapes rather than inventing shunt's own.
 - The operator UI's own JSON stays at `/admin/api/*`, where shunt owns the shape,
   rather than being retrofitted into an Anthropic-shaped path later.
 
@@ -446,12 +470,16 @@ independent decision.
 
 ## Risks
 
-- **Duplicate-route panics are untested.** `axum::Router::merge` panics at boot
-  on a duplicate path+method — a real safety net for new UI routes, but it only
-  fires when both trees are registered. No test builds a router with
+- **Duplicate-route panics were untested; they are covered now.**
+  `axum::Router::merge` panics at boot on a duplicate path+method — a real safety
+  net for new UI routes, but it only fires when both trees are registered. Until
+  `tests/router_surface.rs` landed, no test built a router with
   `[server.admin]`, `[server.gateway]`, and `[server.codex_endpoint]` enabled
-  together, so a collision would surface on an operator's machine rather than in
-  CI. This is a gap today, independent of the UI work.
+  together, so a collision would have surfaced on an operator's machine rather
+  than in CI. `every_optional_surface_can_be_enabled_at_once` now builds that
+  router in CI, and the inventory tests beside it pin the method+path set it
+  registers. Recorded rather than deleted, because the hazard is why the test
+  exists and why it must keep every surface enabled.
 - **Breaking migration.** Removing the legacy `/admin/*` JSON and mutation paths
   breaks every scripted caller M9 documented. The path-migration table lives in
   `endpoints.md`, and the breaking change must be declared in a commit
@@ -493,8 +521,8 @@ The seven questions this document originally left open are now decided:
    surface is not configured it does not silently edit config: it offers to run
    `shunt dashboard setup` and proceeds only on confirmation.
 5. **Single-instance is a limitation, not a decision.** Scaling out stays on the
-   roadmap and is owned by [`storage.md`](storage.md); the `/v1/organizations/*`
-   reservation is accordingly a roadmap item, not a non-goal.
+   roadmap and is owned by [`storage.md`](storage.md); the reservation over the
+   rest of `/v1/organizations/*` is accordingly a roadmap item, not a non-goal.
 6. **No aliases — the admin JSON moves in one breaking change.** Every JSON
    endpoint and every mutation under `/admin/*` outside the server-rendered
    login flow (`/admin/login`, `/admin/oidc/callback`) moves to `/admin/api/*`
@@ -582,7 +610,7 @@ The seven questions this document originally left open are now decided:
   `shunt dashboard setup`.
 - [`m9-admin-surface.md`](m9-admin-surface.md) — its endpoint table becomes the
   pre-split record; add a pointer here rather than rewriting it. It is also
-  missing `GET /admin/status`, which `admin_router` has registered since the
+  missing `GET /admin/status`, which `admin_router` had registered since the
   route was added — an existing drift, worth a one-row fix independently of this
   design.
 - `docs/running.md` — the single-instance topology statement belongs in the

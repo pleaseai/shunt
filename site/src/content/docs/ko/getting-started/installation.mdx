@@ -66,6 +66,18 @@ cargo build --release   # -> target/release/shunt
 
 `cargo run -- <args>`로 소스 트리에서 바로 실행할 수도 있습니다.
 
+기본 빌드는 Node 툴체인이 필요 없고 관리자 대시보드 번들도 포함하지 않습니다.
+관리자 SPA를 내장한 바이너리를 만들려면 번들을 먼저 빌드한 뒤 `ui` 기능을 켭니다. 번들 빌드에는 Node.js 22.12 이상이 필요합니다:
+
+```bash
+cd ui && npm ci && npm run build && cd ..
+cargo build --release --features ui
+```
+
+위의 미리 빌드된 릴리스 바이너리는 이렇게 빌드되므로, 이 단계는 소스 빌드에만
+해당합니다. 이 기능이 무엇을 추가하는지는 [엔드포인트](/ko/reference/endpoints/)를
+참고하세요.
+
 ## Claude Code 연결을 위한 사전 요구 사항
 
 - **Claude Code** — 최신 버전이면 무엇이든 됩니다. [모델 디스커버리](/ko/guides/model-discovery/)를 원한다면 v2.1.129+가 필요합니다.

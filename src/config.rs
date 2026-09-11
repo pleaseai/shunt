@@ -1306,7 +1306,7 @@ fn default_codex_endpoint_provider() -> String {
 /// registers `GET /usage`, which returns a **sanitized, aggregated** view of the
 /// shared account pool's quota state (per-window remaining headroom and reset)
 /// for `[server.auth]` client-token holders. Unlike the admin dashboard
-/// (`GET /admin/pool`), it never exposes account identities, counts, priorities,
+/// (`GET /admin/api/pool`), it never exposes account identities, counts, priorities,
 /// disabled flags, or thresholds. Presence alone opts in; the table has no
 /// fields today. Requires `[server.auth]`. Absent ⇒ the route does not exist.
 /// See `docs/m12-client-usage-endpoint.md`.

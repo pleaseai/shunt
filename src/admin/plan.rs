@@ -1,4 +1,4 @@
-//! Per-account subscription plan resolution for `GET /admin/pool`.
+//! Per-account subscription plan resolution for `GET /admin/api/pool`.
 //!
 //! The dashboard's pool table shows raw quota utilization but not which
 //! subscription tier an account is on (Claude "max" vs "max 20x", ChatGPT
@@ -35,7 +35,7 @@
 //!      instead bounds repeat cost across an operator's page loads and any
 //!      direct API client that hits this endpoint. The backfill attempt
 //!      itself is time-boxed by [`BackfillBudgets`], so a stalled Claude
-//!      endpoint can never make `GET /admin/pool` hang; that bound covers
+//!      endpoint can never make `GET /admin/api/pool` hang; that bound covers
 //!      only this plan-resolution stage, not the account list itself, which
 //!      comes from [`crate::auth::shared::resolve_pool_accounts`]'s
 //!      unbounded credential-store scan.
@@ -131,7 +131,7 @@ fn parse_organization_type(organization_type: &str) -> Option<String> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BackfillBudgets {
     /// Upper bound on the whole backfill step across every provider handled
-    /// by one `/admin/pool` request — with one deliberate exception: since
+    /// by one `/admin/api/pool` request — with one deliberate exception: since
     /// [`file_derived_plans`] floors its own timeout at `min_slice` above
     /// whatever `deadline` has left, the true wall-clock upper bound is
     /// `total + (n - 1) * min_slice`, where `n` is the number of
@@ -373,7 +373,7 @@ struct FilePhase {
 /// timeout bounds how long the caller waits on the read, not the read
 /// itself. To keep a permanently stalled credential file (a hung FUSE or
 /// network mount) from accumulating one leaked blocking worker per
-/// `/admin/pool` request, the read runs under [`FILE_READ_LOCK`], and the
+/// `/admin/api/pool` request, the read runs under [`FILE_READ_LOCK`], and the
 /// permit is **moved into the blocking closure** rather than held by this
 /// future: it is released when the read actually finishes, not when this
 /// function stops waiting for it. A stalled read therefore holds the permit
@@ -809,7 +809,7 @@ pub fn reset_profile_cache() {
 }
 
 /// In-process single-flight for the Claude profile backfill step, mirroring
-/// [`crate::auth::claude::auth`]'s `REFRESH_LOCK`: concurrent `/admin/pool`
+/// [`crate::auth::claude::auth`]'s `REFRESH_LOCK`: concurrent `/admin/api/pool`
 /// requests must not each spend their own budget re-attempting the same
 /// stalled accounts, and a waiter that acquires the lock after another
 /// caller already finished should reuse what that caller cached rather than
@@ -1842,7 +1842,7 @@ mod tests {
 
         // One deadline, computed once (below, right after the mock server is
         // mounted and right before the first call) and reused for both calls
-        // -- reproducing how the `/admin/pool` handler in `src/admin/mod.rs`
+        // -- reproducing how the `/admin/api/pool` handler in `src/admin/mod.rs`
         // shares a single deadline across its per-provider loop.
         let dir = unique_test_dir("mmp-first");
         std::fs::create_dir_all(&dir).unwrap();
@@ -2468,7 +2468,7 @@ mod tests {
     }
 
     /// The complement: a read that completes must hand the permit back, or
-    /// the first `/admin/pool` request would wedge every later one.
+    /// the first `/admin/api/pool` request would wedge every later one.
     #[tokio::test]
     async fn read_permit_is_released_after_a_completed_read() {
         let dir = unique_test_dir("permit-release");

@@ -2070,7 +2070,7 @@ async fn terminal_invalid_grant_during_resolution_marks_the_account_as_needing_r
             .accounts
             .snapshot("anthropic", std::slice::from_ref(&dead), None, None)[0]
             .needs_relogin,
-        "the mark must reach the /admin/pool snapshot"
+        "the mark must reach the /admin/api/pool snapshot"
     );
 
     upstream.verify().await;

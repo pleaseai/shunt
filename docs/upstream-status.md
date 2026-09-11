@@ -62,7 +62,7 @@ roughly 200 characters before being stored.
 
 ## Admin surface
 
-`GET /admin/status` (admin-authenticated, same auth as `GET /admin/pool`)
+`GET /admin/api/status` (admin-authenticated, same auth as `GET /admin/api/pool`)
 returns each configured source's most recently observed indicator,
 description, incidents, and observed timestamp. Before a configured source's
 first poll completes, it appears as `unknown` with a `not polled yet` detail:

@@ -12,6 +12,10 @@
 //! or a `[[server.admin.write_keys]]`/`[[server.admin.read_keys]]` entry; the
 //! read tier passes every GET and is refused on every mutation, the login form
 //! included.
+//! Built with `--features ui`, the SPA shell and its bundle files are the one
+//! part of this surface served without any admin credential — they carry no
+//! operator data, and everything the SPA reads sits behind `/admin/api/*`,
+//! which authenticates normally (see [`ui`]).
 //! The provisioning flow reuses provider OAuth internals for Claude full/setup
 //! logins and refreshable ChatGPT/Codex logins; token values are never returned
 //! to the browser or logged. See `docs/m9-admin-surface.md`.
@@ -23,9 +27,13 @@ mod html;
 mod oidc;
 mod plan;
 mod script;
+#[cfg(feature = "ui")]
+mod ui;
 
 use std::{collections::HashSet, io, sync::Arc, time::Duration};
 
+#[cfg(feature = "ui")]
+use axum::routing::any;
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
     http::{header, HeaderMap, HeaderName, StatusCode},
@@ -49,6 +57,8 @@ use crate::{
 
 pub use plan::reset_profile_cache;
 pub use session::AdminStores;
+#[cfg(feature = "ui")]
+pub use ui::embedded_file_count;
 
 use session::{PendingAttempt, PendingKind};
 
@@ -218,42 +228,62 @@ fn keep_higher(
 }
 
 /// The admin route tree, merged into the main router only when admin is enabled.
+///
+/// With `--features ui` the tree also carries the three embedded-SPA routes (see
+/// [`ui`]). They are catch-alls, and matchit prefers a static or `{param}`
+/// segment over one, so every exact route above keeps answering; `/admin/api/`
+/// gets its own catch-all so an unmatched JSON path stays a `404` rather than
+/// becoming the HTML shell (`docs/admin-ui-delivery.md`, Decision 3).
 pub fn admin_router() -> Router<AppState> {
-    Router::new()
+    let router = Router::new()
         .route("/admin", get(dashboard))
         .route("/admin/login", get(login_page).post(login_submit))
-        .route("/admin/oidc/start", post(oidc::start))
+        .route("/admin/api/oidc/start", post(oidc::start))
         .route("/admin/oidc/callback", get(oidc::callback))
-        .route("/admin/logout", post(logout))
-        .route("/admin/accounts", get(list_accounts))
-        .route("/admin/observed", get(observed_accounts))
-        .route("/admin/pool", get(pool))
-        .route("/admin/status", get(status))
-        .route("/admin/accounts/claude", post(add_account))
+        .route("/admin/api/logout", post(logout))
+        .route("/admin/api/accounts", get(list_accounts))
+        .route("/admin/api/observed", get(observed_accounts))
+        .route("/admin/api/pool", get(pool))
+        .route("/admin/api/status", get(status))
+        .route("/admin/api/accounts/claude", post(add_account))
         .route(
-            "/admin/accounts/claude/{name}/complete",
+            "/admin/api/accounts/claude/{name}/complete",
             post(complete_account),
         )
         .route(
-            "/admin/accounts/claude/{name}/refresh",
+            "/admin/api/accounts/claude/{name}/refresh",
             post(refresh_account),
         )
         .route(
-            "/admin/accounts/claude/{name}",
+            "/admin/api/accounts/claude/{name}",
             delete(remove_account_handler),
         )
         .route(
-            "/admin/accounts/codex",
+            "/admin/api/accounts/codex",
             get(codex::list_codex_accounts).post(codex::add_codex_account),
         )
         .route(
-            "/admin/accounts/codex/{name}/complete",
+            "/admin/api/accounts/codex/{name}/complete",
             post(codex::complete_codex_account),
         )
         .route(
-            "/admin/accounts/codex/{name}",
+            "/admin/api/accounts/codex/{name}",
             delete(codex::remove_codex_account_handler),
-        )
+        );
+
+    #[cfg(feature = "ui")]
+    let router = router
+        .route("/admin/assets/{*path}", get(ui::asset))
+        // The namespace root needs its own registration: a `{*path}` segment
+        // must match at least one character, so `/admin/api` and `/admin/api/`
+        // would otherwise fall through to `/admin/{*path}` and answer the HTML
+        // shell — the failure the separate JSON catch-all exists to prevent.
+        .route("/admin/api", any(ui::api_not_found))
+        .route("/admin/api/", any(ui::api_not_found))
+        .route("/admin/api/{*path}", any(ui::api_not_found))
+        .route("/admin/{*path}", get(ui::shell));
+
+    router
 }
 
 /// How a request authenticated, which decides whether CSRF applies.
@@ -1502,7 +1532,7 @@ async fn refresh_account(
             );
             // Report the state the pool is actually in, not the state the grant
             // implies. A `ServedRequest` mark survives the clear above, and
-            // saying "this login is alive" while `/admin/pool` still demands a
+            // saying "this login is alive" while `/admin/api/pool` still demands a
             // re-login would hand callers two contradictory answers.
             let still_marked = state.accounts.store_account_needs_relogin(
                 crate::accounts::StoreFamily::Claude,
@@ -1665,7 +1695,7 @@ pub(super) fn html_body(body: String) -> Response {
 /// when the SSO form is present: Chrome and WebKit enforce `form-action`
 /// against the post-submission redirect chain (w3c/webappsec-csp#8), so the
 /// strict `'self'` policy would block the
-/// `POST /admin/oidc/start` -> `302` -> IdP hop. See
+/// `POST /admin/api/oidc/start` -> `302` -> IdP hop. See
 /// [`IDP_REDIRECT_FORM_ACTION`](crate::gateway::idp_client) for the source
 /// list and the loopback hosts it cannot express.
 pub(super) fn login_response(
