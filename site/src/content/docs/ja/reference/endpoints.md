@@ -23,6 +23,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `GET` | `/admin` | 管理ダッシュボード（HTML）。未サインイン時は `/admin/login` へリダイレクト |
 | `GET`, `POST` | `/admin/login` | 管理トークンのログインフォームとブラウザーセッションの作成 |
 | `POST` | `/admin/api/logout` | ブラウザーセッションの破棄 |
+| `GET` | `/admin/api/session` | 管理 SPA がレンダリング前に必要とするセッション固有の 2 値: セッションの `csrf` トークンと `expiry_buffer_ms`(`claude::auth::EXPIRY_BUFFER` のミリ秒値で、setup token が使用不可になる境界)。ヘッダー資格情報の呼び出し元は CSRF 免除のため空の `csrf` を受け取る。このサーフェスには CORS レイヤーがないため、クロスオリジンのページはリクエストを送れても応答を読めない。したがって `GET` でトークンを返しても安全 |
 | `GET` | `/admin/api/accounts` | Claude アカウントストアのメタデータ: 名前、種類、有効期限、UUID。トークン本体は決して返さない |
 | `GET` | `/admin/api/accounts/codex` | Codex アカウントストアのメタデータ: 名前、有効期限、ChatGPT アカウント ID。トークン本体は決して返さない |
 | `GET` | `/admin/api/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider ごとのプール状態。各 account オブジェクトには任意の `plan` 文字列が含まれることがあり、ファイルから読んだ値は後の profile 照会でより精密な値に補正されることがあり、Codex の行には報告された 5h/7d 使用量が含まれる(`7d_oi` に対応する Codex の項目はない)。各 account には真偽値 `needs_relogin` も含まれる。クレデンシャルが終端的に拒否された(`invalid_grant`)か、リフレッシュトークンをそもそも持たないか、ローテーションされたトークン対を保存できずに失った場合で、どのリトライでも回復せず、オペレーターの再ログインだけが解決策となる。クールダウンのフィールドとは**独立に**報告される — クールダウンは自然に失効するが、この印は残る — ダッシュボードの二つの表はいずれもクォータ一時停止の `cooling` ではなく **needs re-login** と表示する。メモリ上のみで保持されるため、再起動でクリアされ、そのアカウントの次の終端的な失敗で再び立つ。どの provider テーブルも一度も選択したことのないアカウントについても — `has_state: false` と並んで — 報告される。admin の refresh プローブが判定をストア名で記録するためである。 |

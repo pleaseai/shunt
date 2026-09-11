@@ -25,6 +25,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/admin/api/oidc/start` | Start the optional same-origin admin OIDC/PKCE login |
 | `GET` | `/admin/oidc/callback` | Complete OIDC login, enforce the current allowlist, and create the browser session |
 | `POST` | `/admin/api/logout` | Clear the browser session |
+| `GET` | `/admin/api/session` | The two per-session values the admin SPA needs before it can render: the session's `csrf` token and `expiry_buffer_ms` (`claude::auth::EXPIRY_BUFFER` in milliseconds, the boundary at which a setup token stops being usable). A header-credential caller is CSRF-exempt and receives an empty `csrf`. Returning the token over a `GET` is safe because no CORS layer exists on this surface, so a cross-origin page can send the request but cannot read the reply |
 | `GET` | `/admin/api/accounts` | Claude account-store metadata: name, kind, expiry, and UUID; never token material |
 | `GET` | `/admin/api/accounts/codex` | Codex account-store metadata: name, expiry, and ChatGPT account ID; never token material |
 | `GET` | `/admin/api/observed` | Read-only local Claude Code, Codex, Gemini, Kimi, Grok, and Cursor identity plus provider-native usage; never returns token material or refreshes source credentials. The Claude row also carries the account `uuid` (null when it cannot be established) so the dashboard can tell an observation and a managed pool account holding the same subscription apart from two different accounts |

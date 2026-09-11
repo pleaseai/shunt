@@ -74,21 +74,22 @@ const BASE_PATHS: [(&str, &str); 7] = [
     ("/v1/messages/count_tokens", "POST"),
 ];
 
-/// 16 paths / 18 method+path pairs — the count `docs/admin-ui-delivery.md`
+/// 17 paths / 19 method+path pairs — the count `docs/admin-ui-delivery.md`
 /// records in its "Current surface" table. Counting the `allow` column here
-/// (ignoring the `HEAD` axum adds to every `GET`) is what reproduces the 18.
+/// (ignoring the `HEAD` axum adds to every `GET`) is what reproduces the 19.
 ///
 /// Only the three server-rendered entry points keep their `/admin` spelling; the
 /// JSON reads and every mutation answer under `/admin/api` after this change. The
 /// method sets are unchanged by the move — the same handlers are registered at
 /// new paths — and `every_registered_method_set_matches_the_inventory` proves it
 /// against the live router rather than taking it on trust.
-const ADMIN_PATHS: [(&str, &str); 16] = [
+const ADMIN_PATHS: [(&str, &str); 17] = [
     ("/admin", "GET,HEAD"),
     ("/admin/login", "GET,HEAD,POST"),
     ("/admin/api/oidc/start", "POST"),
     ("/admin/oidc/callback", "GET,HEAD"),
     ("/admin/api/logout", "POST"),
+    ("/admin/api/session", "GET,HEAD"),
     ("/admin/api/accounts", "GET,HEAD"),
     ("/admin/api/observed", "GET,HEAD"),
     ("/admin/api/pool", "GET,HEAD"),
@@ -679,14 +680,14 @@ fn the_source_scan_finds_every_literal_registration() {
         .iter()
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
-    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 16 admin plus
+    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 17 admin plus
     // the 5 UI routes, 7 gateway (its 3 OTLP paths come from `Signal::path()`),
     // 2 spend. The UI five are counted unconditionally: this scan reads source
     // text, and `#[cfg(feature = "ui")]` does not remove the `.route("…"`
     // literals from it.
     assert_eq!(
-        found, 39,
-        "the literal-path scan found {found} registrations, not 39; either a route was added or \
+        found, 40,
+        "the literal-path scan found {found} registrations, not 40; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }

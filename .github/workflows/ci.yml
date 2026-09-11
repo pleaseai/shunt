@@ -63,6 +63,13 @@ jobs:
         working-directory: ui
         run: npm run build
 
+      # The dashboard's behavior lives in this bundle, so its suite is a gate
+      # here rather than a local convenience. `npm run build` above only
+      # typechecks it.
+      - name: Test admin UI bundle
+        working-directory: ui
+        run: npm test
+
       - name: Format check
         run: cargo fmt --all --check
 
