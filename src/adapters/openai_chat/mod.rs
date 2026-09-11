@@ -87,13 +87,8 @@ fn map_openai_chat_error(status: StatusCode, body: &str) -> AdapterError {
                 .or_else(|| value.get("message"))
         })
         .and_then(Value::as_str)
-        .unwrap_or("OpenAI Chat backend returned a non-JSON error")
-        .to_string();
-    let message = if message.len() > 4096 {
-        format!("{}…", &message[..message.floor_char_boundary(4096)])
-    } else {
-        message
-    };
+        .map(str::to_owned)
+        .unwrap_or_else(|| truncate_error_message(body));
     let error_type = match status {
         StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "authentication_error",
@@ -108,6 +103,18 @@ fn map_openai_chat_error(status: StatusCode, body: &str) -> AdapterError {
         message,
         response: Box::new((status, axum::Json(error_body)).into_response()),
         failure: Some(AdapterFailure::UpstreamStatus(status)),
+    }
+}
+
+fn truncate_error_message(message: &str) -> String {
+    const MAX_ERROR_MESSAGE_BYTES: usize = 4096;
+    if message.len() > MAX_ERROR_MESSAGE_BYTES {
+        format!(
+            "{}…",
+            &message[..message.floor_char_boundary(MAX_ERROR_MESSAGE_BYTES)]
+        )
+    } else {
+        message.to_owned()
     }
 }
 
