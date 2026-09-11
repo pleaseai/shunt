@@ -7,6 +7,7 @@ Providers are a **name → config map**. Anthropic-compatible and Responses-comp
 
 - **`kind = "anthropic"`** — the upstream speaks the Anthropic Messages API. shunt passes the request through, optionally injecting a different API key.
 - **`kind = "responses"`** — the upstream speaks the OpenAI Responses API. shunt translates Anthropic Messages ⇄ Responses, including streaming.
+- **`kind = "openai_chat"`** — the upstream speaks OpenAI Chat Completions. shunt translates Anthropic Messages to `/chat/completions` using the configured API key.
 - **`kind = "cursor"`** — the native Cursor ConnectRPC/protobuf adapter.
 - **`kind = "gemini"`** — the native Google Code Assist `generateContent` adapter.
 - **`kind = "antigravity"`** — the Google Antigravity backend over HTTP.

@@ -87,7 +87,7 @@ shunt add upstream https://provider.example/docs --print | claude
 
 ## 프로바이더
 
-프로바이더는 순서가 있는 `[[upstreams]]` 항목 또는 레거시 `[providers.<name>]` TOML 테이블입니다(YAML에서는 각각 해당 sequence 또는 mapping의 항목). 두 가지 어댑터 종류가 대부분의 업스트림을 커버합니다. `kind = "anthropic"`(업스트림이 Anthropic Messages를 사용하며, 필요하면 다른 키로 패스스루)와 `kind = "responses"`(업스트림이 OpenAI Responses API를 사용하며, shunt가 Anthropic Messages ⇄ Responses를 스트리밍 포함하여 변환)입니다. 세 번째 네이티브 종류인 `kind = "cursor"`는 Cursor의 ConnectRPC/protobuf AgentService를 브리지하여 Cursor 구독을 동일한 Anthropic-Messages 인터페이스로 사용할 수 있게 합니다.
+프로바이더는 순서가 있는 `[[upstreams]]` 항목 또는 레거시 `[providers.<name>]` TOML 테이블입니다(YAML에서는 각각 해당 sequence 또는 mapping의 항목). 어댑터 종류에는 `kind = "anthropic"`(Anthropic Messages 패스스루), `kind = "responses"`(OpenAI Responses API와 Anthropic Messages 간 변환), `kind = "openai_chat"`(API 키로 Anthropic Messages를 OpenAI Chat Completions로 변환)가 있습니다. `kind = "cursor"` 같은 네이티브 종류는 프로바이더별 프로토콜을 동일한 Anthropic-Messages 인터페이스로 연결합니다.
 
 순서가 있는 업스트림은 프로바이더 간 페일오버를 지원합니다. 선언 순서가 시도 순서이며, 모델의 `upstream_model` 맵은 참여할 항목을 선택하고 공개 id를 각 백엔드 id에 매핑합니다.
 

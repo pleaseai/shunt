@@ -87,7 +87,7 @@ shunt add upstream https://provider.example/docs --print | claude
 
 ## プロバイダー
 
-プロバイダーは、順序付き `[[upstreams]]` エントリまたはレガシーな `[providers.<name>]` TOML テーブルです（YAML では、それぞれ対応する sequence または mapping のエントリ）。2 種類のアダプターでほとんどの上流をカバーします。`kind = "anthropic"`（上流が Anthropic Messages を話す場合。別のキーを付けてパススルー可能）と `kind = "responses"`（上流が OpenAI Responses API を話す場合。shunt が Anthropic Messages ⇄ Responses をストリーミング込みで変換）です。3 つ目のネイティブな種類である `kind = "cursor"` は、Cursor の ConnectRPC/protobuf AgentService をブリッジし、Cursor サブスクリプションを同じ Anthropic Messages インターフェース経由で利用できるようにします。
+プロバイダーは、順序付き `[[upstreams]]` エントリまたはレガシーな `[providers.<name>]` TOML テーブルです（YAML では、それぞれ対応する sequence または mapping のエントリ）。アダプターには `kind = "anthropic"`（Anthropic Messages のパススルー）、`kind = "responses"`（OpenAI Responses API と Anthropic Messages の変換）、`kind = "openai_chat"`（API キーで Anthropic Messages を OpenAI Chat Completions に変換）があります。`kind = "cursor"` などのネイティブ種別は、プロバイダー固有のプロトコルを同じ Anthropic Messages インターフェースに接続します。
 
 順序付きアップストリームにより、プロバイダー間のフェイルオーバーが可能になります。宣言順が試行順となり、モデルの `upstream_model` マップが参加するエントリを選択して、公開 id を各バックエンドの id にマッピングします。
 

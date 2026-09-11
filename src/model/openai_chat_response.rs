@@ -115,10 +115,10 @@ impl OpenAiChatSseMachine {
             // finish, or any other payload after finish_reason fails closed.
             TerminalState::SuccessPending => return self.process_trailing_usage_chunk(chunk),
             _ => {
-            self.terminal = TerminalState::ProtocolFailed;
-            return Err(OpenAiChatSemanticError::protocol(
-                "OpenAI Chat semantic data arrived after a terminal outcome",
-            ));
+                self.terminal = TerminalState::ProtocolFailed;
+                return Err(OpenAiChatSemanticError::protocol(
+                    "OpenAI Chat semantic data arrived after a terminal outcome",
+                ));
             }
         }
 
@@ -175,11 +175,9 @@ impl OpenAiChatSseMachine {
         &mut self,
         chunk: &Value,
     ) -> Result<Vec<SseEvent>, OpenAiChatSemanticError> {
-        let chunk = chunk
-            .as_object()
-            .ok_or_else(|| {
-                OpenAiChatSemanticError::protocol("OpenAI Chat chunk must be an object")
-            })?;
+        let chunk = chunk.as_object().ok_or_else(|| {
+            OpenAiChatSemanticError::protocol("OpenAI Chat chunk must be an object")
+        })?;
         if chunk.contains_key("error") {
             self.terminal = TerminalState::ProviderFailed;
             let message = chunk
@@ -224,11 +222,9 @@ impl OpenAiChatSseMachine {
     }
 
     fn validate_chunk(&self, chunk: &Value) -> Result<CheckedChunk, OpenAiChatSemanticError> {
-        let chunk = chunk
-            .as_object()
-            .ok_or_else(|| {
-                OpenAiChatSemanticError::protocol("OpenAI Chat chunk must be an object")
-            })?;
+        let chunk = chunk.as_object().ok_or_else(|| {
+            OpenAiChatSemanticError::protocol("OpenAI Chat chunk must be an object")
+        })?;
 
         if let Some(error) = chunk.get("error") {
             let error = error.as_object().ok_or_else(|| {
@@ -304,11 +300,12 @@ impl OpenAiChatSseMachine {
                         }
                     };
                     if !text.is_empty() {
-                        retained_bytes = retained_bytes.checked_add(text.len()).ok_or_else(|| {
-                            OpenAiChatSemanticError::protocol(
-                                "OpenAI Chat retained semantic state exceeds limit",
-                            )
-                        })?;
+                        retained_bytes =
+                            retained_bytes.checked_add(text.len()).ok_or_else(|| {
+                                OpenAiChatSemanticError::protocol(
+                                    "OpenAI Chat retained semantic state exceeds limit",
+                                )
+                            })?;
                         parts.push(text.to_string());
                     }
                 }
@@ -473,9 +470,9 @@ fn validate_usage(
     let Some(usage) = usage else {
         return Ok((None, None));
     };
-    let usage = usage.as_object().ok_or_else(|| {
-        OpenAiChatSemanticError::protocol("OpenAI Chat usage must be an object")
-    })?;
+    let usage = usage
+        .as_object()
+        .ok_or_else(|| OpenAiChatSemanticError::protocol("OpenAI Chat usage must be an object"))?;
     let parse = |key: &str| -> Result<Option<u64>, OpenAiChatSemanticError> {
         match usage.get(key) {
             None => Ok(None),

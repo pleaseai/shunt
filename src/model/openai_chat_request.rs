@@ -37,15 +37,16 @@ pub(crate) fn bad_request(message: impl Into<String>) -> AdapterError {
 /// from the translated tree alone) and forces the upstream
 /// `stream_options.include_usage` contract so streaming turns keep their
 /// usage accounting.
-pub fn translate_request(request: &Value, model: &str, stream: bool) -> Result<Value, AdapterError> {
+pub fn translate_request(
+    request: &Value,
+    model: &str,
+    stream: bool,
+) -> Result<Value, AdapterError> {
     let mut out = Map::new();
     out.insert("model".to_string(), json!(model));
     out.insert("stream".to_string(), json!(stream));
     if stream {
-        out.insert(
-            "stream_options".to_string(),
-            json!({"include_usage": true}),
-        );
+        out.insert("stream_options".to_string(), json!({"include_usage": true}));
     }
     if let Some(system) = request.get("system") {
         out.insert("system".to_string(), translate_system(system)?);
@@ -72,7 +73,9 @@ fn translate_system(system: &Value) -> Result<Value, AdapterError> {
             let text = collect_text_blocks(blocks)?;
             text_with_role("system", &text)
         }
-        _ => Err(bad_request("system must be a string or an array of text blocks")),
+        _ => Err(bad_request(
+            "system must be a string or an array of text blocks",
+        )),
     }
 }
 
@@ -98,7 +101,9 @@ fn translate_message(message: &Value) -> Result<Value, AdapterError> {
             let text = collect_text_blocks(blocks)?;
             text_with_role(role, &text)
         }
-        _ => Err(bad_request("message content must be a string or text blocks")),
+        _ => Err(bad_request(
+            "message content must be a string or text blocks",
+        )),
     }
 }
 

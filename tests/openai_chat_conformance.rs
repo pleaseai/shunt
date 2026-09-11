@@ -1,8 +1,4 @@
-use std::{
-    io::ErrorKind,
-    net::SocketAddr,
-    sync::OnceLock,
-};
+use std::{io::ErrorKind, net::SocketAddr, sync::OnceLock};
 
 use reqwest::StatusCode;
 use serde_json::{json, Value};
@@ -236,7 +232,11 @@ async fn openai_chat_tracer_unary_happy_path() {
     assert_eq!(body["usage"]["output_tokens"], 2, "{body}");
 
     let requests = backend.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 1, "generation POST must not be re-dispatched");
+    assert_eq!(
+        requests.len(),
+        1,
+        "generation POST must not be re-dispatched"
+    );
     // The exact bearer proves the synthetic env key was injected; the absent
     // x-api-key proves the inbound slot was stripped at the wire.
     assert_eq!(
@@ -254,7 +254,10 @@ async fn openai_chat_tracer_unary_happy_path() {
         serde_json::from_slice(&requests[0].body).expect("upstream body is JSON");
     assert_eq!(upstream_body["model"], "gpt-5", "{upstream_body}");
     assert_eq!(upstream_body["stream"], false, "{upstream_body}");
-    assert_eq!(upstream_body["messages"][0]["role"], "user", "{upstream_body}");
+    assert_eq!(
+        upstream_body["messages"][0]["role"], "user",
+        "{upstream_body}"
+    );
     assert_eq!(
         upstream_body["messages"][0]["content"], "fixture",
         "{upstream_body}"
@@ -340,7 +343,10 @@ async fn openai_chat_tracer_unary_isolation() {
     ]
     .into_iter()
     .collect();
-    assert_eq!(seen, expected, "credentials and models must stay request-local");
+    assert_eq!(
+        seen, expected,
+        "credentials and models must stay request-local"
+    );
 }
 
 #[tokio::test]
@@ -365,7 +371,9 @@ async fn openai_chat_tracer_unary_non_api_key_auth_rejected() {
         "service_tier": null
     }]);
     let config: Config = serde_json::from_value(value).unwrap();
-    let error = config.validate().err().expect("non-API-key auth must be rejected");
+    let error = config
+        .validate()
+        .expect_err("non-API-key auth must be rejected");
     let message = error.to_string();
     assert!(message.contains("openai_chat"), "{message}");
     assert!(message.contains("api_key"), "{message}");
@@ -467,11 +475,11 @@ async fn openai_chat_tracer_streaming_eof_failclosed() {
     assert_eq!(response.status(), StatusCode::OK);
     let events = collect_sse_events(response).await;
 
-    let errors = events
-        .iter()
-        .filter(|(event, _)| event == "error")
-        .count();
-    assert_eq!(errors, 1, "EOF without a terminal must fail closed: {events:?}");
+    let errors = events.iter().filter(|(event, _)| event == "error").count();
+    assert_eq!(
+        errors, 1,
+        "EOF without a terminal must fail closed: {events:?}"
+    );
     assert!(
         events.iter().all(|(event, _)| event != "message_stop"),
         "a cut stream must never emit a success terminal: {events:?}"
@@ -509,10 +517,7 @@ async fn openai_chat_tracer_streaming_duplicate_terminal() {
     assert_eq!(response.status(), StatusCode::OK);
     let events = collect_sse_events(response).await;
 
-    let errors = events
-        .iter()
-        .filter(|(event, _)| event == "error")
-        .count();
+    let errors = events.iter().filter(|(event, _)| event == "error").count();
     assert_eq!(
         errors, 1,
         "a duplicate [DONE] terminal must fail closed: {events:?}"
