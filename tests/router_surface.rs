@@ -598,6 +598,48 @@ async fn the_server_rendered_login_flow_stays_outside_the_api_namespace() {
     }
 }
 
+/// Without `--features ui` there is no bundle to serve, and `/admin` says so
+/// instead of disappearing.
+///
+/// `docs/admin-ui-delivery.md` Resolution 1 accepts that a from-source build
+/// without the feature has no dashboard, so the `404` here is the decision, not
+/// a defect. What the decision does *not* license is an empty body: dropping the
+/// route entirely would leave axum's built-in `404`, which carries nothing, and
+/// an operator who typed the documented URL would have no way to tell a missing
+/// feature from a missing `[server.admin]` block — the two have different fixes.
+/// Asserting the body names the feature is therefore the point of the test; the
+/// status alone is what both spellings share.
+///
+/// The sibling assertion for the feature-on build is
+/// `admin_ui::the_mount_root_serves_the_spa_shell`.
+#[cfg(not(feature = "ui"))]
+#[tokio::test]
+async fn the_mount_root_without_the_ui_feature_explains_the_missing_bundle() {
+    let (config, _env) = all_surfaces_config("no-ui-root");
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/admin")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router answers");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads");
+    let body = String::from_utf8(body.to_vec()).expect("the error body is UTF-8");
+    assert!(
+        body.contains("--features ui"),
+        "the 404 must name the feature that would provide a dashboard, so it is \
+         distinguishable from an unconfigured admin surface; it reads {body:?}"
+    );
+}
+
 /// `/` is a liveness probe target as well as a landing page, so any UI work
 /// that later claims a path must leave its `HEAD` answer intact.
 #[tokio::test]

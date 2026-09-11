@@ -32,6 +32,8 @@ cargo install --git https://github.com/pleaseai/shunt
 
 新版本通过 Homebrew 和每个 [GitHub release](https://github.com/pleaseai/shunt/releases) 附带的预构建二进制文件(macOS/Linux,arm64/x64)分发。crates.io 软件包将停留在最后发布的版本。预构建二进制和从源码构建的说明见 [安装](https://shunt.dev/getting-started/installation/)。
 
+上面的 `cargo install` 构建出的二进制不含管理看板:看板的前端包需要 Node.js 22.12+,且只有 `--features ui` 才会内嵌,而 Homebrew 和发布二进制已经启用了该特性。其余部分(包括管理 JSON API)两者完全相同。从源码构建的步骤见 [安装](https://shunt.dev/getting-started/installation/)。
+
 ### 作为服务运行 (macOS/Homebrew)
 
 ```bash
@@ -188,7 +190,7 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 | 入站 Codex 端点 —— 把 **Codex CLI** 指向 shunt 并纳入同一个池,还可按模型选择性路由 | `[server.codex_endpoint]` | [指南](https://shunt.dev/zh-cn/guides/inbound-codex-endpoint/) |
 | Claude 应用网关登录 —— OAuth 设备流、managed settings、按用户策略 | 具备 `public_url`、不少于 32 字节的 JWT 密钥,以及静态用户或 `[server.gateway.oidc]` 的 `[server.gateway]` | [指南](https://shunt.dev/zh-cn/guides/gateway-login/) |
 | 网关遥测接收 —— 原样转发受管客户端的 OTLP | 已配置的 `[server.gateway]`,以及 `forward_to` 非空的 `[server.gateway.telemetry]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#servergatewaytelemetry可选) |
-| 管理 Web 界面 —— 账号与用量看板、浏览器预配 | `[server.admin]`、`shunt dashboard setup` | [指南](https://shunt.dev/zh-cn/guides/admin-remote-provisioning/) |
+| 管理 Web 界面 —— 账号与用量看板、浏览器预配 | `[server.admin]`、`shunt dashboard setup`；但看板本身由只有 `--features ui` 构建才会内嵌的前端包提供 —— 预构建的发布二进制和 Homebrew formula 已包含，普通的 `cargo build`/`cargo install` 则没有 | [指南](https://shunt.dev/zh-cn/guides/admin-remote-provisioning/) |
 | 支出上限 Admin API —— 组织级和用户级上限(stage 1 只存储,尚未实施) | `[server.admin]` + `[server.spend]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#serverspend可选) |
 | 客户端用量端点 —— `GET /usage` 返回脱敏聚合后的池余量 | `[server.auth]` + `[server.usage]` | [参考](https://shunt.dev/zh-cn/reference/configuration/#serverusage可选) |
 | Claude Code CLI 原生用量条 —— 提供 `GET /api/oauth/usage` | `[server.oauth_usage]`;非回环 bind 还需 `[server.auth]` 或 `[server.gateway]` | [参考(英文)](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |

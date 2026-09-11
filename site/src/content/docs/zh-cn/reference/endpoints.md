@@ -20,7 +20,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/v1/metrics` | 来自托管 Claude Code 客户端的入站 OTLP/HTTP 指标 —— verbatim 中继到 opt-in 的网关遥测目标 |
 | `POST` | `/v1/logs` | 入站 OTLP/HTTP log record —— 只中继到 `logs = true` 的目标 |
 | `POST` | `/v1/traces` | 入站 OTLP/HTTP span —— 只中继到 `traces = true` 的目标 |
-| `GET` | `/admin` | 管理仪表盘(HTML);未登录时重定向到 `/admin/login` |
+| `GET` | `/admin` | 管理仪表盘 —— 与前端包的其余部分一样,无需认证即可获取的 SPA 外壳。当 `GET /admin/api/session` 返回 `401` 时,由前端包自身跳转到 `/admin/login`。在未启用 `--features ui` 构建的二进制中,该路径返回 `404`,响应体会点明该特性 |
 | `GET`, `POST` | `/admin/login` | 管理员 token 登录表单与浏览器会话创建 |
 | `POST` | `/admin/api/logout` | 清除浏览器会话 |
 | `GET` | `/admin/api/session` | 管理 SPA 渲染前所需的两个会话级值：会话的 `csrf` 令牌与 `expiry_buffer_ms`（`claude::auth::EXPIRY_BUFFER` 的毫秒值，即 setup token 失效的边界）。使用请求头凭据的调用方免除 CSRF，因此收到空的 `csrf`。该表面没有 CORS 层，跨源页面能发出请求却读不到响应，所以通过 `GET` 返回令牌是安全的 |
@@ -62,7 +62,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
   JSON 而不是 UI,用 HTML 作答会破坏客户端的错误处理;
 - 挂载点之外的路径不受影响,仍然返回 `404`。
 
-`GET /admin` 继续提供服务端渲染的仪表盘。
+`GET /admin` 同样是外壳。它是唯一在两种构建中都注册、但响应取决于该特性的管理路径:启用时返回外壳,未启用时返回响应体中点明 `--features ui` 的 `404`。两种构建都保留注册,是为了让那个 `404` 带上这句说明 —— 若直接不注册,得到的是 axum 没有响应体的 `404`,运维人员无法将其与未配置 `[server.admin]` 区分开。
 
 ### 管理路径迁移
 

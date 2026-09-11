@@ -3,6 +3,7 @@ import type {
   AccountRow,
   ClaudeStoreAccount,
   ObservedAccount,
+  PoolAccount,
   PoolProvider,
 } from './types';
 
@@ -73,6 +74,96 @@ const WINDOW_KEYS = [
 ] as const;
 
 /**
+ * The status a managed pool account gets before any observation is folded in.
+ *
+ * The order is the ladder, not a preference: `needs_relogin` is checked ahead of
+ * the cooldown states for the same reason the pool table checks it first — a
+ * dead credential is *also* cooling, and this is the primary table operators
+ * actually read.
+ */
+function managedState(account: PoolAccount): string {
+  if (account.disabled) return 'disabled';
+  if (account.needs_relogin) return 'needs-relogin';
+  if (!account.has_state) return 'unseen';
+  if (account.cooldown_secs_remaining) return 'cooling';
+  if (account.near_quota) return 'near-quota';
+  if (account.cooldown_fable_secs_remaining) return 'cooling-fable';
+  return 'available';
+}
+
+/** A row for a managed pool account, before any observation is folded into it. */
+function managedRow(provider: string, account: PoolAccount): AccountRow {
+  return {
+    provider,
+    label: account.name,
+    // A managed-only row (no observed override below) shows the pool's own plan
+    // as its detail caption, matching the wording the observed path already uses
+    // ("Max plan") — see `observation::parse_claude`.
+    detail: account.plan ? `${titleCase(account.plan)} plan` : null,
+    managed: account,
+    observed: null,
+    state: managedState(account),
+    utilization_5h: account.utilization_5h,
+    reset_5h: account.reset_5h,
+    utilization_7d: account.utilization_7d,
+    reset_7d: account.reset_7d,
+    utilization_7d_oi: account.utilization_7d_oi,
+    reset_7d_oi: account.reset_7d_oi,
+  };
+}
+
+/** A row for an observation that matched no managed account. */
+function observedRow(observation: ObservedAccount): AccountRow {
+  return {
+    provider: observation.provider,
+    label: observation.identity || observation.provider,
+    detail: observation.detail,
+    managed: null,
+    observed: observation,
+    state: observation.state,
+    utilization_5h: observation.utilization_5h,
+    reset_5h: observation.reset_5h,
+    utilization_7d: observation.utilization_7d,
+    reset_7d: observation.reset_7d,
+    utilization_7d_oi: observation.utilization_7d_oi,
+    reset_7d_oi: observation.reset_7d_oi,
+  };
+}
+
+/** Fold an observation into the managed row that holds the same subscription. */
+function foldObservation(row: AccountRow, observation: ObservedAccount): void {
+  row.observed = observation;
+  // Prefer the observed detail when present; otherwise keep the plan-derived
+  // detail from the pool payload. `observed` comes from
+  // `~/.claude/.credentials.json` while the pool's detail comes from the
+  // account's store file or the live profile API — different sources, and a null
+  // observed detail must not blank out a real plan-derived one.
+  if (observation.detail) row.detail = observation.detail;
+  // Prefer the client's windows: the pool only learns a window from a response
+  // header it has actually received, so it reports null for windows the client
+  // can already see.
+  for (const key of WINDOW_KEYS) {
+    const value = observation[key];
+    if (value !== null && value !== undefined) row[key] = value;
+  }
+}
+
+/**
+ * The uuid each Claude store account is known by, keyed by account name.
+ *
+ * Sourced from `/admin/api/accounts`, which is the Claude store alone — which is
+ * why [`accountGroups`] gates its use on the pool table's own `auth` kind rather
+ * than on a provider name.
+ */
+function uuidsByAccountName(accounts: { accounts?: ClaudeStoreAccount[] } | null): Map<string, string> {
+  const uuids = new Map<string, string>();
+  for (const account of accounts?.accounts ?? []) {
+    if (account.uuid) uuids.set(account.name, account.uuid);
+  }
+  return uuids;
+}
+
+/**
  * Fold managed pool accounts and read-only observations into one row set per
  * provider.
  *
@@ -80,16 +171,18 @@ const WINDOW_KEYS = [
  * as the local client login, that is ONE account seen through two lenses, not
  * two accounts. Listing it twice is precisely what made this table unreadable
  * with a pool configured.
+ *
+ * Managed accounts are laid down first and observations folded in afterwards, so
+ * a coalesced row keeps the managed row's position: the pool's ordering is the
+ * one an operator configured, while the observation order is whatever the local
+ * filesystem scan happened to produce.
  */
 export function accountGroups(
   observed: ObservedAccount[],
   pool: { providers?: PoolProvider[] } | null,
   accounts: { accounts?: ClaudeStoreAccount[] } | null,
 ): Map<string, AccountRow[]> {
-  const uuidByName: Record<string, string> = {};
-  for (const account of accounts?.accounts ?? []) {
-    if (account.uuid) uuidByName[account.name] = account.uuid;
-  }
+  const uuidByName = uuidsByAccountName(accounts);
 
   const groups = new Map<string, AccountRow[]>();
   const groupFor = (provider: string): AccountRow[] => {
@@ -104,47 +197,16 @@ export function accountGroups(
   for (const table of pool?.providers ?? []) {
     const provider = POOL_PROVIDER_ALIASES[table.provider] ?? table.provider;
     for (const account of table.accounts ?? []) {
-      const row: AccountRow = {
-        provider,
-        label: account.name,
-        // A managed-only row (no observed override below) shows the pool's own
-        // plan as its detail caption, matching the wording the observed path
-        // already uses ("Max plan") — see `observation::parse_claude`.
-        detail: account.plan ? `${titleCase(account.plan)} plan` : null,
-        managed: account,
-        observed: null,
-        // `needs_relogin` is checked before the cooldown states for the same
-        // reason the pool table checks it first: a dead credential is *also*
-        // cooling, and this is the primary table operators actually read.
-        state: account.disabled
-          ? 'disabled'
-          : account.needs_relogin
-            ? 'needs-relogin'
-            : !account.has_state
-              ? 'unseen'
-              : account.cooldown_secs_remaining
-                ? 'cooling'
-                : account.near_quota
-                  ? 'near-quota'
-                  : account.cooldown_fable_secs_remaining
-                    ? 'cooling-fable'
-                    : 'available',
-        utilization_5h: account.utilization_5h,
-        reset_5h: account.reset_5h,
-        utilization_7d: account.utilization_7d,
-        reset_7d: account.reset_7d,
-        utilization_7d_oi: account.utilization_7d_oi,
-        reset_7d_oi: account.reset_7d_oi,
-      };
+      const row = managedRow(provider, account);
       groupFor(provider).push(row);
-      // `uuidByName` is sourced from the Claude account store only (see
-      // `/admin/api/accounts`), so only `claude_oauth` accounts may be matched
-      // against it. Gate on the account's actual auth kind (`table.auth`), not
-      // the provider's display name or group key: a provider table can be named
-      // anything, so a `chatgpt_oauth` provider named "claude" would otherwise
-      // still get Claude uuids applied, and a `claude_oauth` provider under a
-      // custom name would otherwise never get them.
-      const uuid = table.auth === 'claude_oauth' ? uuidByName[account.name] : undefined;
+      // `uuidByName` is sourced from the Claude account store only, so only
+      // `claude_oauth` accounts may be matched against it. Gate on the account's
+      // actual auth kind (`table.auth`), not the provider's display name or
+      // group key: a provider table can be named anything, so a `chatgpt_oauth`
+      // provider named "claude" would otherwise still get Claude uuids applied,
+      // and a `claude_oauth` provider under a custom name would otherwise never
+      // get them.
+      const uuid = table.auth === 'claude_oauth' ? uuidByName.get(account.name) : undefined;
       if (uuid) byUuid.set(uuid, row);
     }
   }
@@ -153,36 +215,10 @@ export function accountGroups(
     // A missing uuid means "identity unknown" and must never match.
     const match = observation.uuid ? byUuid.get(observation.uuid) : undefined;
     if (match) {
-      match.observed = observation;
-      // Prefer the observed detail when present; otherwise keep the
-      // plan-derived detail from the pool payload. `observed` comes from
-      // `~/.claude/.credentials.json` while the pool's detail comes from the
-      // account's store file or the live profile API — different sources, and a
-      // null observed detail must not blank out a real plan-derived one.
-      if (observation.detail) match.detail = observation.detail;
-      // Prefer the client's windows: the pool only learns a window from a
-      // response header it has actually received, so it reports null for
-      // windows the client can already see.
-      for (const key of WINDOW_KEYS) {
-        const value = observation[key];
-        if (value !== null && value !== undefined) match[key] = value;
-      }
+      foldObservation(match, observation);
       continue;
     }
-    groupFor(observation.provider).push({
-      provider: observation.provider,
-      label: observation.identity || observation.provider,
-      detail: observation.detail,
-      managed: null,
-      observed: observation,
-      state: observation.state,
-      utilization_5h: observation.utilization_5h,
-      reset_5h: observation.reset_5h,
-      utilization_7d: observation.utilization_7d,
-      reset_7d: observation.reset_7d,
-      utilization_7d_oi: observation.utilization_7d_oi,
-      reset_7d_oi: observation.reset_7d_oi,
-    });
+    groupFor(observation.provider).push(observedRow(observation));
   }
 
   return groups;

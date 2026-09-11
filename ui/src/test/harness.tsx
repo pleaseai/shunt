@@ -109,6 +109,17 @@ export async function renderDashboard(fixtures: Fixtures = {}, extra: Routes = {
   // Every table settles before a test asserts: leaving one on "Loading…" is how
   // an assertion about a missing row passes for the wrong reason.
   await waitFor(() => expect(screen.queryAllByText('Loading…')).toHaveLength(0));
+  // `Upstream status` is not covered by that wait, and cannot be: it renders
+  // `null` — not a "Loading…" row — until `GET /admin/api/status` resolves, so
+  // the settle loop above is already satisfied while the section is still
+  // pending (`UpstreamStatus`, `useDashboard`'s one-shot read). Every assertion
+  // about it would then race the fetch: absence-assertions would pass for the
+  // wrong reason, and presence-assertions would flake. Wait for the section
+  // itself when the fixture configures sources — and only then, since with none
+  // configured `null` is the settled state and there is nothing to wait for.
+  if (fixtures.status?.length) {
+    await screen.findByRole('heading', { name: 'Upstream status' });
+  }
   return api;
 }
 

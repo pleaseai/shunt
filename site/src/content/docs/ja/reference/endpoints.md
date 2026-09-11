@@ -20,7 +20,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/v1/metrics` | 管理された Claude Code クライアントからのインバウンド OTLP/HTTP メトリクス — opt-in したゲートウェイテレメトリー宛先へ verbatim 中継 |
 | `POST` | `/v1/logs` | インバウンド OTLP/HTTP log record — `logs = true` の宛先にのみ中継 |
 | `POST` | `/v1/traces` | インバウンド OTLP/HTTP span — `traces = true` の宛先にのみ中継 |
-| `GET` | `/admin` | 管理ダッシュボード（HTML）。未サインイン時は `/admin/login` へリダイレクト |
+| `GET` | `/admin` | 管理ダッシュボード — バンドルの他の部分と同じく認証なしで配信される SPA シェルです。`GET /admin/api/session` が `401` を返すと、バンドル自身が `/admin/login` へ遷移させます。`--features ui` なしでビルドしたバイナリでは、このパスはその機能名を含む本文とともに `404` を返します |
 | `GET`, `POST` | `/admin/login` | 管理トークンのログインフォームとブラウザーセッションの作成 |
 | `POST` | `/admin/api/logout` | ブラウザーセッションの破棄 |
 | `GET` | `/admin/api/session` | 管理 SPA がレンダリング前に必要とするセッション固有の 2 値: セッションの `csrf` トークンと `expiry_buffer_ms`(`claude::auth::EXPIRY_BUFFER` のミリ秒値で、setup token が使用不可になる境界)。ヘッダー資格情報の呼び出し元は CSRF 免除のため空の `csrf` を受け取る。このサーフェスには CORS レイヤーがないため、クロスオリジンのページはリクエストを送れても応答を読めない。したがって `GET` でトークンを返しても安全 |
@@ -64,7 +64,7 @@ Node ツールチェーンを必要とせず、バンドルも持たず、どち
   壊れるためです。
 - マウントの外側のパスは影響を受けず、これまでどおり `404` を返します。
 
-`GET /admin` は引き続きサーバーレンダリングのダッシュボードを返します。
+`GET /admin` もシェルです。両方のビルドに登録されていながら応答が機能フラグ次第で変わる唯一の管理パスで、有効なら シェル、無効なら本文に `--features ui` を挙げた `404` を返します。どちらでも登録しておくのは、その `404` にこの案内文を持たせるためです — ルートごと外すと axum の本文なし `404` になり、運用者は `[server.admin]` 未設定と見分けられません。
 
 ### 管理パスの移行
 

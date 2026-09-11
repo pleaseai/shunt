@@ -20,7 +20,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/v1/metrics` | Inbound OTLP/HTTP metrics from managed Claude Code clients — relayed verbatim to opted-in gateway telemetry destinations |
 | `POST` | `/v1/logs` | Inbound OTLP/HTTP log records — relayed only to destinations with `logs = true` |
 | `POST` | `/v1/traces` | Inbound OTLP/HTTP spans — relayed only to destinations with `traces = true` |
-| `GET` | `/admin` | Admin dashboard (HTML); redirects to `/admin/login` when not signed in |
+| `GET` | `/admin` | Admin dashboard — the SPA shell, served unauthenticated like the rest of the bundle; the bundle itself redirects to `/admin/login` after `GET /admin/api/session` answers `401`. In a binary built without `--features ui` this path answers `404` with a body naming the feature |
 | `GET`, `POST` | `/admin/login` | Admin-token login form, optional OIDC affordance, and browser-session creation |
 | `POST` | `/admin/api/oidc/start` | Start the optional same-origin admin OIDC/PKCE login |
 | `GET` | `/admin/oidc/callback` | Complete OIDC login, enforce the current allowlist, and create the browser session |
@@ -93,7 +93,12 @@ The fallback is confined to the `/admin` mount:
   a client's error handling;
 - an unmatched path outside the mount is unaffected and still returns `404`.
 
-`GET /admin` continues to serve the server-rendered dashboard.
+`GET /admin` is the shell too. It is the one admin path registered in both
+builds whose answer depends on the feature — the shell with it, and without it a
+`404` whose body names `--features ui`. It stays registered either way so that
+`404` carries that sentence instead of being axum's empty-bodied `404` for an
+unregistered path, which an operator cannot tell apart from an unconfigured
+`[server.admin]`.
 
 ### Admin path migration
 

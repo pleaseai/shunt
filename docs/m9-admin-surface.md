@@ -254,9 +254,14 @@ process-lifetime state:
 > **Pre-split record.** The paths below are the ones M9 shipped. Every JSON and
 > mutation route among them has since moved to `/admin/api/*`; only `/admin`,
 > `/admin/login`, and `/admin/oidc/callback` still answer on the paths written
-> here. This table is deliberately left as the pre-split record rather than
-> rewritten — see [`admin-ui-delivery.md`](admin-ui-delivery.md) (Decision 3 and
-> Resolution 6) for why the namespace split happened, and
+> here. `/admin` kept its path but not its answer: the server-rendered dashboard
+> described below is deleted, and that path now serves the embedded SPA shell —
+> unauthenticated, so the sign-in redirect happens client-side after
+> `GET /admin/api/session` answers `401`, and in a build without `--features ui`
+> it answers `404` instead. This table is deliberately left as the pre-split
+> record rather than rewritten — see
+> [`admin-ui-delivery.md`](admin-ui-delivery.md) (Decision 3, Decision 4, and
+> Resolution 6) for why the namespace split and the SPA move happened, and
 > [`docs/reference/endpoints.md`](../site/src/content/docs/reference/endpoints.md)
 > for the current paths and the before/after migration table.
 
@@ -720,8 +725,11 @@ recover with, so inside that window a routed request already fails on the
 no-refresh-token path; comparing against the bare deadline here would have the
 dashboard call a credential usable for the last five minutes of its life while
 routing rejects it, the window in which the operator most needs the warning.
-`dashboard_page` substitutes the constant's millisecond value into the script's
-`{expiry_buffer_ms}` placeholder, so the two cannot drift apart.
+`GET /admin/api/session` serves the constant's millisecond value as
+`expiry_buffer_ms`, so the two cannot drift apart. (The server-rendered
+dashboard this replaced substituted it into its own script instead; a served
+value and a substituted one are equally drift-proof, which is why the move
+changed nothing here.)
 
 The Codex store table alongside it carries the same status column, but
 unconditionally: that store has no non-refreshable kind at all. Both writers

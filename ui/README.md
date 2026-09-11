@@ -52,9 +52,12 @@ does exactly that.
 
 `ui/dist` and `ui/node_modules` are generated and not committed.
 
-`GET /admin` still serves the server-rendered dashboard
-(`src/admin/html.rs`). Any other path under the mount — `/admin/ui`, say —
-already renders this bundle, which is how to try it before that route flips.
+`GET /admin` serves this bundle, as does every other path under the mount. The
+server-rendered dashboard it replaced is gone; `src/admin/html.rs` now renders
+only the login page, which stays server-rendered because a sign-in screen cannot
+depend on a bundle only a signed-in session is meant to reach
+(`docs/admin-ui-delivery.md`, Resolution 6). Without `--features ui` there is no
+bundle, and `/admin` answers `404` with a body naming the feature.
 
 The toolchain is deliberately separate from `site/`'s Astro/Nimbus one: the two
 serve different purposes and upgrade on different schedules
