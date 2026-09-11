@@ -1,5 +1,7 @@
 # shunt
 
+オフライン認証情報インポート: `shunt import opencodex --dry-run` で互換 API キーと Cursor/Command Code のアクセストークンを確認できます。既存設定を変更せず、更新トークンをコピーせずに新しい非公開スナップショットを作成します。[インポートガイド（英語）](docs/credential-import.md)を参照してください。
+
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/pleaseai/shunt?utm_source=badge)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)

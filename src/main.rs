@@ -51,6 +51,11 @@ enum LoginMode {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Import compatible credentials offline into a new private snapshot.
+    Import {
+        #[command(subcommand)]
+        source: ImportSource,
+    },
     Run {
         #[arg(long)]
         config: Option<PathBuf>,
@@ -128,6 +133,12 @@ enum Command {
 }
 
 #[derive(Debug, Subcommand)]
+enum ImportSource {
+    /// Read OpenCodex files without invoking its loaders or modifying its state.
+    Opencodex(shunt::import::Options),
+}
+
+#[derive(Debug, Subcommand)]
 enum GatewayAction {
     /// Approve this machine against a shunt gateway via its OAuth device flow.
     Login {
@@ -192,6 +203,9 @@ fn main() -> anyhow::Result<()> {
             name_or_url,
             print,
         }) => add(kind, name_or_url.as_deref(), print),
+        Some(Command::Import {
+            source: ImportSource::Opencodex(options),
+        }) => shunt::import::run(options),
         Some(Command::Login {
             provider,
             name,
