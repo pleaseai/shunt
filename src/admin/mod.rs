@@ -233,9 +233,22 @@ fn keep_higher(
 /// segment over one, so every exact route above keeps answering; `/admin/api/`
 /// gets its own catch-all so an unmatched JSON path stays a `404` rather than
 /// becoming the HTML shell (`docs/admin-ui-delivery.md`, Decision 3).
+///
+/// Two roots are spelled twice for the same reason — `/admin` with `/admin/`,
+/// and `/admin/api` with `/admin/api/` — because a wildcard segment cannot
+/// match the empty string.
 pub fn admin_router() -> Router<AppState> {
     let router = Router::new()
         .route("/admin", get(dashboard))
+        // The mount root needs both spellings, for the same reason `/admin/api`
+        // does below: a `{*path}` segment must match at least one character, so
+        // `/admin/` matches neither `/admin` nor `/admin/{*path}` and answered a
+        // bare `404` on the dashboard's own root (#527). It is registered here
+        // rather than beside the UI catch-alls so that the trailing-slash form
+        // keeps the feature-naming `404` in a default build, exactly like
+        // `/admin` — a browser or proxy appending the slash must not change
+        // which of the two answers an operator gets.
+        .route("/admin/", get(dashboard))
         .route("/admin/login", get(login_page).post(login_submit))
         .route("/admin/api/oidc/start", post(oidc::start))
         .route("/admin/oidc/callback", get(oidc::callback))

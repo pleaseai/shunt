@@ -56,7 +56,7 @@ baseline for any new route.
 | always | `GET` | `/health` — unauthenticated, exempt from the concurrency gate |
 | always | `GET` | `/protocol`, `/v1/models`, `/routes` |
 | always | `POST` | `/v1/messages`, `/v1/messages/count_tokens` |
-| `[server.admin]` | — | 17 paths under `/admin`, 19 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which moved to `/admin/api/status`, and `GET /admin/api/session` ([Decision 5](#decision-5--the-spa-bootstraps-its-session-over-the-api)) |
+| `[server.admin]` | — | 18 paths under `/admin`, 20 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which moved to `/admin/api/status`, and `GET /admin/api/session` ([Decision 5](#decision-5--the-spa-bootstraps-its-session-over-the-api)) |
 | `[server.gateway]` | `GET` | `/.well-known/oauth-authorization-server`, `/device`, `/device/callback`, `/managed/settings` |
 | `[server.gateway]` | `POST` | `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize` |
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |
@@ -67,7 +67,7 @@ baseline for any new route.
 | `[server.usage]` | `GET` | `/usage` |
 | `[server.oauth_usage]` | `GET` | `/api/oauth/usage` |
 | `[server.admin]` + `--features ui` | `GET` | `/admin/assets/{*path}` and `/admin/{*path}` — the embedded SPA bundle and the shell fallback. Both are registered with `get`, so `GET`/`HEAD` answer and every other method answers `405` with `Allow: GET,HEAD` rather than falling through; plus `/admin/api/{*path}`, registered for **every** method so an unmatched JSON path answers `404` rather than the shell (Decision 3). Absent from a default build, which embeds no bundle |
-| `[server.admin]` | `GET` | `/admin` — registered in **both** builds, and the only admin path whose *answer* depends on the feature: the SPA shell with `--features ui`, and without it a `404` naming the feature. Registered either way so the default build's answer is that sentence rather than axum's empty-bodied `404` for an unregistered path, which an operator cannot tell from an unconfigured `[server.admin]` |
+| `[server.admin]` | `GET` | `/admin` and `/admin/` — registered in **both** builds, and the only admin paths whose *answer* depends on the feature: the SPA shell with `--features ui`, and without it a `404` naming the feature. Registered either way so the default build's answer is that sentence rather than axum's empty-bodied `404` for an unregistered path, which an operator cannot tell from an unconfigured `[server.admin]`. The mount root needs both spellings because a `{*path}` segment cannot match the empty string, so `/admin/` matches neither the exact route nor the fallback (#527) |
 
 Two properties of this table matter downstream:
 

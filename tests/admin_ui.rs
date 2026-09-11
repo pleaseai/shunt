@@ -364,6 +364,35 @@ async fn the_mount_root_serves_the_spa_shell() {
     );
 }
 
+/// The mount root's other spelling. `/admin/` matches neither `/admin` (exact)
+/// nor `/admin/{*path}` (a wildcard segment cannot match the empty string), so
+/// until it was registered in its own right it answered a bare `404` on the
+/// dashboard's own root — the one path a browser, a proxy, or a hand-typed URL
+/// is most likely to add a slash to (#527).
+///
+/// This asserts the shell rather than merely a `200`: the bug it pins is a
+/// *routing* one, and a redirect or an empty page would satisfy a status-only
+/// check while still failing the operator who typed the slash.
+#[tokio::test]
+async fn the_mount_root_with_a_trailing_slash_serves_the_spa_shell() {
+    let (router, _env) = admin_router("root-slash");
+
+    let response = get(&router, "/admin/").await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "/admin/ must answer the same shell as /admin; a 404 means the trailing-slash \
+         spelling fell through every route in the mount"
+    );
+    assert!(content_type(&response).starts_with("text/html"));
+    assert!(
+        String::from_utf8(body_bytes(response).await)
+            .expect("the shell is UTF-8")
+            .contains("/admin/assets/"),
+        "the trailing-slash root must serve the built index.html, which links the hashed bundle"
+    );
+}
+
 /// The mount root answers the shell with the *same* hardening as every other
 /// shell path, which is not implied by serving the same body: `/admin` is
 /// registered through its own handler ([`admin::dashboard`], via
