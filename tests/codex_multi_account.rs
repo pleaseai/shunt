@@ -48,6 +48,8 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
+mod common;
+
 struct BearerToken(String);
 
 struct LogWriter {
@@ -116,10 +118,6 @@ fn store_account(name: &str) -> AccountConfig {
         ..Default::default()
     }
 }
-
-/// Serializes the refresh-path tests, which set the process-global
-/// `SHUNT_CODEX_ACCOUNTS_DIR` / `SHUNT_CODEX_TOKEN_URL` env vars.
-static REFRESH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn unique_temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -361,8 +359,9 @@ async fn token_env_401_cools_down_and_rotates_without_refresh() {
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-unauth-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-unauth-b");
-    std::env::set_var("SHUNT_TEST_CODEX_UNAUTH_A", &token_a);
-    std::env::set_var("SHUNT_TEST_CODEX_UNAUTH_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_UNAUTH_A", &token_a);
+    vars.set("SHUNT_TEST_CODEX_UNAUTH_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -408,9 +407,6 @@ async fn token_env_401_cools_down_and_rotates_without_refresh() {
         "account-b"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_UNAUTH_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_UNAUTH_B");
 }
 
 #[tokio::test]
@@ -420,7 +416,7 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     // `stale` and `fresh` must differ so the BearerToken matchers below can
     // tell the pre-refresh and post-refresh requests apart.
     let expires_at = future_exp();
@@ -429,7 +425,7 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
 
     let accounts_dir = unique_temp_dir("succeeds");
     write_store_account(&accounts_dir, "account-a", &stale, "refresh-token-a");
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -440,7 +436,7 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -478,8 +474,6 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -490,18 +484,18 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     // `stale` and `fresh` must differ so the BearerToken matchers below can
     // tell the pre-refresh and post-refresh requests apart.
     let expires_at = future_exp();
     let stale = chatgpt_token(expires_at, "acct-a");
     let fresh = chatgpt_token(expires_at + 1, "acct-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-rotate-b");
-    std::env::set_var("SHUNT_TEST_CODEX_ROTATE_B", &token_b);
+    vars.set("SHUNT_TEST_CODEX_ROTATE_B", &token_b);
 
     let accounts_dir = unique_temp_dir("rotates");
     write_store_account(&accounts_dir, "account-a", &stale, "refresh-token-a");
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -512,7 +506,7 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -553,9 +547,6 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_CODEX_ROTATE_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -566,16 +557,16 @@ async fn refresh_retry_and_rotation_reuse_the_identical_serialized_body() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let expires_at = future_exp();
     let stale = chatgpt_token(expires_at, "acct-body-a");
     let fresh = chatgpt_token(expires_at + 1, "acct-body-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-body-b");
-    std::env::set_var("SHUNT_TEST_CODEX_BODY_B", &token_b);
+    vars.set("SHUNT_TEST_CODEX_BODY_B", &token_b);
 
     let accounts_dir = unique_temp_dir("identical-body");
     write_store_account(&accounts_dir, "account-a", &stale, "refresh-token-a");
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -586,7 +577,7 @@ async fn refresh_retry_and_rotation_reuse_the_identical_serialized_body() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -643,9 +634,6 @@ async fn refresh_retry_and_rotation_reuse_the_identical_serialized_body() {
     assert_eq!(translated["model"], "pooled-codex-model");
     assert_eq!(translated["input"][0]["content"][0]["text"], "hi");
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_CODEX_BODY_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -660,16 +648,16 @@ async fn refresh_retry_and_rotation_reuse_the_identical_compressed_body() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let expires_at = future_exp();
     let stale = chatgpt_token(expires_at, "acct-zbody-a");
     let fresh = chatgpt_token(expires_at + 1, "acct-zbody-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-zbody-b");
-    std::env::set_var("SHUNT_TEST_CODEX_ZBODY_B", &token_b);
+    vars.set("SHUNT_TEST_CODEX_ZBODY_B", &token_b);
 
     let accounts_dir = unique_temp_dir("identical-zstd-body");
     write_store_account(&accounts_dir, "account-a", &stale, "refresh-token-a");
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -680,7 +668,7 @@ async fn refresh_retry_and_rotation_reuse_the_identical_compressed_body() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -763,9 +751,6 @@ async fn refresh_retry_and_rotation_reuse_the_identical_compressed_body() {
     assert_eq!(translated["model"], "pooled-codex-model");
     assert_eq!(translated["input"][0]["content"][0]["text"], large_content);
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_CODEX_ZBODY_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -777,18 +762,18 @@ async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     // `stale` and `fresh` must differ so the BearerToken matchers below can
     // tell the pre-refresh and post-refresh requests apart.
     let expires_at = future_exp();
     let stale = chatgpt_token(expires_at, "acct-a");
     let fresh = chatgpt_token(expires_at + 1, "acct-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-still401-b");
-    std::env::set_var("SHUNT_TEST_CODEX_STILL401_B", &token_b);
+    vars.set("SHUNT_TEST_CODEX_STILL401_B", &token_b);
 
     let accounts_dir = unique_temp_dir("still401");
     write_store_account(&accounts_dir, "account-a", &stale, "refresh-token-a");
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -799,7 +784,7 @@ async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -840,9 +825,6 @@ async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_CODEX_STILL401_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -854,9 +836,9 @@ async fn unresolvable_account_cools_down_and_rotates() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::remove_var("SHUNT_TEST_CODEX_MISSING_A");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-resolve-b");
-    std::env::set_var("SHUNT_TEST_CODEX_RESOLVE_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_RESOLVE_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -881,8 +863,6 @@ async fn unresolvable_account_cools_down_and_rotates() {
         "account-b"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_RESOLVE_B");
 }
 
 #[tokio::test]
@@ -893,8 +873,9 @@ async fn all_accounts_unresolvable_returns_bad_gateway() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::remove_var("SHUNT_TEST_CODEX_MISSING_ALL_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_MISSING_ALL_B");
+    let mut vars = common::env_lock().await;
+    vars.unset("SHUNT_TEST_CODEX_MISSING_ALL_A");
+    vars.unset("SHUNT_TEST_CODEX_MISSING_ALL_B");
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -933,8 +914,9 @@ async fn server_error_rotates_and_cools_down_the_failing_account() {
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-server-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-server-b");
-    std::env::set_var("SHUNT_TEST_CODEX_SERVER_A", &token_a);
-    std::env::set_var("SHUNT_TEST_CODEX_SERVER_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_SERVER_A", &token_a);
+    vars.set("SHUNT_TEST_CODEX_SERVER_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -979,9 +961,6 @@ async fn server_error_rotates_and_cools_down_the_failing_account() {
         "account-b"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_SERVER_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_SERVER_B");
 }
 
 #[tokio::test]
@@ -995,8 +974,9 @@ async fn a_429_always_rotates_unlike_the_anthropic_pause_same_case() {
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-throttle-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-throttle-b");
-    std::env::set_var("SHUNT_TEST_CODEX_THROTTLE_A", &token_a);
-    std::env::set_var("SHUNT_TEST_CODEX_THROTTLE_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_THROTTLE_A", &token_a);
+    vars.set("SHUNT_TEST_CODEX_THROTTLE_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1042,9 +1022,6 @@ async fn a_429_always_rotates_unlike_the_anthropic_pause_same_case() {
         "account-b"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_THROTTLE_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_THROTTLE_B");
 }
 
 #[tokio::test]
@@ -1059,8 +1036,9 @@ async fn exhausted_pool_relays_translated_error_envelope() {
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-exhaust-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-exhaust-b");
-    std::env::set_var("SHUNT_TEST_CODEX_EXHAUST_A", &token_a);
-    std::env::set_var("SHUNT_TEST_CODEX_EXHAUST_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_EXHAUST_A", &token_a);
+    vars.set("SHUNT_TEST_CODEX_EXHAUST_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1108,9 +1086,6 @@ async fn exhausted_pool_relays_translated_error_envelope() {
         })
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_EXHAUST_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_EXHAUST_B");
 }
 
 #[tokio::test]
@@ -1129,8 +1104,9 @@ async fn websocket_enabled_pool_falls_back_to_http_and_streams() {
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-wspool-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-wspool-b");
-    std::env::set_var("SHUNT_TEST_CODEX_WSPOOL_A", &token_a);
-    std::env::set_var("SHUNT_TEST_CODEX_WSPOOL_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_WSPOOL_A", &token_a);
+    vars.set("SHUNT_TEST_CODEX_WSPOOL_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1193,9 +1169,6 @@ async fn websocket_enabled_pool_falls_back_to_http_and_streams() {
         "message_start must carry the tiktoken estimate on the pool ws->http fallback path; got:\n{body}"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_WSPOOL_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_WSPOOL_B");
 }
 
 #[tokio::test]
@@ -1213,8 +1186,9 @@ async fn pool_http_dispatch_seeds_message_start_input_token_estimate() {
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-estimate-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-estimate-b");
-    std::env::set_var("SHUNT_TEST_CODEX_ESTIMATE_A", &token_a);
-    std::env::set_var("SHUNT_TEST_CODEX_ESTIMATE_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_ESTIMATE_A", &token_a);
+    vars.set("SHUNT_TEST_CODEX_ESTIMATE_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1253,9 +1227,6 @@ async fn pool_http_dispatch_seeds_message_start_input_token_estimate() {
         "message_start must carry the tiktoken estimate on the pool HTTP dispatch path; got:\n{body}"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_ESTIMATE_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_ESTIMATE_B");
 }
 
 #[tokio::test]
@@ -1272,8 +1243,9 @@ async fn pool_rotation_still_seeds_input_token_estimate_after_401() {
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-estimate-rot-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-estimate-rot-b");
-    std::env::set_var("SHUNT_TEST_CODEX_ESTIMATE_ROT_A", &token_a);
-    std::env::set_var("SHUNT_TEST_CODEX_ESTIMATE_ROT_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_ESTIMATE_ROT_A", &token_a);
+    vars.set("SHUNT_TEST_CODEX_ESTIMATE_ROT_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1321,9 +1293,6 @@ async fn pool_rotation_still_seeds_input_token_estimate_after_401() {
         "message_start must carry the tiktoken estimate after a pool account rotation; got:\n{body}"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_ESTIMATE_ROT_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_ESTIMATE_ROT_B");
 }
 
 #[tokio::test]
@@ -1341,8 +1310,9 @@ async fn codex_quota_headers_drive_proactive_rotation() {
         .unwrap()
         .as_secs()
         .saturating_add(16_200);
-    std::env::set_var("SHUNT_TEST_CODEX_QUOTA_A", &token_a);
-    std::env::set_var("SHUNT_TEST_CODEX_QUOTA_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_QUOTA_A", &token_a);
+    vars.set("SHUNT_TEST_CODEX_QUOTA_B", &token_b);
 
     let upstream = MockServer::start().await;
     // Account-a succeeds but reports its 5h window at 99% used (>= the legacy
@@ -1394,9 +1364,6 @@ async fn codex_quota_headers_drive_proactive_rotation() {
         "a near-quota sticky account should be rotated off proactively"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_QUOTA_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_QUOTA_B");
 }
 
 #[tokio::test]
@@ -1409,8 +1376,9 @@ async fn storm_control_spills_concurrent_request_to_next_account() {
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-storm-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-storm-b");
-    std::env::set_var("SHUNT_TEST_CODEX_STORM_A", &token_a);
-    std::env::set_var("SHUNT_TEST_CODEX_STORM_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_STORM_A", &token_a);
+    vars.set("SHUNT_TEST_CODEX_STORM_B", &token_b);
 
     let upstream = MockServer::start().await;
     // Account-a's turn is slow, so it is still in flight (holding its single
@@ -1477,9 +1445,6 @@ async fn storm_control_spills_concurrent_request_to_next_account() {
     assert_eq!(first.status(), StatusCode::OK);
     assert_eq!(first.headers().get("x-shunt-account").unwrap(), "account-a");
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_STORM_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_STORM_B");
 }
 
 #[tokio::test]
@@ -1490,7 +1455,8 @@ async fn storm_control_last_candidate_is_always_admitted() {
         return;
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-storm-solo");
-    std::env::set_var("SHUNT_TEST_CODEX_STORM_SOLO", &token_a);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_STORM_SOLO", &token_a);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1550,8 +1516,6 @@ async fn storm_control_last_candidate_is_always_admitted() {
     let first = first.await.unwrap();
     assert_eq!(first.status(), StatusCode::OK);
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_STORM_SOLO");
 }
 
 #[tokio::test]
@@ -1570,8 +1534,9 @@ async fn codex_quota_rotation_with_empty_reset_header() {
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-quota-noreset-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-quota-noreset-b");
-    std::env::set_var("SHUNT_TEST_CODEX_QUOTA_NORESET_A", &token_a);
-    std::env::set_var("SHUNT_TEST_CODEX_QUOTA_NORESET_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_QUOTA_NORESET_A", &token_a);
+    vars.set("SHUNT_TEST_CODEX_QUOTA_NORESET_B", &token_b);
 
     let upstream = MockServer::start().await;
     // Account-a succeeds but reports its 5h window at 99% used with an empty
@@ -1622,9 +1587,6 @@ async fn codex_quota_rotation_with_empty_reset_header() {
         "a near-quota sticky account with an empty reset header should still rotate off"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_CODEX_QUOTA_NORESET_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_QUOTA_NORESET_B");
 }
 
 #[tokio::test]
@@ -1641,8 +1603,9 @@ async fn restored_stale_quota_reprobes_once_then_uses_healthy_account() {
     }
     let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-restored-a");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-restored-b");
-    std::env::set_var("SHUNT_TEST_CODEX_RESTORED_A", &token_a);
-    std::env::set_var("SHUNT_TEST_CODEX_RESTORED_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_RESTORED_A", &token_a);
+    vars.set("SHUNT_TEST_CODEX_RESTORED_B", &token_b);
 
     let state_dir = unique_temp_dir("restored-stale");
     let state_path = state_dir.join("pool-state.json");
@@ -1703,8 +1666,6 @@ async fn restored_stale_quota_reprobes_once_then_uses_healthy_account() {
     );
     upstream.verify().await;
 
-    std::env::remove_var("SHUNT_TEST_CODEX_RESTORED_A");
-    std::env::remove_var("SHUNT_TEST_CODEX_RESTORED_B");
     fs::remove_dir_all(state_dir).ok();
 }
 
@@ -1716,9 +1677,9 @@ async fn missing_stale_probe_token_cancels_before_healthy_fallback() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::remove_var("SHUNT_TEST_CODEX_MISSING_A");
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-missing-fallback-b");
-    std::env::set_var("SHUNT_TEST_CODEX_MISSING_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_MISSING_B", &token_b);
 
     let state_dir = unique_temp_dir("missing-stale-token");
     let state_path = state_dir.join("pool-state.json");
@@ -1765,6 +1726,5 @@ async fn missing_stale_probe_token_cancels_before_healthy_fallback() {
     );
     upstream.verify().await;
 
-    std::env::remove_var("SHUNT_TEST_CODEX_MISSING_B");
     fs::remove_dir_all(state_dir).ok();
 }

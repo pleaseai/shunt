@@ -46,6 +46,13 @@ const REQUEST_GUARD: Duration = Duration::from_secs(20);
 /// variables: `std::env::set_var` is process-global and these tests share a
 /// process, so per-test env mutation would race. All env writes happen inside
 /// this initializer, which runs exactly once.
+///
+/// env-lock-exempt: the variables set here must outlive every test in the
+/// binary, so they cannot be owned by a `common::EnvVars` guard that restores
+/// them when one test ends — and holding `common::ENV_LOCK` for the life of the
+/// process instead would be a lock nothing can ever take. The write-once design
+/// above is what stands in for the lock here, and no other test in this binary
+/// writes the environment (issue #539).
 fn stub_agy() -> &'static Path {
     static STUB: OnceLock<PathBuf> = OnceLock::new();
     STUB.get_or_init(|| {

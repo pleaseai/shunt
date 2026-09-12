@@ -6,6 +6,8 @@ use shunt::adapters::antigravity::{
     stream::{AgyEnd, Translator},
 };
 
+mod common;
+
 /// One id per usable `<model>-<effort>` combination, plus a bare model name
 /// where the model takes no `--effort` flag.
 ///
@@ -45,11 +47,11 @@ fn test_antigravity_prompt_extraction() {
 fn test_find_agy_binary_honors_env_override() {
     let fake_bin = std::env::temp_dir().join(format!("shunt-test-agy-{}", std::process::id()));
     std::fs::write(&fake_bin, b"#!/bin/sh\n").unwrap();
-    std::env::set_var("AGY_BIN", &fake_bin);
+    let mut vars = common::set_env_blocking(&[]);
+    vars.set("AGY_BIN", &fake_bin);
 
     let found = find_agy_binary();
 
-    std::env::remove_var("AGY_BIN");
     std::fs::remove_file(&fake_bin).unwrap();
     assert_eq!(found, Some(fake_bin));
 }
