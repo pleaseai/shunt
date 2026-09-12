@@ -463,14 +463,15 @@ crates.io packaging is not a constraint: the crate is already `publish = false`
 
 The server-rendered dashboard interpolates two per-session values into the page
 it emits: the session's CSRF token, and `claude::auth::EXPIRY_BUFFER` in
-milliseconds. The SPA cannot be built that way. Its shell is one file embedded
+milliseconds. A third joined them once sessions recorded a privilege — `access`,
+the tier the session authenticates with. The SPA cannot be built that way. Its shell is one file embedded
 at compile time and served, unauthenticated, to every visitor alike
 (`src/admin/ui.rs`) — it knows nothing about the request that fetched it, and
 making it session-aware would mean rendering it per request, which is exactly
 the server-rendered page this track is replacing.
 
-`GET /admin/api/session` returns both, authenticated like every other route in
-that namespace.
+`GET /admin/api/session` returns all three, authenticated like every other route
+in that namespace.
 
 **Returning a CSRF token over a `GET` does not weaken the guard it belongs to.**
 A cross-origin page can *send* this request with the browser's ambient cookie,
@@ -491,6 +492,76 @@ different reason: the dashboard reports a setup token as expired once it is
 inside that buffer, and routing refuses one on the same boundary
 (`Tokens::is_valid_at`). A copy in TypeScript could drift from the Rust
 constant; a served value cannot.
+
+## Decision 6 — the frontend stack above React + Vite
+
+[Resolution 2](#resolutions) settles the toolchain — React + Vite, its own
+package and lockfile — and says nothing about what goes *inside* it. The
+dashboard is about to grow monitoring, access-permission management, and
+possibly its own sign-in page, which is more surface than one hand-written
+97-line stylesheet and four `<details>`-and-`<table>` screens carry well. This
+fixes what may be added, and on what condition.
+
+Two constraints bound every option, and both come from this document:
+
+- **The bundle ships inside the binary** ([Decision 4](#decision-4--build-the-ui-as-an-embedded-bundle)),
+  so its size is a release-artifact cost, not a page-load one. The baseline at
+  the time of writing is 253 KB raw / 79 KB gzip of JS plus 5.6 KB / 2.0 KB of
+  CSS.
+- **The shell's CSP is `style-src 'self'` with no `'unsafe-inline'`**
+  (`src/admin/ui.rs`), which is the whole reason the stylesheet is external.
+  Anything that injects CSS at runtime — a styled-components or Styletron-style
+  CSS-in-JS layer — would have to loosen that, and is refused on those grounds
+  alone. A build-time compiler that emits a static stylesheet does not.
+
+| Layer | Decision |
+| :-- | :-- |
+| Primitives | **Base UI** (`@base-ui/react`). Headless, so it adds behavior and ARIA without a style runtime. It replaces the hand-rolled disclosure and supplies the dialog, menu, and select the screens below will need |
+| Routing | **TanStack Router**, landing with — not before — the `/admin/*` deep links [Resolution 6](#resolutions) already promised. Its `beforeLoad` is also where the sign-in redirect and the read/write tier gate belong, in one place rather than per screen |
+| Styling | **Tailwind v4 + shadcn/ui, conditional** — see below. Until that condition is met, the existing token-based `index.css` stays |
+
+**Cloudflare Kumo is rejected**, though it is the closest single answer: it is
+MIT, built on Base UI, and would supply charts as well. It is a *product* design
+system — it carries Cloudflare's visual identity, makes `@phosphor-icons/react` a
+required peer dependency, and ships a prebuilt, non-purgeable stylesheet for the
+whole system against a 2 KB baseline. Its patterns are worth reading; the
+dependency is not worth embedding in this binary.
+
+### The condition on Tailwind: `html.rs` must stop being a hand-kept copy
+
+`src/index.css` is a verbatim port of the `STYLE` const in `src/admin/html.rs`,
+which still renders the login page, and the two are kept in step by a comment
+asking a human to remember. That page cannot move into the bundle:
+[Decision 4](#decision-4--build-the-ui-as-an-embedded-bundle) keeps it
+server-rendered precisely because the bundle exists only in a `--features ui`
+build, and an admin surface that lost its *sign-in* page would be unusable
+rather than merely dashboard-less.
+
+So adopting Tailwind would split the product's visual identity into two copies
+that diverge — unless the login page's stylesheet is **generated** from the same
+source and committed, with CI regenerating it and failing on a diff. That trade
+is the condition, and it is worth stating as an improvement rather than a tax:
+it replaces a comment asking someone to remember with a gate that cannot be
+forgotten, while keeping [Resolution 1](#resolutions) intact — a default
+`cargo build` still needs no Node toolchain, because the generated CSS is in the
+tree.
+
+### What this does not decide
+
+Two of the three features motivating this are blocked behind other decisions,
+and naming a frontend stack must not obscure that:
+
+- **Monitoring is blocked on [`storage.md`](storage.md).** Every observable is a
+  point-in-time value in memory, and `src/metrics.rs` emits to the Sentry and
+  OTel sinks rather than to a scrape endpoint. Until a store lands, a
+  "monitoring" screen is a status page, and calling it one is more honest than
+  picking a charting library for it.
+- **Access-permission management is display-only** until the same decision. A
+  UI cannot mint keys: every `write_keys` / `read_keys` entry must come from a
+  `${VAR}` / `${file:}` reference, and a literal in the config file fails the
+  load (`src/config.rs`). Showing which tiers exist, and which one the current
+  session holds, is the part that needs no store — and the session's tier
+  reaching the dashboard is already done.
 
 ## Desktop
 
@@ -670,3 +741,6 @@ The seven questions this document originally left open are now decided:
 - `docs/running.md` — the single-instance topology statement belongs in the
   operational guide, not only in this design record.
 - `README.md` — only if the dashboard becomes a headline capability.
+- `ui/README.md` — whenever [Decision 6](#decision-6--the-frontend-stack-above-react--vite)
+  adds a layer, since its Layout table is what a reader checks before opening
+  the source.

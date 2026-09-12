@@ -23,7 +23,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/admin`、`/admin/` | 管理仪表盘 —— 与前端包的其余部分一样,无需认证即可获取的 SPA 外壳。当 `GET /admin/api/session` 返回 `401` 时,由前端包自身跳转到 `/admin/login`。由于通配符段无法匹配空字符串,`/admin/` 不会命中任何路由,因此挂载点根路径的两种写法都做了注册。在未启用 `--features ui` 构建的二进制中,两个路径都返回 `404`,响应体会点明该特性 |
 | `GET`, `POST` | `/admin/login` | 管理员 token 登录表单与浏览器会话创建 |
 | `POST` | `/admin/api/logout` | 清除浏览器会话 |
-| `GET` | `/admin/api/session` | 管理 SPA 渲染前所需的两个会话级值：会话的 `csrf` 令牌与 `expiry_buffer_ms`（`claude::auth::EXPIRY_BUFFER` 的毫秒值，即 setup token 失效的边界）。使用请求头凭据的调用方免除 CSRF，因此收到空的 `csrf`。该表面没有 CORS 层，跨源页面能发出请求却读不到响应，所以通过 `GET` 返回令牌是安全的 |
+| `GET` | `/admin/api/session` | 管理 SPA 渲染前所需的三个会话级值：会话的 `csrf` 令牌、`expiry_buffer_ms`（`claude::auth::EXPIRY_BUFFER` 的毫秒值，即 setup token 失效的边界），以及 `access` —— 该会话认证所用的级别，取值 `read` 或 `write`，仪表盘据此决定是否呈现写操作。使用请求头凭据的调用方免除 CSRF，因此收到空的 `csrf`。该表面没有 CORS 层，跨源页面能发出请求却读不到响应，所以通过 `GET` 返回令牌是安全的 |
 | `GET` | `/admin/api/accounts` | Claude 账户存储元数据:名称、类型、过期时间和 UUID;绝不返回 token 材料 |
 | `GET` | `/admin/api/accounts/codex` | Codex 账户存储元数据:名称、过期时间和 ChatGPT 账户 ID;绝不返回 token 材料 |
 | `GET` | `/admin/api/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider 的池状态;每个 account 对象可能包含可选的 `plan` 字符串;文件中读取的值之后可能通过 profile 查询被修正为更精确的值;Codex 行包含已上报的 5h/7d 用量,`7d_oi` 没有对应的 Codex 字段;每个 account 还带有布尔字段 `needs_relogin`:凭据被终结性拒绝(`invalid_grant`)、根本不带刷新令牌,或轮换出的令牌对未能写入而丢失 —— 任何重试都无法恢复,只有运维人员重新登录才行。它与冷却字段**相互独立**上报 —— 冷却会自行到期,而该标记不会 —— 仪表盘的两个表格都会显示为 **needs re-login**,而不是配额暂停时的 `cooling`。仅存于内存:重启后清空,该账户的下一次终结性失败会重新置位。即使某个账户从未被任何 provider 表选中过,它也会被上报 —— 与 `has_state: false` 并列 —— 因为 admin 的 refresh 探测按存储名记录其判定。 |
@@ -45,7 +45,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/codex/analytics-events/events` | Codex CLI 分析 sink —— 根路径式 `chatgpt_base_url` 形式 |
 | `GET` | `/usage` | 面向客户端的净化池用量 —— 返回共享账户池按窗口的剩余余量和重置时间,以及每个参与池化的提供方的同样聚合,绝不返回账户身份或容量 |
 
-`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作上会被 `403` 拒绝,在 `POST /admin/login` 上会被 `401` 拒绝。但 SPA 外壳与前端包文件是例外:`GET /admin`(两种写法)、`GET /admin/{*path}` 与 `GET /admin/assets/{*path}` 无需管理员认证即可获取。这样是安全的,因为它们不包含任何运维数据,而 SPA 读取的一切都在 `/admin/api/*` 之后,后者对每个请求都做认证;其中两个通配符路由同样仅在配置了 `[server.admin]` 且二进制使用 `--features ui` 构建时才存在。
+`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作上会被 `403` 拒绝。它可以登录:`POST /admin/login` 会接受它并铸造一个 read 级别的会话,该会话的修改操作同样会被 `403` 拒绝。但 SPA 外壳与前端包文件是例外:`GET /admin`(两种写法)、`GET /admin/{*path}` 与 `GET /admin/assets/{*path}` 无需管理员认证即可获取。这样是安全的,因为它们不包含任何运维数据,而 SPA 读取的一切都在 `/admin/api/*` 之后,后者对每个请求都做认证;其中两个通配符路由同样仅在配置了 `[server.admin]` 且二进制使用 `--features ui` 构建时才存在。
 
 ### 管理 SPA 包(`--features ui`)
 

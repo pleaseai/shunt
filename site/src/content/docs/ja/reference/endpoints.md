@@ -23,7 +23,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `GET` | `/admin`、`/admin/` | 管理ダッシュボード — バンドルの他の部分と同じく認証なしで配信される SPA シェルです。`GET /admin/api/session` が `401` を返すと、バンドル自身が `/admin/login` へ遷移させます。ワイルドカードのセグメントは空文字列に一致しないため `/admin/` はどのルートにも一致せず、マウントルートは 2 つの綴りを両方とも登録しています。`--features ui` なしでビルドしたバイナリでは、どちらのパスもその機能名を含む本文とともに `404` を返します |
 | `GET`, `POST` | `/admin/login` | 管理トークンのログインフォームとブラウザーセッションの作成 |
 | `POST` | `/admin/api/logout` | ブラウザーセッションの破棄 |
-| `GET` | `/admin/api/session` | 管理 SPA がレンダリング前に必要とするセッション固有の 2 値: セッションの `csrf` トークンと `expiry_buffer_ms`(`claude::auth::EXPIRY_BUFFER` のミリ秒値で、setup token が使用不可になる境界)。ヘッダー資格情報の呼び出し元は CSRF 免除のため空の `csrf` を受け取る。このサーフェスには CORS レイヤーがないため、クロスオリジンのページはリクエストを送れても応答を読めない。したがって `GET` でトークンを返しても安全 |
+| `GET` | `/admin/api/session` | 管理 SPA がレンダリング前に必要とするセッション固有の 3 値: セッションの `csrf` トークン、`expiry_buffer_ms`(`claude::auth::EXPIRY_BUFFER` のミリ秒値で、setup token が使用不可になる境界)、そして `access` — このセッションが認証する階層で `read` または `write` であり、ダッシュボードはこの値から書き込み操作を出すかどうかを決める。ヘッダー資格情報の呼び出し元は CSRF 免除のため空の `csrf` を受け取る。このサーフェスには CORS レイヤーがないため、クロスオリジンのページはリクエストを送れても応答を読めない。したがって `GET` でトークンを返しても安全 |
 | `GET` | `/admin/api/accounts` | Claude アカウントストアのメタデータ: 名前、種類、有効期限、UUID。トークン本体は決して返さない |
 | `GET` | `/admin/api/accounts/codex` | Codex アカウントストアのメタデータ: 名前、有効期限、ChatGPT アカウント ID。トークン本体は決して返さない |
 | `GET` | `/admin/api/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider ごとのプール状態。各 account オブジェクトには任意の `plan` 文字列が含まれることがあり、ファイルから読んだ値は後の profile 照会でより精密な値に補正されることがあり、Codex の行には報告された 5h/7d 使用量が含まれる(`7d_oi` に対応する Codex の項目はない)。各 account には真偽値 `needs_relogin` も含まれる。クレデンシャルが終端的に拒否された(`invalid_grant`)か、リフレッシュトークンをそもそも持たないか、ローテーションされたトークン対を保存できずに失った場合で、どのリトライでも回復せず、オペレーターの再ログインだけが解決策となる。クールダウンのフィールドとは**独立に**報告される — クールダウンは自然に失効するが、この印は残る — ダッシュボードの二つの表はいずれもクォータ一時停止の `cooling` ではなく **needs re-login** と表示する。メモリ上のみで保持されるため、再起動でクリアされ、そのアカウントの次の終端的な失敗で再び立つ。どの provider テーブルも一度も選択したことのないアカウントについても — `has_state: false` と並んで — 報告される。admin の refresh プローブが判定をストア名で記録するためである。 |
@@ -45,7 +45,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/codex/analytics-events/events` | Codex CLI analytics sink — ルート形式の `chatgpt_base_url` |
 | `GET` | `/usage` | クライアント向けのサニタイズ済みプール使用量 — 共有アカウントプールのウィンドウごとの残り余裕とリセットに加え、プールされるプロバイダーごとの同じ集計。アカウントの身元や容量は返さない |
 
-`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作では `403` で、`POST /admin/login` では `401` で拒否されます。ただし SPA シェルとバンドルファイルは例外で、`GET /admin`(2 つの綴りとも)、`GET /admin/{*path}`、`GET /admin/assets/{*path}` は管理認証なしで配信されます。これらは運用者のデータを含まず、SPA が読み取る値はすべて、リクエストごとに認証する `/admin/api/*` の背後にあるため安全です。ワイルドカードの 2 つのルートは、`[server.admin]` が設定され、かつ `--features ui` でビルドしたバイナリでのみ存在します。
+`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作では `403` で拒否されます。サインインは可能です: `POST /admin/login` はこれを受け入れて read 階層のセッションを発行し、そのセッションの変更操作も同じ `403` で拒否されます。ただし SPA シェルとバンドルファイルは例外で、`GET /admin`(2 つの綴りとも)、`GET /admin/{*path}`、`GET /admin/assets/{*path}` は管理認証なしで配信されます。これらは運用者のデータを含まず、SPA が読み取る値はすべて、リクエストごとに認証する `/admin/api/*` の背後にあるため安全です。ワイルドカードの 2 つのルートは、`[server.admin]` が設定され、かつ `--features ui` でビルドしたバイナリでのみ存在します。
 
 ### 管理 SPA バンドル（`--features ui`）
 

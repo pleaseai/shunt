@@ -16,6 +16,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
+use crate::config::AdminAccess;
+
 /// A fresh 256-bit URL-safe random identifier (session id or CSRF token).
 pub(crate) fn random_id() -> String {
     let mut bytes = [0_u8; 32];
@@ -95,6 +97,18 @@ impl ObservedUsageCache {
 struct Session {
     csrf: String,
     expires: Instant,
+    access: AdminAccess,
+}
+
+/// What a live session id resolves to: the CSRF token bound to it, and the
+/// privilege the credential that minted it carried.
+///
+/// The two are returned together rather than through separate accessors because
+/// they must come from the *same* entry. Two lookups could straddle the prune in
+/// [`SessionStore::lookup`] and pair a CSRF token with a tier read from nothing.
+pub struct SessionAuth {
+    pub csrf: String,
+    pub access: AdminAccess,
 }
 
 /// Authenticated admin browser sessions, keyed by an opaque session id carried in
@@ -109,8 +123,13 @@ impl SessionStore {
         Self::default()
     }
 
-    /// Create a session with the given lifetime. Returns `(session_id, csrf)`.
-    pub fn create(&self, ttl: Duration) -> (String, String) {
+    /// Create a session with the given lifetime and privilege. Returns
+    /// `(session_id, csrf)`.
+    ///
+    /// `access` is the tier of the credential that minted the session, not a
+    /// property of the browser: a `read_keys` login mints a read session, and a
+    /// write key or an approved OIDC sign-in mints a write one.
+    pub fn create(&self, ttl: Duration, access: AdminAccess) -> (String, String) {
         let id = random_id();
         let csrf = random_id();
         self.sessions
@@ -121,17 +140,21 @@ impl SessionStore {
                 Session {
                     csrf: csrf.clone(),
                     expires: Instant::now() + ttl,
+                    access,
                 },
             );
         (id, csrf)
     }
 
-    /// The session's CSRF token if the id is valid and unexpired. Prunes the
-    /// entry when it has expired.
-    pub fn csrf_for(&self, id: &str) -> Option<String> {
+    /// The session's CSRF token and privilege if the id is valid and unexpired.
+    /// Prunes the entry when it has expired.
+    pub fn lookup(&self, id: &str) -> Option<SessionAuth> {
         let mut sessions = self.sessions.lock().expect("admin session lock poisoned");
         match sessions.get(id) {
-            Some(session) if session.expires > Instant::now() => Some(session.csrf.clone()),
+            Some(session) if session.expires > Instant::now() => Some(SessionAuth {
+                csrf: session.csrf.clone(),
+                access: session.access,
+            }),
             Some(_) => {
                 sessions.remove(id);
                 None
@@ -413,16 +436,42 @@ mod tests {
     #[test]
     fn session_round_trips_and_expires() {
         let store = SessionStore::new();
-        let (id, csrf) = store.create(Duration::from_secs(60));
-        assert_eq!(store.csrf_for(&id).as_deref(), Some(csrf.as_str()));
-        assert!(store.csrf_for("nope").is_none());
+        let (id, csrf) = store.create(Duration::from_secs(60), AdminAccess::Write);
+        let found = store.lookup(&id).expect("live session resolves");
+        assert_eq!(found.csrf, csrf);
+        assert!(store.lookup("nope").is_none());
 
-        let (expired, _) = store.create(Duration::from_millis(0));
+        let (expired, _) = store.create(Duration::from_millis(0), AdminAccess::Write);
         // A zero (already-elapsed) TTL is treated as expired and pruned.
-        assert!(store.csrf_for(&expired).is_none());
+        assert!(store.lookup(&expired).is_none());
 
         store.remove(&id);
-        assert!(store.csrf_for(&id).is_none());
+        assert!(store.lookup(&id).is_none());
+    }
+
+    /// The tier is a property of the session, not a constant: a store that
+    /// dropped `access` and reported one fixed value would still pass every
+    /// assertion above.
+    #[test]
+    fn session_reports_the_tier_it_was_minted_with() {
+        let store = SessionStore::new();
+        let (read_id, _) = store.create(Duration::from_secs(60), AdminAccess::Read);
+        let (write_id, _) = store.create(Duration::from_secs(60), AdminAccess::Write);
+
+        assert_eq!(
+            store
+                .lookup(&read_id)
+                .expect("read session resolves")
+                .access,
+            AdminAccess::Read
+        );
+        assert_eq!(
+            store
+                .lookup(&write_id)
+                .expect("write session resolves")
+                .access,
+            AdminAccess::Write
+        );
     }
 
     #[test]

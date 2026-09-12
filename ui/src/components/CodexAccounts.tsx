@@ -2,7 +2,7 @@ import type { ReactElement } from 'react';
 
 import { API, mutate } from '../api';
 import { when } from '../format';
-import { useSession } from '../session';
+import { useCanWrite, useSession } from '../session';
 import type { CodexStoreAccount } from '../types';
 import type { Loadable } from '../useDashboard';
 
@@ -29,6 +29,8 @@ export function CodexAccounts({
   onMessage,
 }: CodexAccountsProps): ReactElement {
   const { csrf } = useSession();
+  const canWrite = useCanWrite();
+  const columns = canWrite ? 4 : 3;
 
   async function remove(name: string): Promise<void> {
     if (!window.confirm(`Remove Codex account '${name}'? This deletes its stored token file.`)) return;
@@ -56,25 +58,25 @@ export function CodexAccounts({
               <th>Name</th>
               <th>Status</th>
               <th>Account ID</th>
-              <th />
+              {canWrite ? <th /> : null}
             </tr>
           </thead>
           <tbody id="codex-accounts">
             {accounts.status === 'loading' ? (
               <tr>
-                <td colSpan={4} className="muted">
+                <td colSpan={columns} className="muted">
                   Loading…
                 </td>
               </tr>
             ) : null}
             {accounts.status === 'error' ? (
               <tr>
-                <td colSpan={4}>{accounts.message}</td>
+                <td colSpan={columns}>{accounts.message}</td>
               </tr>
             ) : null}
             {accounts.status === 'ready' && !accounts.data.length ? (
               <tr>
-                <td colSpan={4} className="muted">
+                <td colSpan={columns} className="muted">
                   No Codex store accounts yet
                 </td>
               </tr>
@@ -96,22 +98,24 @@ export function CodexAccounts({
                       <small className="status-note">shunt renews this login as needed</small>
                     </td>
                     <td className="mono">{account.account_id || '—'}</td>
-                    <td className="row-actions">
-                      <button
-                        type="button"
-                        className="secondary compact"
-                        onClick={() => onRelogin(account.name)}
-                      >
-                        Re-login
-                      </button>
-                      <button
-                        type="button"
-                        className="danger"
-                        onClick={() => void remove(account.name)}
-                      >
-                        Remove
-                      </button>
-                    </td>
+                    {canWrite ? (
+                      <td className="row-actions">
+                        <button
+                          type="button"
+                          className="secondary compact"
+                          onClick={() => onRelogin(account.name)}
+                        >
+                          Re-login
+                        </button>
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={() => void remove(account.name)}
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    ) : null}
                   </tr>
                 ))
               : null}

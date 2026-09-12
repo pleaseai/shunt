@@ -119,10 +119,15 @@ pre-existing `[server.admin]` untouched.
   `[[server.admin.write_keys]]`, which carries an `id`), as is every
   `write_keys` entry.
 - **`read`** — passes every `GET` on the admin surface and on the spend-limit
-  API, and is refused with `403 permission_error` on every mutation. It also
-  cannot sign in: `POST /admin/login` rejects it with `401` through the login
-  form's own path, because a browser session carries full access and minting one
-  from a read key would silently escalate it.
+  API, and is refused with `403 permission_error` on every mutation. It signs in
+  to the dashboard as well: `POST /admin/login` mints a session that records the
+  `read` tier, and `require_write` refuses that session's mutations exactly as it
+  refuses the header credential's.
+
+  The tier reaching the session is what makes that safe. While a browser session
+  carried full access unconditionally, minting one from a read key would have
+  silently escalated it, which is why the login form answered `401` until
+  sessions recorded their minting privilege.
 
 A credential's privilege is the **maximum** over every set it matches, not
 whichever set happened to be scanned last. Array `id`s must be non-blank and
@@ -248,6 +253,17 @@ process-lifetime state:
   half of this: its value is re-read on every config load, so overwriting the
   referenced file and triggering a reload does rotate that key without a
   restart. Sessions already minted still survive until `session_ttl_secs`.
+
+  **That last sentence reaches read keys too, which it could not while a read
+  key was refused a session.** A `read_keys` login now mints a read-tier
+  session, so rotating a compromised read key stops its *header* credential at
+  the next reload while its *cookie* goes on reading the admin surface until
+  `session_ttl_secs` elapses. What survives is read-only — `require_write`
+  refuses that session's mutations, and it is strictly less than the full access
+  a write-tier session already carried across the same window — but a deployment
+  that hands read keys out widely because revocation looked immediate no longer
+  has that property, and should restart rather than reload. #100 covers both
+  tiers; neither is fixed by the session tier alone.
 
 ## Endpoints (registered only when `[server.admin]` is set)
 

@@ -422,7 +422,9 @@ pub struct AdminConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub write_keys: Vec<AdminKey>,
     /// Read-only keys: they pass every GET on the admin and spend surfaces and
-    /// are refused on every mutation, including the browser login form.
+    /// are refused on every mutation. They sign in to the dashboard too — the
+    /// session records the tier it was minted with, so a read key's session is
+    /// refused on a mutation exactly as the header credential is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub read_keys: Vec<AdminKey>,
     /// Browser session lifetime after login.

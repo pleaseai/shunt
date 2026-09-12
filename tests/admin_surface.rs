@@ -1318,11 +1318,17 @@ async fn admin_header_and_x_api_key_both_authenticate_every_credential_kind() {
     std::env::remove_var(env);
 }
 
-/// A read key is a full citizen on GET routes and is refused everywhere a
-/// write would happen — including the browser login form, which would
-/// otherwise mint a session that carries full access.
+/// A read key is a full citizen on GET routes, is refused everywhere a write
+/// would happen, and signs in to a *read-tier* browser session.
+///
+/// The login half used to assert a `401`: while every session carried full
+/// access, minting one from a read key would have escalated it. Sessions now
+/// record the tier they were minted with, so the property that replaces it is
+/// the stronger one — the read session reaches the mutation with a valid
+/// cookie, a matching CSRF token, and a same-origin request, and is still
+/// refused.
 #[tokio::test]
-async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
+async fn read_key_passes_gets_is_refused_on_mutations_and_signs_in_read_only() {
     if !can_bind_loopback() {
         return;
     }
@@ -1401,28 +1407,95 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    // The login form must not mint a session from a read key.
-    let response = client
-        .post(format!("{}/admin/login", gateway.base_url))
-        .form(&[("token", ADMIN_READ_KEY)])
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(
-        response.headers().get("set-cookie").is_none(),
-        "a read key must never receive a session cookie"
+    // Both tiers sign in; the session each one mints is what differs.
+    let sign_in = |token: &'static str| {
+        let base = gateway.base_url.clone();
+        let client = client.clone();
+        async move {
+            let response = client
+                .post(format!("{base}/admin/login"))
+                .form(&[("token", token)])
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::SEE_OTHER,
+                "{token} must reach the dashboard"
+            );
+            response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .find(|value| value.starts_with("shunt_admin_session="))
+                .map(|value| value.split(';').next().unwrap().to_string())
+                .expect("login sets a session cookie")
+        }
+    };
+
+    // What the dashboard renders its write affordances from.
+    let bootstrap = |cookie: String| {
+        let base = gateway.base_url.clone();
+        let client = client.clone();
+        async move {
+            let response = client
+                .get(format!("{base}/admin/api/session"))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            response.json::<serde_json::Value>().await.unwrap()
+        }
+    };
+
+    // The mutation a session reaches with everything else in order: valid
+    // cookie, matching CSRF token, same-origin. Only the tier can refuse it.
+    let mutate = |cookie: String, csrf: String| {
+        let base = gateway.base_url.clone();
+        let client = client.clone();
+        async move {
+            client
+                .post(format!("{base}/admin/api/accounts/claude"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .header("x-csrf-token", &csrf)
+                .body(r#"{"name":"session-tier","mode":"setup-token"}"#)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+
+    let read_cookie = sign_in(ADMIN_READ_KEY).await;
+    let read_session = bootstrap(read_cookie.clone()).await;
+    assert_eq!(
+        read_session["access"], "read",
+        "a read key's session must report its tier to the dashboard"
+    );
+    let read_csrf = read_session["csrf"].as_str().unwrap().to_string();
+    assert!(!read_csrf.is_empty());
+    assert_eq!(
+        mutate(read_cookie, read_csrf).await,
+        StatusCode::FORBIDDEN,
+        "a read session is refused on a mutation it otherwise fully satisfies"
     );
 
-    // The write key does log in, so the refusal above is about the tier.
-    let response = client
-        .post(format!("{}/admin/login", gateway.base_url))
-        .form(&[("token", ADMIN_WRITE_KEY)])
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert!(response.headers().get("set-cookie").is_some());
+    // The write half is what keeps the assertions above non-vacuous: a
+    // bootstrap hardcoded to "read", or a `require_write` that refused every
+    // cookie, would pass the read half and fail here.
+    let write_cookie = sign_in(ADMIN_WRITE_KEY).await;
+    let write_session = bootstrap(write_cookie.clone()).await;
+    assert_eq!(write_session["access"], "write");
+    let write_csrf = write_session["csrf"].as_str().unwrap().to_string();
+    assert_ne!(
+        mutate(write_cookie, write_csrf).await,
+        StatusCode::FORBIDDEN,
+        "a write session is not refused on the same mutation"
+    );
     std::env::remove_var(env);
     std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
 }

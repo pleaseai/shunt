@@ -27,7 +27,7 @@ shunt check
 shunt run
 ```
 
-Credentials use the same comma-separated `name:token` format as `SHUNT_CLIENT_TOKENS`, but they are a separate security boundary. Do not reuse a `[server.auth]` client token as an admin token. Startup fails closed if `[server.admin]` is present but all three credential sources — its token environment variable (or `tokens_file`), `[[server.admin.write_keys]]`, and `[[server.admin.read_keys]]` — are empty or malformed. The `name:token` pairs are the **write** tier; a `read_keys` entry passes every GET on the admin surface and is refused on every mutation, the login form included.
+Credentials use the same comma-separated `name:token` format as `SHUNT_CLIENT_TOKENS`, but they are a separate security boundary. Do not reuse a `[server.auth]` client token as an admin token. Startup fails closed if `[server.admin]` is present but all three credential sources — its token environment variable (or `tokens_file`), `[[server.admin.write_keys]]`, and `[[server.admin.read_keys]]` — are empty or malformed. The `name:token` pairs are the **write** tier; a `read_keys` entry passes every GET on the admin surface and is refused on every mutation. It can sign in to the dashboard, where its session is read-only.
 
 ### Add OIDC/SSO browser login
 

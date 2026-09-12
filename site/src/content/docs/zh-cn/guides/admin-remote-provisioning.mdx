@@ -25,7 +25,7 @@ shunt check
 shunt run
 ```
 
-凭据使用与 `SHUNT_CLIENT_TOKENS` 相同的逗号分隔 `name:token` 格式,但它们是相互独立的安全边界。不要把 `[server.auth]` 的客户端 token 复用为管理员 token。如果存在 `[server.admin]` 但三个凭据来源 —— token 环境变量(或 `tokens_file`)、`[[server.admin.write_keys]]` 与 `[[server.admin.read_keys]]` —— 全部为空或格式错误,启动会安全失败(fail closed)。`name:token` 对属于 **write** 层级;`read_keys` 条目可以通过管理界面的所有 GET,但在包括登录表单在内的所有修改操作上都会被拒绝。
+凭据使用与 `SHUNT_CLIENT_TOKENS` 相同的逗号分隔 `name:token` 格式,但它们是相互独立的安全边界。不要把 `[server.auth]` 的客户端 token 复用为管理员 token。如果存在 `[server.admin]` 但三个凭据来源 —— token 环境变量(或 `tokens_file`)、`[[server.admin.write_keys]]` 与 `[[server.admin.read_keys]]` —— 全部为空或格式错误,启动会安全失败(fail closed)。`name:token` 对属于 **write** 层级;`read_keys` 条目可以通过管理界面的所有 GET,但在所有修改操作上都会被拒绝。它可以登录仪表盘,该会话是只读的。
 
 每个键与默认值见[配置参考](/zh-cn/reference/configuration/#serveradmin可选)。[端点参考](/zh-cn/reference/endpoints/)列出了浏览器路由和 JSON 路由。
 
