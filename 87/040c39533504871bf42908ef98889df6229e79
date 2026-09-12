@@ -1,0 +1,38 @@
+ui/src/__tests__/rejected-start.test.tsx
+  s_e9fd5f53eebc34::t_d9eb029b0d48ac 8,12,371
+  s_e9fd5f53eebc34::t_354607b0759433 321-357,359-370,372-414,416-419
+  s_e9fd5f53eebc34::t_f9e015488557ac 78,143,186,224,320,358,415
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_e83b90e041560f 50
+ui/src/useProvisioningFlow.ts
+  s_e9fd5f53eebc34::t_0185b08706416d 248
+  s_e9fd5f53eebc34::t_8d021839d04578 165
+  s_e9fd5f53eebc34::t_d9eb029b0d48ac 46,64
+  s_e9fd5f53eebc34::t_e856e181fcc758 339-346,351-365
+  s_e9fd5f53eebc34::t_b32eaee18efcb7 347-350
+  s_e9fd5f53eebc34::t_739cb854d8b582 151-156,158-164,166-169,180-181,185,246-247,249-252,268-274,279,313,322,374,390,397
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_e83b90e041560f 74
+docs/m9-admin-surface.md
+  s_e9fd5f53eebc34::t_0185b08706416d 850-859
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_e83b90e041560f 50
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_e83b90e041560f 50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "87040c39533504871bf42908ef98889df6229e79",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
