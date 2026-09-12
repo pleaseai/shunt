@@ -2871,8 +2871,8 @@ mod tests {
     /// no failure, no timeout, no output — instead of failing.
     ///
     /// * Opening first makes the stall a blocked `read` (a writer exists)
-    ///   rather than a blocked `open`, so the only thing that can end it is
-    ///   this test's own `drop`, which no scheduling order can miss. Opening
+    ///   rather than a blocked `open`, for as long as this test holds the
+    ///   writer — which is across the whole call. Opening
     ///   afterwards instead made the release conditional on an `open` that
     ///   can fail — and its `Result` was discarded, which is the hang: when
     ///   that open fails, for whatever reason, nothing ever opens the write
@@ -2883,6 +2883,15 @@ mod tests {
     ///   as a failed assertion rather than stranding a read.
     /// * `O_RDWR` never blocks. A write-only open blocks until a reader is
     ///   present, deadlocking this thread against the task it must release.
+    ///
+    /// The fifo is unlinked **before** that wait, not after it. The blocking
+    /// closure runs on an OS thread, so the kernel can deschedule it between
+    /// recording the missing file's failure and opening the fifo — for
+    /// seconds, under exactly the full-suite load this hang needs. Such a
+    /// closure reaches its `open` after the writer is already gone, and would
+    /// park on a writerless fifo forever; with the fifo unlinked it fails
+    /// fast with `ENOENT` instead. Cleanup placed after the wait would not
+    /// run at all on that path, because the wait panics.
     ///
     /// Reacquiring `lock` at the end proves the blocking read actually
     /// finished: `file_derived_plans` moves its single-flight permit into the
@@ -2950,11 +2959,10 @@ mod tests {
         // reacquiring the permit is the proof that it ended -- without it a
         // still-parked read would hang teardown rather than fail here.
         drop(writer);
-        let _permit = tokio::time::timeout(Duration::from_secs(30), lock.lock())
+        let _ = std::fs::remove_dir_all(&dir);
+        let _permit = tokio::time::timeout(Duration::from_secs(5), lock.lock())
             .await
             .expect("the stalled read must finish once the fifo writer is closed");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A read failure observed before a *later* account's credential stalls
