@@ -253,20 +253,33 @@ fn enclosing_block(source: &str, at: usize) -> Option<(usize, usize)> {
 }
 
 /// The byte offset of every raw write on a code line.
+///
+/// Searched over the whole `source`, rather than line by line against a running
+/// total. A running total has to know how many bytes each line terminator took,
+/// and `str::lines()` has already stripped it — the `\r` of a CRLF checkout
+/// included, so `line.len() + 1` undercounts by a byte per line there. The
+/// offsets feed the block checks below, so that drift does not fail the gate: it
+/// scopes the checks to whatever block the drifted offset happens to land in,
+/// which is the one outcome a tripwire may not have. Far enough into a file it
+/// also lands inside a multi-byte character, and the slice panics. Recovering
+/// the line from the hit's own offset keeps the terminator out of the arithmetic
+/// entirely.
 fn raw_write_offsets(source: &str) -> Vec<usize> {
     let mut at = Vec::new();
-    let mut base = 0usize;
-    for line in source.lines() {
-        if !line.trim_start().starts_with("//") {
-            for call in RAW_WRITES {
-                let mut from = 0usize;
-                while let Some(found) = line[from..].find(call) {
-                    at.push(base + from + found);
-                    from += found + call.len();
-                }
+    for call in RAW_WRITES {
+        let mut from = 0usize;
+        while let Some(found) = source[from..].find(call) {
+            let offset = from + found;
+            // The same rule `code_lines` applies, decided from the offset: a hit
+            // is prose when everything before it on its line is a `//` comment.
+            let line_start = source[..offset]
+                .rfind('\n')
+                .map_or(0, |newline| newline + 1);
+            if !source[line_start..offset].trim_start().starts_with("//") {
+                at.push(offset);
             }
+            from = offset + call.len();
         }
-        base += line.len() + 1;
     }
     at
 }
@@ -372,4 +385,34 @@ fn every_exemption_is_bounded_and_still_load_bearing() {
             }
         }
     }
+}
+
+/// The offsets above are byte positions into the whole source, and the checks
+/// that consume them slice with those positions. A CRLF checkout is where that
+/// arithmetic used to go wrong: `str::lines()` strips `\r\n` as well as `\n`, so
+/// a total accumulated from `line.len() + 1` fell a byte behind per line, and the
+/// `Within` checks went on to read a block the write was never in.
+#[test]
+fn raw_write_offsets_survive_crlf_line_endings() {
+    let source = "fn seed() {\r\n\
+                  // prose about std::env::set_var, not a call\r\n\
+                  let _lock = common::set_env_blocking(&[]);\r\n\
+                  std::env::set_var(\"NAME\", \"value\");\r\n\
+                  }\r\n";
+
+    let at = raw_write_offsets(source);
+    assert_eq!(at.len(), 1, "the commented mention is prose, not a write");
+    assert!(
+        source[at[0]..].starts_with("set_var(\"NAME\""),
+        "the offset must land on the call itself; it landed on {:?}",
+        &source[at[0]..(at[0] + 20).min(source.len())]
+    );
+
+    // What the drift actually cost: the block the write sits in is the one the
+    // exemption check reads, so a drifted offset scopes it to the wrong text.
+    let (start, end) = enclosing_block(source, at[0]).expect("the write sits in a block");
+    assert!(
+        source[start..end].contains("common::set_env_blocking"),
+        "the enclosing block must be the one that takes the lock"
+    );
 }

@@ -20,7 +20,10 @@
   missing value; unique variable names do not help, and neither does locking
   only the writers. That last point is why a test that only *reads* the
   environment — including indirectly, by building a config or resolving a
-  workspace — takes the guard too. `tests/env_lock_coverage.rs` enforces this.
+  workspace — takes the guard too. `tests/env_lock_coverage.rs` enforces the
+  ban on raw writes: it scans for the `set_var`/`remove_var` spellings, so a
+  reader that skips the guard is invisible to it. That half of the rule is held
+  up by review, not by the gate.
 - `tests/antigravity_process.rs` and `tests/env_guard.rs` hold the only reviewed
   exceptions to that rule: the first because its values must outlive every test
   in the binary, which a guard that restores on drop cannot express; the second
