@@ -66,7 +66,8 @@ impl RuntimeState {
 /// good config rather than going down or running open.
 ///
 /// Fields that cannot be hot-applied (`server.bind`,
-/// `server.max_concurrent_requests`, spend-limit route registration/state path,
+/// `server.max_concurrent_requests`, `server.shutdown_timeout_seconds`,
+/// spend-limit route registration/state path,
 /// `[sentry]`, `[otel]`, and enabling or disabling the optional `[server.*]` route
 /// trees) are compared against the live config and a `warn!` is logged when they
 /// change; the new values are accepted into the swapped config but only take
@@ -136,6 +137,13 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
             previous = previous.server.max_concurrent_requests,
             next = next.server.max_concurrent_requests,
             "server.max_concurrent_requests changed but requires a restart to apply; the concurrency gate is fixed at boot"
+        );
+    }
+    if previous.server.shutdown_timeout_seconds != next.server.shutdown_timeout_seconds {
+        tracing::warn!(
+            previous = previous.server.shutdown_timeout_seconds,
+            next = next.server.shutdown_timeout_seconds,
+            "server.shutdown_timeout_seconds changed but requires a restart to apply; the shutdown coordinator is fixed at boot"
         );
     }
     if previous.server.access_control != next.server.access_control {
@@ -1164,5 +1172,24 @@ mod tests {
             reloaded,
             "file watcher should have hot-reloaded the changed config"
         );
+    }
+
+    #[test]
+    fn shutdown_timeout_change_warns_but_reload_still_succeeds() {
+        let dir = temp_dir("shutdown-timeout");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        std::fs::write(&path, "[server]\nshutdown_timeout_seconds = 30\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        std::fs::write(&path, "[server]\nshutdown_timeout_seconds = 45\n").unwrap();
+        let logs = capture_logs(|| {
+            reload(&shared, Some(&path)).expect("reload succeeds despite timeout change");
+        });
+
+        assert_eq!(shared.load().config.server.shutdown_timeout_seconds, 45);
+        assert!(logs.contains("server.shutdown_timeout_seconds changed"));
+        assert!(logs.contains("requires a restart"));
     }
 }
