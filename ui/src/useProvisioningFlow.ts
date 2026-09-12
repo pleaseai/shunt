@@ -34,6 +34,23 @@ const UNKNOWN_COMPLETION =
  */
 const START_UNANSWERED = 'No answer from the server — no authorization step opened, so start again';
 
+/**
+ * Appended to a rejected start's own error when that start closed an
+ * authorization step the operator could still have completed. The clear itself
+ * is by design — a step left open stays clickable and its Complete button posts
+ * to the name captured for THAT flow (#513) — but the server holds the pending
+ * login for the rest of its `pending_ttl_secs`, and after a rejection nothing on
+ * the page points at it any more. Without this line the operator reads only why
+ * the new request was refused and goes looking for a link that is gone; with it
+ * they know the step is closed and restart (#531).
+ *
+ * Said only when a step was in fact open. A rejected start that closed nothing
+ * has nothing to report, and saying it regardless would teach an operator to
+ * read past the sentence on the one occasion it is true.
+ */
+const CLOSED_PREVIOUS_STEP =
+  'the previous authorization step was closed when this start was issued; start again.';
+
 export interface FlowMessage {
   text: string;
   ok: boolean;
@@ -123,6 +140,22 @@ export function useProvisioningFlow({
   const start = useCallback(
     async (body: Record<string, unknown>) => {
       setMessage(null);
+      // Captured before the clear below, because the notice a rejection adds is
+      // only true when this start is closing a step the operator could still
+      // have completed. Read from the render closure rather than through a ref:
+      // the click that calls this runs against the committed render, so the one
+      // way to miss an open step is to click Start in the same tick its link
+      // appeared — which costs a sentence, not correctness.
+      //
+      // Deliberately not `starting || authorizeUrl !== null`, the predicate the
+      // form's radio lock uses. That one also covers a Start clicked while an
+      // earlier start is still in flight — the case this misses, where the
+      // earlier start closed a step and was then superseded — but it fires just
+      // as readily on two chained starts that never opened a step at all, and
+      // then names a step the operator never saw. A missed notice costs a
+      // sentence; a false one sends them hunting for something that never
+      // existed.
+      const closedOpenStep = authorizeUrl !== null;
       // The previous flow's authorization step is closed the moment a new start
       // is issued. Left open it stays clickable, and its Complete button posts
       // to the name captured for THAT flow — and because `complete` bumps the
@@ -154,7 +187,11 @@ export function useProvisioningFlow({
         // form has nothing to show, so reporting nothing would leave the
         // operator staring at a step that never opened.
         if (!result.ok || !result.answered) {
-          setMessage({ text: result.message ?? copy.startFailure, ok: false });
+          const reason = result.message ?? copy.startFailure;
+          setMessage({
+            text: closedOpenStep ? `${reason} — ${CLOSED_PREVIOUS_STEP}` : reason,
+            ok: false,
+          });
           return;
         }
         currentName.current = (result.payload.name as string | undefined) ?? null;
@@ -166,7 +203,7 @@ export function useProvisioningFlow({
         }
       }
     },
-    [csrf, endpoints, copy.startFailure],
+    [csrf, endpoints, copy.startFailure, authorizeUrl],
   );
 
   const complete = useCallback(async () => {

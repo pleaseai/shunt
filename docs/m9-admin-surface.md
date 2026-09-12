@@ -805,6 +805,18 @@ Start again does **not** release the lock (the replacement start re-arms it
 before any render), so the note names the two things that do: completing the
 flow, or reloading the page.
 
+Clearing at issue time costs the operator something when the replacement start is
+then *refused*: the server holds the previous pending login for the rest of its
+`pending_ttl_secs`, and the page has already thrown away the only handle to it.
+Restoring the flow is not the repair — reinstating `authorizeUrl` and the name
+handle puts the page back into exactly the state #513 removed, and making that
+coherent means restoring the name field too, stomping the edit the operator is
+about to correct. The failure message says what was closed instead, appended to
+the server's own reason, so the operator restarts rather than hunting for a link
+that is gone (issue #531). It is appended only when a step was in fact open: a
+refused start that closed nothing has nothing to report, and saying it regardless
+would teach an operator to read past the sentence on the one occasion it is true.
+
 The epoch orders *starts*, where the later click is the live one, and must not
 be extended to order two completions of the same flow: a completion consumes the
 pending login, so there the **first** click is the one that stores the
