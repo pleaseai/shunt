@@ -144,6 +144,49 @@ describe('a failed start says which authorization step it closed', () => {
   });
 
   /**
+   * A step whose code is already submitted is not one the operator could still
+   * have completed. Its completion leaves `authorizeUrl` non-null until it
+   * succeeds and clears it only after the epoch guard, so a Start clicked
+   * mid-completion supersedes that completion — suppressing its confirmation
+   * while `onStored` has already stored the account. Claiming a lost step there
+   * sends the operator to re-provision an account that is already in the table.
+   */
+  it('says nothing about a step whose completion was already in flight', async () => {
+    const user = userEvent.setup();
+    const held = deferred<Response>();
+    let started = 0;
+    await renderDashboard({}, {
+      'POST /admin/api/accounts/claude': () => {
+        started += 1;
+        return started === 1 ? reply(OPENED) : reply(REFUSED, 400);
+      },
+      'POST /admin/api/accounts/claude/first/complete': (() => held.promise) as Route,
+    });
+
+    await user.type(nameField(), 'first');
+    await user.click(startButton());
+    await screen.findByRole('link', { name: OPENED.authorize_url });
+
+    await user.type(document.getElementById('code') as HTMLTextAreaElement, 'the-code#the-state');
+    await user.click(document.getElementById('complete') as HTMLButtonElement);
+
+    // Start is not disabled during a completion, so this click is reachable.
+    await user.clear(nameField());
+    await user.type(nameField(), 'Second');
+    await user.click(startButton());
+
+    // The completion lands last and did store the account.
+    await act(async () => {
+      held.resolve(reply({ message: 'Account stored' }));
+      await held.promise;
+    });
+
+    const message = document.getElementById('addmsg');
+    expect(message).toHaveTextContent('name must be lowercase');
+    expect(message).not.toHaveTextContent('previous authorization step');
+  });
+
+  /**
    * The clear runs before the request, so an unanswered start has closed the
    * step just as surely as a refused one. Its own text says only that no NEW
    * step opened.

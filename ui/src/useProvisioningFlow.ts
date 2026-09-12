@@ -168,13 +168,23 @@ export function useProvisioningFlow({
       // is the step being closed right now, and `closedStepUnreported` is one an
       // earlier start closed whose own response the epoch guard then dropped.
       //
+      // `completingNow` excludes a step whose code is already submitted. Its
+      // completion leaves `authorizeUrl` non-null until it succeeds, and clears
+      // it only *after* the epoch guard — so a Start clicked mid-completion
+      // supersedes that completion, suppressing its confirmation while
+      // `onStored` has already stored the account. Without this term the
+      // refused start would then tell the operator to start again for an
+      // account that is already in the table. A step being completed is not one
+      // they could still have completed, which is the notice's own contract.
+      //
       // Deliberately not `starting || authorizeUrl !== null`, the predicate
       // `AddClaudeAccount`'s radio lock uses (the Codex form has no radios and
       // no such lock). That one reaches the superseded case too, but it fires
       // just as readily on two chained starts that never opened a step at all,
       // and then names a step the operator never saw. The ref reaches the same
       // case by remembering an actual closure, so it cannot say that.
-      const closedOpenStep = authorizeUrl !== null || closedStepUnreported.current;
+      const closedOpenStep =
+        (authorizeUrl !== null && !completingNow.current) || closedStepUnreported.current;
       closedStepUnreported.current = closedOpenStep;
       // The previous flow's authorization step is closed the moment a new start
       // is issued. Left open it stays clickable, and its Complete button posts
@@ -235,7 +245,7 @@ export function useProvisioningFlow({
         }
       }
     },
-    [csrf, endpoints, copy.startFailure, authorizeUrl],
+    [csrf, endpoints.start, copy.startFailure, authorizeUrl],
   );
 
   const complete = useCallback(async () => {

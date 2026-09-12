@@ -831,7 +831,13 @@ which is disabled for its own request, and carries the 120-second
 close it for the life of the page. `start` has no such bound. So a second Start
 during the first is an ordinary double click, not a race. A
 `closedStepUnreported` ref carries the fact across the gap and is released by
-whichever message reports it. The wider predicate the radio lock uses
+whichever message reports it. The predicate also excludes a step whose code is
+already submitted (`completingNow`): a completion leaves `authorizeUrl` non-null
+until it succeeds and clears it only *after* the epoch guard, so a Start clicked
+mid-completion supersedes that completion — suppressing its confirmation while
+`onStored` has already stored the account. Without that term the refused start
+would send the operator to re-provision an account already in the table, and a
+step being completed is not one they could still have completed. The wider predicate the radio lock uses
 (`starting || authorizeUrl !== null`) would reach the same case, but it fires just
 as readily on two chained starts that never opened a step at all, and would then
 name a step the operator never saw.
