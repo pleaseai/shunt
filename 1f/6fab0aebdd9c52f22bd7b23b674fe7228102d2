@@ -1,0 +1,54 @@
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_dd88506721acf5::t_0d89f20714ea9f 28
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_dd88506721acf5::t_0d89f20714ea9f 28
+site/src/content/docs/ja/reference/endpoints.md
+  s_dd88506721acf5::t_cd4f8d0f40888c 26
+  s_dd88506721acf5::t_0d89f20714ea9f 48
+site/src/content/docs/reference/endpoints.md
+  s_dd88506721acf5::t_0d89f20714ea9f 77
+  s_dd88506721acf5::t_cd4f8d0f40888c 28
+site/src/content/docs/ko/reference/configuration.md
+  s_dd88506721acf5::t_0d89f20714ea9f 85
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_dd88506721acf5::t_0d89f20714ea9f 28
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_dd88506721acf5::t_0d89f20714ea9f 85
+site/src/content/docs/ja/reference/configuration.md
+  s_dd88506721acf5::t_0d89f20714ea9f 85
+site/src/content/docs/reference/configuration.md
+  s_dd88506721acf5::t_0d89f20714ea9f 121
+ui/src/components/ClaudeAccounts.tsx
+  s_dd88506721acf5::t_948a579a7f02bb 127-140,144,146,148-155
+src/config.rs
+  s_dd88506721acf5::t_0d89f20714ea9f 414-416
+docs/admin-ui-delivery.md
+  s_dd88506721acf5::t_cd4f8d0f40888c 466-467,473-474
+  s_dd88506721acf5::t_e101e2adf2b1a8 496-565,744-746
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_dd88506721acf5::t_0d89f20714ea9f 48
+  s_dd88506721acf5::t_cd4f8d0f40888c 26
+site/src/content/docs/ko/reference/endpoints.md
+  s_dd88506721acf5::t_cd4f8d0f40888c 26
+  s_dd88506721acf5::t_0d89f20714ea9f 48
+docs/m9-admin-surface.md
+  s_dd88506721acf5::t_0d89f20714ea9f 122-130
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_dd88506721acf5::t_0d89f20714ea9f 30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1f6fab0aebdd9c52f22bd7b23b674fe7228102d2",
+  "prompts": {},
+  "sessions": {
+    "s_dd88506721acf5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6f2e70cc-ac73-4d92-be7e-f9518dc70b8e",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}
