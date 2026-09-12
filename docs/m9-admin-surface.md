@@ -228,6 +228,18 @@ process-lifetime state:
   /admin/logout` is a plain navigation form that cannot send the header, so it is
   guarded by the same-origin check plus the `SameSite=Strict` cookie instead of
   the synchronizer token.
+- **Same-origin on `POST /admin/login`**, for the same reason and checked before
+  the rate limit, so a cross-site flood cannot spend the operator's login budget.
+  `SameSite=Strict` decides whether the browser *sends* an existing session
+  cookie; it does not stop the browser storing the `Set-Cookie` a cross-site form
+  submission gets back. Without this guard, anyone holding a valid credential
+  could submit that form from their own page and replace a visitor's session with
+  one of their choosing. That became worth guarding when `read_keys` gained the
+  ability to sign in: a read key is handed to someone deliberately given less
+  privilege, and this was its one lever against a write operator — silently
+  downgrading that dashboard to read-only until the operator signed in again.
+  Scripted logins are unaffected: the check passes when neither `Sec-Fetch-Site`
+  nor `Origin` is present.
 - **Pending-login store** is in-memory only, single-use, and TTL-bound; each
   completion attempt is counted and the entry is discarded after a small cap. The
   256-bit OAuth `state` already makes guessing infeasible.

@@ -45,7 +45,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/codex/analytics-events/events` | Codex CLI 분석 sink — 루트형 `chatgpt_base_url` 형식 |
 | `GET` | `/usage` | 클라이언트용 정제된 풀 사용량 — 공유 계정 풀의 창별 잔여 여유와 리셋, 그리고 풀링되는 프로바이더별 동일 집계를 반환하며 계정 신원이나 용량은 반환하지 않음 |
 
-`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로 거부됩니다. 로그인은 할 수 있습니다: `POST /admin/login`이 이를 받아들여 read 등급 세션을 발급하고, 그 세션의 변경 작업도 같은 `403`으로 거부됩니다. 다만 SPA 셸과 번들 파일은 예외로, `GET /admin`(두 표기 모두), `GET /admin/{*path}`, `GET /admin/assets/{*path}`는 관리자 인증 없이 제공됩니다. 이들은 운영자 데이터를 담지 않고, SPA가 읽는 값은 모두 요청마다 인증하는 `/admin/api/*` 뒤에 있으므로 안전합니다. 와일드카드 라우트 둘은 `[server.admin]`이 구성되고 `--features ui`로 빌드한 바이너리에서만 존재합니다.
+`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로 거부됩니다. 로그인은 할 수 있습니다: `POST /admin/login`이 이를 받아들여 read 등급 세션을 발급하고, 그 세션의 변경 작업도 같은 `403`으로 거부됩니다. 이 로그인 POST에는 same-origin 가드가 걸려 있습니다: 교차 사이트 폼 제출은 자격 증명을 검사하기도 전에 `403`으로 거부되므로, 어떤 자격 증명 보유자도 이미 로그인한 운영자의 세션 쿠키를 자기 것으로 바꿔치기할 수 없습니다. 스크립트 로그인은 영향을 받지 않습니다 — `Sec-Fetch-Site`와 `Origin`이 모두 없으면 검사를 통과합니다. 다만 SPA 셸과 번들 파일은 예외로, `GET /admin`(두 표기 모두), `GET /admin/{*path}`, `GET /admin/assets/{*path}`는 관리자 인증 없이 제공됩니다. 이들은 운영자 데이터를 담지 않고, SPA가 읽는 값은 모두 요청마다 인증하는 `/admin/api/*` 뒤에 있으므로 안전합니다. 와일드카드 라우트 둘은 `[server.admin]`이 구성되고 `--features ui`로 빌드한 바이너리에서만 존재합니다.
 
 ### 관리자 SPA 번들(`--features ui`)
 

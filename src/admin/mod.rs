@@ -606,6 +606,25 @@ async fn login_submit(
     let Some(auth) = state.admin_auth.clone() else {
         return not_found();
     };
+    // Same-origin, for the same reason [`logout`] checks it: this is a
+    // navigation form POST, so it carries no `x-csrf-token`, and `SameSite=Strict`
+    // governs whether the browser *sends* an existing cookie -- not whether it
+    // stores the `Set-Cookie` this hands back. Without the guard a cross-site
+    // page could submit a token it holds and overwrite the visitor's session
+    // with one of its own choosing.
+    //
+    // That became worth guarding when `read_keys` gained the ability to sign in:
+    // a read key is handed to someone deliberately given less privilege, and
+    // this was the one lever it had against a write operator -- silently
+    // downgrading their dashboard to read-only until they signed in again. A
+    // write-key holder could always do this, but gains nothing by it.
+    //
+    // Non-browser callers are unaffected: `same_origin` returns `true` when
+    // neither `Sec-Fetch-Site` nor `Origin` is present, so a scripted login
+    // still works.
+    if !same_origin(&headers) {
+        return forbidden("cross-origin admin request rejected");
+    }
     // Throttle admin-token guessing (defense-in-depth behind the constant-time
     // compare); every POST counts, before the token is checked.
     if !state.admin_stores.login_rate.check() {

@@ -1496,6 +1496,39 @@ async fn read_key_passes_gets_is_refused_on_mutations_and_signs_in_read_only() {
         StatusCode::FORBIDDEN,
         "a write session is not refused on the same mutation"
     );
+
+    // A cross-site page cannot mint a session, even holding a valid key.
+    // `SameSite=Strict` decides whether the browser *sends* an existing cookie,
+    // not whether it stores the one this response hands back -- so without the
+    // guard a read-key holder could submit this form from their own page and
+    // overwrite a write operator's cookie, silently downgrading that dashboard
+    // to read-only. Both tiers are asserted: the guard is about the request's
+    // origin, not about privilege, and a check that only refused read keys
+    // would be the wrong guard passing this test.
+    for token in [ADMIN_READ_KEY, ADMIN_WRITE_KEY] {
+        let response = client
+            .post(format!("{}/admin/login", gateway.base_url))
+            .header("sec-fetch-site", "cross-site")
+            .form(&[("token", token)])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a cross-origin login must be refused for {token}"
+        );
+        assert!(
+            response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .all(|value| !value.starts_with("shunt_admin_session=")),
+            "a refused cross-origin login must not set a session cookie"
+        );
+    }
+
     std::env::remove_var(env);
     std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
 }
