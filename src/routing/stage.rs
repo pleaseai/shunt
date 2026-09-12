@@ -20,7 +20,10 @@
 #![allow(dead_code)]
 
 mod signals;
+mod store;
 mod vocabulary;
+
+pub(crate) use store::StageRouterStore;
 
 use serde_json::Value;
 use switchyard_libsy::{pick_tier, DecisionSource, PickOutcome, PickerMode, Tier};
