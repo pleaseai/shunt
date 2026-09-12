@@ -155,6 +155,17 @@ export function useProvisioningFlow({
   // one is the operator's account of the start that closed the step.
   const shownStartFailure = useRef<FlowMessage | null>(null);
 
+  // Mirrors `authorizeUrl` for the same reason `shownStartFailure` mirrors the
+  // message: `complete` has to know whether a step is open *now*, and taking the
+  // state as a dependency would rebuild the callback mid-flight.
+  const stepOpen = useRef(false);
+
+  /** Open or close the authorization step, keeping `stepOpen` in step. */
+  const openStep = useCallback((url: string | null) => {
+    stepOpen.current = url !== null;
+    setAuthorizeUrl(url);
+  }, []);
+
   /**
    * Write the page's one message, remembering whether it came from a failed
    * start. The ref is what lets a callback read what is on screen without
@@ -174,11 +185,11 @@ export function useProvisioningFlow({
     discardedEpoch.current = epoch.current;
     currentName.current = null;
     closedStepUnreported.current = false;
-    setAuthorizeUrl(null);
+    openStep(null);
     setStarting(false);
     setCode('');
     show(null);
-  }, [show]);
+  }, [show, openStep]);
 
   const start = useCallback(
     async (body: Record<string, unknown>) => {
@@ -217,7 +228,7 @@ export function useProvisioningFlow({
       // epoch itself, that click also strands the start now in flight: its
       // response arrives under a superseded epoch and is dropped, so the link
       // the operator is looking at is never replaced by the one they asked for.
-      setAuthorizeUrl(null);
+      openStep(null);
       currentName.current = null;
       // The code belongs to the flow being closed. `complete` clears it only on
       // success, so a failed exchange leaves it in the box, and it would be
@@ -255,7 +266,7 @@ export function useProvisioningFlow({
         }
         currentName.current = (result.payload.name as string | undefined) ?? null;
         const opened = (result.payload.authorize_url as string | undefined) ?? null;
-        setAuthorizeUrl(opened);
+        openStep(opened);
         // Only when a step is actually open again. A 2xx answer carrying no
         // `authorize_url` lands *here*, not in the branch above — that one reads
         // the status and whether the body parsed, never the payload — and it
@@ -276,7 +287,7 @@ export function useProvisioningFlow({
         }
       }
     },
-    [csrf, endpoints.start, copy.startFailure, authorizeUrl, show],
+    [csrf, endpoints.start, copy.startFailure, authorizeUrl, show, openStep],
   );
 
   const complete = useCallback(async () => {
@@ -338,11 +349,17 @@ export function useProvisioningFlow({
         // otherwise.
         if (discardedEpoch.current >= issued) return;
         const onScreen = shownStartFailure.current;
-        if (onScreen === null) {
-          // The start that superseded this completion has not reported yet — it
-          // is still in flight, having cleared the message as it was issued, or
-          // it opened a step. The ref hands the closure to whatever message
-          // comes next.
+        if (stepOpen.current) {
+          // The start that superseded this completion has opened a step of its
+          // own, so the operator is not stranded and there is nothing to say.
+          // Arming the carry here would strand the *fact* instead: completing
+          // that step consumes it without reporting it, and the notice would
+          // surface later on a failure that closed nothing.
+        } else if (onScreen === null) {
+          // That start has not reported yet — it is still in flight, having
+          // cleared the message as it was issued. The ref hands the closure to
+          // whatever message it writes; if that start opens a step instead, its
+          // success path releases the ref.
           closedStepUnreported.current = true;
         } else if (
           !onScreen.text.endsWith(CLOSED_PREVIOUS_STEP) &&
@@ -372,7 +389,7 @@ export function useProvisioningFlow({
       onStored();
       if (issued !== epoch.current) return;
       show({ text: (result.payload.message as string | undefined) ?? copy.stored, ok: true });
-      setAuthorizeUrl(null);
+      openStep(null);
       setName('');
       setCode('');
     } catch {
@@ -394,7 +411,7 @@ export function useProvisioningFlow({
       completingNow.current = false;
       setCompleting(false);
     }
-  }, [csrf, code, endpoints, copy.completeFailure, copy.stored, onStored, show]);
+  }, [csrf, code, endpoints, copy.completeFailure, copy.stored, onStored, show, openStep]);
 
   return {
     name,

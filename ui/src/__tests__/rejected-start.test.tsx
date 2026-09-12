@@ -418,4 +418,58 @@ describe('a failed start says which authorization step it closed', () => {
     await user.click(startButton());
     expect(message).toHaveTextContent(`name must be lowercase — ${CLOSED_NOTICE}`);
   });
+
+  /**
+   * A superseded completion that fails has nothing to report when the start that
+   * superseded it opened a step of its own: the operator is not stranded.
+   * Arming the carry there strands the fact instead — completing that step
+   * consumes it silently, and the notice then surfaces on a later failure that
+   * closed nothing at all.
+   */
+  it('does not carry a closure into a flow that has already reopened', async () => {
+    const user = userEvent.setup();
+    const completion = deferred<Response>();
+    const SECOND = { name: 'second', authorize_url: 'https://auth.example/second' };
+    let started = 0;
+    await renderDashboard({}, {
+      'POST /admin/api/accounts/claude': () => {
+        started += 1;
+        if (started === 1) return reply(OPENED);
+        if (started === 2) return reply(SECOND);
+        return reply(REFUSED, 400);
+      },
+      'POST /admin/api/accounts/claude/first/complete': (() => completion.promise) as Route,
+      'POST /admin/api/accounts/claude/second/complete': () => reply({ message: 'Account stored' }),
+    });
+
+    await user.type(nameField(), 'first');
+    await user.click(startButton());
+    await screen.findByRole('link', { name: OPENED.authorize_url });
+
+    await user.type(document.getElementById('code') as HTMLTextAreaElement, 'the-code#the-state');
+    await user.click(document.getElementById('complete') as HTMLButtonElement);
+
+    await user.clear(nameField());
+    await user.type(nameField(), 'second');
+    await user.click(startButton());
+    await screen.findByRole('link', { name: SECOND.authorize_url });
+
+    // The stranded completion lands last, and failed.
+    await act(async () => {
+      completion.resolve(reply({ error: { message: 'state mismatch' } }, 400));
+      await completion.promise;
+    });
+
+    // The reopened flow completes normally, leaving an empty form.
+    await user.type(document.getElementById('code') as HTMLTextAreaElement, 'second#state');
+    await user.click(document.getElementById('complete') as HTMLButtonElement);
+    await screen.findByText('Account stored');
+
+    await user.type(nameField(), 'Third');
+    await user.click(startButton());
+
+    const message = document.getElementById('addmsg');
+    expect(message).toHaveTextContent('name must be lowercase');
+    expect(message).not.toHaveTextContent(CLOSED_NOTICE);
+  });
 });

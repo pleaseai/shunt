@@ -856,7 +856,11 @@ if the start is still in flight, the ref carries the fact to the message it will
 write. Only the start's own verdict is amended, tracked by `shownStartFailure` —
 `#addmsg` is shared with the row actions, which report through `report`, and a
 closed-step note appended to a failed refresh would name a start the operator did
-not make. The two unknown completion outcomes — an unreadable
+not make. Nothing is reported at all when that start has opened a step of its
+own (`stepOpen`, mirroring `authorizeUrl` for the same reason): the operator is
+not stranded, and arming the carry there would strand the fact instead, since
+completing the new step consumes it silently and the notice would surface later
+on a failure that closed nothing. The two unknown completion outcomes — an unreadable
 answer, an abandoned request — record nothing, because neither can say the
 account was *not* stored and `onStored` has already re-read the table, which is
 where that question is answered. Nor does a completion superseded by `prime`:
