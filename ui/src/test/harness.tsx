@@ -3,6 +3,7 @@ import { vi } from 'vitest';
 
 import { App } from '../App';
 import type {
+  AdminAccess,
   ClaudeStoreAccount,
   CodexStoreAccount,
   ObservedAccount,
@@ -45,7 +46,7 @@ export interface RecordedCall {
 }
 
 export interface Fixtures {
-  session?: { csrf: string; expiry_buffer_ms: number };
+  session?: { csrf: string; expiry_buffer_ms: number; access?: AdminAccess };
   observed?: ObservedAccount[];
   pool?: PoolProvider[];
   accounts?: ClaudeStoreAccount[];
@@ -58,7 +59,15 @@ export const DEFAULT_EXPIRY_BUFFER_MS = 300_000;
 function defaultRoutes(fixtures: Fixtures): Routes {
   return {
     'GET /admin/api/session': () =>
-      reply(fixtures.session ?? { csrf: 'test-csrf', expiry_buffer_ms: DEFAULT_EXPIRY_BUFFER_MS }),
+      reply({
+        csrf: 'test-csrf',
+        expiry_buffer_ms: DEFAULT_EXPIRY_BUFFER_MS,
+        // Write by default: every suite written before the tier existed asserts
+        // on a page that can manage the pool, and a read-only default would
+        // turn those assertions green for the wrong reason.
+        access: 'write',
+        ...fixtures.session,
+      }),
     'GET /admin/api/observed': () => reply({ accounts: fixtures.observed ?? [] }),
     'GET /admin/api/pool': () => reply({ providers: fixtures.pool ?? [] }),
     'GET /admin/api/accounts': () => reply({ accounts: fixtures.accounts ?? [] }),

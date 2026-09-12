@@ -39,6 +39,11 @@ export function App(): ReactElement {
       setSession({
         csrf: result.data.csrf,
         expiryBufferMs: result.data.expiry_buffer_ms,
+        // No fallback for a missing `access`: this bundle is embedded in the
+        // binary that serves it, so the two cannot be different versions. Were
+        // the field ever absent anyway, `useCanWrite` reads it as read-only —
+        // the safe direction — rather than unlocking every write affordance.
+        access: result.data.access,
       });
     })();
   }, []);

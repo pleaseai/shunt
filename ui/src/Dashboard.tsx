@@ -8,6 +8,7 @@ import { CodexAccounts } from './components/CodexAccounts';
 import { ObservedAccounts } from './components/ObservedAccounts';
 import { PoolHealth } from './components/PoolHealth';
 import { UpstreamStatus } from './components/UpstreamStatus';
+import { useCanWrite } from './session';
 import { useDashboard } from './useDashboard';
 
 /**
@@ -36,6 +37,7 @@ function SignOut(): ReactElement {
 
 export function Dashboard(): ReactElement {
   const data = useDashboard();
+  const canWrite = useCanWrite();
   const claudeForm = useRef<AddAccountHandle>(null);
   const codexForm = useRef<AddAccountHandle>(null);
 
@@ -80,8 +82,20 @@ export function Dashboard(): ReactElement {
           load-balancing. You do not need them merely to view usage.
         </p>
 
-        <AddClaudeAccount ref={claudeForm} onStored={afterClaudeMutation} />
-        <AddCodexAccount ref={codexForm} onStored={afterCodexMutation} />
+        {/* A read session keeps every table below — it may read all of them —
+            and loses only what it cannot do. Saying so is the point: a section
+            that simply lost its buttons reads as a broken page. */}
+        {canWrite ? (
+          <>
+            <AddClaudeAccount ref={claudeForm} onStored={afterClaudeMutation} />
+            <AddCodexAccount ref={codexForm} onStored={afterCodexMutation} />
+          </>
+        ) : (
+          <p className="msg">
+            This is a read-only admin session, so adding, re-authenticating, and removing
+            accounts are not available. Sign in with a write-tier admin key to manage the pool.
+          </p>
+        )}
 
         <ClaudeAccounts
           accounts={data.accounts}
