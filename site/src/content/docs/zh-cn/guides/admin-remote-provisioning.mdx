@@ -29,6 +29,10 @@ shunt run
 
 每个键与默认值见[配置参考](/zh-cn/reference/configuration/#serveradmin可选)。[端点参考](/zh-cn/reference/endpoints/)列出了浏览器路由和 JSON 路由。
 
+:::note
+`/admin` 提供的仪表盘来自只有 `--features ui` 构建才会内嵌的前端包。预构建的发布二进制和 Homebrew formula 已包含它;普通的 `cargo build` 或 `cargo install` 则没有,该路径会返回 `404`,响应体会点明该特性。从源码构建的步骤见[安装](/zh-cn/getting-started/installation/)。本页其余内容(JSON API 和配置)两者完全相同。
+:::
+
 ## 在浏览器中预配 Claude 账户
 
 1. 打开 `/admin`,用管理员 token 登录。
@@ -43,7 +47,7 @@ shunt run
    name = "backup"
    ```
 
-已开始的流程在 `pending_ttl_secs`(默认 10 分钟)内保持有效,给运营者留出打开授权页并粘贴结果的时间。服务器把选定的 mode 与 pending attempt 一起记录,所以 completion 请求无法切换 token 类型。Full OAuth 存储 access token 与 refresh token,其 credential kind 显示为 `imported`;setup-token mode 存储 kind 为 `setup_token` 的静态 credential。完成响应会报告账户是否已存储,以及当前的 provider 配置是否让它生效。
+已开始的流程在 `pending_ttl_secs`(默认 10 分钟)内保持有效,给运营者留出打开授权页并粘贴结果的时间。服务器把选定的 mode 与 pending attempt 一起记录,所以 completion 请求无法切换 token 类型。从选择 **Start** 起直到流程结束,仪表盘会禁用登录方式单选按钮并说明原因,因为 pending attempt 的 mode 在请求发出时就已固定。再次选择 **Start** 并不会解除锁定;完成该流程或重新加载页面才能重新选择。Full OAuth 存储 access token 与 refresh token,其 credential kind 显示为 `imported`;setup-token mode 存储 kind 为 `setup_token` 的静态 credential。完成响应会报告账户是否已存储,以及当前的 provider 配置是否让它生效。
 
 账户存储的变化按请求发现,因此扫描模式的提供方在账户增删后不需要重启。
 

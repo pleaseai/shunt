@@ -29,6 +29,10 @@ shunt run
 
 모든 키와 기본값은 [설정 레퍼런스](/ko/reference/configuration/#serveradmin-선택)를 참고하세요. 브라우저 라우트와 JSON 라우트는 [엔드포인트 레퍼런스](/ko/reference/endpoints/)에 나열되어 있습니다.
 
+:::note
+`/admin`이 제공하는 대시보드는 `--features ui`로 빌드한 바이너리만 임베드하는 번들에서 나옵니다. 사전 빌드 릴리스 바이너리와 Homebrew 포뮬러에는 포함되어 있지만, 그냥 `cargo build`나 `cargo install`로 빌드하면 포함되지 않고 해당 경로는 그 피처를 안내하는 본문과 함께 `404`를 반환합니다. 소스 빌드 방법은 [설치](/ko/getting-started/installation/)를 참고하세요. 이 페이지의 나머지 — JSON API와 설정 — 는 어느 쪽이든 동일합니다.
+:::
+
 ## 브라우저에서 Claude 계정 프로비저닝
 
 1. `/admin`을 열고 관리자 토큰으로 로그인합니다.
@@ -43,7 +47,7 @@ shunt run
    name = "backup"
    ```
 
-시작된 플로우는 `pending_ttl_secs`(기본 10분) 동안 유효해서 운영자가 인가 페이지를 열고 결과를 붙여 넣을 시간을 확보할 수 있습니다. 서버는 선택한 mode를 pending attempt와 함께 기록하므로 completion 요청에서 token 종류를 바꿀 수 없습니다. Full OAuth는 access token과 refresh token을 저장하며 credential kind는 `imported`로 표시됩니다. setup-token mode는 kind가 `setup_token`인 정적 credential을 저장합니다. 완료 응답은 계정이 저장됐는지, 그리고 현재 provider 구성에서 그 계정이 실제로 사용되는지(live)를 알려 줍니다.
+시작된 플로우는 `pending_ttl_secs`(기본 10분) 동안 유효해서 운영자가 인가 페이지를 열고 결과를 붙여 넣을 시간을 확보할 수 있습니다. 서버는 선택한 mode를 pending attempt와 함께 기록하므로 completion 요청에서 token 종류를 바꿀 수 없습니다. **Start**를 누른 순간부터 플로우가 끝날 때까지 대시보드는 로그인 방식 라디오 버튼을 비활성화하고 그 이유를 함께 보여 줍니다. pending attempt의 mode가 요청을 보내는 시점에 고정되기 때문입니다. **Start**를 다시 눌러도 잠금은 풀리지 않습니다. 플로우를 완료하거나 페이지를 새로고침해야 다시 선택할 수 있습니다. Full OAuth는 access token과 refresh token을 저장하며 credential kind는 `imported`로 표시됩니다. setup-token mode는 kind가 `setup_token`인 정적 credential을 저장합니다. 완료 응답은 계정이 저장됐는지, 그리고 현재 provider 구성에서 그 계정이 실제로 사용되는지(live)를 알려 줍니다.
 
 계정 스토어 변경은 요청마다 감지되므로, 스캔 모드 프로바이더는 계정이 추가되거나 제거된 뒤 재시작할 필요가 없습니다.
 

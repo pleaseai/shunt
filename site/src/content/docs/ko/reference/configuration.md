@@ -205,6 +205,7 @@ headers = { "x-api-key" = "..." }
 | `upstream_model` | `model` | upstream으로 보낼 모델 id. `model`과 다르면 shunt가 본문 최상위 `model`만 바꾸고 나머지 필드는 그대로 둡니다 |
 
 알 수 없는 provider, `responses`가 아닌 provider, 자격 증명이 없는 인증 모드(`passthrough` 또는 `none`)를 쓰는 provider로 향하는 route는 검증에서 거부되며 중복된 `model`이나 빈 필드도 거부됩니다. route는 라이브 config 스냅샷에서 읽으므로 추가·수정·삭제가 **리로드** 시점에 반영됩니다. 재시작이 필요한 것은 `[server.codex_endpoint]` 테이블 자체를 켜고 끌 때뿐입니다. ChatGPT가 아닌 provider로 라우팅된 request는 새로 만든 헤더 허용 목록(`content-type`, `accept`, flavor 게이트를 통과한 `OpenAI-Beta`, 그리고 `xai_oauth` 라우트의 경우 Grok CLI identity 헤더)과 identity 인코딩 본문, 자격 증명 하나만 사용하며 풀도 페일오버도 없습니다.
+같은 옵트인이 `GET /models`와 `GET /backend-api/codex/models`를 등록하며, 이 경로들은 일반 모델 탐색 인증 게이트 후 유효한 Codex 폴백 `{"models":[]}`를 반환합니다. 공유 `GET /v1/models`에서도 `client_version` 쿼리가 있으면 Anthropic 형태의 헤더보다 우선하여 Codex 빈 형태를 선택합니다. `client_version`이 없으면 기존 Anthropic 탐색 응답은 변경되지 않습니다. shunt는 불완전한 Codex `ModelInfo` 행을 만들지 않습니다.
 
 ## `[server.usage]` (선택)
 

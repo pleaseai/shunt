@@ -160,6 +160,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let http_tuning = HttpTuningLayer::new(
         config.server.access_control.clone(),
         config.server.limits.clone(),
+        config.server.codex_endpoint.is_some(),
     );
     let http_tuning_enabled = config.server.access_control.enabled()
         || config.server.limits.max_request_header_bytes.is_some()
@@ -215,9 +216,14 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let liveness_router = Router::new()
         .route("/", get(root_index))
         .route("/health", get(health));
+    let model_discovery = if codex_endpoint_enabled {
+        get(discovery::get_negotiated)
+    } else {
+        get(discovery::get)
+    };
     let mut router = Router::new()
         .route("/protocol", get(protocol::get))
-        .route("/v1/models", get(discovery::get))
+        .route("/v1/models", model_discovery)
         .route("/routes", get(routes::get))
         .route("/v1/messages", post(proxy::post))
         .route("/v1/messages/count_tokens", post(proxy::post));
@@ -256,6 +262,9 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // discarded locally after recording sanitized counters. Both are gated by
     // `[server.auth]` like the other injected-credential routes.
     if codex_endpoint_enabled {
+        for path in discovery::CODEX_PATHS {
+            router = router.route(path, get(discovery::get_codex));
+        }
         // Register from the same constants `concurrency::is_codex_path`
         // classifies against, so a route cannot be added here without also
         // getting the OpenAI-shaped gateway errors its clients expect.
@@ -290,7 +299,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // zero value preserves the previous unlimited behavior without a layer.
     if max_concurrent_requests > 0 {
         router = router.layer(middleware::from_fn_with_state(
-            ConcurrencyLimit::new(max_concurrent_requests),
+            ConcurrencyLimit::new(max_concurrent_requests, codex_endpoint_enabled),
             limit_requests,
         ));
     }

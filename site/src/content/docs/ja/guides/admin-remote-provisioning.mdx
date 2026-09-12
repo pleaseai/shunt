@@ -29,6 +29,10 @@ shunt run
 
 すべてのキーとデフォルトは[設定リファレンス](/ja/reference/configuration/#serveradminオプション)を参照してください。ブラウザーおよび JSON のルートは[エンドポイントリファレンス](/ja/reference/endpoints/)に一覧があります。
 
+:::note
+`/admin` が返すダッシュボードは、`--features ui` でビルドしたバイナリだけが埋め込むバンドルから配信されます。ビルド済みリリースバイナリと Homebrew formula には含まれますが、素の `cargo build` や `cargo install` には含まれず、そのパスはこの機能名を含む本文とともに `404` を返します。ソースからのビルドは [インストール](/ja/getting-started/installation/) を参照してください。このページのそれ以外 — JSON API と設定 — はどちらでも同じです。
+:::
+
 ## ブラウザーで Claude アカウントをプロビジョニングする
 
 1. `/admin` を開き、管理トークンでサインインします。
@@ -43,7 +47,7 @@ shunt run
    name = "backup"
    ```
 
-開始されたフローは `pending_ttl_secs`（デフォルト 10 分）の間有効で、オペレーターが認可ページを開いて結果を貼り付ける時間を確保できます。サーバーは選択された mode を pending attempt とともに記録するため、completion リクエストで token の種類を切り替えることはできません。Full OAuth は access token と refresh token を保存し、credential kind は `imported` と表示されます。setup-token mode は kind が `setup_token` の静的 credential を保存します。完了レスポンスは、アカウントが保存されたか、そして現在の provider 設定でそれが有効（live）になるかを報告します。
+開始されたフローは `pending_ttl_secs`（デフォルト 10 分）の間有効で、オペレーターが認可ページを開いて結果を貼り付ける時間を確保できます。サーバーは選択された mode を pending attempt とともに記録するため、completion リクエストで token の種類を切り替えることはできません。**Start** を選んだ時点からフローが完了するまで、ダッシュボードはログイン方法のラジオボタンを無効化し、その理由も表示します。pending attempt の mode はリクエストを送る時点で固定されるためです。**Start** をもう一度選んでも解除されません。フローを完了するか、ページを再読み込みすると再び選べるようになります。Full OAuth は access token と refresh token を保存し、credential kind は `imported` と表示されます。setup-token mode は kind が `setup_token` の静的 credential を保存します。完了レスポンスは、アカウントが保存されたか、そして現在の provider 設定でそれが有効（live）になるかを報告します。
 
 アカウントストアの変更はリクエストごとに検出されるため、スキャンモードのプロバイダーはアカウントの追加・削除後に再起動する必要がありません。
 

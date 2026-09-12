@@ -36,12 +36,14 @@ elsewhere, and three of them are load-bearing:
   deliberately the **pre-split** ones, because the collision between them is the
   motivation — rewriting them to `/admin/api/*` would describe a state in which
   there is nothing to decide.
-- **Assets.** The current UI is HTML/CSS/JS inside Rust string literals
+- **Assets.** The UI *was* HTML/CSS/JS inside Rust string literals
   (`src/admin/html.rs`, `src/admin/script.rs`) — ~770 lines when this record was
-  written on 2026-08-15, and 1,525 by 2026-09-10. There is no build step, no
-  type checking, and no component model. `src/AGENTS.md` asks for files under
-  500 lines; both files were near that then and both are past it now (879 and
-  646), on presentation code alone.
+  written on 2026-08-15, and 1,525 by 2026-09-10 (879 and 646), on presentation
+  code alone, with no build step, no type checking, and no component model, and
+  both files past the 500-line ceiling `src/AGENTS.md` asks for. Decision 4
+  resolved this and is now implemented: `script.rs` is deleted and `html.rs` is
+  down to the login page (150 lines), with the dashboard in `ui/` behind
+  `--features ui`.
 
 ## Current surface
 
@@ -54,7 +56,7 @@ baseline for any new route.
 | always | `GET` | `/health` — unauthenticated, exempt from the concurrency gate |
 | always | `GET` | `/protocol`, `/v1/models`, `/routes` |
 | always | `POST` | `/v1/messages`, `/v1/messages/count_tokens` |
-| `[server.admin]` | — | 16 paths under `/admin`, 18 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which this change moved to `/admin/api/status` |
+| `[server.admin]` | — | 18 paths under `/admin`, 20 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which moved to `/admin/api/status`, and `GET /admin/api/session` ([Decision 5](#decision-5--the-spa-bootstraps-its-session-over-the-api)) |
 | `[server.gateway]` | `GET` | `/.well-known/oauth-authorization-server`, `/device`, `/device/callback`, `/managed/settings` |
 | `[server.gateway]` | `POST` | `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize` |
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |
@@ -64,7 +66,8 @@ baseline for any new route.
 | `[server.spend]` | `GET`, `DELETE` | `/v1/organizations/spend_limits/{id}` |
 | `[server.usage]` | `GET` | `/usage` |
 | `[server.oauth_usage]` | `GET` | `/api/oauth/usage` |
-| `[server.admin]` + `--features ui` | `GET` | `/admin/assets/{*path}` and `/admin/{*path}` — the embedded SPA bundle and the shell fallback; plus `/admin/api/{*path}`, registered for **every** method so an unmatched JSON path answers `404` rather than the shell (Decision 3). Absent from a default build, which embeds no bundle |
+| `[server.admin]` + `--features ui` | `GET` | `/admin/assets/{*path}` and `/admin/{*path}` — the embedded SPA bundle and the shell fallback. Both are registered with `get`, so `GET`/`HEAD` answer and every other method answers `405` with `Allow: GET,HEAD` rather than falling through; plus `/admin/api/{*path}`, registered for **every** method so an unmatched JSON path answers `404` rather than the shell (Decision 3). Absent from a default build, which embeds no bundle |
+| `[server.admin]` | `GET` | `/admin` and `/admin/` — registered in **both** builds, and the only admin paths whose *answer* depends on the feature: the SPA shell with `--features ui`, and without it a `404` naming the feature. Registered either way so the default build's answer is that sentence rather than axum's empty-bodied `404` for an unregistered path, which an operator cannot tell from an unconfigured `[server.admin]`. The mount root needs both spellings because a `{*path}` segment cannot match the empty string, so `/admin/` matches neither the exact route nor the fallback (#527) |
 
 Two properties of this table matter downstream:
 
@@ -456,6 +459,39 @@ verify-the-download problem. Offline builds also need the fetch to be skippable.
 crates.io packaging is not a constraint: the crate is already `publish = false`
 (issue #292).
 
+## Decision 5 — the SPA bootstraps its session over the API
+
+The server-rendered dashboard interpolates two per-session values into the page
+it emits: the session's CSRF token, and `claude::auth::EXPIRY_BUFFER` in
+milliseconds. The SPA cannot be built that way. Its shell is one file embedded
+at compile time and served, unauthenticated, to every visitor alike
+(`src/admin/ui.rs`) — it knows nothing about the request that fetched it, and
+making it session-aware would mean rendering it per request, which is exactly
+the server-rendered page this track is replacing.
+
+`GET /admin/api/session` returns both, authenticated like every other route in
+that namespace.
+
+**Returning a CSRF token over a `GET` does not weaken the guard it belongs to.**
+A cross-origin page can *send* this request with the browser's ambient cookie,
+but nothing on this surface lets it read the reply: there is no CORS layer
+anywhere on the admin router, so the same-origin policy stops the read. That is
+the same property the server-rendered dashboard already depends on — a
+cross-origin page cannot read `GET /admin` either. The guard that would fail is
+the one that never existed: were a permissive `Access-Control-Allow-Origin` ever
+added to this surface, this endpoint would hand the token to any origin. Adding
+one is therefore a change that has to be reviewed against this decision.
+
+A header-credential caller receives an empty `csrf`, matching what `dashboard`
+renders for one: it carries no ambient cookie, so `check_csrf` exempts it and
+there is no token to hand out.
+
+The refresh buffer is served rather than duplicated in the bundle for a
+different reason: the dashboard reports a setup token as expired once it is
+inside that buffer, and routing refuses one on the same boundary
+(`Tokens::is_valid_at`). A copy in TypeScript could drift from the Rust
+constant; a served value cannot.
+
 ## Desktop
 
 [`desktop-app.md`](desktop-app.md) already fixed the desktop framework decision:
@@ -591,6 +627,12 @@ The seven questions this document originally left open are now decided:
   inheritance that must not fail open must not silently lock the operator out
   either, and only asserting both halves distinguishes the two.
 - Graceful shutdown drains both listeners from a single signal.
+- The ported views carry their own suite in `ui/` (`npm test`, vitest +
+  Testing Library), which renders components and asserts on what an operator
+  sees. It replaces the substring assertions the string-literal dashboard could
+  only support: those matched emitted JavaScript source, so they could not tell
+  a guard that runs from one that is merely present. Each property there was
+  checked by deleting the guard it covers and confirming the test fails.
 - Embedded assets: the bundle is non-empty (a build that silently embedded
   nothing must fail, not serve a blank page), `/admin/assets/*` returns the
   file's bytes, and each response carries the `Content-Type` its extension
@@ -598,6 +640,18 @@ The seven questions this document originally left open are now decided:
   wrong or missing type is not cosmetic: browsers refuse a stylesheet or module
   script served as `text/plain`, and `X-Content-Type-Options: nosniff` removes
   the sniffing that would otherwise mask the bug.
+- `GET /admin` in **both** feature configurations, because it is the one path
+  whose answer depends on the feature: the shell (with the shell's strict CSP,
+  not the login page's `'unsafe-inline'` one) with `--features ui`, and a `404`
+  whose body names `--features ui` without it. Asserting the body, not just the
+  status, is the point of the second: an empty `404` is indistinguishable from
+  an unconfigured `[server.admin]`, and the two have different fixes.
+- Session properties are asserted against `/admin/api/session`, not `/admin`.
+  Once the shell is served unauthenticated, a `200` from `/admin` says nothing
+  about the caller's cookie — so the tests for "the OIDC callback minted a
+  usable session" and "logout invalidated it" had to move to the endpoint that
+  actually authenticates, or they would have gone on passing while testing
+  nothing.
 
 ## Documentation impact
 

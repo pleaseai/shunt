@@ -32,6 +32,8 @@ cargo install --git https://github.com/pleaseai/shunt
 
 New versions are distributed through Homebrew and prebuilt binaries (macOS/Linux, arm64/x64) attached to each [GitHub release](https://github.com/pleaseai/shunt/releases); the crates.io package stops at the last version published there. See [Installation](https://shunt.dev/getting-started/installation/) for prebuilt-binary and from-source instructions.
 
+The `cargo install` line above builds without the admin dashboard: its bundle needs Node.js 22.12+ and is embedded only by `--features ui`, which Homebrew and the release binaries already enable. Everything else — including the admin JSON API — is identical either way. [Installation](https://shunt.dev/getting-started/installation/) has the from-source steps.
+
 ### Run as a service (macOS/Homebrew)
 
 ```bash
@@ -189,11 +191,11 @@ Unless a row says otherwise, these are **off by default** — absent its config 
 | Inbound Codex endpoint — point the **Codex CLI** at shunt and pool it, with opt-in per-model routing | `[server.codex_endpoint]` | [How-to](https://shunt.dev/guides/inbound-codex-endpoint/) |
 | Claude apps gateway login — OAuth device flow, managed settings, per-user policy | `[server.gateway]` with `public_url`, a 32-byte-or-longer JWT secret, and static users or `[server.gateway.oidc]` | [How-to](https://shunt.dev/guides/gateway-login/) |
 | Gateway telemetry ingest — verbatim OTLP relay for managed clients | a configured `[server.gateway]`, plus `[server.gateway.telemetry]` with a non-empty `forward_to` | [Reference](https://shunt.dev/reference/configuration/#servergatewaytelemetry-optional) |
-| Admin web surface — accounts and usage dashboard, browser provisioning | `[server.admin]`, `shunt dashboard setup` | [How-to](https://shunt.dev/guides/admin-remote-provisioning/) |
+| Admin web surface — accounts and usage dashboard, browser provisioning | `[server.admin]`, `shunt dashboard setup`; the dashboard itself is served from a bundle only a `--features ui` build embeds — prebuilt release binaries and the Homebrew formula have it, a plain `cargo build`/`cargo install` does not | [How-to](https://shunt.dev/guides/admin-remote-provisioning/) |
 | Spend-limit Admin API — organization- and user-scoped caps (stage 1 stores, does not enforce) | `[server.admin]` + `[server.spend]` | [Reference](https://shunt.dev/reference/configuration/#serverspend-optional) |
 | Client usage endpoint — sanitized, aggregated pool headroom at `GET /usage` | `[server.auth]` + `[server.usage]` | [Reference](https://shunt.dev/reference/configuration/#serverusage-optional) |
 | Claude Code CLI native usage bars — serves `GET /api/oauth/usage` | `[server.oauth_usage]`, plus `[server.auth]` or `[server.gateway]` on a non-loopback bind | [Reference](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
-| Upstream status polling — Statuspage indicators in the dashboard and as a metric | `[server.status]` with at least one `[[server.status.sources]]` entry | [Reference](https://shunt.dev/reference/configuration/#serverstatus-optional) |
+| Upstream status polling — Statuspage indicators as a metric, and in the dashboard on a `--features ui` build | `[server.status]` with at least one `[[server.status.sources]]` entry | [Reference](https://shunt.dev/reference/configuration/#serverstatus-optional) |
 | Bounded upstream retry — **on by default**, conservative, never mid-stream | `[providers.<name>.retry]` | [Reference](https://shunt.dev/reference/configuration/#providersnameretry) |
 | Shared-deployment limits — **on by default** (1024 concurrent, 32 MiB bodies, 120 s TTFB, device-flow rate limits); CIDR, header, and URL limits are opt-in | `[server] max_concurrent_requests`, `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [How-to](https://shunt.dev/guides/shared-gateway/) |
 | Secret references — `${VAR}` or `${file:/abs/path}` in any string value, re-resolved on hot reload (not `[sentry]`/`[otel]`, built once at startup — rotating those needs a restart) | any config string (**always on**) | [Reference](https://shunt.dev/reference/configuration/) |

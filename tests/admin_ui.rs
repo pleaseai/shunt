@@ -332,24 +332,92 @@ async fn an_unmatched_path_outside_the_mount_still_404s() {
     }
 }
 
-/// `GET /admin` is still the server-rendered dashboard, which sends an
-/// unauthenticated browser to the login page. The SPA shell answers only the
-/// paths *below* the mount until the views are ported, so the dashboard is not
-/// broken between the two steps — a shell here would be a `200` instead.
+/// `GET /admin` is the shell now, not a redirect to the login page.
+///
+/// This is the cutover the track ends on, and the distinction it turns into a
+/// test is the one an unauthenticated visitor sees: the server-rendered page
+/// answered `303 /admin/login` because it could not render without a session,
+/// while the shell is a static file identical for every visitor and so answers
+/// `200`. The sign-in redirect did not disappear — it moved into the bundle,
+/// which follows a `401` from `GET /admin/api/session` to the same page
+/// (`ui/src/App.tsx`).
+///
+/// Asserting the body links `/admin/assets/` is what separates "the shell" from
+/// "some other `200`": a handler that answered an empty page, or the old
+/// dashboard string, would pass a status-only check.
 #[tokio::test]
-async fn the_mount_root_still_serves_the_server_rendered_dashboard() {
+async fn the_mount_root_serves_the_spa_shell() {
     let (router, _env) = admin_router("root");
 
     let response = get(&router, "/admin").await;
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(
-        response
-            .headers()
-            .get(header::LOCATION)
-            .map(|value| value.to_str().unwrap()),
-        Some("/admin/login"),
-        "/admin must keep serving the string-literal dashboard, not the SPA shell"
+        response.status(),
+        StatusCode::OK,
+        "/admin is the SPA shell now; a 303 means the server-rendered dashboard is still wired up"
     );
+    assert!(content_type(&response).starts_with("text/html"));
+    assert!(
+        String::from_utf8(body_bytes(response).await)
+            .expect("the shell is UTF-8")
+            .contains("/admin/assets/"),
+        "the mount root must serve the built index.html, which links the hashed bundle"
+    );
+}
+
+/// The mount root's other spelling. `/admin/` matches neither `/admin` (exact)
+/// nor `/admin/{*path}` (a wildcard segment cannot match the empty string), so
+/// until it was registered in its own right it answered a bare `404` on the
+/// dashboard's own root — the one path a browser, a proxy, or a hand-typed URL
+/// is most likely to add a slash to (#527).
+///
+/// This asserts the shell rather than merely a `200`: the bug it pins is a
+/// *routing* one, and a redirect or an empty page would satisfy a status-only
+/// check while still failing the operator who typed the slash.
+#[tokio::test]
+async fn the_mount_root_with_a_trailing_slash_serves_the_spa_shell() {
+    let (router, _env) = admin_router("root-slash");
+
+    let response = get(&router, "/admin/").await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "/admin/ must answer the same shell as /admin; a 404 means the trailing-slash \
+         spelling fell through every route in the mount"
+    );
+    assert!(content_type(&response).starts_with("text/html"));
+    assert!(
+        String::from_utf8(body_bytes(response).await)
+            .expect("the shell is UTF-8")
+            .contains("/admin/assets/"),
+        "the trailing-slash root must serve the built index.html, which links the hashed bundle"
+    );
+}
+
+/// The mount root answers the shell with the *same* hardening as every other
+/// shell path, which is not implied by serving the same body: `/admin` is
+/// registered through its own handler ([`admin::dashboard`], via
+/// `ui::shell`), so a future edit could answer there without the header set.
+/// The shell CSP is the one that matters — it is what the strict
+/// `script-src 'self'` lives on, and the server-rendered page this replaced
+/// answered `/admin` with the looser `'unsafe-inline'` policy.
+#[tokio::test]
+async fn the_mount_root_carries_the_shell_hardening() {
+    let (router, _env) = admin_router("root-headers");
+
+    let response = get(&router, "/admin").await;
+    let headers = response.headers();
+    let csp = headers
+        .get(header::CONTENT_SECURITY_POLICY)
+        .expect("/admin carries a CSP")
+        .to_str()
+        .unwrap();
+    assert!(
+        csp.contains("script-src 'self'") && !csp.contains("unsafe-inline"),
+        "/admin must answer with the shell's strict policy, not the login page's; it reads {csp:?}"
+    );
+    assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
+    assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
 }
 
 /// The router-level twin of `admin::ui::tests::a_traversal_path_finds_nothing`.

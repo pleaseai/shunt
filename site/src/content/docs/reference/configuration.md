@@ -301,6 +301,7 @@ Each entry sends one model to a different Responses-compatible upstream, instead
 | `upstream_model` | `model` | Model id sent upstream. When it differs from `model`, shunt rewrites the body's top-level `model` and leaves every other field intact |
 
 Validation rejects a route to an unknown provider, to a non-`responses` provider, to a provider whose auth mode carries no credential (`passthrough` or `none`), and rejects duplicate `model` entries or blank fields. Routes are read from the live config snapshot, so adding, editing, or removing one takes effect on **reload**; only toggling the `[server.codex_endpoint]` table itself needs a restart. A routed request to a non-ChatGPT provider sends a fresh header allowlist (`content-type`, `accept`, plus the flavor-gated `OpenAI-Beta` and, for an `xai_oauth` route, the Grok-CLI identity headers), an identity-encoded body, and one credential with no pool or failover.
+The same opt-in registers `GET /models` and `GET /backend-api/codex/models`, which return the valid Codex fallback `{"models":[]}` after the normal model-discovery auth gate. It also enables Codex negotiation on the shared `GET /v1/models`: when `client_version` is present in the query, that field takes precedence over Anthropic-like headers and selects the Codex empty shape. Without `client_version`, the existing Anthropic discovery response is unchanged. shunt intentionally does not synthesize incomplete Codex `ModelInfo` rows.
 
 ## `[server.usage]` (optional)
 

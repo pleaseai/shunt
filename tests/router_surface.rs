@@ -74,21 +74,28 @@ const BASE_PATHS: [(&str, &str); 7] = [
     ("/v1/messages/count_tokens", "POST"),
 ];
 
-/// 16 paths / 18 method+path pairs — the count `docs/admin-ui-delivery.md`
+/// 18 paths / 20 method+path pairs — the count `docs/admin-ui-delivery.md`
 /// records in its "Current surface" table. Counting the `allow` column here
-/// (ignoring the `HEAD` axum adds to every `GET`) is what reproduces the 18.
+/// (ignoring the `HEAD` axum adds to every `GET`) is what reproduces the 20.
 ///
-/// Only the three server-rendered entry points keep their `/admin` spelling; the
-/// JSON reads and every mutation answer under `/admin/api` after this change. The
+/// Only the three server-rendered entry points keep their `/admin` spelling —
+/// the mount root in both of its spellings, the login page, and the OIDC
+/// callback; the JSON reads and every mutation answer under `/admin/api`. The
 /// method sets are unchanged by the move — the same handlers are registered at
 /// new paths — and `every_registered_method_set_matches_the_inventory` proves it
 /// against the live router rather than taking it on trust.
-const ADMIN_PATHS: [(&str, &str); 16] = [
+const ADMIN_PATHS: [(&str, &str); 18] = [
     ("/admin", "GET,HEAD"),
+    // The same handler under the spelling a browser or proxy produces by
+    // appending a slash. A `{*path}` segment cannot match the empty string, so
+    // without its own registration `/admin/` falls through every route in this
+    // table and in `UI_LITERAL_PATHS` (#527).
+    ("/admin/", "GET,HEAD"),
     ("/admin/login", "GET,HEAD,POST"),
     ("/admin/api/oidc/start", "POST"),
     ("/admin/oidc/callback", "GET,HEAD"),
     ("/admin/api/logout", "POST"),
+    ("/admin/api/session", "GET,HEAD"),
     ("/admin/api/accounts", "GET,HEAD"),
     ("/admin/api/observed", "GET,HEAD"),
     ("/admin/api/pool", "GET,HEAD"),
@@ -161,18 +168,21 @@ const SPEND_PATHS: [(&str, &str); 2] = [
     ("/v1/organizations/spend_limits/{id}", "GET,HEAD,DELETE"),
 ];
 
-/// Mirrors `codex_endpoint::PATHS` and `codex_analytics::PATHS`, which are
+/// Mirrors `codex_endpoint::PATHS`, `codex_analytics::PATHS`, and
+/// `discovery::CODEX_PATHS`, which are
 /// `pub(crate)` and so cannot be imported here. Duplicating them is deliberate:
 /// `every_indirectly_registered_path_is_documented` reads both constants back
 /// out of their defining source and compares them against this list, so a
 /// change to either one fails this test and gets re-reviewed against the path
 /// split — which is exactly the guard being installed.
-const CODEX_ENDPOINT_PATHS: [(&str, &str); 5] = [
+const CODEX_ENDPOINT_PATHS: [(&str, &str); 7] = [
     ("/backend-api/codex/responses", "POST"),
     ("/responses", "POST"),
     ("/v1/responses", "POST"),
     ("/backend-api/codex/analytics-events/events", "POST"),
     ("/codex/analytics-events/events", "POST"),
+    ("/models", "GET,HEAD"),
+    ("/backend-api/codex/models", "GET,HEAD"),
 ];
 
 const USAGE_PATHS: [(&str, &str); 2] = [("/usage", "GET,HEAD"), ("/api/oauth/usage", "GET,HEAD")];
@@ -594,6 +604,55 @@ async fn the_server_rendered_login_flow_stays_outside_the_api_namespace() {
     }
 }
 
+/// Without `--features ui` there is no bundle to serve, and `/admin` says so
+/// instead of disappearing.
+///
+/// `docs/admin-ui-delivery.md` Resolution 1 accepts that a from-source build
+/// without the feature has no dashboard, so the `404` here is the decision, not
+/// a defect. What the decision does *not* license is an empty body: dropping the
+/// route entirely would leave axum's built-in `404`, which carries nothing, and
+/// an operator who typed the documented URL would have no way to tell a missing
+/// feature from a missing `[server.admin]` block — the two have different fixes.
+/// Asserting the body names the feature is therefore the point of the test; the
+/// status alone is what both spellings share.
+///
+/// Both spellings of the mount root are asserted, because they are two separate
+/// registrations answering one handler: `/admin/` would otherwise be free to
+/// regress to axum's empty `404` while `/admin` kept its sentence (#527).
+///
+/// The sibling assertion for the feature-on build is
+/// `admin_ui::the_mount_root_serves_the_spa_shell` and its trailing-slash twin.
+#[cfg(not(feature = "ui"))]
+#[tokio::test]
+async fn the_mount_root_without_the_ui_feature_explains_the_missing_bundle() {
+    let (config, _env) = all_surfaces_config("no-ui-root");
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
+
+    for path in ["/admin", "/admin/"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router answers");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let body = String::from_utf8(body.to_vec()).expect("the error body is UTF-8");
+        assert!(
+            body.contains("--features ui"),
+            "{path}: the 404 must name the feature that would provide a dashboard, so it is \
+             distinguishable from an unconfigured admin surface; it reads {body:?}"
+        );
+    }
+}
+
 /// `/` is a liveness probe target as well as a landing page, so any UI work
 /// that later claims a path must leave its `HEAD` answer intact.
 #[tokio::test]
@@ -646,10 +705,11 @@ fn registered_literal_paths(source: &str) -> Vec<&str> {
 /// actual gate rather than a spot check.
 ///
 /// A route whose path is not a string literal at the call site is invisible to
-/// this scan. There are two such sites today — the OTLP signals in
-/// `gateway_router` and the `codex_endpoint::PATHS` / `codex_analytics::PATHS`
-/// loops in `build_router`. `every_documented_path_is_registered_when_all_surfaces_are_enabled`
-/// catches a removal or rename in either set but **not** an addition, so
+/// this scan. There are three such sites today — the OTLP signals in
+/// `gateway_router`, and the `discovery::CODEX_PATHS` and
+/// `codex_endpoint::PATHS` / `codex_analytics::PATHS` loops in `build_router`.
+/// `every_documented_path_is_registered_when_all_surfaces_are_enabled`
+/// catches a removal or rename in any of those sets but **not** an addition, so
 /// [`INDIRECT_PATH_SOURCES`] scans those definitions to close that direction.
 #[test]
 fn every_registered_literal_path_is_documented() {
@@ -675,14 +735,14 @@ fn the_source_scan_finds_every_literal_registration() {
         .iter()
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
-    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 16 admin plus
+    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 18 admin plus
     // the 5 UI routes, 7 gateway (its 3 OTLP paths come from `Signal::path()`),
     // 2 spend. The UI five are counted unconditionally: this scan reads source
     // text, and `#[cfg(feature = "ui")]` does not remove the `.route("…"`
     // literals from it.
     assert_eq!(
-        found, 39,
-        "the literal-path scan found {found} registrations, not 39; either a route was added or \
+        found, 41,
+        "the literal-path scan found {found} registrations, not 41; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }
@@ -693,7 +753,13 @@ fn the_source_scan_finds_every_literal_registration() {
 /// passes a loop variable or a method call, not a literal — so an **addition**
 /// to one of them would otherwise register a live route while every other test
 /// in this file stayed green.
-const INDIRECT_PATH_SOURCES: [(&str, &str, &str, &str); 3] = [
+const INDIRECT_PATH_SOURCES: [(&str, &str, &str, &str); 4] = [
+    (
+        "src/discovery.rs",
+        include_str!("../src/discovery.rs"),
+        "const CODEX_PATHS: [&str; ",
+        "];",
+    ),
     (
         "src/codex_endpoint.rs",
         include_str!("../src/codex_endpoint.rs"),
@@ -768,10 +834,11 @@ fn the_indirect_scan_finds_every_definition() {
         .iter()
         .map(|(_, source, open, close)| string_literals_in_block(source, open, close).len())
         .sum();
-    // 3 `codex_endpoint::PATHS` + 2 `codex_analytics::PATHS` + 3 OTLP signals.
+    // 2 `discovery::CODEX_PATHS` + 3 `codex_endpoint::PATHS` + 2
+    // `codex_analytics::PATHS` + 3 OTLP signals.
     assert_eq!(
-        found, 8,
-        "the indirect-path scan found {found} definitions, not 8; either a path was added or \
+        found, 10,
+        "the indirect-path scan found {found} definitions, not 10; either a path was added or \
          removed, or one of these sets is no longer spelled the way the scan expects"
     );
 }
@@ -847,7 +914,7 @@ fn no_router_tree_is_composed_in_from_an_unscanned_module() {
 /// Counting the skips closes that. Together with the two count assertions above
 /// and the composition guard, the invariant across the scanned files is that no
 /// registration is silently dropped: every `.route(` either resolves to a literal
-/// path that must appear in the inventory, or is one of these five indirect sites
+/// path that must appear in the inventory, or is one of these six indirect sites
 /// whose definitions [`INDIRECT_PATH_SOURCES`] reads, and the four remaining ways
 /// axum can register a path — `.route_service(`, `.nest(`, `.nest_service(`, and
 /// composing another tree in with `.merge(` — are each counted.
@@ -869,13 +936,14 @@ fn every_nonliteral_route_call_is_one_this_test_already_tracks() {
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
 
-    // The two `codex_endpoint::PATHS` / `codex_analytics::PATHS` loops in
-    // `build_router`, and the three `Signal::path()` calls in `gateway_router`.
+    // The `discovery::CODEX_PATHS`, `codex_endpoint::PATHS` and
+    // `codex_analytics::PATHS` loops in `build_router`, and the three
+    // `Signal::path()` calls in `gateway_router`.
     assert_eq!(
         calls - literals,
-        5,
+        6,
         "the scanned sources make {calls} `.route(` calls of which {literals} pass a string \
-         literal, so {} are registered indirectly — not the 5 this test tracks through \
+         literal, so {} are registered indirectly — not the 6 this test tracks through \
          INDIRECT_PATH_SOURCES. A new indirect registration must be added there, or its paths go \
          unscanned.",
         calls - literals

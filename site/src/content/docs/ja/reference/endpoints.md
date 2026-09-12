@@ -20,9 +20,10 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/v1/metrics` | 管理された Claude Code クライアントからのインバウンド OTLP/HTTP メトリクス — opt-in したゲートウェイテレメトリー宛先へ verbatim 中継 |
 | `POST` | `/v1/logs` | インバウンド OTLP/HTTP log record — `logs = true` の宛先にのみ中継 |
 | `POST` | `/v1/traces` | インバウンド OTLP/HTTP span — `traces = true` の宛先にのみ中継 |
-| `GET` | `/admin` | 管理ダッシュボード（HTML）。未サインイン時は `/admin/login` へリダイレクト |
+| `GET` | `/admin`、`/admin/` | 管理ダッシュボード — バンドルの他の部分と同じく認証なしで配信される SPA シェルです。`GET /admin/api/session` が `401` を返すと、バンドル自身が `/admin/login` へ遷移させます。ワイルドカードのセグメントは空文字列に一致しないため `/admin/` はどのルートにも一致せず、マウントルートは 2 つの綴りを両方とも登録しています。`--features ui` なしでビルドしたバイナリでは、どちらのパスもその機能名を含む本文とともに `404` を返します |
 | `GET`, `POST` | `/admin/login` | 管理トークンのログインフォームとブラウザーセッションの作成 |
 | `POST` | `/admin/api/logout` | ブラウザーセッションの破棄 |
+| `GET` | `/admin/api/session` | 管理 SPA がレンダリング前に必要とするセッション固有の 2 値: セッションの `csrf` トークンと `expiry_buffer_ms`(`claude::auth::EXPIRY_BUFFER` のミリ秒値で、setup token が使用不可になる境界)。ヘッダー資格情報の呼び出し元は CSRF 免除のため空の `csrf` を受け取る。このサーフェスには CORS レイヤーがないため、クロスオリジンのページはリクエストを送れても応答を読めない。したがって `GET` でトークンを返しても安全 |
 | `GET` | `/admin/api/accounts` | Claude アカウントストアのメタデータ: 名前、種類、有効期限、UUID。トークン本体は決して返さない |
 | `GET` | `/admin/api/accounts/codex` | Codex アカウントストアのメタデータ: 名前、有効期限、ChatGPT アカウント ID。トークン本体は決して返さない |
 | `GET` | `/admin/api/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider ごとのプール状態。各 account オブジェクトには任意の `plan` 文字列が含まれることがあり、ファイルから読んだ値は後の profile 照会でより精密な値に補正されることがあり、Codex の行には報告された 5h/7d 使用量が含まれる(`7d_oi` に対応する Codex の項目はない)。各 account には真偽値 `needs_relogin` も含まれる。クレデンシャルが終端的に拒否された(`invalid_grant`)か、リフレッシュトークンをそもそも持たないか、ローテーションされたトークン対を保存できずに失った場合で、どのリトライでも回復せず、オペレーターの再ログインだけが解決策となる。クールダウンのフィールドとは**独立に**報告される — クールダウンは自然に失効するが、この印は残る — ダッシュボードの二つの表はいずれもクォータ一時停止の `cooling` ではなく **needs re-login** と表示する。メモリ上のみで保持されるため、再起動でクリアされ、そのアカウントの次の終端的な失敗で再び立つ。どの provider テーブルも一度も選択したことのないアカウントについても — `has_state: false` と並んで — 報告される。admin の refresh プローブが判定をストア名で記録するためである。 |
@@ -38,11 +39,13 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/backend-api/codex/responses` | Inbound Codex CLI パススルー — 実際の ChatGPT バックエンドパスをミラー |
 | `POST` | `/responses` | Inbound Codex CLI パススルー — bare `base_url` 形式 |
 | `POST` | `/v1/responses` | Inbound Codex CLI パススルー — `/v1` サフィックスの `base_url` 形式 |
+| `GET` | `/models` | Codex CLI モデルカタログのフォールバック — `{"models":[]}` を返す |
+| `GET` | `/backend-api/codex/models` | Codex CLI モデルカタログのフォールバック — ChatGPT 形式のベースパス |
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI analytics sink — 受理して破棄し、サニタイズ済みイベント名のカウンターのみ記録 |
 | `POST` | `/codex/analytics-events/events` | Codex CLI analytics sink — ルート形式の `chatgpt_base_url` |
 | `GET` | `/usage` | クライアント向けのサニタイズ済みプール使用量 — 共有アカウントプールのウィンドウごとの残り余裕とリセットに加え、プールされるプロバイダーごとの同じ集計。アカウントの身元や容量は返さない |
 
-`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作では `403` で、`POST /admin/login` では `401` で拒否されます。ただし SPA シェルとバンドルファイルは例外で、`GET /admin/{*path}` と `GET /admin/assets/{*path}` は管理認証なしで配信されます。これらは運用者のデータを含まず、SPA が読み取る値はすべて、リクエストごとに認証する `/admin/api/*` の背後にあるため安全です。この 2 つのルートも、`[server.admin]` が設定され、かつ `--features ui` でビルドしたバイナリでのみ存在します。
+`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作では `403` で、`POST /admin/login` では `401` で拒否されます。ただし SPA シェルとバンドルファイルは例外で、`GET /admin`(2 つの綴りとも)、`GET /admin/{*path}`、`GET /admin/assets/{*path}` は管理認証なしで配信されます。これらは運用者のデータを含まず、SPA が読み取る値はすべて、リクエストごとに認証する `/admin/api/*` の背後にあるため安全です。ワイルドカードの 2 つのルートは、`[server.admin]` が設定され、かつ `--features ui` でビルドしたバイナリでのみ存在します。
 
 ### 管理 SPA バンドル（`--features ui`）
 
@@ -61,7 +64,9 @@ Node ツールチェーンを必要とせず、バンドルも持たず、どち
   壊れるためです。
 - マウントの外側のパスは影響を受けず、これまでどおり `404` を返します。
 
-`GET /admin` は引き続きサーバーレンダリングのダッシュボードを返します。
+`GET /admin` もシェルで、`GET /admin/` も同様です。ワイルドカードのセグメントは空文字列に一致しないため、`/admin/` は完全一致のルートにもフォールバックにも一致せず、ダッシュボード自身のルートで本文のない `404` を返してしまいます。そのため、マウントルートは 2 つの綴りをそれぞれ登録しています。
+
+この 2 つは、両方のビルドに登録されていながら応答が機能フラグ次第で変わる管理パスで、有効ならシェル、無効なら本文に `--features ui` を挙げた `404` を返します。どちらでも登録しておくのは、その `404` にこの案内文を持たせるためです — ルートごと外すと axum の本文なし `404` になり、運用者は `[server.admin]` 未設定と見分けられません。
 
 ### 管理パスの移行
 
@@ -112,7 +117,7 @@ spend-limit ルートは、起動時に [`[server.spend]`](/ja/reference/configu
 
 `GET /managed/settings` と `POST /v1/{metrics,logs,traces}` のテレメトリー受信ルートは、起動時に `[server.gateway]` が有効だった場合にのみ存在し、どちらも同じゲートウェイのベアラー JWT を要求します。受信ルートは、管理された Claude Code クライアントが export する OTLP/HTTP ペイロードを受け取り（[`[server.gateway.telemetry]`](/ja/reference/configuration/) がそれらの exporter をゲートウェイへ向けます）、リクエストのバイト列をその signal に opt-in したすべての宛先へそのまま中継します。インバウンドの `content-type` と `content-encoding` は保持され、宛先に設定された headers がその上に適用されます（設定されたキーは転送値を置き換え、ヘッダーを重複させません）。クライアントの `Authorization` ヘッダーが転送されることはなく、中継はリダイレクトに従いません。宛先は signal ごとに opt-in し（`metrics` はデフォルト on、`logs`／`traces` は off）、どの宛先も opt-in していない signal は受理後に破棄されます。中継はデタッチされているため、宛先の状態にかかわらずレスポンスは常に即座の `200` で、成功ボディは OTLP/HTTP に従いリクエストのプロトコルをミラーします（`application/json` には `{}`、それ以外には空の `application/x-protobuf` ボディ）。32 MiB の受信上限を超えるボディは `413` を返します。
 
-Inbound Codex Responses と analytics のルートは [`[server.codex_endpoint]`](/ja/reference/configuration/) が設定されている場合にのみ存在します。Responses ルートは OpenAI Responses のリクエストとレスポンスをそのまま中継し、`[[server.codex_endpoint.routes]]` によってモデルごとに別の Responses 互換アップストリームへルーティングすることもできます。2 つの analytics ルートは同じ inbound auth ポリシーを適用し、クライアント payload を転送または保持せず、認証後は不正な JSON やサイズ超過の body にも `200 {}` を返します。サニタイズ済みイベント名だけを `shunt.codex_client_events` に記録し、metric sink がなければ純粋な破棄 sink として動作します。
+Inbound Codex Responses、モデルカタログ、analytics のルートは [`[server.codex_endpoint]`](/ja/reference/configuration/) が設定されている場合にのみ存在します。Responses ルートは OpenAI Responses のリクエストとレスポンスをそのまま中継し、`[[server.codex_endpoint.routes]]` によってモデルごとに別の Responses 互換アップストリームへルーティングすることもできます。Codex 専用の 2 つのモデルパスは `{"models":[]}` を返し、共有の `/v1/models` はクエリに `client_version` がある場合だけその形式を返し、それ以外では Anthropic 契約を保ちます。すべてのカタログ変形は通常のモデル検出認証ゲートを使います。2 つの analytics ルートは同じ inbound auth ポリシーを適用し、クライアント payload を転送または保持せず、認証後は不正な JSON やサイズ超過の body にも `200 {}` を返します。サニタイズ済みイベント名だけを `shunt.codex_client_events` に記録し、metric sink がなければ純粋な破棄 sink として動作します。
 
 `/usage` ルートは [`[server.usage]`](/ja/reference/configuration/#serverusageオプション) を設定した場合にのみ存在し、同じく [`[server.auth]`](/ja/guides/shared-gateway/) の設定を必要とします。`GET /v1/messages` と同じクライアントトークンで認証し、共有アカウントプールのウィンドウごとの残り余裕（そのウィンドウを報告した無効化されていないアカウントの `mean(1 - utilization)`、つまりプール全体の容量のうちまだ使われていない割合）、それらのアカウントが報告した最も早いリセット時刻、`ok`／`degraded`／`exhausted` ステータスを返します。アカウントの身元、件数、優先度、`disabled`、しきい値、アカウント単位の数値は公開しません。無効化されていないアカウントがそのウィンドウを報告していない場合だけ `null` になります。Codex の `x-codex-*` レスポンスヘッダーとオプションの `wham/usage` ポーリングは、5 時間と共有週次ウィンドウを埋めます。WebSocket トランスポートでは、ストリーム内の `codex.rate_limits` イベントが再利用接続を含むすべてのターンで同じウィンドウを埋めます。Codex には Fable スコープ（`7d_oi`）のシグナルがありませんが、混在プロバイダーのプールでは別のプロバイダーが集約 Fable 値を提供できます。`pool` はプールされるすべてのプロバイダーを通じた集計で、`providers` は同じサニタイズ済み集計をプールされるプロバイダーごとに、設定されたプロバイダー名をキーとして持ちます。そのため特定のプロバイダーにルーティングするクライアントは、プール全体の平均ではなく、そのプロバイダーの余裕とステータスを読み取れます。プールされない認証モードのプロバイダーは省略されます。完全なレスポンス形は[英語版エンドポイントリファレンス](/reference/endpoints/)を参照してください。
 

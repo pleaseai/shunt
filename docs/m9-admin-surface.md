@@ -254,9 +254,14 @@ process-lifetime state:
 > **Pre-split record.** The paths below are the ones M9 shipped. Every JSON and
 > mutation route among them has since moved to `/admin/api/*`; only `/admin`,
 > `/admin/login`, and `/admin/oidc/callback` still answer on the paths written
-> here. This table is deliberately left as the pre-split record rather than
-> rewritten — see [`admin-ui-delivery.md`](admin-ui-delivery.md) (Decision 3 and
-> Resolution 6) for why the namespace split happened, and
+> here. `/admin` kept its path but not its answer: the server-rendered dashboard
+> described below is deleted, and that path now serves the embedded SPA shell —
+> unauthenticated, so the sign-in redirect happens client-side after
+> `GET /admin/api/session` answers `401`, and in a build without `--features ui`
+> it answers `404` instead. This table is deliberately left as the pre-split
+> record rather than rewritten — see
+> [`admin-ui-delivery.md`](admin-ui-delivery.md) (Decision 3, Decision 4, and
+> Resolution 6) for why the namespace split and the SPA move happened, and
 > [`docs/reference/endpoints.md`](../site/src/content/docs/reference/endpoints.md)
 > for the current paths and the before/after migration table.
 
@@ -404,6 +409,16 @@ even though the client's last local check happened to see an expired token.
 An observed error (`expired`/`unavailable`) still surfaces over a merely idle
 managed state (`available`/`unseen`), which is the "Needs login" case this
 matching was built for.
+
+Within the managed states both tables run one ladder — `disabled`,
+`needs_relogin`, `!has_state`, account-wide cooldown, `near_quota`, Fable-only
+cooldown — so the same account cannot read `near quota` in the managed-pool
+table while the Accounts table calls it `Cooling` (issue #512). The cooldown is
+tested before `near_quota` because it is the fact that *all* of the account's
+traffic is gated right now, while `near_quota` warns about what is coming. When
+both cooldowns are running the row's state is the account-wide one, and its note
+names both deadlines (`retries in 10m · Fable retries in 30m`), the way the
+managed-pool table's Cooldown column already lists both (issue #511).
 
 Managed provisioning and store metadata remain available under a collapsed
 **Manage pool accounts (advanced)** section. `AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,
@@ -720,8 +735,11 @@ recover with, so inside that window a routed request already fails on the
 no-refresh-token path; comparing against the bare deadline here would have the
 dashboard call a credential usable for the last five minutes of its life while
 routing rejects it, the window in which the operator most needs the warning.
-`dashboard_page` substitutes the constant's millisecond value into the script's
-`{expiry_buffer_ms}` placeholder, so the two cannot drift apart.
+`GET /admin/api/session` serves the constant's millisecond value as
+`expiry_buffer_ms`, so the two cannot drift apart. (The server-rendered
+dashboard this replaced substituted it into its own script instead; a served
+value and a substituted one are equally drift-proof, which is why the move
+changed nothing here.)
 
 The Codex store table alongside it carries the same status column, but
 unconditionally: that store has no non-refreshable kind at all. Both writers
@@ -764,6 +782,28 @@ therefore captures a per-form flow epoch (`claudeFlowEpoch` / `codexFlowEpoch`,
 bumped by a re-login and by every new start or completion) and discards its own
 response once superseded. Claude and Codex count separately, so re-priming one
 form never discards the other's live flow.
+
+Re-priming is not the only way a stale authorization step survives. A second
+**Start** on a form whose step is already open used to leave the first link
+clickable, and its Complete button posts to the name captured for *that* flow —
+and because a completion bumps the epoch itself, that click also strands the
+start now in flight, whose response arrives superseded and is dropped. `start`
+therefore clears the authorization state before it bumps the epoch, so the link
+on screen always belongs to the login the operator last asked for (issue #513).
+The login-method radios are disabled for the same span: the mode is fixed in the
+server's pending entry when the request is issued, so a live radio would let the
+form read one method while the pending login is the other. The lock is keyed on
+`starting || authorizeUrl`, not on `authorizeUrl` alone — `start` nulls
+`authorizeUrl` before it sends, so the narrower key would reopen the radios for
+exactly the length of the request that had already captured the mode. A
+superseded start does not release the flag; `prime` and each newer start set it
+as they take over, so it always belongs to whichever call owns the current epoch.
+A `disabled` attribute states no reason, so the group carries a `role="status"`
+note naming the lock — the form's own live region is empty at exactly that
+moment, because `start` clears it and a successful start never sets it. Pressing
+Start again does **not** release the lock (the replacement start re-arms it
+before any render), so the note names the two things that do: completing the
+flow, or reloading the page.
 
 The epoch orders *starts*, where the later click is the live one, and must not
 be extended to order two completions of the same flow: a completion consumes the
