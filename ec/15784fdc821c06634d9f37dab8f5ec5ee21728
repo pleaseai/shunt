@@ -1,0 +1,48 @@
+tests/inbound_auth.rs
+  s_3598e23a871543::t_53bf9d0fedcd1c 93
+tests/passthrough.rs
+  s_3598e23a871543::t_7af9751871dc52 552
+shunt.toml.example
+  s_3598e23a871543::t_eb873489d28225 333-356
+src/config/stage_router.rs
+  s_3598e23a871543::t_a66070c407c9db 1-103
+src/gateway/tests.rs
+  s_3598e23a871543::t_53bf9d0fedcd1c 1485,1555
+src/discovery.rs
+  s_3598e23a871543::t_53bf9d0fedcd1c 319,325,416,422,486,531
+shunt.yaml.example
+  s_3598e23a871543::t_af1dcadf0651d8 48-62
+src/auth/antigravity/mod.rs
+  s_3598e23a871543::t_53bf9d0fedcd1c 702,838
+src/config.rs
+  s_3598e23a871543::t_f0320279ff6f34 5211-5214
+  s_3598e23a871543::t_5fe4130c442636 4057,7078-7107,7109-7232
+  s_3598e23a871543::t_2e3584c1b30ebd 4302
+  s_3598e23a871543::t_85d391e11eb2e8 5157-5210,5215-5220
+  s_3598e23a871543::t_097b772f50bac6 3883-3889,3949-3953,3982-4056
+  s_3598e23a871543::t_53bf9d0fedcd1c 7325
+  s_3598e23a871543::t_52e60d8e5e61b5 20,31-34,2054-2059
+  s_3598e23a871543::t_4b3852463dbe5f 2272-2285
+  s_3598e23a871543::t_16469614610db9 4058,7108
+src/routing.rs
+  s_3598e23a871543::t_2e3584c1b30ebd 230
+  s_3598e23a871543::t_53bf9d0fedcd1c 351,571,640
+tests/failover.rs
+  s_3598e23a871543::t_7af9751871dc52 131,1086
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "ec15784fdc821c06634d9f37dab8f5ec5ee21728",
+  "prompts": {},
+  "sessions": {
+    "s_3598e23a871543": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "121eceb9-d260-4110-b4e8-1b14de7086df",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
