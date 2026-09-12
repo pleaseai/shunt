@@ -47,7 +47,7 @@ shunt run
    name = "backup"
    ```
 
-已开始的流程在 `pending_ttl_secs`(默认 10 分钟)内保持有效,给运营者留出打开授权页并粘贴结果的时间。服务器把选定的 mode 与 pending attempt 一起记录,所以 completion 请求无法切换 token 类型。从选择 **Start** 起直到流程结束,仪表盘会禁用登录方式单选按钮并说明原因,因为 pending attempt 的 mode 在请求发出时就已固定。再次选择 **Start** 并不会解除锁定;完成该流程或重新加载页面才能重新选择。选择 **Start** 还会关闭屏幕上已经打开的授权步骤,因此在发出替换请求的那一刻,它的链接和 **Complete** 表单就会消失;如果该替换请求失败 — 无论是被拒绝,还是根本没有响应 — 失败消息都会说明先前的步骤已被关闭(但如果该步骤的代码已经提交,那次登录会自行完成,没有任何损失,因此不会显示这条说明)。先前的登录在剩余的 `pending_ttl_secs` 内在服务器上仍然有效,但页面已无法触及它,所以请重新开始该流程。Full OAuth 存储 access token 与 refresh token,其 credential kind 显示为 `imported`;setup-token mode 存储 kind 为 `setup_token` 的静态 credential。完成响应会报告账户是否已存储,以及当前的 provider 配置是否让它生效。
+已开始的流程在 `pending_ttl_secs`(默认 10 分钟)内保持有效,给运营者留出打开授权页并粘贴结果的时间。服务器把选定的 mode 与 pending attempt 一起记录,所以 completion 请求无法切换 token 类型。从选择 **Start** 起直到流程结束,仪表盘会禁用登录方式单选按钮并说明原因,因为 pending attempt 的 mode 在请求发出时就已固定。再次选择 **Start** 并不会解除锁定;完成该流程或重新加载页面才能重新选择。选择 **Start** 还会关闭屏幕上已经打开的授权步骤,因此在发出替换请求的那一刻,它的链接和 **Complete** 表单就会消失;如果该替换请求失败 — 无论是被拒绝,还是根本没有响应 — 失败消息都会说明先前的步骤已被关闭。对于代码已经提交的步骤,只有在那次交换本身失败之后才会提到它,因为在此之前它仍可能存储账户。服务器上留下什么则因情况而异:被拒绝的替换请求不会触碰先前的 pending 登录,它在剩余的 `pending_ttl_secs` 内仍然有效;而没有响应的请求可能已经到达服务器,若使用同一账户名,就已经把那个登录替换掉了。无论哪种情况,页面都已无法触及它,所以请重新开始该流程。Full OAuth 存储 access token 与 refresh token,其 credential kind 显示为 `imported`;setup-token mode 存储 kind 为 `setup_token` 的静态 credential。完成响应会报告账户是否已存储,以及当前的 provider 配置是否让它生效。
 
 账户存储的变化按请求发现,因此扫描模式的提供方在账户增删后不需要重启。
 

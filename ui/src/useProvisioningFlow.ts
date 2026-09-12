@@ -144,12 +144,17 @@ export function useProvisioningFlow({
   // whichever message does get through instead of by nobody. Cleared as soon as
   // something reports it, and as soon as a step is open again.
   const closedStepUnreported = useRef(false);
+  // The epoch `prime` last took. A completion older than it was discarded with
+  // the rest of the flow, at the operator's own request, so it has no closure to
+  // hand on to a later message.
+  const discardedEpoch = useRef(0);
 
   const report = useCallback((text: string, ok: boolean) => setMessage({ text, ok }), []);
 
   const prime = useCallback((next: string) => {
     setName(next);
     epoch.current += 1;
+    discardedEpoch.current = epoch.current;
     currentName.current = null;
     closedStepUnreported.current = false;
     setAuthorizeUrl(null);
@@ -162,20 +167,24 @@ export function useProvisioningFlow({
     async (body: Record<string, unknown>) => {
       setMessage(null);
       // Whether this start closes an authorization step the operator could
-      // still have completed — the fact the notices below report. Captured
-      // before the clear a few lines down, and from two sources, because the
-      // closure and the message that reports it can be separated: `authorizeUrl`
-      // is the step being closed right now, and `closedStepUnreported` is one an
-      // earlier start closed whose own response the epoch guard then dropped.
+      // still have completed — the fact the notices below report. Read before
+      // the clear a few lines down, and from two sources, because the closure
+      // and the message that reports it can be separated: `authorizeUrl` is the
+      // step being closed right now, and `closedStepUnreported` already holds
+      // one whose own response never got to report it — an earlier start the
+      // epoch guard dropped, or a completion this form superseded.
       //
-      // `completingNow` excludes a step whose code is already submitted. Its
-      // completion leaves `authorizeUrl` non-null until it succeeds, and clears
-      // it only *after* the epoch guard — so a Start clicked mid-completion
-      // supersedes that completion, suppressing its confirmation while
-      // `onStored` has already stored the account. Without this term the
-      // refused start would then tell the operator to start again for an
-      // account that is already in the table. A step being completed is not one
-      // they could still have completed, which is the notice's own contract.
+      // `completingNow` defers on a step whose code is already submitted,
+      // because at this moment its outcome is not yet known. Its completion
+      // leaves `authorizeUrl` non-null until it succeeds, and clears it only
+      // *after* the epoch guard — so a Start clicked mid-completion supersedes
+      // that completion, suppressing its confirmation while `onStored` has
+      // already stored the account. Without this term the refused start would
+      // then tell the operator to start again for an account that is already in
+      // the table. The case where that completion *fails* instead is decided
+      // where it becomes known: `complete` records the closure itself. That is
+      // also why the branches below read the ref rather than a value captured
+      // here — the completion can settle while this request is still in flight.
       //
       // Deliberately not `starting || authorizeUrl !== null`, the predicate
       // `AddClaudeAccount`'s radio lock uses (the Codex form has no radios and
@@ -183,9 +192,8 @@ export function useProvisioningFlow({
       // just as readily on two chained starts that never opened a step at all,
       // and then names a step the operator never saw. The ref reaches the same
       // case by remembering an actual closure, so it cannot say that.
-      const closedOpenStep =
+      closedStepUnreported.current =
         (authorizeUrl !== null && !completingNow.current) || closedStepUnreported.current;
-      closedStepUnreported.current = closedOpenStep;
       // The previous flow's authorization step is closed the moment a new start
       // is issued. Left open it stays clickable, and its Complete button posts
       // to the name captured for THAT flow — and because `complete` bumps the
@@ -219,7 +227,7 @@ export function useProvisioningFlow({
         if (!result.ok || !result.answered) {
           const reason = result.message ?? copy.startFailure;
           setMessage({
-            text: closedOpenStep ? `${reason} — ${CLOSED_PREVIOUS_STEP}` : reason,
+            text: closedStepUnreported.current ? `${reason} — ${CLOSED_PREVIOUS_STEP}` : reason,
             ok: false,
           });
           closedStepUnreported.current = false;
@@ -238,7 +246,7 @@ export function useProvisioningFlow({
         if (issued === epoch.current) {
           setStarting(false);
           setMessage({
-            text: closedOpenStep ? START_UNANSWERED_AFTER_CLOSE : START_UNANSWERED,
+            text: closedStepUnreported.current ? START_UNANSWERED_AFTER_CLOSE : START_UNANSWERED,
             ok: false,
           });
           closedStepUnreported.current = false;
@@ -280,12 +288,32 @@ export function useProvisioningFlow({
       if (!result.answered) {
         onStored();
         if (issued === epoch.current) setMessage({ text: UNKNOWN_COMPLETION, ok: false });
+        // No closure recorded when this one is superseded, unlike the definite
+        // failure below: this path cannot say the account was *not* stored, and
+        // the notice it would arm ends in "start again". `onStored` has already
+        // re-read the table, which is where that question is answered.
         return;
       }
       if (!result.ok) {
         if (issued === epoch.current) {
           setMessage({ text: result.message ?? copy.completeFailure, ok: false });
+          return;
         }
+        // Superseded, so this failure is shown to nobody — and the start that
+        // superseded it closed this step before sending. What is certain is that
+        // the account was not stored: the operator has neither it nor the step
+        // that was going to produce it, and only the next message can say so.
+        // Whether the pending login outlived the attempt is a separate question
+        // — `PendingStore::attempt` leaves the entry in place for a state or
+        // upstream failure and discards it at the attempt cap — and the notice
+        // claims nothing about it. Hand the closure on: that is the decision
+        // `start` could not make while this request was still in flight.
+        //
+        // Not when `prime` is what superseded it. That discards the
+        // half-finished flow at the operator's own request and clears the page's
+        // message with it, so the next start closes nothing and must not say
+        // otherwise.
+        if (discardedEpoch.current < issued) closedStepUnreported.current = true;
         return;
       }
       // The account was stored upstream whether or not this flow has since been

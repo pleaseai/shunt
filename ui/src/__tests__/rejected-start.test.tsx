@@ -1,8 +1,8 @@
-import { act, screen } from '@testing-library/react';
+import { act, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
-import { deferred, renderDashboard, reply, type Route } from '../test/harness';
+import { deferred, renderDashboard, reply, rowOf, tbody, type Route } from '../test/harness';
 
 const CLOSED_NOTICE =
   'the previous authorization step was closed when this start was issued; start again.';
@@ -222,5 +222,101 @@ describe('a failed start says which authorization step it closed', () => {
     const message = document.getElementById('addmsg');
     expect(message).toHaveTextContent(UNANSWERED);
     expect(message).not.toHaveTextContent('the previous one was closed');
+  });
+
+  /**
+   * The mid-completion exclusion above is a deferral, not a verdict: a start
+   * clicked while a completion is in flight cannot yet know whether that
+   * exchange stored the account. When it turns out to have failed definitively,
+   * nothing was stored and the pending login is still on the server for the rest
+   * of its `pending_ttl_secs` — while the step that pointed at it is gone, and
+   * the completion's own error is suppressed by the epoch the newer start took.
+   * The closure has to reach the operator through the message that does survive.
+   */
+  it('names the closed step once the completion it superseded has failed', async () => {
+    const user = userEvent.setup();
+    const completion = deferred<Response>();
+    const refusal = deferred<Response>();
+    let started = 0;
+    await renderDashboard({}, {
+      'POST /admin/api/accounts/claude': (() => {
+        started += 1;
+        return started === 1 ? reply(OPENED) : refusal.promise;
+      }) as Route,
+      'POST /admin/api/accounts/claude/first/complete': (() => completion.promise) as Route,
+    });
+
+    await user.type(nameField(), 'first');
+    await user.click(startButton());
+    await screen.findByRole('link', { name: OPENED.authorize_url });
+
+    await user.type(document.getElementById('code') as HTMLTextAreaElement, 'the-code#the-state');
+    await user.click(document.getElementById('complete') as HTMLButtonElement);
+
+    // Start is not disabled during a completion, so this click is reachable.
+    await user.clear(nameField());
+    await user.type(nameField(), 'Second');
+    await user.click(startButton());
+
+    // The completion settles first, and definitively: the exchange was refused,
+    // so the pending login it was spending is still live on the server.
+    await act(async () => {
+      completion.resolve(reply({ error: { message: 'state mismatch' } }, 400));
+      await completion.promise;
+    });
+    // Its own message is suppressed — the newer start owns the epoch.
+    expect(document.getElementById('addmsg')).not.toHaveTextContent('state mismatch');
+
+    await act(async () => {
+      refusal.resolve(reply(REFUSED, 400));
+      await refusal.promise;
+    });
+
+    expect(document.getElementById('addmsg')).toHaveTextContent(
+      `name must be lowercase — ${CLOSED_NOTICE}`,
+    );
+  });
+
+  /**
+   * Re-login discards the half-finished flow deliberately, at the operator's own
+   * request, and clears the page's message with it. A completion that fails
+   * after that has no closure to hand to the next start: that start closed
+   * nothing, and the notice would say the step went when the start was issued.
+   */
+  it('stays quiet when a re-login discarded the flow whose completion then failed', async () => {
+    const user = userEvent.setup();
+    const completion = deferred<Response>();
+    let started = 0;
+    await renderDashboard(
+      { accounts: [{ name: 'other', kind: 'imported' }] },
+      {
+        'POST /admin/api/accounts/claude': () => {
+          started += 1;
+          return started === 1 ? reply(OPENED) : reply(REFUSED, 400);
+        },
+        'POST /admin/api/accounts/claude/first/complete': (() => completion.promise) as Route,
+      },
+    );
+
+    await user.type(nameField(), 'first');
+    await user.click(startButton());
+    await screen.findByRole('link', { name: OPENED.authorize_url });
+
+    await user.type(document.getElementById('code') as HTMLTextAreaElement, 'the-code#the-state');
+    await user.click(document.getElementById('complete') as HTMLButtonElement);
+
+    await user.click(
+      within(rowOf(tbody('accounts').getByText('other'))).getByRole('button', { name: 'Re-login' }),
+    );
+    await act(async () => {
+      completion.resolve(reply({ error: { message: 'state mismatch' } }, 400));
+      await completion.promise;
+    });
+
+    await user.click(startButton());
+
+    const message = document.getElementById('addmsg');
+    expect(message).toHaveTextContent('name must be lowercase');
+    expect(message).not.toHaveTextContent('previous authorization step');
   });
 });
