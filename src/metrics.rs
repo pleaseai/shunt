@@ -508,7 +508,7 @@ pub fn record_upstream_retry(provider: &str, reason: &'static str) {
 }
 
 /// Record one ordered-upstream failover transition. `state` is one of
-/// `attempted`, `advanced`, or `exhausted`.
+/// `attempted`, `advanced`, `exhausted`, or `capability_excluded`.
 pub fn record_failover(provider: &str, state: &'static str) {
     sentry::metrics::counter("shunt.failover", 1)
         .attribute("provider", provider.to_owned())

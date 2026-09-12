@@ -113,7 +113,7 @@ anthropic-primary = "claude-opus-4-8"
 codex-fallback = "gpt-5.6-sol"
 ```
 
-This chain tries `anthropic-primary` and then `codex-fallback`. `auth` accepts either a mode string or a map; `claude_oauth` and `chatgpt_oauth` maps can narrow credentials with `account = "name"` or `accounts = [...]`. Legacy `[providers.<name>]` remains supported and becomes implicit name-sorted upstreams. Do not declare both forms: mixing `[[upstreams]]` with `[providers.*]` is a configuration error. See the [configuration reference](https://shunt.dev/reference/configuration/) for presets, failure classes, and migration details.
+This chain tries `anthropic-primary` and then `codex-fallback`. If a later upstream cannot serve a requested feature (tools, images, structured output, explicit reasoning effort, or a `[1m]`/`[1M]` context hint), it is skipped before the attempt. The primary is always kept. `auth` accepts either a mode string or a map; `claude_oauth` and `chatgpt_oauth` maps can narrow credentials with `account = "name"` or `accounts = [...]`. Legacy `[providers.<name>]` remains supported and becomes implicit name-sorted upstreams. Do not declare both forms: mixing `[[upstreams]]` with `[providers.*]` is a configuration error. See the [configuration reference](https://shunt.dev/reference/configuration/) for presets, failure classes, and migration details.
 
 ### Built in
 
