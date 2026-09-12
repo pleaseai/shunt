@@ -1,0 +1,41 @@
+src/auth/slots.rs
+  s_dd88506721acf5::t_4388e48d03f481 48-50,155-157
+site/src/content/docs/ko/guides/shared-gateway.mdx
+  s_dd88506721acf5::t_7f85f30b779941 25
+site/src/content/docs/zh-cn/guides/shared-gateway.mdx
+  s_dd88506721acf5::t_7f85f30b779941 25
+site/src/content/docs/ja/guides/shared-gateway.mdx
+  s_dd88506721acf5::t_7f85f30b779941 25
+docs/m4-inbound-auth.md
+  s_dd88506721acf5::t_1fe13f3db8aa2b 212-213
+  s_dd88506721acf5::t_4388e48d03f481 210
+  s_dd88506721acf5::t_94099f7a488eae 211
+site/src/content/docs/ja/guides/inbound-codex-endpoint.md
+  s_dd88506721acf5::t_7f85f30b779941 85
+src/auth/slots/tests.rs
+  s_dd88506721acf5::t_4388e48d03f481 712-713
+site/src/content/docs/ko/guides/inbound-codex-endpoint.md
+  s_dd88506721acf5::t_7f85f30b779941 85
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_dd88506721acf5::t_4388e48d03f481 85
+site/src/content/docs/guides/shared-gateway.mdx
+  s_dd88506721acf5::t_4388e48d03f481 25
+site/src/content/docs/zh-cn/guides/inbound-codex-endpoint.md
+  s_dd88506721acf5::t_7f85f30b779941 85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d2e62f6a1bd728cb508f1d5038b2ec2d2e4d9b46",
+  "prompts": {},
+  "sessions": {
+    "s_dd88506721acf5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6f2e70cc-ac73-4d92-be7e-f9518dc70b8e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
