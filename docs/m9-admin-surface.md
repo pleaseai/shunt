@@ -805,6 +805,71 @@ Start again does **not** release the lock (the replacement start re-arms it
 before any render), so the note names the two things that do: completing the
 flow, or reloading the page.
 
+Clearing at issue time costs the operator something when the replacement start
+then *fails*: the page has thrown away the only handle to a pending login the
+server may well still hold. Restoring the flow is not the repair — reinstating `authorizeUrl` and the name
+handle puts the page back into exactly the state #513 removed, and making that
+coherent means restoring the name field too, stomping the edit the operator is
+about to correct. Each failure message names what was closed instead, so the
+operator restarts rather than hunting for a link that is gone (issue #531). Both
+of `start`'s failure paths carry it, because the clear runs *before* the request:
+a refusal appends the notice to the server's own reason, and an unanswered start
+says it in place of the "no authorization step opened" line, which speaks only
+for the step that failed to open.
+
+What the server still holds differs by path, which is why the notice speaks only
+for the page. A refused start never reaches `PendingStore::start` —
+`add_account` calls it only after every failure return — so the earlier pending
+login is untouched and lives out its `pending_ttl_secs`. An unanswered one may
+have reached the server all the same, and `PendingStore::start` is a keyed insert
+that *replaces* the entry, so a retry under the same account name has already
+invalidated the login the closed step pointed at. Neither is reachable from the
+page, which is what the notice says and all it says.
+
+The notice is said only when a step was in fact closed — a failed start that
+closed nothing has nothing to report, and saying it regardless would teach an
+operator to read past the sentence on the one occasion it is true. Reading
+`authorizeUrl` alone does not decide that, because the closure and the message
+that reports it can be separated: a start closes the step synchronously, and its
+own response can then be dropped by the epoch guard when a newer start supersedes
+it — while that newer start reads an `authorizeUrl` the older one already nulled.
+The Start button is not disabled while a start is in flight, unlike Complete —
+which is disabled for its own request, and carries the 120-second
+`AbortController` bound described below precisely so that being disabled cannot
+close it for the life of the page. `start` has no such bound. So a second Start
+during the first is an ordinary double click, not a race. A
+`closedStepUnreported` ref carries the fact across the gap and is released by
+whichever message reports it. The predicate *defers* on a step whose code is
+already submitted (`completingNow`): a completion leaves `authorizeUrl` non-null
+until it succeeds and clears it only *after* the epoch guard, so a Start clicked
+mid-completion supersedes that completion — suppressing its confirmation while
+`onStored` has already stored the account. Claiming a lost step there would send
+the operator to re-provision an account already in the table. Deferring is not
+declining, though: when that superseded completion comes back a definite failure,
+nothing was stored, the step it was spending is closed, and its own error is
+suppressed by the epoch the newer start took — so `complete` reports the closure
+itself on that branch. Which way it reports depends on what the superseding start
+has managed to do by then, and both orders are ordinary: the refusal is a local
+validation while the completion is an upstream round trip, so it usually lands
+first. If that verdict is already on screen, the completion amends it in place;
+if the start is still in flight, the ref carries the fact to the message it will
+write. Only the start's own verdict is amended, tracked by `shownStartFailure` —
+`#addmsg` is shared with the row actions, which report through `report`, and a
+closed-step note appended to a failed refresh would name a start the operator did
+not make. Nothing is reported at all when that start has opened a step of its
+own (`stepOpen`, mirroring `authorizeUrl` for the same reason): the operator is
+not stranded, and arming the carry there would strand the fact instead, since
+completing the new step consumes it silently and the notice would surface later
+on a failure that closed nothing. The two unknown completion outcomes — an unreadable
+answer, an abandoned request — record nothing, because neither can say the
+account was *not* stored and `onStored` has already re-read the table, which is
+where that question is answered. Nor does a completion superseded by `prime`:
+re-login discards the half-finished flow at the operator's own request, so the
+next start closes nothing and must not say it did. The wider predicate the radio lock uses
+(`starting || authorizeUrl !== null`) would reach the same case, but it fires just
+as readily on two chained starts that never opened a step at all, and would then
+name a step the operator never saw.
+
 The epoch orders *starts*, where the later click is the live one, and must not
 be extended to order two completions of the same flow: a completion consumes the
 pending login, so there the **first** click is the one that stores the

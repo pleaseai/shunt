@@ -34,6 +34,35 @@ const UNKNOWN_COMPLETION =
  */
 const START_UNANSWERED = 'No answer from the server — no authorization step opened, so start again';
 
+/**
+ * `START_UNANSWERED` for the case where this start also closed a step. Spelled
+ * out rather than composed from the two constants: concatenating them repeats
+ * "start again" and stacks a second em dash on a sentence that already has one.
+ * The two paths are symmetric in what they cost the operator — the clear that
+ * closes the previous step runs before the request, so it has happened either
+ * way by the time this is read (#531).
+ */
+const START_UNANSWERED_AFTER_CLOSE =
+  'No answer from the server — no authorization step opened, and the one that was open has been closed, so start again';
+
+/**
+ * Appended to a rejected start's own error when an authorization step the
+ * operator could still have completed was closed — by this start, or by an
+ * earlier one whose own response never got to report it. The clear itself
+ * is by design — a step left open stays clickable and its Complete button posts
+ * to the name captured for THAT flow (#513) — but the server holds the pending
+ * login for the rest of its `pending_ttl_secs`, and after a rejection nothing on
+ * the page points at it any more. Without this line the operator reads only why
+ * the new request was refused and goes looking for a link that is gone; with it
+ * they know the step is closed and restart (#531).
+ *
+ * Said only when a step was in fact closed. A rejected start that closed
+ * nothing has nothing to report, and saying it regardless would teach an
+ * operator to read past the sentence on the one occasion it is true.
+ */
+const CLOSED_PREVIOUS_STEP =
+  'the authorization step that was open has been closed; start again.';
+
 export interface FlowMessage {
   text: string;
   ok: boolean;
@@ -107,29 +136,99 @@ export function useProvisioningFlow({
   // tab or a direct API call never sees it. Ordering concurrent completions is
   // server-side work (issue #440).
   const completingNow = useRef(false);
+  // A step this form closed whose closure no message has reported yet. `start`
+  // closes the open step synchronously, before it sends, but its own response
+  // can be dropped by the epoch guard when a newer start supersedes it — and
+  // that newer start reads an `authorizeUrl` the older one already nulled. The
+  // ref is what carries the fact across that gap, so the closure is reported by
+  // whichever message does get through instead of by nobody. Cleared as soon as
+  // something reports it, and as soon as a step is open again.
+  const closedStepUnreported = useRef(false);
+  // The epoch `prime` last took. A completion older than it was discarded with
+  // the rest of the flow, at the operator's own request, so it has no closure to
+  // hand on to a later message.
+  const discardedEpoch = useRef(0);
+  // The start-failure message currently on screen, if that is what is on screen:
+  // `show` clears it for every other writer — a completion's own verdict, a row
+  // action reporting through `report`, the clear a new start issues. A
+  // superseded completion amends this message and no other, because only this
+  // one is the operator's account of the start that closed the step.
+  const shownStartFailure = useRef<FlowMessage | null>(null);
 
-  const report = useCallback((text: string, ok: boolean) => setMessage({ text, ok }), []);
+  // Mirrors `authorizeUrl` for the same reason `shownStartFailure` mirrors the
+  // message: `complete` has to know whether a step is open *now*, and taking the
+  // state as a dependency would rebuild the callback mid-flight.
+  const stepOpen = useRef(false);
+
+  /** Open or close the authorization step, keeping `stepOpen` in step. */
+  const openStep = useCallback((url: string | null) => {
+    stepOpen.current = url !== null;
+    setAuthorizeUrl(url);
+  }, []);
+
+  /**
+   * Write the page's one message, remembering whether it came from a failed
+   * start. The ref is what lets a callback read what is on screen without
+   * taking `message` as a dependency — and keeps the decision out of a
+   * `setMessage` updater, which React is free to run twice.
+   */
+  const show = useCallback((next: FlowMessage | null, fromStartFailure = false) => {
+    shownStartFailure.current = fromStartFailure ? next : null;
+    setMessage(next);
+  }, []);
+
+  const report = useCallback((text: string, ok: boolean) => show({ text, ok }), [show]);
 
   const prime = useCallback((next: string) => {
     setName(next);
     epoch.current += 1;
+    discardedEpoch.current = epoch.current;
     currentName.current = null;
-    setAuthorizeUrl(null);
+    closedStepUnreported.current = false;
+    openStep(null);
     setStarting(false);
     setCode('');
-    setMessage(null);
-  }, []);
+    show(null);
+  }, [show, openStep]);
 
   const start = useCallback(
     async (body: Record<string, unknown>) => {
-      setMessage(null);
+      show(null);
+      // Whether this start closes an authorization step the operator could
+      // still have completed — the fact the notices below report. Read before
+      // the clear a few lines down, and from two sources, because the closure
+      // and the message that reports it can be separated: `authorizeUrl` is the
+      // step being closed right now, and `closedStepUnreported` already holds
+      // one whose own response never got to report it — an earlier start the
+      // epoch guard dropped, or a completion this form superseded.
+      //
+      // `completingNow` defers on a step whose code is already submitted,
+      // because at this moment its outcome is not yet known. Its completion
+      // leaves `authorizeUrl` non-null until it succeeds, and clears it only
+      // *after* the epoch guard — so a Start clicked mid-completion supersedes
+      // that completion, suppressing its confirmation while `onStored` has
+      // already stored the account. Without this term the refused start would
+      // then tell the operator to start again for an account that is already in
+      // the table. The case where that completion *fails* instead is decided
+      // where it becomes known: `complete` records the closure itself. That is
+      // also why the branches below read the ref rather than a value captured
+      // here — the completion can settle while this request is still in flight.
+      //
+      // Deliberately not `starting || authorizeUrl !== null`, the predicate
+      // `AddClaudeAccount`'s radio lock uses (the Codex form has no radios and
+      // no such lock). That one reaches the superseded case too, but it fires
+      // just as readily on two chained starts that never opened a step at all,
+      // and then names a step the operator never saw. The ref reaches the same
+      // case by remembering an actual closure, so it cannot say that.
+      closedStepUnreported.current =
+        (authorizeUrl !== null && !completingNow.current) || closedStepUnreported.current;
       // The previous flow's authorization step is closed the moment a new start
       // is issued. Left open it stays clickable, and its Complete button posts
       // to the name captured for THAT flow — and because `complete` bumps the
       // epoch itself, that click also strands the start now in flight: its
       // response arrives under a superseded epoch and is dropped, so the link
       // the operator is looking at is never replaced by the one they asked for.
-      setAuthorizeUrl(null);
+      openStep(null);
       currentName.current = null;
       // The code belongs to the flow being closed. `complete` clears it only on
       // success, so a failed exchange leaves it in the box, and it would be
@@ -154,19 +253,41 @@ export function useProvisioningFlow({
         // form has nothing to show, so reporting nothing would leave the
         // operator staring at a step that never opened.
         if (!result.ok || !result.answered) {
-          setMessage({ text: result.message ?? copy.startFailure, ok: false });
+          const reason = result.message ?? copy.startFailure;
+          show(
+            {
+              text: closedStepUnreported.current ? `${reason} — ${CLOSED_PREVIOUS_STEP}` : reason,
+              ok: false,
+            },
+            true,
+          );
+          closedStepUnreported.current = false;
           return;
         }
         currentName.current = (result.payload.name as string | undefined) ?? null;
-        setAuthorizeUrl((result.payload.authorize_url as string | undefined) ?? null);
+        const opened = (result.payload.authorize_url as string | undefined) ?? null;
+        openStep(opened);
+        // Only when a step is actually open again. A 2xx answer carrying no
+        // `authorize_url` lands *here*, not in the branch above — that one reads
+        // the status and whether the body parsed, never the payload — and it
+        // opened nothing, so the closure it caused stays unreported for the next
+        // message to carry.
+        if (opened !== null) closedStepUnreported.current = false;
       } catch {
         if (issued === epoch.current) {
           setStarting(false);
-          setMessage({ text: START_UNANSWERED, ok: false });
+          show(
+            {
+              text: closedStepUnreported.current ? START_UNANSWERED_AFTER_CLOSE : START_UNANSWERED,
+              ok: false,
+            },
+            true,
+          );
+          closedStepUnreported.current = false;
         }
       }
     },
-    [csrf, endpoints, copy.startFailure],
+    [csrf, endpoints.start, copy.startFailure, authorizeUrl, show, openStep],
   );
 
   const complete = useCallback(async () => {
@@ -200,13 +321,65 @@ export function useProvisioningFlow({
       // reaches this path, while remove and refresh use `.catch(() => ({}))`.
       if (!result.answered) {
         onStored();
-        if (issued === epoch.current) setMessage({ text: UNKNOWN_COMPLETION, ok: false });
+        if (issued === epoch.current) show({ text: UNKNOWN_COMPLETION, ok: false });
+        // No closure recorded when this one is superseded, unlike the definite
+        // failure below: this path cannot say the account was *not* stored, and
+        // the notice it would arm ends in "start again". `onStored` has already
+        // re-read the table, which is where that question is answered.
         return;
       }
       if (!result.ok) {
         if (issued === epoch.current) {
-          setMessage({ text: result.message ?? copy.completeFailure, ok: false });
+          show({ text: result.message ?? copy.completeFailure, ok: false });
+          return;
         }
+        // Superseded, so this failure is shown to nobody — and the start that
+        // superseded it closed this step before sending. What is certain is that
+        // the account was not stored: the operator has neither it nor the step
+        // that was going to produce it, and only the next message can say so.
+        // Whether the pending login outlived the attempt is a separate question
+        // — `PendingStore::attempt` leaves the entry in place for a state or
+        // upstream failure and discards it at the attempt cap — and the notice
+        // claims nothing about it. Hand the closure on: that is the decision
+        // `start` could not make while this request was still in flight.
+        //
+        // Not when `prime` is what superseded it. That discards the
+        // half-finished flow at the operator's own request and clears the page's
+        // message with it, so the next start closes nothing and must not say
+        // otherwise.
+        if (discardedEpoch.current >= issued) return;
+        const onScreen = shownStartFailure.current;
+        if (stepOpen.current) {
+          // The start that superseded this completion has opened a step of its
+          // own, so the operator is not stranded and there is nothing to say.
+          // Arming the carry here would strand the *fact* instead: completing
+          // that step consumes it without reporting it, and the notice would
+          // surface later on a failure that closed nothing.
+        } else if (onScreen === null) {
+          // That start has not reported yet — it is still in flight, having
+          // cleared the message as it was issued. The ref hands the closure to
+          // whatever message it writes; if that start opens a step instead, its
+          // success path releases the ref.
+          closedStepUnreported.current = true;
+        } else if (
+          !onScreen.text.endsWith(CLOSED_PREVIOUS_STEP) &&
+          onScreen.text !== START_UNANSWERED_AFTER_CLOSE
+        ) {
+          // That start has already failed and its verdict is on screen — the
+          // likelier order, since a refusal is a local validation while this
+          // exchange is an upstream round trip. Amend what the operator is
+          // reading rather than leaving the fact to a message that may never
+          // come: the next start can as easily succeed, and clear the ref
+          // without anything having said it.
+          show(
+            onScreen.text === START_UNANSWERED
+              ? { text: START_UNANSWERED_AFTER_CLOSE, ok: false }
+              : { text: `${onScreen.text} — ${CLOSED_PREVIOUS_STEP}`, ok: false },
+            true,
+          );
+        }
+        // The remaining case needs neither: the message on screen already says
+        // a step was closed, carried there from an earlier start.
         return;
       }
       // The account was stored upstream whether or not this flow has since been
@@ -215,8 +388,8 @@ export function useProvisioningFlow({
       // reset stay gated: those would stomp the newly primed flow.
       onStored();
       if (issued !== epoch.current) return;
-      setMessage({ text: (result.payload.message as string | undefined) ?? copy.stored, ok: true });
-      setAuthorizeUrl(null);
+      show({ text: (result.payload.message as string | undefined) ?? copy.stored, ok: true });
+      openStep(null);
       setName('');
       setCode('');
     } catch {
@@ -231,14 +404,14 @@ export function useProvisioningFlow({
       // this surface does not have (issue #440).
       onStored();
       if (issued === epoch.current) {
-        setMessage({ text: UNKNOWN_COMPLETION, ok: false });
+        show({ text: UNKNOWN_COMPLETION, ok: false });
       }
     } finally {
       clearTimeout(bound);
       completingNow.current = false;
       setCompleting(false);
     }
-  }, [csrf, code, endpoints, copy.completeFailure, copy.stored, onStored]);
+  }, [csrf, code, endpoints, copy.completeFailure, copy.stored, onStored, show, openStep]);
 
   return {
     name,
