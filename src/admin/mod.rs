@@ -791,14 +791,111 @@ async fn observed_accounts(State(state): State<AppState>, headers: HeaderMap) ->
         }
     };
 
+    let pooled = pooled_identities(&state).await;
     let rows = futures_util::future::join_all(
         discovered
             .into_iter()
+            .filter(|observed| !is_already_pooled(observed, &pooled))
             .map(|observed| build_observed_row(Arc::clone(&state), observed)),
     )
     .await;
 
     json_secure(json!({ "accounts": rows }))
+}
+
+/// Stable upstream identities (`shuntAccountUuid` for Claude, `chatgpt_account_id`
+/// for ChatGPT/Codex) of every account the pool already resolves, keyed by store
+/// family so two families cannot collide on a shared id string.
+///
+/// Resolution failures are logged and skipped rather than propagated: a provider
+/// whose scope cannot be read contributes no identities, so its credentials stay
+/// visible as observed rows. Hiding a row is the destructive direction here, and
+/// this is a display concern -- never a reason to fail the whole endpoint.
+async fn pooled_identities(state: &AppState) -> HashSet<(crate::accounts::StoreFamily, String)> {
+    let mut pooled = HashSet::new();
+    for (name, provider) in &state.config.providers {
+        let (label, family, dir, scan): (
+            _,
+            _,
+            _,
+            fn() -> std::io::Result<Vec<crate::config::AccountConfig>>,
+        ) = match provider.auth {
+            AuthMode::ClaudeOauth => (
+                "Claude",
+                crate::accounts::StoreFamily::Claude,
+                claude_store::default_accounts_dir(),
+                claude_store::scan_accounts,
+            ),
+            AuthMode::ChatgptOauth => (
+                "codex",
+                crate::accounts::StoreFamily::Chatgpt,
+                crate::auth::codex::store::default_accounts_dir(),
+                crate::auth::codex::store::scan_accounts,
+            ),
+            AuthMode::KimiOauth => (
+                "Kimi",
+                crate::accounts::StoreFamily::Kimi,
+                crate::auth::kimi::store::default_accounts_dir(),
+                crate::auth::kimi::store::scan_accounts,
+            ),
+            _ => continue,
+        };
+        match crate::auth::shared::resolve_pool_accounts(
+            label,
+            &provider.accounts,
+            &provider.account_scope,
+            family,
+            dir,
+            scan,
+        )
+        .await
+        {
+            Ok(resolved) => pooled.extend(
+                resolved
+                    .iter()
+                    .filter_map(|account| account.uuid.as_deref())
+                    .map(str::trim)
+                    .filter(|uuid| !uuid.is_empty())
+                    .map(|uuid| (family, uuid.to_string())),
+            ),
+            Err(error) => {
+                tracing::debug!(
+                    provider = %name,
+                    %error,
+                    "admin: could not resolve pool identities for observed-row de-duplication"
+                );
+            }
+        }
+    }
+    pooled
+}
+
+/// Whether a discovered local credential is the same upstream account as one the
+/// pool already lists. The pool row carries live quota, priority and cooldown the
+/// observed row cannot, so the observed copy is the one to drop.
+///
+/// Only the three pooled families can match; Grok, Gemini and Cursor have no pool
+/// representation, so their observed rows are the only view of them and are always
+/// kept. A credential with no resolvable identity is kept too -- an unidentified
+/// row is a smaller problem than a silently hidden account.
+fn is_already_pooled(
+    observed: &ObservedCredential,
+    pooled: &HashSet<(crate::accounts::StoreFamily, String)>,
+) -> bool {
+    let family = match observed.provider {
+        ObservedProvider::Claude => crate::accounts::StoreFamily::Claude,
+        ObservedProvider::Codex => crate::accounts::StoreFamily::Chatgpt,
+        ObservedProvider::Kimi => crate::accounts::StoreFamily::Kimi,
+        ObservedProvider::Grok | ObservedProvider::Gemini | ObservedProvider::Cursor => {
+            return false
+        }
+    };
+    observed
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .is_some_and(|id| pooled.contains(&(family, id.to_string())))
 }
 
 async fn build_observed_row(state: Arc<AppState>, observed: ObservedCredential) -> Value {
@@ -1937,6 +2034,59 @@ mod tests {
             );
         }
         map
+    }
+
+    fn observed(provider: ObservedProvider, account_id: Option<&str>) -> ObservedCredential {
+        ObservedCredential {
+            provider,
+            identity: "ChatGPT \u{b7} Pro".to_string(),
+            detail: None,
+            source: observation::ObservedSource::File,
+            valid: true,
+            access_token: "token".to_string(),
+            account_id: account_id.map(ToOwned::to_owned),
+        }
+    }
+
+    /// The local credential file and the pool can hold the same upstream account,
+    /// which listed it twice on the dashboard. Suppression is by store family plus
+    /// identity, and only for the families a pool can represent.
+    #[test]
+    fn observed_row_is_suppressed_only_for_its_own_pooled_identity() {
+        let pooled = HashSet::from([
+            (crate::accounts::StoreFamily::Chatgpt, "acct-1".to_string()),
+            (crate::accounts::StoreFamily::Claude, "uuid-9".to_string()),
+        ]);
+
+        assert!(
+            is_already_pooled(&observed(ObservedProvider::Codex, Some("acct-1")), &pooled),
+            "a ChatGPT credential already in the pool is the duplicate row"
+        );
+        assert!(
+            is_already_pooled(&observed(ObservedProvider::Claude, Some("uuid-9")), &pooled),
+            "Claude de-duplicates on its own family too"
+        );
+
+        assert!(
+            !is_already_pooled(&observed(ObservedProvider::Codex, Some("uuid-9")), &pooled),
+            "an id pooled under Claude must not hide a ChatGPT credential"
+        );
+        assert!(
+            !is_already_pooled(&observed(ObservedProvider::Codex, Some("acct-2")), &pooled),
+            "a second, genuinely unpooled account stays visible"
+        );
+        assert!(
+            !is_already_pooled(&observed(ObservedProvider::Grok, Some("acct-1")), &pooled),
+            "Grok has no pool representation, so its only row must survive"
+        );
+        assert!(
+            !is_already_pooled(&observed(ObservedProvider::Codex, None), &pooled),
+            "an unidentifiable credential is shown rather than silently hidden"
+        );
+        assert!(
+            !is_already_pooled(&observed(ObservedProvider::Codex, Some("  ")), &pooled),
+            "a blank id is no identity at all"
+        );
     }
 
     #[test]
