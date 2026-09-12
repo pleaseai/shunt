@@ -2493,6 +2493,67 @@ async fn cookie_session_mutations_require_a_csrf_token() {
     std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_D");
 }
 
+/// The login page's Content-Security-Policy, directive by directive.
+///
+/// `script-src`/`connect-src` are `'none'`: the page renders no `<script>` and
+/// makes no fetch. They were `'unsafe-inline'`/`'self'` while the
+/// server-rendered dashboard shared this response helper, and nothing narrowed
+/// them when that dashboard moved to the bundle (#525).
+///
+/// The `'unsafe-inline'` that stays is asserted too, and is the half of this
+/// test that fails if the tightening goes one directive too far: `html::STYLE`
+/// is inlined in a `<style>` element, so dropping it renders the sign-in form
+/// unstyled. `form-action` is the one value that varies with the response —
+/// `'self'` here, widened for the IdP redirect chain when SSO is configured
+/// (`admin_oidc_full_flow_mints_session_and_preserves_header_auth` pins that
+/// shape) — and every other directive comes from the same single format string,
+/// so pinning them once covers both.
+#[tokio::test]
+async fn the_login_page_csp_allows_only_inline_style_and_the_form_post() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_CSP", "ops:secret-csp");
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_CSP")).await;
+
+    let response = reqwest::get(format!("{}/admin/login", gateway.base_url))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let csp = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    for directive in [
+        "default-src 'none'",
+        "script-src 'none'",
+        "style-src 'unsafe-inline'",
+        "connect-src 'none'",
+        "form-action 'self'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+    ] {
+        assert!(
+            csp.contains(directive),
+            "the login page CSP is missing `{directive}`; it reads {csp:?}"
+        );
+    }
+
+    // The page has no script, so no source list may admit one. Spelled against
+    // the `script-src` value rather than the whole header, which legitimately
+    // carries `'unsafe-inline'` for styles.
+    let script_src = csp
+        .split(';')
+        .map(str::trim)
+        .find(|directive| directive.starts_with("script-src"))
+        .expect("script-src must be present");
+    assert_eq!(
+        script_src, "script-src 'none'",
+        "the login page renders no script; its script-src must stay `'none'`"
+    );
+}
+
 #[tokio::test]
 async fn browser_session_dashboard_csrf_accept_and_logout() {
     if !can_bind_loopback() {
