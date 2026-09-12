@@ -12,18 +12,13 @@
 //! inconclusive; shunt declines and falls open to the picker's default instead,
 //! which keeps the hot path free of an extra request and an extra credential.
 
-// Nothing routes through this module yet: the decision is wired into
-// `resolve_model_chain` in a later change, deliberately kept separate so the
-// scorer and its tests land — and can be measured against real transcripts —
-// without altering how a single request is routed. Remove this attribute in the
-// change that adds the caller; it must not outlive it.
-#![allow(dead_code)]
-
 mod signals;
 mod store;
 mod vocabulary;
 
 pub(crate) use store::StageRouterStore;
+
+use std::time::Instant;
 
 use serde_json::Value;
 use switchyard_libsy::{pick_tier, DecisionSource, PickOutcome, PickerMode, Tier};
@@ -56,6 +51,51 @@ impl StageTier {
             StageTier::Efficient => &router.efficient_target,
         }
     }
+}
+
+/// Everything a live request carries that a body-less caller does not.
+///
+/// Held by reference for the length of one routing call; nothing here is stored.
+pub(crate) struct StageContext<'a> {
+    /// Process-lifetime pins, from `AppState`.
+    pub store: &'a StageRouterStore,
+    /// The parsed request body. `messages` is read out of it for scoring; a
+    /// request without that field simply yields no signals.
+    pub request: &'a Value,
+    /// `x-claude-code-session-id`. Absent for callers that send no session
+    /// header, which are then routed statelessly.
+    pub session_id: Option<&'a str>,
+    /// Set for `count_tokens`, which must reach the same tier as the real turn
+    /// without recording it.
+    pub read_only: bool,
+    /// Request-entry clock, shared with the rest of the request's timing.
+    pub now: Instant,
+}
+
+/// Resolve a router to the tier that serves this request.
+///
+/// `context` is `None` for the body-less entry points — `/routes`, discovery,
+/// and the public [`crate::routing::resolve_model`] — which have no conversation
+/// to score and no session to pin, and so report the picker's default. That is
+/// the right answer for those surfaces: the tier a fresh session starts on.
+pub(crate) fn select(
+    router: &StageRouterConfig,
+    model: &str,
+    context: Option<&StageContext<'_>>,
+) -> StageDecision {
+    let Some(context) = context else {
+        return decide(router, None);
+    };
+
+    let estimate = decide(router, context.request.get("messages"));
+    context.store.apply(
+        model,
+        context.session_id,
+        router,
+        estimate,
+        context.read_only,
+        context.now,
+    )
 }
 
 /// Pick a tier for a request from its conversation so far.

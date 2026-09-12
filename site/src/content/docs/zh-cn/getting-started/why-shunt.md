@@ -26,6 +26,8 @@ Claude Code 会把每一轮都发送到 Anthropic API。`shunt` 位于前面(通
 
 shunt 只是遵从它收到的 model id —— 没有脆弱的按 agent 系统提示指纹识别。同样的选择性无需 shunt 检查调用方身份即可下探到单个 agent。
 
+也可以让某一个 model id 自己做决定:[阶段路由器](/zh-cn/guides/stage-router/)指定一个强力档位和一个高效档位,并根据对话最近的 tool-result 元数据(`tool_use.name` 与 `tool_result.is_error`,绝不是提示词文本)逐轮在两者之间选择。不配置路由器则行为不变。
+
 ## shunt 实现了什么
 
 - **`POST /v1/messages`** —— 推理,按请求的 `model` id 路由。未映射的模型使用调用方自己的凭据逐字节转发给 Anthropic。

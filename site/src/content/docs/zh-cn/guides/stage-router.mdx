@@ -1,0 +1,129 @@
+---
+title: 阶段路由器
+description: 让一个模型 id 依据对话最近的 tool-result 历史(而非提示词文本)逐轮在强力档位与高效档位之间做选择。
+---
+
+`[[models]]` 条目通常只指定一个目的地。**阶段路由器**指定两个 —— 一个强力档位和一个高效
+档位 —— 并让对话决定由谁承担每一轮。错误、停滞的排查和探索性阅读会向上走;计划确定之后的
+常规产出留在下面。
+
+该功能需要显式启用,默认完全不生效。不配置 `[models.stage_router]` 表,shunt 的路由与以前
+完全一致:只看请求的 `model` id,别无其他。
+
+## 它读取什么
+
+只读取请求体中**结构化的协议元数据**:
+
+- `tool_use.name` —— 助手调用了哪个工具
+- `tool_result.is_error` —— 结果是否以失败返回
+
+两者都是 Anthropic Messages 线路格式的核心字段。路由器不读系统提示、不读用户文本、也不读
+工具参数,因此不会继承那些对提示词形状做指纹识别、每逢 Claude Code 发版就失效的代理的失败
+模式。
+
+`tool_result` 块**不携带**工具名称。唯一的关联是 `tool_use_id` → `tool_use.id`,这个连接是
+整个提取器赖以立足的唯一支点。
+
+### 工具词汇
+
+shunt 知道 Claude Code 实际的工具名称,这正是它能胜过通用路由器的地方:
+
+| 类别 | 工具 |
+| :-- | :-- |
+| 观察(Observe) | `Read`、`Glob`、`Grep`、`NotebookRead`、`WebFetch`、`WebSearch`、`BashOutput` |
+| 变更(Mutate) | `Edit`、`NotebookEdit`、`Write` |
+| 计划(Plan) | `TodoWrite`、`Task`、`Skill`、`ExitPlanMode` |
+| 未分类 | 其余全部,包括 `Bash` 和所有 `mcp__*` 工具 |
+
+包括 `ExitPlanMode` 在内的所有 `Plan` 调用都计为计划活动,而计划活动被读作探索,因此是
+往**上**推,而不是往下。只有一个名称享有超出类别的待遇:失败的 `Task` 被记为致命而非仅仅
+困难,因为那是一整个被委派的子 agent 运行的崩塌,而不是一条命令失败。对话末尾连续两次失败
+同样是致命的 —— 那意味着会话没有在恢复。
+
+`Bash` 是刻意不分类的。`git status` 是观察,`rm -rf` 是变更,`cargo test` 是事情已收敛的
+信号,而区分它们的只有 `input.command` —— 对命令字符串做分类,恰恰是本设计要避免的脆弱推断。
+
+## 它如何决策
+
+信号评分由 [NVIDIA-NeMo/Switchyard][sy] 的评分器 [`switchyard-libsy`][libsy] 负责,那是经过
+校准的部分,这里不重新实现。单个饱和信号约为 `0.46`,不足以决定一轮;两个互相印证的信号可
+达到约 `0.76`。
+
+当信号不足以定夺时,评分器会请求 LLM 裁决。**shunt 不设裁决模型**,而是 fall-open 到 picker
+的默认值,从而让热路径上不多出一次模型调用和一份凭据。
+
+[libsy]: https://crates.io/crates/switchyard-libsy
+[sy]: https://github.com/NVIDIA-NeMo/Switchyard
+
+## 为什么下行比上行更难
+
+档位切换不是免费的,在长时间的 Claude Code 会话中代价很具体:
+
+- **提示缓存按模型分键。** 切换会丢弃已预热的前缀,并在新档位上支付一次完整的缓存写入。
+- **Codex 续接**把模型哈希进签名,因此切换会强制重传全部输入,把 shunt 刚省下的上传量原样
+  吐回去。
+- **跨提供方切换**还会丢掉会话的连接池和粘性账户槽位。
+
+所以两个方向是刻意不对称的:
+
+| 方向 | 需要满足 |
+| :-- | :-- |
+| 高效 → 强力 | 仅 `confidence_threshold`(0.5)。便宜档位应付不了的一轮,比丢掉的缓存前缀更贵。 |
+| 强力 → 高效 | `min_dwell_turns` **且** `deescalate_threshold`(0.75)**且**评分器确实做出的判断。 |
+
+fall-open 或没有工具活动的一轮是 picker 的默认值,不是证据,因此在任何方向上都无法移动档位。
+
+## 会话固定
+
+决策按 `(模型 id, 会话 id)` 固定,会话 id 来自 `x-claude-code-session-id`。会话 id 会被哈希
+且从不存储。同一会话中使用两个带路由器的模型,它们的档位互相独立。
+
+- 不发送会话头的调用方以无状态方式路由。
+- `count_tokens` 探测会到达与真实轮次相同的档位,但不记录任何内容 —— Claude Code 发送它时
+  携带的历史落后一轮。
+- 固定能挺过配置热重载。但固定记得自己是在哪张路由器表下形成的:修改某个路由器,只有它自己
+  的固定会被丢弃。
+- 固定在 `session_ttl_seconds` 后过期。重启之间不持久化任何内容。
+
+## 客户端看到什么
+
+被选中的档位只向上游传递。响应回报客户端请求的那个 id,因此 Claude Code 的 `/model` 显示和
+`--resume` 模型恢复继续正常工作:
+
+```
+POST /v1/messages   {"model": "claude-auto", ...}
+  → 上游收到        {"model": "claude-opus-4-8", ...}
+  → 客户端收到      {"model": "claude-auto", ...}
+```
+
+## 如何配置
+
+```toml
+[[models]]
+id = "claude-auto"                     # 要出现在 /model 中必须以 claude/anthropic 开头
+display_name = "Auto (stage router)"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+# picker = "efficient_first"
+# confidence_threshold = 0.5
+# recent_turn_window = 3
+# min_dwell_turns = 3
+# deescalate_threshold = 0.75
+# session_ttl_seconds = 3600
+```
+
+两个目标都是普通的公开模型 id,因此各自沿常规路由阶梯解析,并保留自己的故障转移链、账户池、
+适配器、`effort` 和 `service_tier`。目标自身也是路由器会导致启动失败,所以解析在结构上就是
+一跳。
+
+所有键都记录在[配置参考](/zh-cn/reference/configuration/)中。包含刻意排除项在内的设计记录见
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md)。
+
+## 限制
+
+- **没有轮次中途升档。** 响应头一旦提交,shunt 不会重放该轮,因此在一轮开始时选定的档位会
+  承担整轮。
+- **没有 LLM 裁决。** 不足以定夺的信号 fall-open 到 picker 默认值。
+- **`[server.codex_endpoint]` 不在范围内**,它使用自己的路由表。

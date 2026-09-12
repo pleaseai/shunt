@@ -219,6 +219,8 @@ Claude Code 会把每一轮都发送到 Anthropic API。`shunt` 位于前面(通
 
 选择性由**每个请求上的 `model` id** 驱动,而 Claude Code 本来就允许你按上下文选择它:主会话的 `/model` 选择器、子 agent 定义的 `model:` frontmatter、面向所有子 agent 的 `CLAUDE_CODE_SUBAGENT_MODEL`,或用 `ANTHROPIC_CUSTOM_MODEL_OPTION` 向选择器添加一个自定义条目。因此“只分流这个 agent / 这个会话”是在 Claude Code 中决定的,而 shunt 只是遵从它收到的 model id —— 没有脆弱的按 agent 系统提示指纹识别。与全局模型替换代理不同,主会话可以留在 Claude 上,而只有你指名的模型才被分流。
 
+也可以让某一个 model id 自己做决定。[`[models.stage_router]`](https://shunt.dev/zh-cn/guides/stage-router/) 条目指定一个强力档位和一个高效档位,并根据对话最近的 **tool-result 元数据**(`tool_use.name` 与 `tool_result.is_error`,而非提示词文本)逐轮在两者之间选择。不配置路由器则行为不变。
+
 ## Claude Code 集成(官方接口)
 
 Claude Code 在 `ANTHROPIC_BASE_URL` 后暴露了一个**一等公民的网关契约**。`shunt` 实现的正是这个契约,而不是早期 Claude Code 代理所依赖的“对子 agent 的系统提示做哈希”这种脆弱启发式。

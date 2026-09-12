@@ -392,6 +392,42 @@ codex = "gpt-5.2"
 | `display_name` | — | 在 `/model` 选择器中显示的标签 |
 | `upstream_model` | — | 从已配置上游名称到后端模型 id 的映射；有序 `[[upstreams]]` 可形成多条目故障转移链，旧式 provider 只允许一个条目 |
 
+### `[models.stage_router]`(可选)
+
+针对某一个对外 id 的内容感知档位选择。该条目不再只指定一个目的地,而是指定**两个** ——
+一个强力档位和一个高效档位 —— 并让请求最近的 tool-result 历史逐轮在两者之间做选择。
+没有这张表时,`[[models]]` 条目的行为与之前完全一致;任何地方都不配置路由器,路由就不变。
+
+两个目标都是普通的公开模型 id,因此各自沿常规阶梯解析,并保留自己的故障转移链、账户池、
+适配器、`effort` 和 `service_tier`。返回给客户端的 id 仍是它请求的那个 id,被选中的档位
+只向上游传递。信号与迟滞的工作方式见[阶段路由器指南](/zh-cn/guides/stage-router/)。
+
+```toml
+[[models]]
+id = "claude-auto"
+display_name = "Auto (stage router)"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `capable_target` | ✅ 必填 | 承担困难推理、排查与错误恢复的模型 id |
+| `efficient_target` | ✅ 必填 | 计划确定之后承担常规产出的模型 id |
+| `picker` | `efficient_first` | 信号不足以定夺时使用的档位。`efficient_first` 或 `capable_first` |
+| `confidence_threshold` | `0.5` | 依据信号行动所需的最低评分置信度,取值范围 `(0.0, 1.0]` |
+| `recent_turn_window` | `3` | 送入评分器的 tool result 的 assistant 轮数,至少为 `1` |
+| `min_dwell_turns` | `3` | 降档可以触发之前档位需保持的轮数 |
+| `deescalate_threshold` | `0.75` | *降低*档位所需的置信度,刻意比 `confidence_threshold` 更严格 |
+| `session_ttl_seconds` | `3600` | 安静会话的固定档位能存活多久 |
+
+目标自身也是路由器、目标为空、阈值超出 `(0.0, 1.0]`、`recent_turn_window` 为 `0`、路由器
+**id** 中含有 `[1m]`,或同一条目同时声明了 `[models.upstream_model]`,都会导致启动失败。没有匹配到
+显式路由的目标只会告警 —— 它和其他未匹配的 id 一样,仍会通过 `server.default_provider`
+解析。
+
 ## `[sentry]`(可选)
 
 可选启用的错误上报,发送到你自己的 Sentry 项目。未设置 `dsn` 时关闭;与 `[otel]` 相互独立。上报网关自身的诊断信息 — 致命的网关启动/服务错误、panic 和 `error` 级日志事件(`warn`/`info` 作为 breadcrumb,仅含消息)— 此外,只要设置了 `dsn`,每当上游提供方本身返回失败响应时都会无条件发送一个错误/警告事件:5xx 响应对应 `error`,429/529(限流/过载)对应 `warning`,并且仅附带 `model`、`provider`、`upstream_status` 三个标签。请求/响应正文、头部和凭证永远不会发送。指标和 tracing 各自是进一步的独立可选项。

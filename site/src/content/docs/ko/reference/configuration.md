@@ -412,6 +412,44 @@ codex = "gpt-5.2"
 | `display_name` | — | `/model` 선택기에 표시되는 레이블 |
 | `upstream_model` | — | 설정된 업스트림 이름에서 백엔드 모델 id로 이어지는 맵. 순서 있는 `[[upstreams]]`는 여러 항목의 페일오버 체인을 허용하고, 레거시 provider는 한 항목만 허용 |
 
+### `[models.stage_router]` (선택)
+
+광고하는 id 하나에 대한 콘텐츠 인지 티어 선택입니다. 목적지를 하나만 지정하는 대신
+**둘**(강한 티어와 효율 티어)을 지정하고, 요청의 최근 tool-result 이력이 턴마다 둘 중
+하나를 고르게 합니다. 이 테이블이 없으면 `[[models]]` 항목은 이전과 똑같이 동작하며,
+어디에도 라우터를 설정하지 않으면 라우팅은 바뀌지 않습니다.
+
+두 타깃 모두 평범한 공개 model id이므로 각각 일반 사다리를 따라 해석되고 페일오버 체인,
+계정 풀, 어댑터, `effort`, `service_tier`를 그대로 유지합니다. 클라이언트에 보고되는 id는
+요청한 id 그대로이고, 선택된 티어는 업스트림으로만 전달됩니다. 신호와 히스테리시스가
+어떻게 동작하는지는 [스테이지 라우터 가이드](/ko/guides/stage-router/)를 참고하세요.
+
+```toml
+[[models]]
+id = "claude-auto"
+display_name = "Auto (stage router)"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `capable_target` | ✅ 필수 | 어려운 추론, 조사, 오류 복구를 맡을 model id |
+| `efficient_target` | ✅ 필수 | 계획이 정해진 뒤의 정형 작업을 맡을 model id |
+| `picker` | `efficient_first` | 신호가 불충분할 때 사용할 티어. `efficient_first` 또는 `capable_first` |
+| `confidence_threshold` | `0.5` | 신호에 따라 움직이기 위한 최소 스코어러 신뢰도. 범위는 `(0.0, 1.0]` |
+| `recent_turn_window` | `3` | 스코어러에 넣을 tool result의 어시스턴트 턴 수. 최소 `1` |
+| `min_dwell_turns` | `3` | 하향 전환이 가능해지기까지 티어를 유지하는 턴 수 |
+| `deescalate_threshold` | `0.75` | 티어를 *내리는* 데 필요한 신뢰도. `confidence_threshold`보다 의도적으로 엄격합니다 |
+| `session_ttl_seconds` | `3600` | 조용한 세션의 고정된 티어가 유지되는 시간 |
+
+타깃이 그 자체로 라우터인 경우, 빈 타깃, `(0.0, 1.0]`를 벗어난 임계값, `0`인
+`recent_turn_window`, `[1m]`을 포함한 라우터 **id**, 같은 항목에
+`[models.upstream_model]`을 함께 선언한 경우는 시작 오류입니다. 명시적 라우트에 매칭되지 않는 타깃은 경고만 냅니다. 다른
+매칭되지 않은 id와 마찬가지로 `server.default_provider`로 해석되기 때문입니다.
+
 ## `[sentry]` (선택)
 
 자체 Sentry 프로젝트로의 옵트인 오류 리포팅. `dsn`을 설정하지 않으면 꺼짐이며, `[otel]`과 독립적입니다. 게이트웨이 자체 진단을 보고합니다 — 치명적인 게이트웨이 시작/서빙 오류, 패닉, `error` 레벨 로그 이벤트(`warn`/`info`는 브레드크럼, 메시지만 포함) — 여기에 더해 `dsn`이 설정되어 있으면 업스트림 제공자가 실패 응답을 반환할 때마다 무조건 오류/경고 이벤트를 보냅니다: 5xx 응답은 `error`, 429/529(레이트 리밋/과부하)는 `warning`이며, 각각 `model`, `provider`, `upstream_status`만 태그로 붙습니다. 요청/응답 본문, 헤더, 자격증명은 절대 전송되지 않습니다. 메트릭과 트레이싱은 각각 별도의 추가 옵트인입니다.

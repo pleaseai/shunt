@@ -6,6 +6,8 @@ use crate::{
     error::ShuntError,
 };
 
+use stage::StageContext;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdapterKind {
     Anthropic,
@@ -73,19 +75,24 @@ pub(crate) fn resolve_request_chain(
     // Deserialize the narrow view straight from bytes for callers without a
     // parsed tree: serde can skip every non-model field without materializing it.
     let view: RoutingView = serde_json::from_slice(body).map_err(invalid_routing_request)?;
-    Ok(resolve_view(config, view))
+    Ok(resolve_view(config, view, None))
 }
 
 pub(crate) fn resolve_request_chain_value(
     config: &Config,
     request: &serde_json::Value,
+    stage: Option<&StageContext<'_>>,
 ) -> Result<(Vec<Route>, String), ShuntError> {
     let view = RoutingView::deserialize(request).map_err(invalid_routing_request)?;
-    Ok(resolve_view(config, view))
+    Ok(resolve_view(config, view, stage))
 }
 
-fn resolve_view(config: &Config, view: RoutingView) -> (Vec<Route>, String) {
-    let routes = resolve_model_chain(config, &view.model);
+fn resolve_view(
+    config: &Config,
+    view: RoutingView,
+    stage: Option<&StageContext<'_>>,
+) -> (Vec<Route>, String) {
+    let routes = resolve_chain(config, &view.model, stage);
     (routes, view.model)
 }
 
@@ -119,10 +126,35 @@ pub fn resolve_model(config: &Config, model: &str) -> Route {
         .expect("route chains are non-empty")
 }
 
+/// Resolve a model id to its failover chain, without a request to score.
+///
+/// A `[models.stage_router]` entry reached this way reports its picker default,
+/// which is what a body-less surface should show: the tier a fresh session
+/// starts on. Live requests go through [`resolve_request_chain_value`].
 pub fn resolve_model_chain(config: &Config, model: &str) -> Vec<Route> {
+    resolve_chain(config, model, None)
+}
+
+fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>) -> Vec<Route> {
     let model = strip_context_window_hint(model);
     for configured_model in &config.models {
         if configured_model.id == model {
+            if let Some(router) = configured_model.stage_router.as_ref() {
+                let target = stage::select(router, model, stage).tier.target(router);
+                // One hop only, and structurally so: config validation rejects a
+                // router whose target is itself a router, so the recursive call
+                // cannot re-enter this arm.
+                let mut routes = resolve_chain(config, target, None);
+                for route in &mut routes {
+                    // `Route.model` is the id reported back to the client, and
+                    // Claude Code records it to restore the model on `--resume`.
+                    // It must stay the id the caller asked for; the tier the
+                    // router picked travels upstream in `upstream_model` and
+                    // nowhere else (issue #172).
+                    route.model = model.to_string();
+                }
+                return routes;
+            }
             if let Some(upstream_models) = configured_model.upstream_model.as_ref() {
                 // Preserve the legacy single-map path even for a Config assembled
                 // directly in code without validation refreshing derived order.
@@ -670,3 +702,168 @@ mod tests {
 }
 
 pub(crate) mod stage;
+
+/// Stage-router resolution tests.
+///
+/// These pin the two properties the router must not lose when it is wired into
+/// the ladder: what the client is told it got, and that a router target is
+/// resolved exactly once. Non-vacuity: delete the `route.model` re-stamp and
+/// `a_stage_router_reports_the_requested_id_to_the_client` goes red; make the
+/// router arm fall through instead of returning and
+/// `a_stage_router_resolves_its_target_through_the_ordinary_ladder` goes red.
+#[cfg(test)]
+mod stage_router_tests {
+    use std::{collections::BTreeMap, time::Instant};
+
+    use serde_json::json;
+
+    use crate::{
+        config::{Config, ModelConfig, StageRouterConfig, StageRouterPicker},
+        routing::stage::{StageContext, StageRouterStore},
+    };
+
+    use super::{resolve_model, resolve_request_chain_value, AdapterKind};
+
+    const ROUTER_ID: &str = "claude-auto";
+
+    fn router() -> StageRouterConfig {
+        StageRouterConfig {
+            capable_target: "capable-alias".to_string(),
+            efficient_target: "efficient-alias".to_string(),
+            picker: StageRouterPicker::EfficientFirst,
+            confidence_threshold: crate::config::DEFAULT_CONFIDENCE_THRESHOLD,
+            recent_turn_window: 3,
+            min_dwell_turns: 3,
+            deescalate_threshold: None,
+            session_ttl_seconds: 3600,
+        }
+    }
+
+    fn mapped(id: &str, upstream_model: &str) -> ModelConfig {
+        ModelConfig {
+            id: id.to_string(),
+            display_name: None,
+            upstream_model: Some(BTreeMap::from([(
+                "codex".to_string(),
+                upstream_model.to_string(),
+            )])),
+            stage_router: None,
+        }
+    }
+
+    fn config() -> Config {
+        Config {
+            models: vec![
+                ModelConfig {
+                    id: ROUTER_ID.to_string(),
+                    display_name: None,
+                    upstream_model: None,
+                    stage_router: Some(router()),
+                },
+                mapped("capable-alias", "upstream-capable"),
+                mapped("efficient-alias", "upstream-efficient"),
+            ],
+            ..Config::default()
+        }
+    }
+
+    /// Two failed investigative turns — enough for the scorer to escalate.
+    fn erroring_request() -> serde_json::Value {
+        json!({
+            "model": ROUTER_ID,
+            "messages": [
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "a", "name": "Read"}]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "a", "is_error": true}]},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "b", "name": "Grep"}]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "b", "is_error": true}]},
+            ]
+        })
+    }
+
+    /// The router's target travels upstream; the id the caller asked for is what
+    /// comes back. Claude Code records the reported id and restores the model
+    /// from it on `--resume`, so leaking the target here is issue #172 again.
+    #[test]
+    fn a_stage_router_reports_the_requested_id_to_the_client() {
+        let config = config();
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let context = StageContext {
+            store: &store,
+            request: &request,
+            session_id: Some("session-a"),
+            read_only: false,
+            now: Instant::now(),
+        };
+
+        let (routes, requested) = resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("a router-backed id resolves");
+
+        assert_eq!(requested, ROUTER_ID);
+        let route = routes.first().expect("route chains are non-empty");
+        assert_eq!(
+            route.upstream_model, "upstream-capable",
+            "an erroring session must reach the capable tier"
+        );
+        assert_eq!(
+            route.model, ROUTER_ID,
+            "the client must be told the id it asked for, not the tier"
+        );
+    }
+
+    /// The target is a public model id, so it resolves through the same ladder
+    /// as any other — picking up its provider, adapter, and upstream mapping.
+    #[test]
+    fn a_stage_router_resolves_its_target_through_the_ordinary_ladder() {
+        let config = config();
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let context = StageContext {
+            store: &store,
+            request: &request,
+            session_id: None,
+            read_only: false,
+            now: Instant::now(),
+        };
+
+        let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("a router-backed id resolves");
+        let route = routes.first().expect("route chains are non-empty");
+
+        assert_eq!(route.provider, "codex");
+        assert_eq!(route.adapter, AdapterKind::Responses);
+    }
+
+    /// `/routes`, discovery, and the public `resolve_model` have no conversation
+    /// to score. They must report the tier a fresh session starts on rather than
+    /// panicking or inventing a signal.
+    #[test]
+    fn a_body_less_resolution_reports_the_picker_default() {
+        let mut config = config();
+
+        let route = resolve_model(&config, ROUTER_ID);
+        assert_eq!(route.upstream_model, "upstream-efficient");
+        assert_eq!(route.model, ROUTER_ID);
+
+        config.models[0].stage_router = Some(StageRouterConfig {
+            picker: StageRouterPicker::CapableFirst,
+            ..router()
+        });
+        let route = resolve_model(&config, ROUTER_ID);
+        assert_eq!(route.upstream_model, "upstream-capable");
+    }
+
+    /// A `[1m]` request still names the bare id back to the client, exactly as a
+    /// non-router model does.
+    #[test]
+    fn the_context_window_hint_is_stripped_before_the_router_sees_the_id() {
+        let config = config();
+
+        let route = resolve_model(&config, "claude-auto[1m]");
+
+        assert_eq!(route.model, ROUTER_ID);
+        assert_eq!(route.upstream_model, "upstream-efficient");
+    }
+}

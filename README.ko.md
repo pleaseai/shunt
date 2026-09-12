@@ -220,6 +220,8 @@ Claude Code는 모든 턴을 Anthropic API로 보냅니다. `shunt`는 그 앞(`
 
 선택성은 **각 요청의 `model` id**로 결정되며, Claude Code는 이미 이를 컨텍스트별로 선택할 수 있게 해줍니다. 메인 세션은 `/model` 선택기, 서브에이전트 정의는 `model:` 프론트매터, 모든 서브에이전트는 `CLAUDE_CODE_SUBAGENT_MODEL`, 선택기에 커스텀 항목을 추가하려면 `ANTHROPIC_CUSTOM_MODEL_OPTION`을 사용합니다. 따라서 "이 에이전트만 / 이 세션만 우회"는 Claude Code에서 결정되고, shunt는 받은 model id만 그대로 존중합니다. 취약한 에이전트별 시스템 프롬프트 지문 인식은 없습니다. 전역 모델 교체 프록시와 달리, 메인 세션은 Claude에 그대로 두고 지정한 모델만 우회할 수 있습니다.
 
+model id 하나를 스스로 판단하게 만들 수도 있습니다. [`[models.stage_router]`](https://shunt.dev/ko/guides/stage-router/) 항목은 강한 티어와 효율 티어를 지정하고, 대화의 최근 **tool-result 메타데이터**(`tool_use.name`과 `tool_result.is_error`, 프롬프트 텍스트가 아닙니다)로 턴마다 둘 중 하나를 고릅니다. 라우터를 설정하지 않으면 동작은 그대로입니다.
+
 ## Claude Code 통합(공식 표면)
 
 Claude Code는 `ANTHROPIC_BASE_URL` 뒤에 **1급 게이트웨이 계약**을 공개합니다. `shunt`는 이전 Claude Code 프록시들이 기대던 "서브에이전트 시스템 프롬프트 해싱"이라는 취약한 휴리스틱 대신 이 계약을 구현합니다.

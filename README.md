@@ -220,6 +220,8 @@ Contrast with the alternative approach (handing a `subagent_type` off to another
 
 Selectivity is driven by the **`model` id on each request**, which Claude Code already lets you choose per context: the `/model` picker for the main session, a subagent definition's `model:` frontmatter, `CLAUDE_CODE_SUBAGENT_MODEL` for all subagents, or `ANTHROPIC_CUSTOM_MODEL_OPTION` to add a custom entry to the picker. So "divert only this agent / this session" is decided in Claude Code, and shunt just honors the model id it receives — no fragile per-agent system-prompt fingerprinting. Unlike global model-swap proxies, the main session can stay on Claude while only the models you name divert.
 
+One model id can opt into deciding for itself. A [`[models.stage_router]`](https://shunt.dev/guides/stage-router/) entry names a capable and an efficient target and picks between them per turn from the conversation's recent **tool-result metadata** — `tool_use.name` and `tool_result.is_error`, not prompt text. Configure no router and nothing changes.
+
 ## Claude Code integration (official surface)
 
 Claude Code exposes a **first-class gateway contract** behind `ANTHROPIC_BASE_URL` — `shunt` implements this rather than the fragile "hash the subagent's system prompt" heuristic that earlier Claude Code proxies rely on.
@@ -229,7 +231,7 @@ Claude Code exposes a **first-class gateway contract** behind `ANTHROPIC_BASE_UR
 - [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` adds a gateway-routed entry to the `/model` picker without replacing built-in aliases; the ID skips validation, so any string the gateway accepts works. **This is the primary way to select a non-Claude model** (e.g. `gpt-5.6-sol`), given the discovery constraint above.
 - **Tool search** (`ENABLE_TOOL_SEARCH`) — Claude Code defers MCP/LSP tool schemas and reveals them on demand, reclaiming context. Because shunt isn't a first-party Anthropic host, Claude Code keeps this **off** unless you opt in. Whether deferral then survives depends on the upstream, not on a setting alone: `claude*` and `anthropic/*` ids keep the protocol byte-for-byte, other ids have their `defer_loading` markers stripped because those hosts reject them, and the Responses path has its own three-state `tool_search` setting. See [Tool search](https://shunt.dev/guides/codex/#tool-search).
 
-**Design principle:** be a spec-compliant Anthropic-Messages gateway (`/v1/messages`, `/v1/models`, correct header/attribution pass-through), route by the request's `model` id, and translate Anthropic Messages ⇄ the OpenAI Responses API for mapped models — no prompt-shape heuristics that break on every Claude Code prompt change.
+**Design principle:** be a spec-compliant Anthropic-Messages gateway (`/v1/messages`, `/v1/models`, correct header/attribution pass-through), route by the request's `model` id, and translate Anthropic Messages ⇄ the OpenAI Responses API for mapped models — no prompt-shape heuristics that break on every Claude Code prompt change. The opt-in stage router holds to the same line: it reads structured protocol fields, never the system prompt.
 
 ## Related work / prior art
 

@@ -11,7 +11,8 @@ description: 将 Claude Code 分流到任意模型 —— 一个符合规范的 
   <Card title="按模型,而非全局" icon="ph:sliders-horizontal">
     路由由每个请求的 `model` id 驱动。让主会话留在
     Claude 上,只分流你指名的模型 —— 精确到单个子 agent ——
-    无需任何提示指纹识别。
+    无需任何提示指纹识别。其中一个 id 可以选择自己做决定 ——
+    依据 tool-result 元数据,而非提示词文本。
   </Card>
   <Card title="符合规范的网关" icon="ph:seal-check">
     实现官方的 [Claude Code LLM 网关

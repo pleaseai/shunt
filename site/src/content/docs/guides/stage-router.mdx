@@ -1,0 +1,149 @@
+---
+title: Stage Router
+description: Let one model id pick between a capable and an efficient tier per turn, from the conversation's recent tool-result history rather than its prompt text.
+---
+
+A `[[models]]` entry normally names one destination. A **stage router** names two
+— a capable tier and an efficient one — and lets the conversation decide which
+serves each turn. Errors, stalled investigation, and exploratory reading route
+up; routine production once the plan is settled stays down.
+
+This is opt-in and inert by default. Configure no `[models.stage_router]` table
+and shunt routes exactly as it did before: by the request's `model` id, and
+nothing else.
+
+## What it reads
+
+Only **structured protocol metadata** from the request body:
+
+- `tool_use.name` — which tool the assistant called
+- `tool_result.is_error` — whether the result came back as a failure
+
+Both are load-bearing fields of the Anthropic Messages wire format. The router
+never reads the system prompt, the user's text, or a tool's arguments, so it does
+not inherit the failure mode of proxies that fingerprint prompt shape and break
+on the next Claude Code release.
+
+A `tool_result` block does **not** carry the tool's name. The only link is
+`tool_use_id` → `tool_use.id`, and that join is the single point the whole
+extractor stands on.
+
+### The vocabulary
+
+shunt knows Claude Code's actual tool names, which is where it can do better than
+a provider-neutral router:
+
+| Category | Tools |
+| :-- | :-- |
+| Observe | `Read`, `Glob`, `Grep`, `NotebookRead`, `WebFetch`, `WebSearch`, `BashOutput` |
+| Mutate | `Edit`, `NotebookEdit`, `Write` |
+| Plan | `TodoWrite`, `Task`, `Skill`, `ExitPlanMode` |
+| Uncategorised | everything else, including `Bash` and every `mcp__*` tool |
+
+Every `Plan` call — `ExitPlanMode` included — counts as planning activity, which
+reads as exploration and pushes **up**, not down. One name gets more than its
+category: a failed `Task` is scored critical rather than merely hard, because it
+is a whole delegated subagent run collapsing rather than one command failing. Two
+consecutive failures at the end of the conversation are critical too — a session
+that is not recovering.
+
+`Bash` is deliberately uncategorised. `git status` observes, `rm -rf` mutates,
+and `cargo test` is a settled-state signal — only `input.command` separates them,
+and classifying command strings would be exactly the kind of fragile inference
+this design avoids.
+
+## How it decides
+
+Signals are scored by [`switchyard-libsy`][libsy], the scorer from
+[NVIDIA-NeMo/Switchyard][sy], which is the calibrated part and is not
+reimplemented here. One saturated signal alone scores about `0.46` and cannot
+decide a turn; two corroborating signals reach about `0.76`.
+
+When the signals are inconclusive the scorer asks for an LLM judge. **shunt runs
+none** — it falls open to the picker's default instead, which keeps the hot path
+free of an extra model call and an extra credential.
+
+[libsy]: https://crates.io/crates/switchyard-libsy
+[sy]: https://github.com/NVIDIA-NeMo/Switchyard
+
+## Why going down is harder than going up
+
+A tier flip is not free, and on a long Claude Code session the cost is concrete:
+
+- **Prompt caching is keyed per model.** A flip forfeits the warm prefix and pays
+  a full cache write on the new tier.
+- **Codex continuation** hashes the model into its signature, so a flip forces a
+  full-input re-send and gives back the upload trimming shunt just earned.
+- **A cross-provider flip** also abandons the session's pooled connection and its
+  sticky account slot.
+
+So the two directions are deliberately unequal:
+
+| Direction | Requires |
+| :-- | :-- |
+| Efficient → Capable | `confidence_threshold` (0.5) alone. A turn the cheap tier cannot serve costs more than the forfeited cache prefix. |
+| Capable → Efficient | `min_dwell_turns` **and** `deescalate_threshold` (0.75) **and** a decision the scorer actually made. |
+
+A fall-open or a turn with no tool activity is the picker's default, not
+evidence, and cannot move a tier in either direction.
+
+## Session pinning
+
+Decisions are pinned per `(model id, session id)`, read from
+`x-claude-code-session-id`. The session id is hashed and never stored. Two
+router-backed models used in the same session keep independent tiers.
+
+- A caller that sends no session header is routed statelessly.
+- A `count_tokens` probe reaches the same tier as the real turn but records
+  nothing — Claude Code sends those with a history one turn behind.
+- Pins survive a config reload, but a pin remembers the router table it was made
+  under: edit one router and only its own pins are dropped.
+- Pins expire after `session_ttl_seconds`. Nothing is persisted across restarts.
+
+## What the client sees
+
+The tier travels upstream and nowhere else. Responses report the id the client
+asked for, so Claude Code's `/model` display and `--resume` model restoration
+keep working:
+
+```
+POST /v1/messages   {"model": "claude-auto", ...}
+  → upstream receives  {"model": "claude-opus-4-8", ...}
+  → client receives    {"model": "claude-auto", ...}
+```
+
+## Configure it
+
+```toml
+[[models]]
+id = "claude-auto"                     # must begin with claude/anthropic to reach /model
+display_name = "Auto (stage router)"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+# picker = "efficient_first"
+# confidence_threshold = 0.5
+# recent_turn_window = 3
+# min_dwell_turns = 3
+# deescalate_threshold = 0.75
+# session_ttl_seconds = 3600
+```
+
+Both targets are ordinary public model ids, so each resolves through the normal
+routing ladder and keeps its own failover chain, account pool, adapter, `effort`,
+and `service_tier`. A target that is itself a router is a startup error, so
+resolution is one hop by construction.
+
+Every key is documented in the
+[configuration reference](/reference/configuration/). The design record, including
+what was deliberately left out, is
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md).
+
+## Limits
+
+- **No mid-turn escalation.** Once response headers are committed shunt does not
+  replay a turn, so a tier chosen at the start of a turn serves all of it.
+- **No LLM judge.** Inconclusive signals fall open to the picker default.
+- **Out of scope for `[server.codex_endpoint]`**, which uses its own routing
+  table.
