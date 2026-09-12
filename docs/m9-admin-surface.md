@@ -254,6 +254,17 @@ process-lifetime state:
   referenced file and triggering a reload does rotate that key without a
   restart. Sessions already minted still survive until `session_ttl_secs`.
 
+  **That last sentence reaches read keys too, which it could not while a read
+  key was refused a session.** A `read_keys` login now mints a read-tier
+  session, so rotating a compromised read key stops its *header* credential at
+  the next reload while its *cookie* goes on reading the admin surface until
+  `session_ttl_secs` elapses. What survives is read-only — `require_write`
+  refuses that session's mutations, and it is strictly less than the full access
+  a write-tier session already carried across the same window — but a deployment
+  that hands read keys out widely because revocation looked immediate no longer
+  has that property, and should restart rather than reload. #100 covers both
+  tiers; neither is fixed by the session tier alone.
+
 ## Endpoints (registered only when `[server.admin]` is set)
 
 > **Pre-split record.** The paths below are the ones M9 shipped. Every JSON and
