@@ -20,12 +20,17 @@
 //! That is a claim about the *shape* of a call, and it has limits worth stating
 //! rather than implying. The patterns below match the bare function name, so
 //! they see every ordinary spelling — `std::env::set_var(..)`, the `use
-//! std::env;` short form, and `use std::env::set_var;` — but a caller who
-//! *renames* on import (`use std::env::set_var as sv;`) or reaches the same
-//! libc call another way is outside what matching text can settle. Parsing the
-//! source would not close that either: a rename is resolvable, but `libc::
-//! setenv` through an FFI shim is not. What the gate buys is that the ordinary
-//! spellings cannot appear unnoticed.
+//! std::env;` short form, and `use std::env::set_var;`. A rename is caught too,
+//! though for a different reason worth knowing: `use std::env::set_var as sv;`
+//! trips on the *import* line, which still carries the name, even though the
+//! `sv(..)` call site does not.
+//!
+//! What is left is an alias this file never sees written down — one re-exported
+//! from elsewhere — and any other route to the same libc call, such as
+//! `libc::setenv` through an FFI shim. Parsing the source would resolve the
+//! first and still not the second, so the boundary moves rather than
+//! disappearing. What the gate buys is that the ordinary spellings cannot
+//! appear unnoticed.
 
 use std::path::{Path, PathBuf};
 
