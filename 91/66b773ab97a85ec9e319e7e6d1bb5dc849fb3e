@@ -1,0 +1,27 @@
+tests/env_guard.rs
+  s_e9fd5f53eebc34::t_0eedae5b871ae6 72-75
+  s_e9fd5f53eebc34::t_e75c52060ca271 1-71,76-84
+tests/AGENTS.md
+  s_e9fd5f53eebc34::t_d2e4ac2a8556a6 14-21,43-44
+tests/common/mod.rs
+  s_e9fd5f53eebc34::t_d134ecacd5d9ab 53-61
+tests/env_lock_coverage.rs
+  s_e9fd5f53eebc34::t_0953520bab9ffb 18-25,27,29-52,54-59,65-71,73-88,91-92,107-114,123-130,138,144,147,160-161,165-166,168,173-182
+  s_e9fd5f53eebc34::t_c8332620bcefe1 183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9166b773ab97a85ec9e319e7e6d1bb5dc849fb3e",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
