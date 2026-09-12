@@ -2535,12 +2535,18 @@ async fn the_login_page_csp_allows_only_inline_style_and_the_form_post() {
         .to_str()
         .unwrap()
         .to_string();
-    let directives: std::collections::HashMap<&str, &str> = csp
+    let parsed: Vec<(&str, &str)> = csp
         .split(';')
         .map(str::trim)
         .filter(|directive| !directive.is_empty())
-        .map(|directive| directive.split_once(' ').unwrap_or((directive, "")))
+        .map(
+            |directive| match directive.split_once(char::is_whitespace) {
+                Some((name, value)) => (name, value.trim()),
+                None => (directive, ""),
+            },
+        )
         .collect();
+    let directives: std::collections::HashMap<&str, &str> = parsed.iter().copied().collect();
 
     // Before the assertions, so a failing one does not leave the variable set
     // for the rest of the binary.
@@ -2562,10 +2568,17 @@ async fn the_login_page_csp_allows_only_inline_style_and_the_form_post() {
             "the login page CSP must set `{name} {expected}`; it reads {csp:?}"
         );
     }
+    // Counted on `parsed`, not on the map. A repeated directive collapses into
+    // one map entry, and the browser resolves the repeat the other way round --
+    // CSP keeps the FIRST occurrence and ignores the rest, while the map keeps
+    // the last. So `connect-src https://evil; ...; connect-src 'none'` reads as
+    // tight through the map and is wide in the browser, and the map's length is
+    // still 8. Counting before the collapse is what catches both that and an
+    // unpinned ninth directive.
     assert_eq!(
-        directives.len(),
+        parsed.len(),
         8,
-        "the login page CSP gained a directive this test does not pin: {csp:?}"
+        "the login page CSP has a repeated or unpinned directive: {csp:?}"
     );
 }
 
