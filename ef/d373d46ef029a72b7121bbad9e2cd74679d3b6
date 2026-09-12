@@ -1,0 +1,27 @@
+README.ja.md
+  s_b29479ac4ba789::t_8c9fd24e81849e 43-44
+README.ko.md
+  s_b29479ac4ba789::t_69bd0a512cd9a0 42-44
+README.md
+  s_b29479ac4ba789::t_9a83879f8704f8 43-44
+README.zh-CN.md
+  s_b29479ac4ba789::t_4cd3d5ff544865 42-43
+docs/bounded-shutdown.md
+  s_b29479ac4ba789::t_4d630651a00f4c 31-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "efd373d46ef029a72b7121bbad9e2cd74679d3b6",
+  "prompts": {},
+  "sessions": {
+    "s_b29479ac4ba789": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47cf774d-f049-4981-bb0d-e214f5e3fcdc",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
