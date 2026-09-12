@@ -39,11 +39,13 @@ export function App(): ReactElement {
       setSession({
         csrf: result.data.csrf,
         expiryBufferMs: result.data.expiry_buffer_ms,
-        // No fallback for a missing `access`: this bundle is embedded in the
-        // binary that serves it, so the two cannot be different versions. Were
-        // the field ever absent anyway, `useCanWrite` reads it as read-only —
-        // the safe direction — rather than unlocking every write affordance.
-        access: result.data.access,
+        // `readJson` casts the response body rather than validating it, so
+        // `access` is asserted to be an `AdminAccess`, not checked. Defaulting
+        // an absent field to the *lower* tier is what makes that safe: the page
+        // then hides its write affordances rather than unlocking them. An
+        // unrecognized value needs no default — `useCanWrite` compares against
+        // `'write'`, so anything else already reads as read-only.
+        access: result.data.access ?? 'read',
       });
     })();
   }, []);
