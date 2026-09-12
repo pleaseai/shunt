@@ -2508,11 +2508,22 @@ async fn cookie_session_mutations_require_a_csrf_token() {
 /// (`admin_oidc_full_flow_mints_session_and_preserves_header_auth` pins that
 /// shape) — and every other directive comes from the same single format string,
 /// so pinning them once covers both.
+///
+/// Each directive is parsed out and compared whole. A `contains` check would
+/// pass a widened `connect-src 'none' https://example.com`, which is the
+/// regression this test exists to catch, and would say nothing at all about a
+/// directive it does not name — so the count is pinned too, and a ninth
+/// directive has to be decided here rather than inherited silently.
 #[tokio::test]
 async fn the_login_page_csp_allows_only_inline_style_and_the_form_post() {
     if !can_bind_loopback() {
         return;
     }
+    // `start` builds the router, which resolves `AdminConfig::tokens_env`
+    // through `std::env::var` — so this test writes the process env and reads
+    // it back, which is the read/write race `ADMIN_ENV_LOCK` exists to
+    // serialize. Held across the cleanup below as well as the write.
+    let _lock = ADMIN_ENV_LOCK.lock().await;
     std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_CSP", "ops:secret-csp");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_CSP")).await;
 
@@ -2524,33 +2535,37 @@ async fn the_login_page_csp_allows_only_inline_style_and_the_form_post() {
         .to_str()
         .unwrap()
         .to_string();
-
-    for directive in [
-        "default-src 'none'",
-        "script-src 'none'",
-        "style-src 'unsafe-inline'",
-        "connect-src 'none'",
-        "form-action 'self'",
-        "base-uri 'none'",
-        "frame-ancestors 'none'",
-    ] {
-        assert!(
-            csp.contains(directive),
-            "the login page CSP is missing `{directive}`; it reads {csp:?}"
-        );
-    }
-
-    // The page has no script, so no source list may admit one. Spelled against
-    // the `script-src` value rather than the whole header, which legitimately
-    // carries `'unsafe-inline'` for styles.
-    let script_src = csp
+    let directives: std::collections::HashMap<&str, &str> = csp
         .split(';')
         .map(str::trim)
-        .find(|directive| directive.starts_with("script-src"))
-        .expect("script-src must be present");
+        .filter(|directive| !directive.is_empty())
+        .map(|directive| directive.split_once(' ').unwrap_or((directive, "")))
+        .collect();
+
+    // Before the assertions, so a failing one does not leave the variable set
+    // for the rest of the binary.
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CSP");
+
+    for (name, expected) in [
+        ("default-src", "'none'"),
+        ("script-src", "'none'"),
+        ("style-src", "'unsafe-inline'"),
+        ("connect-src", "'none'"),
+        ("img-src", "'self'"),
+        ("form-action", "'self'"),
+        ("base-uri", "'none'"),
+        ("frame-ancestors", "'none'"),
+    ] {
+        assert_eq!(
+            directives.get(name),
+            Some(&expected),
+            "the login page CSP must set `{name} {expected}`; it reads {csp:?}"
+        );
+    }
     assert_eq!(
-        script_src, "script-src 'none'",
-        "the login page renders no script; its script-src must stay `'none'`"
+        directives.len(),
+        8,
+        "the login page CSP gained a directive this test does not pin: {csp:?}"
     );
 }
 
