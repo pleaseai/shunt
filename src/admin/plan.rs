@@ -2874,9 +2874,11 @@ mod tests {
     ///   rather than a blocked `open`, so the only thing that can end it is
     ///   this test's own `drop`, which no scheduling order can miss. Opening
     ///   afterwards instead made the release conditional on an `open` that
-    ///   can fail — and its `Result` was discarded, which is the hang: under
-    ///   full-suite fd pressure that open returns `EMFILE` and nothing ever
-    ///   opens the write end.
+    ///   can fail — and its `Result` was discarded, which is the hang: when
+    ///   that open fails, for whatever reason, nothing ever opens the write
+    ///   end. What fails it during a full-suite run is not established;
+    ///   `EMFILE` under fd pressure is a hypothesis, and only the discarded
+    ///   `Result` itself was reproduced.
     /// * Failing to open now aborts before anything is blocked, so it reports
     ///   as a failed assertion rather than stranding a read.
     /// * `O_RDWR` never blocks. A write-only open blocks until a reader is
