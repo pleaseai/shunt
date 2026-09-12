@@ -1,0 +1,21 @@
+tests/admin_surface.rs
+  s_e9fd5f53eebc34::t_de0b8b0d6f2178 2511-2516,2522-2526,2538-2557,2559-2562,2566-2568
+.please/docs/review/rejected-findings.jsonl
+  s_e9fd5f53eebc34::t_14508a81223b0f 85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7c5b04b6a99fdfd7c0692149cedeffedc20c8ba8",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
