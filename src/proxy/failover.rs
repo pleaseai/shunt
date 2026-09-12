@@ -53,13 +53,30 @@ pub(super) async fn forward(
             response: Box::new(error.into_response()),
         })?;
     normalize_request_body(&mut body);
+    // Context for a `[models.stage_router]` entry, should the requested id turn
+    // out to be one. Built unconditionally because it costs five reference
+    // copies and one header lookup; the router itself is still only consulted
+    // by a `[[models]]` entry that configures one.
+    let stage = routing::stage::StageContext {
+        store: &state.stage_router,
+        request: body.json(),
+        session_id: headers
+            .get("x-claude-code-session-id")
+            .and_then(|value| value.to_str().ok()),
+        // A count_tokens probe must reach the same tier as the turn it is
+        // measuring without recording it: Claude Code sends those with a history
+        // one turn behind, so a committing probe would let the stale history
+        // drive the session's pin.
+        read_only: is_count_tokens(uri),
+        now: started_at,
+    };
     let (mut routes, requested_model) =
-        routing::resolve_request_chain_value(&state.config, body.json()).map_err(|error| {
-            ForwardError {
+        routing::resolve_request_chain_value(&state.config, body.json(), Some(&stage)).map_err(
+            |error| ForwardError {
                 message: "failed to route request".to_string(),
                 response: Box::new(error.into_response()),
-            }
-        })?;
+            },
+        )?;
     crate::observability::record_requested_model(&requested_model);
     // Records the request's final outcome exactly once, at whichever terminal
     // return point below is taken — the intermediate per-attempt failover

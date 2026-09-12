@@ -17,7 +17,7 @@ shunt에 대한 주장은 [shunt 저장소](https://github.com/pleaseai/shunt)�
 
 ## 1. shunt는 무엇인가 (그리고 무엇이 아닌가)
 
-shunt는 **스펙을 준수하는 Claude Code LLM 게이트웨이**입니다: Claude Code의 공식 `ANTHROPIC_BASE_URL` 게이트웨이 계약(`/v1/messages`, `/v1/models` 디스커버리, 어트리뷰션/헤더 패스스루)을 구현하고, **`model` id 단위의 선택적** 우회를 수행합니다 — 메인 세션은 Claude에 유지하고, 지정한 모델만 다른 프로바이더(ChatGPT/Codex, OpenAI, xAI)로 돌립니다. 매핑된 모델에 대해서는 Anthropic Messages ⇄ OpenAI Responses API를 변환하고, 그 외는 모두 Anthropic으로 그대로 패스스루합니다. 라우팅은 순수하게 요청의 `model` id로만 합니다 — 프롬프트 형태 핑거프린팅이 없습니다(`README.md:104-131`).
+shunt는 **스펙을 준수하는 Claude Code LLM 게이트웨이**입니다: Claude Code의 공식 `ANTHROPIC_BASE_URL` 게이트웨이 계약(`/v1/messages`, `/v1/models` 디스커버리, 어트리뷰션/헤더 패스스루)을 구현하고, **`model` id 단위의 선택적** 우회를 수행합니다 — 메인 세션은 Claude에 유지하고, 지정한 모델만 다른 프로바이더(ChatGPT/Codex, OpenAI, xAI)로 돌립니다. 매핑된 모델에 대해서는 Anthropic Messages ⇄ OpenAI Responses API를 변환하고, 그 외는 모두 Anthropic으로 그대로 패스스루합니다. 라우팅은 요청의 `model` id로 합니다 — 프롬프트 형태 핑거프린팅이 없습니다(`README.md:104-131`). 유일한 예외는 옵트인이며 프롬프트 텍스트를 전혀 읽지 않습니다. [`[models.stage_router]`](/ko/guides/stage-router/) 항목은 구조화된 tool-result 메타데이터로 두 티어 중 하나를 고르는데, 이는 다음 Claude Code 릴리스가 다시 쓰는 프롬프트가 아니라 안정된 와이어 계약입니다.
 
 이 초점이 아래 모든 비교의 축입니다. shunt는 광범위한 멀티 테넌트 플릿 운영이 아니라, **변환 충실도와 Claude Code 네이티브 동작**에 최적화하며, 모델 인지 선제 쿼터 로테이션과 반응형 페일오버를 결합한 Anthropic 및 ChatGPT/Codex OAuth 계정 풀을 갖습니다.
 

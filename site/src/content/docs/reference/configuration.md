@@ -594,15 +594,17 @@ codex = "gpt-5.2"
 
 ### `[models.stage_router]` (optional)
 
-Content-aware tier selection for one advertised id: instead of naming a single
-destination, the entry names **two** — a capable tier and an efficient one.
+Content-aware tier selection for one advertised id. Instead of naming a single
+destination, the entry names **two** — a capable tier and an efficient one — and
+lets the request's recent tool-result history pick between them per turn. Absent
+this table a `[[models]]` entry behaves exactly as it did before; configure no
+router anywhere and routing is unchanged.
 
-**Not active in this release.** The table is parsed and validated, but the
-resolver does not read it yet, so an id carrying this table still routes by that
-literal id through the ordinary `[[routes]]` / prefix / `default_provider`
-ladder — not to either target. The keys are documented here so a configuration
-can be written and reviewed ahead of the change that activates them. Absent this
-table a `[[models]]` entry behaves exactly as it did before.
+Both targets are ordinary public model ids, so each resolves through the normal
+ladder and keeps its failover chain, account pool, adapter, `effort`, and
+`service_tier`. What the client is told it got stays the id it asked for — the
+tier travels upstream only. See the [stage router guide](/guides/stage-router/)
+for how the signals and the hysteresis work.
 
 ```toml
 [[models]]

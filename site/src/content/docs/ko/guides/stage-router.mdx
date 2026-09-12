@@ -1,0 +1,137 @@
+---
+title: 스테이지 라우터
+description: model id 하나가 프롬프트 텍스트가 아니라 대화의 최근 tool-result 이력을 보고 턴마다 강한 티어와 효율 티어 중 하나를 고르게 합니다.
+---
+
+`[[models]]` 항목은 보통 목적지를 하나만 지정합니다. **스테이지 라우터**는 둘(강한 티어와
+효율 티어)을 지정하고, 어느 쪽이 각 턴을 맡을지 대화가 정하게 합니다. 오류, 진척 없는 조사,
+탐색적 읽기는 위로 올라가고, 계획이 정해진 뒤의 정형 작업은 아래에 머뭅니다.
+
+이 기능은 옵트인이며 기본적으로 비활성입니다. `[models.stage_router]` 테이블을 설정하지
+않으면 shunt는 이전과 정확히 동일하게, 요청의 `model` id만 보고 라우팅합니다.
+
+## 무엇을 읽는가
+
+요청 본문의 **구조화된 프로토콜 메타데이터**만 읽습니다.
+
+- `tool_use.name` — 어시스턴트가 호출한 도구
+- `tool_result.is_error` — 결과가 실패로 돌아왔는지 여부
+
+둘 다 Anthropic Messages 와이어 포맷의 핵심 필드입니다. 라우터는 시스템 프롬프트도, 사용자
+텍스트도, 도구 인자도 읽지 않습니다. 따라서 프롬프트 형태를 지문 인식해서 Claude Code가
+릴리스될 때마다 깨지는 프록시들의 실패 모드를 물려받지 않습니다.
+
+`tool_result` 블록에는 도구 이름이 **없습니다**. 유일한 연결 고리는
+`tool_use_id` → `tool_use.id`이며, 이 조인이 추출기 전체가 딛고 선 단 하나의 지점입니다.
+
+### 도구 어휘
+
+shunt는 Claude Code의 실제 도구 이름을 압니다. 범용 라우터보다 잘할 수 있는 지점이 바로
+여기입니다.
+
+| 분류 | 도구 |
+| :-- | :-- |
+| 관찰(Observe) | `Read`, `Glob`, `Grep`, `NotebookRead`, `WebFetch`, `WebSearch`, `BashOutput` |
+| 변경(Mutate) | `Edit`, `NotebookEdit`, `Write` |
+| 계획(Plan) | `TodoWrite`, `Task`, `Skill`, `ExitPlanMode` |
+| 미분류 | `Bash`과 모든 `mcp__*` 도구를 포함한 나머지 전부 |
+
+`ExitPlanMode`를 포함한 모든 `Plan` 호출은 계획 활동으로 집계되며, 이는 탐색으로 읽혀
+아래가 아니라 **위로** 밉니다. 분류 이상의 취급을 받는 이름은 하나입니다. 실패한 `Task`는
+명령 하나가 실패한 것이 아니라 위임된 서브에이전트 실행 전체가 무너진 것이므로, 단순히
+어려운 정도가 아니라 치명적으로 채점됩니다. 대화 끝에 실패가 두 번 연속되는 것도
+치명적입니다. 세션이 회복하지 못하고 있다는 뜻이기 때문입니다.
+
+`Bash`는 의도적으로 미분류입니다. `git status`는 관찰이고 `rm -rf`는 변경이며
+`cargo test`는 작업이 정리됐다는 신호인데, 이를 가르는 것은 `input.command`뿐입니다. 명령
+문자열을 분류하는 것이야말로 이 설계가 피하려는 취약한 추론입니다.
+
+## 어떻게 결정하는가
+
+신호 채점은 [NVIDIA-NeMo/Switchyard][sy]의 스코어러인 [`switchyard-libsy`][libsy]가
+맡습니다. 캘리브레이션된 부분이라 여기서 다시 구현하지 않습니다. 포화된 신호 하나만으로는
+약 `0.46`이라 턴을 결정하지 못하고, 서로를 뒷받침하는 신호 둘이면 약 `0.76`에 도달합니다.
+
+신호가 불충분하면 스코어러는 LLM 판정을 요청합니다. **shunt는 판정 모델을 두지 않고**
+picker 기본값으로 fall-open합니다. 덕분에 핫패스에 모델 호출과 크리덴셜이 추가되지 않습니다.
+
+[libsy]: https://crates.io/crates/switchyard-libsy
+[sy]: https://github.com/NVIDIA-NeMo/Switchyard
+
+## 내려오기가 올라가기보다 어려운 이유
+
+티어 전환은 공짜가 아니며, 긴 Claude Code 세션에서는 비용이 구체적입니다.
+
+- **프롬프트 캐시는 모델별 키**입니다. 전환하면 워밍된 prefix를 버리고 새 티어에서 전체
+  캐시 쓰기를 물게 됩니다.
+- **Codex continuation**은 모델을 시그니처에 해시하므로, 전환하면 전체 입력을 다시 보내게
+  되어 shunt가 방금 번 업로드 절감을 그대로 반납합니다.
+- **교차 프로바이더 전환**은 세션의 풀링된 연결과 sticky 계정 슬롯까지 버립니다.
+
+그래서 두 방향을 의도적으로 다르게 둡니다.
+
+| 방향 | 필요 조건 |
+| :-- | :-- |
+| 효율 → 강함 | `confidence_threshold`(0.5)만. 싼 티어가 감당 못 하는 턴은 버려지는 캐시 prefix보다 비쌉니다. |
+| 강함 → 효율 | `min_dwell_turns` **그리고** `deescalate_threshold`(0.75) **그리고** 스코어러가 실제로 내린 결정. |
+
+fall-open이나 도구 활동이 없는 턴은 picker 기본값이지 증거가 아니므로, 어느 방향으로도
+티어를 움직이지 못합니다.
+
+## 세션 고정
+
+결정은 `(model id, session id)` 단위로 고정되며, session id는
+`x-claude-code-session-id`에서 읽습니다. session id는 해시되고 저장되지 않습니다. 같은
+세션에서 라우터 기반 모델을 둘 쓰면 티어는 서로 독립입니다.
+
+- 세션 헤더를 보내지 않는 호출자는 무상태로 라우팅됩니다.
+- `count_tokens` 탐침은 실제 턴과 같은 티어에 도달하지만 아무것도 기록하지 않습니다. Claude
+  Code가 한 턴 뒤처진 이력으로 보내기 때문입니다.
+- 고정은 설정 리로드를 견딥니다. 다만 고정은 자신이 만들어진 라우터 테이블을 기억하므로,
+  라우터 하나를 수정하면 그 라우터의 고정만 버려집니다.
+- 고정은 `session_ttl_seconds` 후 만료됩니다. 재시작 간에는 아무것도 영속되지 않습니다.
+
+## 클라이언트가 보는 것
+
+선택된 티어는 업스트림으로만 전달됩니다. 응답은 클라이언트가 요청한 id를 그대로 보고하므로
+Claude Code의 `/model` 표시와 `--resume` 모델 복원이 계속 동작합니다.
+
+```
+POST /v1/messages   {"model": "claude-auto", ...}
+  → 업스트림 수신   {"model": "claude-opus-4-8", ...}
+  → 클라이언트 수신 {"model": "claude-auto", ...}
+```
+
+## 설정
+
+```toml
+[[models]]
+id = "claude-auto"                     # /model에 노출되려면 claude/anthropic으로 시작해야 합니다
+display_name = "Auto (stage router)"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+# picker = "efficient_first"
+# confidence_threshold = 0.5
+# recent_turn_window = 3
+# min_dwell_turns = 3
+# deescalate_threshold = 0.75
+# session_ttl_seconds = 3600
+```
+
+두 타깃 모두 평범한 공개 model id이므로 각각 일반 라우팅 사다리를 따라 해석되고 자신의
+페일오버 체인, 계정 풀, 어댑터, `effort`, `service_tier`를 그대로 유지합니다. 타깃이 그
+자체로 라우터인 경우는 시작 오류이므로, 해석은 구조적으로 한 홉입니다.
+
+모든 키는 [설정 레퍼런스](/ko/reference/configuration/)에 문서화되어 있습니다. 의도적으로
+제외한 것까지 포함한 설계 기록은
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md)에
+있습니다.
+
+## 한계
+
+- **턴 중간 상향 전환은 없습니다.** 응답 헤더가 커밋된 뒤에는 shunt가 턴을 재구동하지
+  않으므로, 턴 시작 시점에 고른 티어가 그 턴 전체를 맡습니다.
+- **LLM 판정은 없습니다.** 불충분한 신호는 picker 기본값으로 fall-open합니다.
+- **`[server.codex_endpoint]`는 범위 밖**입니다. 자체 라우팅 테이블을 사용합니다.
