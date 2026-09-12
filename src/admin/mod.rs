@@ -1784,19 +1784,21 @@ fn html_body_with_form_action(body: String, form_action: &str) -> Response {
     // policy, and `no-store` so a submitted token is never cached by the browser
     // or a shared intermediary.
     //
-    // `script-src`/`connect-src` are wider than this page needs. They were sized
-    // for the server-rendered dashboard, which inlined a script that fetched
-    // `/admin/api/*`; the login page has neither a script nor a fetch, so both
-    // could now be `'none'`. Tightening them is deliberately not part of this
-    // change — it is a policy change on a live page, not part of deleting the
-    // dashboard literals — and is tracked separately. `style-src` genuinely
+    // `script-src`/`connect-src` are `'none'` because this page has neither a
+    // script nor a fetch. They carried `'unsafe-inline'`/`'self'` while the
+    // server-rendered dashboard shared this helper and inlined a script that
+    // called `/admin/api/*`; that dashboard is gone. `style-src` genuinely
     // still needs `'unsafe-inline'`: `html::STYLE` is inlined in a `<style>`
     // element, which is the difference between this policy and the bundle's
     // (`ui::SHELL_CSP`), whose stylesheet is an external asset.
+    //
+    // `form-action` stays the one widened directive, and is what the SSO
+    // button depends on — it is a form POST to `/admin/api/oidc/start`, not a
+    // fetch, so tightening `connect-src` does not reach it.
     let csp = format!(
-        "default-src 'none'; script-src 'unsafe-inline'; \
-style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action {form_action}; \
-base-uri 'none'; frame-ancestors 'none'"
+        "default-src 'none'; script-src 'none'; \
+         style-src 'unsafe-inline'; connect-src 'none'; img-src 'self'; \
+         form-action {form_action}; base-uri 'none'; frame-ancestors 'none'"
     );
     (
         [

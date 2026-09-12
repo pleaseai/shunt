@@ -2493,6 +2493,95 @@ async fn cookie_session_mutations_require_a_csrf_token() {
     std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_D");
 }
 
+/// The login page's Content-Security-Policy, directive by directive.
+///
+/// `script-src`/`connect-src` are `'none'`: the page renders no `<script>` and
+/// makes no fetch. They were `'unsafe-inline'`/`'self'` while the
+/// server-rendered dashboard shared this response helper, and nothing narrowed
+/// them when that dashboard moved to the bundle (#525).
+///
+/// The `'unsafe-inline'` that stays is asserted too, and is the half of this
+/// test that fails if the tightening goes one directive too far: `html::STYLE`
+/// is inlined in a `<style>` element, so dropping it renders the sign-in form
+/// unstyled. `form-action` is the one value that varies with the response —
+/// `'self'` here, widened for the IdP redirect chain when SSO is configured
+/// (`admin_oidc_full_flow_mints_session_and_preserves_header_auth` pins that
+/// shape) — and every other directive comes from the same single format string,
+/// so pinning them once covers both.
+///
+/// Each directive is parsed out and compared whole. A `contains` check would
+/// pass a widened `connect-src 'none' https://example.com`, which is the
+/// regression this test exists to catch, and would say nothing at all about a
+/// directive it does not name — so the count is pinned too, and a ninth
+/// directive has to be decided here rather than inherited silently.
+#[tokio::test]
+async fn the_login_page_csp_allows_only_inline_style_and_the_form_post() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // `start` builds the router, which resolves `AdminConfig::tokens_env`
+    // through `std::env::var` — so this test writes the process env and reads
+    // it back, which is the read/write race `ADMIN_ENV_LOCK` exists to
+    // serialize. Held across the cleanup below as well as the write.
+    let _lock = ADMIN_ENV_LOCK.lock().await;
+    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_CSP", "ops:secret-csp");
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_CSP")).await;
+
+    let response = reqwest::get(format!("{}/admin/login", gateway.base_url))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let csp = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let parsed: Vec<(&str, &str)> = csp
+        .split(';')
+        .map(str::trim)
+        .filter(|directive| !directive.is_empty())
+        .map(
+            |directive| match directive.split_once(char::is_whitespace) {
+                Some((name, value)) => (name, value.trim()),
+                None => (directive, ""),
+            },
+        )
+        .collect();
+    let directives: std::collections::HashMap<&str, &str> = parsed.iter().copied().collect();
+
+    // Before the assertions, so a failing one does not leave the variable set
+    // for the rest of the binary.
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CSP");
+
+    for (name, expected) in [
+        ("default-src", "'none'"),
+        ("script-src", "'none'"),
+        ("style-src", "'unsafe-inline'"),
+        ("connect-src", "'none'"),
+        ("img-src", "'self'"),
+        ("form-action", "'self'"),
+        ("base-uri", "'none'"),
+        ("frame-ancestors", "'none'"),
+    ] {
+        assert_eq!(
+            directives.get(name),
+            Some(&expected),
+            "the login page CSP must set `{name} {expected}`; it reads {csp:?}"
+        );
+    }
+    // Counted on `parsed`, not on the map. A repeated directive collapses into
+    // one map entry, and the browser resolves the repeat the other way round --
+    // CSP keeps the FIRST occurrence and ignores the rest, while the map keeps
+    // the last. So `connect-src https://evil; ...; connect-src 'none'` reads as
+    // tight through the map and is wide in the browser, and the map's length is
+    // still 8. Counting before the collapse is what catches both that and an
+    // unpinned ninth directive.
+    assert_eq!(
+        parsed.len(),
+        8,
+        "the login page CSP has a repeated or unpinned directive: {csp:?}"
+    );
+}
+
 #[tokio::test]
 async fn browser_session_dashboard_csrf_accept_and_logout() {
     if !can_bind_loopback() {
