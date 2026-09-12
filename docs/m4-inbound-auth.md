@@ -166,11 +166,11 @@ request.
 | `InboundAuth::authenticate_client` | `[server.auth] header` raw, `Authorization: Bearer` payload, `x-api-key` raw |
 | `GatewayAuth::authenticate_bearer` / `authenticate_token` | `Authorization: Bearer` payload / a bare token value (reached in production only through that bearer path and through `consumed_by`) |
 | `AdminAuth::authenticate_credential` | `[server.admin] header` raw **and** `x-api-key` raw, over `write_keys`, `read_keys`, and the legacy `tokens_env`/`tokens_file` pairs alike |
-| `admin::authenticate` → `session_cookie` | the `cookie` header — a **write-tier** `shunt_admin_session` accepted when no credential header matched |
+| `admin::authenticate` → `session_cookie` | the `cookie` header — a `shunt_admin_session` accepted when no credential header matched, carrying **the tier its minting credential had** |
 
 shunt also accepts its own values, and admin credentials, out of **form bodies and query
-strings**: `admin::login_submit` (a write-tier admin credential in a form field, via
-`authenticate_login_token`), `gateway::oauth`, `gateway::device`, `gateway::idp`, `admin::oidc`,
+strings**: `admin::login_submit` (an admin credential of either tier in a form field, via
+`login_access`), `gateway::oauth`, `gateway::device`, `gateway::idp`, `admin::oidc`,
 and `auth::callback`. None of them needs a strip, and the reason is structural rather than a rule
 anyone has to remember: no forward site copies an inbound body or query string into an outbound
 request. Every upstream URL is rebuilt from config (`responses_url` and friends), and the body a

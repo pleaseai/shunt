@@ -195,13 +195,16 @@ process-lifetime state:
 
 - **Two credentials, never mixed.** Admin auth is the `[server.admin]` credential;
   it is never the `[server.auth]` client tokens.
-- **Browser:** sign in at `/admin/login` with a **write-tier** admin credential →
+- **Browser:** sign in at `/admin/login` with an admin credential of **either
+  tier** →
   an opaque session
   id in an in-memory `SessionStore`, set as cookie `shunt_admin_session`
   (`HttpOnly`, `SameSite=Strict`, `Path=/admin`). The cookie is marked `Secure`
   **unless the request host is loopback**, so local HTTP dev and tests work while
   any real deployment host gets a Secure cookie (reusing M8's `host_is_loopback`
-  loopback carve-out). A session therefore always carries write access.
+  loopback carve-out). A session carries the tier of the credential that minted
+  it — a `read` key's session is refused on every mutation, exactly as its header
+  credential is.
 - **API/curl:** send the admin credential in the configured header
   (`x-shunt-admin-token`) or in `x-api-key`; both slots are accepted, and the
   resolved privilege is the maximum over whichever slots matched. When both
@@ -258,12 +261,16 @@ process-lifetime state:
   key was refused a session.** A `read_keys` login now mints a read-tier
   session, so rotating a compromised read key stops its *header* credential at
   the next reload while its *cookie* goes on reading the admin surface until
-  `session_ttl_secs` elapses. What survives is read-only — `require_write`
-  refuses that session's mutations, and it is strictly less than the full access
-  a write-tier session already carried across the same window — but a deployment
-  that hands read keys out widely because revocation looked immediate no longer
-  has that property, and should restart rather than reload. #100 covers both
-  tiers; neither is fixed by the session tier alone.
+  `session_ttl_secs` elapses — and that key carries no upper bound
+  (`AdminConfig::session_ttl_secs` is a bare `u64` with a default, and
+  `Config::validate` does not range-check it), so a deployment that raised it
+  for convenience widens the window by exactly as much. What survives is
+  read-only — `require_write` refuses that session's mutations, and it is
+  strictly less than the full access a write-tier session already carried across
+  the same window — but a deployment that hands read keys out widely because
+  revocation looked immediate no longer has that property, and should restart
+  rather than reload. #100 covers both tiers; neither is fixed by the session
+  tier alone.
 
 ## Endpoints (registered only when `[server.admin]` is set)
 
@@ -304,8 +311,9 @@ process-lifetime state:
 Gateway-owned errors keep the Anthropic error shape (`ShuntError`); page routes
 render minimal server-side HTML with inline CSS/JS and no external requests.
 
-Every `GET` above is reachable with a **read** credential. `POST /admin/login`
-and the seven account-provisioning routes (`POST`/`DELETE` under
+Every `GET` above is reachable with a **read** credential, as is
+`POST /admin/login` — it mints a session at the tier of whichever credential
+signed in. The seven account-provisioning routes (`POST`/`DELETE` under
 `/admin/accounts/...`) require **write**. `POST /admin/logout` and the two OIDC
 routes are login-flow plumbing and are guarded by the same-origin/state checks
 rather than by tier.

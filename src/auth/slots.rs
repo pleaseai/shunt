@@ -58,8 +58,8 @@
 //! ### Non-header accept channels (not a forwarding risk)
 //!
 //! shunt also accepts values it minted, or admin credentials, out of **form
-//! bodies and query strings**: `admin::login_submit` (a write-tier admin
-//! credential in a form field, via `authenticate_login_token`),
+//! bodies and query strings**: `admin::login_submit` (an admin credential of
+//! either tier in a form field, via `login_access`),
 //! `gateway::oauth`, `gateway::device`, `gateway::idp`, `admin::oidc`, and
 //! `auth::callback`. None of them can leak the way a header can, and the reason
 //! is structural rather than a rule anyone has to remember: no forward site

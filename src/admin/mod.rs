@@ -10,8 +10,9 @@
 //! are CSRF-exempt (no ambient cookie).
 //! An admin credential is either a `tokens_env`/`tokens_file` `name:token` pair
 //! or a `[[server.admin.write_keys]]`/`[[server.admin.read_keys]]` entry; the
-//! read tier passes every GET and is refused on every mutation, the login form
-//! included.
+//! read tier passes every GET and is refused on every mutation. It signs in at
+//! the login form too: the session records the tier it was minted with, so a
+//! read key's cookie is refused on a mutation exactly as its header is.
 //! Built with `--features ui`, the SPA shell and its bundle files are the one
 //! part of this surface served without any admin credential — they carry no
 //! operator data, and everything the SPA reads sits behind `/admin/api/*`,
@@ -693,9 +694,10 @@ async fn dashboard() -> Response {
 
 // --- JSON API routes -----------------------------------------------------------
 
-/// `GET /admin/api/session` — the two per-session values the dashboard needs
+/// `GET /admin/api/session` — the three per-session values the dashboard needs
 /// before it can render, for a client that cannot have them interpolated into
-/// its own source.
+/// its own source: the CSRF token, the session's access tier, and the refresh
+/// buffer.
 ///
 /// The server-rendered dashboard this replaced substituted both into the page
 /// it emitted. The SPA shell (`ui::shell`) cannot be served that way: it is one
