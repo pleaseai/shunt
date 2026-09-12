@@ -1482,6 +1482,7 @@ async fn gateway_jwt_and_static_client_token_compose_on_models() {
         id: "claude-via-gateway".into(),
         display_name: None,
         upstream_model: None,
+        stage_router: None,
     }];
     let (router, _, _) = build_router(config).unwrap();
 
@@ -1551,6 +1552,7 @@ async fn gateway_session_secret_rotation_accepts_every_listed_secret_and_rejects
         id: "claude-via-gateway".into(),
         display_name: None,
         upstream_model: None,
+        stage_router: None,
     }];
     let (router, _, _) = build_router(config).unwrap();
 

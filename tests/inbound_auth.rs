@@ -90,6 +90,7 @@ fn with_discovery_model(mut config: Config) -> Config {
         id: "claude-mapped-model".to_string(),
         display_name: Some("Mapped model".to_string()),
         upstream_model: None,
+        stage_router: None,
     });
     config
 }

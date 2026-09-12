@@ -45,6 +45,21 @@ route_prefixes:
 #   headers:
 #     authorization: "Bearer <token>"
 
+# Content-aware tier selection (opt-in). Under YAML the stage_router table is a
+# nested mapping on the models entry rather than a [models.stage_router] section.
+# Absent this key, routing stays purely by model id. See shunt.toml.example for
+# every key and its default.
+# models:
+#   - id: claude-auto
+#     display_name: Auto (stage router)
+#     stage_router:
+#       capable_target: claude-opus-4-8
+#       efficient_target: claude-sonnet-4-6
+#       picker: efficient_first
+#       confidence_threshold: 0.5
+#       min_dwell_turns: 3
+#       deescalate_threshold: 0.75
+
 # YAML 1.1 treats bare yes/no/on/off/y/n values as booleans. Quote one of
 # those tokens when using it in a string field, for example:
 # providers:

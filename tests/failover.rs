@@ -128,6 +128,7 @@ fn chain_config(upstreams: Vec<UpstreamConfig>, mappings: &[(&str, &str)]) -> Co
                 .map(|(name, model)| ((*name).to_string(), (*model).to_string()))
                 .collect::<BTreeMap<_, _>>(),
         ),
+        stage_router: None,
     }];
     config
 }
@@ -1082,6 +1083,7 @@ async fn legacy_single_element_chain_adds_gateway_headers() {
             "anthropic".to_string(),
             "legacy-model".to_string(),
         )])),
+        stage_router: None,
     }];
     let gateway = start_gateway(config).await;
 

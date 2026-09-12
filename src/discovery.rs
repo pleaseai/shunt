@@ -316,11 +316,13 @@ mod tests {
                         "codex".to_string(),
                         "gpt-5.2".to_string(),
                     )])),
+                    stage_router: None,
                 },
                 ModelConfig {
                     id: "anthropic-sonnet-via-codex".to_string(),
                     display_name: None,
                     upstream_model: None,
+                    stage_router: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -411,11 +413,13 @@ mod tests {
                     id: "claude-opus-4-8".to_string(),
                     display_name: Some("Opus Curated".to_string()),
                     upstream_model: None,
+                    stage_router: None,
                 },
                 ModelConfig {
                     id: "claude-custom-model".to_string(),
                     display_name: None,
                     upstream_model: None,
+                    stage_router: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -479,6 +483,7 @@ mod tests {
                 id: "claude-opus-5".to_string(),
                 display_name: Some("Opus Curated".to_string()),
                 upstream_model: None,
+                stage_router: None,
             }],
             ..crate::config::Config::default()
         };
@@ -523,6 +528,7 @@ mod tests {
                 id: "claude-existing-contract".to_string(),
                 display_name: Some("Existing Contract".to_string()),
                 upstream_model: None,
+                stage_router: None,
             }],
             ..crate::config::Config::default()
         };

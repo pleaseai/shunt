@@ -330,3 +330,27 @@ provider = "openai"
 # model = "claude-gpt-5.6-sol-via-codex" # the alias Claude Code sends
 # provider = "codex"
 # upstream_model = "gpt-5.6-sol"         # real slug forwarded upstream (see models.json)
+
+# Content-aware tier selection (opt-in). A [[models]] entry carrying a
+# [models.stage_router] table names TWO destinations instead of one and lets the
+# request's recent tool-result history pick between them: errors, investigation,
+# or stalled progress route to the capable tier; routine production stays on the
+# efficient one. Both targets are ordinary model ids, so they resolve through the
+# normal ladder and keep failover, account pools, effort, and service_tier.
+# Without this table nothing changes — routing stays purely by model id.
+# [[models]]
+# id = "claude-auto"                     # must begin with claude/anthropic to reach /model
+# display_name = "Auto (stage router)"
+#
+# [models.stage_router]
+# capable_target = "claude-opus-4-8"     # hard reasoning, investigation, error recovery
+# efficient_target = "claude-sonnet-4-6" # routine work once the plan is settled
+# picker = "efficient_first"             # (default) tier used when signals are inconclusive
+# confidence_threshold = 0.5             # (default) minimum confidence to act on a signal
+# recent_turn_window = 3                 # (default) turns of tool results fed to the scorer
+# min_dwell_turns = 3                    # (default) turns held before a de-escalation may fire
+# deescalate_threshold = 0.75            # (default) stricter than the escalation threshold:
+#                                        # a tier flip forfeits the warm prompt-cache prefix
+#                                        # and any previous_response_id continuation, so
+#                                        # coming back down must clear a higher bar
+# session_ttl_seconds = 3600             # (default) how long a session's pinned tier survives
