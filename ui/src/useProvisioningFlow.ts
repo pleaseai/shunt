@@ -43,7 +43,7 @@ const START_UNANSWERED = 'No answer from the server — no authorization step op
  * way by the time this is read (#531).
  */
 const START_UNANSWERED_AFTER_CLOSE =
-  'No answer from the server — no authorization step opened, and the previous one was closed when this start was issued, so start again';
+  'No answer from the server — no authorization step opened, and the one that was open has been closed, so start again';
 
 /**
  * Appended to a rejected start's own error when an authorization step the
@@ -61,7 +61,7 @@ const START_UNANSWERED_AFTER_CLOSE =
  * operator to read past the sentence on the one occasion it is true.
  */
 const CLOSED_PREVIOUS_STEP =
-  'the previous authorization step was closed when this start was issued; start again.';
+  'the authorization step that was open has been closed; start again.';
 
 export interface FlowMessage {
   text: string;
@@ -148,8 +148,25 @@ export function useProvisioningFlow({
   // the rest of the flow, at the operator's own request, so it has no closure to
   // hand on to a later message.
   const discardedEpoch = useRef(0);
+  // The start-failure message currently on screen, if that is what is on screen:
+  // `show` clears it for every other writer — a completion's own verdict, a row
+  // action reporting through `report`, the clear a new start issues. A
+  // superseded completion amends this message and no other, because only this
+  // one is the operator's account of the start that closed the step.
+  const shownStartFailure = useRef<FlowMessage | null>(null);
 
-  const report = useCallback((text: string, ok: boolean) => setMessage({ text, ok }), []);
+  /**
+   * Write the page's one message, remembering whether it came from a failed
+   * start. The ref is what lets a callback read what is on screen without
+   * taking `message` as a dependency — and keeps the decision out of a
+   * `setMessage` updater, which React is free to run twice.
+   */
+  const show = useCallback((next: FlowMessage | null, fromStartFailure = false) => {
+    shownStartFailure.current = fromStartFailure ? next : null;
+    setMessage(next);
+  }, []);
+
+  const report = useCallback((text: string, ok: boolean) => show({ text, ok }), [show]);
 
   const prime = useCallback((next: string) => {
     setName(next);
@@ -160,12 +177,12 @@ export function useProvisioningFlow({
     setAuthorizeUrl(null);
     setStarting(false);
     setCode('');
-    setMessage(null);
-  }, []);
+    show(null);
+  }, [show]);
 
   const start = useCallback(
     async (body: Record<string, unknown>) => {
-      setMessage(null);
+      show(null);
       // Whether this start closes an authorization step the operator could
       // still have completed — the fact the notices below report. Read before
       // the clear a few lines down, and from two sources, because the closure
@@ -226,10 +243,13 @@ export function useProvisioningFlow({
         // operator staring at a step that never opened.
         if (!result.ok || !result.answered) {
           const reason = result.message ?? copy.startFailure;
-          setMessage({
-            text: closedStepUnreported.current ? `${reason} — ${CLOSED_PREVIOUS_STEP}` : reason,
-            ok: false,
-          });
+          show(
+            {
+              text: closedStepUnreported.current ? `${reason} — ${CLOSED_PREVIOUS_STEP}` : reason,
+              ok: false,
+            },
+            true,
+          );
           closedStepUnreported.current = false;
           return;
         }
@@ -245,15 +265,18 @@ export function useProvisioningFlow({
       } catch {
         if (issued === epoch.current) {
           setStarting(false);
-          setMessage({
-            text: closedStepUnreported.current ? START_UNANSWERED_AFTER_CLOSE : START_UNANSWERED,
-            ok: false,
-          });
+          show(
+            {
+              text: closedStepUnreported.current ? START_UNANSWERED_AFTER_CLOSE : START_UNANSWERED,
+              ok: false,
+            },
+            true,
+          );
           closedStepUnreported.current = false;
         }
       }
     },
-    [csrf, endpoints.start, copy.startFailure, authorizeUrl],
+    [csrf, endpoints.start, copy.startFailure, authorizeUrl, show],
   );
 
   const complete = useCallback(async () => {
@@ -287,7 +310,7 @@ export function useProvisioningFlow({
       // reaches this path, while remove and refresh use `.catch(() => ({}))`.
       if (!result.answered) {
         onStored();
-        if (issued === epoch.current) setMessage({ text: UNKNOWN_COMPLETION, ok: false });
+        if (issued === epoch.current) show({ text: UNKNOWN_COMPLETION, ok: false });
         // No closure recorded when this one is superseded, unlike the definite
         // failure below: this path cannot say the account was *not* stored, and
         // the notice it would arm ends in "start again". `onStored` has already
@@ -296,7 +319,7 @@ export function useProvisioningFlow({
       }
       if (!result.ok) {
         if (issued === epoch.current) {
-          setMessage({ text: result.message ?? copy.completeFailure, ok: false });
+          show({ text: result.message ?? copy.completeFailure, ok: false });
           return;
         }
         // Superseded, so this failure is shown to nobody — and the start that
@@ -313,7 +336,33 @@ export function useProvisioningFlow({
         // half-finished flow at the operator's own request and clears the page's
         // message with it, so the next start closes nothing and must not say
         // otherwise.
-        if (discardedEpoch.current < issued) closedStepUnreported.current = true;
+        if (discardedEpoch.current >= issued) return;
+        const onScreen = shownStartFailure.current;
+        if (onScreen === null) {
+          // The start that superseded this completion has not reported yet — it
+          // is still in flight, having cleared the message as it was issued, or
+          // it opened a step. The ref hands the closure to whatever message
+          // comes next.
+          closedStepUnreported.current = true;
+        } else if (
+          !onScreen.text.endsWith(CLOSED_PREVIOUS_STEP) &&
+          onScreen.text !== START_UNANSWERED_AFTER_CLOSE
+        ) {
+          // That start has already failed and its verdict is on screen — the
+          // likelier order, since a refusal is a local validation while this
+          // exchange is an upstream round trip. Amend what the operator is
+          // reading rather than leaving the fact to a message that may never
+          // come: the next start can as easily succeed, and clear the ref
+          // without anything having said it.
+          show(
+            onScreen.text === START_UNANSWERED
+              ? { text: START_UNANSWERED_AFTER_CLOSE, ok: false }
+              : { text: `${onScreen.text} — ${CLOSED_PREVIOUS_STEP}`, ok: false },
+            true,
+          );
+        }
+        // The remaining case needs neither: the message on screen already says
+        // a step was closed, carried there from an earlier start.
         return;
       }
       // The account was stored upstream whether or not this flow has since been
@@ -322,7 +371,7 @@ export function useProvisioningFlow({
       // reset stay gated: those would stomp the newly primed flow.
       onStored();
       if (issued !== epoch.current) return;
-      setMessage({ text: (result.payload.message as string | undefined) ?? copy.stored, ok: true });
+      show({ text: (result.payload.message as string | undefined) ?? copy.stored, ok: true });
       setAuthorizeUrl(null);
       setName('');
       setCode('');
@@ -338,14 +387,14 @@ export function useProvisioningFlow({
       // this surface does not have (issue #440).
       onStored();
       if (issued === epoch.current) {
-        setMessage({ text: UNKNOWN_COMPLETION, ok: false });
+        show({ text: UNKNOWN_COMPLETION, ok: false });
       }
     } finally {
       clearTimeout(bound);
       completingNow.current = false;
       setCompleting(false);
     }
-  }, [csrf, code, endpoints, copy.completeFailure, copy.stored, onStored]);
+  }, [csrf, code, endpoints, copy.completeFailure, copy.stored, onStored, show]);
 
   return {
     name,

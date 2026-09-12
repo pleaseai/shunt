@@ -847,10 +847,16 @@ mid-completion supersedes that completion — suppressing its confirmation while
 the operator to re-provision an account already in the table. Deferring is not
 declining, though: when that superseded completion comes back a definite failure,
 nothing was stored, the step it was spending is closed, and its own error is
-suppressed by the epoch the newer start took — so `complete` records the closure
-itself on that branch, and the failure messages read the ref as they are written
-rather than as the click happened, which is what lets a completion settling
-mid-request reach them. The two unknown completion outcomes — an unreadable
+suppressed by the epoch the newer start took — so `complete` reports the closure
+itself on that branch. Which way it reports depends on what the superseding start
+has managed to do by then, and both orders are ordinary: the refusal is a local
+validation while the completion is an upstream round trip, so it usually lands
+first. If that verdict is already on screen, the completion amends it in place;
+if the start is still in flight, the ref carries the fact to the message it will
+write. Only the start's own verdict is amended, tracked by `shownStartFailure` —
+`#addmsg` is shared with the row actions, which report through `report`, and a
+closed-step note appended to a failed refresh would name a start the operator did
+not make. The two unknown completion outcomes — an unreadable
 answer, an abandoned request — record nothing, because neither can say the
 account was *not* stored and `onStored` has already re-read the table, which is
 where that question is answered. Nor does a completion superseded by `prime`:

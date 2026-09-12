@@ -5,11 +5,11 @@ import { describe, expect, it } from 'vitest';
 import { deferred, renderDashboard, reply, rowOf, tbody, type Route } from '../test/harness';
 
 const CLOSED_NOTICE =
-  'the previous authorization step was closed when this start was issued; start again.';
+  'the authorization step that was open has been closed; start again.';
 const UNANSWERED =
   'No answer from the server — no authorization step opened, so start again';
 const UNANSWERED_AFTER_CLOSE =
-  'No answer from the server — no authorization step opened, and the previous one was closed when this start was issued, so start again';
+  'No answer from the server — no authorization step opened, and the one that was open has been closed, so start again';
 
 const OPENED = { name: 'first', authorize_url: 'https://auth.example/claude' };
 const REFUSED = { error: { message: 'name must be lowercase' } };
@@ -75,7 +75,7 @@ describe('a failed start says which authorization step it closed', () => {
     expect(message).toHaveTextContent('name must be lowercase');
     // Nothing was open, so nothing was lost. Saying it anyway would teach an
     // operator to read past the sentence on the one occasion it is true.
-    expect(message).not.toHaveTextContent('previous authorization step');
+    expect(message).not.toHaveTextContent(CLOSED_NOTICE);
   });
 
   /**
@@ -140,7 +140,7 @@ describe('a failed start says which authorization step it closed', () => {
 
     // Nothing is open now, and the closure has already been reported.
     await user.click(startButton());
-    expect(document.getElementById('addmsg')).not.toHaveTextContent('previous authorization step');
+    expect(document.getElementById('addmsg')).not.toHaveTextContent(CLOSED_NOTICE);
   });
 
   /**
@@ -183,7 +183,7 @@ describe('a failed start says which authorization step it closed', () => {
 
     const message = document.getElementById('addmsg');
     expect(message).toHaveTextContent('name must be lowercase');
-    expect(message).not.toHaveTextContent('previous authorization step');
+    expect(message).not.toHaveTextContent(CLOSED_NOTICE);
   });
 
   /**
@@ -221,7 +221,7 @@ describe('a failed start says which authorization step it closed', () => {
 
     const message = document.getElementById('addmsg');
     expect(message).toHaveTextContent(UNANSWERED);
-    expect(message).not.toHaveTextContent('the previous one was closed');
+    expect(message).not.toHaveTextContent(UNANSWERED_AFTER_CLOSE);
   });
 
   /**
@@ -317,6 +317,105 @@ describe('a failed start says which authorization step it closed', () => {
 
     const message = document.getElementById('addmsg');
     expect(message).toHaveTextContent('name must be lowercase');
-    expect(message).not.toHaveTextContent('previous authorization step');
+    expect(message).not.toHaveTextContent(CLOSED_NOTICE);
+  });
+
+  /**
+   * The likelier ordering of the pair above: the replacement start's refusal is
+   * a local validation and lands first, while the completion is still doing an
+   * upstream round trip. By the time that exchange fails there is already a
+   * verdict on screen, and handing the closure to the *next* message is not good
+   * enough — the next start can as easily succeed, and would clear the fact
+   * without anything having said it. The message the operator is reading is
+   * amended in place instead.
+   */
+  it('amends a start failure already on screen when the completion lands after it', async () => {
+    const user = userEvent.setup();
+    const completion = deferred<Response>();
+    let started = 0;
+    await renderDashboard({}, {
+      'POST /admin/api/accounts/claude': () => {
+        started += 1;
+        return started === 1 ? reply(OPENED) : reply(REFUSED, 400);
+      },
+      'POST /admin/api/accounts/claude/first/complete': (() => completion.promise) as Route,
+    });
+
+    await user.type(nameField(), 'first');
+    await user.click(startButton());
+    await screen.findByRole('link', { name: OPENED.authorize_url });
+
+    await user.type(document.getElementById('code') as HTMLTextAreaElement, 'the-code#the-state');
+    await user.click(document.getElementById('complete') as HTMLButtonElement);
+
+    await user.clear(nameField());
+    await user.type(nameField(), 'Second');
+    await user.click(startButton());
+
+    // Nothing is claimed yet: the completion may still store the account.
+    const message = document.getElementById('addmsg');
+    expect(message).toHaveTextContent('name must be lowercase');
+    expect(message).not.toHaveTextContent(CLOSED_NOTICE);
+
+    await act(async () => {
+      completion.resolve(reply({ error: { message: 'state mismatch' } }, 400));
+      await completion.promise;
+    });
+
+    expect(message).toHaveTextContent(`name must be lowercase — ${CLOSED_NOTICE}`);
+  });
+
+  /**
+   * Only the start's own verdict is amended. `#addmsg` is shared with the row
+   * actions, which report through `report`, and appending "the previous
+   * authorization step that was open has been closed" to a failed
+   * refresh names a start that is not what the operator just did. The closure
+   * waits for a message that can carry it instead.
+   */
+  it('leaves another action’s message alone and carries the closure to the next start', async () => {
+    const user = userEvent.setup();
+    const completion = deferred<Response>();
+    let started = 0;
+    await renderDashboard(
+      { accounts: [{ name: 'other', kind: 'imported' }] },
+      {
+        'POST /admin/api/accounts/claude': () => {
+          started += 1;
+          return started === 1 ? reply(OPENED) : reply(REFUSED, 400);
+        },
+        'POST /admin/api/accounts/claude/first/complete': (() => completion.promise) as Route,
+        'POST /admin/api/accounts/claude/other/refresh': () =>
+          reply({ error: { message: 'Refresh failed' } }, 500),
+      },
+    );
+
+    await user.type(nameField(), 'first');
+    await user.click(startButton());
+    await screen.findByRole('link', { name: OPENED.authorize_url });
+
+    await user.type(document.getElementById('code') as HTMLTextAreaElement, 'the-code#the-state');
+    await user.click(document.getElementById('complete') as HTMLButtonElement);
+
+    await user.clear(nameField());
+    await user.type(nameField(), 'Second');
+    await user.click(startButton());
+
+    // A row action takes over the live region before the completion settles.
+    await user.click(
+      within(rowOf(tbody('accounts').getByText('other'))).getByRole('button', { name: 'Refresh' }),
+    );
+    const message = document.getElementById('addmsg');
+    expect(message).toHaveTextContent('Refresh failed');
+
+    await act(async () => {
+      completion.resolve(reply({ error: { message: 'state mismatch' } }, 400));
+      await completion.promise;
+    });
+    expect(message).toHaveTextContent('Refresh failed');
+    expect(message).not.toHaveTextContent(CLOSED_NOTICE);
+
+    // Held for the next message that can say it.
+    await user.click(startButton());
+    expect(message).toHaveTextContent(`name must be lowercase — ${CLOSED_NOTICE}`);
   });
 });
