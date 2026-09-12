@@ -1,0 +1,21 @@
+docs/bounded-shutdown.md
+  s_b29479ac4ba789::t_f67f9e15da8eac 22-37
+src/main.rs
+  s_b29479ac4ba789::t_fb065b0796c12e 513-552,628-630,1652-1691
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "15cea6fb15e79fb87bd660a9f515b10f055389d9",
+  "prompts": {},
+  "sessions": {
+    "s_b29479ac4ba789": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47cf774d-f049-4981-bb0d-e214f5e3fcdc",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
