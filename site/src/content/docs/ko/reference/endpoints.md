@@ -23,7 +23,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `GET` | `/admin`, `/admin/` | 관리자 대시보드 — 번들의 나머지와 마찬가지로 인증 없이 제공되는 SPA 셸입니다. `GET /admin/api/session`이 `401`을 반환하면 번들 자체가 `/admin/login`으로 이동시킵니다. 와일드카드 세그먼트는 빈 문자열에 매칭되지 않아 `/admin/`이 어떤 라우트에도 걸리지 않으므로, 마운트 루트는 두 표기를 모두 등록합니다. `--features ui` 없이 빌드한 바이너리에서는 두 경로 모두 해당 피처를 안내하는 본문과 함께 `404`를 반환합니다 |
 | `GET`, `POST` | `/admin/login` | 관리자 토큰 로그인 폼과 브라우저 세션 생성 |
 | `POST` | `/admin/api/logout` | 브라우저 세션 삭제 |
-| `GET` | `/admin/api/session` | 관리자 SPA가 렌더링 전에 필요한 세션별 값 두 가지: 세션의 `csrf` 토큰과 `expiry_buffer_ms`(`claude::auth::EXPIRY_BUFFER`의 밀리초 값으로, setup token이 사용 불가로 바뀌는 경계). 헤더 자격 증명 호출자는 CSRF 면제 대상이라 빈 `csrf`를 받는다. 이 표면에는 CORS 레이어가 없어 교차 출처 페이지가 요청은 보낼 수 있어도 응답은 읽지 못하므로, `GET`으로 토큰을 반환해도 안전하다 |
+| `GET` | `/admin/api/session` | 관리자 SPA가 렌더링 전에 필요한 세션별 값 세 가지: 세션의 `csrf` 토큰, `expiry_buffer_ms`(`claude::auth::EXPIRY_BUFFER`의 밀리초 값으로, setup token이 사용 불가로 바뀌는 경계), 그리고 `access` — 이 세션이 인증하는 등급으로 `read` 또는 `write`이며, 대시보드는 이 값으로 쓰기 동작의 노출 여부를 결정한다. 헤더 자격 증명 호출자는 CSRF 면제 대상이라 빈 `csrf`를 받는다. 이 표면에는 CORS 레이어가 없어 교차 출처 페이지가 요청은 보낼 수 있어도 응답은 읽지 못하므로, `GET`으로 토큰을 반환해도 안전하다 |
 | `GET` | `/admin/api/accounts` | Claude 계정 스토어 메타데이터: 이름, 종류, 만료, UUID; 토큰 자체는 절대 반환하지 않음 |
 | `GET` | `/admin/api/accounts/codex` | Codex 계정 스토어 메타데이터: 이름, 만료, ChatGPT 계정 ID; 토큰 자체는 절대 반환하지 않음 |
 | `GET` | `/admin/api/pool` | `claude_oauth`, `chatgpt_oauth`, `kimi_oauth` 프로바이더별 풀 상태; 각 account 객체에는 선택적인 `plan` 문자열이 포함될 수 있고 파일에서 읽은 값은 이후 profile 조회로 더 정밀하게 보정될 수 있으며, Codex 행은 보고된 5시간/7일 사용량을 담으며 `7d_oi`에는 Codex 대응 항목이 없음; 각 account에는 불리언 `needs_relogin`도 실린다: 크리덴셜이 종결적으로 거부되었거나(`invalid_grant`), 리프레시 토큰이 아예 없거나, 회전된 토큰 쌍을 저장하지 못해 잃어버린 경우로, 어떤 재시도로도 되살릴 수 없고 운영자 재로그인만이 해결한다. 쿨다운 필드와 **독립적으로** 보고된다 — 쿨다운은 저절로 만료되지만 이 표식은 남는다 — 그리고 대시보드의 두 표 모두 쿼터 일시정지의 `cooling`이 아니라 **needs re-login**으로 표시한다. 인메모리라 재시작하면 초기화되고, 해당 계정의 다음 종결 실패에서 다시 세워진다. 어떤 provider 테이블도 선택한 적 없는 계정에도 — `has_state: false`와 함께 — 보고된다. admin refresh 프로브가 판정을 스토어 이름으로 기록하기 때문이다. |
@@ -45,7 +45,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/codex/analytics-events/events` | Codex CLI 분석 sink — 루트형 `chatgpt_base_url` 형식 |
 | `GET` | `/usage` | 클라이언트용 정제된 풀 사용량 — 공유 계정 풀의 창별 잔여 여유와 리셋, 그리고 풀링되는 프로바이더별 동일 집계를 반환하며 계정 신원이나 용량은 반환하지 않음 |
 
-`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로, `POST /admin/login`에서는 `401`로 거부됩니다. 다만 SPA 셸과 번들 파일은 예외로, `GET /admin`(두 표기 모두), `GET /admin/{*path}`, `GET /admin/assets/{*path}`는 관리자 인증 없이 제공됩니다. 이들은 운영자 데이터를 담지 않고, SPA가 읽는 값은 모두 요청마다 인증하는 `/admin/api/*` 뒤에 있으므로 안전합니다. 와일드카드 라우트 둘은 `[server.admin]`이 구성되고 `--features ui`로 빌드한 바이너리에서만 존재합니다.
+`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로 거부됩니다. 로그인은 할 수 있습니다: `POST /admin/login`이 이를 받아들여 read 등급 세션을 발급하고, 그 세션의 변경 작업도 같은 `403`으로 거부됩니다. 다만 SPA 셸과 번들 파일은 예외로, `GET /admin`(두 표기 모두), `GET /admin/{*path}`, `GET /admin/assets/{*path}`는 관리자 인증 없이 제공됩니다. 이들은 운영자 데이터를 담지 않고, SPA가 읽는 값은 모두 요청마다 인증하는 `/admin/api/*` 뒤에 있으므로 안전합니다. 와일드카드 라우트 둘은 `[server.admin]`이 구성되고 `--features ui`로 빌드한 바이너리에서만 존재합니다.
 
 ### 관리자 SPA 번들(`--features ui`)
 

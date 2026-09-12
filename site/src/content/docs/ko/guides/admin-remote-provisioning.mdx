@@ -25,7 +25,7 @@ shunt check
 shunt run
 ```
 
-자격 증명은 `SHUNT_CLIENT_TOKENS`와 같은 쉼표 구분 `name:token` 형식을 쓰지만, 별도의 보안 경계입니다. `[server.auth]` 클라이언트 토큰을 관리자 토큰으로 재사용하지 마세요. `[server.admin]`이 있는데 세 자격 증명 소스 — 토큰 환경 변수(또는 `tokens_file`), `[[server.admin.write_keys]]`, `[[server.admin.read_keys]]` — 가 모두 비어 있거나 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다. `name:token` 쌍은 **쓰기(write)** 티어이며, `read_keys` 항목은 관리자 화면의 모든 GET을 통과하지만 로그인 폼을 포함한 모든 변경 작업에서는 거부됩니다.
+자격 증명은 `SHUNT_CLIENT_TOKENS`와 같은 쉼표 구분 `name:token` 형식을 쓰지만, 별도의 보안 경계입니다. `[server.auth]` 클라이언트 토큰을 관리자 토큰으로 재사용하지 마세요. `[server.admin]`이 있는데 세 자격 증명 소스 — 토큰 환경 변수(또는 `tokens_file`), `[[server.admin.write_keys]]`, `[[server.admin.read_keys]]` — 가 모두 비어 있거나 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다. `name:token` 쌍은 **쓰기(write)** 티어이며, `read_keys` 항목은 관리자 화면의 모든 GET을 통과하지만 모든 변경 작업에서는 거부됩니다. 대시보드에 로그인할 수는 있으며, 그 세션은 읽기 전용입니다.
 
 모든 키와 기본값은 [설정 레퍼런스](/ko/reference/configuration/#serveradmin-선택)를 참고하세요. 브라우저 라우트와 JSON 라우트는 [엔드포인트 레퍼런스](/ko/reference/endpoints/)에 나열되어 있습니다.
 
