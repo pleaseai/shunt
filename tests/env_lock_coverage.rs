@@ -15,40 +15,81 @@
 //! This gate is keyed on the *absence of the raw call* rather than on
 //! recognizing a correct use of the guard. A pattern-matching gate only catches
 //! the shapes it was taught: the equivalent tripwire for credential headers
-//! missed two hand-rolled sites because it scanned for one idiom. There is no
-//! hand-rolled spelling of "not `std::env::set_var`".
+//! missed two hand-rolled sites because it scanned for one idiom.
+//!
+//! That is a claim about the *shape* of a call, and it has limits worth stating
+//! rather than implying. The patterns below match the path segment, so they see
+//! both `std::env::set_var(..)` and the `use std::env;` short form, but a caller
+//! who aliases the module (`use std::env as e;`) or reaches the same libc call
+//! another way is outside what any grep can settle. What the gate does buy is
+//! that the *ordinary* spellings cannot appear unnoticed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// Files this gate does not apply to, each with the reason it cannot take the
-/// shared guard. Adding one means editing this list, which is visible in review
-/// — the point of keeping the exemptions here instead of in a marker comment
-/// the exempted file could grant itself.
-const EXEMPT: &[(&str, &str)] = &[(
-    "antigravity_process.rs",
-    "writes once in a OnceLock initializer, and those values must outlive every \
-     test in the binary — a guard that restores them when one test ends cannot \
-     express that, and holding the lock for the life of the process would be a \
-     lock nothing else can ever take",
-)];
+/// Files this gate does not apply to: the number of raw writes each is allowed
+/// to contain, and the reason it cannot route them through the shared guard.
+///
+/// Keeping the exemptions here rather than in a marker comment means a file
+/// cannot grant itself one — adding a row is visible in review. The count is
+/// what makes the exemption a bound instead of a blanket: exempting the file
+/// wholesale would let a later PR add an ordinary per-test `set_var` beside the
+/// vetted one and stay green, which is the hazard this gate exists to catch.
+const EXEMPT: &[(&str, usize, &str)] = &[
+    (
+        "common/mod.rs",
+        4,
+        "is the guard itself — two writes in `set`/`unset` and the two that put \
+         the previous values back in `Drop`, all under the lock this module owns",
+    ),
+    (
+        "antigravity_process.rs",
+        2,
+        "writes once in a OnceLock initializer, and those values must outlive \
+         every test in the binary — a guard that restores them when one test \
+         ends cannot express that, and holding the lock for the life of the \
+         process would be a lock nothing else can ever take",
+    ),
+];
 
-/// The calls that must not appear outside `tests/common/mod.rs`.
-const RAW_WRITES: &[&str] = &["std::env::set_var", "std::env::remove_var"];
+/// The calls that must not appear outside the exempt files.
+///
+/// Written without the leading `std::` so the `use std::env;` short form is
+/// caught too — `std::env::set_var` contains `env::set_var`, so one pattern
+/// covers both spellings.
+const RAW_WRITES: &[&str] = &["env::set_var", "env::remove_var"];
 
 fn tests_dir() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests"))
 }
 
-/// Every `tests/*.rs` binary, as (file name, contents).
+/// Every `.rs` file under `tests/`, as (path relative to `tests/`, contents).
+///
+/// Recursive, because a test binary is not only `tests/*.rs`: cargo also builds
+/// `tests/<dir>/main.rs`, and a support module in a subdirectory is compiled
+/// into whichever binaries declare it. `tests/common/mod.rs` is the one that
+/// exists today, and it is exempt by name below rather than by being out of
+/// reach of the walk.
 fn test_sources() -> Vec<(String, String)> {
-    let mut sources: Vec<(String, String)> = std::fs::read_dir(tests_dir())
-        .expect("tests/ is readable")
-        .map(|entry| entry.expect("a readable directory entry").path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+    fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("a readable directory under tests/") {
+            let path = entry.expect("a readable directory entry").path();
+            if path.is_dir() {
+                walk(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                into.push(path);
+            }
+        }
+    }
+
+    let mut paths = Vec::new();
+    walk(tests_dir(), &mut paths);
+
+    let mut sources: Vec<(String, String)> = paths
+        .into_iter()
         .map(|path| {
             let name = path
-                .file_name()
-                .expect("a file name")
+                .strip_prefix(tests_dir())
+                .expect("a path under tests/")
                 .to_string_lossy()
                 .into_owned();
             (
@@ -63,21 +104,28 @@ fn test_sources() -> Vec<(String, String)> {
 
 /// The lines of a source that are actually code, as (1-based number, line).
 ///
-/// A line comment naming `std::env::set_var` is prose about the hazard, not a
-/// call — this module's own header is full of it, and so is the doc comment on
-/// the one exempt initializer. Both gates below have to agree on that, and for
-/// opposite reasons: counting prose as a call would flag a file that only
-/// *documents* the rule, and counting it as a call would also keep an exemption
-/// alive after its last real write is gone. The second is how this was found —
-/// stripping both `set_var` calls out of the exempt file left
-/// `every_exemption_is_still_load_bearing` passing on the doc comment above
-/// them.
+/// A line comment naming `env::set_var` is prose about the hazard, not a call —
+/// this module's own header is full of it, and so is the doc comment on the one
+/// exempt initializer. Both gates below have to agree on that, and for opposite
+/// reasons: counting prose as a call would flag a file that only *documents* the
+/// rule, and counting it as a call would keep an exemption alive after its last
+/// real write is gone. The second is how this was found — stripping both
+/// `set_var` calls out of the exempt file left `every_exemption_is_bounded_and_
+/// still_load_bearing` passing on the doc comment above them.
 fn code_lines(source: &str) -> impl Iterator<Item = (usize, &str)> {
     source
         .lines()
         .enumerate()
         .map(|(index, line)| (index + 1, line))
         .filter(|(_, line)| !line.trim_start().starts_with("//"))
+}
+
+/// The raw writes in one source, as `path:line: text`.
+fn raw_writes_in(name: &str, source: &str) -> Vec<String> {
+    code_lines(source)
+        .filter(|(_, line)| RAW_WRITES.iter().any(|call| line.contains(call)))
+        .map(|(number, line)| format!("{name}:{number}: {}", line.trim()))
+        .collect()
 }
 
 #[test]
@@ -87,20 +135,16 @@ fn no_test_binary_writes_the_environment_outside_the_shared_guard() {
     // path that stops resolving would read as "no violations" forever.
     assert!(
         sources.len() > 10,
-        "expected to scan every tests/*.rs binary, found {}",
+        "expected to scan every test source under tests/, found {}",
         sources.len()
     );
 
     let mut violations = Vec::new();
     for (name, source) in &sources {
-        if name == "env_lock_coverage.rs" || EXEMPT.iter().any(|(exempt, _)| exempt == name) {
+        if name == "env_lock_coverage.rs" || EXEMPT.iter().any(|(exempt, _, _)| exempt == name) {
             continue;
         }
-        for (number, line) in code_lines(source) {
-            if RAW_WRITES.iter().any(|call| line.contains(call)) {
-                violations.push(format!("{name}:{number}: {}", line.trim()));
-            }
-        }
+        violations.extend(raw_writes_in(name, source));
     }
 
     assert!(
@@ -113,16 +157,29 @@ fn no_test_binary_writes_the_environment_outside_the_shared_guard() {
 }
 
 #[test]
-fn every_exemption_is_still_load_bearing() {
-    for (name, reason) in EXEMPT {
+fn every_exemption_is_bounded_and_still_load_bearing() {
+    for (name, allowed, reason) in EXEMPT {
         let path = tests_dir().join(name);
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|_| panic!("exempt file {name} no longer exists; drop its exemption"));
+        let found = raw_writes_in(name, &source);
+
         assert!(
-            code_lines(&source).any(|(_, line)| RAW_WRITES.iter().any(|call| line.contains(call))),
+            !found.is_empty(),
             "{name} no longer writes the environment directly, so its exemption \
              is stale and the gate should cover it again. The reason recorded \
              was: {reason}"
+        );
+        assert_eq!(
+            found.len(),
+            *allowed,
+            "{name} is exempt for {allowed} raw write(s) and has {}. A new one is \
+             not covered by the recorded reason — route it through \
+             `common::EnvVars`, or, if it genuinely cannot be, change the count \
+             here and say why in the reason. The reason recorded was: \
+             {reason}\n  {}",
+            found.len(),
+            found.join("\n  ")
         );
     }
 }

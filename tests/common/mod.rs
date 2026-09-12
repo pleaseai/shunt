@@ -50,6 +50,15 @@ static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Bind it for the whole test — `let _env = common::set_env(..).await;`. Do not
 /// write `let _ = ...`: that drops the guard immediately, releasing the lock and
 /// unsetting the variables before the test has done anything.
+///
+/// The `#[must_use]` below catches only the bare-statement form of that mistake
+/// (`common::set_env(..).await;` with no binding at all). It cannot catch
+/// `let _ = ...`, which is the idiom rustc itself suggests for *silencing* the
+/// lint — so that spelling stays a rule this comment enforces and the compiler
+/// does not. `tests/env_lock_coverage.rs` cannot see it either: the call goes
+/// through this guard, which is exactly what that gate scans for.
+#[must_use = "binding this to `_` drops the guard immediately, releasing the \
+              lock and restoring the environment before the test body runs"]
 pub struct EnvVars {
     /// Each name this guard has touched, with the value it held beforehand.
     /// First touch wins: a test that sets the same name twice still restores
