@@ -805,17 +805,36 @@ Start again does **not** release the lock (the replacement start re-arms it
 before any render), so the note names the two things that do: completing the
 flow, or reloading the page.
 
-Clearing at issue time costs the operator something when the replacement start is
-then *refused*: the server holds the previous pending login for the rest of its
+Clearing at issue time costs the operator something when the replacement start
+then *fails*: the server holds the previous pending login for the rest of its
 `pending_ttl_secs`, and the page has already thrown away the only handle to it.
 Restoring the flow is not the repair — reinstating `authorizeUrl` and the name
 handle puts the page back into exactly the state #513 removed, and making that
 coherent means restoring the name field too, stomping the edit the operator is
-about to correct. The failure message says what was closed instead, appended to
-the server's own reason, so the operator restarts rather than hunting for a link
-that is gone (issue #531). It is appended only when a step was in fact open: a
-refused start that closed nothing has nothing to report, and saying it regardless
-would teach an operator to read past the sentence on the one occasion it is true.
+about to correct. Each failure message names what was closed instead, so the
+operator restarts rather than hunting for a link that is gone (issue #531). Both
+of `start`'s failure paths carry it, because the clear runs *before* the request:
+a refusal appends the notice to the server's own reason, and an unanswered start
+says it in place of the "no authorization step opened" line, which speaks only
+for the step that failed to open.
+
+The notice is said only when a step was in fact closed — a failed start that
+closed nothing has nothing to report, and saying it regardless would teach an
+operator to read past the sentence on the one occasion it is true. Reading
+`authorizeUrl` alone does not decide that, because the closure and the message
+that reports it can be separated: a start closes the step synchronously, and its
+own response can then be dropped by the epoch guard when a newer start supersedes
+it — while that newer start reads an `authorizeUrl` the older one already nulled.
+The Start button is not disabled while a start is in flight, unlike Complete —
+which is disabled for its own request, and carries the 120-second
+`AbortController` bound described below precisely so that being disabled cannot
+close it for the life of the page. `start` has no such bound. So a second Start
+during the first is an ordinary double click, not a race. A
+`closedStepUnreported` ref carries the fact across the gap and is released by
+whichever message reports it. The wider predicate the radio lock uses
+(`starting || authorizeUrl !== null`) would reach the same case, but it fires just
+as readily on two chained starts that never opened a step at all, and would then
+name a step the operator never saw.
 
 The epoch orders *starts*, where the later click is the live one, and must not
 be extended to order two completions of the same flow: a completion consumes the

@@ -35,8 +35,20 @@ const UNKNOWN_COMPLETION =
 const START_UNANSWERED = 'No answer from the server — no authorization step opened, so start again';
 
 /**
- * Appended to a rejected start's own error when that start closed an
- * authorization step the operator could still have completed. The clear itself
+ * `START_UNANSWERED` for the case where this start also closed a step. Spelled
+ * out rather than composed from the two constants: concatenating them repeats
+ * "start again" and stacks a second em dash on a sentence that already has one.
+ * The two paths are symmetric in what they cost the operator — the clear that
+ * closes the previous step runs before the request, so it has happened either
+ * way by the time this is read (#531).
+ */
+const START_UNANSWERED_AFTER_CLOSE =
+  'No answer from the server — no authorization step opened, and the previous one was closed when this start was issued, so start again';
+
+/**
+ * Appended to a rejected start's own error when an authorization step the
+ * operator could still have completed was closed — by this start, or by an
+ * earlier one whose own response never got to report it. The clear itself
  * is by design — a step left open stays clickable and its Complete button posts
  * to the name captured for THAT flow (#513) — but the server holds the pending
  * login for the rest of its `pending_ttl_secs`, and after a rejection nothing on
@@ -44,9 +56,9 @@ const START_UNANSWERED = 'No answer from the server — no authorization step op
  * the new request was refused and goes looking for a link that is gone; with it
  * they know the step is closed and restart (#531).
  *
- * Said only when a step was in fact open. A rejected start that closed nothing
- * has nothing to report, and saying it regardless would teach an operator to
- * read past the sentence on the one occasion it is true.
+ * Said only when a step was in fact closed. A rejected start that closed
+ * nothing has nothing to report, and saying it regardless would teach an
+ * operator to read past the sentence on the one occasion it is true.
  */
 const CLOSED_PREVIOUS_STEP =
   'the previous authorization step was closed when this start was issued; start again.';
@@ -124,6 +136,14 @@ export function useProvisioningFlow({
   // tab or a direct API call never sees it. Ordering concurrent completions is
   // server-side work (issue #440).
   const completingNow = useRef(false);
+  // A step this form closed whose closure no message has reported yet. `start`
+  // closes the open step synchronously, before it sends, but its own response
+  // can be dropped by the epoch guard when a newer start supersedes it — and
+  // that newer start reads an `authorizeUrl` the older one already nulled. The
+  // ref is what carries the fact across that gap, so the closure is reported by
+  // whichever message does get through instead of by nobody. Cleared as soon as
+  // something reports it, and as soon as a step is open again.
+  const closedStepUnreported = useRef(false);
 
   const report = useCallback((text: string, ok: boolean) => setMessage({ text, ok }), []);
 
@@ -131,6 +151,7 @@ export function useProvisioningFlow({
     setName(next);
     epoch.current += 1;
     currentName.current = null;
+    closedStepUnreported.current = false;
     setAuthorizeUrl(null);
     setStarting(false);
     setCode('');
@@ -140,22 +161,21 @@ export function useProvisioningFlow({
   const start = useCallback(
     async (body: Record<string, unknown>) => {
       setMessage(null);
-      // Captured before the clear below, because the notice a rejection adds is
-      // only true when this start is closing a step the operator could still
-      // have completed. Read from the render closure rather than through a ref:
-      // the click that calls this runs against the committed render, so the one
-      // way to miss an open step is to click Start in the same tick its link
-      // appeared — which costs a sentence, not correctness.
+      // Whether this start closes an authorization step the operator could
+      // still have completed — the fact the notices below report. Captured
+      // before the clear a few lines down, and from two sources, because the
+      // closure and the message that reports it can be separated: `authorizeUrl`
+      // is the step being closed right now, and `closedStepUnreported` is one an
+      // earlier start closed whose own response the epoch guard then dropped.
       //
-      // Deliberately not `starting || authorizeUrl !== null`, the predicate the
-      // form's radio lock uses. That one also covers a Start clicked while an
-      // earlier start is still in flight — the case this misses, where the
-      // earlier start closed a step and was then superseded — but it fires just
-      // as readily on two chained starts that never opened a step at all, and
-      // then names a step the operator never saw. A missed notice costs a
-      // sentence; a false one sends them hunting for something that never
-      // existed.
-      const closedOpenStep = authorizeUrl !== null;
+      // Deliberately not `starting || authorizeUrl !== null`, the predicate
+      // `AddClaudeAccount`'s radio lock uses (the Codex form has no radios and
+      // no such lock). That one reaches the superseded case too, but it fires
+      // just as readily on two chained starts that never opened a step at all,
+      // and then names a step the operator never saw. The ref reaches the same
+      // case by remembering an actual closure, so it cannot say that.
+      const closedOpenStep = authorizeUrl !== null || closedStepUnreported.current;
+      closedStepUnreported.current = closedOpenStep;
       // The previous flow's authorization step is closed the moment a new start
       // is issued. Left open it stays clickable, and its Complete button posts
       // to the name captured for THAT flow — and because `complete` bumps the
@@ -192,14 +212,26 @@ export function useProvisioningFlow({
             text: closedOpenStep ? `${reason} — ${CLOSED_PREVIOUS_STEP}` : reason,
             ok: false,
           });
+          closedStepUnreported.current = false;
           return;
         }
         currentName.current = (result.payload.name as string | undefined) ?? null;
-        setAuthorizeUrl((result.payload.authorize_url as string | undefined) ?? null);
+        const opened = (result.payload.authorize_url as string | undefined) ?? null;
+        setAuthorizeUrl(opened);
+        // Only when a step is actually open again. A 2xx answer carrying no
+        // `authorize_url` lands *here*, not in the branch above — that one reads
+        // the status and whether the body parsed, never the payload — and it
+        // opened nothing, so the closure it caused stays unreported for the next
+        // message to carry.
+        if (opened !== null) closedStepUnreported.current = false;
       } catch {
         if (issued === epoch.current) {
           setStarting(false);
-          setMessage({ text: START_UNANSWERED, ok: false });
+          setMessage({
+            text: closedOpenStep ? START_UNANSWERED_AFTER_CLOSE : START_UNANSWERED,
+            ok: false,
+          });
+          closedStepUnreported.current = false;
         }
       }
     },
