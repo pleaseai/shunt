@@ -15,8 +15,8 @@ conversation's recent tool-result history. Absent the table, nothing changes: th
 router arm is one `Option::is_none()` on the path that already scans
 `config.models`.
 
-Out of scope, deliberately: the LLM classifier, mid-turn escalation, the advisor,
-and `[server.codex_endpoint]` (which uses its own routing table and never reaches
+Out of scope, deliberately: the LLM classifier, mid-turn escalation, and
+`[server.codex_endpoint]` (which uses its own routing table and never reaches
 `resolve_request_chain_value`). ADR-0004 records why for each.
 
 ## 2. Module layout
@@ -146,9 +146,27 @@ is rejected too — a `recent_turn_window` of `0`, and a router **id** containin
 `stage_router` and `upstream_model` on one entry is rejected separately, by
 `StageRouterWithUpstreamMap`.
 
+The router-targeting-a-router check compares the target **after**
+`strip_context_window_hint`, because that is what `resolve_chain` matches on. It
+has to: compared as written, `capable_target = "claude-auto[1m]"` on the entry
+`claude-auto` is not equal to `claude-auto`, but it resolves to it, and a router
+that resolves back to itself re-enters the router arm on every hop. That is
+unbounded recursion, which aborts the process rather than failing one request —
+so the one-hop property depends on these two predicates normalizing alike.
+`stage_router_rejects_a_target_that_is_itself_a_router` covers the hinted forms
+and `stage_router_accepts_a_context_window_hint_on_a_plain_target` is its mirror.
+
+`min_dwell_turns` takes no lower bound. Dwell is counted from the turn that chose
+the tier, so `0` and `1` both mean "no dwell floor" — degenerate but coherent,
+unlike a `recent_turn_window` of `0`, which leaves the scorer nothing to read.
+
 A target matching no explicit route is a **warning**, not an error: resolution
 always falls back to `server.default_provider`, so such a target is reachable and
-rejecting it would be wrong.
+rejecting it would be wrong. The warning is emitted from
+`warn_stage_router_targets_unresolvable` at the successful load boundary, beside
+`warn_reprobe_seconds_below_floor` — not from `validate`, which re-runs on every
+hot reload and would repeat the line. `shunt check` still reports it, because it
+loads before it validates.
 
 ## 7. What is not built
 

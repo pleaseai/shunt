@@ -139,6 +139,15 @@ skips the scorer and so reports no confidence at all, and gating it on a
 confidence floor would make the strongest reason to go cheap the one reason that
 could never fire.
 
+That exemption is written against libsy's contract, not against a signal shunt
+currently produces: this revision's extractor sets `tests_passed: false`
+unconditionally (deciding it means reading Claude Code's `Bash` result *text*,
+and guessing it wrong is expensive in exactly the direction that hurts), so
+`DecisionSource::TestsPassed` cannot be returned today and the exemption is
+inert. It is here so that populating the signal later is a change to the
+extractor alone. `docs/stage-router.md` §3 records the same limit for
+`compacted`.
+
 The store lives on `AppState` beside the account pool, so it survives a config
 reload. Invalidation is per entry: a pin remembers a fingerprint of the router
 table it was made under, so editing one router drops only its own pins.

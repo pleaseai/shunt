@@ -141,9 +141,12 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
         if configured_model.id == model {
             if let Some(router) = configured_model.stage_router.as_ref() {
                 let target = stage::select(router, model, stage).tier.target(router);
-                // One hop only, and structurally so: config validation rejects a
-                // router whose target is itself a router, so the recursive call
-                // cannot re-enter this arm.
+                // One hop only: config validation rejects a router whose target
+                // is itself a router, so the recursive call cannot re-enter this
+                // arm. That holds only while `validate_stage_router` compares
+                // targets through the same `strip_context_window_hint` applied
+                // at the top of this function — if the two normalizations drift,
+                // a `"<this model>[1m]"` target recurses without bound.
                 let mut routes = resolve_chain(config, target, None);
                 for route in &mut routes {
                     // `Route.model` is the id reported back to the client, and

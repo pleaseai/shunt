@@ -57,6 +57,11 @@ pub struct StageRouterConfig {
     #[serde(default = "default_recent_turn_window")]
     pub recent_turn_window: usize,
     /// Turns the capable tier is held before a de-escalation may fire.
+    ///
+    /// Counted from the turn that chose the tier, so `0` and `1` both mean "no
+    /// dwell floor" — de-escalation then rests on `deescalate_threshold` alone.
+    /// Unlike `recent_turn_window`, `0` is accepted rather than rejected: it is
+    /// a degenerate but coherent setting, not a config that cannot work.
     #[serde(default = "default_min_dwell_turns")]
     pub min_dwell_turns: u32,
     /// Confidence required to move *down* to the efficient tier. Defaults to
