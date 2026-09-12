@@ -20,8 +20,9 @@
 //! so the offending patterns are dropped here rather than forwarded. Outside
 //! strict mode a `pattern` is advisory — the model reads it, nothing enforces
 //! it — so a dropped one costs a hint, not a capability; the `description`
-//! usually restates the constraint anyway. Patterns Python accepts (lookahead
-//! included) are kept, except `\N{…}`: Python reads it as a named character and
+//! usually restates the constraint anyway. The ChatGPT backend also rejects
+//! lookaround in its schema compiler, even though Python accepts it. Drop these
+//! assertions as well. Also reject `\N{…}`: Python reads it as a named character and
 //! JavaScript as a literal `N`, so the two never agree on what it matches.
 
 use serde_json::Value;
@@ -30,7 +31,7 @@ use serde_json::Value;
 const MAXREPEAT: u64 = 4_294_967_295;
 
 /// Remove every `pattern` keyword, and every `patternProperties` entry, whose
-/// regex Python's `re` would refuse to compile.
+/// regex Python's `re` or the upstream lookaround check would refuse to compile.
 ///
 /// Walks the applicator keywords and nothing else, mirroring where the
 /// validator itself looks: the meta-schema recognizes a subschema only under
@@ -46,7 +47,7 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
             if map
                 .get("pattern")
                 .and_then(Value::as_str)
-                .is_some_and(|pattern| !python_re_accepts(pattern))
+                .is_some_and(|pattern| !upstream_accepts(pattern))
             {
                 map.remove("pattern");
             }
@@ -56,7 +57,7 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
                     // keys, then recurse into what survived.
                     "patternProperties" => {
                         if let Value::Object(entries) = child {
-                            entries.retain(|key, _| python_re_accepts(key));
+                            entries.retain(|key, _| upstream_accepts(key));
                             entries.values_mut().for_each(strip_unsupported_patterns);
                         }
                     }
@@ -101,6 +102,45 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
         Value::Array(items) => items.iter_mut().for_each(strip_unsupported_patterns),
         _ => {}
     }
+}
+
+/// The backend applies a second, narrower regex check after meta-schema
+/// validation. For example, Neon's create_auth_user email pattern contains
+/// `(?!...)` and fails with "regex lookaround is not supported".
+fn upstream_accepts(pattern: &str) -> bool {
+    python_re_accepts(pattern) && !contains_lookaround(pattern)
+}
+
+/// Recognize assertions, not literal text in escaped groups or character
+/// classes. Keep the Python validator separate: it still accepts lookaround.
+fn contains_lookaround(pattern: &str) -> bool {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    let mut class_start = None;
+    while i < chars.len() {
+        if chars[i] == '\\' {
+            i += 2;
+            continue;
+        }
+        if let Some(first) = class_start {
+            if chars[i] == ']' && i > first {
+                class_start = None;
+            }
+        } else if chars[i] == '[' {
+            let first = i + 1 + usize::from(chars.get(i + 1) == Some(&'^'));
+            class_start = Some(first);
+            i = first;
+            continue;
+        } else if chars[i] == '(' && chars.get(i + 1) == Some(&'?') {
+            match chars.get(i + 2) {
+                Some('=') | Some('!') => return true,
+                Some('<') if matches!(chars.get(i + 3), Some('=') | Some('!')) => return true,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Whether Python's `re.compile` accepts `pattern`.
@@ -534,6 +574,47 @@ mod tests {
     }
 
     #[test]
+    fn rejects_assertions_without_rejecting_lookaround_text_literals() {
+        for pattern in [r"a(?=b)", r"a(?!b)", r"(?<=a)b", r"(?<!a)b", r"\\(?!x)"] {
+            assert!(!upstream_accepts(pattern), "should reject {pattern:?}");
+        }
+        for pattern in [
+            r"^\(\?=x\)$",
+            r"[(?=!<)]",
+            r"[](?=!<]",
+            r"[^](?=!<]",
+            r"(?:a|b)+",
+            r"^[a-z]+$",
+        ] {
+            assert!(upstream_accepts(pattern), "should keep {pattern:?}");
+        }
+    }
+
+    #[test]
+    fn strips_lookaround_only_at_schema_positions() {
+        let mut schema = json!({
+            "properties": {"email": {"type": "string", "pattern": "^(?!x).*@.*$"}},
+            "$defs": {"email": {"pattern": "a(?=b)"}},
+            "items": {"anyOf": [{"pattern": "(?<=x)y"}, {"pattern": "^ok$"}]},
+            "patternProperties": {"^(?!x)": {}, "^ok": {"pattern": "a(?!b)"}},
+            "default": {"pattern": "(?!literal)"},
+            "x-extension": {"pattern": "(?=literal)"}
+        });
+        strip_unsupported_patterns(&mut schema);
+        assert_eq!(
+            schema,
+            json!({
+                "properties": {"email": {"type": "string"}},
+                "$defs": {"email": {}},
+                "items": {"anyOf": [{}, {"pattern": "^ok$"}]},
+                "patternProperties": {"^ok": {}},
+                "default": {"pattern": "(?!literal)"},
+                "x-extension": {"pattern": "(?=literal)"}
+            })
+        );
+    }
+
+    #[test]
     fn strips_rejected_patterns_at_every_schema_position_and_keeps_the_rest() {
         let mut schema = json!({
             "type": "object",
@@ -552,7 +633,7 @@ mod tests {
                 "type": "object",
                 "properties": {
                     "field": {"type": "string"},
-                    "collection": {"type": "string", "pattern": ARTIFACT_COLLECTION},
+                    "collection": {"type": "string"},
                     "writes": {"type": "array", "items": {"type": "string"}},
                     "either": {"anyOf": [{}, {"pattern": "^ok$"}]},
                     "keyed": {"patternProperties": {"^[a-z]+$": {}}}

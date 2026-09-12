@@ -58,10 +58,48 @@ fn parsed_value_entry_point_matches_byte_wrapper_across_flavors() {
 }
 
 #[test]
+fn neon_email_lookaround_is_removed_for_chatgpt_without_mutating_input() {
+    let pattern = r"^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$";
+    let request = json!({
+        "model": "gpt-6-astra", "max_tokens": 256,
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [{
+            "name": "mcp__plugin_neon_neon__create_auth_user",
+            "description": "Create a user; the server validates the email.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string", "format": "email", "pattern": pattern},
+                    "code": {"type": "string", "pattern": "^[0-9]{6}$"}
+                },
+                "required": ["email"], "additionalProperties": false
+            }
+        }]
+    });
+    let original = request.clone();
+    let output = translate_request_value(
+        &request,
+        &route("gpt-6-astra"),
+        ResponsesFlavor::Chatgpt,
+        false,
+    );
+    let schema = &output["tools"][0]["parameters"];
+    assert_eq!(
+        schema["properties"]["email"],
+        json!({"type": "string", "format": "email"})
+    );
+    assert_eq!(schema["properties"]["code"]["pattern"], "^[0-9]{6}$");
+    assert_eq!(schema["required"], json!(["email"]));
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(request, original);
+}
+
+#[test]
 fn drops_tool_schema_patterns_the_openai_validator_cannot_compile() {
     // Claude Code's `Artifact` tool: `field` carries Unicode property escapes
     // (rejected by the backend's Python `re` check, failing the whole request
-    // with "is not a 'regex'"); `collection` carries a lookahead, which passes.
+    // with "is not a 'regex'"); `collection` carries a lookahead, which the
+    // backend's narrower schema compiler also rejects.
     let field = r#"^(?!__.*__$)[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}"\\./[\]]{1,200}$"#;
     let collection = r"^(?!\.\.?(?:\/|$))[A-Za-z0-9_\-.~:@+]{1,200}$";
     let input = json!({
@@ -86,7 +124,7 @@ fn drops_tool_schema_patterns_the_openai_validator_cannot_compile() {
         output["tools"][0]["parameters"]["properties"],
         json!({
             "field": {"type": "string"},
-            "collection": {"type": "string", "pattern": collection}
+            "collection": {"type": "string"}
         })
     );
 }
