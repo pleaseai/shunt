@@ -668,3 +668,5 @@ mod tests {
         assert_eq!(route.effort.as_deref(), Some("high"));
     }
 }
+
+pub(crate) mod stage;
