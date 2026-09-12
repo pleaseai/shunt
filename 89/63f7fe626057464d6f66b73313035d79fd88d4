@@ -1,0 +1,66 @@
+ui/src/__tests__/rejected-start.test.tsx
+  s_e9fd5f53eebc34::t_b296f170e68f71 2-4,6-7,32-35,40,42-44,49,51,54-66,290,292,298-300,317-319,474-475
+  s_e9fd5f53eebc34::t_847eac36c09545 123-142,187-189
+  s_e9fd5f53eebc34::t_97eb3a8b581d0a 9-11,13-31,36-39,41,45-48,50,52-53,67-69,71-72,80-122,190-223,474
+  s_e9fd5f53eebc34::t_2fc493bab249b1 147-185,187-188
+  s_e9fd5f53eebc34::t_b942eae6fa1416 146
+  s_e9fd5f53eebc34::t_d15e1ae8f3ee4e 1,5,226-319,474
+  s_e9fd5f53eebc34::t_d9eb029b0d48ac 8,12,371
+  s_e9fd5f53eebc34::t_354607b0759433 321-357,359-370,372-414,416-419
+  s_e9fd5f53eebc34::t_f9e015488557ac 78,143,186,224,320,358,415
+  s_e9fd5f53eebc34::t_3cf3c9c9591fc2 421-474
+docs/m9-admin-surface.md
+  s_e9fd5f53eebc34::t_e00850eea1665f 811-812
+  s_e9fd5f53eebc34::t_f44dc9084b33c0 872
+  s_e9fd5f53eebc34::t_72a5551132d668 836-839
+  s_e9fd5f53eebc34::t_551c2bfb0550e3 840-841
+  s_e9fd5f53eebc34::t_0aa380dd855d04 808,813-819,829-835,869-871
+  s_e9fd5f53eebc34::t_2e900a07c4bb70 843-845
+  s_e9fd5f53eebc34::t_4e8682d3078bd6 809-810,820-828,842,846-849,864-868
+  s_e9fd5f53eebc34::t_0185b08706416d 850-858
+  s_e9fd5f53eebc34::t_32f689d2165736 859-863
+ui/src/useProvisioningFlow.ts
+  s_e9fd5f53eebc34::t_4e6e6b7af01fff 204
+  s_e9fd5f53eebc34::t_0431b615e5a9ae 37,52-58,62-63,65,256
+  s_e9fd5f53eebc34::t_9008051c4f8238 38-45,47-48,139-146,187,197,217-222,264,268,275,286
+  s_e9fd5f53eebc34::t_c0f3e2637d1671 49-51,59-61,270-274
+  s_e9fd5f53eebc34::t_2fc493bab249b1 216,224
+  s_e9fd5f53eebc34::t_048df289308ef0 147-150,185,206-215,223,325-328,334,336,345-349
+  s_e9fd5f53eebc34::t_f98b49cd0a4c57 337-344
+  s_e9fd5f53eebc34::t_afa451f7dd5b89 198-203
+  s_e9fd5f53eebc34::t_b1d939900ee86a 205
+  s_e9fd5f53eebc34::t_0185b08706416d 259
+  s_e9fd5f53eebc34::t_8d021839d04578 176
+  s_e9fd5f53eebc34::t_d9eb029b0d48ac 46,64
+  s_e9fd5f53eebc34::t_e856e181fcc758 350-351,363,368-382
+  s_e9fd5f53eebc34::t_b32eaee18efcb7 364-367
+  s_e9fd5f53eebc34::t_739cb854d8b582 151-156,169-175,177-180,191,196,257-258,260-263,279-285,324,333,391,407
+  s_e9fd5f53eebc34::t_70de27627a0c85 158-168,188,192,231,269,290,353-362,392,414
+  s_e9fd5f53eebc34::t_32f689d2165736 352
+.please/docs/review/rejected-findings.jsonl
+  s_e9fd5f53eebc34::t_d29250fd41de8b 86
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_e83b90e041560f 50
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_e83b90e041560f 74
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_e83b90e041560f 50
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_e9fd5f53eebc34::t_e83b90e041560f 50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8963f7fe626057464d6f66b73313035d79fd88d4",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
