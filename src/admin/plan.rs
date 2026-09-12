@@ -2901,9 +2901,18 @@ mod tests {
     /// unlink — POSIX does not wake a blocked FIFO `open` when the name goes
     /// away.
     ///
-    /// Reacquiring `lock` at the end proves the blocking read actually
-    /// finished: `file_derived_plans` moves its single-flight permit into the
-    /// closure and releases it only on genuine completion.
+    /// Reacquiring `lock` proves the blocking read actually finished:
+    /// `file_derived_plans` moves its single-flight permit into the closure
+    /// and releases it only on genuine completion.
+    ///
+    /// All of that runs **before** the assertions, and nothing in it can
+    /// panic until the read is known to be over. An assertion that fires
+    /// first would unwind past the unlink — dropping `writer` on the way out
+    /// and leaving the name with no writer behind it — so a closure that had
+    /// not reached its `open` yet would park there and hang teardown instead
+    /// of letting the failed assertion be reported. `phase` is already
+    /// computed by then, so asserting afterwards tests exactly the same
+    /// thing.
     #[cfg(unix)]
     #[tokio::test]
     async fn read_failures_survive_a_timed_out_file_phase() {
@@ -2953,6 +2962,20 @@ mod tests {
         )
         .await;
 
+        // Settle the read completely before asserting anything. Every
+        // statement here is panic-free until the read is known to be over,
+        // so no assertion below can unwind past the teardown and strand it.
+        //
+        // Unlink before the writer goes away, never after: the invariant is
+        // that the fifo's name is never visible without a writer behind it.
+        // Closing the last writer is then the EOF that ends the stalled read,
+        // and reacquiring the permit is the proof that it ended.
+        let _ = std::fs::remove_dir_all(&dir);
+        drop(writer);
+        let _permit = tokio::time::timeout(Duration::from_secs(5), lock.lock())
+            .await
+            .expect("the stalled read must finish once the fifo writer is closed");
+
         assert!(
             phase.read.is_none(),
             "the stalled candidate must make this phase time out"
@@ -2962,17 +2985,6 @@ mod tests {
             "the missing credential failed to read before the stall, and that is knowledge \
              this pass keeps even though the result was discarded"
         );
-
-        // Unlink before the writer goes away, never after: the invariant is
-        // that the fifo's name is never visible without a writer behind it.
-        // Closing the last writer is then the EOF that ends the stalled read,
-        // and reacquiring the permit is the proof that it ended -- without
-        // that wait a still-parked read would hang teardown rather than fail.
-        let _ = std::fs::remove_dir_all(&dir);
-        drop(writer);
-        let _permit = tokio::time::timeout(Duration::from_secs(5), lock.lock())
-            .await
-            .expect("the stalled read must finish once the fifo writer is closed");
     }
 
     /// A read failure observed before a *later* account's credential stalls
