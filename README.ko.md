@@ -39,8 +39,10 @@ brew services start shunt
 ```
 
 로그는 `$(brew --prefix)/var/log/shunt.log`에 남습니다. `brew services stop`은 `SIGTERM`을 보내고
-shunt는 처리 중인 요청을 모두 마친 뒤 종료합니다. Unix에서는 종료가 시작될 때 Antigravity 에이전트 턴이
-함께 종료되므로, 격리된 프로세스 그룹이 드레인을 붙잡아 둘 수 없습니다. 이후 설정 파일을 수정해도
+shunt는 처리 중인 요청을 마친 뒤 종료합니다 — 최대 `[server] shutdown_timeout_seconds`(기본 30초)까지
+기다리며, 그 시점에도 남아 있는 작업은 취소되므로 조용한 SSE 스트림이 프로세스를 무한정 붙잡을 수 없습니다.
+Unix에서는 종료가 시작될 때 Antigravity 에이전트 턴이 함께 종료되므로, 격리된 프로세스 그룹이 드레인을
+붙잡아 둘 수 없습니다. 이후 설정 파일을 수정해도
 재시작이 필요 없습니다 — 자동으로 [핫 리로드](docs/config-reload.md)됩니다. 자세한 내용은
 [서비스로 실행하기](docs/running.md#run-as-a-background-service-homebrew)를 참고하세요.
 
