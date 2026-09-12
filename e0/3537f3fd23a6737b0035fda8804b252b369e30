@@ -1,0 +1,20 @@
+src/admin/plan.rs
+  s_e9fd5f53eebc34::t_491ffe9f1e80ea 2887-2902,2966-2970
+  s_e9fd5f53eebc34::t_be580286f6ec64 2972
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e03537f3fd23a6737b0035fda8804b252b369e30",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
