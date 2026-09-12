@@ -1,0 +1,38 @@
+ui/src/session.ts
+  s_dd88506721acf5::t_bc48923cb6995c 40
+  s_dd88506721acf5::t_7f25ff8a9b2edd 3-4,10-11,28-39
+  s_dd88506721acf5::t_b947c39db17c1a 41
+ui/src/types.ts
+  s_dd88506721acf5::t_7f25ff8a9b2edd 3-5,9-14
+ui/src/Dashboard.tsx
+  s_dd88506721acf5::t_42feb8b66ecb5e 11,40,85-98
+ui/src/__tests__/read-only-session.test.tsx
+  s_dd88506721acf5::t_7b0d661c9431bd 1-87
+ui/src/App.tsx
+  s_dd88506721acf5::t_7f25ff8a9b2edd 42-46
+ui/src/components/ClaudeAccounts.tsx
+  s_dd88506721acf5::t_42feb8b66ecb5e 6,27-30,83,89,96,101,126,156
+ui/src/test/harness.tsx
+  s_dd88506721acf5::t_c1feeff4407f95 6,49,62-70
+ui/src/components/CodexAccounts.tsx
+  s_dd88506721acf5::t_c1feeff4407f95 101-118
+  s_dd88506721acf5::t_42feb8b66ecb5e 5,32-33,61,67,74,79
+ui/README.md
+  s_dd88506721acf5::t_b2e878cfa53c0e 25,30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "536634e638af65f7d5da31dab19108f69bd82fc4",
+  "prompts": {},
+  "sessions": {
+    "s_dd88506721acf5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6f2e70cc-ac73-4d92-be7e-f9518dc70b8e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
