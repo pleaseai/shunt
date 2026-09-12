@@ -1,0 +1,49 @@
+tests/admin_surface.rs
+  s_dd88506721acf5::t_c709e445baf8e2 1321-1329,1331,1410-1484,1487-1498
+src/admin/mod.rs
+  s_dd88506721acf5::t_53084f5e4f326e 195-203,205,335,337,339-343,617,623-627,727-730
+  s_dd88506721acf5::t_0b4825b640776b 344
+src/admin/session.rs
+  s_dd88506721acf5::t_cb1637d3cc00c1 19-20,100-111,126-132,143,149-151,154-157,439-442,444,446,449-472,474
+  s_dd88506721acf5::t_6886ed9b81b9a3 473
+src/admin/oidc.rs
+  s_dd88506721acf5::t_05ae4d5b74c5ff 8-10,182-190
+ui/src/session.ts
+  s_dd88506721acf5::t_7f25ff8a9b2edd 3-4,10-11,28-39
+  s_dd88506721acf5::t_bc48923cb6995c 40
+  s_dd88506721acf5::t_b947c39db17c1a 41
+ui/src/__tests__/read-only-session.test.tsx
+  s_dd88506721acf5::t_7b0d661c9431bd 1-87
+ui/README.md
+  s_dd88506721acf5::t_b2e878cfa53c0e 25,30
+ui/src/test/harness.tsx
+  s_dd88506721acf5::t_c1feeff4407f95 6,49,62-70
+ui/src/App.tsx
+  s_dd88506721acf5::t_7f25ff8a9b2edd 42-46
+ui/src/Dashboard.tsx
+  s_dd88506721acf5::t_42feb8b66ecb5e 11,40,85-98
+ui/src/components/ClaudeAccounts.tsx
+  s_dd88506721acf5::t_42feb8b66ecb5e 6,27-30,83,89,96,101,126,156
+  s_dd88506721acf5::t_948a579a7f02bb 127-140,144,146,148-155
+ui/src/types.ts
+  s_dd88506721acf5::t_7f25ff8a9b2edd 3-5,9-14
+ui/src/components/CodexAccounts.tsx
+  s_dd88506721acf5::t_42feb8b66ecb5e 5,32-33,61,67,74,79
+  s_dd88506721acf5::t_c1feeff4407f95 101-118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f1b129e1ed3f17f2bda933db6a4049d3b8c43d16",
+  "prompts": {},
+  "sessions": {
+    "s_dd88506721acf5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6f2e70cc-ac73-4d92-be7e-f9518dc70b8e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
