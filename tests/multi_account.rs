@@ -924,6 +924,10 @@ async fn unresolvable_account_cools_down_and_rotates() {
         return;
     }
     let mut vars = common::env_lock().await;
+    // Unset is this test's precondition, not cleanup: the account is
+    // unresolvable *because* the name is absent. It has to hold under the
+    // guard, which also restores it afterwards.
+    vars.unset("SHUNT_TEST_MULTI_MISSING_A");
     // account-a points at an env var that is never set; account-b is healthy.
     let token_b = ["fake-oauth-", "resolve-b"].concat();
     vars.set("SHUNT_TEST_MULTI_RESOLVE_B", &token_b);

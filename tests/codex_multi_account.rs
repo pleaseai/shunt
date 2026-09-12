@@ -838,6 +838,10 @@ async fn unresolvable_account_cools_down_and_rotates() {
     }
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-resolve-b");
     let mut vars = common::env_lock().await;
+    // Unset is this test's precondition, not cleanup: the account is
+    // unresolvable *because* the name is absent. It has to hold under the
+    // guard, which also restores it afterwards.
+    vars.unset("SHUNT_TEST_CODEX_MISSING_A");
     vars.set("SHUNT_TEST_CODEX_RESOLVE_B", &token_b);
 
     let upstream = MockServer::start().await;
@@ -1679,6 +1683,10 @@ async fn missing_stale_probe_token_cancels_before_healthy_fallback() {
     }
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-missing-fallback-b");
     let mut vars = common::env_lock().await;
+    // Unset is this test's precondition, not cleanup: the account is
+    // unresolvable *because* the name is absent. It has to hold under the
+    // guard, which also restores it afterwards.
+    vars.unset("SHUNT_TEST_CODEX_MISSING_A");
     vars.set("SHUNT_TEST_CODEX_MISSING_B", &token_b);
 
     let state_dir = unique_temp_dir("missing-stale-token");

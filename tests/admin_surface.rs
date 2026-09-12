@@ -2495,9 +2495,6 @@ async fn the_login_page_csp_allows_only_inline_style_and_the_form_post() {
         .collect();
     let directives: std::collections::HashMap<&str, &str> = parsed.iter().copied().collect();
 
-    // Before the assertions, so a failing one does not leave the variable set
-    // for the rest of the binary.
-
     for (name, expected) in [
         ("default-src", "'none'"),
         ("script-src", "'none'"),

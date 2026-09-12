@@ -1,9 +1,15 @@
 //! The behaviour of the shared environment guard itself.
 //!
-//! Every other test binary depends on `common::EnvVars` doing three things, and
+//! Every other test binary depends on `common::EnvVars` doing four things, and
 //! nothing in those binaries asserts any of them — they use the guard for their
 //! own purposes and would still pass if its restore were subtly wrong, which is
-//! how a guard silently stops guarding. These are the three.
+//! how a guard silently stops guarding. These are the four.
+//!
+//! Each test reads the environment *after* dropping its guard, to prove the
+//! restore happened. That read is itself the operation the lock serializes, so
+//! it takes the lock again rather than running unguarded — dropping the guard
+//! and then reading would be the same reader-side race this guard exists to
+//! close.
 
 mod common;
 
@@ -26,11 +32,56 @@ fn the_guard_restores_the_value_it_found_not_the_first_one_the_test_wrote() {
 
     // Absent, not "first": the guard saved the pre-test state on the first touch
     // and the second `set` did not overwrite that record.
+    let _after = common::set_env_blocking(&[]);
     assert_eq!(
         std::env::var_os(NAME),
         None,
         "both writes restore to the value that was there before the test"
     );
+}
+
+/// The other half of the restore, and the one no other test here reaches: when
+/// the name already had a value, `Drop` must put *that* value back rather than
+/// simply removing the name. Every other test in this file starts from an absent
+/// name, so they would all still pass if `Drop` ignored `saved` and always
+/// called `remove_var`.
+///
+/// Seeding a pre-existing value cannot come from the guard — the guard's whole
+/// job is to leave nothing behind — so the two writes below are raw, taken under
+/// the lock so they are still serialized. `tests/env_lock_coverage.rs` exempts
+/// this file for exactly those two.
+#[test]
+fn the_guard_puts_a_pre_existing_value_back() {
+    const NAME: &str = "SHUNT_TEST_ENV_GUARD_PRE_EXISTING";
+
+    // Seed under the lock, then release it so the guard below starts from a
+    // name that already has a value — the state a developer's own environment
+    // puts a test in.
+    {
+        let _lock = common::set_env_blocking(&[]);
+        std::env::set_var(NAME, "ambient");
+    }
+
+    {
+        let mut vars = common::set_env_blocking(&[(NAME, "overridden")]);
+        assert_eq!(std::env::var(NAME).as_deref(), Ok("overridden"));
+        vars.unset(NAME);
+        assert_eq!(
+            std::env::var_os(NAME),
+            None,
+            "the body can still remove it mid-test"
+        );
+    }
+
+    {
+        let _lock = common::set_env_blocking(&[]);
+        assert_eq!(
+            std::env::var(NAME).as_deref(),
+            Ok("ambient"),
+            "the value the test found must come back, not merely be removed"
+        );
+        std::env::remove_var(NAME);
+    }
 }
 
 /// `unset` exists for a test asserting what happens when a variable is *absent*.
@@ -52,6 +103,7 @@ fn unset_removes_the_variable_for_the_rest_of_the_test() {
 
     // The name was absent before the test, so restoring it is a second removal.
     // That path has to be a no-op rather than a panic.
+    let _after = common::set_env_blocking(&[]);
     assert_eq!(std::env::var_os(NAME), None);
 }
 
@@ -74,8 +126,9 @@ fn the_guard_restores_the_environment_when_the_test_panics() {
         "the body above must actually have panicked"
     );
 
-    // Reaching this at all also proves the lock was released: it lives in the
-    // same guard, so the restore having run means `Drop` ran.
+    // Taking the lock here also proves it was released while unwinding: it lives
+    // in the same guard, so reaching this at all means `Drop` ran.
+    let _after = common::set_env_blocking(&[]);
     assert_eq!(
         std::env::var_os(NAME),
         None,

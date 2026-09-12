@@ -494,6 +494,10 @@ async fn unresolvable_account_cools_down_and_rotates() {
     // account-a points at an env var that is never set; account-b is healthy.
     let token_b = ["fake-kimi-", "resolve-b"].concat();
     let mut vars = common::env_lock().await;
+    // Unset is this test's precondition, not cleanup: the account is
+    // unresolvable *because* the name is absent. It has to hold under the
+    // guard, which also restores it afterwards.
+    vars.unset("SHUNT_TEST_KIMI_MISSING_A");
     vars.set("SHUNT_TEST_KIMI_RESOLVE_B", &token_b);
 
     let upstream = MockServer::start().await;

@@ -18,11 +18,14 @@
 //! missed two hand-rolled sites because it scanned for one idiom.
 //!
 //! That is a claim about the *shape* of a call, and it has limits worth stating
-//! rather than implying. The patterns below match the path segment, so they see
-//! both `std::env::set_var(..)` and the `use std::env;` short form, but a caller
-//! who aliases the module (`use std::env as e;`) or reaches the same libc call
-//! another way is outside what any grep can settle. What the gate does buy is
-//! that the *ordinary* spellings cannot appear unnoticed.
+//! rather than implying. The patterns below match the bare function name, so
+//! they see every ordinary spelling — `std::env::set_var(..)`, the `use
+//! std::env;` short form, and `use std::env::set_var;` — but a caller who
+//! *renames* on import (`use std::env::set_var as sv;`) or reaches the same
+//! libc call another way is outside what matching text can settle. Parsing the
+//! source would not close that either: a rename is resolvable, but `libc::
+//! setenv` through an FFI shim is not. What the gate buys is that the ordinary
+//! spellings cannot appear unnoticed.
 
 use std::path::{Path, PathBuf};
 
@@ -34,29 +37,82 @@ use std::path::{Path, PathBuf};
 /// what makes the exemption a bound instead of a blanket: exempting the file
 /// wholesale would let a later PR add an ordinary per-test `set_var` beside the
 /// vetted one and stay green, which is the hazard this gate exists to catch.
-const EXEMPT: &[(&str, usize, &str)] = &[
-    (
-        "common/mod.rs",
-        4,
-        "is the guard itself — two writes in `set`/`unset` and the two that put \
-         the previous values back in `Drop`, all under the lock this module owns",
-    ),
-    (
-        "antigravity_process.rs",
-        2,
-        "writes once in a OnceLock initializer, and those values must outlive \
-         every test in the binary — a guard that restores them when one test \
-         ends cannot express that, and holding the lock for the life of the \
-         process would be a lock nothing else can ever take",
-    ),
+const EXEMPT: &[Exemption] = &[
+    Exemption {
+        file: "common/mod.rs",
+        writes: 4,
+        within: Within::Anywhere,
+        reason: "is the guard itself — two writes in `set`/`unset` and the two that \
+                 put the previous values back in `Drop`, all under the lock this \
+                 module owns",
+    },
+    Exemption {
+        file: "env_guard.rs",
+        writes: 2,
+        within: Within::ABlockHoldingTheLock,
+        reason: "seeds a pre-existing value so the `Some(..)` restore branch of \
+                 `Drop` is reachable at all — which the guard cannot do for \
+                 itself, since leaving nothing behind is its whole job. Both \
+                 writes are taken under the lock",
+    },
+    Exemption {
+        file: "antigravity_process.rs",
+        writes: 2,
+        within: Within::Region("STUB.get_or_init("),
+        reason: "writes once in a OnceLock initializer, and those values must \
+                 outlive every test in the binary — a guard that restores them \
+                 when one test ends cannot express that, and holding the lock for \
+                 the life of the process would be a lock nothing else can ever take",
+    },
 ];
+
+/// One file the gate does not apply to, and the bounds that keep the exemption
+/// honest.
+///
+/// Keeping exemptions here rather than in a marker comment means a file cannot
+/// grant itself one — adding a row is visible in review. `writes` and `within`
+/// are what make a row a bound instead of a blanket: exempting the file
+/// wholesale would let a later PR add an ordinary per-test `set_var` beside the
+/// vetted one, or move a vetted one out of the construct that justified it, and
+/// stay green.
+struct Exemption {
+    file: &'static str,
+    /// How many raw writes this file is allowed to contain.
+    writes: usize,
+    /// Where they must sit for the recorded reason to still describe them.
+    within: Within,
+    reason: &'static str,
+}
+
+/// The region an exemption's raw writes must stay inside.
+///
+/// Naming the *enclosing function* was not enough, and the gap is worth stating
+/// because it is the one this check exists to close: a write can stay in
+/// `stub_agy` while moving out of `STUB.get_or_init`, or stay in the guard's
+/// self-test while its `let _lock` is deleted, and in both cases the text is
+/// still inside the named function while the synchronization that justified the
+/// exemption is gone. So the bound is the construct that does the synchronizing,
+/// not the function containing it.
+enum Within {
+    /// No bound — for the guard's own implementation, where every write *is* the
+    /// mechanism under review.
+    Anywhere,
+    /// Every write sits inside the block opened at this anchor text, so a write
+    /// that leaves the construct trips the gate even when the count still
+    /// matches.
+    Region(&'static str),
+    /// Every write sits in a block that also takes the lock, which is what makes
+    /// a deliberately-raw write safe rather than merely intentional.
+    ABlockHoldingTheLock,
+}
 
 /// The calls that must not appear outside the exempt files.
 ///
-/// Written without the leading `std::` so the `use std::env;` short form is
-/// caught too — `std::env::set_var` contains `env::set_var`, so one pattern
-/// covers both spellings.
-const RAW_WRITES: &[&str] = &["env::set_var", "env::remove_var"];
+/// The bare function name, so every path spelling is covered at once:
+/// `std::env::set_var`, `env::set_var` after `use std::env;`, and a plain
+/// `set_var(..)` after `use std::env::set_var;` all contain it. Nothing else in
+/// `tests/` is named this — the guard's own methods are `set` and `unset`.
+const RAW_WRITES: &[&str] = &["set_var", "remove_var"];
 
 fn tests_dir() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests"))
@@ -120,12 +176,94 @@ fn code_lines(source: &str) -> impl Iterator<Item = (usize, &str)> {
         .filter(|(_, line)| !line.trim_start().starts_with("//"))
 }
 
-/// The raw writes in one source, as `path:line: text`.
-fn raw_writes_in(name: &str, source: &str) -> Vec<String> {
+/// Every raw write in one source, as `(occurrences on the line, "path:line: text")`.
+///
+/// Occurrences, not matching lines: two calls on one line are two writes, and a
+/// count that scored them as one would let an exempt file take on an extra write
+/// without tripping its bound.
+fn raw_writes_in(name: &str, source: &str) -> Vec<(usize, usize, String)> {
     code_lines(source)
-        .filter(|(_, line)| RAW_WRITES.iter().any(|call| line.contains(call)))
-        .map(|(number, line)| format!("{name}:{number}: {}", line.trim()))
+        .filter_map(|(number, line)| {
+            let hits: usize = RAW_WRITES
+                .iter()
+                .map(|call| line.matches(call).count())
+                .sum();
+            (hits > 0).then(|| (hits, number, format!("{name}:{number}: {}", line.trim())))
+        })
         .collect()
+}
+
+/// The byte range of the block opened at the first `{` at or after `anchor`.
+fn block_at(source: &str, anchor: &str) -> Option<(usize, usize)> {
+    let at = source.find(anchor)?;
+    let open = source[at..].find('{')? + at;
+    let mut depth = 0usize;
+    for (offset, ch) in source[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((open, open + offset));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The innermost block containing `at`, as a byte range.
+fn enclosing_block(source: &str, at: usize) -> Option<(usize, usize)> {
+    let mut open = None;
+    let mut depth = 0i32;
+    for (offset, ch) in source[..at].char_indices().rev() {
+        match ch {
+            '}' => depth += 1,
+            '{' => {
+                if depth == 0 {
+                    open = Some(offset);
+                    break;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    let open = open?;
+    let mut depth = 0usize;
+    for (offset, ch) in source[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((open, open + offset));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The byte offset of every raw write on a code line.
+fn raw_write_offsets(source: &str) -> Vec<usize> {
+    let mut at = Vec::new();
+    let mut base = 0usize;
+    for line in source.lines() {
+        if !line.trim_start().starts_with("//") {
+            for call in RAW_WRITES {
+                let mut from = 0usize;
+                while let Some(found) = line[from..].find(call) {
+                    at.push(base + from + found);
+                    from += found + call.len();
+                }
+            }
+        }
+        base += line.len() + 1;
+    }
+    at
 }
 
 #[test]
@@ -141,10 +279,10 @@ fn no_test_binary_writes_the_environment_outside_the_shared_guard() {
 
     let mut violations = Vec::new();
     for (name, source) in &sources {
-        if name == "env_lock_coverage.rs" || EXEMPT.iter().any(|(exempt, _, _)| exempt == name) {
+        if name == "env_lock_coverage.rs" || EXEMPT.iter().any(|e| e.file == name) {
             continue;
         }
-        violations.extend(raw_writes_in(name, source));
+        violations.extend(raw_writes_in(name, source).into_iter().map(|(_, _, at)| at));
     }
 
     assert!(
@@ -158,28 +296,75 @@ fn no_test_binary_writes_the_environment_outside_the_shared_guard() {
 
 #[test]
 fn every_exemption_is_bounded_and_still_load_bearing() {
-    for (name, allowed, reason) in EXEMPT {
-        let path = tests_dir().join(name);
+    for exemption in EXEMPT {
+        let Exemption {
+            file,
+            writes,
+            within,
+            reason,
+        } = exemption;
+        let path = tests_dir().join(file);
         let source = std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("exempt file {name} no longer exists; drop its exemption"));
-        let found = raw_writes_in(name, &source);
+            .unwrap_or_else(|_| panic!("exempt file {file} no longer exists; drop its exemption"));
+        let found = raw_writes_in(file, &source);
+        let total: usize = found.iter().map(|(hits, _, _)| hits).sum();
+        let listed = found
+            .iter()
+            .map(|(_, _, at)| at.clone())
+            .collect::<Vec<_>>()
+            .join("\n  ");
 
         assert!(
-            !found.is_empty(),
-            "{name} no longer writes the environment directly, so its exemption \
+            total > 0,
+            "{file} no longer writes the environment directly, so its exemption \
              is stale and the gate should cover it again. The reason recorded \
              was: {reason}"
         );
         assert_eq!(
-            found.len(),
-            *allowed,
-            "{name} is exempt for {allowed} raw write(s) and has {}. A new one is \
-             not covered by the recorded reason — route it through \
+            total, *writes,
+            "{file} is exempt for {writes} raw write(s) and has {total}. A new one \
+             is not covered by the recorded reason — route it through \
              `common::EnvVars`, or, if it genuinely cannot be, change the count \
              here and say why in the reason. The reason recorded was: \
-             {reason}\n  {}",
-            found.len(),
-            found.join("\n  ")
+             {reason}\n  {listed}"
         );
+
+        // A write that leaves the construct the reason names is no longer the
+        // write that was justified, even though the count still matches.
+        match within {
+            Within::Anywhere => {}
+            Within::Region(anchor) => {
+                let (start, end) = block_at(&source, anchor).unwrap_or_else(|| {
+                    panic!("{file} no longer contains `{anchor}`, which its exemption is scoped to")
+                });
+                let strayed: Vec<_> = raw_write_offsets(&source)
+                    .into_iter()
+                    .filter(|at| *at < start || *at > end)
+                    .collect();
+                assert!(
+                    strayed.is_empty(),
+                    "{file} has {} raw write(s) outside the `{anchor}` block its \
+                     exemption covers. Staying inside the enclosing function is \
+                     not the same thing — the block is what does the \
+                     synchronizing. The reason recorded was: {reason}\n  {listed}",
+                    strayed.len()
+                );
+            }
+            Within::ABlockHoldingTheLock => {
+                for at in raw_write_offsets(&source) {
+                    let (start, end) = enclosing_block(&source, at)
+                        .unwrap_or_else(|| panic!("{file}: a raw write sits in no block at all"));
+                    let block = &source[start..end];
+                    assert!(
+                        block.contains("common::set_env_blocking")
+                            || block.contains("common::set_env")
+                            || block.contains("common::env_lock"),
+                        "{file} has a raw write in a block that does not take the \
+                         lock, so it is merely deliberate rather than safe. The \
+                         reason recorded was: {reason}\n  {listed}"
+                    );
+                }
+            }
+        }
     }
 }

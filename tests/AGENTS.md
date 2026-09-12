@@ -18,7 +18,16 @@
   `setenv` may reallocate the single global `environ` array, so a write to any
   variable can be observed by a concurrent `getenv` for an *unrelated* one as a
   missing value; unique variable names do not help, and neither does locking
-  only the writers. `tests/env_lock_coverage.rs` enforces this.
+  only the writers. That last point is why a test that only *reads* the
+  environment — including indirectly, by building a config or resolving a
+  workspace — takes the guard too. `tests/env_lock_coverage.rs` enforces this.
+- `tests/antigravity_process.rs` and `tests/env_guard.rs` hold the only reviewed
+  exceptions to that rule: the first because its values must outlive every test
+  in the binary, which a guard that restores on drop cannot express; the second
+  because seeding a pre-existing value is the one thing the guard cannot do for
+  itself. Both are bounded in `tests/env_lock_coverage.rs` by a write count
+  *and* the region the writes must stay in, so neither is a general licence —
+  do not move ordinary per-test setup into either.
 
 ## Project Structure
 
