@@ -699,6 +699,7 @@ mod tests {
                         .into_iter()
                         .collect(),
                 ),
+                stage_router: None,
             }),
         }
         config
@@ -834,6 +835,7 @@ mod tests {
                     .into_iter()
                     .collect(),
             ),
+            stage_router: None,
         });
         assert!(routes_to_antigravity(&config));
     }

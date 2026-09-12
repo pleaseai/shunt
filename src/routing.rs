@@ -227,6 +227,7 @@ mod tests {
                 provider.to_string(),
                 upstream_model.to_string(),
             )])),
+            stage_router: None,
         }
     }
 
@@ -347,6 +348,7 @@ mod tests {
                 id: "claude-route".to_string(),
                 display_name: None,
                 upstream_model: None,
+                stage_router: None,
             }],
             routes: vec![RouteConfig {
                 model: "claude-route".to_string(),
@@ -566,6 +568,7 @@ mod tests {
                     ("codex".into(), "gpt-codex".into()),
                     ("openai".into(), "gpt-openai".into()),
                 ])),
+                stage_router: None,
             }],
             ..Config::default()
         };
@@ -634,6 +637,7 @@ mod tests {
                     ("openai".into(), "gpt-openai".into()),
                     ("codex".into(), "gpt-codex".into()),
                 ])),
+                stage_router: None,
             }],
             ..Config::default()
         };
