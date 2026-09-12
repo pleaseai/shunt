@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// The scorer reports low confidence far more often than it reports a wrong
 /// answer, so this default — not the score — governs most early turns in a
 /// session.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageRouterPicker {
     /// Start efficient and escalate only when signals support capable.
