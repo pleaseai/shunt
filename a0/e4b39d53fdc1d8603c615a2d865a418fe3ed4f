@@ -1,0 +1,36 @@
+tests/inbound_codex_endpoint.rs
+  s_e9fd5f53eebc34::t_eafa94db10e71c 1091-1094
+tests/multi_account.rs
+  s_e9fd5f53eebc34::t_eafa94db10e71c 927-930
+tests/antigravity_translate.rs
+  s_e9fd5f53eebc34::t_efb0d993d00b84 391-395,410-414,433-437,459-463
+tests/env_guard.rs
+  s_e9fd5f53eebc34::t_dcff79f93b5c31 3,6-12,35,43-86,106,129-131
+tests/env_lock_coverage.rs
+  s_e9fd5f53eebc34::t_ce6d402ddf803b 21-28,40-43,45-51,53-60,62-66,69-75,78-81,84,107-108,111-115
+  s_e9fd5f53eebc34::t_b20fdf3accd9f4 44,52,61,76-77,82-83,85-106
+  s_e9fd5f53eebc34::t_aa87706c70a64c 179-184,186-192,199-268,282,285,299-306,308-315,318-319,324-326,329,331,339,365-368
+  s_e9fd5f53eebc34::t_00eabe1f4a7511 196-198,332-338,340-364
+tests/AGENTS.md
+  s_e9fd5f53eebc34::t_327b3534113c71 21-30
+tests/kimi_multi_account.rs
+  s_e9fd5f53eebc34::t_eafa94db10e71c 497-500
+tests/codex_multi_account.rs
+  s_e9fd5f53eebc34::t_eafa94db10e71c 841-844,1686-1689
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a0e4b39d53fdc1d8603c615a2d865a418fe3ed4f",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
