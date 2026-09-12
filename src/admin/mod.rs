@@ -192,12 +192,17 @@ impl AdminAuth {
             })
     }
 
-    /// Whether a raw token (from the login form) may mint a browser session.
-    /// Read-tier credentials may not: a session carries full access today, so
-    /// minting one from a read key would silently escalate it to write.
-    fn authenticate_login_token(&self, token: &str) -> bool {
+    /// The privilege a raw token (from the login form) may mint a browser
+    /// session with, or `None` when it is not an admin credential at all.
+    ///
+    /// A read-tier credential mints a *read-tier* session. That is safe only
+    /// because [`SessionStore`](session::SessionStore) records the tier and
+    /// [`authenticate`] reads it back: while a session carried full access
+    /// unconditionally, minting one from a read key silently escalated it to
+    /// write, which is why this used to refuse them outright.
+    fn login_access(&self, token: &str) -> Option<AdminAccess> {
         self.authenticate_value(token.as_bytes())
-            .is_some_and(|credential| credential.access >= AdminAccess::Write)
+            .map(|credential| credential.access)
     }
 }
 
@@ -327,13 +332,16 @@ pub(super) fn authenticate(state: &AppState, headers: &HeaderMap) -> Option<Auth
         });
     }
     let sid = session_cookie(headers)?;
-    let csrf = state.admin_stores.sessions.csrf_for(&sid)?;
+    let session = state.admin_stores.sessions.lookup(&sid)?;
     Some(AuthOk {
-        kind: Authenticated::Session { csrf },
+        kind: Authenticated::Session { csrf: session.csrf },
         auth,
-        // A session can only be minted by a write-tier credential or OIDC
-        // (`login_submit`, `oidc::callback`), so it carries full access.
-        access: AdminAccess::Write,
+        // The tier the minting credential carried, not a constant: `read_keys`
+        // sign in too (`login_submit`), so a cookie no longer implies write.
+        // Every mutation still goes through `require_write`, which is what
+        // makes a read session read-only on the server rather than by the
+        // dashboard's good manners.
+        access: session.access,
     })
 }
 
@@ -606,14 +614,17 @@ async fn login_submit(
         Ok(Form(form)) => form.token,
         Err(_) => String::new(),
     };
-    if !auth.authenticate_login_token(&token) {
+    let Some(access) = auth.login_access(&token) else {
         return login_response(
             StatusCode::UNAUTHORIZED,
             Some("Invalid admin token."),
             auth.oidc().map(crate::gateway::ResolvedIdp::button_label),
         );
-    }
-    let (sid, _csrf) = state.admin_stores.sessions.create(auth.session_ttl());
+    };
+    let (sid, _csrf) = state
+        .admin_stores
+        .sessions
+        .create(auth.session_ttl(), access);
     let cookie = set_cookie(&sid, secure_cookie(&headers), auth.session_ttl());
     (
         StatusCode::SEE_OTHER,
@@ -713,6 +724,10 @@ async fn session_bootstrap(State(state): State<AppState>, headers: HeaderMap) ->
     };
     json_secure(json!({
         "csrf": csrf,
+        // The dashboard renders write affordances from this. It is a display
+        // signal only -- `require_write` is the enforcement, and a client that
+        // ignored this field would get `403`s rather than extra powers.
+        "access": authok.access,
         // Served rather than duplicated in the bundle for the same reason the
         // server-rendered page substituted it: the dashboard reports a setup
         // token as expired once it is inside this buffer, and routing refuses
