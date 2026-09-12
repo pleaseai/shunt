@@ -207,10 +207,10 @@ Four behavior changes came with the consolidation:
   a client sent cannot break a legitimate relay — the argument the Codex strip list already made
   for `x-shunt-token` alone.
 - **The `cookie` header is now stripped outright on every forward.** `admin::authenticate`
-  falls back to `session_cookie`, which reads a write-tier `shunt_admin_session` out of `cookie`,
-  making it an accept slot the first version of this enumeration missed — and two of the three
-  forward sites relayed it verbatim (`headers_for_route` starts from a clone of the caller's map
-  on both branches; the Codex strip list had no `cookie` entry). Whole-header removal is safe
+  falls back to `session_cookie`, which reads an accepted `shunt_admin_session` out of `cookie`
+  at whatever tier minted it, making it an accept slot the first version of this enumeration
+  missed — and two of the three forward sites relayed it verbatim
+  (`headers_for_route` starts from a clone of the caller's map on both branches; the Codex strip list had no `cookie` entry). Whole-header removal is safe
   because shunt keeps no cookie jar: `Cargo.toml` builds reqwest **without** the `cookies`
   feature and nothing in `src/` constructs a `cookie_store`/`cookie_provider`, so shunt never
   participates in upstream edge or affinity cookies (`__cf_bm`, `cf_clearance`). The mirror
