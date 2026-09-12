@@ -19,6 +19,22 @@ normal return rather than `process::exit`, so telemetry exporters receive their
 usual drop/flush opportunity. Periodic pool-state persistence remains
 best-effort; this lifecycle does not promise a new final state transaction.
 
+Cancellation reaches async tasks only. Work already running on a blocking thread
+(`tokio::task::spawn_blocking`) cannot be aborted — see `offload::spawn_bounded` —
+and simply *dropping* the runtime would wait for it with no deadline at all,
+which would put the process back past `shutdown_timeout_seconds` and past the
+second-signal escape hatch, whose watcher is itself cancelled once teardown
+begins. So teardown is bounded explicitly: already-started blocking work gets a
+fixed five-second grace (`BLOCKING_SHUTDOWN_GRACE` in `src/main.rs`), after
+which its threads are leaked and the process exits regardless.
+
+The two budgets cover different work classes and are deliberately not the same
+number. A configured `shutdown_timeout_seconds = 30` means "up to 30 seconds of
+draining, then up to 5 seconds for blocking work" — a worst case of 35 seconds,
+not a silent 60. The blocking grace is fixed rather than configurable because
+this crate's blocking tasks are short, bounded CPU jobs (compression in
+`offload`, token counting in `proxy::failover`), not open-ended waits.
+
 On Unix, isolated Antigravity process groups are terminated as soon as the first
 signal arrives, because they do not inherit gateway signals and must not pin the
 drain. A second `SIGTERM` or `SIGINT` remains the explicit emergency escape
