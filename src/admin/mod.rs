@@ -1797,8 +1797,8 @@ fn html_body_with_form_action(body: String, form_action: &str) -> Response {
     // fetch, so tightening `connect-src` does not reach it.
     let csp = format!(
         "default-src 'none'; script-src 'none'; \
-style-src 'unsafe-inline'; connect-src 'none'; img-src 'self'; form-action {form_action}; \
-base-uri 'none'; frame-ancestors 'none'"
+         style-src 'unsafe-inline'; connect-src 'none'; img-src 'self'; \
+         form-action {form_action}; base-uri 'none'; frame-ancestors 'none'"
     );
     (
         [
