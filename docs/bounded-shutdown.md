@@ -28,6 +28,16 @@ begins. So teardown is bounded explicitly: already-started blocking work gets a
 fixed five-second grace (`BLOCKING_SHUTDOWN_GRACE` in `src/main.rs`), after
 which its threads are leaked and the process exits regardless.
 
+The second-signal escape hatch does not cover that final grace. Its watcher is
+itself a Tokio task, so it is gone once teardown starts, and Tokio leaves its
+signal handler installed after the listener drops — a signal arriving in that
+window is captured and discarded rather than falling through to the default
+disposition. This is deliberate rather than overlooked: the hatch exists to
+escape an *unbounded* wait, and a wait that is already bounded at five seconds
+is served by the bound itself. It is also why the grace is a small constant
+instead of a configurable value that an operator could raise to a length where
+an uninterruptible process would matter.
+
 The two budgets cover different work classes and are deliberately not the same
 number. A configured `shutdown_timeout_seconds = 30` means "up to 30 seconds of
 draining, then up to 5 seconds for blocking work" — a worst case of 35 seconds,

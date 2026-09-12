@@ -40,8 +40,8 @@ brew services start shunt
 
 ログは `$(brew --prefix)/var/log/shunt.log` に出力されます。`brew services stop` は `SIGTERM` を送信し、
 shunt は処理中のリクエストを完了させてから終了します — 待機するのは最大で `[server] shutdown_timeout_seconds`
-(既定は 30 秒)であり、その時点で残っている処理はキャンセルされるため、静かな SSE ストリームがプロセスを
-無期限に保持することはできません。Unix では、シャットダウンの開始時に Antigravity のエージェントターンが
+(既定は 30 秒。この値の変更には再起動が必要)であり、それを過ぎると待機をやめて終了するため、静かな SSE
+ストリームがプロセスを無期限に保持することはできません。Unix では、シャットダウンの開始時に Antigravity のエージェントターンが
 終了させられるため、その分離されたプロセスグループがドレインを引き延ばすことはできません。
 その後に設定ファイルを編集しても再起動は不要です —
 自動的に[ホットリロード](docs/config-reload.md)されます。詳細: [サービスとして実行](docs/running.md#run-as-a-background-service-homebrew)。

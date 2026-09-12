@@ -40,8 +40,8 @@ brew services start shunt
 
 Logs go to `$(brew --prefix)/var/log/shunt.log`. `brew services stop` sends `SIGTERM`, and shunt
 drains in-flight requests before exiting — for up to `[server] shutdown_timeout_seconds`
-(default 30), after which whatever is still running is cancelled so a quiet SSE stream cannot hold
-the process open forever. On Unix, Antigravity agent turns are terminated when shutdown starts so
+(default 30; changing this one does need a restart), after which shunt stops waiting and exits, so
+a quiet SSE stream cannot hold the process open forever. On Unix, Antigravity agent turns are terminated when shutdown starts so
 their isolated process groups cannot hold the drain open. Editing the config file
 afterwards doesn't need a restart — it [hot-reloads](docs/config-reload.md) automatically. Details:
 [Running as a service](docs/running.md#run-as-a-background-service-homebrew).
