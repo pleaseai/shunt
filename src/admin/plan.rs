@@ -2884,14 +2884,22 @@ mod tests {
     /// * `O_RDWR` never blocks. A write-only open blocks until a reader is
     ///   present, deadlocking this thread against the task it must release.
     ///
-    /// The fifo is unlinked **before** that wait, not after it. The blocking
-    /// closure runs on an OS thread, so the kernel can deschedule it between
-    /// recording the missing file's failure and opening the fifo — for
-    /// seconds, under exactly the full-suite load this hang needs. Such a
-    /// closure reaches its `open` after the writer is already gone, and would
-    /// park on a writerless fifo forever; with the fifo unlinked it fails
-    /// fast with `ENOENT` instead. Cleanup placed after the wait would not
-    /// run at all on that path, because the wait panics.
+    /// The fifo is unlinked **before** `drop(writer)`, and the ordering is the
+    /// whole guarantee: *the fifo's name is never visible without a writer
+    /// behind it*. The blocking closure runs on an OS thread, so the kernel
+    /// can deschedule it between recording the missing file's failure and
+    /// opening the fifo — for seconds, under exactly the full-suite load this
+    /// hang needs. Wherever it resumes, it is safe: opening while the name
+    /// still exists means a writer is still held, so it proceeds to `read`
+    /// and `drop(writer)` delivers EOF; opening after the unlink gets
+    /// `ENOENT` at once.
+    ///
+    /// Neither weaker ordering holds. Unlinking after the wait does not run
+    /// at all when the wait panics. Unlinking between `drop(writer)` and the
+    /// wait still leaves a window in which the name exists with no writer,
+    /// and an `open` that blocks in that window is never woken by the
+    /// unlink — POSIX does not wake a blocked FIFO `open` when the name goes
+    /// away.
     ///
     /// Reacquiring `lock` at the end proves the blocking read actually
     /// finished: `file_derived_plans` moves its single-flight permit into the
@@ -2955,11 +2963,13 @@ mod tests {
              this pass keeps even though the result was discarded"
         );
 
-        // Closing the last writer is the EOF that ends the stalled read, and
-        // reacquiring the permit is the proof that it ended -- without it a
-        // still-parked read would hang teardown rather than fail here.
-        drop(writer);
+        // Unlink before the writer goes away, never after: the invariant is
+        // that the fifo's name is never visible without a writer behind it.
+        // Closing the last writer is then the EOF that ends the stalled read,
+        // and reacquiring the permit is the proof that it ended -- without
+        // that wait a still-parked read would hang teardown rather than fail.
         let _ = std::fs::remove_dir_all(&dir);
+        drop(writer);
         let _permit = tokio::time::timeout(Duration::from_secs(5), lock.lock())
             .await
             .expect("the stalled read must finish once the fifo writer is closed");
