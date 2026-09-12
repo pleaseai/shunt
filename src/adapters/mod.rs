@@ -11,6 +11,7 @@ pub mod anthropic;
 pub mod antigravity;
 pub mod cursor;
 pub mod gemini;
+pub mod openai_chat;
 pub mod responses;
 
 /// Tie a storm-control [`AdmissionGuard`](crate::accounts::AdmissionGuard) to a

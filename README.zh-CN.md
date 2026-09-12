@@ -88,7 +88,7 @@ shunt add upstream https://provider.example/docs --print | claude
 
 ## 提供方
 
-一个提供方可以是有序的 `[[upstreams]]` 条目，也可以是旧式 `[providers.<name>]` TOML 表（在 YAML 中，分别对应 sequence 或 mapping 中的条目）。两种适配器类型即可覆盖大多数上游：`kind = "anthropic"`（上游讲 Anthropic Messages；透传，可选择换用不同的密钥）和 `kind = "responses"`（上游讲 OpenAI Responses API；shunt 在 Anthropic Messages ⇄ Responses 之间转换，含流式传输）。第三种原生类型 `kind = "cursor"` 桥接 Cursor 的 ConnectRPC/protobuf AgentService，使 Cursor 订阅可通过同一套 Anthropic-Messages 接口访问。
+一个提供方可以是有序的 `[[upstreams]]` 条目，也可以是旧式 `[providers.<name>]` TOML 表（在 YAML 中，分别对应 sequence 或 mapping 中的条目）。适配器类型包括 `kind = "anthropic"`（Anthropic Messages 透传）、`kind = "responses"`（OpenAI Responses API 与 Anthropic Messages 之间的转换）以及 `kind = "openai_chat"`（使用 API 密钥将 Anthropic Messages 转换为 OpenAI Chat Completions）。`kind = "cursor"` 等原生类型则把提供方专用协议桥接到同一套 Anthropic-Messages 接口。
 
 有序上游支持跨提供方故障转移。声明顺序就是尝试顺序；模型的 `upstream_model` 映射选择参与的条目，并将其公开 id 映射到各后端的 id：
 

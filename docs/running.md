@@ -214,7 +214,7 @@ a brand-new table adds a provider. Every provider takes these keys:
 
 | Key | Values | Meaning |
 | :-- | :-- | :-- |
-| `kind` | `anthropic` \| `responses` \| `cursor` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = Cursor's native ConnectRPC/protobuf AgentService. |
+| `kind` | `anthropic` \| `responses` \| `cursor` \| `openai_chat` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = Cursor's native ConnectRPC/protobuf AgentService; `openai_chat` = the bounded Anthropic Messages → OpenAI Chat Completions adapter (text-only messages, streaming usage trailers, and no tool translation yet). |
 | `base_url` | URL | Upstream base; shunt appends the provider endpoint path. |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `kimi_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` forwards the client's credential; `api_key` injects `api_key_env`; `chatgpt_oauth` uses Codex/ChatGPT OAuth; `claude_oauth` selects an Anthropic subscription account pool (see §3.3); `kimi_oauth` selects a Kimi Code subscription account pool (`shunt login kimi`; see the Kimi Code example below); `xai_oauth` and `cursor_oauth` reuse their shunt-managed subscription logins. |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |

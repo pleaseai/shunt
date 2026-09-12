@@ -1827,6 +1827,11 @@ pub enum ProviderKind {
     /// `ideType: ANTIGRAVITY` through project discovery. Requires
     /// `auth = "antigravity_oauth"`.
     Antigravity,
+    /// OpenAI Chat Completions API — Anthropic Messages are translated to
+    /// POST /chat/completions. Auth reuses the generic `api_key` mode with
+    /// `api_key_env`.
+    #[serde(rename = "openai_chat")]
+    OpenAiChat,
     /// Local Antigravity CLI binary (`agy`) execution.
     ///
     /// **Deprecated.** Superseded by `kind = "antigravity"`, which reaches the
@@ -2158,6 +2163,12 @@ pub enum ConfigError {
          deprecated. Pick one explicitly rather than have the transport change underneath you."
     )]
     AntigravityKindRequiresOauth { provider: String, auth: String },
+    #[error(
+        "providers.{provider} uses kind = \"openai_chat\" with auth = \"{auth}\", but \
+         kind = \"openai_chat\" requires auth = \"api_key\" with api_key_env; the \
+         adapter injects the configured key per request and has no other credential path."
+    )]
+    OpenAiChatRequiresApiKey { provider: String, auth: String },
     #[error(
         "providers.antigravity has no `auth` key, so it deep-merges the built-in \
          antigravity_oauth default instead of being caught by the kind = \"antigravity\" \
@@ -3488,6 +3499,19 @@ impl Config {
                 && provider.auth != AuthMode::AntigravityOauth
             {
                 return Err(ConfigError::AntigravityKindRequiresOauth {
+                    provider: name.clone(),
+                    auth: serde_json::to_value(provider.auth)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                });
+            }
+            // The Chat adapter resolves the configured API key fresh on every
+            // request and has no OAuth/passthrough path, so any other auth
+            // mode would silently forward the client's own credential (or
+            // nothing at all) to an OpenAI-shaped upstream. Reject it by name.
+            if provider.kind == ProviderKind::OpenAiChat && provider.auth != AuthMode::ApiKey {
+                return Err(ConfigError::OpenAiChatRequiresApiKey {
                     provider: name.clone(),
                     auth: serde_json::to_value(provider.auth)
                         .ok()
