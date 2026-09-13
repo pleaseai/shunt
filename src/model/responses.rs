@@ -237,12 +237,30 @@ impl AnthropicSseMachine {
         if self.started {
             return Vec::new();
         }
-        self.started = true;
         if let Some(id) = data.pointer("/response/id").or_else(|| data.get("id")) {
             if let Some(id) = id.as_str() {
                 self.id = id.to_string();
             }
         }
+        self.emit_start()
+    }
+
+    /// Emit the Anthropic `message_start` + initial `ping` before any upstream
+    /// event has arrived, carrying a gateway-synthesized message id. The
+    /// streaming transports call this the moment a turn is accepted so the
+    /// client's stall watchdog sees bytes while the upstream thinks in silence;
+    /// a later `response.created` then finds `started` and emits nothing, and
+    /// the synthetic id stands for the rest of the turn.
+    pub fn start_synthetic(&mut self, id: String) -> Vec<String> {
+        if self.started {
+            return Vec::new();
+        }
+        self.id = id;
+        self.emit_start()
+    }
+
+    fn emit_start(&mut self) -> Vec<String> {
+        self.started = true;
         vec![
             sse(
                 "message_start",
@@ -1087,7 +1105,7 @@ pub fn context_overflow_message(value: &Value, message: &str) -> Option<String> 
     }
 }
 
-fn sse(event: &str, data: &Value) -> String {
+pub(crate) fn sse(event: &str, data: &Value) -> String {
     format!("event: {event}\ndata: {data}\n\n")
 }
 
@@ -1100,6 +1118,75 @@ mod tests {
             event: Some(name.to_string()),
             data,
         }
+    }
+
+    #[test]
+    fn synthetic_start_emits_message_start_with_given_id_and_ping() {
+        let mut machine = AnthropicSseMachine::new("gpt-test", false, false);
+        let frames = machine.start_synthetic("msg_synth_1".to_string());
+        assert_eq!(frames.len(), 2, "message_start + initial ping");
+        let start = &frames[0];
+        assert!(
+            start.starts_with("event: message_start\ndata: "),
+            "got: {start}"
+        );
+        let data: Value = serde_json::from_str(
+            start
+                .split_once("data: ")
+                .expect("carries a data line")
+                .1
+                .trim(),
+        )
+        .expect("message_start data is json");
+        assert_eq!(data["type"], "message_start");
+        assert_eq!(data["message"]["id"], "msg_synth_1");
+        assert_eq!(data["message"]["model"], "gpt-test");
+        assert_eq!(data["message"]["content"], json!([]));
+        assert!(frames[1].starts_with("event: ping\ndata: "));
+    }
+
+    #[test]
+    fn second_synthetic_start_is_suppressed() {
+        let mut machine = AnthropicSseMachine::new("gpt-test", false, false);
+        machine.start_synthetic("msg_synth_1".to_string());
+        let frames = machine.start_synthetic("msg_synth_2".to_string());
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn synthetic_start_then_full_stream_emits_exactly_one_message_start() {
+        let mut machine = AnthropicSseMachine::new("gpt-test", false, false);
+        let mut out: Vec<String> = machine.start_synthetic("msg_synth_1".to_string());
+        out.extend(machine.apply(event(
+            "response.created",
+            json!({"response": {"id": "resp_1"}}),
+        )));
+        out.extend(machine.apply(event(
+            "response.output_item.added",
+            json!({"item": {"type": "message"}}),
+        )));
+        out.extend(machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "hello"}),
+        )));
+        out.extend(machine.apply(event("response.output_text.done", json!({}))));
+        out.extend(machine.apply(event(
+            "response.completed",
+            json!({"response": {"usage": {"input_tokens": 3, "output_tokens": 1}}}),
+        )));
+        let text = out.join("\n");
+        assert_eq!(
+            text.matches("event: message_start").count(),
+            1,
+            "got: {text}"
+        );
+        assert!(text.contains("\"text\":\"hello\""), "got: {text}");
+        assert!(text.contains("event: message_stop"), "got: {text}");
+        // The upstream's real response id is discarded in favor of the
+        // synthetic one — the client already holds `msg_synth_1` and must
+        // never see `resp_1`.
+        assert!(text.contains("\"id\":\"msg_synth_1\""), "got: {text}");
+        assert!(!text.contains("\"id\":\"resp_1\""), "got: {text}");
     }
 
     /// Drive a machine to `response.completed` with the given upstream `usage`

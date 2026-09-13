@@ -6,7 +6,7 @@
 use std::convert::Infallible;
 
 use axum::{
-    body::{Body, Bytes},
+    body::{to_bytes, Body, Bytes},
     http::{Response, StatusCode},
     response::IntoResponse,
 };
@@ -143,17 +143,32 @@ pub(super) fn backend_error(status: StatusCode, error: Value) -> AdapterError {
     }
 }
 
+/// Extract the already-mapped Anthropic error envelope from an
+/// [`AdapterError`] so the streaming transports can re-emit it as one SSE
+/// `error` event after the early `message_start` has already committed the
+/// response. Every error this module builds serializes the envelope as its
+/// JSON body, so the body bytes ARE the envelope.
+pub(super) async fn adapter_error_envelope(error: AdapterError) -> Value {
+    let bytes = to_bytes(error.response.into_body(), usize::MAX)
+        .await
+        .unwrap_or_default();
+    serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+        json!({"type": "error", "error": {"type": "api_error", "message": "upstream request failed"}})
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;
     use axum::http::StatusCode;
+    use axum::response::IntoResponse;
     use serde_json::Value;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::config::AuthMode;
 
-    use super::mapped_upstream_error;
+    use super::{adapter_error_envelope, mapped_upstream_error};
 
     /// Serves `body` at `status` from a mock server and returns the resulting
     /// `reqwest::Response`, mirroring the shape `mapped_upstream_error` sees in
@@ -330,5 +345,20 @@ mod tests {
             mapped_upstream_error(StatusCode::TOO_MANY_REQUESTS, upstream, AuthMode::ApiKey).await;
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.response.headers().get("retry-after").unwrap(), "7");
+    }
+
+    #[tokio::test]
+    async fn adapter_error_envelope_preserves_the_mapped_body() {
+        use crate::adapters::AdapterError;
+        let error = crate::error::ShuntError::bad_gateway("upstream timed out");
+        let adapter = AdapterError {
+            message: "responses adapter failed".into(),
+            response: Box::new(error.into_response()),
+            failure: None,
+        };
+        let envelope = adapter_error_envelope(adapter).await;
+        assert_eq!(envelope["type"], "error");
+        assert_eq!(envelope["error"]["type"], "api_error");
+        assert_eq!(envelope["error"]["message"], "upstream timed out");
     }
 }

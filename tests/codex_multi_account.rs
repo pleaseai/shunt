@@ -1221,9 +1221,12 @@ async fn pool_http_dispatch_seeds_message_start_input_token_estimate() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("x-shunt-account").unwrap(),
-        "account-a"
+    // The streaming pool path commits the response (and thus its headers)
+    // before the winning account is known, so `x-shunt-account` is absent
+    // here; the estimate assertion below is this test's actual subject.
+    assert!(
+        response.headers().get("x-shunt-account").is_none(),
+        "early-committed streaming responses cannot carry the winning account header"
     );
     let body = response.text().await.unwrap();
     assert!(
@@ -1287,9 +1290,11 @@ async fn pool_rotation_still_seeds_input_token_estimate_after_401() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("x-shunt-account").unwrap(),
-        "account-b"
+    // The early-committed streaming response cannot carry the winning account
+    // header (see `pool_http_dispatch_seeds_message_start_input_token_estimate`).
+    assert!(
+        response.headers().get("x-shunt-account").is_none(),
+        "early-committed streaming responses cannot carry the winning account header"
     );
     let body = response.text().await.unwrap();
     assert!(

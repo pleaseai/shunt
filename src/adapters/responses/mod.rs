@@ -3,6 +3,7 @@ pub mod codex_ws;
 
 mod body;
 mod context;
+mod early_stream;
 mod error;
 mod http;
 pub(crate) mod inbound;
