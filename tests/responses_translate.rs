@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
-    config::ResponsesFlavor,
+    config::{Config, ResponsesFlavor},
     model::responses::{
         anthropic_error_type, client_facing_status, map_error_value, parse_sse_events,
         translate_request, translate_request_value, AnthropicSseMachine,
@@ -2214,6 +2214,23 @@ fn native_translate(input: Value) -> Value {
     translate_request(&body, &route("gpt-5.6-sol"), ResponsesFlavor::Chatgpt, true).unwrap()
 }
 
+/// Production eligibility: the native wire is selected by
+/// [`Config::native_tool_search`], not a bypass `native = true` fixture.
+fn production_native_for(model: &str) -> bool {
+    Config::default().native_tool_search("codex", model)
+}
+
+fn translate_with_production_gate(model: &str, input: Value) -> Value {
+    let body = serde_json::to_vec(&input).unwrap();
+    translate_request(
+        &body,
+        &route(model),
+        ResponsesFlavor::Chatgpt,
+        production_native_for(model),
+    )
+    .unwrap()
+}
+
 #[test]
 fn native_maps_tool_search_tool_definition() {
     // Claude Code's ToolSearch tool -> the Responses native client tool: no
@@ -2446,6 +2463,78 @@ fn tool_reveal_grows_shim_tools_but_leaves_native_tools_stable() {
 }
 
 #[test]
+fn astra_production_gate_maps_tool_search_and_keeps_prefix_stable() {
+    // Codex catalog slug `gpt-6-astra` takes the native path through
+    // [`Config::native_tool_search`]; close gpt-6 names and gpt-5.2 stay on
+    // the #43 shim. The native request/reveal fixture is the same shape as
+    // [`tool_reveal_grows_shim_tools_but_leaves_native_tools_stable`].
+    assert!(production_native_for("gpt-6-astra"));
+    assert!(production_native_for("gpt-5.6-sol"));
+    assert!(production_native_for("gpt-5.4"));
+    assert!(!production_native_for("gpt-6-pro"));
+    assert!(!production_native_for("gpt-6-astral"));
+    assert!(!production_native_for("gpt-5.2-codex"));
+
+    let tools = json!([
+        {"name": "ToolSearch", "description": "Search", "input_schema": {"type": "object", "properties": {}}},
+        {
+            "name": "find_issue",
+            "description": "Find an issue",
+            "input_schema": {
+                "type": "object",
+                "properties": {"number": {"type": "integer"}},
+                "required": ["number"]
+            },
+            "defer_loading": true
+        }
+    ]);
+    let pre_reveal_messages: Value = json!([]);
+    let post_reveal_messages = json!([
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "find_issue"}}
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "call_ts", "content": [
+                {"type": "tool_reference", "tool_name": "find_issue"}
+            ]}
+        ]}
+    ]);
+
+    let astra_pre = translate_with_production_gate(
+        "gpt-6-astra",
+        json!({
+            "model": "gpt-6-astra", "messages": pre_reveal_messages, "tools": tools
+        }),
+    );
+    let astra_post = translate_with_production_gate(
+        "gpt-6-astra",
+        json!({
+            "model": "gpt-6-astra", "messages": post_reveal_messages, "tools": tools
+        }),
+    );
+    assert_eq!(astra_pre["tools"][0]["type"], "tool_search");
+    assert_eq!(astra_pre["tools"], astra_post["tools"]);
+    assert!(!astra_pre["tools"].to_string().contains("find_issue"));
+    assert!(!astra_post["tools"].to_string().contains("find_issue"));
+    let output_item = astra_post["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "tool_search_output")
+        .expect("post-reveal Astra input should contain a tool_search_output item");
+    assert_eq!(output_item["tools"][0]["name"], "find_issue");
+
+    let unsupported = translate_with_production_gate(
+        "gpt-6-pro",
+        json!({
+            "model": "gpt-6-pro", "messages": pre_reveal_messages, "tools": tools
+        }),
+    );
+    assert_eq!(unsupported["tools"][0]["type"], "function");
+    assert_eq!(unsupported["tools"][0]["name"], "ToolSearch");
+}
+
+#[test]
 fn native_tool_search_output_skips_unknown_reference() {
     // A reference to a tool not in the current inventory is dropped, not emitted
     // as a malformed loadable spec.
@@ -2606,6 +2695,31 @@ fn native_streamed_tool_search_call_becomes_tool_use() {
     assert!(emitted.contains("\"id\":\"call_ts\""));
     assert!(emitted.contains("github issues"));
     assert!(emitted.contains("\"stop_reason\":\"tool_use\""));
+}
+
+#[test]
+fn astra_production_gate_streamed_tool_search_call_becomes_tool_use() {
+    let native = production_native_for("gpt-6-astra");
+    assert!(native);
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"call_ts\",\"execution\":\"client\",\"status\":\"in_progress\",\"arguments\":{}}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"call_ts\",\"execution\":\"client\",\"arguments\":{\"query\":\"github issues\"}}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":3}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-6-astra", false, native);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    assert!(emitted.contains("\"type\":\"tool_use\""));
+    assert!(emitted.contains("\"name\":\"ToolSearch\""));
+    assert!(emitted.contains("\"id\":\"call_ts\""));
+    assert!(emitted.contains("github issues"));
 }
 
 #[test]

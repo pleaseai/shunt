@@ -1916,14 +1916,19 @@ fn model_supports_tool_search(model: &str) -> bool {
     // must be followed by a non-digit (or end of string), so "gpt-5.4" matches
     // but an undocumented "gpt-5.40" does not silently borrow 5.4's flag and get
     // a native wire shape its backend may reject.
-    ["gpt-5.4", "gpt-5.5", "gpt-5.6"].iter().any(|family| {
+    let gpt5 = ["gpt-5.4", "gpt-5.5", "gpt-5.6"].iter().any(|family| {
         model.match_indices(family).any(|(index, matched)| {
             model[index + matched.len()..]
                 .chars()
                 .next()
                 .is_none_or(|next| !next.is_ascii_digit())
         })
-    })
+    });
+    if gpt5 {
+        return true;
+    }
+    // Codex catalog slug `gpt-6-astra` (`supports_search_tool: true`).
+    model == "gpt-6-astra"
 }
 
 /// Whether `host` belongs to xAI (`x.ai` or any subdomain). Used both to gate
@@ -7804,6 +7809,20 @@ id = "claude-sonnet-5"
         assert!(config.native_tool_search("openai", "gpt-5.4"));
         // A trailing non-digit still counts as the documented minor.
         assert!(config.native_tool_search("openai", "gpt-5.4-turbo"));
+        // Codex catalog slug `gpt-6-astra` (`supports_search_tool: true`).
+        assert!(config.native_tool_search("codex", "gpt-6-astra"));
+        assert!(config.native_tool_search("openai", "gpt-6-astra"));
+        for model in [
+            "openai/gpt-6-astra",
+            "gpt-6-astra-preview",
+            "gpt-6-astra[1m]",
+            "not-gpt-6-astra",
+        ] {
+            assert!(!config.native_tool_search("codex", model), "{model}");
+        }
+        let hinted = crate::routing::resolve_model(&config, "gpt-6-astra[1m]");
+        assert_eq!(hinted.upstream_model, "gpt-6-astra");
+        assert!(config.native_tool_search("codex", &hinted.upstream_model));
 
         // Boundary guard: a multi-digit minor must NOT borrow 5.4's flag — those
         // are undocumented families whose backend may reject the native wire.
@@ -7812,12 +7831,18 @@ id = "claude-sonnet-5"
 
         // Unsupported model keeps the #43 shim (gpt-5.2 and below).
         assert!(!config.native_tool_search("codex", "gpt-5.2-codex"));
+        // Other gpt-6 slugs and close names must not borrow Astra's flag.
+        assert!(!config.native_tool_search("codex", "gpt-6-pro"));
+        assert!(!config.native_tool_search("codex", "gpt-6"));
+        assert!(!config.native_tool_search("codex", "gpt-6-astral"));
         // Unsupported flavor keeps the shim (xAI), even though `tool_search`
         // auto-resolves to on for a known host — the flavor gate blocks it
         // regardless.
         assert!(!config.native_tool_search("xai", "gpt-5.6-sol"));
+        assert!(!config.native_tool_search("xai", "gpt-6-astra"));
         // Unknown provider is never native.
         assert!(!config.native_tool_search("nope", "gpt-5.6-sol"));
+        assert!(!config.native_tool_search("nope", "gpt-6-astra"));
     }
 
     #[test]
@@ -7829,6 +7854,7 @@ id = "claude-sonnet-5"
 
         assert!(!config.native_tool_search("codex", "gpt-5.6-sol"));
         assert!(!config.native_tool_search("openai", "gpt-5.4"));
+        assert!(!config.native_tool_search("codex", "gpt-6-astra"));
     }
 
     #[test]
