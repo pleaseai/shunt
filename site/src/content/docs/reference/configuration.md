@@ -56,7 +56,7 @@ This `trust_forwarded_for` switch is independent of `[server.gateway] trust_forw
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `upstream_ttfb_ms` | `120000` | Maximum wait for inference-upstream HTTP response headers; `0` disables. The response body then has no wall-clock cap, preserving long SSE streams. Returns `504 timeout_error` and hot-reloads |
+| `upstream_ttfb_ms` | `120000` | Maximum wait for inference-upstream HTTP response headers; `0` disables. The response body then has no wall-clock cap, preserving long SSE streams. Non-streaming turns return `504 timeout_error`; a streaming Responses turn surfaces the timeout as a terminal SSE `error` event on the committed stream. Hot-reloads |
 
 This timeout covers the Anthropic Messages transports, OpenAI Responses HTTP transport (including WebSocket fallback), Gemini HTTP transport, and inbound Codex Responses passthrough. It does not cover Codex WebSocket turns, Cursor transports, Antigravity processes, discovery, login/OAuth, usage polling, OIDC, or telemetry relay.
 
@@ -528,7 +528,7 @@ token_env = "CLAUDE_BACKUP_OAUTH_TOKEN"
 
 | Key | Required | Meaning |
 | :-- | :-- | :-- |
-| `name` | yes | Unique account label containing only lowercase ASCII letters, digits, and hyphens. A name-only entry resolves from the shunt-managed store. Returned to the client in `x-shunt-account`; avoid personal information. |
+| `name` | yes | Unique account label containing only lowercase ASCII letters, digits, and hyphens. A name-only entry resolves from the shunt-managed store. Returned to the client in `x-shunt-account` (absent on streaming Responses pool turns, whose response commits before the winning account is known); avoid personal information. |
 | `credentials` | one usable source | Path to a Claude Code `.credentials.json`-shaped file. `~/` is expanded. shunt refreshes near expiry and atomically writes refreshed tokens back. |
 | `token_env` | one usable source | Environment variable holding a setup token. Used verbatim and not refreshable. Mutually exclusive with `credentials`. Its own value can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)). |
 | `uuid` | no | Replaces an existing `metadata.user_id.account_uuid` in requests selected for this account. |

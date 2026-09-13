@@ -57,8 +57,12 @@ Pure-logic unit tests plus `tokio::time::pause` timing tests in `src/keepalive.r
 Existing integration suites must pass unchanged (no idle ⇒ no pings ⇒ byte-identical
 streams).
 
-## 4. Out of scope
+## 4. Remaining first-byte windows
 
-- First-byte latency: shunt cannot send SSE before the upstream's response headers decide
-  the status code. An upstream that takes >100s to *start* responding still 524s.
-- Non-SSE long-poll responses (none exist in the gateway protocol).
+The Responses adapter's HTTP paths (single-credential and the account pool) now commit the SSE response immediately — a synthetic `message_start` + ping go out before any upstream byte, and pre-stream failures arrive as one terminal SSE `error` event — so pings cover the client hop from t≈0 there. The windows that remain are:
+
+- the Codex websocket transport's peek-first window (the response commits only after the first upstream event; pre-first-event failures fall back to HTTP),
+- the Anthropic passthrough adapter's pre-header window (bounded in practice: api.anthropic.com starts responding immediately),
+- the pre-send account-pool steps on the non-streaming path (JSON responses buffer by contract).
+
+An upstream that takes >100s to *start* responding still 524s on the hops that have not committed yet.

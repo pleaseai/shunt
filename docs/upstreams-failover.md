@@ -292,6 +292,7 @@ Documented user-facing in the site guide; summarized here.
   Cursor adapter-owned errors, or WebSocket header construction failures —
   return immediately without advancing the chain. This keeps configuration
   errors visible instead of masking them behind another upstream.
+- **Early-committed streaming responses never fail over.** The Responses adapter's streaming paths (single-credential, account pool, and the ws→HTTP fallback) commit `200` + SSE with a synthetic `message_start` before any upstream byte, so every later failure — pre-header transport, TTFB timeout, non-2xx status, pool exhaustion — reaches the client as one terminal SSE `error` event on the committed stream. The chain therefore never sees the §3 step 2 advance classes for streaming Responses turns: neither the relayed-status advance nor the pre-header-failure advance can fire, and the request metrics/access log record the committed `200` (the stream-metrics observer still classifies the error event). Non-streaming turns are unchanged. Restoring chain failover for streaming would mean running the chain inside the committed stream (see docs/todo.md); until then a multi-upstream chain whose Responses element fails mid-turn delivers the error to the client instead of retrying the next upstream.
 
 ## 7. Implementation surface
 
