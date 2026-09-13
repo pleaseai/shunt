@@ -146,6 +146,17 @@ fn write_stale_pool_state(path: &std::path::Path, account_id: &str) {
     fs::write(path, serde_json::to_vec(&state).unwrap()).unwrap();
 }
 
+/// Point `SHUNT_CODEX_ACCOUNTS_DIR` at a fresh empty dir for the test's
+/// lifetime, through the caller's guard: a host with real shunt-managed codex
+/// accounts (`~/.shunt/accounts/codex`) must not leak them into the unpooled
+/// tests' credential resolution. Returns the dir so it stays alive.
+fn pin_empty_accounts_dir(vars: &mut common::EnvVars) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("shunt-ws-accounts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    dir
+}
+
 /// Write a codex-style `auth.json` a valid ChatGPT credential can be read from,
 /// and point `CODEX_AUTH_FILE` at it. Returns the path for cleanup.
 fn write_fake_codex_auth(vars: &mut common::EnvVars) -> PathBuf {
@@ -219,6 +230,7 @@ async fn websocket_handshake_failure_falls_back_to_http() {
         return;
     }
     let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     // Upstream speaks only HTTP: it serves the Responses POST but has no websocket
     // endpoint, so the codex ws handshake (a GET upgrade) 404s and must fall back.
@@ -289,6 +301,7 @@ async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
         return;
     }
     let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     // Streaming variant of the fallback: codex defaults to count_tokens = tiktoken,
     // so forward() builds an input-token estimate. The ws attempt fails (HTTP-only
@@ -554,6 +567,7 @@ async fn websocket_drop_before_first_event_falls_back_to_http() {
         return;
     }
     let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::BeforeFirstEvent).await;
     let auth_path = write_fake_codex_auth(&mut vars);
@@ -598,6 +612,7 @@ async fn websocket_rate_limits_event_records_account_quota() {
         return;
     }
     let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::CompleteTurn).await;
     let auth_path = write_fake_codex_auth(&mut vars);
@@ -655,6 +670,7 @@ async fn websocket_drop_after_first_event_surfaces_clean_error() {
         return;
     }
     let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::AfterFirstEvent).await;
     let auth_path = write_fake_codex_auth(&mut vars);
@@ -703,6 +719,7 @@ async fn pooled_websocket_drop_after_first_event_stops_without_http_or_rotation(
         return;
     }
     let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let total_hits = Arc::new(AtomicUsize::new(0));
     let (base_url, http_hits) =
@@ -746,6 +763,7 @@ async fn websocket_pool_does_not_reprobe_restored_stale_account_on_http_fallback
         return;
     }
     let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let token_a = fake_jwt_for_account(4_000_000_000, "acct-ws-restored-a");
     let token_b = fake_jwt_for_account(4_000_000_000, "acct-ws-restored-b");
@@ -825,6 +843,7 @@ async fn websocket_drop_after_first_event_json_surfaces_gateway_error() {
         return;
     }
     let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::AfterFirstEvent).await;
     let auth_path = write_fake_codex_auth(&mut vars);
