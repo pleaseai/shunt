@@ -65,4 +65,6 @@ The Responses adapter's HTTP paths (single-credential and the account pool) now 
 - the Anthropic passthrough adapter's pre-header window (bounded in practice: api.anthropic.com starts responding immediately),
 - the pre-send account-pool steps on the non-streaming path (JSON responses buffer by contract).
 
+Every early-committed path drops the mapped `retry-after` hint (headers commit before the upstream status is known) and surfaces a mid-stream body error as a terminal SSE `error` event instead of an aborted stream — the ws→HTTP fallback relay included, since it shares the early-commit stream machinery.
+
 An upstream that takes >100s to *start* responding still 524s on the hops that have not committed yet.
