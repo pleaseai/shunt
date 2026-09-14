@@ -340,9 +340,11 @@ async fn connect_failure_advances_but_400_returns_immediately() {
     if !can_bind_loopback() {
         return;
     }
-    let unavailable = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let unavailable_url = format!("http://{}", unavailable.local_addr().unwrap());
-    drop(unavailable);
+    // Port 0 never accepts a connection: unlike a released ephemeral port,
+    // nothing can rebind it between this test and the request, so the
+    // "offline" attempt is refused deterministically even when a sibling
+    // test's mock server is hunting for a port at the same time.
+    let unavailable_url = "http://127.0.0.1:0".to_string();
     let healthy = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_string("after-connect"))
@@ -440,12 +442,10 @@ async fn all_transport_failures_synthesize_anthropic_502_with_last_metadata() {
     if !can_bind_loopback() {
         return;
     }
-    let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let first_url = format!("http://{}", first.local_addr().unwrap());
-    drop(first);
-    let second = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let second_url = format!("http://{}", second.local_addr().unwrap());
-    drop(second);
+    // Port 0 never accepts a connection; see the same choice in
+    // `connect_failure_advances_but_400_returns_immediately`.
+    let first_url = "http://127.0.0.1:0".to_string();
+    let second_url = "http://127.0.0.1:0".to_string();
     let config = chain_config(
         vec![
             passthrough("first", first_url),
@@ -539,12 +539,10 @@ async fn exhausted_chain_502_reaches_the_real_gateway_and_emits_a_sentry_event()
     ));
     let hub_guard = sentry::HubSwitchGuard::new(hub.clone());
 
-    let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let first_url = format!("http://{}", first.local_addr().unwrap());
-    drop(first);
-    let second = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let second_url = format!("http://{}", second.local_addr().unwrap());
-    drop(second);
+    // Port 0 never accepts a connection; see the same choice in
+    // `connect_failure_advances_but_400_returns_immediately`.
+    let first_url = "http://127.0.0.1:0".to_string();
+    let second_url = "http://127.0.0.1:0".to_string();
     let config = chain_config(
         vec![
             passthrough("first", first_url),
