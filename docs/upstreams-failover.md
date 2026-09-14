@@ -45,6 +45,7 @@ branching). Unknown preset name → config error listing available presets.
 | `kimi-code` | anthropic | `https://api.kimi.com/coding` | `kimi_oauth` |
 | `zhipu` | anthropic | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
 | `minimax-cn` | anthropic | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
+| `opencode` | anthropic | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, header `x-api-key` |
 
 `kimi` and `kimi-code` are distinct presets for distinct services: `kimi` is the metered Moonshot
 API (`auth = "api_key"`, env `MOONSHOT_API_KEY`), while `kimi-code` is the subscription-billed Kimi
@@ -69,7 +70,7 @@ existing `AuthMode` strings) and absorbs the legacy sibling fields:
 | mode | map fields |
 |---|---|
 | `passthrough` | — |
-| `api_key` | `env` (required unless preset supplies it), `header` (default as today) |
+| `api_key` | `env` (required unless preset supplies it), `header` (default: the preset's header when the preset supplies one, else `bearer`) |
 | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` | optional scope: `account = "name"` (single) **or** `accounts = [...]` (subset; entries are full `AccountConfig` tables or bare name strings referencing the store). No scope → whole store scan (`~/.shunt/accounts/kimi/` for `kimi_oauth`); for `chatgpt_oauth` an empty store additionally falls through to the single-account `~/.codex/auth.json` path (both preserved today's behavior). `kimi_oauth` has no such single-account fallback — the shunt-managed store is its only source. Setting both `account` and `accounts` is an error. |
 | `xai_oauth` / `cursor_oauth` / `antigravity_oauth` | as today (no scoping fields yet) |
 

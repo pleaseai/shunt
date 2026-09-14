@@ -15,7 +15,7 @@
 
 名字即机制:电气/铁路中的 *shunt(分流)* 将流量中被选中的部分导向一条并行路径。在这里,被映射模型的推理被分流到另一个提供方,而 Claude Code 的工具和技能保持完好。
 
-内置了 OpenAI、ChatGPT/Codex、xAI、Grok、Cursor、Kimi Code、智谱、MiniMax 国内版、Gemini、Antigravity 以及 Anthropic 透传,其中不少可以直接复用你已经在付费的订阅。任何兼容 Anthropic-Messages 的后端只需一个配置表即可接入,无需改动代码。参见[提供方](#提供方)。
+内置了 OpenAI、ChatGPT/Codex、xAI、Grok、Cursor、Kimi Code、智谱、MiniMax 国内版、OpenCode Zen、Gemini、Antigravity 以及 Anthropic 透传,其中不少可以直接复用你已经在付费的订阅。任何兼容 Anthropic-Messages 的后端只需一个配置表即可接入,无需改动代码。参见[提供方](#提供方)。
 
 > [!NOTE]
 > `shunt` 是仍在活跃开发中的 1.0 之前(pre-1.0)软件。按照 [SemVer](https://semver.org/lang/zh-CN/#spec) 惯例,`0.x` 版本可能包含对配置键、CLI 和行为的破坏性变更(breaking change) —— 升级前请查看[发布说明](https://github.com/pleaseai/shunt/releases)。
@@ -131,7 +131,7 @@ codex-fallback = "gpt-5.6-sol"
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` —— 通过 HTTP 访问的 Google Antigravity 后端,使用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |
 | `antigravity-cli` | `antigravity_cli` | 无(本地 CLI) | **已弃用。** 本地 `agy` 二进制 —— 通过子进程访问同一后端,已被上面的 `antigravity` 取代 |
 
-有序的 `[[upstreams]]` 条目还接受 `kimi`、`kimi-code`、`zhipu`、`minimax-cn` 预设,它们会补齐对应后端的 `kind`、`base_url` 和默认认证。
+有序的 `[[upstreams]]` 条目还接受 `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode` 预设,它们会补齐对应后端的 `kind`、`base_url` 和默认认证。
 
 各提供方的设置、模型 id 和注意事项都在[提供方](https://shunt.dev/zh-cn/guides/providers/)下,包括 xAI 的 OAuth 层级限制（[xAI / Grok](https://shunt.dev/zh-cn/guides/xai/)）、Cursor 的 agent 模式前缀（[Cursor](https://shunt.dev/zh-cn/providers/cursor/)）以及 Antigravity 的两种传输方式和 `kind = "antigravity"` 迁移（[Antigravity](https://shunt.dev/zh-cn/providers/antigravity/)）。
 
@@ -151,6 +151,7 @@ codex-fallback = "gpt-5.6-sol"
 | 智谱（GLM 国内版） | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`、`glm-5.3-flash` |
 | MiniMax | `https://api.minimax.io/anthropic` | 见 [MiniMax 文档](https://platform.minimax.io/docs/token-plan/claude-code) |
 | MiniMax 国内版 | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
+| OpenCode Zen | `https://opencode.ai/zen` | `claude-fable-5-1`、`gpt-6-astra` — 精选跨厂商目录;读取 `x-api-key` |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 

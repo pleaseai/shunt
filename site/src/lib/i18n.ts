@@ -58,6 +58,7 @@ export const NAVIGATION: NavigationGroup[] = [
         translations: { ko: "MiniMax 중국", ja: "MiniMax 中国版", "zh-cn": "MiniMax 国内版" },
         slug: "providers/minimax-cn",
       },
+      { label: "OpenCode Zen", slug: "providers/opencode" },
       { label: "Mimo (Xiaomi)", slug: "providers/mimo" },
       { label: "OpenRouter", slug: "providers/openrouter" },
       { label: "Vercel AI Gateway", slug: "providers/vercel-ai-gateway" },
