@@ -1983,7 +1983,8 @@ async fn streaming_failed_refresh_cools_down_and_moves_on() {
         return;
     }
     let dir = unique_temp_dir("stream-refresh-fail");
-    let _env = common::set_env(&[("SHUNT_CODEX_ACCOUNTS_DIR", dir.to_str().unwrap())]).await;
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", dir.to_str().unwrap());
     let access_a = chatgpt_token(FAR_FUTURE_EXP, "acct-a");
     let access_b = chatgpt_token(FAR_FUTURE_EXP, "acct-b");
     write_store_account(
@@ -1999,6 +2000,9 @@ async fn streaming_failed_refresh_cools_down_and_moves_on() {
         &chatgpt_token(FAR_FUTURE_EXP, "acct-b"),
     );
     let upstream = MockServer::start().await;
+    // The failed refresh must hit the mock, never the real ChatGPT token
+    // endpoint.
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", upstream.uri()));
     status_mock(&access_a, 401).mount(&upstream).await;
     Mock::given(method("POST"))
         .and(wiremock::matchers::body_string_contains("refresh_token"))

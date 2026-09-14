@@ -1352,6 +1352,7 @@ pub(crate) async fn chain_attempt(
             let envelope = crate::error::error_body_value(*error.response).await;
             return crate::proxy::chain_stream::Attempt::Failed {
                 advance: false,
+                remember: false,
                 envelope,
                 status: StatusCode::BAD_GATEWAY,
             };
@@ -1396,6 +1397,7 @@ pub(crate) async fn chain_attempt(
                     .await;
             return crate::proxy::chain_stream::Attempt::Failed {
                 advance: true,
+                remember: false,
                 envelope,
                 status: StatusCode::BAD_GATEWAY,
             };
@@ -1424,7 +1426,8 @@ pub(crate) async fn chain_attempt(
             }),
         };
         return crate::proxy::chain_stream::Attempt::Failed {
-            advance: false,
+            advance: crate::proxy::failover::is_advance_status(status),
+            remember: true,
             envelope,
             status,
         };

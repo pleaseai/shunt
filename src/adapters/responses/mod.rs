@@ -258,7 +258,7 @@ pub(crate) async fn chain_attempt(
     route: &Route,
     headers: &HeaderMap,
     body: RequestBody,
-    estimate: u64,
+    mut estimate: Option<&mut std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send>>>,
 ) -> crate::proxy::chain_stream::Attempt {
     let session_id = headers
         .get("x-claude-code-session-id")
@@ -311,16 +311,40 @@ pub(crate) async fn chain_attempt(
                 let envelope = adapter_error_envelope(own_error(error)).await;
                 return crate::proxy::chain_stream::Attempt::Failed {
                     advance: false,
+                    remember: false,
                     envelope,
                     status: StatusCode::BAD_GATEWAY,
                 };
             }
         };
         if !accounts.is_empty() {
+            if accounts.iter().all(|account| account.disabled) {
+                tracing::warn!(
+                    provider = %route.provider,
+                    accounts = accounts.len(),
+                    "all accounts for provider are disabled; none are selectable"
+                );
+                let envelope = adapter_error_envelope(own_error(format!(
+                    "provider '{}' has {} account(s) but all are `disabled = true`; none are selectable",
+                    route.provider,
+                    accounts.len()
+                )))
+                .await;
+                return crate::proxy::chain_stream::Attempt::Failed {
+                    advance: false,
+                    remember: false,
+                    envelope,
+                    status: StatusCode::BAD_GATEWAY,
+                };
+            }
+            let estimate_value = match estimate.as_mut() {
+                Some(future) => future.await,
+                None => 0,
+            };
             let mut machine = turn
                 .relay(route)
                 .machine()
-                .with_input_estimate(estimate)
+                .with_input_estimate(estimate_value)
                 .without_content_accumulation();
             let (order, reprobe) = state.accounts.select_order_deferred(
                 &route.provider,
@@ -356,6 +380,7 @@ pub(crate) async fn chain_attempt(
             let envelope = adapter_error_envelope(error).await;
             return crate::proxy::chain_stream::Attempt::Failed {
                 advance: false,
+                remember: false,
                 envelope,
                 status: StatusCode::BAD_GATEWAY,
             };
@@ -387,10 +412,14 @@ pub(crate) async fn chain_attempt(
     };
     match send_classified(&send_context).await {
         SendClassified::Relay { bytes } => {
+            let estimate_value = match estimate.as_mut() {
+                Some(future) => future.await,
+                None => 0,
+            };
             let mut machine = turn
                 .relay(route)
                 .machine()
-                .with_input_estimate(estimate)
+                .with_input_estimate(estimate_value)
                 .without_content_accumulation();
             let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
             crate::proxy::chain_stream::Attempt::Winner {
@@ -398,12 +427,15 @@ pub(crate) async fn chain_attempt(
                 frames: Box::pin(translated_stream(parsed_events(bytes), machine)),
             }
         }
-        SendClassified::Failed { envelope, status } => {
-            crate::proxy::chain_stream::Attempt::Failed {
-                advance: crate::proxy::failover::is_advance_status(status),
-                envelope,
-                status,
-            }
-        }
+        SendClassified::Failed {
+            envelope,
+            status,
+            remember,
+        } => crate::proxy::chain_stream::Attempt::Failed {
+            advance: crate::proxy::failover::is_advance_status(status),
+            remember,
+            envelope,
+            status,
+        },
     }
 }

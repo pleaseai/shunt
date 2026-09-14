@@ -451,15 +451,13 @@ async fn bounded_input_estimate_keeps_the_value_when_it_lands_in_time() {
 /// A transport error reaches the client without the upstream URL: the error
 /// envelope's message must not embed the request URL, matching the redaction
 /// convention used by every other client-visible transport error in the
-/// adapter. The send fails against a guaranteed-closed loopback port.
+/// adapter. The send fails against port 0, which can never accept a
+/// connection — unlike a released ephemeral port, which another process could
+/// rebind between the drop and the request.
 #[tokio::test]
 async fn http_events_stream_redacts_the_upstream_url_from_transport_errors() {
-    let port = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().port()
-    };
     let mut config = crate::config::Config::default();
-    let upstream_url = format!("http://127.0.0.1:{port}");
+    let upstream_url = "http://127.0.0.1:0".to_string();
     config.providers.get_mut("codex").unwrap().base_url = upstream_url.clone();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let body = prepare_body(&state, &codex_route(), &json!({"input": []})).await;

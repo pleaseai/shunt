@@ -79,8 +79,18 @@ type UpstreamBytes = std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::
 /// (`proxy::chain_stream`) can classify a failure as advance-worthy without
 /// duplicating the send, the quota capture, or the envelope building.
 pub(super) enum SendClassified {
-    Relay { bytes: UpstreamBytes },
-    Failed { envelope: Value, status: StatusCode },
+    Relay {
+        bytes: UpstreamBytes,
+    },
+    Failed {
+        envelope: Value,
+        status: StatusCode,
+        /// Whether this failure is a relayed upstream status (eligible for
+        /// the failover chain's remembered best-failure) or a gateway-
+        /// synthesized transport error (advances without remembering, like
+        /// the pre-commit loop's `BeforeHeaders`).
+        remember: bool,
+    },
 }
 
 /// Drive one bounded-retry send and classify the raw outcome. A retry-exhausted
@@ -113,6 +123,7 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
             return SendClassified::Failed {
                 envelope,
                 status: StatusCode::BAD_GATEWAY,
+                remember: false,
             };
         }
     };
@@ -128,7 +139,11 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
         let envelope =
             adapter_error_envelope(mapped_upstream_error(status, upstream, context.auth).await)
                 .await;
-        return SendClassified::Failed { envelope, status };
+        return SendClassified::Failed {
+            envelope,
+            status,
+            remember: true,
+        };
     }
     SendClassified::Relay {
         bytes: Box::pin(upstream.bytes_stream()),

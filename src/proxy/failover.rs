@@ -419,7 +419,7 @@ pub(crate) fn is_advance_status(status: StatusCode) -> bool {
     ) || status.is_server_error()
 }
 
-fn failure_priority(status: StatusCode) -> u8 {
+pub(crate) fn failure_priority(status: StatusCode) -> u8 {
     match status {
         StatusCode::TOO_MANY_REQUESTS => 4,
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => 3,

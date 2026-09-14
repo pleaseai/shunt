@@ -277,6 +277,38 @@ async fn advance_status_on_the_primary_defers_the_synthetic_start_to_the_winner(
 }
 
 #[tokio::test]
+async fn chain_exhaustion_relays_the_best_remembered_failure() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = common::env_lock().await;
+    let primary = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429))
+        .expect(1)
+        .mount(&primary)
+        .await;
+
+    let config = chain_config(
+        (ProviderKind::Responses, primary.uri()),
+        (ProviderKind::Anthropic, refused_base_url()),
+    );
+    let gateway = start_gateway(config).await;
+    let response = stream_request(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert_eq!(count_event(&body, "message_start"), 0, "got:\n{body}");
+    assert_eq!(count_event(&body, "error"), 1, "got:\n{body}");
+    // The remembered 429 is the best failure by priority and must be the
+    // relayed envelope, not the transport error of the last attempt.
+    assert!(body.contains("rate_limit_error"), "got:\n{body}");
+    assert!(!body.contains("error sending request"), "got:\n{body}");
+    drop(gateway);
+    primary.verify().await;
+}
+
+#[tokio::test]
 async fn a_healthy_primary_still_commits_exactly_one_message_start() {
     if !can_bind_loopback() {
         return;
