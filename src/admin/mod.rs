@@ -59,7 +59,7 @@ pub use session::AdminStores;
 #[cfg(feature = "ui")]
 pub use ui::embedded_file_count;
 
-use session::{PendingAttempt, PendingKind};
+use session::{PendingAttempt, PendingKind, COMPLETION_EXCHANGE_TIMEOUT};
 
 const SESSION_COOKIE: &str = "shunt_admin_session";
 
@@ -1328,7 +1328,17 @@ async fn complete_account(
     let pending = match state.admin_stores.pending.attempt(&name) {
         PendingAttempt::Ready(pending) => pending,
         PendingAttempt::NotFound => {
-            return bad_request("no pending login for this account; start again")
+            // Three causes share this response: no start, an expired entry, and
+            // — since a completion consumes the entry under the lock above — a
+            // concurrent completion for this account that finished first. The
+            // operator cannot tell them apart from the message, and widening it
+            // would leak whether an account exists, so the server's own timeline
+            // is where they are distinguishable (#440).
+            tracing::info!(
+                account = %name,
+                "admin: completion found no pending login (no start, expired, or consumed by a concurrent completion)"
+            );
+            return bad_request("no pending login for this account; start again");
         }
         PendingAttempt::TooManyAttempts => return bad_request("too many attempts; start again"),
     };
@@ -1347,7 +1357,7 @@ async fn complete_account(
         PendingKind::CodexOauth => return internal("unexpected codex pending on the claude route"),
     };
     let token_url = admin_token_url();
-    let tokens = match claude_login::exchange_code(
+    let exchange = claude_login::exchange_code(
         &state.http_client,
         code,
         &pending.state,
@@ -1355,15 +1365,20 @@ async fn complete_account(
         &token_url,
         claude_login::MANUAL_REDIRECT_URL,
         expires_in,
-    )
-    .await
-    {
-        Ok(tokens) => tokens,
+    );
+    // Bounded because the completion lock is held across it; see
+    // `COMPLETION_EXCHANGE_TIMEOUT`.
+    let tokens = match tokio::time::timeout(COMPLETION_EXCHANGE_TIMEOUT, exchange).await {
+        Ok(Ok(tokens)) => tokens,
         // Log full detail server-side; keep the browser response deliberately
         // generic (never echo upstream detail, which may carry hints).
-        Err(error) => {
+        Ok(Err(error)) => {
             tracing::warn!(account = %name, %error, "admin: Claude token exchange failed");
             return bad_gateway("Claude token exchange failed");
+        }
+        Err(_elapsed) => {
+            tracing::warn!(account = %name, "admin: Claude token exchange timed out");
+            return bad_gateway("Claude token exchange timed out");
         }
     };
     let account_uuid = tokens

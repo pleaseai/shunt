@@ -194,6 +194,25 @@ pub struct PendingStore {
     completions: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
+/// Bounds how long a completion may hold [`PendingStore::lock_completion`].
+///
+/// The lock spans the upstream token exchange, and nothing else bounds that
+/// call: the shared `http_client` is built with no `.timeout()`, neither
+/// `exchange_code` sets one, and there is no `TimeoutLayer` in the router. That
+/// was survivable while a stalled exchange delayed only its own request; once
+/// the completions for a key are serialized behind it, an exchange that never
+/// answers blocks every retry for that account for as long as the connection
+/// survives — which for a blackholed SYN/ACK is minutes. The browser's own
+/// 120-second abort does not cover it, because a direct API client has no such
+/// bound.
+///
+/// Bounded here rather than inside `exchange_code` so the CLI login paths,
+/// which hold no lock, keep the behaviour they have. `reqwest`'s own
+/// `.timeout()` would cover the body too and must not be used on streaming
+/// paths; this is a small non-streaming JSON POST, but `tokio::time::timeout`
+/// keeps the bound at the site whose hold time is the actual concern.
+pub const COMPLETION_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl PendingStore {
     pub fn new() -> Self {
         Self::default()
@@ -278,6 +297,16 @@ impl PendingStore {
     /// Deliberately not taken by `start`: a start blocking on an in-flight
     /// completion would stall the operator behind an upstream exchange, and two
     /// racing starts already fail closed on the state check.
+    ///
+    /// One consequence of that, worth stating because it is the case a reader
+    /// will hit next: [`remove`](Self::remove) is unconditional by key, so a
+    /// completion that wins this lock removes whatever entry is present —
+    /// including a *newer* one a `start` created during its exchange. That newer
+    /// flow then fails closed with "start again" rather than being silently
+    /// superseded, which is the direction this lock exists to enforce, but it
+    /// does mean a second start issued mid-exchange is discarded rather than
+    /// honoured. Letting it survive instead needs a generation carried on the
+    /// entry, which is tracked on issue #440 rather than done here.
     pub async fn lock_completion(&self, key: &str) -> tokio::sync::OwnedMutexGuard<()> {
         let lock = {
             let mut completions = self
@@ -621,5 +650,46 @@ mod tests {
         assert!(limiter.check());
         assert!(limiter.check());
         assert!(!limiter.check());
+    }
+
+    /// The sweep in [`PendingStore::lock_completion`] has to do two opposite
+    /// things, and a single comparison decides both: reclaim the locks of
+    /// finished completions, so the map cannot grow once per account name ever
+    /// provisioned, and leave a lock someone still holds alone, because evicting
+    /// it would let the next completion build a *second* lock for that key and
+    /// serialize against nothing. Widening the test to `>= 1` satisfies the
+    /// first and breaks the second silently.
+    #[tokio::test]
+    async fn the_completion_lock_map_reclaims_finished_keys_but_never_held_ones() {
+        let store = PendingStore::new();
+
+        drop(store.lock_completion("alpha").await);
+        let _beta = store.lock_completion("beta").await;
+        assert_eq!(
+            store
+                .completions
+                .lock()
+                .expect("map lock")
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["beta".to_string()],
+            "the released `alpha` lock is swept; the held `beta` one is not"
+        );
+
+        let _gamma = store.lock_completion("gamma").await;
+        let mut keys: Vec<String> = store
+            .completions
+            .lock()
+            .expect("map lock")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            ["beta".to_string(), "gamma".to_string()],
+            "acquiring one key must not evict another key's held lock"
+        );
     }
 }

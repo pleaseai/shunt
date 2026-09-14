@@ -18,7 +18,7 @@ use shunt::{
 };
 use tokio::task::JoinHandle;
 use wiremock::{
-    matchers::{body_partial_json, method, path},
+    matchers::{body_partial_json, body_string_contains, method, path},
     Mock, MockServer, ResponseTemplate,
 };
 
@@ -4548,7 +4548,109 @@ async fn admin_session_bootstrap_serves_the_live_csrf_token_and_refresh_buffer()
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
-/// Two completions for one account cannot both reach the store (issue #440).
+/// Drives two completions for one account into the window issue #440 describes.
+///
+/// The first completion is put in flight against a deliberately slow exchange
+/// and left inside it; a second `start` then replaces the pending entry the
+/// in-flight completion is still relying on, which is what lets a second
+/// completion pass its own state check. Returns the two responses in the order
+/// they were issued.
+///
+/// Shared by both provider routes rather than copied: the choreography is the
+/// thing under test and is identical for each, while the mocks and the store
+/// layout genuinely differ and stay in the tests.
+async fn race_two_completions(
+    client: &reqwest::Client,
+    base_url: &str,
+    admin_token: &str,
+    provider: &str,
+    account: &str,
+    first_code: &str,
+    second_code: &str,
+) -> (reqwest::Response, reqwest::Response) {
+    let start_login = |token: String| {
+        let client = client.clone();
+        let url = format!("{base_url}/admin/api/accounts/{provider}");
+        let body = serde_json::json!({ "name": account }).to_string();
+        async move {
+            let response = client
+                .post(url)
+                .header("x-shunt-admin-token", token)
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value =
+                serde_json::from_str(&response.text().await.unwrap()).unwrap();
+            authorize_state(&body).1
+        }
+    };
+    let complete = |token: String, code: String| {
+        let client = client.clone();
+        let url = format!("{base_url}/admin/api/accounts/{provider}/{account}/complete");
+        async move {
+            client
+                .post(url)
+                .header("x-shunt-admin-token", token)
+                .header("content-type", "application/json")
+                .body(serde_json::json!({ "code": code }).to_string())
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let first_state = start_login(admin_token.to_string()).await;
+    let first = tokio::spawn(complete(
+        admin_token.to_string(),
+        format!("{first_code}#{first_state}"),
+    ));
+    // Long enough for the spawned completion to take the lock and enter its
+    // exchange, and far inside the exchange's own delay below.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let second_state = start_login(admin_token.to_string()).await;
+    let second = complete(
+        admin_token.to_string(),
+        format!("{second_code}#{second_state}"),
+    )
+    .await;
+    (first.await.unwrap(), second)
+}
+
+/// Asserts the invariant both race tests below share.
+///
+/// Not merely "exactly one succeeded": the *first* completion holds the lock, so
+/// it is the one that must store, and the second must fail for the specific
+/// reason the design intends — its entry consumed. Asserting only the count
+/// would pass just as readily if the second won because the first's state check
+/// failed on a replaced entry, which is the scheduling slip this choreography
+/// is otherwise exposed to, or if the loser died on a 500 or a rate limit.
+async fn assert_first_won_and_second_failed_closed(
+    first: reqwest::Response,
+    second: reqwest::Response,
+) {
+    assert_eq!(
+        first.status(),
+        StatusCode::OK,
+        "the completion holding the lock is the one that stores"
+    );
+    assert_eq!(
+        second.status(),
+        StatusCode::BAD_REQUEST,
+        "the second completion must fail closed, not race the first to the store"
+    );
+    let body = second.text().await.unwrap();
+    assert!(
+        body.contains("no pending login"),
+        "the second must fail because its entry was consumed, not for an \
+         unrelated reason; got {body}"
+    );
+}
+
+/// Two completions for one Claude account cannot both reach the store (#440).
 ///
 /// `PendingStore::attempt` does not consume the entry, and the entry is removed
 /// only after the upstream exchange and the store have finished. So the whole
@@ -4558,11 +4660,8 @@ async fn admin_session_bootstrap_serves_the_live_csrf_token_and_refresh_buffer()
 /// account in an order nothing constrains, and when the older one lands last the
 /// account silently keeps the superseded credential — no rejected state check,
 /// no error, both tokens valid.
-///
-/// The invariant asserted here is the one an operator relies on: exactly one
-/// completion is told it succeeded, and the credential on disk is that one's.
 #[tokio::test]
-async fn a_second_completion_cannot_race_the_first_one_to_the_account_store() {
+async fn a_second_claude_completion_cannot_race_the_first_one_to_the_account_store() {
     if !can_bind_loopback() {
         return;
     }
@@ -4608,87 +4707,111 @@ async fn a_second_completion_cannot_race_the_first_one_to_the_account_store() {
 
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_RACE")).await;
     let client = reqwest::Client::new();
-    let base_url = gateway.base_url.clone();
-    let auth = |request: reqwest::RequestBuilder| {
-        request
-            .header("x-shunt-admin-token", "secret-race")
-            .header("content-type", "application/json")
-    };
-    let start_login = |client: reqwest::Client, base_url: String| async move {
-        let response = client
-            .post(format!("{base_url}/admin/api/accounts/claude"))
-            .header("x-shunt-admin-token", "secret-race")
-            .header("content-type", "application/json")
-            .body(r#"{"name":"race"}"#)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value =
-            serde_json::from_str(&response.text().await.unwrap()).unwrap();
-        reqwest::Url::parse(body["authorize_url"].as_str().unwrap())
-            .unwrap()
-            .query_pairs()
-            .find(|(key, _)| key == "state")
-            .map(|(_, value)| value.into_owned())
-            .expect("authorize URL carries the OAuth state")
-    };
-
-    let first_state = start_login(client.clone(), base_url.clone()).await;
-
-    // Put the first completion in flight and leave it inside its 2s exchange.
-    let first = tokio::spawn({
-        let client = client.clone();
-        let base_url = base_url.clone();
-        async move {
-            client
-                .post(format!(
-                    "{base_url}/admin/api/accounts/claude/race/complete"
-                ))
-                .header("x-shunt-admin-token", "secret-race")
-                .header("content-type", "application/json")
-                .body(format!(r#"{{"code":"first-code#{first_state}"}}"#))
-                .send()
-                .await
-                .unwrap()
-        }
-    });
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-    // A second start replaces the pending entry the in-flight completion is
-    // still relying on, which is what lets a second completion pass its own
-    // state check while the first is mid-exchange.
-    let second_state = start_login(client.clone(), base_url.clone()).await;
-    let second = auth(client.post(format!(
-        "{base_url}/admin/api/accounts/claude/race/complete"
-    )))
-    .body(format!(r#"{{"code":"second-code#{second_state}"}}"#))
-    .send()
-    .await
-    .unwrap();
-
-    let first = first.await.unwrap();
-    let outcomes = [
-        (first.status(), "TOKEN-FIRST"),
-        (second.status(), "TOKEN-SECOND"),
-    ];
-    let succeeded: Vec<&str> = outcomes
-        .iter()
-        .filter(|(status, _)| *status == StatusCode::OK)
-        .map(|(_, token)| *token)
-        .collect();
-    assert_eq!(
-        succeeded.len(),
-        1,
-        "exactly one completion may be told it stored the account; got {:?}",
-        outcomes.map(|(status, token)| (status.as_u16(), token))
-    );
+    let (first, second) = race_two_completions(
+        &client,
+        &gateway.base_url,
+        "secret-race",
+        "claude",
+        "race",
+        "first-code",
+        "second-code",
+    )
+    .await;
+    assert_first_won_and_second_failed_closed(first, second).await;
 
     // And the account on disk is the one the operator was told about, rather
     // than a credential from a completion the server reported as failed.
     let stored = std::fs::read_to_string(dir.join("race.json")).unwrap();
     assert!(
-        stored.contains(succeeded[0]),
+        stored.contains("TOKEN-FIRST"),
         "the stored credential must be the one whose completion returned 200"
+    );
+    assert!(
+        !stored.contains("TOKEN-SECOND"),
+        "the failed completion must not have reached the store"
+    );
+}
+
+/// The Codex route takes the same lock, and is a separate handler rather than a
+/// call into the Claude one — it captures a pre-store identity, keys its pending
+/// entry under `codex/{name}`, and writes a different store shape. So "the other
+/// route looks the same" is inspection, not coverage, and this is the assertion
+/// that a copy of the fix which *looks* right is actually wired up.
+#[tokio::test]
+async fn a_second_codex_completion_cannot_race_the_first_one_to_the_account_store() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let dir = unique_dir();
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_CODEXRACE", "ops:secret-codexrace");
+
+    // Codex posts the exchange form-encoded, so the two codes are matched on the
+    // encoded body rather than as JSON.
+    let token_server = MockServer::start().await;
+    let first_access = chatgpt_token(4_102_444_800, "acct-codex-first");
+    let second_access = chatgpt_token(4_102_444_800, "acct-codex-second");
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("code=first-code"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(2))
+                .set_body_json(serde_json::json!({
+                    "access_token": first_access,
+                    "refresh_token": "CODEX-REFRESH-FIRST",
+                    "id_token": "CODEX-ID-FIRST"
+                })),
+        )
+        .mount(&token_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("code=second-code"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": second_access,
+            "refresh_token": "CODEX-REFRESH-SECOND",
+            "id_token": "CODEX-ID-SECOND"
+        })))
+        .mount(&token_server)
+        .await;
+    vars.set(
+        "SHUNT_CODEX_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEXRACE");
+    config.providers.get_mut("codex").unwrap().accounts = Vec::new();
+    // Keep the untouched `anthropic` provider off the real on-disk Claude store
+    // (see the `admin_config` doc comment); only the Codex dir is isolated here.
+    config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
+        name: "codex-race".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        uuid: Some("codex-race-uuid".to_string()),
+        ..Default::default()
+    }];
+    let gateway = start(config).await;
+    let client = reqwest::Client::new();
+    let (first, second) = race_two_completions(
+        &client,
+        &gateway.base_url,
+        "secret-codexrace",
+        "codex",
+        "race",
+        "first-code",
+        "second-code",
+    )
+    .await;
+    assert_first_won_and_second_failed_closed(first, second).await;
+
+    let stored = std::fs::read_to_string(dir.join("race.json")).unwrap();
+    assert!(
+        stored.contains("CODEX-REFRESH-FIRST"),
+        "the stored credential must be the one whose completion returned 200"
+    );
+    assert!(
+        !stored.contains("CODEX-REFRESH-SECOND"),
+        "the failed completion must not have reached the store"
     );
 }

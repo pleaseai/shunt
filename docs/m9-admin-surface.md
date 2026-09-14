@@ -912,10 +912,9 @@ not agree with.
 The marker is a per-page-load convenience, not an enforceable lock: it is a
 `let` in the inline script, so reloading the dashboard clears it and permits the
 same retry the bound does. Being page-local it also cannot see a second tab or a
-direct API call, and the server orders nothing. Its job is only to keep one
-page's own two clicks from racing; ordering concurrent completions is
-server-side work, tracked in
-[issue #440](https://github.com/pleaseai/shunt/issues/440).
+direct API call. Its job is only to keep one page's own two clicks from racing;
+ordering concurrent completions is the server's, through the per-pending-key
+lock described above.
 
 Both are deliberately confined to the managed store tables: the observed rows in
 the top-level **Accounts and usage** table are unchanged, since those credentials
