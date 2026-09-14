@@ -13,6 +13,8 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
+mod common;
+
 /// Exact, whole-value header matcher.
 ///
 /// wiremock's built-in `header()` matcher splits comma-separated header values,
@@ -419,11 +421,12 @@ async fn same_origin_passthrough_strips_a_gateway_jwt_from_both_slots_end_to_end
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_PT_GW_SECRET_A",
         "0123456789abcdef0123456789abcdef",
     );
-    std::env::set_var(
+    vars.set(
         "SHUNT_TEST_PT_GW_USERS_A",
         "dev@example.com:approval-secret",
     );
@@ -477,11 +480,12 @@ async fn same_origin_passthrough_forwards_an_ordinary_credential_with_gateway_au
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_PT_GW_SECRET_B",
         "0123456789abcdef0123456789abcdef",
     );
-    std::env::set_var(
+    vars.set(
         "SHUNT_TEST_PT_GW_USERS_B",
         "dev@example.com:approval-secret",
     );

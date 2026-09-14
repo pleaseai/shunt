@@ -11,8 +11,6 @@
 
 #![cfg(feature = "ui")]
 
-use std::sync::{Mutex, MutexGuard};
-
 use axum::{
     body::{to_bytes, Body},
     http::{header, Method, Request, StatusCode},
@@ -25,30 +23,17 @@ use shunt::{
 };
 use tower::ServiceExt;
 
-/// Serializes every test in this binary that touches the process environment.
-///
-/// Unique variable names per test stop two tests from clobbering *each other's
-/// variable*, but they do not make `set_var` safe: the hazard is a writer
-/// racing a **reader**, and `build_router` reads the environment while a
-/// sibling test may be writing it. So the lock has to span the write, the
-/// `build_router` that reads, and the [`EnvVar`] cleanup — holding it for the
-/// writes alone would exclude nothing. The tests here run in microseconds, so
-/// serializing them costs nothing measurable.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+mod common;
 
 /// A router with `[server.admin]` enabled, which is what registers the UI
 /// routes. The env-backed credential gets a name unique to the process *and*
-/// the calling test, and the returned [`EnvVar`] holds [`ENV_LOCK`] for the rest
-/// of the test body so no sibling reads the environment mid-write.
-fn admin_router(label: &str) -> (Router, EnvVar) {
-    // A poisoned lock only means some other test panicked while holding it; the
-    // environment is still ours to use, so recover rather than cascade.
-    let guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+/// the calling test, and the returned guard holds the shared env lock for the
+/// rest of the test body so no sibling reads the environment mid-write.
+async fn admin_router(label: &str) -> (Router, common::EnvVars) {
+    let mut vars = common::env_lock().await;
 
     let name = format!("SHUNT_ADMIN_UI_TOKENS_{}_{label}", std::process::id());
-    std::env::set_var(&name, "admin:admin-secret");
+    vars.set(&name, "admin:admin-secret");
 
     let mut config = Config::default();
     config.server.admin = Some(AdminConfig {
@@ -63,30 +48,7 @@ fn admin_router(label: &str) -> (Router, EnvVar) {
     });
 
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
-    (
-        router,
-        EnvVar {
-            name,
-            _guard: guard,
-        },
-    )
-}
-
-/// Removes the variable on drop, at the end of the test body — never at its
-/// start, which is what would break a neighbour mid-run — and releases
-/// [`ENV_LOCK`] only after that removal.
-///
-/// `_guard` is never read: it is held for its `Drop`, which is the whole point,
-/// and the leading underscore is what tells `dead_code` so.
-struct EnvVar {
-    name: String,
-    _guard: MutexGuard<'static, ()>,
-}
-
-impl Drop for EnvVar {
-    fn drop(&mut self) {
-        std::env::remove_var(&self.name);
-    }
+    (router, vars)
 }
 
 async fn get(router: &Router, path: &str) -> axum::response::Response {
@@ -139,7 +101,7 @@ fn the_embedded_bundle_is_not_empty() {
 /// otherwise mask exactly that bug.
 #[tokio::test]
 async fn an_asset_is_served_with_its_own_bytes_and_type() {
-    let (router, _env) = admin_router("asset");
+    let (router, _env) = admin_router("asset").await;
 
     // The shell names the hashed entry files, so the asset under test is the
     // real emitted one rather than a name this test invented.
@@ -174,7 +136,7 @@ async fn an_asset_is_served_with_its_own_bytes_and_type() {
 /// value, and should have to say so here.
 #[tokio::test]
 async fn the_shell_carries_the_admin_security_headers() {
-    let (router, _env) = admin_router("shell-headers");
+    let (router, _env) = admin_router("shell-headers").await;
 
     let response = get(&router, "/admin/pool").await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -222,7 +184,7 @@ async fn the_shell_carries_the_admin_security_headers() {
 /// a reload as the shell rather than `404`.
 #[tokio::test]
 async fn an_unmatched_path_under_the_mount_returns_the_shell() {
-    let (router, _env) = admin_router("shell");
+    let (router, _env) = admin_router("shell").await;
 
     let response = get(&router, "/admin/pool").await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -242,7 +204,7 @@ async fn an_unmatched_path_under_the_mount_returns_the_shell() {
 /// other admin JSON handler.
 #[tokio::test]
 async fn an_unmatched_path_under_the_json_namespace_is_a_json_404() {
-    let (router, _env) = admin_router("json404");
+    let (router, _env) = admin_router("json404").await;
 
     let response = get(&router, "/admin/api/nope").await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -268,7 +230,7 @@ async fn an_unmatched_path_under_the_json_namespace_is_a_json_404() {
 /// method-aware inventory. Probing the methods directly is what covers the gap.
 #[tokio::test]
 async fn the_json_namespace_catch_all_answers_every_method() {
-    let (router, _env) = admin_router("json404methods");
+    let (router, _env) = admin_router("json404methods").await;
 
     for method in [
         Method::GET,
@@ -298,7 +260,7 @@ async fn the_json_namespace_catch_all_answers_every_method() {
 /// path segment shorter, so the roots are registered explicitly.
 #[tokio::test]
 async fn the_json_namespace_root_is_a_json_404_too() {
-    let (router, _env) = admin_router("json404root");
+    let (router, _env) = admin_router("json404root").await;
 
     for path in ["/admin/api", "/admin/api/"] {
         let response = get(&router, path).await;
@@ -320,7 +282,7 @@ async fn the_json_namespace_root_is_a_json_404_too() {
 /// makes a catch-all at the root unacceptable.
 #[tokio::test]
 async fn an_unmatched_path_outside_the_mount_still_404s() {
-    let (router, _env) = admin_router("outside");
+    let (router, _env) = admin_router("outside").await;
 
     for path in ["/nope", "/v1/nope", "/adminx"] {
         let response = get(&router, path).await;
@@ -347,7 +309,7 @@ async fn an_unmatched_path_outside_the_mount_still_404s() {
 /// dashboard string, would pass a status-only check.
 #[tokio::test]
 async fn the_mount_root_serves_the_spa_shell() {
-    let (router, _env) = admin_router("root");
+    let (router, _env) = admin_router("root").await;
 
     let response = get(&router, "/admin").await;
     assert_eq!(
@@ -375,7 +337,7 @@ async fn the_mount_root_serves_the_spa_shell() {
 /// check while still failing the operator who typed the slash.
 #[tokio::test]
 async fn the_mount_root_with_a_trailing_slash_serves_the_spa_shell() {
-    let (router, _env) = admin_router("root-slash");
+    let (router, _env) = admin_router("root-slash").await;
 
     let response = get(&router, "/admin/").await;
     assert_eq!(
@@ -402,7 +364,7 @@ async fn the_mount_root_with_a_trailing_slash_serves_the_spa_shell() {
 /// answered `/admin` with the looser `'unsafe-inline'` policy.
 #[tokio::test]
 async fn the_mount_root_carries_the_shell_hardening() {
-    let (router, _env) = admin_router("root-headers");
+    let (router, _env) = admin_router("root-headers").await;
 
     let response = get(&router, "/admin").await;
     let headers = response.headers();
@@ -429,7 +391,7 @@ async fn the_mount_root_carries_the_shell_hardening() {
 /// what a caller actually sends is a URI, not a `Path` extractor argument.
 #[tokio::test]
 async fn a_traversal_probe_under_the_asset_mount_never_serves_a_file() {
-    let (router, _env) = admin_router("traversal");
+    let (router, _env) = admin_router("traversal").await;
 
     for probe in [
         "/admin/assets/../../../../etc/passwd",

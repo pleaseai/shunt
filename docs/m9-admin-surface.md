@@ -119,10 +119,15 @@ pre-existing `[server.admin]` untouched.
   `[[server.admin.write_keys]]`, which carries an `id`), as is every
   `write_keys` entry.
 - **`read`** — passes every `GET` on the admin surface and on the spend-limit
-  API, and is refused with `403 permission_error` on every mutation. It also
-  cannot sign in: `POST /admin/login` rejects it with `401` through the login
-  form's own path, because a browser session carries full access and minting one
-  from a read key would silently escalate it.
+  API, and is refused with `403 permission_error` on every mutation. It signs in
+  to the dashboard as well: `POST /admin/login` mints a session that records the
+  `read` tier, and `require_write` refuses that session's mutations exactly as it
+  refuses the header credential's.
+
+  The tier reaching the session is what makes that safe. While a browser session
+  carried full access unconditionally, minting one from a read key would have
+  silently escalated it, which is why the login form answered `401` until
+  sessions recorded their minting privilege.
 
 A credential's privilege is the **maximum** over every set it matches, not
 whichever set happened to be scanned last. Array `id`s must be non-blank and
@@ -190,13 +195,16 @@ process-lifetime state:
 
 - **Two credentials, never mixed.** Admin auth is the `[server.admin]` credential;
   it is never the `[server.auth]` client tokens.
-- **Browser:** sign in at `/admin/login` with a **write-tier** admin credential →
+- **Browser:** sign in at `/admin/login` with an admin credential of **either
+  tier** →
   an opaque session
   id in an in-memory `SessionStore`, set as cookie `shunt_admin_session`
   (`HttpOnly`, `SameSite=Strict`, `Path=/admin`). The cookie is marked `Secure`
   **unless the request host is loopback**, so local HTTP dev and tests work while
   any real deployment host gets a Secure cookie (reusing M8's `host_is_loopback`
-  loopback carve-out). A session therefore always carries write access.
+  loopback carve-out). A session carries the tier of the credential that minted
+  it — a `read` key's session is refused on every mutation, exactly as its header
+  credential is.
 - **API/curl:** send the admin credential in the configured header
   (`x-shunt-admin-token`) or in `x-api-key`; both slots are accepted, and the
   resolved privilege is the maximum over whichever slots matched. When both
@@ -220,6 +228,18 @@ process-lifetime state:
   /admin/logout` is a plain navigation form that cannot send the header, so it is
   guarded by the same-origin check plus the `SameSite=Strict` cookie instead of
   the synchronizer token.
+- **Same-origin on `POST /admin/login`**, for the same reason and checked before
+  the rate limit, so a cross-site flood cannot spend the operator's login budget.
+  `SameSite=Strict` decides whether the browser *sends* an existing session
+  cookie; it does not stop the browser storing the `Set-Cookie` a cross-site form
+  submission gets back. Without this guard, anyone holding a valid credential
+  could submit that form from their own page and replace a visitor's session with
+  one of their choosing. That became worth guarding when `read_keys` gained the
+  ability to sign in: a read key is handed to someone deliberately given less
+  privilege, and this was its one lever against a write operator — silently
+  downgrading that dashboard to read-only until the operator signed in again.
+  Scripted logins are unaffected: the check passes when neither `Sec-Fetch-Site`
+  nor `Origin` is present.
 - **Pending-login store** is in-memory only, single-use, and TTL-bound; each
   completion attempt is counted and the entry is discarded after a small cap. The
   256-bit OAuth `state` already makes guessing infeasible.
@@ -248,6 +268,21 @@ process-lifetime state:
   half of this: its value is re-read on every config load, so overwriting the
   referenced file and triggering a reload does rotate that key without a
   restart. Sessions already minted still survive until `session_ttl_secs`.
+
+  **That last sentence reaches read keys too, which it could not while a read
+  key was refused a session.** A `read_keys` login now mints a read-tier
+  session, so rotating a compromised read key stops its *header* credential at
+  the next reload while its *cookie* goes on reading the admin surface until
+  `session_ttl_secs` elapses — and that key carries no upper bound
+  (`AdminConfig::session_ttl_secs` is a bare `u64` with a default, and
+  `Config::validate` does not range-check it), so a deployment that raised it
+  for convenience widens the window by exactly as much. What survives is
+  read-only — `require_write` refuses that session's mutations, and it is
+  strictly less than the full access a write-tier session already carried across
+  the same window — but a deployment that hands read keys out widely because
+  revocation looked immediate no longer has that property, and should restart
+  rather than reload. #100 covers both tiers; neither is fixed by the session
+  tier alone.
 
 ## Endpoints (registered only when `[server.admin]` is set)
 
@@ -288,8 +323,9 @@ process-lifetime state:
 Gateway-owned errors keep the Anthropic error shape (`ShuntError`); page routes
 render minimal server-side HTML with inline CSS/JS and no external requests.
 
-Every `GET` above is reachable with a **read** credential. `POST /admin/login`
-and the seven account-provisioning routes (`POST`/`DELETE` under
+Every `GET` above is reachable with a **read** credential, as is
+`POST /admin/login` — it mints a session at the tier of whichever credential
+signed in. The seven account-provisioning routes (`POST`/`DELETE` under
 `/admin/accounts/...`) require **write**. `POST /admin/logout` and the two OIDC
 routes are login-flow plumbing and are guarded by the same-origin/state checks
 rather than by tier.
@@ -885,8 +921,30 @@ consume the entry and `complete_account` removes it only after the store, so a
 start issued during an in-flight exchange replaces the entry and lets a second
 completion pass its own state check — both exchanges then reach the store in an
 order nothing constrains, and the older one landing last leaves the account
-holding the superseded credential. Serializing the page's completions is what
-keeps that sequence out of reach.
+holding the superseded credential.
+
+The page's marker cannot be what keeps that sequence out of reach, because it
+only binds one page: a second tab, a second operator, or a direct API call is
+subject to none of it, and the abort bound below releases the marker while the
+server may still be exchanging. So the ordering is server-side. Each completion
+holds `PendingStore::lock_completion` for its whole `attempt` → exchange → store
+→ remove sequence, keyed by the pending key, so a second completion waits and
+then finds the entry already consumed and fails closed with "start again"
+(issue #440). The marker stays as what it always was locally — a refusal that
+costs no round-trip — rather than the thing that orders the mutations.
+
+The lock is bounded by the exchange it holds. `COMPLETION_EXCHANGE_TIMEOUT` caps
+that upstream exchange at 30 seconds, so a hung provider releases the lock with a
+`502` instead of parking every later completion for that key behind it for as long
+as the connection stays open. The pending entry survives the timeout — the attempt
+still counts against `MAX_PENDING_ATTEMPTS` — but the authorization code may
+already be spent upstream, so the recovery is a fresh start rather than re-posting
+the same code.
+
+`start` deliberately does not take that lock: blocking a start behind an
+in-flight exchange would stall the operator for up to the completion's own
+timeout, and two racing *starts* already fail closed on the state check, which
+is why ordering them is tracked separately rather than here.
 
 Nothing else may release the marker, so the completion request carries its own
 120-second `AbortController` bound, cleared in a `finally`: a connection that
@@ -898,10 +956,9 @@ not agree with.
 The marker is a per-page-load convenience, not an enforceable lock: it is a
 `let` in the inline script, so reloading the dashboard clears it and permits the
 same retry the bound does. Being page-local it also cannot see a second tab or a
-direct API call, and the server orders nothing. Its job is only to keep one
-page's own two clicks from racing; ordering concurrent completions is
-server-side work, tracked in
-[issue #440](https://github.com/pleaseai/shunt/issues/440).
+direct API call. Its job is only to keep one page's own two clicks from racing;
+ordering concurrent completions is the server's, through the per-pending-key
+lock described above.
 
 Both are deliberately confined to the managed store tables: the observed rows in
 the top-level **Accounts and usage** table are unchanged, since those credentials

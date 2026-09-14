@@ -709,8 +709,8 @@ async fn the_codex_passthrough_never_relays_an_admin_credential_header() {
 #[tokio::test]
 async fn no_forward_site_relays_the_admin_session_cookie() {
     // `admin::authenticate` falls back to `session_cookie`, which accepts a
-    // write-tier `shunt_admin_session` out of the `cookie` header when no
-    // credential header matched. That made `cookie` an accept slot the first
+    // `shunt_admin_session` out of the `cookie` header when no credential
+    // header matched, at whatever tier minted it. That made `cookie` an accept slot the first
     // version of this enumeration missed, and two of the three forward sites
     // relayed the header verbatim: `headers_for_route` starts from
     // `base.clone()` on both branches, and the Codex strip list had no `cookie`

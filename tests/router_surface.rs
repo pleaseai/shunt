@@ -42,8 +42,9 @@ use shunt::{
     server,
 };
 use std::collections::BTreeSet;
-use std::sync::{Mutex, MutexGuard};
 use tower::ServiceExt;
+
+mod common;
 
 /// A method no route in the crate registers, so a response distinguishes
 /// "path exists" (`405`) from "path does not exist" (`404`).
@@ -243,17 +244,6 @@ fn method_set(allow: &str) -> BTreeSet<&str> {
         .collect()
 }
 
-/// Serializes every test in this binary that touches the process environment.
-///
-/// The per-test-unique names in [`all_surfaces_config`] stop one test's value
-/// from satisfying another test's config, but they do not make `set_var` safe
-/// on their own: the hazard is a writer racing a **reader**, and
-/// `server::build_router` reads the environment while a sibling test may be
-/// writing it. So the lock has to span the writes, the `build_router` that
-/// reads them, and the [`EnvVars`] cleanup — holding it for the writes alone
-/// would exclude nothing.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
 /// `Config::default()` with **every** optional surface enabled at once.
 ///
 /// Env-backed credentials get per-process-unique names because the process
@@ -263,29 +253,18 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// Both `state_path` values are set to an empty path — the documented opt-out
 /// — so building a router never reads or writes the operator's real
 /// `~/.shunt` state.
-fn all_surfaces_config(label: &str) -> (Config, EnvVars) {
-    // A poisoned lock only means another test panicked while holding it; the
-    // environment is still ours to use, so recover rather than cascade.
-    let guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+async fn all_surfaces_config(label: &str) -> (Config, common::EnvVars) {
+    let mut vars = common::env_lock().await;
 
     let suffix = format!("{}_{label}", std::process::id());
     let admin_env = format!("SHUNT_ROUTER_SURFACE_ADMIN_{suffix}");
     let client_env = format!("SHUNT_ROUTER_SURFACE_CLIENT_{suffix}");
     let jwt_env = format!("SHUNT_ROUTER_SURFACE_JWT_{suffix}");
     let users_env = format!("SHUNT_ROUTER_SURFACE_USERS_{suffix}");
-    std::env::set_var(&admin_env, "admin:admin-secret");
-    std::env::set_var(&client_env, "tester:client-secret");
-    std::env::set_var(&jwt_env, "0123456789abcdef0123456789abcdef");
-    std::env::set_var(&users_env, "dev@example.com:password");
-
-    // The config takes ownership of these names below, so the guard needs its
-    // own copies to remove them by.
-    let admin_env_name = admin_env.clone();
-    let client_env_name = client_env.clone();
-    let jwt_env_name = jwt_env.clone();
-    let users_env_name = users_env.clone();
+    vars.set(&admin_env, "admin:admin-secret");
+    vars.set(&client_env, "tester:client-secret");
+    vars.set(&jwt_env, "0123456789abcdef0123456789abcdef");
+    vars.set(&users_env, "dev@example.com:password");
 
     let mut config = Config::default();
 
@@ -348,42 +327,7 @@ fn all_surfaces_config(label: &str) -> (Config, EnvVars) {
         ..AccountConfig::default()
     }];
 
-    (
-        config,
-        EnvVars {
-            names: vec![
-                admin_env_name,
-                client_env_name,
-                jwt_env_name,
-                users_env_name,
-            ],
-            _guard: guard,
-        },
-    )
-}
-
-/// Removes the env vars [`all_surfaces_config`] set once the test holding it
-/// finishes, and holds [`ENV_LOCK`] until then so no sibling test reads the
-/// environment mid-write. The per-process-unique names already stop one test's
-/// value from satisfying another's config, so the removal itself is hygiene
-/// rather than isolation — the lock is what provides isolation — but
-/// it matches the set/remove pairing every other test file here uses
-/// (`tests/admin_surface.rs` pairs all 91 of its `set_var` calls), and keeps the
-/// variables from outliving their test for the rest of the binary's run.
-///
-/// Removal happens on drop, at the end of the test body, never at its start:
-/// clearing shared globals on entry is what breaks a neighbour mid-run.
-struct EnvVars {
-    names: Vec<String>,
-    _guard: MutexGuard<'static, ()>,
-}
-
-impl Drop for EnvVars {
-    fn drop(&mut self) {
-        for name in &self.names {
-            std::env::remove_var(name);
-        }
-    }
+    (config, vars)
 }
 
 /// `true` when the router has any route registered at `path`.
@@ -444,7 +388,7 @@ async fn allowed_methods(router: &Router, path: &str) -> String {
 /// costs no extra request and runs no handler.
 #[tokio::test]
 async fn every_registered_method_set_matches_the_inventory() {
-    let (config, _env) = all_surfaces_config("methods");
+    let (config, _env) = all_surfaces_config("methods").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for (path, documented) in all_registered_entries() {
@@ -464,14 +408,14 @@ async fn every_registered_method_set_matches_the_inventory() {
 /// panics on a duplicate path+method, but only when both trees are registered.
 #[tokio::test]
 async fn every_optional_surface_can_be_enabled_at_once() {
-    let (config, _env) = all_surfaces_config("builds");
+    let (config, _env) = all_surfaces_config("builds").await;
     let (_router, _shared, _state) =
         server::build_router(config).expect("a config enabling every optional surface builds");
 }
 
 #[tokio::test]
 async fn every_documented_path_is_registered_when_all_surfaces_are_enabled() {
-    let (config, _env) = all_surfaces_config("registered");
+    let (config, _env) = all_surfaces_config("registered").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for path in all_registered_paths() {
@@ -487,7 +431,7 @@ async fn every_documented_path_is_registered_when_all_surfaces_are_enabled() {
 /// the test above would pass just as well against a catch-all fallback.
 #[tokio::test]
 async fn no_undocumented_path_is_registered() {
-    let (config, _env) = all_surfaces_config("undocumented");
+    let (config, _env) = all_surfaces_config("undocumented").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     // Deliberately near-misses of registered paths, plus `/v1/organizations/*`
@@ -553,7 +497,7 @@ const LEGACY_ADMIN_PATHS: [&str; 13] = [
 #[cfg(not(feature = "ui"))]
 #[tokio::test]
 async fn no_legacy_admin_path_survives_the_api_split() {
-    let (config, _env) = all_surfaces_config("legacy");
+    let (config, _env) = all_surfaces_config("legacy").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for path in LEGACY_ADMIN_PATHS {
@@ -575,7 +519,7 @@ async fn no_legacy_admin_path_survives_the_api_split() {
 #[cfg(feature = "ui")]
 #[tokio::test]
 async fn every_legacy_admin_path_is_now_only_an_spa_deep_link() {
-    let (config, _env) = all_surfaces_config("legacy");
+    let (config, _env) = all_surfaces_config("legacy").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for path in LEGACY_ADMIN_PATHS {
@@ -593,7 +537,7 @@ async fn every_legacy_admin_path_is_now_only_an_spa_deep_link() {
 /// and the other two are server-rendered pages the SPA does not replace.
 #[tokio::test]
 async fn the_server_rendered_login_flow_stays_outside_the_api_namespace() {
-    let (config, _env) = all_surfaces_config("survivors");
+    let (config, _env) = all_surfaces_config("survivors").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for path in ["/admin", "/admin/login", "/admin/oidc/callback"] {
@@ -625,7 +569,7 @@ async fn the_server_rendered_login_flow_stays_outside_the_api_namespace() {
 #[cfg(not(feature = "ui"))]
 #[tokio::test]
 async fn the_mount_root_without_the_ui_feature_explains_the_missing_bundle() {
-    let (config, _env) = all_surfaces_config("no-ui-root");
+    let (config, _env) = all_surfaces_config("no-ui-root").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for path in ["/admin", "/admin/"] {
@@ -657,7 +601,7 @@ async fn the_mount_root_without_the_ui_feature_explains_the_missing_bundle() {
 /// that later claims a path must leave its `HEAD` answer intact.
 #[tokio::test]
 async fn root_still_answers_head_with_every_surface_enabled() {
-    let (config, _env) = all_surfaces_config("head");
+    let (config, _env) = all_surfaces_config("head").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     let request = Request::builder()

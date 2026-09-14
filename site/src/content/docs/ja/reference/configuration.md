@@ -83,7 +83,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | 配列 | アクセス権 | 意味 |
 | :-- | :-- | :-- |
 | `write_keys` | `write` | フルアクセス。`write` は `read` を含みます。`tokens_env`/`tokens_file` と同じティアです |
-| `read_keys` | `read` | 管理サーフェスと spend-limit API のすべての `GET` を通過し、すべての変更操作では `403 permission_error` で拒否されます。サインインもできません: `POST /admin/login` は `401` で拒否します（ブラウザーセッションはフルアクセスを持つため、read キーからセッションを発行すると権限が昇格してしまいます） |
+| `read_keys` | `read` | 管理サーフェスと spend-limit API のすべての `GET` を通過し、すべての変更操作では `403 permission_error` で拒否されます。ダッシュボードには読み取り専用セッションとしてサインインできます: `POST /admin/login` はこれを受け入れ、セッションが `read` 階層を記録し、その Cookie で送る変更操作は引き続き `403` で拒否されます |
 
 認証情報の権限は一致したすべての集合に対する**最大値**なので、集合を走査する順序が権限を変えることはありません。各 `id` は空であってはならず、各キーは 32 文字以上である必要があります。id とキー値はそれぞれ 3 つの認証情報集合（`tokens_env`/`tokens_file`、`write_keys`、`read_keys`）全体で一意でなければならず、衝突した場合はキー値をログに出さずに衝突した id だけを報告します。32 文字未満の既存 `tokens_env` トークンは、このルールより前から存在するため失敗ではなく警告になります。
 

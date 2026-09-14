@@ -24,6 +24,8 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
+mod common;
+
 /// A raw OpenAI Responses request body, exactly as the Codex CLI would send it.
 /// `model` is first so a rewrite is visibly a JSON edit and not a text splice.
 fn inbound_body(model: &str) -> String {
@@ -205,11 +207,12 @@ async fn routed_model_is_rewritten_and_sent_to_the_third_party_with_its_api_key(
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_ROUTED_CODEX_A",
         chatgpt_token(FAR_FUTURE_EXP, "acct-a"),
     );
-    std::env::set_var("SHUNT_TEST_ROUTED_KEY_A", "third-party-key");
+    vars.set("SHUNT_TEST_ROUTED_KEY_A", "third-party-key");
 
     let upstream_body = r#"{"id":"resp_routed","object":"response","status":"completed"}"#;
     let third_party = MockServer::start().await;
@@ -271,8 +274,9 @@ async fn unrouted_model_still_uses_the_fixed_pool_verbatim() {
         return;
     }
     let token = chatgpt_token(FAR_FUTURE_EXP, "acct-b");
-    std::env::set_var("SHUNT_TEST_ROUTED_CODEX_B", &token);
-    std::env::set_var("SHUNT_TEST_ROUTED_KEY_B", "third-party-key");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ROUTED_CODEX_B", &token);
+    vars.set("SHUNT_TEST_ROUTED_KEY_B", "third-party-key");
 
     let body = inbound_body("gpt-5.6-sol");
     let codex = MockServer::start().await;
@@ -318,9 +322,10 @@ async fn route_to_a_second_chatgpt_oauth_provider_uses_its_pool() {
     }
     let default_token = chatgpt_token(FAR_FUTURE_EXP, "acct-default");
     let work_token = chatgpt_token(FAR_FUTURE_EXP, "acct-work");
-    std::env::set_var("SHUNT_TEST_ROUTED_CODEX_C", &default_token);
-    std::env::set_var("SHUNT_TEST_ROUTED_WORK_C", &work_token);
-    std::env::set_var("SHUNT_TEST_ROUTED_KEY_C", "unused-key");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ROUTED_CODEX_C", &default_token);
+    vars.set("SHUNT_TEST_ROUTED_WORK_C", &work_token);
+    vars.set("SHUNT_TEST_ROUTED_KEY_C", "unused-key");
 
     let work = MockServer::start().await;
     Mock::given(method("POST"))
@@ -375,12 +380,13 @@ async fn a_rewritten_model_drops_the_clients_stale_routing_hint() {
         return;
     }
     let work_token = chatgpt_token(FAR_FUTURE_EXP, "acct-hint");
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_ROUTED_CODEX_J",
         chatgpt_token(FAR_FUTURE_EXP, "acct-j"),
     );
-    std::env::set_var("SHUNT_TEST_ROUTED_WORK_J", &work_token);
-    std::env::set_var("SHUNT_TEST_ROUTED_KEY_J", "unused-key");
+    vars.set("SHUNT_TEST_ROUTED_WORK_J", &work_token);
+    vars.set("SHUNT_TEST_ROUTED_KEY_J", "unused-key");
 
     let work = MockServer::start().await;
     Mock::given(method("POST"))
@@ -420,12 +426,13 @@ async fn an_unrewritten_route_still_forwards_the_routing_hint() {
         return;
     }
     let work_token = chatgpt_token(FAR_FUTURE_EXP, "acct-hint-kept");
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_ROUTED_CODEX_K",
         chatgpt_token(FAR_FUTURE_EXP, "acct-k"),
     );
-    std::env::set_var("SHUNT_TEST_ROUTED_WORK_K", &work_token);
-    std::env::set_var("SHUNT_TEST_ROUTED_KEY_K", "unused-key");
+    vars.set("SHUNT_TEST_ROUTED_WORK_K", &work_token);
+    vars.set("SHUNT_TEST_ROUTED_KEY_K", "unused-key");
 
     let work = MockServer::start().await;
     Mock::given(method("POST"))
@@ -460,11 +467,12 @@ async fn zstd_inbound_body_reaches_a_third_party_identity_encoded() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_ROUTED_CODEX_D",
         chatgpt_token(FAR_FUTURE_EXP, "acct-d"),
     );
-    std::env::set_var("SHUNT_TEST_ROUTED_KEY_D", "third-party-key");
+    vars.set("SHUNT_TEST_ROUTED_KEY_D", "third-party-key");
 
     let body = inbound_body("glm-5.3");
     let compressed = zstd::stream::encode_all(body.as_bytes(), 3).expect("body should compress");
@@ -517,11 +525,12 @@ async fn third_party_sse_is_relayed_verbatim() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_ROUTED_CODEX_E",
         chatgpt_token(FAR_FUTURE_EXP, "acct-e"),
     );
-    std::env::set_var("SHUNT_TEST_ROUTED_KEY_E", "third-party-key");
+    vars.set("SHUNT_TEST_ROUTED_KEY_E", "third-party-key");
 
     let sse = "event: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n";
     let third_party = MockServer::start().await;
@@ -563,11 +572,12 @@ async fn third_party_429_is_relayed_verbatim_without_failover() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_ROUTED_CODEX_F",
         chatgpt_token(FAR_FUTURE_EXP, "acct-f"),
     );
-    std::env::set_var("SHUNT_TEST_ROUTED_KEY_F", "third-party-key");
+    vars.set("SHUNT_TEST_ROUTED_KEY_F", "third-party-key");
 
     let error_body = r#"{"error":{"type":"rate_limit_error","message":"slow down"}}"#;
     let third_party = MockServer::start().await;
@@ -613,11 +623,12 @@ async fn inbound_auth_gates_routed_requests() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_ROUTED_CODEX_G",
         chatgpt_token(FAR_FUTURE_EXP, "acct-g"),
     );
-    std::env::set_var("SHUNT_TEST_ROUTED_KEY_G", "third-party-key");
+    vars.set("SHUNT_TEST_ROUTED_KEY_G", "third-party-key");
 
     let third_party = MockServer::start().await;
     Mock::given(method("POST"))
@@ -639,7 +650,7 @@ async fn inbound_auth_gates_routed_requests() {
         "SHUNT_TEST_ROUTED_KEY_G",
         vec![route("glm-5.3", "openai", Some("gpt-5.6-sol"))],
     );
-    std::env::set_var("SHUNT_TEST_ROUTED_TOKENS_G", "alice:secret-token");
+    vars.set("SHUNT_TEST_ROUTED_TOKENS_G", "alice:secret-token");
     config.server.auth = Some(InboundAuthConfig {
         header: "x-shunt-token".to_string(),
         tokens_env: "SHUNT_TEST_ROUTED_TOKENS_G".to_string(),
@@ -670,8 +681,9 @@ async fn unreadable_model_never_matches_a_route() {
         return;
     }
     let token = chatgpt_token(FAR_FUTURE_EXP, "acct-h");
-    std::env::set_var("SHUNT_TEST_ROUTED_CODEX_H", &token);
-    std::env::set_var("SHUNT_TEST_ROUTED_KEY_H", "third-party-key");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ROUTED_CODEX_H", &token);
+    vars.set("SHUNT_TEST_ROUTED_KEY_H", "third-party-key");
 
     let body = r#"{"model":["not","a","string"],"input":[]}"#.to_string();
     let codex = MockServer::start().await;
@@ -714,11 +726,12 @@ async fn slash_qualified_model_id_routes_and_rewrites() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_ROUTED_CODEX_I",
         chatgpt_token(FAR_FUTURE_EXP, "acct-i"),
     );
-    std::env::set_var("SHUNT_TEST_ROUTED_KEY_I", "third-party-key");
+    vars.set("SHUNT_TEST_ROUTED_KEY_I", "third-party-key");
 
     let third_party = MockServer::start().await;
     Mock::given(method("POST"))
