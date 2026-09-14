@@ -149,12 +149,39 @@ fn write_stale_pool_state(path: &std::path::Path, account_id: &str) {
 /// Point `SHUNT_CODEX_ACCOUNTS_DIR` at a fresh empty dir for the test's
 /// lifetime, through the caller's guard: a host with real shunt-managed codex
 /// accounts (`~/.shunt/accounts/codex`) must not leak them into the unpooled
-/// tests' credential resolution. Returns the dir so it stays alive.
-fn pin_empty_accounts_dir(vars: &mut common::EnvVars) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("shunt-ws-accounts-{}", std::process::id()));
+/// tests' credential resolution. The guard deletes the dir on drop.
+struct EmptyAccountsDir(std::path::PathBuf);
+
+impl Drop for EmptyAccountsDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn pin_empty_accounts_dir(vars: &mut common::EnvVars) -> EmptyAccountsDir {
+    let dir = std::env::temp_dir().join(format!(
+        "shunt-ws-accounts-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    dir
+    EmptyAccountsDir(dir)
+}
+
+/// The guard removes its directory when it drops: the suite must not
+/// accumulate empty account dirs in the system temp dir.
+#[tokio::test]
+async fn empty_accounts_dir_guard_removes_its_dir_on_drop() {
+    let mut vars = common::env_lock().await;
+    let guard = pin_empty_accounts_dir(&mut vars);
+    let dir = guard.0.clone();
+    assert!(dir.is_dir(), "dir exists while the guard lives");
+    drop(guard);
+    assert!(!dir.exists(), "dir is removed when the guard drops");
 }
 
 /// Write a codex-style `auth.json` a valid ChatGPT credential can be read from,
