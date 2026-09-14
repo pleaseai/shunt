@@ -65,8 +65,32 @@ regenerate it.
 
 ## 4. Tools & tool_choice
 
-- **Tool:** `{ type:"function", name, description, parameters: normalize(input_schema) }`.
-  `normalize`: ensure `type:"object"`, ensure `properties:{}`, drop non-array `required`,
+- **Function tool:** `{ type:"function", name, description, strict:false,
+  parameters: normalize(input_schema) }`.
+  `strict` is pinned off so the source schema's optional properties survive. A tool entry that
+  omits the field is normalized toward strict mode upstream, where a closed parameter object
+  (`additionalProperties:false`) behaves as if every property were required. Measured
+  2026-09-08 against `gpt-5.6-sol`, 10 forced calls per case with one required and one optional
+  string property: the closed object without `strict` returned the optional property (as `""`)
+  10/10, and the same object with `strict:false` omitted it 10/10. A third arm sent `strict:true`
+  over a nullable-required encoding and returned it as `null` 10/10 — that arm changed flag and
+  schema together, so it is a separate observation, not a third controlled case. Claude Code's
+  built-in `Read` ships exactly the closed shape (captured 2026-09-10: `required` holds only
+  `file_path`, `additionalProperties:false`, with `offset`/`limit` integers and `pages` a
+  string), and the mechanism holds on it directly: forced calls against `gpt-5.6-luna`
+  arrived without `strict` carrying `offset:0`, `limit:2000` and `pages:""` 5/5, and with
+  `strict:false` carrying only `file_path` 5/5 (2026-09-10). On the xAI and Grok flavors the
+  field is withheld: those backends reject several standard Responses fields (`text`,
+  `service_tier`, `reasoning.summary`), and their acceptance of `strict` is unverified. The
+  tool specs
+  replayed inside a `tool_search_output` carry the same `strict:false` — measured 2026-09-10
+  against `gpt-5.6-luna`, 3 reveal turns accepted with the loaded tool called without its
+  optional property. Native client-executed
+  `tool_search` omits it: that tool kind rejects the field outright (`400 Unknown parameter:
+  'tools[0].strict'`, measured 2026-09-10 against `gpt-5.6-luna`), and its own schema has no
+  optional properties (captured 2026-09-10: `query` and `max_results` are both required), so
+  the omission costs nothing either way.
+- `normalize`: ensure `type:"object"`, ensure `properties:{}`, drop non-array `required`,
   default `additionalProperties:true`, and drop any `pattern` (or `patternProperties` key)
   Python's `re` cannot compile — the backend validates `parameters` against the JSON Schema
   meta-schema with `format: regex` checked by Python, and one JavaScript-only regex

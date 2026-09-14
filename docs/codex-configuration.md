@@ -745,10 +745,15 @@ it is a raw Responses-to-Responses passthrough. Full behavior spec:
 provider = "codex"   # default; must be a chatgpt_oauth provider (e.g. the built-in codex)
 ```
 
-Absent ⇒ none of the routes exist. Present ⇒ shunt registers three routes at boot — `POST
-/backend-api/codex/responses`, `POST /responses`, `POST /v1/responses` — all served by the named
-provider's account pool. Config validation rejects an unknown provider or one not using `auth =
-"chatgpt_oauth"` at startup.
+Absent ⇒ none of the Codex-specific routes exist. Present ⇒ shunt registers three inference
+routes at boot — `POST /backend-api/codex/responses`, `POST /responses`, `POST /v1/responses` — all
+served by the named provider's account pool, plus `GET /models` and `GET
+/backend-api/codex/models` model-catalog aliases. Codex catalog requests receive the valid empty
+fallback `{"models":[]}` rather than fabricated partial model rows. The shared `GET /v1/models`
+also returns this Codex shape when its query contains `client_version`; otherwise its Anthropic
+discovery bytes are unchanged. These catalog variants use the existing model-discovery auth gate.
+Config validation rejects an unknown provider or one not using `auth = "chatgpt_oauth"` at
+startup.
 
 ### 17.2 Point the Codex CLI at shunt
 
@@ -916,8 +921,8 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"   # when [server.auth] is configured
 ```
 
-shunt does not serve a Codex model catalog: its `GET /v1/models` discovery list is Anthropic-shaped
-and does not advertise Codex routes. The CLI learns metadata for non-OpenAI slugs the way these
+While shunt responds to Codex CLI discovery requests with the valid empty fallback `{"models":[]}`,
+it does not advertise Codex routes in its model list. The CLI learns metadata for non-OpenAI slugs the way these
 vendors document — a `~/.codex/models.json` catalog referenced by `model_catalog_json` (Mimo ships
 its own at `~/.codex/model-catalogs/model-catalogs.json`). Only the `model` value selects the shunt
 route.

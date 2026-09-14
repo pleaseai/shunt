@@ -19,6 +19,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | :-- | :-- | :-- |
 | `bind` | `127.0.0.1:3001` | shunt 监听的地址 |
 | `default_provider` | `anthropic` | 面向任何无匹配路由的模型的提供方 |
+| `shutdown_timeout_seconds` | `30` | 第一次 SIGTERM/SIGINT 后，活动 HTTP/SSE/WebSocket 工作排空并取消其余工作的秒数。必须为 `1`–`3600`；更改后需要重启 |
 | `max_concurrent_requests` | `1024` | 入站并发请求上限，请求会一直计数到响应正文结束。超出上限的请求不会排队，而是立即以 `503` 和 `Retry-After: 1` 拒绝。`0` 表示禁用限制，`/` 和 `/health` 不受限制。更改此键后需要重启 |
 | `sse_keepalive_seconds` | `30` | 注入 SSE `ping` 前的闲置秒数;`0` 禁用([详情](/zh-cn/guides/shared-gateway/#sse-keepalive-ping)) |
 
@@ -82,7 +83,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | 数组 | 访问级别 | 含义 |
 | :-- | :-- | :-- |
 | `write_keys` | `write` | 完全访问权限。`write` 蕴含 `read`,与 `tokens_env`/`tokens_file` 同级 |
-| `read_keys` | `read` | 可以通过管理界面与 spend-limit API 的所有 `GET`;所有修改操作都会以 `403 permission_error` 拒绝。它也无法登录:`POST /admin/login` 会以 `401` 拒绝(浏览器会话拥有完全访问权限,用 read key 铸造会话等于提权) |
+| `read_keys` | `read` | 可以通过管理界面与 spend-limit API 的所有 `GET`;所有修改操作都会以 `403 permission_error` 拒绝。它可以以只读会话登录仪表盘:`POST /admin/login` 会接受它,会话记录 `read` 级别,而通过该 Cookie 发出的所有修改操作仍然会被 `403` 拒绝 |
 
 凭据的权限是它匹配到的所有集合中的**最大值**,因此扫描集合的顺序不会改变权限。每个 `id` 不得为空,每个 key 至少 32 个字符;id 与 key 值都必须在三个凭据集合(`tokens_env`/`tokens_file`、`write_keys`、`read_keys`)范围内唯一,发生冲突时只报告冲突的 id,不会记录 key 值。短于 32 个字符的旧 `tokens_env` token 早于该规则存在,因此只发出警告而不会失败。
 
@@ -204,6 +205,7 @@ headers = { "x-api-key" = "..." }
 | `upstream_model` | `model` | 发送给上游的模型 id。与 `model` 不同时,shunt 只改写请求体顶层的 `model`,其余字段保持不变 |
 
 指向未知 provider、非 `responses` provider,或使用不携带凭证的 auth 模式(`passthrough` 或 `none`)的 provider 的 route 会在校验时被拒绝;重复的 `model` 或空字段同样被拒绝。route 从实时配置快照读取,因此新增、修改、删除会在**重新加载**时生效;只有开关 `[server.codex_endpoint]` 表本身才需要重启。路由到非 ChatGPT provider 的请求使用全新组装的头部允许列表(`content-type`、`accept`、通过 flavor 门控的 `OpenAI-Beta`,以及 `xai_oauth` route 的 Grok CLI identity 头部)、identity 编码的请求体和单个凭证,没有池也没有故障转移。
+同一可选功能还会注册 `GET /models` 和 `GET /backend-api/codex/models`,它们在常规模型发现认证门之后返回有效的 Codex 回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 上,如果存在 `client_version` 查询,它优先于类 Anthropic 的头部并选择 Codex 空形状。没有 `client_version` 时,现有 Anthropic 发现响应保持不变。shunt 不会伪造不完整的 Codex `ModelInfo` 行。
 
 ## `[server.usage]`(可选)
 

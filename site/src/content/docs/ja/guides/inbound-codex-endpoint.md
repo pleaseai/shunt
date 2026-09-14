@@ -23,6 +23,8 @@ shunt run
 
 起動時の検証は、未知の `provider` や `auth = "chatgpt_oauth"` を使わないプロバイダーを拒否します — このエンドポイントはオペレーターの Codex ベアラーを注入するため、`chatgpt_oauth` プロバイダーだけが要件を満たします。すべてのキーとデフォルトは[設定リファレンス](/ja/reference/configuration/)を、登録されるルートは [HTTP エンドポイント](/ja/reference/endpoints/)を参照してください。
 
+このオプトインにより、Codex CLI のモデル検出も解析可能になります。`GET /models` と `GET /backend-api/codex/models` は有効なフォールバック `{"models":[]}` を返します。共有の `GET /v1/models` パスでは、`client_version` クエリフィールドが Anthropic 風のヘッダーより優先され、Codex 形式を選択します。このフィールドがなければ、既存の Anthropic 検出レスポンスは変わりません。これらのリクエストは通常のモデル検出認証ゲートを通り、shunt は不完全な Codex モデル行を生成しません。
+
 ## クライアント analytics のシンク
 
 Codex CLI は base URL へプロダクト analytics も POST します。shunt は CLI が生成しうる両方のパスを受け付けます。
@@ -80,7 +82,7 @@ wire_api = "responses"
 http_headers = { "x-shunt-token" = "<token>" }
 ```
 
-`[server.auth]` がなければ、このエンドポイントはそこへ到達できる誰にでも開かれています — ループバックや個人利用なら許容できますが、共有ゲートウェイでは不可です。クライアントが提示した認証情報は shunt への認証に**のみ**使われ、それ（および CLI がたまたま送る `Authorization`）は取り除かれ、上流へ転送されることはありません。`[server.admin]` の認証情報ヘッダー（既定では `x-shunt-admin-token`、`[server.admin] header` で指定した名前）も取り除かれます — 管理サーフェスはそのスロットで認証し、管理用の認証情報はアップストリームアカウントをプロビジョニングできるためです。`cookie` ヘッダーもヘッダーごと取り除かれます: 管理サーフェスは書き込み権限のセッション Cookie もそこで受理し、shunt 自身は Cookie ジャーを持たないため、上流がそれに依存することはありません。`x-api-key` も無条件に取り除かれます — `[server.auth]` が設定されていない場合も同様です。対象のプロバイダーは起動時に `chatgpt_oauth` 専用であることが検証されるため、インバウンドの `x-api-key` の値がこのアップストリームに対して有効な認証情報になることは決してありません。Claude Code の `apiKeyHelper` のように `Authorization` と `x-api-key` の両方に同じキーを設定するクライアントであっても、2 つ目のスロット経由でそのキーが漏れることはありません。インバウンドのクライアントが実際の Codex CLI であるため、パススルーはそのリクエストヘッダーをそのまま転送し（`version`、`originator`、`OpenAI-Beta`、`x-codex-*`、…）、差し替えるのは選択されたプールアカウントの `Authorization` ベアラーと `chatgpt-account-id` **だけ**です。認証の詳しい手順は [Codex CLI の接続](/ja/guides/connect-codex-cli/#3-shunt-クライアントトークンを提示するserverauth-設定時)を参照してください。
+`[server.auth]` がなければ、このエンドポイントはそこへ到達できる誰にでも開かれています — ループバックや個人利用なら許容できますが、共有ゲートウェイでは不可です。クライアントが提示した認証情報は shunt への認証に**のみ**使われ、それ（および CLI がたまたま送る `Authorization`）は取り除かれ、上流へ転送されることはありません。`[server.admin]` の認証情報ヘッダー（既定では `x-shunt-admin-token`、`[server.admin] header` で指定した名前）も取り除かれます — 管理サーフェスはそのスロットで認証し、管理用の認証情報はアップストリームアカウントをプロビジョニングできるためです。`cookie` ヘッダーもヘッダーごと取り除かれます: 管理サーフェスはセッション Cookie もそこで受理し、shunt 自身は Cookie ジャーを持たないため、上流がそれに依存することはありません。`x-api-key` も無条件に取り除かれます — `[server.auth]` が設定されていない場合も同様です。対象のプロバイダーは起動時に `chatgpt_oauth` 専用であることが検証されるため、インバウンドの `x-api-key` の値がこのアップストリームに対して有効な認証情報になることは決してありません。Claude Code の `apiKeyHelper` のように `Authorization` と `x-api-key` の両方に同じキーを設定するクライアントであっても、2 つ目のスロット経由でそのキーが漏れることはありません。インバウンドのクライアントが実際の Codex CLI であるため、パススルーはそのリクエストヘッダーをそのまま転送し（`version`、`originator`、`OpenAI-Beta`、`x-codex-*`、…）、差し替えるのは選択されたプールアカウントの `Authorization` ベアラーと `chatgpt-account-id` **だけ**です。認証の詳しい手順は [Codex CLI の接続](/ja/guides/connect-codex-cli/#3-shunt-クライアントトークンを提示するserverauth-設定時)を参照してください。
 
 ## アカウントのプロビジョニング
 
@@ -145,7 +147,7 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"
 ```
 
-shunt は Codex 用のモデルカタログを提供しません — `GET /v1/models` のディスカバリー一覧は Anthropic 形式で、Codex のルートを公開しません。CLI はこれらのベンダーが案内するとおり、`model_catalog_json` が指す `~/.codex/models.json` カタログからスラッグのメタデータを取得します。shunt のルートを選ぶのは `model` の値だけです。
+shunt は Codex CLI のディスカバリー要求に対して有効なフォールバック `{"models":[]}` で応答しますが、Codex のルートをディスカバリー一覧で公開しません。CLI はこれらのベンダーが案内するとおり、`model_catalog_json` が指す `~/.codex/models.json` カタログからスラッグのメタデータを取得します。shunt のルートを選ぶのは `model` の値だけです。
 
 **ChatGPT 以外**のアップストリームへルーティングされたリクエストで変わる点:
 

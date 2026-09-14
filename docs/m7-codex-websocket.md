@@ -318,7 +318,7 @@ the WebSocket transport needs both:
   `AccountPool::note_codex_rate_limits`, and still forwards the event downstream
   through the outbound WebSocket response path. This arrives on *every* turn, so a
   pool that only ever reuses connections still reports live windows to
-  `GET /admin/pool` and `GET /usage`.
+  `GET /admin/api/pool` and `GET /usage`.
 
 Both sources share one per-window apply step, so a window's bucket is always
 identified by its `window_minutes` (~300 → 5h, ~10080 → weekly) and never by its

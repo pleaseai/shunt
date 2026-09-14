@@ -19,6 +19,8 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
+mod common;
+
 struct BearerToken(String);
 
 impl Match for BearerToken {
@@ -88,10 +90,6 @@ fn store_account(name: &str) -> AccountConfig {
         ..Default::default()
     }
 }
-
-/// Serializes the refresh-path tests, which set the process-global
-/// `SHUNT_CLAUDE_ACCOUNTS_DIR` / `SHUNT_CLAUDE_TOKEN_URL` env vars.
-static REFRESH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn unique_temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -291,10 +289,11 @@ async fn account_uuid_is_rewritten_for_each_account_during_rotation() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token_a = ["fake-oauth-", "uuid-a"].concat();
     let token_b = ["fake-oauth-", "uuid-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_UUID_A", &token_a);
-    std::env::set_var("SHUNT_TEST_MULTI_UUID_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_UUID_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_UUID_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -334,9 +333,6 @@ async fn account_uuid_is_rewritten_for_each_account_during_rotation() {
         "account-b"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_MULTI_UUID_A");
-    std::env::remove_var("SHUNT_TEST_MULTI_UUID_B");
 }
 
 /// A quota `429` is proof the bearer authenticated: the provider read the
@@ -348,10 +344,11 @@ async fn an_authenticated_quota_429_clears_a_stale_relogin_mark() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token_a = ["fake-oauth-", "quotaclear-a"].concat();
     let token_b = ["fake-oauth-", "quotaclear-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_QUOTACLEAR_A", &token_a);
-    std::env::set_var("SHUNT_TEST_MULTI_QUOTACLEAR_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_QUOTACLEAR_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_QUOTACLEAR_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -401,8 +398,6 @@ async fn an_authenticated_quota_429_clears_a_stale_relogin_mark() {
     );
 
     upstream.verify().await;
-    std::env::remove_var("SHUNT_TEST_MULTI_QUOTACLEAR_A");
-    std::env::remove_var("SHUNT_TEST_MULTI_QUOTACLEAR_B");
 }
 
 /// The retry arm's negative twin. It groups `Rotate | PauseSame | RefreshRetry`,
@@ -415,10 +410,10 @@ async fn a_headerless_429_after_refresh_leaves_the_relogin_mark_standing() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let stale = ["fake-oauth-", "throttlekeep-stale"].concat();
     let rotated = ["fake-oauth-", "throttlekeep-rotated"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_THROTTLEKEEP_B", "unused");
+    vars.set("SHUNT_TEST_MULTI_THROTTLEKEEP_B", "unused");
 
     let accounts_dir = unique_temp_dir("throttlekeep");
     write_store_account(
@@ -429,7 +424,7 @@ async fn a_headerless_429_after_refresh_leaves_the_relogin_mark_standing() {
         "uuid-a",
         future_expiry_ms(),
     );
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -442,7 +437,7 @@ async fn a_headerless_429_after_refresh_leaves_the_relogin_mark_standing() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/oauth/token", auth.uri()),
     );
@@ -492,9 +487,6 @@ async fn a_headerless_429_after_refresh_leaves_the_relogin_mark_standing() {
 
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_THROTTLEKEEP_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -507,10 +499,11 @@ async fn a_5xx_rotation_leaves_the_relogin_mark_standing() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token_a = ["fake-oauth-", "quotakeep-a"].concat();
     let token_b = ["fake-oauth-", "quotakeep-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_QUOTAKEEP_A", &token_a);
-    std::env::set_var("SHUNT_TEST_MULTI_QUOTAKEEP_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_QUOTAKEEP_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_QUOTAKEEP_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -551,8 +544,6 @@ async fn a_5xx_rotation_leaves_the_relogin_mark_standing() {
     );
 
     upstream.verify().await;
-    std::env::remove_var("SHUNT_TEST_MULTI_QUOTAKEEP_A");
-    std::env::remove_var("SHUNT_TEST_MULTI_QUOTAKEEP_B");
 }
 
 #[tokio::test]
@@ -560,10 +551,11 @@ async fn quota_429_rotates_and_cools_down_the_rejected_account() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token_a = ["fake-oauth-", "quota-a"].concat();
     let token_b = ["fake-oauth-", "quota-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_QUOTA_A", &token_a);
-    std::env::set_var("SHUNT_TEST_MULTI_QUOTA_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_QUOTA_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_QUOTA_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -618,10 +610,11 @@ async fn unauthorized_static_account_cools_down_and_rotates() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token_a = ["fake-oauth-", "unauth-a"].concat();
     let token_b = ["fake-oauth-", "unauth-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_UNAUTH_A", &token_a);
-    std::env::set_var("SHUNT_TEST_MULTI_UNAUTH_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_UNAUTH_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_UNAUTH_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -673,10 +666,11 @@ async fn plain_429_retries_the_same_account_without_rotating() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token_a = ["fake-oauth-", "throttle-a"].concat();
     let token_b = ["fake-oauth-", "throttle-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_THROTTLE_A", &token_a);
-    std::env::set_var("SHUNT_TEST_MULTI_THROTTLE_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_THROTTLE_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_THROTTLE_B", &token_b);
 
     let upstream = MockServer::start().await;
     let error_body = r#"{"error":"temporary throttle on account a"}"#;
@@ -721,10 +715,11 @@ async fn exhausted_pool_relays_the_last_upstream_body_verbatim() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token_a = ["fake-oauth-", "exhaust-a"].concat();
     let token_b = ["fake-oauth-", "exhaust-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_EXHAUST_A", &token_a);
-    std::env::set_var("SHUNT_TEST_MULTI_EXHAUST_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_EXHAUST_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_EXHAUST_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -773,7 +768,7 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let stale = ["fake-oauth-", "refresh-stale"].concat();
     let fresh = ["fake-oauth-", "refresh-fresh"].concat();
     let expires_at_ms = future_expiry_ms();
@@ -787,7 +782,7 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
         "uuid-a",
         expires_at_ms,
     );
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -799,7 +794,7 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/oauth/token", auth.uri()),
     );
@@ -836,8 +831,6 @@ async fn refresh_retry_refreshes_then_succeeds_on_401() {
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -848,12 +841,12 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let stale = ["fake-oauth-", "rotate-stale"].concat();
     let fresh = ["fake-oauth-", "rotate-fresh"].concat();
     let token_b = ["fake-oauth-", "rotate-b"].concat();
     let expires_at_ms = future_expiry_ms();
-    std::env::set_var("SHUNT_TEST_MULTI_ROTATE_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_ROTATE_B", &token_b);
 
     let accounts_dir = unique_temp_dir("rotates");
     write_store_account(
@@ -864,7 +857,7 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
         "uuid-a",
         expires_at_ms,
     );
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -876,7 +869,7 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/oauth/token", auth.uri()),
     );
@@ -920,9 +913,6 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_ROTATE_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -933,10 +923,14 @@ async fn unresolvable_account_cools_down_and_rotates() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
+    // Unset is this test's precondition, not cleanup: the account is
+    // unresolvable *because* the name is absent. It has to hold under the
+    // guard, which also restores it afterwards.
+    vars.unset("SHUNT_TEST_MULTI_MISSING_A");
     // account-a points at an env var that is never set; account-b is healthy.
-    std::env::remove_var("SHUNT_TEST_MULTI_MISSING_A");
     let token_b = ["fake-oauth-", "resolve-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_RESOLVE_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_RESOLVE_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -961,8 +955,6 @@ async fn unresolvable_account_cools_down_and_rotates() {
         "account-b"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_MULTI_RESOLVE_B");
 }
 
 #[tokio::test]
@@ -972,10 +964,11 @@ async fn server_error_rotates_and_cools_down_the_failing_account() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token_a = ["fake-oauth-", "server-a"].concat();
     let token_b = ["fake-oauth-", "server-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_SERVER_A", &token_a);
-    std::env::set_var("SHUNT_TEST_MULTI_SERVER_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_SERVER_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_SERVER_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1020,9 +1013,6 @@ async fn server_error_rotates_and_cools_down_the_failing_account() {
         "account-b"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_MULTI_SERVER_A");
-    std::env::remove_var("SHUNT_TEST_MULTI_SERVER_B");
 }
 
 #[tokio::test]
@@ -1033,12 +1023,12 @@ async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let stale = ["fake-oauth-", "still401-stale"].concat();
     let fresh = ["fake-oauth-", "still401-fresh"].concat();
     let token_b = ["fake-oauth-", "still401-b"].concat();
     let expires_at_ms = future_expiry_ms();
-    std::env::set_var("SHUNT_TEST_MULTI_STILL401_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_STILL401_B", &token_b);
 
     let accounts_dir = unique_temp_dir("still401");
     write_store_account(
@@ -1049,7 +1039,7 @@ async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
         "uuid-a",
         expires_at_ms,
     );
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1061,7 +1051,7 @@ async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/oauth/token", auth.uri()),
     );
@@ -1105,9 +1095,6 @@ async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_STILL401_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -1118,8 +1105,9 @@ async fn all_accounts_unresolvable_returns_bad_gateway() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::remove_var("SHUNT_TEST_MULTI_MISSING_ALL_A");
-    std::env::remove_var("SHUNT_TEST_MULTI_MISSING_ALL_B");
+    let mut vars = common::env_lock().await;
+    vars.unset("SHUNT_TEST_MULTI_MISSING_ALL_A");
+    vars.unset("SHUNT_TEST_MULTI_MISSING_ALL_B");
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1149,10 +1137,11 @@ async fn pause_same_retry_succeeds_and_relays_without_rotating() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token_a = ["fake-oauth-", "pauseok-a"].concat();
     let token_b = ["fake-oauth-", "pauseok-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_PAUSEOK_A", &token_a);
-    std::env::set_var("SHUNT_TEST_MULTI_PAUSEOK_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_PAUSEOK_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_PAUSEOK_B", &token_b);
 
     let upstream = MockServer::start().await;
     // First call to account-a: a plain 429 (throttle). Higher priority + capped at
@@ -1203,9 +1192,6 @@ async fn pause_same_retry_succeeds_and_relays_without_rotating() {
     );
     assert_eq!(response.text().await.unwrap(), r#"{"account":"a"}"#);
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_MULTI_PAUSEOK_A");
-    std::env::remove_var("SHUNT_TEST_MULTI_PAUSEOK_B");
 }
 
 /// Write a store account file marked as a long-lived, non-refreshable setup token
@@ -1227,15 +1213,15 @@ async fn static_setup_token_account_cools_down_without_refreshing() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let setup = ["fake-oauth-", "setup-static"].concat();
     let token_b = ["fake-oauth-", "setupstatic-b"].concat();
     let expires_at_ms = future_expiry_ms();
-    std::env::set_var("SHUNT_TEST_MULTI_SETUPSTATIC_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_SETUPSTATIC_B", &token_b);
 
     let accounts_dir = unique_temp_dir("setupstatic");
     write_setup_token_account(&accounts_dir, "account-a", &setup, expires_at_ms);
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     // The refresh endpoint must never be called for a setup token.
     let auth = MockServer::start().await;
@@ -1248,7 +1234,7 @@ async fn static_setup_token_account_cools_down_without_refreshing() {
         .expect(0)
         .mount(&auth)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/oauth/token", auth.uri()),
     );
@@ -1288,9 +1274,6 @@ async fn static_setup_token_account_cools_down_without_refreshing() {
     // expect(0) on the refresh endpoint: a setup token is never refreshed.
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_SETUPSTATIC_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -1304,12 +1287,13 @@ async fn duplicate_identity_alias_is_never_retried_as_a_separate_account() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token_a = ["fake-oauth-", "dup-a"].concat();
     let token_a_dup = ["fake-oauth-", "dup-a-alias"].concat();
     let token_b = ["fake-oauth-", "dup-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_DUP_A", &token_a);
-    std::env::set_var("SHUNT_TEST_MULTI_DUP_A_ALIAS", &token_a_dup);
-    std::env::set_var("SHUNT_TEST_MULTI_DUP_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_DUP_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_DUP_A_ALIAS", &token_a_dup);
+    vars.set("SHUNT_TEST_MULTI_DUP_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1359,10 +1343,6 @@ async fn duplicate_identity_alias_is_never_retried_as_a_separate_account() {
         "account-b"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_MULTI_DUP_A");
-    std::env::remove_var("SHUNT_TEST_MULTI_DUP_A_ALIAS");
-    std::env::remove_var("SHUNT_TEST_MULTI_DUP_B");
 }
 
 #[tokio::test]
@@ -1376,10 +1356,11 @@ async fn storm_control_spills_concurrent_request_to_next_account() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token_a = ["fake-oauth-", "storm-a"].concat();
     let token_b = ["fake-oauth-", "storm-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_STORM_A", &token_a);
-    std::env::set_var("SHUNT_TEST_MULTI_STORM_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_STORM_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_STORM_B", &token_b);
 
     let upstream = MockServer::start().await;
     // Account-a's turn is slow, so it is still in flight (holding its single
@@ -1459,9 +1440,6 @@ async fn storm_control_spills_concurrent_request_to_next_account() {
     assert_eq!(first.status(), StatusCode::OK);
     assert_eq!(first.headers().get("x-shunt-account").unwrap(), "account-a");
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_MULTI_STORM_A");
-    std::env::remove_var("SHUNT_TEST_MULTI_STORM_B");
 }
 
 /// Asserts the forwarded body does *not* carry the Claude Code identity block.
@@ -1515,8 +1493,9 @@ async fn pool_classifier_request_on_a_subscription_oauth_account_gains_the_ident
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     let token = ["sk-ant-oat01-", "pool-classifier"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_CLASSIFIER_OAUTH", &token);
+    vars.set("SHUNT_TEST_MULTI_CLASSIFIER_OAUTH", &token);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1543,8 +1522,6 @@ async fn pool_classifier_request_on_a_subscription_oauth_account_gains_the_ident
         StatusCode::OK
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_MULTI_CLASSIFIER_OAUTH");
 }
 
 #[tokio::test]
@@ -1552,6 +1529,7 @@ async fn pool_classifier_request_on_a_non_oauth_token_env_account_is_not_rewritt
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     // The pool resolves every account to `Credential::ClaudeOauth`, but the
     // `token_env` branch wraps whatever the variable holds without checking it
     // is a subscription token. An account pointed at an API key therefore faces
@@ -1559,7 +1537,7 @@ async fn pool_classifier_request_on_a_non_oauth_token_env_account_is_not_rewritt
     // is the invariant the per-candidate `bearer_is_subscription_oauth` check
     // enforces, and it is only reachable through `forward_claude_oauth`.
     let token = ["sk-ant-api03-", "pool-classifier"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_CLASSIFIER_APIKEY", &token);
+    vars.set("SHUNT_TEST_MULTI_CLASSIFIER_APIKEY", &token);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1586,8 +1564,6 @@ async fn pool_classifier_request_on_a_non_oauth_token_env_account_is_not_rewritt
         StatusCode::OK
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_MULTI_CLASSIFIER_APIKEY");
 }
 
 #[tokio::test]
@@ -1595,14 +1571,15 @@ async fn classifier_gate_is_re_evaluated_for_each_candidate_during_rotation() {
     if !can_bind_loopback() {
         return;
     }
+    let mut vars = common::env_lock().await;
     // The gate lives inside the candidate loop precisely because a pool can mix
     // token shapes. A single-account pool only proves it runs; this proves it
     // runs *per candidate* — the api-key account must relay unrewritten, and the
     // oauth account it rotates to must carry the identity block, in one request.
     let api_key = ["sk-ant-api03-", "rotate-a"].concat();
     let oauth = ["sk-ant-oat01-", "rotate-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_CLASSIFIER_ROT_A", &api_key);
-    std::env::set_var("SHUNT_TEST_MULTI_CLASSIFIER_ROT_B", &oauth);
+    vars.set("SHUNT_TEST_MULTI_CLASSIFIER_ROT_A", &api_key);
+    vars.set("SHUNT_TEST_MULTI_CLASSIFIER_ROT_B", &oauth);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1644,9 +1621,6 @@ async fn classifier_gate_is_re_evaluated_for_each_candidate_during_rotation() {
         "oauth-account"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_MULTI_CLASSIFIER_ROT_A");
-    std::env::remove_var("SHUNT_TEST_MULTI_CLASSIFIER_ROT_B");
 }
 
 /// A dead refresh token (`invalid_grant`) must leave a **durable** mark on the
@@ -1660,10 +1634,10 @@ async fn terminal_invalid_grant_marks_the_account_as_needing_relogin() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let stale = ["fake-oauth-", "terminal-stale"].concat();
     let token_b = ["fake-oauth-", "terminal-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_TERMINAL_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_TERMINAL_B", &token_b);
 
     let accounts_dir = unique_temp_dir("terminalgrant");
     write_store_account(
@@ -1674,7 +1648,7 @@ async fn terminal_invalid_grant_marks_the_account_as_needing_relogin() {
         "uuid-a",
         future_expiry_ms(),
     );
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1686,7 +1660,7 @@ async fn terminal_invalid_grant_marks_the_account_as_needing_relogin() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/oauth/token", auth.uri()),
     );
@@ -1739,9 +1713,6 @@ async fn terminal_invalid_grant_marks_the_account_as_needing_relogin() {
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_TERMINAL_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -1755,10 +1726,10 @@ async fn transient_refresh_failure_does_not_mark_the_account() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let stale = ["fake-oauth-", "transient-stale"].concat();
     let token_b = ["fake-oauth-", "transient-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_TRANSIENT_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_TRANSIENT_B", &token_b);
 
     let accounts_dir = unique_temp_dir("transientgrant");
     write_store_account(
@@ -1769,7 +1740,7 @@ async fn transient_refresh_failure_does_not_mark_the_account() {
         "uuid-a",
         future_expiry_ms(),
     );
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1778,7 +1749,7 @@ async fn transient_refresh_failure_does_not_mark_the_account() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/oauth/token", auth.uri()),
     );
@@ -1829,9 +1800,6 @@ async fn transient_refresh_failure_does_not_mark_the_account() {
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_TRANSIENT_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -1843,14 +1811,14 @@ async fn unrefreshable_setup_token_401_marks_the_account_as_needing_relogin() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let setup = ["fake-oauth-", "markstatic"].concat();
     let token_b = ["fake-oauth-", "markstatic-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_MARKSTATIC_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_MARKSTATIC_B", &token_b);
 
     let accounts_dir = unique_temp_dir("markstatic");
     write_setup_token_account(&accounts_dir, "account-a", &setup, future_expiry_ms());
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1896,9 +1864,6 @@ async fn unrefreshable_setup_token_401_marks_the_account_as_needing_relogin() {
 
     upstream.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_MARKSTATIC_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -1914,14 +1879,14 @@ async fn mark_healthy_clears_the_needs_relogin_mark() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let setup = ["fake-oauth-", "clearmark"].concat();
     let token_b = ["fake-oauth-", "clearmark-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_CLEARMARK_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_CLEARMARK_B", &token_b);
 
     let accounts_dir = unique_temp_dir("clearmark");
     write_setup_token_account(&accounts_dir, "account-a", &setup, future_expiry_ms());
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1962,9 +1927,6 @@ async fn mark_healthy_clears_the_needs_relogin_mark() {
         "a served response proves the credential is alive again"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_CLEARMARK_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -1998,10 +1960,10 @@ async fn terminal_invalid_grant_during_resolution_marks_the_account_as_needing_r
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let expired = ["fake-oauth-", "resolve-expired"].concat();
     let token_b = ["fake-oauth-", "resolve-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_RESOLVE_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_RESOLVE_B", &token_b);
 
     let accounts_dir = unique_temp_dir("resolvegrant");
     write_expired_store_account(
@@ -2011,7 +1973,7 @@ async fn terminal_invalid_grant_during_resolution_marks_the_account_as_needing_r
         "dead-refresh-token",
         "uuid-a",
     );
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -2023,7 +1985,7 @@ async fn terminal_invalid_grant_during_resolution_marks_the_account_as_needing_r
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/oauth/token", auth.uri()),
     );
@@ -2070,15 +2032,12 @@ async fn terminal_invalid_grant_during_resolution_marks_the_account_as_needing_r
             .accounts
             .snapshot("anthropic", std::slice::from_ref(&dead), None, None)[0]
             .needs_relogin,
-        "the mark must reach the /admin/pool snapshot"
+        "the mark must reach the /admin/api/pool snapshot"
     );
 
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_RESOLVE_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -2091,10 +2050,10 @@ async fn transient_resolution_failure_does_not_mark_the_account() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let expired = ["fake-oauth-", "resolve-transient"].concat();
     let token_b = ["fake-oauth-", "resolve-transient-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_RESOLVE_TRANSIENT_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_RESOLVE_TRANSIENT_B", &token_b);
 
     let accounts_dir = unique_temp_dir("resolvetransient");
     write_expired_store_account(
@@ -2104,7 +2063,7 @@ async fn transient_resolution_failure_does_not_mark_the_account() {
         "live-refresh-token",
         "uuid-a",
     );
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -2113,7 +2072,7 @@ async fn transient_resolution_failure_does_not_mark_the_account() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/oauth/token", auth.uri()),
     );
@@ -2157,9 +2116,6 @@ async fn transient_resolution_failure_does_not_mark_the_account() {
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_RESOLVE_TRANSIENT_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -2173,11 +2129,11 @@ async fn a_post_refresh_401_marks_the_account_as_needing_relogin() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let stale = ["fake-oauth-", "postrefresh-stale"].concat();
     let rotated = ["fake-oauth-", "postrefresh-rotated"].concat();
     let token_b = ["fake-oauth-", "postrefresh-b"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_POSTREFRESH_B", &token_b);
+    vars.set("SHUNT_TEST_MULTI_POSTREFRESH_B", &token_b);
 
     let accounts_dir = unique_temp_dir("postrefresh");
     write_store_account(
@@ -2188,7 +2144,7 @@ async fn a_post_refresh_401_marks_the_account_as_needing_relogin() {
         "uuid-a",
         future_expiry_ms(),
     );
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     // The grant itself is healthy: it hands back a fresh access token.
     let auth = MockServer::start().await;
@@ -2202,7 +2158,7 @@ async fn a_post_refresh_401_marks_the_account_as_needing_relogin() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/oauth/token", auth.uri()),
     );
@@ -2261,9 +2217,6 @@ async fn a_post_refresh_401_marks_the_account_as_needing_relogin() {
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_POSTREFRESH_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
@@ -2283,10 +2236,10 @@ async fn a_relayed_client_error_after_refresh_clears_a_stale_mark() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = REFRESH_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let stale = ["fake-oauth-", "relayclear-stale"].concat();
     let rotated = ["fake-oauth-", "relayclear-rotated"].concat();
-    std::env::set_var("SHUNT_TEST_MULTI_RELAYCLEAR_B", "unused");
+    vars.set("SHUNT_TEST_MULTI_RELAYCLEAR_B", "unused");
 
     let accounts_dir = unique_temp_dir("relayclear");
     write_store_account(
@@ -2297,7 +2250,7 @@ async fn a_relayed_client_error_after_refresh_clears_a_stale_mark() {
         "uuid-a",
         future_expiry_ms(),
     );
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
     let auth = MockServer::start().await;
     Mock::given(method("POST"))
@@ -2310,7 +2263,7 @@ async fn a_relayed_client_error_after_refresh_clears_a_stale_mark() {
         .expect(1)
         .mount(&auth)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/oauth/token", auth.uri()),
     );
@@ -2365,8 +2318,5 @@ async fn a_relayed_client_error_after_refresh_clears_a_stale_mark() {
     upstream.verify().await;
     auth.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_MULTI_RELAYCLEAR_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }

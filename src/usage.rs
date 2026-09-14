@@ -4,7 +4,7 @@
 //! Exposes a **sanitized, aggregated** view of the shared account pool's quota
 //! state — per-window remaining headroom and reset time — so a non-admin client
 //! (a `[server.auth]` token holder) can anticipate throttling without the admin
-//! surface. Unlike `GET /admin/pool`, it never reveals account identities,
+//! surface. Unlike `GET /admin/api/pool`, it never reveals account identities,
 //! counts, priorities, disabled flags, thresholds, or burn-rate headroom: the
 //! response carries only aggregate numbers derived across the pool, plus the
 //! same aggregate computed per pooled provider (keyed by the provider's config

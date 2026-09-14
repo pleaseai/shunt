@@ -23,6 +23,8 @@ shunt run
 
 Startup validation rejects an unknown `provider` or one that doesn't use `auth = "chatgpt_oauth"` — the endpoint injects the operator's Codex bearer, so only a `chatgpt_oauth` provider qualifies. See the [configuration reference](/reference/configuration/#servercodex_endpoint-optional) for every key and default, and [HTTP Endpoints](/reference/endpoints/) for the registered routes.
 
+The opt-in also makes Codex CLI model discovery parseable. `GET /models` and `GET /backend-api/codex/models` return the valid fallback `{"models":[]}`. On the shared `GET /v1/models` path, a `client_version` query field selects that Codex shape even when Anthropic-looking headers are present; without it, the existing Anthropic discovery response is unchanged. These requests pass the normal model-discovery auth gate, and shunt deliberately avoids fabricating incomplete Codex model rows.
+
 ## Client analytics sink
 
 The Codex CLI also posts product analytics to the base URL. shunt accepts both paths the CLI can produce:
@@ -80,7 +82,7 @@ wire_api = "responses"
 http_headers = { "x-shunt-token" = "<token>" }
 ```
 
-Without `[server.auth]`, the endpoint is open to anyone who can reach it — acceptable for loopback or personal use, not for a shared gateway. The client's presented credential is used **only** to authenticate to shunt: it (and any `Authorization` the CLI happens to send) is stripped and never forwarded upstream. The `[server.admin]` credential header — `x-shunt-admin-token` by default, or whatever `[server.admin] header` names — is stripped too, since the admin surface authenticates on that slot and an admin credential can provision upstream accounts. So is the whole `cookie` header, because the admin surface also accepts a write-tier session cookie there; shunt keeps no cookie jar, so nothing upstream depends on it. `x-api-key` is stripped unconditionally too — even when `[server.auth]` is not configured — since the target provider is validated `chatgpt_oauth`-only at boot, so no inbound `x-api-key` value can ever be a valid upstream credential; a client whose `apiKeyHelper` sets both `Authorization` and `x-api-key` to the same key (as Claude Code's does) does not leak that key through the second slot. Because the inbound client is a real Codex CLI, the passthrough forwards its request headers verbatim (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) and swaps in **only** the selected pool account's `Authorization` bearer + `chatgpt-account-id`. See [Connect the Codex CLI](/guides/connect-codex-cli/#3-present-the-shunt-client-token-when-serverauth-is-set) for the full auth walkthrough.
+Without `[server.auth]`, the endpoint is open to anyone who can reach it — acceptable for loopback or personal use, not for a shared gateway. The client's presented credential is used **only** to authenticate to shunt: it (and any `Authorization` the CLI happens to send) is stripped and never forwarded upstream. The `[server.admin]` credential header — `x-shunt-admin-token` by default, or whatever `[server.admin] header` names — is stripped too, since the admin surface authenticates on that slot and an admin credential can provision upstream accounts. So is the whole `cookie` header, because the admin surface also accepts a session cookie there; shunt keeps no cookie jar, so nothing upstream depends on it. `x-api-key` is stripped unconditionally too — even when `[server.auth]` is not configured — since the target provider is validated `chatgpt_oauth`-only at boot, so no inbound `x-api-key` value can ever be a valid upstream credential; a client whose `apiKeyHelper` sets both `Authorization` and `x-api-key` to the same key (as Claude Code's does) does not leak that key through the second slot. Because the inbound client is a real Codex CLI, the passthrough forwards its request headers verbatim (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) and swaps in **only** the selected pool account's `Authorization` bearer + `chatgpt-account-id`. See [Connect the Codex CLI](/guides/connect-codex-cli/#3-present-the-shunt-client-token-when-serverauth-is-set) for the full auth walkthrough.
 
 ## Account provisioning
 
@@ -145,7 +147,7 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"
 ```
 
-shunt serves no Codex model catalog — its `GET /v1/models` discovery list is Anthropic-shaped and does not advertise Codex routes. The CLI gets slug metadata from a `~/.codex/models.json` catalog referenced by `model_catalog_json`, exactly as these vendors document; only the `model` value selects the shunt route.
+While shunt responds to Codex CLI discovery requests with the valid fallback `{"models":[]}`, it does not advertise Codex routes in its model list. The CLI gets slug metadata from a `~/.codex/models.json` catalog referenced by `model_catalog_json`, exactly as these vendors document; only the `model` value selects the shunt route.
 
 What changes for a routed request to a **non-ChatGPT** upstream:
 

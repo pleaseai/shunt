@@ -26,6 +26,14 @@ path = "src/lib.rs"
 name = "shunt"
 path = "src/main.rs"
 
+[features]
+# Embed the admin SPA (`ui/dist`) in the binary and serve it from the `/admin`
+# mount. Off by default so `cargo build` needs no Node toolchain
+# (`docs/admin-ui-delivery.md`, Resolution 1); release CI builds `ui/dist` and
+# enables it. Building with this feature requires `ui/dist` to exist — see
+# `ui/README.md`.
+ui = ["dep:rust-embed", "dep:mime_guess"]
+
 [dependencies]
 anyhow = "1"
 arc-swap = "1.9.2"
@@ -46,6 +54,9 @@ http-body-util = "0.1"
 httpdate = "1"
 hmac = "0.12"
 ipnet = "2"
+# `--features ui` only: the `Content-Type` for an embedded asset is derived from
+# its extension, which is all `mime_guess` is used for.
+mime_guess = { version = "2", optional = true }
 notify = "8.2.0"
 # OpenTelemetry export (opt-in `[otel]`). The OTLP exporter speaks HTTP/protobuf
 # over reqwest's *blocking* client so the SDK's dedicated-thread batch span/log
@@ -68,6 +79,11 @@ regex-lite = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2", "json"] }
 rpassword = "7"
 rusqlite = { version = "0.32", features = ["bundled"] }
+# `--features ui` only: embeds `ui/dist` at compile time (the Rust equivalent of
+# Go `embed`), keeping the one-binary guarantee with no runtime asset directory.
+# `debug-embed` makes a debug build embed too, instead of reading `ui/dist` off
+# disk at runtime, so the bundle tests prove the same thing CI and release do.
+rust-embed = { version = "8", features = ["debug-embed"], optional = true }
 # Feature unification compiles both rustls crypto providers into the binary
 # (aws-lc-rs via sentry's reqwest `rustls` feature, ring via reqwest's own
 # `rustls-tls` feature), so rustls refuses to auto-select one. tokio-tungstenite

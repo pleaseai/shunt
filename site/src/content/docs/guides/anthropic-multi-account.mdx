@@ -161,7 +161,7 @@ disabled = true              # kept configured, never selected
 - **Predictive avoidance.** With `burn_rate_avoidance = true`, an account with negative projected headroom is treated as near quota and rotated off *before* it hits a threshold. Off by default — ordering by headroom happens regardless.
 - **All-near guard.** When every account is past a soft threshold (or predicted to exhaust), the pool does not empty: near accounts serve ordered by best headroom, while accounts at or above `hard_threshold` still sort last, followed only by cooling accounts.
 - **Scope.** The quota knobs act on both pool families: this pool from its `anthropic-ratelimit-unified-*` headers, and [Codex pools](/guides/codex-multi-account/) from their reported `x-codex-*` 5h/7d windows (issue #195). Codex has no Fable-scoped `7d_oi` window, so `default_threshold_fable` is inert there; `priority` and `disabled` apply everywhere.
-- The admin pool endpoint (`GET /admin/pool`) reports each account's `priority`, `disabled` flag, and — when `[server.pool]` is configured — its current headroom projection in seconds; the dashboard's state column marks disabled accounts.
+- The admin pool endpoint (`GET /admin/api/pool`) reports each account's `priority`, `disabled` flag, and — when `[server.pool]` is configured — its current headroom projection in seconds; the dashboard's state column marks disabled accounts.
 
 ## Usage-API reconciliation
 

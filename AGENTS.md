@@ -25,6 +25,7 @@
 - `src/adapters/`: provider protocol adapters.
 - `src/model/`: Anthropic Messages and OpenAI Responses translation.
 - `src/auth/`: credential lookup and refresh helpers.
+- `ui/`: React + Vite source for the admin dashboard bundle; `--features ui` embeds `ui/dist` (see `ui/README.md`).
 - `tests/`: protocol and translation integration tests.
 - `README.md`: top-level project overview (features, quickstart, supported providers/models).
 - `docs/`: engineering specs and milestone records (`m1`–`m7`, config, running, `RELEASING`).

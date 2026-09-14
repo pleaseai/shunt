@@ -23,6 +23,8 @@ shunt run
 
 启动校验会拒绝未知的 `provider`,或者不使用 `auth = "chatgpt_oauth"` 的提供方 —— 该端点注入的是运营者的 Codex bearer,因此只有 `chatgpt_oauth` 提供方符合条件。每个键与默认值见[配置参考](/zh-cn/reference/configuration/),已注册的路由见 [HTTP 端点](/zh-cn/reference/endpoints/)。
 
+该可选功能也使 Codex CLI 的模型发现可被正确解析。`GET /models` 和 `GET /backend-api/codex/models` 返回有效的回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 路径上,`client_version` 查询字段优先于类 Anthropic 的头部并选择 Codex 形状;没有该字段时,现有 Anthropic 发现响应保持不变。这些请求先通过常规模型发现认证门,且 shunt 不会伪造不完整的 Codex 模型行。
+
 ## 客户端分析数据接收端
 
 Codex CLI 还会向 base URL 提交产品分析数据。shunt 接受该 CLI 可能产生的两条路径:
@@ -80,7 +82,7 @@ wire_api = "responses"
 http_headers = { "x-shunt-token" = "<token>" }
 ```
 
-没有 `[server.auth]` 时,该端点对任何能触达它的人开放 —— 对回环或个人使用可以接受,对共享网关则不行。客户端提供的凭据**仅**用于向 shunt 认证:它(以及 CLI 碰巧发送的任何 `Authorization`)都会被剥除,绝不转发到上游。`[server.admin]` 的凭据头部 —— 默认 `x-shunt-admin-token`,或 `[server.admin] header` 指定的名字 —— 同样会被剥除,因为管理面正是在该槽位上认证,而管理凭据可以开通上游账户。整个 `cookie` 头部也会被剥除:管理面同样在该槽位接受写入级会话 cookie,而 shunt 不保留 cookie jar,上游不会依赖它。`x-api-key` 也会被无条件剥除 —— 即使未配置 `[server.auth]` 也是如此,因为目标提供方在启动时就被校验为仅 `chatgpt_oauth`,所以入站的 `x-api-key` 值永远不可能是该上游的有效凭据;像 Claude Code 的 `apiKeyHelper` 那样在 `Authorization` 和 `x-api-key` 中填入同一个密钥的客户端,也不会因为第二个槽位而泄露该密钥。由于入站客户端是真正的 Codex CLI,该透传会逐字转发它的请求头部(`version`、`originator`、`OpenAI-Beta`、`x-codex-*` 等),并**只**换入所选池账户的 `Authorization` bearer 与 `chatgpt-account-id`。完整的认证演练见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#3-提供-shunt-客户端-token当配置了-serverauth-时)。
+没有 `[server.auth]` 时,该端点对任何能触达它的人开放 —— 对回环或个人使用可以接受,对共享网关则不行。客户端提供的凭据**仅**用于向 shunt 认证:它(以及 CLI 碰巧发送的任何 `Authorization`)都会被剥除,绝不转发到上游。`[server.admin]` 的凭据头部 —— 默认 `x-shunt-admin-token`,或 `[server.admin] header` 指定的名字 —— 同样会被剥除,因为管理面正是在该槽位上认证,而管理凭据可以开通上游账户。整个 `cookie` 头部也会被剥除:管理面同样在该槽位接受会话 cookie,而 shunt 不保留 cookie jar,上游不会依赖它。`x-api-key` 也会被无条件剥除 —— 即使未配置 `[server.auth]` 也是如此,因为目标提供方在启动时就被校验为仅 `chatgpt_oauth`,所以入站的 `x-api-key` 值永远不可能是该上游的有效凭据;像 Claude Code 的 `apiKeyHelper` 那样在 `Authorization` 和 `x-api-key` 中填入同一个密钥的客户端,也不会因为第二个槽位而泄露该密钥。由于入站客户端是真正的 Codex CLI,该透传会逐字转发它的请求头部(`version`、`originator`、`OpenAI-Beta`、`x-codex-*` 等),并**只**换入所选池账户的 `Authorization` bearer 与 `chatgpt-account-id`。完整的认证演练见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#3-提供-shunt-客户端-token当配置了-serverauth-时)。
 
 ## 账户预配
 
@@ -145,7 +147,7 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"
 ```
 
-shunt 不提供 Codex 的模型目录 —— 它的 `GET /v1/models` 发现列表是 Anthropic 形态的，不会公布 Codex 路由。CLI 按这些厂商记载的方式，从 `model_catalog_json` 指向的 `~/.codex/models.json` 目录获取模型标识的元数据；真正选中 shunt 路由的只有 `model` 的取值。
+shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，但不会在模型列表中公布 Codex 路由。CLI 按这些厂商记载的方式，从 `model_catalog_json` 指向的 `~/.codex/models.json` 目录获取模型标识的元数据；真正选中 shunt 路由的只有 `model` 的取值。
 
 路由到**非 ChatGPT** 上游的请求有以下不同：
 

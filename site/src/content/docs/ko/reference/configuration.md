@@ -19,6 +19,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | :-- | :-- | :-- |
 | `bind` | `127.0.0.1:3001` | shunt가 리슨하는 주소 |
 | `default_provider` | `anthropic` | 일치하는 라우트가 없는 모든 모델의 프로바이더 |
+| `shutdown_timeout_seconds` | `30` | 첫 SIGTERM/SIGINT 뒤 진행 중인 HTTP/SSE/WebSocket 작업을 드레인한 후 나머지를 취소하기까지의 초. `1`–`3600`이어야 하며 변경 후 재시작 필요 |
 | `max_concurrent_requests` | `1024` | 응답 본문이 끝날 때까지 진행 중으로 계산하는 인바운드 요청의 최대 수. 초과 요청은 대기열에 넣지 않고 즉시 `503`과 `Retry-After: 1`로 거부합니다. `0`은 제한을 비활성화하며 `/`와 `/health`는 제한에서 제외됩니다. 이 키를 변경한 뒤에는 재시작해야 합니다 |
 | `sse_keepalive_seconds` | `30` | SSE `ping`이 주입되기 전의 유휴 초; `0`은 비활성화([상세](/ko/guides/shared-gateway/#sse-keepalive-ping)) |
 
@@ -82,7 +83,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | 배열 | 접근 권한 | 의미 |
 | :-- | :-- | :-- |
 | `write_keys` | `write` | 전체 접근. `write`는 `read`를 포함합니다. `tokens_env`/`tokens_file`과 같은 티어입니다 |
-| `read_keys` | `read` | 관리자 화면과 spend-limit API의 모든 `GET`을 통과하며, 모든 변경 작업에서는 `403 permission_error`로 거부됩니다. 로그인도 할 수 없습니다: `POST /admin/login`은 `401`로 거부합니다(브라우저 세션은 전체 접근 권한을 갖기 때문에, read key로 세션을 발급하면 권한이 승격됩니다) |
+| `read_keys` | `read` | 관리자 화면과 spend-limit API의 모든 `GET`을 통과하며, 모든 변경 작업에서는 `403 permission_error`로 거부됩니다. 대시보드에는 읽기 전용 세션으로 로그인할 수 있습니다: `POST /admin/login`이 이를 받아들이고, 세션이 `read` 등급을 기록하며, 그 쿠키로 보내는 모든 변경 작업은 여전히 `403`으로 거부됩니다 |
 
 자격 증명의 권한은 매칭된 모든 집합에 대한 **최댓값**이므로, 집합을 검사하는 순서가 권한을 바꿀 수 없습니다. 각 `id`는 공백이 아니어야 하고 각 key는 32자 이상이어야 합니다. id와 key 값은 각각 세 자격 증명 집합(`tokens_env`/`tokens_file`, `write_keys`, `read_keys`) 전체에서 고유해야 하며, 충돌하면 key 값을 로그에 남기지 않고 충돌한 id만 알립니다. 32자보다 짧은 기존 `tokens_env` 토큰은 이 규칙보다 먼저 존재했기 때문에 실패가 아니라 경고로 처리됩니다.
 
@@ -205,6 +206,7 @@ headers = { "x-api-key" = "..." }
 | `upstream_model` | `model` | upstream으로 보낼 모델 id. `model`과 다르면 shunt가 본문 최상위 `model`만 바꾸고 나머지 필드는 그대로 둡니다 |
 
 알 수 없는 provider, `responses`가 아닌 provider, 자격 증명이 없는 인증 모드(`passthrough` 또는 `none`)를 쓰는 provider로 향하는 route는 검증에서 거부되며 중복된 `model`이나 빈 필드도 거부됩니다. route는 라이브 config 스냅샷에서 읽으므로 추가·수정·삭제가 **리로드** 시점에 반영됩니다. 재시작이 필요한 것은 `[server.codex_endpoint]` 테이블 자체를 켜고 끌 때뿐입니다. ChatGPT가 아닌 provider로 라우팅된 request는 새로 만든 헤더 허용 목록(`content-type`, `accept`, flavor 게이트를 통과한 `OpenAI-Beta`, 그리고 `xai_oauth` 라우트의 경우 Grok CLI identity 헤더)과 identity 인코딩 본문, 자격 증명 하나만 사용하며 풀도 페일오버도 없습니다.
+같은 옵트인이 `GET /models`와 `GET /backend-api/codex/models`를 등록하며, 이 경로들은 일반 모델 탐색 인증 게이트 후 유효한 Codex 폴백 `{"models":[]}`를 반환합니다. 공유 `GET /v1/models`에서도 `client_version` 쿼리가 있으면 Anthropic 형태의 헤더보다 우선하여 Codex 빈 형태를 선택합니다. `client_version`이 없으면 기존 Anthropic 탐색 응답은 변경되지 않습니다. shunt는 불완전한 Codex `ModelInfo` 행을 만들지 않습니다.
 
 ## `[server.usage]` (선택)
 

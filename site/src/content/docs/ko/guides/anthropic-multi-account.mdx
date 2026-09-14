@@ -161,7 +161,7 @@ disabled = true              # 구성은 유지되지만 절대 선택되지 않
 - **예측적 회피(Predictive avoidance).** `burn_rate_avoidance = true`이면, 예측된 여유가 음수인 계정은 임계값에 도달하기 *전에* 쿼터 근접 상태로 간주되어 로테이션됩니다. 기본값은 꺼짐이며 — 여유 기준 정렬 자체는 이 설정과 무관하게 항상 이루어집니다.
 - **전체 근접 가드(All-near guard).** 모든 계정이 소프트 임계값을 넘겼거나(또는 소진이 예측되면), 풀이 비지 않습니다: 근접 계정은 여유가 가장 큰 순서로 서빙되고, `hard_threshold` 이상인 계정은 여전히 마지막으로 정렬되며, 그다음 쿨다운 중인 계정만 이어집니다.
 - **적용 범위(Scope).** 쿼터 관련 노브는 두 풀 계열 모두에 작동합니다: 이 풀은 `anthropic-ratelimit-unified-*` 헤더로부터, [Codex 풀](/ko/guides/codex-multi-account/)은 보고된 `x-codex-*` 5h/7d 윈도우로부터 동작합니다(이슈 #195). Codex에는 Fable 범위의 `7d_oi` 창이 없어 `default_threshold_fable`은 그곳에서 무력화되며, `priority`와 `disabled`는 어디서나 적용됩니다.
-- 관리자 풀 엔드포인트(`GET /admin/pool`)는 각 계정의 `priority`, `disabled` 플래그를 보고하며, `[server.pool]`이 구성되어 있으면 현재 여유(headroom) 예측치를 초 단위로 함께 보고합니다; 대시보드의 상태 열은 비활성화된 계정을 표시합니다.
+- 관리자 풀 엔드포인트(`GET /admin/api/pool`)는 각 계정의 `priority`, `disabled` 플래그를 보고하며, `[server.pool]`이 구성되어 있으면 현재 여유(headroom) 예측치를 초 단위로 함께 보고합니다; 대시보드의 상태 열은 비활성화된 계정을 표시합니다.
 
 ## Usage-API 재보정
 

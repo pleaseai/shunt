@@ -161,7 +161,7 @@ disabled = true              # 保留配置,但永不被选中
 - **预测性规避。**设置 `burn_rate_avoidance = true` 时,预测余量为负的账户被视为接近配额,在真正触及阈值*之前*就被轮换掉。默认关闭 —— 而按余量排序始终生效。
 - **全员接近配额的兜底。**当每个账户都超过了软阈值(或被预测将耗尽)时,池不会变空:接近配额的账户按最佳余量的顺序继续服务,而达到或超过 `hard_threshold` 的账户仍排在最后,其后才是冷却中的账户。
 - **适用范围。**这些配额旋钮作用于两个池家族: 本池依据 `anthropic-ratelimit-unified-*` 头部,[Codex 池](/zh-cn/guides/codex-multi-account/)依据上报的 `x-codex-*` 5h/7d 窗口(issue #195)。Codex 没有 Fable 专属的 `7d_oi` 窗口,因此 `default_threshold_fable` 在那里不起作用;`priority` 和 `disabled` 在所有池中都适用。
-- 管理池端点(`GET /admin/pool`)会报告每个账户的 `priority`、`disabled` 标志,以及在配置了 `[server.pool]` 时该账户当前以秒为单位的余量预测;仪表板的状态列会标记被禁用的账户。
+- 管理池端点(`GET /admin/api/pool`)会报告每个账户的 `priority`、`disabled` 标志,以及在配置了 `[server.pool]` 时该账户当前以秒为单位的余量预测;仪表板的状态列会标记被禁用的账户。
 
 ## Usage-API 对账
 

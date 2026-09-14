@@ -19,6 +19,7 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | :-- | :-- | :-- |
 | `bind` | `127.0.0.1:3001` | shunt がリッスンするアドレス |
 | `default_provider` | `anthropic` | マッチするルートがないモデルのプロバイダー |
+| `shutdown_timeout_seconds` | `30` | 最初の SIGTERM/SIGINT 後、実行中の HTTP/SSE/WebSocket をドレインしてから残りをキャンセルするまでの秒数。`1`–`3600` が必須で、変更後は再起動が必要です |
 | `max_concurrent_requests` | `1024` | レスポンスボディの完了まで実行中として数えるインバウンドリクエストの最大数。超過したリクエストはキューに入れず、即座に `503` と `Retry-After: 1` で拒否します。`0` で制限を無効化でき、`/` と `/health` は対象外です。このキーを変更した後は再起動が必要です |
 | `sse_keepalive_seconds` | `30` | SSE `ping` が注入されるまでのアイドル秒数。`0` で無効化（[詳細](/ja/guides/shared-gateway/#sse-キープアライブ-ping)） |
 
@@ -82,7 +83,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | 配列 | アクセス権 | 意味 |
 | :-- | :-- | :-- |
 | `write_keys` | `write` | フルアクセス。`write` は `read` を含みます。`tokens_env`/`tokens_file` と同じティアです |
-| `read_keys` | `read` | 管理サーフェスと spend-limit API のすべての `GET` を通過し、すべての変更操作では `403 permission_error` で拒否されます。サインインもできません: `POST /admin/login` は `401` で拒否します（ブラウザーセッションはフルアクセスを持つため、read キーからセッションを発行すると権限が昇格してしまいます） |
+| `read_keys` | `read` | 管理サーフェスと spend-limit API のすべての `GET` を通過し、すべての変更操作では `403 permission_error` で拒否されます。ダッシュボードには読み取り専用セッションとしてサインインできます: `POST /admin/login` はこれを受け入れ、セッションが `read` 階層を記録し、その Cookie で送る変更操作は引き続き `403` で拒否されます |
 
 認証情報の権限は一致したすべての集合に対する**最大値**なので、集合を走査する順序が権限を変えることはありません。各 `id` は空であってはならず、各キーは 32 文字以上である必要があります。id とキー値はそれぞれ 3 つの認証情報集合（`tokens_env`/`tokens_file`、`write_keys`、`read_keys`）全体で一意でなければならず、衝突した場合はキー値をログに出さずに衝突した id だけを報告します。32 文字未満の既存 `tokens_env` トークンは、このルールより前から存在するため失敗ではなく警告になります。
 
@@ -204,6 +205,7 @@ headers = { "x-api-key" = "..." }
 | `upstream_model` | `model` | アップストリームへ送るモデル id。`model` と異なる場合、shunt は本文トップレベルの `model` だけを書き換え、他のフィールドはそのまま残します |
 
 未知の provider、`responses` 以外の provider、credential を持たない auth モード（`passthrough` または `none`）の provider へ向かう route は検証で拒否され、重複した `model` や空のフィールドも拒否されます。route はライブの設定スナップショットから読み込まれるため、追加・編集・削除は**リロード**時に反映されます。再起動が必要なのは `[server.codex_endpoint]` テーブル自体を有効化・無効化するときだけです。ChatGPT 以外の provider へルーティングされた request は、新しく組み立てたヘッダー許可リスト（`content-type`、`accept`、flavor ゲートを通過した `OpenAI-Beta`、そして `xai_oauth` route の場合は Grok CLI の identity ヘッダー）と identity エンコードの本文、credential 1 つだけを使い、プールもフェイルオーバーもありません。
+同じオプトインで `GET /models` と `GET /backend-api/codex/models` も登録され、通常のモデル検出認証ゲートの後に有効な Codex フォールバック `{"models":[]}` を返します。共有の `GET /v1/models` でも、`client_version` クエリがある場合は Anthropic 風のヘッダーより優先して Codex の空形式を選択します。`client_version` がなければ、既存の Anthropic 検出レスポンスは変わりません。shunt は不完全な Codex `ModelInfo` 行を生成しません。
 
 ## `[server.usage]`（オプション）
 

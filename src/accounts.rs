@@ -42,7 +42,7 @@ pub(crate) struct AccountKey {
 /// One store account as the admin paths know it: a store family plus the name
 /// and uuid its credential file carries. This is *not* an [`AccountKey`] — it
 /// is the pair the admin routes actually have (`POST
-/// /admin/accounts/claude/{name}/refresh` knows a name and, when the file
+/// /admin/api/accounts/claude/{name}/refresh` knows a name and, when the file
 /// carries one, a `shuntAccountUuid`), and deliberately stays outside the key
 /// space so nothing here has to invent an [`AccountKey`] the selection path
 /// never produced.
@@ -387,7 +387,7 @@ struct AccountHealth {
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
-/// dashboard (`GET /admin/pool`). Derived from [`AccountHealth`]; see
+/// dashboard (`GET /admin/api/pool`). Derived from [`AccountHealth`]; see
 /// [`AccountPool::snapshot`].
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountSnapshot {
@@ -1506,14 +1506,14 @@ impl AccountPool {
     /// The refresh probe reports this *after* its own clear, so its response
     /// cannot claim recovery for an account the pool still considers dead. The
     /// side table is consulted alongside the entries, or an account nothing has
-    /// ever selected would be reported alive by the probe while `/admin/pool`
+    /// ever selected would be reported alive by the probe while `/admin/api/pool`
     /// shows it as needing a re-login.
     ///
     /// The side table is read through the same `(family, name-or-uuid)`
     /// predicate the clears strip with ([`store_relogin_ref_matches`]), not by
     /// ref equality: a recorded ref carries whatever uuid the credential file
     /// reported when the probe ran, and demanding all three fields be equal
-    /// would report a login alive while `/admin/pool` still renders the verdict
+    /// would report a login alive while `/admin/api/pool` still renders the verdict
     /// — the contradiction this read-back exists to prevent.
     pub fn store_account_needs_relogin(
         &self,
@@ -1586,7 +1586,7 @@ impl AccountPool {
     /// Entry-scoped on purpose, and therefore **narrower** than
     /// [`Self::store_account_needs_relogin`]: it does not consult the
     /// store-name side table, so an account the pool has never selected reports
-    /// `false` here while `/admin/pool` and the probe's own read-back report the
+    /// `false` here while `/admin/api/pool` and the probe's own read-back report the
     /// verdict. Ask this when the question really is about one keyed row; ask
     /// the store-scoped reader when the question is "does the pool consider this
     /// credential dead".
@@ -1800,7 +1800,7 @@ impl AccountPool {
             .values_mut()
             .for_each(|members| members.retain(|key, _| !matches(key)));
         // A forgotten identity must not keep a store-name verdict alive either:
-        // `DELETE /admin/accounts/claude/{name}` reaches here through
+        // `DELETE /admin/api/accounts/claude/{name}` reaches here through
         // `forget_pool_health_if_absent`, and a ref left behind would re-condemn
         // a same-named account added later — through the name fallback in
         // `store_relogin_ref_condemns`, even when the re-add carries a different
@@ -3500,7 +3500,7 @@ mod tests {
 
     /// The defect in issue #439: an account the pool has never selected has no
     /// health entry at all, so the admin probe's terminal verdict updated
-    /// nothing and `/admin/pool` kept reporting the row `unseen`. The verdict is
+    /// nothing and `/admin/api/pool` kept reporting the row `unseen`. The verdict is
     /// recorded by store name in the side table instead, and the snapshot's
     /// unseen branch reads it. `has_state` stays `false` — nothing was ever
     /// observed — and both dashboard tables check `needs_relogin` before it, so the
@@ -3830,7 +3830,7 @@ mod tests {
         );
     }
 
-    /// `DELETE /admin/accounts/claude/{name}` reaches `forget_identity` through
+    /// `DELETE /admin/api/accounts/claude/{name}` reaches `forget_identity` through
     /// `forget_pool_health_if_absent`. It drops the health entries; the store
     /// verdict has to go with them, or an account re-added under the same name
     /// would be reported dead the moment it appears, with nothing having failed.
@@ -3924,7 +3924,7 @@ mod tests {
         assert!(
             snapshot[0].needs_relogin,
             "an observed row hid a verdict the pool still holds, so \
-             `/admin/pool` and the refresh probe contradict each other"
+             `/admin/api/pool` and the refresh probe contradict each other"
         );
     }
 
@@ -4049,10 +4049,10 @@ mod tests {
         );
     }
 
-    /// The probe's read-back has to answer the same question `/admin/pool` does.
+    /// The probe's read-back has to answer the same question `/admin/api/pool` does.
     /// The set matches a pool entry on the uuid **or** the name and the clears
     /// strip on either half, so a read that demanded all three fields be equal
-    /// is narrower than both: `/admin/pool` renders "needs re-login" while the
+    /// is narrower than both: `/admin/api/pool` renders "needs re-login" while the
     /// Refresh button reports the login alive.
     #[test]
     fn the_read_back_matches_a_verdict_recorded_under_a_different_uuid() {
@@ -4066,7 +4066,7 @@ mod tests {
         );
         assert!(
             pool.store_account_needs_relogin(StoreFamily::Claude, "a", None),
-            "the read-back reported the login alive for a verdict `/admin/pool` \
+            "the read-back reported the login alive for a verdict `/admin/api/pool` \
              still renders"
         );
     }

@@ -510,6 +510,46 @@ fn prompt_claude_mode() -> anyhow::Result<LoginMode> {
     }
 }
 
+/// How long runtime teardown waits for `spawn_blocking` work that has already
+/// started, after `[server] shutdown_timeout_seconds` has bounded the async
+/// drain. Deliberately a small fixed grace rather than a second full copy of
+/// the configured deadline: the two budgets cover different work classes, and
+/// this crate's blocking tasks are short, bounded CPU jobs (compression in
+/// `offload`, token counting in `proxy::failover`), not open-ended waits. A
+/// configured 30s therefore means "up to 30s of draining, then up to 5s for
+/// blocking work" — not a silent 60s.
+const BLOCKING_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Drives `future` to completion on `runtime`, then bounds runtime teardown
+/// instead of letting the runtime drop.
+///
+/// `serve`'s own deadline bounds the *async* drain, but cancellation never
+/// reaches a `spawn_blocking` task that has already started — `offload::
+/// spawn_bounded` says so outright ("A blocking task cannot be aborted") — and
+/// simply dropping a runtime *waits* on those threads with no deadline at all.
+/// A stalled compression or token-count job could therefore hold the process
+/// past `[server] shutdown_timeout_seconds`, and past the second-signal escape
+/// hatch as well, since that watcher is itself cancelled once teardown begins:
+/// the operator would be left with nothing but `SIGKILL`. `shutdown_timeout`
+/// waits at most `grace` for that work, then leaks the threads so the process
+/// exits regardless.
+///
+/// Split out of [`run`] so this is reachable from a test: the bound is one call
+/// that is easy to delete by accident, and its absence is invisible until a
+/// blocking task hangs in production.
+fn block_on_bounded<F>(
+    runtime: tokio::runtime::Runtime,
+    future: F,
+    grace: std::time::Duration,
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    let output = runtime.block_on(future);
+    runtime.shutdown_timeout(grace);
+    output
+}
+
 /// The runtime is built by hand (not `#[tokio::main]`) so `run` can initialize
 /// Sentry before any runtime thread exists, per sentry-rust guidance.
 fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
@@ -585,7 +625,9 @@ fn run(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     // Both guards must outlive the runtime so buffered events flush on shutdown.
     let _sentry = init_sentry(config.sentry.as_ref());
     let _telemetry = init_telemetry(config.otel.as_ref());
-    let result = runtime().and_then(|runtime| runtime.block_on(serve(config, path)));
+    let result = runtime().and_then(|runtime| {
+        block_on_bounded(runtime, serve(config, path), BLOCKING_SHUTDOWN_GRACE)
+    });
     if let Err(error) = &result {
         sentry::integrations::anyhow::capture_anyhow(error);
     }
@@ -647,6 +689,7 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     if routes_to_antigravity(&config) {
         shunt::auth::antigravity::version::spawn_refresher(reqwest::Client::new());
     }
+    let shutdown_timeout = std::time::Duration::from_secs(config.server.shutdown_timeout_seconds);
     let (router, shared, state) =
         server::build_router(config).context("failed to initialize gateway")?;
     // Reload triggers (SIGHUP and config-file watch) run as background tasks and
@@ -675,17 +718,28 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // ChatGPT/Codex OAuth usage APIs in the background, sharing the router's
     // account pool. A no-op when the key is unset.
     shunt::usage_poll::spawn_usage_poller(state);
-    axum::serve(
+    let (drain_started_tx, drain_started_rx) = tokio::sync::oneshot::channel();
+    let server = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    // Stops accepting new connections on the first shutdown trigger but lets
-    // in-flight ones (including open SSE streams) finish before this call
-    // returns, so `run` returns Ok and drops the sentry/telemetry guards
-    // normally (flushing buffered events on exit) rather than the process
-    // being hard-killed mid-request.
-    .with_graceful_shutdown(shutdown::shutdown_signal())
-    .await?;
+    // Stops accepting new connections on the first shutdown trigger and lets
+    // in-flight ones (including open SSE streams) finish until the configured
+    // deadline. The bounded drain drops the server future on timeout, then
+    // `run` returns normally so runtime teardown cancels remaining tasks and
+    // the sentry/telemetry guards get their ordinary drop path.
+    .with_graceful_shutdown(shutdown::shutdown_signal(drain_started_tx));
+    match shutdown::await_bounded_drain(server, drain_started_rx, shutdown_timeout).await? {
+        shutdown::DrainOutcome::Drained => {
+            tracing::info!("graceful shutdown drain completed");
+        }
+        shutdown::DrainOutcome::TimedOut => {
+            tracing::warn!(
+                timeout_seconds = shutdown_timeout.as_secs(),
+                "graceful shutdown deadline expired; cancelling remaining work"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1593,5 +1647,106 @@ mod tests {
             .expect("serve returns before the test deadline")
             .expect("serve task join")
             .expect("graceful shutdown returns Ok once drained");
+    }
+
+    /// The drain deadline only bounds async work: cancellation never reaches a
+    /// `spawn_blocking` task that has already started, and dropping the runtime
+    /// would wait on it forever. Uses a short grace of its own rather than
+    /// `BLOCKING_SHUTDOWN_GRACE` so proving this costs the suite ~200ms, not 5s.
+    ///
+    /// Deleting the `shutdown_timeout` call in `block_on_bounded` turns this
+    /// red: teardown would then block for the blocking task's full 10 seconds.
+    #[test]
+    fn block_on_bounded_does_not_wait_out_started_blocking_work() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let grace = Duration::from_millis(200);
+        let runtime = runtime().expect("runtime builds");
+        let (started_tx, started_rx) = mpsc::channel();
+
+        let began = Instant::now();
+        block_on_bounded(
+            runtime,
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    // Signal from *inside* the blocking thread so teardown is
+                    // provably racing work that already holds a pool thread,
+                    // not one still queued (which drops without waiting).
+                    started_tx.send(()).expect("receiver is alive");
+                    std::thread::sleep(Duration::from_secs(10));
+                });
+                started_rx.recv().expect("blocking task starts");
+            },
+            grace,
+        );
+        let elapsed = began.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "teardown must abandon started blocking work after the grace, \
+             but it took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_timed_out_cancels_work_and_returns() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::sync::{oneshot, Notify};
+
+        let started = Arc::new(Notify::new());
+        let finish = Arc::new(Notify::new());
+        let app = axum::Router::new().route(
+            "/slow",
+            axum::routing::get({
+                let started = started.clone();
+                let finish = finish.clone();
+                move || {
+                    let started = started.clone();
+                    let finish = finish.clone();
+                    async move {
+                        started.notify_one();
+                        finish.notified().await;
+                        "done"
+                    }
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("read bound address");
+
+        let (drain_started_tx, drain_started_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server = tokio::spawn(async move {
+            let s = axum::serve(listener, app).with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+                let _ = drain_started_tx.send(());
+            });
+            shutdown::await_bounded_drain(s, drain_started_rx, Duration::from_millis(50)).await
+        });
+
+        let _request = tokio::spawn(async move {
+            let _ = reqwest::Client::new()
+                .get(format!("http://{addr}/slow"))
+                .send()
+                .await;
+        });
+
+        started.notified().await;
+        shutdown_tx.send(()).unwrap();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("serve returns before test deadline")
+            .expect("serve task join")
+            .expect("bounded drain result");
+        assert_eq!(outcome, shutdown::DrainOutcome::TimedOut);
+
+        finish.notify_one();
     }
 }

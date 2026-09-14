@@ -7,7 +7,7 @@ remaining headroom and reset time — and anticipate throttling, instead of bein
 `429`.
 
 The only surface that previously showed usage was the admin dashboard
-([M9](m9-admin-surface.md), `GET /admin/pool`), gated by the separate `[server.admin]` credential
+([M9](m9-admin-surface.md), `GET /admin/api/pool`), gated by the separate `[server.admin]` credential
 and rendering full per-account detail. M12 gives ordinary clients a strictly narrower, redacted
 slice of the same underlying data.
 
@@ -19,9 +19,9 @@ poller](m8-anthropic-multi-account.md); metrics are deliberately low-cardinality
 client-scoped. So M12 reports the *pool's* headroom, not "your usage." Per-client accounting would
 be a separate subsystem and is out of scope.
 
-## Contrast with `GET /admin/pool`
+## Contrast with `GET /admin/api/pool`
 
-| | `GET /admin/pool` (M9) | `GET /usage` (this milestone) |
+| | `GET /admin/api/pool` (M9) | `GET /usage` (this milestone) |
 | :-- | :-- | :-- |
 | Auth | `[server.admin]` admin token / browser session | `[server.auth]` client token (header, `x-api-key`, or `Authorization: Bearer`) |
 | Audience | Operator | Any authenticated client |

@@ -119,10 +119,15 @@ pre-existing `[server.admin]` untouched.
   `[[server.admin.write_keys]]`, which carries an `id`), as is every
   `write_keys` entry.
 - **`read`** — passes every `GET` on the admin surface and on the spend-limit
-  API, and is refused with `403 permission_error` on every mutation. It also
-  cannot sign in: `POST /admin/login` rejects it with `401` through the login
-  form's own path, because a browser session carries full access and minting one
-  from a read key would silently escalate it.
+  API, and is refused with `403 permission_error` on every mutation. It signs in
+  to the dashboard as well: `POST /admin/login` mints a session that records the
+  `read` tier, and `require_write` refuses that session's mutations exactly as it
+  refuses the header credential's.
+
+  The tier reaching the session is what makes that safe. While a browser session
+  carried full access unconditionally, minting one from a read key would have
+  silently escalated it, which is why the login form answered `401` until
+  sessions recorded their minting privilege.
 
 A credential's privilege is the **maximum** over every set it matches, not
 whichever set happened to be scanned last. Array `id`s must be non-blank and
@@ -190,13 +195,16 @@ process-lifetime state:
 
 - **Two credentials, never mixed.** Admin auth is the `[server.admin]` credential;
   it is never the `[server.auth]` client tokens.
-- **Browser:** sign in at `/admin/login` with a **write-tier** admin credential →
+- **Browser:** sign in at `/admin/login` with an admin credential of **either
+  tier** →
   an opaque session
   id in an in-memory `SessionStore`, set as cookie `shunt_admin_session`
   (`HttpOnly`, `SameSite=Strict`, `Path=/admin`). The cookie is marked `Secure`
   **unless the request host is loopback**, so local HTTP dev and tests work while
   any real deployment host gets a Secure cookie (reusing M8's `host_is_loopback`
-  loopback carve-out). A session therefore always carries write access.
+  loopback carve-out). A session carries the tier of the credential that minted
+  it — a `read` key's session is refused on every mutation, exactly as its header
+  credential is.
 - **API/curl:** send the admin credential in the configured header
   (`x-shunt-admin-token`) or in `x-api-key`; both slots are accepted, and the
   resolved privilege is the maximum over whichever slots matched. When both
@@ -220,6 +228,18 @@ process-lifetime state:
   /admin/logout` is a plain navigation form that cannot send the header, so it is
   guarded by the same-origin check plus the `SameSite=Strict` cookie instead of
   the synchronizer token.
+- **Same-origin on `POST /admin/login`**, for the same reason and checked before
+  the rate limit, so a cross-site flood cannot spend the operator's login budget.
+  `SameSite=Strict` decides whether the browser *sends* an existing session
+  cookie; it does not stop the browser storing the `Set-Cookie` a cross-site form
+  submission gets back. Without this guard, anyone holding a valid credential
+  could submit that form from their own page and replace a visitor's session with
+  one of their choosing. That became worth guarding when `read_keys` gained the
+  ability to sign in: a read key is handed to someone deliberately given less
+  privilege, and this was its one lever against a write operator — silently
+  downgrading that dashboard to read-only until the operator signed in again.
+  Scripted logins are unaffected: the check passes when neither `Sec-Fetch-Site`
+  nor `Origin` is present.
 - **Pending-login store** is in-memory only, single-use, and TTL-bound; each
   completion attempt is counted and the entry is discarded after a small cap. The
   256-bit OAuth `state` already makes guessing infeasible.
@@ -249,7 +269,37 @@ process-lifetime state:
   referenced file and triggering a reload does rotate that key without a
   restart. Sessions already minted still survive until `session_ttl_secs`.
 
+  **That last sentence reaches read keys too, which it could not while a read
+  key was refused a session.** A `read_keys` login now mints a read-tier
+  session, so rotating a compromised read key stops its *header* credential at
+  the next reload while its *cookie* goes on reading the admin surface until
+  `session_ttl_secs` elapses — and that key carries no upper bound
+  (`AdminConfig::session_ttl_secs` is a bare `u64` with a default, and
+  `Config::validate` does not range-check it), so a deployment that raised it
+  for convenience widens the window by exactly as much. What survives is
+  read-only — `require_write` refuses that session's mutations, and it is
+  strictly less than the full access a write-tier session already carried across
+  the same window — but a deployment that hands read keys out widely because
+  revocation looked immediate no longer has that property, and should restart
+  rather than reload. #100 covers both tiers; neither is fixed by the session
+  tier alone.
+
 ## Endpoints (registered only when `[server.admin]` is set)
+
+> **Pre-split record.** The paths below are the ones M9 shipped. Every JSON and
+> mutation route among them has since moved to `/admin/api/*`; only `/admin`,
+> `/admin/login`, and `/admin/oidc/callback` still answer on the paths written
+> here. `/admin` kept its path but not its answer: the server-rendered dashboard
+> described below is deleted, and that path now serves the embedded SPA shell —
+> unauthenticated, so the sign-in redirect happens client-side after
+> `GET /admin/api/session` answers `401`, and in a build without `--features ui`
+> it answers `404` instead. This table is deliberately left as the pre-split
+> record rather than rewritten — see
+> [`admin-ui-delivery.md`](admin-ui-delivery.md) (Decision 3, Decision 4, and
+> Resolution 6) for why the namespace split and the SPA move happened, and
+> [`docs/reference/endpoints.md`](../site/src/content/docs/reference/endpoints.md)
+> for the current paths and the before/after migration table.
+
 
 | Method | Path | Purpose |
 | :-- | :-- | :-- |
@@ -273,8 +323,9 @@ process-lifetime state:
 Gateway-owned errors keep the Anthropic error shape (`ShuntError`); page routes
 render minimal server-side HTML with inline CSS/JS and no external requests.
 
-Every `GET` above is reachable with a **read** credential. `POST /admin/login`
-and the seven account-provisioning routes (`POST`/`DELETE` under
+Every `GET` above is reachable with a **read** credential, as is
+`POST /admin/login` — it mints a session at the tier of whichever credential
+signed in. The seven account-provisioning routes (`POST`/`DELETE` under
 `/admin/accounts/...`) require **write**. `POST /admin/logout` and the two OIDC
 routes are login-flow plumbing and are guarded by the same-origin/state checks
 rather than by tier.
@@ -394,6 +445,16 @@ even though the client's last local check happened to see an expired token.
 An observed error (`expired`/`unavailable`) still surfaces over a merely idle
 managed state (`available`/`unseen`), which is the "Needs login" case this
 matching was built for.
+
+Within the managed states both tables run one ladder — `disabled`,
+`needs_relogin`, `!has_state`, account-wide cooldown, `near_quota`, Fable-only
+cooldown — so the same account cannot read `near quota` in the managed-pool
+table while the Accounts table calls it `Cooling` (issue #512). The cooldown is
+tested before `near_quota` because it is the fact that *all* of the account's
+traffic is gated right now, while `near_quota` warns about what is coming. When
+both cooldowns are running the row's state is the account-wide one, and its note
+names both deadlines (`retries in 10m · Fable retries in 30m`), the way the
+managed-pool table's Cooldown column already lists both (issue #511).
 
 Managed provisioning and store metadata remain available under a collapsed
 **Manage pool accounts (advanced)** section. `AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,
@@ -710,8 +771,11 @@ recover with, so inside that window a routed request already fails on the
 no-refresh-token path; comparing against the bare deadline here would have the
 dashboard call a credential usable for the last five minutes of its life while
 routing rejects it, the window in which the operator most needs the warning.
-`dashboard_page` substitutes the constant's millisecond value into the script's
-`{expiry_buffer_ms}` placeholder, so the two cannot drift apart.
+`GET /admin/api/session` serves the constant's millisecond value as
+`expiry_buffer_ms`, so the two cannot drift apart. (The server-rendered
+dashboard this replaced substituted it into its own script instead; a served
+value and a substituted one are equally drift-proof, which is why the move
+changed nothing here.)
 
 The Codex store table alongside it carries the same status column, but
 unconditionally: that store has no non-refreshable kind at all. Both writers
@@ -755,6 +819,93 @@ bumped by a re-login and by every new start or completion) and discards its own
 response once superseded. Claude and Codex count separately, so re-priming one
 form never discards the other's live flow.
 
+Re-priming is not the only way a stale authorization step survives. A second
+**Start** on a form whose step is already open used to leave the first link
+clickable, and its Complete button posts to the name captured for *that* flow —
+and because a completion bumps the epoch itself, that click also strands the
+start now in flight, whose response arrives superseded and is dropped. `start`
+therefore clears the authorization state before it bumps the epoch, so the link
+on screen always belongs to the login the operator last asked for (issue #513).
+The login-method radios are disabled for the same span: the mode is fixed in the
+server's pending entry when the request is issued, so a live radio would let the
+form read one method while the pending login is the other. The lock is keyed on
+`starting || authorizeUrl`, not on `authorizeUrl` alone — `start` nulls
+`authorizeUrl` before it sends, so the narrower key would reopen the radios for
+exactly the length of the request that had already captured the mode. A
+superseded start does not release the flag; `prime` and each newer start set it
+as they take over, so it always belongs to whichever call owns the current epoch.
+A `disabled` attribute states no reason, so the group carries a `role="status"`
+note naming the lock — the form's own live region is empty at exactly that
+moment, because `start` clears it and a successful start never sets it. Pressing
+Start again does **not** release the lock (the replacement start re-arms it
+before any render), so the note names the two things that do: completing the
+flow, or reloading the page.
+
+Clearing at issue time costs the operator something when the replacement start
+then *fails*: the page has thrown away the only handle to a pending login the
+server may well still hold. Restoring the flow is not the repair — reinstating `authorizeUrl` and the name
+handle puts the page back into exactly the state #513 removed, and making that
+coherent means restoring the name field too, stomping the edit the operator is
+about to correct. Each failure message names what was closed instead, so the
+operator restarts rather than hunting for a link that is gone (issue #531). Both
+of `start`'s failure paths carry it, because the clear runs *before* the request:
+a refusal appends the notice to the server's own reason, and an unanswered start
+says it in place of the "no authorization step opened" line, which speaks only
+for the step that failed to open.
+
+What the server still holds differs by path, which is why the notice speaks only
+for the page. A refused start never reaches `PendingStore::start` —
+`add_account` calls it only after every failure return — so the earlier pending
+login is untouched and lives out its `pending_ttl_secs`. An unanswered one may
+have reached the server all the same, and `PendingStore::start` is a keyed insert
+that *replaces* the entry, so a retry under the same account name has already
+invalidated the login the closed step pointed at. Neither is reachable from the
+page, which is what the notice says and all it says.
+
+The notice is said only when a step was in fact closed — a failed start that
+closed nothing has nothing to report, and saying it regardless would teach an
+operator to read past the sentence on the one occasion it is true. Reading
+`authorizeUrl` alone does not decide that, because the closure and the message
+that reports it can be separated: a start closes the step synchronously, and its
+own response can then be dropped by the epoch guard when a newer start supersedes
+it — while that newer start reads an `authorizeUrl` the older one already nulled.
+The Start button is not disabled while a start is in flight, unlike Complete —
+which is disabled for its own request, and carries the 120-second
+`AbortController` bound described below precisely so that being disabled cannot
+close it for the life of the page. `start` has no such bound. So a second Start
+during the first is an ordinary double click, not a race. A
+`closedStepUnreported` ref carries the fact across the gap and is released by
+whichever message reports it. The predicate *defers* on a step whose code is
+already submitted (`completingNow`): a completion leaves `authorizeUrl` non-null
+until it succeeds and clears it only *after* the epoch guard, so a Start clicked
+mid-completion supersedes that completion — suppressing its confirmation while
+`onStored` has already stored the account. Claiming a lost step there would send
+the operator to re-provision an account already in the table. Deferring is not
+declining, though: when that superseded completion comes back a definite failure,
+nothing was stored, the step it was spending is closed, and its own error is
+suppressed by the epoch the newer start took — so `complete` reports the closure
+itself on that branch. Which way it reports depends on what the superseding start
+has managed to do by then, and both orders are ordinary: the refusal is a local
+validation while the completion is an upstream round trip, so it usually lands
+first. If that verdict is already on screen, the completion amends it in place;
+if the start is still in flight, the ref carries the fact to the message it will
+write. Only the start's own verdict is amended, tracked by `shownStartFailure` —
+`#addmsg` is shared with the row actions, which report through `report`, and a
+closed-step note appended to a failed refresh would name a start the operator did
+not make. Nothing is reported at all when that start has opened a step of its
+own (`stepOpen`, mirroring `authorizeUrl` for the same reason): the operator is
+not stranded, and arming the carry there would strand the fact instead, since
+completing the new step consumes it silently and the notice would surface later
+on a failure that closed nothing. The two unknown completion outcomes — an unreadable
+answer, an abandoned request — record nothing, because neither can say the
+account was *not* stored and `onStored` has already re-read the table, which is
+where that question is answered. Nor does a completion superseded by `prime`:
+re-login discards the half-finished flow at the operator's own request, so the
+next start closes nothing and must not say it did. The wider predicate the radio lock uses
+(`starting || authorizeUrl !== null`) would reach the same case, but it fires just
+as readily on two chained starts that never opened a step at all, and would then
+name a step the operator never saw.
+
 The epoch orders *starts*, where the later click is the live one, and must not
 be extended to order two completions of the same flow: a completion consumes the
 pending login, so there the **first** click is the one that stores the
@@ -770,8 +921,30 @@ consume the entry and `complete_account` removes it only after the store, so a
 start issued during an in-flight exchange replaces the entry and lets a second
 completion pass its own state check — both exchanges then reach the store in an
 order nothing constrains, and the older one landing last leaves the account
-holding the superseded credential. Serializing the page's completions is what
-keeps that sequence out of reach.
+holding the superseded credential.
+
+The page's marker cannot be what keeps that sequence out of reach, because it
+only binds one page: a second tab, a second operator, or a direct API call is
+subject to none of it, and the abort bound below releases the marker while the
+server may still be exchanging. So the ordering is server-side. Each completion
+holds `PendingStore::lock_completion` for its whole `attempt` → exchange → store
+→ remove sequence, keyed by the pending key, so a second completion waits and
+then finds the entry already consumed and fails closed with "start again"
+(issue #440). The marker stays as what it always was locally — a refusal that
+costs no round-trip — rather than the thing that orders the mutations.
+
+The lock is bounded by the exchange it holds. `COMPLETION_EXCHANGE_TIMEOUT` caps
+that upstream exchange at 30 seconds, so a hung provider releases the lock with a
+`502` instead of parking every later completion for that key behind it for as long
+as the connection stays open. The pending entry survives the timeout — the attempt
+still counts against `MAX_PENDING_ATTEMPTS` — but the authorization code may
+already be spent upstream, so the recovery is a fresh start rather than re-posting
+the same code.
+
+`start` deliberately does not take that lock: blocking a start behind an
+in-flight exchange would stall the operator for up to the completion's own
+timeout, and two racing *starts* already fail closed on the state check, which
+is why ordering them is tracked separately rather than here.
 
 Nothing else may release the marker, so the completion request carries its own
 120-second `AbortController` bound, cleared in a `finally`: a connection that
@@ -783,10 +956,9 @@ not agree with.
 The marker is a per-page-load convenience, not an enforceable lock: it is a
 `let` in the inline script, so reloading the dashboard clears it and permits the
 same retry the bound does. Being page-local it also cannot see a second tab or a
-direct API call, and the server orders nothing. Its job is only to keep one
-page's own two clicks from racing; ordering concurrent completions is
-server-side work, tracked in
-[issue #440](https://github.com/pleaseai/shunt/issues/440).
+direct API call. Its job is only to keep one page's own two clicks from racing;
+ordering concurrent completions is the server's, through the per-pending-key
+lock described above.
 
 Both are deliberately confined to the managed store tables: the observed rows in
 the top-level **Accounts and usage** table are unchanged, since those credentials

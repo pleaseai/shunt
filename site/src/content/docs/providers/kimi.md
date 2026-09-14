@@ -191,7 +191,7 @@ fine; the subscription is what needs attention.
 ### Pooled accounts and the admin surface
 
 A `kimi_oauth` pool participates in the same load-balancing, failover, and quota-aware account
-rotation as the Claude and Codex pools, and its accounts appear in `GET /admin/pool` and in the
+rotation as the Claude and Codex pools, and its accounts appear in `GET /admin/api/pool` and in the
 sanitized `GET /usage` aggregate when those are enabled. It rotates on one extra condition the
 other pools do not have: the `402` membership response above. Because an inactive membership
 returns 402 on every request, shunt treats it as an account-level failure — it cools that account
