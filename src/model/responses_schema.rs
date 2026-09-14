@@ -20,9 +20,8 @@
 //! so the offending patterns are dropped here rather than forwarded. Outside
 //! strict mode a `pattern` is advisory — the model reads it, nothing enforces
 //! it — so a dropped one costs a hint, not a capability; the `description`
-//! usually restates the constraint anyway. The ChatGPT backend also rejects
-//! lookaround in its schema compiler, even though Python accepts it. Drop these
-//! assertions as well. Also reject `\N{…}`: Python reads it as a named character and
+//! usually restates the constraint anyway. Lookahead and lookbehind assertions
+//! are dropped as well. Also reject `\N{…}`: Python reads it as a named character and
 //! JavaScript as a literal `N`, so the two never agree on what it matches.
 
 use serde_json::Value;
@@ -31,7 +30,8 @@ use serde_json::Value;
 const MAXREPEAT: u64 = 4_294_967_295;
 
 /// Remove every `pattern` keyword, and every `patternProperties` entry, whose
-/// regex Python's `re` or the upstream lookaround check would refuse to compile.
+/// regex Python's `re` would refuse to compile, or that contains a lookahead
+/// or lookbehind assertion.
 ///
 /// Walks the applicator keywords and nothing else, mirroring where the
 /// validator itself looks: the meta-schema recognizes a subschema only under
@@ -104,9 +104,6 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
     }
 }
 
-/// The backend applies a second, narrower regex check after meta-schema
-/// validation. For example, Neon's create_auth_user email pattern contains
-/// `(?!...)` and fails with "regex lookaround is not supported".
 fn upstream_accepts(pattern: &str) -> bool {
     python_re_accepts(pattern) && !contains_lookaround(pattern)
 }

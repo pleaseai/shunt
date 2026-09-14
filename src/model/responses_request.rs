@@ -871,7 +871,6 @@ fn normalize_schema(schema: Value) -> Value {
     let mut schema = Value::Object(object);
     // The backend compiles every `pattern` with Python's `re`; a JavaScript-only
     // regex (Claude Code's `Artifact` tool carries `\p{Cc}`) fails the request.
-    // Its schema compiler also rejects lookaround (e.g. Neon's email pattern).
     responses_schema::strip_unsupported_patterns(&mut schema);
     schema
 }

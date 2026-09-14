@@ -96,9 +96,8 @@ regenerate it.
   meta-schema with `format: regex` checked by Python, and one JavaScript-only regex
   (`\p{Cc}`, `(?<name>…)`, `\u{…}`, `\z`) fails the whole request with
   `Invalid schema for function '…': '…' is not a 'regex'`. Claude Code's `Artifact` tool
-  ships such a pattern. Also drop lookahead and lookbehind assertions: the ChatGPT
-  schema compiler rejects these with `regex lookaround is not supported`, including
-  Neon's `create_auth_user` email pattern. Other Python-compatible patterns are kept,
+  ships such a pattern. Also drop lookahead and lookbehind assertions.
+  Other Python-compatible patterns are kept,
   except `\N{…}`, which names a character in Python but is a literal `N` in
   JavaScript — the engines disagree on its meaning, so it is dropped rather than
   forwarded. Outside strict

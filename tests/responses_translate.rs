@@ -58,13 +58,13 @@ fn parsed_value_entry_point_matches_byte_wrapper_across_flavors() {
 }
 
 #[test]
-fn neon_email_lookaround_is_removed_for_chatgpt_without_mutating_input() {
+fn email_pattern_lookaround_is_removed_for_chatgpt_without_mutating_input() {
     let pattern = r"^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$";
     let request = json!({
         "model": "gpt-6-astra", "max_tokens": 256,
         "messages": [{"role": "user", "content": "hello"}],
         "tools": [{
-            "name": "mcp__plugin_neon_neon__create_auth_user",
+            "name": "create_user",
             "description": "Create a user; the server validates the email.",
             "input_schema": {
                 "type": "object",
