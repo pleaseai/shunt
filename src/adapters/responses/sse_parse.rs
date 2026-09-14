@@ -6,10 +6,12 @@
 use std::convert::Infallible;
 
 use axum::body::Bytes;
+use axum::http::StatusCode;
 use futures_util::{stream, Stream, StreamExt};
 use serde_json::Value;
 
 use crate::model::responses::{sse, AnthropicSseMachine, ResponseEvent};
+use crate::proxy::chain_stream::LazyEnvelope;
 
 use super::error::{adapter_error_envelope, own_error, transport_error};
 
@@ -128,16 +130,40 @@ pub(super) enum PoolEvent {
     Event(ResponseEvent),
 }
 
+/// One item of a pooled streaming turn: the winning account's attribution
+/// frame, a relayed Responses event, or the classified pre-frame pool
+/// exhaustion (the committed chain advances on it like the pre-commit loop,
+/// §4).
+pub(super) enum PoolItem {
+    Event(PoolEvent),
+    Exhausted {
+        status: StatusCode,
+        advance: bool,
+        remember: bool,
+        envelope: LazyEnvelope,
+    },
+}
+
 /// Translate pooled items into client-facing bytes: `Account` becomes an
 /// `event: account` frame whose data is the bare account name (mirroring the
-/// `x-shunt-account` header value), `Event` goes through the machine.
+/// `x-shunt-account` header value), `Event` goes through the machine, and a
+/// pre-frame exhaustion becomes the terminal `error` event.
 pub(super) fn pool_translated_stream(
-    events: impl Stream<Item = Result<PoolEvent, Value>> + Send + 'static,
-    machine: AnthropicSseMachine,
+    events: impl Stream<Item = Result<PoolItem, Value>> + Send + 'static,
+    machine: impl FnOnce() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = (AnthropicSseMachine, String)> + Send>,
+        > + Send
+        + 'static,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> + Send + 'static {
     translated_core(
-        events,
-        move || Box::pin(async move { (machine, String::new()) }),
+        events.then(|item| async move {
+            match item {
+                Ok(PoolItem::Event(event)) => Ok(event),
+                Ok(PoolItem::Exhausted { envelope, .. }) => Err(envelope.resolve().await),
+                Err(envelope) => Err(envelope),
+            }
+        }),
+        machine,
         |item, machine| match item {
             PoolEvent::Account(name) => sse("account", &Value::String(name)),
             PoolEvent::Event(event) => machine.apply(event).into_iter().collect::<String>(),

@@ -22,11 +22,12 @@ use super::body::{prepare_body, PreparedBody};
 use super::context::{CredentialSource, ForwardOptions, PoolForward, RelayOptions, TurnOptions};
 use super::early_stream::{
     bounded_input_estimate, estimated_machine_factory, http_events_stream, parsed_events,
-    pool_streaming_response, HttpSendContext, PoolEvent,
+    pool_streaming_response, HttpSendContext, PoolEvent, PoolItem,
 };
 use super::error::{adapter_error_envelope, mapped_upstream_error, own_error, transport_error};
 use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
+use crate::proxy::chain_stream::LazyEnvelope;
 
 fn select_pool_order(
     state: &AppState,
@@ -183,8 +184,8 @@ pub(super) fn pool_or_single_events(
     upstream_body: std::sync::Arc<Value>,
     single: HttpSendContext,
     single_credential: CredentialSource,
-) -> impl Stream<Item = Result<PoolEvent, Value>> + Send + 'static {
-    type Inner = std::pin::Pin<Box<dyn Stream<Item = Result<PoolEvent, Value>> + Send>>;
+) -> impl Stream<Item = Result<PoolItem, Value>> + Send + 'static {
+    type Inner = std::pin::Pin<Box<dyn Stream<Item = Result<PoolItem, Value>> + Send>>;
     struct Init {
         scan: std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<Vec<AccountConfig>, String>> + Send>,
@@ -240,32 +241,32 @@ pub(super) fn pool_or_single_events(
                         return Some((Err(envelope), Phase::Done));
                     }
                     let ramp_initial = state.config.storm_ramp_initial();
-                    let mut inner: Inner = if accounts.is_empty() {
-                        Box::pin(
-                            http_events_stream(single, single_credential, None)
-                                .map(|item| item.map(PoolEvent::Event)),
-                        )
-                    } else {
-                        let accounts_config = std::sync::Arc::new(accounts);
-                        let (order, reprobe) = state.accounts.select_order_deferred(
-                            &route.provider,
-                            &accounts_config,
-                            session_id.as_deref(),
-                            Some(route.upstream_model.as_str()),
-                            state.config.server.pool.as_ref(),
-                        );
-                        Box::pin(pool_events_stream(PoolStreamContext {
-                            state,
-                            route,
-                            auth: AuthMode::ChatgptOauth,
-                            session_id,
-                            upstream_body,
-                            accounts_config,
-                            order,
-                            reprobe,
-                            ramp_initial,
-                        }))
-                    };
+                    let mut inner: Inner =
+                        if accounts.is_empty() {
+                            Box::pin(http_events_stream(single, single_credential, None).map(
+                                |item| item.map(|event| PoolItem::Event(PoolEvent::Event(event))),
+                            ))
+                        } else {
+                            let accounts_config = std::sync::Arc::new(accounts);
+                            let (order, reprobe) = state.accounts.select_order_deferred(
+                                &route.provider,
+                                &accounts_config,
+                                session_id.as_deref(),
+                                Some(route.upstream_model.as_str()),
+                                state.config.server.pool.as_ref(),
+                            );
+                            Box::pin(pool_events_stream(PoolStreamContext {
+                                state,
+                                route,
+                                auth: AuthMode::ChatgptOauth,
+                                session_id,
+                                upstream_body,
+                                accounts_config,
+                                order,
+                                reprobe,
+                                ramp_initial,
+                            }))
+                        };
                     inner.next().await.map(|item| (item, Phase::Inner(inner)))
                 }
                 Phase::Inner(mut inner) => {
@@ -289,7 +290,7 @@ pub(super) fn pool_or_single_events(
 /// the header.
 pub(super) fn pool_events_stream(
     context: PoolStreamContext,
-) -> impl Stream<Item = Result<PoolEvent, Value>> + Send + 'static {
+) -> impl Stream<Item = Result<PoolItem, Value>> + Send + 'static {
     let PoolStreamContext {
         state,
         route,
@@ -343,7 +344,7 @@ pub(super) fn pool_events_stream(
                             // relayed frame.
                             if let Some(name) = account.take() {
                                 return Some((
-                                    Ok(PoolEvent::Account(name)),
+                                    Ok(PoolItem::Event(PoolEvent::Account(name))),
                                     (
                                         Phase::Relay {
                                             parsed,
@@ -360,7 +361,7 @@ pub(super) fn pool_events_stream(
                             match parsed.next().await {
                                 Some(Ok(event)) => {
                                     return Some((
-                                        Ok(PoolEvent::Event(event)),
+                                        Ok(PoolItem::Event(PoolEvent::Event(event))),
                                         (
                                             Phase::Relay {
                                                 parsed,
@@ -392,24 +393,53 @@ pub(super) fn pool_events_stream(
                         Phase::NextAccount => {
                             let Some((position, index)) = order_iter.next() else {
                                 crate::metrics::record_pool_rotation(&route.provider, "exhausted");
-                                let envelope = match last_response.take() {
-                                    Some(upstream) => {
-                                        let status = upstream.status();
-                                        adapter_error_envelope(
-                                            mapped_upstream_error(status, upstream, auth).await,
-                                        )
-                                        .await
-                                    }
-                                    None => {
-                                        adapter_error_envelope(transport_error(
-                                            "all Codex OAuth accounts failed before receiving an upstream response"
-                                                .to_string(),
-                                        ))
-                                        .await
-                                    }
-                                };
+                                // Classified pre-frame exhaustion: the
+                                // committed chain advances on it exactly like
+                                // the pre-commit loop (§4) — a relayed
+                                // advance status is advance-worthy and
+                                // remembered, transport exhaustion advances
+                                // without remembering.
+                                let (status, advance, remember, envelope) =
+                                    match last_response.take() {
+                                        Some(upstream) => {
+                                            let status = upstream.status();
+                                            let envelope =
+                                                LazyEnvelope::Deferred(Box::pin(async move {
+                                                    adapter_error_envelope(
+                                                        mapped_upstream_error(
+                                                            status, upstream, auth,
+                                                        )
+                                                        .await,
+                                                    )
+                                                    .await
+                                                }));
+                                            (
+                                                status,
+                                                crate::proxy::failover::is_advance_status(status),
+                                                true,
+                                                envelope,
+                                            )
+                                        }
+                                        None => (
+                                            StatusCode::BAD_GATEWAY,
+                                            true,
+                                            false,
+                                            LazyEnvelope::Ready(
+                                                adapter_error_envelope(transport_error(
+                                                    "all Codex OAuth accounts failed before receiving an upstream response"
+                                                        .to_string(),
+                                                ))
+                                                .await,
+                                            ),
+                                        ),
+                                    };
                                 return Some((
-                                    Err(envelope),
+                                    Ok(PoolItem::Exhausted {
+                                        status,
+                                        advance,
+                                        remember,
+                                        envelope,
+                                    }),
                                     (Phase::Done, order_iter, http_body, last_response, reprobe),
                                 ));
                             };
@@ -457,8 +487,16 @@ pub(super) fn pool_events_stream(
                                             transport_error(error.without_url().to_string())
                                         }))
                                         .await;
+                                    // The TTFB timeout is the configured 504
+                                    // answer: terminal, never advanced (the
+                                    // pre-commit loop's mapping).
                                     return Some((
-                                        Err(envelope),
+                                        Ok(PoolItem::Exhausted {
+                                            status: StatusCode::GATEWAY_TIMEOUT,
+                                            advance: false,
+                                            remember: false,
+                                            envelope: LazyEnvelope::Ready(envelope),
+                                        }),
                                         (
                                             Phase::Done,
                                             order_iter,
@@ -510,13 +548,19 @@ pub(super) fn pool_events_stream(
                                         // A non-failover 4xx (e.g. 400) is a
                                         // client error, not the account's fault:
                                         // relay it re-shaped, as everywhere on
-                                        // this path.
+                                        // this path. Terminal, carrying its
+                                        // real status for metrics.
                                         let envelope = adapter_error_envelope(
                                             mapped_upstream_error(status, upstream, auth).await,
                                         )
                                         .await;
                                         return Some((
-                                            Err(envelope),
+                                            Ok(PoolItem::Exhausted {
+                                                status,
+                                                advance: false,
+                                                remember: true,
+                                                envelope: LazyEnvelope::Ready(envelope),
+                                            }),
                                             (
                                                 Phase::Done,
                                                 order_iter,
@@ -564,8 +608,15 @@ pub(super) fn pool_events_stream(
                                                 }),
                                             )
                                             .await;
+                                            // Terminal, never advanced (the
+                                            // pre-commit loop's mapping).
                                             return Some((
-                                                Err(envelope),
+                                                Ok(PoolItem::Exhausted {
+                                                    status: StatusCode::GATEWAY_TIMEOUT,
+                                                    advance: false,
+                                                    remember: false,
+                                                    envelope: LazyEnvelope::Ready(envelope),
+                                                }),
                                                 (
                                                     Phase::Done,
                                                     order_iter,
@@ -625,8 +676,15 @@ pub(super) fn pool_events_stream(
                                                     .await,
                                                 )
                                                 .await;
+                                                // Terminal, carrying its real
+                                                // status for metrics.
                                                 return Some((
-                                                    Err(envelope),
+                                                    Ok(PoolItem::Exhausted {
+                                                        status: retry_status,
+                                                        advance: false,
+                                                        remember: true,
+                                                        envelope: LazyEnvelope::Ready(envelope),
+                                                    }),
                                                     (
                                                         Phase::Done,
                                                         order_iter,

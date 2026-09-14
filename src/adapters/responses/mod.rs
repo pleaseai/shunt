@@ -32,14 +32,14 @@ use crate::{
     server::AppState,
 };
 
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 
 use self::context::{CredentialSource, ForwardOptions, PoolForward, TurnOptions};
 use self::early_stream::{
     parsed_events, pool_translated_stream, send_classified, translated_stream, HttpSendContext,
-    SendClassified,
+    PoolItem, SendClassified,
 };
-use self::error::{adapter_error_envelope, own_error};
+use self::error::{adapter_error_envelope, own_error, transport_error};
 use self::http::forward_http;
 pub(crate) use self::inbound::forward_codex_inbound;
 pub(crate) use self::inbound_routed::forward_codex_routed;
@@ -463,12 +463,64 @@ pub(crate) async fn chain_attempt(
                 ramp_initial: state.config.storm_ramp_initial(),
             });
             let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
-            return crate::proxy::chain_stream::Attempt::Winner {
-                start: Some(axum::body::Bytes::from(start.join(""))),
-                frames: Box::pin(
-                    pool_translated_stream(events, machine).map_err(|never| match never {}),
-                ),
-            };
+            // Pre-poll the pool: the synthetic start stays deferred until an
+            // account actually wins, and a pre-frame exhaustion is a
+            // classified failure the chain advances on like the pre-commit
+            // loop (§4) — never a mid-relay terminal event.
+            let mut events = Box::pin(events);
+            match events.next().await {
+                Some(Ok(PoolItem::Event(event))) => {
+                    return crate::proxy::chain_stream::Attempt::Winner {
+                        start: Some(axum::body::Bytes::from(start.join(""))),
+                        frames: Box::pin(
+                            pool_translated_stream(
+                                futures_util::stream::iter([Ok(PoolItem::Event(event))])
+                                    .chain(events),
+                                move || Box::pin(async move { (machine, String::new()) }),
+                            )
+                            .map_err(|never| match never {}),
+                        ),
+                    };
+                }
+                Some(Ok(PoolItem::Exhausted {
+                    status,
+                    advance,
+                    remember,
+                    envelope,
+                })) => {
+                    return crate::proxy::chain_stream::Attempt::Failed {
+                        advance,
+                        remember,
+                        envelope,
+                        status,
+                    };
+                }
+                Some(Err(envelope)) => {
+                    // The TTFB timeout (the arbiter: terminal) or a
+                    // non-failover relayed status — both terminal, neither
+                    // remembered.
+                    return crate::proxy::chain_stream::Attempt::Failed {
+                        advance: false,
+                        remember: false,
+                        envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
+                        status: StatusCode::BAD_GATEWAY,
+                    };
+                }
+                None => {
+                    return crate::proxy::chain_stream::Attempt::Failed {
+                        advance: true,
+                        remember: false,
+                        envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(
+                            adapter_error_envelope(transport_error(
+                                "all Codex OAuth accounts failed before receiving an upstream response"
+                                    .to_string(),
+                            ))
+                            .await,
+                        ),
+                        status: StatusCode::BAD_GATEWAY,
+                    };
+                }
+            }
         }
         // No accounts: fall through to the single-credential path, exactly
         // like `forward`.

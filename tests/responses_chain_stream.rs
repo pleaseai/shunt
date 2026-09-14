@@ -10,7 +10,10 @@ use std::{io::ErrorKind, net::SocketAddr};
 
 use reqwest::StatusCode;
 use shunt::{
-    config::{Config, ModelConfig, ProviderKind, RetryConfig, UpstreamConfig},
+    config::{
+        AccountConfig, AccountSelection, AuthMap, Config, ModelConfig, ProviderKind, RetryConfig,
+        UpstreamAuth, UpstreamConfig,
+    },
     server,
 };
 use tokio::task::JoinHandle;
@@ -342,6 +345,50 @@ async fn a_non_sse_anthropic_winner_becomes_one_terminal_error_event() {
     assert_eq!(count_event(&body, "message_start"), 0, "got:\n{body}");
     assert_eq!(count_event(&body, "error"), 1, "got:\n{body}");
     assert!(!body.contains("not sse"), "got:\n{body}");
+    drop(gateway);
+    fallback.verify().await;
+}
+
+#[tokio::test]
+async fn an_exhausted_pool_primary_advances_to_the_anthropic_fallback() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    // The pool's only account resolves its credential from this env; unset
+    // is the test's precondition (resolution fails, the pool exhausts before
+    // any account frame).
+    vars.unset("SHUNT_POOL_UNSET_TOKEN");
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(ANTHROPIC_SSE, "text/event-stream"))
+        .expect(1)
+        .mount(&fallback)
+        .await;
+
+    let mut config = chain_config(
+        (ProviderKind::Responses, refused_base_url()),
+        (ProviderKind::Anthropic, fallback.uri()),
+    );
+    config.upstreams[0].auth = Some(UpstreamAuth::Map(AuthMap::ChatgptOauth {
+        account: None,
+        accounts: Some(vec![AccountSelection::Inline(AccountConfig {
+            name: "pool-a".to_string(),
+            token_env: Some("SHUNT_POOL_UNSET_TOKEN".to_string()),
+            ..Default::default()
+        })]),
+    }));
+    let gateway = start_gateway(config).await;
+    let response = stream_request(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    // The exhausted pool is a pre-frame failure the chain advances on (§4),
+    // never a terminal mid-relay error: the fallback's own start and output
+    // reach the client.
+    assert_eq!(count_event(&body, "message_start"), 1, "got:\n{body}");
+    assert!(body.contains("from anthropic"), "got:\n{body}");
+    assert_eq!(count_event(&body, "error"), 0, "got:\n{body}");
     drop(gateway);
     fallback.verify().await;
 }

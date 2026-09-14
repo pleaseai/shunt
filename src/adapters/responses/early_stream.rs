@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::{
     auth::Credential,
     config::AuthMode,
-    model::responses::{sse, AnthropicSseMachine, ResponseEvent},
+    model::responses::{AnthropicSseMachine, ResponseEvent},
     routing::Route,
     server::AppState,
 };
@@ -26,7 +26,7 @@ use crate::proxy::chain_stream::LazyEnvelope;
 
 pub(super) use super::sse_parse::{
     bounded_input_estimate, next_parsed, parsed_events, pool_translated_stream, translated_core,
-    translated_stream, PoolEvent, SseParser,
+    translated_stream, PoolEvent, PoolItem, SseParser,
 };
 
 /// The streaming response for the early-commit transport: emit the synthetic
@@ -67,12 +67,9 @@ pub(super) fn pool_streaming_response(
         > + Send
         + 'static,
     keepalive: std::time::Duration,
-    events: impl Stream<Item = Result<PoolEvent, Value>> + Send + 'static,
+    events: impl Stream<Item = Result<PoolItem, Value>> + Send + 'static,
 ) -> axum::response::Response {
-    let output = translated_core(events, machine, |item, machine| match item {
-        PoolEvent::Account(name) => sse("account", &Value::String(name)),
-        PoolEvent::Event(event) => machine.apply(event).into_iter().collect::<String>(),
-    });
+    let output = pool_translated_stream(events, machine);
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
