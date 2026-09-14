@@ -93,6 +93,22 @@ impl IntoResponse for ShuntError {
     }
 }
 
+/// The JSON body of an already-built error response, for turning it into an
+/// SSE `error` event envelope. The bodies here are small pre-built errors; a
+/// non-JSON body falls back to a generic `api_error` envelope.
+pub(crate) async fn error_body_value(response: Response) -> Value {
+    to_bytes(response.into_body(), usize::MAX)
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "type": "error",
+                "error": {"type": "api_error", "message": "upstream failed"}
+            })
+        })
+}
+
 /// OpenAI Responses-shaped error body: `{"error":{"message":..,"type":..,"code":null}}`.
 /// Used only by the inbound Codex endpoint (`[server.codex_endpoint]`), whose
 /// clients speak the OpenAI Responses protocol and expect this envelope rather

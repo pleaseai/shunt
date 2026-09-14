@@ -5,6 +5,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, Response, StatusCode, Uri},
     response::IntoResponse,
 };
+use futures_util::StreamExt;
 
 use crate::{
     accounts::{self, FailoverAction},
@@ -1328,6 +1329,114 @@ fn upstream_error(error: reqwest::Error) -> AdapterError {
         message,
         response: Box::new(UpstreamError::from_reqwest(error).into_response()),
         failure: Some(crate::adapters::AdapterFailure::BeforeHeaders),
+    }
+}
+
+/// One Anthropic-kind attempt for the multi-upstream streaming chain
+/// (`proxy::chain_stream`): resolve the credential, normalize the request, and
+/// run the bounded-retry send inside the committed stream. A winner relays its
+/// own SSE — `message_start` included, so no synthetic start is needed — and a
+/// failure hands back the client-facing error envelope plus the status for the
+/// chain to classify. A mid-relay body error ends the relay silently, exactly
+/// like the single-route relay today.
+pub(crate) async fn chain_attempt(
+    state: &AppState,
+    route: &Route,
+    uri: &Uri,
+    headers: &HeaderMap,
+    mut body: crate::request::RequestBody,
+) -> crate::proxy::chain_stream::Attempt {
+    let credential = match resolve_credential(&state.config, route, &state.http_client).await {
+        Ok(credential) => credential,
+        Err(error) => {
+            let envelope = crate::error::error_body_value(*error.response).await;
+            return crate::proxy::chain_stream::Attempt::Failed {
+                advance: false,
+                envelope,
+                status: StatusCode::BAD_GATEWAY,
+            };
+        }
+    };
+    let request_headers = outbound_headers(headers, &credential);
+    let oauth_client = bearer_is_subscription_oauth(&request_headers);
+    if oauth_client {
+        auto_mode_classifier::restore_claude_code_identity(&mut body);
+    }
+    normalize_upstream_model_request(&mut body, &route.upstream_model);
+    deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    let body = bytes::Bytes::from(body.into_raw());
+    let provider = state
+        .config
+        .provider(&route.provider)
+        .expect("route provider was validated");
+    let policy = provider.retry.policy();
+    let url = upstream_url(state, route, uri);
+    let client = state.http_client.clone();
+    let upstream = match crate::retry::send_with_retry_with_safety(
+        policy,
+        &route.provider,
+        crate::retry::RetrySafety::NonIdempotentPost,
+        || {
+            crate::upstream_timeout::wait(
+                state.config.server.timeouts.upstream_ttfb_ms,
+                client
+                    .post(url.as_str())
+                    .headers(request_headers.clone())
+                    .body(body.clone())
+                    .send(),
+            )
+        },
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            let envelope =
+                crate::error::error_body_value(*error.into_adapter_error(upstream_error).response)
+                    .await;
+            return crate::proxy::chain_stream::Attempt::Failed {
+                advance: true,
+                envelope,
+                status: StatusCode::BAD_GATEWAY,
+            };
+        }
+    };
+    let status = upstream.status();
+    if !status.is_success() {
+        // The single-route path relays a non-2xx upstream response as the HTTP
+        // response; inside the committed stream it becomes the terminal error
+        // event carrying the upstream's own error body when that body is JSON
+        // (the usual Anthropic error shape). The chain decides whether the
+        // status advances (mirroring the loop's relayed-429 advance).
+        let envelope = match upstream.bytes().await {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                serde_json::json!({
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": format!("upstream returned {status}")
+                    }
+                })
+            }),
+            Err(_) => serde_json::json!({
+                "type": "error",
+                "error": {"type": "api_error", "message": format!("upstream returned {status}")}
+            }),
+        };
+        return crate::proxy::chain_stream::Attempt::Failed {
+            advance: false,
+            envelope,
+            status,
+        };
+    }
+    let alias = (route.model != route.upstream_model).then(|| route.model.clone());
+    let frames = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias)
+        .filter_map(|chunk| async move { chunk.ok() })
+        .map(Ok)
+        .boxed();
+    crate::proxy::chain_stream::Attempt::Winner {
+        start: None,
+        frames,
     }
 }
 

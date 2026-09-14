@@ -115,6 +115,26 @@ pub(super) async fn forward(
     let primary_origin = (attempted_total > 1 && is_passthrough_route(&state, first_route))
         .then(|| provider_origin(&state, &first_route.provider))
         .flatten();
+    if super::chain_stream::chain_stream_applies(
+        &state,
+        &routes,
+        body.as_ref().expect("request body is present"),
+    ) {
+        return super::chain_stream::forward_chain_stream(
+            super::chain_stream::ChainStreamRequest {
+                state,
+                routes,
+                uri: uri.clone(),
+                base_headers,
+                inbound,
+                primary_origin,
+                body: body.take().expect("request body is present"),
+                requested_model,
+                started_at,
+            },
+        )
+        .await;
+    }
     let mut remembered: Option<RememberedFailure> = None;
     for (index, route) in routes.into_iter().enumerate() {
         crate::metrics::record_failover(&route.provider, "attempted");
@@ -389,7 +409,7 @@ fn observe_response(
     (status, response)
 }
 
-fn is_advance_status(status: StatusCode) -> bool {
+pub(crate) fn is_advance_status(status: StatusCode) -> bool {
     matches!(
         status,
         StatusCode::TOO_MANY_REQUESTS
@@ -477,6 +497,7 @@ fn enforce_managed_model_policy(
     }))
 }
 
+#[derive(Clone)]
 pub(crate) struct InboundContext {
     gateway_claims: Option<crate::gateway::jwt::Claims>,
     client: Option<String>,
@@ -698,7 +719,7 @@ fn reason_label(reason: ConsumedBy) -> &'static str {
     }
 }
 
-fn stamp_gateway_headers(
+pub(crate) fn stamp_gateway_headers(
     response: &mut axum::response::Response,
     upstream: &str,
     model: &str,

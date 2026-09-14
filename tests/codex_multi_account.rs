@@ -1222,8 +1222,9 @@ async fn pool_http_dispatch_seeds_message_start_input_token_estimate() {
 
     assert_eq!(response.status(), StatusCode::OK);
     // The streaming pool path commits the response (and thus its headers)
-    // before the winning account is known, so `x-shunt-account` is absent
-    // here; the estimate assertion below is this test's actual subject.
+    // before the winning account is known, so `x-shunt-account` cannot ride
+    // the header — the winner is attributed with an `event: account` frame
+    // before its first relayed frame instead.
     assert!(
         response.headers().get("x-shunt-account").is_none(),
         "early-committed streaming responses cannot carry the winning account header"
@@ -1232,6 +1233,21 @@ async fn pool_http_dispatch_seeds_message_start_input_token_estimate() {
     assert!(
         message_start_input_tokens(&body) > 0,
         "message_start must carry the tiktoken estimate on the pool HTTP dispatch path; got:\n{body}"
+    );
+    // The winning account's attribution frame precedes its relayed content.
+    let data_index = body
+        .lines()
+        .position(|line| line.trim() == "event: account")
+        .expect("the stream must attribute the winning account");
+    let data_line = body.lines().nth(data_index + 1).unwrap();
+    assert_eq!(data_line, "data: \"account-a\"");
+    let content_index = body
+        .lines()
+        .position(|line| line.starts_with("data: ") && line.contains("pool http streamed"))
+        .unwrap();
+    assert!(
+        data_index < content_index,
+        "the account frame must precede the relayed content; got:\n{body}"
     );
     upstream.verify().await;
 }

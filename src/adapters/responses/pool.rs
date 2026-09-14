@@ -20,7 +20,9 @@ use crate::{
 
 use super::body::{prepare_body, PreparedBody};
 use super::context::{ForwardOptions, PoolForward, RelayOptions};
-use super::early_stream::{bounded_input_estimate, early_streaming_response, parsed_events};
+use super::early_stream::{
+    bounded_input_estimate, parsed_events, pool_streaming_response, PoolEvent,
+};
 use super::error::{adapter_error_envelope, mapped_upstream_error, own_error, transport_error};
 use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
@@ -76,16 +78,16 @@ pub(super) fn commit_reprobe_for_account(
 
 /// Everything the streaming pool producer needs to run the account loop inside
 /// the already-committed stream.
-struct PoolStreamContext {
-    state: AppState,
-    route: Route,
-    auth: AuthMode,
-    session_id: Option<String>,
-    upstream_body: std::sync::Arc<Value>,
-    accounts_config: std::sync::Arc<Vec<AccountConfig>>,
-    order: Vec<usize>,
-    reprobe: Option<ReprobeReservation>,
-    ramp_initial: Option<u32>,
+pub(super) struct PoolStreamContext {
+    pub(super) state: AppState,
+    pub(super) route: Route,
+    pub(super) auth: AuthMode,
+    pub(super) session_id: Option<String>,
+    pub(super) upstream_body: std::sync::Arc<Value>,
+    pub(super) accounts_config: std::sync::Arc<Vec<AccountConfig>>,
+    pub(super) order: Vec<usize>,
+    pub(super) reprobe: Option<ReprobeReservation>,
+    pub(super) ramp_initial: Option<u32>,
 }
 
 /// One streaming pool turn's event feed: the account loop (admission,
@@ -94,17 +96,19 @@ struct PoolStreamContext {
 /// are yielded one at a time. Every terminal failure — the TTFB timeout, a
 /// non-failover non-2xx status, or pool exhaustion — becomes the same Anthropic
 /// error envelope the pre-commit path returned as a JSON body, emitted as one
-/// terminal SSE `error` event by [`early_streaming_response`]. The winning
+/// terminal SSE `error` event by [`pool_streaming_response`]. The winning
 /// account's admission guard rides in the relay phase so the storm-control slot
 /// stays held until the stream ends. Mirrors the ws-fallback/non-streaming
 /// loop below arm for arm; the duplication is deliberate until the websocket
 /// transport joins the early commit. The committed response
 /// cannot carry the winning account's `x-shunt-account` header — the headers
-/// go out with the synthetic start, before the account is known; the
-/// non-streaming and websocket paths still attach it.
-fn pool_events_stream(
+/// go out with the synthetic start, before the account is known — so the
+/// winner is attributed with an `event: account` frame before its first
+/// relayed frame instead; the non-streaming and websocket paths still attach
+/// the header.
+pub(super) fn pool_events_stream(
     context: PoolStreamContext,
-) -> impl Stream<Item = Result<ResponseEvent, Value>> + Send + 'static {
+) -> impl Stream<Item = Result<PoolEvent, Value>> + Send + 'static {
     let PoolStreamContext {
         state,
         route,
@@ -122,6 +126,7 @@ fn pool_events_stream(
         Relay {
             parsed: Parsed,
             guard: Option<accounts::AdmissionGuard>,
+            account: Option<String>,
         },
         Done,
     }
@@ -148,12 +153,22 @@ fn pool_events_stream(
                 let mut reprobe = reprobe;
                 loop {
                     match phase {
-                        Phase::Relay { mut parsed, guard } => match parsed.next().await {
-                            Some(Ok(event)) => {
+                        Phase::Relay {
+                            mut parsed,
+                            guard,
+                            mut account,
+                        } => {
+                            // Attribute the winner once, before its first
+                            // relayed frame.
+                            if let Some(name) = account.take() {
                                 return Some((
-                                    Ok(event),
+                                    Ok(PoolEvent::Account(name)),
                                     (
-                                        Phase::Relay { parsed, guard },
+                                        Phase::Relay {
+                                            parsed,
+                                            guard,
+                                            account,
+                                        },
                                         order_iter,
                                         http_body,
                                         last_response,
@@ -161,14 +176,38 @@ fn pool_events_stream(
                                     ),
                                 ));
                             }
-                            Some(Err(envelope)) => {
-                                return Some((
-                                    Err(envelope),
-                                    (Phase::Done, order_iter, http_body, last_response, reprobe),
-                                ));
+                            match parsed.next().await {
+                                Some(Ok(event)) => {
+                                    return Some((
+                                        Ok(PoolEvent::Event(event)),
+                                        (
+                                            Phase::Relay {
+                                                parsed,
+                                                guard,
+                                                account,
+                                            },
+                                            order_iter,
+                                            http_body,
+                                            last_response,
+                                            reprobe,
+                                        ),
+                                    ));
+                                }
+                                Some(Err(envelope)) => {
+                                    return Some((
+                                        Err(envelope),
+                                        (
+                                            Phase::Done,
+                                            order_iter,
+                                            http_body,
+                                            last_response,
+                                            reprobe,
+                                        ),
+                                    ));
+                                }
+                                None => return None,
                             }
-                            None => return None,
-                        },
+                        }
                         Phase::NextAccount => {
                             let Some((position, index)) = order_iter.next() else {
                                 crate::metrics::record_pool_rotation(&route.provider, "exhausted");
@@ -284,6 +323,7 @@ fn pool_events_stream(
                                         phase = Phase::Relay {
                                             parsed,
                                             guard: admission,
+                                            account: Some(account.name.clone()),
                                         };
                                     } else {
                                         // A non-failover 4xx (e.g. 400) is a
@@ -392,6 +432,7 @@ fn pool_events_stream(
                                                 phase = Phase::Relay {
                                                     parsed,
                                                     guard: admission,
+                                                    account: Some(account.name.clone()),
                                                 };
                                             } else {
                                                 let envelope = adapter_error_envelope(
@@ -515,7 +556,7 @@ pub(super) async fn forward_chatgpt_oauth(
         });
         return Ok((
             StatusCode::OK,
-            early_streaming_response(machine, keepalive, events),
+            pool_streaming_response(machine, keepalive, events),
         ));
     }
     let (order, mut reprobe_reservation) = if ws_enabled {
