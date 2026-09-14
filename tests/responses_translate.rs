@@ -9,6 +9,8 @@ use shunt::{
     routing::{AdapterKind, Route},
 };
 
+mod common;
+
 fn route(model: &str) -> Route {
     Route {
         provider: "openai".to_string(),
@@ -2468,6 +2470,7 @@ fn astra_production_gate_maps_tool_search_and_keeps_prefix_stable() {
     // [`Config::native_tool_search`]; close gpt-6 names and gpt-5.2 stay on
     // the #43 shim. The native request/reveal fixture is the same shape as
     // [`tool_reveal_grows_shim_tools_but_leaves_native_tools_stable`].
+    let _env = common::set_env_blocking(&[]);
     assert!(production_native_for("gpt-6-astra"));
     assert!(production_native_for("gpt-5.6-sol"));
     assert!(production_native_for("gpt-5.4"));
@@ -2699,6 +2702,7 @@ fn native_streamed_tool_search_call_becomes_tool_use() {
 
 #[test]
 fn astra_production_gate_streamed_tool_search_call_becomes_tool_use() {
+    let _env = common::set_env_blocking(&[]);
     let native = production_native_for("gpt-6-astra");
     assert!(native);
     let fixture = concat!(
