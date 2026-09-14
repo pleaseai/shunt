@@ -31,7 +31,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 `[server.limits]`의 `max_request_bytes`는 Anthropic Messages 및 인바운드 Codex Responses 요청 본문에 적용되며 기본값은 `33554432`(32 MiB)입니다. 초과 시 `413`을 반환합니다. 그 외 게이트웨이, 관리, 텔레메트리 및 분석 경로는 각 엔드포인트별 본문 제한을 유지합니다. `max_request_header_bytes`와 `max_url_length`는 기본적으로 설정되지 않으며 각각 `431`과 `414`를 반환합니다. 헤더 크기는 파싱된 모든 헤더의 이름 길이와 값 길이의 합입니다. 본문 제한은 핫 리로드되지만 헤더/URL 제한은 재시작해야 합니다.
 
-`[server.timeouts] upstream_ttfb_ms` 기본값은 `120000`이며 `0`으로 비활성화합니다. 추론 업스트림 HTTP 응답 헤더를 기다리는 시간만 제한하므로 응답 본문과 긴 SSE 스트림에는 전체 시간 제한이 없습니다. 비스트리밍 요청은 `504 timeout_error`를 반환하고 스트리밍 Responses 요청은 커밋된 스트림에서 타임아웃을 터미널 SSE `error` 이벤트로 표시합니다. Anthropic Messages, OpenAI Responses HTTP(웹소켓 폴백 포함), Gemini HTTP, 인바운드 Codex Responses 패스스루를 포함하며 Codex 웹소켓, Cursor, Antigravity와 보조 HTTP 호출은 포함하지 않습니다.
+`[server.timeouts] upstream_ttfb_ms` 기본값은 `120000`이며 `0`으로 비활성화합니다. 추론 업스트림 HTTP 응답 헤더를 기다리는 시간만 제한하므로 응답 본문과 긴 SSE 스트림에는 전체 시간 제한이 없습니다. 비스트리밍 요청은 `504 timeout_error`를 반환하고, 스트리밍 Responses 요청은 대상 체인을 커밋된 스트림 안에서 진행하며 진행할 수 없으면 타임아웃을 터미널 SSE `error` 이벤트로 표시합니다. Anthropic Messages, OpenAI Responses HTTP(웹소켓 폴백 포함), Gemini HTTP, 인바운드 Codex Responses 패스스루를 포함하며 Codex 웹소켓, Cursor, Antigravity와 보조 HTTP 호출은 포함하지 않습니다.
 
 `[server.rate_limits.device_authorization]` 기본값은 `max = 30`, `window_seconds = 600`이고 `[server.rate_limits.device_verify]`는 `max = 10`, `window_seconds = 600`입니다. 두 per-IP 제한은 서로 독립적이며 `[server.gateway]`가 없으면 비활성 상태입니다. 변경 후 재시작해야 합니다.
 

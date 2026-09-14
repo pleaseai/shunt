@@ -31,7 +31,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 `[server.limits]` 的 `max_request_bytes` 适用于 Anthropic Messages 和入站 Codex Responses 请求正文，默认为 `33554432`（32 MiB），超出时返回 `413`。其他网关、管理、遥测和分析路由仍使用各端点自身的正文限制。`max_request_header_bytes` 和 `max_url_length` 默认未设置，分别返回 `431` 和 `414`。头部大小是所有已解析头部名称长度与值长度之和。正文限制可热重载，头部和 URL 限制需要重启。
 
-`[server.timeouts] upstream_ttfb_ms` 默认为 `120000`，设为 `0` 可禁用。它只限制等待推理上游 HTTP 响应头的时间，因此不会对响应正文和长时间 SSE 流施加总时限。非流式请求返回 `504 timeout_error`；流式 Responses 请求会在已提交的流上将超时显示为终端 SSE `error` 事件。覆盖 Anthropic Messages、OpenAI Responses HTTP（包括 WebSocket 回退）、Gemini HTTP 和入站 Codex Responses 透传；不覆盖 Codex WebSocket、Cursor、Antigravity 或辅助 HTTP 请求。
+`[server.timeouts] upstream_ttfb_ms` 默认为 `120000`，设为 `0` 可禁用。它只限制等待推理上游 HTTP 响应头的时间，因此不会对响应正文和长时间 SSE 流施加总时限。非流式请求返回 `504 timeout_error`；流式 Responses 请求会在已提交的流内推进符合条件的链路，无法推进时则将超时显示为终端 SSE `error` 事件。覆盖 Anthropic Messages、OpenAI Responses HTTP（包括 WebSocket 回退）、Gemini HTTP 和入站 Codex Responses 透传；不覆盖 Codex WebSocket、Cursor、Antigravity 或辅助 HTTP 请求。
 
 `[server.rate_limits.device_authorization]` 默认为 `max = 30`、`window_seconds = 600`，`[server.rate_limits.device_verify]` 默认为 `max = 10`、`window_seconds = 600`。两个 per-IP 限制彼此独立；未配置 `[server.gateway]` 时不生效。更改后需要重启。
 

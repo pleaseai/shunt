@@ -31,7 +31,7 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 `[server.limits]` の `max_request_bytes` は Anthropic Messages とインバウンド Codex Responses のリクエストボディに適用され、デフォルトは `33554432`（32 MiB）です。超過時は `413` を返します。その他のゲートウェイ、管理、テレメトリ、分析ルートでは、エンドポイント固有のボディ制限が維持されます。`max_request_header_bytes` と `max_url_length` はデフォルト未設定で、それぞれ `431` と `414` を返します。ヘッダーサイズは、解析済みの全ヘッダーについて名前と値の長さを合計した値です。ボディ制限はホットリロードされますが、ヘッダーと URL の制限には再起動が必要です。
 
-`[server.timeouts] upstream_ttfb_ms` はデフォルト `120000` で、`0` で無効化します。推論アップストリームの HTTP レスポンスヘッダー待ちだけを制限するため、レスポンスボディと長時間の SSE ストリームには全体時間制限を設定しません。非ストリーミングリクエストは `504 timeout_error` を返し、ストリーミング Responses リクエストはコミット済みストリーム上のターミナル SSE `error` イベントとしてタイムアウトを通知します。Anthropic Messages、OpenAI Responses HTTP（WebSocket フォールバックを含む）、Gemini HTTP、インバウンド Codex Responses パススルーを対象とし、Codex WebSocket、Cursor、Antigravity、補助 HTTP 呼び出しは対象外です。
+`[server.timeouts] upstream_ttfb_ms` はデフォルト `120000` で、`0` で無効化します。推論アップストリームの HTTP レスポンスヘッダー待ちだけを制限するため、レスポンスボディと長時間の SSE ストリームには全体時間制限を設定しません。非ストリーミングリクエストは `504 timeout_error` を返し、ストリーミング Responses リクエストは対象チェーンをコミット済みストリーム内で進め、進められない場合はタイムアウトをターミナル SSE `error` イベントとして通知します。Anthropic Messages、OpenAI Responses HTTP（WebSocket フォールバックを含む）、Gemini HTTP、インバウンド Codex Responses パススルーを対象とし、Codex WebSocket、Cursor、Antigravity、補助 HTTP 呼び出しは対象外です。
 
 `[server.rate_limits.device_authorization]` のデフォルトは `max = 30`、`window_seconds = 600`、`[server.rate_limits.device_verify]` は `max = 10`、`window_seconds = 600` です。2 つの per-IP 制限は独立し、`[server.gateway]` がなければ無効です。変更には再起動が必要です。
 
