@@ -59,7 +59,7 @@ streams).
 
 ## 4. Remaining first-byte windows
 
-The Responses adapter's HTTP paths (single-credential and the account pool) now commit the SSE response immediately — a synthetic `message_start` + ping go out before any upstream byte, and pre-stream failures arrive as one terminal SSE `error` event — so pings cover the client hop from t≈0 there. The windows that remain are:
+The Responses adapter's HTTP paths (single-credential and the account pool) now commit the SSE response immediately — a synthetic `message_start` + ping go out before any upstream byte, and pre-stream failures arrive as one terminal SSE `error` event — so pings cover the client hop from t≈0 there. Multi-upstream streaming chains commit the same way, with one difference: the synthetic `message_start` is deferred until an upstream wins, so the pre-winner window carries pings only. The windows that remain are:
 
 - the Codex websocket transport's peek-first window (the response commits only after the first upstream event; pre-first-event failures fall back to HTTP),
 - the Anthropic passthrough adapter's pre-header window (bounded in practice: api.anthropic.com starts responding immediately),

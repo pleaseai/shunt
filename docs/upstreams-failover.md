@@ -292,7 +292,13 @@ Documented user-facing in the site guide; summarized here.
   Cursor adapter-owned errors, or WebSocket header construction failures —
   return immediately without advancing the chain. This keeps configuration
   errors visible instead of masking them behind another upstream.
-- **Early-committed streaming responses never fail over.** The Responses adapter's streaming paths (single-credential, account pool, and the ws→HTTP fallback) commit `200` + SSE with a synthetic `message_start` before any upstream byte, so every later failure — pre-header transport, TTFB timeout, non-2xx status, pool exhaustion — reaches the client as one terminal SSE `error` event on the committed stream. The chain therefore never sees the §3 step 2 advance classes for streaming Responses turns: neither the relayed-status advance nor the pre-header-failure advance can fire, and the request metrics/access log record the committed `200` (the stream-metrics observer still classifies the error event). Non-streaming turns are unchanged. Restoring chain failover for streaming would mean running the chain inside the committed stream; until then a multi-upstream chain whose Responses element fails mid-turn delivers the error to the client instead of retrying the next upstream.
+- **Early-committed streaming chains fail over inside the committed stream.** A multi-upstream streaming chain whose elements are all `Anthropic`/`Responses` kinds without the websocket transport runs its chain inside the committed SSE response (`proxy/chain_stream`): the response commits `200` immediately (keepalive pings cover the wait), the synthetic `message_start` is deferred until an upstream wins, and pre-header failures — transport, TTFB timeout, advance-status non-2xx — advance to the next upstream. An Anthropic-kind winner relays its own SSE (`message_start` included), so the client sees exactly one start either way. The remaining streaming deviations, each terminal on the committed stream instead of advancing:
+  - a chain containing the websocket transport, or a kind other than `Anthropic`/`Responses`, keeps the pre-commit loop (a Responses element before the chain's end still commits early and pre-empts failover);
+  - a pooled (`chatgpt_oauth`) route's account-pool exhaustion is terminal for that route — the chain does not advance past it, even when the pool exhausted on an advance status;
+  - a terminal non-2xx (e.g. `400`) from an Anthropic-kind fallback surfaces as the terminal `error` event carrying the upstream's error body, rather than a relayed `400` response (headers are already committed as `200`);
+  - `x-gateway-upstream` names the routed (first) provider, not the winner, since gateway headers go out with the commit;
+  - request metrics/access log record the committed `200` (the stream-metrics observer still classifies the error event), exactly like the single-route early-commit path.
+  Non-streaming turns are unchanged.
 
 ## 7. Implementation surface
 
