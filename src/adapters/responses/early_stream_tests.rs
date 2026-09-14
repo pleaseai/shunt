@@ -698,6 +698,45 @@ fn sse_parser_relays_valid_frames_before_an_invalid_utf8_frame() {
     assert_eq!(events[0].data["n"], 1);
 }
 
+/// A terminal event ends the relay even when the upstream keeps the
+/// connection open: the stream must end at the terminal output instead of
+/// polling a still-open upstream forever.
+#[tokio::test]
+async fn translated_stream_ends_after_a_terminal_event_even_when_more_frames_follow() {
+    use futures_util::StreamExt;
+    // The upstream sends the terminal event, then a late frame, then stays
+    // silent forever.
+    let events = futures_util::stream::iter(vec![
+        Ok(ResponseEvent {
+            event: Some("response.completed".to_string()),
+            data: json!({"response": {"usage": {"input_tokens": 1, "output_tokens": 1}}}),
+        }),
+        Ok(ResponseEvent {
+            event: Some("response.output_text.delta".to_string()),
+            data: json!({"delta": "late"}),
+        }),
+    ])
+    .chain(futures_util::stream::pending());
+    let machine = relay_opts().machine().without_content_accumulation();
+    let response = early_streaming_response(
+        move || Box::pin(async move { (machine, String::new()) }),
+        std::time::Duration::from_secs(30),
+        events,
+    );
+    let bytes = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        to_bytes(response.into_body(), usize::MAX),
+    )
+    .await
+    .expect("the relay must end at the terminal event even with the upstream still open")
+    .expect("body is readable");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        !text.contains("late"),
+        "frames after the terminal event must not relay, got: {text}"
+    );
+}
+
 /// A CRLF-framed upstream relays every event — only the LF terminator was
 /// recognized before, which would have dropped the whole body.
 #[tokio::test]

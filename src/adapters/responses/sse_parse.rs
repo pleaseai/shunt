@@ -171,6 +171,11 @@ pub(super) fn pool_translated_stream(
     )
 }
 
+/// How long the relay keeps reading a still-open upstream after a terminal
+/// event: the upstream's EOF must be read so hyper pools the connection, but
+/// nothing past the terminal may ever be forwarded.
+const TERMINAL_DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The shared translation loop behind [`translated_stream`] and
 /// [`pool_translated_stream`]: a producer error envelope becomes an SSE
 /// `error` event and ends the stream; a producer that ends before a terminal
@@ -183,6 +188,7 @@ pub(super) fn translated_core<I, F, M>(
     map: F,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> + Send + 'static
 where
+    I: Send + 'static,
     F: Fn(I, &mut AnthropicSseMachine) -> String + Send + 'static,
     M: FnOnce() -> std::pin::Pin<
             Box<dyn std::future::Future<Output = (AnthropicSseMachine, String)> + Send>,
@@ -196,10 +202,25 @@ where
             false,
             map,
             Some(machine),
+            false,
         ),
-        move |(mut events, mut machine, mut finished, map, mut factory)| {
+        move |(mut events, mut machine, mut finished, map, mut factory, drain)| {
             async move {
                 if finished {
+                    if drain {
+                        // The relay ended at a terminal event. Drain the
+                        // upstream's remaining frames under a short budget —
+                        // a prompt-closing upstream's EOF must be read so
+                        // hyper pools the connection — then end without
+                        // forwarding anything past the terminal. Only the
+                        // terminal path drains: the cut path's producer has
+                        // already ended (polling it again is a panic), and
+                        // the error path's connection is dead.
+                        let _ = tokio::time::timeout(TERMINAL_DRAIN_BUDGET, async {
+                            while events.next().await.is_some() {}
+                        })
+                        .await;
+                    }
                     return None;
                 }
                 // The leading phase: build the machine (the factory may wait
@@ -211,10 +232,13 @@ where
                     if !leading.is_empty() {
                         return Some((
                             Ok(Bytes::from(leading)),
-                            (events, Some(built), false, map, None),
+                            (events, Some(built), false, map, None, false),
                         ));
                     }
-                    return Some((Ok(Bytes::new()), (events, Some(built), false, map, None)));
+                    return Some((
+                        Ok(Bytes::new()),
+                        (events, Some(built), false, map, None, false),
+                    ));
                 }
                 loop {
                     let mut active = machine.take().expect("machine factory ran");
@@ -222,10 +246,26 @@ where
                         Some(Ok(item)) => {
                             let data = map(item, &mut active);
                             if !data.is_empty() {
+                                // A terminal event ends the relay even when
+                                // the upstream keeps the connection open: no
+                                // further frame can produce client-visible
+                                // output. The next poll drains the still-open
+                                // upstream (connection pooling) and ends.
+                                let finished = active.is_stopped();
                                 return Some((
                                     Ok(Bytes::from(data)),
-                                    (events, Some(active), false, map, None),
+                                    (events, Some(active), finished, map, None, finished),
                                 ));
+                            }
+                            if active.is_stopped() {
+                                // Unreachable for the current maps (every
+                                // stopping event emits); drain for pooling
+                                // and end, defensively.
+                                let _ = tokio::time::timeout(TERMINAL_DRAIN_BUDGET, async {
+                                    while events.next().await.is_some() {}
+                                })
+                                .await;
+                                return None;
                             }
                             machine = Some(active);
                             continue;
@@ -240,7 +280,7 @@ where
                             }
                             return Some((
                                 Ok(Bytes::from(sse("error", &envelope))),
-                                (events, Some(active), true, map, None),
+                                (events, Some(active), true, map, None, false),
                             ));
                         }
                         None => {
@@ -261,7 +301,7 @@ where
                             marked.extend_from_slice(data.as_bytes());
                             return Some((
                                 Ok(Bytes::from(marked)),
-                                (events, Some(active), finished, map, None),
+                                (events, Some(active), finished, map, None, false),
                             ));
                         }
                     }

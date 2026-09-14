@@ -112,13 +112,21 @@ pub(crate) async fn bounded_upstream_text(
 ) -> Option<String> {
     let mut body = upstream;
     let mut bytes: Vec<u8> = Vec::new();
+    let mut over_cap = false;
     let read = async {
         loop {
             let Some(chunk) = body.chunk().await.ok()? else {
-                return Some(bytes);
+                return if over_cap { None } else { Some(bytes) };
             };
+            if over_cap {
+                // Keep draining through EOF (or the budget) so reqwest can
+                // reuse the keep-alive connection, retaining only the capped
+                // prefix already collected.
+                continue;
+            }
             if bytes.len() + chunk.len() > cap {
-                return None;
+                over_cap = true;
+                continue;
             }
             bytes.extend_from_slice(&chunk);
         }
@@ -149,9 +157,13 @@ pub(crate) async fn error_body_value_budgeted(
 }
 
 fn generic_envelope() -> Value {
+    // "upstream request failed" is the responses adapter's historical
+    // fallback message (its envelopes are always pre-serialized JSON, so the
+    // fallback is reachable only when a bounded read trips); the chain's
+    // synthesized envelopes parse to JSON and never reach it.
     serde_json::json!({
         "type": "error",
-        "error": {"type": "api_error", "message": "upstream failed"}
+        "error": {"type": "api_error", "message": "upstream request failed"}
     })
 }
 
@@ -264,6 +276,63 @@ mod tests {
             "the budgeted read must not wait on the hanging body"
         );
         assert_eq!(envelope["error"]["type"], "api_error");
+    }
+
+    /// An over-cap body must still be drained to EOF within the budget so
+    /// the keep-alive connection pools; only the capped prefix is kept. The
+    /// server can only write its whole (1 MiB) body if the client keeps
+    /// reading past the cap, so the byte count discriminates drain from
+    /// early drop.
+    #[tokio::test]
+    async fn bounded_upstream_text_drains_an_over_cap_body_to_eof() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let written = Arc::new(AtomicUsize::new(0));
+        let server_written = written.clone();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let n = socket.read(&mut buffer).await.expect("read");
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..n]);
+            }
+            let body = vec![b'x'; 1024 * 1024];
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: keep-alive\r\n\r\n",
+                body.len()
+            );
+            socket.write_all(head.as_bytes()).await.expect("write head");
+            for chunk in body.chunks(512) {
+                if socket.write_all(chunk).await.is_err() {
+                    break;
+                }
+                server_written.fetch_add(chunk.len(), Ordering::SeqCst);
+            }
+            let _ = socket.shutdown().await;
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("request");
+        let result =
+            super::bounded_upstream_text(response, std::time::Duration::from_secs(10), 128).await;
+        assert!(result.is_none(), "an over-cap body yields the fallback");
+        task.await.expect("server task");
+        assert_eq!(
+            written.load(Ordering::SeqCst),
+            1024 * 1024,
+            "the over-cap body must be drained to EOF so the connection pools"
+        );
     }
 
     async fn body_json(response: axum::response::Response) -> Value {

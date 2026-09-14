@@ -74,6 +74,26 @@ fn anth_event(name: &str, data: serde_json::Value) -> String {
     format!("event: {name}\ndata: {data}\n\n")
 }
 
+/// A first frame split across body chunks still counts as content: TTFT must
+/// not wait for a complete parseable frame, only exclude keepalive pings.
+#[test]
+fn ttft_records_on_a_split_first_frame() {
+    let provider = Arc::new(Mutex::new("provider".to_string()));
+    let mut observer = ObserverState::new(
+        Protocol::Anthropic,
+        StatusCode::OK,
+        provider.clone(),
+        Arc::new(Mutex::new("model".to_string())),
+        Instant::now(),
+        tracing::Span::none(),
+    );
+    observer.observe_chunk(b"event: message_st");
+    assert!(
+        observer.ttft_ms.is_some(),
+        "a split first frame is content, not a keepalive"
+    );
+}
+
 /// A keepalive ping emitted before the chain selects its winner must not
 /// record the one-shot TTFT sample: the provider slot still names the routed
 /// primary at that moment, and a later failover win cannot repair the sample.

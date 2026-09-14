@@ -2047,6 +2047,11 @@ async fn streaming_failed_refresh_cools_down_and_moves_on() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
     assert!(body.contains("hello from b"), "body: {body}");
+    drop(gateway);
+    // The store dir is a unique temp dir: clean it up like every other
+    // temp-dir user in this file so CI runs don't accumulate
+    // `shunt-codex-multi-*` dirs.
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

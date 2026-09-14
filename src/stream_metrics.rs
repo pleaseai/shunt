@@ -190,10 +190,10 @@ struct ObserverState {
     /// The `event:` name of the last non-keepalive frame parsed, in a
     /// fixed-size inline buffer (see [`MAX_LAST_EVENT_BYTES`]).
     /// `last_event_len == 0` means none was seen.
-    /// Set while the current chunk is parsed, when any complete frame in it
-    /// is stream content (not a keepalive ping or bare comment). TTFT records
-    /// on the first chunk that set this, so a pre-winner ping never becomes
-    /// the attributed first sample.
+    /// Set per chunk in [`Self::observe_chunk`]: true when the chunk is not
+    /// (a prefix of) a keepalive ping. TTFT records on the first chunk that
+    /// set this, so a pre-winner ping never becomes the attributed first
+    /// sample, while a first frame split across chunks still counts.
     chunk_had_content: bool,
     last_event: [u8; MAX_LAST_EVENT_BYTES],
     last_event_len: usize,
@@ -241,7 +241,12 @@ impl ObserverState {
     }
 
     fn observe_chunk(&mut self, chunk: &[u8]) {
-        self.chunk_had_content = false;
+        // Content is any chunk that is not (a prefix of) a keepalive ping:
+        // the pre-winner ping is the only non-content the committed chain
+        // can emit. A chunk-level check needs no complete frame, so a first
+        // frame split across body chunks still counts.
+        self.chunk_had_content = chunk != crate::keepalive::PING_EVENT.as_bytes()
+            && !crate::keepalive::PING_EVENT.as_bytes().starts_with(chunk);
         self.bytes_forwarded = self.bytes_forwarded.saturating_add(chunk.len() as u64);
         self.push_bytes(chunk);
         if !self.first_chunk_seen && self.chunk_had_content {
@@ -291,11 +296,6 @@ impl ObserverState {
             self.terminal_seen |= observation.terminal;
             self.error_seen |= observation.error;
             self.truncated_seen |= observation.truncated;
-            // A frame is "content" when it is neither a keepalive ping nor a
-            // bare comment: it carries an event name or a terminal/error
-            // observation (`data: [DONE]` has no `event:` line but is real
-            // stream content).
-            self.chunk_had_content |= event.is_some() || observation.terminal || observation.error;
             if let Some((name, len)) = last_event {
                 self.last_event = name;
                 self.last_event_len = len;

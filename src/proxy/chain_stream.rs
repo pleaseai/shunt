@@ -259,30 +259,21 @@ pub(super) async fn forward_chain_stream(
                                 // A mid-relay body failure: emit the terminal
                                 // error event and record the failure, exactly
                                 // like the single-route early-commit relay.
+                                // The Sentry event is the stream observer's:
+                                // it parses the `error` frame this arm emits,
+                                // so capturing here would report the failure
+                                // twice.
                                 let frame = sse("error", &envelope);
                                 observability::record_span_outcome_on(
                                     &request_span,
                                     &winner_provider,
                                     StatusCode::BAD_GATEWAY,
                                 );
-                                observability::capture_upstream_outcome(
-                                    &winner_provider,
-                                    &winner_model,
-                                    StatusCode::BAD_GATEWAY,
-                                );
                                 return Some((Ok(Bytes::from(frame)), (Phase::Done, body)));
                             }
                             None => {
-                                observability::record_span_outcome_on(
-                                    &request_span,
-                                    &winner_provider,
-                                    StatusCode::OK,
-                                );
-                                observability::capture_upstream_outcome(
-                                    &winner_provider,
-                                    &winner_model,
-                                    StatusCode::OK,
-                                );
+                                // Recorded at winner selection: the relay
+                                // ended cleanly, nothing to overwrite.
                                 return Some((Ok(Bytes::new()), (Phase::Done, body)));
                             }
                         },
@@ -336,14 +327,12 @@ pub(super) async fn forward_chain_stream(
                                 let envelope = envelope.resolve().await;
                                 crate::metrics::record_failover(&last_provider, "exhausted");
                                 let frame = sse("error", &envelope);
+                                // The Sentry event is the stream observer's
+                                // (it parses the `error` frame this arm
+                                // emits); only the span fields update here.
                                 observability::record_span_outcome_on(
                                     &request_span,
                                     &finish_provider,
-                                    status,
-                                );
-                                observability::capture_upstream_outcome(
-                                    &finish_provider,
-                                    &finish_model,
                                     status,
                                 );
                                 return Some((Ok(Bytes::from(frame)), (Phase::Done, body)));
@@ -403,6 +392,23 @@ pub(super) async fn forward_chain_stream(
                                     if let Ok(mut slot) = winner_model_slot.lock() {
                                         *slot = model.clone();
                                     }
+                                    // Record the winner at selection: a
+                                    // client disconnect mid-relay drops the
+                                    // unfold, and the request span must
+                                    // already carry the winner and its 200.
+                                    // A later mid-relay failure overwrites
+                                    // only the span status; its Sentry event
+                                    // is the stream observer's.
+                                    observability::record_span_outcome_on(
+                                        &request_span,
+                                        &provider,
+                                        StatusCode::OK,
+                                    );
+                                    observability::capture_upstream_outcome(
+                                        &provider,
+                                        &model,
+                                        StatusCode::OK,
+                                    );
                                     let relay = Phase::Relay {
                                         frames,
                                         winner_provider: provider,
@@ -494,13 +500,14 @@ pub(super) async fn forward_chain_stream(
                                     }
                                     let envelope = envelope.resolve().await;
                                     let frame = sse("error", &envelope);
+                                    // The Sentry event is the stream
+                                    // observer's (it parses the `error`
+                                    // frame this arm emits); only the span
+                                    // fields update here.
                                     observability::record_span_outcome_on(
                                         &request_span,
                                         &provider,
                                         status,
-                                    );
-                                    observability::capture_upstream_outcome(
-                                        &provider, &model, status,
                                     );
                                     return Some((Ok(Bytes::from(frame)), (Phase::Done, body)));
                                 }
