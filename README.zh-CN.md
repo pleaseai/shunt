@@ -41,8 +41,9 @@ brew services start shunt
 ```
 
 日志会写入 `$(brew --prefix)/var/log/shunt.log`。`brew services stop` 会发送 `SIGTERM`,
-shunt 会先处理完正在进行的请求再退出;在 Unix 上,关机开始时 Antigravity 的 agent 轮次会被终止,
-因此它们各自独立的进程组无法拖住这次排空。之后修改配置文件不需要重启 ——
+shunt 会先处理完正在进行的请求再退出 —— 最多等待 `[server] shutdown_timeout_seconds`(默认 30 秒;
+修改该值需要重启),超时后不再等待并退出,因此安静的 SSE 流无法无限期地拖住进程。在 Unix 上,关机开始时 Antigravity
+的 agent 轮次会被终止,因此它们各自独立的进程组无法拖住这次排空。之后修改配置文件不需要重启 ——
 会自动[热重载](docs/config-reload.md)。详见 [作为服务运行](docs/running.md#run-as-a-background-service-homebrew)。
 
 ## 快速开始

@@ -22,16 +22,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-/// Serializes tests that mutate the shared `SHUNT_CLAUDE_*` process env. A tokio
-/// mutex (held across `.await`) so it is safe over the async request calls.
-static CLAUDE_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-/// Serializes tests that mutate the shared `SHUNT_CODEX_*` process env.
-static CODEX_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-/// Serializes admin tests whose config resolves process environment. Holding it
-/// is what keeps one test's `set_var` from landing while another is reading the
-/// env to build its config — the variable names are already distinct, so this
-/// guards the read/write race, not a name collision.
-static ADMIN_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+mod common;
 
 struct Gateway {
     base_url: String,
@@ -279,7 +270,7 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = ADMIN_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let idp = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/token"))
@@ -298,8 +289,8 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
         .expect(1)
         .mount(&idp)
         .await;
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_TOKENS", "ops:admin-secret");
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_SECRET", "client-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_TOKENS", "ops:admin-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_SECRET", "client-secret");
     let mut config = admin_oidc_config(
         "SHUNT_TEST_ADMIN_OIDC_TOKENS",
         "SHUNT_TEST_ADMIN_OIDC_SECRET",
@@ -402,9 +393,6 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
         .await
         .unwrap();
     assert_eq!(header_response.status(), StatusCode::OK);
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_TOKENS");
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_SECRET");
 }
 
 #[tokio::test]
@@ -412,7 +400,7 @@ async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_ori
     if !can_bind_loopback() {
         return;
     }
-    let _lock = ADMIN_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let idp = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/token"))
@@ -428,8 +416,8 @@ async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_ori
         })))
         .mount(&idp)
         .await;
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_REJECT_TOKENS", "ops:admin-secret");
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_REJECT_SECRET", "client-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_REJECT_TOKENS", "ops:admin-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_REJECT_SECRET", "client-secret");
     let gateway = start_with_addr(admin_oidc_config(
         "SHUNT_TEST_ADMIN_OIDC_REJECT_TOKENS",
         "SHUNT_TEST_ADMIN_OIDC_REJECT_SECRET",
@@ -495,9 +483,6 @@ async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_ori
     let error_html = provider_error.text().await.unwrap();
     assert!(error_html.contains("identity provider reported an error"));
     assert!(!error_html.contains("access_denied"));
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_REJECT_TOKENS");
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_REJECT_SECRET");
 }
 
 #[tokio::test]
@@ -505,7 +490,7 @@ async fn admin_oidc_discovery_builds_authorization_redirect() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = ADMIN_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let idp = MockServer::start().await;
     Mock::given(path("/.well-known/openid-configuration"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -517,8 +502,8 @@ async fn admin_oidc_discovery_builds_authorization_redirect() {
         .expect(1)
         .mount(&idp)
         .await;
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_TOKENS", "ops:admin-secret");
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_SECRET", "client-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_TOKENS", "ops:admin-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_SECRET", "client-secret");
     let mut config = admin_oidc_config(
         "SHUNT_TEST_ADMIN_OIDC_DISCOVERY_TOKENS",
         "SHUNT_TEST_ADMIN_OIDC_DISCOVERY_SECRET",
@@ -535,9 +520,6 @@ async fn admin_oidc_discovery_builds_authorization_redirect() {
         .unwrap();
     let (location, _) = oidc_state(&client, &gateway).await;
     assert_eq!(location.path(), "/discovered-authorize");
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_TOKENS");
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_SECRET");
 }
 
 #[tokio::test]
@@ -576,7 +558,8 @@ async fn admin_pool_repeats_shared_physical_state_per_upstream() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_SHARED_POOL", "ops:shared-secret");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_SHARED_POOL", "ops:shared-secret");
     let mut config = admin_config("SHUNT_TEST_ADMIN_SHARED_POOL");
     let mut account = AccountConfig {
         name: "shared-account".to_string(),
@@ -625,7 +608,6 @@ async fn admin_pool_repeats_shared_physical_state_per_upstream() {
         assert_eq!(section["accounts"][0]["name"], "shared-account");
         assert_eq!(section["accounts"][0]["utilization_5h"], 0.73);
     }
-    std::env::remove_var("SHUNT_TEST_ADMIN_SHARED_POOL");
 }
 
 #[tokio::test]
@@ -646,11 +628,11 @@ async fn admin_pool_never_refreshes_or_writes_back_an_expired_on_disk_token() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     shunt::admin::reset_profile_cache();
     let dir = unique_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("SHUNT_TEST_ADMIN_POOL_NO_REFRESH", "ops:no-refresh-secret");
+    vars.set("SHUNT_TEST_ADMIN_POOL_NO_REFRESH", "ops:no-refresh-secret");
 
     let expired_at_ms = (SystemTime::now() - std::time::Duration::from_secs(3600))
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -682,7 +664,7 @@ async fn admin_pool_never_refreshes_or_writes_back_an_expired_on_disk_token() {
         })))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -744,8 +726,6 @@ async fn admin_pool_never_refreshes_or_writes_back_an_expired_on_disk_token() {
         "an account with only an expired on-disk token must carry no plan key, got {account:?}"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_NO_REFRESH");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -759,11 +739,11 @@ async fn admin_pool_reports_plan_when_credential_file_carries_one() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     shunt::admin::reset_profile_cache();
     let dir = unique_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("SHUNT_TEST_ADMIN_POOL_PLAN", "ops:plan-secret");
+    vars.set("SHUNT_TEST_ADMIN_POOL_PLAN", "ops:plan-secret");
     let credentials_path = dir.join("with-plan.json");
     std::fs::write(
         &credentials_path,
@@ -844,7 +824,6 @@ async fn admin_pool_reports_plan_when_credential_file_carries_one() {
          expiresAt in its fixture), no-plan has no credential file to read"
     );
 
-    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_PLAN");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -859,11 +838,11 @@ async fn admin_pool_reports_plan_for_a_name_only_account_via_its_store_path() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     shunt::admin::reset_profile_cache();
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_POOL_STORE_PLAN", "ops:store-plan-secret");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_POOL_STORE_PLAN", "ops:store-plan-secret");
 
     std::fs::write(
         dir.join("store-only.json"),
@@ -922,8 +901,6 @@ async fn admin_pool_reports_plan_for_a_name_only_account_via_its_store_path() {
          claudeAiOauth block, so store-only is never a backfill candidate"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_STORE_PLAN");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -942,11 +919,11 @@ async fn admin_pool_bounds_profile_backfill_when_claude_endpoint_stalls() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     shunt::admin::reset_profile_cache();
     let dir = unique_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("SHUNT_TEST_ADMIN_POOL_STALL", "ops:stall-secret");
+    vars.set("SHUNT_TEST_ADMIN_POOL_STALL", "ops:stall-secret");
 
     let expires_at_ms = (SystemTime::now() + std::time::Duration::from_secs(3600))
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -1017,7 +994,6 @@ async fn admin_pool_bounds_profile_backfill_when_claude_endpoint_stalls() {
          skipped for an unrelated reason"
     );
 
-    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_STALL");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1031,7 +1007,8 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_AUTH_KIND", "ops:auth-kind-secret");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_AUTH_KIND", "ops:auth-kind-secret");
     let mut config = admin_config("SHUNT_TEST_ADMIN_AUTH_KIND");
     // Base each provider on the stock template that already matches its auth
     // kind's `ProviderKind`/host validation (claude_oauth -> anthropic host,
@@ -1096,8 +1073,6 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
         .find(|provider| provider["provider"] == "enterprise-claude")
         .expect("claude_oauth provider under a custom name is present");
     assert_eq!(custom_named["auth"], "claude_oauth");
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_AUTH_KIND");
 }
 
 /// The read-only pool dashboard resolves and lists `kimi_oauth` accounts the
@@ -1110,7 +1085,8 @@ async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_KIMI_POOL", "ops:kimi-pool-secret");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_KIMI_POOL", "ops:kimi-pool-secret");
     let mut config = admin_config("SHUNT_TEST_ADMIN_KIMI_POOL");
     let anthropic = config.providers.get_mut("anthropic").unwrap();
     anthropic.auth = AuthMode::KimiOauth;
@@ -1123,7 +1099,7 @@ async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
         token_env: Some("SHUNT_TEST_ADMIN_KIMI_TOKEN".to_string()),
         ..Default::default()
     }];
-    std::env::set_var("SHUNT_TEST_ADMIN_KIMI_TOKEN", "kimi-access-token");
+    vars.set("SHUNT_TEST_ADMIN_KIMI_TOKEN", "kimi-access-token");
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
@@ -1141,9 +1117,6 @@ async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
         .expect("kimi_oauth provider is present in the pool listing");
     assert_eq!(section["auth"], "kimi_oauth");
     assert_eq!(section["accounts"][0]["name"], "kimi-primary");
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_KIMI_POOL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_KIMI_TOKEN");
 }
 
 /// `[server.status]` is absent from `admin_config`, so `/admin/api/status` must
@@ -1154,7 +1127,8 @@ async fn admin_status_reports_no_sources_when_unconfigured() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_STATUS_EMPTY", "ops:status-empty-secret");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_STATUS_EMPTY", "ops:status-empty-secret");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_STATUS_EMPTY")).await;
 
     let response = reqwest::Client::new()
@@ -1166,8 +1140,6 @@ async fn admin_status_reports_no_sources_when_unconfigured() {
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["sources"].as_array().unwrap().len(), 0);
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_STATUS_EMPTY");
 }
 
 #[tokio::test]
@@ -1175,7 +1147,8 @@ async fn admin_status_reports_configured_source_before_first_poll() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_ADMIN_STATUS_UNPOLLED",
         "ops:status-unpolled-secret",
     );
@@ -1203,8 +1176,6 @@ async fn admin_status_reports_configured_source_before_first_poll() {
     assert_eq!(sources[0]["indicator"], "unknown");
     assert_eq!(sources[0]["error"], "not polled yet");
     assert_eq!(sources[0]["observed_at"], 0);
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_STATUS_UNPOLLED");
 }
 
 /// A populated `StatusStore` entry (as the background poller in
@@ -1216,7 +1187,8 @@ async fn admin_status_reports_observed_sources() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_STATUS_SEEDED", "ops:status-seeded-secret");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_STATUS_SEEDED", "ops:status-seeded-secret");
     let mut config = admin_config("SHUNT_TEST_ADMIN_STATUS_SEEDED");
     config.server.status = Some(shunt::config::StatusConfig {
         refresh_seconds: 300,
@@ -1253,8 +1225,6 @@ async fn admin_status_reports_observed_sources() {
     assert_eq!(sources[0]["description"], "Partially Degraded Service");
     assert_eq!(sources[0]["observed_at"], 1_000);
     assert!(sources[0]["error"].is_null());
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_STATUS_SEEDED");
 }
 
 /// A 32+ character write key and read key for the `[server.admin]` arrays.
@@ -1286,7 +1256,8 @@ async fn admin_header_and_x_api_key_both_authenticate_every_credential_kind() {
         return;
     }
     let env = "SHUNT_TEST_ADMIN_TOKENS_SLOTS";
-    std::env::set_var(env, "ops:secret-slots");
+    let mut vars = common::env_lock().await;
+    vars.set(env, "ops:secret-slots");
     let mut config = admin_config_with_keys(env);
     // An explicit, never-existing credentials path keeps the `/admin/api/pool`
     // requests below off the real on-disk store (see the `admin_config` doc
@@ -1315,7 +1286,6 @@ async fn admin_header_and_x_api_key_both_authenticate_every_credential_kind() {
             );
         }
     }
-    std::env::remove_var(env);
 }
 
 /// A read key is a full citizen on GET routes, is refused everywhere a write
@@ -1332,11 +1302,11 @@ async fn read_key_passes_gets_is_refused_on_mutations_and_signs_in_read_only() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
     let env = "SHUNT_TEST_ADMIN_TOKENS_READONLY";
-    std::env::set_var(env, "ops:secret-readonly");
+    vars.set(env, "ops:secret-readonly");
     let mut config = admin_config_with_keys(env);
     // An explicit, never-existing credentials path keeps the `/admin/api/pool`
     // request below off the real on-disk store (see the `admin_config` doc
@@ -1528,9 +1498,6 @@ async fn read_key_passes_gets_is_refused_on_mutations_and_signs_in_read_only() {
             "a refused cross-origin login must not set a session cookie"
         );
     }
-
-    std::env::remove_var(env);
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
 }
 
 /// The merged slot acceptance is scoped to the admin (and spend) routers.
@@ -1543,8 +1510,9 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
     }
     let admin_env = "SHUNT_TEST_ADMIN_TOKENS_INFERENCE";
     let client_env = "SHUNT_TEST_ADMIN_CLIENT_INFERENCE";
-    std::env::set_var(admin_env, "ops:secret-inference");
-    std::env::set_var(client_env, "device:client-token-value");
+    let mut vars = common::env_lock().await;
+    vars.set(admin_env, "ops:secret-inference");
+    vars.set(client_env, "device:client-token-value");
     let mut config = admin_config_with_keys(admin_env);
     config.server.auth = Some(InboundAuthConfig {
         header: "x-shunt-token".to_string(),
@@ -1615,9 +1583,6 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    std::env::remove_var(admin_env);
-    std::env::remove_var(client_env);
 }
 
 #[tokio::test]
@@ -1625,7 +1590,8 @@ async fn admin_api_requires_authentication() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_B", "ops:secret-b");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_B", "ops:secret-b");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_B")).await;
     let client = reqwest::Client::new();
 
@@ -1653,7 +1619,6 @@ async fn admin_api_requires_authentication() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_B");
 }
 
 #[tokio::test]
@@ -1661,10 +1626,10 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_C", "ops:secret-c");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_C", "ops:secret-c");
 
     // Mock the setup-token exchange, including the one-year expires_in request.
     let token_server = MockServer::start().await;
@@ -1683,7 +1648,7 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
         })))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -1769,9 +1734,6 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     assert_eq!(response.status(), StatusCode::OK);
     assert!(!dir.join("main.json").exists());
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_C");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1780,10 +1742,10 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_OAUTH", "ops:secret-oauth");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_OAUTH", "ops:secret-oauth");
 
     let token_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1803,7 +1765,7 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -1889,9 +1851,6 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
     let body: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(body["accounts"][0]["kind"], "imported");
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_OAUTH");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1906,10 +1865,10 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REPROV",
         "ops:secret-claude-reprov",
     );
@@ -1956,7 +1915,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -2082,9 +2041,6 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REPROV");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2100,10 +2056,10 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_BLANK_OLD",
         "ops:secret-claude-blank-old",
     );
@@ -2135,7 +2091,7 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -2232,9 +2188,6 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_BLANK_OLD");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2247,10 +2200,10 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REMOVE",
         "ops:secret-claude-remove",
     );
@@ -2339,8 +2292,6 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REMOVE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2362,10 +2313,10 @@ async fn claude_remove_preserves_a_configured_providers_health_the_store_scan_ca
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_CONFIGURED",
         "ops:secret-claude-configured",
     );
@@ -2481,8 +2432,6 @@ async fn claude_remove_preserves_a_configured_providers_health_the_store_scan_ca
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_CONFIGURED");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2491,10 +2440,10 @@ async fn full_oauth_completion_rejects_missing_refresh_token() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_NO_REFRESH",
         "ops:secret-no-refresh",
     );
@@ -2510,7 +2459,7 @@ async fn full_oauth_completion_rejects_missing_refresh_token() {
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -2546,9 +2495,6 @@ async fn full_oauth_completion_rejects_missing_refresh_token() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     assert!(!dir.join("missing-refresh.json").exists());
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_NO_REFRESH");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2557,7 +2503,8 @@ async fn cookie_session_mutations_require_a_csrf_token() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_D", "ops:secret-d");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_D", "ops:secret-d");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_D")).await;
     // Do not auto-follow the post-login redirect; inspect the Set-Cookie directly.
     let client = reqwest::Client::builder()
@@ -2596,7 +2543,91 @@ async fn cookie_session_mutations_require_a_csrf_token() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_D");
+}
+
+/// The login page's Content-Security-Policy, directive by directive.
+///
+/// `script-src`/`connect-src` are `'none'`: the page renders no `<script>` and
+/// makes no fetch. They were `'unsafe-inline'`/`'self'` while the
+/// server-rendered dashboard shared this response helper, and nothing narrowed
+/// them when that dashboard moved to the bundle (#525).
+///
+/// The `'unsafe-inline'` that stays is asserted too, and is the half of this
+/// test that fails if the tightening goes one directive too far: `html::STYLE`
+/// is inlined in a `<style>` element, so dropping it renders the sign-in form
+/// unstyled. `form-action` is the one value that varies with the response —
+/// `'self'` here, widened for the IdP redirect chain when SSO is configured
+/// (`admin_oidc_full_flow_mints_session_and_preserves_header_auth` pins that
+/// shape) — and every other directive comes from the same single format string,
+/// so pinning them once covers both.
+///
+/// Each directive is parsed out and compared whole. A `contains` check would
+/// pass a widened `connect-src 'none' https://example.com`, which is the
+/// regression this test exists to catch, and would say nothing at all about a
+/// directive it does not name — so the count is pinned too, and a ninth
+/// directive has to be decided here rather than inherited silently.
+#[tokio::test]
+async fn the_login_page_csp_allows_only_inline_style_and_the_form_post() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // `start` builds the router, which resolves `AdminConfig::tokens_env`
+    // through `std::env::var` — so this test writes the process env and reads
+    // it back, which is the read/write race the shared env lock exists to
+    // serialize. The guard holds it across the cleanup as well as the write.
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_CSP", "ops:secret-csp");
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_CSP")).await;
+
+    let response = reqwest::get(format!("{}/admin/login", gateway.base_url))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let csp = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let parsed: Vec<(&str, &str)> = csp
+        .split(';')
+        .map(str::trim)
+        .filter(|directive| !directive.is_empty())
+        .map(
+            |directive| match directive.split_once(char::is_whitespace) {
+                Some((name, value)) => (name, value.trim()),
+                None => (directive, ""),
+            },
+        )
+        .collect();
+    let directives: std::collections::HashMap<&str, &str> = parsed.iter().copied().collect();
+
+    for (name, expected) in [
+        ("default-src", "'none'"),
+        ("script-src", "'none'"),
+        ("style-src", "'unsafe-inline'"),
+        ("connect-src", "'none'"),
+        ("img-src", "'self'"),
+        ("form-action", "'self'"),
+        ("base-uri", "'none'"),
+        ("frame-ancestors", "'none'"),
+    ] {
+        assert_eq!(
+            directives.get(name),
+            Some(&expected),
+            "the login page CSP must set `{name} {expected}`; it reads {csp:?}"
+        );
+    }
+    // Counted on `parsed`, not on the map. A repeated directive collapses into
+    // one map entry, and the browser resolves the repeat the other way round --
+    // CSP keeps the FIRST occurrence and ignores the rest, while the map keeps
+    // the last. So `connect-src https://evil; ...; connect-src 'none'` reads as
+    // tight through the map and is wide in the browser, and the map's length is
+    // still 8. Counting before the collapse is what catches both that and an
+    // unpinned ninth directive.
+    assert_eq!(
+        parsed.len(),
+        8,
+        "the login page CSP has a repeated or unpinned directive: {csp:?}"
+    );
 }
 
 #[tokio::test]
@@ -2604,7 +2635,8 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_E", "ops:secret-e");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_E", "ops:secret-e");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_E")).await;
     // Do not auto-follow redirects; assert on the raw responses.
     let client = reqwest::Client::builder()
@@ -2726,8 +2758,6 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
         StatusCode::UNAUTHORIZED,
         "a logged-out session no longer authenticates"
     );
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_E");
 }
 
 #[tokio::test]
@@ -2735,10 +2765,10 @@ async fn completion_reports_bad_gateway_when_token_exchange_fails() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_F", "ops:secret-f");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_F", "ops:secret-f");
 
     // Upstream token endpoint fails; the completion must surface a generic 502
     // without echoing the upstream detail, and must not store an account.
@@ -2748,7 +2778,7 @@ async fn completion_reports_bad_gateway_when_token_exchange_fails() {
         .respond_with(ResponseTemplate::new(400).set_body_string("invalid_grant: bad code"))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -2796,9 +2826,6 @@ async fn completion_reports_bad_gateway_when_token_exchange_fails() {
         "a failed exchange must not store an account"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_F");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2807,7 +2834,8 @@ async fn admin_negative_paths_are_rejected() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_G", "ops:secret-g");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_G", "ops:secret-g");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_G")).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -2895,8 +2923,6 @@ async fn admin_negative_paths_are_rejected() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_G");
 }
 
 #[tokio::test]
@@ -2904,10 +2930,10 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_CODEX", "ops:secret-codex");
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_CODEX", "ops:secret-codex");
 
     let token_server = MockServer::start().await;
     let access = chatgpt_token(4_102_444_800, "acct-codex");
@@ -2921,7 +2947,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
         .expect(2)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3079,9 +3105,6 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     assert_eq!(response.status(), StatusCode::OK);
     assert!(!dir.join("codex-a.json").exists());
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3095,10 +3118,10 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_REPROV",
         "ops:secret-codex-reprov",
     );
@@ -3144,7 +3167,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3159,7 +3182,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     // this handler never calls `/admin/api/pool`. The store reads and writes
     // this reprovision/remove handler does perform are safely isolated:
     // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
-    // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
+    // the shared env lock is held for this whole function -- the lock matters
     // because env vars are process-global, so directory isolation alone
     // does not guarantee safety if another test runs concurrently and
     // reassigns the same env var mid-test.
@@ -3278,9 +3301,6 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_REPROV");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3298,10 +3318,10 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_BLANK_OLD",
         "ops:secret-codex-blank-old",
     );
@@ -3333,7 +3353,7 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3348,7 +3368,7 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     // this handler never calls `/admin/api/pool`. The store reads and writes
     // this reprovision/remove handler does perform are safely isolated:
     // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
-    // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
+    // the shared env lock is held for this whole function -- the lock matters
     // because env vars are process-global, so directory isolation alone
     // does not guarantee safety if another test runs concurrently and
     // reassigns the same env var mid-test.
@@ -3423,9 +3443,6 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_BLANK_OLD");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3438,10 +3455,10 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_REMOVE",
         "ops:secret-codex-remove",
     );
@@ -3473,7 +3490,7 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
     // this handler never calls `/admin/api/pool`. The store reads and writes
     // this reprovision/remove handler does perform are safely isolated:
     // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
-    // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
+    // the shared env lock is held for this whole function -- the lock matters
     // because env vars are process-global, so directory isolation alone
     // does not guarantee safety if another test runs concurrently and
     // reassigns the same env var mid-test.
@@ -3540,8 +3557,6 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_REMOVE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3550,10 +3565,10 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_NEGATIVE",
         "ops:secret-codex-negative",
     );
@@ -3567,7 +3582,7 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3615,9 +3630,6 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     assert!(!dir.join("no-refresh.json").exists());
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_NEGATIVE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3626,10 +3638,10 @@ async fn codex_completion_rejects_oauth_state_mismatch_before_exchange() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_STATE",
         "ops:secret-codex-state",
     );
@@ -3644,7 +3656,7 @@ async fn codex_completion_rejects_oauth_state_mismatch_before_exchange() {
         .expect(0)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3679,9 +3691,6 @@ async fn codex_completion_rejects_oauth_state_mismatch_before_exchange() {
     assert!(token_server.received_requests().await.unwrap().is_empty());
     assert!(!dir.join("state-mismatch.json").exists());
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_STATE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3690,10 +3699,10 @@ async fn codex_completion_rejects_access_token_without_account_id() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_NO_ACCOUNT_ID",
         "ops:secret-codex-no-account-id",
     );
@@ -3708,7 +3717,7 @@ async fn codex_completion_rejects_access_token_without_account_id() {
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3742,9 +3751,6 @@ async fn codex_completion_rejects_access_token_without_account_id() {
     assert!(!dir.join("no-account-id.json").exists());
     token_server.verify().await;
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_NO_ACCOUNT_ID");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3753,10 +3759,10 @@ async fn codex_completion_reports_generic_bad_gateway_when_token_exchange_fails(
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_EXCHANGE_FAILURE",
         "ops:secret-codex-exchange-failure",
     );
@@ -3768,7 +3774,7 @@ async fn codex_completion_reports_generic_bad_gateway_when_token_exchange_fails(
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3810,9 +3816,6 @@ async fn codex_completion_reports_generic_bad_gateway_when_token_exchange_fails(
     assert!(!dir.join("exchange-failure.json").exists());
     token_server.verify().await;
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_EXCHANGE_FAILURE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3821,16 +3824,16 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_CSRF",
         "ops:secret-codex-csrf",
     );
 
     let token_server = MockServer::start().await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3923,15 +3926,16 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
         "a valid session cookie + CSRF token is accepted on the Codex route"
     );
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_CSRF");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn admin_config_without_tokens_env_fails_startup() {
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_MISSING");
+    // `validate` reads the environment, so this test is a *reader* and needs the
+    // lock as much as any writer — and the removal below is itself a write to
+    // `environ`. A `#[test]` with no runtime takes the lock by blocking.
+    let mut vars = common::set_env_blocking(&[]);
+    vars.unset("SHUNT_TEST_ADMIN_TOKENS_MISSING");
     let config = admin_config("SHUNT_TEST_ADMIN_TOKENS_MISSING");
     let error = config.validate().unwrap_err().to_string();
     assert!(error.contains("SHUNT_TEST_ADMIN_TOKENS_MISSING"));
@@ -3946,10 +3950,10 @@ async fn refresh_probe_rotates_an_imported_account_without_returning_token_mater
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_OK", "ops:secret-probe-ok");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_PROBE_OK", "ops:secret-probe-ok");
 
     std::fs::write(
         dir.join("importee.json"),
@@ -3980,7 +3984,7 @@ async fn refresh_probe_rotates_an_imported_account_without_returning_token_mater
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -4034,9 +4038,6 @@ async fn refresh_probe_rotates_an_imported_account_without_returning_token_mater
     assert!(body["expires_at"].as_i64().unwrap() > 1_000);
     token_server.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_OK");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4048,10 +4049,10 @@ async fn refresh_probe_never_attempts_a_grant_for_a_setup_token_account() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_SETUP", "ops:secret-probe-st");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_PROBE_SETUP", "ops:secret-probe-st");
 
     let original = serde_json::json!({
         "claudeAiOauth": {
@@ -4075,7 +4076,7 @@ async fn refresh_probe_never_attempts_a_grant_for_a_setup_token_account() {
         .expect(0)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -4104,9 +4105,6 @@ async fn refresh_probe_never_attempts_a_grant_for_a_setup_token_account() {
         original
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_SETUP");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4118,10 +4116,10 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_PROBE_DEAD",
         "ops:secret-probe-dead",
     );
@@ -4167,7 +4165,7 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
         })))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -4269,9 +4267,6 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
         "a successful re-login must clear the needs-re-login mark"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_DEAD");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4285,10 +4280,10 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_PROBE_UNSEEN",
         "ops:secret-probe-unseen",
     );
@@ -4315,7 +4310,7 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
         })))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -4395,9 +4390,6 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
          stays false — both dashboard tables read `needs_relogin` before it"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_UNSEEN");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4411,10 +4403,10 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_PROBE_SERVED",
         "ops:secret-probe-served",
     );
@@ -4444,7 +4436,7 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
         })))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -4543,9 +4535,6 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
         "and the response must say so"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_SERVED");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4564,8 +4553,8 @@ async fn admin_session_bootstrap_serves_the_live_csrf_token_and_refresh_buffer()
     }
     // This test resolves its admin credential out of the process env, so it
     // takes the same lock the other admin env tests do.
-    let _lock = ADMIN_ENV_LOCK.lock().await;
-    std::env::set_var("SHUNT_TEST_ADMIN_SESSION_BOOTSTRAP", "ops:session-secret");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_SESSION_BOOTSTRAP", "ops:session-secret");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_SESSION_BOOTSTRAP")).await;
     let base = &gateway.base_url;
     let client = reqwest::Client::builder()
@@ -4662,6 +4651,4 @@ async fn admin_session_bootstrap_serves_the_live_csrf_token_and_refresh_buffer()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_SESSION_BOOTSTRAP");
 }

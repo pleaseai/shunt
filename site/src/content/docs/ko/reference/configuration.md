@@ -19,6 +19,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | :-- | :-- | :-- |
 | `bind` | `127.0.0.1:3001` | shunt가 리슨하는 주소 |
 | `default_provider` | `anthropic` | 일치하는 라우트가 없는 모든 모델의 프로바이더 |
+| `shutdown_timeout_seconds` | `30` | 첫 SIGTERM/SIGINT 뒤 진행 중인 HTTP/SSE/WebSocket 작업을 드레인한 후 나머지를 취소하기까지의 초. `1`–`3600`이어야 하며 변경 후 재시작 필요 |
 | `max_concurrent_requests` | `1024` | 응답 본문이 끝날 때까지 진행 중으로 계산하는 인바운드 요청의 최대 수. 초과 요청은 대기열에 넣지 않고 즉시 `503`과 `Retry-After: 1`로 거부합니다. `0`은 제한을 비활성화하며 `/`와 `/health`는 제한에서 제외됩니다. 이 키를 변경한 뒤에는 재시작해야 합니다 |
 | `sse_keepalive_seconds` | `30` | SSE `ping`이 주입되기 전의 유휴 초; `0`은 비활성화([상세](/ko/guides/shared-gateway/#sse-keepalive-ping)) |
 
