@@ -522,20 +522,8 @@ pub(super) async fn forward_chatgpt_oauth(
         // estimate must land in that first snapshot, so encode it up front
         // rather than overlapping it with the upstream round-trip as the
         // loop-based paths do.
-        let input_tokens_estimate = match estimate_input {
-            Some(request) => tokio::task::spawn_blocking(move || {
-                crate::count_tokens::count_input_tokens_value(&request)
-            })
-            .await
-            .unwrap_or(0),
-            None => 0,
-        };
         let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
-        let machine = turn
-            .relay(&route)
-            .machine()
-            .with_input_estimate(input_tokens_estimate)
-            .without_content_accumulation();
+        let route_for_start = route.clone();
         let (order, reprobe) = state.accounts.select_order_deferred(
             &route.provider,
             &accounts_config,
@@ -556,7 +544,38 @@ pub(super) async fn forward_chatgpt_oauth(
         });
         return Ok((
             StatusCode::OK,
-            pool_streaming_response(machine, keepalive, events),
+            pool_streaming_response(
+                move || {
+                    Box::pin(async move {
+                        // The bounded estimate wait happens inside the committed
+                        // stream — keepalive pings cover it, the commit itself
+                        // never stalls on the blocking pool.
+                        let input_tokens_estimate = match estimate_input {
+                            Some(request) => {
+                                let handle = tokio::task::spawn_blocking(move || {
+                                    crate::count_tokens::count_input_tokens_value(&request)
+                                });
+                                tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+                                    .await
+                                    .ok()
+                                    .and_then(Result::ok)
+                                    .unwrap_or(0)
+                            }
+                            None => 0,
+                        };
+                        let mut machine = turn
+                            .relay(&route_for_start)
+                            .machine()
+                            .with_input_estimate(input_tokens_estimate)
+                            .without_content_accumulation();
+                        let start =
+                            machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+                        (machine, start.join(""))
+                    })
+                },
+                keepalive,
+                events,
+            ),
         ));
     }
     let (order, mut reprobe_reservation) = if ws_enabled {

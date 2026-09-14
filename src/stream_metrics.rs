@@ -148,7 +148,10 @@ struct TokenUsage {
 
 struct ObserverState {
     protocol: Protocol,
-    provider: String,
+    // Shared so a committed chain can update the attribution once its winner
+    // is known mid-stream (the response already went out stamped with the
+    // routed provider).
+    provider: std::sync::Arc<std::sync::Mutex<String>>,
     model: String,
     started_at: Instant,
     // The upstream response status the stream opened with. `finish` gates
@@ -200,7 +203,7 @@ impl ObserverState {
     fn new(
         protocol: Protocol,
         status: StatusCode,
-        provider: String,
+        provider: std::sync::Arc<std::sync::Mutex<String>>,
         model: String,
         started_at: Instant,
         span: tracing::Span,
@@ -234,7 +237,11 @@ impl ObserverState {
         if !self.first_chunk_seen {
             self.first_chunk_seen = true;
             let ttft = self.started_at.elapsed();
-            crate::metrics::record_ttft(&self.provider, &self.model, ttft.as_secs_f64() * 1000.0);
+            crate::metrics::record_ttft(
+                &self.provider.lock().expect("provider slot"),
+                &self.model,
+                ttft.as_secs_f64() * 1000.0,
+            );
             self.ttft_ms = Some(millis(ttft));
         }
         self.bytes_forwarded = self.bytes_forwarded.saturating_add(chunk.len() as u64);
@@ -380,7 +387,11 @@ impl ObserverState {
         }
         self.finished = true;
         let outcome = self.outcome(end.natural());
-        crate::metrics::record_stream_outcome(&self.provider, &self.model, outcome.as_str());
+        crate::metrics::record_stream_outcome(
+            &self.provider.lock().expect("provider slot"),
+            &self.model,
+            outcome.as_str(),
+        );
         // Only a stream that actually opened `200` can have "failed mid-stream"
         // in the sense this reports: a non-2xx response was already recorded
         // at header time (`record_span_outcome` / `capture_upstream_outcome`),
@@ -390,7 +401,7 @@ impl ObserverState {
             if let Some(failure) = outcome.as_stream_failure() {
                 crate::observability::record_stream_failure(
                     &self.span,
-                    &self.provider,
+                    &self.provider.lock().expect("provider slot"),
                     &self.model,
                     failure,
                     &self.failure_context(failure, &end),
@@ -404,7 +415,12 @@ impl ObserverState {
             ("cache_creation", self.tokens.cache_creation),
         ] {
             if let Some(count) = count {
-                crate::metrics::record_stream_tokens(&self.provider, &self.model, kind, count);
+                crate::metrics::record_stream_tokens(
+                    &self.provider.lock().expect("provider slot"),
+                    &self.model,
+                    kind,
+                    count,
+                );
             }
         }
     }
@@ -601,6 +617,25 @@ pub fn observe_response(
     response: Response<Body>,
     protocol: Protocol,
     provider: String,
+    model: String,
+    started_at: Instant,
+) -> Response<Body> {
+    observe_response_with_slot(
+        response,
+        protocol,
+        std::sync::Arc::new(std::sync::Mutex::new(provider)),
+        model,
+        started_at,
+    )
+}
+
+/// [`observe_response`] over a caller-owned provider slot, so a committed
+/// chain can point the observer at the winning provider once the stream knows
+/// it.
+pub fn observe_response_with_slot(
+    response: Response<Body>,
+    protocol: Protocol,
+    provider: std::sync::Arc<std::sync::Mutex<String>>,
     model: String,
     started_at: Instant,
 ) -> Response<Body> {

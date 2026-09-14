@@ -19,8 +19,7 @@ use crate::{
 use super::body::{prepare_body, PreparedBody};
 use super::context::{ForwardOptions, RelayOptions};
 use super::early_stream::{
-    bounded_input_estimate, early_streaming_response, http_events_stream, parsed_events,
-    translated_stream, HttpSendContext,
+    early_streaming_response, http_events_stream, parsed_events, translated_stream, HttpSendContext,
 };
 use super::error::{backend_error, mapped_upstream_error, own_error, transport_error};
 use super::request::request_builder;
@@ -86,35 +85,54 @@ pub(super) async fn forward_http(
         // Commit the SSE response now, before any upstream byte: the synthetic
         // `message_start` keeps the client's stall watchdog fed while the
         // upstream thinks in silence, and the send (with its bounded retry)
-        // runs inside the stream. The estimate must land in that first
-        // snapshot, so await it here rather than overlapping it with the
-        // upstream round-trip as the non-streaming arm does not need to.
-        // The synthetic `message_start` commits the response before any
-        // upstream byte; it must not wait on the estimator (the budget and its
-        // reasons live in `bounded_input_estimate`).
-        let input_tokens_estimate = match estimate_handle {
-            Some(handle) => bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await,
-            None => 0,
-        };
+        // runs inside the stream. The estimate must not hold the commit: if
+        // the blocking-pool encode has not finished by the time the stream
+        // builds its start, the snapshot seeds `0` (the estimate is a
+        // best-effort progress figure, the bound exists so a saturated pool
+        // cannot stall the first byte).
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
-        let machine = turn
-            .relay(route)
-            .machine()
-            .with_input_estimate(input_tokens_estimate)
-            .without_content_accumulation();
+        let route_for_start = route.clone();
         let events = http_events_stream(HttpSendContext {
             state: state.clone(),
             route: route.clone(),
             policy,
             credential,
             session_id: session_id.map(str::to_string),
-            body,
+            upstream_body: upstream_body.clone(),
             auth,
             codex_quota_account,
         });
         return Ok((
             StatusCode::OK,
-            early_streaming_response(machine, keepalive, events),
+            early_streaming_response(
+                move || {
+                    Box::pin(async move {
+                        // The bounded estimate wait happens inside the committed
+                        // stream — keepalive pings cover it, the commit itself
+                        // never stalls on the blocking pool.
+                        let input_tokens_estimate = match estimate_handle {
+                            Some(handle) => {
+                                tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+                                    .await
+                                    .ok()
+                                    .and_then(Result::ok)
+                                    .unwrap_or(0)
+                            }
+                            None => 0,
+                        };
+                        let mut machine = turn
+                            .relay(&route_for_start)
+                            .machine()
+                            .with_input_estimate(input_tokens_estimate)
+                            .without_content_accumulation();
+                        let start =
+                            machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+                        (machine, start.join(""))
+                    })
+                },
+                keepalive,
+                events,
+            ),
         ));
     }
     // The account-pool path drives its own failover and deliberately does not

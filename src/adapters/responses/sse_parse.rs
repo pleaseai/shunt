@@ -1,0 +1,292 @@
+//! SSE framing for the early-commit streaming paths: the byte-stream parser
+//! and the frame-buffer that turns it into [`ResponseEvent`]s. Split out of
+//! `early_stream` to keep that module's transport orchestration under the
+//! 500-line guideline.
+
+use std::convert::Infallible;
+
+use axum::body::Bytes;
+use futures_util::{stream, Stream, StreamExt};
+use serde_json::Value;
+
+use crate::model::responses::{sse, AnthropicSseMachine, ResponseEvent};
+
+use super::error::{adapter_error_envelope, own_error, transport_error};
+
+/// upstream data.
+pub(super) fn parsed_events(
+    bytes: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+) -> impl Stream<Item = Result<ResponseEvent, Value>> + Send + 'static {
+    stream::unfold(
+        (
+            Box::pin(bytes),
+            SseParser::default(),
+            std::collections::VecDeque::<Result<ResponseEvent, Value>>::new(),
+            false,
+        ),
+        |(mut bytes, mut parser, mut pending, mut done)| async move {
+            loop {
+                if done {
+                    return None;
+                }
+                if let Some(item) = pending.pop_front() {
+                    // A terminal item ends the stream: a consumer that polls
+                    // past the error must not resume relaying upstream events
+                    // behind it.
+                    done = item.is_err();
+                    return Some((item, (bytes, parser, pending, done)));
+                }
+                match bytes.next().await {
+                    Some(Ok(chunk)) => {
+                        let (events, malformed) = parser.push(&chunk);
+                        pending.extend(events.into_iter().map(Ok));
+                        if malformed {
+                            pending.push_back(Err(malformed_frame_envelope().await));
+                        }
+                    }
+                    Some(Err(error)) => {
+                        let envelope = adapter_error_envelope(transport_error(
+                            error.without_url().to_string(),
+                        ))
+                        .await;
+                        return Some((Err(envelope), (bytes, parser, pending, true)));
+                    }
+                    None => return None,
+                }
+            }
+        },
+    )
+}
+
+/// The terminal envelope for an upstream frame whose `data` is present but not
+/// valid JSON: a post-acceptance gateway failure (`own_error`, so the chain
+/// never replays the turn) surfaced as one SSE `error` event.
+async fn malformed_frame_envelope() -> Value {
+    adapter_error_envelope(own_error(
+        "upstream sent an SSE frame whose data is not valid JSON".to_string(),
+    ))
+    .await
+}
+
+/// Await a spawned tiktoken estimate under a wall-clock budget: the synthetic
+/// `message_start` commits the response before any upstream byte and must not
+/// wait on the estimator, so a saturated blocking pool or a pathological
+/// input cannot delay the commit. `0` is a valid seed when the budget elapses
+/// or the task failed.
+pub(super) async fn bounded_input_estimate(
+    handle: tokio::task::JoinHandle<u64>,
+    budget: std::time::Duration,
+) -> u64 {
+    tokio::time::timeout(budget, handle)
+        .await
+        .unwrap_or_else(|_| Ok(0))
+        .unwrap_or(0)
+}
+
+/// Translate parsed upstream events through the [`AnthropicSseMachine`] into
+/// Anthropic SSE bytes. A producer error envelope becomes an SSE `error` event
+/// and ends the stream; a producer that ends before a terminal event gets the
+/// synthesized completion prefixed with the upstream-cut marker
+/// (`stream_metrics::UPSTREAM_TRUNCATED_MARKER`), exactly like the
+/// pre-early-commit relay.
+pub(super) fn translated_stream(
+    events: impl Stream<Item = Result<ResponseEvent, Value>> + Send + 'static,
+    machine: AnthropicSseMachine,
+) -> impl Stream<Item = Result<Bytes, Infallible>> + Send + 'static {
+    translated_core(
+        events,
+        move || Box::pin(async move { (machine, String::new()) }),
+        |event, machine| machine.apply(event).into_iter().collect::<String>(),
+    )
+}
+
+/// One item of a pooled streaming turn: the winning account's attribution
+/// frame, or a relayed Responses event.
+pub(super) enum PoolEvent {
+    /// The account that won the turn, emitted once before its first relayed
+    /// frame. Replaces the `x-shunt-account` response header on the
+    /// early-commit path, where headers go out before the winner is known.
+    Account(String),
+    Event(ResponseEvent),
+}
+
+/// Translate pooled items into client-facing bytes: `Account` becomes an
+/// `event: account` frame whose data is the bare account name (mirroring the
+/// `x-shunt-account` header value), `Event` goes through the machine.
+pub(super) fn pool_translated_stream(
+    events: impl Stream<Item = Result<PoolEvent, Value>> + Send + 'static,
+    machine: AnthropicSseMachine,
+) -> impl Stream<Item = Result<Bytes, Infallible>> + Send + 'static {
+    translated_core(
+        events,
+        move || Box::pin(async move { (machine, String::new()) }),
+        |item, machine| match item {
+            PoolEvent::Account(name) => sse("account", &Value::String(name)),
+            PoolEvent::Event(event) => machine.apply(event).into_iter().collect::<String>(),
+        },
+    )
+}
+
+/// The shared translation loop behind [`translated_stream`] and
+/// [`pool_translated_stream`]: a producer error envelope becomes an SSE
+/// `error` event and ends the stream; a producer that ends before a terminal
+/// event gets the synthesized completion prefixed with the upstream-cut
+/// marker (`stream_metrics::UPSTREAM_TRUNCATED_MARKER`), exactly like the
+/// pre-early-commit relay.
+pub(super) fn translated_core<I, F, M>(
+    events: impl Stream<Item = Result<I, Value>> + Send + 'static,
+    machine: M,
+    map: F,
+) -> impl Stream<Item = Result<Bytes, Infallible>> + Send + 'static
+where
+    F: Fn(I, &mut AnthropicSseMachine) -> String + Send + 'static,
+    M: FnOnce() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = (AnthropicSseMachine, String)> + Send>,
+        > + Send
+        + 'static,
+{
+    stream::unfold(
+        (
+            Box::pin(events),
+            None::<AnthropicSseMachine>,
+            false,
+            map,
+            Some(machine),
+        ),
+        move |(mut events, mut machine, mut finished, map, mut factory)| {
+            async move {
+                if finished {
+                    return None;
+                }
+                // The leading phase: build the machine (the factory may wait
+                // for a bounded estimate — keepalive pings cover the wait) and
+                // emit its leading bytes, the synthetic start, before any
+                // relayed frame.
+                if let Some(factory) = factory.take() {
+                    let (built, leading) = factory().await;
+                    if !leading.is_empty() {
+                        return Some((
+                            Ok(Bytes::from(leading)),
+                            (events, Some(built), false, map, None),
+                        ));
+                    }
+                    return Some((Ok(Bytes::new()), (events, Some(built), false, map, None)));
+                }
+                loop {
+                    let mut active = machine.take().expect("machine factory ran");
+                    match events.next().await {
+                        Some(Ok(item)) => {
+                            let data = map(item, &mut active);
+                            if !data.is_empty() {
+                                return Some((
+                                    Ok(Bytes::from(data)),
+                                    (events, Some(active), false, map, None),
+                                ));
+                            }
+                            machine = Some(active);
+                            continue;
+                        }
+                        Some(Err(envelope)) => {
+                            return Some((
+                                Ok(Bytes::from(sse("error", &envelope))),
+                                (events, Some(active), true, map, None),
+                            ));
+                        }
+                        None => {
+                            let data = active.finish().join("");
+                            finished = true;
+                            if data.is_empty() {
+                                return None;
+                            }
+                            let mut marked = Vec::with_capacity(
+                                crate::stream_metrics::UPSTREAM_TRUNCATED_MARKER.len()
+                                    + 2
+                                    + data.len(),
+                            );
+                            marked.extend_from_slice(
+                                crate::stream_metrics::UPSTREAM_TRUNCATED_MARKER,
+                            );
+                            marked.extend_from_slice(b"\n\n");
+                            marked.extend_from_slice(data.as_bytes());
+                            return Some((
+                                Ok(Bytes::from(marked)),
+                                (events, Some(active), finished, map, None),
+                            ));
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
+
+/// Frame-buffers the upstream SSE byte stream. Buffering raw bytes — rather than
+/// decoding each transport chunk with `from_utf8_lossy` — keeps a multi-byte
+/// UTF-8 code point intact when it straddles a chunk boundary: the incomplete
+/// trailing bytes stay in the buffer until the next chunk completes them. Frame
+/// boundaries are the ASCII `\n\n` or `\r\n\r\n` (the SSE spec permits CRLF
+/// line endings, and `model_rewrite.rs` accepts both for the same reason);
+/// neither can fall inside a multi-byte sequence, so every extracted frame is
+/// already complete UTF-8. CRLF frames are normalized to LF before parsing.
+#[derive(Default)]
+pub(super) struct SseParser {
+    buffer: Vec<u8>,
+    scan_from: usize,
+}
+
+impl SseParser {
+    /// Feed one transport chunk. Returns every event the chunk completed, plus
+    /// whether a complete frame carried data that is not valid JSON: the stream
+    /// then ends with a terminal SSE `error` event instead of relaying a
+    /// synthesized completion over a corrupted upstream.
+    pub(super) fn push(&mut self, chunk: &[u8]) -> (Vec<ResponseEvent>, bool) {
+        self.buffer.extend_from_slice(chunk);
+
+        let mut complete_end = None;
+        let mut scan = self.scan_from;
+        while scan < self.buffer.len() {
+            if self.buffer[scan..].starts_with(b"\n\n") {
+                complete_end = Some(scan + 2);
+                scan += 2;
+            } else if self.buffer[scan..].starts_with(b"\r\n\r\n") {
+                complete_end = Some(scan + 4);
+                scan += 4;
+            } else {
+                scan += 1;
+            }
+        }
+
+        let Some(complete_end) = complete_end else {
+            // The final bytes may be a prefix of a frame terminator, so scan
+            // them again after the next chunk arrives. Everything before has
+            // already been ruled out.
+            self.scan_from = self.buffer.len().saturating_sub(3);
+            return (Vec::new(), false);
+        };
+
+        // Parse all complete frames in one UTF-8 decode, then compact the buffer
+        // once. Front-draining each frame shifts the same trailing bytes over and
+        // over when one transport chunk contains many SSE events.
+        let raw = String::from_utf8_lossy(&self.buffer[..complete_end]);
+        let normalized = if raw.contains('\r') {
+            std::borrow::Cow::Owned(raw.replace("\r\n", "\n"))
+        } else {
+            raw
+        };
+        let mut events = Vec::new();
+        let mut malformed = false;
+        for frame in normalized.split("\n\n") {
+            match crate::model::responses::parse_sse_frame(frame) {
+                None => {}
+                Some(Ok(event)) => events.push(event),
+                Some(Err(_)) => {
+                    malformed = true;
+                    break;
+                }
+            }
+        }
+        self.buffer.drain(..complete_end);
+        self.scan_from = self.buffer.len().saturating_sub(3);
+        (events, malformed)
+    }
+}

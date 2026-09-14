@@ -101,7 +101,11 @@ pub(crate) enum Attempt {
     },
 }
 
-pub(crate) type ClientFrames = Pin<Box<dyn Stream<Item = Result<Bytes, Infallible>> + Send>>;
+/// A winner's relay: `Ok` bytes flow to the client; `Err` carries the error
+/// envelope for one terminal SSE `error` event (a mid-relay body failure, so
+/// the client sees the failure instead of a silently truncated stream and the
+/// outcome records as failed rather than `OK`).
+pub(crate) type ClientFrames = Pin<Box<dyn Stream<Item = Result<Bytes, Value>> + Send>>;
 
 /// Everything the committed-stream chain needs, bundled so the per-attempt
 /// closure carries one context instead of nine arguments.
@@ -139,6 +143,10 @@ pub(super) async fn forward_chain_stream(
     let first_provider = first_route.provider.clone();
     let first_model = first_route.model.clone();
     let first_upstream_model = first_route.upstream_model.clone();
+    // Captured synchronously inside the caller's `.instrument(span)` future,
+    // so the eventual in-stream outcome records land on the request's own
+    // span rather than whatever span is current while the body is polled.
+    let request_span = tracing::Span::current();
     let last_provider = routes
         .last()
         .expect("route chains are non-empty after resolution")
@@ -149,12 +157,6 @@ pub(super) async fn forward_chain_stream(
         .expect("route chains are non-empty after resolution")
         .model
         .clone();
-    // The synthetic start's input-token estimate counts the client's request,
-    // which is identical for every attempt. The blocking-pool encode starts
-    // now, overlapping the chain's own work, and the bounded wait happens
-    // inside the committed stream — never before the `200` goes out.
-    let estimate = estimate_input_tokens(&state, &routes, &body);
-
     enum Phase {
         Attempt {
             attempts: std::collections::VecDeque<(usize, Route)>,
@@ -175,6 +177,10 @@ pub(super) async fn forward_chain_stream(
         model: String,
     }
 
+    // Created before the unfold so the closure can capture a clone and write
+    // the winner into it once the stream knows one.
+    let winner_slot = std::sync::Arc::new(std::sync::Mutex::new(first_provider.clone()));
+    let closure_slot = winner_slot.clone();
     let attempts: std::collections::VecDeque<(usize, Route)> =
         routes.into_iter().enumerate().collect();
     let attempts_len = attempts.len();
@@ -188,9 +194,8 @@ pub(super) async fn forward_chain_stream(
                 remembered: None,
             },
             body,
-            estimate,
         ),
-        move |(mut phase, body, mut estimate)| {
+        move |(mut phase, body)| {
             let state = stream_state.clone();
             let uri = stream_uri.clone();
             let base_headers = stream_headers.clone();
@@ -198,6 +203,8 @@ pub(super) async fn forward_chain_stream(
             let primary_origin = primary_origin.clone();
             let last_provider = last_provider.clone();
             let last_model = last_model.clone();
+            let request_span = request_span.clone();
+            let winner_slot = closure_slot.clone();
             async move {
                 loop {
                     match phase {
@@ -207,6 +214,9 @@ pub(super) async fn forward_chain_stream(
                             winner_model,
                         } => match frames.next().await {
                             Some(Ok(bytes)) => {
+                                if let Ok(mut slot) = winner_slot.lock() {
+                                    *slot = winner_provider.clone();
+                                }
                                 return Some((
                                     Ok::<Bytes, Infallible>(bytes),
                                     (
@@ -216,12 +226,29 @@ pub(super) async fn forward_chain_stream(
                                             winner_model,
                                         },
                                         body,
-                                        estimate,
                                     ),
                                 ));
                             }
-                            Some(Err(_)) | None => {
-                                observability::record_span_outcome(
+                            Some(Err(envelope)) => {
+                                // A mid-relay body failure: emit the terminal
+                                // error event and record the failure, exactly
+                                // like the single-route early-commit relay.
+                                let frame = sse("error", &envelope);
+                                observability::record_span_outcome_on(
+                                    &request_span,
+                                    &winner_provider,
+                                    StatusCode::BAD_GATEWAY,
+                                );
+                                observability::capture_upstream_outcome(
+                                    &winner_provider,
+                                    &winner_model,
+                                    StatusCode::BAD_GATEWAY,
+                                );
+                                return Some((Ok(Bytes::from(frame)), (Phase::Done, body)));
+                            }
+                            None => {
+                                observability::record_span_outcome_on(
+                                    &request_span,
                                     &winner_provider,
                                     StatusCode::OK,
                                 );
@@ -230,7 +257,7 @@ pub(super) async fn forward_chain_stream(
                                     &winner_model,
                                     StatusCode::OK,
                                 );
-                                return Some((Ok(Bytes::new()), (Phase::Done, body, estimate)));
+                                return Some((Ok(Bytes::new()), (Phase::Done, body)));
                             }
                         },
                         Phase::Done => return None,
@@ -268,17 +295,19 @@ pub(super) async fn forward_chain_stream(
                                             last_model.clone(),
                                         ),
                                     };
+                                crate::metrics::record_failover(&last_provider, "exhausted");
                                 let frame = sse("error", &envelope);
-                                observability::record_span_outcome(&finish_provider, status);
+                                observability::record_span_outcome_on(
+                                    &request_span,
+                                    &finish_provider,
+                                    status,
+                                );
                                 observability::capture_upstream_outcome(
                                     &finish_provider,
                                     &finish_model,
                                     status,
                                 );
-                                return Some((
-                                    Ok(Bytes::from(frame)),
-                                    (Phase::Done, body, estimate),
-                                ));
+                                return Some((Ok(Bytes::from(frame)), (Phase::Done, body)));
                             };
                             crate::metrics::record_failover(&route.provider, "attempted");
                             let attempt_started = Instant::now();
@@ -300,7 +329,6 @@ pub(super) async fn forward_chain_stream(
                                         &route,
                                         &attempt_headers,
                                         attempt_body,
-                                        estimate.as_mut(),
                                     )
                                     .await
                                 }
@@ -331,7 +359,7 @@ pub(super) async fn forward_chain_stream(
                                     };
                                     match start {
                                         Some(start) => {
-                                            return Some((Ok(start), (relay, body, estimate)));
+                                            return Some((Ok(start), (relay, body)));
                                         }
                                         None => {
                                             phase = relay;
@@ -400,14 +428,15 @@ pub(super) async fn forward_chain_stream(
                                         continue;
                                     }
                                     let frame = sse("error", &envelope);
-                                    observability::record_span_outcome(&provider, status);
+                                    observability::record_span_outcome_on(
+                                        &request_span,
+                                        &provider,
+                                        status,
+                                    );
                                     observability::capture_upstream_outcome(
                                         &provider, &model, status,
                                     );
-                                    return Some((
-                                        Ok(Bytes::from(frame)),
-                                        (Phase::Done, body, estimate),
-                                    ));
+                                    return Some((Ok(Bytes::from(frame)), (Phase::Done, body)));
                                 }
                             }
                         }
@@ -426,10 +455,10 @@ pub(super) async fn forward_chain_stream(
         )))
         .expect("response builder uses valid status and headers")
         .into_response();
-    let mut response = stream_metrics::observe_response(
+    let mut response = stream_metrics::observe_response_with_slot(
         response,
         Protocol::Anthropic,
-        first_provider.clone(),
+        winner_slot,
         first_model.clone(),
         started_at,
     );
@@ -440,38 +469,4 @@ pub(super) async fn forward_chain_stream(
         &first_upstream_model,
     );
     Ok((StatusCode::OK, response))
-}
-
-/// The local tiktoken estimate for the synthetic `message_start`, when any
-/// chain route's provider opts into local counting. The blocking-pool encode
-/// is spawned immediately and the bounded wait returns a future the committed
-/// stream awaits only once a Responses-kind winner needs its synthetic start —
-/// so a saturated blocking pool can delay the start by at most one second and
-/// never the `200` itself.
-fn estimate_input_tokens(
-    state: &AppState,
-    routes: &[Route],
-    body: &RequestBody,
-) -> Option<Pin<Box<dyn std::future::Future<Output = u64> + Send>>> {
-    let counts_locally = routes.iter().any(|route| {
-        state
-            .config
-            .provider(&route.provider)
-            .map(|provider| provider.count_tokens == crate::config::CountTokens::Tiktoken)
-            .unwrap_or(false)
-    });
-    if !counts_locally {
-        return None;
-    }
-    let request = body.json_arc();
-    let handle = tokio::task::spawn_blocking(move || {
-        crate::count_tokens::count_input_tokens_value(&request)
-    });
-    Some(Box::pin(async move {
-        tokio::time::timeout(Duration::from_secs(1), handle)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or(0)
-    }))
 }

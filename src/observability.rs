@@ -196,7 +196,14 @@ pub(crate) fn record_requested_model(model: &str) {
 /// status for the request is known; never buffers a streamed response to
 /// learn it, since the status is available at response-header time.
 pub(crate) fn record_span_outcome(provider: &str, status: StatusCode) {
-    let span = tracing::Span::current();
+    record_span_outcome_on(&tracing::Span::current(), provider, status);
+}
+
+/// [`record_span_outcome`] on an explicit span, for call sites that record
+/// after the request span has exited — a committed stream's body is polled
+/// outside the `proxy_request` span, so the chain captures the span up front
+/// and records onto it directly.
+pub(crate) fn record_span_outcome_on(span: &tracing::Span, provider: &str, status: StatusCode) {
     span.record("shunt.provider", provider);
     span.record("http.response.status_code", status.as_u16());
     span.record(

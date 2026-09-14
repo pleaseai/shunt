@@ -1,4 +1,3 @@
-use super::super::body::prepare_body;
 use super::*;
 use axum::body::to_bytes;
 use serde_json::{json, Value};
@@ -15,7 +14,17 @@ async fn early_streaming_response_emits_synthetic_start_before_any_upstream_even
         .with_input_estimate(7)
         .without_content_accumulation();
     let never = futures_util::stream::pending::<Result<ResponseEvent, Value>>();
-    let response = early_streaming_response(machine, std::time::Duration::from_secs(30), never);
+    let response = early_streaming_response(
+        move || {
+            Box::pin(async move {
+                let mut machine = machine;
+                let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+                (machine, start.join(""))
+            })
+        },
+        std::time::Duration::from_secs(30),
+        never,
+    );
     let mut body = response.into_body().into_data_stream();
     let first = tokio::time::timeout(std::time::Duration::from_secs(2), body.next())
         .await
@@ -59,7 +68,17 @@ async fn early_streaming_response_emits_error_event_and_ends_on_producer_failure
         "type": "error",
         "error": {"type": "api_error", "message": "boom"}
     }))]);
-    let response = early_streaming_response(machine, std::time::Duration::from_secs(30), failing);
+    let response = early_streaming_response(
+        move || {
+            Box::pin(async move {
+                let mut machine = machine;
+                let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+                (machine, start.join(""))
+            })
+        },
+        std::time::Duration::from_secs(30),
+        failing,
+    );
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("body is readable");
@@ -92,7 +111,11 @@ async fn early_streaming_response_synthesizes_completion_when_producer_ends_earl
             data: json!({"delta": "partial"}),
         }),
     ]);
-    let response = early_streaming_response(machine, std::time::Duration::from_secs(30), events);
+    let response = early_streaming_response(
+        move || Box::pin(async move { (machine, String::new()) }),
+        std::time::Duration::from_secs(30),
+        events,
+    );
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("body is readable");
@@ -124,7 +147,7 @@ async fn http_events_stream_maps_non_success_to_error_envelope() {
     let mut config = crate::config::Config::default();
     config.providers.get_mut("codex").unwrap().base_url = server.uri();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
-    let body = prepare_body(&state, &codex_route(), &json!({"input": []})).await;
+    let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(HttpSendContext {
         state,
         route: codex_route(),
@@ -134,7 +157,7 @@ async fn http_events_stream_maps_non_success_to_error_envelope() {
             header: crate::config::ApiKeyHeader::Bearer,
         },
         session_id: None,
-        body,
+        upstream_body,
         auth: crate::config::AuthMode::ApiKey,
         codex_quota_account: None,
     });
@@ -160,7 +183,7 @@ async fn http_events_stream_maps_ttfb_timeout_to_timeout_error_envelope() {
     config.providers.get_mut("codex").unwrap().base_url = server.uri();
     config.server.timeouts.upstream_ttfb_ms = 100;
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
-    let body = prepare_body(&state, &codex_route(), &json!({"input": []})).await;
+    let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(HttpSendContext {
         state,
         route: codex_route(),
@@ -170,7 +193,7 @@ async fn http_events_stream_maps_ttfb_timeout_to_timeout_error_envelope() {
             header: crate::config::ApiKeyHeader::Bearer,
         },
         session_id: None,
-        body,
+        upstream_body,
         auth: crate::config::AuthMode::ApiKey,
         codex_quota_account: None,
     });
@@ -202,7 +225,7 @@ async fn http_events_stream_yields_parsed_events_from_streaming_upstream() {
     let mut config = crate::config::Config::default();
     config.providers.get_mut("codex").unwrap().base_url = server.uri();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
-    let body = prepare_body(&state, &codex_route(), &json!({"input": []})).await;
+    let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(HttpSendContext {
         state,
         route: codex_route(),
@@ -212,7 +235,7 @@ async fn http_events_stream_yields_parsed_events_from_streaming_upstream() {
             header: crate::config::ApiKeyHeader::Bearer,
         },
         session_id: None,
-        body,
+        upstream_body,
         auth: crate::config::AuthMode::ApiKey,
         codex_quota_account: None,
     });
@@ -376,7 +399,7 @@ async fn http_events_stream_turns_a_malformed_frame_into_a_terminal_error() {
     let mut config = crate::config::Config::default();
     config.providers.get_mut("codex").unwrap().base_url = server.uri();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
-    let body = prepare_body(&state, &codex_route(), &json!({"input": []})).await;
+    let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(HttpSendContext {
         state,
         route: codex_route(),
@@ -386,7 +409,7 @@ async fn http_events_stream_turns_a_malformed_frame_into_a_terminal_error() {
             header: crate::config::ApiKeyHeader::Bearer,
         },
         session_id: None,
-        body,
+        upstream_body,
         auth: crate::config::AuthMode::ApiKey,
         codex_quota_account: None,
     });
@@ -460,7 +483,7 @@ async fn http_events_stream_redacts_the_upstream_url_from_transport_errors() {
     let upstream_url = "http://127.0.0.1:0".to_string();
     config.providers.get_mut("codex").unwrap().base_url = upstream_url.clone();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
-    let body = prepare_body(&state, &codex_route(), &json!({"input": []})).await;
+    let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(HttpSendContext {
         state,
         route: codex_route(),
@@ -470,7 +493,7 @@ async fn http_events_stream_redacts_the_upstream_url_from_transport_errors() {
             header: crate::config::ApiKeyHeader::Bearer,
         },
         session_id: None,
-        body,
+        upstream_body,
         auth: crate::config::AuthMode::ApiKey,
         codex_quota_account: None,
     });
@@ -508,7 +531,7 @@ async fn http_events_stream_relays_crlf_framed_upstream() {
     let mut config = crate::config::Config::default();
     config.providers.get_mut("codex").unwrap().base_url = server.uri();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
-    let body = prepare_body(&state, &codex_route(), &json!({"input": []})).await;
+    let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(HttpSendContext {
         state,
         route: codex_route(),
@@ -518,7 +541,7 @@ async fn http_events_stream_relays_crlf_framed_upstream() {
             header: crate::config::ApiKeyHeader::Bearer,
         },
         session_id: None,
-        body,
+        upstream_body,
         auth: crate::config::AuthMode::ApiKey,
         codex_quota_account: None,
     });

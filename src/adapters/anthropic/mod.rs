@@ -1392,14 +1392,21 @@ pub(crate) async fn chain_attempt(
     {
         Ok(response) => response,
         Err(error) => {
+            let is_timeout = matches!(error, crate::upstream_timeout::SendError::Timeout);
             let envelope =
                 crate::error::error_body_value(*error.into_adapter_error(upstream_error).response)
                     .await;
             return crate::proxy::chain_stream::Attempt::Failed {
-                advance: true,
+                // A TTFB timeout is the configured 504 answer, not a
+                // transport failure: terminal, never advanced.
+                advance: !is_timeout,
                 remember: false,
                 envelope,
-                status: StatusCode::BAD_GATEWAY,
+                status: if is_timeout {
+                    StatusCode::GATEWAY_TIMEOUT
+                } else {
+                    StatusCode::BAD_GATEWAY
+                },
             };
         }
     };
@@ -1434,8 +1441,20 @@ pub(crate) async fn chain_attempt(
     }
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
     let frames = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias)
-        .filter_map(|chunk| async move { chunk.ok() })
-        .map(Ok)
+        .map(|chunk| {
+            chunk.map_err(|error| {
+                // A mid-relay body failure becomes the terminal SSE error
+                // event (the chain records the failure), never a silently
+                // truncated stream.
+                serde_json::json!({
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": error.without_url().to_string()
+                    }
+                })
+            })
+        })
         .boxed();
     crate::proxy::chain_stream::Attempt::Winner {
         start: None,

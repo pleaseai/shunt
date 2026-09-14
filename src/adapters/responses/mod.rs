@@ -9,6 +9,7 @@ mod http;
 pub(crate) mod inbound;
 mod inbound_routed;
 mod pool;
+mod sse_parse;
 // `pub(crate)` (not private): `crate::auth::codex::usage` reuses `CODEX_USER_AGENT`/
 // `CODEX_CLIENT_VERSION` for the wham/usage poller so the CLI identity headers on
 // that endpoint can never drift from the ones the Responses adapter itself sends.
@@ -30,6 +31,8 @@ use crate::{
     routing::Route,
     server::AppState,
 };
+
+use futures_util::TryStreamExt;
 
 use self::context::{ForwardOptions, PoolForward, TurnOptions};
 use self::early_stream::{
@@ -258,7 +261,6 @@ pub(crate) async fn chain_attempt(
     route: &Route,
     headers: &HeaderMap,
     body: RequestBody,
-    mut estimate: Option<&mut std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send>>>,
 ) -> crate::proxy::chain_stream::Attempt {
     let session_id = headers
         .get("x-claude-code-session-id")
@@ -337,10 +339,7 @@ pub(crate) async fn chain_attempt(
                     status: StatusCode::BAD_GATEWAY,
                 };
             }
-            let estimate_value = match estimate.as_mut() {
-                Some(future) => future.await,
-                None => 0,
-            };
+            let estimate_value = winner_estimate(state, route, &body).await;
             let mut machine = turn
                 .relay(route)
                 .machine()
@@ -367,7 +366,9 @@ pub(crate) async fn chain_attempt(
             let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
             return crate::proxy::chain_stream::Attempt::Winner {
                 start: Some(axum::body::Bytes::from(start.join(""))),
-                frames: Box::pin(pool_translated_stream(events, machine)),
+                frames: Box::pin(
+                    pool_translated_stream(events, machine).map_err(|never| match never {}),
+                ),
             };
         }
         // No accounts: fall through to the single-credential path, exactly
@@ -399,23 +400,19 @@ pub(crate) async fn chain_attempt(
         .provider(&route.provider)
         .map(|provider| provider.retry.policy())
         .unwrap_or(crate::retry::RetryPolicy::DISABLED);
-    let prepared = self::body::prepare_body(state, route, upstream_body.as_ref()).await;
     let send_context = HttpSendContext {
         state: state.clone(),
         route: route.clone(),
         policy,
         credential,
         session_id,
-        body: prepared,
+        upstream_body: upstream_body.clone(),
         auth,
         codex_quota_account,
     };
     match send_classified(&send_context).await {
         SendClassified::Relay { bytes } => {
-            let estimate_value = match estimate.as_mut() {
-                Some(future) => future.await,
-                None => 0,
-            };
+            let estimate_value = winner_estimate(state, route, &body).await;
             let mut machine = turn
                 .relay(route)
                 .machine()
@@ -424,18 +421,48 @@ pub(crate) async fn chain_attempt(
             let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
             crate::proxy::chain_stream::Attempt::Winner {
                 start: Some(axum::body::Bytes::from(start.join(""))),
-                frames: Box::pin(translated_stream(parsed_events(bytes), machine)),
+                frames: Box::pin(
+                    translated_stream(parsed_events(bytes), machine)
+                        .map_err(|never| match never {}),
+                ),
             }
         }
         SendClassified::Failed {
             envelope,
             status,
             remember,
+            advance,
         } => crate::proxy::chain_stream::Attempt::Failed {
-            advance: crate::proxy::failover::is_advance_status(status),
+            advance,
             remember,
             envelope,
             status,
         },
     }
+}
+
+/// The synthetic start's input-token estimate, gated on the WINNING route's
+/// own `count_tokens` setting: a provider opted out of local counting must
+/// not receive a locally computed seed just because another chain route
+/// counts. The blocking encode runs here, inside the committed stream, with
+/// the same one-second bound as the single-route path — a saturated pool
+/// delays the deferred synthetic start, never the committed response.
+async fn winner_estimate(state: &AppState, route: &Route, body: &RequestBody) -> u64 {
+    let counts_locally = state
+        .config
+        .provider(&route.provider)
+        .map(|provider| provider.count_tokens == crate::config::CountTokens::Tiktoken)
+        .unwrap_or(false);
+    if !counts_locally {
+        return 0;
+    }
+    let request = body.json_arc();
+    let handle = tokio::task::spawn_blocking(move || {
+        crate::count_tokens::count_input_tokens_value(&request)
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(0)
 }

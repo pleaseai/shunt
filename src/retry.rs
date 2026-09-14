@@ -91,12 +91,19 @@ pub fn is_retryable_status(status: StatusCode) -> bool {
 /// A failure to obtain an upstream response. Implemented per adapter error type
 /// so the driver can decide, without knowing the concrete error, whether the
 /// failure is a transient transport problem worth retrying.
-pub trait RetryableError {
+pub trait RetryableError: std::fmt::Display {
     /// `true` for a connection-level transport failure (connect/reset/timeout)
     /// that occurred before any response body existed; `false` for a
     /// deterministic error (bad request build, decode) an identical retry
     /// cannot fix.
     fn is_transient(&self) -> bool;
+
+    /// A URL-free rendering for logs. The default is the plain `Display`; a
+    /// transport error whose diagnostic embeds the configured upstream URL
+    /// overrides it (see `reqwest::Error`'s impl below).
+    fn log_message(&self) -> String {
+        self.to_string()
+    }
 }
 
 /// Controls whether a response status may be retried.
@@ -116,6 +123,21 @@ impl RetrySafety {
 }
 
 impl RetryableError for reqwest::Error {
+    fn log_message(&self) -> String {
+        // The Display embeds the request URL ("error sending request for url
+        // (…)"), a configured endpoint that must not reach logs, and the
+        // error is not `Clone`, so the log carries the failure kind instead
+        // of the diagnostic. The client-visible envelopes keep the full
+        // redacted text (`without_url` at the adapter sites).
+        if self.is_timeout() {
+            "transport error (timeout)".to_string()
+        } else if self.is_connect() {
+            "transport error (connect)".to_string()
+        } else {
+            "transport error".to_string()
+        }
+    }
+
     fn is_transient(&self) -> bool {
         // A `.send()` future resolves once response headers arrive, so any error
         // it yields is pre-body. Retry the clearly transient kinds; a
@@ -296,7 +318,10 @@ fn log_terminal_outcome<E: RetryableError + std::fmt::Display>(
         Err(error) if error.is_transient() => {
             tracing::warn!(
                 provider = %provider,
-                error = %error,
+                // Redacted: the raw diagnostic embeds the configured upstream
+                // URL, which must not reach retry logs (see the redaction
+                // convention in `adapters::responses::early_stream`).
+                error = %error.log_message(),
                 max_retries = policy.max_retries,
                 "giving up after exhausting retries: upstream transport error persists"
             );
@@ -453,6 +478,11 @@ mod tests {
         // A transient status is retried; a request error is not. Uses the same
         // status set as HTTP responses, exercised here via a stand-in impl.
         struct Stub(u16);
+        impl std::fmt::Display for Stub {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "stub-{}", self.0)
+            }
+        }
         impl RetryableError for Stub {
             fn is_transient(&self) -> bool {
                 is_retryable_status(StatusCode::from_u16(self.0).unwrap())

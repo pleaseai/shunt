@@ -1823,8 +1823,14 @@ async fn streaming_relays_synthetic_start_and_upstream_events() {
     ])
     .await;
     let upstream = MockServer::start().await;
-    sse_ok_mock(&token_a, "hello from a").mount(&upstream).await;
-    sse_ok_mock(&token_b, "hello from b").mount(&upstream).await;
+    sse_ok_mock(&token_a, "hello from a")
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    sse_ok_mock(&token_b, "hello from b")
+        .expect(0)
+        .mount(&upstream)
+        .await;
     let config = test_config(
         &upstream.uri(),
         account("stream-a", "SHUNT_CODEX_STREAM_A"),
@@ -1835,8 +1841,12 @@ async fn streaming_relays_synthetic_start_and_upstream_events() {
     let response = post_streaming_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
-    message_start_input_tokens(&body);
+    assert!(
+        message_start_input_tokens(&body) > 0,
+        "message_start must carry the tiktoken estimate; got:\n{body}"
+    );
     assert!(body.contains("hello from a"), "body: {body}");
+    upstream.verify().await;
 }
 
 #[tokio::test]
@@ -1852,8 +1862,11 @@ async fn streaming_429_rotates_to_second_account() {
     ])
     .await;
     let upstream = MockServer::start().await;
-    status_mock(&token_a, 429).mount(&upstream).await;
-    sse_ok_mock(&token_b, "hello from b").mount(&upstream).await;
+    status_mock(&token_a, 429).expect(1).mount(&upstream).await;
+    sse_ok_mock(&token_b, "hello from b")
+        .expect(1)
+        .mount(&upstream)
+        .await;
     let config = test_config(
         &upstream.uri(),
         account("stream-a", "SHUNT_CODEX_STREAM_A"),
@@ -1864,8 +1877,12 @@ async fn streaming_429_rotates_to_second_account() {
     let response = post_streaming_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
-    message_start_input_tokens(&body);
+    assert!(
+        message_start_input_tokens(&body) > 0,
+        "message_start must carry the tiktoken estimate; got:\n{body}"
+    );
     assert!(body.contains("hello from b"), "body: {body}");
+    upstream.verify().await;
 }
 
 #[tokio::test]
@@ -1881,8 +1898,8 @@ async fn streaming_exhausted_pool_emits_error_envelope() {
     ])
     .await;
     let upstream = MockServer::start().await;
-    status_mock(&token_a, 429).mount(&upstream).await;
-    status_mock(&token_b, 429).mount(&upstream).await;
+    status_mock(&token_a, 429).expect(1).mount(&upstream).await;
+    status_mock(&token_b, 429).expect(1).mount(&upstream).await;
     let config = test_config(
         &upstream.uri(),
         account("stream-a", "SHUNT_CODEX_STREAM_A"),
@@ -1893,6 +1910,7 @@ async fn streaming_exhausted_pool_emits_error_envelope() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
     assert!(body.contains("\"type\":\"error\""), "body: {body}");
+    upstream.verify().await;
 }
 
 #[tokio::test]
@@ -1907,13 +1925,11 @@ async fn streaming_transport_failures_exhaust_pool_with_envelope() {
         ("SHUNT_CODEX_STREAM_B", token_b.as_str()),
     ])
     .await;
-    // A bound-then-released loopback port: every upstream send fails at the
-    // transport layer before any response exists.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let dead_addr = listener.local_addr().unwrap();
-    drop(listener);
+    // Port 0 never accepts a connection, so every upstream send fails at
+    // the transport layer deterministically — a released ephemeral port
+    // could be rebound by a sibling test.
     let mut config = test_config(
-        &format!("http://{dead_addr}"),
+        "http://127.0.0.1:0",
         account("stream-a", "SHUNT_CODEX_STREAM_A"),
         account("stream-b", "SHUNT_CODEX_STREAM_B"),
     );
@@ -1938,8 +1954,11 @@ async fn streaming_non_failover_4xx_emits_error_envelope() {
     ])
     .await;
     let upstream = MockServer::start().await;
-    status_mock(&token_a, 400).mount(&upstream).await;
-    sse_ok_mock(&token_b, "hello from b").mount(&upstream).await;
+    status_mock(&token_a, 400).expect(1).mount(&upstream).await;
+    sse_ok_mock(&token_b, "hello from b")
+        .expect(0)
+        .mount(&upstream)
+        .await;
     let config = test_config(
         &upstream.uri(),
         account("stream-a", "SHUNT_CODEX_STREAM_A"),
@@ -1951,6 +1970,7 @@ async fn streaming_non_failover_4xx_emits_error_envelope() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
     assert!(body.contains("\"type\":\"error\""), "body: {body}");
+    upstream.verify().await;
 }
 
 #[tokio::test]
