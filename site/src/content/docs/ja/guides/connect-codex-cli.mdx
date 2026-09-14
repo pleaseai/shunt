@@ -203,7 +203,7 @@ name = "backup"     # each declared name must be provisioned above; an unprovisi
 選択は**セッションスティッキー**です。Codex CLI 自身の `session-id` リクエストヘッダーがアカウントのキーになるため、1
 つの会話は健全なかぎり 1 つのアカウントに留まり、その後フェイルオーバーします（429 → ローテーション、401 →
 リフレッシュ + リトライ、5xx → クールダウン + ローテーション）。プール経由の成功レスポンスには
-アカウントを示します — 非ストリーミングと WebSocket ストリーミングでは `x-shunt-account: <name>` ヘッダー、早期コミットの HTTP ストリーミングでは中継 SSE の前の `event: account` フレームです。[`[server.auth]`](/ja/reference/configuration/)
+このエンドポイントの成功したプール応答には、ストリーミングを含めて `x-shunt-account: <name>` ヘッダーが付きます — インバウンドパススルーは勝者アップストリームの応答後にのみコミットするためです（送信方向の Responses プールの早期コミット HTTP ストリーミングは、代わりに `event: account` フレームでアカウントを示します。Codex マルチアカウントガイドを参照）。[`[server.auth]`](/ja/reference/configuration/)
 を有効にした共有ゲートウェイでは、スティッキーキーが認証済みクライアントごとにスコープされるため、たまたま同じ
 `session-id` を送る別々のクライアントは別々のスティッキーキーを使います — クライアント間でのスティッキーキーの衝突を防ぐためです。（キーは別個ですが、別個の
 2 つのキーが同じアカウントにハッシュされることはあり得ます。）
@@ -254,9 +254,9 @@ model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
 ## 6. 検証する
 
 3 つのルートのいずれかに対する生の Responses リクエストは、そのまま中継され、（プールされている場合は）
-アカウントを示します —— 早期コミットの HTTP ストリーミングでは中継 SSE の前に
-`event: account` フレーム（コミット済み `200` のヘッダーは勝者アカウントを待てません）、
-WebSocket ストリーミングと非ストリーミングでは `x-shunt-account` ヘッダーです。
+アカウントを示す `x-shunt-account` ヘッダーが付くはずです —— インバウンドパススルーは
+勝者アップストリームの応答後にのみコミットするため、このヘッダーは実際にリクエストを
+処理したアカウントを名指しします。
 
 ```bash
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
@@ -265,7 +265,7 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -d '{"model":"gpt-5.6-sol","input":"say hi","stream":true}'
 ```
 
-- `content-type: text/event-stream` と、プールアカウント名を持つ `event: account` フレームを伴う `200` ⇒ プールがリクエストを処理し、SSE がそのまま中継されています。
+- `content-type: text/event-stream` と、プールアカウント名を持つ `x-shunt-account:` ヘッダーを伴う `200` ⇒ プールがリクエストを処理し、SSE がそのまま中継されています。
 - `401 authentication_error` ⇒ `x-shunt-token` が欠落しているか無効です（ステップ 3）。
 - モデル名を挙げた `400` ⇒ そのアカウントがそのスラッグに entitle されていません（ステップ 5）。
 
