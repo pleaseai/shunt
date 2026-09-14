@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.45.1](https://github.com/pleaseai/shunt/compare/v0.45.0...v0.45.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **codex:** enable native tool search for gpt-6-astra ([#557](https://github.com/pleaseai/shunt/issues/557)) ([830584e](https://github.com/pleaseai/shunt/commit/830584e3cb650299d2774a4952706570d2a79bbf))
+
 ## [0.45.0](https://github.com/pleaseai/shunt/compare/v0.44.0...v0.45.0) (2026-09-14)
 
 
