@@ -1,0 +1,38 @@
+docs/m9-admin-surface.md
+  s_e9fd5f53eebc34::t_d2f730e0ffa98d 915-917
+tests/admin_surface.rs
+  s_e9fd5f53eebc34::t_498ec9b6322af1 4772-4776
+  s_e9fd5f53eebc34::t_74c8f3da7ca37e 21,4551-4653,4664,4710-4720,4722-4733,4735-4748,4750-4771,4777-4781,4784-4807,4810,4813-4816
+src/admin/session.rs
+  s_e9fd5f53eebc34::t_19d8d912f46d6c 197-215
+  s_e9fd5f53eebc34::t_498ec9b6322af1 300-309
+  s_e9fd5f53eebc34::t_23324fef8382de 654-694
+src/admin/codex.rs
+  s_e9fd5f53eebc34::t_498ec9b6322af1 149
+  s_e9fd5f53eebc34::t_d2f730e0ffa98d 139-148
+  s_e9fd5f53eebc34::t_d4738b58255081 26
+  s_e9fd5f53eebc34::t_19d8d912f46d6c 173,179-184,188-190
+  s_e9fd5f53eebc34::t_92b767cf11deb0 191
+src/admin/mod.rs
+  s_e9fd5f53eebc34::t_498ec9b6322af1 1341
+  s_e9fd5f53eebc34::t_19d8d912f46d6c 1360,1368-1372,1375,1379-1381
+  s_e9fd5f53eebc34::t_0ed152f87a533e 62
+  s_e9fd5f53eebc34::t_d2f730e0ffa98d 1331-1340
+  s_e9fd5f53eebc34::t_f4ba864e6af193 1382
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e2b7c3a1fc03d710893a1f703057b3cd9062897f",
+  "prompts": {},
+  "sessions": {
+    "s_e9fd5f53eebc34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a93f0642-bd5e-4e4e-8a0f-f933b9ebf83b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
