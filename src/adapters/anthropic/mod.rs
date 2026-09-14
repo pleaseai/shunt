@@ -1353,7 +1353,7 @@ pub(crate) async fn chain_attempt(
             return crate::proxy::chain_stream::Attempt::Failed {
                 advance: false,
                 remember: false,
-                envelope,
+                envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                 status: StatusCode::BAD_GATEWAY,
             };
         }
@@ -1404,7 +1404,7 @@ pub(crate) async fn chain_attempt(
                 // transport failure: terminal, never advanced.
                 advance: !is_timeout,
                 remember: false,
-                envelope,
+                envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                 status: if is_timeout {
                     StatusCode::GATEWAY_TIMEOUT
                 } else {
@@ -1419,24 +1419,25 @@ pub(crate) async fn chain_attempt(
         // response; inside the committed stream it becomes the terminal error
         // event carrying the upstream's own error body when that body is JSON
         // (the usual Anthropic error shape). The chain decides whether the
-        // status advances (mirroring the loop's relayed-429 advance).
-        let envelope = match upstream.bytes().await {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-                serde_json::json!({
-                    "type": "error",
-                    "error": {
-                        "type": "api_error",
-                        "message": format!("upstream returned {status}")
-                    }
-                })
-            }),
-            Err(_) => serde_json::json!({
-                "type": "error",
-                "error": {"type": "api_error", "message": format!("upstream returned {status}")}
-            }),
-        };
+        // status advances (mirroring the loop's relayed-429 advance). An
+        // advance-worthy status defers the body read — the fallback must not
+        // wait on a slow or non-terminating error body when the status alone
+        // suffices to advance (the pre-commit loop's lazy-body rule).
+        if crate::proxy::failover::is_advance_status(status) {
+            return crate::proxy::chain_stream::Attempt::Failed {
+                advance: true,
+                remember: true,
+                envelope: crate::proxy::chain_stream::LazyEnvelope::Deferred(Box::pin(
+                    mapped_error_envelope(status, upstream),
+                )),
+                status,
+            };
+        }
+        let envelope = crate::proxy::chain_stream::LazyEnvelope::Ready(
+            mapped_error_envelope(status, upstream).await,
+        );
         return crate::proxy::chain_stream::Attempt::Failed {
-            advance: crate::proxy::failover::is_advance_status(status),
+            advance: false,
             remember: true,
             envelope,
             status,
@@ -1462,6 +1463,31 @@ pub(crate) async fn chain_attempt(
     crate::proxy::chain_stream::Attempt::Winner {
         start: None,
         frames,
+    }
+}
+
+/// The mapped envelope for an upstream error status: the upstream's own JSON
+/// error body when it parses (the usual Anthropic shape), else a generic
+/// `api_error` naming the status. The body read happens on demand, so an
+/// advance-worthy status can move the chain on before it.
+pub(crate) async fn mapped_error_envelope(
+    status: StatusCode,
+    upstream: reqwest::Response,
+) -> serde_json::Value {
+    match upstream.bytes().await {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            serde_json::json!({
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": format!("upstream returned {status}")
+                }
+            })
+        }),
+        Err(_) => serde_json::json!({
+            "type": "error",
+            "error": {"type": "api_error", "message": format!("upstream returned {status}")}
+        }),
     }
 }
 

@@ -253,7 +253,9 @@ where
                 };
                 tracing::warn!(
                     provider = %provider,
-                    error = %error,
+                    // Redacted: the raw diagnostic embeds the configured
+                    // upstream URL, which must not reach retry logs.
+                    error = %error.log_message(),
                     attempt = retries + 1,
                     max_retries = policy.max_retries,
                     delay_ms = delay.as_millis(),

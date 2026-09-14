@@ -152,7 +152,7 @@ struct ObserverState {
     // is known mid-stream (the response already went out stamped with the
     // routed provider).
     provider: std::sync::Arc<std::sync::Mutex<String>>,
-    model: String,
+    model: std::sync::Arc<std::sync::Mutex<String>>,
     started_at: Instant,
     // The upstream response status the stream opened with. `finish` gates
     // `record_stream_failure` on this being 2xx: a non-2xx SSE response was
@@ -204,7 +204,7 @@ impl ObserverState {
         protocol: Protocol,
         status: StatusCode,
         provider: std::sync::Arc<std::sync::Mutex<String>>,
-        model: String,
+        model: std::sync::Arc<std::sync::Mutex<String>>,
         started_at: Instant,
         span: tracing::Span,
     ) -> Self {
@@ -239,7 +239,7 @@ impl ObserverState {
             let ttft = self.started_at.elapsed();
             crate::metrics::record_ttft(
                 &self.provider.lock().expect("provider slot"),
-                &self.model,
+                &self.model.lock().expect("model slot"),
                 ttft.as_secs_f64() * 1000.0,
             );
             self.ttft_ms = Some(millis(ttft));
@@ -389,7 +389,7 @@ impl ObserverState {
         let outcome = self.outcome(end.natural());
         crate::metrics::record_stream_outcome(
             &self.provider.lock().expect("provider slot"),
-            &self.model,
+            &self.model.lock().expect("model slot"),
             outcome.as_str(),
         );
         // Only a stream that actually opened `200` can have "failed mid-stream"
@@ -402,7 +402,7 @@ impl ObserverState {
                 crate::observability::record_stream_failure(
                     &self.span,
                     &self.provider.lock().expect("provider slot"),
-                    &self.model,
+                    &self.model.lock().expect("model slot"),
                     failure,
                     &self.failure_context(failure, &end),
                 );
@@ -417,7 +417,7 @@ impl ObserverState {
             if let Some(count) = count {
                 crate::metrics::record_stream_tokens(
                     &self.provider.lock().expect("provider slot"),
-                    &self.model,
+                    &self.model.lock().expect("model slot"),
                     kind,
                     count,
                 );
@@ -624,19 +624,19 @@ pub fn observe_response(
         response,
         protocol,
         std::sync::Arc::new(std::sync::Mutex::new(provider)),
-        model,
+        std::sync::Arc::new(std::sync::Mutex::new(model)),
         started_at,
     )
 }
 
-/// [`observe_response`] over a caller-owned provider slot, so a committed
-/// chain can point the observer at the winning provider once the stream knows
-/// it.
+/// [`observe_response`] over caller-owned provider and model slots, so a
+/// committed chain can point the observer at the winning upstream once the
+/// stream knows it.
 pub fn observe_response_with_slot(
     response: Response<Body>,
     protocol: Protocol,
     provider: std::sync::Arc<std::sync::Mutex<String>>,
-    model: String,
+    model: std::sync::Arc<std::sync::Mutex<String>>,
     started_at: Instant,
 ) -> Response<Body> {
     if !is_sse(&response) {

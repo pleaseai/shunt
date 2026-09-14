@@ -19,9 +19,10 @@ use crate::{
     server::AppState,
 };
 
+use super::context::CredentialSource;
 use super::error::{adapter_error_envelope, mapped_upstream_error, own_error, transport_error};
 use super::http::http_send;
-/// never replays the turn) surfaced as one SSE `error` event.
+use crate::proxy::chain_stream::LazyEnvelope;
 async fn malformed_frame_envelope() -> Value {
     adapter_error_envelope(own_error(
         "upstream sent an SSE frame whose data is not valid JSON".to_string(),
@@ -99,7 +100,11 @@ pub(super) enum SendClassified {
         bytes: UpstreamBytes,
     },
     Failed {
-        envelope: Value,
+        /// `Deferred` for an advance-worthy relayed status, whose upstream
+        /// body stays unread until the chain selects the failure as the
+        /// terminal remembered best (the pre-commit loop's lazy-body rule);
+        /// `Ready` for every terminal answer.
+        envelope: LazyEnvelope,
         status: StatusCode,
         /// Whether this failure is a relayed upstream status (eligible for
         /// the failover chain's remembered best-failure) or a gateway-
@@ -118,6 +123,22 @@ pub(super) enum SendClassified {
 /// path's shape); a non-2xx upstream status becomes the mapped envelope for
 /// that status. The caller decides whether a failure advances a chain.
 pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified {
+    // The credential resolves before this call — the chain resolves it per
+    // attempt, the single-route stream resolves it inside the committed
+    // stream. Fail closed with a gateway error rather than panicking on the
+    // invariant.
+    let Some(credential) = context.credential.clone() else {
+        let envelope = adapter_error_envelope(own_error(
+            "responses credential was not resolved before the upstream send".to_string(),
+        ))
+        .await;
+        return SendClassified::Failed {
+            envelope: LazyEnvelope::Ready(envelope),
+            status: StatusCode::BAD_GATEWAY,
+            remember: false,
+            advance: false,
+        };
+    };
     let body = super::body::prepare_body(
         &context.state,
         &context.route,
@@ -132,7 +153,7 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
             http_send(
                 &context.state,
                 &context.route,
-                context.credential.clone(),
+                credential.clone(),
                 context.session_id.as_deref(),
                 body.clone(),
             )
@@ -148,10 +169,13 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
                 StatusCode::BAD_GATEWAY
             };
             let advance = !matches!(error, crate::upstream_timeout::SendError::Timeout);
-            let envelope = adapter_error_envelope(
-                error.into_adapter_error(|error| transport_error(error.without_url().to_string())),
-            )
-            .await;
+            let envelope =
+                LazyEnvelope::Ready(
+                    adapter_error_envelope(error.into_adapter_error(|error| {
+                        transport_error(error.without_url().to_string())
+                    }))
+                    .await,
+                );
             return SendClassified::Failed {
                 envelope,
                 status,
@@ -169,9 +193,21 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
     }
     if !upstream.status().is_success() {
         let status = upstream.status();
-        let envelope =
-            adapter_error_envelope(mapped_upstream_error(status, upstream, context.auth).await)
-                .await;
+        let envelope = if crate::proxy::failover::is_advance_status(status) {
+            // Advance on the status alone: the body stays unread until the
+            // chain selects this failure as the remembered best — a slow or
+            // non-terminating error body must never block the fallback (the
+            // pre-commit loop drops superseded responses unread).
+            let auth = context.auth;
+            LazyEnvelope::Deferred(Box::pin(async move {
+                adapter_error_envelope(mapped_upstream_error(status, upstream, auth).await).await
+            }))
+        } else {
+            LazyEnvelope::Ready(
+                adapter_error_envelope(mapped_upstream_error(status, upstream, context.auth).await)
+                    .await,
+            )
+        };
         return SendClassified::Failed {
             envelope,
             status,
@@ -190,7 +226,10 @@ pub(super) struct HttpSendContext {
     pub(super) state: AppState,
     pub(super) route: Route,
     pub(super) policy: crate::retry::RetryPolicy,
-    pub(super) credential: Credential,
+    /// Resolved before [`send_classified`]: the chain resolves it per
+    /// attempt, the single-route stream resolves it inside the committed
+    /// stream before the send.
+    pub(super) credential: Option<Credential>,
     pub(super) session_id: Option<String>,
     /// The raw translated request; prepared (zstd admission + blocking-pool
     /// work) at send time inside the committed stream, so compression load
@@ -208,6 +247,8 @@ pub(super) struct HttpSendContext {
 /// one terminal SSE `error` event by [`early_streaming_response`].
 pub(super) fn http_events_stream(
     context: HttpSendContext,
+    credential: CredentialSource,
+    codex_quota_account: Option<crate::config::AccountConfig>,
 ) -> impl Stream<Item = Result<ResponseEvent, Value>> + Send + 'static {
     enum Phase {
         Send,
@@ -220,21 +261,69 @@ pub(super) fn http_events_stream(
             SseParser::default(),
             std::collections::VecDeque::<Result<ResponseEvent, Value>>::new(),
             context,
+            Some(credential),
+            codex_quota_account,
         ),
-        move |(phase, parser, pending, context)| async move {
+        move |(phase, parser, pending, context, credential, quota_account)| async move {
             let mut phase = phase;
             let mut parser = parser;
             let mut pending = pending;
+            let mut context = context;
+            let mut credential = credential;
+            let mut quota_account = quota_account;
             loop {
                 match phase {
-                    Phase::Send => match send_classified(&context).await {
-                        SendClassified::Relay { bytes } => {
-                            phase = Phase::Read { bytes };
+                    Phase::Send => {
+                        // Resolve the credential inside the committed stream:
+                        // a refreshable credential's refresh is outside the
+                        // TTFB timeout, and keepalive pings cover the wait.
+                        if let Some(source) = credential.take() {
+                            let resolved = match source {
+                                CredentialSource::Resolved(credential) => credential,
+                                CredentialSource::Deferred(resolve) => match resolve.await {
+                                    Ok(credential) => credential,
+                                    Err(error) => {
+                                        let envelope = adapter_error_envelope(error).await;
+                                        return Some((
+                                            Err(envelope),
+                                            (
+                                                Phase::Done,
+                                                parser,
+                                                pending,
+                                                context,
+                                                credential,
+                                                quota_account,
+                                            ),
+                                        ));
+                                    }
+                                },
+                            };
+                            if quota_account.is_none() {
+                                quota_account = super::codex_quota_account(&resolved);
+                            }
+                            context.credential = Some(resolved);
+                            context.codex_quota_account = quota_account.take();
                         }
-                        SendClassified::Failed { envelope, .. } => {
-                            return Some((Err(envelope), (Phase::Done, parser, pending, context)));
+                        match send_classified(&context).await {
+                            SendClassified::Relay { bytes } => {
+                                phase = Phase::Read { bytes };
+                            }
+                            SendClassified::Failed { envelope, .. } => {
+                                let envelope = envelope.resolve().await;
+                                return Some((
+                                    Err(envelope),
+                                    (
+                                        Phase::Done,
+                                        parser,
+                                        pending,
+                                        context,
+                                        credential,
+                                        quota_account,
+                                    ),
+                                ));
+                            }
                         }
-                    },
+                    }
                     Phase::Read { bytes } => {
                         let mut bytes = bytes;
                         loop {
@@ -248,7 +337,10 @@ pub(super) fn http_events_stream(
                                 } else {
                                     Phase::Read { bytes }
                                 };
-                                return Some((item, (next, parser, pending, context)));
+                                return Some((
+                                    item,
+                                    (next, parser, pending, context, credential, quota_account),
+                                ));
                             }
                             match bytes.as_mut().next().await {
                                 Some(Ok(chunk)) => {
@@ -265,7 +357,14 @@ pub(super) fn http_events_stream(
                                     .await;
                                     return Some((
                                         Err(envelope),
-                                        (Phase::Done, parser, pending, context),
+                                        (
+                                            Phase::Done,
+                                            parser,
+                                            pending,
+                                            context,
+                                            credential,
+                                            quota_account,
+                                        ),
                                     ));
                                 }
                                 None => return None,

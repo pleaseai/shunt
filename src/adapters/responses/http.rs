@@ -17,7 +17,7 @@ use crate::{
 };
 
 use super::body::{prepare_body, PreparedBody};
-use super::context::{ForwardOptions, RelayOptions};
+use super::context::{CredentialSource, ForwardOptions, RelayOptions};
 use super::early_stream::{
     early_streaming_response, http_events_stream, parsed_events, translated_stream, HttpSendContext,
 };
@@ -62,11 +62,11 @@ pub(super) async fn forward_http(
     state: &AppState,
     route: &Route,
     forward: ForwardOptions,
+    credential: CredentialSource,
     session_id: Option<&str>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let ForwardOptions {
         upstream_body,
-        credential,
         auth,
         turn,
         codex_quota_account,
@@ -91,16 +91,25 @@ pub(super) async fn forward_http(
         // cannot stall the first byte).
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
         let route_for_start = route.clone();
-        let events = http_events_stream(HttpSendContext {
-            state: state.clone(),
-            route: route.clone(),
-            policy,
+        // The credential resolves inside the committed stream: a refreshable
+        // credential's refresh may be networked and is outside the TTFB
+        // timeout, so awaiting it before the commit would starve the client
+        // of headers and keepalive pings (the watchdog failure this commit
+        // exists to prevent).
+        let events = http_events_stream(
+            HttpSendContext {
+                state: state.clone(),
+                route: route.clone(),
+                policy,
+                credential: None,
+                session_id: session_id.map(str::to_string),
+                upstream_body: upstream_body.clone(),
+                auth,
+                codex_quota_account: None,
+            },
             credential,
-            session_id: session_id.map(str::to_string),
-            upstream_body: upstream_body.clone(),
-            auth,
             codex_quota_account,
-        });
+        );
         return Ok((
             StatusCode::OK,
             early_streaming_response(
@@ -140,6 +149,12 @@ pub(super) async fn forward_http(
     // prepares the body inside the committed stream (`send_classified`), so
     // compression cannot delay the commit; this non-streaming arm has no
     // commit to protect and prepares here.
+    let credential = match credential {
+        CredentialSource::Resolved(credential) => credential,
+        CredentialSource::Deferred(resolve) => resolve.await?,
+    };
+    let codex_quota_account =
+        codex_quota_account.or_else(|| super::codex_quota_account(&credential));
     let body = prepare_body(state, route, upstream_body.as_ref()).await;
     let upstream = crate::retry::send_with_retry_with_safety(
         policy,
@@ -427,10 +442,6 @@ mod tests {
         let state = AppState::new(config, reqwest::Client::new()).unwrap();
         let forward = ForwardOptions {
             upstream_body: std::sync::Arc::new(json!({"input": []})),
-            credential: Credential::ApiKey {
-                value: "probe".to_string(),
-                header: crate::config::ApiKeyHeader::Bearer,
-            },
             auth: crate::config::AuthMode::ApiKey,
             turn: TurnOptions {
                 client_wants_stream: true,
@@ -440,7 +451,11 @@ mod tests {
             codex_quota_account: None,
             estimate_input: None,
         };
-        let (status, response) = forward_http(&state, &codex_route(), forward, None)
+        let credential = CredentialSource::Resolved(Credential::ApiKey {
+            value: "probe".to_string(),
+            header: crate::config::ApiKeyHeader::Bearer,
+        });
+        let (status, response) = forward_http(&state, &codex_route(), forward, credential, None)
             .await
             .expect("forward_http builds the response without upstream headers");
         assert_eq!(status, StatusCode::OK);

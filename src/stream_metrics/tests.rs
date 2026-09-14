@@ -26,7 +26,7 @@ fn state(protocol: Protocol) -> ObserverState {
         protocol,
         StatusCode::OK,
         std::sync::Arc::new(std::sync::Mutex::new("provider".to_string())),
-        "model".to_string(),
+        std::sync::Arc::new(std::sync::Mutex::new("model".to_string())),
         Instant::now(),
         tracing::Span::none(),
     )

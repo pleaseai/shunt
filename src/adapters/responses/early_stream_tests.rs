@@ -148,19 +148,23 @@ async fn http_events_stream_maps_non_success_to_error_envelope() {
     config.providers.get_mut("codex").unwrap().base_url = server.uri();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
-    let events = http_events_stream(HttpSendContext {
-        state,
-        route: codex_route(),
-        policy: crate::retry::RetryPolicy::DISABLED,
-        credential: Credential::ApiKey {
+    let events = http_events_stream(
+        HttpSendContext {
+            state,
+            route: codex_route(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body,
+            auth: crate::config::AuthMode::ApiKey,
+            codex_quota_account: None,
+        },
+        CredentialSource::Resolved(Credential::ApiKey {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
-        },
-        session_id: None,
-        upstream_body,
-        auth: crate::config::AuthMode::ApiKey,
-        codex_quota_account: None,
-    });
+        }),
+        None,
+    );
     use futures_util::StreamExt;
     let collected: Vec<_> = events.collect().await;
     assert_eq!(collected.len(), 1, "one terminal item");
@@ -184,19 +188,23 @@ async fn http_events_stream_maps_ttfb_timeout_to_timeout_error_envelope() {
     config.server.timeouts.upstream_ttfb_ms = 100;
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
-    let events = http_events_stream(HttpSendContext {
-        state,
-        route: codex_route(),
-        policy: crate::retry::RetryPolicy::DISABLED,
-        credential: Credential::ApiKey {
+    let events = http_events_stream(
+        HttpSendContext {
+            state,
+            route: codex_route(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body,
+            auth: crate::config::AuthMode::ApiKey,
+            codex_quota_account: None,
+        },
+        CredentialSource::Resolved(Credential::ApiKey {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
-        },
-        session_id: None,
-        upstream_body,
-        auth: crate::config::AuthMode::ApiKey,
-        codex_quota_account: None,
-    });
+        }),
+        None,
+    );
     use futures_util::StreamExt;
     let collected: Vec<_> = events.collect().await;
     assert_eq!(collected.len(), 1, "one terminal item");
@@ -226,19 +234,23 @@ async fn http_events_stream_yields_parsed_events_from_streaming_upstream() {
     config.providers.get_mut("codex").unwrap().base_url = server.uri();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
-    let events = http_events_stream(HttpSendContext {
-        state,
-        route: codex_route(),
-        policy: crate::retry::RetryPolicy::DISABLED,
-        credential: Credential::ApiKey {
+    let events = http_events_stream(
+        HttpSendContext {
+            state,
+            route: codex_route(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body,
+            auth: crate::config::AuthMode::ApiKey,
+            codex_quota_account: None,
+        },
+        CredentialSource::Resolved(Credential::ApiKey {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
-        },
-        session_id: None,
-        upstream_body,
-        auth: crate::config::AuthMode::ApiKey,
-        codex_quota_account: None,
-    });
+        }),
+        None,
+    );
     use futures_util::StreamExt;
     let collected: Vec<_> = events.collect().await;
     let names: Vec<_> = collected
@@ -400,19 +412,23 @@ async fn http_events_stream_turns_a_malformed_frame_into_a_terminal_error() {
     config.providers.get_mut("codex").unwrap().base_url = server.uri();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
-    let events = http_events_stream(HttpSendContext {
-        state,
-        route: codex_route(),
-        policy: crate::retry::RetryPolicy::DISABLED,
-        credential: Credential::ApiKey {
+    let events = http_events_stream(
+        HttpSendContext {
+            state,
+            route: codex_route(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body,
+            auth: crate::config::AuthMode::ApiKey,
+            codex_quota_account: None,
+        },
+        CredentialSource::Resolved(Credential::ApiKey {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
-        },
-        session_id: None,
-        upstream_body,
-        auth: crate::config::AuthMode::ApiKey,
-        codex_quota_account: None,
-    });
+        }),
+        None,
+    );
     use futures_util::StreamExt;
     let collected: Vec<_> = events.collect().await;
     assert_eq!(collected.len(), 2, "the good event, then one terminal item");
@@ -484,19 +500,23 @@ async fn http_events_stream_redacts_the_upstream_url_from_transport_errors() {
     config.providers.get_mut("codex").unwrap().base_url = upstream_url.clone();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
-    let events = http_events_stream(HttpSendContext {
-        state,
-        route: codex_route(),
-        policy: crate::retry::RetryPolicy::DISABLED,
-        credential: Credential::ApiKey {
+    let events = http_events_stream(
+        HttpSendContext {
+            state,
+            route: codex_route(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body,
+            auth: crate::config::AuthMode::ApiKey,
+            codex_quota_account: None,
+        },
+        CredentialSource::Resolved(Credential::ApiKey {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
-        },
-        session_id: None,
-        upstream_body,
-        auth: crate::config::AuthMode::ApiKey,
-        codex_quota_account: None,
-    });
+        }),
+        None,
+    );
     use futures_util::StreamExt;
     let collected: Vec<_> = events.collect().await;
     assert_eq!(collected.len(), 1, "one terminal item");
@@ -511,6 +531,171 @@ async fn http_events_stream_redacts_the_upstream_url_from_transport_errors() {
         !message.contains(&upstream_url),
         "upstream URL leaked into the client-visible message: {message}"
     );
+}
+
+/// An advance-worthy status carries its error body unread: the chain must
+/// advance on the status alone, never wait on a slow or non-terminating
+/// upstream error body (the pre-commit loop's lazy-body rule).
+#[tokio::test]
+async fn send_classified_defers_the_error_body_for_advance_statuses() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("{}"))
+        .mount(&server)
+        .await;
+    let mut config = crate::config::Config::default();
+    config.providers.get_mut("codex").unwrap().base_url = server.uri();
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let context = HttpSendContext {
+        state,
+        route: codex_route(),
+        policy: crate::retry::RetryPolicy::DISABLED,
+        credential: Some(Credential::ApiKey {
+            value: "probe".to_string(),
+            header: crate::config::ApiKeyHeader::Bearer,
+        }),
+        session_id: None,
+        upstream_body: std::sync::Arc::new(json!({"input": []})),
+        auth: crate::config::AuthMode::ApiKey,
+        codex_quota_account: None,
+    };
+    let outcome = send_classified(&context).await;
+    let SendClassified::Failed {
+        envelope,
+        status,
+        remember,
+        advance,
+    } = outcome
+    else {
+        panic!("expected a failed classification, got a relay");
+    };
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(remember);
+    assert!(advance);
+    assert!(
+        matches!(envelope, LazyEnvelope::Deferred(_)),
+        "the error body must stay unread until the chain selects this failure"
+    );
+}
+
+/// A terminal status builds its envelope eagerly: it is the answer, not a
+/// chain candidate.
+#[tokio::test]
+async fn send_classified_builds_the_envelope_eagerly_for_terminal_statuses() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("{}"))
+        .mount(&server)
+        .await;
+    let mut config = crate::config::Config::default();
+    config.providers.get_mut("codex").unwrap().base_url = server.uri();
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let context = HttpSendContext {
+        state,
+        route: codex_route(),
+        policy: crate::retry::RetryPolicy::DISABLED,
+        credential: Some(Credential::ApiKey {
+            value: "probe".to_string(),
+            header: crate::config::ApiKeyHeader::Bearer,
+        }),
+        session_id: None,
+        upstream_body: std::sync::Arc::new(json!({"input": []})),
+        auth: crate::config::AuthMode::ApiKey,
+        codex_quota_account: None,
+    };
+    let outcome = send_classified(&context).await;
+    let SendClassified::Failed {
+        envelope, status, ..
+    } = outcome
+    else {
+        panic!("expected a failed classification, got a relay");
+    };
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        matches!(envelope, LazyEnvelope::Ready(_)),
+        "a terminal status is the answer; its envelope must be ready"
+    );
+}
+
+/// The committed response goes out before a deferred credential resolves: a
+/// networked refresh must never starve the client of headers and keepalive
+/// pings.
+#[tokio::test]
+async fn forward_http_commits_before_resolving_the_credential() {
+    use crate::adapters::responses::context::{ForwardOptions, TurnOptions};
+    let config = crate::config::Config::default();
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let route = codex_route();
+    let options = ForwardOptions {
+        upstream_body: std::sync::Arc::new(json!({"input": []})),
+        auth: crate::config::AuthMode::ApiKey,
+        turn: TurnOptions {
+            client_wants_stream: true,
+            thinking_enabled: false,
+            tool_search_native: false,
+        },
+        codex_quota_account: None,
+        estimate_input: None,
+    };
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        crate::adapters::responses::http::forward_http(
+            &state,
+            &route,
+            options,
+            CredentialSource::Deferred(Box::pin(futures_util::future::pending::<
+                Result<Credential, crate::adapters::AdapterError>,
+            >())),
+            None,
+        ),
+    )
+    .await
+    .expect("the commit must not wait on the deferred credential");
+    let (status, _response) = outcome.expect("the committed response builds");
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// A credential resolution failure inside the committed stream becomes one
+/// terminal SSE `error` item — never a hang, never a pre-commit 502.
+#[tokio::test]
+async fn http_events_stream_turns_a_credential_resolution_failure_into_a_terminal_error() {
+    let config = crate::config::Config::default();
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let error = own_error("credential resolution failed".to_string());
+    let context = HttpSendContext {
+        state,
+        route: codex_route(),
+        policy: crate::retry::RetryPolicy::DISABLED,
+        credential: None,
+        session_id: None,
+        upstream_body: std::sync::Arc::new(json!({"input": []})),
+        auth: crate::config::AuthMode::ApiKey,
+        codex_quota_account: None,
+    };
+    let events = http_events_stream(
+        context,
+        CredentialSource::Deferred(Box::pin(async move { Err(error) })),
+        None,
+    );
+    use futures_util::StreamExt;
+    let collected: Vec<_> = events.collect().await;
+    assert_eq!(collected.len(), 1, "one terminal item");
+    let Err(envelope) = &collected[0] else {
+        panic!("expected an error envelope, got {:?}", collected[0]);
+    };
+    assert_eq!(envelope["error"]["message"], "credential resolution failed");
+}
+
+/// A batch that ends with an invalid-UTF-8 frame still relays the valid
+/// frames that preceded it: the strict decode flags only the bad frame and
+/// never drops its valid prefix.
+#[test]
+fn sse_parser_relays_valid_frames_before_an_invalid_utf8_frame() {
+    let mut parser = SseParser::default();
+    let (events, malformed) = parser.push(b"event: a\ndata: {\"n\":1}\n\ndata: \xff\xfe\n\n");
+    assert!(malformed);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].data["n"], 1);
 }
 
 /// A CRLF-framed upstream relays every event — only the LF terminator was
@@ -532,19 +717,23 @@ async fn http_events_stream_relays_crlf_framed_upstream() {
     config.providers.get_mut("codex").unwrap().base_url = server.uri();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
-    let events = http_events_stream(HttpSendContext {
-        state,
-        route: codex_route(),
-        policy: crate::retry::RetryPolicy::DISABLED,
-        credential: Credential::ApiKey {
+    let events = http_events_stream(
+        HttpSendContext {
+            state,
+            route: codex_route(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body,
+            auth: crate::config::AuthMode::ApiKey,
+            codex_quota_account: None,
+        },
+        CredentialSource::Resolved(Credential::ApiKey {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
-        },
-        session_id: None,
-        upstream_body,
-        auth: crate::config::AuthMode::ApiKey,
-        codex_quota_account: None,
-    });
+        }),
+        None,
+    );
     use futures_util::StreamExt;
     let collected: Vec<_> = events.collect().await;
     let names: Vec<_> = collected

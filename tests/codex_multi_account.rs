@@ -1978,10 +1978,14 @@ async fn streaming_admission_failure_moves_to_next_account() {
     if !can_bind_loopback() {
         return;
     }
-    // Account a's token env is left unset: its admission/resolution fails, the
-    // loop cancels its reprobe reservation and moves on to account b.
+    // Account a's token env is unset: its admission/resolution fails, the
+    // loop cancels its reprobe reservation and moves on to account b. The
+    // unset is this test's precondition, not cleanup — it must hold under the
+    // env guard even when the host already defines the variable.
     let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-b");
-    let _env = common::set_env(&[("SHUNT_CODEX_STREAM_B", token_b.as_str())]).await;
+    let mut vars = common::env_lock().await;
+    vars.unset("SHUNT_CODEX_STREAM_A");
+    vars.set("SHUNT_CODEX_STREAM_B", &token_b);
     let upstream = MockServer::start().await;
     sse_ok_mock(&token_b, "hello from b").mount(&upstream).await;
     let config = test_config(

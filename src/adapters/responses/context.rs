@@ -69,12 +69,37 @@ impl TurnOptions {
 /// The request-derived fields the single-account transports (`forward_http` and
 /// `forward_websocket`) need beyond `state`/`route` and their own connection key
 /// (`forward_http` also takes `session_id`, `forward_websocket` also takes
-/// `pool_key`). Cheaply cloned once in `forward` so a pre-first-event websocket
-/// failure can fall back to HTTP with the same shared translated body and credential.
-#[derive(Debug, Clone)]
+/// `pool_key`). `forward` builds one per transport: a pre-first-event websocket
+/// failure falls back to HTTP with the same resolved credential.
+/// A credential resolved up front or deferred into the committed stream: the
+/// early-commit HTTP arm must not wait on a refreshable credential's
+/// (possibly networked) refresh before committing — that wait leaves the
+/// client with neither response headers nor keepalive pings, and the OAuth
+/// refresh is outside `upstream_ttfb_ms`.
+pub(super) enum CredentialSource {
+    Resolved(Credential),
+    Deferred(
+        std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Credential, crate::adapters::AdapterError>>
+                    + Send,
+            >,
+        >,
+    ),
+}
+
+impl std::fmt::Debug for CredentialSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Resolved(_) => f.write_str("Resolved(_)"),
+            Self::Deferred(_) => f.write_str("Deferred(_)"),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct ForwardOptions {
     pub upstream_body: Arc<Value>,
-    pub credential: Credential,
     pub auth: AuthMode,
     pub turn: TurnOptions,
     /// Selected Codex pool account whose WebSocket handshake quota headers should

@@ -34,10 +34,10 @@ pub(super) async fn forward_websocket(
     route: &Route,
     pool_key: Option<&str>,
     forward: ForwardOptions,
+    credential: Credential,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let ForwardOptions {
         upstream_body,
-        credential,
         auth,
         turn,
         codex_quota_account,

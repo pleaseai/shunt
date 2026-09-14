@@ -34,7 +34,7 @@ use crate::{
 
 use futures_util::TryStreamExt;
 
-use self::context::{ForwardOptions, PoolForward, TurnOptions};
+use self::context::{CredentialSource, ForwardOptions, PoolForward, TurnOptions};
 use self::early_stream::{
     parsed_events, pool_translated_stream, send_classified, translated_stream, HttpSendContext,
     SendClassified,
@@ -202,26 +202,28 @@ async fn forward(
         // `auth = "chatgpt_oauth"` configured without any pooled accounts).
     }
 
-    let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
-    // The default unpooled Codex CLI credential is still an observed account:
-    // attach its stable account id to quota capture so the read-only admin view
-    // can display x-codex-* response-derived usage without importing or copying
-    // the credential into shunt's managed account store.
-    let codex_quota_account = match &credential {
-        Credential::ChatGptOAuth { account_id, .. } => Some(crate::config::AccountConfig {
-            name: "local-codex".to_string(),
-            uuid: Some(account_id.clone()),
-            ..Default::default()
-        }),
-        _ => None,
-    };
-    let forward_options = ForwardOptions {
-        upstream_body,
-        credential,
-        auth,
-        turn,
-        codex_quota_account,
-        estimate_input,
+    // The single-credential HTTP path defers resolution into the committed
+    // stream (see `CredentialSource`); the websocket path has no early
+    // commit, so it resolves up front exactly as before.
+    let (credential, codex_quota_account) = if state.config.codex_websocket_enabled(&route.provider)
+    {
+        let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
+        let codex_quota_account = codex_quota_account(&credential);
+        (CredentialSource::Resolved(credential), codex_quota_account)
+    } else {
+        let deferred_state = state.clone();
+        let deferred_route = route.clone();
+        (
+            CredentialSource::Deferred(Box::pin(async move {
+                resolve_credential(
+                    &deferred_state.config,
+                    &deferred_route,
+                    &deferred_state.http_client,
+                )
+                .await
+            })),
+            None,
+        )
     };
     // Codex WebSocket v2 transport (issue #32), opt-in per provider and only for
     // the ChatGPT/Codex backend. HTTP stays the path for every other upstream, and
@@ -233,7 +235,28 @@ async fn forward(
     // event to a streaming client, or a gateway error to a non-streaming one —
     // since by then the response has already begun and cannot be safely restarted.
     if state.config.codex_websocket_enabled(&route.provider) {
-        match forward_websocket(&state, &route, pool_key.as_deref(), forward_options.clone()).await
+        // This branch built `Resolved` above: the websocket path has no
+        // early commit and must not defer.
+        let CredentialSource::Resolved(websocket_credential) = &credential else {
+            return Err(own_error(
+                "responses websocket path built a deferred credential".to_string(),
+            ));
+        };
+        let websocket_options = ForwardOptions {
+            upstream_body: upstream_body.clone(),
+            auth,
+            turn,
+            codex_quota_account: codex_quota_account.clone(),
+            estimate_input: estimate_input.clone(),
+        };
+        match forward_websocket(
+            &state,
+            &route,
+            pool_key.as_deref(),
+            websocket_options,
+            websocket_credential.clone(),
+        )
+        .await
         {
             Ok(response) => return Ok(response),
             Err(error) if error.failure.is_some() => {
@@ -246,7 +269,36 @@ async fn forward(
             Err(error) => return Err(error),
         }
     }
-    forward_http(&state, &route, forward_options, session_id.as_deref()).await
+    let forward_options = ForwardOptions {
+        upstream_body,
+        auth,
+        turn,
+        codex_quota_account,
+        estimate_input,
+    };
+    forward_http(
+        &state,
+        &route,
+        forward_options,
+        credential,
+        session_id.as_deref(),
+    )
+    .await
+}
+
+/// The default unpooled Codex CLI credential is still an observed account:
+/// attach its stable account id to quota capture so the read-only admin view
+/// can display x-codex-* response-derived usage without importing or copying
+/// the credential into shunt's managed account store.
+pub(super) fn codex_quota_account(credential: &Credential) -> Option<crate::config::AccountConfig> {
+    match credential {
+        Credential::ChatGptOAuth { account_id, .. } => Some(crate::config::AccountConfig {
+            name: "local-codex".to_string(),
+            uuid: Some(account_id.clone()),
+            ..Default::default()
+        }),
+        _ => None,
+    }
 }
 
 /// One upstream attempt for the multi-upstream streaming chain
@@ -314,7 +366,7 @@ pub(crate) async fn chain_attempt(
                 return crate::proxy::chain_stream::Attempt::Failed {
                     advance: false,
                     remember: false,
-                    envelope,
+                    envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                     status: StatusCode::BAD_GATEWAY,
                 };
             }
@@ -335,7 +387,7 @@ pub(crate) async fn chain_attempt(
                 return crate::proxy::chain_stream::Attempt::Failed {
                     advance: false,
                     remember: false,
-                    envelope,
+                    envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                     status: StatusCode::BAD_GATEWAY,
                 };
             }
@@ -382,19 +434,12 @@ pub(crate) async fn chain_attempt(
             return crate::proxy::chain_stream::Attempt::Failed {
                 advance: false,
                 remember: false,
-                envelope,
+                envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                 status: StatusCode::BAD_GATEWAY,
             };
         }
     };
-    let codex_quota_account = match &credential {
-        Credential::ChatGptOAuth { account_id, .. } => Some(crate::config::AccountConfig {
-            name: "local-codex".to_string(),
-            uuid: Some(account_id.clone()),
-            ..Default::default()
-        }),
-        _ => None,
-    };
+    let codex_quota_account = codex_quota_account(&credential);
     let policy = state
         .config
         .provider(&route.provider)
@@ -404,7 +449,7 @@ pub(crate) async fn chain_attempt(
         state: state.clone(),
         route: route.clone(),
         policy,
-        credential,
+        credential: Some(credential),
         session_id,
         upstream_body: upstream_body.clone(),
         auth,

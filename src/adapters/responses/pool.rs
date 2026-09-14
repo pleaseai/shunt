@@ -650,7 +650,6 @@ pub(super) async fn forward_chatgpt_oauth(
                 account_pool_key.as_deref(),
                 ForwardOptions {
                     upstream_body: upstream_body.clone(),
-                    credential: credential.clone(),
                     auth,
                     turn,
                     codex_quota_account: Some(account.clone()),
@@ -659,6 +658,7 @@ pub(super) async fn forward_chatgpt_oauth(
                     // identical to the single-account path (see ForwardOptions).
                     estimate_input: estimate_input.clone(),
                 },
+                credential.clone(),
             )
             .await
             {

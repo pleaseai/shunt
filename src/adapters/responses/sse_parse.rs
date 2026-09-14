@@ -249,50 +249,58 @@ impl SseParser {
     pub(super) fn push(&mut self, chunk: &[u8]) -> (Vec<ResponseEvent>, bool) {
         self.buffer.extend_from_slice(chunk);
 
-        let mut complete_end = None;
+        // One scan collects every complete frame's content end and terminator
+        // length, so the valid frames in front of an invalid one are decoded
+        // and relayed before the stream flags the malformed frame.
+        let mut frames: Vec<(usize, usize)> = Vec::new();
         let mut scan = self.scan_from;
         while scan < self.buffer.len() {
             if self.buffer[scan..].starts_with(b"\n\n") {
-                complete_end = Some(scan + 2);
+                frames.push((scan, 2));
                 scan += 2;
             } else if self.buffer[scan..].starts_with(b"\r\n\r\n") {
-                complete_end = Some(scan + 4);
+                frames.push((scan, 4));
                 scan += 4;
             } else {
                 scan += 1;
             }
         }
 
-        let Some(complete_end) = complete_end else {
+        if frames.is_empty() {
             // The final bytes may be a prefix of a frame terminator, so scan
             // them again after the next chunk arrives. Everything before has
             // already been ruled out.
             self.scan_from = self.buffer.len().saturating_sub(3);
             return (Vec::new(), false);
-        };
+        }
 
-        // Parse all complete frames in one strict UTF-8 decode, then compact
-        // the buffer once. Front-draining each frame shifts the same trailing
-        // bytes over and over when one transport chunk contains many SSE
-        // events. The decode is strict: invalid UTF-8 must surface as the
-        // terminal malformed-frame error, never as lossily-replaced content.
-        let raw = match std::str::from_utf8(&self.buffer[..complete_end]) {
-            Ok(raw) => raw,
-            Err(_) => {
-                self.buffer.drain(..complete_end);
-                self.scan_from = self.buffer.len().saturating_sub(3);
-                return (Vec::new(), true);
-            }
-        };
-        let normalized = if raw.contains('\r') {
-            std::borrow::Cow::Owned(raw.replace("\r\n", "\n"))
-        } else {
-            std::borrow::Cow::Borrowed(raw)
-        };
+        // Decode each completed frame independently, then compact the buffer
+        // once. Front-draining each frame shifts the same trailing bytes over
+        // and over when one transport chunk contains many SSE events. The
+        // decode is strict: invalid UTF-8 must surface as the terminal
+        // malformed-frame error, never as lossily-replaced content — and must
+        // not drop the valid frames that preceded the bad one.
         let mut events = Vec::new();
         let mut malformed = false;
-        for frame in normalized.split("\n\n") {
-            match crate::model::responses::parse_sse_frame(frame) {
+        let mut consume_end = 0;
+        let mut frame_start = 0;
+        for (content_end, terminator_len) in frames {
+            let frame_end = content_end + terminator_len;
+            consume_end = frame_end;
+            let raw = match std::str::from_utf8(&self.buffer[frame_start..content_end]) {
+                Ok(raw) => raw,
+                Err(_) => {
+                    malformed = true;
+                    break;
+                }
+            };
+            frame_start = frame_end;
+            let normalized = if raw.contains('\r') {
+                std::borrow::Cow::Owned(raw.replace("\r\n", "\n"))
+            } else {
+                std::borrow::Cow::Borrowed(raw)
+            };
+            match crate::model::responses::parse_sse_frame(&normalized) {
                 None => {}
                 Some(Ok(event)) => events.push(event),
                 Some(Err(_)) => {
@@ -301,7 +309,7 @@ impl SseParser {
                 }
             }
         }
-        self.buffer.drain(..complete_end);
+        self.buffer.drain(..consume_end);
         self.scan_from = self.buffer.len().saturating_sub(3);
         (events, malformed)
     }

@@ -6,7 +6,7 @@
 use std::convert::Infallible;
 
 use axum::{
-    body::{to_bytes, Body, Bytes},
+    body::{Body, Bytes},
     http::{Response, StatusCode},
     response::IntoResponse,
 };
@@ -147,14 +147,11 @@ pub(super) fn backend_error(status: StatusCode, error: Value) -> AdapterError {
 /// [`AdapterError`] so the streaming transports can re-emit it as one SSE
 /// `error` event after the early `message_start` has already committed the
 /// response. Every error this module builds serializes the envelope as its
-/// JSON body, so the body bytes ARE the envelope.
+/// JSON body, so the body bytes ARE the envelope. The extraction is
+/// [`crate::error::error_body_value`] — the same response-body-to-envelope
+/// conversion, kept in one place.
 pub(super) async fn adapter_error_envelope(error: AdapterError) -> Value {
-    let bytes = to_bytes(error.response.into_body(), usize::MAX)
-        .await
-        .unwrap_or_default();
-    serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-        json!({"type": "error", "error": {"type": "api_error", "message": "upstream request failed"}})
-    })
+    crate::error::error_body_value(*error.response).await
 }
 
 #[cfg(test)]

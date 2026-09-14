@@ -16,6 +16,7 @@
 //! `docs/upstreams-failover.md` §6 for the remaining deviation).
 
 use std::convert::Infallible;
+use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
@@ -78,6 +79,25 @@ pub(super) fn chain_stream_applies(state: &AppState, routes: &[Route], body: &Re
         })
 }
 
+/// An error envelope that is either ready or built on demand. An
+/// advance-worthy relayed status carries its upstream response with the body
+/// unread — the pre-commit loop's lazy-body rule, where superseded failures
+/// drop unread — and the chain resolves the envelope only once that failure
+/// is selected as the terminal answer.
+pub(crate) enum LazyEnvelope {
+    Ready(Value),
+    Deferred(Pin<Box<dyn Future<Output = Value> + Send>>),
+}
+
+impl LazyEnvelope {
+    pub(crate) async fn resolve(self) -> Value {
+        match self {
+            Self::Ready(value) => value,
+            Self::Deferred(build) => build.await,
+        }
+    }
+}
+
 /// One upstream attempt's outcome, produced inside the committed stream.
 pub(crate) enum Attempt {
     /// This upstream won. `start` carries the synthetic `message_start` bytes
@@ -96,7 +116,7 @@ pub(crate) enum Attempt {
     Failed {
         advance: bool,
         remember: bool,
-        envelope: Value,
+        envelope: LazyEnvelope,
         status: StatusCode,
     },
 }
@@ -170,16 +190,18 @@ pub(super) async fn forward_chain_stream(
     }
 
     struct Remembered {
-        envelope: Value,
+        envelope: LazyEnvelope,
         status: StatusCode,
         provider: String,
         model: String,
     }
 
-    // Created before the unfold so the closure can capture a clone and write
-    // the winner into it once the stream knows one.
+    // Created before the unfold so the closure can capture clones and write
+    // the winner into them once the stream knows one.
     let winner_slot = std::sync::Arc::new(std::sync::Mutex::new(first_provider.clone()));
     let closure_slot = winner_slot.clone();
+    let winner_model_slot = std::sync::Arc::new(std::sync::Mutex::new(first_model.clone()));
+    let closure_model_slot = winner_model_slot.clone();
     let attempts: std::collections::VecDeque<(usize, Route)> =
         routes.into_iter().enumerate().collect();
     let attempts_len = attempts.len();
@@ -204,6 +226,7 @@ pub(super) async fn forward_chain_stream(
             let last_model = last_model.clone();
             let request_span = request_span.clone();
             let winner_slot = closure_slot.clone();
+            let winner_model_slot = closure_model_slot.clone();
             async move {
                 loop {
                     match phase {
@@ -215,6 +238,9 @@ pub(super) async fn forward_chain_stream(
                             Some(Ok(bytes)) => {
                                 if let Ok(mut slot) = winner_slot.lock() {
                                     *slot = winner_provider.clone();
+                                }
+                                if let Ok(mut slot) = winner_model_slot.lock() {
+                                    *slot = winner_model.clone();
                                 }
                                 return Some((
                                     Ok::<Bytes, Infallible>(bytes),
@@ -278,22 +304,35 @@ pub(super) async fn forward_chain_stream(
                                             model,
                                         }) => (envelope, status, provider, model),
                                         None => (
-                                            crate::error::error_body_value(
-                                                ShuntError::new(
-                                                    StatusCode::BAD_GATEWAY,
-                                                    "api_error",
-                                                    format!(
-                                                        "all upstreams failed ({attempts_len} attempted)"
-                                                    ),
+                                            LazyEnvelope::Ready(
+                                                crate::error::error_body_value(
+                                                    ShuntError::new(
+                                                        StatusCode::BAD_GATEWAY,
+                                                        "api_error",
+                                                        format!(
+                                                            "all upstreams failed ({attempts_len} attempted)"
+                                                        ),
+                                                    )
+                                                    .into_response(),
                                                 )
-                                                .into_response(),
-                                            )
-                                            .await,
+                                                .await,
+                                            ),
                                             StatusCode::BAD_GATEWAY,
                                             last_provider.clone(),
                                             last_model.clone(),
                                         ),
                                     };
+                                // The terminal error frame is the stream's
+                                // first chunk: attribute it to the provider
+                                // that supplied the failure, not the failed
+                                // primary.
+                                if let Ok(mut slot) = winner_slot.lock() {
+                                    *slot = finish_provider.clone();
+                                }
+                                if let Ok(mut slot) = winner_model_slot.lock() {
+                                    *slot = finish_model.clone();
+                                }
+                                let envelope = envelope.resolve().await;
                                 crate::metrics::record_failover(&last_provider, "exhausted");
                                 let frame = sse("error", &envelope);
                                 observability::record_span_outcome_on(
@@ -356,6 +395,9 @@ pub(super) async fn forward_chain_stream(
                                     // the winner, not the failed primary.
                                     if let Ok(mut slot) = winner_slot.lock() {
                                         *slot = provider.clone();
+                                    }
+                                    if let Ok(mut slot) = winner_model_slot.lock() {
+                                        *slot = model.clone();
                                     }
                                     let relay = Phase::Relay {
                                         frames,
@@ -432,6 +474,16 @@ pub(super) async fn forward_chain_stream(
                                         };
                                         continue;
                                     }
+                                    // Attribute before the terminal frame
+                                    // goes out: this failure names itself,
+                                    // not the failed primary.
+                                    if let Ok(mut slot) = winner_slot.lock() {
+                                        *slot = provider.clone();
+                                    }
+                                    if let Ok(mut slot) = winner_model_slot.lock() {
+                                        *slot = model.clone();
+                                    }
+                                    let envelope = envelope.resolve().await;
                                     let frame = sse("error", &envelope);
                                     observability::record_span_outcome_on(
                                         &request_span,
@@ -464,7 +516,7 @@ pub(super) async fn forward_chain_stream(
         response,
         Protocol::Anthropic,
         winner_slot,
-        first_model.clone(),
+        winner_model_slot,
         started_at,
     );
     // `x-gateway-model` names the client-requested id and is correct
