@@ -192,7 +192,7 @@ Both metric sinks export the same low-cardinality series:
 | :-- | :-- | :-- | :-- |
 | `shunt.requests` | Counter | `provider`, `model`, `http.response.status_code` | Inference requests; token-count requests are excluded. |
 | `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code` | Time to response headers for streams and full latency for non-streaming responses. |
-| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Time from request start to the first SSE body chunk. |
+| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Time from request start to the first non-keepalive SSE content frame. |
 | `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | Exactly one stream result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
 | `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming usage for `input`, `output`, `cache_read`, or `cache_creation`; non-streaming usage is not recorded. |
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation `hit` or full-input `fallback`. |
