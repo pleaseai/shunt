@@ -897,6 +897,14 @@ then finds the entry already consumed and fails closed with "start again"
 (issue #440). The marker stays as what it always was locally — a refusal that
 costs no round-trip — rather than the thing that orders the mutations.
 
+The lock is bounded by the exchange it holds. `COMPLETION_EXCHANGE_TIMEOUT` caps
+that upstream exchange at 30 seconds, so a hung provider releases the lock with a
+`502` instead of parking every later completion for that key behind it for as long
+as the connection stays open. The pending entry survives the timeout — the attempt
+still counts against `MAX_PENDING_ATTEMPTS` — but the authorization code may
+already be spent upstream, so the recovery is a fresh start rather than re-posting
+the same code.
+
 `start` deliberately does not take that lock: blocking a start behind an
 in-flight exchange would stall the operator for up to the completion's own
 timeout, and two racing *starts* already fail closed on the state check, which

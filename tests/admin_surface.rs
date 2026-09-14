@@ -4559,12 +4559,14 @@ async fn admin_session_bootstrap_serves_the_live_csrf_token_and_refresh_buffer()
 /// Shared by both provider routes rather than copied: the choreography is the
 /// thing under test and is identical for each, while the mocks and the store
 /// layout genuinely differ and stay in the tests.
+#[allow(clippy::too_many_arguments)]
 async fn race_two_completions(
     client: &reqwest::Client,
     base_url: &str,
     admin_token: &str,
     provider: &str,
     account: &str,
+    token_server: &MockServer,
     first_code: &str,
     second_code: &str,
 ) -> (reqwest::Response, reqwest::Response) {
@@ -4607,9 +4609,34 @@ async fn race_two_completions(
         admin_token.to_string(),
         format!("{first_code}#{first_state}"),
     ));
-    // Long enough for the spawned completion to take the lock and enter its
-    // exchange, and far inside the exchange's own delay below.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // Wait for a causal signal rather than a fixed delay: the first completion
+    // sends its token request only *after* it has taken the lock, read its
+    // pending entry, and passed the state check, so the mock receiving that
+    // request proves the race window is open. A sleep proves nothing — if the
+    // spawned task were scheduled late, the second `start` would replace the
+    // entry before the first ever read it, the first would fail its own state
+    // check, and the second would win. That still yields exactly one success,
+    // so a test asserting only the count would pass while guarding nothing.
+    // Nothing is needed after this signal for the same reason it is sufficient.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let reached_exchange = token_server
+            .received_requests()
+            .await
+            .is_some_and(|requests| {
+                requests
+                    .iter()
+                    .any(|request| String::from_utf8_lossy(&request.body).contains(first_code))
+            });
+        if reached_exchange {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the first completion never reached its token exchange"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 
     let second_state = start_login(admin_token.to_string()).await;
     let second = complete(
@@ -4713,6 +4740,7 @@ async fn a_second_claude_completion_cannot_race_the_first_one_to_the_account_sto
         "secret-race",
         "claude",
         "race",
+        &token_server,
         "first-code",
         "second-code",
     )
@@ -4799,6 +4827,7 @@ async fn a_second_codex_completion_cannot_race_the_first_one_to_the_account_stor
         "secret-codexrace",
         "codex",
         "race",
+        &token_server,
         "first-code",
         "second-code",
     )
