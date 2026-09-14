@@ -187,6 +187,13 @@ where
                             continue;
                         }
                         Some(Err(envelope)) => {
+                            // A producer error after a terminal event must not
+                            // append an `error` frame to a completed turn: the
+                            // upstream already finished cleanly, the transport
+                            // merely misbehaved afterwards. End the stream.
+                            if active.is_stopped() {
+                                return None;
+                            }
                             return Some((
                                 Ok(Bytes::from(sse("error", &envelope))),
                                 (events, Some(active), true, map, None),
@@ -264,14 +271,23 @@ impl SseParser {
             return (Vec::new(), false);
         };
 
-        // Parse all complete frames in one UTF-8 decode, then compact the buffer
-        // once. Front-draining each frame shifts the same trailing bytes over and
-        // over when one transport chunk contains many SSE events.
-        let raw = String::from_utf8_lossy(&self.buffer[..complete_end]);
+        // Parse all complete frames in one strict UTF-8 decode, then compact
+        // the buffer once. Front-draining each frame shifts the same trailing
+        // bytes over and over when one transport chunk contains many SSE
+        // events. The decode is strict: invalid UTF-8 must surface as the
+        // terminal malformed-frame error, never as lossily-replaced content.
+        let raw = match std::str::from_utf8(&self.buffer[..complete_end]) {
+            Ok(raw) => raw,
+            Err(_) => {
+                self.buffer.drain(..complete_end);
+                self.scan_from = self.buffer.len().saturating_sub(3);
+                return (Vec::new(), true);
+            }
+        };
         let normalized = if raw.contains('\r') {
             std::borrow::Cow::Owned(raw.replace("\r\n", "\n"))
         } else {
-            raw
+            std::borrow::Cow::Borrowed(raw)
         };
         let mut events = Vec::new();
         let mut malformed = false;

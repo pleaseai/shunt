@@ -200,7 +200,10 @@ impl CursorError {
         let status = e.status().map(|s| s.as_u16()).unwrap_or(502);
         Self {
             status,
-            message: e.to_string(),
+            // Redacted at construction: the raw diagnostic embeds the
+            // configured upstream URL, which must not reach client envelopes
+            // or logs.
+            message: e.without_url().to_string(),
             detail: None,
             retry_after: None,
             transient,
@@ -230,6 +233,11 @@ impl crate::retry::RetryableError for CursorError {
     /// reaches this trait at all.
     fn is_transient(&self) -> bool {
         self.transient
+    }
+
+    fn log_message(&self) -> String {
+        // The stored message is already redacted at construction.
+        self.to_string()
     }
 }
 

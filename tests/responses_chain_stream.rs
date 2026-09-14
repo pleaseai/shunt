@@ -132,7 +132,13 @@ fn refused_base_url() -> String {
 }
 
 async fn stream_request(gateway: &TestGateway) -> reqwest::Response {
-    reqwest::Client::new()
+    // `no_proxy`: the refused-loopback assertions must fail at the transport
+    // layer, never route through a system HTTP proxy that would turn the
+    // refusal into a proxy response.
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
         .post(format!("{}/v1/messages", gateway.base_url))
         .header("anthropic-version", "2023-06-01")
         .header("content-type", "application/json")

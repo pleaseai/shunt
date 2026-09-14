@@ -719,6 +719,12 @@ fn reason_label(reason: ConsumedBy) -> &'static str {
     }
 }
 
+pub(crate) fn stamp_gateway_model_header(response: &mut axum::response::Response, model: &str) {
+    if let Ok(value) = HeaderValue::from_str(model) {
+        response.headers_mut().insert("x-gateway-model", value);
+    }
+}
+
 pub(crate) fn stamp_gateway_headers(
     response: &mut axum::response::Response,
     upstream: &str,

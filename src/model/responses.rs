@@ -208,6 +208,14 @@ impl AnthropicSseMachine {
         self.backend_error.take()
     }
 
+    /// Whether a terminal event (`response.completed`/`response.done`/
+    /// `response.incomplete` or an error frame) has already been applied, so a
+    /// producer error after that point must not append an `error` event to a
+    /// completed turn.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
     pub fn finish(&mut self) -> Vec<String> {
         if self.stopped {
             return Vec::new();

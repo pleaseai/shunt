@@ -142,7 +142,6 @@ pub(super) async fn forward_chain_stream(
         .expect("route chains are non-empty after resolution");
     let first_provider = first_route.provider.clone();
     let first_model = first_route.model.clone();
-    let first_upstream_model = first_route.upstream_model.clone();
     // Captured synchronously inside the caller's `.instrument(span)` future,
     // so the eventual in-stream outcome records land on the request's own
     // span rather than whatever span is current while the body is polled.
@@ -352,6 +351,12 @@ pub(super) async fn forward_chain_stream(
                                         StatusCode::OK.as_u16(),
                                         attempt_started.elapsed().as_secs_f64() * 1000.0,
                                     );
+                                    // Attribute before the start goes out:
+                                    // TTFT and early-stream metrics must name
+                                    // the winner, not the failed primary.
+                                    if let Ok(mut slot) = winner_slot.lock() {
+                                        *slot = provider.clone();
+                                    }
                                     let relay = Phase::Relay {
                                         frames,
                                         winner_provider: provider,
@@ -462,11 +467,10 @@ pub(super) async fn forward_chain_stream(
         first_model.clone(),
         started_at,
     );
-    super::failover::stamp_gateway_headers(
-        &mut response,
-        &first_provider,
-        &requested_model,
-        &first_upstream_model,
-    );
+    // `x-gateway-model` names the client-requested id and is correct
+    // regardless of the winner; the upstream-naming headers are omitted on
+    // this path — the winner is unknown at commit time, and stamping the
+    // first route would contradict the header contract.
+    super::failover::stamp_gateway_model_header(&mut response, &requested_model);
     Ok((StatusCode::OK, response))
 }

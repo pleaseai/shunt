@@ -1393,9 +1393,12 @@ pub(crate) async fn chain_attempt(
         Ok(response) => response,
         Err(error) => {
             let is_timeout = matches!(error, crate::upstream_timeout::SendError::Timeout);
-            let envelope =
-                crate::error::error_body_value(*error.into_adapter_error(upstream_error).response)
-                    .await;
+            let envelope = crate::error::error_body_value(
+                *error
+                    .into_adapter_error(|error| upstream_error(error.without_url()))
+                    .response,
+            )
+            .await;
             return crate::proxy::chain_stream::Attempt::Failed {
                 // A TTFB timeout is the configured 504 answer, not a
                 // transport failure: terminal, never advanced.

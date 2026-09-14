@@ -80,7 +80,6 @@ pub(super) async fn forward_http(
         tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
     });
     let policy = provider_retry_policy(state, route);
-    let body = prepare_body(state, route, upstream_body.as_ref()).await;
     if turn.client_wants_stream {
         // Commit the SSE response now, before any upstream byte: the synthetic
         // `message_start` keeps the client's stall watchdog fed while the
@@ -137,7 +136,11 @@ pub(super) async fn forward_http(
     }
     // The account-pool path drives its own failover and deliberately does not
     // layer retry on top. This single-credential path retries only before any
-    // response body is handed to the streaming/JSON relay.
+    // response body is handed to the streaming/JSON relay. The streaming arm
+    // prepares the body inside the committed stream (`send_classified`), so
+    // compression cannot delay the commit; this non-streaming arm has no
+    // commit to protect and prepares here.
+    let body = prepare_body(state, route, upstream_body.as_ref()).await;
     let upstream = crate::retry::send_with_retry_with_safety(
         policy,
         &route.provider,

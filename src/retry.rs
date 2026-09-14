@@ -98,12 +98,10 @@ pub trait RetryableError: std::fmt::Display {
     /// cannot fix.
     fn is_transient(&self) -> bool;
 
-    /// A URL-free rendering for logs. The default is the plain `Display`; a
-    /// transport error whose diagnostic embeds the configured upstream URL
-    /// overrides it (see `reqwest::Error`'s impl below).
-    fn log_message(&self) -> String {
-        self.to_string()
-    }
+    /// A URL-free rendering for logs. No default: every error type must
+    /// decide for itself, so a wrapper whose `Display` embeds a URL cannot
+    /// inherit an unsafe rendering silently.
+    fn log_message(&self) -> String;
 }
 
 /// Controls whether a response status may be retried.
@@ -487,6 +485,10 @@ mod tests {
             fn is_transient(&self) -> bool {
                 is_retryable_status(StatusCode::from_u16(self.0).unwrap())
             }
+
+            fn log_message(&self) -> String {
+                self.to_string()
+            }
         }
         assert!(Stub(503).is_transient());
         assert!(!Stub(400).is_transient());
@@ -542,6 +544,10 @@ mod tests {
     impl RetryableError for StubError {
         fn is_transient(&self) -> bool {
             self.transient
+        }
+
+        fn log_message(&self) -> String {
+            self.to_string()
         }
     }
 
