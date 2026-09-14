@@ -411,6 +411,25 @@ mod tests {
             crate::retry::RetryableError::is_transient(&cursor_error),
             "a connect-level failure must be retryable"
         );
+        // Redaction is a security-relevant contract (URLs must never reach
+        // client envelopes or logs): the stored message and the log rendering
+        // must both exclude the configured URL while keeping the diagnostic
+        // kind.
+        assert!(
+            !cursor_error.message.contains("127.0.0.1:1"),
+            "the upstream URL leaked into the stored message: {}",
+            cursor_error.message
+        );
+        let log_message = crate::retry::RetryableError::log_message(&cursor_error);
+        assert!(
+            !log_message.contains("127.0.0.1:1"),
+            "the upstream URL leaked into the log message: {log_message}"
+        );
+        assert!(
+            cursor_error.message.contains("error sending request"),
+            "the diagnostic kind survives redaction: {}",
+            cursor_error.message
+        );
     }
 
     #[test]

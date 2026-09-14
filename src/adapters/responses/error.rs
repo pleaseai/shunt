@@ -22,7 +22,16 @@ pub(super) async fn mapped_upstream_error(
     let retry_after = upstream.headers().get("retry-after").cloned();
     let shunt_status = crate::model::responses::client_facing_status(status);
     let stream = futures_util::stream::once(async move {
-        let text = upstream.text().await.unwrap_or_default();
+        // A budget trip or read failure must not leave the envelope with an
+        // empty message: name the status instead, matching the anthropic
+        // fallback.
+        let text = crate::error::bounded_upstream_text(
+            upstream,
+            crate::error::ERROR_ENVELOPE_BUDGET,
+            crate::error::ERROR_ENVELOPE_BYTES,
+        )
+        .await
+        .unwrap_or_else(|| format!("upstream returned {status}"));
         tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
         let value = upstream_error_value(status, &text, auth);
         let body = serde_json::to_vec(&map_error_value(&value, status)).unwrap_or_default();

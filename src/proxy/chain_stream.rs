@@ -214,7 +214,7 @@ pub(super) async fn forward_chain_stream(
                 attempts,
                 remembered: None,
             },
-            body,
+            Some(body),
         ),
         move |(mut phase, body)| {
             let state = stream_state.clone();
@@ -228,6 +228,7 @@ pub(super) async fn forward_chain_stream(
             let winner_slot = closure_slot.clone();
             let winner_model_slot = closure_model_slot.clone();
             async move {
+                let mut body = body;
                 loop {
                     match phase {
                         Phase::Relay {
@@ -357,7 +358,10 @@ pub(super) async fn forward_chain_stream(
                                 index == 0,
                                 primary_origin.as_deref(),
                             );
-                            let attempt_body = body.clone();
+                            let attempt_body = body
+                                .as_ref()
+                                .expect("attempt phase holds the request body")
+                                .clone();
                             let provider = route.provider.clone();
                             let model = route.model.clone();
                             let outcome = match route.adapter {
@@ -406,9 +410,14 @@ pub(super) async fn forward_chain_stream(
                                     };
                                     match start {
                                         Some(start) => {
-                                            return Some((Ok(start), (relay, body)));
+                                            return Some((Ok(start), (relay, None)));
                                         }
                                         None => {
+                                            // The winner is selected: the
+                                            // buffered request body must not
+                                            // stay resident for the rest of
+                                            // the (possibly long) relay.
+                                            body = None;
                                             phase = relay;
                                             continue;
                                         }

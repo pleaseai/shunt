@@ -190,10 +190,16 @@ struct ObserverState {
     /// The `event:` name of the last non-keepalive frame parsed, in a
     /// fixed-size inline buffer (see [`MAX_LAST_EVENT_BYTES`]).
     /// `last_event_len == 0` means none was seen.
+    /// Set while the current chunk is parsed, when any complete frame in it
+    /// is stream content (not a keepalive ping or bare comment). TTFT records
+    /// on the first chunk that set this, so a pre-winner ping never becomes
+    /// the attributed first sample.
+    chunk_had_content: bool,
     last_event: [u8; MAX_LAST_EVENT_BYTES],
     last_event_len: usize,
-    /// Milliseconds from `started_at` to the first body chunk, recorded
-    /// alongside the `shunt.ttft` histogram.
+    /// Milliseconds from `started_at` to the first content-bearing chunk
+    /// (keepalive pings do not count), recorded alongside the `shunt.ttft`
+    /// histogram.
     ttft_ms: Option<u64>,
     tokens: TokenUsage,
     finished: bool,
@@ -225,6 +231,7 @@ impl ObserverState {
             truncated_seen: false,
             sse_events: 0,
             bytes_forwarded: 0,
+            chunk_had_content: false,
             last_event: [0; MAX_LAST_EVENT_BYTES],
             last_event_len: 0,
             ttft_ms: None,
@@ -234,7 +241,14 @@ impl ObserverState {
     }
 
     fn observe_chunk(&mut self, chunk: &[u8]) {
-        if !self.first_chunk_seen {
+        self.chunk_had_content = false;
+        self.bytes_forwarded = self.bytes_forwarded.saturating_add(chunk.len() as u64);
+        self.push_bytes(chunk);
+        if !self.first_chunk_seen && self.chunk_had_content {
+            // Record TTFT on the first content-bearing chunk, never on a
+            // keepalive ping: a committed chain can emit pings before its
+            // winner is selected, and a pre-winner ping would attribute the
+            // one-shot sample to the routed (failed) provider.
             self.first_chunk_seen = true;
             let ttft = self.started_at.elapsed();
             crate::metrics::record_ttft(
@@ -244,8 +258,6 @@ impl ObserverState {
             );
             self.ttft_ms = Some(millis(ttft));
         }
-        self.bytes_forwarded = self.bytes_forwarded.saturating_add(chunk.len() as u64);
-        self.push_bytes(chunk);
     }
 
     fn push_bytes(&mut self, mut bytes: &[u8]) {
@@ -279,6 +291,11 @@ impl ObserverState {
             self.terminal_seen |= observation.terminal;
             self.error_seen |= observation.error;
             self.truncated_seen |= observation.truncated;
+            // A frame is "content" when it is neither a keepalive ping nor a
+            // bare comment: it carries an event name or a terminal/error
+            // observation (`data: [DONE]` has no `event:` line but is real
+            // stream content).
+            self.chunk_had_content |= event.is_some() || observation.terminal || observation.error;
             if let Some((name, len)) = last_event {
                 self.last_event = name;
                 self.last_event_len = len;
@@ -661,13 +678,19 @@ fn is_sse(response: &Response<Body>) -> bool {
     response
         .headers()
         .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(';')
-                .next()
-                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
-        })
+        .is_some_and(content_type_is_event_stream)
+}
+
+/// Whether a content-type value names `text/event-stream`, tolerating media
+/// type parameters and case differences the way a conforming upstream may
+/// send them. Shared with the committed chain's Anthropic winner check.
+pub(crate) fn content_type_is_event_stream(value: &axum::http::HeaderValue) -> bool {
+    value.to_str().ok().is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+    })
 }
 
 fn find_boundary(bytes: &[u8]) -> Option<(usize, usize)> {

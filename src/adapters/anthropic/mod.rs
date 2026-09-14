@@ -1443,6 +1443,32 @@ pub(crate) async fn chain_attempt(
             status,
         };
     }
+    let is_sse = upstream
+        .headers()
+        .get("content-type")
+        .is_some_and(crate::stream_metrics::content_type_is_event_stream);
+    if !is_sse {
+        // The committed response is already `text/event-stream`; a non-SSE
+        // success body cannot be relayed inside it (the pre-commit loop
+        // relays it verbatim — a deviation the committed shape forces, see
+        // `docs/upstreams-failover.md` §6). One terminal error event
+        // instead.
+        let envelope = crate::proxy::chain_stream::LazyEnvelope::Ready(
+            crate::error::error_body_value(
+                crate::error::ShuntError::bad_gateway(
+                    "upstream answered the streaming request with a non-SSE response",
+                )
+                .into_response(),
+            )
+            .await,
+        );
+        return crate::proxy::chain_stream::Attempt::Failed {
+            advance: false,
+            remember: false,
+            envelope,
+            status: StatusCode::BAD_GATEWAY,
+        };
+    }
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
     let frames = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias)
         .map(|chunk| {
@@ -1474,21 +1500,29 @@ pub(crate) async fn mapped_error_envelope(
     status: StatusCode,
     upstream: reqwest::Response,
 ) -> serde_json::Value {
-    match upstream.bytes().await {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-            serde_json::json!({
-                "type": "error",
-                "error": {
-                    "type": "api_error",
-                    "message": format!("upstream returned {status}")
-                }
-            })
-        }),
-        Err(_) => serde_json::json!({
+    // Budgeted: the terminal error event must not stall on a body the
+    // upstream keeps open, and a huge body must not be buffered whole.
+    let Some(bytes) = crate::error::bounded_upstream_text(
+        upstream,
+        crate::error::ERROR_ENVELOPE_BUDGET,
+        crate::error::ERROR_ENVELOPE_BYTES,
+    )
+    .await
+    else {
+        return serde_json::json!({
             "type": "error",
             "error": {"type": "api_error", "message": format!("upstream returned {status}")}
-        }),
-    }
+        });
+    };
+    serde_json::from_slice(bytes.as_bytes()).unwrap_or_else(|_| {
+        serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": format!("upstream returned {status}")
+            }
+        })
+    })
 }
 
 #[cfg(test)]

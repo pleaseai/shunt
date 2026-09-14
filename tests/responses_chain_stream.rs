@@ -194,9 +194,9 @@ async fn transport_failure_on_the_primary_advances_to_the_anthropic_fallback() {
     let fallback = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_string(ANTHROPIC_SSE),
+            // set_body_raw so the mock actually returns text/event-stream;
+            // insert_header would leave wiremock's text/plain default in place.
+            ResponseTemplate::new(200).set_body_raw(ANTHROPIC_SSE, "text/event-stream"),
         )
         .expect(1)
         .mount(&fallback)
@@ -253,11 +253,7 @@ async fn advance_status_on_the_primary_defers_the_synthetic_start_to_the_winner(
         .await;
     let fallback = MockServer::start().await;
     Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_string(RESPONSES_SSE),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(RESPONSES_SSE, "text/event-stream"))
         .expect(1)
         .mount(&fallback)
         .await;
@@ -315,6 +311,42 @@ async fn chain_exhaustion_relays_the_best_remembered_failure() {
 }
 
 #[tokio::test]
+async fn a_non_sse_anthropic_winner_becomes_one_terminal_error_event() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = common::env_lock().await;
+    // A successful Anthropic-compatible upstream that answers the streaming
+    // request with JSON: the committed stream is already `text/event-stream`
+    // and cannot relay the body inside it, so the chain emits one terminal
+    // error event instead of mislabeled bytes.
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"type":"message","content":"not sse"}"#,
+            "application/json",
+        ))
+        .expect(1)
+        .mount(&fallback)
+        .await;
+
+    let config = chain_config(
+        (ProviderKind::Responses, refused_base_url()),
+        (ProviderKind::Anthropic, fallback.uri()),
+    );
+    let gateway = start_gateway(config).await;
+    let response = stream_request(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert_eq!(count_event(&body, "message_start"), 0, "got:\n{body}");
+    assert_eq!(count_event(&body, "error"), 1, "got:\n{body}");
+    assert!(!body.contains("not sse"), "got:\n{body}");
+    drop(gateway);
+    fallback.verify().await;
+}
+
+#[tokio::test]
 async fn a_healthy_primary_still_commits_exactly_one_message_start() {
     if !can_bind_loopback() {
         return;
@@ -322,11 +354,7 @@ async fn a_healthy_primary_still_commits_exactly_one_message_start() {
     let _env = common::env_lock().await;
     let primary = MockServer::start().await;
     Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_string(RESPONSES_SSE),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(RESPONSES_SSE, "text/event-stream"))
         .expect(1)
         .mount(&primary)
         .await;

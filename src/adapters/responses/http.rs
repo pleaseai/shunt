@@ -19,7 +19,8 @@ use crate::{
 use super::body::{prepare_body, PreparedBody};
 use super::context::{CredentialSource, ForwardOptions, RelayOptions};
 use super::early_stream::{
-    early_streaming_response, http_events_stream, parsed_events, translated_stream, HttpSendContext,
+    early_streaming_response, estimated_machine_factory, http_events_stream, parsed_events,
+    translated_stream, HttpSendContext,
 };
 use super::error::{backend_error, mapped_upstream_error, own_error, transport_error};
 use super::request::request_builder;
@@ -72,13 +73,6 @@ pub(super) async fn forward_http(
         codex_quota_account,
         estimate_input,
     } = forward;
-    // Kick off the CPU-bound tiktoken encode on the blocking pool *before* the
-    // upstream request so it overlaps that round-trip; the result is not needed
-    // until the response stream (and thus message_start) begins. `None` on
-    // non-streaming turns and non-tiktoken providers (gated in `forward`).
-    let estimate_handle = estimate_input.map(|request| {
-        tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
-    });
     let policy = provider_retry_policy(state, route);
     if turn.client_wants_stream {
         // Commit the SSE response now, before any upstream byte: the synthetic
@@ -113,31 +107,7 @@ pub(super) async fn forward_http(
         return Ok((
             StatusCode::OK,
             early_streaming_response(
-                move || {
-                    Box::pin(async move {
-                        // The bounded estimate wait happens inside the committed
-                        // stream — keepalive pings cover it, the commit itself
-                        // never stalls on the blocking pool.
-                        let input_tokens_estimate = match estimate_handle {
-                            Some(handle) => {
-                                tokio::time::timeout(std::time::Duration::from_secs(1), handle)
-                                    .await
-                                    .ok()
-                                    .and_then(Result::ok)
-                                    .unwrap_or(0)
-                            }
-                            None => 0,
-                        };
-                        let mut machine = turn
-                            .relay(&route_for_start)
-                            .machine()
-                            .with_input_estimate(input_tokens_estimate)
-                            .without_content_accumulation();
-                        let start =
-                            machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
-                        (machine, start.join(""))
-                    })
-                },
+                estimated_machine_factory(turn, route_for_start, estimate_input),
                 keepalive,
                 events,
             ),

@@ -8,7 +8,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use futures_util::{stream, Stream, StreamExt};
+use futures_util::{stream, Stream};
 use serde_json::Value;
 
 use crate::{
@@ -23,15 +23,9 @@ use super::context::CredentialSource;
 use super::error::{adapter_error_envelope, mapped_upstream_error, own_error, transport_error};
 use super::http::http_send;
 use crate::proxy::chain_stream::LazyEnvelope;
-async fn malformed_frame_envelope() -> Value {
-    adapter_error_envelope(own_error(
-        "upstream sent an SSE frame whose data is not valid JSON".to_string(),
-    ))
-    .await
-}
 
 pub(super) use super::sse_parse::{
-    bounded_input_estimate, parsed_events, pool_translated_stream, translated_core,
+    bounded_input_estimate, next_parsed, parsed_events, pool_translated_stream, translated_core,
     translated_stream, PoolEvent, SseParser,
 };
 
@@ -90,6 +84,39 @@ pub(super) fn pool_streaming_response(
 }
 
 type UpstreamBytes = std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
+
+/// The shared machine factory for the committed single-route and pool
+/// responses: the bounded estimate wait happens inside the committed stream
+/// (keepalive pings cover it, the commit itself never stalls on the blocking
+/// pool), then the synthetic start.
+pub(super) fn estimated_machine_factory(
+    turn: super::context::TurnOptions,
+    route: Route,
+    estimate_input: Option<std::sync::Arc<Value>>,
+) -> impl FnOnce() -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = (AnthropicSseMachine, String)> + Send>,
+> + Send {
+    move || {
+        Box::pin(async move {
+            let input_tokens_estimate = match estimate_input {
+                Some(request) => {
+                    let handle = tokio::task::spawn_blocking(move || {
+                        crate::count_tokens::count_input_tokens_value(&request)
+                    });
+                    bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await
+                }
+                None => 0,
+            };
+            let mut machine = turn
+                .relay(&route)
+                .machine()
+                .with_input_estimate(input_tokens_estimate)
+                .without_content_accumulation();
+            let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+            (machine, start.join(""))
+        })
+    }
+}
 
 /// The raw outcome of one bounded-retry send, before the status is judged.
 /// Split out of [`http_events_stream`] so the multi-upstream chain
@@ -326,8 +353,8 @@ pub(super) fn http_events_stream(
                     }
                     Phase::Read { bytes } => {
                         let mut bytes = bytes;
-                        loop {
-                            if let Some(item) = pending.pop_front() {
+                        match next_parsed(&mut parser, &mut pending, &mut bytes).await {
+                            Some(item) => {
                                 // A terminal item ends the stream: return to
                                 // `Done` so a consumer that polls past the
                                 // error cannot resume relaying upstream
@@ -342,33 +369,7 @@ pub(super) fn http_events_stream(
                                     (next, parser, pending, context, credential, quota_account),
                                 ));
                             }
-                            match bytes.as_mut().next().await {
-                                Some(Ok(chunk)) => {
-                                    let (events, malformed) = parser.push(&chunk);
-                                    pending.extend(events.into_iter().map(Ok));
-                                    if malformed {
-                                        pending.push_back(Err(malformed_frame_envelope().await));
-                                    }
-                                }
-                                Some(Err(error)) => {
-                                    let envelope = adapter_error_envelope(transport_error(
-                                        error.without_url().to_string(),
-                                    ))
-                                    .await;
-                                    return Some((
-                                        Err(envelope),
-                                        (
-                                            Phase::Done,
-                                            parser,
-                                            pending,
-                                            context,
-                                            credential,
-                                            quota_account,
-                                        ),
-                                    ));
-                                }
-                                None => return None,
-                            }
+                            None => return None,
                         }
                     }
                     Phase::Done => return None,

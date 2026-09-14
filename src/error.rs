@@ -93,20 +93,66 @@ impl IntoResponse for ShuntError {
     }
 }
 
+/// The wall-clock budget for turning an error response into its SSE envelope:
+/// a terminal error event must never stall on a body the upstream keeps open
+/// or trickles out slowly.
+pub(crate) const ERROR_ENVELOPE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The size cap for the same read: a huge upstream error body must not be
+/// buffered whole for an envelope the client only needs a summary of.
+pub(crate) const ERROR_ENVELOPE_BYTES: usize = 256 * 1024;
+
+/// Read an upstream error body under a wall-clock and size bound, decoded
+/// lossily (an error summary never carries user content that must survive
+/// byte-for-byte). `None` once either bound trips or the read fails.
+pub(crate) async fn bounded_upstream_text(
+    upstream: reqwest::Response,
+    budget: std::time::Duration,
+    cap: usize,
+) -> Option<String> {
+    let mut body = upstream;
+    let mut bytes: Vec<u8> = Vec::new();
+    let read = async {
+        loop {
+            let Some(chunk) = body.chunk().await.ok()? else {
+                return Some(bytes);
+            };
+            if bytes.len() + chunk.len() > cap {
+                return None;
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+    };
+    match tokio::time::timeout(budget, read).await {
+        Ok(Some(bytes)) => Some(String::from_utf8_lossy(&bytes).into_owned()),
+        _ => None,
+    }
+}
+
 /// The JSON body of an already-built error response, for turning it into an
-/// SSE `error` event envelope. The bodies here are small pre-built errors; a
-/// non-JSON body falls back to a generic `api_error` envelope.
+/// SSE `error` event envelope. The read is budgeted (wall clock and size): a
+/// terminal SSE `error` event must not stall on a body the upstream keeps
+/// open. A non-JSON or over-budget body falls back to a generic `api_error`
+/// envelope.
 pub(crate) async fn error_body_value(response: Response) -> Value {
-    to_bytes(response.into_body(), usize::MAX)
-        .await
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_else(|| {
-            serde_json::json!({
-                "type": "error",
-                "error": {"type": "api_error", "message": "upstream failed"}
-            })
-        })
+    error_body_value_budgeted(response, ERROR_ENVELOPE_BUDGET).await
+}
+
+pub(crate) async fn error_body_value_budgeted(
+    response: Response,
+    budget: std::time::Duration,
+) -> Value {
+    match tokio::time::timeout(budget, to_bytes(response.into_body(), ERROR_ENVELOPE_BYTES)).await {
+        Ok(Ok(bytes)) => serde_json::from_slice(&bytes).unwrap_or_else(|_| generic_envelope()),
+        _ => generic_envelope(),
+    }
+}
+
+fn generic_envelope() -> Value {
+    serde_json::json!({
+        "type": "error",
+        "error": {"type": "api_error", "message": "upstream failed"}
+    })
 }
 
 /// OpenAI Responses-shaped error body: `{"error":{"message":..,"type":..,"code":null}}`.
@@ -191,7 +237,34 @@ mod tests {
     use axum::response::IntoResponse;
     use serde_json::Value;
 
-    use super::{into_openai_error_shape, ShuntError, UpstreamError};
+    use super::{error_body_value_budgeted, into_openai_error_shape, ShuntError, UpstreamError};
+
+    /// A terminal SSE error envelope must never stall on an error body the
+    /// upstream keeps open: the budget trips and the generic envelope stands
+    /// in.
+    #[tokio::test]
+    async fn error_body_value_bounds_a_hanging_body() {
+        use axum::body::Body;
+        let hanging = Body::from_stream(futures_util::stream::pending::<
+            Result<axum::body::Bytes, std::convert::Infallible>,
+        >());
+        let response = axum::response::Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .body(hanging)
+            .expect("builder uses a valid status");
+        let started = std::time::Instant::now();
+        let envelope = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            error_body_value_budgeted(response, std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("the budgeted read must not wait on the hanging body");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "the budgeted read must not wait on the hanging body"
+        );
+        assert_eq!(envelope["error"]["type"], "api_error");
+    }
 
     async fn body_json(response: axum::response::Response) -> Value {
         let bytes = to_bytes(response.into_body(), usize::MAX)

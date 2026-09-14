@@ -43,7 +43,10 @@ use self::error::{adapter_error_envelope, own_error};
 use self::http::forward_http;
 pub(crate) use self::inbound::forward_codex_inbound;
 pub(crate) use self::inbound_routed::forward_codex_routed;
-use self::pool::{forward_chatgpt_oauth, pool_events_stream, PoolStreamContext};
+use self::pool::{
+    forward_chatgpt_oauth, forward_chatgpt_oauth_stream, pool_events_stream, PoolForwardStream,
+    PoolStreamContext,
+};
 use self::websocket::forward_websocket;
 
 pub struct ResponsesAdapter;
@@ -172,6 +175,50 @@ async fn forward(
             .config
             .provider(&route.provider)
             .expect("route provider was validated");
+        let ws_enabled = state.config.codex_websocket_enabled(&route.provider);
+        if turn.client_wants_stream && !ws_enabled {
+            // Commit before the account-store scan: the scan queues an
+            // unbounded filesystem walk on the blocking pool, and neither a
+            // slow filesystem nor a saturated pool may delay the committed
+            // response (keepalive pings cover the wait). The empty-scan
+            // single-credential fallback runs inside the same stream.
+            let accounts_config = provider.accounts.clone();
+            let account_scope = provider.account_scope.clone();
+            let scan = Box::pin(async move {
+                auth::shared::resolve_pool_accounts(
+                    "codex",
+                    &accounts_config,
+                    &account_scope,
+                    crate::accounts::StoreFamily::Chatgpt,
+                    auth::codex::store::default_accounts_dir(),
+                    auth::codex::store::scan_accounts,
+                )
+                .await
+            });
+            let credential_state = state.clone();
+            let credential_route = route.clone();
+            let credential = CredentialSource::Deferred(Box::pin(async move {
+                resolve_credential(
+                    &credential_state.config,
+                    &credential_route,
+                    &credential_state.http_client,
+                )
+                .await
+            }));
+            return forward_chatgpt_oauth_stream(
+                state,
+                route,
+                PoolForwardStream {
+                    session_id,
+                    upstream_body,
+                    turn,
+                    estimate_input,
+                    scan,
+                    credential,
+                },
+            )
+            .await;
+        }
         let accounts = auth::shared::resolve_pool_accounts(
             "codex",
             &provider.accounts,

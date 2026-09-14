@@ -25,37 +25,55 @@ pub(super) fn parsed_events(
             false,
         ),
         |(mut bytes, mut parser, mut pending, mut done)| async move {
-            loop {
-                if done {
-                    return None;
-                }
-                if let Some(item) = pending.pop_front() {
+            if done {
+                return None;
+            }
+            match next_parsed(&mut parser, &mut pending, &mut bytes).await {
+                Some(item) => {
                     // A terminal item ends the stream: a consumer that polls
                     // past the error must not resume relaying upstream events
                     // behind it.
                     done = item.is_err();
-                    return Some((item, (bytes, parser, pending, done)));
+                    Some((item, (bytes, parser, pending, done)))
                 }
-                match bytes.next().await {
-                    Some(Ok(chunk)) => {
-                        let (events, malformed) = parser.push(&chunk);
-                        pending.extend(events.into_iter().map(Ok));
-                        if malformed {
-                            pending.push_back(Err(malformed_frame_envelope().await));
-                        }
-                    }
-                    Some(Err(error)) => {
-                        let envelope = adapter_error_envelope(transport_error(
-                            error.without_url().to_string(),
-                        ))
-                        .await;
-                        return Some((Err(envelope), (bytes, parser, pending, true)));
-                    }
-                    None => return None,
-                }
+                None => None,
             }
         },
     )
+}
+
+/// One step of the shared byte→event pump behind [`parsed_events`] and the
+/// single-route committed stream: drain a pending item first, then pull the
+/// next transport chunk and parse it. A malformed frame or transport error
+/// becomes the terminal error envelope. `None` means the upstream ended.
+pub(super) async fn next_parsed<S>(
+    parser: &mut SseParser,
+    pending: &mut std::collections::VecDeque<Result<ResponseEvent, Value>>,
+    bytes: &mut S,
+) -> Option<Result<ResponseEvent, Value>>
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
+{
+    loop {
+        if let Some(item) = pending.pop_front() {
+            return Some(item);
+        }
+        match bytes.next().await {
+            Some(Ok(chunk)) => {
+                let (events, malformed) = parser.push(&chunk);
+                pending.extend(events.into_iter().map(Ok));
+                if malformed {
+                    pending.push_back(Err(malformed_frame_envelope().await));
+                }
+            }
+            Some(Err(error)) => {
+                let envelope =
+                    adapter_error_envelope(transport_error(error.without_url().to_string())).await;
+                return Some(Err(envelope));
+            }
+            None => return None,
+        }
+    }
 }
 
 /// The terminal envelope for an upstream frame whose `data` is present but not

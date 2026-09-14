@@ -19,9 +19,10 @@ use crate::{
 };
 
 use super::body::{prepare_body, PreparedBody};
-use super::context::{ForwardOptions, PoolForward, RelayOptions};
+use super::context::{CredentialSource, ForwardOptions, PoolForward, RelayOptions, TurnOptions};
 use super::early_stream::{
-    bounded_input_estimate, parsed_events, pool_streaming_response, PoolEvent,
+    bounded_input_estimate, estimated_machine_factory, http_events_stream, parsed_events,
+    pool_streaming_response, HttpSendContext, PoolEvent,
 };
 use super::error::{adapter_error_envelope, mapped_upstream_error, own_error, transport_error};
 use super::http::{http_send, json_response, stream_response};
@@ -96,8 +97,188 @@ pub(super) struct PoolStreamContext {
 /// are yielded one at a time. Every terminal failure — the TTFB timeout, a
 /// non-failover non-2xx status, or pool exhaustion — becomes the same Anthropic
 /// error envelope the pre-commit path returned as a JSON body, emitted as one
-/// terminal SSE `error` event by [`pool_streaming_response`]. The winning
-/// account's admission guard rides in the relay phase so the storm-control slot
+/// terminal SSE `error` event by [`pool_streaming_response`].
+///
+/// The request-derived fields the committed streaming `chatgpt_oauth` turn
+/// needs beyond `state`/`route`: the deferred account scan, the
+/// single-credential fallback's deferred credential, and the shared
+/// translation inputs.
+pub(super) struct PoolForwardStream {
+    pub session_id: Option<String>,
+    pub upstream_body: std::sync::Arc<Value>,
+    pub turn: TurnOptions,
+    pub estimate_input: Option<std::sync::Arc<Value>>,
+    pub scan: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<AccountConfig>, String>> + Send>,
+    >,
+    pub credential: CredentialSource,
+}
+
+/// The committed variant of [`forward_chatgpt_oauth`] for streaming turns
+/// without the websocket transport: the response commits before the account
+/// scan, so a slow filesystem scan or a saturated blocking pool cannot starve
+/// the client of headers and keepalive pings. The scan, the all-disabled
+/// check, the empty-scan single-credential fallback, and the pool itself all
+/// run inside the stream ([`pool_or_single_events`]).
+pub(super) async fn forward_chatgpt_oauth_stream(
+    state: AppState,
+    route: Route,
+    forward: PoolForwardStream,
+) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let PoolForwardStream {
+        session_id,
+        upstream_body,
+        turn,
+        estimate_input,
+        scan,
+        credential,
+    } = forward;
+    let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
+    let route_for_start = route.clone();
+    let single = HttpSendContext {
+        state: state.clone(),
+        route: route.clone(),
+        policy: state
+            .config
+            .provider(&route.provider)
+            .map(|provider| provider.retry.policy())
+            .unwrap_or(crate::retry::RetryPolicy::DISABLED),
+        credential: None,
+        session_id: session_id.clone(),
+        upstream_body: upstream_body.clone(),
+        auth: AuthMode::ChatgptOauth,
+        codex_quota_account: None,
+    };
+    let events = pool_or_single_events(
+        scan,
+        state.clone(),
+        route.clone(),
+        session_id,
+        upstream_body,
+        single,
+        credential,
+    );
+    Ok((
+        StatusCode::OK,
+        pool_streaming_response(
+            estimated_machine_factory(turn, route_for_start, estimate_input),
+            keepalive,
+            events,
+        ),
+    ))
+}
+
+/// One committed stream for a streaming `chatgpt_oauth` turn: the account
+/// scan, the all-disabled check, the empty-scan single-credential fallback,
+/// and the pool itself all run inside the committed response, so neither a
+/// slow filesystem scan nor a saturated blocking pool can delay the commit
+/// (keepalive pings cover the wait).
+pub(super) fn pool_or_single_events(
+    scan: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<AccountConfig>, String>> + Send>,
+    >,
+    state: AppState,
+    route: Route,
+    session_id: Option<String>,
+    upstream_body: std::sync::Arc<Value>,
+    single: HttpSendContext,
+    single_credential: CredentialSource,
+) -> impl Stream<Item = Result<PoolEvent, Value>> + Send + 'static {
+    type Inner = std::pin::Pin<Box<dyn Stream<Item = Result<PoolEvent, Value>> + Send>>;
+    struct Init {
+        scan: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<AccountConfig>, String>> + Send>,
+        >,
+        state: AppState,
+        route: Route,
+        session_id: Option<String>,
+        upstream_body: std::sync::Arc<Value>,
+        single: HttpSendContext,
+        single_credential: CredentialSource,
+    }
+    enum Phase {
+        Init(Box<Init>),
+        Inner(Inner),
+        Done,
+    }
+    stream::unfold(
+        Phase::Init(Box::new(Init {
+            scan,
+            state,
+            route,
+            session_id,
+            upstream_body,
+            single,
+            single_credential,
+        })),
+        move |phase| async move {
+            match phase {
+                Phase::Init(init) => {
+                    let Init {
+                        scan,
+                        state,
+                        route,
+                        session_id,
+                        upstream_body,
+                        single,
+                        single_credential,
+                    } = *init;
+                    let accounts = match scan.await {
+                        Ok(accounts) => accounts,
+                        Err(error) => {
+                            let envelope = adapter_error_envelope(own_error(error)).await;
+                            return Some((Err(envelope), Phase::Done));
+                        }
+                    };
+                    if !accounts.is_empty() && accounts.iter().all(|account| account.disabled) {
+                        let envelope = adapter_error_envelope(own_error(format!(
+                            "provider '{}' has {} account(s) but all are `disabled = true`; none are selectable",
+                            route.provider,
+                            accounts.len()
+                        )))
+                        .await;
+                        return Some((Err(envelope), Phase::Done));
+                    }
+                    let ramp_initial = state.config.storm_ramp_initial();
+                    let mut inner: Inner = if accounts.is_empty() {
+                        Box::pin(
+                            http_events_stream(single, single_credential, None)
+                                .map(|item| item.map(PoolEvent::Event)),
+                        )
+                    } else {
+                        let accounts_config = std::sync::Arc::new(accounts);
+                        let (order, reprobe) = state.accounts.select_order_deferred(
+                            &route.provider,
+                            &accounts_config,
+                            session_id.as_deref(),
+                            Some(route.upstream_model.as_str()),
+                            state.config.server.pool.as_ref(),
+                        );
+                        Box::pin(pool_events_stream(PoolStreamContext {
+                            state,
+                            route,
+                            auth: AuthMode::ChatgptOauth,
+                            session_id,
+                            upstream_body,
+                            accounts_config,
+                            order,
+                            reprobe,
+                            ramp_initial,
+                        }))
+                    };
+                    inner.next().await.map(|item| (item, Phase::Inner(inner)))
+                }
+                Phase::Inner(mut inner) => {
+                    inner.next().await.map(|item| (item, Phase::Inner(inner)))
+                }
+                Phase::Done => None,
+            }
+        },
+    )
+}
+
+/// The winning account's admission guard rides in the relay phase so the
+/// storm-control slot
 /// stays held until the stream ends. Mirrors the ws-fallback/non-streaming
 /// loop below arm for arm; the duplication is deliberate until the websocket
 /// transport joins the early commit. The committed response
@@ -545,34 +726,7 @@ pub(super) async fn forward_chatgpt_oauth(
         return Ok((
             StatusCode::OK,
             pool_streaming_response(
-                move || {
-                    Box::pin(async move {
-                        // The bounded estimate wait happens inside the committed
-                        // stream — keepalive pings cover it, the commit itself
-                        // never stalls on the blocking pool.
-                        let input_tokens_estimate = match estimate_input {
-                            Some(request) => {
-                                let handle = tokio::task::spawn_blocking(move || {
-                                    crate::count_tokens::count_input_tokens_value(&request)
-                                });
-                                tokio::time::timeout(std::time::Duration::from_secs(1), handle)
-                                    .await
-                                    .ok()
-                                    .and_then(Result::ok)
-                                    .unwrap_or(0)
-                            }
-                            None => 0,
-                        };
-                        let mut machine = turn
-                            .relay(&route_for_start)
-                            .machine()
-                            .with_input_estimate(input_tokens_estimate)
-                            .without_content_accumulation();
-                        let start =
-                            machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
-                        (machine, start.join(""))
-                    })
-                },
+                estimated_machine_factory(turn, route_for_start, estimate_input),
                 keepalive,
                 events,
             ),
