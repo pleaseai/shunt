@@ -263,9 +263,9 @@ list. A request naming a model your subscription lacks fails exactly as it would
 
 ## 6. Verify
 
-A raw Responses request against any of the three routes should relay verbatim and (when pooled)
-carry an `x-shunt-account` header — the inbound passthrough waits for the winning upstream before
-committing, so the header names the account that actually served the turn:
+A raw Responses request against any of the three routes should relay verbatim and, when a pooled
+account wins, carry an `x-shunt-account` header naming it — the inbound passthrough waits for the
+winning upstream before committing, so the header names the account that actually served the turn:
 
 ```bash
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
