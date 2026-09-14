@@ -56,7 +56,7 @@ This `trust_forwarded_for` switch is independent of `[server.gateway] trust_forw
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `upstream_ttfb_ms` | `120000` | Maximum wait for inference-upstream HTTP response headers; `0` disables. The response body then has no wall-clock cap, preserving long SSE streams. Non-streaming turns return `504 timeout_error`; a streaming Responses turn advances an eligible chain inside the committed stream, otherwise it surfaces the timeout as a terminal SSE `error` event. Hot-reloads |
+| `upstream_ttfb_ms` | `120000` | Maximum wait for inference-upstream HTTP response headers; `0` disables. The response body then has no wall-clock cap, preserving long SSE streams. Turns that have not committed an SSE response return `504 timeout_error`; a committed streaming turn surfaces the timeout as one terminal SSE `error` event carrying the same envelope — the timeout never advances a chain. Hot-reloads |
 
 This timeout covers the Anthropic Messages transports, OpenAI Responses HTTP transport (including WebSocket fallback), Gemini HTTP transport, and inbound Codex Responses passthrough. It does not cover Codex WebSocket turns, Cursor transports, Antigravity processes, discovery, login/OAuth, usage polling, OIDC, or telemetry relay.
 
