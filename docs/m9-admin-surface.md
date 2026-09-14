@@ -885,8 +885,22 @@ consume the entry and `complete_account` removes it only after the store, so a
 start issued during an in-flight exchange replaces the entry and lets a second
 completion pass its own state check — both exchanges then reach the store in an
 order nothing constrains, and the older one landing last leaves the account
-holding the superseded credential. Serializing the page's completions is what
-keeps that sequence out of reach.
+holding the superseded credential.
+
+The page's marker cannot be what keeps that sequence out of reach, because it
+only binds one page: a second tab, a second operator, or a direct API call is
+subject to none of it, and the abort bound below releases the marker while the
+server may still be exchanging. So the ordering is server-side. Each completion
+holds `PendingStore::lock_completion` for its whole `attempt` → exchange → store
+→ remove sequence, keyed by the pending key, so a second completion waits and
+then finds the entry already consumed and fails closed with "start again"
+(issue #440). The marker stays as what it always was locally — a refusal that
+costs no round-trip — rather than the thing that orders the mutations.
+
+`start` deliberately does not take that lock: blocking a start behind an
+in-flight exchange would stall the operator for up to the completion's own
+timeout, and two racing *starts* already fail closed on the state check, which
+is why ordering them is tracked separately rather than here.
 
 Nothing else may release the marker, so the completion request carries its own
 120-second `AbortController` bound, cleared in a `finally`: a connection that

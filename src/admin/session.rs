@@ -188,6 +188,10 @@ pub enum PendingAttempt {
 #[derive(Default)]
 pub struct PendingStore {
     pending: Mutex<HashMap<String, PendingEntry>>,
+    /// One lock per pending key, held by a completion across its whole
+    /// attempt -> exchange -> store -> remove sequence. See
+    /// [`PendingStore::lock_completion`].
+    completions: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl PendingStore {
@@ -249,6 +253,48 @@ impl PendingStore {
             .lock()
             .expect("admin pending lock poisoned")
             .remove(key);
+    }
+
+    /// Serializes the completions for one pending key.
+    ///
+    /// [`attempt`](Self::attempt) does not consume the entry — it only counts
+    /// the try — and the entry is removed only after the upstream exchange and
+    /// the store have finished. The whole exchange therefore runs with the entry
+    /// still in place, so a `start` issued in that window replaces it and a
+    /// second completion passes its own state check against the new entry. Both
+    /// exchanges then reach the account store in an order nothing constrains,
+    /// and if the older one lands last the account keeps the **superseded**
+    /// credential. Unlike a rejected state check that tells the operator to
+    /// start again, nothing signals that: both credentials are valid (issue
+    /// #440).
+    ///
+    /// Holding this for the whole sequence makes the second completion find the
+    /// entry already consumed, so it fails closed with "start again" instead of
+    /// racing the first one to the store. It is keyed by the *pending* key, not
+    /// the account name, which is what makes the Claude and Codex routes — whose
+    /// keys are namespaced apart — serialize against their own entry rather than
+    /// against each other.
+    ///
+    /// Deliberately not taken by `start`: a start blocking on an in-flight
+    /// completion would stall the operator behind an upstream exchange, and two
+    /// racing starts already fail closed on the state check.
+    pub async fn lock_completion(&self, key: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut completions = self
+                .completions
+                .lock()
+                .expect("admin pending completion lock poisoned");
+            // Drop the locks nobody is holding or waiting on. A task that has
+            // taken one has cloned the `Arc`, so a strong count of 1 means this
+            // map holds the only reference and removing it cannot let a later
+            // completion build a second lock for a key someone is still under.
+            completions.retain(|_, lock| Arc::strong_count(lock) > 1);
+            Arc::clone(completions.entry(key.to_string()).or_default())
+        };
+        // The map guard is released above: a `std` guard must not be held across
+        // the await below, and the wait here is for the *other* completion's
+        // upstream exchange, which is exactly what this serializes.
+        lock.lock_owned().await
     }
 }
 

@@ -130,6 +130,9 @@ pub(super) async fn complete_codex_account(
         return bad_request("account name must match [a-z0-9-]+");
     }
     let key = codex_pending_key(&name);
+    // Held for the rest of the handler; see `PendingStore::lock_completion` for
+    // the interleaving this closes (#440).
+    let _completion = state.admin_stores.pending.lock_completion(&key).await;
     let pending = match state.admin_stores.pending.attempt(&key) {
         PendingAttempt::Ready(pending) => pending,
         PendingAttempt::NotFound => {

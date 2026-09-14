@@ -4547,3 +4547,148 @@ async fn admin_session_bootstrap_serves_the_live_csrf_token_and_refresh_buffer()
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
+
+/// Two completions for one account cannot both reach the store (issue #440).
+///
+/// `PendingStore::attempt` does not consume the entry, and the entry is removed
+/// only after the upstream exchange and the store have finished. So the whole
+/// exchange for one completion runs with the entry still in place: a `start`
+/// issued in that window replaces it, and a second completion passes its own
+/// state check against the new entry. Both then store a credential for the same
+/// account in an order nothing constrains, and when the older one lands last the
+/// account silently keeps the superseded credential — no rejected state check,
+/// no error, both tokens valid.
+///
+/// The invariant asserted here is the one an operator relies on: exactly one
+/// completion is told it succeeded, and the credential on disk is that one's.
+#[tokio::test]
+async fn a_second_completion_cannot_race_the_first_one_to_the_account_store() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let dir = unique_dir();
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_RACE", "ops:secret-race");
+
+    // The first exchange is the slow one, so an unserialized second completion
+    // would store *before* it and then be overwritten by the older credential —
+    // the silent-loss ordering, rather than the harmless one.
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_partial_json(
+            serde_json::json!({ "code": "first-code" }),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(2))
+                .set_body_json(serde_json::json!({
+                    "access_token": "TOKEN-FIRST",
+                    "account": {"uuid": "acct-first"}
+                })),
+        )
+        .mount(&token_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_partial_json(
+            serde_json::json!({ "code": "second-code" }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "TOKEN-SECOND",
+            "account": {"uuid": "acct-second"}
+        })))
+        .mount(&token_server)
+        .await;
+    vars.set(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_RACE")).await;
+    let client = reqwest::Client::new();
+    let base_url = gateway.base_url.clone();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-race")
+            .header("content-type", "application/json")
+    };
+    let start_login = |client: reqwest::Client, base_url: String| async move {
+        let response = client
+            .post(format!("{base_url}/admin/api/accounts/claude"))
+            .header("x-shunt-admin-token", "secret-race")
+            .header("content-type", "application/json")
+            .body(r#"{"name":"race"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        reqwest::Url::parse(body["authorize_url"].as_str().unwrap())
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .map(|(_, value)| value.into_owned())
+            .expect("authorize URL carries the OAuth state")
+    };
+
+    let first_state = start_login(client.clone(), base_url.clone()).await;
+
+    // Put the first completion in flight and leave it inside its 2s exchange.
+    let first = tokio::spawn({
+        let client = client.clone();
+        let base_url = base_url.clone();
+        async move {
+            client
+                .post(format!(
+                    "{base_url}/admin/api/accounts/claude/race/complete"
+                ))
+                .header("x-shunt-admin-token", "secret-race")
+                .header("content-type", "application/json")
+                .body(format!(r#"{{"code":"first-code#{first_state}"}}"#))
+                .send()
+                .await
+                .unwrap()
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // A second start replaces the pending entry the in-flight completion is
+    // still relying on, which is what lets a second completion pass its own
+    // state check while the first is mid-exchange.
+    let second_state = start_login(client.clone(), base_url.clone()).await;
+    let second = auth(client.post(format!(
+        "{base_url}/admin/api/accounts/claude/race/complete"
+    )))
+    .body(format!(r#"{{"code":"second-code#{second_state}"}}"#))
+    .send()
+    .await
+    .unwrap();
+
+    let first = first.await.unwrap();
+    let outcomes = [
+        (first.status(), "TOKEN-FIRST"),
+        (second.status(), "TOKEN-SECOND"),
+    ];
+    let succeeded: Vec<&str> = outcomes
+        .iter()
+        .filter(|(status, _)| *status == StatusCode::OK)
+        .map(|(_, token)| *token)
+        .collect();
+    assert_eq!(
+        succeeded.len(),
+        1,
+        "exactly one completion may be told it stored the account; got {:?}",
+        outcomes.map(|(status, token)| (status.as_u16(), token))
+    );
+
+    // And the account on disk is the one the operator was told about, rather
+    // than a credential from a completion the server reported as failed.
+    let stored = std::fs::read_to_string(dir.join("race.json")).unwrap();
+    assert!(
+        stored.contains(succeeded[0]),
+        "the stored credential must be the one whose completion returned 200"
+    );
+}

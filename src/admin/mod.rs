@@ -1321,6 +1321,10 @@ async fn complete_account(
     if claude_store::validate_account_name(&name).is_err() {
         return bad_request("account name must match [a-z0-9-]+");
     }
+    // Held for the rest of the handler: the entry survives the exchange below,
+    // so without this a second completion started in that window stores a second
+    // credential for this account and the two land in an arbitrary order (#440).
+    let _completion = state.admin_stores.pending.lock_completion(&name).await;
     let pending = match state.admin_stores.pending.attempt(&name) {
         PendingAttempt::Ready(pending) => pending,
         PendingAttempt::NotFound => {
