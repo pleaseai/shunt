@@ -1741,3 +1741,303 @@ async fn missing_stale_probe_token_cancels_before_healthy_fallback() {
 
     fs::remove_dir_all(state_dir).ok();
 }
+
+// ---------------------------------------------------------------------------
+// Streaming (early-commit) arm of the responses pool: `stream: true` requests
+// with the Codex websocket path disabled drive `pool_events_stream` instead
+// of the buffered loop, covering the relay / rotate / refresh / exhaustion
+// branches of the committed-stream loop (PR #549).
+// ---------------------------------------------------------------------------
+
+/// POST /v1/messages with `stream: true` so the responses adapter takes the
+/// early-commit streaming arm (`pool_events_stream`) instead of the buffered
+/// loop.
+async fn post_streaming_messages(
+    gateway: &TestGateway,
+    session_id: Option<&str>,
+) -> reqwest::Response {
+    let mut request = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "model": "pooled-codex-model",
+                "max_tokens": 16,
+                "stream": true,
+                "messages": [{"role": "user", "content": "hi"}]
+            })
+            .to_string(),
+        );
+    if let Some(session_id) = session_id {
+        request = request.header("x-claude-code-session-id", session_id);
+    }
+    request.send().await.unwrap()
+}
+
+/// A Responses SSE success fixture for one account's bearer token.
+fn sse_ok_mock(token: &str, text: &str) -> Mock {
+    Mock::given(BearerToken(token.to_string()))
+        .and(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(sse_body(text).into_bytes(), "text/event-stream"),
+        )
+}
+
+/// A bare status-code fixture for one account's bearer token.
+fn status_mock(token: &str, status: u16) -> Mock {
+    Mock::given(BearerToken(token.to_string()))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(status))
+}
+
+#[tokio::test]
+async fn streaming_relays_synthetic_start_and_upstream_events() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-b");
+    let _env = common::set_env(&[
+        ("SHUNT_CODEX_STREAM_A", token_a.as_str()),
+        ("SHUNT_CODEX_STREAM_B", token_b.as_str()),
+    ])
+    .await;
+    let upstream = MockServer::start().await;
+    sse_ok_mock(&token_a, "hello from a").mount(&upstream).await;
+    sse_ok_mock(&token_b, "hello from b").mount(&upstream).await;
+    let config = test_config(
+        &upstream.uri(),
+        account("stream-a", "SHUNT_CODEX_STREAM_A"),
+        account("stream-b", "SHUNT_CODEX_STREAM_B"),
+    );
+    let gateway = start_gateway_with(config).await;
+    let session_id = session_id_for_account(0, 2);
+    let response = post_streaming_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    message_start_input_tokens(&body);
+    assert!(body.contains("hello from a"), "body: {body}");
+}
+
+#[tokio::test]
+async fn streaming_429_rotates_to_second_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-b");
+    let _env = common::set_env(&[
+        ("SHUNT_CODEX_STREAM_A", token_a.as_str()),
+        ("SHUNT_CODEX_STREAM_B", token_b.as_str()),
+    ])
+    .await;
+    let upstream = MockServer::start().await;
+    status_mock(&token_a, 429).mount(&upstream).await;
+    sse_ok_mock(&token_b, "hello from b").mount(&upstream).await;
+    let config = test_config(
+        &upstream.uri(),
+        account("stream-a", "SHUNT_CODEX_STREAM_A"),
+        account("stream-b", "SHUNT_CODEX_STREAM_B"),
+    );
+    let gateway = start_gateway_with(config).await;
+    let session_id = session_id_for_account(0, 2);
+    let response = post_streaming_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    message_start_input_tokens(&body);
+    assert!(body.contains("hello from b"), "body: {body}");
+}
+
+#[tokio::test]
+async fn streaming_exhausted_pool_emits_error_envelope() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-b");
+    let _env = common::set_env(&[
+        ("SHUNT_CODEX_STREAM_A", token_a.as_str()),
+        ("SHUNT_CODEX_STREAM_B", token_b.as_str()),
+    ])
+    .await;
+    let upstream = MockServer::start().await;
+    status_mock(&token_a, 429).mount(&upstream).await;
+    status_mock(&token_b, 429).mount(&upstream).await;
+    let config = test_config(
+        &upstream.uri(),
+        account("stream-a", "SHUNT_CODEX_STREAM_A"),
+        account("stream-b", "SHUNT_CODEX_STREAM_B"),
+    );
+    let gateway = start_gateway_with(config).await;
+    let response = post_streaming_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("\"type\":\"error\""), "body: {body}");
+}
+
+#[tokio::test]
+async fn streaming_transport_failures_exhaust_pool_with_envelope() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-b");
+    let _env = common::set_env(&[
+        ("SHUNT_CODEX_STREAM_A", token_a.as_str()),
+        ("SHUNT_CODEX_STREAM_B", token_b.as_str()),
+    ])
+    .await;
+    // A bound-then-released loopback port: every upstream send fails at the
+    // transport layer before any response exists.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead_addr = listener.local_addr().unwrap();
+    drop(listener);
+    let mut config = test_config(
+        &format!("http://{dead_addr}"),
+        account("stream-a", "SHUNT_CODEX_STREAM_A"),
+        account("stream-b", "SHUNT_CODEX_STREAM_B"),
+    );
+    config.providers.get_mut("codex").unwrap().retry.max_retries = 0;
+    let gateway = start_gateway_with(config).await;
+    let response = post_streaming_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("\"type\":\"error\""), "body: {body}");
+}
+
+#[tokio::test]
+async fn streaming_non_failover_4xx_emits_error_envelope() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-b");
+    let _env = common::set_env(&[
+        ("SHUNT_CODEX_STREAM_A", token_a.as_str()),
+        ("SHUNT_CODEX_STREAM_B", token_b.as_str()),
+    ])
+    .await;
+    let upstream = MockServer::start().await;
+    status_mock(&token_a, 400).mount(&upstream).await;
+    sse_ok_mock(&token_b, "hello from b").mount(&upstream).await;
+    let config = test_config(
+        &upstream.uri(),
+        account("stream-a", "SHUNT_CODEX_STREAM_A"),
+        account("stream-b", "SHUNT_CODEX_STREAM_B"),
+    );
+    let gateway = start_gateway_with(config).await;
+    let session_id = session_id_for_account(0, 2);
+    let response = post_streaming_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("\"type\":\"error\""), "body: {body}");
+}
+
+#[tokio::test]
+async fn streaming_admission_failure_moves_to_next_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // Account a's token env is left unset: its admission/resolution fails, the
+    // loop cancels its reprobe reservation and moves on to account b.
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-b");
+    let _env = common::set_env(&[("SHUNT_CODEX_STREAM_B", token_b.as_str())]).await;
+    let upstream = MockServer::start().await;
+    sse_ok_mock(&token_b, "hello from b").mount(&upstream).await;
+    let config = test_config(
+        &upstream.uri(),
+        account("stream-a", "SHUNT_CODEX_STREAM_A"),
+        account("stream-b", "SHUNT_CODEX_STREAM_B"),
+    );
+    let gateway = start_gateway_with(config).await;
+    let session_id = session_id_for_account(0, 2);
+    let response = post_streaming_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("hello from b"), "body: {body}");
+}
+
+#[tokio::test]
+async fn streaming_failed_refresh_cools_down_and_moves_on() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let dir = unique_temp_dir("stream-refresh-fail");
+    let _env = common::set_env(&[("SHUNT_CODEX_ACCOUNTS_DIR", dir.to_str().unwrap())]).await;
+    let access_a = chatgpt_token(FAR_FUTURE_EXP, "acct-a");
+    let access_b = chatgpt_token(FAR_FUTURE_EXP, "acct-b");
+    write_store_account(
+        &dir,
+        "stream-refresh-a",
+        &access_a,
+        &chatgpt_token(FAR_FUTURE_EXP, "acct-a"),
+    );
+    write_store_account(
+        &dir,
+        "stream-refresh-b",
+        &access_b,
+        &chatgpt_token(FAR_FUTURE_EXP, "acct-b"),
+    );
+    let upstream = MockServer::start().await;
+    status_mock(&access_a, 401).mount(&upstream).await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::body_string_contains("refresh_token"))
+        .respond_with(ResponseTemplate::new(400))
+        .mount(&upstream)
+        .await;
+    sse_ok_mock(&access_b, "hello from b")
+        .mount(&upstream)
+        .await;
+    let config = test_config(
+        &upstream.uri(),
+        store_account("stream-refresh-a"),
+        store_account("stream-refresh-b"),
+    );
+    let gateway = start_gateway_with(config).await;
+    let session_id = session_id_for_account(0, 2);
+    let response = post_streaming_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("hello from b"), "body: {body}");
+}
+
+#[tokio::test]
+async fn streaming_ttfb_timeout_emits_error_envelope() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-b");
+    let _env = common::set_env(&[
+        ("SHUNT_CODEX_STREAM_A", token_a.as_str()),
+        ("SHUNT_CODEX_STREAM_B", token_b.as_str()),
+    ])
+    .await;
+    let upstream = MockServer::start().await;
+    Mock::given(BearerToken(token_a.clone()))
+        .and(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(sse_body("too late").into_bytes(), "text/event-stream")
+                .set_delay(std::time::Duration::from_secs(5)),
+        )
+        .mount(&upstream)
+        .await;
+    let mut config = test_config(
+        &upstream.uri(),
+        account("stream-a", "SHUNT_CODEX_STREAM_A"),
+        account("stream-b", "SHUNT_CODEX_STREAM_B"),
+    );
+    config.server.timeouts.upstream_ttfb_ms = 500;
+    config.providers.get_mut("codex").unwrap().retry.max_retries = 0;
+    let gateway = start_gateway_with(config).await;
+    let session_id = session_id_for_account(0, 2);
+    let response = post_streaming_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("\"type\":\"error\""), "body: {body}");
+}
