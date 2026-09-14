@@ -20,7 +20,7 @@ use crate::{
 
 use super::body::{prepare_body, PreparedBody};
 use super::context::{ForwardOptions, PoolForward, RelayOptions};
-use super::early_stream::{early_streaming_response, parsed_events};
+use super::early_stream::{bounded_input_estimate, early_streaming_response, parsed_events};
 use super::error::{adapter_error_envelope, mapped_upstream_error, own_error, transport_error};
 use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
@@ -98,7 +98,7 @@ struct PoolStreamContext {
 /// account's admission guard rides in the relay phase so the storm-control slot
 /// stays held until the stream ends. Mirrors the ws-fallback/non-streaming
 /// loop below arm for arm; the duplication is deliberate until the websocket
-/// transport joins the early commit (see docs/todo.md). The committed response
+/// transport joins the early commit. The committed response
 /// cannot carry the winning account's `x-shunt-account` header — the headers
 /// go out with the synthetic start, before the account is known; the
 /// non-streaming and websocket paths still attach it.
@@ -234,7 +234,7 @@ fn pool_events_stream(
                                 Err(error @ crate::upstream_timeout::SendError::Timeout) => {
                                     let envelope =
                                         adapter_error_envelope(error.into_adapter_error(|error| {
-                                            transport_error(error.to_string())
+                                            transport_error(error.without_url().to_string())
                                         }))
                                         .await;
                                     return Some((
@@ -337,11 +337,12 @@ fn pool_events_stream(
                                         Err(
                                             error @ crate::upstream_timeout::SendError::Timeout,
                                         ) => {
-                                            let envelope =
-                                                adapter_error_envelope(error.into_adapter_error(
-                                                    |error| transport_error(error.to_string()),
-                                                ))
-                                                .await;
+                                            let envelope = adapter_error_envelope(
+                                                error.into_adapter_error(|error| {
+                                                    transport_error(error.without_url().to_string())
+                                                }),
+                                            )
+                                            .await;
                                             return Some((
                                                 Err(envelope),
                                                 (
@@ -850,7 +851,9 @@ async fn relay_success(
 /// handle, for streaming turns), which naturally yields `0` below.
 async fn take_estimate(estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>) -> u64 {
     match estimate_handle.take() {
-        Some(handle) => handle.await.unwrap_or(0),
+        // Bounded like `forward_http`: the committed `message_start` must not
+        // wait on the estimator (see `bounded_input_estimate`).
+        Some(handle) => bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await,
         None => 0,
     }
 }

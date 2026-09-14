@@ -884,25 +884,33 @@ impl AnthropicSseMachine {
 pub fn parse_sse_events(input: &str) -> Vec<ResponseEvent> {
     input
         .split("\n\n")
-        .filter_map(|frame| {
-            let mut event = None;
-            let mut data = Vec::new();
-            for line in frame.lines() {
-                if let Some(value) = line.strip_prefix("event:") {
-                    event = Some(value.trim().to_string());
-                } else if let Some(value) = line.strip_prefix("data:") {
-                    data.push(value.trim_start());
-                }
-            }
-            let data = data.join("\n");
-            if data.is_empty() || data == "[DONE]" {
-                return None;
-            }
-            serde_json::from_str(&data)
-                .ok()
-                .map(|data| ResponseEvent { event, data })
-        })
+        .filter_map(|frame| parse_sse_frame(frame).and_then(Result::ok))
         .collect()
+}
+
+/// Classify one complete SSE frame (terminators already stripped): `None` when
+/// the frame carries nothing to relay (no `data` lines, whitespace-only data,
+/// or the `[DONE]` sentinel), `Some(Ok(_))` for a parsed event, and
+/// `Some(Err(_))` when the frame's data is present but not valid JSON.
+pub(crate) fn parse_sse_frame(frame: &str) -> Option<Result<ResponseEvent, serde_json::Error>> {
+    let mut event = None;
+    let mut data = Vec::new();
+    for line in frame.lines() {
+        if let Some(value) = line.strip_prefix("event:") {
+            event = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data.push(value.trim_start());
+        }
+    }
+    let data = data.join("\n");
+    let trimmed = data.trim();
+    if trimmed.is_empty() || trimmed == "[DONE]" {
+        return None;
+    }
+    match serde_json::from_str(&data) {
+        Ok(data) => Some(Ok(ResponseEvent { event, data })),
+        Err(error) => Some(Err(error)),
+    }
 }
 
 pub fn map_error_value(value: &Value, status: StatusCode) -> Value {

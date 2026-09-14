@@ -19,7 +19,8 @@ use crate::{
 use super::body::{prepare_body, PreparedBody};
 use super::context::{ForwardOptions, RelayOptions};
 use super::early_stream::{
-    early_streaming_response, http_events_stream, parsed_events, translated_stream, HttpSendContext,
+    bounded_input_estimate, early_streaming_response, http_events_stream, parsed_events,
+    translated_stream, HttpSendContext,
 };
 use super::error::{backend_error, mapped_upstream_error, own_error, transport_error};
 use super::request::request_builder;
@@ -88,8 +89,11 @@ pub(super) async fn forward_http(
         // runs inside the stream. The estimate must land in that first
         // snapshot, so await it here rather than overlapping it with the
         // upstream round-trip as the non-streaming arm does not need to.
+        // The synthetic `message_start` commits the response before any
+        // upstream byte; it must not wait on the estimator (the budget and its
+        // reasons live in `bounded_input_estimate`).
         let input_tokens_estimate = match estimate_handle {
-            Some(handle) => handle.await.unwrap_or(0),
+            Some(handle) => bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await,
             None => 0,
         };
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
@@ -123,7 +127,9 @@ pub(super) async fn forward_http(
         || http_send(state, route, credential.clone(), session_id, body.clone()),
     )
     .await
-    .map_err(|error| error.into_adapter_error(|error| transport_error(error.to_string())))?;
+    .map_err(|error| {
+        error.into_adapter_error(|error| transport_error(error.without_url().to_string()))
+    })?;
     if let Some(account) = &codex_quota_account {
         state
             .accounts
