@@ -159,7 +159,7 @@ originator: codex_cli_rs
 OpenAI-Beta: responses=experimental
 ```
 
-经过池的响应会标识账户 —— 非流式响应带 `x-shunt-account` 响应头部,流式响应则在中继内容之前带 `event: account` SSE 帧(已提交的 `200` 头部无法等待获胜账户):
+经过池的响应会标识账户 —— 非流式响应和 WebSocket 流式响应带 `x-shunt-account` 响应头部,早期提交的 HTTP 流式响应则在中继内容之前带 `event: account` SSE 帧(已提交的 `200` 头部无法等待获胜账户):
 
 ```http
 x-shunt-account: backup

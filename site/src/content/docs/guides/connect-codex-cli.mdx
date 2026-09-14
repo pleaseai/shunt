@@ -210,9 +210,9 @@ name = "backup"     # each declared name must be provisioned above; an unprovisi
 
 Selection is **session-sticky**: the Codex CLI's own `session-id` request header keys the account,
 so one conversation stays on one account for as long as it stays healthy, then fails over (429 →
-rotate, 401 → refresh + retry, 5xx → cool down + rotate). A successful pooled response attributes the account — non-streaming with an
-`x-shunt-account: <name>` header, streaming with an `event: account` frame before the relayed SSE.
-On a shared gateway with [`[server.auth]`](/reference/configuration/)
+rotate, 401 → refresh + retry, 5xx → cool down + rotate). A successful pooled response attributes the account — non-streaming and websocket-streaming
+responses with an `x-shunt-account: <name>` header, early-committed HTTP streaming with an
+`event: account` frame before the relayed SSE. On a shared gateway with [`[server.auth]`](/reference/configuration/)
 enabled, the sticky key is scoped per authenticated client, so different clients that happen to send
 the same `session-id` use distinct sticky keys — preventing cross-client sticky-key collisions. (The
 keys are distinct; two distinct keys can still hash to the same account.)
@@ -263,9 +263,9 @@ list. A request naming a model your subscription lacks fails exactly as it would
 ## 6. Verify
 
 A raw Responses request against any of the three routes should relay verbatim and (when pooled)
-attribute the account — streaming turns with an `event: account` frame before the relayed SSE
-(committed `200` headers cannot wait for the winning account), non-streaming turns with an
-`x-shunt-account` header:
+attribute the account — early-committed HTTP streaming with an `event: account` frame before the
+relayed SSE (committed `200` headers cannot wait for the winning account), websocket-streaming
+and non-streaming turns with an `x-shunt-account` header:
 
 ```bash
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \

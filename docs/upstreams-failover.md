@@ -293,10 +293,10 @@ Documented user-facing in the site guide; summarized here.
   return immediately without advancing the chain. This keeps configuration
   errors visible instead of masking them behind another upstream.
 - **Early-committed streaming chains fail over inside the committed stream.** A multi-upstream streaming chain whose elements are all `Anthropic`/`Responses` kinds without the websocket transport runs its chain inside the committed SSE response (`proxy/chain_stream`): the response commits `200` immediately (keepalive pings cover the wait), the synthetic `message_start` is deferred until an upstream wins, and pre-header failures — transport, TTFB timeout, advance-status non-2xx — advance to the next upstream. An Anthropic-kind winner relays its own SSE (`message_start` included), so the client sees exactly one start either way. The remaining streaming deviations, each terminal on the committed stream instead of advancing:
-  - a chain containing the websocket transport, or a kind other than `Anthropic`/`Responses`, keeps the pre-commit loop (a Responses element before the chain's end still commits early and pre-empts failover);
+  - a chain containing the websocket transport, a kind other than `Anthropic`/`Responses`, or an Anthropic-kind route on a pooled `claude_oauth`/`kimi_oauth` auth, keeps the pre-commit loop (a Responses element before the chain's end still commits early and pre-empts failover);
   - a pooled (`chatgpt_oauth`) route's account-pool exhaustion is terminal for that route — the chain does not advance past it, even when the pool exhausted on an advance status;
   - a terminal non-2xx (e.g. `400`) from an Anthropic-kind fallback surfaces as the terminal `error` event carrying the upstream's error body, rather than a relayed `400` response (headers are already committed as `200`);
-  - `x-gateway-upstream` names the routed (first) provider, not the winner, since gateway headers go out with the commit;
+  - `x-gateway-upstream` names the routed (first) provider, not the winner, since gateway headers go out with the commit; the request metrics and span outcome attribute the winner once the stream knows it, and the remembered best-failure preference (`429` > `401`/`403` > `404` > other `5xx`) plus the all-pre-header `502` synthesis follow the pre-commit loop exactly;
   - request metrics/access log record the committed `200` (the stream-metrics observer still classifies the error event), exactly like the single-route early-commit path.
   Non-streaming turns are unchanged.
 
