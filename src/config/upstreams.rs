@@ -63,8 +63,11 @@ pub enum AuthMap {
     ApiKey {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         env: Option<String>,
-        #[serde(default)]
-        header: ApiKeyHeader,
+        /// Absent leaves the header alone, preserving a preset's choice (the
+        /// `opencode` preset sends `x-api-key`; an env-only map must not flip
+        /// it back to bearer, which zen rejects at request time).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<ApiKeyHeader>,
     },
     ClaudeOauth {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,7 +115,9 @@ impl UpstreamAuth {
                 if env.is_some() {
                     provider.api_key_env = env;
                 }
-                provider.api_key_header = header;
+                if let Some(header) = header {
+                    provider.api_key_header = header;
+                }
             }
             Self::Map(AuthMap::ClaudeOauth { account, accounts }) => {
                 absorb_oauth_scope(upstream, AuthMode::ClaudeOauth, account, accounts, provider)?;
@@ -222,7 +227,9 @@ pub(super) fn normalize(
             base_url,
             auth: preset.map_or(AuthMode::Passthrough, |preset| preset.auth),
             api_key_env: preset.and_then(|preset| preset.api_key_env.map(str::to_string)),
-            api_key_header: ApiKeyHeader::default(),
+            api_key_header: preset.map_or(super::ApiKeyHeader::default(), |preset| {
+                preset.api_key_header.unwrap_or_default()
+            }),
             effort: upstream.effort.clone(),
             service_tier: upstream.service_tier.clone(),
             count_tokens: upstream.count_tokens,

@@ -833,7 +833,7 @@ async fn mixed_chain_is_gated_and_strips_credentials_per_attempt() {
                 ProviderKind::Anthropic,
                 UpstreamAuth::Map(AuthMap::ApiKey {
                     env: Some(key_env.clone()),
-                    header: ApiKeyHeader::Bearer,
+                    header: Some(ApiKeyHeader::Bearer),
                 }),
             ),
         ],
@@ -1000,7 +1000,7 @@ async fn injected_primary_failover_strips_client_credential_on_same_origin_passt
                 ProviderKind::Anthropic,
                 UpstreamAuth::Map(AuthMap::ApiKey {
                     env: Some(key_env.clone()),
-                    header: ApiKeyHeader::Bearer,
+                    header: Some(ApiKeyHeader::Bearer),
                 }),
             ),
             passthrough("fallback", origin.uri()),
