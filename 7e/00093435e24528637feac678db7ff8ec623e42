@@ -1,0 +1,33 @@
+shunt.toml.example
+  s_3598e23a871543::t_e2bb6dccb9b87d 334-343
+shunt.yaml.example
+  s_3598e23a871543::t_c39311b744fa20 52-55
+src/config.rs
+  s_3598e23a871543::t_9d826c64378710 7256,7258-7259,7261-7275
+  s_3598e23a871543::t_d479bb913777c8 3885-3895
+  s_3598e23a871543::t_2c509123182ee0 4047-4049,4053,4059-4062,4066
+  s_3598e23a871543::t_ceef63fa7b5679 7178-7184
+  s_3598e23a871543::t_4b8fc376b0f616 4010-4015,4019,4023
+  s_3598e23a871543::t_c2e208574e5650 4050-4052,4054
+  s_3598e23a871543::t_89a256987f0a9a 3990-3994
+  s_3598e23a871543::t_69c4b87089f016 5274
+  s_3598e23a871543::t_f4ff52039e80e4 2288-2289
+  s_3598e23a871543::t_56e9144e6de94c 5244,7204-7255,7257,7260,7276-7277
+  s_3598e23a871543::t_34925e8e4a9118 5245-5273
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7e00093435e24528637feac678db7ff8ec623e42",
+  "prompts": {},
+  "sessions": {
+    "s_3598e23a871543": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "121eceb9-d260-4110-b4e8-1b14de7086df",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
