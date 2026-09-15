@@ -1862,7 +1862,20 @@ async fn streaming_429_rotates_to_second_account() {
     ])
     .await;
     let upstream = MockServer::start().await;
-    status_mock(&token_a, 429).expect(1).mount(&upstream).await;
+    // The 429 answers once; a pool that re-requests account a past the
+    // rotation reaches the success fixture instead, so a's content would
+    // appear in the relayed stream and trip the assertion below.
+    status_mock(&token_a, 429)
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    sse_ok_mock(&token_a, "hello from a")
+        .with_priority(2)
+        .expect(0)
+        .mount(&upstream)
+        .await;
     sse_ok_mock(&token_b, "hello from b")
         .expect(1)
         .mount(&upstream)
