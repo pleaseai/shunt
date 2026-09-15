@@ -59,6 +59,74 @@ async fn early_streaming_response_emits_synthetic_start_before_any_upstream_even
     );
 }
 
+/// The producer's first poll overlaps the machine build: the upstream
+/// dispatch starts while the factory still waits (the bounded estimate)
+/// instead of serializing behind it, and the item the producer produced in
+/// the meantime relays after the synthetic start.
+#[tokio::test]
+async fn first_producer_poll_overlaps_the_machine_build() {
+    use futures_util::StreamExt;
+    let (build_release, build_wait) = tokio::sync::oneshot::channel::<()>();
+    let (polled_tx, polled_rx) = tokio::sync::oneshot::channel::<()>();
+    let machine = relay_opts().machine().without_content_accumulation();
+    let events = futures_util::stream::unfold(Some(polled_tx), |tx| async move {
+        let tx = tx?;
+        let _ = tx.send(());
+        Some((
+            Ok(ResponseEvent {
+                event: Some("response.output_text.delta".to_string()),
+                data: json!({"delta": "after"}),
+            }),
+            None,
+        ))
+    });
+    let response = early_streaming_response(
+        move || {
+            Box::pin(async move {
+                let _ = build_wait.await;
+                let mut machine = machine;
+                let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+                (machine, start.join(""))
+            })
+        },
+        std::time::Duration::from_secs(30),
+        events,
+    );
+    let mut body = response.into_body().into_data_stream();
+    let first_poll = tokio::spawn(async move {
+        let item = body.next().await;
+        (item, body)
+    });
+    // The producer must be polled while the build is still blocked: a
+    // serialized build never reaches the producer, so the signal never
+    // arrives and the timeout fails the test.
+    tokio::time::timeout(std::time::Duration::from_secs(2), polled_rx)
+        .await
+        .expect("the producer's first poll overlaps the machine build")
+        .expect("the poll signal is sent");
+    build_release
+        .send(())
+        .expect("the factory is still listening");
+    let (first, mut body) = tokio::time::timeout(std::time::Duration::from_secs(2), first_poll)
+        .await
+        .expect("the synthetic start arrives once the build is released")
+        .expect("the body task joined");
+    let first = first.expect("the stream yields").expect("the chunk is ok");
+    let text = String::from_utf8(first.to_vec()).expect("chunk is utf8");
+    assert!(
+        text.starts_with("event: message_start\ndata: "),
+        "got: {text}"
+    );
+    // The item the producer produced during the build relays after the start.
+    let second = body
+        .next()
+        .await
+        .expect("the stream yields")
+        .expect("the chunk is ok");
+    let second = String::from_utf8(second.to_vec()).expect("chunk is utf8");
+    assert!(second.contains("\"text\":\"after\""), "got: {second}");
+}
+
 /// A producer failure after the early start surfaces as an SSE `error` event
 /// and the stream ends — never a synthesized completion.
 #[tokio::test]

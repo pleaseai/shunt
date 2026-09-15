@@ -195,16 +195,27 @@ where
         > + Send
         + 'static,
 {
+    type Events<I> = std::pin::Pin<Box<dyn Stream<Item = Result<I, Value>> + Send>>;
+    type FirstPoll<I> = (Option<Result<I, Value>>, Events<I>);
+
+    /// The producer is polled live, or its first poll is in flight (the
+    /// machine build won the race) or already resolved (the producer won it);
+    /// either way the first-poll future hands the stream back.
+    enum Producer<I> {
+        Live(Events<I>),
+        First(std::pin::Pin<Box<dyn std::future::Future<Output = FirstPoll<I>> + Send>>),
+    }
+
     stream::unfold(
         (
-            Box::pin(events),
+            Producer::Live(Box::pin(events)),
             None::<AnthropicSseMachine>,
             false,
             map,
             Some(machine),
             false,
         ),
-        move |(mut events, mut machine, mut finished, map, mut factory, drain)| {
+        move |(mut producer, mut machine, mut finished, map, mut factory, drain)| {
             async move {
                 if finished {
                     if drain {
@@ -216,6 +227,9 @@ where
                         // terminal path drains: the cut path's producer has
                         // already ended (polling it again is a panic), and
                         // the error path's connection is dead.
+                        let Producer::Live(mut events) = producer else {
+                            unreachable!("a terminal item implies the producer is live");
+                        };
                         let _ = tokio::time::timeout(TERMINAL_DRAIN_BUDGET, async {
                             while events.next().await.is_some() {}
                         })
@@ -223,26 +237,58 @@ where
                     }
                     return None;
                 }
-                // The leading phase: build the machine (the factory may wait
-                // for a bounded estimate — keepalive pings cover the wait) and
-                // emit its leading bytes, the synthetic start, before any
-                // relayed frame.
+                // The leading phase: race the machine build against the
+                // producer's first poll so the upstream dispatch overlaps the
+                // bounded estimate instead of serializing behind it (the
+                // factory may wait for the estimate; keepalive pings cover
+                // the wait), then emit the leading bytes, the synthetic
+                // start, before any relayed frame. The producer's item, when
+                // it won the race, is buffered until after the start.
                 if let Some(factory) = factory.take() {
-                    let (built, leading) = factory().await;
-                    if !leading.is_empty() {
-                        return Some((
-                            Ok(Bytes::from(leading)),
-                            (events, Some(built), false, map, None, false),
-                        ));
-                    }
+                    let Producer::Live(mut events) = producer else {
+                        unreachable!("the leading phase runs once");
+                    };
+                    let build = factory();
+                    let first = async move {
+                        let item = events.next().await;
+                        (item, events)
+                    };
+                    let build = Box::pin(build);
+                    let first = Box::pin(first);
+                    let (built, leading, producer) =
+                        match futures_util::future::select(build, first).await {
+                            futures_util::future::Either::Left(((built, leading), first)) => {
+                                (built, leading, Producer::First(first))
+                            }
+                            futures_util::future::Either::Right(((item, events), build)) => {
+                                let (built, leading) = build.await;
+                                (
+                                    built,
+                                    leading,
+                                    Producer::First(Box::pin(async move { (item, events) })),
+                                )
+                            }
+                        };
                     return Some((
-                        Ok(Bytes::new()),
-                        (events, Some(built), false, map, None, false),
+                        Ok(Bytes::from(leading)),
+                        (producer, Some(built), false, map, None, false),
                     ));
                 }
                 loop {
                     let mut active = machine.take().expect("machine factory ran");
-                    match events.next().await {
+                    let item = match producer {
+                        Producer::Live(mut events) => {
+                            let item = events.next().await;
+                            producer = Producer::Live(events);
+                            item
+                        }
+                        Producer::First(pending) => {
+                            let (item, events) = pending.await;
+                            producer = Producer::Live(events);
+                            item
+                        }
+                    };
+                    match item {
                         Some(Ok(item)) => {
                             let data = map(item, &mut active);
                             if !data.is_empty() {
@@ -254,13 +300,16 @@ where
                                 let finished = active.is_stopped();
                                 return Some((
                                     Ok(Bytes::from(data)),
-                                    (events, Some(active), finished, map, None, finished),
+                                    (producer, Some(active), finished, map, None, finished),
                                 ));
                             }
                             if active.is_stopped() {
                                 // Unreachable for the current maps (every
                                 // stopping event emits); drain for pooling
                                 // and end, defensively.
+                                let Producer::Live(mut events) = producer else {
+                                    unreachable!("a live producer precedes its item");
+                                };
                                 let _ = tokio::time::timeout(TERMINAL_DRAIN_BUDGET, async {
                                     while events.next().await.is_some() {}
                                 })
@@ -280,7 +329,7 @@ where
                             }
                             return Some((
                                 Ok(Bytes::from(sse("error", &envelope))),
-                                (events, Some(active), true, map, None, false),
+                                (producer, Some(active), true, map, None, false),
                             ));
                         }
                         None => {
@@ -301,7 +350,7 @@ where
                             marked.extend_from_slice(data.as_bytes());
                             return Some((
                                 Ok(Bytes::from(marked)),
-                                (events, Some(active), finished, map, None, false),
+                                (producer, Some(active), finished, map, None, false),
                             ));
                         }
                     }
