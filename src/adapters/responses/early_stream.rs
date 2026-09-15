@@ -30,6 +30,15 @@ pub(super) use super::sse_parse::{
     SseParser,
 };
 
+/// Marker on the committed streaming responses: their
+/// `record_proxied_request` sample is taken inside the stream when the
+/// attempt is classified — the dispatch-time return precedes credential
+/// resolution and the upstream send — so the failover loop must skip its
+/// dispatch-time sample for them: a committed 200 and a near-zero elapsed
+/// are not the request's real outcome.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct InStreamMetrics;
+
 /// The streaming response for the early-commit transport: emit the synthetic
 /// `message_start` + initial ping immediately — before any upstream byte — and
 /// then relay the translated events. The keepalive wrapper spans both phases,
@@ -46,14 +55,15 @@ pub(super) fn early_streaming_response(
     let output = translated_core(events, machine, |event, machine| {
         machine.apply(event).into_iter().collect::<String>()
     });
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
         .body(Body::from_stream(crate::keepalive::with_pings(
             output, keepalive,
         )))
-        .expect("response builder uses valid status and headers")
-        .into_response()
+        .expect("response builder uses valid status and headers");
+    response.extensions_mut().insert(InStreamMetrics);
+    response.into_response()
 }
 
 /// The pooled variant of [`early_streaming_response`]: the same synthetic
@@ -71,14 +81,15 @@ pub(super) fn pool_streaming_response(
     events: impl Stream<Item = Result<PoolItem, Value>> + Send + 'static,
 ) -> axum::response::Response {
     let output = pool_translated_stream(events, machine);
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
         .body(Body::from_stream(crate::keepalive::with_pings(
             output, keepalive,
         )))
-        .expect("response builder uses valid status and headers")
-        .into_response()
+        .expect("response builder uses valid status and headers");
+    response.extensions_mut().insert(InStreamMetrics);
+    response.into_response()
 }
 
 type UpstreamBytes = std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
@@ -344,6 +355,13 @@ pub(super) fn http_events_stream(
             loop {
                 match phase {
                     Phase::Send => {
+                        // The response committed before the upstream send, so
+                        // the failover loop's dispatch-time sample would read
+                        // a fake 200 and a near-zero elapsed (it is skipped
+                        // via `InStreamMetrics`); the real sample lands here,
+                        // when the attempt is classified, matching the
+                        // chain's per-attempt record.
+                        let attempt_started = std::time::Instant::now();
                         // Resolve the credential inside the committed stream:
                         // a refreshable credential's refresh is outside the
                         // TTFB timeout, and keepalive pings cover the wait.
@@ -353,7 +371,14 @@ pub(super) fn http_events_stream(
                                 CredentialSource::Deferred(resolve) => match resolve.await {
                                     Ok(credential) => credential,
                                     Err(error) => {
+                                        let status = error.response.status();
                                         let envelope = adapter_error_envelope(error).await;
+                                        crate::metrics::record_proxied_request(
+                                            &context.route.provider,
+                                            &context.route.model,
+                                            status.as_u16(),
+                                            attempt_started.elapsed().as_secs_f64() * 1000.0,
+                                        );
                                         return Some((
                                             Err(envelope),
                                             (
@@ -376,9 +401,23 @@ pub(super) fn http_events_stream(
                         }
                         match send_classified(&context).await {
                             SendClassified::Relay { bytes } => {
+                                crate::metrics::record_proxied_request(
+                                    &context.route.provider,
+                                    &context.route.model,
+                                    StatusCode::OK.as_u16(),
+                                    attempt_started.elapsed().as_secs_f64() * 1000.0,
+                                );
                                 phase = Phase::Read { bytes };
                             }
-                            SendClassified::Failed { envelope, .. } => {
+                            SendClassified::Failed {
+                                envelope, status, ..
+                            } => {
+                                crate::metrics::record_proxied_request(
+                                    &context.route.provider,
+                                    &context.route.model,
+                                    status.as_u16(),
+                                    attempt_started.elapsed().as_secs_f64() * 1000.0,
+                                );
                                 let envelope = envelope.resolve().await;
                                 return Some((
                                     Err(envelope),

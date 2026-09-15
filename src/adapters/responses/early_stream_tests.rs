@@ -1199,3 +1199,222 @@ async fn http_events_stream_relays_crlf_framed_upstream() {
         vec!["response.created", "response.output_text.delta"]
     );
 }
+
+/// A route whose provider is `name`, cloned off the built-in codex provider,
+/// so tests observing the global test sample store can use a per-test key
+/// (tests in this binary run concurrently and share that store).
+fn named_codex_route(provider: &str) -> Route {
+    Route {
+        provider: provider.to_string(),
+        ..codex_route()
+    }
+}
+
+/// A state whose `provider` is a clone of the built-in codex provider with
+/// `base_url` repointed, alongside [`named_codex_route`].
+fn state_with_provider(provider: &str, base_url: String) -> AppState {
+    let mut config = crate::config::Config::default();
+    config.providers.insert(
+        provider.to_string(),
+        config
+            .providers
+            .get("codex")
+            .expect("codex provider is built in")
+            .clone(),
+    );
+    config
+        .providers
+        .get_mut(provider)
+        .expect("just inserted")
+        .base_url = base_url;
+    AppState::new(config, reqwest::Client::new()).unwrap()
+}
+
+/// The early-commit producer records the request sample when the attempt is
+/// classified: a success becomes one `200` sample whose latency covers the
+/// real upstream round-trip, never the near-zero dispatch/commit time.
+#[tokio::test]
+async fn http_events_stream_records_the_sample_at_classification() {
+    let sse = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(100))
+                .set_body_string(sse.to_string()),
+        )
+        .mount(&server)
+        .await;
+    let state = state_with_provider("early-metrics-probe", server.uri());
+    let events = http_events_stream(
+        HttpSendContext {
+            state,
+            route: named_codex_route("early-metrics-probe"),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: crate::config::AuthMode::ApiKey,
+            codex_quota_account: None,
+        },
+        CredentialSource::Resolved(Credential::ApiKey {
+            value: "probe".to_string(),
+            header: crate::config::ApiKeyHeader::Bearer,
+        }),
+        None,
+    );
+    use futures_util::StreamExt;
+    let collected: Vec<_> = events.collect().await;
+    assert!(!collected.is_empty(), "the clean turn relays events");
+    let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+        "early-metrics-probe",
+        "gpt-5.2-codex",
+        200,
+    );
+    assert_eq!(count, 1, "exactly one sample for the classified attempt");
+    assert!(
+        latencies.iter().all(|latency| *latency >= 50.0),
+        "the latency covers the real upstream round-trip, not the near-zero commit, got {latencies:?}"
+    );
+}
+
+/// A classified failure records its real status, not the committed 200.
+#[tokio::test]
+async fn http_events_stream_records_the_terminal_status_of_a_classified_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("{}"))
+        .mount(&server)
+        .await;
+    let state = state_with_provider("early-metrics-fail-probe", server.uri());
+    let events = http_events_stream(
+        HttpSendContext {
+            state,
+            route: named_codex_route("early-metrics-fail-probe"),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: crate::config::AuthMode::ApiKey,
+            codex_quota_account: None,
+        },
+        CredentialSource::Resolved(Credential::ApiKey {
+            value: "probe".to_string(),
+            header: crate::config::ApiKeyHeader::Bearer,
+        }),
+        None,
+    );
+    use futures_util::StreamExt;
+    let collected: Vec<_> = events.collect().await;
+    assert_eq!(collected.len(), 1, "one terminal item");
+    let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+        "early-metrics-fail-probe",
+        "gpt-5.2-codex",
+        429,
+    );
+    assert_eq!(count, 1, "the classified failure records its real status");
+}
+
+/// A credential-resolution failure classifies with its own status: the
+/// sample records it, never the committed 200.
+#[tokio::test]
+async fn http_events_stream_records_the_credential_resolution_failure_status() {
+    let state = state_with_provider("early-metrics-cred-probe", "http://127.0.0.1:1".to_string());
+    let events = http_events_stream(
+        HttpSendContext {
+            state,
+            route: named_codex_route("early-metrics-cred-probe"),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: crate::config::AuthMode::ApiKey,
+            codex_quota_account: None,
+        },
+        CredentialSource::Deferred(Box::pin(async {
+            Err(crate::adapters::AdapterError {
+                message: "no key".to_string(),
+                response: Box::new(
+                    crate::error::ShuntError::new(
+                        StatusCode::UNAUTHORIZED,
+                        "authentication_error",
+                        "missing api key".to_string(),
+                    )
+                    .into_response(),
+                ),
+                failure: None,
+            })
+        })),
+        None,
+    );
+    use futures_util::StreamExt;
+    let collected: Vec<_> = events.collect().await;
+    assert_eq!(collected.len(), 1, "one terminal item");
+    let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+        "early-metrics-cred-probe",
+        "gpt-5.2-codex",
+        401,
+    );
+    assert_eq!(count, 1, "the credential failure records its own status");
+}
+
+/// Only the committed streaming responses carry the in-stream-metrics
+/// marker the failover loop checks; the already-upstreamed `stream_response`
+/// must keep its loop sample.
+#[tokio::test]
+async fn only_the_committed_streaming_responses_carry_the_metrics_marker() {
+    let server = MockServer::start().await;
+    let upstream = reqwest::get(server.uri()).await.expect("mock responds");
+    let machine = relay_opts()
+        .machine()
+        .with_input_estimate(0)
+        .without_content_accumulation();
+    let committed = early_streaming_response(
+        move || {
+            Box::pin(async move {
+                let mut machine = machine;
+                let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+                (machine, start.join(""))
+            })
+        },
+        std::time::Duration::from_secs(30),
+        futures_util::stream::pending::<Result<ResponseEvent, Value>>(),
+    );
+    assert!(committed
+        .extensions()
+        .get::<crate::adapters::responses::InStreamMetrics>()
+        .is_some());
+    let pooled = pool_streaming_response(
+        move || {
+            Box::pin(async move {
+                let mut machine = relay_opts()
+                    .machine()
+                    .with_input_estimate(0)
+                    .without_content_accumulation();
+                let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+                (machine, start.join(""))
+            })
+        },
+        std::time::Duration::from_secs(30),
+        futures_util::stream::pending::<Result<PoolItem, Value>>(),
+    );
+    assert!(pooled
+        .extensions()
+        .get::<crate::adapters::responses::InStreamMetrics>()
+        .is_some());
+    let relayed = super::super::http::stream_response(
+        upstream,
+        relay_opts(),
+        0,
+        std::time::Duration::from_secs(30),
+    );
+    assert!(relayed
+        .extensions()
+        .get::<crate::adapters::responses::InStreamMetrics>()
+        .is_none());
+}

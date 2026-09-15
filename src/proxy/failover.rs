@@ -164,7 +164,18 @@ pub(super) async fn forward(
         };
         let result = dispatch(state.clone(), route, uri, &attempt_headers, attempt_body).await;
 
-        if !is_count_tokens(uri) {
+        if !is_count_tokens(uri)
+            && !result.as_ref().is_ok_and(|(_, response)| {
+                // The early-commit streaming responses sample their metrics
+                // in-stream at classification: the dispatch-time return
+                // precedes the upstream send, so recording here would count a
+                // fake 200 with a near-zero latency.
+                response
+                    .extensions()
+                    .get::<crate::adapters::responses::InStreamMetrics>()
+                    .is_some()
+            })
+        {
             let status = match &result {
                 Ok((status, _)) => status.as_u16(),
                 Err(error) => error.response.status().as_u16(),

@@ -2,7 +2,10 @@
 //! websocket-first when enabled with an HTTP fallback per account, classifying
 //! each raw upstream status to decide relay / rotate / refresh-and-retry.
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use axum::http::{HeaderValue, StatusCode};
 use futures_util::{stream, Stream, StreamExt};
@@ -90,6 +93,9 @@ pub(super) struct PoolStreamContext {
     pub(super) order: Vec<usize>,
     pub(super) reprobe: Option<ReprobeReservation>,
     pub(super) ramp_initial: Option<u32>,
+    /// Whether this pool stream owns the request's `record_proxied_request`
+    /// sample (the committed single-route paths) or the enclosing chain does.
+    pub(super) record_metrics: bool,
 }
 
 /// One streaming pool turn's event feed: the account loop (admission,
@@ -215,6 +221,7 @@ pub(super) fn pool_or_single_events(
         move |phase| async move {
             match phase {
                 Phase::Init(init) => {
+                    let attempt_started = Instant::now();
                     let Init {
                         scan,
                         state,
@@ -227,11 +234,28 @@ pub(super) fn pool_or_single_events(
                     let accounts = match scan.await {
                         Ok(accounts) => accounts,
                         Err(error) => {
+                            // A scan failure is a classified gateway
+                            // failure (502), recorded here so the committed
+                            // response does not leave the request unsampled —
+                            // the chain records the same shape for its own
+                            // scan failure.
+                            crate::metrics::record_proxied_request(
+                                &route.provider,
+                                &route.model,
+                                StatusCode::BAD_GATEWAY.as_u16(),
+                                attempt_started.elapsed().as_secs_f64() * 1000.0,
+                            );
                             let envelope = adapter_error_envelope(own_error(error)).await;
                             return Some((Err(envelope), Phase::Done));
                         }
                     };
                     if !accounts.is_empty() && accounts.iter().all(|account| account.disabled) {
+                        crate::metrics::record_proxied_request(
+                            &route.provider,
+                            &route.model,
+                            StatusCode::BAD_GATEWAY.as_u16(),
+                            attempt_started.elapsed().as_secs_f64() * 1000.0,
+                        );
                         let envelope = adapter_error_envelope(own_error(format!(
                             "provider '{}' has {} account(s) but all are `disabled = true`; none are selectable",
                             route.provider,
@@ -265,6 +289,7 @@ pub(super) fn pool_or_single_events(
                                 order,
                                 reprobe,
                                 ramp_initial,
+                                record_metrics: true,
                             }))
                         };
                     inner.next().await.map(|item| (item, Phase::Inner(inner)))
@@ -301,6 +326,7 @@ pub(super) fn pool_events_stream(
         order,
         reprobe,
         ramp_initial,
+        record_metrics,
     } = context;
     type Parsed = std::pin::Pin<Box<dyn Stream<Item = Result<ResponseEvent, Value>> + Send>>;
     enum Phase {
@@ -320,8 +346,9 @@ pub(super) fn pool_events_stream(
             None::<PreparedBody>,
             None::<reqwest::Response>,
             reprobe,
+            None::<Instant>,
         ),
-        move |(phase, order_iter, http_body, last_response, reprobe)| {
+        move |(phase, order_iter, http_body, last_response, reprobe, attempt_started)| {
             let state = state.clone();
             let route = route.clone();
             let accounts_config = accounts_config.clone();
@@ -333,6 +360,7 @@ pub(super) fn pool_events_stream(
                 let mut http_body = http_body;
                 let mut last_response = last_response;
                 let mut reprobe = reprobe;
+                let mut attempt_started = attempt_started;
                 loop {
                     match phase {
                         Phase::Relay {
@@ -355,6 +383,7 @@ pub(super) fn pool_events_stream(
                                         http_body,
                                         last_response,
                                         reprobe,
+                                        attempt_started,
                                     ),
                                 ));
                             }
@@ -372,6 +401,7 @@ pub(super) fn pool_events_stream(
                                             http_body,
                                             last_response,
                                             reprobe,
+                                            attempt_started,
                                         ),
                                     ));
                                 }
@@ -384,6 +414,7 @@ pub(super) fn pool_events_stream(
                                             http_body,
                                             last_response,
                                             reprobe,
+                                            attempt_started,
                                         ),
                                     ));
                                 }
@@ -391,6 +422,27 @@ pub(super) fn pool_events_stream(
                             }
                         }
                         Phase::NextAccount => {
+                            // The response committed before the account loop
+                            // ran: the failover loop's dispatch-time sample
+                            // would read a fake 200 and a near-zero elapsed
+                            // (skipped via `InStreamMetrics`); the real
+                            // sample lands here, once per committed attempt,
+                            // when the pool classifies its outcome — matching
+                            // the chain's per-attempt record. The chain
+                            // builds its own pool streams with
+                            // `record_metrics: false` and records the attempt
+                            // itself.
+                            let started = *attempt_started.get_or_insert_with(Instant::now);
+                            let record = |status: StatusCode| {
+                                if record_metrics {
+                                    crate::metrics::record_proxied_request(
+                                        &route.provider,
+                                        &route.model,
+                                        status.as_u16(),
+                                        started.elapsed().as_secs_f64() * 1000.0,
+                                    );
+                                }
+                            };
                             let Some((position, index)) = order_iter.next() else {
                                 crate::metrics::record_pool_rotation(&route.provider, "exhausted");
                                 // Classified pre-frame exhaustion: the
@@ -433,6 +485,7 @@ pub(super) fn pool_events_stream(
                                             ),
                                         ),
                                     };
+                                record(status);
                                 return Some((
                                     Ok(PoolItem::Exhausted {
                                         status,
@@ -440,7 +493,14 @@ pub(super) fn pool_events_stream(
                                         remember,
                                         envelope,
                                     }),
-                                    (Phase::Done, order_iter, http_body, last_response, reprobe),
+                                    (
+                                        Phase::Done,
+                                        order_iter,
+                                        http_body,
+                                        last_response,
+                                        reprobe,
+                                        attempt_started,
+                                    ),
                                 ));
                             };
                             let account = &accounts_config[index];
@@ -490,6 +550,7 @@ pub(super) fn pool_events_stream(
                                     // The TTFB timeout is the configured 504
                                     // answer: terminal, never advanced (the
                                     // pre-commit loop's mapping).
+                                    record(StatusCode::GATEWAY_TIMEOUT);
                                     return Some((
                                         Ok(PoolItem::Exhausted {
                                             status: StatusCode::GATEWAY_TIMEOUT,
@@ -503,6 +564,7 @@ pub(super) fn pool_events_stream(
                                             http_body,
                                             last_response,
                                             reprobe,
+                                            attempt_started,
                                         ),
                                     ));
                                 }
@@ -537,6 +599,7 @@ pub(super) fn pool_events_stream(
                                         status.is_success(),
                                     );
                                     if status.is_success() {
+                                        record(StatusCode::OK);
                                         let parsed: Parsed =
                                             Box::pin(parsed_events(upstream.bytes_stream()));
                                         phase = Phase::Relay {
@@ -550,6 +613,7 @@ pub(super) fn pool_events_stream(
                                         // relay it re-shaped, as everywhere on
                                         // this path. Terminal, carrying its
                                         // real status for metrics.
+                                        record(status);
                                         let envelope = adapter_error_envelope(
                                             mapped_upstream_error(status, upstream, auth).await,
                                         )
@@ -567,6 +631,7 @@ pub(super) fn pool_events_stream(
                                                 http_body,
                                                 last_response,
                                                 reprobe,
+                                                attempt_started,
                                             ),
                                         ));
                                     }
@@ -610,6 +675,7 @@ pub(super) fn pool_events_stream(
                                             .await;
                                             // Terminal, never advanced (the
                                             // pre-commit loop's mapping).
+                                            record(StatusCode::GATEWAY_TIMEOUT);
                                             return Some((
                                                 Ok(PoolItem::Exhausted {
                                                     status: StatusCode::GATEWAY_TIMEOUT,
@@ -623,6 +689,7 @@ pub(super) fn pool_events_stream(
                                                     http_body,
                                                     last_response,
                                                     reprobe,
+                                                    attempt_started,
                                                 ),
                                             ));
                                         }
@@ -659,6 +726,7 @@ pub(super) fn pool_events_stream(
                                                     account,
                                                     true,
                                                 );
+                                                record(StatusCode::OK);
                                                 let parsed: Parsed =
                                                     Box::pin(parsed_events(retry.bytes_stream()));
                                                 phase = Phase::Relay {
@@ -678,6 +746,7 @@ pub(super) fn pool_events_stream(
                                                 .await;
                                                 // Terminal, carrying its real
                                                 // status for metrics.
+                                                record(retry_status);
                                                 return Some((
                                                     Ok(PoolItem::Exhausted {
                                                         status: retry_status,
@@ -691,6 +760,7 @@ pub(super) fn pool_events_stream(
                                                         http_body,
                                                         last_response,
                                                         reprobe,
+                                                        attempt_started,
                                                     ),
                                                 ));
                                             }
@@ -780,6 +850,7 @@ pub(super) async fn forward_chatgpt_oauth(
             order,
             reprobe,
             ramp_initial: state.config.storm_ramp_initial(),
+            record_metrics: true,
         });
         return Ok((
             StatusCode::OK,
@@ -1950,5 +2021,372 @@ mod tests {
             Some(access_token.as_str())
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A state whose provider `name` is a clone of the built-in codex
+    /// provider with `base_url` repointed — the per-test provider names keep
+    /// the global test sample store free of cross-test interference.
+    fn pool_state_with_provider(name: &str, base_url: String) -> (AppState, Route) {
+        let mut config = Config::default();
+        config.providers.insert(
+            name.to_string(),
+            config
+                .providers
+                .get("codex")
+                .expect("codex provider is built in")
+                .clone(),
+        );
+        config
+            .providers
+            .get_mut(name)
+            .expect("just inserted")
+            .base_url = base_url;
+        let mut route = pool_route();
+        route.provider = name.to_string();
+        (
+            AppState::new(config, reqwest::Client::new()).unwrap(),
+            route,
+        )
+    }
+
+    /// The committed pool stream records the request sample at
+    /// classification: one `200` with the real upstream latency once an
+    /// account relays, never the near-zero dispatch/commit time.
+    #[tokio::test]
+    async fn pool_stream_records_the_sample_at_classification() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_PROBE",
+            probe_token("acc-metrics"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_string(
+                        "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                         event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+                    ),
+            )
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-probe-a",
+            "SHUNT_POOL_METRICS_PROBE",
+        )];
+        let (state, route) = pool_state_with_provider("pool-metrics-probe", server.uri());
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and relays");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: message_stop"), "got: {text}");
+        let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 1, "exactly one sample at classification");
+        assert!(
+            latencies.iter().all(|latency| *latency >= 50.0),
+            "the sample covers the upstream round-trip, not the near-zero commit, got {latencies:?}"
+        );
+    }
+
+    /// Pool exhaustion records the classified terminal status, not the
+    /// committed 200.
+    #[tokio::test]
+    async fn pool_stream_records_the_terminal_status_on_exhaustion() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_FAIL_PROBE",
+            probe_token("acc-metrics-fail"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-fail-probe-a",
+            "SHUNT_POOL_METRICS_FAIL_PROBE",
+        )];
+        let (state, route) = pool_state_with_provider("pool-metrics-fail-probe", server.uri());
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and reports the failure in-stream");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: error"), "got: {text}");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-fail-probe",
+            "gpt-5.2-codex",
+            500,
+        );
+        assert_eq!(
+            count, 1,
+            "the classified exhaustion records its real status"
+        );
+    }
+
+    /// The chain owns its attempt's sample: a pool stream built for the
+    /// chain (`record_metrics: false`) must record nothing itself, or the
+    /// chain's per-attempt record would double-count.
+    #[tokio::test]
+    async fn a_chain_pool_stream_leaves_the_sample_to_the_chain() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_CHAIN_PROBE",
+            probe_token("acc-metrics-chain"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-chain-probe-a",
+            "SHUNT_POOL_METRICS_CHAIN_PROBE",
+        )];
+        let (state, route) = pool_state_with_provider("pool-metrics-chain-probe", server.uri());
+        let (order, reprobe) = state.accounts.select_order_deferred(
+            &route.provider,
+            &accounts,
+            None,
+            Some(route.upstream_model.as_str()),
+            state.config.server.pool.as_ref(),
+        );
+        let events = pool_events_stream(PoolStreamContext {
+            state: state.clone(),
+            route: route.clone(),
+            auth: AuthMode::ChatgptOauth,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            accounts_config: std::sync::Arc::new(accounts),
+            order,
+            reprobe,
+            ramp_initial: state.config.storm_ramp_initial(),
+            record_metrics: false,
+        });
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert!(!collected.is_empty(), "the pool relays the account's turn");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-chain-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 0, "the chain records its attempt's sample");
+    }
+
+    /// The TTFB timeout on the committed pool stream classifies as 504 and
+    /// records the sample.
+    #[tokio::test]
+    async fn pool_stream_records_the_ttfb_timeout_status() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_TTFB_PROBE",
+            probe_token("acc-metrics-ttfb"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-ttfb-probe-a",
+            "SHUNT_POOL_METRICS_TTFB_PROBE",
+        )];
+        let mut config = Config::default();
+        config.providers.insert(
+            "pool-metrics-ttfb-probe".to_string(),
+            config
+                .providers
+                .get("codex")
+                .expect("codex provider is built in")
+                .clone(),
+        );
+        config
+            .providers
+            .get_mut("pool-metrics-ttfb-probe")
+            .expect("just inserted")
+            .base_url = server.uri();
+        config.server.timeouts.upstream_ttfb_ms = 100;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let mut route = pool_route();
+        route.provider = "pool-metrics-ttfb-probe".to_string();
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and reports the timeout in-stream");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: error"), "got: {text}");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-ttfb-probe",
+            "gpt-5.2-codex",
+            504,
+        );
+        assert_eq!(count, 1, "the TTFB timeout records its 504");
+    }
+
+    /// Transport exhaustion (every account failed before a response) records
+    /// the classified 502 from the exhaustion arm, never a committed 200.
+    #[tokio::test]
+    async fn pool_stream_records_the_transport_exhaustion_status() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_REFUSED_PROBE",
+            probe_token("acc-metrics-refused"),
+        );
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .unwrap();
+        socket
+            .bind(
+                &"127.0.0.1:0"
+                    .parse::<std::net::SocketAddr>()
+                    .unwrap()
+                    .into(),
+            )
+            .unwrap();
+        let port = socket.local_addr().unwrap().as_socket().unwrap().port();
+        let accounts = vec![pool_account(
+            "pool-metrics-refused-probe-a",
+            "SHUNT_POOL_METRICS_REFUSED_PROBE",
+        )];
+        let mut config = Config::default();
+        config.providers.insert(
+            "pool-metrics-refused-probe".to_string(),
+            config
+                .providers
+                .get("codex")
+                .expect("codex provider is built in")
+                .clone(),
+        );
+        let provider = config
+            .providers
+            .get_mut("pool-metrics-refused-probe")
+            .expect("just inserted");
+        provider.base_url = format!("http://127.0.0.1:{port}");
+        provider.retry = crate::config::RetryConfig {
+            max_retries: 0,
+            ..Default::default()
+        };
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let mut route = pool_route();
+        route.provider = "pool-metrics-refused-probe".to_string();
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and reports the exhaustion in-stream");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: error"), "got: {text}");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-refused-probe",
+            "gpt-5.2-codex",
+            502,
+        );
+        assert_eq!(count, 1, "transport exhaustion records its 502");
+        drop(socket);
+    }
+
+    /// A scan failure inside the committed pool stream classifies as 502 and
+    /// records the sample — the committed response must not leave the
+    /// request unsampled.
+    #[tokio::test]
+    async fn pool_or_single_records_the_scan_failure_status() {
+        let (state, route) =
+            pool_state_with_provider("pool-metrics-scan-probe", "http://127.0.0.1:1".to_string());
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ChatgptOauth,
+            codex_quota_account: None,
+        };
+        let events = pool_or_single_events(
+            Box::pin(async { Err("scan failed".to_string()) }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert_eq!(collected.len(), 1, "one terminal item");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-scan-probe",
+            "gpt-5.2-codex",
+            502,
+        );
+        assert_eq!(count, 1, "the scan failure records its 502");
+    }
+
+    /// An all-disabled pool classifies as 502 and records the sample.
+    #[tokio::test]
+    async fn pool_or_single_records_the_all_disabled_status() {
+        let (state, route) = pool_state_with_provider(
+            "pool-metrics-disabled-probe",
+            "http://127.0.0.1:1".to_string(),
+        );
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ChatgptOauth,
+            codex_quota_account: None,
+        };
+        let accounts = vec![AccountConfig {
+            name: "disabled-metrics-a".to_string(),
+            disabled: true,
+            ..Default::default()
+        }];
+        let events = pool_or_single_events(
+            Box::pin(async { Ok(accounts) }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert_eq!(collected.len(), 1, "one terminal item");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-disabled-probe",
+            "gpt-5.2-codex",
+            502,
+        );
+        assert_eq!(count, 1, "the all-disabled pool records its 502");
     }
 }

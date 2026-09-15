@@ -36,6 +36,7 @@ use futures_util::future::{BoxFuture, Shared};
 use futures_util::{FutureExt, StreamExt, TryStreamExt};
 
 use self::context::{CredentialSource, ForwardOptions, PoolForward, TurnOptions};
+pub(crate) use self::early_stream::InStreamMetrics;
 use self::early_stream::{
     parsed_events, pool_translated_stream, pooled_first_poll, send_classified,
     send_classified_with_estimate, translated_stream, EstimateBuild, HttpSendContext, MachineBuild,
@@ -460,6 +461,7 @@ pub(crate) async fn chain_attempt(
                 order,
                 reprobe,
                 ramp_initial: state.config.storm_ramp_initial(),
+                record_metrics: false,
             });
             // Race the machine build — which awaits the bounded token
             // estimate — against the pool's first poll so account admission,
