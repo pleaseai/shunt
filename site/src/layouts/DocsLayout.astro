@@ -77,7 +77,7 @@ const hasPagination = Astro.slots.has("pagination");
 
 <BaseLayout title={title} description={description} noindex={noindex || draft} markdownUrl={markdownUrl} socialImage={socialImage} lastUpdated={lastUpdated} head={head} collection={collection} entryId={entryId} lang={lang}>
   <div class="flex flex-col min-h-screen">
-    {hasHeader ? <slot name="header" /> : <Header collection={collection} entryId={entryId} showSidebar={showSidebar} locale={locale} />}
+    {hasHeader ? <slot name="header" /> : <Header entryId={entryId} showSidebar={showSidebar} locale={locale} />}
 
     {isCustom ? (
       <main id="main-content" class="flex-1">
