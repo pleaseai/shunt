@@ -158,7 +158,7 @@ That is the structural answer to "observe SSE for usage/guardrails without buffe
 
 > A model id is interpolated into a single-segment slot of an upstream path (`.../models/{model}:generateContent`), so a `/` in one is either a resource-style name (`models/x`, `tunedModels/x`, a Bedrock inference-profile ARN) or an attempt to choose the upstream path. **Deciding that here keeps extraction and every path builder on the same answer.**
 
-`is_safe_segment` rejects empty, `.`, `..`, and any of `/ \ % ? # < > " \` { } | ^`, plus control and whitespace characters; `is_safe_resource_name` splits on `/` and requires every segment safe. The unit tests explicitly cover `gemini-2.5-flash?alt=sse` and `gemini-2.5-flash/../../locations/...`.
+`is_safe_segment` rejects empty, `.`, `..`, and any of ``/ \ % ? # < > " ` { } | ^``, plus control and whitespace characters; `is_safe_resource_name` splits on `/` and requires every segment safe. The unit tests explicitly cover `gemini-2.5-flash?alt=sse` and `gemini-2.5-flash/../../locations/...`.
 
 ## Guardrails and policy
 
