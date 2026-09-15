@@ -1,0 +1,26 @@
+.please/docs/research/md/004-agentgatewayagentgateway-rust-llm-mcp-and-a2a-prox.md
+  s_ea5dad7b2c87fd::t_bd2ebc42859171 204
+  s_ea5dad7b2c87fd::t_e290b274523ef0 1-203
+.please/docs/research/md/005-theagentrouteragent-router-the-renamed-envoy-ai-ga.md
+  s_ea5dad7b2c87fd::t_e290b274523ef0 1-152
+  s_ea5dad7b2c87fd::t_bd2ebc42859171 153
+.please/docs/research/README.md
+  s_ea5dad7b2c87fd::t_02d071276c25a8 13
+  s_ea5dad7b2c87fd::t_0072c76987464b 7-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "32accd2166f3b4e60b0b22d523aac32cb0b6b7e7",
+  "prompts": {},
+  "sessions": {
+    "s_ea5dad7b2c87fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "187791e0-c411-4d17-9037-c3d62eed5c81",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
