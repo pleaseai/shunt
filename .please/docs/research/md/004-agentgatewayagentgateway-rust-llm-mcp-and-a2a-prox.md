@@ -56,7 +56,7 @@ Dispatch is a **single ordered const table**, not a match tree ([`llm/mod.rs`](h
 const CHAT_TRANSLATIONS: &[ChatTranslation] = ...
 ```
 
-The 13 entries, in order:
+The 12 entries, in order:
 
 | # | Client `InputFormat` | Upstream `ChatFormat` | Note in source |
 |--:|---|---|---|
