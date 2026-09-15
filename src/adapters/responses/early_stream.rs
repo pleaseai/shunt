@@ -136,10 +136,11 @@ pub(super) enum SendClassified {
         bytes: UpstreamBytes,
     },
     Failed {
-        /// `Deferred` for an advance-worthy relayed status, whose upstream
-        /// body stays unread until the chain selects the failure as the
-        /// terminal remembered best (the pre-commit loop's lazy-body rule);
-        /// `Ready` for every terminal answer.
+        /// `Deferred` for every relayed upstream status — the body stays
+        /// unread until the envelope is selected (the pre-commit loop's
+        /// lazy-body rule, where superseded failures drop unread) or built
+        /// for the terminal frame; `Ready` only for gateway-synthesized
+        /// failures with no upstream body to read.
         envelope: LazyEnvelope,
         status: StatusCode,
         /// Whether this failure is a relayed upstream status (eligible for
@@ -229,21 +230,16 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
     }
     if !upstream.status().is_success() {
         let status = upstream.status();
-        let envelope = if crate::proxy::failover::is_advance_status(status) {
-            // Advance on the status alone: the body stays unread until the
-            // chain selects this failure as the remembered best — a slow or
-            // non-terminating error body must never block the fallback (the
-            // pre-commit loop drops superseded responses unread).
-            let auth = context.auth;
-            LazyEnvelope::Deferred(Box::pin(async move {
-                adapter_error_envelope(mapped_upstream_error(status, upstream, auth).await).await
-            }))
-        } else {
-            LazyEnvelope::Ready(
-                adapter_error_envelope(mapped_upstream_error(status, upstream, context.auth).await)
-                    .await,
-            )
-        };
+        // Every relayed status defers its body read (the pre-commit loop's
+        // lazy-body rule): an advance-worthy failure lets the chain move on
+        // before the body arrives, and a terminal one lets the caller sample
+        // `shunt.latency` at header arrival — the documented metric — before
+        // the budgeted read runs for the terminal error frame. The envelope
+        // resolves where the failure turns terminal.
+        let auth = context.auth;
+        let envelope = LazyEnvelope::Deferred(Box::pin(async move {
+            adapter_error_envelope(mapped_upstream_error(status, upstream, auth).await).await
+        }));
         return SendClassified::Failed {
             envelope,
             status,

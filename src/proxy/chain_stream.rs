@@ -40,6 +40,7 @@ use crate::{
 
 use super::failover::{headers_for_route, InboundContext};
 use super::ForwardError;
+use crate::adapters::responses::spawn_terminal_drain;
 
 /// Whether this request is one this module drives: more than one upstream, a
 /// streaming client, at least one Responses-kind route (the only kind that
@@ -79,11 +80,12 @@ pub(super) fn chain_stream_applies(state: &AppState, routes: &[Route], body: &Re
         })
 }
 
-/// An error envelope that is either ready or built on demand. An
-/// advance-worthy relayed status carries its upstream response with the body
-/// unread — the pre-commit loop's lazy-body rule, where superseded failures
-/// drop unread — and the chain resolves the envelope only once that failure
-/// is selected as the terminal answer.
+/// An error envelope that is either ready or built on demand. A relayed
+/// status carries its upstream response with the body unread — the pre-commit
+/// loop's lazy-body rule, where superseded failures drop unread — and the
+/// chain resolves the envelope only once that failure is selected as the
+/// terminal answer (a terminal status's budgeted read runs right before its
+/// error frame, after the latency sample).
 pub(crate) enum LazyEnvelope {
     Ready(Value),
     Deferred(Pin<Box<dyn Future<Output = Value> + Send>>),
@@ -130,17 +132,17 @@ pub(crate) enum Attempt {
 /// envelope for one terminal SSE `error` event (a mid-relay body failure, so
 /// the client sees the failure instead of a silently truncated stream and the
 /// outcome records as failed rather than `OK`). A body error after the turn's
-/// `message_stop` already relayed ends the stream silently instead — the
-/// client holds a complete response, and an appended error event would both
-/// corrupt it and (the observer gives error events precedence over terminal
-/// events) record the request as failed.
+/// `message_stop` already relayed can no longer reach the relay: it ends at
+/// that frame, so the post-terminal drain absorbs whatever follows.
 pub(crate) type ClientFrames = Pin<Box<dyn Stream<Item = Result<Bytes, Value>> + Send>>;
 
 /// Cross-chunk scanner over a winner's relayed frames: once a complete
-/// `event: message_stop` frame has passed, a later transport error must end
-/// the relay silently rather than append an `error` event to a completed
-/// turn — the Responses relay's post-terminal rule
-/// (`adapters::responses::sse_parse`).
+/// `event: message_stop` frame has passed, the relay ends at that frame — the
+/// Responses relay's post-terminal rule
+/// (`adapters::responses::sse_parse`) — and a later transport error surfaces
+/// nowhere: the client holds a complete turn, and an appended error event
+/// would both corrupt it and (the observer gives error events precedence over
+/// terminal events) record the request as failed.
 struct TerminalScan {
     /// Bytes since the last complete frame boundary, held until the next
     /// boundary arrives (a frame may straddle chunk boundaries).
@@ -165,18 +167,23 @@ impl TerminalScan {
         }
     }
 
-    /// Feed one relayed chunk.
-    fn scan(&mut self, chunk: &[u8]) {
+    /// Feed one relayed chunk. When the terminal frame completes inside this
+    /// chunk, returns the offset just past its boundary within the chunk —
+    /// earlier bytes of the frame may have arrived in previous chunks — so
+    /// the relay cuts there and forwards nothing past the terminal;
+    /// otherwise `None`.
+    fn scan(&mut self, chunk: &[u8]) -> Option<usize> {
         if self.terminal_seen || self.gave_up {
-            return;
+            return None;
         }
+        let carried = self.carry.len();
         self.carry.extend_from_slice(chunk);
         let mut consumed = 0;
         while let Some(end) = sse_frame_boundary(&self.carry[consumed..]) {
             if is_message_stop_frame(&self.carry[consumed..consumed + end]) {
                 self.terminal_seen = true;
                 self.carry.clear();
-                return;
+                return Some(consumed + end - carried);
             }
             consumed += end;
         }
@@ -186,10 +193,7 @@ impl TerminalScan {
             self.gave_up = true;
             self.carry.clear();
         }
-    }
-
-    fn seen(&self) -> bool {
-        self.terminal_seen
+        None
     }
 }
 
@@ -337,45 +341,60 @@ pub(super) async fn forward_chain_stream(
                             mut terminal,
                         } => match frames.next().await {
                             Some(Ok(bytes)) => {
-                                terminal.scan(&bytes);
+                                let terminal_cut = terminal.scan(&bytes);
                                 if let Ok(mut slot) = winner_slot.lock() {
                                     *slot = winner_provider.clone();
                                 }
                                 if let Ok(mut slot) = winner_model_slot.lock() {
                                     *slot = winner_model.clone();
                                 }
-                                return Some((
-                                    Ok::<Bytes, Infallible>(bytes),
-                                    (
-                                        Phase::Relay {
-                                            frames,
-                                            winner_provider,
-                                            winner_model,
-                                            terminal,
-                                        },
-                                        body,
-                                    ),
-                                ));
+                                match terminal_cut {
+                                    // The terminal frame completes inside
+                                    // this chunk: relay through its
+                                    // boundary, then end the outward
+                                    // stream. The still-open upstream
+                                    // drains detached under the Responses
+                                    // relay's budget, so the client's
+                                    // stream completes at the turn — a
+                                    // client waiting for EOF is never
+                                    // stranded — and the keepalive wrapper
+                                    // can never inject a ping past the
+                                    // terminal frame while the drain runs.
+                                    Some(cut) => {
+                                        spawn_terminal_drain(frames);
+                                        return Some((
+                                            Ok::<Bytes, Infallible>(bytes.slice(..cut)),
+                                            (Phase::Done, body),
+                                        ));
+                                    }
+                                    None => {
+                                        return Some((
+                                            Ok::<Bytes, Infallible>(bytes),
+                                            (
+                                                Phase::Relay {
+                                                    frames,
+                                                    winner_provider,
+                                                    winner_model,
+                                                    terminal,
+                                                },
+                                                body,
+                                            ),
+                                        ));
+                                    }
+                                }
                             }
                             Some(Err(envelope)) => {
-                                // A transport error after the turn's terminal
-                                // frame has already relayed ends the stream
-                                // silently: the client holds a complete
-                                // response, and an appended error event would
-                                // both corrupt it and — the observer gives
-                                // error events precedence over terminal
-                                // events — record the request as failed.
-                                // Mirrors the Responses relay's post-terminal
-                                // suppression (`adapters::responses::sse_parse`).
-                                if terminal.seen() {
-                                    return Some((Ok(Bytes::new()), (Phase::Done, body)));
-                                }
                                 // A pre-terminal mid-relay body failure: emit
                                 // the terminal error event and record the
                                 // failure. The Sentry event is the stream
                                 // observer's: it parses the `error` frame this
                                 // arm emits, so capturing here would report
-                                // the failure twice.
+                                // the failure twice. A post-terminal failure
+                                // never reaches this arm — the relay ended at
+                                // the terminal frame and the drain absorbs
+                                // it, mirroring the Responses relay's
+                                // post-terminal suppression
+                                // (`adapters::responses::sse_parse`).
                                 let frame = sse("error", &envelope);
                                 observability::record_span_outcome_on(
                                     &request_span,
@@ -677,10 +696,13 @@ mod tests {
 
     fn scan(chunks: &[&str]) -> bool {
         let mut scan = TerminalScan::new();
+        let mut armed = false;
         for chunk in chunks {
-            scan.scan(chunk.as_bytes());
+            if scan.scan(chunk.as_bytes()).is_some() {
+                armed = true;
+            }
         }
-        scan.seen()
+        armed
     }
 
     #[test]
@@ -697,6 +719,42 @@ mod tests {
             "op\ndata: {\"type\":\"message_stop\"}",
             "\n\n",
         ]));
+    }
+
+    #[test]
+    fn the_terminal_cut_covers_the_straddled_frame_tail() {
+        let mut scan = TerminalScan::new();
+        let head = "event: message_st";
+        assert_eq!(scan.scan(head.as_bytes()), None);
+        let chunk = "op\ndata: {\"type\":\"message_stop\"}\n\ntrailing";
+        let cut = scan
+            .scan(chunk.as_bytes())
+            .expect("the frame completes in this chunk");
+        assert_eq!(
+            format!("{head}{}", &chunk[..cut]),
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+            "the relay cuts exactly at the terminal frame boundary"
+        );
+    }
+
+    #[test]
+    fn the_terminal_cut_includes_earlier_frames_of_the_same_chunk() {
+        let mut scan = TerminalScan::new();
+        let chunk = "event: ping\ndata: {}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\ntrailing";
+        let cut = scan
+            .scan(chunk.as_bytes())
+            .expect("the frame completes in this chunk");
+        assert_eq!(
+            &chunk[..cut],
+            "event: ping\ndata: {}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        );
+    }
+
+    #[test]
+    fn ordinary_chunks_return_no_cut() {
+        let mut scan = TerminalScan::new();
+        assert_eq!(scan.scan(b"event: content_block_delta\ndata: {}\n\n"), None);
+        assert_eq!(scan.scan(b"event: message_st"), None);
     }
 
     #[test]
@@ -726,9 +784,15 @@ mod tests {
     #[test]
     fn once_armed_the_scan_stays_armed() {
         let mut scan = TerminalScan::new();
-        scan.scan(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
-        scan.scan(b"trailing bytes without a boundary");
-        assert!(scan.seen());
+        assert!(scan
+            .scan(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+            .is_some());
+        // A second terminal frame produces no second cut: the relay ended at
+        // the first.
+        assert_eq!(
+            scan.scan(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+            None
+        );
     }
 
     #[test]
@@ -736,8 +800,11 @@ mod tests {
         let mut scan = TerminalScan::new();
         let garbage = vec![b'x'; super::MAX_TERMINAL_FRAME_BYTES + 1];
         scan.scan(&garbage);
-        scan.scan(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
-        assert!(!scan.seen(), "a given-up scan must stay unarmed");
+        assert_eq!(
+            scan.scan(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+            None,
+            "a given-up scan must stay unarmed"
+        );
     }
 
     #[test]

@@ -10,6 +10,11 @@ pub(crate) mod inbound;
 mod inbound_routed;
 mod pool;
 mod sse_parse;
+// `pub(crate)` (not private): the chain (`proxy::chain_stream`) reuses the
+// post-terminal drain for an Anthropic-kind winner's raw relay, so both
+// winner kinds end the outward stream at the terminal frame under the same
+// budget and the same pooling rule.
+pub(crate) use sse_parse::spawn_terminal_drain;
 // `pub(crate)` (not private): `crate::auth::codex::usage` reuses `CODEX_USER_AGENT`/
 // `CODEX_CLIENT_VERSION` for the wham/usage poller so the CLI identity headers on
 // that endpoint can never drift from the ones the Responses adapter itself sends.

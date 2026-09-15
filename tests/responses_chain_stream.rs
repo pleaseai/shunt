@@ -666,3 +666,72 @@ async fn a_body_error_before_message_stop_still_emits_the_terminal_error_event()
     drop(gateway);
     responder.await.unwrap();
 }
+
+/// An Anthropic-kind winner whose upstream parks the connection after the
+/// full turn — no EOF, no error — must not strand the client: the relay ends
+/// at the terminal frame and the post-terminal drain reads the still-open
+/// upstream detached, so no keepalive ping can ever follow `message_stop` and
+/// the client's stream completes instead of waiting on the upstream to close.
+#[tokio::test]
+async fn a_parked_upstream_after_message_stop_ends_the_relay_at_the_terminal_frame() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = common::env_lock().await;
+    // Chunked transfer: the turn relays as one chunk — a trailing frame
+    // arrives in the same chunk as the terminal frame — and the connection
+    // then parks, no terminating chunk, no EOF, until the test drops the
+    // park handle. wiremock cannot express the park (its server closes or
+    // errors the body), so the raw one-shot responder drives it.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (release_park, parked) = tokio::sync::oneshot::channel::<()>();
+    let responder = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let turn = format!("{ANTHROPIC_SSE}event: ping\ndata: {{}}\n\n");
+        socket
+            .write_all(format!("{:x}\r\n", turn.len()).as_bytes())
+            .await
+            .unwrap();
+        socket.write_all(turn.as_bytes()).await.unwrap();
+        socket.write_all(b"\r\n").await.unwrap();
+        let _ = parked.await;
+    });
+
+    let refused = refused_base_url();
+    let config = chain_config(
+        (ProviderKind::Anthropic, format!("http://{addr}")),
+        (ProviderKind::Responses, refused.url.clone()),
+    );
+    let gateway = start_gateway(config).await;
+    let response = stream_request(&gateway).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = tokio::time::timeout(std::time::Duration::from_secs(3), response.text())
+        .await
+        .expect("the relay ends at the terminal frame instead of waiting on the parked upstream")
+        .unwrap();
+    let frames: Vec<&str> = body
+        .split("\n\n")
+        .filter(|frame| !frame.trim().is_empty())
+        .collect();
+    assert_eq!(
+        frames.last().unwrap().lines().next().unwrap(),
+        "event: message_stop",
+        "no frame may follow the terminal frame, got:\n{body}"
+    );
+    assert_eq!(
+        count_event(&body, "ping"),
+        0,
+        "no frame may follow the terminal frame — neither an upstream frame nor a keepalive ping, got:\n{body}"
+    );
+    drop(gateway);
+    drop(release_park);
+    responder.await.unwrap();
+}

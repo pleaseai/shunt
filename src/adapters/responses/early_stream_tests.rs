@@ -950,10 +950,11 @@ async fn send_classified_defers_the_error_body_for_advance_statuses() {
     );
 }
 
-/// A terminal status builds its envelope eagerly: it is the answer, not a
-/// chain candidate.
+/// A terminal status defers its envelope like an advance-worthy one: the
+/// caller samples latency at header arrival, and the body read runs at
+/// resolve, right before the terminal frame is emitted.
 #[tokio::test]
-async fn send_classified_builds_the_envelope_eagerly_for_terminal_statuses() {
+async fn send_classified_defers_the_envelope_for_terminal_statuses() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(400).set_body_string("{}"))
@@ -984,8 +985,13 @@ async fn send_classified_builds_the_envelope_eagerly_for_terminal_statuses() {
     };
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
-        matches!(envelope, LazyEnvelope::Ready(_)),
-        "a terminal status is the answer; its envelope must be ready"
+        matches!(envelope, LazyEnvelope::Deferred(_)),
+        "the terminal status defers its body read so the latency sample lands at header arrival"
+    );
+    let envelope = envelope.resolve().await;
+    assert!(
+        envelope.get("error").is_some(),
+        "the resolved envelope maps the 400, got {envelope:?}"
     );
 }
 
@@ -1417,4 +1423,108 @@ async fn only_the_committed_streaming_responses_carry_the_metrics_marker() {
         .extensions()
         .get::<crate::adapters::responses::InStreamMetrics>()
         .is_none());
+}
+
+/// A terminal non-advance status defers its error-body read: the classified
+/// failure returns at header arrival with the envelope unbuilt, so the caller
+/// records the latency sample before the (budgeted) body read — never after
+/// it, the way an eager read would inflate the sample.
+#[tokio::test]
+async fn a_terminal_status_defers_its_error_body_read() {
+    let stalled = crate::testutil::StalledBody::start(StatusCode::BAD_REQUEST, "{", "}").await;
+    let state = state_with_provider("stalled-400-send-probe", stalled.base_url.clone());
+    let context = HttpSendContext {
+        state,
+        route: named_codex_route("stalled-400-send-probe"),
+        policy: crate::retry::RetryPolicy::DISABLED,
+        credential: Some(Credential::ApiKey {
+            value: "probe".to_string(),
+            header: crate::config::ApiKeyHeader::Bearer,
+        }),
+        session_id: None,
+        upstream_body: std::sync::Arc::new(json!({"input": []})),
+        auth: crate::config::AuthMode::ApiKey,
+        codex_quota_account: None,
+    };
+    let classified = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        send_classified(&context),
+    )
+    .await
+    .expect("the classified failure returns at header arrival, before the stalled body resolves");
+    let envelope = match classified {
+        SendClassified::Failed {
+            envelope, status, ..
+        } => {
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            envelope
+        }
+        SendClassified::Relay { .. } => panic!("a 400 classifies as a failure"),
+    };
+    // The body read happens at resolve: release the stalled body and build
+    // the envelope, which still names the status.
+    let (resolved, _) = tokio::join!(async { envelope.resolve().await }, stalled.release());
+    assert!(
+        resolved.get("error").is_some(),
+        "the envelope maps the 400, got {resolved:?}"
+    );
+}
+
+/// The latency sample for a terminal status records at header arrival: while
+/// the error body is still stalled, the sample is already in the registry
+/// (and small), and only the terminal error frame waits for the body.
+#[tokio::test]
+async fn a_stalled_terminal_error_body_never_delays_the_latency_sample() {
+    let stalled = crate::testutil::StalledBody::start(StatusCode::BAD_REQUEST, "{", "}").await;
+    let state = state_with_provider("stalled-400-metrics-probe", stalled.base_url.clone());
+    let mut events = Box::pin(http_events_stream(
+        HttpSendContext {
+            state,
+            route: named_codex_route("stalled-400-metrics-probe"),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: crate::config::AuthMode::ApiKey,
+            codex_quota_account: None,
+        },
+        CredentialSource::Resolved(Credential::ApiKey {
+            value: "probe".to_string(),
+            header: crate::config::ApiKeyHeader::Bearer,
+        }),
+        None,
+    ));
+    use futures_util::StreamExt;
+    let drive = tokio::spawn(async move { events.next().await });
+    let count = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+                "stalled-400-metrics-probe",
+                "gpt-5.2-codex",
+                400,
+            );
+            if count > 0 {
+                break count;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the sample records at header arrival, before the stalled body resolves");
+    assert_eq!(count, 1, "exactly one sample for the classified attempt");
+    let (_, latencies) = crate::metrics::proxied_request_samples_for_tests(
+        "stalled-400-metrics-probe",
+        "gpt-5.2-codex",
+        400,
+    );
+    assert!(
+        latencies.iter().all(|latency| *latency < 1000.0),
+        "the latency covers headers only, never the stalled body read, got {latencies:?}"
+    );
+    stalled.release().await;
+    let item = drive.await.unwrap();
+    assert!(
+        item.is_some_and(|item| item.is_err()),
+        "the turn ends in one terminal error item"
+    );
 }

@@ -238,6 +238,28 @@ where
 /// terminal while it runs.
 const TERMINAL_DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Detach the post-terminal drain: after the terminal frame the outward
+/// stream ends, while this task keeps reading the still-open upstream under
+/// the same budget so hyper can pool the connection. Detached because an
+/// in-stream drain made the poll after the terminal frame stall — long
+/// enough, with a short keepalive interval, for the surrounding `with_pings`
+/// wrapper to inject a client-visible `ping` past the terminal. Shared with
+/// the chain's raw Anthropic-kind relay (`proxy::chain_stream`), whose
+/// frames stream has the same item shape.
+pub(crate) fn spawn_terminal_drain<I>(
+    events: std::pin::Pin<Box<dyn Stream<Item = Result<I, Value>> + Send>>,
+) where
+    I: Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut events = events;
+        let _ = tokio::time::timeout(TERMINAL_DRAIN_BUDGET, async {
+            while events.next().await.is_some() {}
+        })
+        .await;
+    });
+}
+
 /// The shared translation loop behind [`translated_stream`] and
 /// [`pool_translated_stream`]: a producer error envelope becomes an SSE
 /// `error` event and ends the stream; a producer that ends before a terminal
@@ -269,26 +291,6 @@ where
         Live(Events<I>),
         First(std::pin::Pin<Box<dyn std::future::Future<Output = FirstPoll<I>> + Send>>),
         Done,
-    }
-
-    /// Detach the post-terminal drain: after the terminal frame the outward
-    /// stream ends, while this task keeps reading the still-open upstream
-    /// under the same budget so hyper can pool the connection. Detached
-    /// because an in-stream drain made the poll after the terminal frame
-    /// stall — long enough, with a short keepalive interval, for the
-    /// surrounding `with_pings` wrapper to inject a client-visible `ping`
-    /// past the terminal.
-    fn spawn_terminal_drain<I>(events: Events<I>)
-    where
-        I: Send + 'static,
-    {
-        tokio::spawn(async move {
-            let mut events = events;
-            let _ = tokio::time::timeout(TERMINAL_DRAIN_BUDGET, async {
-                while events.next().await.is_some() {}
-            })
-            .await;
-        });
     }
 
     stream::unfold(
