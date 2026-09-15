@@ -1,7 +1,23 @@
 ---
 title: CLI
-description: The shunt command line — run, check, init, add, token, gateway login, and provider login.
+description: The shunt command line — run, check, init, add, import, token, gateway login, and provider login.
 ---
+
+## `shunt import opencodex`
+
+Read compatible credentials offline into a new private snapshot. Existing settings, credential files and OpenCodex state are never overwritten. Preview first; a non-interactive export requires `--yes`.
+
+```bash
+shunt import opencodex --dry-run
+shunt import opencodex --provider cursor
+shunt import opencodex --from /path/to/copied-opencodex --yes
+```
+
+Imports the active API key for `anthropic`, `openai-chat` and `openai-responses` transports, plus the active Cursor or Command Code subscription access token (legacy and multi-account auth stores). Expired/invalid/unsupported records are skipped. Refresh tokens and Codex account pools are not copied; other subscriptions require a separate login.
+
+`--from` selects the source home (default: `OPENCODEX_HOME`, then `~/.opencodex`). Repeat `--provider` to select several providers; without it, all compatible active credentials are selected. `--output-dir` chooses the snapshot parent (default: `~/.shunt/imports`). Every export creates a unique directory (0700) and `credentials.env` (0600), preserving earlier snapshots. macOS/Linux export only.
+
+Source the printed file path before starting Shunt. Cursor uses `SHUNT_CURSOR_AUTH_TOKEN`. API keys and Command Code access tokens use `OPENAI_API_KEY`, `XAI_API_KEY`, `SHUNT_COMMANDCODE_API_KEY`, or `SHUNT_IMPORTED_<PROVIDER>_API_KEY` (uppercase, hyphens become underscores); match this variable in your existing `api_key_env`. No config or routing is generated. Snapshots are not refreshed; re-import when access tokens expire. Importing a key does not admit an unsupported provider such as OpenCode Go.
 
 ## `shunt run`
 

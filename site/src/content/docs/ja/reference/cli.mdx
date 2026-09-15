@@ -1,7 +1,23 @@
 ---
 title: CLI
-description: shunt コマンドライン — run、check、init、add、token、gateway login、provider login。
+description: shunt コマンドライン — run、check、init、add、import、token、gateway login、provider login。
 ---
+
+## `shunt import opencodex`
+
+互換性のある認証情報をオフラインで読み、新しい非公開スナップショットに保存します。既存の設定、認証情報ファイル、OpenCodex の状態は上書きしません。まずプレビューしてください。非対話型のエクスポートには `--yes` が必要です。
+
+```bash
+shunt import opencodex --dry-run
+shunt import opencodex --provider cursor
+shunt import opencodex --from /path/to/copied-opencodex --yes
+```
+
+`anthropic`、`openai-chat`、`openai-responses` の有効な API キーと、Cursor または Command Code の選択中のサブスクリプションアクセストークンを取り込みます（旧形式・複数アカウント形式）。期限切れ、不正、未対応の項目はスキップします。更新トークンと Codex アカウントプールはコピーしません。他のサブスクリプションは個別にログインしてください。
+
+`--from` で読み取り元を指定します（既定: `OPENCODEX_HOME`、次に `~/.opencodex`）。`--provider` は複数指定でき、省略すると互換性のある選択中の認証情報をすべて対象にします。`--output-dir` は保存先の親ディレクトリです（既定: `~/.shunt/imports`）。毎回、一意のディレクトリ（0700）と `credentials.env`（0600）を作成し、過去のスナップショットを保持します。エクスポートは macOS/Linux のみ対応します。
+
+表示されたファイルをシェルで source してから Shunt を起動します。Cursor は `SHUNT_CURSOR_AUTH_TOKEN` を使います。API キーおよび Command Code アクセストークンは `OPENAI_API_KEY`、`XAI_API_KEY`、`SHUNT_COMMANDCODE_API_KEY`、または `SHUNT_IMPORTED_<PROVIDER>_API_KEY`（大文字、ハイフンはアンダースコア）です。既存の `api_key_env` を合わせてください。設定やルーティングは生成しません。自動更新されないため期限切れ時に再インポートしてください。キーのインポートで OpenCode Go などの未対応プロバイダーが有効になることはありません。
 
 ## `shunt run`
 
