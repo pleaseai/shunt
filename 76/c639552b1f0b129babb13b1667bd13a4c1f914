@@ -1,0 +1,19 @@
+.please/docs/research/md/004-agentgatewayagentgateway-rust-llm-mcp-and-a2a-prox.md
+  s_971ff42e798800::t_20144f250028df 59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "76c639552b1f0b129babb13b1667bd13a4c1f914",
+  "prompts": {},
+  "sessions": {
+    "s_971ff42e798800": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0abf16d-a7b2-48fd-a8b0-d051a9df51e2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
