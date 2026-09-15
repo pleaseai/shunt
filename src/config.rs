@@ -4120,7 +4120,17 @@ impl Config {
             for target in router.targets() {
                 // Same normalization the validation and the resolver apply.
                 let resolved = crate::routing::strip_context_window_hint(target);
-                if !self.models.iter().any(|other| other.id == resolved)
+                // A `[[models]]` entry routes its own id only when it carries
+                // an `upstream_model` map: `resolve_model_chain` returns from
+                // that arm in that case alone and otherwise falls through to
+                // `[[routes]]`, `[[route_prefixes]]`, and the default provider.
+                // A map-less entry is discovery metadata, so counting it here
+                // would suppress the warning for a target that does land on the
+                // default backend — the exact case this diagnostic exists for.
+                if !self
+                    .models
+                    .iter()
+                    .any(|other| other.id == resolved && other.upstream_model.is_some())
                     && !self.routes.iter().any(|route| route.model == resolved)
                     && !self
                         .route_prefixes
@@ -4131,7 +4141,7 @@ impl Config {
                         model_id = %model.id,
                         target = %target,
                         default_provider = %self.server.default_provider,
-                        "stage_router target matches no [[models]], [[routes]], or [[route_prefixes]] entry; it will fall back to the default provider"
+                        "stage_router target matches no [[models]] entry with an upstream_model map, no [[routes]] entry, and no [[route_prefixes]] entry; it will fall back to the default provider"
                     );
                 }
             }
@@ -7488,6 +7498,40 @@ id = "claude-sonnet-5"
                 "a duplicate id carrying a stage_router must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn stage_router_warns_for_a_target_only_advertised_for_discovery() {
+        // A map-less `[[models]]` entry advertises an id; it does not route it.
+        // `resolve_model_chain` returns from a `[[models]]` match only when
+        // `upstream_model` is present (`routing.rs`), and otherwise falls
+        // through to `[[routes]]`, `[[route_prefixes]]`, and finally
+        // `server.default_provider` — so a target naming such an entry lands on
+        // the default backend exactly like an unmatched id, and must warn.
+        let config = Config {
+            models: vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                // Advertised for discovery only: no map, no route.
+                model_config("claude-opus-4-8", None),
+                // Mapped, so this one really does route on its own.
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("anthropic", "claude-sonnet-4-6")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        let (_, logs) = capture_logs(|| config.warn_stage_router_targets_unresolvable());
+        assert_eq!(
+            logs.matches("stage_router target matches no").count(),
+            1,
+            "only the discovery-only target warns: {logs}"
+        );
+        assert!(
+            logs.contains("target=claude-opus-4-8"),
+            "the warning must name the discovery-only target, not the mapped one: {logs}"
+        );
     }
 
     #[test]
