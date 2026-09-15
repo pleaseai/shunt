@@ -414,6 +414,45 @@ codex = "gpt-5.2"
 | `display_name` | — | `/model` 선택기에 표시되는 레이블 |
 | `upstream_model` | — | 설정된 업스트림 이름에서 백엔드 모델 id로 이어지는 맵. 순서 있는 `[[upstreams]]`는 여러 항목의 페일오버 체인을 허용하고, 레거시 provider는 한 항목만 허용 |
 
+### `[models.stage_router]` (선택)
+
+광고된 id 하나에 대한 콘텐츠 인지 티어 선택입니다. 목적지를 하나만 지정하는 대신
+**두 개** — 강한 티어와 효율 티어 — 를 지정합니다.
+
+**이 릴리스에서는 동작하지 않습니다.** 테이블을 파싱하고 검증하지만 리졸버가 아직
+읽지 않으므로, 이 테이블을 가진 id는 여전히 그 id 문자열 그대로 일반
+`[[routes]]` / 접두사 / `default_provider` 순서로 라우팅되며 두 타깃 어느 쪽으로도
+가지 않습니다. 활성화 변경보다 먼저 설정을 작성하고 검토할 수 있도록 키를 여기에
+기록합니다. 이 테이블이 없으면 `[[models]]` 항목은 이전과 똑같이 동작합니다.
+
+```toml
+[[models]]
+id = "claude-auto"
+display_name = "Auto (stage router)"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `capable_target` | ✅ 필수 | 어려운 추론·조사·오류 복구를 맡는 모델 id |
+| `efficient_target` | ✅ 필수 | 계획이 정해진 뒤 정형 작업을 맡는 모델 id |
+| `picker` | `efficient_first` | 신호가 불확실할 때 사용할 티어. `efficient_first` 또는 `capable_first` |
+| `confidence_threshold` | `0.5` | 신호에 따라 결정하기 위한 최소 스코어러 확신도, `(0.0, 1.0]` 범위 |
+| `recent_turn_window` | `3` | 스코어러에 전달하는 어시스턴트 툴 결과 턴 수. 최소 `1` |
+| `min_dwell_turns` | `3` | 하향 전환이 가능해지기까지 티어를 유지하는 턴 수. 티어를 고른 턴부터 세므로 `0`과 `1`은 모두 하한 없음을 뜻합니다 |
+| `deescalate_threshold` | `0.75` | 티어를 *내릴* 때 필요한 확신도. `confidence_threshold`보다 의도적으로 엄격합니다 |
+| `session_ttl_seconds` | `3600` | 조용한 세션의 고정 티어가 유지되는 시간 |
+
+타깃이 그 자체로 라우터인 경우, 빈 타깃, `(0.0, 1.0]`을 벗어난 문턱값,
+`recent_turn_window`가 `0`인 경우, 라우터 **id**가 `[1m]`으로 끝나는 경우, 같은
+항목이 `[models.upstream_model]`도 선언한 경우는 시작 오류입니다. 타깃 id는
+라우팅이 매칭하는 방식과 동일하게 끝의 `[1m]` 힌트를 제거한 뒤 비교합니다. 명시적
+라우트와 매칭되지 않는 타깃은 경고만 냅니다 — 매칭되지 않는 다른 id와 마찬가지로
+`server.default_provider`로 해석됩니다.
+
 ## `[sentry]` (선택)
 
 자체 Sentry 프로젝트로의 옵트인 오류 리포팅. `dsn`을 설정하지 않으면 꺼짐이며, `[otel]`과 독립적입니다. 게이트웨이 자체 진단을 보고합니다 — 치명적인 게이트웨이 시작/서빙 오류, 패닉, `error` 레벨 로그 이벤트(`warn`/`info`는 브레드크럼, 메시지만 포함) — 여기에 더해 `dsn`이 설정되어 있으면 업스트림 제공자가 실패 응답을 반환할 때마다 무조건 오류/경고 이벤트를 보냅니다: 5xx 응답은 `error`, 429/529(레이트 리밋/과부하)는 `warning`이며, 각각 `model`, `provider`, `upstream_status`만 태그로 붙습니다. 요청/응답 본문, 헤더, 자격증명은 절대 전송되지 않습니다. 메트릭과 트레이싱은 각각 별도의 추가 옵트인입니다.

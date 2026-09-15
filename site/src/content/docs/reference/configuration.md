@@ -592,6 +592,46 @@ codex = "gpt-5.2"
 | `display_name` | — | Label shown in the `/model` picker |
 | `upstream_model` | — | Map from configured upstream names to backend model ids; ordered `[[upstreams]]` may produce a multi-entry failover chain, while legacy providers allow one entry |
 
+### `[models.stage_router]` (optional)
+
+Content-aware tier selection for one advertised id: instead of naming a single
+destination, the entry names **two** — a capable tier and an efficient one.
+
+**Not active in this release.** The table is parsed and validated, but the
+resolver does not read it yet, so an id carrying this table still routes by that
+literal id through the ordinary `[[routes]]` / prefix / `default_provider`
+ladder — not to either target. The keys are documented here so a configuration
+can be written and reviewed ahead of the change that activates them. Absent this
+table a `[[models]]` entry behaves exactly as it did before.
+
+```toml
+[[models]]
+id = "claude-auto"
+display_name = "Auto (stage router)"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `capable_target` | ✅ required | Model id for hard reasoning, investigation, and error recovery |
+| `efficient_target` | ✅ required | Model id for routine production once the plan is settled |
+| `picker` | `efficient_first` | Tier used when the signals are inconclusive. `efficient_first` or `capable_first` |
+| `confidence_threshold` | `0.5` | Minimum scorer confidence to act on a signal, in `(0.0, 1.0]` |
+| `recent_turn_window` | `3` | Assistant turns of tool results fed to the scorer. Must be at least `1` |
+| `min_dwell_turns` | `3` | Turns a tier is held before a de-escalation may fire; counted from the turn that chose it, so `0` and `1` both mean no dwell floor |
+| `deescalate_threshold` | `0.75` | Confidence required to move *down* a tier, deliberately stricter than `confidence_threshold` |
+| `session_ttl_seconds` | `3600` | How long a quiet session's pinned tier survives |
+
+A target that is itself a router, a blank target, a threshold outside
+`(0.0, 1.0]`, a `recent_turn_window` of `0`, a router **id** ending in `[1m]`, or
+the same entry also declaring `[models.upstream_model]` is a startup error.
+Target ids are compared after the trailing `[1m]` hint is stripped, the same way
+routing matches them. A target that matches no explicit route only warns — it
+still resolves through `server.default_provider` like any other unmatched id.
+
 ## `[sentry]` (optional)
 
 Opt-in error reporting to your own Sentry project. Off unless `dsn` is set; independent of `[otel]`. Reports gateway-owned diagnostics — fatal gateway startup/serve errors, panics, and `error`-level log events (`warn`/`info` as breadcrumbs, message only) — plus, unconditionally once `dsn` is set, an error/warning event whenever an upstream provider itself returns a failure: `error` for a 5xx response, `warning` for 429/529 (rate limit/overload), each tagged with `model`, `provider`, and `upstream_status` only. A streaming request that answers `200` and then fails mid-stream — an `event: error` frame, or the connection cut before a terminal event — also reports an event (`error`/`warning` respectively), tagged with `model`, `provider`, and `outcome`, and marks the request span `otel.status_code = error` (issue #287). A cut additionally carries a `cut_kind` tag saying which kind it was — `eof` (the body simply ended), `transport_error` (the body read failed), or `marker` (shunt had already detected the cut and synthesized a completion so the client stream stayed well-formed) — and every mid-stream event carries diagnostic context: how many SSE events and body bytes reached the client, the last event type seen, elapsed and time-to-first-token in milliseconds, and, for a `transport_error`, the upstream error's message (issue #310). These events are rate-limited in-process to a handful per minute, so one client retrying a cut stream cannot flood the project. Each combination of provider, model, and failure kind gets its own budget, and the three cut kinds count separately from each other and from an error-event failure — so a burst of `eof` cuts cannot hide a `transport_error` on the same model. A suppressed run is reported as a `suppressed_count` on the next event that gets through. The `shunt.stream_outcome` metric is never throttled. Request/response bodies, headers, and credentials are never sent. Metrics and tracing are each a further, separate opt-in.
