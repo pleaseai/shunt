@@ -1,0 +1,42 @@
+src/routing/stage/signals.rs
+  s_3598e23a871543::t_089bd0747f9516 239-240
+  s_3598e23a871543::t_c66005b8c53950 133
+  s_3598e23a871543::t_0dd05abfd87db9 404-405,407,412-413,415-435
+  s_3598e23a871543::t_196e5d05acbc49 18-20,25-33
+  s_3598e23a871543::t_e84197266f69d7 192
+  s_3598e23a871543::t_0be914e345525d 241-242,244-248
+  s_3598e23a871543::t_5b25edceadbe52 402-403,406,408-411,414,436-437
+  s_3598e23a871543::t_7f67391f60420f 381-384
+  s_3598e23a871543::t_996445604ae216 373-380,385-401
+  s_3598e23a871543::t_67799ffd2df1f5 64-70,74-78,97,99-101,106,109-122,124-132,134-140
+  s_3598e23a871543::t_ba17310b94abb4 83-86,98,102-105
+  s_3598e23a871543::t_ce0470895f93ff 166-167,173
+  s_3598e23a871543::t_1bd627d3f4a367 87,93
+  s_3598e23a871543::t_93120b03fc118c 205
+  s_3598e23a871543::t_edfff8165b394a 34
+  s_3598e23a871543::t_cb5184d4e51c10 35-36
+src/routing/stage.rs
+  s_3598e23a871543::t_aa96dbad886c4b 239-245
+  s_3598e23a871543::t_05c0292e9ec17f 107
+  s_3598e23a871543::t_6887f06fc8fac9 98-104
+src/routing/stage/vocabulary.rs
+  s_3598e23a871543::t_f84ebb42b0db18 65-67
+  s_3598e23a871543::t_8af886a08978d7 38-43
+  s_3598e23a871543::t_6b5c4cf2fea12d 60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "6398b7af546eddfab3d8c0a3e07cb8a2dfeeafbd",
+  "prompts": {},
+  "sessions": {
+    "s_3598e23a871543": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "121eceb9-d260-4110-b4e8-1b14de7086df",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
