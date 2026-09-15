@@ -47,6 +47,16 @@ struct StageSession {
     /// Turns served at this tier, counting the one that chose it.
     dwell_turns: u32,
     last_seen: Instant,
+    /// The `session_ttl_seconds` of the router that wrote this entry.
+    ///
+    /// Carried per entry because the store is shared across every
+    /// router-backed model, and [`evict`] runs over all of them on whichever
+    /// request happened to overflow the cap. Expiring with the *caller's* TTL
+    /// would let a model configured with a one-second window delete another
+    /// model's seconds-old pin out from under a one-hour window — and an
+    /// unpinned session is free to de-escalate immediately, which is the exact
+    /// flip the dwell gate exists to prevent.
+    ttl: Duration,
 }
 
 /// Per-session tier pins. Lives on `AppState` beside the account pool, so it
@@ -83,7 +93,12 @@ impl StageRouterStore {
         read_only: bool,
         now: Instant,
     ) -> StageDecision {
-        let Some(session_id) = session_id else {
+        // An empty header is not a session. Without this every client that
+        // sends a blank `x-claude-code-session-id` would hash to one key and
+        // share a single tier pin for the model — the same reason the websocket
+        // pool (`adapters/responses/mod.rs`) and the inbound Codex endpoint
+        // already filter it before using the id as a sticky key.
+        let Some(session_id) = session_id.filter(|session_id| !session_id.is_empty()) else {
             return estimate;
         };
         let key = session_key(model, session_id);
@@ -97,9 +112,15 @@ impl StageRouterStore {
 
         // A pin from a different router table, or one that has gone quiet longer
         // than its TTL, is treated as absent.
+        //
+        // Expiry reads the entry's own TTL, as [`evict`] does. The caller's
+        // would give the same answer — a table whose `session_ttl_seconds`
+        // differs also hashes to a different `fingerprint`, which this filter
+        // already rejects — but only by way of the hash, which is not something
+        // these two lines show on their own.
         let pinned = entries.get(&key).copied().filter(|session| {
             session.fingerprint == fingerprint
-                && now.saturating_duration_since(session.last_seen) <= ttl
+                && now.saturating_duration_since(session.last_seen) <= session.ttl
         });
 
         let (decision, changed) = resolve(router, pinned, estimate);
@@ -123,9 +144,10 @@ impl StageRouterStore {
                 fingerprint,
                 dwell_turns,
                 last_seen: now,
+                ttl,
             },
         );
-        evict(&mut entries, now, ttl);
+        evict(&mut entries, now);
 
         decision
     }
@@ -197,20 +219,42 @@ fn decided_by_signals(source: &str) -> bool {
 
 /// Drop expired entries, then the oldest, until the store is back under its cap.
 /// Amortised onto the insert path: no timer, no background task.
-fn evict(entries: &mut HashMap<SessionKey, StageSession>, now: Instant, ttl: Duration) {
+///
+/// Each entry is expired against **its own** TTL, not the caller's — see
+/// [`StageSession::ttl`]. One pass does both jobs: the retain predicate drops
+/// what has expired and remembers the oldest survivor, so the capacity trim
+/// below needs no second scan of the map while the lock is held.
+fn evict(entries: &mut HashMap<SessionKey, StageSession>, now: Instant) {
     if entries.len() <= MAX_TRACKED_SESSIONS {
         return;
     }
-    entries.retain(|_, session| now.saturating_duration_since(session.last_seen) <= ttl);
+    let mut oldest: Option<(SessionKey, Instant)> = None;
+    entries.retain(|key, session| {
+        if now.saturating_duration_since(session.last_seen) > session.ttl {
+            return false;
+        }
+        if oldest
+            .as_ref()
+            .is_none_or(|(_, last_seen)| session.last_seen < *last_seen)
+        {
+            oldest = Some((key.clone(), session.last_seen));
+        }
+        true
+    });
+    // `apply` inserts exactly one entry before calling this and returns early
+    // above while under the cap, so the store is at most one over it here and
+    // a single removal is enough. The loop is still a loop so that a future
+    // caller inserting in bulk cannot silently leave the cap exceeded.
     while entries.len() > MAX_TRACKED_SESSIONS {
-        let Some(oldest) = entries
-            .iter()
-            .min_by_key(|(_, session)| session.last_seen)
-            .map(|(key, _)| key.clone())
-        else {
+        let Some(key) = oldest.take().map(|(key, _)| key).or_else(|| {
+            entries
+                .iter()
+                .min_by_key(|(_, session)| session.last_seen)
+                .map(|(key, _)| key.clone())
+        }) else {
             break;
         };
-        entries.remove(&oldest);
+        entries.remove(&key);
     }
 }
 
@@ -254,382 +298,5 @@ fn fingerprint(router: &StageRouterConfig) -> u64 {
     hasher.finish()
 }
 
-/// Hysteresis tests.
-///
-/// These pin the asymmetry and the invalidation rules, not libsy's scoring —
-/// every estimate here is constructed by hand so a test states exactly the
-/// scorer output it is reasoning about. Non-vacuity: drop the `Capable` arm's
-/// dwell/threshold gate and `a_pinned_capable_tier_holds_through_a_weak_estimate`
-/// plus `a_de_escalation_also_needs_the_dwell_window` go red; drop the
-/// `Efficient` arm's immediate flip and `an_escalation_needs_no_dwell` goes red;
-/// stop recording in `read_only` mode and `a_count_tokens_probe_never_moves_the_pin`
-/// goes red; make the fingerprint constant and
-/// `a_reconfigured_router_abandons_its_pins` goes red; drop the `tests_passed`
-/// exemption from the confidence gate and
-/// `a_passing_test_suite_de_escalates_without_a_confidence_score` goes red.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::StageRouterPicker;
-
-    const SESSION: &str = "0199a0f2-2f4b-7c3e-9d61-4f1a2b3c4d5e";
-
-    fn router() -> StageRouterConfig {
-        StageRouterConfig {
-            capable_target: "claude-opus-4-8".to_string(),
-            efficient_target: "claude-sonnet-4-6".to_string(),
-            picker: StageRouterPicker::EfficientFirst,
-            confidence_threshold: crate::config::DEFAULT_CONFIDENCE_THRESHOLD,
-            recent_turn_window: 3,
-            min_dwell_turns: 3,
-            deescalate_threshold: None,
-            session_ttl_seconds: 3600,
-        }
-    }
-
-    fn decision(tier: StageTier, source: &'static str, confidence: f64) -> StageDecision {
-        StageDecision {
-            tier,
-            source,
-            confidence: Some(confidence),
-        }
-    }
-
-    fn capable() -> StageDecision {
-        decision(StageTier::Capable, "dimensions", 0.76)
-    }
-
-    fn efficient(confidence: f64) -> StageDecision {
-        decision(StageTier::Efficient, "dimensions", confidence)
-    }
-
-    /// Serve `turns` turns at whatever the estimate says, so a pin accrues dwell.
-    fn pin(
-        store: &StageRouterStore,
-        router: &StageRouterConfig,
-        estimate: StageDecision,
-        turns: u32,
-    ) {
-        let now = Instant::now();
-        for _ in 0..turns {
-            store.apply("claude-auto", Some(SESSION), router, estimate, false, now);
-        }
-    }
-
-    #[test]
-    fn a_request_without_a_session_id_is_decided_statelessly() {
-        // A bare `curl` sends no session header. It must still route, and must
-        // not take a slot that a real session could use.
-        let store = StageRouterStore::new();
-        let router = router();
-
-        let decision = store.apply(
-            "claude-auto",
-            None,
-            &router,
-            capable(),
-            false,
-            Instant::now(),
-        );
-
-        assert_eq!(decision.tier, StageTier::Capable);
-        assert_eq!(store.len(), 0);
-    }
-
-    #[test]
-    fn a_count_tokens_probe_never_moves_the_pin() {
-        // Claude Code sends count_tokens with a history one turn behind. A probe
-        // that committed would let the stale history drive the pin.
-        let store = StageRouterStore::new();
-        let router = router();
-        let now = Instant::now();
-
-        let probe = store.apply("claude-auto", Some(SESSION), &router, capable(), true, now);
-
-        assert_eq!(probe.tier, StageTier::Capable, "a probe still gets a tier");
-        assert_eq!(store.len(), 0, "but it leaves no trace");
-    }
-
-    /// The asymmetry, upward half: a turn the efficient tier cannot serve costs
-    /// more than the cache prefix an immediate flip forfeits.
-    #[test]
-    fn an_escalation_needs_no_dwell() {
-        let store = StageRouterStore::new();
-        let router = router();
-        let now = Instant::now();
-
-        store.apply(
-            "claude-auto",
-            Some(SESSION),
-            &router,
-            efficient(0.9),
-            false,
-            now,
-        );
-        let escalated = store.apply("claude-auto", Some(SESSION), &router, capable(), false, now);
-
-        assert_eq!(escalated.tier, StageTier::Capable);
-        assert_eq!(escalated.source, "dimensions");
-    }
-
-    /// The asymmetry, downward half: 0.6 clears the escalate threshold (0.5) but
-    /// not the de-escalate one (0.75), so the pin holds.
-    #[test]
-    fn a_pinned_capable_tier_holds_through_a_weak_estimate() {
-        let store = StageRouterStore::new();
-        let router = router();
-        assert_eq!(
-            router.deescalate_threshold(),
-            crate::config::DEFAULT_DEESCALATE_THRESHOLD
-        );
-        pin(&store, &router, capable(), 5);
-
-        let held = store.apply(
-            "claude-auto",
-            Some(SESSION),
-            &router,
-            efficient(0.6),
-            false,
-            Instant::now(),
-        );
-
-        assert_eq!(held.tier, StageTier::Capable);
-        assert_eq!(held.source, "sticky");
-    }
-
-    #[test]
-    fn a_confident_estimate_de_escalates_once_the_dwell_window_has_passed() {
-        let store = StageRouterStore::new();
-        let router = router();
-        pin(&store, &router, capable(), 5);
-
-        let dropped = store.apply(
-            "claude-auto",
-            Some(SESSION),
-            &router,
-            efficient(0.8),
-            false,
-            Instant::now(),
-        );
-
-        assert_eq!(dropped.tier, StageTier::Efficient);
-        assert_eq!(dropped.source, "dimensions");
-    }
-
-    /// Confidence alone is not enough: the tier must also have been held long
-    /// enough that the forfeited prompt cache was worth building.
-    #[test]
-    fn a_de_escalation_also_needs_the_dwell_window() {
-        let store = StageRouterStore::new();
-        let router = router();
-        pin(&store, &router, capable(), 1);
-
-        let held = store.apply(
-            "claude-auto",
-            Some(SESSION),
-            &router,
-            efficient(0.9),
-            false,
-            Instant::now(),
-        );
-
-        assert_eq!(
-            held.tier,
-            StageTier::Capable,
-            "one turn is not a dwell window"
-        );
-        assert_eq!(held.source, "sticky");
-    }
-
-    /// libsy's hard de-escalation shortcut skips the scorer and reports no
-    /// confidence at all (`resolved(Efficient, TestsPassed, 0.0, None)`), so a
-    /// bare `confidence >= threshold` gate would make the single strongest
-    /// reason to go cheap the one reason that can never fire.
-    #[test]
-    fn a_passing_test_suite_de_escalates_without_a_confidence_score() {
-        let store = StageRouterStore::new();
-        let router = router();
-        pin(&store, &router, capable(), 5);
-
-        let dropped = store.apply(
-            "claude-auto",
-            Some(SESSION),
-            &router,
-            StageDecision {
-                tier: StageTier::Efficient,
-                source: "tests_passed",
-                confidence: None,
-            },
-            false,
-            Instant::now(),
-        );
-
-        assert_eq!(dropped.tier, StageTier::Efficient);
-        assert_eq!(dropped.source, "tests_passed");
-    }
-
-    /// It still waits out the dwell window: that gate prices the forfeited
-    /// prompt cache, which costs the same however strong the evidence is.
-    #[test]
-    fn even_a_passing_test_suite_waits_out_the_dwell_window() {
-        let store = StageRouterStore::new();
-        let router = router();
-        pin(&store, &router, capable(), 1);
-
-        let held = store.apply(
-            "claude-auto",
-            Some(SESSION),
-            &router,
-            StageDecision {
-                tier: StageTier::Efficient,
-                source: "tests_passed",
-                confidence: None,
-            },
-            false,
-            Instant::now(),
-        );
-
-        assert_eq!(held.tier, StageTier::Capable);
-        assert_eq!(held.source, "sticky");
-    }
-
-    /// A fall-open is the picker's default, not evidence. It must not be able to
-    /// unpin a tier the signals chose — in either direction.
-    #[test]
-    fn a_fall_open_estimate_cannot_move_a_pinned_tier() {
-        let store = StageRouterStore::new();
-        let router = router();
-        pin(&store, &router, capable(), 5);
-
-        for source in ["fall_open", "no_signal", "ambiguous"] {
-            let held = store.apply(
-                "claude-auto",
-                Some(SESSION),
-                &router,
-                decision(StageTier::Efficient, source, 0.9),
-                false,
-                Instant::now(),
-            );
-            assert_eq!(held.tier, StageTier::Capable, "{source} must not unpin");
-            assert_eq!(held.source, "sticky");
-        }
-    }
-
-    #[test]
-    fn a_reconfigured_router_abandons_its_pins() {
-        let store = StageRouterStore::new();
-        let router = router();
-        pin(&store, &router, capable(), 5);
-
-        let mut reloaded = router.clone();
-        reloaded.efficient_target = "claude-haiku-4-5".to_string();
-        let decision = store.apply(
-            "claude-auto",
-            Some(SESSION),
-            &reloaded,
-            efficient(0.6),
-            false,
-            Instant::now(),
-        );
-
-        assert_eq!(
-            decision.tier,
-            StageTier::Efficient,
-            "a pin made under a different table must not bind the new one"
-        );
-    }
-
-    #[test]
-    fn a_pin_expires_once_the_session_goes_quiet() {
-        let store = StageRouterStore::new();
-        let mut router = router();
-        router.session_ttl_seconds = 60;
-        let start = Instant::now();
-        store.apply(
-            "claude-auto",
-            Some(SESSION),
-            &router,
-            capable(),
-            false,
-            start,
-        );
-
-        let later = start + Duration::from_secs(61);
-        let decision = store.apply(
-            "claude-auto",
-            Some(SESSION),
-            &router,
-            efficient(0.6),
-            false,
-            later,
-        );
-
-        assert_eq!(
-            decision.tier,
-            StageTier::Efficient,
-            "an expired pin must not bind, even below the de-escalate threshold"
-        );
-    }
-
-    #[test]
-    fn two_router_models_in_one_session_keep_independent_tiers() {
-        let store = StageRouterStore::new();
-        let router = router();
-        let now = Instant::now();
-
-        store.apply("claude-auto", Some(SESSION), &router, capable(), false, now);
-        let other = store.apply(
-            "claude-cheap",
-            Some(SESSION),
-            &router,
-            efficient(0.9),
-            false,
-            now,
-        );
-
-        assert_eq!(other.tier, StageTier::Efficient);
-        assert_eq!(store.len(), 2);
-    }
-
-    #[test]
-    fn the_store_evicts_the_oldest_session_once_it_is_full() {
-        let store = StageRouterStore::new();
-        let router = router();
-        let start = Instant::now();
-
-        // The oldest session is inserted first and never touched again.
-        store.apply(
-            "claude-auto",
-            Some(SESSION),
-            &router,
-            capable(),
-            false,
-            start,
-        );
-        for index in 0..MAX_TRACKED_SESSIONS {
-            let session = format!("session-{index}");
-            // Milliseconds apart, so every filler stays well inside the TTL and
-            // the cap — not expiry — is what does the evicting here.
-            let now = start + Duration::from_millis(index as u64 + 1);
-            store.apply(
-                "claude-auto",
-                Some(&session),
-                &router,
-                capable(),
-                false,
-                now,
-            );
-        }
-
-        assert_eq!(store.len(), MAX_TRACKED_SESSIONS);
-        let key = session_key("claude-auto", SESSION);
-        assert!(
-            !store
-                .entries
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains_key(&key),
-            "the least recently seen session is the one dropped"
-        );
-    }
-}
+mod tests;
