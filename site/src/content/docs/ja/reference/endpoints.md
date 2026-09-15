@@ -36,9 +36,9 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `DELETE` | `/admin/api/accounts/codex/{name}` | 指定した Codex アカウントのストアファイルを削除 |
 | `GET` | `/admin/assets/{*path}` | 埋め込まれた管理 SPA バンドルのファイル。拡張子に応じた `Content-Type` と `X-Content-Type-Options: nosniff` を付けて返します。`--features ui` でビルドしたバイナリにのみ存在 |
 | `GET` | `/admin/{*path}` | `/admin` マウント配下でどのルートにも一致しないパスに対する SPA シェル。クライアント側のディープリンクがリロード後も維持されます。`--features ui` でビルドしたバイナリにのみ存在 |
-| `POST` | `/backend-api/codex/responses` | Inbound Codex CLI パススルー — 実際の ChatGPT バックエンドパスをミラー |
-| `POST` | `/responses` | Inbound Codex CLI パススルー — bare `base_url` 形式 |
-| `POST` | `/v1/responses` | Inbound Codex CLI パススルー — `/v1` サフィックスの `base_url` 形式 |
+| `GET`, `POST` | `/backend-api/codex/responses` | Inbound Codex CLI パススルー — 実際の ChatGPT バックエンドパスをミラー |
+| `GET`, `POST` | `/responses` | Inbound Codex CLI パススルー — bare `base_url` 形式 |
+| `GET`, `POST` | `/v1/responses` | Inbound Codex CLI パススルー — `/v1` サフィックスの `base_url` 形式 |
 | `GET` | `/models` | Codex CLI モデルカタログのフォールバック — `{"models":[]}` を返す |
 | `GET` | `/backend-api/codex/models` | Codex CLI モデルカタログのフォールバック — ChatGPT 形式のベースパス |
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI analytics sink — 受理して破棄し、サニタイズ済みイベント名のカウンターのみ記録 |

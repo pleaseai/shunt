@@ -40,9 +40,9 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `DELETE` | `/admin/api/accounts/codex/{name}` | Remove the named Codex account's store file |
 | `GET` | `/admin/assets/{*path}` | Embedded admin SPA bundle files, each served with the `Content-Type` its extension implies plus `X-Content-Type-Options: nosniff`. Only in a binary built with `--features ui` |
 | `GET` | `/admin/{*path}` | SPA shell for any unmatched path under the `/admin` mount, so a client-side deep link survives a reload. Only in a binary built with `--features ui` |
-| `POST` | `/backend-api/codex/responses` | Inbound Codex CLI passthrough — mirrors the real ChatGPT backend path |
-| `POST` | `/responses` | Inbound Codex CLI passthrough — bare `base_url` form |
-| `POST` | `/v1/responses` | Inbound Codex CLI passthrough — `/v1`-suffixed `base_url` form |
+| `GET`, `POST` | `/backend-api/codex/responses` | Inbound Codex CLI passthrough — mirrors the real ChatGPT backend path |
+| `GET`, `POST` | `/responses` | Inbound Codex CLI passthrough — bare `base_url` form |
+| `GET`, `POST` | `/v1/responses` | Inbound Codex CLI passthrough — `/v1`-suffixed `base_url` form |
 | `GET` | `/models` | Codex CLI model catalog fallback — returns `{"models":[]}` |
 | `GET` | `/backend-api/codex/models` | Codex CLI model catalog fallback — ChatGPT-style base path |
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI analytics sink — accept and discard; record sanitized event-name counters only |

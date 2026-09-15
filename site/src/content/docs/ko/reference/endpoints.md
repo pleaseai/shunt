@@ -36,9 +36,9 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `DELETE` | `/admin/api/accounts/codex/{name}` | 해당 이름 Codex 계정의 스토어 파일 제거 |
 | `GET` | `/admin/assets/{*path}` | 내장된 관리자 SPA 번들 파일. 확장자에 해당하는 `Content-Type`과 `X-Content-Type-Options: nosniff`를 함께 반환합니다. `--features ui`로 빌드한 바이너리에만 존재 |
 | `GET` | `/admin/{*path}` | `/admin` 마운트 아래에서 다른 라우트에 걸리지 않은 경로에 대한 SPA 셸. 클라이언트 측 딥링크가 새로고침에도 유지됩니다. `--features ui`로 빌드한 바이너리에만 존재 |
-| `POST` | `/backend-api/codex/responses` | 인바운드 Codex CLI 패스스루 — 실제 ChatGPT 백엔드 경로 미러 |
-| `POST` | `/responses` | 인바운드 Codex CLI 패스스루 — bare `base_url` 형식 |
-| `POST` | `/v1/responses` | 인바운드 Codex CLI 패스스루 — `/v1` 접미 `base_url` 형식 |
+| `GET`, `POST` | `/backend-api/codex/responses` | 인바운드 Codex CLI 패스스루 — 실제 ChatGPT 백엔드 경로 미러 |
+| `GET`, `POST` | `/responses` | 인바운드 Codex CLI 패스스루 — bare `base_url` 형식 |
+| `GET`, `POST` | `/v1/responses` | 인바운드 Codex CLI 패스스루 — `/v1` 접미 `base_url` 형식 |
 | `GET` | `/models` | Codex CLI 모델 카탈로그 폴백 — `{"models":[]}` 반환 |
 | `GET` | `/backend-api/codex/models` | Codex CLI 모델 카탈로그 폴백 — ChatGPT 형태 기본 경로 |
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI 분석 sink — 수락 후 폐기하고 정제된 이벤트 이름 카운터만 기록 |
