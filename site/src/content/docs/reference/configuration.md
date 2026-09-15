@@ -626,12 +626,13 @@ efficient_target = "claude-sonnet-4-6"
 | `session_ttl_seconds` | `3600` | How long a quiet session's pinned tier survives |
 
 A target that is itself a router, a blank target, a threshold outside
-`(0.0, 1.0]`, a `recent_turn_window` of `0`, a router **id** ending in `[1m]`, a
-duplicate `[[models]]` id where either entry carries a router table, or the same
+`(0.0, 1.0]`, a `recent_turn_window` of `0`, a router **id** ending in `[1m]` or
+`[1M]`, a duplicate `[[models]]` id where either entry carries a router table, or the same
 entry also declaring `[models.upstream_model]` is a startup error. Two map-less
 entries may otherwise share an id, but a router names a routing policy rather
 than discovery metadata, so a duplicate would leave two policies for one id.
-Target ids are compared after the trailing `[1m]` hint is stripped, the same way
+Target ids are compared after the trailing `[1m]`/`[1M]` hint is stripped, the
+same way
 routing matches them. A target that matches no explicit route only warns — it
 still resolves through `server.default_provider` like any other unmatched id.
 
