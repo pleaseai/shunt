@@ -8,6 +8,32 @@ use serde_json::{json, Value};
 use crate::adapters::AdapterError;
 
 const GEMINI_TOOL_USE_ID_PREFIX: &str = "call_gemini_v1_";
+const MAX_RETAINED_SEMANTIC_BYTES: usize = 32 * 1024 * 1024;
+const MAX_TOOL_SIGNATURE_BYTES: usize = 64 * 1024;
+const MAX_TOOL_USE_ID_BYTES: usize = 96 * 1024;
+const MAX_CONTENT_BLOCKS: usize = 4_096;
+/// Provider Part fields with content semantics. These must never fall through
+/// to the metadata no-op path: unsupported kinds are rejected explicitly, and
+/// more than one kind in a Part is ambiguous.
+const GEMINI_PART_SEMANTIC_KEYS: &[&str] = &[
+    "text",
+    "functionCall",
+    "functionResponse",
+    "inlineData",
+    "executableCode",
+    "codeExecutionResult",
+    "fileData",
+];
+const UNSUPPORTED_GEMINI_PART_KEYS: &[&str] = &[
+    "inlineData",
+    "executableCode",
+    "codeExecutionResult",
+    "fileData",
+];
+/// `citationMetadata` is the currently evidenced metadata-only Part field.
+/// Truly unknown fields also remain no-ops for forward compatibility, but any
+/// newly recognized semantic field must be added to the classifier above.
+const GEMINI_PART_METADATA_KEYS: &[&str] = &["citationMetadata"];
 
 /// Pack Gemini's opaque function-call signature into the Anthropic tool-use join
 /// key. Claude Code returns this id unchanged in assistant history and in the
@@ -23,7 +49,59 @@ pub struct SseEvent {
 enum ActiveBlockKind {
     Text,
     Thinking,
-    ToolUse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalState {
+    Open,
+    SuccessPending,
+    SuccessEmitted,
+    ProviderFailed,
+    ProtocolFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeminiSemanticError {
+    message: String,
+}
+
+impl GeminiSemanticError {
+    fn protocol(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for GeminiSemanticError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for GeminiSemanticError {}
+
+#[derive(Debug, Clone)]
+enum CheckedPart {
+    Text(String),
+    Thinking(String),
+    Tool {
+        name: String,
+        args: Value,
+        id: String,
+    },
+    Metadata,
+}
+
+#[derive(Debug)]
+struct CheckedChunk {
+    parts: Vec<CheckedPart>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    finish_reason: Option<String>,
+    provider_error: Option<Value>,
+    retained_bytes: usize,
+    part_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -37,9 +115,10 @@ struct ActiveBlock {
 /// `content_block_delta`, `content_block_stop`, `message_delta`, `message_stop`).
 pub struct GeminiSseMachine {
     model: String,
+    upstream_model: String,
     message_id: String,
     started: bool,
-    stopped: bool,
+    terminal: TerminalState,
     block_index: usize,
     active_block: Option<ActiveBlock>,
     saw_tool_use: bool,
@@ -48,16 +127,24 @@ pub struct GeminiSseMachine {
     last_finish_reason: Option<String>,
     accumulate_content: bool,
     content: Vec<Value>,
+    retained_bytes: usize,
+    part_count: usize,
 }
 
 impl GeminiSseMachine {
     pub fn new(model: impl Into<String>) -> Self {
+        let model = model.into();
+        Self::new_for_upstream(model.clone(), model)
+    }
+
+    pub fn new_for_upstream(model: impl Into<String>, upstream_model: impl Into<String>) -> Self {
         let random_id = format!("{:016x}", rand::random::<u64>());
         Self {
             model: model.into(),
+            upstream_model: upstream_model.into(),
             message_id: format!("msg_gemini_{random_id}"),
             started: false,
-            stopped: false,
+            terminal: TerminalState::Open,
             block_index: 0,
             active_block: None,
             saw_tool_use: false,
@@ -66,117 +153,432 @@ impl GeminiSseMachine {
             last_finish_reason: None,
             accumulate_content: true,
             content: Vec::new(),
+            retained_bytes: 0,
+            part_count: 0,
         }
+    }
+
+    /// Construct a machine for incremental relay. Streamed text/reasoning is
+    /// not retained as a second complete response copy.
+    pub fn new_streaming(model: impl Into<String>) -> Self {
+        let mut machine = Self::new(model);
+        machine.accumulate_content = false;
+        machine
+    }
+
+    pub fn new_streaming_for_upstream(
+        model: impl Into<String>,
+        upstream_model: impl Into<String>,
+    ) -> Self {
+        let mut machine = Self::new_for_upstream(model, upstream_model);
+        machine.accumulate_content = false;
+        machine
     }
 
     pub fn is_started(&self) -> bool {
         self.started
     }
 
-    /// Process a parsed Gemini chunk (from SSE or non-streaming JSON)
-    /// and return any Anthropic SSE events to emit.
+    /// Compatibility wrapper for trusted fixtures. Production transports use
+    /// [`Self::process_chunk_checked`] so protocol failures remain typed.
     pub fn process_chunk(&mut self, chunk: &Value) -> Vec<SseEvent> {
-        let chunk = if let Some(resp) = chunk.get("response") {
-            resp
-        } else {
-            chunk
-        };
-        let mut events = Vec::new();
-
-        // 0. Check for error payload in chunk
-        if let Some(error_val) = chunk.get("error") {
-            let anthropic_err = translate_gemini_error_val(error_val);
-            events.push(SseEvent {
-                event: "error".to_string(),
-                data: anthropic_err,
-            });
-            return events;
-        }
-
-        // 1. Emit message_start if not yet started
-        if !self.started {
-            self.started = true;
-
-            // Extract usage if present in first chunk
-            if let Some(usage) = chunk.get("usageMetadata") {
-                if let Some(prompt) = usage.get("promptTokenCount").and_then(Value::as_u64) {
-                    self.input_tokens = prompt;
-                }
-            }
-
-            events.push(SseEvent {
-                event: "message_start".to_string(),
-                data: json!({
-                    "type": "message_start",
-                    "message": {
-                        "id": self.message_id,
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [],
-                        "model": self.model,
-                        "stop_reason": null,
-                        "stop_sequence": null,
-                        "usage": {
-                            "input_tokens": self.input_tokens,
-                            "output_tokens": 0
-                        }
-                    }
-                }),
-            });
-        }
-
-        // Update usage metadata if present
-        if let Some(usage) = chunk.get("usageMetadata") {
-            if let Some(prompt) = usage.get("promptTokenCount").and_then(Value::as_u64) {
-                self.input_tokens = prompt;
-            }
-            if let Some(cand) = usage.get("candidatesTokenCount").and_then(Value::as_u64) {
-                self.output_tokens = cand;
-            }
-        }
-
-        // 2. Process candidate parts
-        let mut finish_reason = None;
-
-        if let Some(candidates) = chunk.get("candidates").and_then(Value::as_array) {
-            for candidate in candidates {
-                if let Some(fr) = candidate.get("finishReason").and_then(Value::as_str) {
-                    finish_reason = Some(fr.to_string());
-                }
-
-                if let Some(parts) = candidate
-                    .get("content")
-                    .and_then(|c| c.get("parts"))
-                    .and_then(Value::as_array)
-                {
-                    for part in parts {
-                        self.process_part(part, &mut events);
+        match self.process_chunk_checked(chunk) {
+            Ok(mut events) => {
+                if self.terminal == TerminalState::SuccessPending {
+                    if let Ok(terminal) = self.transport_close_checked() {
+                        events.extend(terminal);
                     }
                 }
+                events
             }
+            Err(error) => vec![protocol_error_event(error.to_string())],
         }
-
-        // 3. Process finish reason if present
-        if let Some(reason) = finish_reason {
-            self.last_finish_reason = Some(reason.clone());
-            self.finish_stream(&reason, &mut events);
-        }
-
-        events
     }
 
-    fn process_part(&mut self, part: &Value, events: &mut Vec<SseEvent>) {
-        // A. Thinking part
-        if part.get("thought").and_then(Value::as_bool) == Some(true)
-            || part.get("thinking").is_some()
-        {
-            let text = part
-                .get("text")
-                .or_else(|| part.get("thinking"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
+    /// Validate one direct Gemini response or one Code Assist wrapper and
+    /// atomically apply its semantic meaning.
+    pub fn process_chunk_checked(
+        &mut self,
+        chunk: &Value,
+    ) -> Result<Vec<SseEvent>, GeminiSemanticError> {
+        if self.terminal != TerminalState::Open {
+            self.terminal = TerminalState::ProtocolFailed;
+            return Err(GeminiSemanticError::protocol(
+                "Gemini semantic data arrived after a terminal outcome",
+            ));
+        }
 
-            if !text.is_empty() {
+        let checked = match self.validate_chunk(chunk) {
+            Ok(checked) => checked,
+            Err(error) => {
+                self.terminal = TerminalState::ProtocolFailed;
+                return Err(error);
+            }
+        };
+
+        if let Some(error_val) = checked.provider_error {
+            self.terminal = TerminalState::ProviderFailed;
+            return Ok(vec![SseEvent {
+                event: "error".to_string(),
+                data: translate_gemini_error_val(&error_val),
+            }]);
+        }
+
+        self.retained_bytes = self
+            .retained_bytes
+            .checked_add(checked.retained_bytes)
+            .filter(|total| *total <= MAX_RETAINED_SEMANTIC_BYTES)
+            .ok_or_else(|| {
+                self.terminal = TerminalState::ProtocolFailed;
+                GeminiSemanticError::protocol("Gemini retained semantic state exceeds limit")
+            })?;
+        self.part_count = self
+            .part_count
+            .checked_add(checked.part_count)
+            .expect("candidate part count was prevalidated");
+
+        if let Some(tokens) = checked.input_tokens {
+            self.input_tokens = tokens;
+        }
+        if let Some(tokens) = checked.output_tokens {
+            self.output_tokens = tokens;
+        }
+
+        let mut events = Vec::new();
+        if !self.started && (!checked.parts.is_empty() || checked.finish_reason.is_some()) {
+            self.started = true;
+            events.push(self.message_start_event());
+        }
+
+        for part in checked.parts {
+            self.apply_part(part, &mut events);
+        }
+        if let Some(reason) = checked.finish_reason {
+            self.last_finish_reason = Some(reason);
+            self.terminal = TerminalState::SuccessPending;
+        }
+        Ok(events)
+    }
+
+    fn validate_chunk(&self, outer: &Value) -> Result<CheckedChunk, GeminiSemanticError> {
+        let outer = outer
+            .as_object()
+            .ok_or_else(|| GeminiSemanticError::protocol("Gemini response must be an object"))?;
+        let chunk = if let Some(response) = outer.get("response") {
+            if ["candidates", "usageMetadata", "error"]
+                .iter()
+                .any(|key| outer.contains_key(*key))
+            {
+                return Err(GeminiSemanticError::protocol(
+                    "Gemini response mixes wrapped and direct fields",
+                ));
+            }
+            let response = response.as_object().ok_or_else(|| {
+                GeminiSemanticError::protocol("Gemini response wrapper must contain an object")
+            })?;
+            if response.contains_key("response") {
+                return Err(GeminiSemanticError::protocol(
+                    "nested Gemini response wrappers are not supported",
+                ));
+            }
+            response
+        } else {
+            outer
+        };
+
+        if let Some(error) = chunk.get("error") {
+            let error = error.as_object().ok_or_else(|| {
+                GeminiSemanticError::protocol("Gemini provider error must be an object")
+            })?;
+            for key in ["message", "status"] {
+                if error.get(key).is_some_and(|value| !value.is_string()) {
+                    return Err(GeminiSemanticError::protocol(format!(
+                        "Gemini provider error {key} must be a string"
+                    )));
+                }
+            }
+            return Ok(CheckedChunk {
+                parts: Vec::new(),
+                input_tokens: None,
+                output_tokens: None,
+                finish_reason: None,
+                provider_error: Some(Value::Object(error.clone())),
+                retained_bytes: 0,
+                part_count: 0,
+            });
+        }
+
+        let (input_tokens, output_tokens) = validate_usage(chunk.get("usageMetadata"))?;
+        let mut parts = Vec::new();
+        let mut finish_reason = None;
+        let mut retained_bytes = 0usize;
+        if let Some(candidates) = chunk.get("candidates") {
+            let candidates = candidates.as_array().ok_or_else(|| {
+                GeminiSemanticError::protocol("Gemini candidates must be an array")
+            })?;
+            if candidates.len() > 1 {
+                return Err(GeminiSemanticError::protocol(
+                    "multiple Gemini candidates have ambiguous ordering",
+                ));
+            }
+            if let Some(candidate) = candidates.first() {
+                let candidate = candidate.as_object().ok_or_else(|| {
+                    GeminiSemanticError::protocol("Gemini candidate must be an object")
+                })?;
+                if let Some(reason) = candidate.get("finishReason") {
+                    let reason = reason
+                        .as_str()
+                        .filter(|reason| !reason.is_empty())
+                        .ok_or_else(|| {
+                            GeminiSemanticError::protocol("Gemini finishReason must be non-empty")
+                        })?;
+                    if !matches!(reason, "STOP" | "MAX_TOKENS" | "SAFETY") {
+                        return Err(GeminiSemanticError::protocol(format!(
+                            "unsupported Gemini finishReason {reason}"
+                        )));
+                    }
+                    finish_reason = Some(reason.to_string());
+                }
+                if let Some(content) = candidate.get("content") {
+                    let content = content.as_object().ok_or_else(|| {
+                        GeminiSemanticError::protocol("Gemini candidate content must be an object")
+                    })?;
+                    if content
+                        .get("role")
+                        .is_some_and(|role| role.as_str() != Some("model"))
+                    {
+                        return Err(GeminiSemanticError::protocol(
+                            "Gemini candidate role must be model",
+                        ));
+                    }
+                    if let Some(raw_parts) = content.get("parts") {
+                        let raw_parts = raw_parts.as_array().ok_or_else(|| {
+                            GeminiSemanticError::protocol("Gemini content parts must be an array")
+                        })?;
+                        if self
+                            .part_count
+                            .checked_add(raw_parts.len())
+                            .is_none_or(|count| count > MAX_CONTENT_BLOCKS)
+                        {
+                            return Err(GeminiSemanticError::protocol(
+                                "Gemini content block count exceeds limit",
+                            ));
+                        }
+                        let mut function_call_seen = self.saw_tool_use;
+                        for raw_part in raw_parts {
+                            let is_function_call = raw_part.get("functionCall").is_some();
+                            let require_signature = is_function_call && !function_call_seen;
+                            let (part, cost) = self.validate_part(raw_part, require_signature)?;
+                            if is_function_call {
+                                function_call_seen = true;
+                            }
+                            retained_bytes = retained_bytes.checked_add(cost).ok_or_else(|| {
+                                GeminiSemanticError::protocol(
+                                    "Gemini retained semantic state exceeds limit",
+                                )
+                            })?;
+                            parts.push(part);
+                        }
+                    }
+                }
+            }
+        }
+        let part_count = parts.len();
+        Ok(CheckedChunk {
+            parts,
+            input_tokens,
+            output_tokens,
+            finish_reason,
+            provider_error: None,
+            retained_bytes,
+            part_count,
+        })
+    }
+
+    fn validate_part(
+        &self,
+        raw: &Value,
+        require_signature: bool,
+    ) -> Result<(CheckedPart, usize), GeminiSemanticError> {
+        let part = raw
+            .as_object()
+            .ok_or_else(|| GeminiSemanticError::protocol("Gemini part must be an object"))?;
+        if part.contains_key("thinking") {
+            return Err(GeminiSemanticError::protocol(
+                "ambiguous Gemini thinking compatibility shape",
+            ));
+        }
+        if part
+            .get("thought")
+            .is_some_and(|thought| !thought.is_boolean())
+        {
+            return Err(GeminiSemanticError::protocol(
+                "Gemini thought marker must be boolean",
+            ));
+        }
+        if part.get("text").is_some_and(|text| !text.is_string()) {
+            return Err(GeminiSemanticError::protocol(
+                "Gemini part text must be a string",
+            ));
+        }
+        let semantic_keys: Vec<_> = GEMINI_PART_SEMANTIC_KEYS
+            .iter()
+            .copied()
+            .filter(|key| part.contains_key(*key))
+            .collect();
+        if semantic_keys.len() > 1 {
+            return Err(GeminiSemanticError::protocol(format!(
+                "Gemini part claims incompatible semantic kinds: {}",
+                semantic_keys.join(", ")
+            )));
+        }
+        if let Some(key) = UNSUPPORTED_GEMINI_PART_KEYS
+            .iter()
+            .find(|key| part.contains_key(**key))
+        {
+            return Err(GeminiSemanticError::protocol(format!(
+                "unsupported Gemini Part kind {key}"
+            )));
+        }
+        if part.contains_key("functionResponse") {
+            return Err(GeminiSemanticError::protocol(
+                "assistant-side Gemini functionResponse is unsupported",
+            ));
+        }
+        let has_text = part.contains_key("text");
+        let has_call = part.contains_key("functionCall");
+        if part.contains_key("thought") && !has_text {
+            return Err(GeminiSemanticError::protocol(
+                "Gemini thought marker must accompany text",
+            ));
+        }
+        if has_call {
+            let call = part["functionCall"].as_object().ok_or_else(|| {
+                GeminiSemanticError::protocol("Gemini functionCall must be an object")
+            })?;
+            let name = call
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .ok_or_else(|| {
+                    GeminiSemanticError::protocol("Gemini functionCall name must be non-blank")
+                })?;
+            let args = call.get("args").cloned().unwrap_or_else(|| json!({}));
+            if !args.is_object() {
+                return Err(GeminiSemanticError::protocol(
+                    "Gemini functionCall args must be an object",
+                ));
+            }
+            let signature = match part.get("thoughtSignature") {
+                Some(value) => value
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        GeminiSemanticError::protocol(
+                            "Gemini thoughtSignature must be a non-empty string",
+                        )
+                    })?,
+                None if self.upstream_model.starts_with("gemini-3") && require_signature => {
+                    return Err(GeminiSemanticError::protocol(
+                        "Gemini 3 functionCall is missing an authentic thoughtSignature",
+                    ));
+                }
+                None => "",
+            };
+            if signature.len() > MAX_TOOL_SIGNATURE_BYTES {
+                return Err(GeminiSemanticError::protocol(
+                    "Gemini thoughtSignature exceeds limit",
+                ));
+            }
+            let id = if signature.is_empty() {
+                format!("call_{:012x}", rand::random::<u64>())
+            } else {
+                encode_tool_use_id(signature)
+            };
+            if id.len() > MAX_TOOL_USE_ID_BYTES {
+                return Err(GeminiSemanticError::protocol(
+                    "Gemini encoded tool-use id exceeds limit",
+                ));
+            }
+            let cost = if self.accumulate_content {
+                name.len()
+                    .checked_add(id.len())
+                    .and_then(|cost| {
+                        serde_json::to_vec(&args)
+                            .ok()
+                            .and_then(|args| cost.checked_add(args.len()))
+                    })
+                    .ok_or_else(|| {
+                        GeminiSemanticError::protocol(
+                            "Gemini retained semantic state exceeds limit",
+                        )
+                    })?
+            } else {
+                id.len().checked_add(name.len()).ok_or_else(|| {
+                    GeminiSemanticError::protocol("Gemini tool metadata exceeds limit")
+                })?
+            };
+            return Ok((
+                CheckedPart::Tool {
+                    name: name.to_string(),
+                    args,
+                    id,
+                },
+                cost,
+            ));
+        }
+        if let Some(text) = part.get("text").and_then(Value::as_str) {
+            if text.is_empty() {
+                return Ok((CheckedPart::Metadata, 0));
+            }
+            let cost = if self.accumulate_content {
+                text.len()
+            } else {
+                0
+            };
+            if part.get("thought").and_then(Value::as_bool) == Some(true) {
+                return Ok((CheckedPart::Thinking(text.to_string()), cost));
+            }
+            return Ok((CheckedPart::Text(text.to_string()), cost));
+        }
+        if part.contains_key("thoughtSignature") {
+            return Err(GeminiSemanticError::protocol(
+                "Gemini thoughtSignature is not attached to a functionCall",
+            ));
+        }
+        if GEMINI_PART_METADATA_KEYS
+            .iter()
+            .any(|key| part.contains_key(*key))
+        {
+            return Ok((CheckedPart::Metadata, 0));
+        }
+        // Unknown fields that do not claim a known semantic kind are retained
+        // as forward-compatible metadata no-ops.
+        Ok((CheckedPart::Metadata, 0))
+    }
+
+    fn message_start_event(&self) -> SseEvent {
+        SseEvent {
+            event: "message_start".to_string(),
+            data: json!({
+                "type": "message_start",
+                "message": {
+                    "id": self.message_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": self.model,
+                    "stop_reason": null,
+                    "stop_sequence": null,
+                    "usage": {"input_tokens": self.input_tokens, "output_tokens": 0}
+                }
+            }),
+        }
+    }
+
+    fn apply_part(&mut self, part: CheckedPart, events: &mut Vec<SseEvent>) {
+        match part {
+            CheckedPart::Thinking(text) => {
                 self.ensure_active_block(ActiveBlockKind::Thinking, events);
                 events.push(SseEvent {
                     event: "content_block_delta".to_string(),
@@ -194,10 +596,8 @@ impl GeminiSseMachine {
                         Some(last)
                             if last.get("type").and_then(Value::as_str) == Some("thinking") =>
                         {
-                            if let Some(existing_thinking) = last.get_mut("thinking") {
-                                if let Some(s) = existing_thinking.as_str() {
-                                    *existing_thinking = Value::String(format!("{}{}", s, text));
-                                }
+                            if let Some(Value::String(s)) = last.get_mut("thinking") {
+                                s.push_str(&text);
                             }
                             false
                         }
@@ -212,85 +612,53 @@ impl GeminiSseMachine {
                     }
                 }
             }
-            return;
-        }
-
-        // B. Function Call part (Tool Use)
-        if let Some(func_call) = part.get("functionCall") {
-            self.saw_tool_use = true;
-
-            // Close existing block if text/thinking
-            if let Some(active) = &self.active_block {
-                if active.kind != ActiveBlockKind::ToolUse {
-                    self.close_active_block(events);
-                }
-            }
-
-            let name = func_call
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown_tool");
-            let args = func_call.get("args").cloned().unwrap_or_else(|| json!({}));
-
-            let tool_use_id = part
-                .get("thoughtSignature")
-                .and_then(Value::as_str)
-                .filter(|signature| !signature.is_empty())
-                .map(encode_tool_use_id)
-                .unwrap_or_else(|| format!("call_{:012x}", rand::random::<u64>()));
-            let idx = self.block_index;
-
-            events.push(SseEvent {
-                event: "content_block_start".to_string(),
-                data: json!({
-                    "type": "content_block_start",
-                    "index": idx,
-                    "content_block": {
-                        "type": "tool_use",
-                        "id": tool_use_id,
-                        "name": name,
-                        "input": {}
-                    }
-                }),
-            });
-
-            let args_json_str = serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string());
-            events.push(SseEvent {
-                event: "content_block_delta".to_string(),
-                data: json!({
-                    "type": "content_block_delta",
-                    "index": idx,
-                    "delta": {
-                        "type": "input_json_delta",
-                        "partial_json": args_json_str
-                    }
-                }),
-            });
-
-            events.push(SseEvent {
-                event: "content_block_stop".to_string(),
-                data: json!({
-                    "type": "content_block_stop",
-                    "index": idx
-                }),
-            });
-
-            if self.accumulate_content {
-                self.content.push(json!({
+            CheckedPart::Tool { name, args, id } => {
+                self.saw_tool_use = true;
+                self.close_active_block(events);
+                let idx = self.block_index;
+                events.push(SseEvent {
+                    event: "content_block_start".to_string(),
+                    data: json!({
+                        "type": "content_block_start",
+                        "index": idx,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": id,
+                            "name": name,
+                            "input": {}
+                        }
+                    }),
+                });
+                let args_json_str = serde_json::to_string(&args).expect("validated JSON value");
+                events.push(SseEvent {
+                    event: "content_block_delta".to_string(),
+                    data: json!({
+                        "type": "content_block_delta",
+                        "index": idx,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": args_json_str
+                        }
+                    }),
+                });
+                events.push(SseEvent {
+                    event: "content_block_stop".to_string(),
+                    data: json!({
+                        "type": "content_block_stop",
+                        "index": idx
+                    }),
+                });
+                if self.accumulate_content {
+                    self.content.push(json!({
                     "type": "tool_use",
-                    "id": tool_use_id,
+                    "id": id,
                     "name": name,
                     "input": args
-                }));
+                    }));
+                }
+                self.block_index += 1;
             }
-
-            self.block_index += 1;
-            return;
-        }
-
-        // C. Standard Text part
-        if let Some(text) = part.get("text").and_then(Value::as_str) {
-            if !text.is_empty() {
+            CheckedPart::Text(text) => {
                 self.ensure_active_block(ActiveBlockKind::Text, events);
                 events.push(SseEvent {
                     event: "content_block_delta".to_string(),
@@ -306,10 +674,8 @@ impl GeminiSseMachine {
                 if self.accumulate_content {
                     let should_push = match self.content.last_mut() {
                         Some(last) if last.get("type").and_then(Value::as_str) == Some("text") => {
-                            if let Some(existing_text) = last.get_mut("text") {
-                                if let Some(s) = existing_text.as_str() {
-                                    *existing_text = Value::String(format!("{}{}", s, text));
-                                }
+                            if let Some(Value::String(s)) = last.get_mut("text") {
+                                s.push_str(&text);
                             }
                             false
                         }
@@ -323,6 +689,7 @@ impl GeminiSseMachine {
                     }
                 }
             }
+            CheckedPart::Metadata => {}
         }
     }
 
@@ -346,7 +713,6 @@ impl GeminiSseMachine {
                     "thinking": "",
                     "signature": "gemini_thinking"
                 }),
-                ActiveBlockKind::ToolUse => unreachable!(),
             };
 
             events.push(SseEvent {
@@ -376,31 +742,70 @@ impl GeminiSseMachine {
     }
 
     pub fn finish(&mut self, events: &mut Vec<SseEvent>) {
-        let reason = self
-            .last_finish_reason
-            .clone()
-            .unwrap_or_else(|| "STOP".to_string());
-        self.finish_stream(&reason, events);
-    }
-
-    pub fn finish_stream(&mut self, finish_reason: &str, events: &mut Vec<SseEvent>) {
-        if self.stopped {
+        if matches!(
+            self.terminal,
+            TerminalState::SuccessEmitted
+                | TerminalState::ProviderFailed
+                | TerminalState::ProtocolFailed
+        ) {
             return;
         }
-
-        self.close_active_block(events);
-
-        let stop_reason = if self.saw_tool_use {
-            "tool_use"
-        } else {
-            match finish_reason {
-                "STOP" => "end_turn",
-                "MAX_TOKENS" => "max_tokens",
-                "SAFETY" => "stop_sequence",
-                _ => "end_turn",
+        match self.transport_close_checked() {
+            Ok(terminal) => events.extend(terminal),
+            Err(error) if self.terminal == TerminalState::ProtocolFailed => {
+                events.push(protocol_error_event(error.to_string()));
             }
-        };
+            Err(_) => {}
+        }
+    }
 
+    pub fn finish_stream(
+        &mut self,
+        finish_reason: &str,
+        events: &mut Vec<SseEvent>,
+    ) -> Result<(), GeminiSemanticError> {
+        match self.terminal {
+            TerminalState::SuccessPending => {
+                if self.last_finish_reason.as_deref() != Some(finish_reason) {
+                    self.terminal = TerminalState::ProtocolFailed;
+                    return Err(GeminiSemanticError::protocol(
+                        "Gemini compatibility finish conflicts with the provider finish",
+                    ));
+                }
+                events.extend(self.transport_close_checked()?);
+                return Ok(());
+            }
+            TerminalState::SuccessEmitted
+            | TerminalState::ProviderFailed
+            | TerminalState::ProtocolFailed => return Ok(()),
+            TerminalState::Open => {}
+        }
+        if !matches!(finish_reason, "STOP" | "MAX_TOKENS" | "SAFETY") {
+            self.terminal = TerminalState::ProtocolFailed;
+            return Err(GeminiSemanticError::protocol(format!(
+                "unsupported Gemini finishReason {finish_reason}"
+            )));
+        }
+        self.last_finish_reason = Some(finish_reason.to_string());
+        self.terminal = TerminalState::SuccessPending;
+        if !self.started {
+            self.started = true;
+            events.push(self.message_start_event());
+        }
+        events.extend(self.transport_close_checked()?);
+        Ok(())
+    }
+
+    pub fn transport_close_checked(&mut self) -> Result<Vec<SseEvent>, GeminiSemanticError> {
+        if self.terminal != TerminalState::SuccessPending {
+            self.terminal = TerminalState::ProtocolFailed;
+            return Err(GeminiSemanticError::protocol(
+                "Gemini transport closed without one supported provider finish",
+            ));
+        }
+        let mut events = Vec::new();
+        self.close_active_block(&mut events);
+        let stop_reason = self.stop_reason();
         events.push(SseEvent {
             event: "message_delta".to_string(),
             data: json!({
@@ -410,6 +815,7 @@ impl GeminiSseMachine {
                     "stop_sequence": null
                 },
                 "usage": {
+                    "input_tokens": self.input_tokens,
                     "output_tokens": self.output_tokens
                 }
             }),
@@ -422,12 +828,40 @@ impl GeminiSseMachine {
             }),
         });
 
-        self.stopped = true;
+        self.terminal = TerminalState::SuccessEmitted;
+        Ok(events)
     }
 
     /// Return full final Anthropic response JSON for non-streaming consumers.
     pub fn final_json(&self) -> Value {
-        let stop_reason = if self.saw_tool_use {
+        self.final_json_checked().unwrap_or_else(|error| {
+            translate_gemini_error_val(&json!({"message": error.to_string()}))
+        })
+    }
+
+    pub fn final_json_checked(&self) -> Result<Value, GeminiSemanticError> {
+        if self.terminal != TerminalState::SuccessEmitted || !self.accumulate_content {
+            return Err(GeminiSemanticError::protocol(
+                "Gemini final JSON requested before checked unary completion",
+            ));
+        }
+        Ok(json!({
+            "id": self.message_id,
+            "type": "message",
+            "role": "assistant",
+            "content": self.content,
+            "model": self.model,
+            "stop_reason": self.stop_reason(),
+            "stop_sequence": null,
+            "usage": {
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens
+            }
+        }))
+    }
+
+    fn stop_reason(&self) -> &'static str {
+        if self.saw_tool_use {
             "tool_use"
         } else {
             match self.last_finish_reason.as_deref() {
@@ -435,21 +869,42 @@ impl GeminiSseMachine {
                 Some("SAFETY") => "stop_sequence",
                 _ => "end_turn",
             }
-        };
+        }
+    }
+}
 
-        json!({
-            "id": self.message_id,
-            "type": "message",
-            "role": "assistant",
-            "content": self.content,
-            "model": self.model,
-            "stop_reason": stop_reason,
-            "stop_sequence": null,
-            "usage": {
-                "input_tokens": self.input_tokens,
-                "output_tokens": self.output_tokens
-            }
-        })
+fn validate_usage(
+    usage: Option<&Value>,
+) -> Result<(Option<u64>, Option<u64>), GeminiSemanticError> {
+    let Some(usage) = usage else {
+        return Ok((None, None));
+    };
+    let usage = usage
+        .as_object()
+        .ok_or_else(|| GeminiSemanticError::protocol("Gemini usageMetadata must be an object"))?;
+    let parse = |key: &str| -> Result<Option<u64>, GeminiSemanticError> {
+        match usage.get(key) {
+            None => Ok(None),
+            Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+                GeminiSemanticError::protocol(format!(
+                    "Gemini usageMetadata.{key} must be a non-negative integer"
+                ))
+            }),
+        }
+    };
+    let input = parse("promptTokenCount")?;
+    let output = parse("candidatesTokenCount")?;
+    let _ = parse("totalTokenCount")?;
+    Ok((input, output))
+}
+
+fn protocol_error_event(message: String) -> SseEvent {
+    SseEvent {
+        event: "error".to_string(),
+        data: json!({
+            "type": "error",
+            "error": {"type": "api_error", "message": message}
+        }),
     }
 }
 
@@ -549,7 +1004,7 @@ mod tests {
             }
         });
 
-        let events1 = machine.process_chunk(&chunk1);
+        let events1 = machine.process_chunk_checked(&chunk1).unwrap();
         assert_eq!(events1[0].event, "message_start");
         assert_eq!(events1[1].event, "content_block_start");
         assert_eq!(events1[2].event, "content_block_delta");
@@ -569,7 +1024,8 @@ mod tests {
             }
         });
 
-        let events2 = machine.process_chunk(&chunk2);
+        let mut events2 = machine.process_chunk_checked(&chunk2).unwrap();
+        events2.extend(machine.transport_close_checked().unwrap());
         assert_eq!(events2[0].event, "content_block_delta");
         assert_eq!(events2[0].data["delta"]["text"], "world!");
         assert_eq!(events2[1].event, "content_block_stop");
@@ -589,7 +1045,8 @@ mod tests {
                         "functionCall": {
                             "name": "get_weather",
                             "args": { "location": "Paris" }
-                        }
+                        },
+                        "thoughtSignature": "weather-signature"
                     }],
                     "role": "model"
                 },
@@ -597,7 +1054,8 @@ mod tests {
             }]
         });
 
-        let events = machine.process_chunk(&chunk);
+        let mut events = machine.process_chunk_checked(&chunk).unwrap();
+        events.extend(machine.transport_close_checked().unwrap());
         assert_eq!(events[0].event, "message_start");
         assert_eq!(events[1].event, "content_block_start");
         assert_eq!(events[1].data["content_block"]["type"], "tool_use");
