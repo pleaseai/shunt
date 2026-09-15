@@ -1,0 +1,18 @@
+{
+  "name": "shunt-mod",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Tests for the shunt Claude Mod's pure modules (endpoint resolution, GET /usage parsing, rendering).",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitest": "^5.0.0"
+  }
+}

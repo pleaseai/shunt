@@ -6,9 +6,15 @@
     "url": "https://github.com/pleaseai/shunt"
   },
   "metadata": {
-    "description": "Claude Code subagents for models the shunt gateway diverts to other providers."
+    "description": "Claude Code plugins for the shunt gateway: subagents for the models it diverts to other providers, and a mod for the gateway's own pool usage."
   },
   "plugins": [
+    {
+      "name": "shunt",
+      "source": "./plugins/shunt",
+      "description": "A Claude Mod for the gateway itself: /shunt:usage shows the shared account pool's remaining headroom and reset times, read from GET /usage. Requires function hooks (early access).",
+      "keywords": ["usage", "quota", "pool", "mod", "function-hooks"]
+    },
     {
       "name": "shunt-codex",
       "source": "./plugins/shunt-codex",
