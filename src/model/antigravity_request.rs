@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 /// Client identity the Antigravity client sends on every request.
 const ANTIGRAVITY_USER_AGENT: &str = "antigravity";
@@ -104,6 +105,22 @@ pub fn antigravity_session_id(request: &Value) -> String {
         None => rand::random::<u64>() % SESSION_ID_MODULUS,
     };
     format!("-{digits}")
+}
+
+/// Opaque account/conversation-scoped session identity for native requests.
+/// The bounded conversation seed is combined with the private account tuple,
+/// so identical prompts in different accounts cannot collide.
+pub fn antigravity_scoped_session_id(account: &str, request: &Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"shunt.antigravity.session/v1\0");
+    hasher.update(account.as_bytes());
+    hasher.update([0]);
+    let conversation = serde_json::to_vec(request).unwrap_or_default();
+    hasher.update(&conversation[..conversation.len().min(SESSION_SEED_LIMIT)]);
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    format!("-{}", u64::from_be_bytes(bytes) % SESSION_ID_MODULUS)
 }
 
 /// FNV-1a, spelled out rather than reached for through `DefaultHasher`: this
@@ -1367,5 +1384,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn antigravity_native_envelope_session_is_account_scoped_and_opaque() {
+        let request = json!({"contents":[{"role":"user","parts":[{"text":"secret prompt"}]}]});
+        let first = antigravity_scoped_session_id("email-v1:account-a", &request);
+        assert_eq!(
+            first,
+            antigravity_scoped_session_id("email-v1:account-a", &request)
+        );
+        assert_ne!(
+            first,
+            antigravity_scoped_session_id("email-v1:account-b", &request)
+        );
+        assert!(!first.contains("secret"));
+        assert!(antigravity_request_id().starts_with("agent-"));
     }
 }
