@@ -125,13 +125,50 @@ async fn start_gateway(config: Config) -> TestGateway {
     }
 }
 
-/// A base URL whose connections are refused: bind a loopback port, remember
-/// it, drop the listener.
-fn refused_base_url() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    format!("http://127.0.0.1:{port}")
+/// A base URL whose connections are deterministically refused: a socket
+/// bound but never listening, held open for the test's lifetime. A dropped
+/// listener frees the port, and the OS can hand it to another ephemeral
+/// socket before the gateway connects — the race that made the old
+/// bind-then-drop helper flake.
+struct RefusedPort {
+    url: String,
+    _socket: socket2::Socket,
+}
+
+fn refused_base_url() -> RefusedPort {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )
+    .unwrap();
+    socket
+        .bind(
+            &"127.0.0.1:0"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+                .into(),
+        )
+        .unwrap();
+    let port = socket.local_addr().unwrap().as_socket().unwrap().port();
+    RefusedPort {
+        url: format!("http://127.0.0.1:{port}"),
+        _socket: socket,
+    }
+}
+
+#[test]
+fn refused_port_is_deterministically_refused() {
+    let refused = refused_base_url();
+    let port = refused.url.rsplit(':').next().unwrap();
+    let error =
+        std::net::TcpStream::connect(format!("127.0.0.1:{port}").parse::<SocketAddr>().unwrap())
+            .unwrap_err();
+    assert_eq!(
+        error.kind(),
+        ErrorKind::ConnectionRefused,
+        "a bound, non-listening socket must refuse deterministically"
+    );
 }
 
 async fn stream_request(gateway: &TestGateway) -> reqwest::Response {
@@ -205,8 +242,9 @@ async fn transport_failure_on_the_primary_advances_to_the_anthropic_fallback() {
         .mount(&fallback)
         .await;
 
+    let refused = refused_base_url();
     let config = chain_config(
-        (ProviderKind::Responses, refused_base_url()),
+        (ProviderKind::Responses, refused.url.clone()),
         (ProviderKind::Anthropic, fallback.uri()),
     );
     let gateway = start_gateway(config).await;
@@ -229,9 +267,10 @@ async fn a_broken_chain_ends_in_one_terminal_error_event() {
         return;
     }
     let _env = common::env_lock().await;
+    let refused = refused_base_url();
     let config = chain_config(
-        (ProviderKind::Responses, refused_base_url()),
-        (ProviderKind::Anthropic, refused_base_url()),
+        (ProviderKind::Responses, refused.url.clone()),
+        (ProviderKind::Anthropic, refused.url.clone()),
     );
     let gateway = start_gateway(config).await;
     let response = stream_request(&gateway).await;
@@ -294,9 +333,10 @@ async fn chain_exhaustion_relays_the_best_remembered_failure() {
         .mount(&primary)
         .await;
 
+    let refused = refused_base_url();
     let config = chain_config(
         (ProviderKind::Responses, primary.uri()),
-        (ProviderKind::Anthropic, refused_base_url()),
+        (ProviderKind::Anthropic, refused.url.clone()),
     );
     let gateway = start_gateway(config).await;
     let response = stream_request(&gateway).await;
@@ -333,8 +373,9 @@ async fn a_non_sse_anthropic_winner_becomes_one_terminal_error_event() {
         .mount(&fallback)
         .await;
 
+    let refused = refused_base_url();
     let config = chain_config(
-        (ProviderKind::Responses, refused_base_url()),
+        (ProviderKind::Responses, refused.url.clone()),
         (ProviderKind::Anthropic, fallback.uri()),
     );
     let gateway = start_gateway(config).await;
@@ -366,8 +407,9 @@ async fn an_exhausted_pool_primary_advances_to_the_anthropic_fallback() {
         .mount(&fallback)
         .await;
 
+    let refused = refused_base_url();
     let mut config = chain_config(
-        (ProviderKind::Responses, refused_base_url()),
+        (ProviderKind::Responses, refused.url.clone()),
         (ProviderKind::Anthropic, fallback.uri()),
     );
     config.upstreams[0].auth = Some(UpstreamAuth::Map(AuthMap::ChatgptOauth {
@@ -406,9 +448,10 @@ async fn a_healthy_primary_still_commits_exactly_one_message_start() {
         .mount(&primary)
         .await;
 
+    let refused = refused_base_url();
     let config = chain_config(
         (ProviderKind::Responses, primary.uri()),
-        (ProviderKind::Anthropic, refused_base_url()),
+        (ProviderKind::Anthropic, refused.url.clone()),
     );
     let gateway = start_gateway(config).await;
     let response = stream_request(&gateway).await;
