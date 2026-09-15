@@ -129,6 +129,36 @@ fn compact_ping_does_not_record_ttft_before_the_winner() {
     );
 }
 
+/// An oversized first frame that parses as a ping must not record TTFT:
+/// the skip path consults the same ping predicate as the frame parser,
+/// so an `event: ping` padded past the parse cap stays a keepalive.
+#[test]
+fn an_oversized_ping_frame_does_not_record_ttft() {
+    let mut observer = state(Protocol::Anthropic);
+    let mut frame = Vec::from(&b"event: ping\ndata: "[..]);
+    frame.extend(std::iter::repeat_n(b'x', 300 * 1024));
+    observer.observe_chunk(&frame);
+    assert!(
+        observer.ttft_ms.is_none(),
+        "an oversized ping frame must not record TTFT"
+    );
+}
+
+/// An oversized first frame that is not a ping still records TTFT: the
+/// event past the parse cap is content, and the sample must not vanish
+/// with it into the skip.
+#[test]
+fn an_oversized_content_frame_records_ttft() {
+    let mut observer = state(Protocol::Anthropic);
+    let mut frame = Vec::from(&b"event: message_start\ndata: "[..]);
+    frame.extend(std::iter::repeat_n(b'x', 300 * 1024));
+    observer.observe_chunk(&frame);
+    assert!(
+        observer.ttft_ms.is_some(),
+        "an oversized content frame must record TTFT"
+    );
+}
+
 /// A keepalive ping emitted before the chain selects its winner must not
 /// record the one-shot TTFT sample: the provider slot still names the routed
 /// primary at that moment, and a later failover win cannot repair the sample.

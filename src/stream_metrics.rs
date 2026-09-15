@@ -306,14 +306,17 @@ impl ObserverState {
         let retained = self.buffer.len().min(4);
         self.skip_tail_len = retained;
         self.skip_tail[..retained].copy_from_slice(&self.buffer[self.buffer.len() - retained..]);
+        if !self.first_content_seen {
+            // An oversized first frame is content unless its buffered prefix
+            // parses as a keepalive — the same predicate the frame parser
+            // uses, so TTFT agrees with it even past the parse cap.
+            let (event, data) = event_and_data(&self.buffer);
+            if !is_ping(event, data) {
+                self.record_ttft();
+            }
+        }
         self.buffer.clear();
         self.skipping_oversized = true;
-        if !self.first_content_seen {
-            // An event past the parse cap cannot be a keepalive ping: the
-            // oversized first frame is content, and TTFT must not vanish
-            // with it into the skip.
-            self.record_ttft();
-        }
     }
 
     /// Consume bytes through the first boundary. The tiny byte loop is used only
