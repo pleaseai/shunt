@@ -95,14 +95,16 @@ pub(crate) fn decide(router: &StageRouterConfig, messages: Option<&Value>) -> St
         // The signals were too weak to decide and shunt runs no judge, so the
         // picker's default takes the turn. This is libsy's documented fall-open
         // path, not an error.
-        PickOutcome::ConsultClassifier {
-            default_tier,
-            confidence,
-            ..
-        } => StageDecision {
+        //
+        // The sub-threshold score libsy returns here is deliberately dropped:
+        // `confidence` is documented as the scorer's confidence *in this tier*,
+        // and on this arm the scorer chose no tier at all — the picker did.
+        // Reporting it would let a metric read a fallback as a scored decision,
+        // which is the one reading the field must never support.
+        PickOutcome::ConsultClassifier { default_tier, .. } => StageDecision {
             tier: tier_from(default_tier),
             source: "fall_open",
-            confidence: Some(confidence),
+            confidence: None,
         },
     }
 }
@@ -233,6 +235,13 @@ mod tests {
                 decision.tier, expected,
                 "a weak signal must land on the picker default, got source {}",
                 decision.source
+            );
+            assert_eq!(decision.source, "fall_open");
+            // The picker chose this tier, not the scorer, so there is no
+            // confidence *in it* to report — see the arm in `decide`.
+            assert_eq!(
+                decision.confidence, None,
+                "a fall-open decision must not look scored"
             );
         }
     }

@@ -15,9 +15,23 @@ use super::vocabulary::{classify, is_delegated_run, mutate_kind, MutateKind, Too
 /// One completed tool call: an assistant `tool_use` joined to the `tool_result`
 /// that answered it.
 struct Completed<'a> {
-    name: &'a str,
+    /// The id the result named. Held unresolved so the walk can be a single
+    /// pass: names are looked up afterwards, against the complete call map.
+    id: &'a str,
     is_error: bool,
     recent: bool,
+}
+
+/// The tool name a completed call resolves to, or `""` when no `tool_use` in
+/// this request claims its id — a call trimmed out of the history, or a body
+/// that never sent one. Such a call is activity of unknown character, which is
+/// what `Other` means.
+///
+/// Resolving here rather than during the walk is what keeps the join
+/// independent of block order: `names` is already complete by the time any
+/// call is classified, so a result that precedes its own call still joins.
+fn name_of<'a>(names: &HashMap<&'a str, &'a str>, call: &Completed<'a>) -> &'a str {
+    names.get(call.id).copied().unwrap_or("")
 }
 
 /// Severity of a single failed result, on libsy's scale (`0.0` clean, `0.3`
@@ -47,65 +61,83 @@ fn severity_of(name: &str) -> f32 {
 pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<ToolSignals> {
     let messages = messages.as_array()?;
 
-    // Pass 1 — map every `tool_use` id to its tool name, and record which ids
-    // belong to the most recent assistant turns.
-    //
-    // The join is load-bearing: a `tool_result` block carries only
-    // `tool_use_id`, never the tool's name, so without this map no result can
-    // be classified at all.
-    let mut names: HashMap<&str, &str> = HashMap::new();
-    let mut turns: Vec<Vec<&str>> = Vec::new();
-    for message in messages {
+    // Pass 1 — walk backwards only as far as the window reaches, recording which
+    // `tool_use` ids belong to the most recent assistant turns. Bounding the
+    // scan here is what keeps a thousand-message transcript from being measured
+    // to decide something that only ever looks at its tail.
+    let mut recent: HashSet<&str> = HashSet::new();
+    let mut assistant_turns = 0usize;
+    for message in messages.iter().rev() {
         if message.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
-        let mut turn = Vec::new();
+        // Checked before the turn is read, so a window of 0 records nothing.
+        if assistant_turns == recent_turn_window {
+            break;
+        }
+        assistant_turns += 1;
         for block in content_blocks(message) {
             if block.get("type").and_then(Value::as_str) != Some("tool_use") {
                 continue;
             }
-            let (Some(id), Some(name)) = (
+            // Both fields, not just the id: a call this extractor cannot name
+            // is one it cannot classify, so letting it into the window would
+            // let a failed result read as a recent hard error on the strength
+            // of a block nothing could read.
+            let (Some(id), Some(_)) = (
                 block.get("id").and_then(Value::as_str),
                 block.get("name").and_then(Value::as_str),
             ) else {
                 continue;
             };
-            names.insert(id, name);
-            turn.push(id);
+            recent.insert(id);
         }
-        turns.push(turn);
     }
-    let recent: HashSet<&str> = turns
-        .iter()
-        .rev()
-        .take(recent_turn_window)
-        .flatten()
-        .copied()
-        .collect();
 
-    // Pass 2 — walk the results in wire order, joining each back to its call.
+    // Pass 2 — walk forwards once, mapping each `tool_use` id to its tool name
+    // and recording every result by the id it answered.
+    //
+    // The join is load-bearing: a `tool_result` block carries only
+    // `tool_use_id`, never the tool's name, so without this map no result can
+    // be classified at all. It stays a single pass because the names are
+    // resolved after the walk rather than during it (see [`name_of`]) — the
+    // wire format puts a call in an earlier message than the result answering
+    // it, but `messages` is the client's body and nothing here enforces that.
+    let mut names: HashMap<&str, &str> = HashMap::new();
     let mut completed = Vec::new();
     for message in messages {
-        if message.get("role").and_then(Value::as_str) != Some("user") {
-            continue;
-        }
-        for block in content_blocks(message) {
-            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
-                continue;
+        match message.get("role").and_then(Value::as_str) {
+            Some("assistant") => {
+                for block in content_blocks(message) {
+                    if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                        continue;
+                    }
+                    let (Some(id), Some(name)) = (
+                        block.get("id").and_then(Value::as_str),
+                        block.get("name").and_then(Value::as_str),
+                    ) else {
+                        continue;
+                    };
+                    names.insert(id, name);
+                }
             }
-            let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else {
-                continue;
-            };
-            // A result whose call is not in this request (trimmed history, or a
-            // malformed body) has no name and so no category. It still counts as
-            // activity, which is what `Other` means.
-            let name = names.get(id).copied().unwrap_or("");
-            completed.push(Completed {
-                name,
-                // `is_error` lives on the result, never on the call.
-                is_error: block.get("is_error").and_then(Value::as_bool) == Some(true),
-                recent: recent.contains(id),
-            });
+            Some("user") => {
+                for block in content_blocks(message) {
+                    if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                        continue;
+                    }
+                    let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    completed.push(Completed {
+                        id,
+                        // `is_error` lives on the result, never on the call.
+                        is_error: block.get("is_error").and_then(Value::as_bool) == Some(true),
+                        recent: recent.contains(id),
+                    });
+                }
+            }
+            _ => {}
         }
     }
     if completed.is_empty() {
@@ -131,13 +163,14 @@ pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<Too
     };
 
     for call in &completed {
-        let category = classify(call.name);
+        let name = name_of(&names, call);
+        let category = classify(name);
         match category {
             ToolCategory::Observe => {
                 signals.read_count += 1;
                 signals.recent_read_count += u32::from(call.recent);
             }
-            ToolCategory::Mutate => match mutate_kind(call.name) {
+            ToolCategory::Mutate => match mutate_kind(name) {
                 Some(MutateKind::Edit) => {
                     signals.edit_count += 1;
                     signals.recent_edit_count += u32::from(call.recent);
@@ -156,7 +189,7 @@ pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<Too
         // Severity is windowed so an error persists through the recovery turns
         // instead of clearing the moment one clean result lands.
         if call.is_error && call.recent {
-            signals.severity = signals.severity.max(severity_of(call.name));
+            signals.severity = signals.severity.max(severity_of(name));
         }
     }
 
@@ -169,7 +202,7 @@ pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<Too
     signals.pure_bash_streak = completed
         .iter()
         .rev()
-        .take_while(|call| classify(call.name) == ToolCategory::Other)
+        .take_while(|call| classify(name_of(&names, call)) == ToolCategory::Other)
         .count() as u32;
 
     // Two consecutive failures at the end mean the session is not recovering,
@@ -203,9 +236,16 @@ fn content_blocks(message: &Value) -> impl Iterator<Item = &Value> {
 /// Non-vacuity: replace [`extract`] with one that returns
 /// `Some(ToolSignals::default())` and `joins_a_result_back_to_its_call`,
 /// `counts_each_category`, `errors_are_read_from_the_result_not_the_call`,
-/// `a_failed_task_outranks_a_failed_read`, and
-/// `severity_ignores_errors_outside_the_window` all go red. Replace it with one
+/// `a_failed_task_outranks_a_failed_read`,
+/// `severity_ignores_errors_outside_the_window`,
+/// `both_plan_mode_tools_are_planning`, `a_skill_call_is_uncategorised`, and
+/// `a_result_before_its_call_still_joins` all go red. Replace it with one
 /// that returns `None` and every test but the three `None` cases goes red.
+///
+/// `a_nameless_call_is_not_recent` is the exception: it asserts an absence, so
+/// a stub satisfies it. What makes it non-vacuous is the narrower mutation —
+/// admit a `tool_use` to the recent set on its `id` alone, without requiring a
+/// readable `name`, and it goes red at `severity 0.7`.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +368,71 @@ mod tests {
 
         assert_eq!(signals.read_count, 0, "an unknown name must not be guessed");
         assert_eq!(signals.pure_bash_streak, 1);
+    }
+
+    /// Both ways into plan mode are planning. Only the exit was named at first,
+    /// which left an entered-but-not-exited plan turn scoring as nothing.
+    #[test]
+    fn both_plan_mode_tools_are_planning() {
+        for name in ["EnterPlanMode", "ExitPlanMode"] {
+            let signals =
+                extract_from(vec![call("t1", name), result("t1", false)], 3).expect("signals");
+            assert_eq!(signals.todowrite_count, 1, "{name} must classify as plan");
+            assert_eq!(
+                signals.pure_bash_streak, 0,
+                "{name} is not unknown activity"
+            );
+        }
+    }
+
+    /// `Skill` names a dispatcher, not an activity — the skill it runs may plan
+    /// or may rewrite the tree, and the call records only the name.
+    #[test]
+    fn a_skill_call_is_uncategorised() {
+        let signals =
+            extract_from(vec![call("t1", "Skill"), result("t1", false)], 3).expect("signals");
+
+        assert_eq!(
+            signals.todowrite_count, 0,
+            "dispatching a skill is not evidence of planning"
+        );
+        assert_eq!(signals.pure_bash_streak, 1);
+    }
+
+    /// The wire format puts a call in an earlier message than the result
+    /// answering it, but the body is the client's and nothing here enforces the
+    /// order. The join must not depend on it — which is why names are resolved
+    /// after the walk rather than during it.
+    #[test]
+    fn a_result_before_its_call_still_joins() {
+        let signals = extract_from(vec![result("t1", false), call("t1", "Read")], 3)
+            .expect("a result still counts as activity");
+
+        assert_eq!(
+            signals.read_count, 1,
+            "the join must read the whole request, not only what preceded the result"
+        );
+        assert_eq!(signals.pure_bash_streak, 0);
+    }
+
+    /// A `tool_use` this extractor cannot name is one it cannot classify, so it
+    /// must stay out of the recent window too. Letting it in would make a failed
+    /// result a recent hard error on the strength of a block nothing could read.
+    #[test]
+    fn a_nameless_call_is_not_recent() {
+        let signals = extract_from(
+            vec![
+                json!({"role": "assistant", "content": [{"type": "tool_use", "id": "t1"}]}),
+                result("t1", true),
+            ],
+            3,
+        )
+        .expect("the result still counts as activity");
+
+        assert_eq!(
+            signals.severity, 0.0,
+            "an unreadable call must not contribute a recent failure"
+        );
     }
 
     /// `is_error` lives on the result. A body that puts it on the call instead

@@ -35,6 +35,12 @@ pub(crate) enum MutateKind {
 /// unclassified instead feeds `pure_bash_streak`, which the scorer already reads
 /// as "trailing activity of unknown character". Operators who want it counted
 /// can say so per deployment once `tool_semantics` is wired.
+///
+/// `Skill` is `Other` for the same reason. It names a packaged set of
+/// instructions, not an activity: one skill plans, the next edits files, and the
+/// call site records only the skill's name. Reading it as `Plan` would count
+/// arbitrary work as investigation on the strength of the dispatcher alone,
+/// which is the guess `Bash` is already refused.
 pub(crate) fn classify(name: &str) -> ToolCategory {
     if name.eq_ignore_ascii_case("Read")
         || name.eq_ignore_ascii_case("Glob")
@@ -51,14 +57,14 @@ pub(crate) fn classify(name: &str) -> ToolCategory {
     }
     if name.eq_ignore_ascii_case("TodoWrite")
         || name.eq_ignore_ascii_case("Task")
-        || name.eq_ignore_ascii_case("Skill")
+        || name.eq_ignore_ascii_case("EnterPlanMode")
         || name.eq_ignore_ascii_case("ExitPlanMode")
     {
         return ToolCategory::Plan;
     }
-    // Everything else, `Bash`, `KillShell`, and every `mcp__*` server tool
-    // included. An unknown name is forward activity of unknown character, not
-    // evidence for either tier.
+    // Everything else, `Bash`, `Skill`, `KillShell`, and every `mcp__*` server
+    // tool included. An unknown name is forward activity of unknown character,
+    // not evidence for either tier.
     ToolCategory::Other
 }
 
