@@ -1,0 +1,45 @@
+site/src/content/docs/ja/reference/configuration.md
+  s_fe426a5cebc327::t_56d0d5e5168770 245
+site/src/content/docs/ko/getting-started/comparison.mdx
+  s_fe426a5cebc327::t_8dba877874e175 63,99
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_fe426a5cebc327::t_677e33b99f80ce 40
+site/src/content/docs/ko/guides/codex.mdx
+  s_fe426a5cebc327::t_4dbe773cd13eae 168
+site/src/content/docs/ko/guides/connect-claude-desktop.mdx
+  s_fe426a5cebc327::t_443fd96bee837b 20
+site/src/content/docs/ko/guides/effort-and-context.mdx
+  s_fe426a5cebc327::t_00ab5c0e5be6da 38
+site/src/content/docs/ko/guides/providers.mdx
+  s_fe426a5cebc327::t_6211450debe147 185,187
+site/src/content/docs/ko/guides/shared-gateway.mdx
+  s_fe426a5cebc327::t_88a632f26d348c 23
+site/src/content/docs/ko/guides/xai.mdx
+  s_fe426a5cebc327::t_a7cc259d2d39d7 24,46,77,182,268
+site/src/content/docs/ko/reference/configuration.md
+  s_fe426a5cebc327::t_e95e408209e3d1 244
+site/src/content/docs/zh-cn/changelog.md
+  s_fe426a5cebc327::t_12d012614d1fc8 11
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.mdx
+  s_fe426a5cebc327::t_b9bd289d7f0ffb 159-163
+site/src/content/docs/zh-cn/guides/connect-codex-cli.mdx
+  s_fe426a5cebc327::t_2530433364a7d6 52
+site/src/content/docs/zh-cn/guides/inbound-codex-endpoint.md
+  s_fe426a5cebc327::t_19f16439bec2c8 163-168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a0c47b36a3bb26d2684f70c3b653440d50cb37e8",
+  "prompts": {},
+  "sessions": {
+    "s_fe426a5cebc327": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fcea8663-f603-4665-9da1-8df7125f0a3f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
