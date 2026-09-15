@@ -103,6 +103,12 @@ libsy's hard de-escalation shortcut, which skips the scorer and returns
 `confidence >= threshold` gate would make the strongest reason to go cheap the
 one reason that could never fire.
 
+That exemption is written against libsy's contract, not against a signal shunt
+produces today: §3 leaves `tests_passed` unconditionally `false`, so
+`DecisionSource::TestsPassed` cannot be returned and the exemption is inert. It
+is kept so that populating the signal later is a change to the extractor alone
+(ADR-0004).
+
 Deciding and recording are separate calls. Routing has to run before
 `check_inbound_auth` — that gate reads the resolved chain to decide whether the
 route injects a credential — so the tier is chosen while the caller is still
