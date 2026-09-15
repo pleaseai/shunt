@@ -36,11 +36,68 @@ pub(crate) enum StageTier {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct StageDecision {
     pub tier: StageTier,
-    /// Why this tier was chosen. A closed set of `&'static str` so it can label
-    /// a metric without unbounded cardinality.
-    pub source: &'static str,
+    /// Why this tier was chosen.
+    pub source: StageSource,
     /// Scorer confidence, absent where the scorer did not decide the turn.
     pub confidence: Option<f64>,
+}
+
+/// Why a tier was chosen.
+///
+/// Closed, so the evidence test in [`StageSource::is_signal_evidence`] — which
+/// gates whether a pinned tier may move — is checked by the compiler against
+/// the producer instead of matching on a string. A renamed label or a new
+/// upstream variant used to fall through to "not evidence" silently, leaving a
+/// pin that simply stopped moving: no error, no log, no failing test.
+///
+/// The variants libsy owns are carried as its own type rather than re-spelled,
+/// so adding one upstream fails to compile here, and the metric label is
+/// whatever libsy calls it — the two can no longer drift apart once a metric
+/// reads it. Bounded metric cardinality, the reason the source used to be a
+/// `&'static str`, constrains only what reaches a label, and this type is
+/// closed, so the conversion belongs with the metric that consumes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StageSource {
+    /// The scorer reached this turn and stamped its own reason.
+    Scorer(DecisionSource),
+    /// The request carried no tool history to score, so the picker's default
+    /// took the turn.
+    NoSignal,
+    /// A pin held the tier and this turn's estimate did not earn a move.
+    Sticky,
+}
+
+impl StageSource {
+    /// Whether the signals actually decided this turn, rather than a default
+    /// standing in for a decision. Only evidence may move a pinned tier.
+    pub(crate) fn is_signal_evidence(self) -> bool {
+        match self {
+            Self::Scorer(
+                DecisionSource::Override | DecisionSource::TestsPassed | DecisionSource::Dimensions,
+            ) => true,
+            // `Ambiguous` is the scorer declining to decide, `FallOpen` is the
+            // picker's default standing in, and `LlmClassifier` cannot occur
+            // because shunt runs no judge. None of the three is evidence.
+            Self::Scorer(
+                DecisionSource::Ambiguous
+                | DecisionSource::LlmClassifier
+                | DecisionSource::FallOpen,
+            ) => false,
+            Self::NoSignal | Self::Sticky => false,
+        }
+    }
+
+    /// libsy's hard de-escalation shortcut, which reports no confidence at all.
+    ///
+    /// Unreachable through the live path today: [`signals::extract`] pins
+    /// `ToolSignals::tests_passed` to `false` because Claude Code runs tests
+    /// through `Bash`, so recognizing a pass would mean reading result text.
+    /// The branch this gates is kept because it is the correct handling the
+    /// moment the extractor learns to set the flag, and because removing it
+    /// would silently change de-escalation if it ever did.
+    pub(crate) fn is_tests_passed(self) -> bool {
+        matches!(self, Self::Scorer(DecisionSource::TestsPassed))
+    }
 }
 
 impl StageTier {
@@ -147,7 +204,7 @@ pub(crate) fn decide(router: &StageRouterConfig, messages: Option<&Value>) -> St
     else {
         return StageDecision {
             tier: default_tier,
-            source: "no_signal",
+            source: StageSource::NoSignal,
             confidence: None,
         };
     };
@@ -160,7 +217,7 @@ pub(crate) fn decide(router: &StageRouterConfig, messages: Option<&Value>) -> St
             ..
         } => StageDecision {
             tier: tier_from(tier),
-            source: source_label(source),
+            source: StageSource::Scorer(source),
             confidence,
         },
         // The signals were too weak to decide and shunt runs no judge, so the
@@ -174,7 +231,7 @@ pub(crate) fn decide(router: &StageRouterConfig, messages: Option<&Value>) -> St
         // which is the one reading the field must never support.
         PickOutcome::ConsultClassifier { default_tier, .. } => StageDecision {
             tier: tier_from(default_tier),
-            source: "fall_open",
+            source: StageSource::Scorer(DecisionSource::FallOpen),
             confidence: None,
         },
     }
@@ -184,17 +241,6 @@ fn tier_from(tier: Tier) -> StageTier {
     match tier {
         Tier::Capable => StageTier::Capable,
         Tier::Efficient => StageTier::Efficient,
-    }
-}
-
-fn source_label(source: DecisionSource) -> &'static str {
-    match source {
-        DecisionSource::Override => "override",
-        DecisionSource::TestsPassed => "tests_passed",
-        DecisionSource::Dimensions => "dimensions",
-        DecisionSource::Ambiguous => "ambiguous",
-        DecisionSource::LlmClassifier => "llm_classifier",
-        DecisionSource::FallOpen => "fall_open",
     }
 }
 
@@ -246,7 +292,7 @@ mod tests {
         ] {
             let decision = decide(&router(picker), None);
             assert_eq!(decision.tier, expected);
-            assert_eq!(decision.source, "no_signal");
+            assert_eq!(decision.source, StageSource::NoSignal);
             assert_eq!(decision.confidence, None);
         }
     }
@@ -257,7 +303,7 @@ mod tests {
         let decision = decide(&router(StageRouterPicker::EfficientFirst), Some(&messages));
 
         assert_eq!(decision.tier, StageTier::Efficient);
-        assert_eq!(decision.source, "no_signal");
+        assert_eq!(decision.source, StageSource::NoSignal);
     }
 
     /// The whole point of the router: repeated failures move the turn up.
@@ -269,7 +315,7 @@ mod tests {
         assert_eq!(
             decision.tier,
             StageTier::Capable,
-            "two failed investigative turns must escalate (source {}, confidence {:?})",
+            "two failed investigative turns must escalate (source {:?}, confidence {:?})",
             decision.source,
             decision.confidence
         );
@@ -281,8 +327,11 @@ mod tests {
         let decision = decide(&router(StageRouterPicker::EfficientFirst), Some(&messages));
 
         assert!(
-            matches!(decision.source, "dimensions" | "override"),
-            "an escalation must name its evidence, got {}",
+            matches!(
+                decision.source,
+                StageSource::Scorer(DecisionSource::Dimensions | DecisionSource::Override)
+            ),
+            "an escalation must name its evidence, got {:?}",
             decision.source
         );
     }
@@ -304,10 +353,13 @@ mod tests {
             let decision = decide(&router(picker), Some(&messages));
             assert_eq!(
                 decision.tier, expected,
-                "a weak signal must land on the picker default, got source {}",
+                "a weak signal must land on the picker default, got source {:?}",
                 decision.source
             );
-            assert_eq!(decision.source, "fall_open");
+            assert_eq!(
+                decision.source,
+                StageSource::Scorer(DecisionSource::FallOpen)
+            );
             // The picker chose this tier, not the scorer, so there is no
             // confidence *in it* to report — see the arm in `decide`.
             assert_eq!(

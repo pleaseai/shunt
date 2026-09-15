@@ -26,7 +26,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use super::{StageDecision, StageTier};
+use super::{StageDecision, StageSource, StageTier};
 use crate::config::StageRouterConfig;
 
 /// Upper bound on tracked sessions. Each entry is well under 100 bytes, so the
@@ -278,13 +278,13 @@ fn resolve(
 
     let held = StageDecision {
         tier: session.tier,
-        source: "sticky",
+        source: StageSource::Sticky,
         confidence: estimate.confidence,
     };
 
     // Only a decision the signals actually made may move a pinned tier. A
     // fall-open or a signal-less turn is the picker's default, not evidence.
-    if !decided_by_signals(estimate.source) {
+    if !estimate.source.is_signal_evidence() {
         return (held, false);
     }
 
@@ -300,7 +300,7 @@ fn resolve(
             // cheap the one reason that can never fire. The dwell window still
             // applies — that gate prices the forfeited prompt cache, which
             // costs the same however good the evidence is.
-            let convincing = estimate.source == "tests_passed"
+            let convincing = estimate.source.is_tests_passed()
                 || estimate
                     .confidence
                     .is_some_and(|confidence| confidence >= router.deescalate_threshold());
@@ -311,11 +311,6 @@ fn resolve(
             }
         }
     }
-}
-
-/// Whether a decision source represents evidence rather than a default.
-fn decided_by_signals(source: &str) -> bool {
-    matches!(source, "dimensions" | "override" | "tests_passed")
 }
 
 /// Drop expired entries, then the oldest, until the store is back under its cap.
