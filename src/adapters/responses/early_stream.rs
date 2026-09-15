@@ -25,8 +25,9 @@ use super::http::http_send;
 use crate::proxy::chain_stream::LazyEnvelope;
 
 pub(super) use super::sse_parse::{
-    bounded_input_estimate, next_parsed, parsed_events, pool_translated_stream, translated_core,
-    translated_stream, PoolEvent, PoolItem, SseParser,
+    bounded_input_estimate, next_parsed, parsed_events, pool_translated_stream, pooled_first_poll,
+    translated_core, translated_stream, MachineBuild, PoolEvent, PoolFirstPoll, PoolItem,
+    SseParser,
 };
 
 /// The streaming response for the early-commit transport: emit the synthetic

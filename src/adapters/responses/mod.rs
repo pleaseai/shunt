@@ -37,8 +37,8 @@ use futures_util::{StreamExt, TryStreamExt};
 
 use self::context::{CredentialSource, ForwardOptions, PoolForward, TurnOptions};
 use self::early_stream::{
-    parsed_events, pool_translated_stream, send_classified, translated_stream, HttpSendContext,
-    PoolItem, SendClassified,
+    parsed_events, pool_translated_stream, pooled_first_poll, send_classified, translated_stream,
+    HttpSendContext, MachineBuild, PoolFirstPoll, PoolItem, SendClassified,
 };
 use self::error::{adapter_error_envelope, own_error, transport_error};
 use self::http::forward_http;
@@ -439,12 +439,6 @@ pub(crate) async fn chain_attempt(
                     status: StatusCode::BAD_GATEWAY,
                 };
             }
-            let estimate_value = winner_estimate(state, route, &body).await;
-            let mut machine = turn
-                .relay(route)
-                .machine()
-                .with_input_estimate(estimate_value)
-                .without_content_accumulation();
             let (order, reprobe) = state.accounts.select_order_deferred(
                 &route.provider,
                 &accounts,
@@ -463,17 +457,50 @@ pub(crate) async fn chain_attempt(
                 reprobe,
                 ramp_initial: state.config.storm_ramp_initial(),
             });
-            let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
-            // Pre-poll the pool: the synthetic start stays deferred until an
-            // account actually wins, and a pre-frame exhaustion is a
-            // classified failure the chain advances on like the pre-commit
-            // loop (§4) — never a mid-relay terminal event.
-            let mut events = Box::pin(events);
-            match events.next().await {
+            // Race the machine build — which awaits the bounded token
+            // estimate — against the pool's first poll so account admission,
+            // credential resolution, and the upstream request overlap the
+            // estimate instead of serializing behind it (the pooled-branch
+            // counterpart of translated_core's leading race). The pool's
+            // first item, when it wins, is buffered, and only the winner arm
+            // consumes the build: a pre-frame exhaustion is a classified
+            // failure the chain advances on like the pre-commit loop (§4) —
+            // never a mid-relay terminal event — and it never waits on the
+            // estimate.
+            let build = {
+                let state = state.clone();
+                let route = route.clone();
+                let request = body.json_arc();
+                async move {
+                    let estimate_value = winner_estimate(&state, &route, &request).await;
+                    let mut machine = turn
+                        .relay(&route)
+                        .machine()
+                        .with_input_estimate(estimate_value)
+                        .without_content_accumulation();
+                    let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+                    (machine, start)
+                }
+            };
+            let PoolFirstPoll {
+                build,
+                item,
+                events,
+                headers_at,
+            } = pooled_first_poll(Box::pin(events), build).await;
+            // The synthetic start stays deferred until an account actually
+            // wins; the header-latency sample is the first item's arrival
+            // (captured by the seam), never inflated by a still-pending
+            // estimate.
+            match item {
                 Some(Ok(PoolItem::Event(event))) => {
+                    let (machine, start) = match build {
+                        MachineBuild::Ready(machine, start) => (*machine, start),
+                        MachineBuild::Pending(build) => build.await,
+                    };
                     return crate::proxy::chain_stream::Attempt::Winner {
                         start: Some(axum::body::Bytes::from(start.join(""))),
-                        headers_at: Instant::now(),
+                        headers_at,
                         frames: Box::pin(
                             pool_translated_stream(
                                 futures_util::stream::iter([Ok(PoolItem::Event(event))])
@@ -490,6 +517,10 @@ pub(crate) async fn chain_attempt(
                     remember,
                     envelope,
                 })) => {
+                    // The pending build is dropped with the failure: a
+                    // mid-flight estimate's blocking task completes
+                    // unobserved, and no synthetic start reaches the client
+                    // on a failed attempt.
                     return crate::proxy::chain_stream::Attempt::Failed {
                         advance,
                         remember,
@@ -567,7 +598,8 @@ pub(crate) async fn chain_attempt(
             // estimate below is post-header work and must not inflate the
             // header-latency sample the chain records.
             let headers_at = Instant::now();
-            let estimate_value = winner_estimate(state, route, &body).await;
+            let request = body.json_arc();
+            let estimate_value = winner_estimate(state, route, &request).await;
             let mut machine = turn
                 .relay(route)
                 .machine()
@@ -603,7 +635,7 @@ pub(crate) async fn chain_attempt(
 /// counts. The blocking encode runs here, inside the committed stream, with
 /// the same one-second bound as the single-route path — a saturated pool
 /// delays the deferred synthetic start, never the committed response.
-async fn winner_estimate(state: &AppState, route: &Route, body: &RequestBody) -> u64 {
+async fn winner_estimate(state: &AppState, route: &Route, request: &Arc<Value>) -> u64 {
     let counts_locally = state
         .config
         .provider(&route.provider)
@@ -612,7 +644,7 @@ async fn winner_estimate(state: &AppState, route: &Route, body: &RequestBody) ->
     if !counts_locally {
         return 0;
     }
-    let request = body.json_arc();
+    let request = request.clone();
     let handle = tokio::task::spawn_blocking(move || {
         crate::count_tokens::count_input_tokens_value(&request)
     });

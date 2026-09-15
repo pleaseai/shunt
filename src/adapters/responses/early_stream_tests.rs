@@ -1,5 +1,8 @@
 use super::*;
+use crate::model::responses::AnthropicSseMachine;
+use crate::proxy::chain_stream::LazyEnvelope;
 use axum::body::to_bytes;
+use axum::http::StatusCode;
 use serde_json::{json, Value};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -125,6 +128,123 @@ async fn first_producer_poll_overlaps_the_machine_build() {
         .expect("the chunk is ok");
     let second = String::from_utf8(second.to_vec()).expect("chunk is utf8");
     assert!(second.contains("\"text\":\"after\""), "got: {second}");
+}
+
+/// The pooled chain attempt's machine build (the bounded estimate) overlaps
+/// the pool's first poll: the pool is polled while the build is still
+/// blocked, the first item is buffered, and the pending build then resolves
+/// for the winner arm — a serialized build never reaches the poll, so the
+/// signal never arrives and the timeout fails the test.
+#[tokio::test]
+async fn pooled_first_poll_overlaps_the_machine_build() {
+    let (build_release, build_wait) = tokio::sync::oneshot::channel::<()>();
+    let (polled_tx, polled_rx) = tokio::sync::oneshot::channel::<()>();
+    let events = futures_util::stream::unfold(Some(polled_tx), |tx| async move {
+        let tx = tx?;
+        let _ = tx.send(());
+        Some((
+            Ok(PoolItem::Event(PoolEvent::Account("pool-a".to_string()))),
+            None,
+        ))
+    });
+    let machine = relay_opts().machine().without_content_accumulation();
+    let resolved_at = std::sync::Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+    let build_resolved_at = resolved_at.clone();
+    let build = async move {
+        let _ = build_wait.await;
+        *build_resolved_at
+            .lock()
+            .expect("the build holds the only lock") = Some(std::time::Instant::now());
+        let mut machine = machine;
+        let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+        (machine, start)
+    };
+    let poll = tokio::spawn(pooled_first_poll(Box::pin(events), build));
+    tokio::time::timeout(std::time::Duration::from_secs(2), polled_rx)
+        .await
+        .expect("the pool's first poll overlaps the machine build")
+        .expect("the poll signal is sent");
+    build_release
+        .send(())
+        .expect("the build is still listening");
+    let poll = poll.await.expect("the first poll task joined");
+    match poll.item {
+        Some(Ok(PoolItem::Event(PoolEvent::Account(name)))) => assert_eq!(name, "pool-a"),
+        _ => panic!("first item is the account frame"),
+    }
+    let (machine, start) = match poll.build {
+        MachineBuild::Pending(build) => build.await,
+        MachineBuild::Ready(..) => panic!("the build was still blocked when the pool won the race"),
+    };
+    // headers_at is the item's arrival: captured before the still-pending
+    // build resolved, never after the winner arm awaited it.
+    let resolved = resolved_at
+        .lock()
+        .expect("the build holds the only lock")
+        .expect("the build ran");
+    assert!(
+        poll.headers_at <= resolved,
+        "headers_at {:?} was captured after the build resolved at {:?}",
+        poll.headers_at,
+        resolved
+    );
+    assert!(
+        start.join("").contains("event: message_start"),
+        "the winner arm gets the synthetic start, got: {}",
+        start.join("")
+    );
+    let _ = machine;
+}
+
+/// A pre-frame pool failure never waits on the machine build: the exhausted
+/// item classifies the attempt while the build is still pending, and the
+/// pending build is dropped with it — a serialized build never returns, so
+/// the timeout fails the test.
+#[tokio::test]
+async fn pooled_first_poll_never_waits_for_the_build_on_a_pre_frame_failure() {
+    let events = futures_util::stream::iter([Ok(PoolItem::Exhausted {
+        status: StatusCode::BAD_GATEWAY,
+        advance: true,
+        remember: false,
+        envelope: LazyEnvelope::Ready(Value::Null),
+    })]);
+    let build = async move {
+        let (machine, start): (AnthropicSseMachine, Vec<String>) =
+            futures_util::future::pending().await;
+        (machine, start)
+    };
+    let poll = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        pooled_first_poll(Box::pin(events), build),
+    )
+    .await
+    .expect("a pre-frame failure classifies without waiting on the build");
+    assert!(matches!(poll.item, Some(Ok(PoolItem::Exhausted { .. }))));
+    assert!(
+        matches!(poll.build, MachineBuild::Pending(_)),
+        "the build was never awaited"
+    );
+}
+
+/// When the machine build wins the race, the first item still arrives and
+/// the resolved build carries the synthetic start.
+#[tokio::test]
+async fn pooled_first_poll_returns_the_item_after_the_build_wins() {
+    let events = futures_util::stream::iter([Ok(PoolItem::Event(PoolEvent::Account(
+        "pool-a".to_string(),
+    )))]);
+    let machine = relay_opts().machine().without_content_accumulation();
+    let build = async move {
+        let mut machine = machine;
+        let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+        (machine, start)
+    };
+    let poll = pooled_first_poll(Box::pin(events), build).await;
+    assert!(matches!(poll.build, MachineBuild::Ready(..)));
+    assert!(matches!(
+        poll.item,
+        Some(Ok(PoolItem::Event(PoolEvent::Account(_))))
+    ));
 }
 
 /// A producer failure after the early start surfaces as an SSE `error` event

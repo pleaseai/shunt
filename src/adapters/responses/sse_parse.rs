@@ -171,6 +171,65 @@ pub(super) fn pool_translated_stream(
     )
 }
 
+/// A pooled chain attempt's machine build, raced against the pool's first
+/// poll ([`pooled_first_poll`]): resolved when the build won the race, still
+/// pending when the pool's first item won it.
+pub(super) enum MachineBuild {
+    Ready(Box<AnthropicSseMachine>, Vec<String>),
+    Pending(
+        std::pin::Pin<
+            Box<dyn std::future::Future<Output = (AnthropicSseMachine, Vec<String>)> + Send>,
+        >,
+    ),
+}
+
+/// The pooled chain attempt's first poll, raced against its machine build.
+/// `headers_at` is the first item's arrival instant — never a build-completion
+/// instant — for the chain's header-latency sample.
+pub(super) struct PoolFirstPoll<E> {
+    pub(super) build: MachineBuild,
+    pub(super) item: Option<Result<PoolItem, Value>>,
+    pub(super) events: std::pin::Pin<Box<E>>,
+    pub(super) headers_at: std::time::Instant,
+}
+
+/// Race the pooled chain attempt's machine build (which awaits the bounded
+/// token estimate) against the pool's first poll so account admission,
+/// credential resolution, and the upstream request overlap the estimate
+/// instead of serializing behind it — the pooled-branch counterpart of
+/// [`translated_core`]'s leading race. The pool's first item, when it wins,
+/// is buffered, and only the winner arm consumes the build, so a pre-frame
+/// failure never waits on the estimate.
+pub(super) async fn pooled_first_poll<E>(
+    mut events: std::pin::Pin<Box<E>>,
+    build: impl std::future::Future<Output = (AnthropicSseMachine, Vec<String>)> + Send + 'static,
+) -> PoolFirstPoll<E>
+where
+    E: Stream<Item = Result<PoolItem, Value>> + Send,
+{
+    let first = async move {
+        let item = events.next().await;
+        (item, events)
+    };
+    match futures_util::future::select(Box::pin(build), Box::pin(first)).await {
+        futures_util::future::Either::Left(((machine, start), first)) => {
+            let (item, events) = first.await;
+            PoolFirstPoll {
+                build: MachineBuild::Ready(Box::new(machine), start),
+                item,
+                events,
+                headers_at: std::time::Instant::now(),
+            }
+        }
+        futures_util::future::Either::Right(((item, events), build)) => PoolFirstPoll {
+            build: MachineBuild::Pending(Box::pin(build)),
+            item,
+            events,
+            headers_at: std::time::Instant::now(),
+        },
+    }
+}
+
 /// How long the relay keeps reading a still-open upstream after a terminal
 /// event: the upstream's EOF must be read so hyper pools the connection, but
 /// nothing past the terminal may ever be forwarded.
