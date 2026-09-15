@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.46.0](https://github.com/pleaseai/shunt/compare/v0.45.1...v0.46.0) (2026-09-15)
+
+
+### Features
+
+* **config:** add opt-in [models.stage_router] schema and validation ([#544](https://github.com/pleaseai/shunt/issues/544)) ([1a7ee3a](https://github.com/pleaseai/shunt/commit/1a7ee3a84e250a1f12396b899121ea7785a81170))
+* **routing:** extract stage signals from Claude Code tool results ([#545](https://github.com/pleaseai/shunt/issues/545)) ([78163bd](https://github.com/pleaseai/shunt/commit/78163bdc1e4ebee0064a6b7eaba67c9644fbc943))
+* **routing:** pin stage-router tiers per session with asymmetric hysteresis ([#546](https://github.com/pleaseai/shunt/issues/546)) ([cd87ae7](https://github.com/pleaseai/shunt/commit/cd87ae74ca3bbb2b3de5ff5eb174dee4aa9cad88))
+* **routing:** route a model id by its tool-result history, opt-in ([#547](https://github.com/pleaseai/shunt/issues/547)) ([21e18b5](https://github.com/pleaseai/shunt/commit/21e18b5722accfa090986e876434a89906d70bb0))
+* **site:** surface the changelog in the header nav strip ([#565](https://github.com/pleaseai/shunt/issues/565)) ([9d560ac](https://github.com/pleaseai/shunt/commit/9d560acc29d147889ce96e00ae56eccd926c5255))
+
+
+### Bug Fixes
+
+* **accounts:** treat a blank session header as no session ([#568](https://github.com/pleaseai/shunt/issues/568)) ([5154078](https://github.com/pleaseai/shunt/commit/5154078b65cd98fe8d03efd97ba2fb9a7c5c0916))
+* **site:** close CJK bold spans that CommonMark refused to parse ([#567](https://github.com/pleaseai/shunt/issues/567)) ([0fd3113](https://github.com/pleaseai/shunt/commit/0fd3113bf28d40e8bb4610b0f927932e9b320568))
+
 ## [0.45.1](https://github.com/pleaseai/shunt/compare/v0.45.0...v0.45.1) (2026-09-14)
 
 
