@@ -2305,7 +2305,7 @@ pub enum ConfigError {
     ModelUpstreamContextWindowHint { model: String },
     #[error("models entry {model} has a stage_router table but its id ends with a [1m] or [1M] context-window hint; clients strip that hint before model matching, so the entry is unreachable")]
     StageRouterContextWindowHint { model: String },
-    #[error("duplicate [[models]] id {model}; ids must be unique when any matching entry has an upstream_model map")]
+    #[error("duplicate [[models]] id {model}; ids must be unique when any matching entry has an upstream_model map or a stage_router table")]
     DuplicateModelId { model: String },
     #[error("route prefix {prefix} references unknown provider: {provider}")]
     UnknownPrefixProvider { prefix: String, provider: String },
@@ -3908,6 +3908,7 @@ impl Config {
         }
         let mut model_ids = HashSet::new();
         let mut model_upstream_ids = HashSet::new();
+        let mut model_router_ids = HashSet::new();
         for model in &self.models {
             let duplicate_id = !model_ids.insert(&model.id);
             // Mutual exclusivity first, so an entry declaring both reports that
@@ -3925,10 +3926,24 @@ impl Config {
                 self.validate_stage_router(&model.id, router)?;
             }
             let Some(upstream_models) = &model.upstream_model else {
-                if duplicate_id && model_upstream_ids.contains(&model.id) {
+                // Two map-less entries may share an id while both are pure
+                // discovery metadata: neither one changes how the id resolves,
+                // so `duplicate_map_less_model_ids_remain_valid` keeps that
+                // tolerated. A `stage_router` entry is not metadata — it names
+                // a routing policy — so a duplicate on either side leaves two
+                // policies for one public id, settled by declaration order once
+                // the resolver reads the table.
+                if duplicate_id
+                    && (model_upstream_ids.contains(&model.id)
+                        || model_router_ids.contains(&model.id)
+                        || model.stage_router.is_some())
+                {
                     return Err(ConfigError::DuplicateModelId {
                         model: model.id.clone(),
                     });
+                }
+                if model.stage_router.is_some() {
+                    model_router_ids.insert(&model.id);
                 }
                 continue;
             };
@@ -7433,6 +7448,44 @@ id = "claude-sonnet-5"
                     ConfigError::EmptyStageRouterTarget { key: found, .. } if found == key
                 ),
                 "expected {key} to be rejected when blank"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_router_rejects_a_duplicate_router_id() {
+        // Two map-less entries may share an id when both are discovery
+        // metadata — `duplicate_map_less_model_ids_remain_valid` pins that, and
+        // it is harmless because neither entry changes resolution. A
+        // `stage_router` entry is not metadata: it names a routing policy, so a
+        // second entry for the same id leaves two policies for one public model
+        // id, chosen by declaration order.
+        for models in [
+            vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                router_model("claude-auto", "claude-opus-4-7", "claude-haiku-4-5"),
+            ],
+            // And when only one side carries the table, in either order.
+            vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                model_config("claude-auto", None),
+            ],
+            vec![
+                model_config("claude-auto", None),
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+            ],
+        ] {
+            let config = Config {
+                models,
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::DuplicateModelId { model } if model == "claude-auto"
+                ),
+                "a duplicate id carrying a stage_router must be rejected"
             );
         }
     }
