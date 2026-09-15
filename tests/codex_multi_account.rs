@@ -1882,6 +1882,10 @@ async fn streaming_429_rotates_to_second_account() {
         "message_start must carry the tiktoken estimate; got:\n{body}"
     );
     assert!(body.contains("hello from b"), "body: {body}");
+    assert!(
+        !body.contains("hello from a"),
+        "the rotated-away account must not serve the stream; body: {body}"
+    );
     upstream.verify().await;
 }
 
