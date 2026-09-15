@@ -3,8 +3,9 @@ title: 更新日志
 description: shunt 的每一项重要变更，按日期记录，并标注破坏性变更。
 ---
 
-精选的发布说明，由新到旧。shunt 尚未发布 1.0，因此次版本号递增（`0.44` → `0.45`）可能包含破坏性变更，
-修订版本号递增则不会。下面每一条破坏性条目都写明了受影响的对象、需要采取的措施，以及落地的版本。
+精选的发布说明，由新到旧。shunt 尚未发布 1.0，因此次版本号递增（`0.44` → `0.45`）可能包含破坏性变更；
+修订版本号递增通常不会，但例外都会标注为 **破坏性变更**，请留意这类条目。下面每一条破坏性条目都写明了
+受影响的对象、需要采取的措施，以及落地的版本。
 
 - **订阅：**[GitHub 发布源](https://github.com/pleaseai/shunt/releases.atom)
 - **完整记录：**由每一次提交生成的 [`CHANGELOG.md`](https://github.com/pleaseai/shunt/blob/main/CHANGELOG.md)
@@ -162,10 +163,14 @@ OpenAI 之外的厂商。参见 [入站 Codex 端点](/zh-cn/guides/inbound-code
 
 ## 0.40.2 — 2026-09-05
 
-### Antigravity 拒绝调用方提供的工具，而不是忽略它们
+### `antigravity-cli` 拒绝调用方提供的工具，而不是忽略它们
 
-**变更** — Antigravity 上游自行驱动工具循环，因此调用方提供的工具现在会以错误拒绝，而不是从请求中被悄悄
-丢弃。参见 [Antigravity](/zh-cn/providers/antigravity/)。
+**变更 · 破坏性变更，自 0.40.2 起** — 影响向 `antigravity-cli` 提供方发送非空 `tools` 数组（`tool_choice`
+为 `none` 时除外），或 `any`、`tool` 形式 `tool_choice` 的调用方。该提供方运行本地 `agy` 二进制，而 `agy` 自行解析工具调用，从不返回
+`tool_use` 块；因此这类请求过去会得到一个悄悄忽略工具的纯文本 `200`，现在则以 `400
+invalid_request_error` 拒绝。请将任务作为普通提示发送，或把该模型路由到会转发工具的原生 `antigravity`
+或 `gemini` 提供方。没有工具且 `tool_choice` 为 `auto` 时不受影响。
+参见 [Antigravity](/zh-cn/providers/antigravity/)。
 
 ### 为 `gpt-6-astra` 将 Codex 客户端标识升到 0.153.3
 

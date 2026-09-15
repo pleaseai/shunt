@@ -4,7 +4,8 @@ description: Every notable change to shunt, dated, with breaking changes flagged
 ---
 
 Curated release notes, newest first. shunt is pre-1.0, so a minor bump (`0.44` → `0.45`)
-may carry breaking changes and a patch bump does not. Every breaking entry below names who
+may carry breaking changes; a patch bump usually does not, but check any entry marked
+**Breaking** — that is where the exceptions are named. Every breaking entry below names who
 it affects, what to do, and the release it landed in.
 
 - **Subscribe:** [GitHub Releases feed](https://github.com/pleaseai/shunt/releases.atom)
@@ -176,11 +177,15 @@ turn containing a built-in tool call is surfaced instead of dropped. See [Cursor
 
 ## 0.40.2 — 2026-09-05
 
-### Antigravity rejects caller-supplied tools instead of ignoring them
+### `antigravity-cli` rejects caller-supplied tools instead of ignoring them
 
-**Changed** — The Antigravity upstream drives its own tool loop, so caller-supplied tools are now
-refused with an error rather than silently dropped from the request. See
-[Antigravity](/providers/antigravity/).
+**Changed · Breaking, effective 0.40.2** — Affects callers that send a non-empty `tools` array (unless
+`tool_choice` is `none`), or a `tool_choice` of `any` or `tool`, to the `antigravity-cli` provider. It runs the local `agy` binary,
+which resolves its own tool calls and never returns a `tool_use` block, so such a request used to
+return a text-only `200` that silently ignored them; it is now refused with a `400
+invalid_request_error`. Send the task as a plain prompt, or route the model at the native
+`antigravity` or `gemini` provider, which do forward tools. A `tool_choice` of `auto` with no tools
+is unaffected. See [Antigravity](/providers/antigravity/).
 
 ### Codex client identity bumped to 0.153.3 for `gpt-6-astra`
 

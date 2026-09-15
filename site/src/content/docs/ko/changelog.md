@@ -4,8 +4,9 @@ description: shunt의 모든 주요 변경 사항을 날짜와 함께, 호환성
 ---
 
 선별한 릴리스 노트이며 최신 순입니다. shunt는 1.0 이전이므로 마이너 버전 상승(`0.44` → `0.45`)에는
-호환성이 깨지는 변경이 포함될 수 있고, 패치 버전 상승에는 포함되지 않습니다. 아래의 호환성 관련 항목은
-영향을 받는 대상, 해야 할 조치, 적용된 릴리스를 모두 명시합니다.
+호환성이 깨지는 변경이 포함될 수 있습니다. 패치 버전 상승에는 대개 포함되지 않지만 예외가 있으므로,
+**호환성 깨짐**으로 표시된 항목을 확인하세요. 아래의 호환성 관련 항목은 영향을 받는 대상, 해야 할 조치,
+적용된 릴리스를 모두 명시합니다.
 
 - **구독:** [GitHub 릴리스 피드](https://github.com/pleaseai/shunt/releases.atom)
 - **전체 기록:** 모든 커밋에서 생성되는 [`CHANGELOG.md`](https://github.com/pleaseai/shunt/blob/main/CHANGELOG.md)
@@ -169,10 +170,15 @@ description: shunt의 모든 주요 변경 사항을 날짜와 함께, 호환성
 
 ## 0.40.2 — 2026-09-05
 
-### Antigravity가 호출자 제공 도구를 무시하지 않고 거부
+### `antigravity-cli`가 호출자 제공 도구를 무시하지 않고 거부
 
-**변경** — Antigravity 업스트림은 자체 도구 루프를 구동하므로, 호출자가 제공한 도구는 요청에서 조용히 제거되지
-않고 오류로 거부됩니다. [Antigravity](/ko/providers/antigravity/)를 참고하세요.
+**변경 · 호환성 깨짐, 0.40.2부터** — `antigravity-cli` 프로바이더에 비어 있지 않은 `tools` 배열(`tool_choice`가
+`none`인 경우는 제외)이나 `any`·`tool` 값의 `tool_choice`를 보내는 호출자에 영향을 줍니다. 이 프로바이더는 로컬 `agy` 바이너리를
+실행하는데, `agy`는 자체적으로 도구 호출을 해결하며 `tool_use` 블록을 반환하지 않습니다. 그래서 이런 요청은
+이전에는 도구를 조용히 무시한 텍스트 전용 `200`을 받았지만, 이제 `400 invalid_request_error`로 거부됩니다.
+작업을 일반 프롬프트로 보내거나, 도구를 그대로 전달하는 네이티브 `antigravity` 또는 `gemini` 프로바이더로
+해당 모델을 라우팅하세요. 도구 없이 `tool_choice`가 `auto`인 경우는 영향을 받지 않습니다.
+[Antigravity](/ko/providers/antigravity/)를 참고하세요.
 
 ### `gpt-6-astra`를 위해 Codex 클라이언트 identity를 0.153.3으로 상향
 
