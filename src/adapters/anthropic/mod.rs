@@ -1337,8 +1337,9 @@ fn upstream_error(error: reqwest::Error) -> AdapterError {
 /// run the bounded-retry send inside the committed stream. A winner relays its
 /// own SSE — `message_start` included, so no synthetic start is needed — and a
 /// failure hands back the client-facing error envelope plus the status for the
-/// chain to classify. A mid-relay body error ends the relay silently, exactly
-/// like the single-route relay today.
+/// chain to classify. A pre-terminal mid-relay body failure becomes the
+/// chain's terminal error event; one after the winner's `message_stop` relayed
+/// ends the stream silently (the chain's post-terminal rule).
 pub(crate) async fn chain_attempt(
     state: &AppState,
     route: &Route,
@@ -1481,9 +1482,10 @@ pub(crate) async fn chain_attempt(
     let frames = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias)
         .map(|chunk| {
             chunk.map_err(|error| {
-                // A mid-relay body failure becomes the terminal SSE error
-                // event (the chain records the failure), never a silently
-                // truncated stream.
+                // A pre-terminal mid-relay body failure becomes the terminal
+                // SSE error event (the chain records the failure), never a
+                // silently truncated stream; once the terminal frame has
+                // relayed, the chain ends the relay silently.
                 serde_json::json!({
                     "type": "error",
                     "error": {

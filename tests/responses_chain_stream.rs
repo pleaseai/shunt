@@ -565,3 +565,104 @@ async fn a_healthy_primary_still_commits_exactly_one_message_start() {
     drop(gateway);
     primary.verify().await;
 }
+
+/// A winner whose body errors after the complete turn already relayed —
+/// `message_stop` included, then the connection closing short of the declared
+/// content-length — must end the relay silently. Appending an `error` event
+/// to a completed response corrupts the client's finished turn, and the
+/// stream observer (which gives error events precedence over terminal events)
+/// would record the request as failed.
+#[tokio::test]
+async fn a_body_error_after_message_stop_ends_the_relay_silently() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = common::env_lock().await;
+    // wiremock cannot express this fault: its hyper server refuses a
+    // content-length header that disagrees with the body it sends. A raw
+    // one-shot responder writes the full turn, then closes with bytes still
+    // unread against the declared length — the reader's body errors on the
+    // final chunk, after every frame has relayed.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let responder = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 4096\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        socket.write_all(ANTHROPIC_SSE.as_bytes()).await.unwrap();
+    });
+
+    let refused = refused_base_url();
+    let config = chain_config(
+        (ProviderKind::Anthropic, format!("http://{addr}")),
+        (ProviderKind::Responses, refused.url.clone()),
+    );
+    let gateway = start_gateway(config).await;
+    let response = stream_request(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert_eq!(count_event(&body, "message_stop"), 1, "got:\n{body}");
+    assert_eq!(count_event(&body, "error"), 0, "got:\n{body}");
+    drop(gateway);
+    responder.await.unwrap();
+}
+
+/// The silent end is terminal-frame-gated: a body error BEFORE the turn's
+/// `message_stop` still becomes one terminal `error` event with the failure
+/// recorded — only a completed turn may end silently.
+#[tokio::test]
+async fn a_body_error_before_message_stop_still_emits_the_terminal_error_event() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = common::env_lock().await;
+    // The same raw one-shot responder, this time cutting the turn short:
+    // the start and one delta relay, then the connection closes with bytes
+    // still unread against the declared content-length.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let responder = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 4096\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        socket
+            .write_all(
+                concat!(
+                    "event: message_start\n",
+                    "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_anthropic\",\"model\":\"claude-fable-5-1\"}}\n\n",
+                    "event: content_block_delta\n",
+                    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    });
+
+    let refused = refused_base_url();
+    let config = chain_config(
+        (ProviderKind::Anthropic, format!("http://{addr}")),
+        (ProviderKind::Responses, refused.url.clone()),
+    );
+    let gateway = start_gateway(config).await;
+    let response = stream_request(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("partial"), "got:\n{body}");
+    assert_eq!(count_event(&body, "message_stop"), 0, "got:\n{body}");
+    assert_eq!(count_event(&body, "error"), 1, "got:\n{body}");
+    drop(gateway);
+    responder.await.unwrap();
+}
