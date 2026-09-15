@@ -22,7 +22,12 @@ type NavigationGroup = LocalizedLabel & {
   items: NavigationLink[];
 };
 
-export const NAVIGATION: NavigationGroup[] = [
+/** A sidebar entry is either a collapsible group or a standalone top-level link. */
+type NavigationEntry = NavigationGroup | NavigationLink;
+
+const isGroup = (entry: NavigationEntry): entry is NavigationGroup => "items" in entry;
+
+export const NAVIGATION: NavigationEntry[] = [
   {
     label: "Getting Started",
     translations: { ko: "시작하기", ja: "はじめに", "zh-cn": "开始使用" },
@@ -95,6 +100,11 @@ export const NAVIGATION: NavigationGroup[] = [
       { label: "Troubleshooting", translations: { ko: "문제 해결", ja: "トラブルシューティング", "zh-cn": "故障排查" }, slug: "reference/troubleshooting" },
     ],
   },
+  {
+    label: "Changelog",
+    translations: { ko: "변경 이력", ja: "変更履歴", "zh-cn": "更新日志" },
+    slug: "changelog",
+  },
 ];
 
 const normalizePath = (path: string): string => {
@@ -105,10 +115,14 @@ const normalizePath = (path: string): string => {
 const translatedLabel = (item: LocalizedLabel, locale: Locale): string =>
   locale === "" ? item.label : item.translations?.[locale] ?? item.label;
 
-export const ENGLISH_SIDEBAR_ITEMS: SidebarConfigItem[] = NAVIGATION.map((group) => ({
-  label: group.label,
-  items: group.items.map((item) => ({ label: item.label, link: item.slug })),
-}));
+export const ENGLISH_SIDEBAR_ITEMS: SidebarConfigItem[] = NAVIGATION.map((entry) =>
+  isGroup(entry)
+    ? {
+        label: entry.label,
+        items: entry.items.map((item) => ({ label: item.label, link: item.slug })),
+      }
+    : { label: entry.label, link: entry.slug },
+);
 
 export function localeFromSlug(slug: string): Locale {
   const firstSegment = slug.replace(/^\//, "").split("/", 1)[0];
@@ -137,19 +151,24 @@ export function buildLocaleSidebar(locale: Locale, currentSlug: string): Sidebar
   const currentPath = normalizePath(currentSlug);
   let order = 0;
 
-  return NAVIGATION.map((group) => ({
-    type: "group" as const,
-    label: translatedLabel(group, locale),
-    order: order++,
-    children: group.items.map((item) => {
-      const href = localizedPath(locale, item.slug);
-      return {
-        type: "link" as const,
-        label: translatedLabel(item, locale),
-        href,
-        isCurrent: currentPath === href,
-        order: order++,
-      };
-    }),
-  }));
+  const toLink = (item: NavigationLink): SidebarItem => {
+    const href = localizedPath(locale, item.slug);
+    return {
+      type: "link" as const,
+      label: translatedLabel(item, locale),
+      href,
+      isCurrent: currentPath === href,
+      order: order++,
+    };
+  };
+
+  return NAVIGATION.map((entry) => {
+    if (!isGroup(entry)) return toLink(entry);
+    return {
+      type: "group" as const,
+      label: translatedLabel(entry, locale),
+      order: order++,
+      children: entry.items.map(toLink),
+    };
+  });
 }
