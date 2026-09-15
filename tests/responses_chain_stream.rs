@@ -160,6 +160,9 @@ fn refused_base_url() -> RefusedPort {
 
 #[test]
 fn refused_port_is_deterministically_refused() {
+    if !can_bind_loopback() {
+        return;
+    }
     let refused = refused_base_url();
     let port = refused.url.rsplit(':').next().unwrap();
     let error =
