@@ -37,8 +37,16 @@
 
 use super::*;
 use crate::config::StageRouterPicker;
+use switchyard_libsy::DecisionSource;
 
 const SESSION: &str = "0199a0f2-2f4b-7c3e-9d61-4f1a2b3c4d5e";
+
+/// The two scorer reasons these tests construct by hand. Naming them through
+/// `StageSource` keeps the hand-built estimates on the same type the real
+/// scorer stamps, so a renamed or removed upstream variant fails to compile
+/// here instead of quietly no longer matching what `decide` produces.
+const DIMENSIONS: StageSource = StageSource::Scorer(DecisionSource::Dimensions);
+const TESTS_PASSED: StageSource = StageSource::Scorer(DecisionSource::TestsPassed);
 
 fn router() -> StageRouterConfig {
     StageRouterConfig {
@@ -53,7 +61,7 @@ fn router() -> StageRouterConfig {
     }
 }
 
-fn decision(tier: StageTier, source: &'static str, confidence: f64) -> StageDecision {
+fn decision(tier: StageTier, source: StageSource, confidence: f64) -> StageDecision {
     StageDecision {
         tier,
         source,
@@ -62,11 +70,11 @@ fn decision(tier: StageTier, source: &'static str, confidence: f64) -> StageDeci
 }
 
 fn capable() -> StageDecision {
-    decision(StageTier::Capable, "dimensions", 0.76)
+    decision(StageTier::Capable, DIMENSIONS, 0.76)
 }
 
 fn efficient(confidence: f64) -> StageDecision {
-    decision(StageTier::Efficient, "dimensions", confidence)
+    decision(StageTier::Efficient, DIMENSIONS, confidence)
 }
 
 /// Serve `turns` turns at whatever the estimate says, so a pin accrues dwell.
@@ -130,7 +138,7 @@ fn an_escalation_needs_no_dwell() {
     let escalated = store.apply_now("claude-auto", Some(SESSION), &router, capable(), false, now);
 
     assert_eq!(escalated.tier, StageTier::Capable);
-    assert_eq!(escalated.source, "dimensions");
+    assert_eq!(escalated.source, DIMENSIONS);
 }
 
 /// The asymmetry, downward half: 0.6 clears the escalate threshold (0.5) but
@@ -155,7 +163,7 @@ fn a_pinned_capable_tier_holds_through_a_weak_estimate() {
     );
 
     assert_eq!(held.tier, StageTier::Capable);
-    assert_eq!(held.source, "sticky");
+    assert_eq!(held.source, StageSource::Sticky);
 }
 
 #[test]
@@ -174,7 +182,7 @@ fn a_confident_estimate_de_escalates_once_the_dwell_window_has_passed() {
     );
 
     assert_eq!(dropped.tier, StageTier::Efficient);
-    assert_eq!(dropped.source, "dimensions");
+    assert_eq!(dropped.source, DIMENSIONS);
 }
 
 /// Confidence alone is not enough: the tier must also have been held long
@@ -199,7 +207,7 @@ fn a_de_escalation_also_needs_the_dwell_window() {
         StageTier::Capable,
         "one turn is not a dwell window"
     );
-    assert_eq!(held.source, "sticky");
+    assert_eq!(held.source, StageSource::Sticky);
 }
 
 /// libsy's hard de-escalation shortcut skips the scorer and reports no
@@ -218,7 +226,7 @@ fn a_passing_test_suite_de_escalates_without_a_confidence_score() {
         &router,
         StageDecision {
             tier: StageTier::Efficient,
-            source: "tests_passed",
+            source: TESTS_PASSED,
             confidence: None,
         },
         false,
@@ -226,7 +234,7 @@ fn a_passing_test_suite_de_escalates_without_a_confidence_score() {
     );
 
     assert_eq!(dropped.tier, StageTier::Efficient);
-    assert_eq!(dropped.source, "tests_passed");
+    assert_eq!(dropped.source, TESTS_PASSED);
 }
 
 /// It still waits out the dwell window: that gate prices the forfeited
@@ -243,7 +251,7 @@ fn even_a_passing_test_suite_waits_out_the_dwell_window() {
         &router,
         StageDecision {
             tier: StageTier::Efficient,
-            source: "tests_passed",
+            source: TESTS_PASSED,
             confidence: None,
         },
         false,
@@ -251,7 +259,7 @@ fn even_a_passing_test_suite_waits_out_the_dwell_window() {
     );
 
     assert_eq!(held.tier, StageTier::Capable);
-    assert_eq!(held.source, "sticky");
+    assert_eq!(held.source, StageSource::Sticky);
 }
 
 /// A fall-open is the picker's default, not evidence. It must not be able to
@@ -262,7 +270,16 @@ fn a_fall_open_estimate_cannot_move_a_pinned_tier() {
     let router = router();
     pin(&store, &router, capable(), 5);
 
-    for source in ["fall_open", "no_signal", "ambiguous"] {
+    // Every source that is not evidence, enumerated over the closed type. A
+    // new upstream variant lands in `is_signal_evidence`'s match first, so it
+    // cannot reach here unclassified.
+    for source in [
+        StageSource::Scorer(DecisionSource::FallOpen),
+        StageSource::Scorer(DecisionSource::Ambiguous),
+        StageSource::Scorer(DecisionSource::LlmClassifier),
+        StageSource::NoSignal,
+        StageSource::Sticky,
+    ] {
         let held = store.apply_now(
             "claude-auto",
             Some(SESSION),
@@ -271,8 +288,8 @@ fn a_fall_open_estimate_cannot_move_a_pinned_tier() {
             false,
             Instant::now(),
         );
-        assert_eq!(held.tier, StageTier::Capable, "{source} must not unpin");
-        assert_eq!(held.source, "sticky");
+        assert_eq!(held.tier, StageTier::Capable, "{source:?} must not unpin");
+        assert_eq!(held.source, StageSource::Sticky);
     }
 }
 
@@ -501,7 +518,7 @@ fn a_decided_turn_records_nothing_until_it_is_committed() {
         "claude-auto",
         Some(SESSION),
         &router,
-        decision(StageTier::Efficient, "dimensions", 0.9),
+        decision(StageTier::Efficient, DIMENSIONS, 0.9),
         false,
         now,
     );
@@ -556,7 +573,7 @@ fn a_late_commit_does_not_overwrite_a_newer_decision() {
         "claude-auto",
         Some(SESSION),
         &router,
-        decision(StageTier::Efficient, "dimensions", 0.9),
+        decision(StageTier::Efficient, DIMENSIONS, 0.9),
         false,
         start + Duration::from_secs(1),
     );
@@ -574,7 +591,7 @@ fn a_late_commit_does_not_overwrite_a_newer_decision() {
         "claude-auto",
         Some(SESSION),
         &router,
-        decision(StageTier::Efficient, "dimensions", 0.9),
+        decision(StageTier::Efficient, DIMENSIONS, 0.9),
         true,
         start + Duration::from_secs(2),
     );
@@ -621,7 +638,7 @@ fn an_in_order_commit_still_replaces_the_pin() {
         "claude-auto",
         Some(SESSION),
         &router,
-        decision(StageTier::Efficient, "dimensions", 0.9),
+        decision(StageTier::Efficient, DIMENSIONS, 0.9),
         true,
         start + Duration::from_secs(2),
     );
@@ -656,7 +673,7 @@ fn a_pre_reload_commit_does_not_overwrite_a_post_reload_pin() {
         "claude-auto",
         Some(SESSION),
         &before,
-        decision(StageTier::Efficient, "dimensions", 0.9),
+        decision(StageTier::Efficient, DIMENSIONS, 0.9),
         false,
         start,
     );
@@ -676,7 +693,7 @@ fn a_pre_reload_commit_does_not_overwrite_a_post_reload_pin() {
         "claude-auto",
         Some(SESSION),
         &after,
-        decision(StageTier::Efficient, "dimensions", 0.9),
+        decision(StageTier::Efficient, DIMENSIONS, 0.9),
         true,
         start + Duration::from_secs(2),
     );
@@ -710,7 +727,7 @@ fn a_post_reload_decision_still_replaces_an_old_table_pin() {
         "claude-auto",
         Some(SESSION),
         &after,
-        decision(StageTier::Efficient, "dimensions", 0.9),
+        decision(StageTier::Efficient, DIMENSIONS, 0.9),
         false,
         start + Duration::from_secs(1),
     );
@@ -720,10 +737,71 @@ fn a_post_reload_decision_still_replaces_an_old_table_pin() {
         "claude-auto",
         Some(SESSION),
         &after,
-        decision(StageTier::Efficient, "dimensions", 0.9),
+        decision(StageTier::Efficient, DIMENSIONS, 0.9),
         true,
         start + Duration::from_secs(2),
     );
     assert_eq!(held.tier, StageTier::Efficient);
     assert_eq!(store.len(), 1, "the new table's pin replaced, not added to");
+}
+
+/// The one link the hand-built estimates in this file cannot check: a source
+/// the *real* scorer stamped, carried through `apply` and accepted as evidence.
+///
+/// Every other test here constructs `StageDecision` by hand, so if `decide`
+/// started producing a source that `is_signal_evidence` does not count — a
+/// renamed upstream variant, a new one — those tests would keep passing while
+/// live pins silently stopped moving. This drives the real `decide` and
+/// requires its output to move a pinned tier.
+///
+/// This fixture's two trailing failures are scored as critical, so the real
+/// source here is `Override` rather than `Dimensions` — which is exactly why
+/// the test drives `decide` instead of naming a variant it assumed.
+///
+/// Non-vacuity: make `is_signal_evidence` return `false` for
+/// `DecisionSource::Override` and the escalation stops, so the final tier
+/// assertion goes red.
+#[test]
+fn a_real_scorer_decision_is_evidence_that_moves_a_pin() {
+    let store = StageRouterStore::new();
+    let router = router();
+    pin(
+        &store,
+        &router,
+        decision(StageTier::Efficient, DIMENSIONS, 0.76),
+        5,
+    );
+
+    // Two failed investigative turns: enough for the scorer to decide, which
+    // is what makes this an escalation rather than a fall-open.
+    let messages = serde_json::json!([
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "a", "name": "Read"}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a", "is_error": true}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "b", "name": "Grep"}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "b", "is_error": true}]},
+    ]);
+    let estimate = super::super::decide(&router, Some(&messages));
+    assert_eq!(
+        estimate.tier,
+        StageTier::Capable,
+        "fixture must escalate, got {estimate:?}"
+    );
+    assert!(
+        estimate.source.is_signal_evidence(),
+        "the scorer decided this turn, so its source must count as evidence: {:?}",
+        estimate.source
+    );
+
+    let decided = store.apply_now(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        estimate,
+        false,
+        Instant::now(),
+    );
+    assert_eq!(decided.tier, StageTier::Capable);
+    assert_eq!(decided.source, estimate.source);
 }
