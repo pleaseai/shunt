@@ -321,7 +321,7 @@ fn retry_reason(status: StatusCode) -> &'static str {
 /// wins over computed backoff; when it exceeds `max_backoff` the caller gives up
 /// cleanly instead of sleeping past budget.
 fn next_backoff(policy: &RetryPolicy, attempt: u32, headers: Option<&HeaderMap>) -> Backoff {
-    if let Some(retry_after) = headers.and_then(crate::accounts::retry_after) {
+    if let Some(retry_after) = headers.and_then(crate::accounts::retry_after_for_retry) {
         if retry_after > policy.max_backoff {
             return Backoff::ExceedsBudget;
         }
@@ -442,6 +442,47 @@ mod tests {
         let policy = policy();
         let mut headers = HeaderMap::new();
         headers.insert("retry-after", "5".parse().unwrap());
+        assert!(matches!(
+            next_backoff(&policy, 0, Some(&headers)),
+            Backoff::ExceedsBudget
+        ));
+    }
+
+    #[test]
+    fn fractional_retry_after_rounds_up_before_budget_check() {
+        let policy = policy();
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "0.1".parse().unwrap());
+        assert!(matches!(
+            next_backoff(&policy, 0, Some(&headers)),
+            Backoff::Sleep(delay) if delay == Duration::from_secs(1)
+        ));
+        headers.insert("retry-after", "3600".parse().unwrap());
+        assert!(matches!(
+            next_backoff(&policy, 0, Some(&headers)),
+            Backoff::ExceedsBudget
+        ));
+    }
+
+    #[test]
+    fn retry_after_clamp_does_not_hide_over_budget_deadline() {
+        let policy = RetryPolicy {
+            max_retries: 1,
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(7200),
+            multiplier: 2.0,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "7200".parse().unwrap());
+        assert!(matches!(
+            next_backoff(&policy, 0, Some(&headers)),
+            Backoff::Sleep(delay) if delay == Duration::from_secs(7200)
+        ));
+
+        let policy = RetryPolicy {
+            max_backoff: Duration::from_secs(3600),
+            ..policy
+        };
         assert!(matches!(
             next_backoff(&policy, 0, Some(&headers)),
             Backoff::ExceedsBudget
