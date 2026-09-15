@@ -622,7 +622,7 @@ efficient_target = "claude-sonnet-4-6"
 | `confidence_threshold` | `0.5` | Minimum scorer confidence to act on a signal, in `(0.0, 1.0]` |
 | `recent_turn_window` | `3` | Assistant turns of tool results fed to the scorer. Must be at least `1` |
 | `min_dwell_turns` | `3` | Turns a tier is held before a de-escalation may fire; counted from the turn that chose it, so `0` and `1` both mean no dwell floor |
-| `deescalate_threshold` | `0.75` | Confidence required to move *down* a tier, deliberately stricter than `confidence_threshold` |
+| `deescalate_threshold` | `0.75` | Confidence required to move *down* a tier. The default sits above `confidence_threshold`'s, making the down direction the harder one, but the two are range-checked independently — a value below `confidence_threshold` is accepted |
 | `session_ttl_seconds` | `3600` | How long a quiet session's pinned tier survives |
 
 A target that is itself a router, a blank target, a threshold outside

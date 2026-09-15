@@ -422,7 +422,7 @@ efficient_target = "claude-sonnet-4-6"
 | `confidence_threshold` | `0.5` | 依据信号作出判定所需的最低评分器置信度，范围 `(0.0, 1.0]` |
 | `recent_turn_window` | `3` | 送入评分器的助手工具结果轮数。至少为 `1` |
 | `min_dwell_turns` | `3` | 降档可以触发之前档位需保持的轮数。从选定档位的那一轮开始计数，因此 `0` 和 `1` 都表示没有下限 |
-| `deescalate_threshold` | `0.75` | *降低*档位所需的置信度，刻意比 `confidence_threshold` 更严格 |
+| `deescalate_threshold` | `0.75` | *降低*档位所需的置信度。默认值高于 `confidence_threshold` 的默认值，使下降方向更难触发；但两者各自独立做范围校验，因此低于 `confidence_threshold` 的值也会被接受 |
 | `session_ttl_seconds` | `3600` | 空闲会话的固定档位可存续多久 |
 
 目标本身就是路由器、目标为空、阈值超出 `(0.0, 1.0]`、`recent_turn_window` 为 `0`、

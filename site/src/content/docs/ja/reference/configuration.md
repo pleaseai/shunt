@@ -424,7 +424,7 @@ efficient_target = "claude-sonnet-4-6"
 | `confidence_threshold` | `0.5` | シグナルに基づいて判断するための最小スコアラー信頼度、`(0.0, 1.0]` |
 | `recent_turn_window` | `3` | スコアラーに渡すアシスタントのツール結果ターン数。最小 `1` |
 | `min_dwell_turns` | `3` | 下降が発火できるようになるまでティアを保持するターン数。ティアを選んだターンから数えるため、`0` と `1` はどちらも下限なしを意味します |
-| `deescalate_threshold` | `0.75` | ティアを*下げる*ために必要な信頼度。`confidence_threshold` より意図的に厳しくしています |
+| `deescalate_threshold` | `0.75` | ティアを*下げる*ために必要な信頼度。既定値は `confidence_threshold` の既定値より高く、下げる方向をより難しくしていますが、2 つの値はそれぞれ独立に範囲検査されるため、`confidence_threshold` より低い値も受け付けます |
 | `session_ttl_seconds` | `3600` | 静かなセッションの固定ティアが維持される時間 |
 
 ターゲット自身がルーターである場合、空のターゲット、`(0.0, 1.0]` を外れたしきい値、

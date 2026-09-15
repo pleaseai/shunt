@@ -443,7 +443,7 @@ efficient_target = "claude-sonnet-4-6"
 | `confidence_threshold` | `0.5` | 신호에 따라 결정하기 위한 최소 스코어러 확신도, `(0.0, 1.0]` 범위 |
 | `recent_turn_window` | `3` | 스코어러에 전달하는 어시스턴트 툴 결과 턴 수. 최소 `1` |
 | `min_dwell_turns` | `3` | 하향 전환이 가능해지기까지 티어를 유지하는 턴 수. 티어를 고른 턴부터 세므로 `0`과 `1`은 모두 하한 없음을 뜻합니다 |
-| `deescalate_threshold` | `0.75` | 티어를 *내릴* 때 필요한 확신도. `confidence_threshold`보다 의도적으로 엄격합니다 |
+| `deescalate_threshold` | `0.75` | 티어를 *내릴* 때 필요한 확신도. 기본값이 `confidence_threshold` 기본값보다 높아 내려가는 쪽이 더 어렵지만, 두 값은 각각 독립적으로 범위 검사되므로 `confidence_threshold`보다 낮은 값도 허용됩니다 |
 | `session_ttl_seconds` | `3600` | 조용한 세션의 고정 티어가 유지되는 시간 |
 
 타깃이 그 자체로 라우터인 경우, 빈 타깃, `(0.0, 1.0]`을 벗어난 문턱값,

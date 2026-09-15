@@ -2960,6 +2960,7 @@ impl Config {
         // defensive validation and `shunt check` also call `validate`, so
         // keeping it there would repeat the same warning on every validation.
         config.warn_reprobe_seconds_below_floor();
+        config.warn_stage_router_targets_unresolvable();
         // One aggregated warning per load naming every `Secret` field whose
         // value was written literally in the config file — never the value
         // itself. A `Secret` populated from an env override, a `${...}`
@@ -4082,28 +4083,44 @@ impl Config {
                 model: model_id.to_string(),
             });
         }
-        for target in router.targets() {
-            // Same normalization as the recursion check above, and as routing.
-            let resolved = crate::routing::strip_context_window_hint(target);
-            if !self.models.iter().any(|other| other.id == resolved)
-                && !self.routes.iter().any(|route| route.model == resolved)
-                && !self
-                    .route_prefixes
-                    .iter()
-                    .any(|prefix| resolved.starts_with(&prefix.prefix))
-            {
-                // Not an error: resolution always falls back to
-                // `server.default_provider`, so the target still routes. It is
-                // very likely not what the operator meant, though.
-                tracing::warn!(
-                    model_id = %model_id,
-                    target = %target,
-                    default_provider = %self.server.default_provider,
-                    "stage_router target matches no [[models]], [[routes]], or [[route_prefixes]] entry; it will fall back to the default provider"
-                );
+        Ok(())
+    }
+
+    /// Warns once at load for every `[models.stage_router]` target that matches
+    /// no `[[models]]`, `[[routes]]`, or `[[route_prefixes]]` entry.
+    ///
+    /// Not an error, and deliberately not part of [`Config::validate_stage_router`]:
+    /// resolution always falls back to `server.default_provider`, so the target
+    /// still routes — it is just very likely not what the operator meant. Since
+    /// `validate` also runs on every hot reload (`reload.rs`) and on
+    /// `shunt check`, warning from there would repeat the line on each one;
+    /// emitting it at the successful load boundary fires it exactly once and
+    /// keeps repeated validation side-effect free, the same split
+    /// [`Config::warn_reprobe_seconds_below_floor`] uses.
+    fn warn_stage_router_targets_unresolvable(&self) {
+        for model in &self.models {
+            let Some(router) = &model.stage_router else {
+                continue;
+            };
+            for target in router.targets() {
+                // Same normalization the validation and the resolver apply.
+                let resolved = crate::routing::strip_context_window_hint(target);
+                if !self.models.iter().any(|other| other.id == resolved)
+                    && !self.routes.iter().any(|route| route.model == resolved)
+                    && !self
+                        .route_prefixes
+                        .iter()
+                        .any(|prefix| resolved.starts_with(&prefix.prefix))
+                {
+                    tracing::warn!(
+                        model_id = %model.id,
+                        target = %target,
+                        default_provider = %self.server.default_provider,
+                        "stage_router target matches no [[models]], [[routes]], or [[route_prefixes]] entry; it will fall back to the default provider"
+                    );
+                }
             }
         }
-        Ok(())
     }
 
     /// Resolve `[server.auth]` into the runtime inbound-auth state, reading the
@@ -7418,6 +7435,75 @@ id = "claude-sonnet-5"
                 "expected {key} to be rejected when blank"
             );
         }
+    }
+
+    #[test]
+    fn stage_router_unresolvable_target_warning_is_load_only() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-stage-router-warn-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // `claude-sonnet-4-6` matches no [[models]], [[routes]], or
+        // [[route_prefixes]] entry here, so it resolves through
+        // `server.default_provider` and earns the warning.
+        let unresolvable = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.stage_router]\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-sonnet-4-6\"\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n";
+        let path = dir.join("unresolvable.toml");
+        std::fs::write(&path, unresolvable).unwrap();
+
+        let (loaded, load_logs) = capture_logs(|| Config::load(Some(&path)));
+        let config = loaded.expect("an unresolvable stage_router target still loads");
+        assert_eq!(
+            load_logs.matches("stage_router target matches no").count(),
+            1,
+            "the successful load warns once for the one unresolvable target: {load_logs}"
+        );
+
+        // The point of the split: `validate` runs again on every hot reload
+        // (`reload.rs`) and on `shunt check`, and must stay silent.
+        let (_, validate_logs) = capture_logs(|| {
+            config
+                .clone()
+                .validate()
+                .expect("first validation succeeds");
+            config.validate().expect("second validation succeeds");
+        });
+        assert_eq!(
+            validate_logs
+                .matches("stage_router target matches no")
+                .count(),
+            0,
+            "repeated validation must not repeat the load warning: {validate_logs}"
+        );
+
+        // Positive twin: with both targets routable the load is silent, so the
+        // assertion above cannot be satisfied by a warning that never fires.
+        let resolvable = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.stage_router]\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-sonnet-4-6\"\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n\n\
+             [[routes]]\nmodel = \"claude-sonnet-4-6\"\nprovider = \"anthropic\"\n";
+        let ok_path = dir.join("resolvable.toml");
+        std::fs::write(&ok_path, resolvable).unwrap();
+        let (ok_loaded, ok_logs) = capture_logs(|| Config::load(Some(&ok_path)));
+        ok_loaded.expect("a fully routable stage_router loads");
+        assert_eq!(
+            ok_logs.matches("stage_router target matches no").count(),
+            0,
+            "both targets route explicitly, so the load must be silent: {ok_logs}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

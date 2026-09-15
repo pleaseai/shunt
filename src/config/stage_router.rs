@@ -30,11 +30,17 @@ pub enum StageRouterPicker {
 
 /// `[models.stage_router]`.
 ///
-/// Thresholds are deliberately asymmetric. Escalating costs one forfeited
-/// prompt-cache prefix; staying on the efficient tier through a turn it cannot
-/// handle costs a wasted turn *and* the escalation afterwards. So
-/// `confidence_threshold` gates the way up and the stricter
+/// The default thresholds are deliberately asymmetric. Escalating costs one
+/// forfeited prompt-cache prefix; staying on the efficient tier through a turn
+/// it cannot handle costs a wasted turn *and* the escalation afterwards. So
+/// `confidence_threshold` gates the way up and the higher default
 /// `deescalate_threshold` gates the way down.
+///
+/// That ordering is the default, not an invariant: validation ranges each
+/// threshold independently, so an operator may set `deescalate_threshold`
+/// *below* `confidence_threshold` and make the down direction the easier one.
+/// Whether to reject that, warn about it, or keep it a documented choice is
+/// open — see issue #562, to be settled before these keys ship.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StageRouterConfig {
@@ -54,8 +60,9 @@ pub struct StageRouterConfig {
     #[serde(default = "default_min_dwell_turns")]
     pub min_dwell_turns: u32,
     /// Confidence required to move *down* to the efficient tier. Defaults to
-    /// [`DEFAULT_DEESCALATE_THRESHOLD`], which is stricter than the escalation
-    /// threshold; read it through [`StageRouterConfig::deescalate_threshold`].
+    /// [`DEFAULT_DEESCALATE_THRESHOLD`], which is higher than the default
+    /// escalation threshold but is not required to exceed a configured one;
+    /// read it through [`StageRouterConfig::deescalate_threshold`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deescalate_threshold: Option<f64>,
     /// How long a session's pinned tier survives without traffic.
