@@ -50,8 +50,8 @@ authorization = "Bearer <token>"
 | 序列 | 类型 | 属性 | 含义 |
 | :-- | :-- | :-- | :-- |
 | `shunt.requests` | 计数器 | `provider`, `model`, `http.response.status_code` | 代理的推理请求。 |
-| `shunt.latency` | 直方图(ms) | `provider`, `model`, `http.response.status_code` | 流式响应为到 header 的延迟；其他响应为完整延迟。 |
-| `shunt.ttft` | 直方图(ms) | `provider`, `model` | 从请求开始到第一个 SSE body chunk 的时间。 |
+| `shunt.latency` | 直方图(ms) | `provider`, `model`, `http.response.status_code` | 流式响应为到 header 的延迟；其他响应为完整延迟。提交式流式响应因 header 在上游响应前提交，测量从分发到尝试分类的时间。 |
+| `shunt.ttft` | 直方图(ms) | `provider`, `model` | 从请求开始到第一个完整的非保活 SSE 帧的时间。 |
 | `shunt.stream_outcome` | 计数器 | `provider`, `model`, `outcome` | 每个 SSE 记录一个最终结果：`completed`、`error_event`、`upstream_cut` 或 `client_disconnect`。 |
 | `shunt.tokens` | 计数器 | `provider`, `model`, `kind` | 最后报告的流式 token 用量（`input`、`output`、`cache_read`、`cache_creation`）；不记录非流式用量。 |
 | `shunt.codex_continuation` | 计数器 | `provider`, `outcome` | Codex WebSocket continuation 的 hit 或 fallback。 |

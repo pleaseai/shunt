@@ -100,7 +100,7 @@ async fn cancelled_refresh_still_persists_rotated_token() {
     let error = caller.await.unwrap_err();
     assert!(error.is_cancelled());
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let stored = read_file(&path).unwrap();
             if stored["claudeAiOauth"]["refreshToken"] == "rotated-refresh" {

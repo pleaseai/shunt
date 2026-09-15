@@ -211,7 +211,7 @@ name = "backup"     # 선언한 이름은 모두 위에서 프로비저닝되어
 
 선택은 **세션 스티키**입니다: Codex CLI 자체의 `session-id` 요청 헤더가 계정의 키가 되므로, 하나의
 대화는 그 계정이 정상인 동안 같은 계정에 머무르다가 페일오버합니다(429 → 로테이션, 401 → 갱신 +
-재시도, 5xx → 쿨다운 + 로테이션). 성공한 풀링 응답에는 `x-shunt-account: <name>` 헤더가 실립니다.
+재시도, 5xx → 쿨다운 + 로테이션). 이 엔드포인트의 성공한 풀링 응답에는 스트리밍을 포함해 `x-shunt-account: <name>` 헤더가 실립니다 — 인바운드 패스스루는 승자 업스트림이 응답한 뒤에만 커밋하기 때문입니다(송신 방향 Responses 풀의 조기 커밋 HTTP 스트리밍은 대신 `event: account` 프레임으로 계정을 표시합니다. Codex 멀티 계정 가이드 참조).
 [`[server.auth]`](/ko/reference/configuration/)가 활성화된 공유 게이트웨이에서는 스티키 키가
 인증된 클라이언트별로 스코프되므로, 우연히 같은 `session-id`를 보내는 서로 다른 클라이언트도 서로
 다른 스티키 키를 사용합니다 — 클라이언트 간 스티키 키 충돌을 방지합니다. (키는 서로 구별되지만,
@@ -263,8 +263,10 @@ model = "gpt-5.6-sol"   # 자격이 부여된 슬러그, *-codex가 아닌 것
 
 ## 6. 검증
 
-세 라우트 중 어디로든 보낸 원시 Responses 요청은 그대로 릴레이되어야 하며, (풀링된 경우)
-`x-shunt-account` 헤더를 반환해야 합니다:
+세 라우트 중 어디로든 보낸 원시 Responses 요청은 그대로 릴레이되어야 하며, 풀링된 계정이
+승자가 된 경우에는 해당 계정을 표시하는 `x-shunt-account` 헤더를 반환해야 합니다 — 인바운드
+패스스루는 승자 업스트림이 응답한 뒤에만 커밋하므로, 이 헤더는 실제로 요청을 처리한 계정을
+가리킵니다:
 
 ```bash
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
@@ -273,8 +275,8 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -d '{"model":"gpt-5.6-sol","input":"say hi","stream":true}'
 ```
 
-- `content-type: text/event-stream`과 `x-shunt-account:` 헤더가 있는 `200` ⇒ 풀이 요청을 처리했고
-  SSE가 변경 없이 릴레이된 것입니다.
+- `content-type: text/event-stream`과 풀 계정 이름을 담은 `x-shunt-account:` 헤더가 있는 `200` ⇒
+  풀이 요청을 처리했고 SSE가 변경 없이 릴레이된 것입니다.
 - `401 authentication_error` ⇒ `x-shunt-token`이 없거나 유효하지 않습니다(3단계).
 - 모델을 지목하는 `400` ⇒ 그 계정에 해당 슬러그의 자격이 없습니다(5단계).
 

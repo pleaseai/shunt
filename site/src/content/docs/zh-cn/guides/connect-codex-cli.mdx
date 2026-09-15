@@ -197,8 +197,8 @@ name = "backup"     # each declared name must be provisioned above; an unprovisi
 ```
 
 选择是**会话粘性**的:Codex CLI 自己的 `session-id` 请求头部决定账户的 key,因此一段对话只要账户保持
-健康就一直留在同一个账户上,随后才会故障转移(429 → 轮换,401 → 刷新并重试,5xx → 冷却并轮换)。成功
-的池化响应会带上 `x-shunt-account: <name>` 头部。在启用了 [`[server.auth]`](/zh-cn/reference/configuration/)
+健康就一直留在同一个账户上,随后才会故障转移(429 → 轮换,401 → 刷新并重试,5xx → 冷却并轮换)。
+此端点上成功的池化响应会带 `x-shunt-account: <name>` 头部 —— 流式响应也不例外,因为入站透传只在获胜上游响应之后才提交(出站 Responses 池的早期提交 HTTP 流式响应则改用 `event: account` 帧标注账户,见 Codex 多账户指南)。在启用了 [`[server.auth]`](/zh-cn/reference/configuration/)
 的共享网关上,粘性 key 按已认证的客户端隔离,因此恰好发送相同 `session-id` 的不同客户端会使用不同的
 粘性 key —— 从而避免跨客户端的粘性 key 碰撞。(这些 key 是不同的;两个不同的 key 仍可能哈希到同一个
 账户。)
@@ -246,8 +246,9 @@ model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
 
 ## 6. 验证
 
-针对这三条路由中的任意一条发起一个原始 Responses 请求,应当被逐字中继,并(在池化时)返回一个
-`x-shunt-account` 头部:
+针对这三条路由中的任意一条发起一个原始 Responses 请求,应当被逐字中继;当一个池化账户获胜时,响应
+会带一个指明该账户的 `x-shunt-account` 头部 —— 入站透传只在获胜上游响应之后才提交,因此该头部指明的
+是实际处理该请求的账户:
 
 ```bash
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
@@ -256,8 +257,8 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -d '{"model":"gpt-5.6-sol","input":"say hi","stream":true}'
 ```
 
-- 返回 `200`,带 `content-type: text/event-stream` 和 `x-shunt-account:` 头部 ⇒ 池已服务该请求,且 SSE
-  被原样中继。
+- 返回 `200`,带 `content-type: text/event-stream` 和标注池账户名的 `x-shunt-account:` 头部 ⇒ 池已服务
+  该请求,且 SSE 被原样中继。
 - 返回 `401 authentication_error` ⇒ `x-shunt-token` 缺失或无效(步骤 3)。
 - 返回指明模型的 `400` ⇒ 该账户对这个 slug 没有权限(步骤 5)。
 

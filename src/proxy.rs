@@ -11,6 +11,7 @@ use tracing::Instrument;
 
 use crate::{error::ShuntError, model::responses::anthropic_error_type, server::AppState};
 
+pub(crate) mod chain_stream;
 pub(crate) mod failover;
 
 pub async fn post(

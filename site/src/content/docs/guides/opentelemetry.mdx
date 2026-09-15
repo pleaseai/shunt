@@ -50,8 +50,8 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 | Series | Type | Attributes | Meaning |
 | :-- | :-- | :-- | :-- |
 | `shunt.requests` | Counter | `provider`, `model`, `http.response.status_code` | Proxied inference requests. |
-| `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code` | Header latency for streams; full latency otherwise. |
-| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Request start to the first SSE body chunk. |
+| `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code` | Header latency for streams; full latency otherwise. The committed streaming responses sample from dispatch to attempt classification, since their headers commit before the upstream responds. |
+| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Request start to the first complete non-keepalive SSE frame. |
 | `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | One final SSE result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
 | `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming token usage (`input`, `output`, `cache_read`, `cache_creation`). Non-streaming usage is not recorded. |
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation hit or fallback. |

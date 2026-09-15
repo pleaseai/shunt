@@ -50,8 +50,8 @@ authorization = "Bearer <token>"
 | 계열 | 유형 | 속성 | 의미 |
 | :-- | :-- | :-- | :-- |
 | `shunt.requests` | 카운터 | `provider`, `model`, `http.response.status_code` | 프록시된 추론 요청. |
-| `shunt.latency` | 히스토그램(ms) | `provider`, `model`, `http.response.status_code` | 스트림은 헤더 지연 시간, 그 외에는 전체 지연 시간. |
-| `shunt.ttft` | 히스토그램(ms) | `provider`, `model` | 요청 시작부터 첫 SSE 본문 청크까지의 시간. |
+| `shunt.latency` | 히스토그램(ms) | `provider`, `model`, `http.response.status_code` | 스트림은 헤더 지연 시간, 그 외에는 전체 지연 시간. 커밋형 스트리밍 응답은 헤더가 업스트림 응답보다 먼저 커밋되므로 디스패치부터 시도 분류까지를 측정합니다. |
+| `shunt.ttft` | 히스토그램(ms) | `provider`, `model` | 요청 시작부터 첫 번째 완전한 비-킵얼라이브 SSE 프레임까지의 시간. |
 | `shunt.stream_outcome` | 카운터 | `provider`, `model`, `outcome` | SSE 최종 결과 하나: `completed`, `error_event`, `upstream_cut`, `client_disconnect`. |
 | `shunt.tokens` | 카운터 | `provider`, `model`, `kind` | 마지막으로 보고된 스트리밍 토큰 사용량(`input`, `output`, `cache_read`, `cache_creation`). 비스트리밍 사용량은 기록하지 않음. |
 | `shunt.codex_continuation` | 카운터 | `provider`, `outcome` | Codex WebSocket continuation hit 또는 fallback. |
