@@ -18,7 +18,6 @@ mod websocket;
 mod ws_stream;
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use axum::http::{HeaderMap, StatusCode, Uri};
 use serde_json::Value;
@@ -37,8 +36,9 @@ use futures_util::{StreamExt, TryStreamExt};
 
 use self::context::{CredentialSource, ForwardOptions, PoolForward, TurnOptions};
 use self::early_stream::{
-    parsed_events, pool_translated_stream, pooled_first_poll, send_classified, translated_stream,
-    HttpSendContext, MachineBuild, PoolFirstPoll, PoolItem, SendClassified,
+    parsed_events, pool_translated_stream, pooled_first_poll, send_classified,
+    send_classified_with_estimate, translated_stream, EstimateBuild, HttpSendContext, MachineBuild,
+    PoolFirstPoll, PoolItem, SendClassified,
 };
 use self::error::{adapter_error_envelope, own_error, transport_error};
 use self::http::forward_http;
@@ -129,7 +129,9 @@ async fn forward(
     // count_tokens endpoint). The CPU-bound tiktoken encode itself is deferred to
     // each transport, where it runs on the blocking pool overlapped with the
     // upstream round-trip rather than serially in front of it (see forward_http /
-    // forward_websocket). See model/responses.rs.
+    // forward_websocket); the multi-upstream chain races it against each
+    // attempt's dispatch (the pool's first poll via `pooled_first_poll`, the
+    // non-pooled send via `send_classified_with_estimate`). See model/responses.rs.
     let estimate_input = if client_wants_stream
         && matches!(
             state
@@ -592,14 +594,23 @@ pub(crate) async fn chain_attempt(
         auth,
         codex_quota_account,
     };
-    match send_classified(&send_context).await {
+    // Start the route-gated estimate before the send so the encode overlaps
+    // the upstream round-trip instead of serializing after the headers
+    // arrive — the non-pooled counterpart of the pooled branch's race.
+    // Only the winner arm awaits it; a failed attempt drops it unobserved.
+    let estimate = {
+        let state = state.clone();
+        let route = route.clone();
+        let request = body.json_arc();
+        async move { winner_estimate(&state, &route, &request).await }
+    };
+    let sent = send_classified_with_estimate(send_classified(&send_context), estimate).await;
+    match sent.classified {
         SendClassified::Relay { bytes } => {
-            // The upstream's headers arrived before this arm runs; the
-            // estimate below is post-header work and must not inflate the
-            // header-latency sample the chain records.
-            let headers_at = Instant::now();
-            let request = body.json_arc();
-            let estimate_value = winner_estimate(state, route, &request).await;
+            let estimate_value = match sent.estimate {
+                EstimateBuild::Ready(value) => value,
+                EstimateBuild::Pending(build) => build.await,
+            };
             let mut machine = turn
                 .relay(route)
                 .machine()
@@ -608,7 +619,7 @@ pub(crate) async fn chain_attempt(
             let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
             crate::proxy::chain_stream::Attempt::Winner {
                 start: Some(axum::body::Bytes::from(start.join(""))),
-                headers_at,
+                headers_at: sent.headers_at,
                 frames: Box::pin(
                     translated_stream(parsed_events(bytes), machine)
                         .map_err(|never| match never {}),
@@ -632,9 +643,11 @@ pub(crate) async fn chain_attempt(
 /// The synthetic start's input-token estimate, gated on the WINNING route's
 /// own `count_tokens` setting: a provider opted out of local counting must
 /// not receive a locally computed seed just because another chain route
-/// counts. The blocking encode runs here, inside the committed stream, with
-/// the same one-second bound as the single-route path — a saturated pool
-/// delays the deferred synthetic start, never the committed response.
+/// counts. The blocking encode runs here, raced against the attempt's
+/// dispatch — the pool's first poll via [`pooled_first_poll`], the
+/// non-pooled send via [`send_classified_with_estimate`] — with the same
+/// one-second bound as the single-route path; a slow estimate delays the
+/// deferred synthetic start, never the committed response.
 async fn winner_estimate(state: &AppState, route: &Route, request: &Arc<Value>) -> u64 {
     let counts_locally = state
         .config

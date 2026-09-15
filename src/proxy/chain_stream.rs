@@ -105,8 +105,8 @@ pub(crate) enum Attempt {
     /// winner has none — its own `message_start` relays as the first frame.
     /// `headers_at` is when the winning upstream's response headers arrived:
     /// the chain records `shunt.latency` to that instant (the pre-commit
-    /// loop's semantics), so post-header work like the synthetic start's
-    /// token estimate never inflates the header-latency sample.
+    /// loop's semantics), so a still-running estimate awaited after the
+    /// headers never inflates the header-latency sample.
     Winner {
         start: Option<Bytes>,
         frames: ClientFrames,

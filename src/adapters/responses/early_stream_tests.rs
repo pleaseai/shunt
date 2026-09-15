@@ -247,6 +247,139 @@ async fn pooled_first_poll_returns_the_item_after_the_build_wins() {
     ));
 }
 
+/// The non-pooled chain attempt's estimate is polled while its send is
+/// blocked: a serialized seam never polls the estimate before the send
+/// completes, the poll signal never arrives, and the timeout fails the test.
+#[tokio::test]
+async fn send_classified_with_estimate_overlaps_the_estimate_with_the_send() {
+    let (estimate_polled_tx, estimate_polled_rx) = tokio::sync::oneshot::channel::<()>();
+    let estimate = async move {
+        let _ = estimate_polled_tx.send(());
+        futures_util::future::pending::<u64>().await
+    };
+    let (send_release, send_wait) = tokio::sync::oneshot::channel::<()>();
+    let send = async move {
+        let _ = send_wait.await;
+        SendClassified::Relay {
+            bytes: Box::pin(futures_util::stream::empty()),
+        }
+    };
+    let raced = tokio::spawn(send_classified_with_estimate(send, estimate));
+    tokio::time::timeout(std::time::Duration::from_secs(2), estimate_polled_rx)
+        .await
+        .expect("the estimate is polled while the send is blocked")
+        .expect("the poll signal is sent");
+    send_release.send(()).expect("the send is still listening");
+    let raced = raced.await.expect("the seam task joined");
+    assert!(matches!(raced.classified, SendClassified::Relay { .. }));
+    assert!(
+        matches!(raced.estimate, EstimateBuild::Pending(_)),
+        "the send won the race"
+    );
+}
+
+/// A classified failure never waits on a still-running estimate: the failed
+/// send returns while the estimate is pending, and the pending estimate is
+/// dropped with the failure — a serialized seam awaits the pending estimate
+/// and the timeout fails the test.
+#[tokio::test]
+async fn send_classified_with_estimate_never_waits_for_the_estimate_on_a_classified_failure() {
+    let estimate = futures_util::future::pending::<u64>();
+    let send = async {
+        SendClassified::Failed {
+            envelope: LazyEnvelope::Ready(Value::Null),
+            status: StatusCode::BAD_GATEWAY,
+            remember: false,
+            advance: true,
+        }
+    };
+    let raced = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        send_classified_with_estimate(send, estimate),
+    )
+    .await
+    .expect("a classified failure returns without waiting on the estimate");
+    assert!(matches!(raced.classified, SendClassified::Failed { .. }));
+    assert!(
+        matches!(raced.estimate, EstimateBuild::Pending(_)),
+        "the estimate was never awaited"
+    );
+}
+
+/// When the estimate wins the race, the send's result still lands and the
+/// resolved estimate rides along for the winner arm — a serialized seam
+/// awaits the blocked send first and the timeout fails the test.
+#[tokio::test]
+async fn send_classified_with_estimate_returns_the_send_result_after_the_estimate_wins() {
+    let (send_release, send_wait) = tokio::sync::oneshot::channel::<()>();
+    let estimate = async move {
+        send_release.send(()).expect("the send is still listening");
+        42u64
+    };
+    let send = async move {
+        let _ = send_wait.await;
+        SendClassified::Relay {
+            bytes: Box::pin(futures_util::stream::empty()),
+        }
+    };
+    let raced = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        send_classified_with_estimate(send, estimate),
+    )
+    .await
+    .expect("the send result lands after the estimate won the race");
+    assert!(matches!(raced.classified, SendClassified::Relay { .. }));
+    assert!(matches!(raced.estimate, EstimateBuild::Ready(42)));
+}
+
+/// `headers_at` is the send's completion instant: captured while the
+/// estimate is still pending, never after the winner arm awaited it.
+#[tokio::test]
+async fn send_classified_with_estimate_headers_at_precedes_a_pending_estimate() {
+    let (estimate_release, estimate_wait) = tokio::sync::oneshot::channel::<()>();
+    let resolved_at = std::sync::Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+    let estimate_resolved_at = resolved_at.clone();
+    let estimate = async move {
+        let _ = estimate_wait.await;
+        *estimate_resolved_at
+            .lock()
+            .expect("the estimate holds the only lock") = Some(std::time::Instant::now());
+        42u64
+    };
+    let send = async {
+        SendClassified::Failed {
+            envelope: LazyEnvelope::Ready(Value::Null),
+            status: StatusCode::BAD_GATEWAY,
+            remember: false,
+            advance: true,
+        }
+    };
+    let raced = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        send_classified_with_estimate(send, estimate),
+    )
+    .await
+    .expect("the send's failure returns while the estimate is still pending");
+    let EstimateBuild::Pending(build) = raced.estimate else {
+        panic!("the send won the race");
+    };
+    estimate_release
+        .send(())
+        .expect("the estimate is still listening");
+    let value = build.await;
+    assert_eq!(value, 42);
+    let resolved = resolved_at
+        .lock()
+        .expect("the estimate holds the only lock")
+        .expect("the estimate ran");
+    assert!(
+        raced.headers_at <= resolved,
+        "headers_at {:?} was captured after the estimate resolved at {:?}",
+        raced.headers_at,
+        resolved
+    );
+}
+
 /// A producer failure after the early start surfaces as an SSE `error` event
 /// and the stream ends — never a synthesized completion.
 #[tokio::test]

@@ -245,6 +245,51 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
     }
 }
 
+/// A non-pooled chain attempt's route-gated token estimate, raced against its
+/// send ([`send_classified_with_estimate`]): resolved when the estimate won
+/// the race, still pending when the send won it.
+pub(super) enum EstimateBuild<'a> {
+    Ready(u64),
+    Pending(std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send + 'a>>),
+}
+
+/// One non-pooled chain attempt's send raced against its estimate.
+/// `headers_at` is the send's completion instant, for the chain's
+/// header-latency sample — never an estimate-completion instant.
+pub(super) struct SendClassifiedWithEstimate<'a> {
+    pub(super) classified: SendClassified,
+    pub(super) estimate: EstimateBuild<'a>,
+    pub(super) headers_at: std::time::Instant,
+}
+
+/// Race a non-pooled chain attempt's route-gated token estimate against its
+/// bounded-retry send so the synthetic `message_start` seed no longer waits
+/// for the estimate on top of the upstream round-trip — the non-pooled
+/// counterpart of [`pooled_first_poll`]. Only the winner arm consumes the
+/// estimate, so a classified failure never waits on it: a still-running
+/// estimate is dropped with the failure, its blocking task completing
+/// unobserved.
+pub(super) async fn send_classified_with_estimate<'a>(
+    send: impl std::future::Future<Output = SendClassified> + Send + 'a,
+    estimate: impl std::future::Future<Output = u64> + Send + 'a,
+) -> SendClassifiedWithEstimate<'a> {
+    match futures_util::future::select(Box::pin(send), Box::pin(estimate)).await {
+        futures_util::future::Either::Left((classified, estimate)) => SendClassifiedWithEstimate {
+            classified,
+            estimate: EstimateBuild::Pending(Box::pin(estimate)),
+            headers_at: std::time::Instant::now(),
+        },
+        futures_util::future::Either::Right((value, send)) => {
+            let classified = send.await;
+            SendClassifiedWithEstimate {
+                classified,
+                estimate: EstimateBuild::Ready(value),
+                headers_at: std::time::Instant::now(),
+            }
+        }
+    }
+}
+
 /// Everything [`http_events_stream`] needs to drive one upstream send.
 #[derive(Clone)]
 pub(super) struct HttpSendContext {
