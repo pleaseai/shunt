@@ -103,9 +103,14 @@ pub(crate) enum Attempt {
     /// This upstream won. `start` carries the synthetic `message_start` bytes
     /// for a Responses-kind winner (deferred until now); an Anthropic-kind
     /// winner has none — its own `message_start` relays as the first frame.
+    /// `headers_at` is when the winning upstream's response headers arrived:
+    /// the chain records `shunt.latency` to that instant (the pre-commit
+    /// loop's semantics), so post-header work like the synthetic start's
+    /// token estimate never inflates the header-latency sample.
     Winner {
         start: Option<Bytes>,
         frames: ClientFrames,
+        headers_at: Instant,
     },
     /// The attempt failed before any client-visible frame. `advance` mirrors
     /// the pre-commit loop: advance-status and transport failures move the
@@ -376,12 +381,19 @@ pub(super) async fn forward_chain_stream(
                                 _ => unreachable!("chain_stream_applies gates the adapter kind"),
                             };
                             match outcome {
-                                Attempt::Winner { start, frames } => {
+                                Attempt::Winner {
+                                    start,
+                                    frames,
+                                    headers_at,
+                                } => {
                                     crate::metrics::record_proxied_request(
                                         &provider,
                                         &model,
                                         StatusCode::OK.as_u16(),
-                                        attempt_started.elapsed().as_secs_f64() * 1000.0,
+                                        headers_at
+                                            .saturating_duration_since(attempt_started)
+                                            .as_secs_f64()
+                                            * 1000.0,
                                     );
                                     // Attribute before the start goes out:
                                     // TTFT and early-stream metrics must name

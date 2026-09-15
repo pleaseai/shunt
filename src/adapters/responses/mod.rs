@@ -18,6 +18,7 @@ mod websocket;
 mod ws_stream;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::http::{HeaderMap, StatusCode, Uri};
 use serde_json::Value;
@@ -472,6 +473,7 @@ pub(crate) async fn chain_attempt(
                 Some(Ok(PoolItem::Event(event))) => {
                     return crate::proxy::chain_stream::Attempt::Winner {
                         start: Some(axum::body::Bytes::from(start.join(""))),
+                        headers_at: Instant::now(),
                         frames: Box::pin(
                             pool_translated_stream(
                                 futures_util::stream::iter([Ok(PoolItem::Event(event))])
@@ -529,12 +531,17 @@ pub(crate) async fn chain_attempt(
     let credential = match resolve_credential(&state.config, route, &state.http_client).await {
         Ok(credential) => credential,
         Err(error) => {
+            // Capture before the error is consumed: the envelope the stream
+            // emits is the credential error's own (a missing key is a 401),
+            // and the chain must classify the attempt with that status, not
+            // a gateway-synthesized 502.
+            let status = error.response.status();
             let envelope = adapter_error_envelope(error).await;
             return crate::proxy::chain_stream::Attempt::Failed {
                 advance: false,
                 remember: false,
                 envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
-                status: StatusCode::BAD_GATEWAY,
+                status,
             };
         }
     };
@@ -556,6 +563,10 @@ pub(crate) async fn chain_attempt(
     };
     match send_classified(&send_context).await {
         SendClassified::Relay { bytes } => {
+            // The upstream's headers arrived before this arm runs; the
+            // estimate below is post-header work and must not inflate the
+            // header-latency sample the chain records.
+            let headers_at = Instant::now();
             let estimate_value = winner_estimate(state, route, &body).await;
             let mut machine = turn
                 .relay(route)
@@ -565,6 +576,7 @@ pub(crate) async fn chain_attempt(
             let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
             crate::proxy::chain_stream::Attempt::Winner {
                 start: Some(axum::body::Bytes::from(start.join(""))),
+                headers_at,
                 frames: Box::pin(
                     translated_stream(parsed_events(bytes), machine)
                         .map_err(|never| match never {}),

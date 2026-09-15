@@ -686,6 +686,38 @@ async fn http_events_stream_turns_a_credential_resolution_failure_into_a_termina
     assert_eq!(envelope["error"]["message"], "credential resolution failed");
 }
 
+/// A credential resolution failure inside the chain keeps the credential's
+/// own status: the terminal envelope is a 401 authentication error, so the
+/// chain must classify the attempt as 401 — a 502 would misreport the
+/// emitted envelope in `shunt.requests` and the request span.
+#[tokio::test]
+async fn chain_attempt_keeps_the_credential_failure_status() {
+    let mut config = crate::config::Config::default();
+    // Deterministic 401 with no env or store reads: an api-key provider whose
+    // key env var is absent.
+    let codex = config
+        .providers
+        .get_mut("codex")
+        .expect("built-in codex provider");
+    codex.auth = crate::config::AuthMode::ApiKey;
+    codex.api_key_env = Some("SHUNT_CHAIN_TEST_API_KEY_MISSING".to_string());
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let body = crate::request::RequestBody::parse(b"{\"input\": []}".to_vec()).unwrap();
+    let attempt = crate::adapters::responses::chain_attempt(
+        &state,
+        &codex_route(),
+        &axum::http::HeaderMap::new(),
+        body,
+    )
+    .await;
+    match attempt {
+        crate::proxy::chain_stream::Attempt::Failed { status, .. } => {
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        _ => panic!("expected a failed attempt, got a winner"),
+    }
+}
+
 /// A batch that ends with an invalid-UTF-8 frame still relays the valid
 /// frames that preceded it: the strict decode flags only the bad frame and
 /// never drops its valid prefix.
