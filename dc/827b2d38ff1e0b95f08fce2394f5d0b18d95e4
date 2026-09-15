@@ -1,0 +1,70 @@
+plugins/shunt/hooks/endpoint.ts
+  s_c4a0a288129ccb::t_ff78d85c458d78 1-74
+plugins/shunt/hooks/names.ts
+  s_c4a0a288129ccb::t_b2ed78362a30a5 17,23,28,33,38
+  s_c4a0a288129ccb::t_de47a56c8a2098 1-16,18-22,24-27,29-32,34-37,39-40
+site/src/content/docs/ja/reference/endpoints.md
+  s_c4a0a288129ccb::t_56b9d9c844b5fd 122
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_c4a0a288129ccb::t_56b9d9c844b5fd 115
+plugins/shunt/tests/views.test.ts
+  s_c4a0a288129ccb::t_7aa9ee29c17835 7,47,52
+  s_c4a0a288129ccb::t_266d699faaa5cb 1-6,8-46,48-51,53-91
+plugins/shunt/tests/report.test.ts
+  s_c4a0a288129ccb::t_20e54619e7dded 1-76
+site/src/content/docs/reference/endpoints.md
+  s_c4a0a288129ccb::t_bacfbcd20f9d82 190-191
+.gitignore
+  s_c4a0a288129ccb::t_21300103b02c51 17
+plugins/shunt/commands/usage.md
+  s_c4a0a288129ccb::t_5b07ccc909c605 1-39
+plugins/shunt/hooks/report.ts
+  s_c4a0a288129ccb::t_b2ed78362a30a5 92,99,107
+  s_c4a0a288129ccb::t_4bcd8b08a860a2 1-91,93-98,100-106,108-123
+plugins/shunt/hooks/register.ts
+  s_c4a0a288129ccb::t_3ea3a2e7c9d7e3 13-17,19-22
+  s_c4a0a288129ccb::t_b2ed78362a30a5 70,88
+  s_c4a0a288129ccb::t_5b07ccc909c605 1-12,18,23-69,71-87,89-113
+.github/workflows/ci.yml
+  s_c4a0a288129ccb::t_21300103b02c51 56-58,75-87,149-151
+plugins/shunt/package.json
+  s_c4a0a288129ccb::t_a1d388ea9983f0 1-18
+plugins/shunt/README.md
+  s_c4a0a288129ccb::t_a444959e4ef60b 1-160
+plugins/shunt/hooks/views.ts
+  s_c4a0a288129ccb::t_b2ed78362a30a5 128
+  s_c4a0a288129ccb::t_52cf5de0d6657b 1-127,129-144
+site/src/content/docs/ko/reference/endpoints.md
+  s_c4a0a288129ccb::t_56b9d9c844b5fd 120
+plugins/shunt/vitest.config.ts
+  s_c4a0a288129ccb::t_a1d388ea9983f0 1-10
+plugins/shunt/.claude-plugin/plugin.json
+  s_c4a0a288129ccb::t_b239f870e6f9b5 1-16
+plugins/shunt/hooks/hooks.json
+  s_c4a0a288129ccb::t_b239f870e6f9b5 1-4
+plugins/shunt/tests/endpoint.test.ts
+  s_c4a0a288129ccb::t_a1d388ea9983f0 1-101
+plugins/shunt/tests/fixtures.ts
+  s_c4a0a288129ccb::t_20e54619e7dded 1-32
+.claude-plugin/marketplace.json
+  s_c4a0a288129ccb::t_68c0ec78b63d82 9,12-15,17
+  s_c4a0a288129ccb::t_4ac42bcfa78ff3 16
+plugins/shunt/package-lock.json
+  s_c4a0a288129ccb::t_19b8e2c6f1eefc 1-1186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "dc827b2d38ff1e0b95f08fce2394f5d0b18d95e4",
+  "prompts": {},
+  "sessions": {
+    "s_c4a0a288129ccb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc28f049-bb3f-4826-a7df-14a37c465699",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
