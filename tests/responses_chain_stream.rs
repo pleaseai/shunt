@@ -17,7 +17,10 @@ use shunt::{
     server,
 };
 use tokio::task::JoinHandle;
-use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+use wiremock::{
+    matchers::{body_string_contains, method},
+    Mock, MockServer, ResponseTemplate,
+};
 
 mod common;
 
@@ -319,6 +322,46 @@ async fn advance_status_on_the_primary_defers_the_synthetic_start_to_the_winner(
     assert!(!body.contains("gpt-5.6-sol"), "got:\n{body}");
     assert!(body.contains("from responses"), "got:\n{body}");
     assert_eq!(count_event(&body, "error"), 0, "got:\n{body}");
+    drop(gateway);
+    primary.verify().await;
+    fallback.verify().await;
+}
+
+/// The final chain attempt still receives the request body: the last route
+/// moves the buffered body (no later attempt needs it) and must forward the
+/// request bytes faithfully. A take applied to a non-final attempt would
+/// empty the body for the next route and abort the chain before any request
+/// reached the fallback.
+#[tokio::test]
+async fn the_final_attempt_receives_the_request_body() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = common::env_lock().await;
+    let primary = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429))
+        .expect(1)
+        .mount(&primary)
+        .await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_string_contains("Reply with OK."))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(ANTHROPIC_SSE, "text/event-stream"))
+        .expect(1)
+        .mount(&fallback)
+        .await;
+
+    let config = chain_config(
+        (ProviderKind::Responses, primary.uri()),
+        (ProviderKind::Anthropic, fallback.uri()),
+    );
+    let gateway = start_gateway(config).await;
+    let response = stream_request(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("from anthropic"), "got:\n{body}");
     drop(gateway);
     primary.verify().await;
     fallback.verify().await;

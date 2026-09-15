@@ -352,10 +352,16 @@ pub(super) async fn forward_chain_stream(
                                 index == 0,
                                 primary_origin.as_deref(),
                             );
-                            let attempt_body = body
-                                .as_ref()
-                                .expect("attempt phase holds the request body")
-                                .clone();
+                            let attempt_body = if attempts.is_empty() {
+                                // The final attempt: no later route needs the
+                                // buffered body, so move it instead of
+                                // deep-copying its raw bytes.
+                                body.take().expect("attempt phase holds the request body")
+                            } else {
+                                body.as_ref()
+                                    .expect("attempt phase holds the request body")
+                                    .clone()
+                            };
                             let provider = route.provider.clone();
                             let model = route.model.clone();
                             let outcome = match route.adapter {
