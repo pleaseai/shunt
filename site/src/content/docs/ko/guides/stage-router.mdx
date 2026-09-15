@@ -33,8 +33,8 @@ shunt는 Claude Code의 실제 도구 이름을 압니다. 범용 라우터보�
 | :-- | :-- |
 | 관찰(Observe) | `Read`, `Glob`, `Grep`, `NotebookRead`, `WebFetch`, `WebSearch`, `BashOutput` |
 | 변경(Mutate) | `Edit`, `NotebookEdit`, `Write` |
-| 계획(Plan) | `TodoWrite`, `Task`, `Skill`, `ExitPlanMode` |
-| 미분류 | `Bash`과 모든 `mcp__*` 도구를 포함한 나머지 전부 |
+| 계획(Plan) | `TodoWrite`, `Task`, `EnterPlanMode`, `ExitPlanMode` |
+| 미분류 | `Bash`, `Skill`, `KillShell`과 모든 `mcp__*` 도구를 포함한 나머지 전부 |
 
 `ExitPlanMode`를 포함한 모든 `Plan` 호출은 계획 활동으로 집계되며, 이는 탐색으로 읽혀
 아래가 아니라 **위로** 밉니다. 분류 이상의 취급을 받는 이름은 하나입니다. 실패한 `Task`는
@@ -85,8 +85,11 @@ fall-open이나 도구 활동이 없는 턴은 picker 기본값이지 증거가 
 세션에서 라우터 기반 모델을 둘 쓰면 티어는 서로 독립입니다.
 
 - 세션 헤더를 보내지 않는 호출자는 무상태로 라우팅됩니다.
-- `count_tokens` 탐침은 실제 턴과 같은 티어에 도달하지만 아무것도 기록하지 않습니다. Claude
-  Code가 한 턴 뒤처진 이력으로 보내기 때문입니다.
+- `count_tokens` 탐침은 아무것도 기록하지 않습니다. Claude Code가 한 턴 뒤처진 이력으로
+  보내기 때문에, 기록하는 탐침은 오래된 이력이 고정을 몰게 합니다. 세션이 이미 고정돼
+  있으면 탐침과 뒤따르는 턴이 같은 고정을 읽으므로 같은 티어에 도달합니다. 아직 고정되지
+  *않은* 세션에서는 탐침이 자기 이력으로 채점되므로 뒤따르는 턴과 다른 티어에 도달할 수
+  있습니다.
 - 고정은 설정 리로드를 견딥니다. 다만 고정은 자신이 만들어진 라우터 테이블을 기억하므로,
   라우터 하나를 수정하면 그 라우터의 고정만 버려집니다.
 - 고정은 `session_ttl_seconds` 후 만료됩니다. 재시작 간에는 아무것도 영속되지 않습니다.

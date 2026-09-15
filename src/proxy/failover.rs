@@ -69,6 +69,7 @@ pub(super) async fn forward(
         // drive the session's pin.
         read_only: is_count_tokens(uri),
         now: started_at,
+        pending: std::cell::Cell::new(None),
     };
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json(), Some(&stage)).map_err(
@@ -98,6 +99,10 @@ pub(super) async fn forward(
         check_inbound_auth(&state, &routes, headers).map_err(|error| *error)?;
     enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)
         .map_err(|error| *error)?;
+    // The request is admitted, so the tier it was routed at may be recorded.
+    // Both gates above rejected before this line, and neither had run when the
+    // chain was resolved — `check_inbound_auth` needs that chain to decide.
+    stage.commit();
 
     let first_route = routes
         .first()

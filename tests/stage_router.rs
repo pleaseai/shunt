@@ -9,7 +9,11 @@
 //! Non-vacuity: delete the `route.model` re-stamp in `routing::resolve_chain`
 //! and `the_client_is_told_the_id_it_asked_for` goes red; make `read_only` commit
 //! and `a_count_tokens_probe_does_not_pin_the_session` goes red; drop the pin
-//! entirely and `a_pinned_capable_tier_survives_a_clean_turn` goes red.
+//! entirely and `a_pinned_capable_tier_survives_a_clean_turn` goes red; commit
+//! the pin inside `stage::select` rather than parking it for
+//! `StageContext::commit` — the shape this had before the write moved past
+//! request admission — and `a_rejected_request_does_not_pin_the_session` goes
+//! red, because the quiet turn is then held on the pin the 401 left behind.
 
 use std::{collections::BTreeMap, io::ErrorKind, net::SocketAddr};
 
@@ -17,8 +21,9 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
     config::{
-        AuthMode, Config, CountTokens, ModelConfig, ProviderKind, RetryConfig, StageRouterConfig,
-        StageRouterPicker, UpstreamAuth, UpstreamConfig,
+        ApiKeyHeader, AuthMap, AuthMode, Config, CountTokens, InboundAuthConfig, ModelConfig,
+        ProviderKind, RetryConfig, StageRouterConfig, StageRouterPicker, UpstreamAuth,
+        UpstreamConfig,
     },
     server,
 };
@@ -27,6 +32,8 @@ use wiremock::{
     matchers::{method, path},
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
+
+mod common;
 
 const ROUTER_ID: &str = "claude-auto";
 const CAPABLE_UPSTREAM_MODEL: &str = "upstream-capable";
@@ -72,12 +79,20 @@ fn can_bind_loopback() -> bool {
 }
 
 fn passthrough(name: &str, base_url: String) -> UpstreamConfig {
+    upstream_with(
+        name,
+        base_url,
+        UpstreamAuth::Shorthand(AuthMode::Passthrough),
+    )
+}
+
+fn upstream_with(name: &str, base_url: String, auth: UpstreamAuth) -> UpstreamConfig {
     UpstreamConfig {
         name: name.to_string(),
         provider: None,
         kind: Some(ProviderKind::Anthropic),
         base_url: Some(base_url),
-        auth: Some(UpstreamAuth::Shorthand(AuthMode::Passthrough)),
+        auth: Some(auth),
         effort: None,
         service_tier: None,
         count_tokens: CountTokens::Tiktoken,
@@ -106,11 +121,19 @@ fn tier_alias(id: &str, upstream: &str, upstream_model: &str) -> ModelConfig {
 }
 
 fn router_config(capable: &MockServer, efficient: &MockServer) -> Config {
+    router_config_with(capable, efficient, passthrough)
+}
+
+fn router_config_with(
+    capable: &MockServer,
+    efficient: &MockServer,
+    upstream: impl Fn(&str, String) -> UpstreamConfig,
+) -> Config {
     let mut config = Config::default();
     config.providers.clear();
     config.upstreams = vec![
-        passthrough("capable", capable.uri()),
-        passthrough("efficient", efficient.uri()),
+        upstream("capable", capable.uri()),
+        upstream("efficient", efficient.uri()),
     ];
     config.server.default_provider = "efficient".to_string();
     config.models = vec![
@@ -177,6 +200,25 @@ async fn post_to(gateway: &TestGateway, path: &str, messages: Value) -> reqwest:
         .post(format!("{}{path}", gateway.base_url))
         .header("content-type", "application/json")
         .header("x-claude-code-session-id", SESSION)
+        .body(json!({"model": ROUTER_ID, "max_tokens": 16, "messages": messages}).to_string())
+        .send()
+        .await
+        .unwrap()
+}
+
+async fn post_with_token(
+    gateway: &TestGateway,
+    messages: Value,
+    token: Option<&str>,
+) -> reqwest::Response {
+    let mut request = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("x-claude-code-session-id", SESSION);
+    if let Some(token) = token {
+        request = request.header("x-shunt-token", token);
+    }
+    request
         .body(json!({"model": ROUTER_ID, "max_tokens": 16, "messages": messages}).to_string())
         .send()
         .await
@@ -342,6 +384,62 @@ async fn a_count_tokens_probe_does_not_pin_the_session() {
     // Had the probe committed, this quiet turn would be held on capable.
     let response = post(&gateway, quiet_messages()).await;
     assert_eq!(response.status(), StatusCode::OK);
+
+    capable.verify().await;
+    efficient.verify().await;
+}
+
+/// A request the gateway refuses must not leave a pin behind.
+///
+/// Routing has to run before `check_inbound_auth` — that gate reads the resolved
+/// chain to decide whether the route injects a credential — so the tier is
+/// chosen while the caller is still unauthenticated. Recording it there let an
+/// unauthenticated caller pin, evict, and steer a session it never proved it
+/// owns; the write now waits until the request has been admitted.
+#[tokio::test]
+async fn a_rejected_request_does_not_pin_the_session() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_STAGE_KEY", "upstream-key");
+    vars.set("SHUNT_TEST_STAGE_TOKENS", "alice:tok-a");
+
+    let capable = MockServer::start().await;
+    let efficient = MockServer::start().await;
+    // The rejected turn is the erroring one, so if it pinned it would pin
+    // *capable* — and the quiet turn afterwards would be held there by the dwell
+    // window instead of being scored on its own.
+    tier_mock(CAPABLE_UPSTREAM_MODEL, 0).mount(&capable).await;
+    tier_mock(EFFICIENT_UPSTREAM_MODEL, 1)
+        .mount(&efficient)
+        .await;
+
+    // Inbound auth only gates a route that injects a credential, so both tiers
+    // have to carry one for this test to reach the gate at all.
+    let mut config = router_config_with(&capable, &efficient, |name, uri| {
+        upstream_with(
+            name,
+            uri,
+            UpstreamAuth::Map(AuthMap::ApiKey {
+                env: Some("SHUNT_TEST_STAGE_KEY".to_string()),
+                header: Some(ApiKeyHeader::Bearer),
+            }),
+        )
+    });
+    config.server.auth = Some(InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: "SHUNT_TEST_STAGE_TOKENS".to_string(),
+    });
+    let config = config.validate().expect("the gated router config is valid");
+    let gateway = start_gateway(config).await;
+
+    let rejected = post_with_token(&gateway, erroring_messages(), None).await;
+    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+
+    // Had the rejected turn pinned, this quiet one would be held on capable.
+    let served = post_with_token(&gateway, quiet_messages(), Some("tok-a")).await;
+    assert_eq!(served.status(), StatusCode::OK);
 
     capable.verify().await;
     efficient.verify().await;

@@ -37,8 +37,8 @@ a provider-neutral router:
 | :-- | :-- |
 | Observe | `Read`, `Glob`, `Grep`, `NotebookRead`, `WebFetch`, `WebSearch`, `BashOutput` |
 | Mutate | `Edit`, `NotebookEdit`, `Write` |
-| Plan | `TodoWrite`, `Task`, `Skill`, `ExitPlanMode` |
-| Uncategorised | everything else, including `Bash` and every `mcp__*` tool |
+| Plan | `TodoWrite`, `Task`, `EnterPlanMode`, `ExitPlanMode` |
+| Uncategorised | everything else, including `Bash`, `Skill`, `KillShell`, and every `mcp__*` tool |
 
 Every `Plan` call — `ExitPlanMode` included — counts as planning activity, which
 reads as exploration and pushes **up**, not down. One name gets more than its
@@ -94,8 +94,12 @@ Decisions are pinned per `(model id, session id)`, read from
 router-backed models used in the same session keep independent tiers.
 
 - A caller that sends no session header is routed statelessly.
-- A `count_tokens` probe reaches the same tier as the real turn but records
-  nothing — Claude Code sends those with a history one turn behind.
+- A `count_tokens` probe records nothing — Claude Code sends those with a
+  history one turn behind, so a committing probe would let stale history drive
+  the pin. Once a session is pinned, the probe and the turn that follows read the
+  same pin and so reach the same tier; on an *unpinned* session the probe is
+  scored from its own history and can land on a different tier than the turn
+  after it.
 - Pins survive a config reload, but a pin remembers the router table it was made
   under: edit one router and only its own pins are dropped.
 - Pins expire after `session_ttl_seconds`. Nothing is persisted across restarts.

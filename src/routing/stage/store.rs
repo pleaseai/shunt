@@ -17,7 +17,10 @@
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -39,6 +42,15 @@ type SessionKey = (String, [u8; 16]);
 
 #[derive(Debug, Clone, Copy)]
 struct StageSession {
+    /// Which decision this entry came from, in the order `apply` made them.
+    ///
+    /// The ordering [`StageRouterStore::commit`] needs, and `last_seen` cannot
+    /// supply: two turns of one session routinely share an `Instant` — the work
+    /// between them can be finer than the clock's resolution, and a test injects
+    /// one `now` for several turns — so a timestamp comparison cannot tell
+    /// "already superseded" from "decided in the same tick", and would drop the
+    /// second turn's write.
+    seq: u64,
     tier: StageTier,
     /// Hash of the router table in force when this tier was chosen. A config
     /// reload that changes the table invalidates this entry alone, so an
@@ -59,11 +71,30 @@ struct StageSession {
     ttl: Duration,
 }
 
+/// A pin [`StageRouterStore::apply`] prepared but has not written.
+///
+/// Deciding and recording are separate because routing runs *before* inbound
+/// auth and the managed-model policy — `check_inbound_auth` needs the resolved
+/// chain, so it cannot run first. Committing inside `apply` therefore let a
+/// request that was about to be rejected create or evict pins, and let a caller
+/// who guessed another client's session id steer that client's next turn
+/// without ever presenting a credential. The decision still happens under one
+/// lock with the pin it read; only the write-back is deferred, to the point
+/// where the request is known to be served.
+#[derive(Debug)]
+pub(crate) struct PendingPin {
+    key: SessionKey,
+    session: StageSession,
+}
+
 /// Per-session tier pins. Lives on `AppState` beside the account pool, so it
 /// survives a config reload rather than being rebuilt by one.
 #[derive(Debug, Default)]
 pub(crate) struct StageRouterStore {
     entries: Mutex<HashMap<SessionKey, StageSession>>,
+    /// Hands out the `seq` above. Monotonic for the process, so it orders
+    /// decisions across every session and router without a per-key counter.
+    next_seq: AtomicU64,
 }
 
 impl StageRouterStore {
@@ -84,6 +115,11 @@ impl StageRouterStore {
     ///
     /// `now` is injected so dwell, TTL, and eviction are deterministically
     /// testable.
+    ///
+    /// Returns the decision and, unless the turn is read-only or sessionless,
+    /// the [`PendingPin`] it earned. Nothing is written until that pin is handed
+    /// to [`StageRouterStore::commit`] — see [`PendingPin`] for why the write
+    /// waits for the request to be admitted.
     pub(crate) fn apply(
         &self,
         model: &str,
@@ -92,20 +128,25 @@ impl StageRouterStore {
         estimate: StageDecision,
         read_only: bool,
         now: Instant,
-    ) -> StageDecision {
+    ) -> (StageDecision, Option<PendingPin>) {
         // An empty header is not a session. Without this every client that
         // sends a blank `x-claude-code-session-id` would hash to one key and
         // share a single tier pin for the model — the same reason the websocket
         // pool (`adapters/responses/mod.rs`) and the inbound Codex endpoint
         // already filter it before using the id as a sticky key.
         let Some(session_id) = session_id.filter(|session_id| !session_id.is_empty()) else {
-            return estimate;
+            return (estimate, None);
         };
         let key = session_key(model, session_id);
         let fingerprint = fingerprint(router);
+        // Taken before the lock, so the number reflects the order requests
+        // arrived at this function rather than the order they won the mutex.
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let ttl = Duration::from_secs(router.session_ttl_seconds);
 
-        let mut entries = self
+        // A shared borrow: `apply` only reads. The write that used to happen
+        // here now waits for [`StageRouterStore::commit`].
+        let entries = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -126,7 +167,7 @@ impl StageRouterStore {
         let (decision, changed) = resolve(router, pinned, estimate);
 
         if read_only {
-            return decision;
+            return (decision, None);
         }
 
         let dwell_turns = match (pinned, changed) {
@@ -137,18 +178,78 @@ impl StageRouterStore {
             // may move again.
             _ => 1,
         };
-        entries.insert(
-            key,
-            StageSession {
-                tier: decision.tier,
-                fingerprint,
-                dwell_turns,
-                last_seen: now,
-                ttl,
-            },
-        );
-        evict(&mut entries, now);
+        (
+            decision,
+            Some(PendingPin {
+                key,
+                session: StageSession {
+                    seq,
+                    tier: decision.tier,
+                    fingerprint,
+                    dwell_turns,
+                    last_seen: now,
+                    ttl,
+                },
+            }),
+        )
+    }
 
+    /// Write a pin [`StageRouterStore::apply`] prepared, once the request that
+    /// earned it has been admitted.
+    ///
+    /// The lock is taken again rather than held across admission: auth and the
+    /// managed-model policy run in between, and holding a store-wide mutex
+    /// across them would serialize every router-backed request behind the
+    /// slowest one.
+    ///
+    /// Releasing it means two concurrent turns of one session can both decide
+    /// against the same pin and then commit in either order — and the one that
+    /// commits *last* is not necessarily the one that decided last. The write is
+    /// therefore conditional: a pending pin is dropped when the entry already
+    /// there came from a *later* decision (a higher `seq`). Without that check an older turn
+    /// landing second would install its own tier and dwell count over a newer
+    /// turn's, regressing the session to a decision made from staler history.
+    ///
+    /// The comparison is on `seq` alone, deliberately. Scoping it to a matching
+    /// `fingerprint` — so a reconfigured table could replace an old-table pin —
+    /// reads as the careful choice and is the wrong one: two requests straddling
+    /// a hot reload hold different fingerprints, so the check would not apply and
+    /// the *older* one would overwrite the newer table's pin, leaving an entry
+    /// the next request rejects as stale. `seq` already covers the case the
+    /// carve-out was for: a request decided under the new table necessarily has
+    /// the higher `seq`, so it wins without needing an exemption.
+    pub(crate) fn commit(&self, pin: PendingPin, now: Instant) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let superseded = entries
+            .get(&pin.key)
+            .is_some_and(|current| current.seq > pin.session.seq);
+        if superseded {
+            return;
+        }
+        entries.insert(pin.key, pin.session);
+        evict(&mut entries, now);
+    }
+
+    /// `apply` followed immediately by `commit`, the shape the store had before
+    /// the write was deferred past admission. Tests that are not about the split
+    /// itself use this so they assert on the same end-to-end behaviour.
+    #[cfg(test)]
+    fn apply_now(
+        &self,
+        model: &str,
+        session_id: Option<&str>,
+        router: &StageRouterConfig,
+        estimate: StageDecision,
+        read_only: bool,
+        now: Instant,
+    ) -> StageDecision {
+        let (decision, pin) = self.apply(model, session_id, router, estimate, read_only, now);
+        if let Some(pin) = pin {
+            self.commit(pin, now);
+        }
         decision
     }
 

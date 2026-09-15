@@ -32,8 +32,8 @@ shunt 知道 Claude Code 实际的工具名称,这正是它能胜过通用路由
 | :-- | :-- |
 | 观察(Observe) | `Read`、`Glob`、`Grep`、`NotebookRead`、`WebFetch`、`WebSearch`、`BashOutput` |
 | 变更(Mutate) | `Edit`、`NotebookEdit`、`Write` |
-| 计划(Plan) | `TodoWrite`、`Task`、`Skill`、`ExitPlanMode` |
-| 未分类 | 其余全部,包括 `Bash` 和所有 `mcp__*` 工具 |
+| 计划(Plan) | `TodoWrite`、`Task`、`EnterPlanMode`、`ExitPlanMode` |
+| 未分类 | 其余全部,包括 `Bash`、`Skill`、`KillShell` 和所有 `mcp__*` 工具 |
 
 包括 `ExitPlanMode` 在内的所有 `Plan` 调用都计为计划活动,而计划活动被读作探索,因此是
 往**上**推,而不是往下。只有一个名称享有超出类别的待遇:失败的 `Task` 被记为致命而非仅仅
@@ -79,8 +79,9 @@ fall-open 或没有工具活动的一轮是 picker 的默认值,不是证据,因
 且从不存储。同一会话中使用两个带路由器的模型,它们的档位互相独立。
 
 - 不发送会话头的调用方以无状态方式路由。
-- `count_tokens` 探测会到达与真实轮次相同的档位,但不记录任何内容 —— Claude Code 发送它时
-  携带的历史落后一轮。
+- `count_tokens` 探测不记录任何内容 —— Claude Code 发送它时携带的历史落后一轮,若记录便会
+  让陈旧历史左右固定。会话一旦已被固定,探测与紧随其后的轮次读取同一份固定,因此到达相同
+  档位;而在*尚未*固定的会话上,探测按自己的历史评分,可能落在与后一轮不同的档位。
 - 固定能挺过配置热重载。但固定记得自己是在哪张路由器表下形成的:修改某个路由器,只有它自己
   的固定会被丢弃。
 - 固定在 `session_ttl_seconds` 后过期。重启之间不持久化任何内容。

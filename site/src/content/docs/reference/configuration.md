@@ -635,14 +635,16 @@ entries may otherwise share an id, but a router names a routing policy rather
 than discovery metadata, so a duplicate would leave two policies for one id.
 Target ids are compared after the trailing `[1m]`/`[1M]` hint is stripped, the
 same way
-routing matches them. Three shapes warn instead of failing the load, each
+routing matches them. Four shapes warn instead of failing the load, each
 because it has a coherent operator intent: a target that matches no explicit
 route (it still resolves through `server.default_provider` like any other
 unmatched id), `capable_target` and `efficient_target` resolving to the same id
-(both tiers deliberately flattened onto one model), and a `deescalate_threshold`
+(both tiers deliberately flattened onto one model), a `deescalate_threshold`
 below `confidence_threshold` (de-escalation made the easier direction, which a
-cost-first deployment may want). Each of these is emitted once, when the config
-loads; a hot reload re-validates without repeating them.
+cost-first deployment may want), and a `[[routes]]` or `[[route_prefixes]]` entry
+naming the router's own id (inert, since the router decides that id's
+destination). Each is emitted once per load — and a hot reload is a load, so a
+config left unfixed warns again on each one.
 
 ## `[sentry]` (optional)
 
@@ -681,4 +683,10 @@ Extra headers on every OTLP request (e.g. a hosted-collector token). Merged unde
 
 ## Routing precedence
 
-A matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
+A matching `[models.stage_router]` entry → a matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
+
+The router comes first because it is matched on the `[[models]]` entry itself: a
+request for a router-backed id is answered by the router, which picks a tier and
+resolves **that target** through the rest of the ladder — so the target, not the
+router id, is what a `[[routes]]` or `[[route_prefixes]]` entry should name. An
+entry naming the router id is never consulted and warns at load.

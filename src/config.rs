@@ -2963,6 +2963,7 @@ impl Config {
         config.warn_stage_router_targets_unresolvable();
         config.warn_stage_router_threshold_inversion();
         config.warn_stage_router_identical_targets();
+        config.warn_stage_router_shadows_exact_route();
         // One aggregated warning per load naming every `Secret` field whose
         // value was written literally in the config file — never the value
         // itself. A `Secret` populated from an env override, a `${...}`
@@ -4108,12 +4109,17 @@ impl Config {
     ///
     /// Not an error, and deliberately not part of [`Config::validate_stage_router`]:
     /// resolution always falls back to `server.default_provider`, so the target
-    /// still routes — it is just very likely not what the operator meant. Since
-    /// `validate` also runs on every hot reload (`reload.rs`) and on
-    /// `shunt check`, warning from there would repeat the line on each one;
-    /// emitting it at the successful load boundary fires it exactly once and
-    /// keeps repeated validation side-effect free, the same split
-    /// [`Config::warn_reprobe_seconds_below_floor`] uses.
+    /// still routes — it is just very likely not what the operator meant.
+    ///
+    /// Emitted at the successful load boundary rather than from `validate`, the
+    /// same split [`Config::warn_reprobe_seconds_below_floor`] uses. That is
+    /// **once per load, not once per process**: `reload::reload` calls
+    /// `Config::load`, so a hot reload that leaves the problem in place warns
+    /// again. What the split buys is that validation stays side-effect free —
+    /// `validate` runs strictly more often than `load` does (`Config::load`
+    /// calls it, `RuntimeState::from_config` calls it again on every reload, and
+    /// `shunt check` calls it), so warning from there would multiply the same
+    /// line per reload rather than emit it once.
     fn warn_stage_router_targets_unresolvable(&self) {
         for model in &self.models {
             let Some(router) = &model.stage_router else {
@@ -4212,6 +4218,48 @@ impl Config {
                     efficient_target = %efficient,
                     "stage_router capable_target and efficient_target resolve to the same model; the router has no tier to choose between"
                 );
+            }
+        }
+    }
+
+    /// Warns once at load for every `[[routes]]` or `[[route_prefixes]]` entry a
+    /// `[models.stage_router]` id shadows.
+    ///
+    /// `resolve_chain` matches `[[models]]` before either table and returns from
+    /// the router arm, so a route naming a router-backed id is never consulted.
+    /// Mutual exclusivity with `upstream_model` is what makes this reachable: a
+    /// router entry has no map, and a map-less `[[models]]` entry is exactly the
+    /// shape that *does* fall through to `[[routes]]` — so an operator
+    /// converting a routed alias into a router leaves a route behind that used
+    /// to do something and now does nothing.
+    ///
+    /// A warning rather than a `ConfigError`, for the reason issue #562 settled
+    /// for the sibling cross-field rules: the shadowed route is inert, not
+    /// wrong, and rejecting it would fail a config whose only fault is a leftover
+    /// line. Prefix entries are reported too — a prefix that the id starts with
+    /// is shadowed the same way.
+    fn warn_stage_router_shadows_exact_route(&self) {
+        for model in &self.models {
+            if model.stage_router.is_none() {
+                continue;
+            }
+            for route in &self.routes {
+                if route.model == model.id {
+                    tracing::warn!(
+                        model_id = %model.id,
+                        provider = %route.provider,
+                        "a [[routes]] entry names a stage_router id; the router decides this id's destination, so the route is never consulted"
+                    );
+                }
+            }
+            for prefix in &self.route_prefixes {
+                if model.id.starts_with(&prefix.prefix) {
+                    tracing::warn!(
+                        model_id = %model.id,
+                        prefix = %prefix.prefix,
+                        "a [[route_prefixes]] entry matches a stage_router id; the router decides this id's destination, so the prefix is never consulted"
+                    );
+                }
             }
         }
     }
@@ -7771,6 +7819,75 @@ id = "claude-sonnet-5"
                 "{capable} and {efficient} are distinct ids: {logs}"
             );
         }
+    }
+
+    fn route_config(model: &str) -> super::RouteConfig {
+        super::RouteConfig {
+            model: model.to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        }
+    }
+
+    #[test]
+    fn stage_router_warns_for_a_route_its_id_shadows() {
+        // `resolve_chain` matches `[[models]]` first and returns from the router
+        // arm, so both of these entries are inert — and silently so before this
+        // diagnostic. The prefix is spelled so it matches the router id.
+        let config = Config {
+            models: vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                model_config(
+                    "claude-opus-4-8",
+                    Some(model_upstream("anthropic", "claude-opus-4-8")),
+                ),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("anthropic", "claude-sonnet-4-6")),
+                ),
+            ],
+            routes: vec![route_config("claude-auto")],
+            route_prefixes: vec![super::RoutePrefixConfig {
+                prefix: "claude-".to_string(),
+                provider: "anthropic".to_string(),
+            }],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_stage_router_shadows_exact_route());
+        assert_eq!(
+            logs.matches("the route is never consulted").count(),
+            1,
+            "the exact route naming the router id warns: {logs}"
+        );
+        assert_eq!(
+            logs.matches("the prefix is never consulted").count(),
+            1,
+            "the prefix matching the router id warns: {logs}"
+        );
+
+        // Positive twin: the same tables, with the routes naming the router's
+        // *targets* instead. Those really are consulted — the router resolves
+        // each target through the ordinary ladder — so neither may warn.
+        let config = Config {
+            models: vec![router_model(
+                "claude-auto",
+                "claude-opus-4-8",
+                "claude-sonnet-4-6",
+            )],
+            routes: vec![
+                route_config("claude-opus-4-8"),
+                route_config("claude-sonnet-4-6"),
+            ],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_stage_router_shadows_exact_route());
+        assert_eq!(
+            logs.matches("never consulted").count(),
+            0,
+            "a route naming a target, not the router id, is live: {logs}"
+        );
     }
 
     #[test]

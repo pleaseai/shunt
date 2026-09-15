@@ -40,7 +40,7 @@ pub enum StageRouterPicker {
 /// threshold independently, so an operator may set `deescalate_threshold`
 /// *below* `confidence_threshold` and make the down direction the easier one.
 /// A cost-first deployment may want exactly that, so the inverted pair loads —
-/// with a warning, once, from `Config::warn_stage_router_threshold_inversion`
+/// with a warning, once per load, from `Config::warn_stage_router_threshold_inversion`
 /// (issue #562). The same call decided the neighbouring rule: two targets that
 /// resolve to one id flatten both tiers onto one model, which is degenerate but
 /// a real way to test, so `Config::warn_stage_router_identical_targets` warns

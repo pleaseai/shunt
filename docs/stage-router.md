@@ -67,10 +67,11 @@ Two fields are deliberately left `false`, with the reasoning in the source:
 
 `Observe`: `Read`, `Glob`, `Grep`, `NotebookRead`, `WebFetch`, `WebSearch`,
 `BashOutput`. `Mutate`: `Edit`, `NotebookEdit` (edit-shaped), `Write`
-(write-shaped). `Plan`: `TodoWrite`, `Task`, `Skill`, `ExitPlanMode`. Everything
-else, `Bash` and `mcp__*` included, is uncategorised — which in 0.2.0 means it
-contributes through `pure_bash_streak` rather than through a `new` counter, since
-that counter does not exist in the published scorer.
+(write-shaped). `Plan`: `TodoWrite`, `Task`, `EnterPlanMode`, `ExitPlanMode`.
+Everything else, `Bash`, `Skill`, `KillShell` and `mcp__*` included, is
+uncategorised — which in 0.2.0 means it contributes through `pure_bash_streak`
+rather than through a `new` counter, since that counter does not exist in the
+published scorer.
 
 Matching is `eq_ignore_ascii_case`. `Bash` stays uncategorised on purpose: only
 `input.command` separates `git status` from `rm -rf` from `cargo test`, and
@@ -88,8 +89,9 @@ id)` — the session id is hashed and never stored, matching
 
 | Situation | Behavior |
 |---|---|
-| No session id | Decided statelessly; the store is not touched |
+| No session id (absent or blank) | Decided statelessly; the store is not touched |
 | `read_only` (count_tokens) | Decided, not recorded |
+| Rejected before admission | Decided, not recorded |
 | Efficient → Capable | Immediate on any scorer-made decision |
 | Capable → Efficient | `dwell_turns >= min_dwell_turns` **and** confidence `>= deescalate_threshold` **and** a scorer-made decision |
 | `fall_open` / `no_signal` / `ambiguous` | Cannot move a pin in either direction |
@@ -100,6 +102,35 @@ libsy's hard de-escalation shortcut, which skips the scorer and returns
 `confidence: None` (`resolved(Efficient, TestsPassed, 0.0, None)`); a bare
 `confidence >= threshold` gate would make the strongest reason to go cheap the
 one reason that could never fire.
+
+Deciding and recording are separate calls. Routing has to run before
+`check_inbound_auth` — that gate reads the resolved chain to decide whether the
+route injects a credential — so the tier is chosen while the caller is still
+unauthenticated. `StageRouterStore::apply` therefore returns a `PendingPin`
+instead of writing, and `proxy::failover` commits it only after inbound auth and
+the managed-model policy have admitted the request. Without the split an
+unauthenticated caller could pin a session, evict other sessions' pins by filling
+the cap, and steer the next turn of any session id it guessed. Admission, not a
+successful upstream response, is the boundary: the tier chosen is the tier the
+turn was dispatched at, and an upstream 500 afterwards is not evidence the choice
+was wrong.
+
+The store lock is released between the two calls, so two concurrent turns of one
+session can decide against the same pin and then commit in either order — and the
+one that commits last is not necessarily the one that decided last. Each decision
+therefore carries a `seq` from a process-wide counter, and `commit` drops a
+pending pin when the entry already there has a higher one. `last_seen` cannot do
+this job: two turns routinely share an `Instant`, so a timestamp comparison
+cannot separate "already superseded" from "decided in the same tick" and would
+drop the second turn's write.
+
+The comparison is on `seq` alone. Scoping it to a matching `fingerprint`, so a
+reconfigured table could replace an old-table pin, reads as the careful version
+and is the wrong one: two requests straddling a hot reload carry different
+fingerprints, so the check would not fire and the older request would overwrite
+the newer table's pin — leaving an entry every later request rejects as stale.
+`seq` already covers what the exemption was for, since a request decided under
+the new table necessarily holds the higher one.
 
 The fingerprint destructures `StageRouterConfig` rather than dotting into it, so a
 key added to the table later fails to compile in `fingerprint` instead of quietly
@@ -160,21 +191,32 @@ and `stage_router_accepts_a_context_window_hint_on_a_plain_target` is its mirror
 the tier, so `0` and `1` both mean "no dwell floor" — degenerate but coherent,
 unlike a `recent_turn_window` of `0`, which leaves the scorer nothing to read.
 
-Three shapes are **warnings**, not errors, and all three are emitted at the
-successful load boundary beside `warn_reprobe_seconds_below_floor` — not from
-`validate`, which re-runs on every hot reload and would repeat the line.
-`shunt check` still reports them, because it loads before it validates.
+Four shapes are **warnings**, not errors, and all four are emitted at the
+successful load boundary beside `warn_reprobe_seconds_below_floor` rather than
+from `validate`. `shunt check` still reports them, because it loads before it
+validates.
 
 | Warning | Why it is not an error |
 | :-- | :-- |
 | `warn_stage_router_targets_unresolvable` | Resolution always falls back to `server.default_provider`, so the target is reachable |
 | `warn_stage_router_identical_targets` | Both tiers flattened onto one model is degenerate, but a one-line way to test against restructuring the entry |
 | `warn_stage_router_threshold_inversion` | A cost-first deployment may genuinely want de-escalation to be the easier direction |
+| `warn_stage_router_shadows_exact_route` | An entry naming a router id is inert, not wrong — the router arm returns before `[[routes]]` is consulted |
 
-The last two were settled together in issue #562, over rejecting them: each
-rejects a configuration with a coherent operator intent, and the realistic
-failure is a typo, which a warning makes visible without taking the
-configuration away.
+"Load boundary" means **once per load, not once per process.** `reload::reload`
+calls `Config::load`, so a config left unfixed warns again on every hot reload.
+The split from `validate` is still worth having: `validate` runs strictly more
+often than `load` — `Config::load` calls it, `RuntimeState::from_config` calls it
+again on each reload, and `shunt check` calls it — so warning from there would
+multiply each line per reload instead of emitting it once.
+
+`warn_stage_router_identical_targets` and
+`warn_stage_router_threshold_inversion` were settled together in issue #562,
+over rejecting them: each rejects a configuration with a coherent operator
+intent, and the realistic failure is a typo, which a warning makes visible
+without taking the configuration away. `warn_stage_router_shadows_exact_route`
+follows the same reading — the shadowed entry is a leftover line, not a wrong
+one.
 
 `warn_stage_router_identical_targets` compares the two targets after
 `strip_context_window_hint`, the same normalization `resolve_chain` applies, so

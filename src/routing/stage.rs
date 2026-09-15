@@ -18,7 +18,7 @@ mod vocabulary;
 
 pub(crate) use store::StageRouterStore;
 
-use std::time::Instant;
+use std::{cell::Cell, time::Instant};
 
 use serde_json::Value;
 use switchyard_libsy::{pick_tier, DecisionSource, PickOutcome, PickerMode, Tier};
@@ -70,6 +70,29 @@ pub(crate) struct StageContext<'a> {
     pub read_only: bool,
     /// Request-entry clock, shared with the rest of the request's timing.
     pub now: Instant,
+    /// The pin [`select`] decided this request earns, parked until the request
+    /// is admitted. Routing runs before inbound auth and the managed-model
+    /// policy — those need the resolved chain — so writing it here would let a
+    /// request that is about to be rejected pin, evict, or steer a session it
+    /// never proved it owns. [`StageContext::commit`] writes it once the
+    /// request is known to be served.
+    pub pending: Cell<Option<store::PendingPin>>,
+}
+
+impl StageContext<'_> {
+    /// Write the pin this request earned. Called after inbound auth and the
+    /// managed-model policy have admitted it, and a no-op for every request
+    /// that earned none — a read-only `count_tokens` probe, a caller with no
+    /// session header, and any id the router never looked at.
+    ///
+    /// Admission, not a successful upstream response, is the boundary: the tier
+    /// chosen here is the tier the turn was dispatched at, and an upstream 500
+    /// afterwards is not evidence that the choice was wrong.
+    pub(crate) fn commit(&self) {
+        if let Some(pin) = self.pending.replace(None) {
+            self.store.commit(pin, self.now);
+        }
+    }
 }
 
 /// Resolve a router to the tier that serves this request.
@@ -88,14 +111,19 @@ pub(crate) fn select(
     };
 
     let estimate = decide(router, context.request.get("messages"));
-    context.store.apply(
+    let (decision, pin) = context.store.apply(
         model,
         context.session_id,
         router,
         estimate,
         context.read_only,
         context.now,
-    )
+    );
+    // Parked, not written: see [`StageContext::pending`]. Validation forbids a
+    // router whose target is itself a router, so one request reaches this line
+    // at most once and no earlier pin can be dropped here.
+    context.pending.set(pin);
+    decision
 }
 
 /// Pick a tier for a request from its conversation so far.

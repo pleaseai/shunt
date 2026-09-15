@@ -799,6 +799,7 @@ mod stage_router_tests {
             session_id: Some("session-a"),
             read_only: false,
             now: Instant::now(),
+            pending: std::cell::Cell::new(None),
         };
 
         let (routes, requested) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -829,6 +830,7 @@ mod stage_router_tests {
             session_id: None,
             read_only: false,
             now: Instant::now(),
+            pending: std::cell::Cell::new(None),
         };
 
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))

@@ -428,13 +428,14 @@ efficient_target = "claude-sonnet-4-6"
 目标本身就是路由器、目标为空、阈值超出 `(0.0, 1.0]`、`recent_turn_window` 为 `0`、
 路由器 **id** 以 `[1m]` 或 `[1M]` 结尾、其中一项带有路由器表的重复 `[[models]]` id，或同一条目
 同时声明了 `[models.upstream_model]`，都会导致启动错误。不带映射的两个条目本可共用同一
-个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致。以下三种情况
+个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致。以下四种情况
 只发出警告而不会让加载失败，因为每一种都可能是运维人员的本意 —— 未匹配到任何显式路由
 的目标（它仍会像其他未匹配的 id 一样经由 `server.default_provider` 解析）、解析到同一个
-id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同一个模型上），以及低于
+id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同一个模型上）、低于
 `confidence_threshold` 的 `deescalate_threshold`（把下降方向变得更容易，这可能正是成本
-优先的部署所需要的）。这些警告只在加载配置时各输出一次；热重载会重新校验，但不会
-重复输出。
+优先的部署所需要的），以及写了路由器自身 id 的 `[[routes]]` 或 `[[route_prefixes]]` 条目
+（该 id 的去向由路由器决定，因此不会被查询）。每条警告在每次加载时各输出一次；热重载
+同样是一次加载，所以配置不改就会在每次重载时再次输出。
 
 ## `[sentry]`(可选)
 
@@ -473,4 +474,9 @@ id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同�
 
 ## 路由优先级
 
-匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
+匹配的 `[models.stage_router]` 条目 → 匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
+
+路由器排在最前，是因为它在 `[[models]]` 条目本身上完成匹配：指向带路由器 id 的请求由路由器
+应答，路由器选定档位后再把**那个目标**交给其余的解析链。因此 `[[routes]]` 或
+`[[route_prefixes]]` 条目应当写目标，而不是路由器 id。写了路由器 id 的条目永远不会被查询，
+并会在加载时发出警告。
