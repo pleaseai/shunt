@@ -377,7 +377,7 @@ codex-fallback = "gpt-5.2"
 
 发现的模型在 shunt 能取到实际上游列表时来自该列表。仅当 `server.default_provider` 为 Anthropic 类型时,它才会对该上游发起 `GET /v1/models`,并按其认证模式选择凭据。`auth = "passthrough"` 时使用调用方转发的凭据,因此每个调用方看到的都是该凭据有权使用的列表——但如果某个槽位中存放的不是真正的上游凭据,而是 shunt 自身的 `[server.gateway]` JWT 或配置的 `[server.auth]` 客户端令牌,则该槽位不会被转发。`authorization` 与 `x-api-key` 各自独立过滤,因此另一槽位中的真实凭据仍会被转发;只有当两个槽位都没有可转发的凭据时,发现才会回退到内置快照。`api_key` 时使用配置的密钥。`claude_oauth` 时使用推理路径所用的同一有效账户集合中第一个可解析且未禁用的账户。该集合包含从存储中扫描到的账户,并遵循 `account_scope` 顺序。发现不会进行账户池选择、冷却或配额记账。因此,后两种使用网关自有凭据的模式下,所有调用方共享由该凭据范围决定的目录。shunt 不做缓存。若 `server.default_provider` 不是 Anthropic 类型、没有凭据,或调用失败、超时(上限 2 秒),则回退到内置 Claude 目录快照。无论哪种情况,这些 id 都不需要专门的 `[[routes]]` 条目;它们按常规路由规则解析,当 `[[routes]]` 与 `[[route_prefixes]]` 均未匹配时回退到 `server.default_provider`。
 
-在维护的条目中添加 `[models.upstream_model]`，即可通过同一声明公开 id、进行路由并转换为上游 id。对于精确 id 路由，建议使用此形式而不是 `[[routes]]`。使用有序 `[[upstreams]]` 时，映射可包含一个或多个 `upstream = "backend-id"` 键值对，并按 `[[upstreams]]` 声明顺序解析为故障转移链。旧式 `[providers.*]` 没有声明顺序，因此只能包含一个键值对。对于这个 id，该映射优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`；每个上游的默认 `effort` 会应用到相应链条目。空映射、空或仅含空白字符的上游名称或后端 id、未知上游、同 id 的 `[[routes]]` 条目、以 `[1m]` 或 `[1M]` 结尾的带映射 id，以及至少有一项带映射的重复 `[[models]]` id 都会导致启动错误。client 会在匹配前移除 context-window hint，因此在带映射 id 中包含该 suffix 会使该条目无法命中。仅由不带映射条目组成的重复 id 保持原有行为。
+在维护的条目中添加 `[models.upstream_model]`，即可通过同一声明公开 id、进行路由并转换为上游 id。对于精确 id 路由，建议使用此形式而不是 `[[routes]]`。使用有序 `[[upstreams]]` 时，映射可包含一个或多个 `upstream = "backend-id"` 键值对，并按 `[[upstreams]]` 声明顺序解析为故障转移链。旧式 `[providers.*]` 没有声明顺序，因此只能包含一个键值对。对于这个 id，该映射优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`；每个上游的默认 `effort` 会应用到相应链条目。空映射、空或仅含空白字符的上游名称或后端 id、未知上游、同 id 的 `[[routes]]` 条目、以 `[1m]` 或 `[1M]` 结尾的带映射 id，以及至少有一项带映射的重复 `[[models]]` id 都会导致启动错误。client 会在匹配前移除 context-window hint，因此在带映射 id 中包含该 suffix 会使该条目无法命中。仅由不带映射条目组成的重复 id 保持原有行为，但其中一项带有 `[models.stage_router]` 表时除外 —— 参见下文。
 
 ```toml
 [[models]]
@@ -393,6 +393,44 @@ codex = "gpt-5.2"
 | `id` | ✅ | 暴露给 Claude Code 的模型 id |
 | `display_name` | — | 在 `/model` 选择器中显示的标签 |
 | `upstream_model` | — | 从已配置上游名称到后端模型 id 的映射；有序 `[[upstreams]]` 可形成多条目故障转移链，旧式 provider 只允许一个条目 |
+
+### `[models.stage_router]`(可选)
+
+针对单个对外 id 的内容感知档位选择。该条目不再指定一个目的地，而是指定**两个** ——
+一个强力档位和一个高效档位。
+
+**本次发布中尚未生效。** 该表会被解析和校验，但解析器尚未读取它，因此带有该表的 id
+仍按其字面 id 经由普通的 `[[routes]]` / 前缀 / `default_provider` 阶梯路由，而不会
+去往任一目标。此处记录这些键，是为了在启用该功能的改动之前就能编写和评审配置。没有
+该表时，`[[models]]` 条目的行为与以往完全一致。
+
+```toml
+[[models]]
+id = "claude-auto"
+display_name = "Auto (stage router)"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `capable_target` | ✅ 必填 | 负责高难度推理、排查与错误恢复的模型 id |
+| `efficient_target` | ✅ 必填 | 计划确定后负责常规产出的模型 id |
+| `picker` | `efficient_first` | 信号不明确时使用的档位。`efficient_first` 或 `capable_first` |
+| `confidence_threshold` | `0.5` | 依据信号作出判定所需的最低评分器置信度，范围 `(0.0, 1.0]` |
+| `recent_turn_window` | `3` | 送入评分器的助手工具结果轮数。至少为 `1` |
+| `min_dwell_turns` | `3` | 降档可以触发之前档位需保持的轮数。从选定档位的那一轮开始计数，因此 `0` 和 `1` 都表示没有下限 |
+| `deescalate_threshold` | `0.75` | *降低*档位所需的置信度。默认值高于 `confidence_threshold` 的默认值，使下降方向更难触发；但两者各自独立做范围校验，因此低于 `confidence_threshold` 的值也会被接受 |
+| `session_ttl_seconds` | `3600` | 空闲会话的固定档位可存续多久 |
+
+目标本身就是路由器、目标为空、阈值超出 `(0.0, 1.0]`、`recent_turn_window` 为 `0`、
+路由器 **id** 以 `[1m]` 或 `[1M]` 结尾、其中一项带有路由器表的重复 `[[models]]` id，或同一条目
+同时声明了 `[models.upstream_model]`，都会导致启动错误。不带映射的两个条目本可共用同一
+个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致。未匹配
+到任何显式路由的目标只会发出警告 —— 它仍会像其他未匹配的 id 一样经由
+`server.default_provider` 解析。
 
 ## `[sentry]`(可选)
 

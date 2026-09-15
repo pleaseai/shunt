@@ -575,7 +575,7 @@ The top-level `auto_include_builtin_models` key defaults to `true`. When enabled
 
 Discovered models come from the live upstream list when shunt can get one. It issues `GET /v1/models` against `server.default_provider` when it is Anthropic-kind, using that provider's authentication mode. With `auth = "passthrough"`, shunt forwards the caller's credential, so each caller sees the list that credential is entitled to — except a slot holding shunt's own `[server.gateway]` JWT or a configured `[server.auth]` client token rather than a real upstream credential, which is not forwarded. `authorization` and `x-api-key` are filtered independently, so a genuine credential in the other slot is still forwarded; discovery falls back to the builtin snapshot only when neither slot has a forwardable credential left. With `api_key`, shunt uses the configured key. With `claude_oauth`, it uses the first resolvable, non-disabled account from the same effective account set as inference, including store-scanned accounts in `account_scope` order. Discovery performs no pool selection, cooldown, or quota accounting. Those two gateway-owned modes therefore expose a shared credential-scoped catalog. shunt caches nothing. When the default provider is not Anthropic-kind, there is no credential, or the call fails or times out (2 s cap), shunt falls back to a builtin snapshot of the Claude catalog. Either way these ids need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
 
-A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. With ordered `[[upstreams]]`, the map may contain one or more `upstream = "backend-id"` pairs and resolves to a failover chain in `[[upstreams]]` declaration order. With legacy `[providers.*]`, it must contain exactly one pair because that form has no declared order. For that id the map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; each upstream's default `effort` applies to its chain element. An empty map, an empty or whitespace-only upstream name or backend id, an unknown upstream, a same-id `[[routes]]` entry, a mapped id ending in `[1m]` or `[1M]`, or a duplicate `[[models]]` id where either entry has a map is a startup error. Clients strip the context-window hint before matching, so including it in a mapped id would make that entry unreachable. Pure map-less duplicate ids retain their previous behavior.
+A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. With ordered `[[upstreams]]`, the map may contain one or more `upstream = "backend-id"` pairs and resolves to a failover chain in `[[upstreams]]` declaration order. With legacy `[providers.*]`, it must contain exactly one pair because that form has no declared order. For that id the map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; each upstream's default `effort` applies to its chain element. An empty map, an empty or whitespace-only upstream name or backend id, an unknown upstream, a same-id `[[routes]]` entry, a mapped id ending in `[1m]` or `[1M]`, or a duplicate `[[models]]` id where either entry has a map is a startup error. Clients strip the context-window hint before matching, so including it in a mapped id would make that entry unreachable. Pure map-less duplicate ids retain their previous behavior, unless one of them carries a `[models.stage_router]` table — see below.
 
 ```toml
 [[models]]
@@ -591,6 +591,50 @@ codex = "gpt-5.2"
 | `id` | ✅ | Model id exposed to Claude Code |
 | `display_name` | — | Label shown in the `/model` picker |
 | `upstream_model` | — | Map from configured upstream names to backend model ids; ordered `[[upstreams]]` may produce a multi-entry failover chain, while legacy providers allow one entry |
+
+### `[models.stage_router]` (optional)
+
+Content-aware tier selection for one advertised id: instead of naming a single
+destination, the entry names **two** — a capable tier and an efficient one.
+
+**Not active in this release.** The table is parsed and validated, but the
+resolver does not read it yet, so an id carrying this table still routes by that
+literal id through the ordinary `[[routes]]` / prefix / `default_provider`
+ladder — not to either target. The keys are documented here so a configuration
+can be written and reviewed ahead of the change that activates them. Absent this
+table a `[[models]]` entry behaves exactly as it did before.
+
+```toml
+[[models]]
+id = "claude-auto"
+display_name = "Auto (stage router)"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `capable_target` | ✅ required | Model id for hard reasoning, investigation, and error recovery |
+| `efficient_target` | ✅ required | Model id for routine production once the plan is settled |
+| `picker` | `efficient_first` | Tier used when the signals are inconclusive. `efficient_first` or `capable_first` |
+| `confidence_threshold` | `0.5` | Minimum scorer confidence to act on a signal, in `(0.0, 1.0]` |
+| `recent_turn_window` | `3` | Assistant turns of tool results fed to the scorer. Must be at least `1` |
+| `min_dwell_turns` | `3` | Turns a tier is held before a de-escalation may fire; counted from the turn that chose it, so `0` and `1` both mean no dwell floor |
+| `deescalate_threshold` | `0.75` | Confidence required to move *down* a tier. The default sits above `confidence_threshold`'s, making the down direction the harder one, but the two are range-checked independently — a value below `confidence_threshold` is accepted |
+| `session_ttl_seconds` | `3600` | How long a quiet session's pinned tier survives |
+
+A target that is itself a router, a blank target, a threshold outside
+`(0.0, 1.0]`, a `recent_turn_window` of `0`, a router **id** ending in `[1m]` or
+`[1M]`, a duplicate `[[models]]` id where either entry carries a router table, or the same
+entry also declaring `[models.upstream_model]` is a startup error. Two map-less
+entries may otherwise share an id, but a router names a routing policy rather
+than discovery metadata, so a duplicate would leave two policies for one id.
+Target ids are compared after the trailing `[1m]`/`[1M]` hint is stripped, the
+same way
+routing matches them. A target that matches no explicit route only warns — it
+still resolves through `server.default_provider` like any other unmatched id.
 
 ## `[sentry]` (optional)
 
