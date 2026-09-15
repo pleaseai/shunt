@@ -32,7 +32,7 @@ const currentSlug = Astro.url.pathname.replace(/\/$/, "") || "/";
 // and keep standalone top-level links (Changelog) as sections of their own.
 const sections = buildLocaleSidebar(locale, currentSlug).flatMap((item) => {
   if (item.type === "link") {
-    return [{ label: item.label, href: item.href, isActive: item.isCurrent === true }];
+    return [{ label: item.label, href: item.href, isActive: item.isCurrent }];
   }
   if (item.type !== "group") return [];
   const firstLink = item.children.find((child) => child.type === "link");
