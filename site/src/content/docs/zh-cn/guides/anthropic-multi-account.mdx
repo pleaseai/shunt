@@ -115,7 +115,7 @@ Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude
 ## 选择与主动轮换
 
 - 带 `x-claude-code-session-id` 时:一个稳定的哈希选出粘性账户。如果该账户可用且低于切换阈值,shunt 会让它保持在首位。
-- 不带该头部时:每个提供方有自己的轮询计数器。
+- 不带该头部、或该头部为空值时:每个提供方有自己的轮询计数器。空值不是一次对话,因此它共享这个轮询,而不会被哈希到某个固定账户上。
 - 在 `claude_oauth` 账户池处理的每个上游响应上,shunt 会记录以下头部(如存在):
   - `anthropic-ratelimit-unified-5h-utilization`、`anthropic-ratelimit-unified-7d-utilization` 和 `anthropic-ratelimit-unified-7d_oi-utilization`;
   - `anthropic-ratelimit-unified-5h-reset`、`anthropic-ratelimit-unified-7d-reset` 和 `anthropic-ratelimit-unified-7d_oi-reset`(Unix 秒);以及

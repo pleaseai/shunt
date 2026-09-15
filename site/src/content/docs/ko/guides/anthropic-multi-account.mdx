@@ -115,7 +115,7 @@ admin web 화면을 통해 스토어 관리 계정을 삭제하면, 동일한 �
 ## 선택과 선제 로테이션
 
 - `x-claude-code-session-id`가 있으면: 안정적인 해시가 스티키 계정을 고릅니다. 그 계정이 사용 가능하고 전환 임계값 아래라면 shunt는 그 계정을 첫 번째로 유지합니다.
-- 헤더가 없으면: 프로바이더마다 자체 라운드 로빈 카운터를 사용합니다.
+- 헤더가 없거나 빈 값으로 오면: 프로바이더마다 자체 라운드 로빈 카운터를 사용합니다. 빈 값은 하나의 대화가 아니므로, 고정된 계정 하나로 해시되지 않고 이 로테이션을 함께 씁니다.
 - `claude_oauth` 계정 풀이 처리하는 모든 업스트림 응답에서, shunt는 다음 헤더가 있으면 기록합니다:
   - `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, `anthropic-ratelimit-unified-7d_oi-utilization`;
   - `anthropic-ratelimit-unified-5h-reset`, `anthropic-ratelimit-unified-7d-reset`, `anthropic-ratelimit-unified-7d_oi-reset`(Unix 초); 그리고
