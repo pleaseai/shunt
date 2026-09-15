@@ -51,11 +51,14 @@ pub(crate) struct StageDecision {
 /// pin that simply stopped moving: no error, no log, no failing test.
 ///
 /// The variants libsy owns are carried as its own type rather than re-spelled,
-/// so adding one upstream fails to compile here, and the metric label is
-/// whatever libsy calls it — the two can no longer drift apart once a metric
-/// reads it. Bounded metric cardinality, the reason the source used to be a
-/// `&'static str`, constrains only what reaches a label, and this type is
-/// closed, so the conversion belongs with the metric that consumes it.
+/// so adding one upstream fails to compile in the match below. Bounded metric
+/// cardinality, the reason the source used to be a `&'static str`, constrains
+/// only what reaches a label, and this type is closed, so the conversion
+/// belongs with the metric that consumes it. When one is added, a scorer label
+/// should come from [`DecisionSource::as_str`] rather than a fresh set of
+/// literals — libsy spells one of them `llm-classifier`, and the copy this
+/// type replaced had already drifted to `llm_classifier`. Nothing here
+/// enforces that; it is the reason the conversion is not written twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StageSource {
     /// The scorer reached this turn and stamped its own reason.
