@@ -440,7 +440,8 @@ described above on every reveal:
 - The upstream must be a stock OpenAI or ChatGPT/Codex-flavored Responses backend. xAI/Grok routes
   always keep the shim.
 - The routed model must be **gpt-5.4 or later** (`gpt-5.4`, `gpt-5.5`, or the `gpt-5.6` family).
-  Earlier slugs (`gpt-5.2` and below) keep the shim regardless of `tool_search`.
+  The exact slug `gpt-6-astra` is also eligible. Earlier slugs (`gpt-5.2` and below) keep the shim
+  regardless of `tool_search`.
 - `ENABLE_TOOL_SEARCH=true` is still required on the Claude Code side — this flag only changes
   *how* shunt translates that feature upstream, not whether Claude Code defers tools at all.
 

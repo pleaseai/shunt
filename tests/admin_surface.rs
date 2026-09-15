@@ -18,7 +18,7 @@ use shunt::{
 };
 use tokio::task::JoinHandle;
 use wiremock::{
-    matchers::{body_partial_json, method, path},
+    matchers::{body_partial_json, body_string_contains, method, path},
     Mock, MockServer, ResponseTemplate,
 };
 
@@ -1288,11 +1288,17 @@ async fn admin_header_and_x_api_key_both_authenticate_every_credential_kind() {
     }
 }
 
-/// A read key is a full citizen on GET routes and is refused everywhere a
-/// write would happen — including the browser login form, which would
-/// otherwise mint a session that carries full access.
+/// A read key is a full citizen on GET routes, is refused everywhere a write
+/// would happen, and signs in to a *read-tier* browser session.
+///
+/// The login half used to assert a `401`: while every session carried full
+/// access, minting one from a read key would have escalated it. Sessions now
+/// record the tier they were minted with, so the property that replaces it is
+/// the stronger one — the read session reaches the mutation with a valid
+/// cookie, a matching CSRF token, and a same-origin request, and is still
+/// refused.
 #[tokio::test]
-async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
+async fn read_key_passes_gets_is_refused_on_mutations_and_signs_in_read_only() {
     if !can_bind_loopback() {
         return;
     }
@@ -1371,28 +1377,127 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    // The login form must not mint a session from a read key.
-    let response = client
-        .post(format!("{}/admin/login", gateway.base_url))
-        .form(&[("token", ADMIN_READ_KEY)])
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(
-        response.headers().get("set-cookie").is_none(),
-        "a read key must never receive a session cookie"
+    // Both tiers sign in; the session each one mints is what differs.
+    let sign_in = |token: &'static str| {
+        let base = gateway.base_url.clone();
+        let client = client.clone();
+        async move {
+            let response = client
+                .post(format!("{base}/admin/login"))
+                .form(&[("token", token)])
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::SEE_OTHER,
+                "{token} must reach the dashboard"
+            );
+            response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .find(|value| value.starts_with("shunt_admin_session="))
+                .map(|value| value.split(';').next().unwrap().to_string())
+                .expect("login sets a session cookie")
+        }
+    };
+
+    // What the dashboard renders its write affordances from.
+    let bootstrap = |cookie: String| {
+        let base = gateway.base_url.clone();
+        let client = client.clone();
+        async move {
+            let response = client
+                .get(format!("{base}/admin/api/session"))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            response.json::<serde_json::Value>().await.unwrap()
+        }
+    };
+
+    // The mutation a session reaches with everything else in order: valid
+    // cookie, matching CSRF token, same-origin. Only the tier can refuse it.
+    let mutate = |cookie: String, csrf: String| {
+        let base = gateway.base_url.clone();
+        let client = client.clone();
+        async move {
+            client
+                .post(format!("{base}/admin/api/accounts/claude"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .header("x-csrf-token", &csrf)
+                .body(r#"{"name":"session-tier","mode":"setup-token"}"#)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+
+    let read_cookie = sign_in(ADMIN_READ_KEY).await;
+    let read_session = bootstrap(read_cookie.clone()).await;
+    assert_eq!(
+        read_session["access"], "read",
+        "a read key's session must report its tier to the dashboard"
+    );
+    let read_csrf = read_session["csrf"].as_str().unwrap().to_string();
+    assert!(!read_csrf.is_empty());
+    assert_eq!(
+        mutate(read_cookie, read_csrf).await,
+        StatusCode::FORBIDDEN,
+        "a read session is refused on a mutation it otherwise fully satisfies"
     );
 
-    // The write key does log in, so the refusal above is about the tier.
-    let response = client
-        .post(format!("{}/admin/login", gateway.base_url))
-        .form(&[("token", ADMIN_WRITE_KEY)])
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert!(response.headers().get("set-cookie").is_some());
+    // The write half is what keeps the assertions above non-vacuous: a
+    // bootstrap hardcoded to "read", or a `require_write` that refused every
+    // cookie, would pass the read half and fail here.
+    let write_cookie = sign_in(ADMIN_WRITE_KEY).await;
+    let write_session = bootstrap(write_cookie.clone()).await;
+    assert_eq!(write_session["access"], "write");
+    let write_csrf = write_session["csrf"].as_str().unwrap().to_string();
+    assert_ne!(
+        mutate(write_cookie, write_csrf).await,
+        StatusCode::FORBIDDEN,
+        "a write session is not refused on the same mutation"
+    );
+
+    // A cross-site page cannot mint a session, even holding a valid key.
+    // `SameSite=Strict` decides whether the browser *sends* an existing cookie,
+    // not whether it stores the one this response hands back -- so without the
+    // guard a read-key holder could submit this form from their own page and
+    // overwrite a write operator's cookie, silently downgrading that dashboard
+    // to read-only. Both tiers are asserted: the guard is about the request's
+    // origin, not about privilege, and a check that only refused read keys
+    // would be the wrong guard passing this test.
+    for token in [ADMIN_READ_KEY, ADMIN_WRITE_KEY] {
+        let response = client
+            .post(format!("{}/admin/login", gateway.base_url))
+            .header("sec-fetch-site", "cross-site")
+            .form(&[("token", token)])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a cross-origin login must be refused for {token}"
+        );
+        assert!(
+            response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .all(|value| !value.starts_with("shunt_admin_session=")),
+            "a refused cross-origin login must not set a session cookie"
+        );
+    }
 }
 
 /// The merged slot acceptance is scoped to the admin (and spend) routers.
@@ -4546,4 +4651,301 @@ async fn admin_session_bootstrap_serves_the_live_csrf_token_and_refresh_buffer()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+/// Drives two completions for one account into the window issue #440 describes.
+///
+/// The first completion is put in flight against a deliberately slow exchange
+/// and left inside it; a second `start` then replaces the pending entry the
+/// in-flight completion is still relying on, which is what lets a second
+/// completion pass its own state check. Returns the two responses in the order
+/// they were issued.
+///
+/// Shared by both provider routes rather than copied: the choreography is the
+/// thing under test and is identical for each, while the mocks and the store
+/// layout genuinely differ and stay in the tests.
+#[allow(clippy::too_many_arguments)]
+async fn race_two_completions(
+    client: &reqwest::Client,
+    base_url: &str,
+    admin_token: &str,
+    provider: &str,
+    account: &str,
+    token_server: &MockServer,
+    first_code: &str,
+    second_code: &str,
+) -> (reqwest::Response, reqwest::Response) {
+    let start_login = |token: String| {
+        let client = client.clone();
+        let url = format!("{base_url}/admin/api/accounts/{provider}");
+        let body = serde_json::json!({ "name": account }).to_string();
+        async move {
+            let response = client
+                .post(url)
+                .header("x-shunt-admin-token", token)
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value =
+                serde_json::from_str(&response.text().await.unwrap()).unwrap();
+            authorize_state(&body).1
+        }
+    };
+    let complete = |token: String, code: String| {
+        let client = client.clone();
+        let url = format!("{base_url}/admin/api/accounts/{provider}/{account}/complete");
+        async move {
+            client
+                .post(url)
+                .header("x-shunt-admin-token", token)
+                .header("content-type", "application/json")
+                .body(serde_json::json!({ "code": code }).to_string())
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let first_state = start_login(admin_token.to_string()).await;
+    let first = tokio::spawn(complete(
+        admin_token.to_string(),
+        format!("{first_code}#{first_state}"),
+    ));
+    // Wait for a causal signal rather than a fixed delay: the first completion
+    // sends its token request only *after* it has taken the lock, read its
+    // pending entry, and passed the state check, so the mock receiving that
+    // request proves the race window is open. A sleep proves nothing — if the
+    // spawned task were scheduled late, the second `start` would replace the
+    // entry before the first ever read it, the first would fail its own state
+    // check, and the second would win. That still yields exactly one success,
+    // so a test asserting only the count would pass while guarding nothing.
+    // Nothing is needed after this signal for the same reason it is sufficient.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let reached_exchange = token_server
+            .received_requests()
+            .await
+            .is_some_and(|requests| {
+                requests
+                    .iter()
+                    .any(|request| String::from_utf8_lossy(&request.body).contains(first_code))
+            });
+        if reached_exchange {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the first completion never reached its token exchange"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let second_state = start_login(admin_token.to_string()).await;
+    let second = complete(
+        admin_token.to_string(),
+        format!("{second_code}#{second_state}"),
+    )
+    .await;
+    (first.await.unwrap(), second)
+}
+
+/// Asserts the invariant both race tests below share.
+///
+/// Not merely "exactly one succeeded": the *first* completion holds the lock, so
+/// it is the one that must store, and the second must fail for the specific
+/// reason the design intends — its entry consumed. Asserting only the count
+/// would pass just as readily if the second won because the first's state check
+/// failed on a replaced entry, which is the scheduling slip this choreography
+/// is otherwise exposed to, or if the loser died on a 500 or a rate limit.
+async fn assert_first_won_and_second_failed_closed(
+    first: reqwest::Response,
+    second: reqwest::Response,
+) {
+    assert_eq!(
+        first.status(),
+        StatusCode::OK,
+        "the completion holding the lock is the one that stores"
+    );
+    assert_eq!(
+        second.status(),
+        StatusCode::BAD_REQUEST,
+        "the second completion must fail closed, not race the first to the store"
+    );
+    let body = second.text().await.unwrap();
+    assert!(
+        body.contains("no pending login"),
+        "the second must fail because its entry was consumed, not for an \
+         unrelated reason; got {body}"
+    );
+}
+
+/// Two completions for one Claude account cannot both reach the store (#440).
+///
+/// `PendingStore::attempt` does not consume the entry, and the entry is removed
+/// only after the upstream exchange and the store have finished. So the whole
+/// exchange for one completion runs with the entry still in place: a `start`
+/// issued in that window replaces it, and a second completion passes its own
+/// state check against the new entry. Both then store a credential for the same
+/// account in an order nothing constrains, and when the older one lands last the
+/// account silently keeps the superseded credential — no rejected state check,
+/// no error, both tokens valid.
+#[tokio::test]
+async fn a_second_claude_completion_cannot_race_the_first_one_to_the_account_store() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let dir = unique_dir();
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_RACE", "ops:secret-race");
+
+    // The first exchange is the slow one, so an unserialized second completion
+    // would store *before* it and then be overwritten by the older credential —
+    // the silent-loss ordering, rather than the harmless one.
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_partial_json(
+            serde_json::json!({ "code": "first-code" }),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(2))
+                .set_body_json(serde_json::json!({
+                    "access_token": "TOKEN-FIRST",
+                    "account": {"uuid": "acct-first"}
+                })),
+        )
+        .mount(&token_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_partial_json(
+            serde_json::json!({ "code": "second-code" }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "TOKEN-SECOND",
+            "account": {"uuid": "acct-second"}
+        })))
+        .mount(&token_server)
+        .await;
+    vars.set(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_RACE")).await;
+    let client = reqwest::Client::new();
+    let (first, second) = race_two_completions(
+        &client,
+        &gateway.base_url,
+        "secret-race",
+        "claude",
+        "race",
+        &token_server,
+        "first-code",
+        "second-code",
+    )
+    .await;
+    assert_first_won_and_second_failed_closed(first, second).await;
+
+    // And the account on disk is the one the operator was told about, rather
+    // than a credential from a completion the server reported as failed.
+    let stored = std::fs::read_to_string(dir.join("race.json")).unwrap();
+    assert!(
+        stored.contains("TOKEN-FIRST"),
+        "the stored credential must be the one whose completion returned 200"
+    );
+    assert!(
+        !stored.contains("TOKEN-SECOND"),
+        "the failed completion must not have reached the store"
+    );
+}
+
+/// The Codex route takes the same lock, and is a separate handler rather than a
+/// call into the Claude one — it captures a pre-store identity, keys its pending
+/// entry under `codex/{name}`, and writes a different store shape. So "the other
+/// route looks the same" is inspection, not coverage, and this is the assertion
+/// that a copy of the fix which *looks* right is actually wired up.
+#[tokio::test]
+async fn a_second_codex_completion_cannot_race_the_first_one_to_the_account_store() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let dir = unique_dir();
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_CODEXRACE", "ops:secret-codexrace");
+
+    // Codex posts the exchange form-encoded, so the two codes are matched on the
+    // encoded body rather than as JSON.
+    let token_server = MockServer::start().await;
+    let first_access = chatgpt_token(4_102_444_800, "acct-codex-first");
+    let second_access = chatgpt_token(4_102_444_800, "acct-codex-second");
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("code=first-code"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(2))
+                .set_body_json(serde_json::json!({
+                    "access_token": first_access,
+                    "refresh_token": "CODEX-REFRESH-FIRST",
+                    "id_token": "CODEX-ID-FIRST"
+                })),
+        )
+        .mount(&token_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("code=second-code"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": second_access,
+            "refresh_token": "CODEX-REFRESH-SECOND",
+            "id_token": "CODEX-ID-SECOND"
+        })))
+        .mount(&token_server)
+        .await;
+    vars.set(
+        "SHUNT_CODEX_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEXRACE");
+    config.providers.get_mut("codex").unwrap().accounts = Vec::new();
+    // Keep the untouched `anthropic` provider off the real on-disk Claude store
+    // (see the `admin_config` doc comment); only the Codex dir is isolated here.
+    config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
+        name: "codex-race".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        uuid: Some("codex-race-uuid".to_string()),
+        ..Default::default()
+    }];
+    let gateway = start(config).await;
+    let client = reqwest::Client::new();
+    let (first, second) = race_two_completions(
+        &client,
+        &gateway.base_url,
+        "secret-codexrace",
+        "codex",
+        "race",
+        &token_server,
+        "first-code",
+        "second-code",
+    )
+    .await;
+    assert_first_won_and_second_failed_closed(first, second).await;
+
+    let stored = std::fs::read_to_string(dir.join("race.json")).unwrap();
+    assert!(
+        stored.contains("CODEX-REFRESH-FIRST"),
+        "the stored credential must be the one whose completion returned 200"
+    );
+    assert!(
+        !stored.contains("CODEX-REFRESH-SECOND"),
+        "the failed completion must not have reached the store"
+    );
 }

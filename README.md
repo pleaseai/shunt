@@ -15,7 +15,7 @@
 
 The name is the mechanism: an electrical/railway *shunt* diverts a selected part of the flow onto a parallel path. Here, a mapped model's inference is diverted to another provider while Claude Code's tools and skills stay intact.
 
-Providers for OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax China, Gemini, Antigravity, and Anthropic passthrough ship built in — several of them reusing a subscription you already pay for. Any Anthropic-Messages-compatible backend is one config table away, with no code changes. See [Providers](#providers).
+Providers for OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax China, OpenCode Zen, Gemini, Antigravity, and Anthropic passthrough ship built in — several of them reusing a subscription you already pay for. Any Anthropic-Messages-compatible backend is one config table away, with no code changes. See [Providers](#providers).
 
 > [!NOTE]
 > `shunt` is pre-1.0 software under active development. Per [SemVer](https://semver.org/#spec), `0.x` releases may include breaking changes to configuration keys, the CLI, and behavior — check the [release notes](https://github.com/pleaseai/shunt/releases) before upgrading.
@@ -133,7 +133,7 @@ These providers are seeded by default, so `provider = "<name>"` routes to them w
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — Google Antigravity backend over HTTP; uses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
 | `antigravity-cli` | `antigravity_cli` | None (local CLI) | **Deprecated.** Local `agy` binary — same backend via subprocess; superseded by `antigravity` above |
 
-Ordered `[[upstreams]]` entries additionally accept the presets `kimi`, `kimi-code`, `zhipu`, and `minimax-cn`, which fill in `kind`, `base_url`, and the default auth for those backends.
+Ordered `[[upstreams]]` entries additionally accept the presets `kimi`, `kimi-code`, `zhipu`, `minimax-cn`, and `opencode`, which fill in `kind`, `base_url`, and the default auth for those backends.
 
 Per-provider setup, model ids, and caveats live under [Providers](https://shunt.dev/guides/providers/) — including xAI's OAuth tier gate ([xAI / Grok](https://shunt.dev/guides/xai/)), Cursor's agent-mode prefixes ([Cursor](https://shunt.dev/providers/cursor/)), and Antigravity's two transports and the `kind = "antigravity"` migration ([Antigravity](https://shunt.dev/providers/antigravity/)).
 
@@ -153,6 +153,7 @@ One table, no code changes:
 | Zhipu (GLM China) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
 | MiniMax China | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
+| OpenCode Zen | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — curated cross-vendor catalog; reads `x-api-key` |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 
@@ -193,7 +194,7 @@ Unless a row says otherwise, these are **off by default** — absent its config 
 | Inbound Codex endpoint — point the **Codex CLI** at shunt and pool it, with opt-in per-model routing | `[server.codex_endpoint]` | [How-to](https://shunt.dev/guides/inbound-codex-endpoint/) |
 | Claude apps gateway login — OAuth device flow, managed settings, per-user policy | `[server.gateway]` with `public_url`, a 32-byte-or-longer JWT secret, and static users or `[server.gateway.oidc]` | [How-to](https://shunt.dev/guides/gateway-login/) |
 | Gateway telemetry ingest — verbatim OTLP relay for managed clients | a configured `[server.gateway]`, plus `[server.gateway.telemetry]` with a non-empty `forward_to` | [Reference](https://shunt.dev/reference/configuration/#servergatewaytelemetry-optional) |
-| Admin web surface — accounts and usage dashboard, browser provisioning | `[server.admin]` with an admin credential (`tokens_env`, `tokens_file`, or a `write_keys` entry) — **or** `shunt dashboard setup`, which writes the table and mints a token, but only when `[server.admin]` is absent: against an existing block it leaves your credential untouched and only adds a missing `[server.oauth_usage]`. The dashboard itself is served from a bundle only a `--features ui` build embeds — prebuilt release binaries and the Homebrew formula have it, a plain `cargo build`/`cargo install` does not | [How-to](https://shunt.dev/guides/admin-remote-provisioning/) |
+| Admin web surface — accounts and usage dashboard, browser provisioning | `[server.admin]` with an admin credential (`tokens_env`, `tokens_file`, or a `write_keys` entry; a `read_keys` entry alone brings the dashboard up read-only — it signs in and serves every view, but provisioning needs write) — **or** `shunt dashboard setup`, which writes the table and mints a token, but only when `[server.admin]` is absent: against an existing block it leaves your credential untouched and only adds a missing `[server.oauth_usage]`. The dashboard itself is served from a bundle only a `--features ui` build embeds — prebuilt release binaries and the Homebrew formula have it, a plain `cargo build`/`cargo install` does not | [How-to](https://shunt.dev/guides/admin-remote-provisioning/) |
 | Spend-limit Admin API — organization- and user-scoped caps (stage 1 stores, does not enforce) | `[server.admin]` with an admin credential (`tokens_env`, `tokens_file`, or a `write_keys`/`read_keys` entry — read-tier serves the GETs) + `[server.spend]` | [Reference](https://shunt.dev/reference/configuration/#serverspend-optional) |
 | Client usage endpoint — sanitized, aggregated pool headroom at `GET /usage` | `[server.auth]` with client tokens in `tokens_env` (default `SHUNT_CLIENT_TOKENS`) + `[server.usage]` | [Reference](https://shunt.dev/reference/configuration/#serverusage-optional) |
 | Claude Code CLI native usage bars — serves `GET /api/oauth/usage` | `[server.oauth_usage]`, plus `[server.auth]` (client tokens in `tokens_env`, default `SHUNT_CLIENT_TOKENS`) or `[server.gateway]` on a non-loopback bind | [Reference](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |

@@ -15,7 +15,7 @@
 
 이름 자체가 동작 방식을 나타냅니다. 전기/철도의 *shunt*는 흐름의 일부를 선택해 병렬 경로로 우회시킵니다. 여기서는 매핑된 모델의 추론이 다른 프로바이더로 우회되는 동안 Claude Code의 도구와 스킬은 그대로 유지됩니다.
 
-OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax 중국, Gemini, Antigravity, Anthropic 패스스루가 기본 내장되어 있고, 이 가운데 여럿은 이미 결제 중인 구독을 그대로 재사용합니다. Anthropic Messages 호환 백엔드라면 무엇이든 구성 테이블 하나로 붙일 수 있으며, 코드 변경은 필요 없습니다. [프로바이더](#프로바이더)를 참고하세요.
+OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax 중국, OpenCode Zen, Gemini, Antigravity, Anthropic 패스스루가 기본 내장되어 있고, 이 가운데 여럿은 이미 결제 중인 구독을 그대로 재사용합니다. Anthropic Messages 호환 백엔드라면 무엇이든 구성 테이블 하나로 붙일 수 있으며, 코드 변경은 필요 없습니다. [프로바이더](#프로바이더)를 참고하세요.
 
 > [!NOTE]
 > `shunt`는 활발히 개발 중인 1.0 미만(pre-1.0) 소프트웨어입니다. [SemVer](https://semver.org/lang/ko/#spec) 관례에 따라 `0.x` 릴리스에는 설정 키, CLI, 동작에 대한 호환성이 깨지는 변경(breaking change)이 포함될 수 있으니, 업그레이드 전에 [릴리스 노트](https://github.com/pleaseai/shunt/releases)를 확인하세요.
@@ -134,7 +134,7 @@ codex-fallback = "gpt-5.6-sol"
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — HTTP로 통신하는 Google Antigravity 백엔드, `~/.shunt/antigravity-auth.json`(`shunt login antigravity`)을 사용 |
 | `antigravity-cli` | `antigravity_cli` | 없음(로컬 CLI) | **Deprecated.** 로컬 `agy` 바이너리 — 서브프로세스로 동일한 백엔드를 사용하며, 위의 `antigravity`로 대체되었습니다 |
 
-순서가 있는 `[[upstreams]]` 항목은 여기에 더해 `kimi`, `kimi-code`, `zhipu`, `minimax-cn` 프리셋도 받으며, 각 백엔드의 `kind`, `base_url`, 기본 인증을 채워 넣습니다.
+순서가 있는 `[[upstreams]]` 항목은 여기에 더해 `kimi`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode` 프리셋도 받으며, 각 백엔드의 `kind`, `base_url`, 기본 인증을 채워 넣습니다.
 
 프로바이더별 설정과 모델 id, 주의 사항은 [프로바이더](https://shunt.dev/ko/guides/providers/)에 정리되어 있습니다. xAI의 OAuth 등급 제한([xAI / Grok](https://shunt.dev/ko/guides/xai/)), Cursor의 에이전트 모드 프리픽스([Cursor](https://shunt.dev/ko/providers/cursor/)), Antigravity의 두 가지 전송 방식과 `kind = "antigravity"` 마이그레이션([Antigravity](https://shunt.dev/ko/providers/antigravity/))도 그곳에 있습니다.
 
@@ -154,6 +154,7 @@ codex-fallback = "gpt-5.6-sol"
 | Zhipu (GLM 중국) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | MiniMax | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
 | MiniMax 중국 | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
+| OpenCode Zen | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — 큐레이션된 크로스 벤더 카탈로그; `x-api-key` 읽음 |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 
@@ -194,7 +195,7 @@ OpenAI의 Thibault Sottiaux는 다른 코딩 하네스를 통해 Codex를 실행
 | 인바운드 Codex 엔드포인트 — **Codex CLI**를 shunt로 향하게 해 같은 풀에 태우고, 모델별 라우팅도 선택할 수 있음 | `[server.codex_endpoint]` | [가이드](https://shunt.dev/ko/guides/inbound-codex-endpoint/) |
 | Claude 앱 게이트웨이 로그인 — OAuth device flow, managed settings, 사용자별 정책 | `public_url`, 32바이트 이상 JWT 시크릿, 정적 사용자 또는 `[server.gateway.oidc]`를 갖춘 `[server.gateway]` | [가이드](https://shunt.dev/ko/guides/gateway-login/) |
 | 게이트웨이 텔레메트리 인제스트 — 관리 클라이언트의 OTLP를 그대로 릴레이 | 구성된 `[server.gateway]`와 `forward_to`가 비어 있지 않은 `[server.gateway.telemetry]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#servergatewaytelemetry-선택) |
-| 관리자 웹 화면 — 계정·사용량 대시보드, 브라우저 프로비저닝 | `[server.admin]`에 관리자 자격 증명(`tokens_env`, `tokens_file`, 또는 `write_keys` 항목)을 직접 작성하거나, **또는** `shunt dashboard setup`으로 테이블 작성과 토큰 발급을 한 번에 처리합니다. 단 테이블 작성과 토큰 발급은 `[server.admin]`이 없을 때만 일어납니다 — 이미 있으면 기존 자격 증명을 그대로 두고 빠진 `[server.oauth_usage]`만 추가합니다. 대시보드 자체는 `--features ui` 빌드만 임베드하는 번들에서 제공됩니다 — 사전 빌드 릴리스 바이너리와 Homebrew 포뮬러에는 포함되어 있고, 그냥 `cargo build`/`cargo install`로 빌드하면 포함되지 않습니다 | [가이드](https://shunt.dev/ko/guides/admin-remote-provisioning/) |
+| 관리자 웹 화면 — 계정·사용량 대시보드, 브라우저 프로비저닝 | `[server.admin]`에 관리자 자격 증명(`tokens_env`, `tokens_file`, 또는 `write_keys` 항목)을 직접 작성하거나(`read_keys` 항목만 있어도 대시보드는 읽기 전용으로 뜹니다 — 로그인과 모든 조회는 되지만 프로비저닝에는 write가 필요합니다), **또는** `shunt dashboard setup`으로 테이블 작성과 토큰 발급을 한 번에 처리합니다. 단 테이블 작성과 토큰 발급은 `[server.admin]`이 없을 때만 일어납니다 — 이미 있으면 기존 자격 증명을 그대로 두고 빠진 `[server.oauth_usage]`만 추가합니다. 대시보드 자체는 `--features ui` 빌드만 임베드하는 번들에서 제공됩니다 — 사전 빌드 릴리스 바이너리와 Homebrew 포뮬러에는 포함되어 있고, 그냥 `cargo build`/`cargo install`로 빌드하면 포함되지 않습니다 | [가이드](https://shunt.dev/ko/guides/admin-remote-provisioning/) |
 | 지출 한도 Admin API — 조직·사용자 단위 상한(1단계는 저장만 하고 아직 적용하지 않음) | `[server.admin]`(관리자 자격 증명 필요: `tokens_env`, `tokens_file`, 또는 `write_keys`/`read_keys` 항목 — read 등급은 GET만 처리) + `[server.spend]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverspend-선택) |
 | 클라이언트 사용량 엔드포인트 — `GET /usage`가 정제·집계된 풀 여유를 반환 | `[server.auth]`(`tokens_env`에 클라이언트 토큰 필요, 기본값 `SHUNT_CLIENT_TOKENS`) + `[server.usage]` | [레퍼런스](https://shunt.dev/ko/reference/configuration/#serverusage-선택) |
 | Claude Code CLI 네이티브 사용량 막대 — `GET /api/oauth/usage` 제공 | `[server.oauth_usage]`, 루프백이 아닌 bind에서는 `[server.auth]`(`tokens_env`에 클라이언트 토큰 필요, 기본값 `SHUNT_CLIENT_TOKENS`) 또는 `[server.gateway]` 추가 필요 | [레퍼런스(영문)](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |

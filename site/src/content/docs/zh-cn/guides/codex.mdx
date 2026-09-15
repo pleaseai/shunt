@@ -395,8 +395,8 @@ export ENABLE_TOOL_SEARCH=true
 都要承担上文所述的缓存失效代价:
 
 - 上游必须是标准 OpenAI 或 ChatGPT/Codex 风格的 Responses 后端。xAI / Grok 路由始终保留 shim。
-- 路由到的模型必须是 **gpt-5.4 及以上**(`gpt-5.4`、`gpt-5.5`,或 `gpt-5.6` 系列)。更早的 slug
-  (`gpt-5.2` 及以下)无论 `tool_search` 如何设置都会保留 shim。
+- 路由到的模型必须是 **gpt-5.4 及以上**(`gpt-5.4`、`gpt-5.5`,或 `gpt-5.6` 系列)。精确 slug
+  `gpt-6-astra` 也符合条件。更早的 slug (`gpt-5.2` 及以下)无论 `tool_search` 如何设置都会保留 shim。
 - Claude Code 一侧仍然需要 `ENABLE_TOOL_SEARCH=true` —— 这个标志只改变 shunt *如何* 把该功能转译到
   上游,不改变 Claude Code 是否延迟工具本身。
 

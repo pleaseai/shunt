@@ -242,11 +242,12 @@ fields. Ready-to-use entries (uncomment in
 | Zhipu (GLM China) — built-in preset | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
 | MiniMax China — built-in preset | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
+| OpenCode Zen — built-in preset | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — curated cross-vendor catalog; reads `x-api-key` |
 | Mimo (Xiaomi) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — see [Mimo docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8`, `~anthropic/claude-sonnet-latest` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |
 
-`zhipu` and `minimax-cn` are also built-in presets, so they do not need a `[providers.*]` table
+`zhipu`, `minimax-cn`, and `opencode` are also built-in presets, so they do not need a `[providers.*]` table
 from `shunt.toml.example`. Use the ordered `[[upstreams]]` form instead — for example,
 `provider = "zhipu"` or `provider = "minimax-cn"` — and keep the `anthropic` passthrough default.
 

@@ -342,7 +342,8 @@ Claude Code는 base URL이 퍼스트파티 Anthropic 호스트가 아니면 낙�
 - 업스트림은 스톡 OpenAI 또는 ChatGPT/Codex 계열 Responses 백엔드여야 합니다. xAI / Grok 라우트는
   항상 shim을 유지합니다.
 - 라우팅되는 모델은 **gpt-5.4 이상**(`gpt-5.4`, `gpt-5.5`, 또는 `gpt-5.6` 패밀리)이어야 합니다.
-  이전 슬러그(`gpt-5.2` 이하)는 `tool_search`와 무관하게 shim을 유지합니다.
+  정확한 슬러그 `gpt-6-astra`도 대상입니다. 이전 슬러그(`gpt-5.2` 이하)는 `tool_search`와 무관하게
+  shim을 유지합니다.
 - Claude Code 쪽에서는 여전히 `ENABLE_TOOL_SEARCH=true`가 필요합니다 — 이 플래그는 shunt가 그 기능을
   업스트림으로 *어떻게* 변환하는지만 바꿀 뿐, Claude Code가 애초에 도구를 지연시키는지 여부는 바꾸지
   않습니다.

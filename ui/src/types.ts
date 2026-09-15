@@ -1,8 +1,17 @@
 /** The JSON shapes `/admin/api/*` returns, named as the Rust handlers spell them. */
 
+/** `config::AdminAccess`, as the admin API spells it. `write` implies `read`. */
+export type AdminAccess = 'read' | 'write';
+
 export interface SessionBootstrap {
   /** The session's CSRF token; empty for a header-credential caller. */
   csrf: string;
+  /**
+   * The privilege this session authenticates with — what the dashboard renders
+   * its write affordances from. A `[server.admin] read_keys` login mints a
+   * `read` session, which every mutation route refuses with `403`.
+   */
+  access: AdminAccess;
   /**
    * `claude::auth::EXPIRY_BUFFER` in milliseconds. Served rather than copied
    * here so this bundle and routing cannot disagree about when a setup token
