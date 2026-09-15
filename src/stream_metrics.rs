@@ -169,7 +169,13 @@ struct ObserverState {
     // See `crate::observability`'s module docs for why this is the only
     // reliable way to reach the span from here.
     span: tracing::Span,
-    first_chunk_seen: bool,
+    /// True once the first non-keepalive complete frame was observed (or an
+    /// oversized first frame hit the parse cap, which proves it content).
+    /// TTFT records on that frame, so a pre-winner ping never becomes the
+    /// attributed first sample. A first frame split across chunks counts as
+    /// soon as the frame completes — pings in any spelling are excluded by
+    /// the same predicate the frame parser uses.
+    first_content_seen: bool,
     buffer: Vec<u8>,
     skipping_oversized: bool,
     skip_tail: [u8; 4],
@@ -190,16 +196,10 @@ struct ObserverState {
     /// The `event:` name of the last non-keepalive frame parsed, in a
     /// fixed-size inline buffer (see [`MAX_LAST_EVENT_BYTES`]).
     /// `last_event_len == 0` means none was seen.
-    /// Set per chunk in [`Self::observe_chunk`]: true when the chunk is not
-    /// (a prefix of) a keepalive ping. TTFT records on the first chunk that
-    /// set this, so a pre-winner ping never becomes the attributed first
-    /// sample, while a first frame split across chunks still counts.
-    chunk_had_content: bool,
     last_event: [u8; MAX_LAST_EVENT_BYTES],
     last_event_len: usize,
-    /// Milliseconds from `started_at` to the first content-bearing chunk
-    /// (keepalive pings do not count), recorded alongside the `shunt.ttft`
-    /// histogram.
+    /// Milliseconds from `started_at` to the first non-keepalive complete
+    /// frame, recorded alongside the `shunt.ttft` histogram.
     ttft_ms: Option<u64>,
     tokens: TokenUsage,
     finished: bool,
@@ -221,7 +221,7 @@ impl ObserverState {
             started_at,
             status,
             span,
-            first_chunk_seen: false,
+            first_content_seen: false,
             buffer: Vec::with_capacity(4096),
             skipping_oversized: false,
             skip_tail: [0; 4],
@@ -231,7 +231,6 @@ impl ObserverState {
             truncated_seen: false,
             sse_events: 0,
             bytes_forwarded: 0,
-            chunk_had_content: false,
             last_event: [0; MAX_LAST_EVENT_BYTES],
             last_event_len: 0,
             ttft_ms: None,
@@ -241,28 +240,23 @@ impl ObserverState {
     }
 
     fn observe_chunk(&mut self, chunk: &[u8]) {
-        // Content is any chunk that is not (a prefix of) a keepalive ping:
-        // the pre-winner ping is the only non-content the committed chain
-        // can emit. A chunk-level check needs no complete frame, so a first
-        // frame split across body chunks still counts.
-        self.chunk_had_content = chunk != crate::keepalive::PING_EVENT.as_bytes()
-            && !crate::keepalive::PING_EVENT.as_bytes().starts_with(chunk);
         self.bytes_forwarded = self.bytes_forwarded.saturating_add(chunk.len() as u64);
         self.push_bytes(chunk);
-        if !self.first_chunk_seen && self.chunk_had_content {
-            // Record TTFT on the first content-bearing chunk, never on a
-            // keepalive ping: a committed chain can emit pings before its
-            // winner is selected, and a pre-winner ping would attribute the
-            // one-shot sample to the routed (failed) provider.
-            self.first_chunk_seen = true;
-            let ttft = self.started_at.elapsed();
-            crate::metrics::record_ttft(
-                &self.provider.lock().expect("provider slot"),
-                &self.model.lock().expect("model slot"),
-                ttft.as_secs_f64() * 1000.0,
-            );
-            self.ttft_ms = Some(millis(ttft));
-        }
+    }
+
+    /// Record the one-shot TTFT sample and mark it taken. Called on the
+    /// first complete frame the parser classifies as content: a keepalive
+    /// ping the committed chain emits before its winner is selected must
+    /// not attribute the sample to the routed (failed) provider.
+    fn record_ttft(&mut self) {
+        self.first_content_seen = true;
+        let ttft = self.started_at.elapsed();
+        crate::metrics::record_ttft(
+            &self.provider.lock().expect("provider slot"),
+            &self.model.lock().expect("model slot"),
+            ttft.as_secs_f64() * 1000.0,
+        );
+        self.ttft_ms = Some(millis(ttft));
     }
 
     fn push_bytes(&mut self, mut bytes: &[u8]) {
@@ -292,6 +286,9 @@ impl ObserverState {
             // Copied out before anything else touches `self`: `event` borrows
             // the buffer this loop is about to drain.
             let last_event = event.map(inline_event_name);
+            if !self.first_content_seen && !observation.ping {
+                self.record_ttft();
+            }
             self.sse_events = self.sse_events.saturating_add(1);
             self.terminal_seen |= observation.terminal;
             self.error_seen |= observation.error;
@@ -311,6 +308,12 @@ impl ObserverState {
         self.skip_tail[..retained].copy_from_slice(&self.buffer[self.buffer.len() - retained..]);
         self.buffer.clear();
         self.skipping_oversized = true;
+        if !self.first_content_seen {
+            // An event past the parse cap cannot be a keepalive ping: the
+            // oversized first frame is content, and TTFT must not vanish
+            // with it into the skip.
+            self.record_ttft();
+        }
     }
 
     /// Consume bytes through the first boundary. The tiny byte loop is used only
@@ -449,7 +452,18 @@ struct FrameObservation {
     error: bool,
     /// Set only for the [`UPSTREAM_TRUNCATED_MARKER`] comment frame.
     truncated: bool,
+    /// Set only for a keepalive frame, so the TTFT check and the frame
+    /// parser share one classification.
+    ping: bool,
     tokens: TokenUsage,
+}
+
+/// A keepalive frame under either spelling the observer accepts: an
+/// `event:` line naming `ping`, or a data line carrying the ping JSON.
+/// The injected keepalive uses both, and the compact single-line forms are
+/// equally valid.
+fn is_ping(event: Option<&[u8]>, data: Option<&[u8]>) -> bool {
+    event == Some(b"ping") || data == Some(b"{\"type\": \"ping\"}")
 }
 
 /// Observe one complete SSE frame. The second element is the frame's `event:`
@@ -471,8 +485,14 @@ fn observe_frame(protocol: Protocol, frame: &[u8]) -> (FrameObservation, Option<
     }
 
     let (event, data) = event_and_data(frame);
-    if event == Some(b"ping") || data == Some(b"{\"type\": \"ping\"}") {
-        return (FrameObservation::default(), None);
+    if is_ping(event, data) {
+        return (
+            FrameObservation {
+                ping: true,
+                ..Default::default()
+            },
+            None,
+        );
     }
 
     let observation = match protocol {

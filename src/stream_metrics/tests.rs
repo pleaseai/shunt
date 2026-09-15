@@ -74,8 +74,9 @@ fn anth_event(name: &str, data: serde_json::Value) -> String {
     format!("event: {name}\ndata: {data}\n\n")
 }
 
-/// A first frame split across body chunks still counts as content: TTFT must
-/// not wait for a complete parseable frame, only exclude keepalive pings.
+/// A first frame split across body chunks records TTFT once the frame
+/// completes — never on the partial bytes (a split keepalive must not
+/// count), and never waiting for a second frame.
 #[test]
 fn ttft_records_on_a_split_first_frame() {
     let provider = Arc::new(Mutex::new("provider".to_string()));
@@ -89,8 +90,42 @@ fn ttft_records_on_a_split_first_frame() {
     );
     observer.observe_chunk(b"event: message_st");
     assert!(
+        observer.ttft_ms.is_none(),
+        "a partial first frame is not yet classifiable"
+    );
+    observer.observe_chunk(b"art\ndata: {}\n\n");
+    assert!(
         observer.ttft_ms.is_some(),
-        "a split first frame is content, not a keepalive"
+        "the completed split frame is content, not a keepalive"
+    );
+}
+
+/// A compact keepalive (`event: ping` with no data line) must not record
+/// the one-shot TTFT sample either: the sample would attribute the routed
+/// (failed) provider, and the winner's real first frame must own it.
+#[test]
+fn compact_ping_does_not_record_ttft_before_the_winner() {
+    let provider = Arc::new(Mutex::new("primary".to_string()));
+    let mut observer = ObserverState::new(
+        Protocol::Anthropic,
+        StatusCode::OK,
+        provider.clone(),
+        Arc::new(Mutex::new("model".to_string())),
+        Instant::now(),
+        tracing::Span::none(),
+    );
+    observer.observe_chunk(b"event: ping\n\n");
+    assert!(
+        observer.ttft_ms.is_none(),
+        "a compact pre-winner ping must not record TTFT"
+    );
+    *provider.lock().expect("slot") = "fallback".to_string();
+    observer.observe_chunk(
+        b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{}}}\n\n",
+    );
+    assert!(
+        observer.ttft_ms.is_some(),
+        "the winner's first frame records TTFT"
     );
 }
 
