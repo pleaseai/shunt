@@ -1130,9 +1130,9 @@ async fn translated_stream_ends_after_a_terminal_event_even_when_more_frames_fol
         events,
     );
     let bytes = tokio::time::timeout(
-        // The relay drains the still-open upstream for up to the terminal
-        // drain budget (2 s) before ending, so the timeout must outlast
-        // that budget or the drain races it.
+        // The relay ends at the terminal event while the post-terminal drain
+        // runs detached; the timeout only guards against a regression that
+        // makes the collection hang.
         std::time::Duration::from_secs(3),
         to_bytes(response.into_body(), usize::MAX),
     )

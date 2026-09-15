@@ -232,7 +232,10 @@ where
 
 /// How long the relay keeps reading a still-open upstream after a terminal
 /// event: the upstream's EOF must be read so hyper pools the connection, but
-/// nothing past the terminal may ever be forwarded.
+/// nothing past the terminal may ever be forwarded. The drain runs in a
+/// detached task after the outward stream has ended, so the client never
+/// waits on it and the keepalive wrapper can never inject a ping past the
+/// terminal while it runs.
 const TERMINAL_DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The shared translation loop behind [`translated_stream`] and
@@ -259,10 +262,33 @@ where
 
     /// The producer is polled live, or its first poll is in flight (the
     /// machine build won the race) or already resolved (the producer won it);
-    /// either way the first-poll future hands the stream back.
+    /// either way the first-poll future hands the stream back. `Done` means
+    /// the terminal frame was yielded and the post-terminal drain owns the
+    /// producer; the outward stream ends at the next poll.
     enum Producer<I> {
         Live(Events<I>),
         First(std::pin::Pin<Box<dyn std::future::Future<Output = FirstPoll<I>> + Send>>),
+        Done,
+    }
+
+    /// Detach the post-terminal drain: after the terminal frame the outward
+    /// stream ends, while this task keeps reading the still-open upstream
+    /// under the same budget so hyper can pool the connection. Detached
+    /// because an in-stream drain made the poll after the terminal frame
+    /// stall — long enough, with a short keepalive interval, for the
+    /// surrounding `with_pings` wrapper to inject a client-visible `ping`
+    /// past the terminal.
+    fn spawn_terminal_drain<I>(events: Events<I>)
+    where
+        I: Send + 'static,
+    {
+        tokio::spawn(async move {
+            let mut events = events;
+            let _ = tokio::time::timeout(TERMINAL_DRAIN_BUDGET, async {
+                while events.next().await.is_some() {}
+            })
+            .await;
+        });
     }
 
     stream::unfold(
@@ -272,28 +298,15 @@ where
             false,
             map,
             Some(machine),
-            false,
         ),
-        move |(mut producer, mut machine, mut finished, map, mut factory, drain)| {
+        move |(mut producer, mut machine, mut finished, map, mut factory)| {
             async move {
                 if finished {
-                    if drain {
-                        // The relay ended at a terminal event. Drain the
-                        // upstream's remaining frames under a short budget —
-                        // a prompt-closing upstream's EOF must be read so
-                        // hyper pools the connection — then end without
-                        // forwarding anything past the terminal. Only the
-                        // terminal path drains: the cut path's producer has
-                        // already ended (polling it again is a panic), and
-                        // the error path's connection is dead.
-                        let Producer::Live(mut events) = producer else {
-                            unreachable!("a terminal item implies the producer is live");
-                        };
-                        let _ = tokio::time::timeout(TERMINAL_DRAIN_BUDGET, async {
-                            while events.next().await.is_some() {}
-                        })
-                        .await;
-                    }
+                    // The terminal frame already yielded: the outward stream
+                    // ends here. The post-terminal drain runs detached (see
+                    // the terminal arm), so this poll returns immediately
+                    // and the keepalive wrapper can never inject a frame
+                    // past the terminal while the drain is still waiting.
                     return None;
                 }
                 // The leading phase: race the machine build against the
@@ -330,7 +343,7 @@ where
                         };
                     return Some((
                         Ok(Bytes::from(leading)),
-                        (producer, Some(built), false, map, None, false),
+                        (producer, Some(built), false, map, None),
                     ));
                 }
                 loop {
@@ -346,6 +359,9 @@ where
                             producer = Producer::Live(events);
                             item
                         }
+                        Producer::Done => {
+                            unreachable!("Done is set only with `finished`, which returns above");
+                        }
                     };
                     match item {
                         Some(Ok(item)) => {
@@ -354,25 +370,36 @@ where
                                 // A terminal event ends the relay even when
                                 // the upstream keeps the connection open: no
                                 // further frame can produce client-visible
-                                // output. The next poll drains the still-open
-                                // upstream (connection pooling) and ends.
+                                // output. The drain for the still-open
+                                // upstream (connection pooling) is detached
+                                // here, so the next poll ends the outward
+                                // stream immediately.
                                 let finished = active.is_stopped();
+                                if finished {
+                                    let Producer::Live(events) = producer else {
+                                        unreachable!(
+                                            "a terminal item implies the producer is live"
+                                        );
+                                    };
+                                    spawn_terminal_drain(events);
+                                    return Some((
+                                        Ok(Bytes::from(data)),
+                                        (Producer::Done, Some(active), finished, map, None),
+                                    ));
+                                }
                                 return Some((
                                     Ok(Bytes::from(data)),
-                                    (producer, Some(active), finished, map, None, finished),
+                                    (producer, Some(active), false, map, None),
                                 ));
                             }
                             if active.is_stopped() {
                                 // Unreachable for the current maps (every
                                 // stopping event emits); drain for pooling
                                 // and end, defensively.
-                                let Producer::Live(mut events) = producer else {
+                                let Producer::Live(events) = producer else {
                                     unreachable!("a live producer precedes its item");
                                 };
-                                let _ = tokio::time::timeout(TERMINAL_DRAIN_BUDGET, async {
-                                    while events.next().await.is_some() {}
-                                })
-                                .await;
+                                spawn_terminal_drain(events);
                                 return None;
                             }
                             machine = Some(active);
@@ -388,7 +415,7 @@ where
                             }
                             return Some((
                                 Ok(Bytes::from(sse("error", &envelope))),
-                                (producer, Some(active), true, map, None, false),
+                                (producer, Some(active), true, map, None),
                             ));
                         }
                         None => {
@@ -409,7 +436,7 @@ where
                             marked.extend_from_slice(data.as_bytes());
                             return Some((
                                 Ok(Bytes::from(marked)),
-                                (producer, Some(active), finished, map, None, false),
+                                (producer, Some(active), finished, map, None),
                             ));
                         }
                     }
@@ -504,5 +531,112 @@ impl SseParser {
         self.buffer.drain(..consume_end);
         self.scan_from = self.buffer.len().saturating_sub(3);
         (events, malformed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use axum::body::to_bytes;
+    use futures_util::StreamExt;
+    use serde_json::json;
+
+    use super::{translated_stream, TERMINAL_DRAIN_BUDGET};
+    use crate::adapters::responses::context::RelayOptions;
+    use crate::keepalive::with_pings;
+    use crate::model::responses::{AnthropicSseMachine, ResponseEvent};
+
+    fn machine() -> AnthropicSseMachine {
+        RelayOptions {
+            model: "gpt-5.2-codex".to_string(),
+            thinking_enabled: false,
+            tool_search_native: false,
+        }
+        .machine()
+        .with_input_estimate(0)
+        .without_content_accumulation()
+    }
+
+    /// After the terminal frame the outward stream must end immediately:
+    /// with a keepalive interval shorter than the drain budget, a poll that
+    /// waits out the drain lets the wrapper inject a client-visible `ping`
+    /// past `message_stop`.
+    #[tokio::test]
+    async fn a_keepalive_ping_never_follows_the_terminal_frame() {
+        let events = futures_util::stream::iter([
+            Ok(ResponseEvent {
+                event: Some("response.created".to_string()),
+                data: json!({"response": {"id": "resp_1"}}),
+            }),
+            Ok(ResponseEvent {
+                event: Some("response.completed".to_string()),
+                data: json!({"response": {"usage": {"input_tokens": 1, "output_tokens": 1}}}),
+            }),
+        ])
+        // The upstream stays open past the terminal, like the
+        // prompt-closing connections the drain exists for.
+        .chain(futures_util::stream::pending::<
+            Result<ResponseEvent, serde_json::Value>,
+        >());
+        let output = with_pings(
+            translated_stream(events, machine()),
+            Duration::from_millis(300),
+        );
+        let started = std::time::Instant::now();
+        let bytes = to_bytes(axum::body::Body::from_stream(output), usize::MAX)
+            .await
+            .expect("body is readable");
+        let elapsed = started.elapsed();
+        let text = String::from_utf8_lossy(&bytes);
+        let stop_at = text
+            .rfind("event: message_stop")
+            .expect("terminal frame present");
+        assert!(
+            !text[stop_at..].contains("event: ping"),
+            "no keepalive frame may follow the terminal frame, got: {text}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "the outward stream ends at the terminal frame instead of waiting out the {TERMINAL_DRAIN_BUDGET:?} drain, took {elapsed:?}"
+        );
+    }
+
+    /// The detached drain keeps reading the still-open upstream to EOF after
+    /// the outward stream ends — the connection-pooling purpose the budget
+    /// exists for. A producer tail that reports its first poll proves the
+    /// drain ran, detached from the relay.
+    #[tokio::test]
+    async fn the_detached_drain_reads_the_upstream_tail() {
+        use std::sync::Arc;
+        let drained = Arc::new(tokio::sync::Notify::new());
+        let flag = drained.clone();
+        let tail = futures_util::stream::unfold((), move |()| {
+            let flag = flag.clone();
+            async move {
+                flag.notify_one();
+                futures_util::future::pending::<()>().await;
+                None::<(Result<ResponseEvent, serde_json::Value>, ())>
+            }
+        });
+        let events = futures_util::stream::iter([
+            Ok(ResponseEvent {
+                event: Some("response.created".to_string()),
+                data: json!({"response": {"id": "resp_1"}}),
+            }),
+            Ok(ResponseEvent {
+                event: Some("response.completed".to_string()),
+                data: json!({"response": {"usage": {"input_tokens": 1, "output_tokens": 1}}}),
+            }),
+        ])
+        .chain(tail);
+        let output = translated_stream(events, machine());
+        let bytes = to_bytes(axum::body::Body::from_stream(output), usize::MAX)
+            .await
+            .expect("body is readable");
+        assert!(String::from_utf8_lossy(&bytes).contains("event: message_stop"));
+        tokio::time::timeout(Duration::from_secs(1), drained.notified())
+            .await
+            .expect("the detached drain polls the upstream past the terminal frame");
     }
 }
