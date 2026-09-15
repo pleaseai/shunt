@@ -287,12 +287,16 @@ async fn aggregate_turn(
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let mut events = std::pin::pin!(turn.into_event_stream());
     let mut text = String::new();
-    let mut tool_call: Option<(String, String)> = None;
+    let mut tool_call: Option<(String, String, String)> = None;
     while let Some(event) = events.next().await {
         match event.map_err(map_cursor_stream_error)? {
             CursorStreamEvent::TextDelta { text: delta } => text.push_str(&delta),
-            CursorStreamEvent::ToolCall { name, input_json } => {
-                tool_call = Some((name, input_json));
+            CursorStreamEvent::ToolCall {
+                id,
+                name,
+                input_json,
+            } => {
+                tool_call = Some((id, name, input_json));
                 break;
             }
             CursorStreamEvent::End => break,
@@ -305,12 +309,12 @@ async fn aggregate_turn(
     if !text.is_empty() {
         content.push(serde_json::json!({"type": "text", "text": text}));
     }
-    let stop_reason = if let Some((name, input_json)) = tool_call {
+    let stop_reason = if let Some((id, name, input_json)) = tool_call {
         let input: Value =
             serde_json::from_str(&input_json).unwrap_or_else(|_| serde_json::json!({}));
         content.push(serde_json::json!({
             "type": "tool_use",
-            "id": format!("toolu_{}", uuid::Uuid::new_v4().simple()),
+            "id": id,
             "name": name,
             "input": input,
         }));
@@ -373,12 +377,15 @@ fn streaming_response(
                             return Some((Ok(Bytes::from(output)), (events, framer, false)));
                         }
                     }
-                    Some(Ok(CursorStreamEvent::ToolCall { name, input_json })) => {
+                    Some(Ok(CursorStreamEvent::ToolCall {
+                        id,
+                        name,
+                        input_json,
+                    })) => {
                         // Emit the tool_use pause (content block + message_delta
                         // stop_reason="tool_use" + message_stop) and end the SSE.
                         // The client executes the tool and re-sends the result in
                         // history, which the stateless bridge re-runs upstream.
-                        let id = format!("toolu_{}", uuid::Uuid::new_v4().simple());
                         framer.emit_tool_pause(&id, &name, &input_json);
                         return Some((
                             Ok(Bytes::from(framer.take_output())),
@@ -602,6 +609,7 @@ mod tests {
         let mut entry = field_str(1, key);
         entry.extend(field_ld(2, &field_ld(3, value.as_bytes())));
         let mut mcp_args = field_str(5, name);
+        mcp_args.extend(field_str(3, "call_authentic_fixture"));
         mcp_args.extend(field_ld(2, &entry));
         let mut frames = connect_frame(&field_ld(2, &field_ld(11, &mcp_args)));
         frames.extend_from_slice(&connect::encode_connect_frame(b"{}", connect::FLAG_END));
@@ -1041,6 +1049,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["stop_reason"], "tool_use");
         assert_eq!(body["content"][0]["type"], "tool_use");
+        assert_eq!(body["content"][0]["id"], "call_authentic_fixture");
         assert_eq!(body["content"][0]["name"], "Read");
         assert_eq!(body["content"][0]["input"]["file_path"], "/tmp/x");
     }
@@ -1061,6 +1070,7 @@ mod tests {
         let body = String::from_utf8(bytes.to_vec()).expect("SSE body should be UTF-8");
 
         assert!(body.contains("\"type\":\"tool_use\""));
+        assert!(body.contains("\"id\":\"call_authentic_fixture\""));
         assert!(body.contains("\"stop_reason\":\"tool_use\""));
         assert!(body.contains("\"partial_json\""));
         assert!(body.contains("file_path"));
