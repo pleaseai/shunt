@@ -196,9 +196,7 @@ Cross-cutting:
   shared with model discovery; see `docs/m4-inbound-auth.md` §2).
 - **count_tokens**: answered from the first chain element, as a chain has one
   advertised id; no failover for count_tokens.
-- **Metrics**: per-attempt `record_proxied_request` labeled by upstream name,
-  plus a failover counter (attempted/advanced/exhausted) so dashboards can see
-  chain pressure. Exact metric name settled at implementation.
+- **Metrics**: per-attempt `record_proxied_request` (the `shunt.requests` counter and `shunt.latency` distribution, labeled by upstream name, model, and status) plus a `shunt.failover` counter (attempted/advanced/exhausted) so dashboards can see chain pressure.
 - **`[server.codex_endpoint]`**: out of scope; stays pinned to its configured
   upstream.
 
@@ -297,8 +295,8 @@ Documented user-facing in the site guide; summarized here.
   - a chain containing the websocket transport, a kind other than `Anthropic`/`Responses`, or an Anthropic-kind route on a pooled `claude_oauth`/`kimi_oauth` auth, keeps the pre-commit loop (a Responses element before the chain's end still commits early and pre-empts failover);
   - a terminal non-2xx (e.g. `400`) from an Anthropic-kind fallback surfaces as the terminal `error` event carrying the upstream's error body, rather than a relayed `400` response (headers are already committed as `200`);
   - a `2xx` whose body is not `text/event-stream` from an Anthropic-kind winner becomes one terminal `error` event (the committed stream cannot relay a non-SSE body), where the pre-commit loop relays it verbatim;
-  - the committed response carries only `content-type` and `x-gateway-model`: the winner-dependent gateway headers (`x-gateway-upstream`/`x-gateway-upstream-model`) are omitted because the winner is unknown at commit time, and upstream response headers (request ids, `anthropic-ratelimit-*` quota metadata included) never reach the client on this path, even from an Anthropic-kind winner; the request metrics, stream metrics, and span outcome attribute the winner once the stream knows it, and the remembered best-failure preference (`429` > `401`/`403` > `404` > other `5xx`) plus the all-pre-header `502` synthesis follow the pre-commit loop exactly;
-  - request metrics/access log record the committed `200` (the stream-metrics observer still classifies the error event), exactly like the single-route early-commit path.
+  - the committed response carries only `content-type` and `x-gateway-model`: the winner-dependent gateway headers (`x-gateway-upstream`/`x-gateway-upstream-model`) are omitted because the winner is unknown at commit time, and upstream response headers (request ids, `anthropic-ratelimit-*` quota metadata included) never reach the client on this path, even from an Anthropic-kind winner; the stream metrics and span outcome attribute the winner once the stream knows it, and the remembered best-failure preference (`429` > `401`/`403` > `404` > other `5xx`) plus the all-pre-header `502` synthesis follow the pre-commit loop exactly;
+  - the access log records the committed `200` (the stream-metrics observer still classifies the error event), exactly like the single-route early-commit path; request metrics stay per-attempt (§3): each failed attempt records its classified status (`429`, `5xx`, …) and the winner records `200`.
   Non-streaming turns are unchanged.
 
 ## 7. Implementation surface
