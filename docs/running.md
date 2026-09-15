@@ -192,7 +192,7 @@ Both metric sinks export the same low-cardinality series:
 | :-- | :-- | :-- | :-- |
 | `shunt.requests` | Counter | `provider`, `model`, `http.response.status_code` | Inference requests; token-count requests are excluded. |
 | `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code` | Time to response headers for streams and full latency for non-streaming responses. |
-| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Time from request start to the first non-keepalive SSE content frame. |
+| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Time from request start to the first complete non-keepalive SSE frame. |
 | `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | Exactly one stream result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
 | `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming usage for `input`, `output`, `cache_read`, or `cache_creation`; non-streaming usage is not recorded. |
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation `hit` or full-input `fallback`. |
@@ -555,7 +555,7 @@ file, so the static + `setup-token` route stays the simplest and safest default.
 > the copy echoed into `x-api-key` would otherwise make `api.anthropic.com` reject the request as
 > an invalid API key. shunt normalizes this on the passthrough path: when the forwarded bearer is
 > an OAuth token it drops the duplicated `x-api-key` before forwarding, leaving the bearer to stand
-> alone (`outbound_headers`, `src/adapters/anthropic.rs`). A real API key (the `ANTHROPIC_API_KEY`
+> alone (`outbound_headers`, `src/adapters/anthropic/mod.rs`). A real API key (the `ANTHROPIC_API_KEY`
 > path, which sends `x-api-key` and no bearer) is never touched. Without this normalization,
 > `apiKeyHelper` + an OAuth token would only satisfy the discovery gate and mapped-model routes —
 > Claude passthrough would 401.
