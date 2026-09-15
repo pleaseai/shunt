@@ -32,7 +32,8 @@ use crate::{
     server::AppState,
 };
 
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::future::{BoxFuture, Shared};
+use futures_util::{FutureExt, StreamExt, TryStreamExt};
 
 use self::context::{CredentialSource, ForwardOptions, PoolForward, TurnOptions};
 use self::early_stream::{
@@ -363,6 +364,7 @@ pub(crate) async fn chain_attempt(
     route: &Route,
     headers: &HeaderMap,
     body: RequestBody,
+    estimate_cache: &Arc<ChainEstimate>,
 ) -> crate::proxy::chain_stream::Attempt {
     let session_id = headers
         .get("x-claude-code-session-id")
@@ -468,13 +470,29 @@ pub(crate) async fn chain_attempt(
             // consumes the build: a pre-frame exhaustion is a classified
             // failure the chain advances on like the pre-commit loop (§4) —
             // never a mid-relay terminal event — and it never waits on the
-            // estimate.
+            // estimate. The chain's cache hands every opted-in attempt the
+            // same estimate share: an exhausted attempt drops its share, not
+            // the compute, and the next opted-in attempt resumes it instead
+            // of re-tokenizing the identical body.
             let build = {
                 let state = state.clone();
                 let route = route.clone();
                 let request = body.json_arc();
+                let cache = estimate_cache.clone();
                 async move {
-                    let estimate_value = winner_estimate(&state, &route, &request).await;
+                    let estimate_value = if counts_locally(&state, &route) {
+                        let state = state.clone();
+                        let route = route.clone();
+                        let request = request.clone();
+                        let shared = cache
+                            .get_or_start(move || async move {
+                                winner_estimate(&state, &route, &request).await
+                            })
+                            .await;
+                        shared.await
+                    } else {
+                        0
+                    };
                     let mut machine = turn
                         .relay(&route)
                         .machine()
@@ -519,10 +537,11 @@ pub(crate) async fn chain_attempt(
                     remember,
                     envelope,
                 })) => {
-                    // The pending build is dropped with the failure: a
-                    // mid-flight estimate's blocking task completes
-                    // unobserved, and no synthetic start reaches the client
-                    // on a failed attempt.
+                    // The pending build is dropped with the failure: the
+                    // estimate share it holds keeps the chain's single
+                    // compute alive for the next opted-in attempt, and no
+                    // synthetic start reaches the client on a failed
+                    // attempt.
                     return crate::proxy::chain_stream::Attempt::Failed {
                         advance,
                         remember,
@@ -597,12 +616,29 @@ pub(crate) async fn chain_attempt(
     // Start the route-gated estimate before the send so the encode overlaps
     // the upstream round-trip instead of serializing after the headers
     // arrive — the non-pooled counterpart of the pooled branch's race.
-    // Only the winner arm awaits it; a failed attempt drops it unobserved.
+    // Only the winner arm awaits it; a failed attempt drops its share of
+    // the chain's single estimate, never the compute, and the next
+    // opted-in attempt reuses it.
     let estimate = {
+        let cache = estimate_cache.clone();
         let state = state.clone();
         let route = route.clone();
         let request = body.json_arc();
-        async move { winner_estimate(&state, &route, &request).await }
+        async move {
+            if counts_locally(&state, &route) {
+                let state = state.clone();
+                let route = route.clone();
+                let request = request.clone();
+                let shared = cache
+                    .get_or_start(
+                        move || async move { winner_estimate(&state, &route, &request).await },
+                    )
+                    .await;
+                shared.await
+            } else {
+                0
+            }
+        }
     };
     let sent = send_classified_with_estimate(send_classified(&send_context), estimate).await;
     match sent.classified {
@@ -640,6 +676,51 @@ pub(crate) async fn chain_attempt(
     }
 }
 
+/// Whether the route opted into local token counting — the estimate gate at
+/// every call site. A provider opted out must not receive a locally computed
+/// seed, and an opted-out attempt must never start the chain's cached
+/// compute: a later opted-in winner would otherwise inherit the opted-out
+/// route's zero.
+fn counts_locally(state: &AppState, route: &Route) -> bool {
+    state
+        .config
+        .provider(&route.provider)
+        .map(|provider| provider.count_tokens == CountTokens::Tiktoken)
+        .unwrap_or(false)
+}
+
+/// One chain's shared token estimate: the first opted-in attempt starts the
+/// bounded blocking encode and every later opted-in attempt reuses the same
+/// compute instead of re-tokenizing the identical request body. A failed
+/// attempt drops its racing share, never the compute — the cell keeps one
+/// handle alive for the chain, so rapid status/transport failures leave at
+/// most one tokenization running, not one per attempt.
+#[derive(Default)]
+pub(crate) struct ChainEstimate {
+    cell: tokio::sync::OnceCell<Shared<BoxFuture<'static, u64>>>,
+}
+
+impl ChainEstimate {
+    /// Start the chain's single estimate on the first call and hand back a
+    /// share of it. The factory runs at most once per chain: a share dropped
+    /// mid-compute leaves the compute running and the next share resumes it.
+    pub(crate) async fn get_or_start<F, Fut>(&self, factory: F) -> Shared<BoxFuture<'static, u64>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = u64> + Send + 'static,
+    {
+        self.cell
+            .get_or_init(|| {
+                std::future::ready({
+                    let boxed: BoxFuture<'static, u64> = Box::pin(factory());
+                    boxed.shared()
+                })
+            })
+            .await
+            .clone()
+    }
+}
+
 /// The synthetic start's input-token estimate, gated on the WINNING route's
 /// own `count_tokens` setting: a provider opted out of local counting must
 /// not receive a locally computed seed just because another chain route
@@ -647,14 +728,11 @@ pub(crate) async fn chain_attempt(
 /// dispatch — the pool's first poll via [`pooled_first_poll`], the
 /// non-pooled send via [`send_classified_with_estimate`] — with the same
 /// one-second bound as the single-route path; a slow estimate delays the
-/// deferred synthetic start, never the committed response.
+/// deferred synthetic start, never the committed response. Called at most
+/// once per chain from [`ChainEstimate`]: every opted-in attempt shares the
+/// same encode and its one-second bound.
 async fn winner_estimate(state: &AppState, route: &Route, request: &Arc<Value>) -> u64 {
-    let counts_locally = state
-        .config
-        .provider(&route.provider)
-        .map(|provider| provider.count_tokens == crate::config::CountTokens::Tiktoken)
-        .unwrap_or(false);
-    if !counts_locally {
+    if !counts_locally(state, route) {
         return 0;
     }
     let request = request.clone();

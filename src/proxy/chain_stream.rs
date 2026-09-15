@@ -207,6 +207,11 @@ pub(super) async fn forward_chain_stream(
     let closure_slot = winner_slot.clone();
     let winner_model_slot = std::sync::Arc::new(std::sync::Mutex::new(first_model.clone()));
     let closure_model_slot = winner_model_slot.clone();
+    // One chain, one token estimate: the first opted-in attempt starts the
+    // bounded blocking encode and later opted-in attempts reuse the same
+    // compute (see `ChainEstimate`) instead of re-tokenizing the identical
+    // body per attempt.
+    let estimate_cache = std::sync::Arc::new(crate::adapters::responses::ChainEstimate::default());
     let attempts: std::collections::VecDeque<(usize, Route)> =
         routes.into_iter().enumerate().collect();
     let attempts_len = attempts.len();
@@ -232,6 +237,7 @@ pub(super) async fn forward_chain_stream(
             let request_span = request_span.clone();
             let winner_slot = closure_slot.clone();
             let winner_model_slot = closure_model_slot.clone();
+            let estimate_cache = estimate_cache.clone();
             async move {
                 let mut body = body;
                 loop {
@@ -371,6 +377,7 @@ pub(super) async fn forward_chain_stream(
                                         &route,
                                         &attempt_headers,
                                         attempt_body,
+                                        &estimate_cache,
                                     )
                                     .await
                                 }

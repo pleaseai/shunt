@@ -380,6 +380,57 @@ async fn send_classified_with_estimate_headers_at_precedes_a_pending_estimate() 
     );
 }
 
+/// The chain estimate cache starts the compute once and hands every later
+/// attempt the same share: a failed attempt drops its racing share without
+/// killing the compute, and the next opted-in attempt resumes it instead of
+/// launching a second tokenization. A per-attempt cell (the factory re-run
+/// on every call) leaves the counter at 2 and fails the test.
+#[tokio::test]
+async fn chain_estimate_reuses_the_first_attempts_compute_after_its_share_is_dropped() {
+    let cache = crate::adapters::responses::ChainEstimate::default();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (release, wait) = tokio::sync::oneshot::channel::<u64>();
+    let first = {
+        let calls = calls.clone();
+        cache
+            .get_or_start(move || {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move { wait.await.expect("the compute holds the receiver") }
+            })
+            .await
+    };
+    // Start the compute as the seam's race would, then drop the share
+    // mid-compute: the send won the race and the attempt failed.
+    {
+        futures_util::pin_mut!(first);
+        assert!(
+            futures_util::poll!(&mut first).is_pending(),
+            "the compute is still waiting"
+        );
+    }
+    // The next opted-in attempt must resume the pending compute, never start
+    // a second one: the factory runs once per chain, not once per attempt.
+    let second = {
+        let calls = calls.clone();
+        cache
+            .get_or_start(move || {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move { futures_util::future::pending::<u64>().await }
+            })
+            .await
+    };
+    release.send(7).expect("the compute is still listening");
+    let value = tokio::time::timeout(std::time::Duration::from_secs(2), second)
+        .await
+        .expect("the reused compute resolves after the first share was dropped");
+    assert_eq!(value, 7);
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "one compute per chain, not one per attempt"
+    );
+}
+
 /// A producer failure after the early start surfaces as an SSE `error` event
 /// and the stream ends — never a synthesized completion.
 #[tokio::test]
@@ -1024,11 +1075,13 @@ async fn chain_attempt_keeps_the_credential_failure_status() {
     codex.api_key_env = Some("SHUNT_CHAIN_TEST_API_KEY_MISSING".to_string());
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let body = crate::request::RequestBody::parse(b"{\"input\": []}".to_vec()).unwrap();
+    let estimate_cache = std::sync::Arc::new(crate::adapters::responses::ChainEstimate::default());
     let attempt = crate::adapters::responses::chain_attempt(
         &state,
         &codex_route(),
         &axum::http::HeaderMap::new(),
         body,
+        &estimate_cache,
     )
     .await;
     match attempt {

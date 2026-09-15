@@ -11,8 +11,8 @@ use std::{io::ErrorKind, net::SocketAddr};
 use reqwest::StatusCode;
 use shunt::{
     config::{
-        AccountConfig, AccountSelection, AuthMap, Config, ModelConfig, ProviderKind, RetryConfig,
-        UpstreamAuth, UpstreamConfig,
+        AccountConfig, AccountSelection, AuthMap, Config, CountTokens, ModelConfig, ProviderKind,
+        RetryConfig, UpstreamAuth, UpstreamConfig,
     },
     server,
 };
@@ -324,6 +324,60 @@ async fn advance_status_on_the_primary_defers_the_synthetic_start_to_the_winner(
     assert_eq!(count_event(&body, "error"), 0, "got:\n{body}");
     drop(gateway);
     primary.verify().await;
+    fallback.verify().await;
+}
+
+/// An opted-out route never starts the chain's shared estimate: a chain whose
+/// primary opted out of local counting and whose fallback opted in must hand
+/// the winner the fallback's real count, never the primary's zero. A cache
+/// initialized unconditionally captures the opted-out primary's route, its
+/// zero poisons the cell, and the winner's synthetic start carries 0, failing
+/// the assertion.
+#[tokio::test]
+async fn an_opted_out_primary_never_starts_the_chains_shared_estimate() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = common::env_lock().await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(RESPONSES_SSE, "text/event-stream"))
+        .expect(1)
+        .mount(&fallback)
+        .await;
+
+    let refused = refused_base_url();
+    let mut config = chain_config(
+        (ProviderKind::Responses, refused.url.clone()),
+        (ProviderKind::Responses, fallback.uri()),
+    );
+    // The primary opts out; the fallback keeps the Tiktoken default and opts
+    // in. The gate must keep the opted-out primary from initializing the
+    // chain's shared estimate with its own zero.
+    config.upstreams[0].count_tokens = CountTokens::Estimate;
+    let gateway = start_gateway(config).await;
+    let response = stream_request(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert_eq!(count_event(&body, "message_start"), 1, "got:\n{body}");
+    assert!(body.contains("from responses"), "got:\n{body}");
+    let start_data = body
+        .split_once("event: message_start\ndata: ")
+        .expect("carries a synthetic start")
+        .1
+        .split("\n\n")
+        .next()
+        .expect("event frame is terminated");
+    let start: serde_json::Value = serde_json::from_str(start_data).expect("start data is json");
+    assert!(
+        start["message"]["usage"]["input_tokens"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0,
+        "the winner's synthetic start carries the fallback's real count, got: {start_data}"
+    );
+    drop(gateway);
     fallback.verify().await;
 }
 
