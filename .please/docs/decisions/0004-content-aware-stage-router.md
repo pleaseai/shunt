@@ -132,6 +132,14 @@ directions are deliberately unequal:
   confidence at or above the stricter `deescalate_threshold` (0.75 by default,
   against 0.5 for escalation), and a decision the scorer actually made.
 
+That asymmetry is the **default**, not an invariant the config enforces. Both
+thresholds are range-checked independently, so an operator may invert them and
+make de-escalation the easier direction — which a cost-first deployment may
+genuinely want. Issue #562 settled that, and the sibling rule on identical
+targets, as load-boundary **warnings** rather than `ConfigError`s: each rejects a
+configuration with a coherent operator intent, while the realistic failure is a
+typo that a warning already makes visible.
+
 `fall_open` and `no_signal` are the picker's default, not evidence, and cannot
 move a pin in either direction. `tests_passed` is exempt from the *confidence*
 gate but not the dwell one: it is libsy's hard de-escalation shortcut, which

@@ -624,7 +624,7 @@ efficient_target = "claude-sonnet-4-6"
 | `confidence_threshold` | `0.5` | Minimum scorer confidence to act on a signal, in `(0.0, 1.0]` |
 | `recent_turn_window` | `3` | Assistant turns of tool results fed to the scorer. Must be at least `1` |
 | `min_dwell_turns` | `3` | Turns a tier is held before a de-escalation may fire; counted from the turn that chose it, so `0` and `1` both mean no dwell floor |
-| `deescalate_threshold` | `0.75` | Confidence required to move *down* a tier. The default sits above `confidence_threshold`'s, making the down direction the harder one, but the two are range-checked independently — a value below `confidence_threshold` is accepted |
+| `deescalate_threshold` | `0.75` | Confidence required to move *down* a tier. The default sits above `confidence_threshold`'s, making the down direction the harder one, but the two are range-checked independently — a value below `confidence_threshold` is accepted, and warns at load |
 | `session_ttl_seconds` | `3600` | How long a quiet session's pinned tier survives |
 
 A target that is itself a router, a blank target, a threshold outside
@@ -635,8 +635,14 @@ entries may otherwise share an id, but a router names a routing policy rather
 than discovery metadata, so a duplicate would leave two policies for one id.
 Target ids are compared after the trailing `[1m]`/`[1M]` hint is stripped, the
 same way
-routing matches them. A target that matches no explicit route only warns — it
-still resolves through `server.default_provider` like any other unmatched id.
+routing matches them. Three shapes warn instead of failing the load, each
+because it has a coherent operator intent: a target that matches no explicit
+route (it still resolves through `server.default_provider` like any other
+unmatched id), `capable_target` and `efficient_target` resolving to the same id
+(both tiers deliberately flattened onto one model), and a `deescalate_threshold`
+below `confidence_threshold` (de-escalation made the easier direction, which a
+cost-first deployment may want). Each of these is emitted once, when the config
+loads; a hot reload re-validates without repeating them.
 
 ## `[sentry]` (optional)
 

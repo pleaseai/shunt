@@ -422,15 +422,19 @@ efficient_target = "claude-sonnet-4-6"
 | `confidence_threshold` | `0.5` | 依据信号作出判定所需的最低评分器置信度，范围 `(0.0, 1.0]` |
 | `recent_turn_window` | `3` | 送入评分器的助手工具结果轮数。至少为 `1` |
 | `min_dwell_turns` | `3` | 降档可以触发之前档位需保持的轮数。从选定档位的那一轮开始计数，因此 `0` 和 `1` 都表示没有下限 |
-| `deescalate_threshold` | `0.75` | *降低*档位所需的置信度。默认值高于 `confidence_threshold` 的默认值，使下降方向更难触发；但两者各自独立做范围校验，因此低于 `confidence_threshold` 的值也会被接受 |
+| `deescalate_threshold` | `0.75` | *降低*档位所需的置信度。默认值高于 `confidence_threshold` 的默认值，使下降方向更难触发；但两者各自独立做范围校验，因此低于 `confidence_threshold` 的值也会被接受，并在加载时发出警告 |
 | `session_ttl_seconds` | `3600` | 空闲会话的固定档位可存续多久 |
 
 目标本身就是路由器、目标为空、阈值超出 `(0.0, 1.0]`、`recent_turn_window` 为 `0`、
 路由器 **id** 以 `[1m]` 或 `[1M]` 结尾、其中一项带有路由器表的重复 `[[models]]` id，或同一条目
 同时声明了 `[models.upstream_model]`，都会导致启动错误。不带映射的两个条目本可共用同一
-个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致。未匹配
-到任何显式路由的目标只会发出警告 —— 它仍会像其他未匹配的 id 一样经由
-`server.default_provider` 解析。
+个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致。以下三种情况
+只发出警告而不会让加载失败，因为每一种都可能是运维人员的本意 —— 未匹配到任何显式路由
+的目标（它仍会像其他未匹配的 id 一样经由 `server.default_provider` 解析）、解析到同一个
+id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同一个模型上），以及低于
+`confidence_threshold` 的 `deescalate_threshold`（把下降方向变得更容易，这可能正是成本
+优先的部署所需要的）。这些警告只在加载配置时各输出一次；热重载会重新校验，但不会
+重复输出。
 
 ## `[sentry]`(可选)
 

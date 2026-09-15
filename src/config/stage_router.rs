@@ -39,8 +39,12 @@ pub enum StageRouterPicker {
 /// That ordering is the default, not an invariant: validation ranges each
 /// threshold independently, so an operator may set `deescalate_threshold`
 /// *below* `confidence_threshold` and make the down direction the easier one.
-/// Whether to reject that, warn about it, or keep it a documented choice is
-/// open — see issue #562, to be settled before these keys ship.
+/// A cost-first deployment may want exactly that, so the inverted pair loads —
+/// with a warning, once, from `Config::warn_stage_router_threshold_inversion`
+/// (issue #562). The same call decided the neighbouring rule: two targets that
+/// resolve to one id flatten both tiers onto one model, which is degenerate but
+/// a real way to test, so `Config::warn_stage_router_identical_targets` warns
+/// rather than rejecting.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StageRouterConfig {

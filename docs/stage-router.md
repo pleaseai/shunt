@@ -160,13 +160,31 @@ and `stage_router_accepts_a_context_window_hint_on_a_plain_target` is its mirror
 the tier, so `0` and `1` both mean "no dwell floor" — degenerate but coherent,
 unlike a `recent_turn_window` of `0`, which leaves the scorer nothing to read.
 
-A target matching no explicit route is a **warning**, not an error: resolution
-always falls back to `server.default_provider`, so such a target is reachable and
-rejecting it would be wrong. The warning is emitted from
-`warn_stage_router_targets_unresolvable` at the successful load boundary, beside
-`warn_reprobe_seconds_below_floor` — not from `validate`, which re-runs on every
-hot reload and would repeat the line. `shunt check` still reports it, because it
-loads before it validates.
+Three shapes are **warnings**, not errors, and all three are emitted at the
+successful load boundary beside `warn_reprobe_seconds_below_floor` — not from
+`validate`, which re-runs on every hot reload and would repeat the line.
+`shunt check` still reports them, because it loads before it validates.
+
+| Warning | Why it is not an error |
+| :-- | :-- |
+| `warn_stage_router_targets_unresolvable` | Resolution always falls back to `server.default_provider`, so the target is reachable |
+| `warn_stage_router_identical_targets` | Both tiers flattened onto one model is degenerate, but a one-line way to test against restructuring the entry |
+| `warn_stage_router_threshold_inversion` | A cost-first deployment may genuinely want de-escalation to be the easier direction |
+
+The last two were settled together in issue #562, over rejecting them: each
+rejects a configuration with a coherent operator intent, and the realistic
+failure is a typo, which a warning makes visible without taking the
+configuration away.
+
+`warn_stage_router_identical_targets` compares the two targets after
+`strip_context_window_hint`, the same normalization `resolve_chain` applies, so
+`"m[1m]"` and `"m"` are recognized as the one destination they route to. It is
+**not** case-insensitive: routing matches ids with `==`, so ids differing only in
+case are genuinely different ids and warning about them would be wrong.
+`warn_stage_router_threshold_inversion` reads the *effective*
+`deescalate_threshold`, so raising `confidence_threshold` past the `0.75` default
+warns even though only one key was written — that config inverts the design just
+as much. Equal thresholds are symmetric rather than inverted and stay silent.
 
 ## 7. What is not built
 
