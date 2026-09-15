@@ -201,7 +201,7 @@ validates.
 | `warn_stage_router_targets_unresolvable` | Resolution always falls back to `server.default_provider`, so the target is reachable |
 | `warn_stage_router_identical_targets` | Both tiers flattened onto one model is degenerate, but a one-line way to test against restructuring the entry |
 | `warn_stage_router_threshold_inversion` | A cost-first deployment may genuinely want de-escalation to be the easier direction |
-| `warn_stage_router_shadows_exact_route` | An entry naming a router id is inert, not wrong — the router arm returns before `[[routes]]` is consulted |
+| `warn_stage_router_shadows_exact_route` | A `[[routes]]` entry naming a router id is inert, not wrong — the router arm returns before that table is consulted |
 
 "Load boundary" means **once per load, not once per process.** `reload::reload`
 calls `Config::load`, so a config left unfixed warns again on every hot reload.

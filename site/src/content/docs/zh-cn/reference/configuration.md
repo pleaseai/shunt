@@ -433,8 +433,9 @@ efficient_target = "claude-sonnet-4-6"
 的目标（它仍会像其他未匹配的 id 一样经由 `server.default_provider` 解析）、解析到同一个
 id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同一个模型上）、低于
 `confidence_threshold` 的 `deescalate_threshold`（把下降方向变得更容易，这可能正是成本
-优先的部署所需要的），以及写了路由器自身 id 的 `[[routes]]` 或 `[[route_prefixes]]` 条目
-（该 id 的去向由路由器决定，因此不会被查询）。每条警告在每次加载时各输出一次；热重载
+优先的部署所需要的），以及写了路由器自身 id 的 `[[routes]]` 条目（该 id 的去向由路由器
+决定，因此不会被查询）。仅仅是 id 以某个前缀开头的 `[[route_prefixes]]` 条目**不会**被
+报告 —— 匹配该前缀的其他 id 仍由它处理。每条警告在每次加载时各输出一次；热重载
 同样是一次加载，所以配置不改就会在每次重载时再次输出。
 
 ## `[sentry]`(可选)
@@ -478,5 +479,5 @@ id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同�
 
 路由器排在最前，是因为它在 `[[models]]` 条目本身上完成匹配：指向带路由器 id 的请求由路由器
 应答，路由器选定档位后再把**那个目标**交给其余的解析链。因此 `[[routes]]` 或
-`[[route_prefixes]]` 条目应当写目标，而不是路由器 id。写了路由器 id 的条目永远不会被查询，
-并会在加载时发出警告。
+条目应当写目标，而不是路由器 id。写了路由器 id 的精确条目永远不会被查询，并会在加载时
+发出警告。`[[route_prefixes]]` 条目不受影响：路由器只从该前缀中取走自己的 id。

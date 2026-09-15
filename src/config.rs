@@ -4222,8 +4222,8 @@ impl Config {
         }
     }
 
-    /// Warns once at load for every `[[routes]]` or `[[route_prefixes]]` entry a
-    /// `[models.stage_router]` id shadows.
+    /// Warns once at load for every `[[routes]]` entry a `[models.stage_router]`
+    /// id shadows.
     ///
     /// `resolve_chain` matches `[[models]]` before either table and returns from
     /// the router arm, so a route naming a router-backed id is never consulted.
@@ -4236,8 +4236,14 @@ impl Config {
     /// A warning rather than a `ConfigError`, for the reason issue #562 settled
     /// for the sibling cross-field rules: the shadowed route is inert, not
     /// wrong, and rejecting it would fail a config whose only fault is a leftover
-    /// line. Prefix entries are reported too — a prefix that the id starts with
-    /// is shadowed the same way.
+    /// line.
+    ///
+    /// `[[route_prefixes]]` is deliberately **not** checked. A prefix entry is
+    /// not dead just because one router id happens to start with it: it still
+    /// serves every other id that matches, and which ids those are is not
+    /// knowable at load — they arrive from `[[models]]`, from discovery, and
+    /// from whatever a client asks for. Only the exact-match entry has a single
+    /// purpose that the router takes away.
     fn warn_stage_router_shadows_exact_route(&self) {
         for model in &self.models {
             if model.stage_router.is_none() {
@@ -4249,15 +4255,6 @@ impl Config {
                         model_id = %model.id,
                         provider = %route.provider,
                         "a [[routes]] entry names a stage_router id; the router decides this id's destination, so the route is never consulted"
-                    );
-                }
-            }
-            for prefix in &self.route_prefixes {
-                if model.id.starts_with(&prefix.prefix) {
-                    tracing::warn!(
-                        model_id = %model.id,
-                        prefix = %prefix.prefix,
-                        "a [[route_prefixes]] entry matches a stage_router id; the router decides this id's destination, so the prefix is never consulted"
                     );
                 }
             }
@@ -7834,8 +7831,9 @@ id = "claude-sonnet-5"
     #[test]
     fn stage_router_warns_for_a_route_its_id_shadows() {
         // `resolve_chain` matches `[[models]]` first and returns from the router
-        // arm, so both of these entries are inert — and silently so before this
-        // diagnostic. The prefix is spelled so it matches the router id.
+        // arm, so the exact route is inert — and silently so before this
+        // diagnostic. The prefix entry alongside it is *not*: it still serves
+        // every other id starting with `claude-`, so it must stay silent.
         let config = Config {
             models: vec![
                 router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
@@ -7862,9 +7860,9 @@ id = "claude-sonnet-5"
             "the exact route naming the router id warns: {logs}"
         );
         assert_eq!(
-            logs.matches("the prefix is never consulted").count(),
-            1,
-            "the prefix matching the router id warns: {logs}"
+            logs.matches("route_prefixes").count(),
+            0,
+            "a prefix entry the router id happens to match is still live: {logs}"
         );
 
         // Positive twin: the same tables, with the routes naming the router's

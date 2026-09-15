@@ -641,9 +641,10 @@ route (it still resolves through `server.default_provider` like any other
 unmatched id), `capable_target` and `efficient_target` resolving to the same id
 (both tiers deliberately flattened onto one model), a `deescalate_threshold`
 below `confidence_threshold` (de-escalation made the easier direction, which a
-cost-first deployment may want), and a `[[routes]]` or `[[route_prefixes]]` entry
-naming the router's own id (inert, since the router decides that id's
-destination). Each is emitted once per load — and a hot reload is a load, so a
+cost-first deployment may want), and a `[[routes]]` entry naming the router's
+own id (inert, since the router decides that id's destination). A
+`[[route_prefixes]]` entry the id merely starts with is **not** reported — it
+still serves every other id matching it. Each is emitted once per load — and a hot reload is a load, so a
 config left unfixed warns again on each one.
 
 ## `[sentry]` (optional)
@@ -688,5 +689,6 @@ A matching `[models.stage_router]` entry → a matching `[models.upstream_model]
 The router comes first because it is matched on the `[[models]]` entry itself: a
 request for a router-backed id is answered by the router, which picks a tier and
 resolves **that target** through the rest of the ladder — so the target, not the
-router id, is what a `[[routes]]` or `[[route_prefixes]]` entry should name. An
-entry naming the router id is never consulted and warns at load.
+router id, is what a `[[routes]]` entry should name. An exact entry naming the
+router id is never consulted and warns at load. A `[[route_prefixes]]` entry is
+unaffected: the router takes only its own id out of that prefix's reach.
