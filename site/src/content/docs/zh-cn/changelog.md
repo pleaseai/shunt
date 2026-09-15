@@ -8,7 +8,7 @@ description: shunt 的每一项重要变更，按日期记录，并标注破坏�
 受影响的对象、需要采取的措施，以及落地的版本。
 
 - **订阅：**[GitHub 发布源](https://github.com/pleaseai/shunt/releases.atom)
-- **完整记录：**由每一次提交生成的 [`CHANGELOG.md`](https://github.com/pleaseai/shunt/blob/main/CHANGELOG.md)
+- **完整记录**：由每一次提交生成的 [`CHANGELOG.md`](https://github.com/pleaseai/shunt/blob/main/CHANGELOG.md)
 - **升级：**[安装](/zh-cn/getting-started/installation/)
 
 本页涵盖 0.35.0 及之后的版本。更早的发布只存在于生成的更新日志中。

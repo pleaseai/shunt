@@ -35,7 +35,7 @@ shunt에서의 우선순위: 구성의 `route.effort` / `[providers.*].effort` �
 **Anthropic으로 라우팅된** 모델에 대해 shunt는 `POST /v1/messages/count_tokens`를 업스트림으로 패스스루합니다(정확한 카운트). **`responses`로 라우팅된** 모델에는 동등한 업스트림 엔드포인트가 없으므로, 프로바이더의 `count_tokens` 설정이 결정합니다:
 
 - **`count_tokens = "tiktoken"`(기본)** — shunt는 tiktoken의 `o200k_base` 인코더로 로컬에서 카운트를 계산하여 `{"input_tokens": N}`을 반환합니다. GPT 계열 모델의 텍스트에 대해 거의 정확하며, 프로세스 내에서(~ms) 응답됩니다 — 이는 Claude Code의 `/context`가 표시되는 항목당 하나의 `count_tokens` 호출(호출당 30–50개)을 발생시키기 때문에 중요합니다.
-- **`count_tokens = "estimate"`(옵트인)** — shunt는 **501 `not_supported`**를 반환하여 Claude Code에 이 엔드포인트를 사용할 수 없음을 알리고 폴백을 실행합니다. 그러면 메인 루프 컨텍스트 바는 로컬에서 추정하지만, `/context`는 모든 카테고리 카운트를 네트워크를 통해 Haiku에 대해 다시 실행합니다 — 느리고, Anthropic 자격 증명이 없으면 조용히 0 토큰으로 보고됩니다.
+- **`count_tokens = "estimate"`(옵트인)** — shunt는 **501** `not_supported`를 반환하여 Claude Code에 이 엔드포인트를 사용할 수 없음을 알리고 폴백을 실행합니다. 그러면 메인 루프 컨텍스트 바는 로컬에서 추정하지만, `/context`는 모든 카테고리 카운트를 네트워크를 통해 Haiku에 대해 다시 실행합니다 — 느리고, Anthropic 자격 증명이 없으면 조용히 0 토큰으로 보고됩니다.
 
 어느 쪽이든 요청은 responses 어댑터에 도달하지 않으므로, 카운트 요청이 전체 추론 호출로(그리고 그에 대한 과금으로) 바뀌는 일은 절대 없습니다.
 
