@@ -47,6 +47,14 @@ describe('views', () => {
     expect(resetTextOf(NOW_MS / 1000 + 3 * 3600, NOW_MS)).toBe('resets 07:13')
   })
 
+  test('a reset on the next day names the weekday, however few hours away', () => {
+    // Thu 04:13 + 22h is Fri 02:13 — under 24 hours, but a bare "02:13" on a
+    // Thursday reads as a time that has already passed.
+    expect(resetTextOf(NOW_MS / 1000 + 22 * 3600, NOW_MS)).toBe(
+      'resets Fri 02:13',
+    )
+  })
+
   test('a reset beyond the day names the weekday too', () => {
     expect(resetTextOf(NOW_MS / 1000 + 4 * 86_400, NOW_MS)).toBe(
       'resets Mon 04:13',

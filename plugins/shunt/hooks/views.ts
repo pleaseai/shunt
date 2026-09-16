@@ -8,8 +8,6 @@ const DASH = '—'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000
-
 const pad2 = (value: number) => String(value).padStart(2, '0')
 
 /**
@@ -45,8 +43,14 @@ export const percentOf = (remaining: number | null): string => {
 }
 
 /**
- * When the window's earliest reset lands, in local time: the clock alone
- * within a day, the weekday too beyond one, and `due` once it has passed.
+ * When the window's earliest reset lands, in local time: the clock alone when
+ * it lands today, the weekday too on any later date, and `due` once it has
+ * passed.
+ *
+ * The cut is the calendar date rather than a 24-hour delta, because a bare
+ * clock is only unambiguous on today's date: at 04:13 on Thursday a reset 22
+ * hours out is Friday 02:13, and rendering it as `02:13` reads as a time that
+ * has already gone by.
  */
 export const resetTextOf = (
   resetsAt: number | null,
@@ -65,9 +69,13 @@ export const resetTextOf = (
   const at = new Date(atMs)
   const clock = `${pad2(at.getHours())}:${pad2(at.getMinutes())}`
 
-  return atMs - nowMs < MS_PER_DAY
-    ? `resets ${clock}`
-    : `resets ${DAYS[at.getDay()]} ${clock}`
+  const now = new Date(nowMs)
+  const today =
+    at.getFullYear() === now.getFullYear() &&
+    at.getMonth() === now.getMonth() &&
+    at.getDate() === now.getDate()
+
+  return today ? `resets ${clock}` : `resets ${DAYS[at.getDay()]} ${clock}`
 }
 
 const windowLabel = (key: WindowKey) => key.padEnd(5)

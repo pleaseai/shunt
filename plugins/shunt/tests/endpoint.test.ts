@@ -122,4 +122,34 @@ describe('endpoint', () => {
 
     expect(resolved).toEqual({ problem: NO_TOKEN_TEXT })
   })
+
+  test('a blank ANTHROPIC_AUTH_TOKEN reads as no credential, not an empty one', () => {
+    const resolved = endpointOf({
+      anthropicBaseUrl: 'http://gateway',
+      anthropicAuthToken: '   ',
+    })
+
+    expect(resolved).toEqual({ problem: NO_TOKEN_TEXT })
+  })
+
+  test('a blank ANTHROPIC_API_KEY reads as no credential, not an empty one', () => {
+    const resolved = endpointOf({
+      anthropicBaseUrl: 'http://gateway',
+      anthropicApiKey: '   ',
+    })
+
+    expect(resolved).toEqual({ problem: NO_TOKEN_TEXT })
+  })
+
+  test('a blank ANTHROPIC_AUTH_TOKEN falls through to the API key', () => {
+    const { headers } = endpoint(
+      endpointOf({
+        anthropicBaseUrl: 'http://gateway',
+        anthropicAuthToken: '  ',
+        anthropicApiKey: 'key',
+      }),
+    )
+
+    expect(headers).toEqual({ 'x-api-key': 'key' })
+  })
 })

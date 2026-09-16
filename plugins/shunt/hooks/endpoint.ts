@@ -46,9 +46,12 @@ const usageUrlOf = (base: string) => `${base.replace(/\/+$/, '')}${USAGE_PATH}`
  * so whichever shape the operator's `[server.auth]` matches on, it matches the
  * same way here. `SHUNT_TOKEN` overrides both and rides as a `Bearer`.
  *
- * An override that is set but blank is no override: `$.env.get` reads an
- * exported-but-empty variable as `''`, so each override is normalized to
- * absent before the fallback is chosen rather than after.
+ * A credential that is set but blank is no credential: `$.env.get` reads an
+ * exported-but-empty variable as `''`, so every candidate is normalized to
+ * absent before the choice is made rather than after. That cuts both ways — a
+ * blank override falls back instead of shadowing a working one, and a blank
+ * fallback reports the missing token here instead of sending an empty header
+ * for the gateway to reject as a wrong one.
  */
 export function endpointOf(env: Environment): Resolved {
   const base = env.shuntBaseUrl?.trim() || env.anthropicBaseUrl
@@ -57,8 +60,8 @@ export function endpointOf(env: Environment): Resolved {
     return { problem: NO_BASE_URL_TEXT }
   }
 
-  const bearer = env.shuntToken?.trim() || env.anthropicAuthToken
-  const apiKey = env.anthropicApiKey
+  const bearer = env.shuntToken?.trim() || env.anthropicAuthToken?.trim()
+  const apiKey = env.anthropicApiKey?.trim()
 
   const headers: Record<string, string> | undefined = bearer
     ? { authorization: `Bearer ${bearer}` }
