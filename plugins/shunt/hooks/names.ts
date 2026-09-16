@@ -34,6 +34,11 @@ export const REFUSED_TEXT =
   'that ANTHROPIC_AUTH_TOKEN (or ANTHROPIC_API_KEY) is one of the tokens in ' +
   "the gateway's [server.auth]."
 
+export const HOOK_FAILED_TEXT =
+  'could not read the pool usage — the hook that answers this command ' +
+  'failed or ran past its budget. Run /shunt:usage again; if it keeps ' +
+  'failing, check that the gateway is up and reachable.'
+
 export const NO_POOL_TEXT =
   'the gateway reports no pooled provider, so there is no shared quota ' +
   'to show. Pool usage appears once a provider is configured with pooled ' +

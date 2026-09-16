@@ -3,6 +3,7 @@ import type { On } from 'claude-code'
 import { endpointOf } from './endpoint'
 import {
   COMMAND_NAME,
+  HOOK_FAILED_TEXT,
   NOT_ENABLED_TEXT,
   NO_POOL_TEXT,
   REFUSED_TEXT,
@@ -13,7 +14,7 @@ import { reportText } from './views'
 /**
  * An error's message, less the `shunt: ` the engine stamps on its own — the
  * transcript line already carries the plugin's name, so keeping it would read
- * `shunt: ... \u2014 shunt: ...`.
+ * `shunt: ... — shunt: ...`.
  */
 const messageOf = (error: unknown): string =>
   (error instanceof Error ? error.message : String(error)).replace(
@@ -45,69 +46,84 @@ const firstLineOf = (text: string): string => {
  * @param on the engine's registrar
  */
 export function register(on: On) {
-  on('command.run', { command: COMMAND_NAME }, async ($, e, next) => {
-    const resolved = endpointOf({
-      shuntBaseUrl: await $.env.get('SHUNT_BASE_URL'),
-      anthropicBaseUrl: await $.env.get('ANTHROPIC_BASE_URL'),
-      shuntToken: await $.env.get('SHUNT_TOKEN'),
-      anthropicAuthToken: await $.env.get('ANTHROPIC_AUTH_TOKEN'),
-      anthropicApiKey: await $.env.get('ANTHROPIC_API_KEY'),
-    })
+  const registration = on(
+    'command.run',
+    { command: COMMAND_NAME },
+    async ($, e, next) => {
+      const resolved = endpointOf({
+        shuntBaseUrl: await $.env.get('SHUNT_BASE_URL'),
+        anthropicBaseUrl: await $.env.get('ANTHROPIC_BASE_URL'),
+        shuntToken: await $.env.get('SHUNT_TOKEN'),
+        anthropicAuthToken: await $.env.get('ANTHROPIC_AUTH_TOKEN'),
+        anthropicApiKey: await $.env.get('ANTHROPIC_API_KEY'),
+      })
 
-    if ('problem' in resolved) {
-      return { text: resolved.problem }
-    }
-
-    const { endpoint } = resolved
-
-    let response
-
-    try {
-      response = await $.http.fetch(endpoint.url, { headers: endpoint.headers })
-    } catch (error) {
-      return {
-        text:
-          `could not reach the gateway at ${endpoint.base} ` +
-          `${'—'} ${messageOf(error)}`,
+      if ('problem' in resolved) {
+        return { text: resolved.problem }
       }
-    }
 
-    if (response.status === 404) {
-      return { text: NOT_ENABLED_TEXT }
-    }
+      const { endpoint } = resolved
 
-    if (response.status === 401 || response.status === 403) {
-      return { text: REFUSED_TEXT }
-    }
+      let response
 
-    if (!response.ok) {
-      const detail = firstLineOf(response.text)
+      try {
+        response = await $.http.fetch(endpoint.url, {
+          headers: endpoint.headers,
+        })
+      } catch (error) {
+        return {
+          text:
+            `could not reach the gateway at ${endpoint.base} ` +
+            `${'—'} ${messageOf(error)}`,
+        }
+      }
+
+      if (response.status === 404) {
+        return { text: NOT_ENABLED_TEXT }
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        return { text: REFUSED_TEXT }
+      }
+
+      if (!response.ok) {
+        const detail = firstLineOf(response.text)
+
+        return {
+          text:
+            `the gateway answered GET /usage with ${response.status}` +
+            `${detail === '' ? '' : ` ${'—'} ${detail}`}`,
+        }
+      }
+
+      const parsed = parseReport(response.text)
+
+      if ('problem' in parsed) {
+        return { text: parsed.problem }
+      }
+
+      const { report } = parsed
+
+      const isSilent =
+        report.providers.length === 0 &&
+        WINDOW_KEYS.every(key => report.pool.windows[key].remaining === null)
+
+      if (isSilent) {
+        return { text: NO_POOL_TEXT }
+      }
 
       return {
-        text:
-          `the gateway answered GET /usage with ${response.status}` +
-          `${detail === '' ? '' : ` ${'—'} ${detail}`}`,
+        text: reportText(report, endpoint.base, await $.clock.now()),
       }
-    }
+    },
+  )
 
-    const parsed = parseReport(response.text)
-
-    if ('problem' in parsed) {
-      return { text: parsed.problem }
-    }
-
-    const { report } = parsed
-
-    const isSilent =
-      report.providers.length === 0 &&
-      WINDOW_KEYS.every(key => report.pool.windows[key].remaining === null)
-
-    if (isSilent) {
-      return { text: NO_POOL_TEXT }
-    }
-
-    return {
-      text: reportText(report, endpoint.base, await $.clock.now()),
-    }
-  })
+  /**
+   * A hook that throws or overruns its budget is treated as absent, and core
+   * runs in its place — for this command that is `commands/usage.md`, which
+   * asks the model to fetch the endpoint with a tool call. The answer would
+   * still arrive, but it would cost a model turn in a mod whose whole point is
+   * that it costs none, so the failure is reported rather than handed on.
+   */
+  registration.catch(() => ({ text: HOOK_FAILED_TEXT }))
 }
