@@ -90,10 +90,12 @@ which asks the model to read the endpoint with a tool call instead.
 
 ## Configuration
 
-The mod reads five environment variables and writes none. It sends the session's
-own credential to the gateway the session is already sending every message to, so
-it reaches no host the session was not already using — with no base URL set it
-asks nothing rather than sending the credential to Anthropic's API.
+The mod reads five environment variables and writes none. By default it sends the
+session's own credential to the gateway the session is already sending every
+message to, so it reaches no host the session was not already using;
+`SHUNT_BASE_URL` is the one deliberate exception, and points it at a gateway you
+name instead. With no base URL set at all it asks nothing rather than sending the
+credential to Anthropic's API.
 
 | Variable | Purpose |
 | -------- | ------- |

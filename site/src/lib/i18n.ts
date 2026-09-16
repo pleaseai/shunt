@@ -83,6 +83,7 @@ export const NAVIGATION: NavigationEntry[] = [
       { label: "Connect Claude Desktop", translations: { ko: "Claude Desktop 연결", ja: "Claude Desktop の接続", "zh-cn": "连接 Claude Desktop" }, slug: "guides/connect-claude-desktop" },
       { label: "Connect the Codex CLI", translations: { ko: "Codex CLI 연결", ja: "Codex CLI の接続", "zh-cn": "连接 Codex CLI" }, slug: "guides/connect-codex-cli" },
       { label: "Model Discovery", translations: { ko: "모델 디스커버리", ja: "モデルディスカバリー", "zh-cn": "模型发现" }, slug: "guides/model-discovery" },
+      { label: "Claude Code Plugins", translations: { ko: "Claude Code 플러그인", ja: "Claude Code プラグイン", "zh-cn": "Claude Code 插件" }, slug: "guides/claude-code-plugins" },
       { label: "Model Aliases & 1M Context", translations: { ko: "모델 별칭과 1M 컨텍스트", ja: "モデルエイリアスと 1M コンテキスト", "zh-cn": "模型别名与 1M 上下文" }, slug: "guides/model-aliases" },
       { label: "Effort & Context", translations: { ko: "Effort와 컨텍스트", ja: "Effort とコンテキスト", "zh-cn": "推理强度与上下文" }, slug: "guides/effort-and-context" },
       { label: "Stage Router", translations: { ko: "스테이지 라우터", ja: "ステージルーター", "zh-cn": "阶段路由器" }, slug: "guides/stage-router" },
