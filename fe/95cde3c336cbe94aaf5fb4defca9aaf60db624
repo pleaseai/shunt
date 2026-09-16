@@ -1,0 +1,63 @@
+site/src/content/docs/guides/stage-router.mdx
+  s_3598e23a871543::t_a89ac58db98f0f 137
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_3598e23a871543::t_a89ac58db98f0f 124-125
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_3598e23a871543::t_a89ac58db98f0f 114-115
+site/src/content/docs/ko/reference/endpoints.md
+  s_3598e23a871543::t_a89ac58db98f0f 12
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_3598e23a871543::t_a89ac58db98f0f 63
+src/routing/stage/store/tests.rs
+  s_3598e23a871543::t_b4b74a3325fc18 954
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_3598e23a871543::t_a89ac58db98f0f 63
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_3598e23a871543::t_a89ac58db98f0f 12
+src/routes.rs
+  s_3598e23a871543::t_e43095cf475088 23-25
+  s_3598e23a871543::t_a89ac58db98f0f 32-36
+site/src/content/docs/ja/reference/endpoints.md
+  s_3598e23a871543::t_a89ac58db98f0f 12
+docs/stage-router.md
+  s_3598e23a871543::t_e43095cf475088 265-266
+  s_3598e23a871543::t_a89ac58db98f0f 174
+  s_3598e23a871543::t_b4b74a3325fc18 252-255
+site/src/content/docs/guides/opentelemetry.mdx
+  s_3598e23a871543::t_a89ac58db98f0f 63
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_3598e23a871543::t_a89ac58db98f0f 130-131
+site/src/content/docs/reference/endpoints.md
+  s_3598e23a871543::t_a89ac58db98f0f 12
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_3598e23a871543::t_a89ac58db98f0f 63
+.please/docs/decisions/0004-content-aware-stage-router.md
+  s_3598e23a871543::t_e43095cf475088 207-212
+  s_3598e23a871543::t_a89ac58db98f0f 224
+src/routing/stage.rs
+  s_3598e23a871543::t_a89ac58db98f0f 215-216
+src/routing.rs
+  s_3598e23a871543::t_a89ac58db98f0f 132-133
+  s_3598e23a871543::t_e43095cf475088 847
+src/metrics.rs
+  s_3598e23a871543::t_ba2a329d2c52a5 559-560,593-594
+  s_3598e23a871543::t_e43095cf475088 573-577
+docs/running.md
+  s_3598e23a871543::t_a89ac58db98f0f 201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fe95cde3c336cbe94aaf5fb4defca9aaf60db624",
+  "prompts": {},
+  "sessions": {
+    "s_3598e23a871543": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "121eceb9-d260-4110-b4e8-1b14de7086df",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
