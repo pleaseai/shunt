@@ -148,10 +148,14 @@ struct TerminalScan {
     /// boundary arrives (a frame may straddle chunk boundaries).
     carry: Vec<u8>,
     terminal_seen: bool,
-    /// A pending frame larger than any real relayed frame means the upstream
-    /// is not emitting parseable SSE: stop buffering instead of growing
-    /// without bound.
-    gave_up: bool,
+    /// Set while the pending frame exceeds the terminal bound: its bytes are
+    /// not buffered (no terminal frame is that large) and scanning resumes
+    /// once its boundary passes — the stream-metrics observer's skip.
+    skipping_oversized: bool,
+    /// The skipped frame's last bytes, so a boundary split across relay
+    /// chunks still ends the skip.
+    skip_tail: [u8; 4],
+    skip_tail_len: usize,
 }
 
 /// No relayed frame can be a `message_stop` past this size (real frames are
@@ -163,7 +167,9 @@ impl TerminalScan {
         Self {
             carry: Vec::new(),
             terminal_seen: false,
-            gave_up: false,
+            skipping_oversized: false,
+            skip_tail: [0; 4],
+            skip_tail_len: 0,
         }
     }
 
@@ -173,27 +179,71 @@ impl TerminalScan {
     /// the relay cuts there and forwards nothing past the terminal;
     /// otherwise `None`.
     fn scan(&mut self, chunk: &[u8]) -> Option<usize> {
-        if self.terminal_seen || self.gave_up {
+        if self.terminal_seen {
             return None;
         }
+        // Bytes of the caller's chunk consumed by an in-progress skip; they
+        // belong to the oversized frame, whose content is not scanned.
+        let skipped = if self.skipping_oversized {
+            let consumed = self.skip_to_boundary(chunk);
+            if self.skipping_oversized {
+                return None;
+            }
+            consumed
+        } else {
+            0
+        };
+        let rest = &chunk[skipped..];
         let carried = self.carry.len();
-        self.carry.extend_from_slice(chunk);
+        self.carry.extend_from_slice(rest);
         let mut consumed = 0;
         while let Some(end) = sse_frame_boundary(&self.carry[consumed..]) {
             if is_message_stop_frame(&self.carry[consumed..consumed + end]) {
                 self.terminal_seen = true;
                 self.carry.clear();
-                return Some(consumed + end - carried);
+                return Some(skipped + consumed + end - carried);
             }
             consumed += end;
         }
         self.carry.copy_within(consumed.., 0);
         self.carry.truncate(self.carry.len() - consumed);
         if self.carry.len() > MAX_TERMINAL_FRAME_BYTES {
-            self.gave_up = true;
-            self.carry.clear();
+            self.begin_oversized_skip();
         }
         None
+    }
+
+    /// The pending frame cannot be a terminal: drop the buffered prefix and
+    /// skip the frame's remaining bytes, keeping its last bytes so a
+    /// boundary split across relay chunks still ends the skip. Mirrors the
+    /// stream-metrics observer's skip.
+    fn begin_oversized_skip(&mut self) {
+        let retained = self.carry.len().min(self.skip_tail.len());
+        self.skip_tail_len = retained;
+        self.skip_tail[..retained].copy_from_slice(&self.carry[self.carry.len() - retained..]);
+        self.carry.clear();
+        self.skipping_oversized = true;
+    }
+
+    /// Consume bytes through the oversized frame's first boundary. Only used
+    /// after a frame has exceeded the terminal bound, never on the hot path.
+    fn skip_to_boundary(&mut self, bytes: &[u8]) -> usize {
+        for (index, &byte) in bytes.iter().enumerate() {
+            if self.skip_tail_len < self.skip_tail.len() {
+                self.skip_tail[self.skip_tail_len] = byte;
+                self.skip_tail_len += 1;
+            } else {
+                self.skip_tail.copy_within(1.., 0);
+                self.skip_tail[self.skip_tail.len() - 1] = byte;
+            }
+            let tail = &self.skip_tail[..self.skip_tail_len];
+            if tail.ends_with(b"\n\n") || tail.ends_with(b"\r\n\r\n") {
+                self.skipping_oversized = false;
+                self.skip_tail_len = 0;
+                return index + 1;
+            }
+        }
+        bytes.len()
     }
 }
 
@@ -796,14 +846,104 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_boundaryless_frame_gives_up_without_arming() {
+    fn a_stop_shaped_suffix_of_an_oversized_frame_does_not_arm() {
+        // Bytes after a boundaryless oversized frame are still that frame's
+        // tail until its own boundary arrives: a stop-shaped payload there
+        // is content, not a terminal frame.
         let mut scan = TerminalScan::new();
         let garbage = vec![b'x'; super::MAX_TERMINAL_FRAME_BYTES + 1];
         scan.scan(&garbage);
         assert_eq!(
             scan.scan(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
             None,
-            "a given-up scan must stay unarmed"
+            "the oversized frame is still open until a boundary closes it"
+        );
+    }
+
+    #[test]
+    fn scanning_resumes_after_an_oversized_frame_ends() {
+        let mut scan = TerminalScan::new();
+        let oversized = vec![b'x'; super::MAX_TERMINAL_FRAME_BYTES + 1];
+        assert_eq!(scan.scan(&oversized), None, "the frame exceeds the bound");
+        assert_eq!(
+            scan.scan(b"\n\n"),
+            None,
+            "the skip ends at the frame boundary"
+        );
+        assert!(scan
+            .scan(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+            .is_some());
+    }
+
+    #[test]
+    fn the_terminal_cut_skips_a_boundary_split_across_chunks() {
+        let mut scan = TerminalScan::new();
+        let oversized = vec![b'x'; super::MAX_TERMINAL_FRAME_BYTES + 1];
+        assert_eq!(scan.scan(&oversized), None);
+        assert_eq!(
+            scan.scan(b"x\n"),
+            None,
+            "the frame end still awaits its second newline"
+        );
+        let chunk = "\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\ntrailing";
+        let cut = scan
+            .scan(chunk.as_bytes())
+            .expect("the terminal frame completes in this chunk");
+        assert_eq!(
+            &chunk[..cut],
+            "\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+            "the cut skips the split boundary and stops at the terminal frame"
+        );
+    }
+
+    #[test]
+    fn a_crlf_boundary_ends_the_oversized_skip() {
+        let mut scan = TerminalScan::new();
+        let oversized = vec![b'x'; super::MAX_TERMINAL_FRAME_BYTES + 1];
+        assert_eq!(scan.scan(&oversized), None);
+        assert_eq!(
+            scan.scan(b"\r\n\r\n"),
+            None,
+            "the skip ends at the CRLF boundary"
+        );
+        assert!(scan
+            .scan(b"event: message_stop\r\ndata: {\"type\":\"message_stop\"}\r\n\r\n")
+            .is_some());
+    }
+
+    #[test]
+    fn a_crlf_boundary_split_across_chunks_ends_the_oversized_skip() {
+        let mut scan = TerminalScan::new();
+        let mut oversized = vec![b'x'; super::MAX_TERMINAL_FRAME_BYTES];
+        oversized.extend_from_slice(b"\r\n");
+        assert_eq!(scan.scan(&oversized), None);
+        let chunk = "\r\nevent: message_stop\r\ndata: {\"type\":\"message_stop\"}\r\n\r\ntrailing";
+        let cut = scan
+            .scan(chunk.as_bytes())
+            .expect("the terminal frame completes in this chunk");
+        assert_eq!(
+            &chunk[..cut],
+            "\r\nevent: message_stop\r\ndata: {\"type\":\"message_stop\"}\r\n\r\n",
+            "the cut skips the split CRLF boundary and stops at the terminal frame"
+        );
+    }
+
+    #[test]
+    fn the_skip_seed_carries_the_boundary_byte_from_the_oversized_chunk() {
+        // The oversized chunk itself ends in the boundary's first byte: only
+        // the carried tail seeded into the skip window finds the split.
+        let mut scan = TerminalScan::new();
+        let mut oversized = vec![b'x'; super::MAX_TERMINAL_FRAME_BYTES];
+        oversized.push(b'\n');
+        assert_eq!(scan.scan(&oversized), None);
+        let chunk = "\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\ntrailing";
+        let cut = scan
+            .scan(chunk.as_bytes())
+            .expect("the terminal frame completes in this chunk");
+        assert_eq!(
+            &chunk[..cut],
+            "\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+            "the cut skips the carried boundary byte and stops at the terminal frame"
         );
     }
 
