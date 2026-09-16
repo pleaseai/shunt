@@ -732,7 +732,11 @@ fn find_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-fn event_and_data(frame: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
+/// Parse a complete frame's `event:` and `data:` field values under the SSE
+/// optional-space rule. `pub(crate)` so the chain relay's terminal scan
+/// shares the observer's parser: two normalizations of the same field drift
+/// apart and disagree about a frame's event name.
+pub(crate) fn event_and_data(frame: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
     let mut event = None;
     let mut data = None;
     for raw_line in frame.split(|&byte| byte == b'\n') {

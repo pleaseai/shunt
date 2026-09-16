@@ -264,13 +264,13 @@ fn sse_frame_boundary(buf: &[u8]) -> Option<usize> {
     }
 }
 
-/// Whether the complete frame carries the Anthropic terminal event. Only a
+/// Whether the complete frame carries the Anthropic terminal event. The
+/// `event:` field parses through the metrics observer's own parser, so the
+/// scan and the observer cannot disagree about a frame's event name; only a
 /// frame's own `event:` line matches — a `data:` payload whose JSON happens
 /// to contain the literal must not arm the scan.
 fn is_message_stop_frame(frame: &[u8]) -> bool {
-    frame
-        .split(|&byte| byte == b'\n')
-        .any(|line| line.strip_suffix(b"\r").unwrap_or(line) == b"event: message_stop")
+    stream_metrics::event_and_data(frame).0 == Some(b"message_stop".as_slice())
 }
 
 /// Everything the committed-stream chain needs, bundled so the per-attempt
@@ -815,6 +815,13 @@ mod tests {
     }
 
     #[test]
+    fn a_no_space_terminal_event_field_arms_the_scan() {
+        assert!(scan(&[
+            "event:message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        ]));
+    }
+
+    #[test]
     fn ordinary_frames_do_not_arm_the_scan() {
         assert!(!scan(&[
             "event: message_start\ndata: {\"type\":\"message_start\"}\n\n",
@@ -960,7 +967,13 @@ mod tests {
     fn only_the_event_line_matches_not_a_data_payload() {
         assert!(is_message_stop_frame(b"event: message_stop\ndata: {}\n\n"));
         assert!(is_message_stop_frame(b"event: message_stop\r\n"));
+        assert!(is_message_stop_frame(b"event:message_stop\n\n"));
+        assert!(is_message_stop_frame(b"event:message_stop\r\n"));
         assert!(!is_message_stop_frame(b"data: event: message_stop\n\n"));
+        assert!(!is_message_stop_frame(b"data: event:message_stop\n\n"));
+        // The shared field parser strips one optional post-colon space — the
+        // SSE rule — so a second space stays part of the event name.
+        assert!(!is_message_stop_frame(b"event:  message_stop\n\n"));
         assert!(!is_message_stop_frame(
             b"event: content_block_delta\ndata: {\"text\":\"event: message_stop\"}\n\n"
         ));
