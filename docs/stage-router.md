@@ -234,9 +234,54 @@ case are genuinely different ids and warning about them would be wrong.
 warns even though only one key was written — that config inverts the design just
 as much. Equal thresholds are symmetric rather than inverted and stay silent.
 
-## 7. What is not built
+## 7. Observability
 
-Metrics (`record_stage_decision`, `record_stage_flip`), the
-`x-gateway-routed-model` / `x-gateway-route-source` response headers, and
-`RoutesResponse.routers` are a follow-on change. Until they land, "why did this
-turn use that model" is answerable only by reading the request.
+A decision is invisible once made. §5 re-stamps `Route.model` to the requested
+id on purpose, so neither the response body nor the resolved chain says which
+tier served a turn or why. Three surfaces report it.
+
+**Response headers.** `x-gateway-routed-model` is the configured target the
+chosen tier routes to, and `x-gateway-route-source` is
+`StageSource::as_label`. Both are omitted for an id that carries no router —
+sent empty, a client could not tell "routed to the efficient tier" from "not
+router-routed". They sit beside the existing `x-gateway-upstream` /
+`x-gateway-model` / `x-gateway-upstream-model` trio; `x-gateway-routed-model`
+differs from `x-gateway-upstream-model` whenever the target maps its own
+`upstream_model`.
+
+**Metrics.** `shunt.stage_router.decisions` counts decisions by requested
+model, tier, and source. `shunt.stage_router.flips` counts those that moved a
+session off its pinned tier, `from` and `to` kept separate because §4.1's
+asymmetry means the two directions are not expected to match. The decision
+counter cannot show churn on its own: a session pinned to `capable` and one
+that just arrived there are the same row. Every label is a closed set, so the
+series count is bounded by the number of configured routers rather than by
+session count.
+
+**`GET /routes`.** Grows a `routers` array — `model`, `capable_target`,
+`efficient_target`, `default_tier`. A router's targets need not have
+`[[routes]]` entries, so `data` alone never named them. The field is omitted
+when no router is configured, so a deployment without one serves the
+byte-identical response it served before routers existed. The tunables are
+deliberately absent: the endpoint answers "where can a request go", and
+calibration is read from the config.
+
+### 7.1 Both are gated on admission
+
+The counters and the headers report only admitted requests — the same boundary
+§4's pin write waits for, and for the same reason. Routing runs before
+`check_inbound_auth`, which needs the resolved chain, so a request that is about
+to be rejected has already been routed. Counting it would report traffic the
+gateway never carried.
+
+`count_tokens` is excluded from the counters, as it is from
+`record_proxied_request`, and its response is left unstamped as well. A probe on
+a session that is not yet pinned scores its own one-turn-behind history, so the
+tier it resolves to is not necessarily the tier of the turn it is measuring
+(§4). Reporting that as the session's routed tier would state something the
+gateway has not decided.
+
+## 8. What is not built
+
+No per-tier latency or token histogram: `record_proxied_request` already carries
+both, keyed by the upstream the tier resolved to.

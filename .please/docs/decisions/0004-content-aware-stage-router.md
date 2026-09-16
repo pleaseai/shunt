@@ -200,8 +200,13 @@ drive the pin.
 - The three documentation claims above are now qualified rather than absolute,
   and a reader who skims will read the qualification as a retreat.
 - Tier selection is a new source of "why did this turn use that model", which
-  only observability answers. The metrics and `x-gateway-route-source` header
-  that answer it are a follow-on change, not this one.
+  only observability answers. That answer shipped as a follow-on change: a
+  routed response carries `x-gateway-routed-model` and `x-gateway-route-source`,
+  `GET /routes` lists each configured router under `routers`, and
+  `shunt.stage_router.decisions` / `shunt.stage_router.flips` count decisions
+  and tier changes. All of it is gated on admission — routing runs before
+  `check_inbound_auth` (which needs the resolved chain), so nothing is stamped,
+  counted, or pinned for a request that never gets in.
 
 ### Neutral
 

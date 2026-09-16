@@ -116,6 +116,26 @@ POST /v1/messages   {"model": "claude-auto", ...}
   → client receives    {"model": "claude-auto", ...}
 ```
 
+Two response headers report the decision, so you do not have to infer it:
+
+| Header | Value |
+| :-- | :-- |
+| `x-gateway-routed-model` | The target the router chose (`claude-opus-4-8`) |
+| `x-gateway-route-source` | Why (`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`) |
+
+Both are absent for a model id that has no router, so "routed to the efficient
+tier" stays distinguishable from "not routed by a router at all". A
+`count_tokens` probe is left unstamped: on a session that is not yet pinned it
+scores its own one-turn-behind history, so its tier is not necessarily the tier
+of the turn it is measuring.
+
+`GET /routes` lists every configured router under `routers`, with both targets
+and the tier a fresh session starts on. Two counters,
+`shunt.stage_router.decisions` and `shunt.stage_router.flips`, are exported when
+you enable metrics; flips are counted separately because a tier change is the
+expensive event, and the decision counter cannot distinguish a session that just
+moved from one that was already there.
+
 ## Configure it
 
 ```toml
