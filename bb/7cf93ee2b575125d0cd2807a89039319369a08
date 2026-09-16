@@ -1,0 +1,101 @@
+site/src/content/docs/ko/reference/endpoints.md
+  s_b8f8f539934879::t_93f0814b08f82e 120
+.claude/agent-memory/review-review-issue-fixer/MEMORY.md
+  s_b8f8f539934879::t_93f0814b08f82e 2-3
+.gitignore
+  s_b8f8f539934879::t_93f0814b08f82e 17
+plugins/shunt/package.json
+  s_b8f8f539934879::t_93f0814b08f82e 1-19
+site/src/content/docs/ja/reference/endpoints.md
+  s_b8f8f539934879::t_93f0814b08f82e 122
+plugins/shunt/tests/fixtures.ts
+  s_b8f8f539934879::t_93f0814b08f82e 1-32
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_b8f8f539934879::t_93f0814b08f82e 1-314
+plugins/shunt/commands/usage.md
+  s_b8f8f539934879::t_93f0814b08f82e 1-39
+site/src/content/docs/guides/stage-router.mdx
+  s_b8f8f539934879::t_93f0814b08f82e 66-68
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_b8f8f539934879::t_93f0814b08f82e 62-64
+site/src/content/docs/zh-cn/guides/claude-code-plugins.md
+  s_b8f8f539934879::t_93f0814b08f82e 1-127
+site/src/content/docs/guides/claude-code-plugins.md
+  s_b8f8f539934879::t_93f0814b08f82e 1-127
+docs/stage-router.md
+  s_b8f8f539934879::t_1242edadd2452a 6,8
+  s_b8f8f539934879::t_93f0814b08f82e 7,48-57,89-93
+plugins/shunt/hooks/names.ts
+  s_b8f8f539934879::t_93f0814b08f82e 1-46
+plugins/shunt/tests/views.test.ts
+  s_b8f8f539934879::t_93f0814b08f82e 1-99
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_b8f8f539934879::t_93f0814b08f82e 58-60
+site/src/content/docs/guides/switchyard.mdx
+  s_b8f8f539934879::t_93f0814b08f82e 1-326
+.claude/agent-memory/review-review-issue-fixer/shunt-mod-typecheck-boundary.md
+  s_b8f8f539934879::t_93f0814b08f82e 1-24
+plugins/shunt/hooks/endpoint.ts
+  s_b8f8f539934879::t_93f0814b08f82e 1-81
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_b8f8f539934879::t_93f0814b08f82e 55-57
+plugins/shunt/hooks/report.ts
+  s_b8f8f539934879::t_93f0814b08f82e 1-123
+site/src/content/docs/ko/guides/claude-code-plugins.md
+  s_b8f8f539934879::t_93f0814b08f82e 1-127
+.claude-plugin/marketplace.json
+  s_b8f8f539934879::t_93f0814b08f82e 9,12-17
+plugins/shunt/.claude-plugin/plugin.json
+  s_b8f8f539934879::t_93f0814b08f82e 1-16
+plugins/shunt/hooks/hooks.json
+  s_b8f8f539934879::t_93f0814b08f82e 1-4
+.github/workflows/ci.yml
+  s_b8f8f539934879::t_93f0814b08f82e 56-58,75-94,156-158
+.claude/agent-memory/review-review-issue-fixer/shunt-mod-blank-env-override.md
+  s_b8f8f539934879::t_93f0814b08f82e 1-27
+plugins/shunt/tests/report.test.ts
+  s_b8f8f539934879::t_93f0814b08f82e 1-76
+plugins/shunt/tests/endpoint.test.ts
+  s_b8f8f539934879::t_93f0814b08f82e 1-155
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_b8f8f539934879::t_93f0814b08f82e 1-323
+site/src/content/docs/reference/endpoints.md
+  s_b8f8f539934879::t_93f0814b08f82e 190-191
+plugins/shunt/tsconfig.json
+  s_b8f8f539934879::t_93f0814b08f82e 1-30
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_b8f8f539934879::t_93f0814b08f82e 1-294
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_b8f8f539934879::t_93f0814b08f82e 115
+plugins/shunt/hooks/views.ts
+  s_b8f8f539934879::t_93f0814b08f82e 1-152
+site/src/lib/i18n.ts
+  s_b8f8f539934879::t_93f0814b08f82e 86,90
+plugins/shunt/README.md
+  s_b8f8f539934879::t_93f0814b08f82e 1-22,24-197
+  s_b8f8f539934879::t_1242edadd2452a 23
+plugins/shunt/vitest.config.ts
+  s_b8f8f539934879::t_93f0814b08f82e 1-10
+site/src/content/docs/ja/guides/claude-code-plugins.md
+  s_b8f8f539934879::t_93f0814b08f82e 1-127
+plugins/shunt/hooks/register.ts
+  s_b8f8f539934879::t_93f0814b08f82e 1-129
+plugins/shunt/package-lock.json
+  s_b8f8f539934879::t_c47b846e220408 1-1186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "bb7cf93ee2b575125d0cd2807a89039319369a08",
+  "prompts": {},
+  "sessions": {
+    "s_b8f8f539934879": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56c6b43b-5d94-468c-84eb-06060fb39d6d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
