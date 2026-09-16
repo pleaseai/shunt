@@ -326,6 +326,7 @@ pub(super) fn http_events_stream(
     context: HttpSendContext,
     credential: CredentialSource,
     codex_quota_account: Option<crate::config::AccountConfig>,
+    started_at: Option<std::time::Instant>,
 ) -> impl Stream<Item = Result<ResponseEvent, Value>> + Send + 'static {
     enum Phase {
         Send,
@@ -340,14 +341,16 @@ pub(super) fn http_events_stream(
             context,
             Some(credential),
             codex_quota_account,
+            started_at,
         ),
-        move |(phase, parser, pending, context, credential, quota_account)| async move {
+        move |(phase, parser, pending, context, credential, quota_account, started_at)| async move {
             let mut phase = phase;
             let mut parser = parser;
             let mut pending = pending;
             let mut context = context;
             let mut credential = credential;
             let mut quota_account = quota_account;
+            let mut started_at = started_at;
             loop {
                 match phase {
                     Phase::Send => {
@@ -356,8 +359,12 @@ pub(super) fn http_events_stream(
                         // a fake 200 and a near-zero elapsed (it is skipped
                         // via `InStreamMetrics`); the real sample lands here,
                         // when the attempt is classified, matching the
-                        // chain's per-attempt record.
-                        let attempt_started = std::time::Instant::now();
+                        // chain's per-attempt record. A caller that ran
+                        // pre-commit work inside the committed stream (the
+                        // committed pool's account scan) seeds the instant
+                        // that work started, so the sample covers it.
+                        let attempt_started =
+                            *started_at.get_or_insert_with(std::time::Instant::now);
                         // Resolve the credential inside the committed stream:
                         // a refreshable credential's refresh is outside the
                         // TTFB timeout, and keepalive pings cover the wait.
@@ -384,6 +391,7 @@ pub(super) fn http_events_stream(
                                                 context,
                                                 credential,
                                                 quota_account,
+                                                started_at,
                                             ),
                                         ));
                                     }
@@ -424,6 +432,7 @@ pub(super) fn http_events_stream(
                                         context,
                                         credential,
                                         quota_account,
+                                        started_at,
                                     ),
                                 ));
                             }
@@ -444,7 +453,15 @@ pub(super) fn http_events_stream(
                                 };
                                 return Some((
                                     item,
-                                    (next, parser, pending, context, credential, quota_account),
+                                    (
+                                        next,
+                                        parser,
+                                        pending,
+                                        context,
+                                        credential,
+                                        quota_account,
+                                        started_at,
+                                    ),
                                 ));
                             }
                             None => return None,

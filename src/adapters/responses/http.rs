@@ -72,6 +72,7 @@ pub(super) async fn forward_http(
         turn,
         codex_quota_account,
         estimate_input,
+        started_at,
     } = forward;
     let policy = provider_retry_policy(state, route);
     if turn.client_wants_stream {
@@ -103,6 +104,7 @@ pub(super) async fn forward_http(
             },
             credential,
             codex_quota_account,
+            started_at,
         );
         return Ok((
             StatusCode::OK,
@@ -420,6 +422,7 @@ mod tests {
             },
             codex_quota_account: None,
             estimate_input: None,
+            started_at: None,
         };
         let credential = CredentialSource::Resolved(Credential::ApiKey {
             value: "probe".to_string(),
@@ -440,6 +443,72 @@ mod tests {
         assert!(
             text.starts_with("event: message_start\ndata: "),
             "got: {text}"
+        );
+    }
+
+    /// The committed single-account sample starts at the pre-dispatch instant
+    /// the caller seeded (the empty-scan fallback after an in-dispatch account
+    /// scan): a back-dated start shows up in the recorded latency.
+    #[tokio::test]
+    async fn forward_http_seeds_the_committed_sample_from_the_pre_dispatch_start() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let mut config = crate::config::Config::default();
+        config.providers.insert(
+            "forward-http-start-probe".to_string(),
+            config
+                .providers
+                .get("codex")
+                .expect("codex provider is built in")
+                .clone(),
+        );
+        config
+            .providers
+            .get_mut("forward-http-start-probe")
+            .expect("just inserted")
+            .base_url = server.uri();
+        let mut route = codex_route();
+        route.provider = "forward-http-start-probe".to_string();
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let forward = ForwardOptions {
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: crate::config::AuthMode::ApiKey,
+            turn: TurnOptions {
+                client_wants_stream: true,
+                thinking_enabled: false,
+                tool_search_native: false,
+            },
+            codex_quota_account: None,
+            estimate_input: None,
+            started_at: Some(std::time::Instant::now() - std::time::Duration::from_millis(300)),
+        };
+        let credential = CredentialSource::Resolved(Credential::ApiKey {
+            value: "probe".to_string(),
+            header: crate::config::ApiKeyHeader::Bearer,
+        });
+        let (status, response) = forward_http(&state, &route, forward, credential, None)
+            .await
+            .expect("forward_http builds the committed response");
+        assert_eq!(status, StatusCode::OK);
+        to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the committed stream completes");
+        let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+            "forward-http-start-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 1, "one committed sample");
+        assert!(
+            latencies[0] >= 150.0,
+            "the sample must start at the seeded instant: {}ms",
+            latencies[0]
         );
     }
 }

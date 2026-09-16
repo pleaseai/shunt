@@ -96,6 +96,10 @@ pub(super) struct PoolStreamContext {
     /// Whether this pool stream owns the request's `record_proxied_request`
     /// sample (the committed single-route paths) or the enclosing chain does.
     pub(super) record_metrics: bool,
+    /// A pre-commit instant the sample clock starts at when the stream owns
+    /// it — the committed pool's account scan ran inside this stream — else
+    /// the first poll of the account loop.
+    pub(super) started_at: Option<std::time::Instant>,
 }
 
 /// One streaming pool turn's event feed: the account loop (admission,
@@ -265,33 +269,39 @@ pub(super) fn pool_or_single_events(
                         return Some((Err(envelope), Phase::Done));
                     }
                     let ramp_initial = state.config.storm_ramp_initial();
-                    let mut inner: Inner =
-                        if accounts.is_empty() {
-                            Box::pin(http_events_stream(single, single_credential, None).map(
-                                |item| item.map(|event| PoolItem::Event(PoolEvent::Event(event))),
-                            ))
-                        } else {
-                            let accounts_config = std::sync::Arc::new(accounts);
-                            let (order, reprobe) = state.accounts.select_order_deferred(
-                                &route.provider,
-                                &accounts_config,
-                                session_id.as_deref(),
-                                Some(route.upstream_model.as_str()),
-                                state.config.server.pool.as_ref(),
-                            );
-                            Box::pin(pool_events_stream(PoolStreamContext {
-                                state,
-                                route,
-                                auth: AuthMode::ChatgptOauth,
-                                session_id,
-                                upstream_body,
-                                accounts_config,
-                                order,
-                                reprobe,
-                                ramp_initial,
-                                record_metrics: true,
-                            }))
-                        };
+                    let mut inner: Inner = if accounts.is_empty() {
+                        Box::pin(
+                            http_events_stream(
+                                single,
+                                single_credential,
+                                None,
+                                Some(attempt_started),
+                            )
+                            .map(|item| item.map(|event| PoolItem::Event(PoolEvent::Event(event)))),
+                        )
+                    } else {
+                        let accounts_config = std::sync::Arc::new(accounts);
+                        let (order, reprobe) = state.accounts.select_order_deferred(
+                            &route.provider,
+                            &accounts_config,
+                            session_id.as_deref(),
+                            Some(route.upstream_model.as_str()),
+                            state.config.server.pool.as_ref(),
+                        );
+                        Box::pin(pool_events_stream(PoolStreamContext {
+                            state,
+                            route,
+                            auth: AuthMode::ChatgptOauth,
+                            session_id,
+                            upstream_body,
+                            accounts_config,
+                            order,
+                            reprobe,
+                            ramp_initial,
+                            record_metrics: true,
+                            started_at: Some(attempt_started),
+                        }))
+                    };
                     inner.next().await.map(|item| (item, Phase::Inner(inner)))
                 }
                 Phase::Inner(mut inner) => {
@@ -327,6 +337,7 @@ pub(super) fn pool_events_stream(
         reprobe,
         ramp_initial,
         record_metrics,
+        started_at,
     } = context;
     type Parsed = std::pin::Pin<Box<dyn Stream<Item = Result<ResponseEvent, Value>> + Send>>;
     enum Phase {
@@ -346,7 +357,7 @@ pub(super) fn pool_events_stream(
             None::<PreparedBody>,
             None::<reqwest::Response>,
             reprobe,
-            None::<Instant>,
+            started_at,
         ),
         move |(phase, order_iter, http_body, last_response, reprobe, attempt_started)| {
             let state = state.clone();
@@ -431,7 +442,10 @@ pub(super) fn pool_events_stream(
                             // the chain's per-attempt record. The chain
                             // builds its own pool streams with
                             // `record_metrics: false` and records the attempt
-                            // itself.
+                            // itself. A caller that ran pre-commit work
+                            // inside the committed stream (the committed
+                            // pool's account scan) seeds the clock at that
+                            // work's start.
                             let started = *attempt_started.get_or_insert_with(Instant::now);
                             let record = |status: StatusCode| {
                                 if record_metrics {
@@ -851,6 +865,7 @@ pub(super) async fn forward_chatgpt_oauth(
             reprobe,
             ramp_initial: state.config.storm_ramp_initial(),
             record_metrics: true,
+            started_at: None,
         });
         return Ok((
             StatusCode::OK,
@@ -940,6 +955,7 @@ pub(super) async fn forward_chatgpt_oauth(
                     // forward_websocket spawns its own blocking encode from it,
                     // identical to the single-account path (see ForwardOptions).
                     estimate_input: estimate_input.clone(),
+                    started_at: None,
                 },
                 credential.clone(),
             )
@@ -2175,6 +2191,7 @@ mod tests {
             reprobe,
             ramp_initial: state.config.storm_ramp_initial(),
             record_metrics: false,
+            started_at: None,
         });
         use futures_util::StreamExt;
         let collected: Vec<_> = events.collect().await;
@@ -2388,5 +2405,126 @@ mod tests {
             502,
         );
         assert_eq!(count, 1, "the all-disabled pool records its 502");
+    }
+
+    /// A slow successful scan is inside the committed sample: the pre-scan
+    /// start seeds the single-credential producer, so `shunt.latency` keeps
+    /// the dispatch-to-classification span the pre-commit loop records.
+    #[tokio::test]
+    async fn pool_or_single_carries_the_scan_time_into_the_single_sample() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let (state, route) =
+            pool_state_with_provider("pool-metrics-scan-latency-probe", server.uri());
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ApiKey,
+            codex_quota_account: None,
+        };
+        let events = pool_or_single_events(
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                Ok(vec![])
+            }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert!(!collected.is_empty(), "the turn relays");
+        let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-scan-latency-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 1, "one committed sample");
+        assert!(
+            latencies[0] >= 150.0,
+            "the sample must include the scan: {}ms",
+            latencies[0]
+        );
+    }
+
+    /// The pool producer's sample starts at the pre-scan instant too: the
+    /// committed pool sample covers the scan exactly like the chain's
+    /// per-attempt record.
+    #[tokio::test]
+    async fn pool_or_single_carries_the_scan_time_into_the_pool_sample() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_SCAN_LATENCY_POOL_PROBE",
+            probe_token("pool-metrics-scan-latency-pool"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let (state, route) =
+            pool_state_with_provider("pool-metrics-scan-latency-pool-probe", server.uri());
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ChatgptOauth,
+            codex_quota_account: None,
+        };
+        let accounts = vec![pool_account(
+            "pool-metrics-scan-latency-pool-a",
+            "SHUNT_POOL_SCAN_LATENCY_POOL_PROBE",
+        )];
+        let events = pool_or_single_events(
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                Ok(accounts)
+            }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert!(!collected.is_empty(), "the pool relays the account's turn");
+        let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-scan-latency-pool-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 1, "one committed sample");
+        assert!(
+            latencies[0] >= 150.0,
+            "the sample must include the scan: {}ms",
+            latencies[0]
+        );
     }
 }

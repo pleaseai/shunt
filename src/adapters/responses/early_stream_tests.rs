@@ -536,6 +536,7 @@ async fn http_events_stream_maps_non_success_to_error_envelope() {
             header: crate::config::ApiKeyHeader::Bearer,
         }),
         None,
+        None,
     );
     use futures_util::StreamExt;
     let collected: Vec<_> = events.collect().await;
@@ -575,6 +576,7 @@ async fn http_events_stream_maps_ttfb_timeout_to_timeout_error_envelope() {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
         }),
+        None,
         None,
     );
     use futures_util::StreamExt;
@@ -621,6 +623,7 @@ async fn http_events_stream_yields_parsed_events_from_streaming_upstream() {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
         }),
+        None,
         None,
     );
     use futures_util::StreamExt;
@@ -800,6 +803,7 @@ async fn http_events_stream_turns_a_malformed_frame_into_a_terminal_error() {
             header: crate::config::ApiKeyHeader::Bearer,
         }),
         None,
+        None,
     );
     use futures_util::StreamExt;
     let collected: Vec<_> = events.collect().await;
@@ -887,6 +891,7 @@ async fn http_events_stream_redacts_the_upstream_url_from_transport_errors() {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
         }),
+        None,
         None,
     );
     use futures_util::StreamExt;
@@ -1014,6 +1019,7 @@ async fn forward_http_commits_before_resolving_the_credential() {
         },
         codex_quota_account: None,
         estimate_input: None,
+        started_at: None,
     };
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -1053,6 +1059,7 @@ async fn http_events_stream_turns_a_credential_resolution_failure_into_a_termina
     let events = http_events_stream(
         context,
         CredentialSource::Deferred(Box::pin(async move { Err(error) })),
+        None,
         None,
     );
     use futures_util::StreamExt;
@@ -1187,6 +1194,7 @@ async fn http_events_stream_relays_crlf_framed_upstream() {
             header: crate::config::ApiKeyHeader::Bearer,
         }),
         None,
+        None,
     );
     use futures_util::StreamExt;
     let collected: Vec<_> = events.collect().await;
@@ -1273,6 +1281,7 @@ async fn http_events_stream_records_the_sample_at_classification() {
             header: crate::config::ApiKeyHeader::Bearer,
         }),
         None,
+        None,
     );
     use futures_util::StreamExt;
     let collected: Vec<_> = events.collect().await;
@@ -1313,6 +1322,7 @@ async fn http_events_stream_records_the_terminal_status_of_a_classified_failure(
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
         }),
+        None,
         None,
     );
     use futures_util::StreamExt;
@@ -1356,6 +1366,7 @@ async fn http_events_stream_records_the_credential_resolution_failure_status() {
                 failure: None,
             })
         })),
+        None,
         None,
     );
     use futures_util::StreamExt;
@@ -1492,6 +1503,7 @@ async fn a_stalled_terminal_error_body_never_delays_the_latency_sample() {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
         }),
+        None,
         None,
     ));
     use futures_util::StreamExt;

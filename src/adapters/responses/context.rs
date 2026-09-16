@@ -109,6 +109,10 @@ pub(super) struct ForwardOptions {
     /// local tiktoken estimate, or `None` on non-streaming / non-tiktoken turns.
     /// Mirrored on the account-pool path by [`PoolForward::estimate_input`].
     pub estimate_input: Option<Arc<Value>>,
+    /// A pre-dispatch instant the committed stream's sample clock starts at —
+    /// the single-credential fallback after an account scan ran inside the
+    /// dispatch — else the stream's first poll.
+    pub started_at: Option<std::time::Instant>,
 }
 
 /// Everything `forward_chatgpt_oauth` needs beyond `state`/`route`. The account

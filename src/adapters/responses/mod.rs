@@ -180,6 +180,7 @@ async fn forward(
     // inside forward_chatgpt_oauth rather than once up front, so a single
     // account's expired/rejected token can rotate to the next one instead of
     // failing the whole request.
+    let mut single_started_at: Option<std::time::Instant> = None;
     if auth == AuthMode::ChatgptOauth {
         let provider = state
             .config
@@ -229,6 +230,11 @@ async fn forward(
             )
             .await;
         }
+        // The empty-scan single-credential fallback below commits its stream
+        // after this scan (and a possible websocket attempt) ran: seed its
+        // sample clock here so `shunt.latency` keeps the dispatch span the
+        // pre-commit loop records.
+        single_started_at = Some(std::time::Instant::now());
         let accounts = auth::shared::resolve_pool_accounts(
             "codex",
             &provider.accounts,
@@ -305,6 +311,7 @@ async fn forward(
             turn,
             codex_quota_account: codex_quota_account.clone(),
             estimate_input: estimate_input.clone(),
+            started_at: None,
         };
         match forward_websocket(
             &state,
@@ -332,6 +339,7 @@ async fn forward(
         turn,
         codex_quota_account,
         estimate_input,
+        started_at: single_started_at,
     };
     forward_http(
         &state,
@@ -467,6 +475,7 @@ pub(crate) async fn chain_attempt(
                 reprobe,
                 ramp_initial: state.config.storm_ramp_initial(),
                 record_metrics: false,
+                started_at: None,
             });
             // Race the machine build — which awaits the bounded token
             // estimate — against the pool's first poll so account admission,
