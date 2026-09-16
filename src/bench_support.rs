@@ -22,6 +22,7 @@
 //! expose.
 
 use std::cell::Cell;
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::Value;
@@ -37,6 +38,20 @@ use crate::routing::{self, Route};
 /// The session cap `StageRouterStore` evicts against — the point past which
 /// eviction stops being O(1) (issue #552).
 pub const MAX_TRACKED_SESSIONS: usize = STORE_CAP;
+
+/// Parse a request body exactly as the proxy does.
+///
+/// `src/proxy/failover.rs` does not call `serde_json::from_slice`: it calls
+/// [`crate::request::RequestBody::parse`], whose visitor rejects duplicate
+/// top-level keys so the gateway and the upstream cannot read one request
+/// differently. That check is real work, and benchmarking the plain parser
+/// instead would understate the cost the request has already paid before
+/// routing — which is the denominator every routed number here is read against.
+///
+/// Returns the parsed tree so the parse cannot be optimised away.
+pub fn parse_request_body(raw: Vec<u8>) -> Result<Arc<Value>, serde_json::Error> {
+    crate::request::RequestBody::parse(raw).map(|body| body.json_arc())
+}
 
 /// Extract tool-activity signals from a request's `messages` array.
 ///

@@ -15,15 +15,22 @@
 //!   refute it.
 //! * `store_turn_*` — issue #552. `existing_session` never grows the map and so
 //!   never evicts; `new_session_at_capacity` is the saturated case the issue
-//!   describes, where each previously unseen id triggers a full `retain` scan
-//!   plus a `min_by_key` scan. Both run against a store pre-filled to
-//!   `MAX_TRACKED_SESSIONS`, so the difference between them is the eviction
-//!   cost and not the map size.
+//!   describes, where each previously unseen id pays a full `retain` scan — one
+//!   scan, not two: the pass that drops expired entries also remembers the
+//!   oldest survivor, so the `min_by_key` fallback is never reached. Both run
+//!   against a store pre-filled to `MAX_TRACKED_SESSIONS`, so the difference
+//!   between them is the eviction cost and not the map size.
 //! * `resolve_chain_*` — the whole router-backed request path, and the control
-//!   it has to be read against: `resolve_chain_unrouted` sends the identical
-//!   body to a model id with no `[models.stage_router]` table. That pair is the
-//!   "non-router traffic pays only one `Option::is_none()`" claim, which is the
-//!   assertion most worth protecting from regression.
+//!   it has to be read against. Both arms send the *same body* naming the *same
+//!   model id* through configs that differ only in whether that id's
+//!   `[[models]]` entry carries a `[models.stage_router]` table. That pair is
+//!   the "non-router traffic pays only one `Option::is_none()`" claim, which is
+//!   the assertion most worth protecting from regression.
+//! * `parse_body_to_value` — the denominator. It benchmarks
+//!   `RequestBody::parse`, the parser `src/proxy/failover.rs` actually calls,
+//!   not `serde_json::from_slice`: the custom visitor's duplicate-key rejection
+//!   is real work, and omitting it would understate what the request has
+//!   already paid before routing begins.
 
 fn main() {
     #[cfg(feature = "bench")]
@@ -37,6 +44,7 @@ fn main() {
 
 #[cfg(feature = "bench")]
 mod bench {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
     use serde_json::{json, Value};
@@ -50,13 +58,18 @@ mod bench {
     /// `recent_turn_window` of them, which is the asymmetry #553 is about.
     const TURN_COUNTS: [usize; 4] = [10, 50, 200, 800];
 
+    /// The one id both `resolve_chain_*` arms request. They must differ only by
+    /// whether its `[[models]]` entry carries a `[models.stage_router]` table:
+    /// two different ids would also differ in string length, in position within
+    /// `config.models`, and in which lookup arm matches — none of which is the
+    /// property under test.
     const ROUTER_MODEL: &str = "claude-auto";
-    const PLAIN_MODEL: &str = "claude-sonnet-4-6";
+    const EFFICIENT_TARGET: &str = "claude-sonnet-4-6";
 
     fn router() -> StageRouterConfig {
         StageRouterConfig {
             capable_target: "claude-opus-4-8".to_string(),
-            efficient_target: PLAIN_MODEL.to_string(),
+            efficient_target: EFFICIENT_TARGET.to_string(),
             picker: StageRouterPicker::EfficientFirst,
             confidence_threshold: 0.5,
             recent_turn_window: 3,
@@ -66,40 +79,32 @@ mod bench {
         }
     }
 
-    /// Both ids resolve through the same `[[routes]]` entry, so the only
-    /// difference between the routed and unrouted benchmarks is the
-    /// `[models.stage_router]` table.
-    fn config() -> Config {
+    /// Two configs identical but for `stage_router`, so the `resolve_chain_*`
+    /// pair isolates the router and nothing else.
+    ///
+    /// `ROUTER_MODEL` carries a `[[routes]]` entry in both. The routed config
+    /// never consults it — `resolve_chain` matches `[[models]]` first — and it
+    /// is what lets the unrouted config resolve the same id, so the two stay
+    /// structurally identical rather than differing in their route tables too.
+    fn config(with_router: bool) -> Config {
+        let route = |model: &str| RouteConfig {
+            model: model.to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        };
         Config {
-            models: vec![
-                ModelConfig {
-                    id: ROUTER_MODEL.to_string(),
-                    display_name: Some("Auto (stage router)".to_string()),
-                    upstream_model: None,
-                    stage_router: Some(router()),
-                },
-                ModelConfig {
-                    id: PLAIN_MODEL.to_string(),
-                    display_name: None,
-                    upstream_model: None,
-                    stage_router: None,
-                },
-            ],
+            models: vec![ModelConfig {
+                id: ROUTER_MODEL.to_string(),
+                display_name: Some("Auto (stage router)".to_string()),
+                upstream_model: None,
+                stage_router: with_router.then(router),
+            }],
             routes: vec![
-                RouteConfig {
-                    model: PLAIN_MODEL.to_string(),
-                    provider: "anthropic".to_string(),
-                    upstream_model: None,
-                    effort: None,
-                    service_tier: None,
-                },
-                RouteConfig {
-                    model: "claude-opus-4-8".to_string(),
-                    provider: "anthropic".to_string(),
-                    upstream_model: None,
-                    effort: None,
-                    service_tier: None,
-                },
+                route(ROUTER_MODEL),
+                route(EFFICIENT_TARGET),
+                route("claude-opus-4-8"),
             ],
             ..Config::default()
         }
@@ -160,9 +165,9 @@ mod bench {
     #[divan::bench(args = TURN_COUNTS)]
     fn parse_body_to_value(bencher: divan::Bencher, turns: usize) {
         let body = serde_json::to_vec(&request(ROUTER_MODEL, turns)).unwrap();
-        bencher
-            .with_inputs(|| body.as_slice())
-            .bench_refs(|body| divan::black_box(serde_json::from_slice::<Value>(body).unwrap()));
+        bencher.with_inputs(|| body.clone()).bench_values(|body| {
+            divan::black_box(bench_support::parse_request_body(body).unwrap())
+        });
     }
 
     /// Issue #553: cost of one extraction against history length.
@@ -202,17 +207,23 @@ mod bench {
         let router = router();
         let now = Instant::now();
         let store = saturated_store(&router, now);
-        let mut nonce = 0usize;
-        bencher.bench_local(|| {
-            nonce += 1;
-            divan::black_box(store.turn(ROUTER_MODEL, &format!("fresh-{nonce}"), &router, now));
-        });
+        // The id is built in `with_inputs`, which divan does not time, so neither
+        // the `format!` nor its allocation is charged to the eviction this arm
+        // exists to measure. The counter is atomic because divan requires the
+        // generator to be `Fn + Sync`; cycling a precomputed list instead would
+        // repeat ids, and a repeat is an *existing* session, which never evicts.
+        let nonce = AtomicUsize::new(0);
+        bencher
+            .with_inputs(|| format!("fresh-{}", nonce.fetch_add(1, Ordering::Relaxed)))
+            .bench_values(|session_id| {
+                divan::black_box(store.turn(ROUTER_MODEL, &session_id, &router, now));
+            });
     }
 
     /// The whole router-backed request path: score, hysteresis, commit.
     #[divan::bench(args = TURN_COUNTS)]
     fn resolve_chain_routed(bencher: divan::Bencher, turns: usize) {
-        let config = config();
+        let config = config(true);
         let request = request(ROUTER_MODEL, turns);
         let store = StageStore::new();
         let now = Instant::now();
@@ -231,13 +242,13 @@ mod bench {
         });
     }
 
-    /// The control for the arm above: the identical body against a model id
-    /// with no router table. The gap between the two is what non-router traffic
-    /// does *not* pay.
+    /// The control for the arm above: the *identical* body and model id, against
+    /// a config whose only difference is the absent `[models.stage_router]`
+    /// table. The gap between the two is what non-router traffic does not pay.
     #[divan::bench(args = TURN_COUNTS)]
     fn resolve_chain_unrouted(bencher: divan::Bencher, turns: usize) {
-        let config = config();
-        let request = request(PLAIN_MODEL, turns);
+        let config = config(false);
+        let request = request(ROUTER_MODEL, turns);
         let store = StageStore::new();
         let now = Instant::now();
         bencher.bench(|| {

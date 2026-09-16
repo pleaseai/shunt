@@ -314,59 +314,78 @@ points pass `stage: None`, so the benchmark reaches it through
 module docs. CodSpeed passes the feature in `.github/workflows/codspeed.yml`;
 without it the target builds, runs, and registers nothing.
 
-Numbers below are medians from one local run (Apple silicon, `bench` profile).
-Read them as orders of magnitude, not as a baseline to diff against — CodSpeed
-owns regression detection.
+One local run, `--sample-count 200`, Apple silicon. CodSpeed owns regression
+detection; these are orders of magnitude, not a baseline to diff against.
+
+**Read the `fastest` column.** These arms allocate, so a sample can absorb an
+allocator or scheduler excursion but never finish faster than the work takes —
+`extract_signals` at 800 turns spans 207 µs to 805 µs. Taking its median (335 µs)
+against `resolve_chain_routed`'s (212 µs) would say a routed resolve is cheaper
+than the extraction it strictly contains, which is not a property of the code but
+of that spread. `fastest` is the low-noise estimator here; medians are given
+alongside so the spread stays visible.
 
 | Benchmark | 10 turns | 50 | 200 | 800 |
 |---|---|---|---|---|
-| `parse_body_to_value` | 32.2 µs | 158 µs | 680 µs | 3.30 ms |
-| `extract_signals` | 3.6 µs | 13.4 µs | 51.6 µs | 257 µs |
-| `resolve_chain_routed` | 5.0 µs | 15.0 µs | 54.5 µs | 214 µs |
-| `resolve_chain_unrouted` | 315 ns | 316 ns | 315 ns | 312 ns |
+| `parse_body_to_value` | 31.6 µs *(32.1)* | 156 µs *(160)* | 648 µs *(722)* | 2.79 ms *(3.28)* |
+| `extract_signals` | 3.43 µs *(3.50)* | 12.7 µs *(12.9)* | 49.0 µs *(49.7)* | 207 µs *(335)* |
+| `resolve_chain_routed` | 4.78 µs *(5.13)* | 14.2 µs *(14.7)* | 50.8 µs *(52.8)* | 197 µs *(212)* |
+| `resolve_chain_unrouted` | 295 ns *(298)* | 294 ns *(297)* | 296 ns *(299)* | 295 ns *(299)* |
 
-Three things those rows establish.
+`fastest`, with the median in parentheses.
 
-**Extraction is linear in turn count, it is essentially the whole cost of a
-routed resolve, and it is small against what the request already spent.** An
-80× longer history costs ~71× more, and `resolve_chain_routed` tracks
-`extract_signals` within measurement noise at every width. §3's second pass
-reads the entire `messages` array on every turn, so a session's *cumulative*
-extraction cost grows quadratically in its own length even though each call is
-linear.
+**Extraction is linear in turn count, dominates a routed resolve, and is small
+against what the request already spent.** An 80× longer history costs ~60× more.
+`resolve_chain_routed` sits within a few percent of `extract_signals` at every
+width, which is what "dominates" means here — the two are not separable at this
+resolution, and §3's second pass reads the entire `messages` array every turn, so
+a session's *cumulative* extraction cost grows quadratically in its own length
+even though each call is linear.
 
-That is a constant factor on top of a bound the request already pays, and the
-factor is measured rather than assumed: `RequestBody::parse` (`src/request.rs`)
-builds the whole `serde_json::Value` eagerly for every inbound request, before
-routing, and `parse_body_to_value` is that parse over the identical body.
-Extraction costs **7.6–11% of it** at every width tested — 11% at 10 turns,
-7.8% at 800. So the ceiling on optimizing §3 is roughly a tenth of a cost the
-gateway has already sunk by the time the router is consulted, which is why §3 is
-left as it stands (issue #553).
+The denominator is measured, not assumed. `parse_body_to_value` benchmarks
+`RequestBody::parse` (`src/request.rs`) — the parser `src/proxy/failover.rs`
+actually calls, not `serde_json::from_slice` — which builds the whole
+`serde_json::Value` eagerly for every inbound request before routing runs.
+Extraction is **7.4–10.8% of it** across the range. (Its duplicate-key visitor
+inspects only *top-level* keys, nested values going through stock `Value`
+deserialization, so it costs about what the plain parser does on a body this
+shape; the distinction matters for what is being claimed, not for the number.)
+So the ceiling on optimizing §3 is roughly a tenth of a cost the gateway has
+already sunk by the time the router is consulted, which is why §3 is left as it
+stands (issue #553).
 
 **A request to a model with no `[models.stage_router]` table does not read
-`messages` at all.** `resolve_chain_unrouted` is flat across a 80× range of
-history length, at ~315 ns — the same body, the same store, only the router
-table absent. That flatness is the property to protect: it is what makes the
-feature opt-in in cost as well as in behavior, and any change that makes this
-row slope is a regression whatever it does to the routed rows.
+`messages` at all.** Both `resolve_chain_*` arms send the identical body naming
+the identical model id; the configs differ only in whether that id's `[[models]]`
+entry carries the table. `resolve_chain_unrouted` is flat at ~295 ns across an
+80× range of history length, with the tightest spread of any arm here. That
+flatness is the property to protect: it is what makes the feature opt-in in cost
+as well as in behaviour, and any change that makes this row slope is a regression
+whatever it does to the routed rows. The routed arm additionally resolves its
+chosen tier's own id through `[[routes]]`, which the unrouted arm does not — that
+second lookup is part of what routing costs, not a flaw in the pairing.
 
 **Eviction dominates the store once it saturates.**
 
-| Benchmark | median |
-|---|---|
-| `store_turn_existing_session` | 516 ns |
-| `store_turn_new_session_at_capacity` | 31.4 µs |
+| Benchmark | fastest | median |
+|---|---|---|
+| `store_turn_existing_session` | 512 ns | 517 ns |
+| `store_turn_new_session_at_capacity` | 32.6 µs | 32.8 µs |
 
-Both run against a store already holding `MAX_TRACKED_SESSIONS` entries, so the
-61× gap is the eviction and not the map size. An existing session's update never
-grows the map, returns at `evict`'s length check, and costs about half a
-microsecond. A previously unseen id at capacity pays a full `retain` walk of
-4096 entries — one walk, not two: the pass that drops expired entries also
+Both run against a store already holding `MAX_TRACKED_SESSIONS` entries, and both
+build their session id outside the timed region, so the **64×** gap is the
+eviction and not the map size, the id's allocation, or its hashing. An existing
+session's update never grows the map, returns at `evict`'s length check, and costs
+about half a microsecond. A previously unseen id at capacity pays a full `retain`
+walk of 4096 entries — one walk, not two: the pass that drops expired entries also
 remembers the oldest survivor, so the capacity trim needs no second scan.
 
-That 31 µs is CPU held under the store's single process-global mutex, so it
-serializes against every other router-backed request rather than costing only
-its own. It is reached only at capacity and only by an id the store has not
-seen, which is the normal-operation case for no one and the steady state for a
-client that rotates `x-claude-code-session-id` per request (issue #552).
+That ~32 µs gap is the eviction scan, and the scan runs while the store's single
+process-global mutex is held, so it serializes against every other router-backed
+request rather than costing only its own. (The 32 µs is the whole benchmarked
+turn, which also covers `stage::decide`, the SHA-256 session key, the router
+fingerprint, and two lock acquisitions — the control arm pays all of those too,
+which is why the *gap* rather than the total is what attributes to eviction.) It
+is reached only at capacity and only by an id the store has not seen, which is
+the normal-operation case for no one and the steady state for a client that
+rotates `x-claude-code-session-id` per request (issue #552).
