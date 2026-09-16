@@ -284,7 +284,7 @@ provider = "kimi-code"
 
 `kimi_oauth` is pool-capable like `claude_oauth`/`chatgpt_oauth` — use `accounts = [...]` in place
 of `account` to spread load across several stored Kimi accounts. See
-[Kimi → Kimi Code (OAuth subscription)](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription)
+[Kimi → Kimi Code (OAuth subscription)](https://shunt.sh/providers/kimi/#kimi-code-oauth-subscription)
 for the full walkthrough.
 
 For example, to route Kimi's (Moonshot) model through shunt:

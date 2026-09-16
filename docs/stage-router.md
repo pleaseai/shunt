@@ -3,7 +3,7 @@
 Engineering note for the opt-in `[models.stage_router]`, implementing
 [ADR-0004](../.please/docs/decisions/0004-content-aware-stage-router.md).
 Status: **implemented.** User-facing documentation lives in the
-[stage router guide](https://shunt.dev/guides/stage-router/); this document is
+[stage router guide](https://shunt.sh/guides/stage-router/); this document is
 the implementation record — what the code does, why, and what a change to it must
 not break.
 
