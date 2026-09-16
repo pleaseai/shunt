@@ -1808,3 +1808,99 @@ async fn a_winner_with_a_pending_estimate_returns_a_pending_relay_build() {
         "the estimate is still pending when the winner returns"
     );
 }
+
+/// The pooled winner arm passes the pending machine build through without
+/// awaiting it, exactly like the non-pooled arm: the shared estimate cell
+/// stays pending, the pool's first item (the account attribution frame)
+/// wins the race, and the arm returns a pending relay — a serialized arm
+/// awaits the pending build forever and the timeout fails the test.
+#[tokio::test]
+async fn a_pooled_winner_with_a_pending_estimate_returns_a_pending_relay_build() {
+    use crate::adapters::responses::{chain_attempt, ChainEstimate};
+    use crate::proxy::chain_stream::{Attempt, RelayBuild};
+    use base64::Engine;
+    let dir = std::env::temp_dir().join(format!(
+        "shunt-pooled-chain-attempt-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let payload = serde_json::json!({
+        "exp": 4_102_444_800u64,
+        "https://api.openai.com/auth": {"chatgpt_account_id": "acc-pooled-chain"}
+    });
+    let access_token = format!(
+        "x.{}.y",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).unwrap())
+    );
+    let credentials = dir.join("auth.json");
+    std::fs::write(
+        &credentials,
+        serde_json::json!({
+            "auth_mode": "ChatGPT",
+            "tokens": {
+                "access_token": access_token,
+                "refresh_token": "unused-refresh-token"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(
+                    "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+                ),
+        )
+        .mount(&server)
+        .await;
+    let mut config = crate::config::Config::default();
+    let mut provider = config
+        .providers
+        .get("codex")
+        .expect("codex provider is built in")
+        .clone();
+    provider.base_url = server.uri();
+    provider.accounts = vec![crate::config::AccountConfig {
+        name: "pool-a".to_string(),
+        credentials: Some(credentials.to_string_lossy().into_owned()),
+        ..Default::default()
+    }];
+    config
+        .providers
+        .insert("pooled-chain-probe".to_string(), provider);
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let route = named_codex_route("pooled-chain-probe");
+    let body = crate::request::RequestBody::parse(
+        serde_json::json!({
+            "model": "gpt-5.6-sol",
+            "stream": true,
+            "messages": [{ "role": "user", "content": "hi" }],
+        })
+        .to_string()
+        .into_bytes(),
+    )
+    .expect("the request body parses");
+    let cache = ChainEstimate::test_held_pending();
+    let attempt = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        chain_attempt(&state, &route, &axum::http::HeaderMap::new(), body, &cache),
+    )
+    .await
+    .expect("the pooled winner arm returns without awaiting the pending build");
+    let Attempt::Winner { relay, .. } = attempt else {
+        panic!("the pooled account wins the attempt");
+    };
+    assert!(
+        matches!(relay, RelayBuild::Pending(_)),
+        "the estimate is still pending when the pooled winner returns"
+    );
+}

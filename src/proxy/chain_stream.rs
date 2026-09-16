@@ -1089,6 +1089,38 @@ mod tests {
     #[tokio::test]
     async fn the_winner_is_recorded_before_a_pending_relay_build_resolves() {
         use crate::metrics::proxied_request_samples_for_tests;
+        use std::collections::HashMap;
+        use std::future::Future;
+        use tracing_subscriber::layer::{Layer, SubscriberExt};
+        use tracing_subscriber::Registry;
+
+        #[derive(Clone, Default)]
+        struct CapturingLayer(std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>);
+        struct CapturingVisitor<'a>(&'a mut HashMap<String, String>);
+        impl tracing::field::Visit for CapturingVisitor<'_> {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.0.insert(field.name().to_string(), value.to_string());
+            }
+            fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                self.0.insert(field.name().to_string(), value.to_string());
+            }
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0
+                    .insert(field.name().to_string(), format!("{value:?}"));
+            }
+        }
+        impl<S: tracing::Subscriber> Layer<S> for CapturingLayer {
+            fn on_record(
+                &self,
+                _id: &tracing::span::Id,
+                values: &tracing::span::Record<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut map = self.0.lock().expect("capturing layer mutex poisoned");
+                values.record(&mut CapturingVisitor(&mut map));
+            }
+        }
+
         let provider = "resolve-winner-test-provider".to_string();
         let model = "resolve-winner-test-model".to_string();
         let provider_slot =
@@ -1103,51 +1135,68 @@ mod tests {
             let frames: super::ClientFrames = Box::pin(futures_util::stream::empty());
             (axum::body::Bytes::new(), frames)
         }));
-        let task = tokio::spawn({
-            let provider = provider.clone();
-            let model = model.clone();
-            let provider_slot = provider_slot.clone();
-            let model_slot = model_slot.clone();
-            async move {
-                super::resolve_winner(
-                    &provider,
-                    &model,
-                    0.0,
-                    &tracing::Span::none(),
-                    &provider_slot,
-                    &model_slot,
-                    relay,
-                )
-                .await
-            }
-        });
-        // The records land while the build is still blocked: wait for the
-        // slot to flip rather than racing a sleep against scheduling.
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+
+        let captured = CapturingLayer::default();
+        let subscriber = Registry::default().with(captured.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                "test_winner",
+                shunt.provider = tracing::field::Empty,
+                http.response.status_code = tracing::field::Empty,
+                otel.status_code = tracing::field::Empty,
+            );
+            let mut resolution = Box::pin(super::resolve_winner(
+                &provider,
+                &model,
+                0.0,
+                &span,
+                &provider_slot,
+                &model_slot,
+                relay,
+            ));
+            // One poll runs every record up to the pending build's await:
+            // the winner must be fully attributed — slots, requests sample,
+            // span fields — while the build is still blocked. The capture
+            // call on the winner's 200 is a documented no-op (its own tests
+            // pin the no-op), so its position is unobservable on this path.
+            let mut polled = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                resolution.as_mut().poll(&mut polled).is_pending(),
+                "the pending build keeps the resolution pending"
+            );
+            let map = captured.0.lock().expect("capturing layer mutex poisoned");
+            assert_eq!(
+                map.get("shunt.provider").map(String::as_str),
+                Some(provider.as_str()),
+                "the span carries the winner before the pending build resolves"
+            );
+            assert_eq!(
+                map.get("http.response.status_code").map(String::as_str),
+                Some("200")
+            );
+            assert_eq!(map.get("otel.status_code").map(String::as_str), Some("ok"));
+            drop(map);
+            assert_eq!(*provider_slot.lock().expect("provider slot lock"), provider);
+            assert_eq!(*model_slot.lock().expect("model slot lock"), model);
+            let (count, _) = proxied_request_samples_for_tests(&provider, &model, 200);
+            assert_eq!(
+                count, 1,
+                "the requests sample is recorded before the pending build resolves"
+            );
+            assert!(
+                !*build_resolved.lock().expect("build flag lock"),
+                "the pending build stays unawaited while the winner records"
+            );
+            release.send(()).expect("the build is still listening");
             loop {
-                if *provider_slot.lock().expect("provider slot lock") == provider {
+                if let std::task::Poll::Ready(_resolved) = resolution.as_mut().poll(&mut polled) {
                     break;
                 }
-                tokio::task::yield_now().await;
             }
-        })
-        .await
-        .expect("the winner slots flip while the build is still pending");
-        assert_eq!(*model_slot.lock().expect("model slot lock"), model);
-        let (count, _) = proxied_request_samples_for_tests(&provider, &model, 200);
-        assert_eq!(
-            count, 1,
-            "the requests sample is recorded before the pending build resolves"
-        );
-        assert!(
-            !*build_resolved.lock().expect("build flag lock"),
-            "the pending build stays unawaited while the winner records"
-        );
-        release.send(()).expect("the build is still listening");
-        let (_start, _frames) = task.await.expect("the winner resolution task joined");
-        assert!(
-            *build_resolved.lock().expect("build flag lock"),
-            "the pending build resolves once released"
-        );
+            assert!(
+                *build_resolved.lock().expect("build flag lock"),
+                "the pending build resolves once released"
+            );
+        });
     }
 }
