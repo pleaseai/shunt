@@ -9,7 +9,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `GET` | `/` | 人間可読なランディング（バージョン + エンドポイント一覧） |
 | `GET` | `/health` | ヘルスチェック — `{"status":"ok","version":"x.y.z"}` |
 | `GET` | `/v1/models` | [Model discovery](/ja/guides/model-discovery/) — あなたの `[[models]]` エントリを返す |
-| `GET` | `/routes` | shunt ネイティブのルート discovery — 設定された `[[routes]]` テーブルをそのまま返す（model → provider/upstream_model/effort のマッピング、claude プレフィックスの discovery エイリアスを含む）。`/v1/models` とは別物で、後者はより狭い Anthropic プロトコルの discovery レスポンス（`id`、`display_name`、およびアップストリームのモデルメタデータ）を提供する。[ステージルーター](/ja/guides/stage-router/)を設定した `[[models]]` エントリが 1 つでもあれば `routers` 配列が加わり、各ルーターの model id、2 つのティアのターゲット、picker が出発するティアを示す |
+| `GET` | `/routes` | shunt ネイティブのルート discovery — 設定された `[[routes]]` テーブルをそのまま返す（model → provider/upstream_model/effort のマッピング、claude プレフィックスの discovery エイリアスを含む）。`/v1/models` とは別物で、後者はより狭い Anthropic プロトコルの discovery レスポンス（`id`、`display_name`、およびアップストリームのモデルメタデータ）を提供する。[ステージルーター](/ja/guides/stage-router/)を設定した `[[models]]` エントリが 1 つでもあれば `routers` 配列が加わり、各ルーターの model id、2 つのティアのターゲット、シグナルが何も決めなかったときに picker が戻るティアを示す |
 | `POST` | `/v1/messages` | 推論 — リクエストの `model` id に従ってルーティング |
 | `POST` | `/v1/messages/count_tokens` | [トークンカウント](/ja/guides/effort-and-context/#トークンカウントcount_tokens) |
 | `GET` | `/managed/settings` | ゲートウェイ JWT ごとの Claude Code managed settings。`ETag`、`If-None-Match`、`304 Not Modified` に対応 |

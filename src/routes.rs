@@ -20,17 +20,20 @@ pub struct RoutesResponse {
 /// The tunables (`confidence_threshold`, dwell, TTL) are deliberately absent:
 /// this endpoint answers "where can a request go", and a client that needs the
 /// calibration reads the config. What it does report is the pair of ids the
-/// router chooses between, because those are destinations that appear nowhere
-/// else in this response — a router's targets need not have `[[routes]]`
-/// entries of their own.
+/// router chooses between, because nothing else in this response is required
+/// to name them: a router's targets need not have `[[routes]]` entries of
+/// their own, though one that does still appears in `data` as itself.
 #[derive(Debug, Serialize)]
 pub struct RouterEntry {
     /// The advertised id clients request.
     pub model: String,
     pub capable_target: String,
     pub efficient_target: String,
-    /// The tier a fresh session starts on, from `picker`. A body-less caller
-    /// resolving this id gets this tier, which is what makes it worth naming.
+    /// The tier `picker` falls back to when no signal decides a turn. A
+    /// body-less caller resolving this id gets it for that reason, which is
+    /// what makes it worth naming. It is not "where a session starts": a first
+    /// turn that already carries decisive tool-result history is scored like
+    /// any other and can land on the opposite tier.
     pub default_tier: &'static str,
 }
 

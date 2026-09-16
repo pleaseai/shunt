@@ -134,7 +134,7 @@ scores its own one-turn-behind history, so its tier is not necessarily the tier
 of the turn it is measuring.
 
 `GET /routes` lists every configured router under `routers`, with both targets
-and the tier a fresh session starts on. Two counters,
+and the tier its picker falls back to when no signal decides. Two counters,
 `shunt.stage_router.decisions` and `shunt.stage_router.flips`, are exported when
 you enable metrics; flips are counted separately because a tier change is the
 expensive event, and the decision counter cannot distinguish a session that just

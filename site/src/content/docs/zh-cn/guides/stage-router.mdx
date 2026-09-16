@@ -111,8 +111,8 @@ POST /v1/messages   {"model": "claude-auto", ...}
 区分开。`count_tokens` 探测不加这两个头:在尚未固定的会话上,探测按自己落后一轮的
 历史评分,因此它的档位不一定是被测量那一轮的档位。
 
-`GET /routes` 会在 `routers` 中列出每个已配置的路由器,附带两个目标以及新会话起始的
-档位。启用指标后会导出两个计数器 `shunt.stage_router.decisions` 和
+`GET /routes` 会在 `routers` 中列出每个已配置的路由器,附带两个目标,以及当没有信号做出决定时
+picker 回退到的档位。启用指标后会导出两个计数器 `shunt.stage_router.decisions` 和
 `shunt.stage_router.flips`;档位切换是昂贵事件,而决策计数器无法区分刚刚迁移过来的
 会话和本来就在那里的会话,所以 flip 单独计数。
 

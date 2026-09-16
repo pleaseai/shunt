@@ -129,8 +129,8 @@ pub fn resolve_model(config: &Config, model: &str) -> Route {
 /// Resolve a model id to its failover chain, without a request to score.
 ///
 /// A `[models.stage_router]` entry reached this way reports its picker default,
-/// which is what a body-less surface should show: the tier a fresh session
-/// starts on. Live requests go through [`resolve_request_chain_value`].
+/// which is what a body-less surface should show: the tier the picker falls
+/// back to when no signal decides. Live requests go through [`resolve_request_chain_value`].
 pub fn resolve_model_chain(config: &Config, model: &str) -> Vec<Route> {
     resolve_chain(config, model, None)
 }
@@ -844,7 +844,7 @@ mod stage_router_tests {
     }
 
     /// `/routes`, discovery, and the public `resolve_model` have no conversation
-    /// to score. They must report the tier a fresh session starts on rather than
+    /// to score. They must report the picker's fallback tier rather than
     /// panicking or inventing a signal.
     #[test]
     fn a_body_less_resolution_reports_the_picker_default() {

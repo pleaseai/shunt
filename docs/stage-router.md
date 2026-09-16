@@ -171,7 +171,7 @@ relax it without replacing it.
 
 Body-less entry points (`/routes`, discovery, the public `resolve_model`) pass no
 context and report the picker default, which is the right answer there: the tier
-a fresh session starts on.
+the picker falls back to when no signal decides.
 
 ## 6. Validation
 
@@ -249,8 +249,10 @@ router-routed". They sit beside the existing `x-gateway-upstream` /
 differs from `x-gateway-upstream-model` whenever the target maps its own
 `upstream_model`.
 
-**Metrics.** `shunt.stage_router.decisions` counts decisions by requested
-model, tier, and source. `shunt.stage_router.flips` counts those that moved a
+**Metrics.** `shunt.stage_router.decisions` counts decisions by the router's
+model id, tier, and source. That id is the one the router was matched on, so a
+client-side `[1m]` hint is already stripped from it — labelling by the raw
+request id would report one router as two series. `shunt.stage_router.flips` counts those that moved a
 session off its pinned tier, `from` and `to` kept separate because §4.1's
 asymmetry means the two directions are not expected to match. The decision
 counter cannot show churn on its own: a session pinned to `capable` and one
@@ -260,7 +262,8 @@ session count.
 
 **`GET /routes`.** Grows a `routers` array — `model`, `capable_target`,
 `efficient_target`, `default_tier`. A router's targets need not have
-`[[routes]]` entries, so `data` alone never named them. The field is omitted
+`[[routes]]` entries, so `data` alone is not guaranteed to name them; a target
+that does have one still appears there as itself. The field is omitted
 when no router is configured, so a deployment without one serves the
 byte-identical response it served before routers existed. The tunables are
 deliberately absent: the endpoint answers "where can a request go", and

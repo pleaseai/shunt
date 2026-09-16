@@ -556,8 +556,8 @@ pub fn record_failover(provider: &str, state: &'static str) {
 pub fn record_stage_decision(model: &str, tier: &'static str, source: &'static str) {
     sentry::metrics::counter("shunt.stage_router.decisions", 1)
         .attribute("model", model.to_owned())
-        .attribute("tier", tier.to_owned())
-        .attribute("source", source.to_owned())
+        .attribute("tier", tier)
+        .attribute("source", source)
         .capture();
 
     let attributes = [
@@ -570,9 +570,11 @@ pub fn record_stage_decision(model: &str, tier: &'static str, source: &'static s
 
 /// Record one stage-router decision that moved a session off its pinned tier.
 ///
-/// A flip is the expensive event this design is built to ration: it forfeits a
-/// warmed prompt-cache prefix, forces a Codex continuation to resend its whole
-/// input, and drops pooled connections and sticky account slots. The decision
+/// A flip is the expensive event this design is built to ration. It always
+/// forfeits a warmed prompt-cache prefix, since caching is keyed per model; on
+/// the Codex transport it also forces a full-input re-send, because `model` is
+/// hashed into the continuation signature; and a flip that crosses providers
+/// abandons the session's pooled socket and sticky account slot too. The decision
 /// counter above cannot show it — a session pinned to `capable` and a session
 /// that just moved there are the same row — so churn needs its own series.
 ///
@@ -588,8 +590,8 @@ pub fn record_stage_decision(model: &str, tier: &'static str, source: &'static s
 pub fn record_stage_flip(model: &str, from: &'static str, to: &'static str) {
     sentry::metrics::counter("shunt.stage_router.flips", 1)
         .attribute("model", model.to_owned())
-        .attribute("from", from.to_owned())
-        .attribute("to", to.to_owned())
+        .attribute("from", from)
+        .attribute("to", to)
         .capture();
 
     let attributes = [

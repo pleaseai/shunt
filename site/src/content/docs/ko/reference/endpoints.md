@@ -9,7 +9,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `GET` | `/` | 사람이 읽을 수 있는 랜딩(버전 + 엔드포인트 목록) |
 | `GET` | `/health` | 헬스체크 — `{"status":"ok","version":"x.y.z"}` |
 | `GET` | `/v1/models` | [모델 디스커버리](/ko/guides/model-discovery/) — `[[models]]` 항목을 반환 |
-| `GET` | `/routes` | shunt 네이티브 라우트 디스커버리 — 구성된 `[[routes]]` 테이블을 그대로 반환(model → provider/upstream_model/effort 매핑, claude 프리픽스 디스커버리 별칭 포함); 더 좁은 Anthropic 프로토콜 디스커버리 응답(`id`, `display_name`, 업스트림 모델 메타데이터)을 제공하는 `/v1/models`와 구별됨. [스테이지 라우터](/ko/guides/stage-router/)를 설정한 `[[models]]` 엔트리가 하나라도 있으면 `routers` 배열이 추가되어, 각 라우터의 model id와 두 티어 타깃, picker가 출발하는 티어를 알려줌 |
+| `GET` | `/routes` | shunt 네이티브 라우트 디스커버리 — 구성된 `[[routes]]` 테이블을 그대로 반환(model → provider/upstream_model/effort 매핑, claude 프리픽스 디스커버리 별칭 포함); 더 좁은 Anthropic 프로토콜 디스커버리 응답(`id`, `display_name`, 업스트림 모델 메타데이터)을 제공하는 `/v1/models`와 구별됨. [스테이지 라우터](/ko/guides/stage-router/)를 설정한 `[[models]]` 엔트리가 하나라도 있으면 `routers` 배열이 추가되어, 각 라우터의 model id와 두 티어 타깃, 신호가 아무것도 결정하지 못했을 때 picker가 돌아가는 티어를 알려줌 |
 | `POST` | `/v1/messages` | 추론 — 요청의 `model` id에 따라 라우팅 |
 | `POST` | `/v1/messages/count_tokens` | [토큰 카운팅](/ko/guides/effort-and-context/#토큰-카운팅-count_tokens) |
 | `GET` | `/managed/settings` | 게이트웨이 JWT별 Claude Code managed settings; `ETag`, `If-None-Match`, `304 Not Modified` 지원 |

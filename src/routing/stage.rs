@@ -212,7 +212,8 @@ impl StageContext<'_> {
 /// `context` is `None` for the body-less entry points — `/routes`, discovery,
 /// and the public [`crate::routing::resolve_model`] — which have no conversation
 /// to score and no session to pin, and so report the picker's default. That is
-/// the right answer for those surfaces: the tier a fresh session starts on.
+/// the right answer for those surfaces: the tier the picker falls back to when
+/// no signal decides.
 pub(crate) fn select(
     router: &StageRouterConfig,
     model: &str,

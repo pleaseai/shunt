@@ -951,7 +951,7 @@ fn a_superseded_commit_reports_no_flip() {
 }
 
 /// `commit` reads the entry it replaces through the same liveness filter
-/// `apply` reads pins through. Without that, resuming a session after its TTU
+/// `apply` reads pins through. Without that, resuming a session after its TTL
 /// lapsed would report a flip away from a tier no request was served at — the
 /// entry was already invisible to the turn that decided.
 #[test]
