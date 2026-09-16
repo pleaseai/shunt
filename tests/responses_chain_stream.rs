@@ -747,6 +747,63 @@ async fn a_parked_upstream_after_message_stop_ends_the_relay_at_the_terminal_fra
     responder.await.unwrap();
 }
 
+/// An Anthropic-kind winner whose upstream relays a terminal `error` frame
+/// and then parks the connection must not strand the client: the error frame
+/// is terminal exactly like `message_stop`, so the relay ends at that frame
+/// and the post-terminal drain reads the still-open upstream detached — no
+/// keepalive ping can ever follow the terminal error, and the client's
+/// stream completes instead of waiting on the upstream to close.
+#[tokio::test]
+async fn a_parked_upstream_after_an_error_frame_ends_the_relay_at_it() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = common::env_lock().await;
+    let turn = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_anthropic\",\"model\":\"claude-fable-5-1\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+        "event: error\n",
+        "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n",
+        "event: ping\n",
+        "data: {}\n\n",
+    );
+    let (addr, release_park, responder) = parked_responder(turn.to_string()).await;
+    let refused = refused_base_url();
+    let config = chain_config(
+        (ProviderKind::Anthropic, format!("http://{addr}")),
+        (ProviderKind::Responses, refused.url.clone()),
+    );
+    let gateway = start_gateway(config).await;
+    let response = stream_request(&gateway).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = tokio::time::timeout(std::time::Duration::from_secs(3), response.text())
+        .await
+        .expect(
+            "the relay ends at the terminal error frame instead of waiting on the parked upstream",
+        )
+        .unwrap();
+    let frames: Vec<&str> = body
+        .split("\n\n")
+        .filter(|frame| !frame.trim().is_empty())
+        .collect();
+    assert_eq!(
+        frames.last().unwrap().lines().next().unwrap(),
+        "event: error",
+        "no frame may follow the terminal error frame, got:\n{body}"
+    );
+    assert_eq!(
+        count_event(&body, "ping"),
+        0,
+        "no frame may follow the terminal error frame — neither an upstream frame nor a keepalive ping, got:\n{body}"
+    );
+    assert_eq!(count_event(&body, "error"), 1, "got:\n{body}");
+    drop(gateway);
+    drop(release_park);
+    responder.await.unwrap();
+}
+
 /// The terminal event's field may omit the post-colon space — the spelling
 /// the metrics parser accepts — and the relay still ends at that frame: the
 /// scan shares the observer's field parser, so a no-space `message_stop`

@@ -100,19 +100,32 @@ impl LazyEnvelope {
     }
 }
 
-/// One upstream attempt's outcome, produced inside the committed stream.
-pub(crate) enum Attempt {
-    /// This upstream won. `start` carries the synthetic `message_start` bytes
-    /// for a Responses-kind winner (deferred until now); an Anthropic-kind
-    /// winner has none — its own `message_start` relays as the first frame.
-    /// `headers_at` is when the winning upstream's response headers arrived:
-    /// the chain records `shunt.latency` to that instant (the pre-commit
-    /// loop's semantics), so a still-running estimate awaited after the
-    /// headers never inflates the header-latency sample.
-    Winner {
+/// A winner's relay build: ready when the machine resolved before the
+/// headers (or the route never estimates — an Anthropic-kind winner relays
+/// its own `message_start` and has no synthetic start), pending when the
+/// headers won the race. The pending build resolves only the machine and
+/// the synthetic `message_start`, awaited by the chain AFTER it recorded
+/// the winner — a client disconnect during that await drops the unfold,
+/// and the attribution (slots, requests sample, span outcome) must already
+/// name the winner, not the failed primary.
+pub(crate) enum RelayBuild {
+    Ready {
         start: Option<Bytes>,
         frames: ClientFrames,
+    },
+    Pending(Pin<Box<dyn Future<Output = (Bytes, ClientFrames)> + Send>>),
+}
+
+/// One upstream attempt's outcome, produced inside the committed stream.
+pub(crate) enum Attempt {
+    /// This upstream won. `headers_at` is when the winning upstream's
+    /// response headers arrived: the chain records `shunt.latency` to that
+    /// instant (the pre-commit loop's semantics), so a still-running
+    /// estimate awaited after the headers never inflates the
+    /// header-latency sample.
+    Winner {
         headers_at: Instant,
+        relay: RelayBuild,
     },
     /// The attempt failed before any client-visible frame. `advance` mirrors
     /// the pre-commit loop: advance-status and transport failures move the
@@ -132,17 +145,19 @@ pub(crate) enum Attempt {
 /// envelope for one terminal SSE `error` event (a mid-relay body failure, so
 /// the client sees the failure instead of a silently truncated stream and the
 /// outcome records as failed rather than `OK`). A body error after the turn's
-/// `message_stop` already relayed can no longer reach the relay: it ends at
+/// terminal frame already relayed can no longer reach the relay: it ends at
 /// that frame, so the post-terminal drain absorbs whatever follows.
 pub(crate) type ClientFrames = Pin<Box<dyn Stream<Item = Result<Bytes, Value>> + Send>>;
 
 /// Cross-chunk scanner over a winner's relayed frames: once a complete
-/// `event: message_stop` frame has passed, the relay ends at that frame — the
-/// Responses relay's post-terminal rule
-/// (`adapters::responses::sse_parse`) — and a later transport error surfaces
-/// nowhere: the client holds a complete turn, and an appended error event
-/// would both corrupt it and (the observer gives error events precedence over
-/// terminal events) record the request as failed.
+/// terminal frame — `message_stop`, or a relayed `error` frame (an
+/// Anthropic-kind upstream's own mid-stream error, or a translated backend
+/// error event) — has passed, the relay ends at that frame — the Responses
+/// relay's post-terminal rule (`adapters::responses::sse_parse`) — and a
+/// later transport error surfaces nowhere: the client holds a complete turn,
+/// and an appended error event would both corrupt it and (the observer gives
+/// error events precedence over terminal events) record the request as
+/// failed.
 struct TerminalScan {
     /// Bytes since the last complete frame boundary, held until the next
     /// boundary arrives (a frame may straddle chunk boundaries).
@@ -158,8 +173,8 @@ struct TerminalScan {
     skip_tail_len: usize,
 }
 
-/// No relayed frame can be a `message_stop` past this size (real frames are
-/// a few hundred bytes); the bound mirrors the model-rewrite accumulator's.
+/// No relayed frame can be terminal past this size (real frames are a few
+/// hundred bytes); the bound mirrors the model-rewrite accumulator's.
 const MAX_TERMINAL_FRAME_BYTES: usize = 64 * 1024;
 
 impl TerminalScan {
@@ -198,7 +213,7 @@ impl TerminalScan {
         self.carry.extend_from_slice(rest);
         let mut consumed = 0;
         while let Some(end) = sse_frame_boundary(&self.carry[consumed..]) {
-            if is_message_stop_frame(&self.carry[consumed..consumed + end]) {
+            if is_terminal_frame(&self.carry[consumed..consumed + end]) {
                 self.terminal_seen = true;
                 self.carry.clear();
                 return Some(skipped + consumed + end - carried);
@@ -264,13 +279,63 @@ fn sse_frame_boundary(buf: &[u8]) -> Option<usize> {
     }
 }
 
-/// Whether the complete frame carries the Anthropic terminal event. The
-/// `event:` field parses through the metrics observer's own parser, so the
-/// scan and the observer cannot disagree about a frame's event name; only a
-/// frame's own `event:` line matches — a `data:` payload whose JSON happens
-/// to contain the literal must not arm the scan.
-fn is_message_stop_frame(frame: &[u8]) -> bool {
-    stream_metrics::event_and_data(frame).0 == Some(b"message_stop".as_slice())
+/// Whether the complete frame carries a terminal event — `message_stop`, or
+/// a relayed `error` frame (an Anthropic-kind upstream's own mid-stream
+/// error, or a translated backend error event). The `event:` field parses
+/// through the metrics observer's own parser, so the scan and the observer
+/// cannot disagree about a frame's event name; only a frame's own `event:`
+/// line matches — a `data:` payload whose JSON happens to contain the
+/// literal must not arm the scan.
+fn is_terminal_frame(frame: &[u8]) -> bool {
+    let Some(event) = stream_metrics::event_and_data(frame).0 else {
+        return false;
+    };
+    event == b"message_stop" || event == b"error"
+}
+
+/// Resolve a winner's relay build into its start and frames, recording the
+/// winner FIRST: the attribution slots, the requests sample, and the span
+/// outcome all land before a still-pending build is awaited — a client
+/// disconnect during that await drops the unfold, and the records must
+/// already name the winner, not the failed primary. The pending build
+/// resolves only the machine and the synthetic start; the keepalive wrapper
+/// covers the wait.
+async fn resolve_winner(
+    provider: &str,
+    model: &str,
+    header_latency_ms: f64,
+    request_span: &tracing::Span,
+    winner_slot: &std::sync::Arc<std::sync::Mutex<String>>,
+    winner_model_slot: &std::sync::Arc<std::sync::Mutex<String>>,
+    relay: RelayBuild,
+) -> (Option<Bytes>, ClientFrames) {
+    crate::metrics::record_proxied_request(
+        provider,
+        model,
+        StatusCode::OK.as_u16(),
+        header_latency_ms,
+    );
+    // Attribute before the start goes out: TTFT and early-stream metrics
+    // must name the winner, not the failed primary.
+    if let Ok(mut slot) = winner_slot.lock() {
+        *slot = provider.to_string();
+    }
+    if let Ok(mut slot) = winner_model_slot.lock() {
+        *slot = model.to_string();
+    }
+    // Record the winner at selection: a client disconnect mid-relay drops
+    // the unfold, and the request span must already carry the winner and
+    // its 200. A later mid-relay failure overwrites only the span status;
+    // its Sentry event is the stream observer's.
+    observability::record_span_outcome_on(request_span, provider, StatusCode::OK);
+    observability::capture_upstream_outcome(provider, model, StatusCode::OK);
+    match relay {
+        RelayBuild::Ready { start, frames } => (start, frames),
+        RelayBuild::Pending(build) => {
+            let (start, frames) = build.await;
+            (Some(start), frames)
+        }
+    }
 }
 
 /// Everything the committed-stream chain needs, bundled so the per-attempt
@@ -565,46 +630,20 @@ pub(super) async fn forward_chain_stream(
                                 _ => unreachable!("chain_stream_applies gates the adapter kind"),
                             };
                             match outcome {
-                                Attempt::Winner {
-                                    start,
-                                    frames,
-                                    headers_at,
-                                } => {
-                                    crate::metrics::record_proxied_request(
+                                Attempt::Winner { headers_at, relay } => {
+                                    let (start, frames) = resolve_winner(
                                         &provider,
                                         &model,
-                                        StatusCode::OK.as_u16(),
                                         headers_at
                                             .saturating_duration_since(attempt_started)
                                             .as_secs_f64()
                                             * 1000.0,
-                                    );
-                                    // Attribute before the start goes out:
-                                    // TTFT and early-stream metrics must name
-                                    // the winner, not the failed primary.
-                                    if let Ok(mut slot) = winner_slot.lock() {
-                                        *slot = provider.clone();
-                                    }
-                                    if let Ok(mut slot) = winner_model_slot.lock() {
-                                        *slot = model.clone();
-                                    }
-                                    // Record the winner at selection: a
-                                    // client disconnect mid-relay drops the
-                                    // unfold, and the request span must
-                                    // already carry the winner and its 200.
-                                    // A later mid-relay failure overwrites
-                                    // only the span status; its Sentry event
-                                    // is the stream observer's.
-                                    observability::record_span_outcome_on(
                                         &request_span,
-                                        &provider,
-                                        StatusCode::OK,
-                                    );
-                                    observability::capture_upstream_outcome(
-                                        &provider,
-                                        &model,
-                                        StatusCode::OK,
-                                    );
+                                        &winner_slot,
+                                        &winner_model_slot,
+                                        relay,
+                                    )
+                                    .await;
                                     let relay = Phase::Relay {
                                         frames,
                                         winner_provider: provider,
@@ -742,7 +781,7 @@ pub(super) async fn forward_chain_stream(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_message_stop_frame, sse_frame_boundary, TerminalScan};
+    use super::{is_terminal_frame, sse_frame_boundary, TerminalScan};
 
     fn scan(chunks: &[&str]) -> bool {
         let mut scan = TerminalScan::new();
@@ -819,6 +858,48 @@ mod tests {
         assert!(scan(&[
             "event:message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
         ]));
+    }
+
+    #[test]
+    fn a_complete_error_frame_arms_the_scan() {
+        assert!(scan(&[
+            "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n"
+        ]));
+    }
+
+    #[test]
+    fn a_no_space_error_event_field_arms_the_scan() {
+        assert!(scan(&[
+            "event:error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n"
+        ]));
+    }
+
+    #[test]
+    fn an_error_shaped_data_payload_does_not_arm_the_scan() {
+        assert!(!scan(&[
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"event: error\"}}\n\n",
+        ]));
+    }
+
+    #[test]
+    fn the_terminal_cut_ends_at_the_error_frame_boundary() {
+        let mut scan = TerminalScan::new();
+        let chunk = concat!(
+            "event: content_block_delta\ndata: {}\n\n",
+            "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\"}}\n\n",
+            "trailing",
+        );
+        let cut = scan
+            .scan(chunk.as_bytes())
+            .expect("the error frame completes in this chunk");
+        assert_eq!(
+            &chunk[..cut],
+            concat!(
+                "event: content_block_delta\ndata: {}\n\n",
+                "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\"}}\n\n",
+            ),
+            "the relay cuts exactly at the terminal error frame boundary"
+        );
     }
 
     #[test]
@@ -968,27 +1049,105 @@ mod tests {
         // The shared parser overwrites the event name per `event:` line — the
         // SSE rule — so a later line supersedes an earlier one, and the scan
         // arms exactly when the observer classifies the terminal.
-        assert!(is_message_stop_frame(
+        assert!(is_terminal_frame(
             b"event: message_start\nevent: message_stop\ndata: {}\n\n"
         ));
-        assert!(!is_message_stop_frame(
+        assert!(!is_terminal_frame(
             b"event: message_stop\nevent: message_start\ndata: {}\n\n"
+        ));
+        assert!(is_terminal_frame(
+            b"event: content_block_delta\nevent: error\ndata: {}\n\n"
+        ));
+        assert!(!is_terminal_frame(
+            b"event: error\nevent: content_block_delta\ndata: {}\n\n"
         ));
     }
 
     #[test]
     fn only_the_event_line_matches_not_a_data_payload() {
-        assert!(is_message_stop_frame(b"event: message_stop\ndata: {}\n\n"));
-        assert!(is_message_stop_frame(b"event: message_stop\r\n"));
-        assert!(is_message_stop_frame(b"event:message_stop\n\n"));
-        assert!(is_message_stop_frame(b"event:message_stop\r\n"));
-        assert!(!is_message_stop_frame(b"data: event: message_stop\n\n"));
-        assert!(!is_message_stop_frame(b"data: event:message_stop\n\n"));
+        assert!(is_terminal_frame(b"event: message_stop\ndata: {}\n\n"));
+        assert!(is_terminal_frame(b"event: message_stop\r\n"));
+        assert!(is_terminal_frame(b"event:message_stop\n\n"));
+        assert!(is_terminal_frame(b"event:message_stop\r\n"));
+        assert!(is_terminal_frame(b"event: error\ndata: {}\n\n"));
+        assert!(is_terminal_frame(b"event:error\r\n"));
+        assert!(!is_terminal_frame(b"data: event: message_stop\n\n"));
+        assert!(!is_terminal_frame(b"data: event:message_stop\n\n"));
+        assert!(!is_terminal_frame(b"data: event: error\n\n"));
         // The shared field parser strips one optional post-colon space — the
         // SSE rule — so a second space stays part of the event name.
-        assert!(!is_message_stop_frame(b"event:  message_stop\n\n"));
-        assert!(!is_message_stop_frame(
+        assert!(!is_terminal_frame(b"event:  message_stop\n\n"));
+        assert!(!is_terminal_frame(b"event:  error\n\n"));
+        assert!(!is_terminal_frame(
             b"event: content_block_delta\ndata: {\"text\":\"event: message_stop\"}\n\n"
         ));
+        assert!(!is_terminal_frame(
+            b"event: content_block_delta\ndata: {\"text\":\"event: error\"}\n\n"
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_winner_is_recorded_before_a_pending_relay_build_resolves() {
+        use crate::metrics::proxied_request_samples_for_tests;
+        let provider = "resolve-winner-test-provider".to_string();
+        let model = "resolve-winner-test-model".to_string();
+        let provider_slot =
+            std::sync::Arc::new(std::sync::Mutex::new("failed-primary".to_string()));
+        let model_slot = std::sync::Arc::new(std::sync::Mutex::new("failed-model".to_string()));
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let build_resolved = std::sync::Arc::new(std::sync::Mutex::new(false));
+        let build_resolved_flag = build_resolved.clone();
+        let relay = super::RelayBuild::Pending(Box::pin(async move {
+            let _ = wait.await;
+            *build_resolved_flag.lock().expect("build flag lock") = true;
+            let frames: super::ClientFrames = Box::pin(futures_util::stream::empty());
+            (axum::body::Bytes::new(), frames)
+        }));
+        let task = tokio::spawn({
+            let provider = provider.clone();
+            let model = model.clone();
+            let provider_slot = provider_slot.clone();
+            let model_slot = model_slot.clone();
+            async move {
+                super::resolve_winner(
+                    &provider,
+                    &model,
+                    0.0,
+                    &tracing::Span::none(),
+                    &provider_slot,
+                    &model_slot,
+                    relay,
+                )
+                .await
+            }
+        });
+        // The records land while the build is still blocked: wait for the
+        // slot to flip rather than racing a sleep against scheduling.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if *provider_slot.lock().expect("provider slot lock") == provider {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the winner slots flip while the build is still pending");
+        assert_eq!(*model_slot.lock().expect("model slot lock"), model);
+        let (count, _) = proxied_request_samples_for_tests(&provider, &model, 200);
+        assert_eq!(
+            count, 1,
+            "the requests sample is recorded before the pending build resolves"
+        );
+        assert!(
+            !*build_resolved.lock().expect("build flag lock"),
+            "the pending build stays unawaited while the winner records"
+        );
+        release.send(()).expect("the build is still listening");
+        let (_start, _frames) = task.await.expect("the winner resolution task joined");
+        assert!(
+            *build_resolved.lock().expect("build flag lock"),
+            "the pending build resolves once released"
+        );
     }
 }

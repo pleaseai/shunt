@@ -1489,9 +1489,11 @@ pub(crate) async fn chain_attempt(
         })
         .boxed();
     crate::proxy::chain_stream::Attempt::Winner {
-        start: None,
-        frames,
         headers_at,
+        relay: crate::proxy::chain_stream::RelayBuild::Ready {
+            start: None,
+            frames,
+        },
     }
 }
 

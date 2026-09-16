@@ -38,14 +38,13 @@ use crate::{
 };
 
 use futures_util::future::{BoxFuture, Shared};
-use futures_util::{FutureExt, StreamExt, TryStreamExt};
+use futures_util::{FutureExt, TryStreamExt};
 
 use self::context::{CredentialSource, ForwardOptions, PoolForward, TurnOptions};
 pub(crate) use self::early_stream::InStreamMetrics;
 use self::early_stream::{
-    parsed_events, pool_translated_stream, pooled_first_poll, send_classified,
-    send_classified_with_estimate, translated_stream, EstimateBuild, HttpSendContext, MachineBuild,
-    PoolFirstPoll, PoolItem, SendClassified,
+    parsed_events, pooled_first_poll, relay_build, send_classified, send_classified_with_estimate,
+    translated_stream, HttpSendContext, PoolFirstPoll, PoolItem, SendClassified,
 };
 use self::error::{adapter_error_envelope, own_error, transport_error};
 use self::http::forward_http;
@@ -55,6 +54,7 @@ use self::pool::{
     forward_chatgpt_oauth, forward_chatgpt_oauth_stream, pool_events_stream, PoolForwardStream,
     PoolStreamContext,
 };
+use self::sse_parse::pool_relay_build;
 use self::websocket::forward_websocket;
 
 pub struct ResponsesAdapter;
@@ -530,21 +530,9 @@ pub(crate) async fn chain_attempt(
             // estimate.
             match item {
                 Some(Ok(PoolItem::Event(event))) => {
-                    let (machine, start) = match build {
-                        MachineBuild::Ready(machine, start) => (*machine, start),
-                        MachineBuild::Pending(build) => build.await,
-                    };
                     return crate::proxy::chain_stream::Attempt::Winner {
-                        start: Some(axum::body::Bytes::from(start.join(""))),
                         headers_at,
-                        frames: Box::pin(
-                            pool_translated_stream(
-                                futures_util::stream::iter([Ok(PoolItem::Event(event))])
-                                    .chain(events),
-                                move || Box::pin(async move { (machine, String::new()) }),
-                            )
-                            .map_err(|never| match never {}),
-                        ),
+                        relay: pool_relay_build(build, event, events),
                     };
                 }
                 Some(Ok(PoolItem::Exhausted {
@@ -632,9 +620,10 @@ pub(crate) async fn chain_attempt(
     // Start the route-gated estimate before the send so the encode overlaps
     // the upstream round-trip instead of serializing after the headers
     // arrive — the non-pooled counterpart of the pooled branch's race.
-    // Only the winner arm awaits it; a failed attempt drops its share of
-    // the chain's single estimate, never the compute, and the next
-    // opted-in attempt reuses it.
+    // Only the winner's pending relay build awaits it, after the chain
+    // recorded the winner; a failed attempt drops its share of the chain's
+    // single estimate, never the compute, and the next opted-in attempt
+    // reuses it.
     let estimate = {
         let cache = estimate_cache.clone();
         let state = state.clone();
@@ -659,23 +648,28 @@ pub(crate) async fn chain_attempt(
     let sent = send_classified_with_estimate(send_classified(&send_context), estimate).await;
     match sent.classified {
         SendClassified::Relay { bytes } => {
-            let estimate_value = match sent.estimate {
-                EstimateBuild::Ready(value) => value,
-                EstimateBuild::Pending(build) => build.await,
-            };
-            let mut machine = turn
-                .relay(route)
-                .machine()
-                .with_input_estimate(estimate_value)
-                .without_content_accumulation();
-            let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+            let route = route.clone();
+            let relay = relay_build(
+                sent.estimate,
+                move |estimate_value| {
+                    let mut machine = turn
+                        .relay(&route)
+                        .machine()
+                        .with_input_estimate(estimate_value)
+                        .without_content_accumulation();
+                    let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+                    (machine, start)
+                },
+                move |machine| {
+                    Box::pin(
+                        translated_stream(parsed_events(bytes), machine)
+                            .map_err(|never| match never {}),
+                    )
+                },
+            );
             crate::proxy::chain_stream::Attempt::Winner {
-                start: Some(axum::body::Bytes::from(start.join(""))),
                 headers_at: sent.headers_at,
-                frames: Box::pin(
-                    translated_stream(parsed_events(bytes), machine)
-                        .map_err(|never| match never {}),
-                ),
+                relay,
             }
         }
         SendClassified::Failed {
@@ -734,6 +728,23 @@ impl ChainEstimate {
             })
             .await
             .clone()
+    }
+}
+
+#[cfg(test)]
+impl ChainEstimate {
+    /// A chain estimate whose cell already holds a pending share: the
+    /// factory never runs and every caller's share stays pending, so a test
+    /// pins the send-win race and holds the estimate open past it.
+    pub(crate) fn test_held_pending() -> std::sync::Arc<Self> {
+        let estimate = std::sync::Arc::new(Self::default());
+        let boxed: BoxFuture<'static, u64> = Box::pin(std::future::pending());
+        estimate
+            .cell
+            .set(boxed.shared())
+            .map_err(|_| ())
+            .expect("the test estimate seeds once");
+        estimate
     }
 }
 

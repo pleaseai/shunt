@@ -22,12 +22,11 @@ use crate::{
 use super::context::CredentialSource;
 use super::error::{adapter_error_envelope, mapped_upstream_error, own_error, transport_error};
 use super::http::http_send;
-use crate::proxy::chain_stream::LazyEnvelope;
+use crate::proxy::chain_stream::{ClientFrames, LazyEnvelope, RelayBuild};
 
 pub(super) use super::sse_parse::{
     bounded_input_estimate, next_parsed, parsed_events, pool_translated_stream, pooled_first_poll,
-    translated_core, translated_stream, MachineBuild, PoolEvent, PoolFirstPoll, PoolItem,
-    SseParser,
+    translated_core, translated_stream, PoolEvent, PoolFirstPoll, PoolItem, SseParser,
 };
 
 /// Marker on the committed streaming responses: their
@@ -254,18 +253,20 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
 
 /// A non-pooled chain attempt's route-gated token estimate, raced against its
 /// send ([`send_classified_with_estimate`]): resolved when the estimate won
-/// the race, still pending when the send won it.
-pub(super) enum EstimateBuild<'a> {
+/// the race, still pending when the send won it. The pending future is
+/// `'static` — the estimate is built from clones — so the winner's pending
+/// relay build can await it after the chain recorded the winner.
+pub(super) enum EstimateBuild {
     Ready(u64),
-    Pending(std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send + 'a>>),
+    Pending(std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send>>),
 }
 
 /// One non-pooled chain attempt's send raced against its estimate.
 /// `headers_at` is the send's completion instant, for the chain's
 /// header-latency sample — never an estimate-completion instant.
-pub(super) struct SendClassifiedWithEstimate<'a> {
+pub(super) struct SendClassifiedWithEstimate {
     pub(super) classified: SendClassified,
-    pub(super) estimate: EstimateBuild<'a>,
+    pub(super) estimate: EstimateBuild,
     pub(super) headers_at: std::time::Instant,
 }
 
@@ -276,14 +277,14 @@ pub(super) struct SendClassifiedWithEstimate<'a> {
 /// estimate, so a classified failure never waits on it: a still-running
 /// estimate is dropped with the failure, its blocking task completing
 /// unobserved.
-pub(super) async fn send_classified_with_estimate<'a>(
-    send: impl std::future::Future<Output = SendClassified> + Send + 'a,
-    estimate: impl std::future::Future<Output = u64> + Send + 'a,
-) -> SendClassifiedWithEstimate<'a> {
+pub(super) async fn send_classified_with_estimate(
+    send: impl std::future::Future<Output = SendClassified> + Send,
+    estimate: impl std::future::Future<Output = u64> + Send + 'static,
+) -> SendClassifiedWithEstimate {
     match futures_util::future::select(Box::pin(send), Box::pin(estimate)).await {
         futures_util::future::Either::Left((classified, estimate)) => SendClassifiedWithEstimate {
             classified,
-            estimate: EstimateBuild::Pending(Box::pin(estimate)),
+            estimate: EstimateBuild::Pending(estimate),
             headers_at: std::time::Instant::now(),
         },
         futures_util::future::Either::Right((value, send)) => {
@@ -294,6 +295,34 @@ pub(super) async fn send_classified_with_estimate<'a>(
                 headers_at: std::time::Instant::now(),
             }
         }
+    }
+}
+
+/// Build a winner's relay from the raced estimate: `Ready` resolves the
+/// machine and the synthetic start now, `Pending` defers only that build —
+/// the chain records the winner (attribution slots, requests sample, span
+/// outcome) before awaiting the pending relay, so a client disconnect
+/// during that await can no longer drop the attribution. `build` turns the
+/// estimate into the machine plus the synthetic start; `wrap` turns the
+/// machine into the relayed frames.
+pub(super) fn relay_build(
+    estimate: EstimateBuild,
+    build: impl FnOnce(u64) -> (AnthropicSseMachine, Vec<String>) + Send + 'static,
+    wrap: impl FnOnce(AnthropicSseMachine) -> ClientFrames + Send + 'static,
+) -> RelayBuild {
+    match estimate {
+        EstimateBuild::Ready(value) => {
+            let (machine, start) = build(value);
+            RelayBuild::Ready {
+                start: Some(axum::body::Bytes::from(start.join(""))),
+                frames: wrap(machine),
+            }
+        }
+        EstimateBuild::Pending(pending) => RelayBuild::Pending(Box::pin(async move {
+            let value = pending.await;
+            let (machine, start) = build(value);
+            (axum::body::Bytes::from(start.join("")), wrap(machine))
+        })),
     }
 }
 

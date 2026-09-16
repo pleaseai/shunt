@@ -1,4 +1,5 @@
 use super::*;
+use crate::adapters::responses::sse_parse::MachineBuild;
 use crate::model::responses::AnthropicSseMachine;
 use crate::proxy::chain_stream::LazyEnvelope;
 use axum::body::to_bytes;
@@ -1538,5 +1539,272 @@ async fn a_stalled_terminal_error_body_never_delays_the_latency_sample() {
     assert!(
         item.is_some_and(|item| item.is_err()),
         "the turn ends in one terminal error item"
+    );
+}
+
+/// A still-pending estimate defers only the relay build: the helper returns
+/// a pending relay without awaiting the estimate — the chain records the
+/// winner before that await, so a serialized build never returns and the
+/// timeout fails the test.
+#[tokio::test]
+async fn a_pending_estimate_defers_only_the_relay_build() {
+    use crate::proxy::chain_stream::RelayBuild;
+    use futures_util::TryStreamExt;
+    let (estimate_release, estimate_wait) = tokio::sync::oneshot::channel::<()>();
+    let estimate_resolved = std::sync::Arc::new(std::sync::Mutex::new(false));
+    let estimate_resolved_flag = estimate_resolved.clone();
+    let estimate = EstimateBuild::Pending(Box::pin(async move {
+        let _ = estimate_wait.await;
+        *estimate_resolved_flag.lock().expect("estimate flag lock") = true;
+        42u64
+    }));
+    let built_value = std::sync::Arc::new(std::sync::Mutex::new(None::<u64>));
+    let built_value_flag = built_value.clone();
+    let relay = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        std::future::ready(relay_build(
+            estimate,
+            move |value| {
+                *built_value_flag.lock().expect("built value lock") = Some(value);
+                let mut machine = relay_opts().machine().without_content_accumulation();
+                let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+                (machine, start)
+            },
+            |machine| {
+                Box::pin(
+                    translated_stream(futures_util::stream::empty(), machine)
+                        .map_err(|never| match never {}),
+                )
+            },
+        )),
+    )
+    .await
+    .expect("the relay build never waits on the pending estimate");
+    let RelayBuild::Pending(build) = relay else {
+        panic!("the estimate was still pending when the relay built");
+    };
+    assert!(
+        !*estimate_resolved.lock().expect("estimate flag lock"),
+        "the estimate stays unawaited until the chain awaits the pending relay"
+    );
+    estimate_release
+        .send(())
+        .expect("the estimate is still listening");
+    let (start, _frames) = build.await;
+    assert!(
+        String::from_utf8_lossy(&start).contains("event: message_start"),
+        "the pending relay resolves the synthetic start, got: {}",
+        String::from_utf8_lossy(&start)
+    );
+    assert_eq!(
+        *built_value.lock().expect("built value lock"),
+        Some(42),
+        "the build receives the resolved estimate"
+    );
+}
+
+/// A resolved estimate builds the relay now: the winner relays the synthetic
+/// start immediately, with no pending future.
+#[tokio::test]
+async fn a_resolved_estimate_builds_the_relay_now() {
+    use crate::proxy::chain_stream::RelayBuild;
+    use futures_util::TryStreamExt;
+    let built_value = std::sync::Arc::new(std::sync::Mutex::new(None::<u64>));
+    let built_value_flag = built_value.clone();
+    let relay = relay_build(
+        EstimateBuild::Ready(42),
+        move |value| {
+            *built_value_flag.lock().expect("built value lock") = Some(value);
+            let mut machine = relay_opts().machine().without_content_accumulation();
+            let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+            (machine, start)
+        },
+        |machine| {
+            Box::pin(
+                translated_stream(futures_util::stream::empty(), machine)
+                    .map_err(|never| match never {}),
+            )
+        },
+    );
+    let RelayBuild::Ready { start, .. } = relay else {
+        panic!("the resolved estimate builds the relay immediately");
+    };
+    let start = start.expect("a Responses-kind winner always carries the synthetic start");
+    assert!(
+        String::from_utf8_lossy(&start).contains("event: message_start"),
+        "got: {}",
+        String::from_utf8_lossy(&start)
+    );
+    assert_eq!(
+        *built_value.lock().expect("built value lock"),
+        Some(42),
+        "the build receives the resolved estimate"
+    );
+}
+
+/// A still-pending machine build defers only the pooled relay: the helper
+/// returns a pending relay without awaiting the build, and the resolved
+/// relay puts the buffered account attribution frame first.
+#[tokio::test]
+async fn a_pending_machine_build_defers_only_the_pool_relay() {
+    use crate::adapters::responses::sse_parse::{pool_relay_build, MachineBuild, PoolEvent};
+    use crate::proxy::chain_stream::RelayBuild;
+    let (build_release, build_wait) = tokio::sync::oneshot::channel::<()>();
+    let build_resolved = std::sync::Arc::new(std::sync::Mutex::new(false));
+    let build_resolved_flag = build_resolved.clone();
+    let machine = relay_opts().machine().without_content_accumulation();
+    let build = async move {
+        let _ = build_wait.await;
+        *build_resolved_flag.lock().expect("build flag lock") = true;
+        let mut machine = machine;
+        let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+        (machine, start)
+    };
+    let relay = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        std::future::ready(pool_relay_build(
+            MachineBuild::Pending(Box::pin(build)),
+            PoolEvent::Account("pool-a".to_string()),
+            Box::pin(futures_util::stream::empty()),
+        )),
+    )
+    .await
+    .expect("the pooled relay build never waits on the pending machine build");
+    let RelayBuild::Pending(build) = relay else {
+        panic!("the machine build was still pending when the relay built");
+    };
+    assert!(
+        !*build_resolved.lock().expect("build flag lock"),
+        "the machine build stays unawaited until the chain awaits the pending relay"
+    );
+    build_release
+        .send(())
+        .expect("the build is still listening");
+    let (start, mut frames) = build.await;
+    assert!(
+        String::from_utf8_lossy(&start).contains("event: message_start"),
+        "the pending relay resolves the synthetic start"
+    );
+    use futures_util::StreamExt;
+    // The frames stream's leading chunk is the (empty) factory leading
+    // bytes: the synthetic start already went out as the winner's `start`.
+    let first = loop {
+        let chunk = frames
+            .next()
+            .await
+            .expect("the relayed frames yield")
+            .expect("the frame is ok");
+        if !chunk.is_empty() {
+            break chunk;
+        }
+    };
+    assert_eq!(
+        String::from_utf8_lossy(&first),
+        "event: account\ndata: \"pool-a\"\n\n",
+        "the buffered account attribution frame stays first"
+    );
+}
+
+/// A resolved machine build relays the buffered account attribution frame
+/// first, exactly like the pending arm.
+#[tokio::test]
+async fn a_resolved_machine_build_relays_the_account_frame_first() {
+    use crate::adapters::responses::sse_parse::{pool_relay_build, MachineBuild, PoolEvent};
+    use crate::proxy::chain_stream::RelayBuild;
+    let mut machine = relay_opts().machine().without_content_accumulation();
+    let start = machine.start_synthetic(format!("msg_{}", uuid::Uuid::new_v4()));
+    let relay = pool_relay_build(
+        MachineBuild::Ready(Box::new(machine), start),
+        PoolEvent::Account("pool-a".to_string()),
+        Box::pin(futures_util::stream::empty()),
+    );
+    let RelayBuild::Ready {
+        start, mut frames, ..
+    } = relay
+    else {
+        panic!("the resolved build relays immediately");
+    };
+    let start = start.expect("a Responses-kind winner always carries the synthetic start");
+    assert!(
+        String::from_utf8_lossy(&start).contains("event: message_start"),
+        "got: {}",
+        String::from_utf8_lossy(&start)
+    );
+    use futures_util::StreamExt;
+    // The frames stream's leading chunk is the (empty) factory leading
+    // bytes: the synthetic start already went out as the winner's `start`.
+    let first = loop {
+        let chunk = frames
+            .next()
+            .await
+            .expect("the relayed frames yield")
+            .expect("the frame is ok");
+        if !chunk.is_empty() {
+            break chunk;
+        }
+    };
+    assert_eq!(
+        String::from_utf8_lossy(&first),
+        "event: account\ndata: \"pool-a\"\n\n",
+        "the account attribution frame relays first"
+    );
+}
+
+/// The non-pooled winner arm returns the relay without awaiting a
+/// still-pending estimate: pre-seeding the chain's shared estimate with a
+/// pending share pins the send-win race, and a serialized arm awaits the
+/// pending estimate forever — the timeout fails the test.
+#[tokio::test]
+async fn a_winner_with_a_pending_estimate_returns_a_pending_relay_build() {
+    use crate::adapters::responses::{chain_attempt, ChainEstimate};
+    use crate::auth::shared::EnvVarGuard;
+    use crate::proxy::chain_stream::{Attempt, RelayBuild};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(""))
+        .mount(&server)
+        .await;
+    // `api_key` auth: the built-in codex provider defaults to
+    // `chatgpt_oauth`, whose single-credential resolution reads the real
+    // account store — box-dependent.
+    let key = "SHUNT_TEST_CHAIN_ATTEMPT_KEY";
+    let _env = EnvVarGuard::set(key, "probe");
+    let mut config = crate::config::Config::default();
+    let mut provider = config
+        .providers
+        .get("codex")
+        .expect("codex provider is built in")
+        .clone();
+    provider.base_url = server.uri();
+    provider.auth = crate::config::AuthMode::ApiKey;
+    provider.api_key_env = Some(key.to_string());
+    config
+        .providers
+        .insert("pending-estimate-probe".to_string(), provider);
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let route = named_codex_route("pending-estimate-probe");
+    let body = crate::request::RequestBody::parse(
+        serde_json::json!({
+            "model": "gpt-5.6-sol",
+            "stream": true,
+            "messages": [{ "role": "user", "content": "hi" }],
+        })
+        .to_string()
+        .into_bytes(),
+    )
+    .expect("the request body parses");
+    let cache = ChainEstimate::test_held_pending();
+    let attempt = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        chain_attempt(&state, &route, &axum::http::HeaderMap::new(), body, &cache),
+    )
+    .await
+    .expect("the winner arm returns without awaiting the pending estimate");
+    let Attempt::Winner { relay, .. } = attempt else {
+        panic!("the 200 upstream wins the attempt");
+    };
+    assert!(
+        matches!(relay, RelayBuild::Pending(_)),
+        "the estimate is still pending when the winner returns"
     );
 }

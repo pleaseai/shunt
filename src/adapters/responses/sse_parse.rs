@@ -7,11 +7,11 @@ use std::convert::Infallible;
 
 use axum::body::Bytes;
 use axum::http::StatusCode;
-use futures_util::{stream, Stream, StreamExt};
+use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use serde_json::Value;
 
 use crate::model::responses::{sse, AnthropicSseMachine, ResponseEvent};
-use crate::proxy::chain_stream::LazyEnvelope;
+use crate::proxy::chain_stream::{LazyEnvelope, RelayBuild};
 
 use super::error::{adapter_error_envelope, own_error, transport_error};
 
@@ -227,6 +227,49 @@ where
             events,
             headers_at: std::time::Instant::now(),
         },
+    }
+}
+
+/// Build a pooled winner's relay from the raced machine build: `Ready`
+/// constructs the relay now, `Pending` defers only the machine and the
+/// synthetic start — the chain records the winner (attribution slots,
+/// requests sample, span outcome) before awaiting the pending relay, so a
+/// client disconnect during that await can no longer drop the attribution.
+/// The buffered first item (the winning account's attribution frame) stays
+/// the first relayed frame either way.
+pub(super) fn pool_relay_build<E>(
+    build: MachineBuild,
+    event: PoolEvent,
+    events: std::pin::Pin<Box<E>>,
+) -> RelayBuild
+where
+    E: Stream<Item = Result<PoolItem, Value>> + Send + 'static,
+{
+    match build {
+        MachineBuild::Ready(machine, start) => {
+            let machine = *machine;
+            RelayBuild::Ready {
+                start: Some(Bytes::from(start.join(""))),
+                frames: Box::pin(
+                    pool_translated_stream(
+                        futures_util::stream::iter([Ok(PoolItem::Event(event))]).chain(events),
+                        move || Box::pin(async move { (machine, String::new()) }),
+                    )
+                    .map_err(|never| match never {}),
+                ),
+            }
+        }
+        MachineBuild::Pending(pending) => RelayBuild::Pending(Box::pin(async move {
+            let (machine, start) = pending.await;
+            let frames: crate::proxy::chain_stream::ClientFrames = Box::pin(
+                pool_translated_stream(
+                    futures_util::stream::iter([Ok(PoolItem::Event(event))]).chain(events),
+                    move || Box::pin(async move { (machine, String::new()) }),
+                )
+                .map_err(|never| match never {}),
+            );
+            (Bytes::from(start.join("")), frames)
+        })),
     }
 }
 
