@@ -1,0 +1,31 @@
+.claude/agent-memory/review-review-issue-fixer/MEMORY.md
+  s_a84d85fd6b2d07::t_1ddccb5e49b1ba 2-3
+plugins/shunt/package.json
+  s_a84d85fd6b2d07::t_08737d4de8c96a 11
+plugins/shunt/tsconfig.json
+  s_a84d85fd6b2d07::t_c65f95e05fe4e1 1-30
+.github/workflows/ci.yml
+  s_a84d85fd6b2d07::t_a1039e06416401 84-90
+.claude/agent-memory/review-review-issue-fixer/shunt-mod-typecheck-boundary.md
+  s_a84d85fd6b2d07::t_edc27fa62ba196 1-24
+plugins/shunt/README.md
+  s_a84d85fd6b2d07::t_58eef956c8a0db 144-145,154-157
+.claude/agent-memory/review-review-issue-fixer/shunt-mod-blank-env-override.md
+  s_a84d85fd6b2d07::t_f617b876d0c4db 1-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "957e06db732df7e9854ccb192e662ad74bb5b602",
+  "prompts": {},
+  "sessions": {
+    "s_a84d85fd6b2d07": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069ce642-e236-4f25-9254-70feab41ce47",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
