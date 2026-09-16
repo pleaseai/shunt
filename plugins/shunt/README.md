@@ -108,6 +108,23 @@ credential to Anthropic's API.
 `SHUNT_BASE_URL` is what lets you read one gateway's pool while routing traffic
 through another.
 
+### `apiKeyHelper`-only sessions
+
+The mod reads the credential from the environment and nowhere else, so a session
+whose credential arrives through `apiKeyHelper` has none it can see: Claude Code
+consumes the helper's output internally and never re-exports it. That covers both
+`shunt gateway claude`, whose launcher scrubs `ANTHROPIC_AUTH_TOKEN` and
+`ANTHROPIC_API_KEY` from the environment it hands Claude Code and wires
+`apiKeyHelper` instead, and a hand-configured `apiKeyHelper`. In those sessions
+`/shunt:usage` reports that it has no client token even though the session itself
+is authenticating fine.
+
+Export one for the mod to use alongside it:
+
+```bash
+export SHUNT_TOKEN=$(shunt gateway token)
+```
+
 ## Why `/shunt:usage` and not `/usage`
 
 `/usage` is Claude Code's own built-in, and the engine refuses to let a plugin
