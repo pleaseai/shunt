@@ -24,7 +24,7 @@ One entry is one failover unit: a named route with its own credential scope.
 | `base_url` | if no preset | Upstream base URL. For `kind = "cursor"`, this is the login/token-refresh surface only; inference uses the fixed agent host `https://agentn.global.api5.cursor.sh`, overridable only with `SHUNT_CURSOR_AGENT_BASE_URL`. |
 | `auth` | no | String or map (§1.3). Default: preset's default auth, else `passthrough`. |
 | other provider fields | no | `effort`, `service_tier`, `count_tokens`, `websocket`, `tool_search`, `retry` — unchanged semantics, now per upstream, except that normalized `retry` settings do not apply to the Cursor streaming turn. |
-| `workspace_roots`, `sandbox` | no | `kind = "antigravity_cli"` only; unchanged semantics and defaults (`[]` and `true`), now per upstream. `sandbox = false` is refused at startup when `server.bind` is non-loopback, and the adapter re-checks it per request against the listener bound at boot, so a reload cannot disable the sandbox under a public listener. |
+| `workspace_roots`, `sandbox`, `profile_dir` | no | `kind = "antigravity_cli"` only; unchanged semantics and defaults (`[]`, `true` and unset), now per upstream. `profile_dir` gives the entry its own `HOME`, so each ordered upstream can sign in to its own Google account. `sandbox = false` is refused at startup when `server.bind` is non-loopback, and the adapter re-checks it per request against the listener bound at boot, so a reload cannot disable the sandbox under a public listener. |
 
 Explicit fields always override preset-supplied values.
 
