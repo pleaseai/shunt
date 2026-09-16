@@ -1,0 +1,22 @@
+plugins/shunt/tests/endpoint.test.ts
+  s_a84d85fd6b2d07::t_69ab3192dd252f 64-75,108-118
+  s_a84d85fd6b2d07::t_779f782d799899 119
+plugins/shunt/hooks/endpoint.ts
+  s_a84d85fd6b2d07::t_6373e9c0ccf5a8 48-51,54,60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0964a7ba8ab565d81026493cf66fcd2545c2c82e",
+  "prompts": {},
+  "sessions": {
+    "s_a84d85fd6b2d07": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069ce642-e236-4f25-9254-70feab41ce47",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
