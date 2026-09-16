@@ -304,3 +304,69 @@ in the same series whenever both targets resolve through one provider. Where the
 targets sit on different providers the `provider` label happens to separate
 them, which is not a tier dimension and should not be read as one. Giving those
 series a real tier label is a change to metrics this feature does not own.
+
+## 9. Measured cost
+
+`benches/stage_router.rs`, run with `cargo bench --features bench --bench
+stage_router`. The whole path here is `pub(crate)` and both public routing entry
+points pass `stage: None`, so the benchmark reaches it through
+`shunt::bench_support` — a facade gated on that feature, described in its own
+module docs. CodSpeed passes the feature in `.github/workflows/codspeed.yml`;
+without it the target builds, runs, and registers nothing.
+
+Numbers below are medians from one local run (Apple silicon, `bench` profile).
+Read them as orders of magnitude, not as a baseline to diff against — CodSpeed
+owns regression detection.
+
+| Benchmark | 10 turns | 50 | 200 | 800 |
+|---|---|---|---|---|
+| `parse_body_to_value` | 32.2 µs | 158 µs | 680 µs | 3.30 ms |
+| `extract_signals` | 3.6 µs | 13.4 µs | 51.6 µs | 257 µs |
+| `resolve_chain_routed` | 5.0 µs | 15.0 µs | 54.5 µs | 214 µs |
+| `resolve_chain_unrouted` | 315 ns | 316 ns | 315 ns | 312 ns |
+
+Three things those rows establish.
+
+**Extraction is linear in turn count, it is essentially the whole cost of a
+routed resolve, and it is small against what the request already spent.** An
+80× longer history costs ~71× more, and `resolve_chain_routed` tracks
+`extract_signals` within measurement noise at every width. §3's second pass
+reads the entire `messages` array on every turn, so a session's *cumulative*
+extraction cost grows quadratically in its own length even though each call is
+linear.
+
+That is a constant factor on top of a bound the request already pays, and the
+factor is measured rather than assumed: `RequestBody::parse` (`src/request.rs`)
+builds the whole `serde_json::Value` eagerly for every inbound request, before
+routing, and `parse_body_to_value` is that parse over the identical body.
+Extraction costs **7.6–11% of it** at every width tested — 11% at 10 turns,
+7.8% at 800. So the ceiling on optimizing §3 is roughly a tenth of a cost the
+gateway has already sunk by the time the router is consulted, which is why §3 is
+left as it stands (issue #553).
+
+**A request to a model with no `[models.stage_router]` table does not read
+`messages` at all.** `resolve_chain_unrouted` is flat across a 80× range of
+history length, at ~315 ns — the same body, the same store, only the router
+table absent. That flatness is the property to protect: it is what makes the
+feature opt-in in cost as well as in behavior, and any change that makes this
+row slope is a regression whatever it does to the routed rows.
+
+**Eviction dominates the store once it saturates.**
+
+| Benchmark | median |
+|---|---|
+| `store_turn_existing_session` | 516 ns |
+| `store_turn_new_session_at_capacity` | 31.4 µs |
+
+Both run against a store already holding `MAX_TRACKED_SESSIONS` entries, so the
+61× gap is the eviction and not the map size. An existing session's update never
+grows the map, returns at `evict`'s length check, and costs about half a
+microsecond. A previously unseen id at capacity pays a full `retain` walk of
+4096 entries — one walk, not two: the pass that drops expired entries also
+remembers the oldest survivor, so the capacity trim needs no second scan.
+
+That 31 µs is CPU held under the store's single process-global mutex, so it
+serializes against every other router-backed request rather than costing only
+its own. It is reached only at capacity and only by an id the store has not
+seen, which is the normal-operation case for no one and the steady state for a
+client that rotates `x-claude-code-session-id` per request (issue #552).

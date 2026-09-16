@@ -34,6 +34,11 @@ path = "src/main.rs"
 # `ui/README.md`.
 ui = ["dep:rust-embed", "dep:mime_guess"]
 
+# Expose `shunt::bench_support`, the facade `benches/stage_router.rs` needs to
+# reach the crate-private stage-router path (issue #554). Off by default so the
+# public API of a normal build is unchanged; `cargo bench --features bench`.
+bench = []
+
 [dependencies]
 anyhow = "1"
 arc-swap = "1.9.2"
@@ -151,6 +156,10 @@ harness = false
 
 [[bench]]
 name = "perf_issues"
+harness = false
+
+[[bench]]
+name = "stage_router"
 harness = false
 
 # openai-oss-forks pins for permessage-deflate (RFC 7692) on the outbound Codex

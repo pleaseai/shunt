@@ -14,6 +14,10 @@
 - Format check: `cargo fmt --all --check`
 - Lints: `cargo clippy --all-targets --all-features -- -D warnings`
 - CI runs format, clippy, and tests with `RUSTFLAGS=-D warnings`.
+- Benchmarks: `cargo bench`. `benches/stage_router.rs` additionally needs
+  `--features bench`, which exposes `shunt::bench_support` — the facade that
+  reaches the crate-private stage-router path. Without the feature that target
+  builds and runs but registers no benchmarks, so pass it (CodSpeed does).
 
 ## Project Structure
 

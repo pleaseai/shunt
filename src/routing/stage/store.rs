@@ -31,7 +31,7 @@ use crate::config::StageRouterConfig;
 
 /// Upper bound on tracked sessions. Each entry is well under 100 bytes, so the
 /// whole store stays in the low hundreds of kilobytes.
-const MAX_TRACKED_SESSIONS: usize = 4096;
+pub(crate) const MAX_TRACKED_SESSIONS: usize = 4096;
 
 /// `(advertised model id, SHA-256 prefix of the session id)`.
 ///
