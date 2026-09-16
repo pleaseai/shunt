@@ -964,6 +964,19 @@ mod tests {
     }
 
     #[test]
+    fn the_last_event_field_wins_like_the_shared_parser() {
+        // The shared parser overwrites the event name per `event:` line — the
+        // SSE rule — so a later line supersedes an earlier one, and the scan
+        // arms exactly when the observer classifies the terminal.
+        assert!(is_message_stop_frame(
+            b"event: message_start\nevent: message_stop\ndata: {}\n\n"
+        ));
+        assert!(!is_message_stop_frame(
+            b"event: message_stop\nevent: message_start\ndata: {}\n\n"
+        ));
+    }
+
+    #[test]
     fn only_the_event_line_matches_not_a_data_payload() {
         assert!(is_message_stop_frame(b"event: message_stop\ndata: {}\n\n"));
         assert!(is_message_stop_frame(b"event: message_stop\r\n"));
