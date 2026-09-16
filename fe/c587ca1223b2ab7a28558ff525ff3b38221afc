@@ -1,0 +1,19 @@
+plugins/shunt/README.md
+  s_a84d85fd6b2d07::t_58eef956c8a0db 111-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fec587ca1223b2ab7a28558ff525ff3b38221afc",
+  "prompts": {},
+  "sessions": {
+    "s_a84d85fd6b2d07": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069ce642-e236-4f25-9254-70feab41ce47",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
