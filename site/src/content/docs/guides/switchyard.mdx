@@ -235,11 +235,13 @@ what is listed here.
 ### Claude Code's actual tool vocabulary
 
 The scorer wants to know whether a call observed, mutated, or planned.
-A provider-neutral router has to infer that; shunt knows the names. `Read`,
-`Glob`, `Grep`, `Edit`, `Write`, `TodoWrite`, `Task`, `EnterPlanMode`, and
-`ExitPlanMode` are matched directly, and a *failed* `Task` is scored critical
-rather than merely hard because it is a whole delegated subagent run collapsing
-rather than one command failing.
+A provider-neutral router has to infer that; shunt knows the names, and matches
+fourteen of them directly: `Read`, `Glob`, `Grep`, `NotebookRead`, `WebFetch`,
+`WebSearch`, and `BashOutput` as observation; `Edit`, `NotebookEdit`, and
+`Write` as mutation; `TodoWrite`, `Task`, `EnterPlanMode`, and `ExitPlanMode` as
+planning. One of them gets more than its category: a *failed* `Task` is scored
+critical rather than merely hard, because it is a whole delegated subagent run
+collapsing rather than one command failing.
 
 ### Asymmetric hysteresis, because a flip is not free
 

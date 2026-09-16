@@ -215,9 +215,11 @@ Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 
 ### Claude Code 真实的工具词汇
 
 评分器想知道的是某次调用是在观察、修改还是计划。provider 中立的路由器只能推断,
-而 shunt 知道名字。`Read`、`Glob`、`Grep`、`Edit`、`Write`、`TodoWrite`、`Task`、
-`EnterPlanMode`、`ExitPlanMode` 都是直接匹配的;而*失败的* `Task` 会被评为 critical 而非仅仅 hard,
-因为那是整个被委派的子代理运行崩塌,而不是一条命令失败。
+而 shunt 知道名字,并直接匹配其中 14 个:观察类是 `Read`、`Glob`、`Grep`、
+`NotebookRead`、`WebFetch`、`WebSearch`、`BashOutput`,修改类是 `Edit`、`NotebookEdit`、
+`Write`,计划类是 `TodoWrite`、`Task`、`EnterPlanMode`、`ExitPlanMode`。其中一个享有超出
+其类别的待遇:*失败的* `Task` 会被评为 critical 而非仅仅 hard,因为那是整个被委派的子代理
+运行崩塌,而不是一条命令失败。
 
 ### 切换并不免费,所以迟滞是非对称的
 

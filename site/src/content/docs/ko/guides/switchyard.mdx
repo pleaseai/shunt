@@ -228,9 +228,11 @@ shunt는 Claude Code 게이트웨이이므로 그래야 하고, 여기 나열된
 ### Claude Code의 실제 도구 어휘
 
 스코어러가 알고 싶은 것은 어떤 호출이 관찰했는지, 변경했는지, 계획했는지입니다.
-프로바이더 중립 라우터는 그것을 추론해야 하지만 shunt는 이름을 압니다. `Read`,
-`Glob`, `Grep`, `Edit`, `Write`, `TodoWrite`, `Task`, `EnterPlanMode`,
-`ExitPlanMode`가 직접 매칭되고, *실패한* `Task`는 명령 하나가 아니라 위임된 서브에이전트 실행 전체가
+프로바이더 중립 라우터는 그것을 추론해야 하지만 shunt는 이름을 압니다. 직접 매칭하는
+이름은 열네 개입니다. 관찰은 `Read`, `Glob`, `Grep`, `NotebookRead`, `WebFetch`,
+`WebSearch`, `BashOutput`, 변경은 `Edit`, `NotebookEdit`, `Write`, 계획은
+`TodoWrite`, `Task`, `EnterPlanMode`, `ExitPlanMode`입니다. 그중 하나는 범주 이상의
+대우를 받습니다. *실패한* `Task`는 명령 하나가 아니라 위임된 서브에이전트 실행 전체가
 무너진 것이므로 hard가 아니라 critical로 채점됩니다.
 
 ### 전환이 공짜가 아니기에, 비대칭 히스테리시스

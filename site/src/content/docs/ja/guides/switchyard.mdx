@@ -233,10 +233,12 @@ shunt は Claude Code ゲートウェイなのでその必要があり、ここ�
 ### Claude Code の実際のツール語彙
 
 スコアラーが知りたいのは、ある呼び出しが観測したのか、変更したのか、計画したのかです。
-プロバイダー中立なルーターはそれを推論するしかありませんが、shunt は名前を知っています。
-`Read`、`Glob`、`Grep`、`Edit`、`Write`、`TodoWrite`、`Task`、`EnterPlanMode`、
-`ExitPlanMode` を直接マッチし、*失敗した* `Task` はコマンド 1 つではなく委譲されたサブエージェント実行
-まるごとの崩壊なので、hard ではなく critical として採点されます。
+プロバイダー中立なルーターはそれを推論するしかありませんが、shunt は名前を知っており、
+14 個を直接マッチします。観測は `Read`、`Glob`、`Grep`、`NotebookRead`、`WebFetch`、
+`WebSearch`、`BashOutput`、変更は `Edit`、`NotebookEdit`、`Write`、計画は `TodoWrite`、
+`Task`、`EnterPlanMode`、`ExitPlanMode` です。うち 1 つはカテゴリ以上の扱いを受けます —
+*失敗した* `Task` はコマンド 1 つではなく委譲されたサブエージェント実行まるごとの崩壊なので、
+hard ではなく critical として採点されます。
 
 ### 切り替えはタダではない、だから非対称ヒステリシス
 
