@@ -1,0 +1,43 @@
+README.md
+  s_b8f8f539934879::t_ba1720651673b2 33,35,70,118,138,141,172,192-205,209,211-212,226,233,235
+README.zh-CN.md
+  s_b8f8f539934879::t_ba1720651673b2 33,35,68,116,136,139,170,190-203,207,209-210,224,231,233
+docs/stage-router.md
+  s_b8f8f539934879::t_ba1720651673b2 6
+src/init.rs
+  s_b8f8f539934879::t_ba1720651673b2 22
+site/src/content/docs/ja/providers/kimi.md
+  s_b8f8f539934879::t_ba1720651673b2 200
+docs/running.md
+  s_b8f8f539934879::t_ba1720651673b2 287
+site/src/content/docs/providers/kimi.md
+  s_b8f8f539934879::t_ba1720651673b2 201
+site/src/content/docs/zh-cn/providers/kimi.md
+  s_b8f8f539934879::t_ba1720651673b2 200
+site/src/content/docs/ko/providers/kimi.md
+  s_b8f8f539934879::t_ba1720651673b2 196
+README.ja.md
+  s_b8f8f539934879::t_ba1720651673b2 33,35,70,118,138,141,172,192-205,209,211-212,226,233,235
+README.ko.md
+  s_b8f8f539934879::t_ba1720651673b2 33,35,71,119,139,142,173,193-206,210,212-213,227,234,236
+site/astro.config.ts
+  s_b8f8f539934879::t_ba1720651673b2 8
+plugins/shunt-codex/README.md
+  s_b8f8f539934879::t_ba1720651673b2 70,102,104,106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c962198c3d7d69828de9ab49afdc1b18bc05eb8f",
+  "prompts": {},
+  "sessions": {
+    "s_b8f8f539934879": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56c6b43b-5d94-468c-84eb-06060fb39d6d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
