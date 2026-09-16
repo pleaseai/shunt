@@ -5,8 +5,8 @@ description: shunt 스테이지 라우터의 스코어러는 NVIDIA Switchyard �
 
 shunt의 [스테이지 라우터](/ko/guides/stage-router/)는 자체 스코어링을 만들지
 않았습니다. [NVIDIA-NeMo/Switchyard][sy]의 라우팅 라이브러리
-[`switchyard-libsy`][libsy]에 의존합니다 — "각 LLM 호출을 성공 가능성이 있는 가장
-저렴한 모델로 보낸다"를 목표로 내건 프로젝트입니다.
+[`switchyard-libsy`][libsy]에 의존합니다 — "각 LLM 호출을 그래도 해낼 수 있는 가장
+저렴한 모델로 라우팅한다"를 내건 프로젝트입니다.
 
 이 문서는 통합 기록입니다. shunt가 Switchyard의 어느 부분을 쓰고 어느 부분을
 의도적으로 쓰지 않는지, 공개된 수치가 실제로 무엇을 측정한 것인지, 알고리즘이 한
@@ -69,8 +69,11 @@ Pro Python-75에서 도출된 별개의 작업입니다.
 
 ### 출처와 단서
 
-- 이 수치는 [Route AI Agent Workloads Across Models with NVIDIA NeMo Switchyard][blog]
-  (NVIDIA, 2026년 8월 11일)에 공개된 **v0.2.0** Terminal-Bench 2.1 결과입니다.
+- 이 수치는 업스트림의 [Benchmark Provenance][provenance] 표에 공개된 **v0.2.0**
+  Terminal-Bench 2.1 결과이며, 그 표는 다시
+  [Route AI Agent Workloads Across Models with NVIDIA NeMo Switchyard][blog]
+  (NVIDIA, 2026년 8월 11일)를 출처로 밝히고 있습니다. 블로그 글 자체에는 이 표가
+  실려 있지 않으므로, 숫자를 대조할 때는 블로그가 아니라 README를 보세요.
 - 해당 실행은 **NVIDIA 내부 추론 엔드포인트**를 사용했으며, 업스트림은 다른 서빙
   스택에서는 절대 해결률이 달라질 수 있다고 밝히고 있습니다.
 - 업스트림이 체크인한 프로파일은 *에스컬레이션* 하나뿐입니다
@@ -80,6 +83,7 @@ Pro Python-75에서 도출된 별개의 작업입니다.
 - 이 표에는 지연 시간이나 요청당 라우팅 오버헤드 수치가 함께 공개되지 않았습니다.
   업스트림은 그 질문을 자체 soak 테스트 문서로 넘깁니다.
 
+[provenance]: https://github.com/NVIDIA-NeMo/Switchyard#benchmark-provenance
 [blog]: https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/
 
 ### shunt로 넘어오는 것과 넘어오지 않는 것
@@ -106,13 +110,16 @@ Pro Python-75에서 도출된 별개의 작업입니다.
 
 ### 1. 신호
 
-shunt는 요청의 `messages` 배열을 두 번 훑습니다. 먼저 어시스턴트 메시지에서
-`tool_use.id → tool_use.name`을 만들고, 다음으로 사용자 메시지의 `tool_result`
-블록을 훑으며 각각을 `tool_use_id`로 원래 호출에 다시 잇습니다. `tool_result` 블록은
-도구 이름을 담지 않으므로, 이 조인이 추출기 전체가 딛고 선 단 하나의 지점입니다.
+shunt는 요청의 `messages` 배열을 두 번 훑습니다. 첫 번째는 어시스턴트 메시지를
+`recent_turn_window`가 닿는 데까지만 뒤에서부터 훑으며 *최근*으로 칠 `tool_use` id를
+모읍니다. 두 번째는 두 역할을 한 번에 앞에서부터 훑으며 `tool_use.id →
+tool_use.name`을 만들고, 모든 `tool_result`를 그것이 답한 `tool_use_id`에 기록합니다.
+이름은 훑는 도중이 아니라 훑고 난 뒤에 해석하므로, 자기 호출보다 앞서 나온 결과도
+그대로 이어집니다. `tool_result` 블록은 도구 이름을 담지 않으므로, 이 조인이 추출기
+전체가 딛고 선 단 하나의 지점입니다.
 
-읽는 필드는 `tool_use.name`과 `tool_result.is_error` 둘뿐입니다. 시스템 프롬프트도,
-사용자 텍스트도, 도구 인자도 읽지 않습니다.
+조인을 만드는 id를 빼면 읽는 필드는 `tool_use.name`과 `tool_result.is_error`
+둘뿐입니다. 시스템 프롬프트도, 사용자 텍스트도, 도구 인자도 읽지 않습니다.
 
 Claude Code는 실패를 등급 없는 불리언 하나로만 보고하므로, shunt가 직접 libsy의
 `0.0 / 0.3 / 0.7 / 1.0` 심각도 척도에 매핑합니다.
@@ -121,8 +128,8 @@ Claude Code는 실패를 등급 없는 불리언 하나로만 보고하므로, s
 | :-- | :-- |
 | 윈도 안에 실패한 결과 없음 | `0.0` |
 | 윈도 안에 실패한 결과 있음 | `0.7` (hard) |
-| `Task` 실패 — 위임된 서브에이전트 실행 전체가 무너짐 | `1.0` (critical) |
-| 마지막 두 완료 결과가 모두 실패 — 회복 중이 아님 | `1.0` (critical) |
+| 윈도 안의 `Task` 실패 — 위임된 서브에이전트 실행 전체가 무너짐 | `1.0` (critical) |
+| 마지막 두 완료 결과가 모두 실패하고 둘 다 윈도 안 — 회복 중이 아님 | `1.0` (critical) |
 
 도구 이름은 [어휘](/ko/guides/stage-router/#도구-어휘)에 따라 `Observe`, `Mutate`,
 `Plan`, 미분류로 나뉩니다. `Bash`는 의도적으로 미분류입니다 — `git status`,
@@ -222,8 +229,8 @@ shunt는 Claude Code 게이트웨이이므로 그래야 하고, 여기 나열된
 
 스코어러가 알고 싶은 것은 어떤 호출이 관찰했는지, 변경했는지, 계획했는지입니다.
 프로바이더 중립 라우터는 그것을 추론해야 하지만 shunt는 이름을 압니다. `Read`,
-`Glob`, `Grep`, `Edit`, `Write`, `TodoWrite`, `Task`, `ExitPlanMode`가 직접
-매칭되고, *실패한* `Task`는 명령 하나가 아니라 위임된 서브에이전트 실행 전체가
+`Glob`, `Grep`, `Edit`, `Write`, `TodoWrite`, `Task`, `EnterPlanMode`,
+`ExitPlanMode`가 직접 매칭되고, *실패한* `Task`는 명령 하나가 아니라 위임된 서브에이전트 실행 전체가
 무너진 것이므로 hard가 아니라 critical로 채점됩니다.
 
 ### 전환이 공짜가 아니기에, 비대칭 히스테리시스

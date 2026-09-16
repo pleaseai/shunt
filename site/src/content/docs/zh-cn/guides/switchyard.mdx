@@ -5,7 +5,7 @@ description: shunt 阶段路由器背后的评分器来自 NVIDIA 的 Switchyard
 
 shunt 的[阶段路由器](/zh-cn/guides/stage-router/)并没有自造评分逻辑,而是依赖
 [NVIDIA-NeMo/Switchyard][sy] 的路由库 [`switchyard-libsy`][libsy] —— 该项目的目标
-是"把每次 LLM 调用送到最便宜且大概率能完成任务的模型"。
+是"把每次 LLM 调用路由到仍然能把活干完的最便宜的模型"。
 
 本页是集成记录:shunt 用了 Switchyard 的哪一部分、刻意没用哪些部分、公开数字实际
 测的是什么,以及算法如何判定一个回合。如果你只想把功能打开,
@@ -65,8 +65,11 @@ shunt 实现的正是阶段路由这一行:三种路由配置中最便宜,同时
 
 ### 出处与保留
 
-- 这些数字是 [Route AI Agent Workloads Across Models with NVIDIA NeMo Switchyard][blog]
-  (NVIDIA,2026 年 8 月 11 日)中公布的 **v0.2.0** Terminal-Bench 2.1 结果。
+- 这些数字是上游自己的 [Benchmark Provenance][provenance] 表中公布的 **v0.2.0**
+  Terminal-Bench 2.1 结果,而该表又把出处标为
+  [Route AI Agent Workloads Across Models with NVIDIA NeMo Switchyard][blog]
+  (NVIDIA,2026 年 8 月 11 日)。博客正文本身并没有登出这张表,所以要核对某个数字时
+  应看 README 而不是博客。
 - 那些运行使用了 **NVIDIA 内部推理端点**,上游明确表示在别的服务栈上绝对解决率可能
   变化。
 - 上游只签入了*升级*这一份配置
@@ -76,6 +79,7 @@ shunt 实现的正是阶段路由这一行:三种路由配置中最便宜,同时
 - 该表未随附任何延迟或单请求路由开销数字;上游把这个问题交给了它自己的 soak 测试
   文档。
 
+[provenance]: https://github.com/NVIDIA-NeMo/Switchyard#benchmark-provenance
 [blog]: https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/
 
 ### 哪些能迁移到 shunt,哪些不能
@@ -101,13 +105,15 @@ shunt 实现的正是阶段路由这一行:三种路由配置中最便宜,同时
 
 ### 1. 信号
 
-shunt 会两次遍历请求的 `messages` 数组:先从 assistant 消息建立
-`tool_use.id → tool_use.name`,再遍历 user 消息中的 `tool_result` 块,按
-`tool_use_id` 把每个结果接回它的调用。`tool_result` 块不携带工具名,所以这次关联是
+shunt 会两次遍历请求的 `messages` 数组。第一次只从后往前遍历 assistant 消息,走到
+`recent_turn_window` 覆盖的范围为止,收集算作*最近*的 `tool_use` id。第二次从前往后
+一次遍历两种角色,既建立 `tool_use.id → tool_use.name`,也把每个 `tool_result` 记到
+它所回答的 `tool_use_id` 上。名字是在遍历之后才解析而不是边走边解析,所以即使结果
+出现在它自己的调用之前也照样能接上。`tool_result` 块不携带工具名,所以这次关联是
 整个提取器唯一的立足点。
 
-只读取两个字段 —— `tool_use.name` 和 `tool_result.is_error`。不读系统提示、不读用户
-文本、不读工具参数。
+除了用于关联的 id,只读取两个字段 —— `tool_use.name` 和 `tool_result.is_error`。
+不读系统提示、不读用户文本、不读工具参数。
 
 Claude Code 只用一个没有分级的布尔值报告失败,所以由 shunt 自己把它映射到 libsy 的
 `0.0 / 0.3 / 0.7 / 1.0` 严重度刻度上。
@@ -116,8 +122,8 @@ Claude Code 只用一个没有分级的布尔值报告失败,所以由 shunt 自
 | :-- | :-- |
 | 窗口内没有失败结果 | `0.0` |
 | 窗口内有失败结果 | `0.7`(hard) |
-| `Task` 失败 —— 整个被委派的子代理运行崩塌 | `1.0`(critical) |
-| 最后两条完成结果都失败 —— 没有在恢复 | `1.0`(critical) |
+| 窗口内的 `Task` 失败 —— 整个被委派的子代理运行崩塌 | `1.0`(critical) |
+| 最后两条完成结果都失败且都在窗口内 —— 没有在恢复 | `1.0`(critical) |
 
 工具名按[工具词汇](/zh-cn/guides/stage-router/#工具词汇)分入 `Observe`、`Mutate`、
 `Plan` 和未分类。`Bash` 是刻意不分类的 —— 区分 `git status`、`rm -rf` 和
@@ -210,7 +216,7 @@ Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 
 
 评分器想知道的是某次调用是在观察、修改还是计划。provider 中立的路由器只能推断,
 而 shunt 知道名字。`Read`、`Glob`、`Grep`、`Edit`、`Write`、`TodoWrite`、`Task`、
-`ExitPlanMode` 都是直接匹配的;而*失败的* `Task` 会被评为 critical 而非仅仅 hard,
+`EnterPlanMode`、`ExitPlanMode` 都是直接匹配的;而*失败的* `Task` 会被评为 critical 而非仅仅 hard,
 因为那是整个被委派的子代理运行崩塌,而不是一条命令失败。
 
 ### 切换并不免费,所以迟滞是非对称的

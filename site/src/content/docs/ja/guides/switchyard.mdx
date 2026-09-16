@@ -5,8 +5,8 @@ description: shunt のステージルーターのスコアラーは NVIDIA の S
 
 shunt の[ステージルーター](/ja/guides/stage-router/)は独自のスコアリングを発明して
 いません。[NVIDIA-NeMo/Switchyard][sy] のルーティングライブラリ
-[`switchyard-libsy`][libsy] に依存しています — 「各 LLM 呼び出しを、成功しそうな
-もっとも安価なモデルへ送る」を掲げるプロジェクトです。
+[`switchyard-libsy`][libsy] に依存しています — 「各 LLM 呼び出しを、それでも仕事を
+こなせるもっとも安価なモデルへルーティングする」を掲げるプロジェクトです。
 
 このページは統合の記録です。shunt が Switchyard のどの部分を使い、どの部分を意図的に
 使わないのか、公開されている数値が実際に何を測ったものなのか、そしてアルゴリズムが
@@ -71,8 +71,11 @@ shunt が実装している行であるステージルーティングは、3 つ
 
 ### 出典と留保
 
-- これらの数値は [Route AI Agent Workloads Across Models with NVIDIA NeMo Switchyard][blog]
-  （NVIDIA、2026 年 8 月 11 日）で公開された **v0.2.0** の Terminal-Bench 2.1 結果です。
+- これらの数値はアップストリーム自身の [Benchmark Provenance][provenance] 表で公開
+  された **v0.2.0** の Terminal-Bench 2.1 結果であり、その表はさらに
+  [Route AI Agent Workloads Across Models with NVIDIA NeMo Switchyard][blog]
+  （NVIDIA、2026 年 8 月 11 日）を出典として挙げています。ブログ記事自体にこの表は
+  載っていないので、数値を突き合わせるならブログではなく README を見てください。
 - それらの実行は **NVIDIA 内部の推論エンドポイント**を使っており、別のサービング
   スタックでは絶対的な解決率が変わりうるとアップストリーム自身が述べています。
 - アップストリームがチェックインしているプロファイルは*エスカレーション*のみです
@@ -82,6 +85,7 @@ shunt が実装している行であるステージルーティングは、3 つ
 - この表にレイテンシやリクエストあたりのルーティングオーバーヘッドの数値は付いて
   いません。アップストリームはその問いを自身の soak テストのドキュメントに委ねています。
 
+[provenance]: https://github.com/NVIDIA-NeMo/Switchyard#benchmark-provenance
 [blog]: https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/
 
 ### shunt に引き継がれるもの、引き継がれないもの
@@ -108,13 +112,17 @@ shunt が実装している行であるステージルーティングは、3 つ
 
 ### 1. シグナル
 
-shunt はリクエストの `messages` 配列を 2 回走査します。まずアシスタントメッセージから
-`tool_use.id → tool_use.name` を作り、次にユーザーメッセージの `tool_result` ブロックを
-走査して、それぞれを `tool_use_id` で元の呼び出しに突き合わせます。`tool_result`
-ブロックはツール名を持たないので、この突き合わせが抽出器全体を支える唯一の足場です。
+shunt はリクエストの `messages` 配列を 2 回走査します。1 回目はアシスタント
+メッセージを `recent_turn_window` が届く範囲まで後ろから走査し、*最近*として数える
+`tool_use` の id を集めます。2 回目は両方のロールを前から 1 度だけ走査し、
+`tool_use.id → tool_use.name` を作りつつ、すべての `tool_result` をそれが答えた
+`tool_use_id` に紐づけて記録します。名前は走査中ではなく走査後に解決するので、自分の
+呼び出しより前に現れた結果もそのまま突き合わせられます。`tool_result` ブロックは
+ツール名を持たないので、この突き合わせが抽出器全体を支える唯一の足場です。
 
-読むフィールドは `tool_use.name` と `tool_result.is_error` の 2 つだけ。システム
-プロンプトも、ユーザーのテキストも、ツール引数も読みません。
+突き合わせに使う id を除けば、読むフィールドは `tool_use.name` と
+`tool_result.is_error` の 2 つだけ。システムプロンプトも、ユーザーのテキストも、
+ツール引数も読みません。
 
 Claude Code は失敗を等級なしの真偽値でしか報告しないため、shunt 自身が libsy の
 `0.0 / 0.3 / 0.7 / 1.0` という深刻度スケールへ対応づけます。
@@ -123,8 +131,8 @@ Claude Code は失敗を等級なしの真偽値でしか報告しないため�
 | :-- | :-- |
 | ウィンドウ内に失敗結果なし | `0.0` |
 | ウィンドウ内に失敗結果あり | `0.7`（hard） |
-| `Task` の失敗 — 委譲されたサブエージェント実行まるごとの崩壊 | `1.0`（critical） |
-| 直近 2 件の完了結果がどちらも失敗 — 回復していない | `1.0`（critical） |
+| ウィンドウ内の `Task` の失敗 — 委譲されたサブエージェント実行まるごとの崩壊 | `1.0`（critical） |
+| 直近 2 件の完了結果がどちらも失敗し、どちらもウィンドウ内 — 回復していない | `1.0`（critical） |
 
 ツール名は[語彙](/ja/guides/stage-router/#ツールの語彙)に従って `Observe`、`Mutate`、
 `Plan`、未分類に振り分けられます。`Bash` は意図的に未分類です — `git status`、
@@ -226,8 +234,8 @@ shunt は Claude Code ゲートウェイなのでその必要があり、ここ�
 
 スコアラーが知りたいのは、ある呼び出しが観測したのか、変更したのか、計画したのかです。
 プロバイダー中立なルーターはそれを推論するしかありませんが、shunt は名前を知っています。
-`Read`、`Glob`、`Grep`、`Edit`、`Write`、`TodoWrite`、`Task`、`ExitPlanMode` を直接
-マッチし、*失敗した* `Task` はコマンド 1 つではなく委譲されたサブエージェント実行
+`Read`、`Glob`、`Grep`、`Edit`、`Write`、`TodoWrite`、`Task`、`EnterPlanMode`、
+`ExitPlanMode` を直接マッチし、*失敗した* `Task` はコマンド 1 つではなく委譲されたサブエージェント実行
 まるごとの崩壊なので、hard ではなく critical として採点されます。
 
 ### 切り替えはタダではない、だから非対称ヒステリシス
