@@ -524,7 +524,19 @@ base_url = "http://localhost"
         !expanded.starts_with('~'),
         "a leading ~ must be expanded before it reaches Command::env: {expanded}"
     );
-    assert!(expanded.ends_with("/.shunt/antigravity/account-a"));
+    // Compared by component, not as a string: `expand_tilde` joins with
+    // `PathBuf`, so the separator is a backslash on the Windows platform its
+    // `USERPROFILE` fallback exists for, and a `/`-spelled suffix never matches.
+    let tail: Vec<_> = std::path::Path::new(expanded)
+        .components()
+        .rev()
+        .take(3)
+        .collect();
+    let expected: Vec<_> = std::path::Path::new(".shunt/antigravity/account-a")
+        .components()
+        .rev()
+        .collect();
+    assert_eq!(tail, expected, "unexpected expansion: {expanded}");
 
     // Unset means the previous behavior: inherit the gateway's ambient profile.
     assert_eq!(config.provider_profile_dir("antigravity-b"), None);
