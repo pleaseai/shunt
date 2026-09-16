@@ -123,6 +123,10 @@ Two response headers report the decision, so you do not have to infer it:
 | `x-gateway-routed-model` | The target the router chose (`claude-opus-4-8`) |
 | `x-gateway-route-source` | Why (`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`) |
 
+Those five are the labels shunt emits today. The scorer defines a sixth,
+`tests_passed`, but the signal extractor never reports a passing test run, so no
+response carries it.
+
 Both are absent for a model id that has no router, so "routed to the efficient
 tier" stays distinguishable from "not routed by a router at all". A
 `count_tokens` probe is left unstamped: on a session that is not yet pinned it

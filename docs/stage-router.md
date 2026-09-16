@@ -283,5 +283,10 @@ gateway has not decided.
 
 ## 8. What is not built
 
-No per-tier latency or token histogram: `record_proxied_request` already carries
-both, keyed by the upstream the tier resolved to.
+No per-tier latency or token histogram. `record_proxied_request` and the stream
+metrics label by provider and by `Route.model`, and §5 re-stamps that to the id
+the client asked for — so two turns served by different tiers of one router land
+in the same series whenever both targets resolve through one provider. Where the
+targets sit on different providers the `provider` label happens to separate
+them, which is not a tier dimension and should not be read as one. Giving those
+series a real tier label is a change to metrics this feature does not own.

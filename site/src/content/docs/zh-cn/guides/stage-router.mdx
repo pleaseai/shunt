@@ -104,6 +104,9 @@ POST /v1/messages   {"model": "claude-auto", ...}
 | `x-gateway-routed-model` | 路由器选中的目标(`claude-opus-4-8`) |
 | `x-gateway-route-source` | 原因(`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`) |
 
+这五个就是 shunt 今天会发出的标签。评分器还定义了第六个 `tests_passed`,但信号
+提取器从不报告测试通过,因此没有响应会带上它。
+
 没有路由器的模型 id 不会带上这两个头,这样"被路由到高效档位"与"根本没走路由器"才能
 区分开。`count_tokens` 探测不加这两个头:在尚未固定的会话上,探测按自己落后一轮的
 历史评分,因此它的档位不一定是被测量那一轮的档位。

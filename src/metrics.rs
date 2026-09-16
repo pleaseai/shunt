@@ -538,11 +538,17 @@ pub fn record_failover(provider: &str, state: &'static str) {
 
 /// Record one stage-router tier decision (issue #543 follow-up; plan PR 6).
 ///
-/// `model` is the **requested** id — the `[[models]]` entry carrying the
-/// router, not the tier target — so the series stays one per configured router
-/// rather than one per target. `tier` and `source` are closed sets
-/// (`StageTier::as_label`, `StageSource::as_label`), so the label space is the
-/// number of routers times ten, whatever the session count.
+/// `model` is the `[[models]]` entry carrying the router, not the tier target,
+/// so the series stays one per configured router rather than one per target.
+/// It must be the id the router was *matched* on rather than the raw request
+/// id: a client-side `[1m]` context-window hint is stripped before the lookup
+/// and before the session is keyed, so labelling by the raw id would report one
+/// router as two series and one session's pin under both. `StageOutcome::model`
+/// carries that id out of routing for exactly this reason.
+///
+/// `tier` and `source` are closed sets (`StageTier::as_label`,
+/// `StageSource::as_label`), so the label space is the number of routers times
+/// ten, whatever the session count.
 ///
 /// Called only for an admitted request. A turn rejected by inbound auth or the
 /// managed-model policy is routed but never served, and counting it would
@@ -573,6 +579,12 @@ pub fn record_stage_decision(model: &str, tier: &'static str, source: &'static s
 /// `from` and `to` are tier labels, which makes the two directions separable:
 /// escalation is designed to be easy and de-escalation hard, so they are not
 /// expected to be symmetric and a single count would hide that.
+///
+/// The pair comes from what `StageRouterStore::commit` actually wrote, not from
+/// the tier the deciding request saw. Those differ under concurrency: the store
+/// lock is released between deciding and committing, so two turns of one
+/// session can both read `efficient` and both choose `capable`, and only one of
+/// them displaces anything.
 pub fn record_stage_flip(model: &str, from: &'static str, to: &'static str) {
     sentry::metrics::counter("shunt.stage_router.flips", 1)
         .attribute("model", model.to_owned())

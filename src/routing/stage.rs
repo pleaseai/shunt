@@ -141,24 +141,20 @@ impl StageTier {
 /// served the turn or why.
 #[derive(Debug, Clone)]
 pub(crate) struct StageOutcome {
+    /// The configured model id that carries the router — the id
+    /// [`crate::routing::resolve_chain`] matched, so already past
+    /// `strip_context_window_hint`.
+    ///
+    /// Carried rather than re-derived at the reporting site: a client-side
+    /// `[1m]` suffix is stripped before the router is looked up and before the
+    /// session is keyed, so a counter labelled with the raw request id would
+    /// split one router's series in two and attribute one session's pin to
+    /// both halves.
+    pub model: String,
     /// The configured model id the chosen tier routes to.
     pub target: String,
     pub tier: StageTier,
     pub source: StageSource,
-    /// The tier a pin held before this turn, when this turn could have moved
-    /// it. See [`store::StageApplied::previous_tier`].
-    pub previous_tier: Option<StageTier>,
-}
-
-impl StageOutcome {
-    /// The `(from, to)` pair when this turn moved a session off the tier it was
-    /// pinned to, and `None` when it did not move one — an unpinned session, a
-    /// probe, or a turn that landed back on the tier already pinned.
-    pub(crate) fn flip(&self) -> Option<(StageTier, StageTier)> {
-        self.previous_tier
-            .filter(|previous| *previous != self.tier)
-            .map(|previous| (previous, self.tier))
-    }
 }
 
 /// Everything a live request carries that a body-less caller does not.
@@ -200,10 +196,14 @@ impl StageContext<'_> {
     /// Admission, not a successful upstream response, is the boundary: the tier
     /// chosen here is the tier the turn was dispatched at, and an upstream 500
     /// afterwards is not evidence that the choice was wrong.
-    pub(crate) fn commit(&self) {
-        if let Some(pin) = self.pending.replace(None) {
-            self.store.commit(pin, self.now);
-        }
+    ///
+    /// Returns the `(from, to)` tier change the write made, for the flip
+    /// counter. `None` for every request that wrote nothing, and for a write
+    /// that landed on the tier already pinned.
+    pub(crate) fn commit(&self) -> Option<(StageTier, StageTier)> {
+        self.pending
+            .replace(None)
+            .and_then(|pin| self.store.commit(pin, self.now))
     }
 }
 
@@ -236,10 +236,10 @@ pub(crate) fn select(
     // request is admitted — the same boundary the pin waits for, and for the
     // same reason: a rejected request neither pins nor counts.
     context.decided.set(Some(StageOutcome {
+        model: model.to_string(),
         target: decision.tier.target(router).to_string(),
         tier: decision.tier,
         source: decision.source,
-        previous_tier: applied.previous_tier,
     }));
     // Parked, not written: see [`StageContext::pending`]. Validation forbids a
     // router whose target is itself a router, so one request reaches this line

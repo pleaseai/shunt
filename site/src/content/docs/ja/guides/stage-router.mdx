@@ -117,6 +117,10 @@ POST /v1/messages     {"model": "claude-auto", ...}
 | `x-gateway-routed-model` | ルーターが選んだターゲット（`claude-opus-4-8`） |
 | `x-gateway-route-source` | その理由（`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`） |
 
+この 5 つが今日 shunt が出力するラベルです。スコアラーには 6 つ目の
+`tests_passed` がありますが、シグナル抽出器がテストの成功を報告しないため、
+レスポンスに載ることはありません。
+
 ルーターを持たないモデル id には両方とも付きません。そうすることで「効率ティアに
 ルーティングされた」と「そもそもルーター経由ではない」が区別できます。
 `count_tokens` のプローブには付けません。まだピン留めされていないセッションでは、

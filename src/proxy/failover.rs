@@ -103,21 +103,28 @@ pub(super) async fn forward(
     // The request is admitted, so the tier it was routed at may be recorded.
     // Both gates above rejected before this line, and neither had run when the
     // chain was resolved — `check_inbound_auth` needs that chain to decide.
-    stage.commit();
+    // The write reports the tier change it actually made, which is what the
+    // flip counter must count: two concurrent turns of one session decide
+    // against the same snapshot, so a flip derived from that snapshot would be
+    // counted twice for a session that moved once.
+    let stage_flip = stage.commit();
     // The same boundary governs the counters: a rejected request is routed but
     // never served, so counting it would report traffic the gateway did not
     // carry. `None` for every request whose id carries no router.
     let stage_outcome = stage.decided.take();
     if let Some(outcome) = &stage_outcome {
+        // `outcome.model`, not `requested_model`: the router was matched on the
+        // id with any `[1m]` hint stripped, and the session was keyed on it too,
+        // so labelling by the raw id would split one router across two series.
         if !is_count_tokens(uri) {
             crate::metrics::record_stage_decision(
-                &requested_model,
+                &outcome.model,
                 outcome.tier.as_label(),
                 outcome.source.as_label(),
             );
         }
-        if let Some((from, to)) = outcome.flip() {
-            crate::metrics::record_stage_flip(&requested_model, from.as_label(), to.as_label());
+        if let Some((from, to)) = stage_flip {
+            crate::metrics::record_stage_flip(&outcome.model, from.as_label(), to.as_label());
         }
     }
     let stage_stamp = stage_outcome.as_ref().map(|outcome| StageStamp {

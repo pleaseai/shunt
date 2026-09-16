@@ -112,6 +112,10 @@ POST /v1/messages   {"model": "claude-auto", ...}
 | `x-gateway-routed-model` | 라우터가 고른 타깃(`claude-opus-4-8`) |
 | `x-gateway-route-source` | 그 이유(`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`) |
 
+이 다섯 개가 오늘 shunt가 내보내는 라벨입니다. 스코어러에는 `tests_passed`라는
+여섯 번째 값이 있지만, 신호 추출기가 테스트 통과를 보고하지 않으므로 응답에
+실리지 않습니다.
+
 라우터가 없는 model id에는 둘 다 붙지 않습니다. 그래야 "효율 티어로 라우팅됨"과
 "애초에 라우터를 거치지 않음"이 구분됩니다. `count_tokens` 탐침에는 붙이지
 않습니다. 아직 고정되지 않은 세션에서는 탐침이 한 턴 뒤처진 자기 이력으로
