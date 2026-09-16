@@ -86,6 +86,7 @@ export const NAVIGATION: NavigationEntry[] = [
       { label: "Model Aliases & 1M Context", translations: { ko: "모델 별칭과 1M 컨텍스트", ja: "モデルエイリアスと 1M コンテキスト", "zh-cn": "模型别名与 1M 上下文" }, slug: "guides/model-aliases" },
       { label: "Effort & Context", translations: { ko: "Effort와 컨텍스트", ja: "Effort とコンテキスト", "zh-cn": "推理强度与上下文" }, slug: "guides/effort-and-context" },
       { label: "Stage Router", translations: { ko: "스테이지 라우터", ja: "ステージルーター", "zh-cn": "阶段路由器" }, slug: "guides/stage-router" },
+      { label: "Switchyard Integration", translations: { ko: "Switchyard 통합", ja: "Switchyard 統合", "zh-cn": "Switchyard 集成" }, slug: "guides/switchyard" },
       { label: "Sharing a Gateway", translations: { ko: "게이트웨이 공유", ja: "ゲートウェイの共有", "zh-cn": "共享网关" }, slug: "guides/shared-gateway" },
       { label: "OpenTelemetry", translations: { ko: "OpenTelemetry", ja: "OpenTelemetry", "zh-cn": "OpenTelemetry" }, slug: "guides/opentelemetry" },
     ],
