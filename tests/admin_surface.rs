@@ -18,17 +18,11 @@ use shunt::{
 };
 use tokio::task::JoinHandle;
 use wiremock::{
-    matchers::{body_partial_json, method, path},
+    matchers::{body_partial_json, body_string_contains, method, path},
     Mock, MockServer, ResponseTemplate,
 };
 
-/// Serializes tests that mutate the shared `SHUNT_CLAUDE_*` process env. A tokio
-/// mutex (held across `.await`) so it is safe over the async request calls.
-static CLAUDE_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-/// Serializes tests that mutate the shared `SHUNT_CODEX_*` process env.
-static CODEX_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-/// Serializes admin OIDC tests because their config resolves process environment.
-static ADMIN_OIDC_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+mod common;
 
 struct Gateway {
     base_url: String,
@@ -56,13 +50,13 @@ fn can_bind_loopback() -> bool {
 }
 
 /// A config with `[server.admin]` enabled: `anthropic` is flipped to
-/// `claude_oauth` with an empty accounts list, so `/admin/pool` enumerates
+/// `claude_oauth` with an empty accounts list, so `/admin/api/pool` enumerates
 /// the store and a completed add is "live now"; `codex` instead gets an
 /// explicit placeholder account (see [`nonexistent_credentials_path`]), so
 /// it does not scan the real store by default.
 ///
 /// Rule: `anthropic` still defaults to an empty accounts list, so any test
-/// that calls `/admin/pool` against a config built from this function must
+/// that calls `/admin/api/pool` against a config built from this function must
 /// itself choose one of: give the provider an explicit account, or isolate
 /// `SHUNT_CLAUDE_ACCOUNTS_DIR`/`SHUNT_CODEX_ACCOUNTS_DIR` before starting
 /// the gateway. A test that means to exercise the real store-scan path
@@ -76,7 +70,7 @@ fn can_bind_loopback() -> bool {
 /// OAuth credentials. For Claude, a real credential file with no
 /// `subscriptionType` but a still-valid access token (eligible per
 /// `refreshable_valid_access_token`, `src/auth/claude/auth.rs`) lets a
-/// completed `/admin/pool` request's profile backfill read that on-disk
+/// completed `/admin/api/pool` request's profile backfill read that on-disk
 /// token (never refreshing or writing it back) and send it to the real
 /// Claude API.
 fn admin_config(tokens_env: &str) -> Config {
@@ -180,7 +174,7 @@ fn unique_dir() -> PathBuf {
 /// (`src/admin/plan.rs`) does a plain `std::fs::read` on this path (via
 /// `read_json`), which fails the same way (`NotFound`) whether or not the
 /// parent directory exists, so no still-valid access token is ever
-/// extracted and a live `/admin/pool` profile backfill never reaches the
+/// extracted and a live `/admin/api/pool` profile backfill never reaches the
 /// real Claude API.
 fn nonexistent_credentials_path() -> String {
     let counter = UNIQUE_DIR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -255,7 +249,7 @@ fn response_cookie(response: &reqwest::Response) -> Option<String> {
 
 async fn oidc_state(client: &reqwest::Client, gateway: &Gateway) -> (reqwest::Url, String) {
     let response = client
-        .post(format!("{}/admin/oidc/start", gateway.base_url))
+        .post(format!("{}/admin/api/oidc/start", gateway.base_url))
         .header("sec-fetch-site", "same-origin")
         .send()
         .await
@@ -276,7 +270,7 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = ADMIN_OIDC_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let idp = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/token"))
@@ -295,15 +289,15 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
         .expect(1)
         .mount(&idp)
         .await;
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_TOKENS", "ops:admin-secret");
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_SECRET", "client-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_TOKENS", "ops:admin-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_SECRET", "client-secret");
     let mut config = admin_oidc_config(
         "SHUNT_TEST_ADMIN_OIDC_TOKENS",
         "SHUNT_TEST_ADMIN_OIDC_SECRET",
         &idp,
     );
     // An explicit, never-existing credentials path keeps the later
-    // `/admin/pool` request off the real on-disk store (see the
+    // `/admin/api/pool` request off the real on-disk store (see the
     // `admin_config` doc comment).
     config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
         name: "oidc-flow".to_string(),
@@ -334,7 +328,7 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
     );
     let login = response.text().await.unwrap();
     assert!(login.contains("Sign in with SSO"));
-    assert!(login.contains("action=\"/admin/oidc/start\""));
+    assert!(login.contains("action=\"/admin/api/oidc/start\""));
 
     let (location, state) = oidc_state(&client, &gateway).await;
     let params: std::collections::HashMap<_, _> = location.query_pairs().into_owned().collect();
@@ -358,13 +352,22 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(response.headers()["location"], "/admin");
     let cookie = response_cookie(&response).expect("OIDC callback sets admin session cookie");
-    let dashboard = client
-        .get(format!("{}/admin", gateway.base_url))
+    // The minted cookie really authenticates, proven where authentication is
+    // actually decided. `GET /admin` would not prove it: the SPA shell is served
+    // to anyone, so its `200` says nothing about the cookie — and without
+    // `--features ui` that path answers `404` (no bundle in this build) while
+    // this test runs in both.
+    let bootstrap = client
+        .get(format!("{}/admin/api/session", gateway.base_url))
         .header("cookie", cookie)
         .send()
         .await
         .unwrap();
-    assert_eq!(dashboard.status(), StatusCode::OK);
+    assert_eq!(
+        bootstrap.status(),
+        StatusCode::OK,
+        "the OIDC-minted session cookie must authenticate the admin API"
+    );
 
     let requests = idp.received_requests().await.unwrap();
     let token = requests
@@ -384,15 +387,12 @@ async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
     );
 
     let header_response = client
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "admin-secret")
         .send()
         .await
         .unwrap();
     assert_eq!(header_response.status(), StatusCode::OK);
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_TOKENS");
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_SECRET");
 }
 
 #[tokio::test]
@@ -400,7 +400,7 @@ async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_ori
     if !can_bind_loopback() {
         return;
     }
-    let _lock = ADMIN_OIDC_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let idp = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/token"))
@@ -416,8 +416,8 @@ async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_ori
         })))
         .mount(&idp)
         .await;
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_REJECT_TOKENS", "ops:admin-secret");
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_REJECT_SECRET", "client-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_REJECT_TOKENS", "ops:admin-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_REJECT_SECRET", "client-secret");
     let gateway = start_with_addr(admin_oidc_config(
         "SHUNT_TEST_ADMIN_OIDC_REJECT_TOKENS",
         "SHUNT_TEST_ADMIN_OIDC_REJECT_SECRET",
@@ -430,7 +430,7 @@ async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_ori
         .unwrap();
 
     let response = client
-        .post(format!("{}/admin/oidc/start", gateway.base_url))
+        .post(format!("{}/admin/api/oidc/start", gateway.base_url))
         .header("sec-fetch-site", "cross-site")
         .send()
         .await
@@ -483,9 +483,6 @@ async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_ori
     let error_html = provider_error.text().await.unwrap();
     assert!(error_html.contains("identity provider reported an error"));
     assert!(!error_html.contains("access_denied"));
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_REJECT_TOKENS");
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_REJECT_SECRET");
 }
 
 #[tokio::test]
@@ -493,7 +490,7 @@ async fn admin_oidc_discovery_builds_authorization_redirect() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = ADMIN_OIDC_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let idp = MockServer::start().await;
     Mock::given(path("/.well-known/openid-configuration"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -505,8 +502,8 @@ async fn admin_oidc_discovery_builds_authorization_redirect() {
         .expect(1)
         .mount(&idp)
         .await;
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_TOKENS", "ops:admin-secret");
-    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_SECRET", "client-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_TOKENS", "ops:admin-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_SECRET", "client-secret");
     let mut config = admin_oidc_config(
         "SHUNT_TEST_ADMIN_OIDC_DISCOVERY_TOKENS",
         "SHUNT_TEST_ADMIN_OIDC_DISCOVERY_SECRET",
@@ -523,9 +520,6 @@ async fn admin_oidc_discovery_builds_authorization_redirect() {
         .unwrap();
     let (location, _) = oidc_state(&client, &gateway).await;
     assert_eq!(location.path(), "/discovered-authorize");
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_TOKENS");
-    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_SECRET");
 }
 
 #[tokio::test]
@@ -539,11 +533,12 @@ async fn admin_routes_are_absent_without_the_block() {
     for route in [
         "/admin",
         "/admin/login",
-        "/admin/oidc/start",
+        "/admin/api/oidc/start",
         "/admin/oidc/callback",
-        "/admin/observed",
-        "/admin/pool",
-        "/admin/status",
+        "/admin/api/observed",
+        "/admin/api/pool",
+        "/admin/api/status",
+        "/admin/api/session",
     ] {
         let response = client
             .get(format!("{}{route}", gateway.base_url))
@@ -563,7 +558,8 @@ async fn admin_pool_repeats_shared_physical_state_per_upstream() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_SHARED_POOL", "ops:shared-secret");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_SHARED_POOL", "ops:shared-secret");
     let mut config = admin_config("SHUNT_TEST_ADMIN_SHARED_POOL");
     let mut account = AccountConfig {
         name: "shared-account".to_string(),
@@ -596,7 +592,7 @@ async fn admin_pool_repeats_shared_physical_state_per_upstream() {
     state.accounts.note_quota("primary", &account, &quota);
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "shared-secret")
         .send()
         .await
@@ -612,12 +608,11 @@ async fn admin_pool_repeats_shared_physical_state_per_upstream() {
         assert_eq!(section["accounts"][0]["name"], "shared-account");
         assert_eq!(section["accounts"][0]["utilization_5h"], 0.73);
     }
-    std::env::remove_var("SHUNT_TEST_ADMIN_SHARED_POOL");
 }
 
 #[tokio::test]
 async fn admin_pool_never_refreshes_or_writes_back_an_expired_on_disk_token() {
-    // Regression pin for the review-response fix: the `/admin/pool` plan
+    // Regression pin for the review-response fix: the `/admin/api/pool` plan
     // backfill path must never call the token-refresh endpoint or write
     // back to the credential file, even when the on-disk access token has
     // expired. Eligibility for a live profile-backfill attempt requires
@@ -633,11 +628,11 @@ async fn admin_pool_never_refreshes_or_writes_back_an_expired_on_disk_token() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     shunt::admin::reset_profile_cache();
     let dir = unique_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("SHUNT_TEST_ADMIN_POOL_NO_REFRESH", "ops:no-refresh-secret");
+    vars.set("SHUNT_TEST_ADMIN_POOL_NO_REFRESH", "ops:no-refresh-secret");
 
     let expired_at_ms = (SystemTime::now() - std::time::Duration::from_secs(3600))
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -669,7 +664,7 @@ async fn admin_pool_never_refreshes_or_writes_back_an_expired_on_disk_token() {
         })))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -695,7 +690,7 @@ async fn admin_pool_never_refreshes_or_writes_back_an_expired_on_disk_token() {
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "no-refresh-secret")
         .send()
         .await
@@ -731,8 +726,6 @@ async fn admin_pool_never_refreshes_or_writes_back_an_expired_on_disk_token() {
         "an account with only an expired on-disk token must carry no plan key, got {account:?}"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_NO_REFRESH");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -746,11 +739,11 @@ async fn admin_pool_reports_plan_when_credential_file_carries_one() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     shunt::admin::reset_profile_cache();
     let dir = unique_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("SHUNT_TEST_ADMIN_POOL_PLAN", "ops:plan-secret");
+    vars.set("SHUNT_TEST_ADMIN_POOL_PLAN", "ops:plan-secret");
     let credentials_path = dir.join("with-plan.json");
     std::fs::write(
         &credentials_path,
@@ -798,7 +791,7 @@ async fn admin_pool_reports_plan_when_credential_file_carries_one() {
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "plan-secret")
         .send()
         .await
@@ -831,7 +824,6 @@ async fn admin_pool_reports_plan_when_credential_file_carries_one() {
          expiresAt in its fixture), no-plan has no credential file to read"
     );
 
-    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_PLAN");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -846,11 +838,11 @@ async fn admin_pool_reports_plan_for_a_name_only_account_via_its_store_path() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     shunt::admin::reset_profile_cache();
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_POOL_STORE_PLAN", "ops:store-plan-secret");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_POOL_STORE_PLAN", "ops:store-plan-secret");
 
     std::fs::write(
         dir.join("store-only.json"),
@@ -884,7 +876,7 @@ async fn admin_pool_reports_plan_for_a_name_only_account_via_its_store_path() {
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "store-plan-secret")
         .send()
         .await
@@ -909,15 +901,13 @@ async fn admin_pool_reports_plan_for_a_name_only_account_via_its_store_path() {
          claudeAiOauth block, so store-only is never a backfill candidate"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_STORE_PLAN");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
 async fn admin_pool_bounds_profile_backfill_when_claude_endpoint_stalls() {
     // D2 regression: the profile GET has no outer bound of its own, so a
-    // stalled Claude endpoint could hang `GET /admin/pool` indefinitely if
+    // stalled Claude endpoint could hang `GET /admin/api/pool` indefinitely if
     // the backfill step it's part of weren't itself time-boxed. The account
     // fixture here deliberately satisfies every condition that makes it an
     // eligible backfill candidate per `refreshable_valid_access_token`
@@ -929,11 +919,11 @@ async fn admin_pool_bounds_profile_backfill_when_claude_endpoint_stalls() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     shunt::admin::reset_profile_cache();
     let dir = unique_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("SHUNT_TEST_ADMIN_POOL_STALL", "ops:stall-secret");
+    vars.set("SHUNT_TEST_ADMIN_POOL_STALL", "ops:stall-secret");
 
     let expires_at_ms = (SystemTime::now() + std::time::Duration::from_secs(3600))
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -984,7 +974,7 @@ async fn admin_pool_bounds_profile_backfill_when_claude_endpoint_stalls() {
 
     let started = std::time::Instant::now();
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "stall-secret")
         .send()
         .await
@@ -994,7 +984,7 @@ async fn admin_pool_bounds_profile_backfill_when_claude_endpoint_stalls() {
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
         elapsed < std::time::Duration::from_secs(10),
-        "GET /admin/pool took {elapsed:?}; the production BackfillBudgets \
+        "GET /admin/api/pool took {elapsed:?}; the production BackfillBudgets \
          default (8s total / 5s per_account) should bound this to roughly 5s \
          against a profile endpoint that never responds within the budget"
     );
@@ -1004,7 +994,6 @@ async fn admin_pool_bounds_profile_backfill_when_claude_endpoint_stalls() {
          skipped for an unrelated reason"
     );
 
-    std::env::remove_var("SHUNT_TEST_ADMIN_POOL_STALL");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1018,7 +1007,8 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_AUTH_KIND", "ops:auth-kind-secret");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_AUTH_KIND", "ops:auth-kind-secret");
     let mut config = admin_config("SHUNT_TEST_ADMIN_AUTH_KIND");
     // Base each provider on the stock template that already matches its auth
     // kind's `ProviderKind`/host validation (claude_oauth -> anthropic host,
@@ -1030,7 +1020,7 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
     let mut misnamed_chatgpt = chatgpt_oauth_template;
     // An explicit, never-existing credentials path keeps this chatgpt_oauth
     // provider (named "claude" here, deliberately) off the real on-disk
-    // Codex store when the later `/admin/pool` request runs — the same
+    // Codex store when the later `/admin/api/pool` request runs — the same
     // real-credential risk the `admin_config` doc comment describes for
     // Claude, just against Codex's own store instead.
     misnamed_chatgpt.accounts = vec![AccountConfig {
@@ -1044,7 +1034,7 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
 
     let mut custom_named_claude = claude_oauth_template;
     // An explicit, never-existing credentials path keeps the later
-    // `/admin/pool` request off the real on-disk Claude store (see the
+    // `/admin/api/pool` request off the real on-disk Claude store (see the
     // `admin_config` doc comment) -- this provider is claude_oauth, so it is
     // the one the live profile backfill would otherwise reach.
     custom_named_claude.accounts = vec![AccountConfig {
@@ -1063,7 +1053,7 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "auth-kind-secret")
         .send()
         .await
@@ -1083,13 +1073,11 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
         .find(|provider| provider["provider"] == "enterprise-claude")
         .expect("claude_oauth provider under a custom name is present");
     assert_eq!(custom_named["auth"], "claude_oauth");
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_AUTH_KIND");
 }
 
 /// The read-only pool dashboard resolves and lists `kimi_oauth` accounts the
 /// same way it already does for `claude_oauth`/`chatgpt_oauth`: this only
-/// covers listing (`/admin/pool`) -- Kimi's device-flow login has no
+/// covers listing (`/admin/api/pool`) -- Kimi's device-flow login has no
 /// browser-based provisioning UI in this pass, unlike Claude/Codex's
 /// redirect-style add-account flow (see `shunt login kimi`).
 #[tokio::test]
@@ -1097,7 +1085,8 @@ async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_KIMI_POOL", "ops:kimi-pool-secret");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_KIMI_POOL", "ops:kimi-pool-secret");
     let mut config = admin_config("SHUNT_TEST_ADMIN_KIMI_POOL");
     let anthropic = config.providers.get_mut("anthropic").unwrap();
     anthropic.auth = AuthMode::KimiOauth;
@@ -1110,11 +1099,11 @@ async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
         token_env: Some("SHUNT_TEST_ADMIN_KIMI_TOKEN".to_string()),
         ..Default::default()
     }];
-    std::env::set_var("SHUNT_TEST_ADMIN_KIMI_TOKEN", "kimi-access-token");
+    vars.set("SHUNT_TEST_ADMIN_KIMI_TOKEN", "kimi-access-token");
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/pool", gateway.base_url))
+        .get(format!("{}/admin/api/pool", gateway.base_url))
         .header("x-shunt-admin-token", "kimi-pool-secret")
         .send()
         .await
@@ -1128,12 +1117,9 @@ async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
         .expect("kimi_oauth provider is present in the pool listing");
     assert_eq!(section["auth"], "kimi_oauth");
     assert_eq!(section["accounts"][0]["name"], "kimi-primary");
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_KIMI_POOL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_KIMI_TOKEN");
 }
 
-/// `[server.status]` is absent from `admin_config`, so `/admin/status` must
+/// `[server.status]` is absent from `admin_config`, so `/admin/api/status` must
 /// report an empty `sources` list -- the shape the dashboard reads as "hide
 /// the whole section" rather than an empty table.
 #[tokio::test]
@@ -1141,11 +1127,12 @@ async fn admin_status_reports_no_sources_when_unconfigured() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_STATUS_EMPTY", "ops:status-empty-secret");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_STATUS_EMPTY", "ops:status-empty-secret");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_STATUS_EMPTY")).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/status", gateway.base_url))
+        .get(format!("{}/admin/api/status", gateway.base_url))
         .header("x-shunt-admin-token", "status-empty-secret")
         .send()
         .await
@@ -1153,8 +1140,6 @@ async fn admin_status_reports_no_sources_when_unconfigured() {
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["sources"].as_array().unwrap().len(), 0);
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_STATUS_EMPTY");
 }
 
 #[tokio::test]
@@ -1162,7 +1147,8 @@ async fn admin_status_reports_configured_source_before_first_poll() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_ADMIN_STATUS_UNPOLLED",
         "ops:status-unpolled-secret",
     );
@@ -1177,7 +1163,7 @@ async fn admin_status_reports_configured_source_before_first_poll() {
     let gateway = start(config).await;
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/status", gateway.base_url))
+        .get(format!("{}/admin/api/status", gateway.base_url))
         .header("x-shunt-admin-token", "status-unpolled-secret")
         .send()
         .await
@@ -1190,8 +1176,6 @@ async fn admin_status_reports_configured_source_before_first_poll() {
     assert_eq!(sources[0]["indicator"], "unknown");
     assert_eq!(sources[0]["error"], "not polled yet");
     assert_eq!(sources[0]["observed_at"], 0);
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_STATUS_UNPOLLED");
 }
 
 /// A populated `StatusStore` entry (as the background poller in
@@ -1203,7 +1187,8 @@ async fn admin_status_reports_observed_sources() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_STATUS_SEEDED", "ops:status-seeded-secret");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_STATUS_SEEDED", "ops:status-seeded-secret");
     let mut config = admin_config("SHUNT_TEST_ADMIN_STATUS_SEEDED");
     config.server.status = Some(shunt::config::StatusConfig {
         refresh_seconds: 300,
@@ -1226,7 +1211,7 @@ async fn admin_status_reports_observed_sources() {
     );
 
     let response = reqwest::Client::new()
-        .get(format!("{}/admin/status", gateway.base_url))
+        .get(format!("{}/admin/api/status", gateway.base_url))
         .header("x-shunt-admin-token", "status-seeded-secret")
         .send()
         .await
@@ -1240,8 +1225,6 @@ async fn admin_status_reports_observed_sources() {
     assert_eq!(sources[0]["description"], "Partially Degraded Service");
     assert_eq!(sources[0]["observed_at"], 1_000);
     assert!(sources[0]["error"].is_null());
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_STATUS_SEEDED");
 }
 
 /// A 32+ character write key and read key for the `[server.admin]` arrays.
@@ -1273,9 +1256,10 @@ async fn admin_header_and_x_api_key_both_authenticate_every_credential_kind() {
         return;
     }
     let env = "SHUNT_TEST_ADMIN_TOKENS_SLOTS";
-    std::env::set_var(env, "ops:secret-slots");
+    let mut vars = common::env_lock().await;
+    vars.set(env, "ops:secret-slots");
     let mut config = admin_config_with_keys(env);
-    // An explicit, never-existing credentials path keeps the `/admin/pool`
+    // An explicit, never-existing credentials path keeps the `/admin/api/pool`
     // requests below off the real on-disk store (see the `admin_config` doc
     // comment).
     config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
@@ -1290,7 +1274,7 @@ async fn admin_header_and_x_api_key_both_authenticate_every_credential_kind() {
     for credential in ["secret-slots", ADMIN_WRITE_KEY, ADMIN_READ_KEY] {
         for slot in ["x-shunt-admin-token", "x-api-key"] {
             let response = client
-                .get(format!("{}/admin/pool", gateway.base_url))
+                .get(format!("{}/admin/api/pool", gateway.base_url))
                 .header(slot, credential)
                 .send()
                 .await
@@ -1302,24 +1286,29 @@ async fn admin_header_and_x_api_key_both_authenticate_every_credential_kind() {
             );
         }
     }
-    std::env::remove_var(env);
 }
 
-/// A read key is a full citizen on GET routes and is refused everywhere a
-/// write would happen — including the browser login form, which would
-/// otherwise mint a session that carries full access.
+/// A read key is a full citizen on GET routes, is refused everywhere a write
+/// would happen, and signs in to a *read-tier* browser session.
+///
+/// The login half used to assert a `401`: while every session carried full
+/// access, minting one from a read key would have escalated it. Sessions now
+/// record the tier they were minted with, so the property that replaces it is
+/// the stronger one — the read session reaches the mutation with a valid
+/// cookie, a matching CSRF token, and a same-origin request, and is still
+/// refused.
 #[tokio::test]
-async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
+async fn read_key_passes_gets_is_refused_on_mutations_and_signs_in_read_only() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
     let env = "SHUNT_TEST_ADMIN_TOKENS_READONLY";
-    std::env::set_var(env, "ops:secret-readonly");
+    vars.set(env, "ops:secret-readonly");
     let mut config = admin_config_with_keys(env);
-    // An explicit, never-existing credentials path keeps the `/admin/pool`
+    // An explicit, never-existing credentials path keeps the `/admin/api/pool`
     // request below off the real on-disk store (see the `admin_config` doc
     // comment).
     config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
@@ -1334,7 +1323,11 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
         .build()
         .unwrap();
 
-    for route in ["/admin/pool", "/admin/status", "/admin/accounts"] {
+    for route in [
+        "/admin/api/pool",
+        "/admin/api/status",
+        "/admin/api/accounts",
+    ] {
         let response = client
             .get(format!("{}{route}", gateway.base_url))
             .header("x-api-key", ADMIN_READ_KEY)
@@ -1346,9 +1339,9 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
             StatusCode::OK,
             "read key must pass {route}"
         );
-        if route == "/admin/accounts" {
-            // A decisive gate for the isolation set up above: `/admin/accounts`
-            // scans a real on-disk store the same way `/admin/pool` did before
+        if route == "/admin/api/accounts" {
+            // A decisive gate for the isolation set up above: `/admin/api/accounts`
+            // scans a real on-disk store the same way `/admin/api/pool` did before
             // the earlier fix, so an empty array here proves the isolated
             // `SHUNT_CLAUDE_ACCOUNTS_DIR` actually took effect rather than the
             // request silently falling back to a real, possibly non-empty
@@ -1362,7 +1355,7 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
     // write key, so the 403 is about privilege and not about the route.
     let post_account = |credential: &'static str| {
         client
-            .post(format!("{}/admin/accounts/claude", gateway.base_url))
+            .post(format!("{}/admin/api/accounts/claude", gateway.base_url))
             .header("x-api-key", credential)
             .header("content-type", "application/json")
             .body(r#"{"name":"main","mode":"setup-token"}"#)
@@ -1374,37 +1367,137 @@ async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
 
     let response = client
-        .delete(format!("{}/admin/accounts/claude/main", gateway.base_url))
+        .delete(format!(
+            "{}/admin/api/accounts/claude/main",
+            gateway.base_url
+        ))
         .header("x-api-key", ADMIN_READ_KEY)
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    // The login form must not mint a session from a read key.
-    let response = client
-        .post(format!("{}/admin/login", gateway.base_url))
-        .form(&[("token", ADMIN_READ_KEY)])
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(
-        response.headers().get("set-cookie").is_none(),
-        "a read key must never receive a session cookie"
+    // Both tiers sign in; the session each one mints is what differs.
+    let sign_in = |token: &'static str| {
+        let base = gateway.base_url.clone();
+        let client = client.clone();
+        async move {
+            let response = client
+                .post(format!("{base}/admin/login"))
+                .form(&[("token", token)])
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::SEE_OTHER,
+                "{token} must reach the dashboard"
+            );
+            response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .find(|value| value.starts_with("shunt_admin_session="))
+                .map(|value| value.split(';').next().unwrap().to_string())
+                .expect("login sets a session cookie")
+        }
+    };
+
+    // What the dashboard renders its write affordances from.
+    let bootstrap = |cookie: String| {
+        let base = gateway.base_url.clone();
+        let client = client.clone();
+        async move {
+            let response = client
+                .get(format!("{base}/admin/api/session"))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            response.json::<serde_json::Value>().await.unwrap()
+        }
+    };
+
+    // The mutation a session reaches with everything else in order: valid
+    // cookie, matching CSRF token, same-origin. Only the tier can refuse it.
+    let mutate = |cookie: String, csrf: String| {
+        let base = gateway.base_url.clone();
+        let client = client.clone();
+        async move {
+            client
+                .post(format!("{base}/admin/api/accounts/claude"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .header("x-csrf-token", &csrf)
+                .body(r#"{"name":"session-tier","mode":"setup-token"}"#)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+
+    let read_cookie = sign_in(ADMIN_READ_KEY).await;
+    let read_session = bootstrap(read_cookie.clone()).await;
+    assert_eq!(
+        read_session["access"], "read",
+        "a read key's session must report its tier to the dashboard"
+    );
+    let read_csrf = read_session["csrf"].as_str().unwrap().to_string();
+    assert!(!read_csrf.is_empty());
+    assert_eq!(
+        mutate(read_cookie, read_csrf).await,
+        StatusCode::FORBIDDEN,
+        "a read session is refused on a mutation it otherwise fully satisfies"
     );
 
-    // The write key does log in, so the refusal above is about the tier.
-    let response = client
-        .post(format!("{}/admin/login", gateway.base_url))
-        .form(&[("token", ADMIN_WRITE_KEY)])
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert!(response.headers().get("set-cookie").is_some());
-    std::env::remove_var(env);
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    // The write half is what keeps the assertions above non-vacuous: a
+    // bootstrap hardcoded to "read", or a `require_write` that refused every
+    // cookie, would pass the read half and fail here.
+    let write_cookie = sign_in(ADMIN_WRITE_KEY).await;
+    let write_session = bootstrap(write_cookie.clone()).await;
+    assert_eq!(write_session["access"], "write");
+    let write_csrf = write_session["csrf"].as_str().unwrap().to_string();
+    assert_ne!(
+        mutate(write_cookie, write_csrf).await,
+        StatusCode::FORBIDDEN,
+        "a write session is not refused on the same mutation"
+    );
+
+    // A cross-site page cannot mint a session, even holding a valid key.
+    // `SameSite=Strict` decides whether the browser *sends* an existing cookie,
+    // not whether it stores the one this response hands back -- so without the
+    // guard a read-key holder could submit this form from their own page and
+    // overwrite a write operator's cookie, silently downgrading that dashboard
+    // to read-only. Both tiers are asserted: the guard is about the request's
+    // origin, not about privilege, and a check that only refused read keys
+    // would be the wrong guard passing this test.
+    for token in [ADMIN_READ_KEY, ADMIN_WRITE_KEY] {
+        let response = client
+            .post(format!("{}/admin/login", gateway.base_url))
+            .header("sec-fetch-site", "cross-site")
+            .form(&[("token", token)])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a cross-origin login must be refused for {token}"
+        );
+        assert!(
+            response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .all(|value| !value.starts_with("shunt_admin_session=")),
+            "a refused cross-origin login must not set a session cookie"
+        );
+    }
 }
 
 /// The merged slot acceptance is scoped to the admin (and spend) routers.
@@ -1417,14 +1510,15 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
     }
     let admin_env = "SHUNT_TEST_ADMIN_TOKENS_INFERENCE";
     let client_env = "SHUNT_TEST_ADMIN_CLIENT_INFERENCE";
-    std::env::set_var(admin_env, "ops:secret-inference");
-    std::env::set_var(client_env, "device:client-token-value");
+    let mut vars = common::env_lock().await;
+    vars.set(admin_env, "ops:secret-inference");
+    vars.set(client_env, "device:client-token-value");
     let mut config = admin_config_with_keys(admin_env);
     config.server.auth = Some(InboundAuthConfig {
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
     });
-    // An explicit, never-existing credentials path keeps the `/admin/pool`
+    // An explicit, never-existing credentials path keeps the `/admin/api/pool`
     // requests below off the real on-disk store (see the `admin_config` doc
     // comment).
     config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
@@ -1439,7 +1533,7 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
     // The credentials really are valid admin credentials.
     for credential in ["secret-inference", ADMIN_WRITE_KEY, ADMIN_READ_KEY] {
         let response = client
-            .get(format!("{}/admin/pool", gateway.base_url))
+            .get(format!("{}/admin/api/pool", gateway.base_url))
             .header("x-api-key", credential)
             .send()
             .await
@@ -1489,9 +1583,6 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    std::env::remove_var(admin_env);
-    std::env::remove_var(client_env);
 }
 
 #[tokio::test]
@@ -1499,12 +1590,17 @@ async fn admin_api_requires_authentication() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_B", "ops:secret-b");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_B", "ops:secret-b");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_B")).await;
     let client = reqwest::Client::new();
 
     // No credential at all.
-    for route in ["/admin/observed", "/admin/pool", "/admin/status"] {
+    for route in [
+        "/admin/api/observed",
+        "/admin/api/pool",
+        "/admin/api/status",
+    ] {
         let response = client
             .get(format!("{}{route}", gateway.base_url))
             .send()
@@ -1515,7 +1611,7 @@ async fn admin_api_requires_authentication() {
 
     // Wrong admin token.
     let response = client
-        .post(format!("{}/admin/accounts/claude", gateway.base_url))
+        .post(format!("{}/admin/api/accounts/claude", gateway.base_url))
         .header("x-shunt-admin-token", "nope")
         .header("content-type", "application/json")
         .body(r#"{"name":"main"}"#)
@@ -1523,7 +1619,6 @@ async fn admin_api_requires_authentication() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_B");
 }
 
 #[tokio::test]
@@ -1531,10 +1626,10 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_C", "ops:secret-c");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_C", "ops:secret-c");
 
     // Mock the setup-token exchange, including the one-year expires_in request.
     let token_server = MockServer::start().await;
@@ -1553,7 +1648,7 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
         })))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -1567,7 +1662,7 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     };
 
     // Start: returns an inference-only authorize URL carrying the OAuth state.
-    let response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/claude", gateway.base_url)))
         .body(r#"{"name":"main"}"#)
         .send()
         .await
@@ -1588,7 +1683,7 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
 
     // Complete: paste `<code>#<state>`; the account is stored and live immediately.
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/main/complete",
+        "{}/admin/api/accounts/claude/main/complete",
         gateway.base_url
     )))
     .body(format!(r#"{{"code":"the-auth-code#{state}"}}"#))
@@ -1611,7 +1706,7 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     assert!(stored.contains("acct-uuid-123"));
 
     // List reports metadata only (kind, not the token).
-    let response = auth(client.get(format!("{}/admin/accounts", gateway.base_url)))
+    let response = auth(client.get(format!("{}/admin/api/accounts", gateway.base_url)))
         .send()
         .await
         .unwrap();
@@ -1621,7 +1716,7 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     assert!(!body.to_string().contains("SECRET-SETUP-TOKEN"));
 
     // Pool enumerates the scanned account.
-    let response = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
+    let response = auth(client.get(format!("{}/admin/api/pool", gateway.base_url)))
         .send()
         .await
         .unwrap();
@@ -1629,16 +1724,16 @@ async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     assert!(body.to_string().contains("\"main\""));
 
     // Delete removes the store file.
-    let response = auth(client.delete(format!("{}/admin/accounts/claude/main", gateway.base_url)))
-        .send()
-        .await
-        .unwrap();
+    let response = auth(client.delete(format!(
+        "{}/admin/api/accounts/claude/main",
+        gateway.base_url
+    )))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert!(!dir.join("main.json").exists());
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_C");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1647,10 +1742,10 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_OAUTH", "ops:secret-oauth");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_OAUTH", "ops:secret-oauth");
 
     let token_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1670,7 +1765,7 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -1683,7 +1778,7 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/claude", gateway.base_url)))
         .body(r#"{"name":"oauthy","mode":"oauth"}"#)
         .send()
         .await
@@ -1706,7 +1801,7 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
         .expect("authorize URL carries the OAuth state");
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/oauthy/complete",
+        "{}/admin/api/accounts/claude/oauthy/complete",
         gateway.base_url
     )))
     .body(format!(r#"{{"code":"oauth-code#{state}"}}"#))
@@ -1746,7 +1841,7 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
     assert!(stored["claudeAiOauth"].get("shuntCredentialKind").is_none());
     assert_eq!(stored["shuntAccountUuid"], "acct-oauth-123");
 
-    let response = auth(client.get(format!("{}/admin/accounts", gateway.base_url)))
+    let response = auth(client.get(format!("{}/admin/api/accounts", gateway.base_url)))
         .send()
         .await
         .unwrap();
@@ -1756,9 +1851,6 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
     let body: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(body["accounts"][0]["kind"], "imported");
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_OAUTH");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1773,10 +1865,10 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REPROV",
         "ops:secret-claude-reprov",
     );
@@ -1823,7 +1915,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -1861,7 +1953,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
     };
 
     // First provisioning: account-a -> identity "acct-old".
-    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/claude")))
         .body(r#"{"name":"account-a","mode":"oauth"}"#)
         .send()
         .await
@@ -1869,7 +1961,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state1) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/claude/account-a/complete"
+        "{base_url}/admin/api/accounts/claude/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
     .send()
@@ -1902,7 +1994,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
 
     // Reprovision account-a onto "shared-id" -- the same identity as
     // "other-account".
-    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/claude")))
         .body(r#"{"name":"account-a","mode":"oauth"}"#)
         .send()
         .await
@@ -1910,7 +2002,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state2) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/claude/account-a/complete"
+        "{base_url}/admin/api/accounts/claude/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-2#{state2}")}).to_string())
     .send()
@@ -1949,9 +2041,6 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REPROV");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1967,10 +2056,10 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_BLANK_OLD",
         "ops:secret-claude-blank-old",
     );
@@ -2002,7 +2091,7 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -2027,7 +2116,7 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     };
 
     // First provisioning: account-a stored with no UUID at all.
-    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/claude")))
         .body(r#"{"name":"account-a","mode":"oauth"}"#)
         .send()
         .await
@@ -2035,7 +2124,7 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state1) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/claude/account-a/complete"
+        "{base_url}/admin/api/accounts/claude/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
     .send()
@@ -2069,7 +2158,7 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     );
 
     // Reprovision account-a onto a real UUID ("new-id").
-    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/claude")))
         .body(r#"{"name":"account-a","mode":"oauth"}"#)
         .send()
         .await
@@ -2077,7 +2166,7 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state2) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/claude/account-a/complete"
+        "{base_url}/admin/api/accounts/claude/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-2#{state2}")}).to_string())
     .send()
@@ -2099,9 +2188,6 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_BLANK_OLD");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2114,10 +2200,10 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REMOVE",
         "ops:secret-claude-remove",
     );
@@ -2170,7 +2256,7 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
 
     // Removing "alias-a" must not clear "shared-id" health: "alias-b" still
     // resolves to it.
-    let response = auth(client.delete(format!("{base_url}/admin/accounts/claude/alias-a")))
+    let response = auth(client.delete(format!("{base_url}/admin/api/accounts/claude/alias-a")))
         .send()
         .await
         .unwrap();
@@ -2188,7 +2274,7 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
     );
 
     // Removing "alias-b" (the last remaining alias) must now clear it.
-    let response = auth(client.delete(format!("{base_url}/admin/accounts/claude/alias-b")))
+    let response = auth(client.delete(format!("{base_url}/admin/api/accounts/claude/alias-b")))
         .send()
         .await
         .unwrap();
@@ -2206,8 +2292,6 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REMOVE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2229,10 +2313,10 @@ async fn claude_remove_preserves_a_configured_providers_health_the_store_scan_ca
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_CONFIGURED",
         "ops:secret-claude-configured",
     );
@@ -2307,7 +2391,7 @@ async fn claude_remove_preserves_a_configured_providers_health_the_store_scan_ca
         request.header("x-shunt-admin-token", "secret-claude-configured")
     };
 
-    let response = auth(client.delete(format!("{base_url}/admin/accounts/claude/account-a")))
+    let response = auth(client.delete(format!("{base_url}/admin/api/accounts/claude/account-a")))
         .send()
         .await
         .unwrap();
@@ -2348,8 +2432,6 @@ async fn claude_remove_preserves_a_configured_providers_health_the_store_scan_ca
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_CONFIGURED");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2358,10 +2440,10 @@ async fn full_oauth_completion_rejects_missing_refresh_token() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_NO_REFRESH",
         "ops:secret-no-refresh",
     );
@@ -2377,7 +2459,7 @@ async fn full_oauth_completion_rejects_missing_refresh_token() {
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -2389,7 +2471,7 @@ async fn full_oauth_completion_rejects_missing_refresh_token() {
             .header("x-shunt-admin-token", "secret-no-refresh")
             .header("content-type", "application/json")
     };
-    let response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/claude", gateway.base_url)))
         .body(r#"{"name":"missing-refresh","mode":"oauth"}"#)
         .send()
         .await
@@ -2403,7 +2485,7 @@ async fn full_oauth_completion_rejects_missing_refresh_token() {
         .unwrap();
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/missing-refresh/complete",
+        "{}/admin/api/accounts/claude/missing-refresh/complete",
         gateway.base_url
     )))
     .body(format!(r#"{{"code":"oauth-code#{state}"}}"#))
@@ -2413,9 +2495,6 @@ async fn full_oauth_completion_rejects_missing_refresh_token() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     assert!(!dir.join("missing-refresh.json").exists());
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_NO_REFRESH");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2424,7 +2503,8 @@ async fn cookie_session_mutations_require_a_csrf_token() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_D", "ops:secret-d");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_D", "ops:secret-d");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_D")).await;
     // Do not auto-follow the post-login redirect; inspect the Set-Cookie directly.
     let client = reqwest::Client::builder()
@@ -2454,7 +2534,7 @@ async fn cookie_session_mutations_require_a_csrf_token() {
 
     // A cookie-authenticated mutation without the CSRF token is rejected.
     let response = client
-        .post(format!("{}/admin/accounts/claude", gateway.base_url))
+        .post(format!("{}/admin/api/accounts/claude", gateway.base_url))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "same-origin")
@@ -2463,7 +2543,91 @@ async fn cookie_session_mutations_require_a_csrf_token() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_D");
+}
+
+/// The login page's Content-Security-Policy, directive by directive.
+///
+/// `script-src`/`connect-src` are `'none'`: the page renders no `<script>` and
+/// makes no fetch. They were `'unsafe-inline'`/`'self'` while the
+/// server-rendered dashboard shared this response helper, and nothing narrowed
+/// them when that dashboard moved to the bundle (#525).
+///
+/// The `'unsafe-inline'` that stays is asserted too, and is the half of this
+/// test that fails if the tightening goes one directive too far: `html::STYLE`
+/// is inlined in a `<style>` element, so dropping it renders the sign-in form
+/// unstyled. `form-action` is the one value that varies with the response —
+/// `'self'` here, widened for the IdP redirect chain when SSO is configured
+/// (`admin_oidc_full_flow_mints_session_and_preserves_header_auth` pins that
+/// shape) — and every other directive comes from the same single format string,
+/// so pinning them once covers both.
+///
+/// Each directive is parsed out and compared whole. A `contains` check would
+/// pass a widened `connect-src 'none' https://example.com`, which is the
+/// regression this test exists to catch, and would say nothing at all about a
+/// directive it does not name — so the count is pinned too, and a ninth
+/// directive has to be decided here rather than inherited silently.
+#[tokio::test]
+async fn the_login_page_csp_allows_only_inline_style_and_the_form_post() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // `start` builds the router, which resolves `AdminConfig::tokens_env`
+    // through `std::env::var` — so this test writes the process env and reads
+    // it back, which is the read/write race the shared env lock exists to
+    // serialize. The guard holds it across the cleanup as well as the write.
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_CSP", "ops:secret-csp");
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_CSP")).await;
+
+    let response = reqwest::get(format!("{}/admin/login", gateway.base_url))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let csp = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let parsed: Vec<(&str, &str)> = csp
+        .split(';')
+        .map(str::trim)
+        .filter(|directive| !directive.is_empty())
+        .map(
+            |directive| match directive.split_once(char::is_whitespace) {
+                Some((name, value)) => (name, value.trim()),
+                None => (directive, ""),
+            },
+        )
+        .collect();
+    let directives: std::collections::HashMap<&str, &str> = parsed.iter().copied().collect();
+
+    for (name, expected) in [
+        ("default-src", "'none'"),
+        ("script-src", "'none'"),
+        ("style-src", "'unsafe-inline'"),
+        ("connect-src", "'none'"),
+        ("img-src", "'self'"),
+        ("form-action", "'self'"),
+        ("base-uri", "'none'"),
+        ("frame-ancestors", "'none'"),
+    ] {
+        assert_eq!(
+            directives.get(name),
+            Some(&expected),
+            "the login page CSP must set `{name} {expected}`; it reads {csp:?}"
+        );
+    }
+    // Counted on `parsed`, not on the map. A repeated directive collapses into
+    // one map entry, and the browser resolves the repeat the other way round --
+    // CSP keeps the FIRST occurrence and ignores the rest, while the map keeps
+    // the last. So `connect-src https://evil; ...; connect-src 'none'` reads as
+    // tight through the map and is wide in the browser, and the map's length is
+    // still 8. Counting before the collapse is what catches both that and an
+    // unpinned ninth directive.
+    assert_eq!(
+        parsed.len(),
+        8,
+        "the login page CSP has a repeated or unpinned directive: {csp:?}"
+    );
 }
 
 #[tokio::test]
@@ -2471,7 +2635,8 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_E", "ops:secret-e");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_E", "ops:secret-e");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_E")).await;
     // Do not auto-follow redirects; assert on the raw responses.
     let client = reqwest::Client::builder()
@@ -2508,26 +2673,31 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
         .map(|value| value.split(';').next().unwrap().to_string())
         .expect("login sets a session cookie");
 
-    // The dashboard renders and embeds the session's CSRF token for its script.
+    // The session's CSRF token comes from the bootstrap endpoint. The
+    // server-rendered dashboard used to interpolate it into the page it emitted
+    // and this test used to scrape it back out; the SPA shell is one static file
+    // served to every visitor alike, so it cannot carry a per-session value and
+    // `GET /admin/api/session` serves it instead (`docs/admin-ui-delivery.md`,
+    // Decision 5). The subject of this test is unchanged — what `check_csrf`
+    // accepts on a cookie mutation — only where the browser gets the token.
     let response = client
-        .get(format!("{}/admin", gateway.base_url))
+        .get(format!("{}/admin/api/session", gateway.base_url))
         .header("cookie", &cookie)
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let html = response.text().await.unwrap();
-    let csrf = html
-        .split_once("const CSRF = \"")
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(token, _)| token.to_string())
-        .expect("dashboard embeds the CSRF token");
+    let body: serde_json::Value = response.json().await.unwrap();
+    let csrf = body["csrf"]
+        .as_str()
+        .expect("the bootstrap carries a csrf token")
+        .to_string();
     assert!(!csrf.is_empty());
 
     // A cookie mutation WITH the matching CSRF token + same-origin is accepted
     // (the accept branch of check_csrf, complementing the reject-path test).
     let response = client
-        .post(format!("{}/admin/accounts/claude", gateway.base_url))
+        .post(format!("{}/admin/api/accounts/claude", gateway.base_url))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "same-origin")
@@ -2544,7 +2714,7 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
 
     // Cross-site logout is rejected by the same-origin guard.
     let response = client
-        .post(format!("{}/admin/logout", gateway.base_url))
+        .post(format!("{}/admin/api/logout", gateway.base_url))
         .header("cookie", &cookie)
         .header("sec-fetch-site", "cross-site")
         .send()
@@ -2558,7 +2728,7 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
 
     // Same-origin logout clears the cookie and invalidates the session.
     let response = client
-        .post(format!("{}/admin/logout", gateway.base_url))
+        .post(format!("{}/admin/api/logout", gateway.base_url))
         .header("cookie", &cookie)
         .header("sec-fetch-site", "same-origin")
         .send()
@@ -2566,21 +2736,28 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
 
-    // After logout the old cookie no longer authenticates → redirect to login.
+    // After logout the old cookie no longer authenticates.
+    //
+    // Asserted against the bootstrap endpoint rather than `GET /admin`, for two
+    // reasons that both arrived with the SPA cutover. The shell is served
+    // unauthenticated, so `/admin` answers `200` to a logged-out browser and the
+    // `303` this used to assert now happens client-side, off the back of this
+    // very `401` (`ui/src/App.tsx`). And `/admin` is the one admin path whose
+    // answer depends on `--features ui` — the shell with it, a `404` naming the
+    // feature without — while this file runs in both builds; `/admin/api/*` is
+    // identical in both, so the authentication property is pinned where it is
+    // actually decided.
     let response = client
-        .get(format!("{}/admin", gateway.base_url))
+        .get(format!("{}/admin/api/session", gateway.base_url))
         .header("cookie", &cookie)
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(
-        response.headers().get("location").unwrap(),
-        "/admin/login",
-        "a logged-out session is redirected to the login page"
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "a logged-out session no longer authenticates"
     );
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_E");
 }
 
 #[tokio::test]
@@ -2588,10 +2765,10 @@ async fn completion_reports_bad_gateway_when_token_exchange_fails() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_F", "ops:secret-f");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_F", "ops:secret-f");
 
     // Upstream token endpoint fails; the completion must surface a generic 502
     // without echoing the upstream detail, and must not store an account.
@@ -2601,7 +2778,7 @@ async fn completion_reports_bad_gateway_when_token_exchange_fails() {
         .respond_with(ResponseTemplate::new(400).set_body_string("invalid_grant: bad code"))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -2615,7 +2792,7 @@ async fn completion_reports_bad_gateway_when_token_exchange_fails() {
     };
 
     // Start to obtain a valid pending OAuth state.
-    let response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/claude", gateway.base_url)))
         .body(r#"{"name":"main"}"#)
         .send()
         .await
@@ -2631,7 +2808,7 @@ async fn completion_reports_bad_gateway_when_token_exchange_fails() {
 
     // Complete with a well-formed `<code>#<state>` but a failing upstream.
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/main/complete",
+        "{}/admin/api/accounts/claude/main/complete",
         gateway.base_url
     )))
     .body(format!(r#"{{"code":"the-auth-code#{state}"}}"#))
@@ -2649,9 +2826,6 @@ async fn completion_reports_bad_gateway_when_token_exchange_fails() {
         "a failed exchange must not store an account"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_F");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2660,7 +2834,8 @@ async fn admin_negative_paths_are_rejected() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_G", "ops:secret-g");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_G", "ops:secret-g");
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_G")).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -2689,7 +2864,7 @@ async fn admin_negative_paths_are_rejected() {
         .contains("Invalid admin token."));
 
     // add_account with a malformed JSON body → 400.
-    let response = hdr(client.post(format!("{base}/admin/accounts/claude")))
+    let response = hdr(client.post(format!("{base}/admin/api/accounts/claude")))
         .body("not json")
         .send()
         .await
@@ -2697,7 +2872,7 @@ async fn admin_negative_paths_are_rejected() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     // add_account with an invalid account name → 400.
-    let response = hdr(client.post(format!("{base}/admin/accounts/claude")))
+    let response = hdr(client.post(format!("{base}/admin/api/accounts/claude")))
         .body(r#"{"name":"BAD_NAME"}"#)
         .send()
         .await
@@ -2705,7 +2880,7 @@ async fn admin_negative_paths_are_rejected() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     // add_account with an invalid mode → 400.
-    let response = hdr(client.post(format!("{base}/admin/accounts/claude")))
+    let response = hdr(client.post(format!("{base}/admin/api/accounts/claude")))
         .body(r#"{"name":"valid-name","mode":"bogus"}"#)
         .send()
         .await
@@ -2713,7 +2888,7 @@ async fn admin_negative_paths_are_rejected() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     // complete with no pending login for the name → 400.
-    let response = hdr(client.post(format!("{base}/admin/accounts/claude/ghost/complete")))
+    let response = hdr(client.post(format!("{base}/admin/api/accounts/claude/ghost/complete")))
         .body(r#"{"code":"the-code#the-state"}"#)
         .send()
         .await
@@ -2738,7 +2913,7 @@ async fn admin_negative_paths_are_rejected() {
         .map(|value| value.split(';').next().unwrap().to_string())
         .expect("login sets a session cookie");
     let response = client
-        .post(format!("{base}/admin/accounts/claude"))
+        .post(format!("{base}/admin/api/accounts/claude"))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "cross-site")
@@ -2748,8 +2923,6 @@ async fn admin_negative_paths_are_rejected() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_G");
 }
 
 #[tokio::test]
@@ -2757,10 +2930,10 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_CODEX", "ops:secret-codex");
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_CODEX", "ops:secret-codex");
 
     let token_server = MockServer::start().await;
     let access = chatgpt_token(4_102_444_800, "acct-codex");
@@ -2774,13 +2947,13 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
         .expect(2)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
 
     let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX");
-    // Opt codex back into the store scan: the `/admin/pool` assertion below
+    // Opt codex back into the store scan: the `/admin/api/pool` assertion below
     // needs the scanned result, and `forget_pool_health_if_absent`'s
     // `draws_from_store` check (`src/admin/mod.rs:344`) also needs an empty
     // `accounts` list to treat this as a store-backed account. The
@@ -2788,7 +2961,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     // this test's own directory.
     config.providers.get_mut("codex").unwrap().accounts = Vec::new();
     // An explicit, never-existing credentials path on the untouched
-    // `anthropic` provider keeps the later `/admin/pool` request off the
+    // `anthropic` provider keeps the later `/admin/api/pool` request off the
     // real on-disk Claude store (see the `admin_config` doc comment); this
     // test only isolates `SHUNT_CODEX_ACCOUNTS_DIR` for its own Codex flow.
     config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
@@ -2805,7 +2978,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"codex-a"}"#)
         .send()
         .await
@@ -2831,7 +3004,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     }
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/codex-a/complete",
+        "{}/admin/api/accounts/codex/codex-a/complete",
         gateway.base_url
     )))
     .body(serde_json::json!({"code": format!("oauth-code#{state}")}).to_string())
@@ -2851,7 +3024,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     assert_eq!(stored["tokens"]["refresh_token"], "SECRET-CODEX-REFRESH");
     assert_eq!(stored["tokens"]["account_id"], "acct-codex");
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"codex-url"}"#)
         .send()
         .await
@@ -2864,7 +3037,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     )
     .unwrap();
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/codex-url/complete",
+        "{}/admin/api/accounts/codex/codex-url/complete",
         gateway.base_url
     )))
     .body(serde_json::json!({"code": callback.to_string()}).to_string())
@@ -2890,7 +3063,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
         assert!(body.contains("code_verifier="));
     }
 
-    let response = auth(client.get(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.get(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .send()
         .await
         .unwrap();
@@ -2905,7 +3078,7 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
         .iter()
         .all(|account| account["account_id"] == "acct-codex"));
 
-    let response = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
+    let response = auth(client.get(format!("{}/admin/api/pool", gateway.base_url)))
         .send()
         .await
         .unwrap();
@@ -2922,17 +3095,16 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
         .iter()
         .any(|account| account["name"] == "codex-a"));
 
-    let response =
-        auth(client.delete(format!("{}/admin/accounts/codex/codex-a", gateway.base_url)))
-            .send()
-            .await
-            .unwrap();
+    let response = auth(client.delete(format!(
+        "{}/admin/api/accounts/codex/codex-a",
+        gateway.base_url
+    )))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert!(!dir.join("codex-a.json").exists());
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2946,10 +3118,10 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_REPROV",
         "ops:secret-codex-reprov",
     );
@@ -2995,7 +3167,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3007,10 +3179,10 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     // `draws_from_store` check (`src/admin/mod.rs:344`) so a reprovisioned
     // or removed identity here is treated as store-backed. The pool-plan
     // machinery in `src/admin/plan.rs` never runs in this test at all --
-    // this handler never calls `/admin/pool`. The store reads and writes
+    // this handler never calls `/admin/api/pool`. The store reads and writes
     // this reprovision/remove handler does perform are safely isolated:
     // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
-    // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
+    // the shared env lock is held for this whole function -- the lock matters
     // because env vars are process-global, so directory isolation alone
     // does not guarantee safety if another test runs concurrently and
     // reassigns the same env var mid-test.
@@ -3047,7 +3219,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     };
 
     // First provisioning: account-a -> identity "acct-old".
-    let response = auth(client.post(format!("{base_url}/admin/accounts/codex")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/codex")))
         .body(r#"{"name":"account-a"}"#)
         .send()
         .await
@@ -3055,7 +3227,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state1) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/codex/account-a/complete"
+        "{base_url}/admin/api/accounts/codex/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
     .send()
@@ -3086,7 +3258,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
 
     // Reprovision account-a onto "shared-id" -- the same identity as
     // "other-account".
-    let response = auth(client.post(format!("{base_url}/admin/accounts/codex")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/codex")))
         .body(r#"{"name":"account-a"}"#)
         .send()
         .await
@@ -3094,7 +3266,7 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state2) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/codex/account-a/complete"
+        "{base_url}/admin/api/accounts/codex/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-2#{state2}")}).to_string())
     .send()
@@ -3129,9 +3301,6 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_REPROV");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3149,10 +3318,10 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_BLANK_OLD",
         "ops:secret-codex-blank-old",
     );
@@ -3184,7 +3353,7 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3196,10 +3365,10 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     // `draws_from_store` check (`src/admin/mod.rs:344`) so a reprovisioned
     // or removed identity here is treated as store-backed. The pool-plan
     // machinery in `src/admin/plan.rs` never runs in this test at all --
-    // this handler never calls `/admin/pool`. The store reads and writes
+    // this handler never calls `/admin/api/pool`. The store reads and writes
     // this reprovision/remove handler does perform are safely isolated:
     // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
-    // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
+    // the shared env lock is held for this whole function -- the lock matters
     // because env vars are process-global, so directory isolation alone
     // does not guarantee safety if another test runs concurrently and
     // reassigns the same env var mid-test.
@@ -3246,7 +3415,7 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     };
 
     // Reprovision account-a onto a real identity ("new-id").
-    let response = auth(client.post(format!("{base_url}/admin/accounts/codex")))
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/codex")))
         .body(r#"{"name":"account-a"}"#)
         .send()
         .await
@@ -3254,7 +3423,7 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state1) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{base_url}/admin/accounts/codex/account-a/complete"
+        "{base_url}/admin/api/accounts/codex/account-a/complete"
     )))
     .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
     .send()
@@ -3274,9 +3443,6 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_BLANK_OLD");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3289,10 +3455,10 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_REMOVE",
         "ops:secret-codex-remove",
     );
@@ -3321,10 +3487,10 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
     // `draws_from_store` check (`src/admin/mod.rs:344`) so a reprovisioned
     // or removed identity here is treated as store-backed. The pool-plan
     // machinery in `src/admin/plan.rs` never runs in this test at all --
-    // this handler never calls `/admin/pool`. The store reads and writes
+    // this handler never calls `/admin/api/pool`. The store reads and writes
     // this reprovision/remove handler does perform are safely isolated:
     // `SHUNT_CODEX_ACCOUNTS_DIR` above points at a fresh `unique_dir()`, and
-    // `CODEX_ENV_LOCK` is held for this whole function -- the lock matters
+    // the shared env lock is held for this whole function -- the lock matters
     // because env vars are process-global, so directory isolation alone
     // does not guarantee safety if another test runs concurrently and
     // reassigns the same env var mid-test.
@@ -3359,7 +3525,7 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
 
     // Removing "alias-a" must not clear "shared-id" health: "alias-b" still
     // resolves to it.
-    let response = auth(client.delete(format!("{base_url}/admin/accounts/codex/alias-a")))
+    let response = auth(client.delete(format!("{base_url}/admin/api/accounts/codex/alias-a")))
         .send()
         .await
         .unwrap();
@@ -3375,7 +3541,7 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
     );
 
     // Removing "alias-b" (the last remaining alias) must now clear it.
-    let response = auth(client.delete(format!("{base_url}/admin/accounts/codex/alias-b")))
+    let response = auth(client.delete(format!("{base_url}/admin/api/accounts/codex/alias-b")))
         .send()
         .await
         .unwrap();
@@ -3391,8 +3557,6 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
     );
 
     task.abort();
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_REMOVE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3401,10 +3565,10 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_NEGATIVE",
         "ops:secret-codex-negative",
     );
@@ -3418,7 +3582,7 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3431,7 +3595,7 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"BAD_NAME"}"#)
         .send()
         .await
@@ -3439,7 +3603,7 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/ghost/complete",
+        "{}/admin/api/accounts/codex/ghost/complete",
         gateway.base_url
     )))
     .body(r#"{"code":"code#state"}"#)
@@ -3448,7 +3612,7 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
     .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"no-refresh"}"#)
         .send()
         .await
@@ -3456,7 +3620,7 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
     let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     let (_, state) = authorize_state(&body);
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/no-refresh/complete",
+        "{}/admin/api/accounts/codex/no-refresh/complete",
         gateway.base_url
     )))
     .body(serde_json::json!({"code": format!("code#{state}")}).to_string())
@@ -3466,9 +3630,6 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     assert!(!dir.join("no-refresh.json").exists());
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_NEGATIVE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3477,10 +3638,10 @@ async fn codex_completion_rejects_oauth_state_mismatch_before_exchange() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_STATE",
         "ops:secret-codex-state",
     );
@@ -3495,7 +3656,7 @@ async fn codex_completion_rejects_oauth_state_mismatch_before_exchange() {
         .expect(0)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3508,7 +3669,7 @@ async fn codex_completion_rejects_oauth_state_mismatch_before_exchange() {
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"state-mismatch"}"#)
         .send()
         .await
@@ -3519,7 +3680,7 @@ async fn codex_completion_rejects_oauth_state_mismatch_before_exchange() {
     assert_ne!(state, "WRONG-state");
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/state-mismatch/complete",
+        "{}/admin/api/accounts/codex/state-mismatch/complete",
         gateway.base_url
     )))
     .body(r#"{"code":"the-code#WRONG-state"}"#)
@@ -3530,9 +3691,6 @@ async fn codex_completion_rejects_oauth_state_mismatch_before_exchange() {
     assert!(token_server.received_requests().await.unwrap().is_empty());
     assert!(!dir.join("state-mismatch.json").exists());
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_STATE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3541,10 +3699,10 @@ async fn codex_completion_rejects_access_token_without_account_id() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_NO_ACCOUNT_ID",
         "ops:secret-codex-no-account-id",
     );
@@ -3559,7 +3717,7 @@ async fn codex_completion_rejects_access_token_without_account_id() {
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3572,7 +3730,7 @@ async fn codex_completion_rejects_access_token_without_account_id() {
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"no-account-id"}"#)
         .send()
         .await
@@ -3582,7 +3740,7 @@ async fn codex_completion_rejects_access_token_without_account_id() {
     let (_, state) = authorize_state(&body);
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/no-account-id/complete",
+        "{}/admin/api/accounts/codex/no-account-id/complete",
         gateway.base_url
     )))
     .body(serde_json::json!({"code": format!("the-code#{state}")}).to_string())
@@ -3593,9 +3751,6 @@ async fn codex_completion_rejects_access_token_without_account_id() {
     assert!(!dir.join("no-account-id.json").exists());
     token_server.verify().await;
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_NO_ACCOUNT_ID");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3604,10 +3759,10 @@ async fn codex_completion_reports_generic_bad_gateway_when_token_exchange_fails(
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_EXCHANGE_FAILURE",
         "ops:secret-codex-exchange-failure",
     );
@@ -3619,7 +3774,7 @@ async fn codex_completion_reports_generic_bad_gateway_when_token_exchange_fails(
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3635,7 +3790,7 @@ async fn codex_completion_reports_generic_bad_gateway_when_token_exchange_fails(
             .header("content-type", "application/json")
     };
 
-    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+    let response = auth(client.post(format!("{}/admin/api/accounts/codex", gateway.base_url)))
         .body(r#"{"name":"exchange-failure"}"#)
         .send()
         .await
@@ -3645,7 +3800,7 @@ async fn codex_completion_reports_generic_bad_gateway_when_token_exchange_fails(
     let (_, state) = authorize_state(&body);
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/codex/exchange-failure/complete",
+        "{}/admin/api/accounts/codex/exchange-failure/complete",
         gateway.base_url
     )))
     .body(serde_json::json!({"code": format!("the-code#{state}")}).to_string())
@@ -3661,9 +3816,6 @@ async fn codex_completion_reports_generic_bad_gateway_when_token_exchange_fails(
     assert!(!dir.join("exchange-failure.json").exists());
     token_server.verify().await;
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_EXCHANGE_FAILURE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3672,16 +3824,16 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CODEX_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_CODEX_CSRF",
         "ops:secret-codex-csrf",
     );
 
     let token_server = MockServer::start().await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CODEX_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3710,22 +3862,23 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
         .map(|value| value.split(';').next().unwrap().to_string())
         .expect("login sets a session cookie");
 
+    // As above: the token is served by the bootstrap endpoint, not interpolated
+    // into a page.
     let response = client
-        .get(format!("{base}/admin"))
+        .get(format!("{base}/admin/api/session"))
         .header("cookie", &cookie)
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let html = response.text().await.unwrap();
-    let csrf = html
-        .split_once("const CSRF = \"")
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(token, _)| token.to_string())
-        .expect("dashboard embeds the CSRF token");
+    let body: serde_json::Value = response.json().await.unwrap();
+    let csrf = body["csrf"]
+        .as_str()
+        .expect("the bootstrap carries a csrf token")
+        .to_string();
 
     let response = client
-        .post(format!("{base}/admin/accounts/codex"))
+        .post(format!("{base}/admin/api/accounts/codex"))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "same-origin")
@@ -3736,7 +3889,9 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     let response = client
-        .post(format!("{base}/admin/accounts/codex/codex-csrf/complete"))
+        .post(format!(
+            "{base}/admin/api/accounts/codex/codex-csrf/complete"
+        ))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "same-origin")
@@ -3747,7 +3902,7 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     let response = client
-        .delete(format!("{base}/admin/accounts/codex/codex-csrf"))
+        .delete(format!("{base}/admin/api/accounts/codex/codex-csrf"))
         .header("cookie", &cookie)
         .header("sec-fetch-site", "same-origin")
         .send()
@@ -3756,7 +3911,7 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     let response = client
-        .post(format!("{base}/admin/accounts/codex"))
+        .post(format!("{base}/admin/api/accounts/codex"))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .header("sec-fetch-site", "same-origin")
@@ -3771,15 +3926,16 @@ async fn codex_cookie_session_mutations_require_a_csrf_token() {
         "a valid session cookie + CSRF token is accepted on the Codex route"
     );
 
-    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_CSRF");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn admin_config_without_tokens_env_fails_startup() {
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_MISSING");
+    // `validate` reads the environment, so this test is a *reader* and needs the
+    // lock as much as any writer — and the removal below is itself a write to
+    // `environ`. A `#[test]` with no runtime takes the lock by blocking.
+    let mut vars = common::set_env_blocking(&[]);
+    vars.unset("SHUNT_TEST_ADMIN_TOKENS_MISSING");
     let config = admin_config("SHUNT_TEST_ADMIN_TOKENS_MISSING");
     let error = config.validate().unwrap_err().to_string();
     assert!(error.contains("SHUNT_TEST_ADMIN_TOKENS_MISSING"));
@@ -3794,10 +3950,10 @@ async fn refresh_probe_rotates_an_imported_account_without_returning_token_mater
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_OK", "ops:secret-probe-ok");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_PROBE_OK", "ops:secret-probe-ok");
 
     std::fs::write(
         dir.join("importee.json"),
@@ -3828,7 +3984,7 @@ async fn refresh_probe_rotates_an_imported_account_without_returning_token_mater
         .expect(1)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3836,7 +3992,7 @@ async fn refresh_probe_rotates_an_imported_account_without_returning_token_mater
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_PROBE_OK")).await;
     let response = reqwest::Client::new()
         .post(format!(
-            "{}/admin/accounts/claude/importee/refresh",
+            "{}/admin/api/accounts/claude/importee/refresh",
             gateway.base_url
         ))
         .header("x-shunt-admin-token", "secret-probe-ok")
@@ -3882,9 +4038,6 @@ async fn refresh_probe_rotates_an_imported_account_without_returning_token_mater
     assert!(body["expires_at"].as_i64().unwrap() > 1_000);
     token_server.verify().await;
 
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_OK");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3896,10 +4049,10 @@ async fn refresh_probe_never_attempts_a_grant_for_a_setup_token_account() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_SETUP", "ops:secret-probe-st");
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_PROBE_SETUP", "ops:secret-probe-st");
 
     let original = serde_json::json!({
         "claudeAiOauth": {
@@ -3923,7 +4076,7 @@ async fn refresh_probe_never_attempts_a_grant_for_a_setup_token_account() {
         .expect(0)
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -3931,7 +4084,7 @@ async fn refresh_probe_never_attempts_a_grant_for_a_setup_token_account() {
     let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_PROBE_SETUP")).await;
     let response = reqwest::Client::new()
         .post(format!(
-            "{}/admin/accounts/claude/statik/refresh",
+            "{}/admin/api/accounts/claude/statik/refresh",
             gateway.base_url
         ))
         .header("x-shunt-admin-token", "secret-probe-st")
@@ -3952,24 +4105,21 @@ async fn refresh_probe_never_attempts_a_grant_for_a_setup_token_account() {
         original
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_SETUP");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A terminal `invalid_grant` from the probe marks the pool account, and a
-/// re-login through `POST /admin/accounts/claude/{name}/complete` clears the
+/// re-login through `POST /admin/api/accounts/claude/{name}/complete` clears the
 /// mark again. Also pins that the failure response carries no provider detail.
 #[tokio::test]
 async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_PROBE_DEAD",
         "ops:secret-probe-dead",
     );
@@ -4015,7 +4165,7 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
         })))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -4042,7 +4192,7 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
     assert!(!state.accounts.needs_relogin("anthropic", &account));
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/deadone/refresh",
+        "{}/admin/api/accounts/claude/deadone/refresh",
         gateway.base_url
     )))
     .send()
@@ -4063,7 +4213,7 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
             .accounts
             .snapshot("anthropic", std::slice::from_ref(&account), None, None)[0]
             .needs_relogin,
-        "the mark must reach the /admin/pool snapshot"
+        "the mark must reach the /admin/api/pool snapshot"
     );
 
     // A second store account resolving to the *same* upstream identity. This is
@@ -4086,16 +4236,17 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
     .unwrap();
 
     // Re-login through the ordinary provisioning flow clears it again.
-    let start_response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
-        .body(r#"{"name":"deadone","mode":"oauth"}"#)
-        .send()
-        .await
-        .unwrap();
+    let start_response =
+        auth(client.post(format!("{}/admin/api/accounts/claude", gateway.base_url)))
+            .body(r#"{"name":"deadone","mode":"oauth"}"#)
+            .send()
+            .await
+            .unwrap();
     assert_eq!(start_response.status(), StatusCode::OK);
     let start_body: serde_json::Value = start_response.json().await.unwrap();
     let (_url, oauth_state) = authorize_state(&start_body);
     let complete = auth(client.post(format!(
-        "{}/admin/accounts/claude/deadone/complete",
+        "{}/admin/api/accounts/claude/deadone/complete",
         gateway.base_url
     )))
     .body(format!(r#"{{"code":"relogin-code#{oauth_state}"}}"#))
@@ -4116,13 +4267,10 @@ async fn refresh_probe_marks_a_dead_account_and_relogin_clears_the_mark() {
         "a successful re-login must clear the needs-re-login mark"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_DEAD");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Issue #439: the account is in the store and enumerated by `/admin/pool`, but
+/// Issue #439: the account is in the store and enumerated by `/admin/api/pool`, but
 /// no provider table has ever selected it, so the pool holds no health entry for
 /// it. A terminal probe verdict used to update nothing and the row kept
 /// reporting `unseen` — the operator clicked Refresh, was told the credential is
@@ -4132,10 +4280,10 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_PROBE_UNSEEN",
         "ops:secret-probe-unseen",
     );
@@ -4162,7 +4310,7 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
         })))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -4188,20 +4336,21 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
                     .into_iter()
             })
             .find(|account| account["name"] == "neverpicked")
-            .expect("the store account is enumerated by /admin/pool");
+            .expect("the store account is enumerated by /admin/api/pool");
         (
             row["needs_relogin"] == serde_json::Value::Bool(true),
             row["has_state"] == serde_json::Value::Bool(true),
         )
     };
 
-    let before: serde_json::Value = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let before: serde_json::Value =
+        auth(client.get(format!("{}/admin/api/pool", gateway.base_url)))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
     assert_eq!(
         relogin_state(&before),
         (false, false),
@@ -4210,7 +4359,7 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
     );
 
     let response = auth(client.post(format!(
-        "{}/admin/accounts/claude/neverpicked/refresh",
+        "{}/admin/api/accounts/claude/neverpicked/refresh",
         gateway.base_url
     )))
     .send()
@@ -4222,7 +4371,7 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
         "the grant is terminally rejected"
     );
 
-    let after: serde_json::Value = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
+    let after: serde_json::Value = auth(client.get(format!("{}/admin/api/pool", gateway.base_url)))
         .send()
         .await
         .unwrap()
@@ -4232,7 +4381,7 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
     let (needs_relogin, has_state) = relogin_state(&after);
     assert!(
         needs_relogin,
-        "the probe's terminal verdict never reached /admin/pool for an account \
+        "the probe's terminal verdict never reached /admin/api/pool for an account \
          the pool has no health entry for: {after}"
     );
     assert!(
@@ -4241,9 +4390,6 @@ async fn refresh_probe_marks_an_account_no_provider_table_has_ever_selected() {
          stays false — both dashboard tables read `needs_relogin` before it"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_UNSEEN");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4257,10 +4403,10 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
     if !can_bind_loopback() {
         return;
     }
-    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
     let dir = unique_dir();
-    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-    std::env::set_var(
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
         "SHUNT_TEST_ADMIN_TOKENS_PROBE_SERVED",
         "ops:secret-probe-served",
     );
@@ -4290,7 +4436,7 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
         })))
         .mount(&token_server)
         .await;
-    std::env::set_var(
+    vars.set(
         "SHUNT_CLAUDE_TOKEN_URL",
         format!("{}/token", token_server.uri()),
     );
@@ -4315,7 +4461,7 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
 
     let response = client
         .post(format!(
-            "{}/admin/accounts/claude/servedmark/refresh",
+            "{}/admin/api/accounts/claude/servedmark/refresh",
             gateway.base_url
         ))
         .header("x-shunt-admin-token", "secret-probe-served")
@@ -4337,7 +4483,7 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
          never the broken part"
     );
     // The response must agree with the pool. Reporting `needs_relogin: false`
-    // and "this login is alive" while `/admin/pool` still demands a re-login
+    // and "this login is alive" while `/admin/api/pool` still demands a re-login
     // would hand the dashboard and API callers contradictory answers.
     assert_eq!(
         body["needs_relogin"],
@@ -4369,7 +4515,7 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
     assert!(state.accounts.needs_relogin("anthropic", &account));
     let response = client
         .post(format!(
-            "{}/admin/accounts/claude/servedmark/refresh",
+            "{}/admin/api/accounts/claude/servedmark/refresh",
             gateway.base_url
         ))
         .header("x-shunt-admin-token", "secret-probe-served")
@@ -4389,8 +4535,417 @@ async fn refresh_probe_success_does_not_clear_a_served_request_mark() {
         "and the response must say so"
     );
 
-    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
-    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
-    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_PROBE_SERVED");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `GET /admin/api/session` hands the SPA the two per-session values the
+/// server-rendered dashboard gets by interpolation, and the CSRF token it
+/// serves is the live one the guard accepts — not a decorative copy.
+///
+/// Proving that last part needs a real mutation: a test that only asserted the
+/// field is non-empty would stay green if the handler minted a fresh unrelated
+/// token, which is exactly the failure that would leave the ported dashboard
+/// unable to perform a single write.
+#[tokio::test]
+async fn admin_session_bootstrap_serves_the_live_csrf_token_and_refresh_buffer() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // This test resolves its admin credential out of the process env, so it
+    // takes the same lock the other admin env tests do.
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_SESSION_BOOTSTRAP", "ops:session-secret");
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_SESSION_BOOTSTRAP")).await;
+    let base = &gateway.base_url;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    // Unauthenticated: the bootstrap is behind the same credential as the rest
+    // of `/admin/api/*`, so an anonymous SPA load learns nothing.
+    let response = client
+        .get(format!("{base}/admin/api/session"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Header credential: CSRF-exempt, so there is no token to hand out — the
+    // same empty string `dashboard` renders into the server-rendered page.
+    let response = client
+        .get(format!("{base}/admin/api/session"))
+        .header("x-shunt-admin-token", "session-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("cache-control").unwrap(),
+        "no-store",
+        "the session bootstrap carries a token and must never be cached"
+    );
+    assert_eq!(
+        response.headers().get("x-content-type-options").unwrap(),
+        "nosniff"
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["csrf"], "");
+    // The value routing itself enforces (`claude::auth::EXPIRY_BUFFER`), served
+    // rather than duplicated in the bundle so the two cannot drift.
+    assert_eq!(body["expiry_buffer_ms"], 300_000);
+
+    // Cookie session: the served token must be the session's own.
+    let login = client
+        .post(format!("{base}/admin/login"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("token=session-secret")
+        .send()
+        .await
+        .unwrap();
+    let cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find(|value| value.starts_with("shunt_admin_session="))
+        .map(|value| value.split(';').next().unwrap().to_string())
+        .expect("login sets a session cookie");
+
+    let body: serde_json::Value = client
+        .get(format!("{base}/admin/api/session"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let csrf = body["csrf"].as_str().unwrap().to_string();
+    assert!(!csrf.is_empty(), "a cookie session must receive its token");
+
+    // The served token passes the guard...
+    let response = client
+        .post(format!("{base}/admin/api/accounts/claude"))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .header("x-csrf-token", &csrf)
+        .body(r#"{"name":"bootstrap-probe","mode":"oauth"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the token `/admin/api/session` served must be the one `check_csrf` accepts"
+    );
+
+    // ...and the guard is genuinely being exercised: another token does not.
+    let response = client
+        .post(format!("{base}/admin/api/accounts/claude"))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .header("x-csrf-token", format!("{csrf}-tampered"))
+        .body(r#"{"name":"bootstrap-probe","mode":"oauth"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+/// Drives two completions for one account into the window issue #440 describes.
+///
+/// The first completion is put in flight against a deliberately slow exchange
+/// and left inside it; a second `start` then replaces the pending entry the
+/// in-flight completion is still relying on, which is what lets a second
+/// completion pass its own state check. Returns the two responses in the order
+/// they were issued.
+///
+/// Shared by both provider routes rather than copied: the choreography is the
+/// thing under test and is identical for each, while the mocks and the store
+/// layout genuinely differ and stay in the tests.
+#[allow(clippy::too_many_arguments)]
+async fn race_two_completions(
+    client: &reqwest::Client,
+    base_url: &str,
+    admin_token: &str,
+    provider: &str,
+    account: &str,
+    token_server: &MockServer,
+    first_code: &str,
+    second_code: &str,
+) -> (reqwest::Response, reqwest::Response) {
+    let start_login = |token: String| {
+        let client = client.clone();
+        let url = format!("{base_url}/admin/api/accounts/{provider}");
+        let body = serde_json::json!({ "name": account }).to_string();
+        async move {
+            let response = client
+                .post(url)
+                .header("x-shunt-admin-token", token)
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value =
+                serde_json::from_str(&response.text().await.unwrap()).unwrap();
+            authorize_state(&body).1
+        }
+    };
+    let complete = |token: String, code: String| {
+        let client = client.clone();
+        let url = format!("{base_url}/admin/api/accounts/{provider}/{account}/complete");
+        async move {
+            client
+                .post(url)
+                .header("x-shunt-admin-token", token)
+                .header("content-type", "application/json")
+                .body(serde_json::json!({ "code": code }).to_string())
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let first_state = start_login(admin_token.to_string()).await;
+    let first = tokio::spawn(complete(
+        admin_token.to_string(),
+        format!("{first_code}#{first_state}"),
+    ));
+    // Wait for a causal signal rather than a fixed delay: the first completion
+    // sends its token request only *after* it has taken the lock, read its
+    // pending entry, and passed the state check, so the mock receiving that
+    // request proves the race window is open. A sleep proves nothing — if the
+    // spawned task were scheduled late, the second `start` would replace the
+    // entry before the first ever read it, the first would fail its own state
+    // check, and the second would win. That still yields exactly one success,
+    // so a test asserting only the count would pass while guarding nothing.
+    // Nothing is needed after this signal for the same reason it is sufficient.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let reached_exchange = token_server
+            .received_requests()
+            .await
+            .is_some_and(|requests| {
+                requests
+                    .iter()
+                    .any(|request| String::from_utf8_lossy(&request.body).contains(first_code))
+            });
+        if reached_exchange {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the first completion never reached its token exchange"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let second_state = start_login(admin_token.to_string()).await;
+    let second = complete(
+        admin_token.to_string(),
+        format!("{second_code}#{second_state}"),
+    )
+    .await;
+    (first.await.unwrap(), second)
+}
+
+/// Asserts the invariant both race tests below share.
+///
+/// Not merely "exactly one succeeded": the *first* completion holds the lock, so
+/// it is the one that must store, and the second must fail for the specific
+/// reason the design intends — its entry consumed. Asserting only the count
+/// would pass just as readily if the second won because the first's state check
+/// failed on a replaced entry, which is the scheduling slip this choreography
+/// is otherwise exposed to, or if the loser died on a 500 or a rate limit.
+async fn assert_first_won_and_second_failed_closed(
+    first: reqwest::Response,
+    second: reqwest::Response,
+) {
+    assert_eq!(
+        first.status(),
+        StatusCode::OK,
+        "the completion holding the lock is the one that stores"
+    );
+    assert_eq!(
+        second.status(),
+        StatusCode::BAD_REQUEST,
+        "the second completion must fail closed, not race the first to the store"
+    );
+    let body = second.text().await.unwrap();
+    assert!(
+        body.contains("no pending login"),
+        "the second must fail because its entry was consumed, not for an \
+         unrelated reason; got {body}"
+    );
+}
+
+/// Two completions for one Claude account cannot both reach the store (#440).
+///
+/// `PendingStore::attempt` does not consume the entry, and the entry is removed
+/// only after the upstream exchange and the store have finished. So the whole
+/// exchange for one completion runs with the entry still in place: a `start`
+/// issued in that window replaces it, and a second completion passes its own
+/// state check against the new entry. Both then store a credential for the same
+/// account in an order nothing constrains, and when the older one lands last the
+/// account silently keeps the superseded credential — no rejected state check,
+/// no error, both tokens valid.
+#[tokio::test]
+async fn a_second_claude_completion_cannot_race_the_first_one_to_the_account_store() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let dir = unique_dir();
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_RACE", "ops:secret-race");
+
+    // The first exchange is the slow one, so an unserialized second completion
+    // would store *before* it and then be overwritten by the older credential —
+    // the silent-loss ordering, rather than the harmless one.
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_partial_json(
+            serde_json::json!({ "code": "first-code" }),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(2))
+                .set_body_json(serde_json::json!({
+                    "access_token": "TOKEN-FIRST",
+                    "account": {"uuid": "acct-first"}
+                })),
+        )
+        .mount(&token_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_partial_json(
+            serde_json::json!({ "code": "second-code" }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "TOKEN-SECOND",
+            "account": {"uuid": "acct-second"}
+        })))
+        .mount(&token_server)
+        .await;
+    vars.set(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_RACE")).await;
+    let client = reqwest::Client::new();
+    let (first, second) = race_two_completions(
+        &client,
+        &gateway.base_url,
+        "secret-race",
+        "claude",
+        "race",
+        &token_server,
+        "first-code",
+        "second-code",
+    )
+    .await;
+    assert_first_won_and_second_failed_closed(first, second).await;
+
+    // And the account on disk is the one the operator was told about, rather
+    // than a credential from a completion the server reported as failed.
+    let stored = std::fs::read_to_string(dir.join("race.json")).unwrap();
+    assert!(
+        stored.contains("TOKEN-FIRST"),
+        "the stored credential must be the one whose completion returned 200"
+    );
+    assert!(
+        !stored.contains("TOKEN-SECOND"),
+        "the failed completion must not have reached the store"
+    );
+}
+
+/// The Codex route takes the same lock, and is a separate handler rather than a
+/// call into the Claude one — it captures a pre-store identity, keys its pending
+/// entry under `codex/{name}`, and writes a different store shape. So "the other
+/// route looks the same" is inspection, not coverage, and this is the assertion
+/// that a copy of the fix which *looks* right is actually wired up.
+#[tokio::test]
+async fn a_second_codex_completion_cannot_race_the_first_one_to_the_account_store() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let dir = unique_dir();
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_CODEXRACE", "ops:secret-codexrace");
+
+    // Codex posts the exchange form-encoded, so the two codes are matched on the
+    // encoded body rather than as JSON.
+    let token_server = MockServer::start().await;
+    let first_access = chatgpt_token(4_102_444_800, "acct-codex-first");
+    let second_access = chatgpt_token(4_102_444_800, "acct-codex-second");
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("code=first-code"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(2))
+                .set_body_json(serde_json::json!({
+                    "access_token": first_access,
+                    "refresh_token": "CODEX-REFRESH-FIRST",
+                    "id_token": "CODEX-ID-FIRST"
+                })),
+        )
+        .mount(&token_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("code=second-code"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": second_access,
+            "refresh_token": "CODEX-REFRESH-SECOND",
+            "id_token": "CODEX-ID-SECOND"
+        })))
+        .mount(&token_server)
+        .await;
+    vars.set(
+        "SHUNT_CODEX_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEXRACE");
+    config.providers.get_mut("codex").unwrap().accounts = Vec::new();
+    // Keep the untouched `anthropic` provider off the real on-disk Claude store
+    // (see the `admin_config` doc comment); only the Codex dir is isolated here.
+    config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
+        name: "codex-race".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        uuid: Some("codex-race-uuid".to_string()),
+        ..Default::default()
+    }];
+    let gateway = start(config).await;
+    let client = reqwest::Client::new();
+    let (first, second) = race_two_completions(
+        &client,
+        &gateway.base_url,
+        "secret-codexrace",
+        "codex",
+        "race",
+        &token_server,
+        "first-code",
+        "second-code",
+    )
+    .await;
+    assert_first_won_and_second_failed_closed(first, second).await;
+
+    let stored = std::fs::read_to_string(dir.join("race.json")).unwrap();
+    assert!(
+        stored.contains("CODEX-REFRESH-FIRST"),
+        "the stored credential must be the one whose completion returned 200"
+    );
+    assert!(
+        !stored.contains("CODEX-REFRESH-SECOND"),
+        "the failed completion must not have reached the store"
+    );
 }

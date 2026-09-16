@@ -6,6 +6,7 @@ mod context;
 mod error;
 mod http;
 pub(crate) mod inbound;
+mod inbound_routed;
 mod pool;
 // `pub(crate)` (not private): `crate::auth::codex::usage` reuses `CODEX_USER_AGENT`/
 // `CODEX_CLIENT_VERSION` for the wham/usage poller so the CLI identity headers on
@@ -33,6 +34,7 @@ use self::context::{ForwardOptions, PoolForward, TurnOptions};
 use self::error::own_error;
 use self::http::forward_http;
 pub(crate) use self::inbound::forward_codex_inbound;
+pub(crate) use self::inbound_routed::forward_codex_routed;
 use self::pool::forward_chatgpt_oauth;
 use self::websocket::forward_websocket;
 

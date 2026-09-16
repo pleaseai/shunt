@@ -26,7 +26,8 @@ brew services start shunt
 ```
 
 日志会写入 `$(brew --prefix)/var/log/shunt.log`。`brew services stop` 会发送 `SIGTERM`,
-shunt 会先耗尽正在处理的请求再退出。修改配置文件后不需要重启 —— shunt 会自动
+shunt 会先耗尽正在处理的请求再退出 —— 最多等待 `[server] shutdown_timeout_seconds`(默认 30 秒;
+修改该值需要重启),超时后不再等待并退出。修改配置文件后不需要重启 —— shunt 会自动
 [热重载](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)该文件。
 更多细节(如配置查找路径)参见 [Running as a
 service](https://github.com/pleaseai/shunt/blob/main/docs/running.md#run-as-a-background-service-homebrew)。
@@ -64,6 +65,18 @@ cargo build --release   # -> target/release/shunt
 ```
 
 你也可以用 `cargo run -- <args>` 直接从源码树运行。
+
+默认构建不需要 Node 工具链,也不包含管理仪表盘的前端包。若要构建内嵌管理 SPA 的
+二进制,请先构建前端包,再启用 `ui` 特性。构建前端包需要 Node.js 22.12 或更高
+版本:
+
+```bash
+cd ui && npm ci && npm run build && cd ..
+cargo build --release --features ui
+```
+
+上面提供的预构建发布二进制就是这样构建的,因此这一步只与从源码构建有关。该特性
+新增了什么,参见[端点](/zh-cn/reference/endpoints/)。
 
 ## 连接 Claude Code 的前置条件
 

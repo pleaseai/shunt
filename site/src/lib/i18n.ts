@@ -22,7 +22,12 @@ type NavigationGroup = LocalizedLabel & {
   items: NavigationLink[];
 };
 
-export const NAVIGATION: NavigationGroup[] = [
+/** A sidebar entry is either a collapsible group or a standalone top-level link. */
+type NavigationEntry = NavigationGroup | NavigationLink;
+
+const isGroup = (entry: NavigationEntry): entry is NavigationGroup => "items" in entry;
+
+export const NAVIGATION: NavigationEntry[] = [
   {
     label: "Getting Started",
     translations: { ko: "시작하기", ja: "はじめに", "zh-cn": "开始使用" },
@@ -58,6 +63,7 @@ export const NAVIGATION: NavigationGroup[] = [
         translations: { ko: "MiniMax 중국", ja: "MiniMax 中国版", "zh-cn": "MiniMax 国内版" },
         slug: "providers/minimax-cn",
       },
+      { label: "OpenCode Zen", slug: "providers/opencode" },
       { label: "Mimo (Xiaomi)", slug: "providers/mimo" },
       { label: "OpenRouter", slug: "providers/openrouter" },
       { label: "Vercel AI Gateway", slug: "providers/vercel-ai-gateway" },
@@ -77,8 +83,11 @@ export const NAVIGATION: NavigationGroup[] = [
       { label: "Connect Claude Desktop", translations: { ko: "Claude Desktop 연결", ja: "Claude Desktop の接続", "zh-cn": "连接 Claude Desktop" }, slug: "guides/connect-claude-desktop" },
       { label: "Connect the Codex CLI", translations: { ko: "Codex CLI 연결", ja: "Codex CLI の接続", "zh-cn": "连接 Codex CLI" }, slug: "guides/connect-codex-cli" },
       { label: "Model Discovery", translations: { ko: "모델 디스커버리", ja: "モデルディスカバリー", "zh-cn": "模型发现" }, slug: "guides/model-discovery" },
+      { label: "Claude Code Plugins", translations: { ko: "Claude Code 플러그인", ja: "Claude Code プラグイン", "zh-cn": "Claude Code 插件" }, slug: "guides/claude-code-plugins" },
       { label: "Model Aliases & 1M Context", translations: { ko: "모델 별칭과 1M 컨텍스트", ja: "モデルエイリアスと 1M コンテキスト", "zh-cn": "模型别名与 1M 上下文" }, slug: "guides/model-aliases" },
       { label: "Effort & Context", translations: { ko: "Effort와 컨텍스트", ja: "Effort とコンテキスト", "zh-cn": "推理强度与上下文" }, slug: "guides/effort-and-context" },
+      { label: "Stage Router", translations: { ko: "스테이지 라우터", ja: "ステージルーター", "zh-cn": "阶段路由器" }, slug: "guides/stage-router" },
+      { label: "Switchyard Integration", translations: { ko: "Switchyard 통합", ja: "Switchyard 統合", "zh-cn": "Switchyard 集成" }, slug: "guides/switchyard" },
       { label: "Sharing a Gateway", translations: { ko: "게이트웨이 공유", ja: "ゲートウェイの共有", "zh-cn": "共享网关" }, slug: "guides/shared-gateway" },
       { label: "OpenTelemetry", translations: { ko: "OpenTelemetry", ja: "OpenTelemetry", "zh-cn": "OpenTelemetry" }, slug: "guides/opentelemetry" },
     ],
@@ -94,6 +103,11 @@ export const NAVIGATION: NavigationGroup[] = [
       { label: "Troubleshooting", translations: { ko: "문제 해결", ja: "トラブルシューティング", "zh-cn": "故障排查" }, slug: "reference/troubleshooting" },
     ],
   },
+  {
+    label: "Changelog",
+    translations: { ko: "변경 이력", ja: "変更履歴", "zh-cn": "更新日志" },
+    slug: "changelog",
+  },
 ];
 
 const normalizePath = (path: string): string => {
@@ -104,10 +118,14 @@ const normalizePath = (path: string): string => {
 const translatedLabel = (item: LocalizedLabel, locale: Locale): string =>
   locale === "" ? item.label : item.translations?.[locale] ?? item.label;
 
-export const ENGLISH_SIDEBAR_ITEMS: SidebarConfigItem[] = NAVIGATION.map((group) => ({
-  label: group.label,
-  items: group.items.map((item) => ({ label: item.label, link: item.slug })),
-}));
+export const ENGLISH_SIDEBAR_ITEMS: SidebarConfigItem[] = NAVIGATION.map((entry) =>
+  isGroup(entry)
+    ? {
+        label: entry.label,
+        items: entry.items.map((item) => ({ label: item.label, link: item.slug })),
+      }
+    : { label: entry.label, link: entry.slug },
+);
 
 export function localeFromSlug(slug: string): Locale {
   const firstSegment = slug.replace(/^\//, "").split("/", 1)[0];
@@ -136,19 +154,24 @@ export function buildLocaleSidebar(locale: Locale, currentSlug: string): Sidebar
   const currentPath = normalizePath(currentSlug);
   let order = 0;
 
-  return NAVIGATION.map((group) => ({
-    type: "group" as const,
-    label: translatedLabel(group, locale),
-    order: order++,
-    children: group.items.map((item) => {
-      const href = localizedPath(locale, item.slug);
-      return {
-        type: "link" as const,
-        label: translatedLabel(item, locale),
-        href,
-        isCurrent: currentPath === href,
-        order: order++,
-      };
-    }),
-  }));
+  const toLink = (item: NavigationLink): SidebarItem => {
+    const href = localizedPath(locale, item.slug);
+    return {
+      type: "link" as const,
+      label: translatedLabel(item, locale),
+      href,
+      isCurrent: currentPath === href,
+      order: order++,
+    };
+  };
+
+  return NAVIGATION.map((entry) => {
+    if (!isGroup(entry)) return toLink(entry);
+    return {
+      type: "group" as const,
+      label: translatedLabel(entry, locale),
+      order: order++,
+      children: entry.items.map(toLink),
+    };
+  });
 }

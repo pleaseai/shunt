@@ -9,9 +9,9 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/` | 人类可读的落地页(版本 + 端点列表) |
 | `GET` | `/health` | 健康检查 —— `{"status":"ok","version":"x.y.z"}` |
 | `GET` | `/v1/models` | [模型发现](/zh-cn/guides/model-discovery/) —— 返回你的 `[[models]]` 条目 |
-| `GET` | `/routes` | shunt 原生路由发现 —— 逐字返回配置的 `[[routes]]` 表(model → provider/upstream_model/effort 映射,包括 claude 前缀的发现别名);区别于 `/v1/models`,后者提供更窄的 Anthropic 协议发现响应(`id`、`display_name` 以及上游模型元数据) |
+| `GET` | `/routes` | shunt 原生路由发现 —— 逐字返回配置的 `[[routes]]` 表(model → provider/upstream_model/effort 映射,包括 claude 前缀的发现别名);区别于 `/v1/models`,后者提供更窄的 Anthropic 协议发现响应(`id`、`display_name` 以及上游模型元数据)。只要有一个 `[[models]]` 条目配置了[阶段路由器](/zh-cn/guides/stage-router/),响应就会多出一个 `routers` 数组,列出每个路由器的模型 id、两个档位的目标,以及没有信号做出决定时 picker 回退到的档位 |
 | `POST` | `/v1/messages` | 推理 —— 按请求的 `model` id 路由 |
-| `POST` | `/v1/messages/count_tokens` | [Token 计数](/zh-cn/guides/effort-and-context/#token-counting-count_tokens) |
+| `POST` | `/v1/messages/count_tokens` | [Token 计数](/zh-cn/guides/effort-and-context/#token-计数count_tokens) |
 | `GET` | `/managed/settings` | 按网关 JWT 提供的 Claude Code managed settings;支持 `ETag`、`If-None-Match` 与 `304 Not Modified` |
 | `GET` | `/v1/organizations/spend_limits` | 使用方向游标分页列出已存储的支出限制 |
 | `POST` | `/v1/organizations/spend_limits` | 为一个 `(scope, period)` 创建或替换支出限制 |
@@ -20,38 +20,102 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/v1/metrics` | 来自托管 Claude Code 客户端的入站 OTLP/HTTP 指标 —— verbatim 中继到 opt-in 的网关遥测目标 |
 | `POST` | `/v1/logs` | 入站 OTLP/HTTP log record —— 只中继到 `logs = true` 的目标 |
 | `POST` | `/v1/traces` | 入站 OTLP/HTTP span —— 只中继到 `traces = true` 的目标 |
-| `GET` | `/admin` | 管理仪表盘(HTML);未登录时重定向到 `/admin/login` |
+| `GET` | `/admin`、`/admin/` | 管理仪表盘 —— 与前端包的其余部分一样,无需认证即可获取的 SPA 外壳。当 `GET /admin/api/session` 返回 `401` 时,由前端包自身跳转到 `/admin/login`。由于通配符段无法匹配空字符串,`/admin/` 不会命中任何路由,因此挂载点根路径的两种写法都做了注册。在未启用 `--features ui` 构建的二进制中,两个路径都返回 `404`,响应体会点明该特性 |
 | `GET`, `POST` | `/admin/login` | 管理员 token 登录表单与浏览器会话创建 |
-| `POST` | `/admin/logout` | 清除浏览器会话 |
-| `GET` | `/admin/accounts` | Claude 账户存储元数据:名称、类型、过期时间和 UUID;绝不返回 token 材料 |
-| `GET` | `/admin/accounts/codex` | Codex 账户存储元数据:名称、过期时间和 ChatGPT 账户 ID;绝不返回 token 材料 |
-| `GET` | `/admin/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider 的池状态;每个 account 对象可能包含可选的 `plan` 字符串;文件中读取的值之后可能通过 profile 查询被修正为更精确的值;Codex 行包含已上报的 5h/7d 用量,`7d_oi` 没有对应的 Codex 字段;每个 account 还带有布尔字段 `needs_relogin`:凭据被终结性拒绝(`invalid_grant`)、根本不带刷新令牌,或轮换出的令牌对未能写入而丢失 —— 任何重试都无法恢复,只有运维人员重新登录才行。它与冷却字段**相互独立**上报 —— 冷却会自行到期,而该标记不会 —— 仪表盘的两个表格都会显示为 **needs re-login**,而不是配额暂停时的 `cooling`。仅存于内存:重启后清空,该账户的下一次终结性失败会重新置位。即使某个账户从未被任何 provider 表选中过,它也会被上报 —— 与 `has_state: false` 并列 —— 因为 admin 的 refresh 探测按存储名记录其判定。 |
-| `POST` | `/admin/accounts/claude` | 用 `{name, mode}` 开始 Claude 浏览器预配;`mode` 为 `oauth` 或 `setup_token`,省略时默认为 `setup_token`;返回 `{authorize_url}` |
-| `POST` | `/admin/accounts/claude/{name}/complete` | 用包含 `<code>#<state>` 的 `{code}` 完成 Claude 预配;存储账户并报告其是否生效 |
-| `POST` | `/admin/accounts/claude/{name}/refresh` | 按需执行 **imported** Claude 账户的 refresh 授权,报告该登录是否仍然有效。因为会请求提供方的令牌端点,所以受限流保护;并且始终经由共享凭据存储,不会与代理路径自身的刷新竞争。仅返回新的 `expires_at`,绝不返回任何令牌材料;并附带在该探测自身清除之后从池中重新读取的 `needs_relogin` —— 对池仍视为已死的账户,授权本身也可能成功,因此响应如实报告,而不会宣称与 `/admin/pool` 矛盾的恢复。对 `setup_token` 账户(不含 refresh 授权)或任何终结性判定返回 `400`,对非终结性失败返回 `502` |
-| `DELETE` | `/admin/accounts/claude/{name}` | 删除指定 Claude 账户的存储文件 |
-| `POST` | `/admin/accounts/codex` | 用 `{name}` 开始 ChatGPT OAuth;返回 `{authorize_url}` |
-| `POST` | `/admin/accounts/codex/{name}/complete` | 用包含完整 localhost redirect URL 或 `<code>#<state>` 的 `{code}` 完成 Codex 预配 |
-| `DELETE` | `/admin/accounts/codex/{name}` | 删除指定 Codex 账户的存储文件 |
+| `POST` | `/admin/api/logout` | 清除浏览器会话 |
+| `GET` | `/admin/api/session` | 管理 SPA 渲染前所需的三个会话级值：会话的 `csrf` 令牌、`expiry_buffer_ms`（`claude::auth::EXPIRY_BUFFER` 的毫秒值，即 setup token 失效的边界），以及 `access` —— 该会话认证所用的级别，取值 `read` 或 `write`，仪表盘据此决定是否呈现写操作。使用请求头凭据的调用方免除 CSRF，因此收到空的 `csrf`。该表面没有 CORS 层，跨源页面能发出请求却读不到响应，所以通过 `GET` 返回令牌是安全的 |
+| `GET` | `/admin/api/accounts` | Claude 账户存储元数据:名称、类型、过期时间和 UUID;绝不返回 token 材料 |
+| `GET` | `/admin/api/accounts/codex` | Codex 账户存储元数据:名称、过期时间和 ChatGPT 账户 ID;绝不返回 token 材料 |
+| `GET` | `/admin/api/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider 的池状态;每个 account 对象可能包含可选的 `plan` 字符串;文件中读取的值之后可能通过 profile 查询被修正为更精确的值;Codex 行包含已上报的 5h/7d 用量,`7d_oi` 没有对应的 Codex 字段;每个 account 还带有布尔字段 `needs_relogin`:凭据被终结性拒绝(`invalid_grant`)、根本不带刷新令牌,或轮换出的令牌对未能写入而丢失 —— 任何重试都无法恢复,只有运维人员重新登录才行。它与冷却字段**相互独立**上报 —— 冷却会自行到期,而该标记不会 —— 仪表盘的两个表格都会显示为 **needs re-login**,而不是配额暂停时的 `cooling`。仅存于内存:重启后清空,该账户的下一次终结性失败会重新置位。即使某个账户从未被任何 provider 表选中过,它也会被上报 —— 与 `has_state: false` 并列 —— 因为 admin 的 refresh 探测按存储名记录其判定。 |
+| `POST` | `/admin/api/accounts/claude` | 用 `{name, mode}` 开始 Claude 浏览器预配;`mode` 为 `oauth` 或 `setup_token`,省略时默认为 `setup_token`;返回 `{authorize_url}` |
+| `POST` | `/admin/api/accounts/claude/{name}/complete` | 用包含 `<code>#<state>` 的 `{code}` 完成 Claude 预配;存储账户并报告其是否生效 |
+| `POST` | `/admin/api/accounts/claude/{name}/refresh` | 按需执行 **imported** Claude 账户的 refresh 授权,报告该登录是否仍然有效。因为会请求提供方的令牌端点,所以受限流保护;并且始终经由共享凭据存储,不会与代理路径自身的刷新竞争。仅返回新的 `expires_at`,绝不返回任何令牌材料;并附带在该探测自身清除之后从池中重新读取的 `needs_relogin` —— 对池仍视为已死的账户,授权本身也可能成功,因此响应如实报告,而不会宣称与 `/admin/api/pool` 矛盾的恢复。对 `setup_token` 账户(不含 refresh 授权)或任何终结性判定返回 `400`,对非终结性失败返回 `502` |
+| `DELETE` | `/admin/api/accounts/claude/{name}` | 删除指定 Claude 账户的存储文件 |
+| `POST` | `/admin/api/accounts/codex` | 用 `{name}` 开始 ChatGPT OAuth;返回 `{authorize_url}` |
+| `POST` | `/admin/api/accounts/codex/{name}/complete` | 用包含完整 localhost redirect URL 或 `<code>#<state>` 的 `{code}` 完成 Codex 预配 |
+| `DELETE` | `/admin/api/accounts/codex/{name}` | 删除指定 Codex 账户的存储文件 |
+| `GET` | `/admin/assets/{*path}` | 内嵌的管理 SPA 包文件,按扩展名对应的 `Content-Type` 返回,并附带 `X-Content-Type-Options: nosniff`。仅存在于使用 `--features ui` 构建的二进制中 |
+| `GET` | `/admin/{*path}` | `/admin` 挂载点下未匹配任何路由的路径所返回的 SPA 外壳,使客户端深链接在刷新后依然可用。仅存在于使用 `--features ui` 构建的二进制中 |
 | `POST` | `/backend-api/codex/responses` | 入站 Codex CLI 透传 —— 镜像真实 ChatGPT 后端路径 |
 | `POST` | `/responses` | 入站 Codex CLI 透传 —— 裸 `base_url` 形式 |
 | `POST` | `/v1/responses` | 入站 Codex CLI 透传 —— 带 `/v1` 后缀的 `base_url` 形式 |
+| `GET` | `/models` | Codex CLI 模型目录回退 —— 返回 `{"models":[]}` |
+| `GET` | `/backend-api/codex/models` | Codex CLI 模型目录回退 —— ChatGPT 式基础路径 |
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI 分析 sink —— 接收后丢弃，仅记录净化后的事件名称计数器 |
 | `POST` | `/codex/analytics-events/events` | Codex CLI 分析 sink —— 根路径式 `chatgpt_base_url` 形式 |
-| `GET` | `/usage` | 面向客户端的净化池用量 —— 返回共享账户池按窗口的剩余余量和重置时间,绝不返回账户身份或容量 |
+| `GET` | `/usage` | 面向客户端的净化池用量 —— 返回共享账户池按窗口的剩余余量和重置时间,以及每个参与池化的提供方的同样聚合,绝不返回账户身份或容量 |
 
-`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作上会被 `403` 拒绝,在 `POST /admin/login` 上会被 `401` 拒绝。
+`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作上会被 `403` 拒绝。它可以登录:`POST /admin/login` 会接受它并铸造一个 read 级别的会话,该会话的修改操作同样会被 `403` 拒绝。 该登录 POST 受 same-origin 保护:跨站表单提交会在检查凭据之前就被 `403` 拒绝,因此任何凭据持有者都无法用自己的会话 cookie 替换已登录运维人员的会话。脚本登录不受影响 —— 当 `Sec-Fetch-Site` 和 `Origin` 都不存在时,该检查会通过。但 SPA 外壳与前端包文件是例外:`GET /admin`(两种写法)、`GET /admin/{*path}` 与 `GET /admin/assets/{*path}` 无需管理员认证即可获取。这样是安全的,因为它们不包含任何运维数据,而 SPA 读取的一切都在 `/admin/api/*` 之后,后者对每个请求都做认证;其中两个通配符路由同样仅在配置了 `[server.admin]` 且二进制使用 `--features ui` 构建时才存在。
+
+### 管理 SPA 包(`--features ui`)
+
+`/admin/assets/{*path}` 与 `/admin/{*path}` SPA 回退仅存在于使用 `--features ui`
+构建的二进制中,该构建会把 `ui/` 包产出的前端包内嵌进二进制。默认的 `cargo build`
+不需要 Node 工具链,不包含前端包,也不会注册这两个路由;预构建的发布二进制则启用了
+该特性。
+
+回退被限制在 `/admin` 挂载点之内:
+
+- `/admin/` 下未匹配任何路由的路径会以 `200` 和 `text/html` 返回 SPA 外壳,使客户端
+  深链接在刷新后依然可用;
+- `/admin/api/` 下未匹配的路径会以 Anthropic 错误结构返回 `404` —— 该命名空间是
+  JSON 而不是 UI,用 HTML 作答会破坏客户端的错误处理;
+- 挂载点之外的路径不受影响,仍然返回 `404`。
+
+`GET /admin` 同样是外壳,`GET /admin/` 也是。由于通配符段无法匹配空字符串,`/admin/` 既不会命中精确路由,也不会命中回退,只会在仪表盘自己的根路径上返回一个没有响应体的 `404`,因此挂载点根路径的两种写法各自注册。
+
+这两者是在两种构建中都注册、但响应取决于该特性的管理路径:启用时返回外壳,未启用时返回响应体中点明 `--features ui` 的 `404`。两种构建都保留注册,是为了让那个 `404` 带上这句说明 —— 若直接不注册,得到的是 axum 没有响应体的 `404`,运维人员无法将其与未配置 `[server.admin]` 区分开。
+
+### 管理路径迁移
+
+**破坏性变更。** 所有管理 JSON 路由与修改类路由都从 `/admin/*` 迁移到了 `/admin/api/*`。
+旧路径**已被移除,而不是保留为别名**,任何请求都不会再到达 admin 处理器。
+
+旧路径上返回什么取决于构建方式,因此不要把那里的 `200` 当作成功:
+
+- **默认构建** —— 该路径未在任何位置注册,返回 `404`。
+- **`--features ui`**(预构建的发布二进制即为此类)—— `GET` 会像挂载点下的其他深层链接一样
+  落到 `/admin/{*path}` SPA 回退,返回 `200 text/html` 的外壳;`HEAD` 同理。其余方法返回 `405`
+  并带上 `Allow: GET,HEAD`,因为该回退是用 `get` 而非 `any` 注册的。
+
+因此仍停留在旧 `GET` URL 的脚本收到的是 HTML,而不是迁移信号。请迁移到 `/admin/api/*`;
+响应的 `Content-Type` 是可靠的判别依据。
+
+`/admin` 仍然是仪表盘外壳,`/admin/login` 和 `/admin/oidc/callback` 也保持原位 —— 它们是服务端
+渲染的页面,不是 API 路由。其余全部迁移,是为了让仪表盘可以把 `/admin/*` 用作可浏览的深层链接:
+一个路径不可能既是 JSON 端点又是客户端路由,所以没有保留任何兼容别名。
+
+脚本调用方只需机械地改写一次 —— 路径只是在 `/admin` 之后多了一个 `/api` 段:
+
+| 变更前 | 变更后 |
+| :-- | :-- |
+| `GET /admin/accounts` | `GET /admin/api/accounts` |
+| `GET /admin/accounts/codex` | `GET /admin/api/accounts/codex` |
+| `GET /admin/observed` | `GET /admin/api/observed` |
+| `GET /admin/pool` | `GET /admin/api/pool` |
+| `GET /admin/status` | `GET /admin/api/status` |
+| `POST /admin/accounts/claude` | `POST /admin/api/accounts/claude` |
+| `POST /admin/accounts/claude/{name}/complete` | `POST /admin/api/accounts/claude/{name}/complete` |
+| `POST /admin/accounts/claude/{name}/refresh` | `POST /admin/api/accounts/claude/{name}/refresh` |
+| `DELETE /admin/accounts/claude/{name}` | `DELETE /admin/api/accounts/claude/{name}` |
+| `POST /admin/accounts/codex` | `POST /admin/api/accounts/codex` |
+| `POST /admin/accounts/codex/{name}/complete` | `POST /admin/api/accounts/codex/{name}/complete` |
+| `DELETE /admin/accounts/codex/{name}` | `DELETE /admin/api/accounts/codex/{name}` |
+| `POST /admin/oidc/start` | `POST /admin/api/oidc/start` |
+| `POST /admin/logout` | `POST /admin/api/logout` |
+
+认证未变:仍是同一份管理员凭据,通过同样的头部或 `x-api-key` 提交,读/写分级也相同。
 
 spend-limit 路由仅在启动时配置了 [`[server.spend]`](/zh-cn/reference/configuration/#serverspend可选) 的情况下存在;它们使用 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 凭据认证,因此与 `[server.gateway]` 无关。请通过配置的管理员头部(默认 `x-shunt-admin-token`)或 `x-api-key` 发送该凭据 —— 两个槽位都被接受。write 凭据(`write_keys` 条目,或 `tokens_env`/`tokens_file` 对)可使用全部操作;`read_keys` 凭据只能使用 GET,在修改操作上会收到 `403`。`POST` 接受 `user` 和 `organization` scope、`daily`/`weekly`/`monthly` period、user scope 中 1–256 字节的 `user_id`，以及 1–19 位非负 USD 美分整数字符串或 `null` 的 `amount`，并按 `(scope, period)` 执行 upsert。列表分页接受 `limit`（1–1000，默认 20）、`after_id`、`before_id` 和 `scope_type`；两个游标不能同时使用。每个响应都包含 `request-id`，错误采用 Anthropic 错误形状。限制与修改审计记录一起保存到所配置的带版本 JSON 状态文件中,每次修改归属于 `admin-key:<id>` 或 `admin-token:<name>` —— 当两个槽位携带同一层级的不同凭据时，归属于配置的管理员头部那一个。stage 1 不公开 `/effective` 或 `/audit`，也不对推理请求实施限制。
 
 `GET /managed/settings` 与 `POST /v1/{metrics,logs,traces}` 遥测接收路由仅在启动时启用了 `[server.gateway]` 的情况下存在,二者要求相同的网关 bearer JWT。接收路由接受托管 Claude Code 客户端 export 的 OTLP/HTTP 载荷([`[server.gateway.telemetry]`](/zh-cn/reference/configuration/) 将这些 exporter 指向网关),并把请求字节原样中继到所有 opt-in 该 signal 的目标。入站的 `content-type` 与 `content-encoding` 会被保留,目标配置的 headers 应用在其上(配置的键会替换转发值,而不是重复该 header)。客户端的 `Authorization` 头永远不会被转发,中继也不跟随重定向。目标按 signal opt-in(`metrics` 默认开启,`logs`/`traces` 默认关闭),没有任何目标 opt-in 的 signal 会被接收后丢弃。中继是分离执行的,因此无论目标状态如何,响应始终是立即的 `200`,成功 body 依照 OTLP/HTTP 镜像请求协议(`application/json` 得到 `{}`,其余得到空的 `application/x-protobuf` body)。超过 32 MiB 入站上限的 body 返回 `413`。
 
-入站 Codex Responses 和分析路由仅在配置了 [`[server.codex_endpoint]`](/zh-cn/reference/configuration/) 时存在。Responses 路由逐字中继 OpenAI Responses 请求和响应。两个分析路由采用相同的入站认证策略，不转发或保留客户端 payload，并在认证后对无效 JSON 或超大正文也返回 `200 {}`。只有净化后的事件名称会记录到 `shunt.codex_client_events`；未配置指标 sink 时，它们是纯丢弃 sink。
+入站 Codex Responses、模型目录和分析路由仅在配置了 [`[server.codex_endpoint]`](/zh-cn/reference/configuration/) 时存在。Responses 路由逐字中继 OpenAI Responses 请求和响应，也可以通过 `[[server.codex_endpoint.routes]]` 按模型路由到其他兼容 Responses 的上游。Codex 专用的两个模型路径返回 `{"models":[]}`；共用 `/v1/models` 仅在查询包含 `client_version` 时返回该形状，否则保持现有 Anthropic 外观响应。所有目录变体都会先通过现用的模型发现认证门。两个分析路由采用相同的入站认证策略，不转发或保留客户端 payload，并在认证后对无效 JSON 或超大正文也返回 `200 {}`。只有净化后的事件名称会记录到 `shunt.codex_client_events`；未配置指标 sink 时，它们是纯丢弃 sink。
 
-`/usage` 路由仅在配置 [`[server.usage]`](/zh-cn/reference/configuration/#serverusage可选) 时存在,且同样要求 [`[server.auth]`](/zh-cn/guides/shared-gateway/)。它使用与 `GET /v1/messages` 相同的客户端 token 进行认证,返回共享账户池按窗口的剩余余量、重置时间和 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户身份、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充已观测的 5 小时和共享每周窗口。Codex 没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。
+`/usage` 路由仅在配置 [`[server.usage]`](/zh-cn/reference/configuration/#serverusage可选) 时存在,且同样要求 [`[server.auth]`](/zh-cn/guides/shared-gateway/)。它使用与 `GET /v1/messages` 相同的客户端 token 进行认证,返回共享账户池按窗口的剩余余量(报告该窗口的未禁用账户的 `mean(1 - utilization)`,即整个池的总容量中尚未使用的比例)、这些账户报告的最早重置时间,以及 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户身份、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充已观测的 5 小时和共享每周窗口。在 WebSocket 传输上,流内的 `codex.rate_limits` 事件会在每一轮对话(包括复用连接)填充同样的窗口。Codex 没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。`pool` 是所有参与池化的提供方的总体聚合;`providers` 以配置的提供方名称为键,为每个参与池化的提供方给出同样经过净化的聚合,使路由到某一提供方的客户端可以读取该提供方自身的余量和状态,而不是整个池的平均值。认证模式不参与池化的提供方会被省略。完整的响应形态见[英文端点参考](/reference/endpoints/)。 Claude Code 客户端无需 `curl` 即可读取:本仓库插件市场中的 [`shunt` mod](https://github.com/pleaseai/shunt/tree/main/plugins/shunt) 会用这个端点回答 `/shunt:usage`,打印每个窗口的剩余余量和重置时间。它需要函数钩子(`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`),目前仍是早期访问。
 
 即使启用了 [`[server.auth]`](/zh-cn/guides/shared-gateway/),`GET /` 和 `GET /health` 也保持开放(健康检查工具通常无法附带 token),并且不暴露任何敏感信息 —— 只有状态、版本以及已经公开的端点列表。
 
 ## 网关协议
 
-shunt 实现官方的 [Claude Code LLM 网关协议](https://code.claude.com/docs/en/llm-gateway-protocol):正确的头部和正文字段转发、特性透传以及系统提示归属处理。网关自身产生的错误以 Anthropic 错误形状返回,上游上下文溢出错误被重写为 Anthropic 的 `prompt is too long` 措辞,以便触发 Claude Code 的 [压缩并重试](/zh-cn/guides/effort-and-context/#context-overflow-recovery),而流式响应无缓冲地中继(带可选的 [keepalive ping](/zh-cn/guides/shared-gateway/#sse-keepalive-pings))。
+shunt 实现官方的 [Claude Code LLM 网关协议](https://code.claude.com/docs/en/llm-gateway-protocol):正确的头部和正文字段转发、特性透传以及系统提示归属处理。网关自身产生的错误以 Anthropic 错误形状返回,上游上下文溢出错误被重写为 Anthropic 的 `prompt is too long` 措辞,以便触发 Claude Code 的 [压缩并重试](/zh-cn/guides/effort-and-context/#上下文溢出恢复),而流式响应无缓冲地中继(带可选的 [keepalive ping](/zh-cn/guides/shared-gateway/#sse-keepalive-ping))。

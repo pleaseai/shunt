@@ -182,9 +182,9 @@ ChatGPT 계정 Codex 백엔드는 `gpt-*-codex` 슬러그를 **거부**합니다
 
 ### xai / grok 프로바이더 (Grok)
 
-두 개의 내장 프로바이더가 xAI의 **Grok** 모델에 도달하며, 자격 증명으로 갈립니다: **`grok`**은
+두 개의 내장 프로바이더가 xAI의 **Grok** 모델에 도달하며, 자격 증명으로 갈립니다: `grok`은
 OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`shunt login xai`, 토큰당 과금 없음),
-**`xai`**는 측정된 개발자 API에 대해 `XAI_API_KEY`를 사용합니다. 구독 bearer와 API 키는 서로 교체할 수
+`xai`는 측정된 개발자 API에 대해 `XAI_API_KEY`를 사용합니다. 구독 bearer와 API 키는 서로 교체할 수
 **없습니다** — 각각은 자신의 프로바이더에서만 동작합니다.
 
 전체 설정 — 로그인, 두 프로바이더 블록, 모델 슬러그, 옵트인 노력 다이얼, 자격 관련 함정 — 은 전용
@@ -203,6 +203,7 @@ OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`
 | [Zhipu (GLM 중국)](/ko/providers/zhipu/) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | [MiniMax](/ko/providers/minimax/) | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
 | [MiniMax 중국](/ko/providers/minimax-cn/) | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
+| [OpenCode Zen](/ko/providers/opencode/) | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — 큐레이션된 크로스 벤더 카탈로그 (`x-api-key` 읽음) |
 | [Mimo (Xiaomi)](/ko/providers/mimo/) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — [Mimo 문서](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) 참고 |
 | [OpenRouter](/ko/providers/openrouter/) | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | [Vercel AI Gateway](/ko/providers/vercel-ai-gateway/) | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8`(`x_api_key`를 받아들임) |

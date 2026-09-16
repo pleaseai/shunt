@@ -50,7 +50,7 @@ pub(super) async fn forward_websocket(
         ws_url,
         pool_key,
         provider: &route.provider,
-        accounts: &state.accounts,
+        accounts: std::sync::Arc::clone(&state.accounts),
         codex_quota_account: codex_quota_account.as_ref(),
         credential,
         auth,
@@ -100,7 +100,9 @@ struct WsTurnContext<'a> {
     ws_url: String,
     pool_key: Option<&'a str>,
     provider: &'a str,
-    accounts: &'a crate::accounts::AccountPool,
+    /// Shared, not borrowed: the `codex.rate_limits` tap outlives this context
+    /// (the connection reader owns it for the turn's duration).
+    accounts: std::sync::Arc<crate::accounts::AccountPool>,
     codex_quota_account: Option<&'a crate::config::AccountConfig>,
     credential: Credential,
     auth: AuthMode,
@@ -233,10 +235,11 @@ async fn start_ws_turn(
         .await
         .map_err(|error| ws_connect_error(error, ctx.auth))?;
     // Only a fresh connection performed a handshake this turn, so only it carries
-    // quota headers to record. A reused connection has no new signal to report —
-    // replaying its original handshake headers would overwrite fresher state with
-    // stale values and falsely bump the observation timestamp (issue: stale quota
-    // marks outliving their upstream reset).
+    // quota headers to record. A reused connection has no new *header* signal to
+    // report — replaying its original handshake headers would overwrite fresher
+    // state with stale values and falsely bump the observation timestamp (issue:
+    // stale quota marks outliving their upstream reset). The in-stream
+    // `codex.rate_limits` event tapped below covers every turn, reused included.
     if let (Some(account), Some(headers)) = (ctx.codex_quota_account, turn.handshake_headers()) {
         ctx.accounts
             .note_codex_quota(ctx.provider, account, headers);
@@ -291,9 +294,21 @@ async fn start_ws_turn(
     }
 
     let frame = codex_ws::response_create_frame(frame_body.as_ref());
+    // The websocket backend reports its rate limits in-stream rather than only on
+    // the handshake, so tap the event to keep a pooled Codex account's quota
+    // observed on every turn — including turns that reused a connection.
+    let rate_limits = ctx.codex_quota_account.map(|account| {
+        let accounts = std::sync::Arc::clone(&ctx.accounts);
+        let provider = ctx.provider.to_string();
+        let account = account.clone();
+        std::sync::Arc::new(move |event: &Value| {
+            accounts.note_codex_rate_limits(&provider, &account, event);
+        }) as codex_ws::RateLimitTap
+    });
     let record = codex_ws::RecordPlan {
         signature: ctx.signature.clone(),
         request: Some(std::sync::Arc::clone(&ctx.upstream_body)),
+        rate_limits,
     };
     let events = turn
         .stream(&frame, record)

@@ -21,6 +21,8 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
+mod common;
+
 struct TestGateway {
     base_url: String,
     task: JoinHandle<()>,
@@ -248,7 +250,8 @@ async fn responses_path_does_not_retry_transient_status() {
     // A unique api-key env var (avoids colliding with a real OPENAI_API_KEY or a
     // parallel test) so the single-credential Responses path resolves its
     // credential and reaches forward_http, where the shared retry driver runs.
-    std::env::set_var("SHUNT_TEST_OPENAI_RETRY_KEY", "sk-test-retry");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_OPENAI_RETRY_KEY", "sk-test-retry");
 
     let upstream = MockServer::start().await;
     // A persistent 503 on `/responses` under the default (enabled) retry policy.

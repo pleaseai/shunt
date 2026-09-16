@@ -16,6 +16,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
+use crate::config::AdminAccess;
+
 /// A fresh 256-bit URL-safe random identifier (session id or CSRF token).
 pub(crate) fn random_id() -> String {
     let mut bytes = [0_u8; 32];
@@ -95,6 +97,18 @@ impl ObservedUsageCache {
 struct Session {
     csrf: String,
     expires: Instant,
+    access: AdminAccess,
+}
+
+/// What a live session id resolves to: the CSRF token bound to it, and the
+/// privilege the credential that minted it carried.
+///
+/// The two are returned together rather than through separate accessors because
+/// they must come from the *same* entry. Two lookups could straddle the prune in
+/// [`SessionStore::lookup`] and pair a CSRF token with a tier read from nothing.
+pub struct SessionAuth {
+    pub csrf: String,
+    pub access: AdminAccess,
 }
 
 /// Authenticated admin browser sessions, keyed by an opaque session id carried in
@@ -109,8 +123,13 @@ impl SessionStore {
         Self::default()
     }
 
-    /// Create a session with the given lifetime. Returns `(session_id, csrf)`.
-    pub fn create(&self, ttl: Duration) -> (String, String) {
+    /// Create a session with the given lifetime and privilege. Returns
+    /// `(session_id, csrf)`.
+    ///
+    /// `access` is the tier of the credential that minted the session, not a
+    /// property of the browser: a `read_keys` login mints a read session, and a
+    /// write key or an approved OIDC sign-in mints a write one.
+    pub fn create(&self, ttl: Duration, access: AdminAccess) -> (String, String) {
         let id = random_id();
         let csrf = random_id();
         self.sessions
@@ -121,17 +140,21 @@ impl SessionStore {
                 Session {
                     csrf: csrf.clone(),
                     expires: Instant::now() + ttl,
+                    access,
                 },
             );
         (id, csrf)
     }
 
-    /// The session's CSRF token if the id is valid and unexpired. Prunes the
-    /// entry when it has expired.
-    pub fn csrf_for(&self, id: &str) -> Option<String> {
+    /// The session's CSRF token and privilege if the id is valid and unexpired.
+    /// Prunes the entry when it has expired.
+    pub fn lookup(&self, id: &str) -> Option<SessionAuth> {
         let mut sessions = self.sessions.lock().expect("admin session lock poisoned");
         match sessions.get(id) {
-            Some(session) if session.expires > Instant::now() => Some(session.csrf.clone()),
+            Some(session) if session.expires > Instant::now() => Some(SessionAuth {
+                csrf: session.csrf.clone(),
+                access: session.access,
+            }),
             Some(_) => {
                 sessions.remove(id);
                 None
@@ -188,7 +211,30 @@ pub enum PendingAttempt {
 #[derive(Default)]
 pub struct PendingStore {
     pending: Mutex<HashMap<String, PendingEntry>>,
+    /// One lock per pending key, held by a completion across its whole
+    /// attempt -> exchange -> store -> remove sequence. See
+    /// [`PendingStore::lock_completion`].
+    completions: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
+
+/// Bounds how long a completion may hold [`PendingStore::lock_completion`].
+///
+/// The lock spans the upstream token exchange, and nothing else bounds that
+/// call: the shared `http_client` is built with no `.timeout()`, neither
+/// `exchange_code` sets one, and there is no `TimeoutLayer` in the router. That
+/// was survivable while a stalled exchange delayed only its own request; once
+/// the completions for a key are serialized behind it, an exchange that never
+/// answers blocks every retry for that account for as long as the connection
+/// survives — which for a blackholed SYN/ACK is minutes. The browser's own
+/// 120-second abort does not cover it, because a direct API client has no such
+/// bound.
+///
+/// Bounded here rather than inside `exchange_code` so the CLI login paths,
+/// which hold no lock, keep the behaviour they have. `reqwest`'s own
+/// `.timeout()` would cover the body too and must not be used on streaming
+/// paths; this is a small non-streaming JSON POST, but `tokio::time::timeout`
+/// keeps the bound at the site whose hold time is the actual concern.
+pub const COMPLETION_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl PendingStore {
     pub fn new() -> Self {
@@ -249,6 +295,58 @@ impl PendingStore {
             .lock()
             .expect("admin pending lock poisoned")
             .remove(key);
+    }
+
+    /// Serializes the completions for one pending key.
+    ///
+    /// [`attempt`](Self::attempt) does not consume the entry — it only counts
+    /// the try — and the entry is removed only after the upstream exchange and
+    /// the store have finished. The whole exchange therefore runs with the entry
+    /// still in place, so a `start` issued in that window replaces it and a
+    /// second completion passes its own state check against the new entry. Both
+    /// exchanges then reach the account store in an order nothing constrains,
+    /// and if the older one lands last the account keeps the **superseded**
+    /// credential. Unlike a rejected state check that tells the operator to
+    /// start again, nothing signals that: both credentials are valid (issue
+    /// #440).
+    ///
+    /// Holding this for the whole sequence makes the second completion find the
+    /// entry already consumed, so it fails closed with "start again" instead of
+    /// racing the first one to the store. It is keyed by the *pending* key, not
+    /// the account name, which is what makes the Claude and Codex routes — whose
+    /// keys are namespaced apart — serialize against their own entry rather than
+    /// against each other.
+    ///
+    /// Deliberately not taken by `start`: a start blocking on an in-flight
+    /// completion would stall the operator behind an upstream exchange, and two
+    /// racing starts already fail closed on the state check.
+    ///
+    /// One consequence of that, worth stating because it is the case a reader
+    /// will hit next: [`remove`](Self::remove) is unconditional by key, so a
+    /// completion that wins this lock removes whatever entry is present —
+    /// including a *newer* one a `start` created during its exchange. That newer
+    /// flow then fails closed with "start again" rather than being silently
+    /// superseded, which is the direction this lock exists to enforce, but it
+    /// does mean a second start issued mid-exchange is discarded rather than
+    /// honoured. Letting it survive instead needs a generation carried on the
+    /// entry, which is tracked on issue #440 rather than done here.
+    pub async fn lock_completion(&self, key: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut completions = self
+                .completions
+                .lock()
+                .expect("admin pending completion lock poisoned");
+            // Drop the locks nobody is holding or waiting on. A task that has
+            // taken one has cloned the `Arc`, so a strong count of 1 means this
+            // map holds the only reference and removing it cannot let a later
+            // completion build a second lock for a key someone is still under.
+            completions.retain(|_, lock| Arc::strong_count(lock) > 1);
+            Arc::clone(completions.entry(key.to_string()).or_default())
+        };
+        // The map guard is released above: a `std` guard must not be held across
+        // the await below, and the wait here is for the *other* completion's
+        // upstream exchange, which is exactly what this serializes.
+        lock.lock_owned().await
     }
 }
 
@@ -413,16 +511,42 @@ mod tests {
     #[test]
     fn session_round_trips_and_expires() {
         let store = SessionStore::new();
-        let (id, csrf) = store.create(Duration::from_secs(60));
-        assert_eq!(store.csrf_for(&id).as_deref(), Some(csrf.as_str()));
-        assert!(store.csrf_for("nope").is_none());
+        let (id, csrf) = store.create(Duration::from_secs(60), AdminAccess::Write);
+        let found = store.lookup(&id).expect("live session resolves");
+        assert_eq!(found.csrf, csrf);
+        assert!(store.lookup("nope").is_none());
 
-        let (expired, _) = store.create(Duration::from_millis(0));
+        let (expired, _) = store.create(Duration::from_millis(0), AdminAccess::Write);
         // A zero (already-elapsed) TTL is treated as expired and pruned.
-        assert!(store.csrf_for(&expired).is_none());
+        assert!(store.lookup(&expired).is_none());
 
         store.remove(&id);
-        assert!(store.csrf_for(&id).is_none());
+        assert!(store.lookup(&id).is_none());
+    }
+
+    /// The tier is a property of the session, not a constant: a store that
+    /// dropped `access` and reported one fixed value would still pass every
+    /// assertion above.
+    #[test]
+    fn session_reports_the_tier_it_was_minted_with() {
+        let store = SessionStore::new();
+        let (read_id, _) = store.create(Duration::from_secs(60), AdminAccess::Read);
+        let (write_id, _) = store.create(Duration::from_secs(60), AdminAccess::Write);
+
+        assert_eq!(
+            store
+                .lookup(&read_id)
+                .expect("read session resolves")
+                .access,
+            AdminAccess::Read
+        );
+        assert_eq!(
+            store
+                .lookup(&write_id)
+                .expect("write session resolves")
+                .access,
+            AdminAccess::Write
+        );
     }
 
     #[test]
@@ -575,5 +699,46 @@ mod tests {
         assert!(limiter.check());
         assert!(limiter.check());
         assert!(!limiter.check());
+    }
+
+    /// The sweep in [`PendingStore::lock_completion`] has to do two opposite
+    /// things, and a single comparison decides both: reclaim the locks of
+    /// finished completions, so the map cannot grow once per account name ever
+    /// provisioned, and leave a lock someone still holds alone, because evicting
+    /// it would let the next completion build a *second* lock for that key and
+    /// serialize against nothing. Widening the test to `>= 1` satisfies the
+    /// first and breaks the second silently.
+    #[tokio::test]
+    async fn the_completion_lock_map_reclaims_finished_keys_but_never_held_ones() {
+        let store = PendingStore::new();
+
+        drop(store.lock_completion("alpha").await);
+        let _beta = store.lock_completion("beta").await;
+        assert_eq!(
+            store
+                .completions
+                .lock()
+                .expect("map lock")
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["beta".to_string()],
+            "the released `alpha` lock is swept; the held `beta` one is not"
+        );
+
+        let _gamma = store.lock_completion("gamma").await;
+        let mut keys: Vec<String> = store
+            .completions
+            .lock()
+            .expect("map lock")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            ["beta".to_string(), "gamma".to_string()],
+            "acquiring one key must not evict another key's held lock"
+        );
     }
 }

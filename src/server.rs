@@ -20,6 +20,7 @@ use crate::{
     oauth_usage, protocol, proxy,
     reload::{RuntimeState, SharedState},
     routes,
+    routing::stage::StageRouterStore,
     upstream_status::StatusStore,
     usage,
 };
@@ -48,6 +49,11 @@ pub struct AppState {
     pub gateway_auth: Option<Arc<GatewayAuth>>,
     /// Process-lifetime device grants, IdP states/cache, refresh tokens, and limits.
     pub gateway_stores: Arc<GatewayStores>,
+    /// Process-lifetime per-session tier pins for `[models.stage_router]`.
+    /// Kept across reloads like [`AppState::accounts`] — a router's pins are
+    /// invalidated by a change to *that router's* table, not by any config edit
+    /// (see [`StageRouterStore::apply`]).
+    pub(crate) stage_router: Arc<StageRouterStore>,
     /// Whether the listener this process actually bound at startup is
     /// loopback. Fixed at boot like `server.bind` itself (see
     /// `reload::warn_on_restart_only_changes`): a reload can rewrite
@@ -78,18 +84,24 @@ impl AppState {
             Arc::new(StatusStore::new()),
             Arc::new(AdminStores::new()),
             Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
+            Arc::new(StageRouterStore::new()),
             boot_is_loopback,
         ))
     }
 
     /// Snapshot the current runtime state from an existing shared store.
-    pub fn from_shared(
+    // Five process-lifetime stores, each created once at boot and carried
+    // across reloads; grouping them behind a struct would only move the same
+    // list one level down.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_shared(
         shared: SharedState,
         http_client: reqwest::Client,
         accounts: Arc<AccountPool>,
         status: Arc<StatusStore>,
         admin_stores: Arc<AdminStores>,
         gateway_stores: Arc<GatewayStores>,
+        stage_router: Arc<StageRouterStore>,
         boot_is_loopback: bool,
     ) -> Self {
         let current = shared.load();
@@ -103,6 +115,7 @@ impl AppState {
             status,
             admin_stores,
             gateway_stores,
+            stage_router,
             boot_is_loopback,
             shared,
         }
@@ -119,6 +132,7 @@ impl AppState {
             self.status.clone(),
             self.admin_stores.clone(),
             self.gateway_stores.clone(),
+            self.stage_router.clone(),
             self.boot_is_loopback,
         )
     }
@@ -160,6 +174,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let http_tuning = HttpTuningLayer::new(
         config.server.access_control.clone(),
         config.server.limits.clone(),
+        config.server.codex_endpoint.is_some(),
     );
     let http_tuning_enabled = config.server.access_control.enabled()
         || config.server.limits.max_request_header_bytes.is_some()
@@ -202,6 +217,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         Arc::new(StatusStore::new()),
         Arc::new(AdminStores::new()),
         Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
+        Arc::new(StageRouterStore::new()),
         boot_is_loopback,
     );
 
@@ -215,16 +231,24 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let liveness_router = Router::new()
         .route("/", get(root_index))
         .route("/health", get(health));
+    let model_discovery = if codex_endpoint_enabled {
+        get(discovery::get_negotiated)
+    } else {
+        get(discovery::get)
+    };
     let mut router = Router::new()
         .route("/protocol", get(protocol::get))
-        .route("/v1/models", get(discovery::get))
+        .route("/v1/models", model_discovery)
         .route("/routes", get(routes::get))
         .route("/v1/messages", post(proxy::post))
         .route("/v1/messages/count_tokens", post(proxy::post));
 
     // Opt-in admin surface (M9): registered only when `[server.admin]` is set,
     // so the default HTTP surface is unchanged. Its handlers authenticate every
-    // request against the separate `[server.admin]` credential.
+    // request against the separate `[server.admin]` credential, with two
+    // deliberate exceptions: the server-rendered login flow, and — under
+    // `--features ui` — the SPA shell and its bundle files, which carry no
+    // operator data (`crate::admin::ui`).
     if admin_enabled {
         router = router.merge(admin::admin_router());
     }
@@ -253,6 +277,9 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // discarded locally after recording sanitized counters. Both are gated by
     // `[server.auth]` like the other injected-credential routes.
     if codex_endpoint_enabled {
+        for path in discovery::CODEX_PATHS {
+            router = router.route(path, get(discovery::get_codex));
+        }
         // Register from the same constants `concurrency::is_codex_path`
         // classifies against, so a route cannot be added here without also
         // getting the OpenAI-shaped gateway errors its clients expect.
@@ -287,7 +314,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // zero value preserves the previous unlimited behavior without a layer.
     if max_concurrent_requests > 0 {
         router = router.layer(middleware::from_fn_with_state(
-            ConcurrencyLimit::new(max_concurrent_requests),
+            ConcurrencyLimit::new(max_concurrent_requests, codex_endpoint_enabled),
             limit_requests,
         ));
     }

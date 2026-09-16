@@ -1,13 +1,15 @@
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
-    config::ResponsesFlavor,
+    config::{Config, ResponsesFlavor},
     model::responses::{
         anthropic_error_type, client_facing_status, map_error_value, parse_sse_events,
         translate_request, translate_request_value, AnthropicSseMachine,
     },
     routing::{AdapterKind, Route},
 };
+
+mod common;
 
 fn route(model: &str) -> Route {
     Route {
@@ -55,6 +57,40 @@ fn parsed_value_entry_point_matches_byte_wrapper_across_flavors() {
             "parsed and byte entry points diverged for {flavor:?}"
         );
     }
+}
+
+#[test]
+fn drops_tool_schema_patterns_the_openai_validator_cannot_compile() {
+    // Claude Code's `Artifact` tool: `field` carries Unicode property escapes
+    // (rejected by the backend's Python `re` check, failing the whole request
+    // with "is not a 'regex'"); `collection` carries a lookahead, which passes.
+    let field = r#"^(?!__.*__$)[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}"\\./[\]]{1,200}$"#;
+    let collection = r"^(?!\.\.?(?:\/|$))[A-Za-z0-9_\-.~:@+]{1,200}$";
+    let input = json!({
+        "model": "gpt-5.2-codex",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{
+            "name": "Artifact",
+            "description": "Publish",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string", "pattern": field},
+                    "collection": {"type": "string", "pattern": collection}
+                }
+            }
+        }]
+    });
+
+    let output = translate(input);
+    assert_eq!(
+        output["tools"][0]["parameters"]["properties"],
+        json!({
+            "field": {"type": "string"},
+            "collection": {"type": "string", "pattern": collection}
+        })
+    );
 }
 
 #[test]
@@ -192,9 +228,9 @@ fn tool_reference_result_becomes_loaded_tool_text() {
 fn defer_loading_field_never_reaches_upstream_tools() {
     // With tool search enabled, discovered deferred tools carry
     // defer_loading:true. The Responses API doesn't know the field; the tools()
-    // rebuild must emit only type/name/description/parameters. Mark the deferred
-    // tool loaded so progressive filtering forwards it and this test stays focused
-    // on stripping the unsupported field.
+    // rebuild must emit only type/name/description/strict/parameters. Mark the
+    // deferred tool loaded so progressive filtering forwards it and this test
+    // stays focused on stripping the unsupported field.
     let actual = translate(json!({
         "model": "gpt-5.2-codex",
         "messages": [
@@ -221,6 +257,7 @@ fn defer_loading_field_never_reaches_upstream_tools() {
             "type": "function",
             "name": "mcp__github__get_me",
             "description": "Get the authenticated user",
+            "strict": false,
             "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
         }])
     );
@@ -500,6 +537,7 @@ fn translates_tools_and_tool_choice_variants() {
             "type": "function",
             "name": "run",
             "description": "Run command",
+            "strict": false,
             "parameters": {
                 "type": "object",
                 "properties": {"cmd": {"type": "string"}},
@@ -529,6 +567,128 @@ fn translate_with_flavor(input: Value, flavor: ResponsesFlavor) -> Value {
 }
 
 #[test]
+fn responses_tools_explicitly_disable_strict_normalization() {
+    let input_schema = json!({
+        "type": "object",
+        "properties": {
+            "required_value": {"type": "string"},
+            "optional_value": {"type": "string"},
+            "nested": {
+                "type": "object",
+                "properties": {
+                    "required_child": {"type": "integer"},
+                    "optional_child": {"type": ["string", "null"]}
+                },
+                "required": ["required_child"],
+                "additionalProperties": false
+            },
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "required_item": {"type": "boolean"},
+                        "optional_item": {"type": "number"}
+                    },
+                    "required": ["required_item"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["required_value"],
+        "additionalProperties": false
+    });
+    let eager = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [],
+        "tools": [{
+            "name": "probe",
+            "description": "Probe",
+            "input_schema": input_schema
+        }]
+    }));
+    assert_eq!(eager["tools"][0]["strict"], json!(false));
+    assert_eq!(eager["tools"][0]["parameters"], input_schema);
+
+    let native = native_translate(json!({
+        "model": "gpt-5.6-sol",
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "probe"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_ts", "content": [
+                    {"type": "tool_reference", "tool_name": "probe"}
+                ]}
+            ]}
+        ],
+        "tools": [
+            {
+                "name": "ToolSearch",
+                "description": "Search",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "probe",
+                "description": "Probe",
+                "input_schema": input_schema,
+                "defer_loading": true
+            }
+        ]
+    }));
+    assert_eq!(
+        native["tools"],
+        json!([{
+            "type": "tool_search",
+            "execution": "client",
+            "description": "Search",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": true
+            }
+        }])
+    );
+    assert_eq!(native["input"][1]["tools"][0]["strict"], json!(false));
+    assert_eq!(native["input"][1]["tools"][0]["parameters"], input_schema);
+}
+
+#[test]
+fn xai_and_grok_withhold_strict_on_function_tools() {
+    // `strict:false` is pinned only where acceptance is established —
+    // ChatGPT/Codex (measured 2026-09-08) and stock OpenAI (its own field).
+    // xAI/Grok reject several standard Responses fields, so it is withheld
+    // there rather than risk a 400 on every tool-carrying request.
+    let input = json!({
+        "model": "grok-4.5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"name": "Bash", "input_schema": {}}]
+    });
+    let withheld = json!([{
+        "type": "function",
+        "name": "Bash",
+        "description": "",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
+    }]);
+    for flavor in [ResponsesFlavor::Xai, ResponsesFlavor::Grok] {
+        assert_eq!(
+            translate_with_flavor(input.clone(), flavor)["tools"],
+            withheld,
+            "strict should be withheld on {flavor:?}"
+        );
+    }
+    assert_eq!(
+        translate_with_flavor(input, ResponsesFlavor::OpenAi)["tools"][0]["strict"],
+        json!(false)
+    );
+}
+
+#[test]
 fn translates_hosted_web_search_tool_to_responses_web_search() {
     // Claude Code sends the hosted `web_search_20250305` tool when a user
     // enables web search. It must become the Responses hosted web-search tool,
@@ -551,6 +711,7 @@ fn translates_hosted_web_search_tool_to_responses_web_search() {
                     "type": "function",
                     "name": "Bash",
                     "description": "",
+                    "strict": false,
                     "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
                 },
                 {
@@ -2055,6 +2216,23 @@ fn native_translate(input: Value) -> Value {
     translate_request(&body, &route("gpt-5.6-sol"), ResponsesFlavor::Chatgpt, true).unwrap()
 }
 
+/// Production eligibility: the native wire is selected by
+/// [`Config::native_tool_search`], not a bypass `native = true` fixture.
+fn production_native_for(model: &str) -> bool {
+    Config::default().native_tool_search("codex", model)
+}
+
+fn translate_with_production_gate(model: &str, input: Value) -> Value {
+    let body = serde_json::to_vec(&input).unwrap();
+    translate_request(
+        &body,
+        &route(model),
+        ResponsesFlavor::Chatgpt,
+        production_native_for(model),
+    )
+    .unwrap()
+}
+
 #[test]
 fn native_maps_tool_search_tool_definition() {
     // Claude Code's ToolSearch tool -> the Responses native client tool: no
@@ -2159,6 +2337,7 @@ fn native_tool_result_becomes_tool_search_output_with_ordered_schemas() {
                     "name": "find_issue",
                     "description": "Find an issue",
                     "defer_loading": true,
+                    "strict": false,
                     "parameters": {
                         "type": "object",
                         "properties": {"number": {"type": "integer"}},
@@ -2171,6 +2350,7 @@ fn native_tool_result_becomes_tool_search_output_with_ordered_schemas() {
                     "name": "list_issues",
                     "description": "List issues",
                     "defer_loading": true,
+                    "strict": false,
                     "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
                 }
             ]
@@ -2273,6 +2453,7 @@ fn tool_reveal_grows_shim_tools_but_leaves_native_tools_stable() {
             "name": "find_issue",
             "description": "Find an issue",
             "defer_loading": true,
+            "strict": false,
             "parameters": {
                 "type": "object",
                 "properties": {"number": {"type": "integer"}},
@@ -2281,6 +2462,79 @@ fn tool_reveal_grows_shim_tools_but_leaves_native_tools_stable() {
             }
         }])
     );
+}
+
+#[test]
+fn astra_production_gate_maps_tool_search_and_keeps_prefix_stable() {
+    // Codex catalog slug `gpt-6-astra` takes the native path through
+    // [`Config::native_tool_search`]; close gpt-6 names and gpt-5.2 stay on
+    // the #43 shim. The native request/reveal fixture is the same shape as
+    // [`tool_reveal_grows_shim_tools_but_leaves_native_tools_stable`].
+    let _env = common::set_env_blocking(&[]);
+    assert!(production_native_for("gpt-6-astra"));
+    assert!(production_native_for("gpt-5.6-sol"));
+    assert!(production_native_for("gpt-5.4"));
+    assert!(!production_native_for("gpt-6-pro"));
+    assert!(!production_native_for("gpt-6-astral"));
+    assert!(!production_native_for("gpt-5.2-codex"));
+
+    let tools = json!([
+        {"name": "ToolSearch", "description": "Search", "input_schema": {"type": "object", "properties": {}}},
+        {
+            "name": "find_issue",
+            "description": "Find an issue",
+            "input_schema": {
+                "type": "object",
+                "properties": {"number": {"type": "integer"}},
+                "required": ["number"]
+            },
+            "defer_loading": true
+        }
+    ]);
+    let pre_reveal_messages: Value = json!([]);
+    let post_reveal_messages = json!([
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "find_issue"}}
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "call_ts", "content": [
+                {"type": "tool_reference", "tool_name": "find_issue"}
+            ]}
+        ]}
+    ]);
+
+    let astra_pre = translate_with_production_gate(
+        "gpt-6-astra",
+        json!({
+            "model": "gpt-6-astra", "messages": pre_reveal_messages, "tools": tools
+        }),
+    );
+    let astra_post = translate_with_production_gate(
+        "gpt-6-astra",
+        json!({
+            "model": "gpt-6-astra", "messages": post_reveal_messages, "tools": tools
+        }),
+    );
+    assert_eq!(astra_pre["tools"][0]["type"], "tool_search");
+    assert_eq!(astra_pre["tools"], astra_post["tools"]);
+    assert!(!astra_pre["tools"].to_string().contains("find_issue"));
+    assert!(!astra_post["tools"].to_string().contains("find_issue"));
+    let output_item = astra_post["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "tool_search_output")
+        .expect("post-reveal Astra input should contain a tool_search_output item");
+    assert_eq!(output_item["tools"][0]["name"], "find_issue");
+
+    let unsupported = translate_with_production_gate(
+        "gpt-6-pro",
+        json!({
+            "model": "gpt-6-pro", "messages": pre_reveal_messages, "tools": tools
+        }),
+    );
+    assert_eq!(unsupported["tools"][0]["type"], "function");
+    assert_eq!(unsupported["tools"][0]["name"], "ToolSearch");
 }
 
 #[test]
@@ -2444,6 +2698,32 @@ fn native_streamed_tool_search_call_becomes_tool_use() {
     assert!(emitted.contains("\"id\":\"call_ts\""));
     assert!(emitted.contains("github issues"));
     assert!(emitted.contains("\"stop_reason\":\"tool_use\""));
+}
+
+#[test]
+fn astra_production_gate_streamed_tool_search_call_becomes_tool_use() {
+    let _env = common::set_env_blocking(&[]);
+    let native = production_native_for("gpt-6-astra");
+    assert!(native);
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"call_ts\",\"execution\":\"client\",\"status\":\"in_progress\",\"arguments\":{}}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"call_ts\",\"execution\":\"client\",\"arguments\":{\"query\":\"github issues\"}}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":3}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-6-astra", false, native);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    assert!(emitted.contains("\"type\":\"tool_use\""));
+    assert!(emitted.contains("\"name\":\"ToolSearch\""));
+    assert!(emitted.contains("\"id\":\"call_ts\""));
+    assert!(emitted.contains("github issues"));
 }
 
 #[test]

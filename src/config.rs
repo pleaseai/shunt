@@ -17,6 +17,7 @@ mod presets;
 mod secrets;
 mod session;
 mod spend;
+mod stage_router;
 mod upstreams;
 
 pub use admin_keys::{AdminAccess, AdminCredential, AdminKey, AdminKeyring};
@@ -27,6 +28,10 @@ pub use presets::{provider_presets, ProviderPresetView};
 pub use secrets::Secret;
 pub use session::GatewaySessionConfig;
 pub use spend::{GroupLimitMode, SpendConfig, SpendEnforcementConfig};
+pub use stage_router::{
+    StageRouterConfig, StageRouterPicker, DEFAULT_CONFIDENCE_THRESHOLD,
+    DEFAULT_DEESCALATE_THRESHOLD,
+};
 pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -147,6 +152,11 @@ pub struct ServerConfig {
     /// `0` disables injection (M5).
     #[serde(default = "default_sse_keepalive_seconds")]
     pub sse_keepalive_seconds: u64,
+    /// Seconds to wait for in-flight requests and connections to drain after
+    /// the first shutdown signal before forcing termination. `0` and values
+    /// above 3600 are rejected by validation.
+    #[serde(default = "default_shutdown_timeout_seconds")]
+    pub shutdown_timeout_seconds: u64,
     /// Maximum inbound client requests in flight at once on the limited routes
     /// (`/` and `/health` are merged outside the gate and always answer). `0`
     /// disables the limit. Over-limit requests are shed with 503 rather than
@@ -178,6 +188,12 @@ fn default_sse_keepalive_seconds() -> u64 {
 fn default_max_concurrent_requests() -> usize {
     1024
 }
+
+fn default_shutdown_timeout_seconds() -> u64 {
+    30
+}
+
+pub(crate) const MAX_SHUTDOWN_TIMEOUT_SECONDS: u64 = 3600;
 
 /// Upper bound accepted for `[server] max_concurrent_requests`, mirroring
 /// `tokio::sync::Semaphore::MAX_PERMITS` (`usize::MAX >> 3`). Tokio's
@@ -411,7 +427,9 @@ pub struct AdminConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub write_keys: Vec<AdminKey>,
     /// Read-only keys: they pass every GET on the admin and spend surfaces and
-    /// are refused on every mutation, including the browser login form.
+    /// are refused on every mutation. They sign in to the dashboard too — the
+    /// session records the tier it was minted with, so a read key's session is
+    /// refused on a mutation exactly as the header credential is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub read_keys: Vec<AdminKey>,
     /// Browser session lifetime after login.
@@ -1203,7 +1221,14 @@ fn validate_idp_url(
     let url = reqwest::Url::parse(raw)
         .map_err(|error| section.invalid(format!("{key} is not a valid URL: {error}")))?;
     let invalid_issuer_parts = issuer && url.query().is_some();
-    if !url_uses_safe_transport(&url)
+    // Narrower than `url_uses_safe_transport`: an IdP URL is also a browser
+    // redirect target, and the device and admin login pages can only name
+    // `localhost` and `127.0.0.1` in their CSP `form-action`, so any other
+    // loopback host must fail here rather than in the browser.
+    let safe_transport = url.scheme() == "https"
+        || url.scheme() == "http"
+            && crate::gateway::idp_client::host_is_csp_loopback(url.host_str().unwrap_or_default());
+    if !safe_transport
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
@@ -1216,7 +1241,7 @@ fn validate_idp_url(
             "userinfo or fragment"
         };
         return Err(section.invalid(format!(
-            "{key} must use https (or http on loopback), include a host, and contain no {parts}"
+            "{key} must use https (or http on localhost or 127.0.0.1), include a host, and contain no {parts}"
         )));
     }
     Ok(url)
@@ -1224,19 +1249,73 @@ fn validate_idp_url(
 
 /// `[server.codex_endpoint]` — opt-in inbound OpenAI Responses (Codex) endpoint.
 /// When present, shunt registers `POST /backend-api/codex/responses`,
-/// `POST /responses`, and `POST /v1/responses`, and proxies each request through
-/// the named provider's ChatGPT/Codex account pool without translating it to or
-/// from Anthropic Messages (a raw passthrough). Absent ⇒ none of those routes
-/// exist. See `docs/m11-inbound-codex-endpoint.md`.
+/// `POST /responses`, and `POST /v1/responses`, plus the Codex CLI model-catalog
+/// aliases, and proxies each inference request through the configured
+/// Responses-compatible provider without translating it to or from Anthropic
+/// Messages (a raw passthrough). The default provider is the ChatGPT/Codex
+/// account pool; exact `routes` entries may select other providers. Absent ⇒
+/// none of those routes exist. See
+/// `docs/m11-inbound-codex-endpoint.md`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CodexEndpointConfig {
     /// Which `chatgpt_oauth` provider's account pool serves inbound Responses
-    /// requests. Every inbound request is routed to this one provider (the body
-    /// `model` is forwarded upstream verbatim, not used to pick a provider), so
-    /// it must exist and use `auth = "chatgpt_oauth"`. Defaults to the built-in
-    /// `codex` provider.
+    /// requests whose `model` matches no [`routes`](Self::routes) entry. It must
+    /// exist and use `auth = "chatgpt_oauth"`. Defaults to the built-in `codex`
+    /// provider.
     #[serde(default = "default_codex_endpoint_provider")]
     pub provider: String,
+    /// Opt-in per-model routing to other Responses-compatible upstreams
+    /// (`[[server.codex_endpoint.routes]]`). Empty ⇒ today's behavior: every
+    /// inbound request goes to [`provider`](Self::provider) with its body
+    /// forwarded verbatim. A matching entry instead sends the request to that
+    /// entry's provider, rewriting the body `model` when `upstream_model`
+    /// differs. Read from the live config snapshot, so edits hot-reload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<CodexRouteConfig>,
+}
+
+impl Default for CodexEndpointConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_codex_endpoint_provider(),
+            routes: Vec::new(),
+        }
+    }
+}
+
+impl CodexEndpointConfig {
+    /// The route serving `model`, matched **exactly**. Deliberately not the
+    /// prefix/`[1m]`-stripping match `routing.rs` applies to `/v1/messages`: the
+    /// Codex CLI sends the model id from its own config verbatim and never
+    /// appends the `[1m]` context-window hint, so anything looser would only
+    /// widen what an operator's route captures.
+    pub fn route_for(&self, model: &str) -> Option<&CodexRouteConfig> {
+        self.routes.iter().find(|route| route.model == model)
+    }
+}
+
+/// One `[[server.codex_endpoint.routes]]` entry: a public model id the inbound
+/// Codex client asks for, and the Responses-compatible provider that serves it.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CodexRouteConfig {
+    /// Public model id the Codex client sends in the Responses body `model`.
+    pub model: String,
+    /// Configured provider that serves this model. Must be `kind = "responses"`
+    /// and must carry a credential — a credential-free auth mode
+    /// (`passthrough` or `none`) is rejected, since the inbound client's own
+    /// `Authorization` is always stripped.
+    pub provider: String,
+    /// Model id sent upstream; defaults to `model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_model: Option<String>,
+}
+
+impl CodexRouteConfig {
+    /// The model id put on the wire — `upstream_model` when set, else the public
+    /// [`model`](Self::model).
+    pub fn upstream_model(&self) -> &str {
+        self.upstream_model.as_deref().unwrap_or(&self.model)
+    }
 }
 
 fn default_codex_endpoint_provider() -> String {
@@ -1247,7 +1326,7 @@ fn default_codex_endpoint_provider() -> String {
 /// registers `GET /usage`, which returns a **sanitized, aggregated** view of the
 /// shared account pool's quota state (per-window remaining headroom and reset)
 /// for `[server.auth]` client-token holders. Unlike the admin dashboard
-/// (`GET /admin/pool`), it never exposes account identities, counts, priorities,
+/// (`GET /admin/api/pool`), it never exposes account identities, counts, priorities,
 /// disabled flags, or thresholds. Presence alone opts in; the table has no
 /// fields today. Requires `[server.auth]`. Absent ⇒ the route does not exist.
 /// See `docs/m12-client-usage-endpoint.md`.
@@ -1860,14 +1939,19 @@ fn model_supports_tool_search(model: &str) -> bool {
     // must be followed by a non-digit (or end of string), so "gpt-5.4" matches
     // but an undocumented "gpt-5.40" does not silently borrow 5.4's flag and get
     // a native wire shape its backend may reject.
-    ["gpt-5.4", "gpt-5.5", "gpt-5.6"].iter().any(|family| {
+    let gpt5 = ["gpt-5.4", "gpt-5.5", "gpt-5.6"].iter().any(|family| {
         model.match_indices(family).any(|(index, matched)| {
             model[index + matched.len()..]
                 .chars()
                 .next()
                 .is_none_or(|next| !next.is_ascii_digit())
         })
-    })
+    });
+    if gpt5 {
+        return true;
+    }
+    // Codex catalog slug `gpt-6-astra` (`supports_search_tool: true`).
+    model == "gpt-6-astra"
 }
 
 /// Whether `host` belongs to xAI (`x.ai` or any subdomain). Used both to gate
@@ -2001,6 +2085,12 @@ pub struct ModelConfig {
     pub display_name: Option<String>,
     #[serde(default)]
     pub upstream_model: Option<BTreeMap<String, String>>,
+    /// Opt-in content-aware tier selection. `skip_serializing_if` is
+    /// load-bearing, not cosmetic: `Config::load` round-trips
+    /// `Serialized::defaults(Self::default())` through figment, and a `None`
+    /// serialized as an explicit null would fail the table's own deserializer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_router: Option<StageRouterConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -2171,6 +2261,22 @@ pub enum ConfigError {
     UnknownCodexEndpointProvider(String),
     #[error("[server.codex_endpoint] provider {0} must use auth = \"chatgpt_oauth\"; the inbound Responses endpoint injects the operator's Codex bearer")]
     CodexEndpointWrongAuth(String),
+    #[error(
+        "[server.codex_endpoint] route for model {model} references unknown provider: {provider}"
+    )]
+    UnknownCodexRouteProvider { model: String, provider: String },
+    #[error("[server.codex_endpoint] route for model {model} targets provider {provider}, which is not kind = \"responses\"; the inbound endpoint relays raw OpenAI Responses bytes")]
+    CodexRouteWrongKind { model: String, provider: String },
+    #[error("[server.codex_endpoint] route for model {model} targets provider {provider}, which uses the credential-free auth = \"{auth}\"; the inbound client's own Authorization is always stripped, so no credential would be sent")]
+    CodexRouteNoCredential {
+        model: String,
+        provider: String,
+        auth: &'static str,
+    },
+    #[error("[server.codex_endpoint] declares more than one route for model {model}")]
+    DuplicateCodexRoute { model: String },
+    #[error("[server.codex_endpoint] route field `{field}` is empty for model {model}")]
+    EmptyCodexRouteField { model: String, field: &'static str },
     #[error("[server.usage] requires [server.auth]: the usage endpoint must identify a non-admin caller by client token")]
     UsageEndpointRequiresAuth,
     #[error("[server.oauth_usage] on a non-loopback [server.bind] requires [server.auth] or [server.gateway]: without one, Claude subscription quota telemetry would be served to any caller on the network")]
@@ -2197,9 +2303,25 @@ pub enum ConfigError {
     EmptyModelUpstream { model: String, provider: String },
     #[error("model {model} is declared both in [[routes]] and in a [[models]] upstream_model entry; remove one")]
     ModelRouteConflict { model: String },
+    #[error("models entry {model} has both a stage_router and an upstream_model map; a router picks its own target, so the two are mutually exclusive")]
+    StageRouterWithUpstreamMap { model: String },
+    #[error("models entry {model} stage_router {key} must not be empty")]
+    EmptyStageRouterTarget { model: String, key: &'static str },
+    #[error("models entry {model} stage_router targets {target}, which is itself a stage_router; a router target must be a concrete model")]
+    StageRouterRecursion { model: String, target: String },
+    #[error("models entry {model} stage_router {key} is {value}; it must be greater than 0.0 and at most 1.0")]
+    InvalidStageRouterThreshold {
+        model: String,
+        key: &'static str,
+        value: f64,
+    },
+    #[error("models entry {model} stage_router recent_turn_window must be at least 1")]
+    InvalidStageRouterWindow { model: String },
     #[error("models entry {model} has an upstream_model map but its id ends with a [1m] or [1M] context-window hint; clients strip that hint before model matching, so the entry is unreachable")]
     ModelUpstreamContextWindowHint { model: String },
-    #[error("duplicate [[models]] id {model}; ids must be unique when any matching entry has an upstream_model map")]
+    #[error("models entry {model} has a stage_router table but its id ends with a [1m] or [1M] context-window hint; clients strip that hint before model matching, so the entry is unreachable")]
+    StageRouterContextWindowHint { model: String },
+    #[error("duplicate [[models]] id {model}; ids must be unique when any matching entry has an upstream_model map or a stage_router table")]
     DuplicateModelId { model: String },
     #[error("route prefix {prefix} references unknown provider: {provider}")]
     UnknownPrefixProvider { prefix: String, provider: String },
@@ -2332,6 +2454,8 @@ pub enum ConfigError {
         max_concurrent_requests: usize,
         limit: usize,
     },
+    #[error("server.shutdown_timeout_seconds must be between 1 and {limit}, got {seconds}")]
+    InvalidShutdownTimeout { seconds: u64, limit: u64 },
     #[error("server.access_control.{field}[{index}] is not a valid CIDR `{value}`: {message}")]
     InvalidAccessControlCidr {
         field: &'static str,
@@ -2598,6 +2722,7 @@ impl Default for Config {
                 status: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
                 max_concurrent_requests: default_max_concurrent_requests(),
+                shutdown_timeout_seconds: default_shutdown_timeout_seconds(),
                 access_control: AccessControlConfig::default(),
                 limits: LimitsConfig::default(),
                 timeouts: TimeoutsConfig::default(),
@@ -2857,6 +2982,10 @@ impl Config {
         // defensive validation and `shunt check` also call `validate`, so
         // keeping it there would repeat the same warning on every validation.
         config.warn_reprobe_seconds_below_floor();
+        config.warn_stage_router_targets_unresolvable();
+        config.warn_stage_router_threshold_inversion();
+        config.warn_stage_router_identical_targets();
+        config.warn_stage_router_shadows_exact_route();
         // One aggregated warning per load naming every `Secret` field whose
         // value was written literally in the config file — never the value
         // itself. A `Secret` populated from an env override, a `${...}`
@@ -3162,6 +3291,12 @@ impl Config {
             return Err(ConfigError::InvalidMaxConcurrentRequests {
                 max_concurrent_requests: self.server.max_concurrent_requests,
                 limit: MAX_CONCURRENT_REQUESTS_LIMIT,
+            });
+        }
+        if !(1..=MAX_SHUTDOWN_TIMEOUT_SECONDS).contains(&self.server.shutdown_timeout_seconds) {
+            return Err(ConfigError::InvalidShutdownTimeout {
+                seconds: self.server.shutdown_timeout_seconds,
+                limit: MAX_SHUTDOWN_TIMEOUT_SECONDS,
             });
         }
         self.server.access_control.validate()?;
@@ -3704,6 +3839,64 @@ impl Config {
                 }
                 Some(_) => {}
             }
+            // Opt-in per-model routing: an entry may name any provider that can
+            // actually serve raw Responses bytes with a shunt-owned credential.
+            // Every auth mode a `kind = "responses"` provider can legally carry
+            // (`api_key`, `chatgpt_oauth`, `xai_oauth`) is accepted; only
+            // `passthrough` is not, since the inbound client's own Authorization
+            // is stripped and nothing would be left to send.
+            let mut seen_models = std::collections::HashSet::new();
+            for route in &codex_endpoint.routes {
+                for (field, value) in [
+                    ("model", Some(route.model.as_str())),
+                    ("provider", Some(route.provider.as_str())),
+                    ("upstream_model", route.upstream_model.as_deref()),
+                ] {
+                    if value.is_some_and(|value| value.trim().is_empty()) {
+                        return Err(ConfigError::EmptyCodexRouteField {
+                            model: route.model.clone(),
+                            field,
+                        });
+                    }
+                }
+                if !seen_models.insert(route.model.as_str()) {
+                    return Err(ConfigError::DuplicateCodexRoute {
+                        model: route.model.clone(),
+                    });
+                }
+                match self.provider(&route.provider) {
+                    None => {
+                        return Err(ConfigError::UnknownCodexRouteProvider {
+                            model: route.model.clone(),
+                            provider: route.provider.clone(),
+                        });
+                    }
+                    Some(provider) if provider.kind != ProviderKind::Responses => {
+                        return Err(ConfigError::CodexRouteWrongKind {
+                            model: route.model.clone(),
+                            provider: route.provider.clone(),
+                        });
+                    }
+                    // Both credential-free modes: `passthrough` would forward
+                    // the caller's own credential, which this endpoint always
+                    // strips, and `none` sends nothing at all. Either way the
+                    // routed request would reach the upstream unauthenticated.
+                    Some(provider)
+                        if matches!(provider.auth, AuthMode::Passthrough | AuthMode::None) =>
+                    {
+                        return Err(ConfigError::CodexRouteNoCredential {
+                            model: route.model.clone(),
+                            provider: route.provider.clone(),
+                            auth: if provider.auth == AuthMode::Passthrough {
+                                "passthrough"
+                            } else {
+                                "none"
+                            },
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
         }
         // The client-facing usage endpoint identifies its caller by client token,
         // so it is only meaningful — and only safe to register — when inbound auth
@@ -3740,13 +3933,42 @@ impl Config {
         }
         let mut model_ids = HashSet::new();
         let mut model_upstream_ids = HashSet::new();
+        let mut model_router_ids = HashSet::new();
         for model in &self.models {
             let duplicate_id = !model_ids.insert(&model.id);
+            // Mutual exclusivity first, so an entry declaring both reports that
+            // rather than whichever router field happens to fail validation
+            // next. Both checks sit above the `upstream_model` arm below, which
+            // `continue`s past every entry that has no map — a router entry is
+            // exactly such an entry, so checking either later would never run
+            // for it.
+            if model.stage_router.is_some() && model.upstream_model.is_some() {
+                return Err(ConfigError::StageRouterWithUpstreamMap {
+                    model: model.id.clone(),
+                });
+            }
+            if let Some(router) = &model.stage_router {
+                self.validate_stage_router(&model.id, router)?;
+            }
             let Some(upstream_models) = &model.upstream_model else {
-                if duplicate_id && model_upstream_ids.contains(&model.id) {
+                // Two map-less entries may share an id while both are pure
+                // discovery metadata: neither one changes how the id resolves,
+                // so `duplicate_map_less_model_ids_remain_valid` keeps that
+                // tolerated. A `stage_router` entry is not metadata — it names
+                // a routing policy — so a duplicate on either side leaves two
+                // policies for one public id, settled by declaration order once
+                // the resolver reads the table.
+                if duplicate_id
+                    && (model_upstream_ids.contains(&model.id)
+                        || model_router_ids.contains(&model.id)
+                        || model.stage_router.is_some())
+                {
                     return Err(ConfigError::DuplicateModelId {
                         model: model.id.clone(),
                     });
+                }
+                if model.stage_router.is_some() {
+                    model_router_ids.insert(&model.id);
                 }
                 continue;
             };
@@ -3827,6 +4049,238 @@ impl Config {
         }
         self.warn_service_tier_withheld_for_flavor();
         Ok(self)
+    }
+
+    /// Fail-closed checks for one `[models.stage_router]` table.
+    ///
+    /// Recursion is a one-hop check, not a graph walk: a router target may never
+    /// itself be a router, so no longer cycle can exist. Self-targeting is the
+    /// degenerate case of that same rule and is caught by it. Every id compared
+    /// here goes through `strip_context_window_hint` first, because that is what
+    /// `resolve_model_chain` matches on — a predicate that normalized
+    /// differently would enforce the rule on the written string while routing
+    /// resolved a different one.
+    fn validate_stage_router(
+        &self,
+        model_id: &str,
+        router: &StageRouterConfig,
+    ) -> Result<(), ConfigError> {
+        for (key, target) in [
+            ("capable_target", &router.capable_target),
+            ("efficient_target", &router.efficient_target),
+        ] {
+            if target.trim().is_empty() {
+                return Err(ConfigError::EmptyStageRouterTarget {
+                    model: model_id.to_string(),
+                    key,
+                });
+            }
+            // `resolve_model_chain` strips the context-window hint before it
+            // matches a `[[models]]` id, so this comparison has to strip it too.
+            // A target written `"<a router>[1m]"` is not equal to that router's
+            // id as written but resolves to it, which would leave the
+            // router-may-not-target-a-router rule satisfied only on paper.
+            let resolved = crate::routing::strip_context_window_hint(target);
+            if self
+                .models
+                .iter()
+                .any(|other| other.id == resolved && other.stage_router.is_some())
+            {
+                return Err(ConfigError::StageRouterRecursion {
+                    model: model_id.to_string(),
+                    // Report the target as the operator wrote it, hint included.
+                    target: target.clone(),
+                });
+            }
+        }
+        for (key, value) in [
+            ("confidence_threshold", router.confidence_threshold),
+            ("deescalate_threshold", router.deescalate_threshold()),
+        ] {
+            // `!(0.0 < v && v <= 1.0)` rather than a negated range so NaN, which
+            // compares false against every bound, is rejected too.
+            if !(value > 0.0 && value <= 1.0) {
+                return Err(ConfigError::InvalidStageRouterThreshold {
+                    model: model_id.to_string(),
+                    key,
+                    value,
+                });
+            }
+        }
+        if router.recent_turn_window == 0 {
+            return Err(ConfigError::InvalidStageRouterWindow {
+                model: model_id.to_string(),
+            });
+        }
+        // Suffix, not substring: `strip_context_window_hint` only strips a
+        // trailing hint, so an id merely containing `[1m]` mid-string is an
+        // ordinary id that routes by its literal name. Same predicate the
+        // `upstream_model` arm uses on `model.id`, but its own error: mutual
+        // exclusivity is enforced above, so an entry reaching here has a
+        // stage_router table and provably no upstream_model map.
+        if crate::routing::strip_context_window_hint(model_id) != model_id {
+            return Err(ConfigError::StageRouterContextWindowHint {
+                model: model_id.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Warns once at load for every `[models.stage_router]` target that matches
+    /// no `[[models]]`, `[[routes]]`, or `[[route_prefixes]]` entry.
+    ///
+    /// Not an error, and deliberately not part of [`Config::validate_stage_router`]:
+    /// resolution always falls back to `server.default_provider`, so the target
+    /// still routes — it is just very likely not what the operator meant.
+    ///
+    /// Emitted at the successful load boundary rather than from `validate`, the
+    /// same split [`Config::warn_reprobe_seconds_below_floor`] uses. That is
+    /// **once per load, not once per process**: `reload::reload` calls
+    /// `Config::load`, so a hot reload that leaves the problem in place warns
+    /// again. What the split buys is that validation stays side-effect free —
+    /// `validate` runs strictly more often than `load` does (`Config::load`
+    /// calls it, `RuntimeState::from_config` calls it again on every reload, and
+    /// `shunt check` calls it), so warning from there would multiply the same
+    /// line per reload rather than emit it once.
+    fn warn_stage_router_targets_unresolvable(&self) {
+        for model in &self.models {
+            let Some(router) = &model.stage_router else {
+                continue;
+            };
+            for target in router.targets() {
+                // Same normalization the validation and the resolver apply.
+                let resolved = crate::routing::strip_context_window_hint(target);
+                // A `[[models]]` entry routes its own id only when it carries
+                // an `upstream_model` map: `resolve_model_chain` returns from
+                // that arm in that case alone and otherwise falls through to
+                // `[[routes]]`, `[[route_prefixes]]`, and the default provider.
+                // A map-less entry is discovery metadata, so counting it here
+                // would suppress the warning for a target that does land on the
+                // default backend — the exact case this diagnostic exists for.
+                if !self
+                    .models
+                    .iter()
+                    .any(|other| other.id == resolved && other.upstream_model.is_some())
+                    && !self.routes.iter().any(|route| route.model == resolved)
+                    && !self
+                        .route_prefixes
+                        .iter()
+                        .any(|prefix| resolved.starts_with(&prefix.prefix))
+                {
+                    tracing::warn!(
+                        model_id = %model.id,
+                        target = %target,
+                        default_provider = %self.server.default_provider,
+                        "stage_router target matches no [[models]] entry with an upstream_model map, no [[routes]] entry, and no [[route_prefixes]] entry; it will fall back to the default provider"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Warns once at load when a `[models.stage_router]` sets its de-escalation
+    /// gate *below* its escalation gate.
+    ///
+    /// The shipped defaults (0.5 / 0.75) make coming back down the harder
+    /// direction, because a tier flip forfeits the warm prompt-cache prefix and
+    /// any `previous_response_id` continuation. Inverting that is coherent —
+    /// a cost-sensitive deployment may genuinely want to drop to the efficient
+    /// tier readily and escalate only on strong evidence — so this is a warning
+    /// and not a [`ConfigError`]: the realistic failure is a typo, and rejecting
+    /// the pair would take away a configuration someone means (issue #562).
+    ///
+    /// Compared against [`StageRouterConfig::deescalate_threshold`], the
+    /// *effective* value, so leaving the key out and raising
+    /// `confidence_threshold` past the 0.75 default warns too — that config
+    /// inverts the design just as much as writing both keys does. Equal
+    /// thresholds are symmetric rather than inverted and stay silent.
+    fn warn_stage_router_threshold_inversion(&self) {
+        for model in &self.models {
+            let Some(router) = &model.stage_router else {
+                continue;
+            };
+            let deescalate = router.deescalate_threshold();
+            if deescalate < router.confidence_threshold {
+                tracing::warn!(
+                    model_id = %model.id,
+                    deescalate_threshold = deescalate,
+                    confidence_threshold = router.confidence_threshold,
+                    "stage_router deescalate_threshold is below confidence_threshold; de-escalation is the easier direction, which inverts the default design"
+                );
+            }
+        }
+    }
+
+    /// Warns once at load when a `[models.stage_router]`'s two targets resolve
+    /// to the same model id.
+    ///
+    /// The router then has nothing to choose between: whatever the signals say,
+    /// every decision lands on one destination. Degenerate, but a real operator
+    /// move — flattening both tiers onto one model while testing is a one-line
+    /// edit against restructuring the entry — so it warns rather than failing
+    /// the load (issue #562).
+    ///
+    /// Compared after [`crate::routing::strip_context_window_hint`], the same
+    /// normalization `resolve_chain` applies to a target before matching it, so
+    /// `"m[1m]"` and `"m"` are recognized as the one destination they route to.
+    /// Not case-insensitive: routing matches ids with `==`, so two ids differing
+    /// only in case really are two ids.
+    fn warn_stage_router_identical_targets(&self) {
+        for model in &self.models {
+            let Some(router) = &model.stage_router else {
+                continue;
+            };
+            let [capable, efficient] = router.targets();
+            if crate::routing::strip_context_window_hint(capable)
+                == crate::routing::strip_context_window_hint(efficient)
+            {
+                tracing::warn!(
+                    model_id = %model.id,
+                    capable_target = %capable,
+                    efficient_target = %efficient,
+                    "stage_router capable_target and efficient_target resolve to the same model; the router has no tier to choose between"
+                );
+            }
+        }
+    }
+
+    /// Warns once at load for every `[[routes]]` entry a `[models.stage_router]`
+    /// id shadows.
+    ///
+    /// `resolve_chain` matches `[[models]]` before either table and returns from
+    /// the router arm, so a route naming a router-backed id is never consulted.
+    /// Mutual exclusivity with `upstream_model` is what makes this reachable: a
+    /// router entry has no map, and a map-less `[[models]]` entry is exactly the
+    /// shape that *does* fall through to `[[routes]]` — so an operator
+    /// converting a routed alias into a router leaves a route behind that used
+    /// to do something and now does nothing.
+    ///
+    /// A warning rather than a `ConfigError`, for the reason issue #562 settled
+    /// for the sibling cross-field rules: the shadowed route is inert, not
+    /// wrong, and rejecting it would fail a config whose only fault is a leftover
+    /// line.
+    ///
+    /// `[[route_prefixes]]` is deliberately **not** checked. A prefix entry is
+    /// not dead just because one router id happens to start with it: it still
+    /// serves every other id that matches, and which ids those are is not
+    /// knowable at load — they arrive from `[[models]]`, from discovery, and
+    /// from whatever a client asks for. Only the exact-match entry has a single
+    /// purpose that the router takes away.
+    fn warn_stage_router_shadows_exact_route(&self) {
+        for model in &self.models {
+            if model.stage_router.is_none() {
+                continue;
+            }
+            for route in &self.routes {
+                if route.model == model.id {
+                    tracing::warn!(
+                        model_id = %model.id,
+                        provider = %route.provider,
+                        "a [[routes]] entry names a stage_router id; the router decides this id's destination, so the route is never consulted"
+                    );
+                }
+            }
+        }
     }
 
     /// Resolve `[server.auth]` into the runtime inbound-auth state, reading the
@@ -4067,11 +4521,12 @@ mod tests {
     use super::{
         config_file_candidates, default_auth_header, host_is_chatgpt, host_is_kimi,
         identity_collisions, AccountConfig, AdminConfig, AdminKey, AdminOidcConfig, AuthMode,
-        CodexEndpointConfig, Config, ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig,
-        GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
-        GatewayTelemetryDestination, InboundAuthConfig, ModelConfig, OauthUsageConfig,
-        OidcProviderConfig, PoolConfig, ProviderConfig, ProviderKind, ResponsesFlavor, RetryConfig,
-        Secret, SpendConfig, StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
+        CodexEndpointConfig, CodexRouteConfig, Config, ConfigError, ConfigFormat, GatewayConfig,
+        GatewayOidcConfig, GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig,
+        GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, ModelConfig,
+        OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderConfig, ProviderKind,
+        ResponsesFlavor, RetryConfig, Secret, SpendConfig, StatusConfig, StatusSource,
+        UsageEndpointConfig, CONFIG_ENV_LOCK, MAX_SHUTDOWN_TIMEOUT_SECONDS,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -4079,6 +4534,7 @@ mod tests {
             id: id.to_string(),
             display_name: None,
             upstream_model,
+            stage_router: None,
         }
     }
 
@@ -4273,6 +4729,34 @@ mod tests {
             .validate()
             .expect("the boundary value itself is valid");
         let _ = tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS_LIMIT);
+    }
+
+    #[test]
+    fn shutdown_timeout_is_finite_by_default_and_validated() {
+        assert_eq!(Config::default().server.shutdown_timeout_seconds, 30);
+
+        for seconds in [0, MAX_SHUTDOWN_TIMEOUT_SECONDS + 1] {
+            let mut config = Config::default();
+            config.server.shutdown_timeout_seconds = seconds;
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::InvalidShutdownTimeout {
+                        seconds: rejected,
+                        limit: MAX_SHUTDOWN_TIMEOUT_SECONDS,
+                    }) if rejected == seconds
+                ),
+                "shutdown timeout {seconds} must fail closed"
+            );
+        }
+
+        for seconds in [1, MAX_SHUTDOWN_TIMEOUT_SECONDS] {
+            let mut config = Config::default();
+            config.server.shutdown_timeout_seconds = seconds;
+            config
+                .validate()
+                .unwrap_or_else(|error| panic!("boundary {seconds} rejected: {error}"));
+        }
     }
 
     #[test]
@@ -4933,6 +5417,101 @@ mod tests {
         assert!(!bare.disabled);
     }
 
+    /// `Config::load` round-trips `Serialized::defaults(Self::default())` through
+    /// figment, so a `stage_router` serialized as an explicit null would reach
+    /// the table's own deserializer and fail. This pins the
+    /// `skip_serializing_if` on the field — drop it and this test goes red for
+    /// every config, router or not.
+    #[test]
+    fn stage_router_survives_the_load_round_trip_in_both_formats() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-stage-router-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let toml_path = dir.join("shunt.toml");
+        std::fs::write(
+            &toml_path,
+            r#"
+[[models]]
+id = "claude-auto"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.6
+"#,
+        )
+        .unwrap();
+
+        let yaml_path = dir.join("shunt.yaml");
+        std::fs::write(
+            &yaml_path,
+            "models:\n  - id: claude-auto\n    stage_router:\n      capable_target: claude-opus-4-8\n      efficient_target: claude-sonnet-4-6\n      confidence_threshold: 0.6\n",
+        )
+        .unwrap();
+
+        for path in [&toml_path, &yaml_path] {
+            let config = Config::load(Some(path))
+                .unwrap_or_else(|error| panic!("{} must load: {error}", path.display()));
+            let router = config.models[0]
+                .stage_router
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} must parse a stage_router", path.display()));
+            assert_eq!(router.capable_target, "claude-opus-4-8");
+            assert_eq!(router.efficient_target, "claude-sonnet-4-6");
+            assert_eq!(router.confidence_threshold, 0.6);
+            // Omitted keys take their documented defaults, not zero values.
+            assert_eq!(router.recent_turn_window, 3);
+            assert_eq!(router.min_dwell_turns, 3);
+            assert_eq!(
+                router.deescalate_threshold(),
+                super::DEFAULT_DEESCALATE_THRESHOLD
+            );
+            assert_eq!(router.picker, super::StageRouterPicker::EfficientFirst);
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_model_without_a_stage_router_omits_the_key_entirely() {
+        // The round-trip test above populates the router in both fixtures, so
+        // it proves parsing and defaults but never the *absent* case — which is
+        // the one `skip_serializing_if` exists for. `Config::load` round-trips
+        // `Serialized::defaults(Self::default())` through figment, so a `None`
+        // emitted as an explicit null would come back as a present-but-null
+        // table and fail the router's own deserializer.
+        //
+        // Non-vacuity: drop `skip_serializing_if` from `ModelConfig` and both
+        // assertions below go red.
+        let model = ModelConfig {
+            id: "claude-opus-4-8".to_string(),
+            display_name: None,
+            upstream_model: None,
+            stage_router: None,
+        };
+
+        let rendered = toml::to_string(&model).expect("a router-less model serializes to TOML");
+        assert!(
+            !rendered.contains("stage_router"),
+            "stage_router must be omitted from TOML, got:\n{rendered}"
+        );
+
+        let json = serde_json::to_value(&model).expect("a router-less model serializes to JSON");
+        assert!(
+            json.get("stage_router").is_none(),
+            "stage_router must be omitted from JSON, got: {json}"
+        );
+    }
+
     #[test]
     fn reprobe_floor_warning_is_load_only_and_disabled_values_are_silent() {
         let _guard = CONFIG_ENV_LOCK
@@ -5308,6 +5887,7 @@ mod tests {
         let mut config = Config::default();
         config.server.codex_endpoint = Some(CodexEndpointConfig {
             provider: "codex".to_string(),
+            ..Default::default()
         });
         config.validate().unwrap();
     }
@@ -5317,6 +5897,7 @@ mod tests {
         let mut config = Config::default();
         config.server.codex_endpoint = Some(CodexEndpointConfig {
             provider: "nope".to_string(),
+            ..Default::default()
         });
         assert!(matches!(
             config.validate().unwrap_err(),
@@ -5332,11 +5913,232 @@ mod tests {
         let mut config = Config::default();
         config.server.codex_endpoint = Some(CodexEndpointConfig {
             provider: "anthropic".to_string(),
+            ..Default::default()
         });
         assert!(matches!(
             config.validate().unwrap_err(),
             ConfigError::CodexEndpointWrongAuth(provider) if provider == "anthropic"
         ));
+    }
+
+    fn codex_route(model: &str, provider: &str, upstream_model: Option<&str>) -> CodexRouteConfig {
+        CodexRouteConfig {
+            model: model.to_string(),
+            provider: provider.to_string(),
+            upstream_model: upstream_model.map(ToOwned::to_owned),
+        }
+    }
+
+    fn codex_endpoint_with(routes: Vec<CodexRouteConfig>) -> CodexEndpointConfig {
+        CodexEndpointConfig {
+            provider: "codex".to_string(),
+            routes,
+        }
+    }
+
+    #[test]
+    fn codex_endpoint_accepts_an_api_key_responses_route() {
+        // The built-in `openai` preset is `kind = "responses"`, `auth = "api_key"`
+        // — the shape a GLM/DeepSeek/OpenRouter route takes.
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "glm-5.3",
+            "openai",
+            Some("gpt-5.6-sol"),
+        )]));
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn codex_endpoint_accepts_a_route_to_a_second_chatgpt_oauth_provider() {
+        let mut config = Config::default();
+        let second = config.providers.get("codex").unwrap().clone();
+        config.providers.insert("codex-work".to_string(), second);
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "work",
+            "codex-work",
+            None,
+        )]));
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_a_route_to_an_unknown_provider() {
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "glm-5.3", "nope", None,
+        )]));
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::UnknownCodexRouteProvider { model, provider }
+                if model == "glm-5.3" && provider == "nope"
+        ));
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_a_route_to_a_non_responses_provider() {
+        // The endpoint relays raw Responses bytes; an Anthropic-kind provider
+        // cannot serve them.
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "glm-5.3",
+            "anthropic",
+            None,
+        )]));
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::CodexRouteWrongKind { model, provider }
+                if model == "glm-5.3" && provider == "anthropic"
+        ));
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_a_route_to_a_credential_free_provider() {
+        // The client's own Authorization is always stripped, so neither
+        // `passthrough` (forward the caller's) nor `none` (send nothing) leaves
+        // the routed request with a credential.
+        for (auth, name) in [
+            (AuthMode::Passthrough, "passthrough"),
+            (AuthMode::None, "none"),
+        ] {
+            let mut config = Config::default();
+            config.providers.insert(
+                "relay".to_string(),
+                ProviderConfig::responses("https://relay.example/v1", auth, None),
+            );
+            config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+                "glm-5.3", "relay", None,
+            )]));
+            let error = config.validate().unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    ConfigError::CodexRouteNoCredential { model, provider, auth }
+                        if model == "glm-5.3" && provider == "relay" && *auth == name
+                ),
+                "expected a credential-free rejection naming `{name}`, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_duplicate_routes_for_one_model() {
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![
+            codex_route("glm-5.3", "openai", None),
+            codex_route("glm-5.3", "codex", None),
+        ]));
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateCodexRoute { model } if model == "glm-5.3"
+        ));
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_blank_route_fields() {
+        for (route, field) in [
+            (codex_route("   ", "openai", None), "model"),
+            (codex_route("glm-5.3", "", None), "provider"),
+            (
+                codex_route("glm-5.3", "openai", Some(" ")),
+                "upstream_model",
+            ),
+        ] {
+            let mut config = Config::default();
+            config.server.codex_endpoint = Some(codex_endpoint_with(vec![route]));
+            let error = config.validate().unwrap_err();
+            assert!(
+                matches!(&error, ConfigError::EmptyCodexRouteField { field: got, .. } if *got == field),
+                "expected an empty `{field}` rejection, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_route_lookup_is_an_exact_match() {
+        let endpoint = codex_endpoint_with(vec![codex_route("glm-5.3", "openai", None)]);
+        assert_eq!(endpoint.route_for("glm-5.3").unwrap().provider, "openai");
+        // No prefix matching and no `[1m]` stripping — the Codex CLI never
+        // appends that hint, so a looser match would only over-capture.
+        assert!(endpoint.route_for("glm-5.3[1m]").is_none());
+        assert!(endpoint.route_for("glm-5").is_none());
+        assert!(endpoint.route_for("glm-5.3-air").is_none());
+    }
+
+    #[test]
+    fn codex_route_lookup_is_case_sensitive() {
+        // Vendors ship mixed-case slugs (MiniMax's `MiniMax-M3`), so the match
+        // is byte-exact: a lowercased request is a different model id.
+        let endpoint = codex_endpoint_with(vec![codex_route("MiniMax-M3", "minimax", None)]);
+        assert!(endpoint.route_for("minimax-m3").is_none());
+        assert!(endpoint.route_for("MiniMax-M3").is_some());
+    }
+
+    #[test]
+    fn codex_route_accepts_a_slash_qualified_model_id() {
+        // Vercel AI Gateway publishes provider-qualified slugs
+        // (`openai/gpt-5.6-sol`); the id is opaque, with no charset restriction.
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "openai/gpt-5.6-sol",
+            "openai",
+            Some("gpt-5.6-sol"),
+        )]));
+        let endpoint = config.server.codex_endpoint.clone().unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            endpoint
+                .route_for("openai/gpt-5.6-sol")
+                .unwrap()
+                .upstream_model(),
+            "gpt-5.6-sol"
+        );
+    }
+
+    #[test]
+    fn codex_route_upstream_model_defaults_to_the_public_model() {
+        assert_eq!(
+            codex_route("glm-5.3", "openai", None).upstream_model(),
+            "glm-5.3"
+        );
+        assert_eq!(
+            codex_route("glm-5.3", "openai", Some("glm-5.3-turbo")).upstream_model(),
+            "glm-5.3-turbo"
+        );
+    }
+
+    #[test]
+    fn parses_codex_endpoint_routes_from_toml() {
+        let config: Config =
+            figment::Figment::from(figment::providers::Serialized::defaults(Config::default()))
+                .merge(figment::providers::Toml::string(
+                    r#"
+[server.codex_endpoint]
+provider = "codex"
+
+[[server.codex_endpoint.routes]]
+model = "glm-5.3"
+provider = "glm"
+upstream_model = "glm-5.3"
+
+[[server.codex_endpoint.routes]]
+model = "deepseek-v4"
+provider = "deepseek"
+"#,
+                ))
+                .extract()
+                .expect("routes table should parse");
+        let endpoint = config
+            .server
+            .codex_endpoint
+            .expect("endpoint is configured");
+        assert_eq!(endpoint.provider, "codex");
+        assert_eq!(endpoint.routes.len(), 2);
+        assert_eq!(endpoint.routes[0].provider, "glm");
+        assert_eq!(endpoint.routes[0].upstream_model(), "glm-5.3");
+        assert_eq!(endpoint.routes[1].model, "deepseek-v4");
+        // Absent `upstream_model` falls back to the public model id.
+        assert_eq!(endpoint.routes[1].upstream_model(), "deepseek-v4");
     }
 
     #[test]
@@ -5776,6 +6578,20 @@ mod tests {
             Err(ConfigError::InvalidGatewayOidc { .. })
         ));
         oidc.provider.authorization_endpoint = Some("http://127.0.0.1:8787/authorize".into());
+        assert!(oidc.resolve().is_ok());
+        // Loopback hosts a CSP host-source cannot name are refused at
+        // configuration time, so the browser never sees the blocked redirect.
+        for blocked in [
+            "http://[::1]:8787/authorize",
+            "http://127.0.0.2:8787/authorize",
+        ] {
+            oidc.provider.authorization_endpoint = Some(blocked.into());
+            assert!(
+                matches!(oidc.resolve(), Err(ConfigError::InvalidGatewayOidc { .. })),
+                "{blocked}"
+            );
+        }
+        oidc.provider.authorization_endpoint = Some("http://localhost:8787/authorize".into());
         assert!(oidc.resolve().is_ok());
         std::env::remove_var(secret_env);
     }
@@ -6553,6 +7369,641 @@ id = "claude-sonnet-5"
         ));
     }
 
+    /// A `[[models]]` entry carrying a stage router, with every optional key at
+    /// its default.
+    fn router_model(id: &str, capable: &str, efficient: &str) -> ModelConfig {
+        ModelConfig {
+            id: id.to_string(),
+            display_name: None,
+            upstream_model: None,
+            stage_router: Some(super::StageRouterConfig {
+                capable_target: capable.to_string(),
+                efficient_target: efficient.to_string(),
+                picker: super::StageRouterPicker::EfficientFirst,
+                confidence_threshold: super::DEFAULT_CONFIDENCE_THRESHOLD,
+                recent_turn_window: 3,
+                min_dwell_turns: 3,
+                deescalate_threshold: None,
+                session_ttl_seconds: 3600,
+            }),
+        }
+    }
+
+    /// The positive twin for every rejection below: without it, a `validate`
+    /// that rejected *everything* would still pass the negative tests.
+    #[test]
+    fn stage_router_accepts_a_well_formed_table() {
+        let config = Config {
+            models: vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("codex", "gpt-5.1")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn stage_router_rejects_a_target_that_is_itself_a_router() {
+        for (capable, efficient) in [
+            // A router targeting another router.
+            ("claude-nested", "claude-sonnet-4-6"),
+            // The degenerate case of the same rule: a router targeting itself.
+            ("claude-auto", "claude-sonnet-4-6"),
+            // `resolve_model_chain` strips a trailing context-window hint before
+            // it matches a `[[models]]` id, so a hinted target resolves to the
+            // router it names. Compared as written these look distinct from the
+            // router ids, which is how they used to satisfy the rule on paper.
+            ("claude-nested[1m]", "claude-sonnet-4-6"),
+            ("claude-auto[1m]", "claude-sonnet-4-6"),
+            ("claude-auto[1M]", "claude-sonnet-4-6"),
+        ] {
+            let config = Config {
+                models: vec![
+                    router_model("claude-auto", capable, efficient),
+                    router_model("claude-nested", "claude-opus-4-8", "claude-sonnet-4-6"),
+                ],
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::StageRouterRecursion { ref target, .. } if target == capable
+                ),
+                "expected recursion rejection for capable_target {capable}"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_router_accepts_a_context_window_hint_on_a_plain_target() {
+        // The mirror of the test above: stripping the hint before the
+        // comparison must not turn a legitimate `"<plain model>[1m]"` target
+        // into a false recursion rejection, nor warn that it resolves to
+        // nothing.
+        let config = Config {
+            models: vec![
+                router_model("claude-auto", "claude-opus-4-8[1m]", "claude-sonnet-4-6"),
+                model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("codex", "gpt-5.1")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn stage_router_accepts_a_router_id_carrying_a_bracketed_substring() {
+        // `[1m]` mid-string is not a context-window hint — routing strips only a
+        // trailing one, so such an id routes by its literal name and must not be
+        // rejected. Regression for a `contains`-based check.
+        let config = Config {
+            models: vec![
+                router_model("claude[1m]auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("codex", "gpt-5.1")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn stage_router_rejects_a_router_id_ending_in_a_context_window_hint() {
+        let config = Config {
+            models: vec![router_model(
+                "claude-auto[1m]",
+                "claude-opus-4-8",
+                "claude-sonnet-4-6",
+            )],
+            ..Config::default()
+        };
+
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::StageRouterContextWindowHint { ref model } if model == "claude-auto[1m]"
+        ));
+        // The rendered text, not just the variant: this case reuses the wording
+        // of the `upstream_model` hint error closely enough that a wrong variant
+        // would still match on `model` alone. An entry reaching this check has a
+        // stage_router table and provably no upstream_model map — mutual
+        // exclusivity is rejected earlier — so a message claiming otherwise
+        // sends the operator looking for a key they never wrote.
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("has a stage_router table"),
+            "message must name the stage_router table, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("upstream_model"),
+            "message must not claim an upstream_model map, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn stage_router_rejects_an_entry_that_also_has_an_upstream_map() {
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        model.upstream_model = Some(model_upstream("codex", "gpt-5.2"));
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::StageRouterWithUpstreamMap { model } if model == "claude-auto"
+        ));
+    }
+
+    #[test]
+    fn stage_router_rejects_thresholds_outside_the_unit_interval() {
+        // NaN is in the table deliberately: it compares false against every
+        // bound, so a naive `value < 0.0 || value > 1.0` check would accept it.
+        for value in [0.0, -0.1, 1.1, f64::NAN] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            model.stage_router.as_mut().unwrap().confidence_threshold = value;
+            let config = Config {
+                models: vec![model],
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::InvalidStageRouterThreshold { key, .. }
+                        if key == "confidence_threshold"
+                ),
+                "expected confidence_threshold {value} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_router_rejects_an_out_of_range_deescalate_threshold() {
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        model.stage_router.as_mut().unwrap().deescalate_threshold = Some(1.5);
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidStageRouterThreshold { key, .. }
+                if key == "deescalate_threshold"
+        ));
+    }
+
+    #[test]
+    fn stage_router_rejects_a_zero_turn_window() {
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        model.stage_router.as_mut().unwrap().recent_turn_window = 0;
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidStageRouterWindow { model } if model == "claude-auto"
+        ));
+    }
+
+    #[test]
+    fn stage_router_rejects_a_blank_target() {
+        for (key, capable, efficient) in [
+            ("capable_target", "   ", "claude-sonnet-4-6"),
+            ("efficient_target", "claude-opus-4-8", ""),
+        ] {
+            let config = Config {
+                models: vec![router_model("claude-auto", capable, efficient)],
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::EmptyStageRouterTarget { key: found, .. } if found == key
+                ),
+                "expected {key} to be rejected when blank"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_router_rejects_a_duplicate_router_id() {
+        // Two map-less entries may share an id when both are discovery
+        // metadata — `duplicate_map_less_model_ids_remain_valid` pins that, and
+        // it is harmless because neither entry changes resolution. A
+        // `stage_router` entry is not metadata: it names a routing policy, so a
+        // second entry for the same id leaves two policies for one public model
+        // id, chosen by declaration order.
+        for models in [
+            vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                router_model("claude-auto", "claude-opus-4-7", "claude-haiku-4-5"),
+            ],
+            // And when only one side carries the table, in either order.
+            vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                model_config("claude-auto", None),
+            ],
+            vec![
+                model_config("claude-auto", None),
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+            ],
+        ] {
+            let config = Config {
+                models,
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::DuplicateModelId { model } if model == "claude-auto"
+                ),
+                "a duplicate id carrying a stage_router must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_router_warns_for_a_target_only_advertised_for_discovery() {
+        // A map-less `[[models]]` entry advertises an id; it does not route it.
+        // `resolve_model_chain` returns from a `[[models]]` match only when
+        // `upstream_model` is present (`routing.rs`), and otherwise falls
+        // through to `[[routes]]`, `[[route_prefixes]]`, and finally
+        // `server.default_provider` — so a target naming such an entry lands on
+        // the default backend exactly like an unmatched id, and must warn.
+        let config = Config {
+            models: vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                // Advertised for discovery only: no map, no route.
+                model_config("claude-opus-4-8", None),
+                // Mapped, so this one really does route on its own.
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("anthropic", "claude-sonnet-4-6")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        let (_, logs) = capture_logs(|| config.warn_stage_router_targets_unresolvable());
+        assert_eq!(
+            logs.matches("stage_router target matches no").count(),
+            1,
+            "only the discovery-only target warns: {logs}"
+        );
+        assert!(
+            logs.contains("target=claude-opus-4-8"),
+            "the warning must name the discovery-only target, not the mapped one: {logs}"
+        );
+    }
+
+    #[test]
+    fn stage_router_unresolvable_target_warning_is_load_only() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-stage-router-warn-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // `claude-sonnet-4-6` matches no [[models]], [[routes]], or
+        // [[route_prefixes]] entry here, so it resolves through
+        // `server.default_provider` and earns the warning.
+        let unresolvable = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.stage_router]\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-sonnet-4-6\"\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n";
+        let path = dir.join("unresolvable.toml");
+        std::fs::write(&path, unresolvable).unwrap();
+
+        let (loaded, load_logs) = capture_logs(|| Config::load(Some(&path)));
+        let config = loaded.expect("an unresolvable stage_router target still loads");
+        assert_eq!(
+            load_logs.matches("stage_router target matches no").count(),
+            1,
+            "the successful load warns once for the one unresolvable target: {load_logs}"
+        );
+
+        // The point of the split: `validate` runs again on every hot reload
+        // (`reload.rs`) and on `shunt check`, and must stay silent.
+        let (_, validate_logs) = capture_logs(|| {
+            config
+                .clone()
+                .validate()
+                .expect("first validation succeeds");
+            config.validate().expect("second validation succeeds");
+        });
+        assert_eq!(
+            validate_logs
+                .matches("stage_router target matches no")
+                .count(),
+            0,
+            "repeated validation must not repeat the load warning: {validate_logs}"
+        );
+
+        // Positive twin: with both targets routable the load is silent, so the
+        // assertion above cannot be satisfied by a warning that never fires.
+        let resolvable = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.stage_router]\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-sonnet-4-6\"\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n\n\
+             [[routes]]\nmodel = \"claude-sonnet-4-6\"\nprovider = \"anthropic\"\n";
+        let ok_path = dir.join("resolvable.toml");
+        std::fs::write(&ok_path, resolvable).unwrap();
+        let (ok_loaded, ok_logs) = capture_logs(|| Config::load(Some(&ok_path)));
+        ok_loaded.expect("a fully routable stage_router loads");
+        assert_eq!(
+            ok_logs.matches("stage_router target matches no").count(),
+            0,
+            "both targets route explicitly, so the load must be silent: {ok_logs}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stage_router_warns_when_deescalation_is_the_easier_direction() {
+        // Written pair: the operator set both keys and inverted them.
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        let router = model.stage_router.as_mut().unwrap();
+        router.confidence_threshold = 0.9;
+        router.deescalate_threshold = Some(0.1);
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_stage_router_threshold_inversion());
+        assert_eq!(
+            logs.matches("deescalate_threshold is below confidence_threshold")
+                .count(),
+            1,
+            "an inverted pair warns once: {logs}"
+        );
+
+        // Effective value, not the written one: the key is absent, so the 0.75
+        // default applies and a `confidence_threshold` above it inverts the
+        // design just as much.
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        let router = model.stage_router.as_mut().unwrap();
+        router.confidence_threshold = 0.9;
+        router.deescalate_threshold = None;
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_stage_router_threshold_inversion());
+        assert_eq!(
+            logs.matches("deescalate_threshold is below confidence_threshold")
+                .count(),
+            1,
+            "the default de-escalation gate below a raised escalation gate warns: {logs}"
+        );
+
+        // Positive twins. Equal thresholds are symmetric, not inverted, and the
+        // shipped defaults are the design this warning defends — neither may
+        // fire, or the assertions above would pass on a warning that is always
+        // emitted.
+        for (confidence, deescalate) in [(0.6, Some(0.6)), (0.5, None), (0.5, Some(0.75))] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            let router = model.stage_router.as_mut().unwrap();
+            router.confidence_threshold = confidence;
+            router.deescalate_threshold = deescalate;
+            let config = Config {
+                models: vec![model],
+                ..Config::default()
+            };
+            let (_, logs) = capture_logs(|| config.warn_stage_router_threshold_inversion());
+            assert_eq!(
+                logs.matches("deescalate_threshold is below confidence_threshold")
+                    .count(),
+                0,
+                "{confidence}/{deescalate:?} does not invert the design: {logs}"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_router_warns_when_both_targets_resolve_to_one_model() {
+        // Identical as written, and identical only after the context-window
+        // hint is stripped — `resolve_chain` strips it before matching, so both
+        // pairs name the single destination every decision would land on.
+        for (capable, efficient) in [
+            ("claude-opus-4-8", "claude-opus-4-8"),
+            ("claude-opus-4-8[1m]", "claude-opus-4-8"),
+        ] {
+            let config = Config {
+                models: vec![router_model("claude-auto", capable, efficient)],
+                ..Config::default()
+            };
+            let (_, logs) = capture_logs(|| config.warn_stage_router_identical_targets());
+            assert_eq!(
+                logs.matches("resolve to the same model").count(),
+                1,
+                "{capable} and {efficient} route to one destination: {logs}"
+            );
+        }
+
+        // Positive twins: two genuinely different ids, and — the sub-point
+        // declined on #562 — two ids differing only in case. Routing matches
+        // with `==`, so those really are two ids and warning would be wrong.
+        for (capable, efficient) in [
+            ("claude-opus-4-8", "claude-sonnet-4-6"),
+            ("claude-opus-4-8", "CLAUDE-OPUS-4-8"),
+        ] {
+            let config = Config {
+                models: vec![router_model("claude-auto", capable, efficient)],
+                ..Config::default()
+            };
+            let (_, logs) = capture_logs(|| config.warn_stage_router_identical_targets());
+            assert_eq!(
+                logs.matches("resolve to the same model").count(),
+                0,
+                "{capable} and {efficient} are distinct ids: {logs}"
+            );
+        }
+    }
+
+    fn route_config(model: &str) -> super::RouteConfig {
+        super::RouteConfig {
+            model: model.to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        }
+    }
+
+    #[test]
+    fn stage_router_warns_for_a_route_its_id_shadows() {
+        // `resolve_chain` matches `[[models]]` first and returns from the router
+        // arm, so the exact route is inert — and silently so before this
+        // diagnostic. The prefix entry alongside it is *not*: it still serves
+        // every other id starting with `claude-`, so it must stay silent.
+        let config = Config {
+            models: vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                model_config(
+                    "claude-opus-4-8",
+                    Some(model_upstream("anthropic", "claude-opus-4-8")),
+                ),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("anthropic", "claude-sonnet-4-6")),
+                ),
+            ],
+            routes: vec![route_config("claude-auto")],
+            route_prefixes: vec![super::RoutePrefixConfig {
+                prefix: "claude-".to_string(),
+                provider: "anthropic".to_string(),
+            }],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_stage_router_shadows_exact_route());
+        assert_eq!(
+            logs.matches("the route is never consulted").count(),
+            1,
+            "the exact route naming the router id warns: {logs}"
+        );
+        assert_eq!(
+            logs.matches("route_prefixes").count(),
+            0,
+            "a prefix entry the router id happens to match is still live: {logs}"
+        );
+
+        // Positive twin: the same tables, with the routes naming the router's
+        // *targets* instead. Those really are consulted — the router resolves
+        // each target through the ordinary ladder — so neither may warn.
+        let config = Config {
+            models: vec![router_model(
+                "claude-auto",
+                "claude-opus-4-8",
+                "claude-sonnet-4-6",
+            )],
+            routes: vec![
+                route_config("claude-opus-4-8"),
+                route_config("claude-sonnet-4-6"),
+            ],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_stage_router_shadows_exact_route());
+        assert_eq!(
+            logs.matches("never consulted").count(),
+            0,
+            "a route naming a target, not the router id, is live: {logs}"
+        );
+    }
+
+    #[test]
+    fn stage_router_cross_field_warnings_are_load_only() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-stage-router-cross-field-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Both rules tripped at once: one target for both tiers, and a
+        // de-escalation gate under the escalation gate. Both targets are routed
+        // explicitly so the unresolvable-target warning stays out of the counts.
+        let degenerate = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.stage_router]\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-opus-4-8\"\n\
+             confidence_threshold = 0.9\ndeescalate_threshold = 0.1\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n";
+        let path = dir.join("degenerate.toml");
+        std::fs::write(&path, degenerate).unwrap();
+
+        let (loaded, load_logs) = capture_logs(|| Config::load(Some(&path)));
+        let config = loaded.expect("a degenerate stage_router still loads");
+        assert_eq!(
+            load_logs
+                .matches("deescalate_threshold is below confidence_threshold")
+                .count(),
+            1,
+            "the successful load warns once about the inverted thresholds: {load_logs}"
+        );
+        assert_eq!(
+            load_logs.matches("resolve to the same model").count(),
+            1,
+            "the successful load warns once about the single destination: {load_logs}"
+        );
+
+        // The point of the split: `validate` runs again on every hot reload
+        // (`reload.rs`) and on `shunt check`, and must stay silent.
+        let (_, validate_logs) = capture_logs(|| {
+            config
+                .clone()
+                .validate()
+                .expect("first validation succeeds");
+            config.validate().expect("second validation succeeds");
+        });
+        for message in [
+            "deescalate_threshold is below confidence_threshold",
+            "resolve to the same model",
+        ] {
+            assert_eq!(
+                validate_logs.matches(message).count(),
+                0,
+                "repeated validation must not repeat {message:?}: {validate_logs}"
+            );
+        }
+
+        // Positive twin: distinct targets and the default threshold ordering
+        // load silently, so neither assertion above is satisfied by a warning
+        // that never fires.
+        let sane = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.stage_router]\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-sonnet-4-6\"\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n\n\
+             [[routes]]\nmodel = \"claude-sonnet-4-6\"\nprovider = \"anthropic\"\n";
+        let ok_path = dir.join("sane.toml");
+        std::fs::write(&ok_path, sane).unwrap();
+        let (ok_loaded, ok_logs) = capture_logs(|| Config::load(Some(&ok_path)));
+        ok_loaded.expect("a well-formed stage_router loads");
+        for message in [
+            "deescalate_threshold is below confidence_threshold",
+            "resolve to the same model",
+        ] {
+            assert_eq!(
+                ok_logs.matches(message).count(),
+                0,
+                "a well-formed router must not emit {message:?}: {ok_logs}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn model_upstream_map_rejects_context_window_hint_in_id() {
         for id in ["claude-opus-4-8[1m]", "claude-opus-4-8[1M]"] {
@@ -6645,6 +8096,7 @@ id = "claude-sonnet-5"
                 id: "claude-opus-via-codex".to_string(),
                 display_name: None,
                 upstream_model: None,
+                stage_router: None,
             }],
             ..Config::default()
         };
@@ -7413,6 +8865,20 @@ id = "claude-sonnet-5"
         assert!(config.native_tool_search("openai", "gpt-5.4"));
         // A trailing non-digit still counts as the documented minor.
         assert!(config.native_tool_search("openai", "gpt-5.4-turbo"));
+        // Codex catalog slug `gpt-6-astra` (`supports_search_tool: true`).
+        assert!(config.native_tool_search("codex", "gpt-6-astra"));
+        assert!(config.native_tool_search("openai", "gpt-6-astra"));
+        for model in [
+            "openai/gpt-6-astra",
+            "gpt-6-astra-preview",
+            "gpt-6-astra[1m]",
+            "not-gpt-6-astra",
+        ] {
+            assert!(!config.native_tool_search("codex", model), "{model}");
+        }
+        let hinted = crate::routing::resolve_model(&config, "gpt-6-astra[1m]");
+        assert_eq!(hinted.upstream_model, "gpt-6-astra");
+        assert!(config.native_tool_search("codex", &hinted.upstream_model));
 
         // Boundary guard: a multi-digit minor must NOT borrow 5.4's flag — those
         // are undocumented families whose backend may reject the native wire.
@@ -7421,12 +8887,18 @@ id = "claude-sonnet-5"
 
         // Unsupported model keeps the #43 shim (gpt-5.2 and below).
         assert!(!config.native_tool_search("codex", "gpt-5.2-codex"));
+        // Other gpt-6 slugs and close names must not borrow Astra's flag.
+        assert!(!config.native_tool_search("codex", "gpt-6-pro"));
+        assert!(!config.native_tool_search("codex", "gpt-6"));
+        assert!(!config.native_tool_search("codex", "gpt-6-astral"));
         // Unsupported flavor keeps the shim (xAI), even though `tool_search`
         // auto-resolves to on for a known host — the flavor gate blocks it
         // regardless.
         assert!(!config.native_tool_search("xai", "gpt-5.6-sol"));
+        assert!(!config.native_tool_search("xai", "gpt-6-astra"));
         // Unknown provider is never native.
         assert!(!config.native_tool_search("nope", "gpt-5.6-sol"));
+        assert!(!config.native_tool_search("nope", "gpt-6-astra"));
     }
 
     #[test]
@@ -7438,6 +8910,7 @@ id = "claude-sonnet-5"
 
         assert!(!config.native_tool_search("codex", "gpt-5.6-sol"));
         assert!(!config.native_tool_search("openai", "gpt-5.4"));
+        assert!(!config.native_tool_search("codex", "gpt-6-astra"));
     }
 
     #[test]

@@ -17,8 +17,13 @@ discovery, attribution/header pass-through) and does **selective, per-`model`-id
 diversion — keep the main session on Claude, divert only the models you name onto
 another provider (ChatGPT/Codex, OpenAI, Cursor, xAI, Grok). It translates Anthropic Messages ⇄
 the OpenAI Responses API for mapped models, and passes everything else through to
-Anthropic unchanged. Routing is purely by the request's `model` id — no
-prompt-shape fingerprinting (`README.md:104-131`).
+Anthropic unchanged. Routing is by the request's `model` id — no prompt-shape
+fingerprinting (`README.md:104-131`). The one exception is opt-in and reads no
+prompt text: a `[models.stage_router]` entry picks between two tiers from
+structured tool-result metadata (`tool_use.name`, `tool_result.is_error`), which
+is a stable wire contract rather than a prompt the next Claude Code release
+rewrites. See [ADR-0004](../.please/docs/decisions/0004-content-aware-stage-router.md)
+and [`stage-router.md`](stage-router.md).
 
 That focus is the axis every comparison below turns on. shunt optimizes for
 **translation fidelity and Claude-Code-native behavior**, with Anthropic and
@@ -77,7 +82,7 @@ handling exists (zero matches for `defer_loading` / `tool_reference` / `tool_sea
 silently dropped — no 400, but no context saved; a `tool_reference` block in a
 ToolSearch result renders as `[unsupported content block omitted: tool_reference]`
 (`request.rs:836-842`) rather than the full schema shunt renders for a known
-reference (`src/model/responses_request.rs:623-643`) — shunt's `"Loaded tool: X"`
+reference (`src/model/responses_request.rs:637-661`) — shunt's `"Loaded tool: X"`
 is only the fallback for an unrecognized reference. Hence ○ (vs shunt's ◐):
 force-enabling `ENABLE_TOOL_SEARCH` against raine/ccp degrades the discovery-loop
 result to a placeholder. By default Claude Code's own gate keeps tool
@@ -144,7 +149,7 @@ short of CLIProxyAPI's full management API + quota/usage manager.
   *synthesizes* continuation: it stores the transcript on the pooled connection,
   diffs the next request against it with type-aware normalization, and injects
   `previous_response_id` + input-delta — real upload trimming on the Claude→Codex
-  path (`src/adapters/responses/codex_continuation.rs:79-114`). This is **not** unique:
+  path (`src/adapters/responses/codex_continuation.rs`). This is **not** unique:
   **raine/claude-code-proxy does the same class of thing** (opt-in
   `CCP_CODEX_PREVIOUS_RESPONSE_ID`, session-keyed, append-only). The two Rust
   subscription proxies share it — the real contrast is with **passthrough** proxies
@@ -158,7 +163,7 @@ short of CLIProxyAPI's full management API + quota/usage manager.
   axes: (1) its continuation normalization parses `function_call.arguments` and
   round-trips reasoning `encrypted_content`/signature, so continuation keeps firing
   across tool turns where a shape-only comparison would drop it
-  (`src/adapters/responses/codex_continuation.rs:11-48`); and (2) it **forwards Codex reasoning
+  (`src/adapters/responses/codex_continuation.rs`); and (2) it **forwards Codex reasoning
   to Claude Code as `thinking`**, whereas raine/claude-code-proxy **drops Codex
   reasoning blocks entirely** (its README lists this as a limitation). Any unforeseen
   shape still falls back to full input — never wrong context, only a missed
@@ -234,9 +239,9 @@ toward being a fleet gateway and warrant a conscious decision first.
   xAI/Grok routes, gpt-5.2-and-below models, and custom OpenAI-compatible
   endpoints that haven't opted in all still fall back to the shim, which
   withholds an unloaded deferred tool from the `tools` array
-  (`src/model/responses_request.rs:791-797`) — so it does reclaim context for
+  (`src/model/responses_request.rs:819-830`) — so it does reclaim context for
   tools never revealed — but once Claude Code reveals a tool, the shim both
-  renders its full schema as `tool_reference` text (`:623-643`) *and*
+  renders its full schema as `tool_reference` text (`:637-661`) *and*
   re-adds the tool to `tools`, so each reveal re-sends the schema and
   invalidates the cached prompt prefix from that point on. The Responses API
   only lets the model call a tool it can see in `tools`, so this double-send
@@ -305,6 +310,22 @@ toward being a fleet gateway and warrant a conscious decision first.
   cooldown state (`src/accounts.rs:46-63`); extending the same per-account view to
   ChatGPT/Codex subscription accounts (as CLIProxyAPI's ecosystem does) is the part
   still missing. Ties to the observability gap.
+
+- **J. Content-aware tier selection — Implemented, opt-in
+  ([ADR-0004](../.please/docs/decisions/0004-content-aware-stage-router.md)).**
+  A `[models.stage_router]` entry names a capable and an efficient target and
+  picks between them per turn from the recent tool-result history, using
+  [NVIDIA-NeMo/Switchyard][sy-router]'s scorer (`switchyard-libsy`). This is the
+  one place routing consults something other than the `model` id, and the
+  boundary it holds is the one §1 states: structured protocol metadata
+  (`tool_use.name`, `tool_result.is_error`), never prompt text. shunt adds
+  asymmetric session hysteresis Switchyard does not need — escalate at 0.5,
+  de-escalate at 0.75 plus a dwell window — because a tier flip forfeits the
+  per-model prompt-cache prefix and the Codex continuation signature. The LLM
+  classifier and mid-turn escalation were declined; see the ADR and
+  [`stage-router.md`](stage-router.md).
+
+[sy-router]: https://github.com/NVIDIA-NeMo/Switchyard
 
 - **I. Native Gemini backend — Implemented (Path B).** Reuses the Google One AI Pro / Code Assist subscription token (`google_oauth`) from the Gemini CLI credential file. Valid access tokens work directly; shunt-side refresh requires operator-supplied Google OAuth client credentials. Supports models like `gemini-3.1-pro-preview` and `gemini-3-flash-preview`.
 

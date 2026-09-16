@@ -23,6 +23,8 @@ shunt run
 
 启动校验会拒绝未知的 `provider`,或者不使用 `auth = "chatgpt_oauth"` 的提供方 —— 该端点注入的是运营者的 Codex bearer,因此只有 `chatgpt_oauth` 提供方符合条件。每个键与默认值见[配置参考](/zh-cn/reference/configuration/),已注册的路由见 [HTTP 端点](/zh-cn/reference/endpoints/)。
 
+该可选功能也使 Codex CLI 的模型发现可被正确解析。`GET /models` 和 `GET /backend-api/codex/models` 返回有效的回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 路径上,`client_version` 查询字段优先于类 Anthropic 的头部并选择 Codex 形状;没有该字段时,现有 Anthropic 发现响应保持不变。这些请求先通过常规模型发现认证门,且 shunt 不会伪造不完整的 Codex 模型行。
+
 ## 客户端分析数据接收端
 
 Codex CLI 还会向 base URL 提交产品分析数据。shunt 接受该 CLI 可能产生的两条路径:
@@ -80,7 +82,7 @@ wire_api = "responses"
 http_headers = { "x-shunt-token" = "<token>" }
 ```
 
-没有 `[server.auth]` 时,该端点对任何能触达它的人开放 —— 对回环或个人使用可以接受,对共享网关则不行。客户端提供的凭据**仅**用于向 shunt 认证:它(以及 CLI 碰巧发送的任何 `Authorization`)都会被剥除,绝不转发到上游。`[server.admin]` 的凭据头部 —— 默认 `x-shunt-admin-token`,或 `[server.admin] header` 指定的名字 —— 同样会被剥除,因为管理面正是在该槽位上认证,而管理凭据可以开通上游账户。整个 `cookie` 头部也会被剥除:管理面同样在该槽位接受写入级会话 cookie,而 shunt 不保留 cookie jar,上游不会依赖它。`x-api-key` 也会被无条件剥除 —— 即使未配置 `[server.auth]` 也是如此,因为目标提供方在启动时就被校验为仅 `chatgpt_oauth`,所以入站的 `x-api-key` 值永远不可能是该上游的有效凭据;像 Claude Code 的 `apiKeyHelper` 那样在 `Authorization` 和 `x-api-key` 中填入同一个密钥的客户端,也不会因为第二个槽位而泄露该密钥。由于入站客户端是真正的 Codex CLI,该透传会逐字转发它的请求头部(`version`、`originator`、`OpenAI-Beta`、`x-codex-*` 等),并**只**换入所选池账户的 `Authorization` bearer 与 `chatgpt-account-id`。完整的认证演练见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#3-提供-shunt-客户端-token当配置了-serverauth-时)。
+没有 `[server.auth]` 时,该端点对任何能触达它的人开放 —— 对回环或个人使用可以接受,对共享网关则不行。客户端提供的凭据**仅**用于向 shunt 认证:它(以及 CLI 碰巧发送的任何 `Authorization`)都会被剥除,绝不转发到上游。`[server.admin]` 的凭据头部 —— 默认 `x-shunt-admin-token`,或 `[server.admin] header` 指定的名字 —— 同样会被剥除,因为管理面正是在该槽位上认证,而管理凭据可以开通上游账户。整个 `cookie` 头部也会被剥除:管理面同样在该槽位接受会话 cookie,而 shunt 不保留 cookie jar,上游不会依赖它。`x-api-key` 也会被无条件剥除 —— 即使未配置 `[server.auth]` 也是如此,因为目标提供方在启动时就被校验为仅 `chatgpt_oauth`,所以入站的 `x-api-key` 值永远不可能是该上游的有效凭据;像 Claude Code 的 `apiKeyHelper` 那样在 `Authorization` 和 `x-api-key` 中填入同一个密钥的客户端,也不会因为第二个槽位而泄露该密钥。由于入站客户端是真正的 Codex CLI,该透传会逐字转发它的请求头部(`version`、`originator`、`OpenAI-Beta`、`x-codex-*` 等),并**只**换入所选池账户的 `Authorization` bearer 与 `chatgpt-account-id`。完整的认证演练见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#3-提供-shunt-客户端-token当配置了-serverauth-时)。
 
 ## 账户预配
 
@@ -98,17 +100,75 @@ name = "main"
 
 在**没有**配置 `[[providers.codex.accounts]]` **且 shunt 账户存储为空**时,该端点会回退到单个默认的 `~/.codex/auth.json` 凭据 —— 没有池化,也没有故障转移 —— 因此只要设置了 `[server.codex_endpoint]`,一个 Codex 登录就能工作。(处理器会先扫描账户存储,并把发现的任何账户组成池,因此导入到存储中的账户仍然会启用池化。)
 
+## 把模型路由到其他上游
+
+默认情况下，所有请求都会发往 `[server.codex_endpoint]` 中指定的那一个提供方。可选的 `[[server.codex_endpoint.routes]]` 表让 Codex CLI 可以按模型 id 选择**另一个**兼容 Responses 的上游；没有配置路由的模型仍保持固定提供方的行为。
+
+多家厂商都为 Codex CLI 提供了原生 Responses 端点的文档：Z.ai GLM（`https://api.z.ai/api/v1`）、DeepSeek（`https://api.deepseek.com`）、Kimi Code（`https://api.kimi.com/coding/v1`）、MiniMax（`https://api.minimax.io/v1`）、Mimo（`https://api.xiaomimimo.com/v1`）、OpenRouter（`https://openrouter.ai/api/v1`）、Vercel AI Gateway（`https://ai-gateway.vercel.sh/codex/v1`），以及原生 OpenAI。shunt 会在提供方的 `base_url` 后追加 `/responses`，所以直接填写厂商为 Codex 所记载的同一个 base URL 即可。上游必须原生实现 Responses API —— 这里没有 Responses → Chat Completions 的适配层。
+
+```toml
+[providers.glm]
+kind = "responses"
+auth = "api_key"
+api_key_env = "GLM_API_KEY"
+base_url = "https://api.z.ai/api/v1"
+
+[providers.deepseek]
+kind = "responses"
+auth = "api_key"
+api_key_env = "DEEPSEEK_API_KEY"
+base_url = "https://api.deepseek.com"
+
+[server.codex_endpoint]
+provider = "codex"
+
+[[server.codex_endpoint.routes]]
+model = "glm-5.3"
+provider = "glm"
+
+[[server.codex_endpoint.routes]]
+model = "deepseek-v4-flash"
+provider = "deepseek"
+```
+
+`upstream_model` 是可选的，默认等于 `model`；当 CLI 中填写的 id 与厂商实际提供的 id 不同时再设置它。被路由到的提供方必须带有真实凭据 —— 客户端自己的 `Authorization` 总是会被剥离，因此不携带凭据的认证模式（`passthrough` 或 `none`）会在启动时被拒绝。shunt 内置的 `kimi` 预设是 `kind = "anthropic"`，因此指向 Kimi Code 的 Codex 路由需要另建一个 `kind = "responses"` 的提供方 —— 把 Codex 模型路由到 Anthropic 类型的预设会在启动时被拒绝。
+
+在 CLI 一侧，把 Codex 指向 **shunt**，并用 `model` 选择路由：
+
+```toml
+# ~/.codex/config.toml
+model = "glm-5.3"
+model_provider = "shunt"
+model_catalog_json = "~/.codex/models.json"
+
+[model_providers.shunt]
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"
+env_key = "SHUNT_TOKEN"
+```
+
+shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，但不会在模型列表中公布 Codex 路由。CLI 按这些厂商记载的方式，从 `model_catalog_json` 指向的 `~/.codex/models.json` 目录获取模型标识的元数据；真正选中 shunt 路由的只有 `model` 的取值。
+
+路由到**非 ChatGPT** 上游的请求有以下不同：
+
+- **请求头白名单。** 只有 `content-type` 和 `accept` 取自客户端，另加解析出的凭据以及被路由到的上游自身所要求的 identity —— `OpenAI-Beta: responses=experimental`（xAI/Grok 除外），以及 `xai_oauth` 路由所需的 Grok CLI identity 请求头。`authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`x-codex-*`、`x-shunt-*` 都不会到达第三方。
+- **改写请求体的 `model`。** 当 `upstream_model` 与请求的模型不同时，shunt 只改写顶层的 `model`，其余字段原样保留。不是 JSON 对象的请求体会以 `400` 拒绝，而不会被继续转发。
+- **identity 编码。** zstd 请求体会先解码（原生 Responses API 不接受该编码），且不转发 `content-encoding`。
+- **单一凭据，无故障转移。** 被路由到的第三方背后没有账号池，因此 429 或 5xx 会连同 `retry-after` 原样转发，不会触发轮换。
+
+匹配是精确且区分大小写的，并且不限制字符集，所以 `MiniMax-M3`、`openai/gpt-5.6-sol`、`~openai/gpt-latest` 这类厂商标识都会按写法路由。指向另一个 `chatgpt_oauth` 提供方的路由则仍保留完整的账号池透传。路由从实时配置读取，因此在重载时生效。
+
 ## 与 `/v1/messages` 的差异
 
-- **没有转换。**入站的 Responses 请求体会逐字节转发到上游,而上游的响应 —— 无论 SSE 还是 JSON、成功还是错误 —— 都逐字中继回来(状态码与 `content-type` 保留)。完全没有 Anthropic Messages ⇄ Responses 的转换步骤。
-- **压缩的请求体直接透传。**当前的 Codex 版本在与 ChatGPT 后端通信时会用 zstd 压缩请求体,这也包括指向本端点的 `chatgpt_base_url` 形态。这些字节及其 `content-encoding: zstd` 头部会被原样转发;shunt 只是额外在内存中解码一份副本,用来读取请求的 `model` 以供指标、日志和 span 使用。shunt 无法解码的请求体照样能正常中继 —— 只有 `model` 标签会退化为 `unknown`,并附带一条说明原因的警告。
-- **没有基于模型的路由。**每个请求都发往 `[server.codex_endpoint]` 中指定的那一个提供方;请求体的 `model` 字段原样转发,绝不参与选择提供方。
-- **耗尽时逐字中继。**如果所有池化账户都已尝试过,并且至少收到过一个上游响应,shunt 会原样中继最后那个响应,而不是把它重新塑形成 Anthropic 风格的错误 —— 因为 Responses 客户端期待的是它从真实 ChatGPT 后端会得到的原始形态。
-- **网关自身的错误使用 OpenAI 形态。**当失败源自 shunt 自己时 —— 客户端 token 错误或缺失(`401`)、账户池不可用且没有任何上游响应(`502`)、请求体过大,或端点未配置 —— shunt 会以 OpenAI Responses 的错误形态(`{"error":{"message":…,"type":…,"code":null}}`)返回,并保持相同的状态码,这样 Codex CLI 就能走它自己的错误解析路径,而不是 Anthropic 的 `{"type":"error",…}` 信封。被中继的*上游*错误(来自后端的 429/4xx/5xx)仍然逐字透传。
-- **仅 HTTP/SSE。**即使目标提供方设置了 `websocket = true`,这个端点也始终使用 HTTP 传输。
+- **没有转换**。入站的 Responses 请求体会逐字节转发到上游,而上游的响应 —— 无论 SSE 还是 JSON、成功还是错误 —— 都逐字中继回来(状态码与 `content-type` 保留)。完全没有 Anthropic Messages ⇄ Responses 的转换步骤。
+- **压缩的请求体直接透传**。当前的 Codex 版本在与 ChatGPT 后端通信时会用 zstd 压缩请求体,这也包括指向本端点的 `chatgpt_base_url` 形态。这些字节及其 `content-encoding: zstd` 头部会被原样转发;shunt 只是额外在内存中解码一份副本,用来读取请求的 `model` 以供指标、日志和 span 使用。shunt 无法解码的请求体照样能正常中继 —— 只有 `model` 标签会退化为 `unknown`,并附带一条说明原因的警告。
+- **基于模型的路由是可选项**。默认情况下每个请求都发往 `[server.codex_endpoint]` 中指定的那一个提供方,请求体的 `model` 字段原样转发。配置 `[[server.codex_endpoint.routes]]` 后,精确匹配的 `model` 会改为选中该条目的提供方 —— 参见[把模型路由到其他上游](#把模型路由到其他上游)。
+- **耗尽时逐字中继**。如果所有池化账户都已尝试过,并且至少收到过一个上游响应,shunt 会原样中继最后那个响应,而不是把它重新塑形成 Anthropic 风格的错误 —— 因为 Responses 客户端期待的是它从真实 ChatGPT 后端会得到的原始形态。
+- **网关自身的错误使用 OpenAI 形态**。当失败源自 shunt 自己时 —— 客户端 token 错误或缺失(`401`)、账户池不可用且没有任何上游响应(`502`)、请求体过大,或端点未配置 —— shunt 会以 OpenAI Responses 的错误形态(`{"error":{"message":…,"type":…,"code":null}}`)返回,并保持相同的状态码,这样 Codex CLI 就能走它自己的错误解析路径,而不是 Anthropic 的 `{"type":"error",…}` 信封。被中继的*上游*错误(来自后端的 429/4xx/5xx)仍然逐字透传。
+- **仅 HTTP/SSE**。即使目标提供方设置了 `websocket = true`,这个端点也始终使用 HTTP 传输。
 
 ## 安全
 
 - 在回环之外的任何场景都请用 `[server.auth]` 为该端点设置门控 —— 提供方会在每个请求上注入一个真实的 Codex bearer。
 - 客户端自己的凭据不会有任何部分到达 Codex 后端;该透传逐字转发 Codex CLI 自己的请求头部,并只换入所选池账户的 bearer 与 `chatgpt-account-id`(shunt 客户端 token 头部、`[server.admin]` 凭据头部、整个 `cookie` 头部、内部的 `x-shunt-inbound-client` 标签、客户端的 `Authorization`/`chatgpt-account-id`,以及 `x-api-key` 都会被剥除,绝不转发)。
-- 路由集合在启动时一次性确定。在运行时开启或关闭 `[server.codex_endpoint]` 会记录一条需要重启的警告;而 reload 仍可以改变它所指向的提供方。
+- 启动时一次性确定的只有该端点的 **HTTP 路由注册**:在运行时开启或关闭 `[server.codex_endpoint]` 会记录一条警告,说明需要重启才能添加或移除这些路径。该表*所包含*的内容全部支持热重载 —— 目标 `provider` 和整个 `[[server.codex_endpoint.routes]]` 模型表都会在每次请求时从实时配置读取,因此添加、修改或删除路由都会在 reload 时生效。

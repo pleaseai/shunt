@@ -20,6 +20,8 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
+mod common;
+
 /// Asserts a header is absent from the forwarded request.
 struct NoHeader(&'static str);
 
@@ -91,6 +93,7 @@ fn with_discovery_model(mut config: Config) -> Config {
         id: "claude-mapped-model".to_string(),
         display_name: Some("Mapped model".to_string()),
         upstream_model: None,
+        stage_router: None,
     });
     config
 }
@@ -165,8 +168,9 @@ async fn mapped_route_without_token_is_401_and_upstream_is_never_called() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_A", "upstream-key");
-    std::env::set_var("SHUNT_TEST_M4_TOKENS_A", "alice:tok-a");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_A", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_A", "alice:tok-a");
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
@@ -196,8 +200,9 @@ async fn mapped_route_with_wrong_token_is_401() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_B", "upstream-key");
-    std::env::set_var("SHUNT_TEST_M4_TOKENS_B", "alice:tok-a");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_B", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_B", "alice:tok-a");
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
@@ -220,8 +225,9 @@ async fn mapped_route_with_valid_token_forwards_and_strips_the_token_header() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_C", "upstream-key");
-    std::env::set_var("SHUNT_TEST_M4_TOKENS_C", "alice:tok-a,bob:tok-b");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_C", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_C", "alice:tok-a,bob:tok-b");
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -246,8 +252,9 @@ async fn mapped_route_accepts_the_gate_token_via_bearer_and_x_api_key() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_I", "upstream-key");
-    std::env::set_var("SHUNT_TEST_M4_TOKENS_I", "alice:tok-a");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_I", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_I", "alice:tok-a");
     let upstream = MockServer::start().await;
     // Whichever slot carried the gate token, the upstream request must show
     // only the injected provider credential — never the gate token.
@@ -287,8 +294,9 @@ async fn mapped_route_with_wrong_bearer_or_x_api_key_is_401() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_J", "upstream-key");
-    std::env::set_var("SHUNT_TEST_M4_TOKENS_J", "alice:tok-a");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_J", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_J", "alice:tok-a");
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
@@ -317,8 +325,9 @@ async fn mapped_route_attributes_to_the_dedicated_header_over_bearer_and_api_key
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_K", "upstream-key");
-    std::env::set_var("SHUNT_TEST_M4_TOKENS_K", "alice:tok-a,bob:tok-b");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_K", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_K", "alice:tok-a,bob:tok-b");
     let upstream = MockServer::start().await;
     // Both requests below carry a second valid credential belonging to "bob";
     // the higher-priority slot must decide the attributed client. Neither live
@@ -368,8 +377,9 @@ async fn passthrough_route_forwards_the_client_credential_unchanged() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_L", "upstream-key");
-    std::env::set_var("SHUNT_TEST_M4_TOKENS_L", "alice:tok-a");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_L", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_L", "alice:tok-a");
     let upstream = MockServer::start().await;
     // On passthrough the Bearer is the caller's real Anthropic credential: it
     // must reach the upstream even though the gated path would strip it.
@@ -404,8 +414,9 @@ async fn passthrough_route_needs_no_token_and_still_strips_the_header() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_D", "upstream-key");
-    std::env::set_var("SHUNT_TEST_M4_TOKENS_D", "alice:tok-a");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_D", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_D", "alice:tok-a");
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -447,8 +458,9 @@ async fn antigravity_requires_a_client_token_even_on_passthrough_auth() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_AGY", "upstream-key");
-    std::env::set_var("SHUNT_TEST_M4_TOKENS_AGY", "alice:tok-a");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_AGY", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_AGY", "alice:tok-a");
     let upstream = MockServer::start().await;
     let mut config = with_inbound_auth(
         test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_AGY"),
@@ -483,8 +495,9 @@ async fn models_discovery_requires_valid_token_when_inbound_auth_is_configured()
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_G", "upstream-key");
-    std::env::set_var("SHUNT_TEST_M4_TOKENS_G", "alice:tok-a");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_G", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_G", "alice:tok-a");
     let upstream = MockServer::start().await;
     let config = with_inbound_auth(
         with_discovery_model(test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_G")),
@@ -528,7 +541,8 @@ async fn models_discovery_stays_open_without_inbound_auth() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_H", "upstream-key");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_H", "upstream-key");
     let upstream = MockServer::start().await;
     let config = with_discovery_model(test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_H"));
     let gateway = start_gateway_with(config).await;
@@ -545,8 +559,9 @@ async fn health_and_root_stay_open_when_inbound_auth_is_configured() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_F", "upstream-key");
-    std::env::set_var("SHUNT_TEST_M4_TOKENS_F", "alice:tok-a");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_F", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_F", "alice:tok-a");
     let upstream = MockServer::start().await;
     let config = with_inbound_auth(
         test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_F"),
@@ -577,7 +592,8 @@ async fn without_auth_config_mapped_route_stays_open() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var("SHUNT_TEST_M4_KEY_E", "upstream-key");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_E", "upstream-key");
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -595,7 +611,8 @@ async fn without_auth_config_mapped_route_stays_open() {
 
 #[test]
 fn auth_config_without_tokens_env_fails_startup() {
-    std::env::remove_var("SHUNT_TEST_M4_TOKENS_MISSING");
+    let mut vars = common::set_env_blocking(&[]);
+    vars.unset("SHUNT_TEST_M4_TOKENS_MISSING");
     let config = with_inbound_auth(Config::default(), "SHUNT_TEST_M4_TOKENS_MISSING");
     let error = config.validate().unwrap_err().to_string();
     assert!(error.contains("SHUNT_TEST_M4_TOKENS_MISSING"));

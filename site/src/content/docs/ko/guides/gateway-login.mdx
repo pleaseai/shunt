@@ -72,6 +72,8 @@ GitHub, SAML 등 shunt가 기대하는 표준 OIDC 화면을 노출하지 않는
 앞단에 두고 여기에 Dex issuer를 구성하세요. 프로바이더별 직접 OAuth2
 통합은 범위 밖입니다.
 
+issuer와 모든 endpoint는 HTTPS를 써야 합니다. 평문 HTTP는 `localhost` 또는 `127.0.0.1`에서만 허용됩니다. 승인 페이지의 Content Security Policy가 이름 붙일 수 있는 loopback 호스트가 그 둘뿐이므로, `[::1]`이나 다른 `127.0.0.0/8` 주소의 IdP는 나중에 브라우저에서 막히는 대신 시작 시점에 거부됩니다.
+
 비어 있지 않은 `allowed_domains` 또는 `allowed_emails` 항목이 최소 하나 필요하며,
 없으면 shunt는 시작을 거부합니다. `[server.gateway.oidc]`가 구성되면
 `users_env`는 선택이 됩니다. SSO와 비밀번호 로그인을 함께 보여주려면
@@ -106,7 +108,7 @@ Claude Code를 시작하고 `/login`을 실행하세요. CLI가 디바이스 코
 2. SSO 버튼(Google은 **Sign in with Google**, 그 외 프로바이더는 **Sign in with SSO**)을 선택한 뒤 프로바이더 로그인을 마칩니다. 정적 사용자도 함께 구성되어 있다면, 이메일과 시크릿을 입력하고 **Approve device**를 선택하는 방법도 계속 사용할 수 있습니다.
 3. 성공 페이지가 나타나면 Claude Code로 돌아갑니다.
 
-코드를 미리 채워 넣어도 자동 승인되지는 않습니다. 비밀번호 승인 POST는 same-origin으로 보호됩니다. 외부 callback은 대신 일회용 10분짜리 OAuth state와 PKCE로 교차 사이트 리디렉션을 바인딩하며, 프로바이더 오류가 페이지에 그대로 출력되는 일은 없습니다.
+코드를 미리 채워 넣어도 자동 승인되지는 않습니다. 비밀번호 승인 POST는 same-origin으로 보호됩니다. 게이트웨이는 브라우저의 `Sec-Fetch-Site: same-origin` Fetch Metadata 신호를 신뢰하는데, 페이지의 `Referrer-Policy: no-referrer` 때문에 브라우저가 자기 폼 제출에도 `Origin: null`을 보내기 때문입니다. 따라서 `Sec-Fetch-*` 헤더를 제거하는 리버스 프록시를 거치면 모든 승인이 "This request came from another site and was blocked."로 차단됩니다. 외부 callback은 대신 일회용 10분짜리 OAuth state와 PKCE로 교차 사이트 리디렉션을 바인딩하며, 프로바이더 오류가 페이지에 그대로 출력되는 일은 없습니다.
 
 ## 터미널에서 로그인하기
 

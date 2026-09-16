@@ -13,7 +13,7 @@
 **Core workflow**:
 
 1. Claude Code sends an Anthropic `POST /v1/messages` (or `count_tokens`) request to `shunt`.
-2. `proxy::forward` buffers the body, snapshots the live config, and `routing::resolve` picks a `Route` from the request's `model` id (exact route → prefix route → `default_provider`).
+2. `proxy::forward` buffers the body, snapshots the live config, and `routing::resolve` picks a `Route` from the request's `model` id (exact route → prefix route → `default_provider`). An id carrying an opt-in `[models.stage_router]` chooses between two targets first, from the conversation's recent tool-result history, and re-stamps the resolved `Route.model` back to the requested id (`routing/stage.rs`).
 3. The route's `AdapterKind` selects an adapter, which injects the provider credential, translates the request/response protocol if needed, and forwards upstream.
 4. The upstream response streams back to the client **unbuffered** (unless it asked for non-streaming), with gateway-owned errors reshaped into the Anthropic error envelope.
 
@@ -48,6 +48,7 @@ For understanding **request proxying** (the hot path):
 
 - `src/proxy.rs` — `post` → `forward`: body buffering, config snapshot, inbound-auth gate, `count_tokens` short-circuit, adapter dispatch, metrics. Start here.
 - `src/routing.rs` — `resolve` / `resolve_model`: how a `model` id becomes a `Route` (exact → prefix → default), including the `[1m]` context-window suffix stripping.
+- `src/routing/stage.rs` — the opt-in content-aware tier selection layered on top of that: signal extraction, the `switchyard-libsy` scorer, and the per-session hysteresis store. See [`docs/stage-router.md`](docs/stage-router.md).
 - `src/adapters/mod.rs` — the `Adapter` trait and `AdapterError`; the seam every provider implements.
 
 For understanding **server startup & state**:
@@ -72,7 +73,7 @@ For understanding **config & credentials**:
 | --- | --- | --- | --- | --- |
 | `server` | axum router, endpoint registration, `AppState` snapshot | `server.rs` | `proxy`, `routes`, `discovery`, `protocol`, `admin`, `reload`, `accounts`, `auth::inbound` | `main` |
 | `proxy` | request pipeline: buffer → route → auth gate → dispatch → metrics | `proxy.rs` | `routing`, `adapters`, `auth`, `count_tokens`, `error`, `metrics` | `server` |
-| `routing` | model-id → `Route` (exact/prefix/default), `[1m]` strip | `routing.rs` | `config`, `error` | `proxy`, `routes` |
+| `routing` | model-id → `Route` (exact/prefix/default), `[1m]` strip, opt-in stage router | `routing.rs`, `routing/stage.rs` | `config`, `error` | `proxy`, `routes` |
 | `adapters` | provider protocol adapters behind the `Adapter` trait | `adapters/{mod,anthropic,responses,cursor}` | `model`, `auth`, `accounts`, `config`, `error` | `proxy` |
 | `model` | Anthropic Messages ⇄ OpenAI Responses translation | `model/{responses,responses_request}.rs` | `config` | `adapters::responses` |
 | `auth` | credential lookup/refresh, provider logins, inbound client auth | `auth/mod.rs`, `auth/{claude,codex,cursor,xai}`, `auth/inbound.rs` | `config`, `accounts` | `proxy`, `adapters`, `main`, `admin` |

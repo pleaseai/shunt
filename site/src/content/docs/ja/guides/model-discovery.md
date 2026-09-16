@@ -49,7 +49,7 @@ export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 
 エイリアスは `/model` に *From gateway* とラベル付けされて表示されます。それを選ぶと `claude-gpt-5.6-sol-via-codex` が送られ、shunt がそれを `codex` へルーティングし、`gpt-5.6-sol` へ書き換えます。
 
-エイリアスのない `gpt-*` id には、代わりに `ANTHROPIC_CUSTOM_MODEL_OPTION` を使ってください — [Connect Claude Code](/ja/guides/connect-claude-code/#4-select-a-mapped-model) を参照。
+エイリアスのない `gpt-*` id には、代わりに `ANTHROPIC_CUSTOM_MODEL_OPTION` を使ってください — [Connect Claude Code](/ja/guides/connect-claude-code/#4-マッピングされたモデルを選択する) を参照。
 
 ## Claude Desktop は tier 名の id のみを認識します
 
@@ -68,7 +68,7 @@ Desktop でそれを選ぶと、意図した上流へ解決されます。この
 
 ## Discovery にはゲートウェイの認証情報が必要
 
-claude.ai OAuth の*ログイン*だけでは discovery はトリガーされません。Claude Code は `ANTHROPIC_AUTH_TOKEN`、API キー、または `apiKeyHelper` が設定されているときのみ `/v1/models` リクエストを発行します。素の Max/Pro サブスクリプションログインでは、フラグをオンにしても何も送りません — shunt に届くリクエストはなく、キャッシュも書かれません。[認証情報の選択](/ja/guides/connect-claude-code/#2-choose-the-anthropic-credential)を参照してください。`claude setup-token` が推奨ルートです。
+claude.ai OAuth の*ログイン*だけでは discovery はトリガーされません。Claude Code は `ANTHROPIC_AUTH_TOKEN`、API キー、または `apiKeyHelper` が設定されているときのみ `/v1/models` リクエストを発行します。素の Max/Pro サブスクリプションログインでは、フラグをオンにしても何も送りません — shunt に届くリクエストはなく、キャッシュも書かれません。[認証情報の選択](/ja/guides/connect-claude-code/#2-anthropic-認証情報を選ぶ)を参照してください。`claude setup-token` が推奨ルートです。
 
 ## デバッグ
 

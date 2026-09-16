@@ -42,7 +42,7 @@ pub(crate) struct AccountKey {
 /// One store account as the admin paths know it: a store family plus the name
 /// and uuid its credential file carries. This is *not* an [`AccountKey`] — it
 /// is the pair the admin routes actually have (`POST
-/// /admin/accounts/claude/{name}/refresh` knows a name and, when the file
+/// /admin/api/accounts/claude/{name}/refresh` knows a name and, when the file
 /// carries one, a `shuntAccountUuid`), and deliberately stays outside the key
 /// space so nothing here has to invent an [`AccountKey`] the selection path
 /// never produced.
@@ -387,7 +387,7 @@ struct AccountHealth {
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
-/// dashboard (`GET /admin/pool`). Derived from [`AccountHealth`]; see
+/// dashboard (`GET /admin/api/pool`). Derived from [`AccountHealth`]; see
 /// [`AccountPool::snapshot`].
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountSnapshot {
@@ -617,6 +617,10 @@ impl AccountPool {
 
     /// Return account indices in the order an adapter should try them.
     ///
+    /// A `session_id` of `Some("")` is treated as absent: a blank header is not
+    /// a conversation, so such requests round-robin rather than sharing one
+    /// sticky slot (issue #566).
+    ///
     /// `pool` is the optional `[server.pool]` tuning (issue #135). When
     /// absent, selection is the pre-#135 behavior: a single 0.98 hard
     /// threshold and weekly-reset ordering. When present, available accounts
@@ -709,6 +713,18 @@ impl AccountPool {
         self.sync_enabled_accounts(&provider, accounts);
         let ident_reps = collapse_representatives(&provider, accounts);
         let distinct = ident_reps.len();
+        // An empty header is not a session. `Some("")` would otherwise take the
+        // sticky branch and hash to `sha256("") % distinct` — one constant slot
+        // shared by every client that sends a blank `x-claude-code-session-id`,
+        // concentrating them on a single account instead of spreading them the
+        // way a session-less request is spread (issue #566).
+        //
+        // The guard lives here rather than at each header read so the property
+        // cannot depend on a caller remembering it: three public wrappers feed
+        // this function, and two of its call sites in `adapters/anthropic` were
+        // reading the header unfiltered. The stage-router store guards inside
+        // its consumer for the same reason (issue #546).
+        let session_id = session_id.filter(|session_id| !session_id.is_empty());
         let start_slot = match session_id {
             Some(session_id) => stable_session_index(session_id, distinct),
             None => {
@@ -1097,26 +1113,7 @@ impl AccountPool {
                 // below is unconditional — `observed_at_X` must not depend on
                 // whether the reset happened to be present this time.
                 let reset = header_value::<u64>(headers, reset_header);
-                match window {
-                    CodexWindow::FiveHour => {
-                        if let Some(utilization) = utilization {
-                            quota.utilization_5h = Some(utilization / 100.0);
-                            quota.observed_at_5h = Some(now);
-                            quota.reset_5h = preserve_future_reset(quota.reset_5h, reset, now);
-                        } else if let Some(reset) = reset {
-                            quota.reset_5h = Some(reset);
-                        }
-                    }
-                    CodexWindow::Weekly => {
-                        if let Some(utilization) = utilization {
-                            quota.utilization_7d = Some(utilization / 100.0);
-                            quota.observed_at_7d = Some(now);
-                            quota.reset_7d = preserve_future_reset(quota.reset_7d, reset, now);
-                        } else if let Some(reset) = reset {
-                            quota.reset_7d = Some(reset);
-                        }
-                    }
-                }
+                apply_codex_window(quota, window, utilization, reset, now);
             }
 
             if let Some(status) = headers
@@ -1126,6 +1123,60 @@ impl AccountPool {
                 quota.status = Some(status.to_string());
                 quota.observed_at_status = Some(now);
             }
+            // The post-lock dirty mark below covers both this observation and
+            // any expiry found while recomputing the provider metric.
+            let (utilization, _quota_expired) =
+                self.pool_utilization_for(provider, &mut entries, now);
+            record_pool_utilization(provider, utilization);
+        }
+        self.mark_dirty();
+    }
+
+    /// Record the Codex backend's in-stream `codex.rate_limits` event. The
+    /// websocket transport only sees quota headers on a fresh handshake, so a
+    /// reused connection depends on this event for a per-turn observation. As
+    /// with the headers, a window's `window_minutes` identifies its bucket and
+    /// the primary/secondary position does not; a window with an unrecognized
+    /// duration is skipped rather than guessed at. The event carries no
+    /// rate-limit-reached type, so `status` stays header-driven.
+    pub fn note_codex_rate_limits(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        event: &serde_json::Value,
+    ) {
+        {
+            let mut entries = self.entries.lock().expect("account health lock poisoned");
+            let health = entries.entry(account_key(provider, account)).or_default();
+            health.observed = true;
+            let quota = &mut health.quota;
+            let now = unix_now();
+
+            expire_stale_quota(quota, now);
+
+            for position in ["primary", "secondary"] {
+                let Some(reported) = event
+                    .get("rate_limits")
+                    .and_then(|limits| limits.get(position))
+                    .filter(|window| window.is_object())
+                else {
+                    continue;
+                };
+                let Some(window) = reported
+                    .get("window_minutes")
+                    .and_then(serde_json::Value::as_i64)
+                    .and_then(codex_window_bucket)
+                else {
+                    continue;
+                };
+                let utilization = reported
+                    .get("used_percent")
+                    .and_then(serde_json::Value::as_f64)
+                    .filter(|value| value.is_finite() && (0.0..=100.0).contains(value));
+                let reset = reported.get("reset_at").and_then(serde_json::Value::as_u64);
+                apply_codex_window(quota, window, utilization, reset, now);
+            }
+
             // The post-lock dirty mark below covers both this observation and
             // any expiry found while recomputing the provider metric.
             let (utilization, _quota_expired) =
@@ -1159,7 +1210,8 @@ impl AccountPool {
     /// 5h/7d windows, so the Codex parser can mark a bucket's utilization as
     /// authoritatively absent. Such a bucket's utilization and observation
     /// timestamp are cleared before reported windows are applied. For a
-    /// reported bucket, reset metadata remains header-derived: a future stored
+    /// reported bucket, reset metadata stays response-derived (the `x-codex-*`
+    /// headers and the websocket `codex.rate_limits` event): a future stored
     /// reset survives, while an elapsed stored reset is dropped so it cannot
     /// immediately expire the fresh utilization. The parser's `resets_at` is
     /// ignored, and status metadata remains owned by response headers. The
@@ -1182,7 +1234,9 @@ impl AccountPool {
             {
                 let quota = &mut health.quota;
                 // wham/usage reports only reconcile Codex utilization. Keep
-                // reset and status metadata header-derived, including when a
+                // reset metadata response-derived (the `x-codex-*` headers and
+                // the websocket `codex.rate_limits` event) and status metadata
+                // header-derived, including when a
                 // recognized window is absent from the report. This also
                 // prevents a stale signal in one bucket from expiring or
                 // rewriting unrelated fields during another bucket's poll.
@@ -1468,14 +1522,14 @@ impl AccountPool {
     /// The refresh probe reports this *after* its own clear, so its response
     /// cannot claim recovery for an account the pool still considers dead. The
     /// side table is consulted alongside the entries, or an account nothing has
-    /// ever selected would be reported alive by the probe while `/admin/pool`
+    /// ever selected would be reported alive by the probe while `/admin/api/pool`
     /// shows it as needing a re-login.
     ///
     /// The side table is read through the same `(family, name-or-uuid)`
     /// predicate the clears strip with ([`store_relogin_ref_matches`]), not by
     /// ref equality: a recorded ref carries whatever uuid the credential file
     /// reported when the probe ran, and demanding all three fields be equal
-    /// would report a login alive while `/admin/pool` still renders the verdict
+    /// would report a login alive while `/admin/api/pool` still renders the verdict
     /// — the contradiction this read-back exists to prevent.
     pub fn store_account_needs_relogin(
         &self,
@@ -1548,7 +1602,7 @@ impl AccountPool {
     /// Entry-scoped on purpose, and therefore **narrower** than
     /// [`Self::store_account_needs_relogin`]: it does not consult the
     /// store-name side table, so an account the pool has never selected reports
-    /// `false` here while `/admin/pool` and the probe's own read-back report the
+    /// `false` here while `/admin/api/pool` and the probe's own read-back report the
     /// verdict. Ask this when the question really is about one keyed row; ask
     /// the store-scoped reader when the question is "does the pool consider this
     /// credential dead".
@@ -1762,7 +1816,7 @@ impl AccountPool {
             .values_mut()
             .for_each(|members| members.retain(|key, _| !matches(key)));
         // A forgotten identity must not keep a store-name verdict alive either:
-        // `DELETE /admin/accounts/claude/{name}` reaches here through
+        // `DELETE /admin/api/accounts/claude/{name}` reaches here through
         // `forget_pool_health_if_absent`, and a ref left behind would re-condemn
         // a same-named account added later — through the name fallback in
         // `store_relogin_ref_condemns`, even when the re-add carries a different
@@ -2487,6 +2541,41 @@ fn update_string_header(headers: &HeaderMap, name: &str, field: &mut Option<Stri
 /// cleared, `observed_at_X` alone governs this window's expiry.
 fn preserve_future_reset(stored: Option<u64>, polled: Option<u64>, now: u64) -> Option<u64> {
     polled.or_else(|| stored.filter(|&reset| reset > now))
+}
+
+/// Apply one Codex rate-limit window observation to an account's quota state.
+/// Shared by [`AccountPool::note_codex_quota`] (response headers) and
+/// [`AccountPool::note_codex_rate_limits`] (the websocket `codex.rate_limits`
+/// event) so the two sources cannot drift. `utilization` is the backend's
+/// 0-100 used-percent, already validated by the caller; `reset` is best-effort,
+/// so a window without a fresh utilization only refreshes the reset.
+fn apply_codex_window(
+    quota: &mut QuotaState,
+    window: CodexWindow,
+    utilization: Option<f64>,
+    reset: Option<u64>,
+    now: u64,
+) {
+    match window {
+        CodexWindow::FiveHour => {
+            if let Some(utilization) = utilization {
+                quota.utilization_5h = Some(utilization / 100.0);
+                quota.observed_at_5h = Some(now);
+                quota.reset_5h = preserve_future_reset(quota.reset_5h, reset, now);
+            } else if let Some(reset) = reset {
+                quota.reset_5h = Some(reset);
+            }
+        }
+        CodexWindow::Weekly => {
+            if let Some(utilization) = utilization {
+                quota.utilization_7d = Some(utilization / 100.0);
+                quota.observed_at_7d = Some(now);
+                quota.reset_7d = preserve_future_reset(quota.reset_7d, reset, now);
+            } else if let Some(reset) = reset {
+                quota.reset_7d = Some(reset);
+            }
+        }
+    }
 }
 
 /// `pub(crate)`: shared with `crate::auth::codex::usage`'s wham/usage parser —
@@ -3427,7 +3516,7 @@ mod tests {
 
     /// The defect in issue #439: an account the pool has never selected has no
     /// health entry at all, so the admin probe's terminal verdict updated
-    /// nothing and `/admin/pool` kept reporting the row `unseen`. The verdict is
+    /// nothing and `/admin/api/pool` kept reporting the row `unseen`. The verdict is
     /// recorded by store name in the side table instead, and the snapshot's
     /// unseen branch reads it. `has_state` stays `false` — nothing was ever
     /// observed — and both dashboard tables check `needs_relogin` before it, so the
@@ -3757,7 +3846,7 @@ mod tests {
         );
     }
 
-    /// `DELETE /admin/accounts/claude/{name}` reaches `forget_identity` through
+    /// `DELETE /admin/api/accounts/claude/{name}` reaches `forget_identity` through
     /// `forget_pool_health_if_absent`. It drops the health entries; the store
     /// verdict has to go with them, or an account re-added under the same name
     /// would be reported dead the moment it appears, with nothing having failed.
@@ -3851,7 +3940,7 @@ mod tests {
         assert!(
             snapshot[0].needs_relogin,
             "an observed row hid a verdict the pool still holds, so \
-             `/admin/pool` and the refresh probe contradict each other"
+             `/admin/api/pool` and the refresh probe contradict each other"
         );
     }
 
@@ -3976,10 +4065,10 @@ mod tests {
         );
     }
 
-    /// The probe's read-back has to answer the same question `/admin/pool` does.
+    /// The probe's read-back has to answer the same question `/admin/api/pool` does.
     /// The set matches a pool entry on the uuid **or** the name and the clears
     /// strip on either half, so a read that demanded all three fields be equal
-    /// is narrower than both: `/admin/pool` renders "needs re-login" while the
+    /// is narrower than both: `/admin/api/pool` renders "needs re-login" while the
     /// Refresh button reports the login alive.
     #[test]
     fn the_read_back_matches_a_verdict_recorded_under_a_different_uuid() {
@@ -3993,7 +4082,7 @@ mod tests {
         );
         assert!(
             pool.store_account_needs_relogin(StoreFamily::Claude, "a", None),
-            "the read-back reported the login alive for a verdict `/admin/pool` \
+            "the read-back reported the login alive for a verdict `/admin/api/pool` \
              still renders"
         );
     }
@@ -4602,6 +4691,97 @@ mod tests {
         let snaps = pool.snapshot("codex", &accounts, None, None);
         assert!(snaps[0].has_state);
         assert_eq!(snaps[0].utilization_5h, Some(0.4));
+    }
+
+    /// The websocket transport's `codex.rate_limits` event carries the same two
+    /// windows the headers do, so both must land with their resets.
+    #[test]
+    fn codex_rate_limits_event_records_both_windows() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        let weekly_reset = unix_now() + 508_740;
+        let five_hour_reset = unix_now() + 3_600;
+        let event = serde_json::json!({
+            "type": "codex.rate_limits",
+            "rate_limits": {
+                "primary": {
+                    "used_percent": 26,
+                    "window_minutes": 10080,
+                    "reset_at": weekly_reset,
+                },
+                "secondary": {
+                    "used_percent": 40,
+                    "window_minutes": 300,
+                    "reset_at": five_hour_reset,
+                },
+            },
+        });
+
+        pool.note_codex_rate_limits("codex", &accounts[0], &event);
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert!(snaps[0].has_state);
+        assert_eq!(snaps[0].utilization_7d, Some(0.26));
+        assert_eq!(snaps[0].reset_7d, Some(weekly_reset));
+        assert_eq!(snaps[0].utilization_5h, Some(0.4));
+        assert_eq!(snaps[0].reset_5h, Some(five_hour_reset));
+    }
+
+    /// `window_minutes` identifies a window's bucket; `primary`/`secondary` is
+    /// only a position, so swapping the two must not swap the recorded windows.
+    #[test]
+    fn codex_rate_limits_event_maps_by_minutes_not_position() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        let event = serde_json::json!({
+            "rate_limits": {
+                "primary": {"used_percent": 40, "window_minutes": 300},
+                "secondary": {"used_percent": 26, "window_minutes": 10080},
+            },
+        });
+
+        pool.note_codex_rate_limits("codex", &accounts[0], &event);
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert_eq!(snaps[0].utilization_5h, Some(0.4));
+        assert_eq!(snaps[0].utilization_7d, Some(0.26));
+    }
+
+    /// A missing `rate_limits`, a null window, an unrecognized duration, or an
+    /// out-of-range percentage leaves the affected window alone — and must not
+    /// disturb a window an earlier observation already recorded.
+    #[test]
+    fn codex_rate_limits_event_ignores_unusable_windows() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        pool.note_codex_rate_limits(
+            "codex",
+            &accounts[0],
+            &serde_json::json!({
+                "rate_limits": {"primary": {"used_percent": 26, "window_minutes": 10080}},
+            }),
+        );
+
+        for event in [
+            serde_json::json!({"type": "codex.rate_limits"}),
+            serde_json::json!({"rate_limits": {"primary": null, "secondary": null}}),
+            serde_json::json!({
+                "rate_limits": {"primary": {"used_percent": 75, "window_minutes": 1440}},
+            }),
+            serde_json::json!({
+                "rate_limits": {"primary": {"used_percent": 150, "window_minutes": 300}},
+            }),
+        ] {
+            pool.note_codex_rate_limits("codex", &accounts[0], &event);
+        }
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert_eq!(snaps[0].utilization_5h, None);
+        assert_eq!(
+            snaps[0].utilization_7d,
+            Some(0.26),
+            "an unusable event must not clear an earlier observation"
+        );
     }
 
     #[test]
@@ -7798,6 +7978,50 @@ mod tests {
         assert_eq!(pool.select_order("two", &accounts, None, None, None)[0], 0);
         assert_eq!(pool.select_order("one", &accounts, None, None, None)[0], 2);
         assert_eq!(pool.select_order("two", &accounts, None, None, None)[0], 1);
+    }
+
+    /// A blank `x-claude-code-session-id` is not a conversation.
+    ///
+    /// Non-vacuity: delete the `!session_id.is_empty()` filter in
+    /// `select_order_inner` and every call here hashes `""` to the same
+    /// constant slot, so the three assertions collapse onto one index.
+    #[test]
+    fn a_blank_session_id_round_robins_instead_of_pinning_one_account() {
+        let pool = AccountPool::new();
+        let accounts = accounts();
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, Some(""), None, None)[0],
+            0
+        );
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, Some(""), None, None)[0],
+            1
+        );
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, Some(""), None, None)[0],
+            2
+        );
+    }
+
+    /// The blank id must not merely be *different* from a real one — it must
+    /// share the round-robin counter a session-less request uses, or blank and
+    /// session-less callers would still be two separate rotations.
+    #[test]
+    fn a_blank_session_id_shares_the_session_less_rotation() {
+        let pool = AccountPool::new();
+        let accounts = accounts();
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, None, None, None)[0],
+            0
+        );
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, Some(""), None, None)[0],
+            1
+        );
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, None, None, None)[0],
+            2
+        );
     }
 
     #[test]

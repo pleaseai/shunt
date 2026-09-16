@@ -25,7 +25,7 @@ unchanged.
 - **WebSocket**: `tokio-tungstenite` 0.24 (`rustls-tls-webpki-roots`) — Codex Responses
   WebSocket v2 transport (issue #32)
 - **TLS**: `rustls` 0.23 with `aws_lc_rs`; process-wide default provider installed on the
-  first WS handshake (`ensure_crypto_provider` in `src/adapters/codex_ws.rs`)
+  first WS handshake (`ensure_crypto_provider` in `src/adapters/responses/codex_ws.rs`)
 - **Streaming semantics**: upstream SSE is **not buffered** unless the client requested
   non-streaming output — preserving streaming is a hard invariant
 - **Compression**: `flate2`

@@ -709,8 +709,8 @@ async fn the_codex_passthrough_never_relays_an_admin_credential_header() {
 #[tokio::test]
 async fn no_forward_site_relays_the_admin_session_cookie() {
     // `admin::authenticate` falls back to `session_cookie`, which accepts a
-    // write-tier `shunt_admin_session` out of the `cookie` header when no
-    // credential header matched. That made `cookie` an accept slot the first
+    // `shunt_admin_session` out of the `cookie` header when no credential
+    // header matched, at whatever tier minted it. That made `cookie` an accept slot the first
     // version of this enumeration missed, and two of the three forward sites
     // relayed the header verbatim: `headers_for_route` starts from
     // `base.clone()` on both branches, and the Codex strip list had no `cookie`
@@ -797,7 +797,7 @@ async fn stripping_the_cookie_header_leaves_the_callers_own_credential_alone() {
 /// would slip through. Files named `tests.rs` are skipped so fixtures need no
 /// entry; an in-file `#[cfg(test)] mod tests` helper is *not* skipped and is
 /// listed below as noise.
-const HEADER_PRODUCER_ALLOWLIST: [&str; 9] = [
+const HEADER_PRODUCER_ALLOWLIST: [&str; 11] = [
     // noise — `#[cfg(test)] mod tests` fixture builder.
     "src/accounts.rs",
     // registered forward site — consumes the map `headers_for_route` produced
@@ -808,8 +808,14 @@ const HEADER_PRODUCER_ALLOWLIST: [&str; 9] = [
     "src/adapters/responses/codex_ws.rs",
     // registered forward site — site 3, the inbound Codex passthrough.
     "src/adapters/responses/inbound.rs",
+    // allowlist-built, not a forward site — a routed inbound Codex request to a
+    // third party keeps only `content-type`/`accept` from the caller, so no
+    // credential slot is a candidate to leak (issue #436).
+    "src/adapters/responses/inbound_routed.rs",
     // noise — `#[cfg(test)] mod tests` fixture builder.
     "src/admin/mod.rs",
+    // noise — `#[cfg(test)] mod tests` fixture builder.
+    "src/codex_endpoint/routing.rs",
     // registered forward site — site 2, discovery's passthrough branch.
     "src/discovery/upstream.rs",
     // allowlist-built, not a forward site — the OTLP relay forwards only

@@ -25,9 +25,10 @@
 - `src/adapters/`: provider protocol adapters.
 - `src/model/`: Anthropic Messages and OpenAI Responses translation.
 - `src/auth/`: credential lookup and refresh helpers.
+- `ui/`: React + Vite source for the admin dashboard bundle; `--features ui` embeds `ui/dist` (see `ui/README.md`).
 - `tests/`: protocol and translation integration tests.
 - `README.md`: top-level project overview (features, quickstart, supported providers/models).
-- `docs/`: engineering specs and milestone records (`m1`–`m7`, config, running, `RELEASING`).
+- `docs/`: engineering specs and milestone records (`m1`–`m16`, config, running, `RELEASING`), and captured research (`docs/research/`).
 - `site/`: published Nimbus documentation site deployed to Cloudflare Pages; sources under `site/src/content/docs/` (`getting-started`, `guides`, `providers`, `reference`) with custom locale fallback routing.
 - `wiki/`: generated Astro Starlight wiki (wiki-please — do not hand-edit; regenerate).
 

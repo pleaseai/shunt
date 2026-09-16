@@ -26,6 +26,7 @@ The existing `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`,
 | :-- | :-- | :-- |
 | `bind` | `127.0.0.1:3001` | Address shunt listens on |
 | `default_provider` | `anthropic` | Provider for any model with no matching route |
+| `shutdown_timeout_seconds` | `30` | Seconds after the first SIGTERM/SIGINT for active HTTP/SSE/WebSocket work to drain before the remainder is cancelled. Must be `1`–`3600`; changing it requires a restart |
 | `max_concurrent_requests` | `1024` | Maximum inbound requests in flight through response-body completion. Excess requests are shed immediately with `503` and `Retry-After: 1`; `0` disables the limit. `/` and `/health` are exempt. A restart is required after changing this key |
 | `sse_keepalive_seconds` | `30` | Idle seconds before an SSE `ping` is injected; `0` disables ([details](/guides/shared-gateway/#sse-keepalive-pings)) |
 
@@ -118,7 +119,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | Array | Access | Meaning |
 | :-- | :-- | :-- |
 | `write_keys` | `write` | Full access: `write` implies `read`. The same tier as `tokens_env`/`tokens_file` |
-| `read_keys` | `read` | Passes every `GET` on the admin surface and the spend-limit API; refused with `403 permission_error` on every mutation. It also cannot sign in: `POST /admin/login` rejects it with `401` (a browser session carries full access, so minting one from a read key would escalate it) |
+| `read_keys` | `read` | Passes every `GET` on the admin surface and the spend-limit API; refused with `403 permission_error` on every mutation. It signs in to the dashboard as a read-only session: `POST /admin/login` accepts it, the session records the `read` tier, and every mutation behind that cookie is still refused with `403` |
 
 A credential's privilege is the maximum over every set it matches, so the order the sets are scanned in cannot change it. Each `id` must be non-blank and each key at least 32 characters; ids **and** key values must each be unique across all three credential sets (`tokens_env`/`tokens_file`, `write_keys`, `read_keys`), and a collision names the colliding ids without logging a key value. A legacy `tokens_env` token shorter than 32 characters warns rather than failing, because those tokens predate the rule.
 
@@ -133,15 +134,15 @@ Presence of this subtable adds an OIDC/SSO button to the admin browser login pag
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
 | `public_url` | required | Externally reachable bare HTTPS origin for the admin surface; loopback HTTP is allowed. The redirect URI is `{public_url}/admin/oidc/callback` |
-| `issuer` | required | OIDC discovery issuer. Must use HTTPS, except HTTP on loopback; a path is allowed |
+| `issuer` | required | OIDC discovery issuer. Must use HTTPS, except HTTP on `localhost` or `127.0.0.1`; a path is allowed |
 | `client_id` | required | OIDC client id |
 | `client_secret_env` | `SHUNT_ADMIN_OIDC_SECRET` | Env var holding the non-empty client secret |
 | `allowed_domains` | `[]` | Case-insensitive email domains allowed to administer shunt |
 | `allowed_emails` | `[]` | Case-insensitive full email addresses allowed to administer shunt |
 | `scopes` | `openid email profile` | Scopes sent to the authorization endpoint |
-| `authorization_endpoint` | discovery | Advanced authorization URL override; HTTPS or loopback HTTP only |
-| `token_endpoint` | discovery | Advanced token URL override; HTTPS or loopback HTTP only |
-| `userinfo_endpoint` | discovery | Advanced OIDC UserInfo URL override; HTTPS or loopback HTTP only |
+| `authorization_endpoint` | discovery | Advanced authorization URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
+| `token_endpoint` | discovery | Advanced token URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
+| `userinfo_endpoint` | discovery | Advanced OIDC UserInfo URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
 
 At least one non-empty `allowed_domains` or `allowed_emails` entry is mandatory. Startup also fails closed for an invalid `public_url`, empty issuer/client id, or missing client secret. shunt accepts only a non-empty UserInfo email with `email_verified = true`. The browser flow uses PKCE and a `pending_ttl_secs`-bound, single-use state; callback/token/UserInfo failures produce generic browser messages without echoing provider input. The callback re-checks the current hot-reloaded allowlist before minting the same HttpOnly admin session cookie as token login, then redirects to the fixed `/admin` target.
 
@@ -219,15 +220,15 @@ Presence of this subtable replaces or supplements the password approval form wit
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `issuer` | required | OIDC discovery issuer. Must use HTTPS, except HTTP on loopback; a path is allowed |
+| `issuer` | required | OIDC discovery issuer. Must use HTTPS, except HTTP on `localhost` or `127.0.0.1`; a path is allowed |
 | `client_id` | required | OIDC client id |
 | `client_secret_env` | `SHUNT_GATEWAY_OIDC_SECRET` | Env var holding the non-empty client secret |
 | `allowed_domains` | `[]` | Case-insensitive email domains allowed to approve a device |
 | `allowed_emails` | `[]` | Case-insensitive full email addresses allowed to approve a device |
 | `scopes` | `openid email profile` | Scopes sent to the authorization endpoint; custom values must include `openid` and `email` |
-| `authorization_endpoint` | discovery | Advanced authorization URL override; HTTPS or loopback HTTP only |
-| `token_endpoint` | discovery | Advanced token URL override; HTTPS or loopback HTTP only |
-| `userinfo_endpoint` | discovery | Advanced OIDC UserInfo URL override; HTTPS or loopback HTTP only |
+| `authorization_endpoint` | discovery | Advanced authorization URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
+| `token_endpoint` | discovery | Advanced token URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
+| `userinfo_endpoint` | discovery | Advanced OIDC UserInfo URL override; HTTPS, or HTTP on `localhost`/`127.0.0.1` only |
 
 At least one non-empty `allowed_domains` or `allowed_emails` entry is mandatory. shunt accepts only a non-empty UserInfo email with `email_verified = true`. The browser flow uses a single-use ten-minute state and PKCE, and callback/token/UserInfo failures produce generic browser messages without echoing provider input. The redirect URI registered at the provider is `{public_url}/device/callback`. For GitHub, SAML, or another non-OIDC provider, use an OIDC broker such as Dex; direct provider-specific OAuth2 integrations are out of scope.
 
@@ -285,9 +286,23 @@ Presence of this table enables an inbound OpenAI Responses passthrough so the **
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `provider` | `codex` | Configured upstream name to serve inbound requests; must use `auth = "chatgpt_oauth"` |
+| `provider` | `codex` | Configured upstream name to serve inbound requests whose `model` matches no route; must use `auth = "chatgpt_oauth"` |
+| `routes` | `[]` | Opt-in per-model routing (see below) |
 
 Registers `POST /backend-api/codex/responses`, `POST /responses`, and `POST /v1/responses` — all served by the named provider's account pool. When `[server.auth]` is configured they require a valid client token (like the other injected-credential routes); with no `[server.auth]` they are **open** to anyone who can reach them while still injecting the operator's Codex credential, so gate them on anything beyond loopback. Unlike `/v1/messages`, the request is not translated to or from Anthropic Messages; it is relayed to and from the upstream verbatim.
+
+### `[[server.codex_endpoint.routes]]` (optional)
+
+Each entry sends one model to a different Responses-compatible upstream, instead of the fixed `provider` above.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `model` | *(required)* | Public model id the Codex client sends in the Responses body. Matched **exactly** and **case-sensitively** — no prefix match, no `[1m]` stripping, and no charset restriction, so vendor slugs like `MiniMax-M3`, `openai/gpt-5.6-sol`, and `~openai/gpt-latest` route as written |
+| `provider` | *(required)* | Configured provider that serves this model; must be `kind = "responses"` and must not use a credential-free auth mode (`passthrough` or `none`) |
+| `upstream_model` | `model` | Model id sent upstream. When it differs from `model`, shunt rewrites the body's top-level `model` and leaves every other field intact |
+
+Validation rejects a route to an unknown provider, to a non-`responses` provider, to a provider whose auth mode carries no credential (`passthrough` or `none`), and rejects duplicate `model` entries or blank fields. Routes are read from the live config snapshot, so adding, editing, or removing one takes effect on **reload**; only toggling the `[server.codex_endpoint]` table itself needs a restart. A routed request to a non-ChatGPT provider sends a fresh header allowlist (`content-type`, `accept`, plus the flavor-gated `OpenAI-Beta` and, for an `xai_oauth` route, the Grok-CLI identity headers), an identity-encoded body, and one credential with no pool or failover.
+The same opt-in registers `GET /models` and `GET /backend-api/codex/models`, which return the valid Codex fallback `{"models":[]}` after the normal model-discovery auth gate. It also enables Codex negotiation on the shared `GET /v1/models`: when `client_version` is present in the query, that field takes precedence over Anthropic-like headers and selects the Codex empty shape. Without `client_version`, the existing Anthropic discovery response is unchanged. shunt intentionally does not synthesize incomplete Codex `ModelInfo` rows.
 
 ## `[server.usage]` (optional)
 
@@ -295,7 +310,9 @@ Presence of this table registers a client-facing `GET /usage` endpoint that retu
 
 The table has no keys today — presence alone opts in. It **requires [`[server.auth]`](#serverauth-optional)**: the endpoint identifies its caller by client token, so shunt fails startup if `[server.usage]` is set without inbound auth rather than serve pool telemetry unauthenticated.
 
-`GET /usage` authenticates the same client token as `/v1/messages` (configured header, `x-api-key`, or `Authorization: Bearer`) and reports per-window remaining headroom (`1 - min(utilization)` across non-disabled accounts, i.e. the least reported utilization among non-disabled accounts — a pool-wide aggregate, not a prediction of which account the next request will actually route to), each window's reset, and a coarse `ok`/`degraded`/`exhausted` status. It never exposes account names, counts, priorities, `disabled` flags, thresholds, or per-account numbers — the full per-account detail stays behind the admin-only [`GET /admin/pool`](#serveradmin-optional). A window is `null` only when no non-disabled account reports it. Codex response `x-codex-*` headers and optional `wham/usage` polling populate the observed 5-hour and shared weekly windows; an unobserved window alone is `null`. Codex has no Fable-scoped (`7d_oi`) signal, although another provider in a mixed pool may supply the aggregate Fable window.
+`GET /usage` authenticates the same client token as `/v1/messages` (configured header, `x-api-key`, or `Authorization: Bearer`) and reports per-window remaining headroom (`mean(1 - utilization)` across non-disabled accounts that report the window, i.e. the fraction of the pool's combined capacity still unused — nine exhausted accounts plus one fresh one read `0.1` — a pool-wide aggregate, not a prediction of whether the next request will be admitted), each window's reset, and a coarse `ok`/`degraded`/`exhausted` status. It never exposes account names, counts, priorities, `disabled` flags, thresholds, or per-account numbers — the full per-account detail stays behind the admin-only [`GET /admin/api/pool`](#serveradmin-optional). A window is `null` only when no non-disabled account reports it. Codex response `x-codex-*` headers and optional `wham/usage` polling populate the observed 5-hour and shared weekly windows; an unobserved window alone is `null`. Codex has no Fable-scoped (`7d_oi`) signal, although another provider in a mixed pool may supply the aggregate Fable window.
+
+The response carries the pool-wide aggregate under `pool` and, under `providers`, the same sanitized aggregate computed per pooled provider, keyed by the configured provider name (the `<name>` in `[providers.<name>]` or the `name` of a `[[upstreams]]` entry — not an account identity). Mapping a model to that key is the client's job: [`GET /routes`](/reference/endpoints/) covers only models explicitly listed in `[[routes]]`, no endpoint exposes the `[[models]].upstream_model`, `[[route_prefixes]]`, or `server.default_provider` mappings, and `GET /v1/models` entries carry no provider field. On a mixed pool, `pool` blends every provider's accounts into one mean, so a client that routes to one provider should read `providers.<name>` for that provider's headroom and status. Providers whose auth mode is not pooled are omitted, and a provider's `fable` window is `null` when that provider has no Fable-scoped signal even if `pool` reports one. See the [endpoint reference](/reference/endpoints/) for the full shape.
 
 ## `[server.oauth_usage]` (optional)
 
@@ -303,7 +320,7 @@ Presence of this table registers `GET /api/oauth/usage` — the exact path Claud
 
 The table has no keys today — presence alone opts in. Its auth model differs from `[server.usage]`: on a loopback `[server.bind]` the route is unauthenticated (the caller cannot have reached it off the operator's own machine); on a non-loopback bind it requires a **valid** credential — a configured client token or a valid gateway JWT, gated exactly as `/v1/messages` is (bare header presence is not accepted) — and shunt fails startup (`OauthUsageEndpointRequiresAuthOnNonLoopback`) unless [`[server.auth]`](#serverauth-optional) or [`[server.gateway]`](#servergateway-optional) is also configured. shunt also refuses to boot if a `claude_oauth` provider's `base_url` resolves to this gateway's own bind (`OauthUsageSelfPollLoop`) — otherwise the outbound usage poller could read back its own synthesized aggregate instead of Anthropic's real usage.
 
-`GET /api/oauth/usage` reports only `claude_oauth`-provider accounts (never Codex/Cursor/Grok), and uses a routing-aware, priority-tiered worst case per window rather than `/usage`'s pool-wide least-utilized aggregate: within the lowest-`priority` tier of available accounts (falling back to the full non-disabled set when none are available), it reports the *maximum* utilization — the worst case among the accounts the next request can actually route to, not an optimistic pool-wide minimum. **This route only helps when the CLI itself is configured to call it**, which was verified to happen only for a full interactive `claude login` session, not `claude setup-token` or a shared-gateway client token — see the design note for the full precondition evidence.
+`GET /api/oauth/usage` reports only `claude_oauth`-provider accounts (never Codex/Cursor/Grok), and uses a routing-aware, priority-tiered worst case per window rather than `/usage`'s pool-wide mean headroom: within the lowest-`priority` tier of available accounts (falling back to the full non-disabled set when none are available), it reports the *maximum* utilization — the worst case among the accounts the next request can actually route to, not a pool-wide average. **This route only helps when the CLI itself is configured to call it**, which was verified to happen only for a full interactive `claude login` session, not `claude setup-token` or a shared-gateway client token — see the design note for the full precondition evidence.
 
 ## `[server.pool]` (optional)
 
@@ -324,7 +341,7 @@ Quota-aware load-balancing tuning for the account pools — Claude (Anthropic) (
 
 For each window `X`, the effective soft threshold resolves as: account `threshold_X` → account `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, and is capped at `hard_threshold`. All thresholds are utilization fractions in `[0.0, 1.0]`; out-of-range values fail startup. The threshold and burn-rate knobs govern both pool families: the Anthropic pool from its `anthropic-ratelimit-unified-*` headers, and the Codex/ChatGPT pool from its `x-codex-*` 5-hour/weekly windows (Codex has no Fable-scoped `7d_oi` window, so `default_threshold_fable` is inert there). `usage_refresh_seconds` polls both families: Anthropic accounts use the official API, while imported Codex/ChatGPT-backend accounts use the private, unofficial `wham/usage` endpoint ([details](/guides/codex-multi-account/#usage-poller)).
 
-A positive `usage_refresh_seconds` starts a background poller that reconciles account-pool quota state against each family's usage API ([Anthropic details](/guides/anthropic-multi-account/#usage-api-reconciliation), [Codex details](/guides/codex-multi-account/#usage-poller)); absent or `0` disables it (the default). Only imported (refreshable) accounts of either family are polled — a long-lived `claude setup-token`, or a `token_env` account of either family, is skipped because the usage endpoint rejects a non-refreshable token. For Claude, the poller reconciles each reported window's utilization, its own reset time, and its utilization observation time; only per-window and aggregate status freshness and the reset boundary captured when a status was observed remain header-derived, including when authoritative usage contains out-of-band consumption of the same account outside shunt. For Codex, it reconciles utilization and utilization observation time while keeping reset and status metadata header-derived. For a reported window, a future header reset survives, while an elapsed stored reset is cleared before fresh utilization is written; the parsed wham `reset_at` is not adopted as live reset metadata. For Codex, the private endpoint's schema is observed rather than documented, so parsing is lenient and fail-soft. The interval is fixed at boot; a config reload does not start, stop, or re-tune the poller.
+A positive `usage_refresh_seconds` starts a background poller that reconciles account-pool quota state against each family's usage API ([Anthropic details](/guides/anthropic-multi-account/#usage-api-reconciliation), [Codex details](/guides/codex-multi-account/#usage-poller)); absent or `0` disables it (the default). Only imported (refreshable) accounts of either family are polled — a long-lived `claude setup-token`, or a `token_env` account of either family, is skipped because the usage endpoint rejects a non-refreshable token. For Claude, the poller reconciles each reported window's utilization, its own reset time, and its utilization observation time; only per-window and aggregate status freshness and the reset boundary captured when a status was observed remain header-derived, including when authoritative usage contains out-of-band consumption of the same account outside shunt. For Codex, it reconciles utilization and utilization observation time while keeping reset metadata response-derived (the `x-codex-*` headers and the WebSocket `codex.rate_limits` event) and status metadata header-derived. For a reported window, a future stored reset survives, while an elapsed stored reset is cleared before fresh utilization is written; the parsed wham `reset_at` is not adopted as live reset metadata. For Codex, the private endpoint's schema is observed rather than documented, so parsing is lenient and fail-soft. The interval is fixed at boot; a config reload does not start, stop, or re-tune the poller.
 
 `state_path` persists the pool's quota state (per-window utilization and each window's own reset, independent utilization/status observation times and status reset boundaries, across every provider's accounts) to disk. Without it, a restart begins with an empty pool: every account looks unseen until its first post-restart response, which disables burn-rate avoidance and leaves `GET /usage` blank until traffic re-populates the pool. The file is a best-effort cache, not a source of truth — quota is re-derived from upstream responses regardless, so a missing, stale, or corrupt file only costs a cold start, never a boot failure. Writes use a private (`0600` on Unix) temp file, atomically rename it over the target, and happen on a background timer only when quota changed; failed writes retry on the next tick. Cooldowns are not persisted (they lapse on restart), and any restored window whose reset has already passed is dropped during import, before the first selection or snapshot after restore. A reset-less utilization or status signal expires one window length after its own observation time. Version-2 files migrate through an explicit legacy path and are rewritten as version 3. An aggregate `status` without `observed_at_status` captures the earliest persisted `reset_5h`, `reset_7d`, or `reset_7d_oi` as an immutable deadline. If that reset has already passed, the expired reset, the unstamped aggregate status, and its synthesized stamp are removed during the same import. A reset beyond the plausible seven-day horizon is conservatively bounded at boot plus seven days; an aggregate with no reset starts its seven-day cap at boot. Existing v2 stamps are not reinterpreted from reset metadata, while normal import still normalizes orphan metadata, expires elapsed signals, clamps future timestamps to boot, and supplies boot time to a surviving unstamped aggregate when appropriate. Later reset-only or usage updates cannot extend the captured deadline, and the result remains equivalent after the v3 rewrite and a second restore. A version-3 reset-less status stays reset-less after reset-only updates. The path is fixed at boot; a config reload does not start, stop, or re-point persistence.
 
@@ -334,7 +351,7 @@ A positive `ramp_initial_concurrency` enables **storm control** on every account
 
 ## `[server.status]` (optional)
 
-Observation-only background polling of provider Statuspage `summary.json` endpoints, for visibility rather than decisioning: it never feeds routing, failover, or pool/cooldown behavior. It only updates a shared store surfaced by the `shunt.upstream.status` metric and the admin dashboard's "Upstream status" strip ([`GET /admin/status`](/reference/endpoints/)). When the table is absent, or `sources` is empty, the poller does not start.
+Observation-only background polling of provider Statuspage `summary.json` endpoints, for visibility rather than decisioning: it never feeds routing, failover, or pool/cooldown behavior. It only updates a shared store surfaced by the `shunt.upstream.status` metric and the admin dashboard's "Upstream status" strip ([`GET /admin/api/status`](/reference/endpoints/)). When the table is absent, or `sources` is empty, the poller does not start.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
@@ -358,7 +375,7 @@ Each `sources` entry needs a non-empty, unique `provider` label and an `http`/`h
 
 A fetch failure, non-2xx response, oversized body (capped at 1 MiB), invalid JSON, or an unrecognized `indicator` string in the response all resolve to `unknown` ("no signal") rather than `none` ("operational"): a failed poll can only ever replace a source's stored entry with `unknown`, never leave a stale "operational" value in place or report a false all-clear for a source shunt could not actually reach. Sources in the `unknown` state are also omitted from the `shunt.upstream.status` metric entirely, rather than reported as a `0` sample.
 
-`GET /admin/status` (admin-authenticated) returns each configured source's most recently observed indicator, description, incidents, and observed timestamp. A configured source whose first poll has not completed is returned as `unknown`; an unconfigured or empty `[server.status]` reports an empty `sources` list, which the dashboard reads as "hide this section" rather than rendering an empty table.
+`GET /admin/api/status` (admin-authenticated) returns each configured source's most recently observed indicator, description, incidents, and observed timestamp. A configured source whose first poll has not completed is returned as `unknown`; an unconfigured or empty `[server.status]` reports an empty `sources` list, which the dashboard reads as "hide this section" rather than rendering an empty table.
 
 Whether the poller runs at all, and its polling interval, are decided once from the boot config — exactly like `[server.pool] usage_refresh_seconds` above: if `[server.status]` is absent, empty, or `refresh_seconds` is `0` at boot, no background task is created, and a later reload that enables it does not retroactively start one. Once running, each tick re-reads the current `sources` list from the live (possibly reloaded) config, so edits to which sources are polled take effect from the next tick onward; the polling interval itself does not change on reload.
 
@@ -417,8 +434,9 @@ Available presets:
 | `kimi-code` | `anthropic` | `https://api.kimi.com/coding` | `kimi_oauth` |
 | `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
 | `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
+| `opencode` | `anthropic` | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, header `x_api_key` |
 
-A bare string such as `auth = "claude_oauth"` is shorthand for `auth = { mode = "claude_oauth" }`. `api_key` maps accept `env` (required unless the preset supplies it) and `header` (`bearer` by default, or `x_api_key`). `claude_oauth`, `chatgpt_oauth`, and `kimi_oauth` maps may select `account = "name"` or `accounts = [...]`, but not both. `accounts` accepts bare store-entry names and full account tables; an explicitly empty `accounts = []` is rejected, while omitting both scope fields scans the whole store. If the ChatGPT store is empty, `chatgpt_oauth` retains its `~/.codex/auth.json` fallback. `passthrough`, `xai_oauth`, `cursor_oauth`, and `antigravity_oauth` maps take only `mode`; unknown mode-specific keys are errors.
+A bare string such as `auth = "claude_oauth"` is shorthand for `auth = { mode = "claude_oauth" }`. `api_key` maps accept `env` (required unless the preset supplies it) and `header`; an omitted `header` keeps the default (`bearer`, or the `opencode` preset's `x_api_key`). `claude_oauth`, `chatgpt_oauth`, and `kimi_oauth` maps may select `account = "name"` or `accounts = [...]`, but not both. `accounts` accepts bare store-entry names and full account tables; an explicitly empty `accounts = []` is rejected, while omitting both scope fields scans the whole store. If the ChatGPT store is empty, `chatgpt_oauth` retains its `~/.codex/auth.json` fallback. `passthrough`, `xai_oauth`, `cursor_oauth`, and `antigravity_oauth` maps take only `mode`; unknown mode-specific keys are errors.
 
 Do not combine `[[upstreams]]` with `[providers.*]` in the config file: startup fails when both file-layer declaration forms are present. Environment variables may override individual fields by normalized upstream/provider name under either form, using `SHUNT_PROVIDERS__<name>__<field>`. Declare the ordered `[[upstreams]]` array in the config file rather than trying to synthesize the whole array with one environment variable. Legacy `[providers.<name>]` remains supported and is normalized to implicit name-sorted upstreams. Because that form has no declared failover order, it supports only zero- or one-entry model maps; use `[[upstreams]]` before adding multiple entries to a model map.
 
@@ -432,7 +450,7 @@ For a `passthrough` upstream, the client's own `authorization` / `x-api-key` is 
 
 Independent of origin, each retained slot is also checked by the value it actually holds: `authorization` and `x-api-key` are each cleared only when that slot's own value is shaped like a JWT shunt itself issued — three segments whose payload's `aud` claims `"shunt"`, whose `iss` claims this gateway's identity, or whose `shunt_token_use` claim is `"gateway-session"`, a dedicated marker that only shunt mints — or matches a configured `[server.auth]` client token. The JWT check is deliberately by shape, not by whether the token currently authenticates: an expired token, one minted by a sibling instance under a different `public_url`, or one that no longer verifies after a `jwt_secret` rotation is still shunt's own credential and is still cleared. The marker is an additional arm on that shape check, not a requirement: a token minted before the marker existed still matches by `aud`/`iss`, and `verify` does not require the marker either, so a token minted by an older shunt version still authenticates for as long as it remains within its TTL. An `apiKeyHelper` fills both slots with the same value, so either credential can land in either or both. A slot holding a genuine upstream credential is forwarded even when the other slot holds the gateway JWT or a static client token; only the gate-credential-bearing slot is cleared. `[server.auth] header` accepts any header name, including `authorization` itself; when it is set that way a client authenticates with a bare, unprefixed `Authorization: <token>`, so that slot is checked as a whole value as well as by its `Bearer` payload and such a token is never forwarded upstream. One caveat for that configuration: on inference requests shunt removes the configured header before routing, unconditionally, so that slot then carries nothing upstream — a caller's own credential in it is dropped too, not just a gate token. Keeping `header` at its dedicated `x-shunt-token` default avoids that collision.
 
-Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id). `count_tokens` uses only the first chain element and never fails over. `[server.codex_endpoint]` remains pinned to its configured upstream and does not participate in this chain.
+Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id). A response routed by a [stage router](/guides/stage-router/) additionally carries `x-gateway-routed-model` (the target its chosen tier routes to) and `x-gateway-route-source` (why that tier was chosen); both are omitted for a model id that configures no router. `count_tokens` uses only the first chain element, never fails over, and is left unstamped by the stage-router pair. `[server.codex_endpoint]` is pinned to its configured upstream for every model with no `[[server.codex_endpoint.routes]]` entry, and does not participate in this chain either way.
 
 ### Migrating existing configurations
 
@@ -558,7 +576,7 @@ The top-level `auto_include_builtin_models` key defaults to `true`. When enabled
 
 Discovered models come from the live upstream list when shunt can get one. It issues `GET /v1/models` against `server.default_provider` when it is Anthropic-kind, using that provider's authentication mode. With `auth = "passthrough"`, shunt forwards the caller's credential, so each caller sees the list that credential is entitled to — except a slot holding shunt's own `[server.gateway]` JWT or a configured `[server.auth]` client token rather than a real upstream credential, which is not forwarded. `authorization` and `x-api-key` are filtered independently, so a genuine credential in the other slot is still forwarded; discovery falls back to the builtin snapshot only when neither slot has a forwardable credential left. With `api_key`, shunt uses the configured key. With `claude_oauth`, it uses the first resolvable, non-disabled account from the same effective account set as inference, including store-scanned accounts in `account_scope` order. Discovery performs no pool selection, cooldown, or quota accounting. Those two gateway-owned modes therefore expose a shared credential-scoped catalog. shunt caches nothing. When the default provider is not Anthropic-kind, there is no credential, or the call fails or times out (2 s cap), shunt falls back to a builtin snapshot of the Claude catalog. Either way these ids need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
 
-A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. With ordered `[[upstreams]]`, the map may contain one or more `upstream = "backend-id"` pairs and resolves to a failover chain in `[[upstreams]]` declaration order. With legacy `[providers.*]`, it must contain exactly one pair because that form has no declared order. For that id the map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; each upstream's default `effort` applies to its chain element. An empty map, an empty or whitespace-only upstream name or backend id, an unknown upstream, a same-id `[[routes]]` entry, a mapped id ending in `[1m]` or `[1M]`, or a duplicate `[[models]]` id where either entry has a map is a startup error. Clients strip the context-window hint before matching, so including it in a mapped id would make that entry unreachable. Pure map-less duplicate ids retain their previous behavior.
+A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. With ordered `[[upstreams]]`, the map may contain one or more `upstream = "backend-id"` pairs and resolves to a failover chain in `[[upstreams]]` declaration order. With legacy `[providers.*]`, it must contain exactly one pair because that form has no declared order. For that id the map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; each upstream's default `effort` applies to its chain element. An empty map, an empty or whitespace-only upstream name or backend id, an unknown upstream, a same-id `[[routes]]` entry, a mapped id ending in `[1m]` or `[1M]`, or a duplicate `[[models]]` id where either entry has a map is a startup error. Clients strip the context-window hint before matching, so including it in a mapped id would make that entry unreachable. Pure map-less duplicate ids retain their previous behavior, unless one of them carries a `[models.stage_router]` table — see below.
 
 ```toml
 [[models]]
@@ -574,6 +592,61 @@ codex = "gpt-5.2"
 | `id` | ✅ | Model id exposed to Claude Code |
 | `display_name` | — | Label shown in the `/model` picker |
 | `upstream_model` | — | Map from configured upstream names to backend model ids; ordered `[[upstreams]]` may produce a multi-entry failover chain, while legacy providers allow one entry |
+
+### `[models.stage_router]` (optional)
+
+Content-aware tier selection for one advertised id. Instead of naming a single
+destination, the entry names **two** — a capable tier and an efficient one — and
+lets the request's recent tool-result history pick between them per turn. Absent
+this table a `[[models]]` entry behaves exactly as it did before; configure no
+router anywhere and routing is unchanged.
+
+Both targets are ordinary public model ids, so each resolves through the normal
+ladder and keeps its failover chain, account pool, adapter, `effort`, and
+`service_tier`. What the client is told it got stays the id it asked for — the
+tier travels upstream only. See the [stage router guide](/guides/stage-router/)
+for how the signals and the hysteresis work.
+
+```toml
+[[models]]
+id = "claude-auto"
+display_name = "Auto (stage router)"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `capable_target` | ✅ required | Model id for hard reasoning, investigation, and error recovery |
+| `efficient_target` | ✅ required | Model id for routine production once the plan is settled |
+| `picker` | `efficient_first` | Tier used when the signals are inconclusive. `efficient_first` or `capable_first` |
+| `confidence_threshold` | `0.5` | Minimum scorer confidence to act on a signal, in `(0.0, 1.0]` |
+| `recent_turn_window` | `3` | Assistant turns of tool results fed to the scorer. Must be at least `1` |
+| `min_dwell_turns` | `3` | Turns a tier is held before a de-escalation may fire; counted from the turn that chose it, so `0` and `1` both mean no dwell floor |
+| `deescalate_threshold` | `0.75` | Confidence required to move *down* a tier. The default sits above `confidence_threshold`'s, making the down direction the harder one, but the two are range-checked independently — a value below `confidence_threshold` is accepted, and warns at load |
+| `session_ttl_seconds` | `3600` | How long a quiet session's pinned tier survives |
+
+A target that is itself a router, a blank target, a threshold outside
+`(0.0, 1.0]`, a `recent_turn_window` of `0`, a router **id** ending in `[1m]` or
+`[1M]`, a duplicate `[[models]]` id where either entry carries a router table, or the same
+entry also declaring `[models.upstream_model]` is a startup error. Two map-less
+entries may otherwise share an id, but a router names a routing policy rather
+than discovery metadata, so a duplicate would leave two policies for one id.
+Target ids are compared after the trailing `[1m]`/`[1M]` hint is stripped, the
+same way
+routing matches them. Four shapes warn instead of failing the load, each
+because it has a coherent operator intent: a target that matches no explicit
+route (it still resolves through `server.default_provider` like any other
+unmatched id), `capable_target` and `efficient_target` resolving to the same id
+(both tiers deliberately flattened onto one model), a `deescalate_threshold`
+below `confidence_threshold` (de-escalation made the easier direction, which a
+cost-first deployment may want), and a `[[routes]]` entry naming the router's
+own id (inert, since the router decides that id's destination). A
+`[[route_prefixes]]` entry the id merely starts with is **not** reported — it
+still serves every other id matching it. Each is emitted once per load — and a hot reload is a load, so a
+config left unfixed warns again on each one.
 
 ## `[sentry]` (optional)
 
@@ -612,4 +685,11 @@ Extra headers on every OTLP request (e.g. a hosted-collector token). Merged unde
 
 ## Routing precedence
 
-A matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
+A matching `[models.stage_router]` entry → a matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
+
+The router comes first because it is matched on the `[[models]]` entry itself: a
+request for a router-backed id is answered by the router, which picks a tier and
+resolves **that target** through the rest of the ladder — so the target, not the
+router id, is what a `[[routes]]` entry should name. An exact entry naming the
+router id is never consulted and warns at load. A `[[route_prefixes]]` entry is
+unaffected: the router takes only its own id out of that prefix's reach.

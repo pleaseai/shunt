@@ -19,8 +19,9 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | :-- | :-- | :-- |
 | `bind` | `127.0.0.1:3001` | shunt 监听的地址 |
 | `default_provider` | `anthropic` | 面向任何无匹配路由的模型的提供方 |
+| `shutdown_timeout_seconds` | `30` | 第一次 SIGTERM/SIGINT 后，活动 HTTP/SSE/WebSocket 工作排空并取消其余工作的秒数。必须为 `1`–`3600`；更改后需要重启 |
 | `max_concurrent_requests` | `1024` | 入站并发请求上限，请求会一直计数到响应正文结束。超出上限的请求不会排队，而是立即以 `503` 和 `Retry-After: 1` 拒绝。`0` 表示禁用限制，`/` 和 `/health` 不受限制。更改此键后需要重启 |
-| `sse_keepalive_seconds` | `30` | 注入 SSE `ping` 前的闲置秒数;`0` 禁用([详情](/zh-cn/guides/shared-gateway/#sse-keepalive-pings)) |
+| `sse_keepalive_seconds` | `30` | 注入 SSE `ping` 前的闲置秒数;`0` 禁用([详情](/zh-cn/guides/shared-gateway/#sse-keepalive-ping)) |
 
 ## HTTP 调优表
 
@@ -82,7 +83,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | 数组 | 访问级别 | 含义 |
 | :-- | :-- | :-- |
 | `write_keys` | `write` | 完全访问权限。`write` 蕴含 `read`,与 `tokens_env`/`tokens_file` 同级 |
-| `read_keys` | `read` | 可以通过管理界面与 spend-limit API 的所有 `GET`;所有修改操作都会以 `403 permission_error` 拒绝。它也无法登录:`POST /admin/login` 会以 `401` 拒绝(浏览器会话拥有完全访问权限,用 read key 铸造会话等于提权) |
+| `read_keys` | `read` | 可以通过管理界面与 spend-limit API 的所有 `GET`;所有修改操作都会以 `403 permission_error` 拒绝。它可以以只读会话登录仪表盘:`POST /admin/login` 会接受它,会话记录 `read` 级别,而通过该 Cookie 发出的所有修改操作仍然会被 `403` 拒绝 |
 
 凭据的权限是它匹配到的所有集合中的**最大值**,因此扫描集合的顺序不会改变权限。每个 `id` 不得为空,每个 key 至少 32 个字符;id 与 key 值都必须在三个凭据集合(`tokens_env`/`tokens_file`、`write_keys`、`read_keys`)范围内唯一,发生冲突时只报告冲突的 id,不会记录 key 值。短于 32 个字符的旧 `tokens_env` token 早于该规则存在,因此只发出警告而不会失败。
 
@@ -182,13 +183,39 @@ headers = { "x-api-key" = "..." }
 
 默认情况下,`/device` 忽略 forwarding header 并按 socket peer 做 rate limit。只有在 shunt 仅能通过会删除 client 所提供 forwarding header 并设置自身值的 trusted reverse proxy 访问时,才设置 `trust_forwarded_for = true`。不要在直接暴露的 gateway 上启用。
 
+## `[server.codex_endpoint]`(可选)
+
+此表启用入站 OpenAI Responses passthrough,让 **Codex CLI** 可以把 `base_url` 指向 shunt,并在 ChatGPT/Codex OAuth 账户池之间做 load balancing([详情](/zh-cn/guides/inbound-codex-endpoint/))。没有此表时,该路由不会注册。
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `provider` | `codex` | 处理所有未被任何 route 的 `model` 匹配的入站请求的 `[providers.<name>]` 表名。必须使用 `auth = "chatgpt_oauth"` |
+| `routes` | `[]` | 可选的按模型路由(见下文) |
+
+注册 `POST /backend-api/codex/responses`、`POST /responses` 和 `POST /v1/responses`,均由指定 provider 的账户池处理。存在 `[server.auth]` 时,与其他服务端凭证路由一样要求有效的客户端 token。没有 `[server.auth]` 时,端点会注入操作者的 Codex 凭证,却对任何能访问的人**开放**,因此在 loopback 之外的环境务必加以保护。与 `/v1/messages` 不同,请求不会转换为 Anthropic Messages 或反向转换,而是原样 relay 到上游。
+
+### `[[server.codex_endpoint.routes]]`(可选)
+
+每个条目把某一个模型送往另一个 Responses 兼容的上游,而不是上面固定的 `provider`。
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `model` | *(必填)* | Codex 客户端在 Responses 请求体中发送的公开模型 id。**精确匹配**且**区分大小写** — 没有前缀匹配、不剥离 `[1m]`、也不限制字符集,因此 `MiniMax-M3`、`openai/gpt-5.6-sol`、`~openai/gpt-latest` 这类厂商 slug 都按原样路由 |
+| `provider` | *(必填)* | 提供该模型的 provider。必须是 `kind = "responses"`,且不能使用不携带凭证的 auth 模式(`passthrough` 或 `none`) |
+| `upstream_model` | `model` | 发送给上游的模型 id。与 `model` 不同时,shunt 只改写请求体顶层的 `model`,其余字段保持不变 |
+
+指向未知 provider、非 `responses` provider,或使用不携带凭证的 auth 模式(`passthrough` 或 `none`)的 provider 的 route 会在校验时被拒绝;重复的 `model` 或空字段同样被拒绝。route 从实时配置快照读取,因此新增、修改、删除会在**重新加载**时生效;只有开关 `[server.codex_endpoint]` 表本身才需要重启。路由到非 ChatGPT provider 的请求使用全新组装的头部允许列表(`content-type`、`accept`、通过 flavor 门控的 `OpenAI-Beta`,以及 `xai_oauth` route 的 Grok CLI identity 头部)、identity 编码的请求体和单个凭证,没有池也没有故障转移。
+同一可选功能还会注册 `GET /models` 和 `GET /backend-api/codex/models`,它们在常规模型发现认证门之后返回有效的 Codex 回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 上,如果存在 `client_version` 查询,它优先于类 Anthropic 的头部并选择 Codex 空形状。没有 `client_version` 时,现有 Anthropic 发现响应保持不变。shunt 不会伪造不完整的 Codex `ModelInfo` 行。
+
 ## `[server.usage]`(可选)
 
 存在此表会注册面向客户端的 `GET /usage`,返回共享账户池配额状态的**净化聚合**视图,使非管理员客户端无需管理界面也能预判限流([端点详情](/zh-cn/reference/endpoints/))。没有此表时,该路由不会注册。
 
 此表目前没有键,仅凭存在即启用。它**要求 [`[server.auth]`](#serverauth可选)**:端点通过客户端 token 识别调用方,因此配置 `[server.usage]` 却没有 `[server.auth]` 时启动会失败,不会在未认证的情况下提供池遥测。
 
-`GET /usage` 使用与 `/v1/messages` 相同的客户端 token(配置的头部、`x-api-key` 或 `Authorization: Bearer`)进行认证,并返回每个窗口的剩余余量、重置时间以及 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户名称、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充 5 小时和共享每周窗口。Codex 本身没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。正的 `usage_refresh_seconds` 只轮询 imported 且可刷新的 `chatgpt_oauth` 账户;轮询默认关闭,获取或解析失败会保留既有状态。
+`GET /usage` 使用与 `/v1/messages` 相同的客户端 token(配置的头部、`x-api-key` 或 `Authorization: Bearer`)进行认证,并返回每个窗口的剩余余量(报告该窗口的未禁用账户的 `mean(1 - utilization)`,即整个池的总容量中尚未使用的比例 —— 九个耗尽账户加一个全新账户读作 `0.1` —— 这是池级聚合值,不预测下一个请求是否会被放行)、这些账户报告的最早重置时间,以及 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户名称、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充 5 小时和共享每周窗口。Codex 本身没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。正的 `usage_refresh_seconds` 只轮询 imported 且可刷新的 `chatgpt_oauth` 账户;轮询默认关闭,获取或解析失败会保留既有状态。
+
+响应在 `pool` 下给出池级聚合,并在 `providers` 下以配置的提供方名称(即 `[providers.<name>]` 中的 `<name>` 或 `[[upstreams]]` 条目的 `name`,而非账户身份)为键,为每个参与池化的提供方给出同样经过净化的聚合。将模型对应到该键是客户端的职责:[`GET /routes`](/zh-cn/reference/endpoints/) 只覆盖 `[[routes]]` 中明确列出的模型,没有端点公开 `[[models]].upstream_model`、`[[route_prefixes]]` 或 `server.default_provider` 的映射,而 `GET /v1/models` 条目不包含提供方字段。在混合池中,`pool` 报告的是把所有提供方账户混在一起的平均值,因此路由到某一提供方的客户端应从 `providers.<name>` 读取该提供方自身的余量和状态。认证模式不参与池化的提供方会被省略;没有 Fable 范围信号的提供方,其 `fable` 窗口即使在 `pool` 报告了值时也是 `null`。完整形态见[端点参考](/zh-cn/reference/endpoints/)。
 
 ## `[server.pool]`(可选)
 
@@ -211,7 +238,7 @@ headers = { "x-api-key" = "..." }
 
 对每个窗口 `X`,生效的软阈值按以下顺序解析:账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`,并以 `hard_threshold` 为上限。所有阈值都是 `[0.0, 1.0]` 范围内的使用率分数;超出范围会导致启动失败。阈值与 burn-rate 旋钮对两个池家族都生效:Anthropic 池取自其 `anthropic-ratelimit-unified-*` 头部,Codex/ChatGPT 池取自其 `x-codex-*` 5 小时/周窗口(Codex 没有 Fable 范围的 `7d_oi` 窗口,因此 `default_threshold_fable` 在那里不起作用)。`usage_refresh_seconds` 除了 `claude_oauth` 账户外,还会通过非官方的 `wham/usage` 端点轮询 Codex/ChatGPT 后端的 `chatgpt_oauth` 账户。
 
-正的 `usage_refresh_seconds` 还会启动一个后台轮询器,针对每个家族各自的 usage API 对账户池的配额状态进行对账校正:`claude_oauth` 账户对接官方 Anthropic OAuth usage API,Codex/ChatGPT 后端的 `chatgpt_oauth` 账户对接非官方的 `wham/usage` 端点;未设置或为 `0` 时禁用(默认)。两个家族都只轮询 imported(可刷新)账户 —— 长期 `claude setup-token`,或任一家族的 `token_env` 账户,都会被跳过,因为 usage 端点会拒绝不可刷新的令牌。Claude 轮询器会更新每个报告窗口的用量、窗口自身的重置时刻和用量观测时间;只有按窗口及聚合 status 的新鲜度,以及观测 status 时捕获的重置边界仍由头部驱动,即使权威用量包含 shunt 之外同一账户的消耗。Codex 轮询器会更新用量和用量观测时间;重置时间与 status 元数据仍由 header 驱动。对于已报告的窗口,未来的 header 重置时间会保留;已经过期的存储重置时间会在写入新用量前被清除。wham 的 `reset_at` 不会被采用为实际重置元数据。非公开的 schema 采用宽松、fail-soft 的解析,间隔在启动时固定,配置重载不会启动、停止或重新调整轮询器。
+正的 `usage_refresh_seconds` 还会启动一个后台轮询器,针对每个家族各自的 usage API 对账户池的配额状态进行对账校正:`claude_oauth` 账户对接官方 Anthropic OAuth usage API,Codex/ChatGPT 后端的 `chatgpt_oauth` 账户对接非官方的 `wham/usage` 端点;未设置或为 `0` 时禁用(默认)。两个家族都只轮询 imported(可刷新)账户 —— 长期 `claude setup-token`,或任一家族的 `token_env` 账户,都会被跳过,因为 usage 端点会拒绝不可刷新的令牌。Claude 轮询器会更新每个报告窗口的用量、窗口自身的重置时刻和用量观测时间;只有按窗口及聚合 status 的新鲜度,以及观测 status 时捕获的重置边界仍由头部驱动,即使权威用量包含 shunt 之外同一账户的消耗。Codex 轮询器会更新用量和用量观测时间;重置时间来自响应(`x-codex-*` header 与 WebSocket 的 `codex.rate_limits` 事件),status 元数据仍由 header 驱动。对于已报告的窗口,未来的存储重置时间会保留;已经过期的存储重置时间会在写入新用量前被清除。wham 的 `reset_at` 不会被采用为实际重置元数据。非公开的 schema 采用宽松、fail-soft 的解析,间隔在启动时固定,配置重载不会启动、停止或重新调整轮询器。
 
 `state_path` 会把池的配额状态(所有 provider 账户的按窗口使用率与各窗口自身的重置时刻,使用率和 status 的独立观测时间及捕获的 status 重置边界)写入磁盘。不设置时,重启会从空池开始:每个账户在重启后首个响应之前都显示为未观测,这会禁用 burn-rate 规避,并使 `GET /usage` 在流量重新填充池之前返回空值。该文件是尽力而为的缓存,而非权威来源 —— 配额无论如何都会从上游响应重新导出,因此文件缺失、陈旧或损坏只会导致冷启动,绝不会导致启动失败。写入使用私有 temp 文件(Unix 上为 `0600`)并将其原子重命名覆盖目标,且仅在配额发生变化时按后台定时器进行。写入失败时会在下一个 tick 重试。冷却不会被持久化(重启即失效),恢复的窗口中重置已过期的会在恢复时的 import 阶段、首次选择或 snapshot 之前丢弃。使用率在自身观测时间上限和该窗口的重置之间较早者到达时过期;仅上限经过时该窗口的未来重置仍可保留。按窗口 status 在自身观测时间上限和观测时捕获的 status 重置边界之间较早者到达时过期,捕获边界也会随 status 清除。版本2文件通过明确的迁移路径重写为版本3;版本3的无重置 status 在仅重置更新后仍保持无重置。路径在启动时固定;配置重载不会启动、停止或改变持久化路径。
 
@@ -273,8 +300,9 @@ codex-fallback = "gpt-5.2"
 | `kimi-code` | `anthropic` | `https://api.kimi.com/coding` | `kimi_oauth` |
 | `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
 | `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
+| `opencode` | `anthropic` | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, 头 `x_api_key` |
 
-`auth = "claude_oauth"` 这样的字符串是 `auth = { mode = "claude_oauth" }` 的简写。`api_key` 映射接受 `env`（除非 preset 已提供，否则必需）和 `header`（默认为 `bearer`，也可设为 `x_api_key`）。`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小范围，但不能同时设置两者。`accounts` 接受存储条目名称字符串和完整账户表；显式的 `accounts = []` 会被拒绝，而省略两个范围字段则扫描整个存储。若 ChatGPT 存储为空，`chatgpt_oauth` 仍会回退到 `~/.codex/auth.json`。`passthrough`、`xai_oauth`、`cursor_oauth`、`antigravity_oauth` 映射只接受 `mode`；特定 mode 下的未知键会报错。
+`auth = "claude_oauth"` 这样的字符串是 `auth = { mode = "claude_oauth" }` 的简写。`api_key` 映射接受 `env`（除非 preset 已提供，否则必需）和 `header`。省略 `header` 时保持默认值（`bearer`，或 `opencode` preset 的 `x_api_key`）。`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小范围，但不能同时设置两者。`accounts` 接受存储条目名称字符串和完整账户表；显式的 `accounts = []` 会被拒绝，而省略两个范围字段则扫描整个存储。若 ChatGPT 存储为空，`chatgpt_oauth` 仍会回退到 `~/.codex/auth.json`。`passthrough`、`xai_oauth`、`cursor_oauth`、`antigravity_oauth` 映射只接受 `mode`；特定 mode 下的未知键会报错。
 
 不要在配置文件中同时声明 `[[upstreams]]` 与 `[providers.*]`：文件层同时存在这两种声明形式时，启动会失败。无论采用哪种形式，环境变量都可按标准化后的上游/provider 名称通过 `SHUNT_PROVIDERS__<name>__<field>` 覆盖单个字段。有序的 `[[upstreams]]` 数组本身应在配置文件中声明，不要试图用单个环境变量合成整个数组。旧式 `[providers.<name>]` 仍受支持，并会标准化为按名称排序的隐式上游。由于这种形式没有声明故障转移顺序，模型映射只能有零个或一个条目；向模型映射添加多个条目前，请迁移到 `[[upstreams]]`。
 
@@ -288,7 +316,7 @@ codex-fallback = "gpt-5.2"
 
 与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值与 shunt 自己签发的 JWT **形状相符**——三段式结构，且载荷的 `aud` 声明为 `"shunt"`、`iss` 声明与本网关的身份一致，或 `shunt_token_use` 声明为 `"gateway-session"`（仅由 shunt 签发的专用标记）——或匹配配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除。这项 JWT 检查刻意按“形状是否相符”而非“该令牌现在是否能通过认证”来判定：一个已过期的令牌、由使用不同 `public_url` 的兄弟实例签发的令牌，或在 `jwt_secret` 轮换后已不再能通过校验的令牌，仍然是 shunt 自己的凭据，因此仍会被清除。该标记只是形状检查新增的一个分支，而非必要条件：在该标记出现之前签发的令牌仍会按 `aud`/`iss` 匹配，`verify` 本身也不要求该标记，因此旧版本 shunt 签发的令牌只要仍在其 TTL 内就仍能通过认证 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或静态客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。`[server.auth] header` 可以是任意头名称，包括 `authorization` 本身；这样配置时客户端使用不带前缀的 `Authorization: <token>` 进行认证，因此该槽位除了按 `Bearer` 载荷检查外还会按整个值检查，此类令牌绝不会被转发到上游。该配置有一个注意事项：在推理请求上 shunt 会在路由前无条件移除配置的头部，因此该槽位不会向上游携带任何东西 —— 不只是门控令牌，调用方自己的凭据也会一并被丢弃。把 `header` 保持为默认的专用 `x-shunt-token` 可以避免这种冲突。
 
-每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）。`count_tokens` 只使用链中第一个条目，且不会故障转移。`[server.codex_endpoint]` 仍固定到所配置的单一上游，不参与此链。
+每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）。由[阶段路由器](/zh-cn/guides/stage-router/)路由的响应还会带上 `x-gateway-routed-model`（所选档位指向的目标）和 `x-gateway-route-source`（选中该档位的原因）；未配置路由器的模型 id 不会带这两个头。`count_tokens` 只使用链中第一个条目，不会故障转移，也不会带上这两个阶段路由器头。对于没有 `[[server.codex_endpoint.routes]]` 条目的模型，`[server.codex_endpoint]` 仍固定到所配置的单一上游；无论哪种情况都不参与此链。
 
 ### 迁移现有配置
 
@@ -314,7 +342,7 @@ codex-fallback = "gpt-5.2"
 | `api_key_env` | 环境变量名 | 当 `auth = "api_key"` 时,从何处读取密钥。该值自身也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。 |
 | `api_key_header` | `bearer`(默认) \| `x_api_key` | 注入的密钥在哪个头部中发送。 |
 | `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。也适用于 `kind = "antigravity"`,会作为目录的 effort 后缀追加到不带后缀的 `gemini-*` `upstream_model` 上。 |
-| `count_tokens` | `tiktoken`(默认) \| `estimate` | `responses` 与 `cursor` provider:本地 tiktoken 计数 vs. `501 not_supported` 回退([详情](/zh-cn/guides/effort-and-context/#token-counting-count_tokens))。 |
+| `count_tokens` | `tiktoken`(默认) \| `estimate` | `responses` 与 `cursor` provider:本地 tiktoken 计数 vs. `501 not_supported` 回退([详情](/zh-cn/guides/effort-and-context/#token-计数count_tokens))。 |
 | `tool_search` | 未设置("auto",默认) \| `true` \| `false` | 在模型为 GPT-5.4+ 且风格不是 xAI/Grok 时,为 Claude Code 的工具搜索使用原生的客户端执行 `tool_search` 协议。未设置时仅对已验证支持的主机 —— ChatGPT/Codex 后端与 `api.openai.com` —— 默认使用原生协议,LiteLLM、vLLM、OpenRouter、自托管代理等其他所有 OpenAI 兼容端点都保留文本 shim。设为 `true` 可让已验证的自定义端点选择加入原生协议;设为 `false` 则始终强制使用 shim。见 [Codex → 工具搜索](/zh-cn/guides/codex/#原生协议)。 |
 
 只带名称的条目读取 `~/.shunt/accounts/claude/<name>.json`,该文件由 `shunt login claude --name <name> --mode oauth|import|setup-token` 创建。交互式 CLI 会提示选择这三种 mode,并推荐可刷新的 OAuth。`--long-lived` 保留为 `--mode setup-token` 的 deprecated alias。`SHUNT_CLAUDE_ACCOUNTS_DIR` 可覆盖存储目录。可刷新的 OAuth/import 文件会在 provider 轮换 refresh token 时原地更新,因此每个文件只能有一个正在运行的 owner。不要在多个 shunt 进程之间共享或独立复制该文件。请为每个进程分别预配,或在适合时使用静态 setup token。
@@ -349,7 +377,7 @@ codex-fallback = "gpt-5.2"
 
 发现的模型在 shunt 能取到实际上游列表时来自该列表。仅当 `server.default_provider` 为 Anthropic 类型时,它才会对该上游发起 `GET /v1/models`,并按其认证模式选择凭据。`auth = "passthrough"` 时使用调用方转发的凭据,因此每个调用方看到的都是该凭据有权使用的列表——但如果某个槽位中存放的不是真正的上游凭据,而是 shunt 自身的 `[server.gateway]` JWT 或配置的 `[server.auth]` 客户端令牌,则该槽位不会被转发。`authorization` 与 `x-api-key` 各自独立过滤,因此另一槽位中的真实凭据仍会被转发;只有当两个槽位都没有可转发的凭据时,发现才会回退到内置快照。`api_key` 时使用配置的密钥。`claude_oauth` 时使用推理路径所用的同一有效账户集合中第一个可解析且未禁用的账户。该集合包含从存储中扫描到的账户,并遵循 `account_scope` 顺序。发现不会进行账户池选择、冷却或配额记账。因此,后两种使用网关自有凭据的模式下,所有调用方共享由该凭据范围决定的目录。shunt 不做缓存。若 `server.default_provider` 不是 Anthropic 类型、没有凭据,或调用失败、超时(上限 2 秒),则回退到内置 Claude 目录快照。无论哪种情况,这些 id 都不需要专门的 `[[routes]]` 条目;它们按常规路由规则解析,当 `[[routes]]` 与 `[[route_prefixes]]` 均未匹配时回退到 `server.default_provider`。
 
-在维护的条目中添加 `[models.upstream_model]`，即可通过同一声明公开 id、进行路由并转换为上游 id。对于精确 id 路由，建议使用此形式而不是 `[[routes]]`。使用有序 `[[upstreams]]` 时，映射可包含一个或多个 `upstream = "backend-id"` 键值对，并按 `[[upstreams]]` 声明顺序解析为故障转移链。旧式 `[providers.*]` 没有声明顺序，因此只能包含一个键值对。对于这个 id，该映射优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`；每个上游的默认 `effort` 会应用到相应链条目。空映射、空或仅含空白字符的上游名称或后端 id、未知上游、同 id 的 `[[routes]]` 条目、以 `[1m]` 或 `[1M]` 结尾的带映射 id，以及至少有一项带映射的重复 `[[models]]` id 都会导致启动错误。client 会在匹配前移除 context-window hint，因此在带映射 id 中包含该 suffix 会使该条目无法命中。仅由不带映射条目组成的重复 id 保持原有行为。
+在维护的条目中添加 `[models.upstream_model]`，即可通过同一声明公开 id、进行路由并转换为上游 id。对于精确 id 路由，建议使用此形式而不是 `[[routes]]`。使用有序 `[[upstreams]]` 时，映射可包含一个或多个 `upstream = "backend-id"` 键值对，并按 `[[upstreams]]` 声明顺序解析为故障转移链。旧式 `[providers.*]` 没有声明顺序，因此只能包含一个键值对。对于这个 id，该映射优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`；每个上游的默认 `effort` 会应用到相应链条目。空映射、空或仅含空白字符的上游名称或后端 id、未知上游、同 id 的 `[[routes]]` 条目、以 `[1m]` 或 `[1M]` 结尾的带映射 id，以及至少有一项带映射的重复 `[[models]]` id 都会导致启动错误。client 会在匹配前移除 context-window hint，因此在带映射 id 中包含该 suffix 会使该条目无法命中。仅由不带映射条目组成的重复 id 保持原有行为，但其中一项带有 `[models.stage_router]` 表时除外 —— 参见下文。
 
 ```toml
 [[models]]
@@ -365,6 +393,50 @@ codex = "gpt-5.2"
 | `id` | ✅ | 暴露给 Claude Code 的模型 id |
 | `display_name` | — | 在 `/model` 选择器中显示的标签 |
 | `upstream_model` | — | 从已配置上游名称到后端模型 id 的映射；有序 `[[upstreams]]` 可形成多条目故障转移链，旧式 provider 只允许一个条目 |
+
+### `[models.stage_router]`(可选)
+
+针对某一个对外 id 的内容感知档位选择。该条目不再只指定一个目的地,而是指定**两个** ——
+一个强力档位和一个高效档位 —— 并让请求最近的 tool-result 历史逐轮在两者之间做选择。
+没有这张表时,`[[models]]` 条目的行为与之前完全一致;任何地方都不配置路由器,路由就不变。
+
+两个目标都是普通的公开模型 id,因此各自沿常规阶梯解析,并保留自己的故障转移链、账户池、
+适配器、`effort` 和 `service_tier`。返回给客户端的 id 仍是它请求的那个 id,被选中的档位
+只向上游传递。信号与迟滞的工作方式见[阶段路由器指南](/zh-cn/guides/stage-router/)。
+
+```toml
+[[models]]
+id = "claude-auto"
+display_name = "Auto (stage router)"
+
+[models.stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `capable_target` | ✅ 必填 | 负责高难度推理、排查与错误恢复的模型 id |
+| `efficient_target` | ✅ 必填 | 计划确定后负责常规产出的模型 id |
+| `picker` | `efficient_first` | 信号不明确时使用的档位。`efficient_first` 或 `capable_first` |
+| `confidence_threshold` | `0.5` | 依据信号作出判定所需的最低评分器置信度，范围 `(0.0, 1.0]` |
+| `recent_turn_window` | `3` | 送入评分器的助手工具结果轮数。至少为 `1` |
+| `min_dwell_turns` | `3` | 降档可以触发之前档位需保持的轮数。从选定档位的那一轮开始计数，因此 `0` 和 `1` 都表示没有下限 |
+| `deescalate_threshold` | `0.75` | *降低*档位所需的置信度。默认值高于 `confidence_threshold` 的默认值，使下降方向更难触发；但两者各自独立做范围校验，因此低于 `confidence_threshold` 的值也会被接受，并在加载时发出警告 |
+| `session_ttl_seconds` | `3600` | 空闲会话的固定档位可存续多久 |
+
+目标本身就是路由器、目标为空、阈值超出 `(0.0, 1.0]`、`recent_turn_window` 为 `0`、
+路由器 **id** 以 `[1m]` 或 `[1M]` 结尾、其中一项带有路由器表的重复 `[[models]]` id，或同一条目
+同时声明了 `[models.upstream_model]`，都会导致启动错误。不带映射的两个条目本可共用同一
+个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致。以下四种情况
+只发出警告而不会让加载失败，因为每一种都可能是运维人员的本意 —— 未匹配到任何显式路由
+的目标（它仍会像其他未匹配的 id 一样经由 `server.default_provider` 解析）、解析到同一个
+id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同一个模型上）、低于
+`confidence_threshold` 的 `deescalate_threshold`（把下降方向变得更容易，这可能正是成本
+优先的部署所需要的），以及写了路由器自身 id 的 `[[routes]]` 条目（该 id 的去向由路由器
+决定，因此不会被查询）。仅仅是 id 以某个前缀开头的 `[[route_prefixes]]` 条目**不会**被
+报告 —— 匹配该前缀的其他 id 仍由它处理。每条警告在每次加载时各输出一次；热重载
+同样是一次加载，所以配置不改就会在每次重载时再次输出。
 
 ## `[sentry]`(可选)
 
@@ -403,4 +475,9 @@ codex = "gpt-5.2"
 
 ## 路由优先级
 
-匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
+匹配的 `[models.stage_router]` 条目 → 匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
+
+路由器排在最前，是因为它在 `[[models]]` 条目本身上完成匹配：指向带路由器 id 的请求由路由器
+应答，路由器选定档位后再把**那个目标**交给其余的解析链。因此 `[[routes]]` 或
+条目应当写目标，而不是路由器 id。写了路由器 id 的精确条目永远不会被查询，并会在加载时
+发出警告。`[[route_prefixes]]` 条目不受影响：路由器只从该前缀中取走自己的 id。
