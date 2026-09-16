@@ -113,6 +113,18 @@ Detection does not depend on what the request advertised: shunt recognizes the b
 the response frame alone, so a request that carries no `tools` can raise the same error whenever
 Composer reaches for a built-in. Retrying is the mitigation in both cases.
 
+A turn also ends only on an authoritative terminal from Cursor. If the upstream stream is cut
+before that terminal arrives — a dropped connection, a truncated body — shunt fails the turn
+instead of handing back the partial answer as a finished one:
+
+```json
+{"type":"error","error":{"type":"api_error","message":"cursor: upstream EOF without an authoritative terminal"}}
+```
+
+The exception is a turn that has already produced output and then goes quiet: Cursor holds the
+response open waiting for a tool result the stateless bridge never sends, so an idle stream there
+is the normal end of a turn, not a cut one.
+
 ## Verify
 
 ```bash
