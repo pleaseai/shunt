@@ -99,6 +99,12 @@ with that result in history), and forwards **inline images** (base64 sources; UR
 skipped). Cursor's own agentic file/shell tools are not exposed — only the tools your request
 advertises.
 
+Treat `tool_use.id` as opaque. When Cursor identifies the call on the wire, shunt passes that
+identity straight through, so the id carries Cursor's own `tool_<uuid>` shape rather than the
+`toolu_<uuid>` an Anthropic upstream would mint; when it does not, shunt mints a `toolu_<uuid>`
+itself. Either way the id only has to round-trip: send it back unchanged as the `tool_result`
+`tool_use_id`.
+
 Composer nevertheless chooses per turn whether to answer through a bridged tool or through one of
 Cursor's built-in tools, and a built-in call arrives on the wire with no tool name, carrying only
 its arguments and a call id. shunt cannot map that onto a tool your client owns, so it fails the
