@@ -504,7 +504,11 @@ fn a_decided_turn_records_nothing_until_it_is_committed() {
     let router = router();
     let now = Instant::now();
 
-    let (decided, pin) = store.apply("claude-auto", Some(SESSION), &router, capable(), false, now);
+    let StageApplied {
+        decision: decided,
+        pin,
+        ..
+    } = store.apply("claude-auto", Some(SESSION), &router, capable(), false, now);
     assert_eq!(decided.tier, StageTier::Capable);
     assert_eq!(store.len(), 0, "apply alone must not write");
 
@@ -538,13 +542,16 @@ fn a_read_only_or_sessionless_turn_earns_no_pin() {
     let router = router();
     let now = Instant::now();
 
-    let (_, probe) = store.apply("claude-auto", Some(SESSION), &router, capable(), true, now);
+    let StageApplied { pin: probe, .. } =
+        store.apply("claude-auto", Some(SESSION), &router, capable(), true, now);
     assert!(probe.is_none(), "a count_tokens probe earns no pin");
 
-    let (_, stateless) = store.apply("claude-auto", None, &router, capable(), false, now);
+    let StageApplied { pin: stateless, .. } =
+        store.apply("claude-auto", None, &router, capable(), false, now);
     assert!(stateless.is_none(), "a sessionless turn earns no pin");
 
-    let (_, blank) = store.apply("claude-auto", Some(""), &router, capable(), false, now);
+    let StageApplied { pin: blank, .. } =
+        store.apply("claude-auto", Some(""), &router, capable(), false, now);
     assert!(blank.is_none(), "a blank session header earns no pin");
 
     assert_eq!(store.len(), 0);
@@ -561,7 +568,7 @@ fn a_late_commit_does_not_overwrite_a_newer_decision() {
     let start = Instant::now();
 
     // Both read an empty store, so both are first-turn decisions.
-    let (_, older) = store.apply(
+    let StageApplied { pin: older, .. } = store.apply(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -569,7 +576,7 @@ fn a_late_commit_does_not_overwrite_a_newer_decision() {
         false,
         start,
     );
-    let (_, newer) = store.apply(
+    let StageApplied { pin: newer, .. } = store.apply(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -610,7 +617,7 @@ fn an_in_order_commit_still_replaces_the_pin() {
     let router = router();
     let start = Instant::now();
 
-    let (_, first) = store.apply(
+    let StageApplied { pin: first, .. } = store.apply(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -620,7 +627,7 @@ fn an_in_order_commit_still_replaces_the_pin() {
     );
     store.commit(first.expect("the first turn earns a pin"), start);
 
-    let (_, second) = store.apply(
+    let StageApplied { pin: second, .. } = store.apply(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -669,7 +676,7 @@ fn a_pre_reload_commit_does_not_overwrite_a_post_reload_pin() {
     // A surviving *capable* post-reload pin holds an efficient probe back; a
     // pre-reload pin that overwrote it is rejected on fingerprint, leaving the
     // probe unpinned and free to answer from its own estimate.
-    let (_, stale) = store.apply(
+    let StageApplied { pin: stale, .. } = store.apply(
         "claude-auto",
         Some(SESSION),
         &before,
@@ -677,7 +684,7 @@ fn a_pre_reload_commit_does_not_overwrite_a_post_reload_pin() {
         false,
         start,
     );
-    let (_, fresh) = store.apply(
+    let StageApplied { pin: fresh, .. } = store.apply(
         "claude-auto",
         Some(SESSION),
         &after,
@@ -723,7 +730,7 @@ fn a_post_reload_decision_still_replaces_an_old_table_pin() {
         false,
         start,
     );
-    let (_, fresh) = store.apply(
+    let StageApplied { pin: fresh, .. } = store.apply(
         "claude-auto",
         Some(SESSION),
         &after,

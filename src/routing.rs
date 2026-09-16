@@ -800,6 +800,7 @@ mod stage_router_tests {
             read_only: false,
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
+            decided: std::cell::Cell::new(None),
         };
 
         let (routes, requested) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -831,6 +832,7 @@ mod stage_router_tests {
             read_only: false,
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
+            decided: std::cell::Cell::new(None),
         };
 
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))

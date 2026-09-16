@@ -6,6 +6,32 @@ use crate::server::AppState;
 #[derive(Debug, Serialize)]
 pub struct RoutesResponse {
     pub data: Vec<RouteEntry>,
+    /// The `[[models]]` entries carrying a `[models.stage_router]` table.
+    ///
+    /// Omitted entirely when none is configured, so a deployment without a
+    /// router serves the byte-identical response it served before routers
+    /// existed — the two assertions in this module's tests pin exactly that.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub routers: Vec<RouterEntry>,
+}
+
+/// One configured stage router, as `/routes` reports it.
+///
+/// The tunables (`confidence_threshold`, dwell, TTL) are deliberately absent:
+/// this endpoint answers "where can a request go", and a client that needs the
+/// calibration reads the config. What it does report is the pair of ids the
+/// router chooses between, because those are destinations that appear nowhere
+/// else in this response — a router's targets need not have `[[routes]]`
+/// entries of their own.
+#[derive(Debug, Serialize)]
+pub struct RouterEntry {
+    /// The advertised id clients request.
+    pub model: String,
+    pub capable_target: String,
+    pub efficient_target: String,
+    /// The tier a fresh session starts on, from `picker`. A body-less caller
+    /// resolving this id gets this tier, which is what makes it worth naming.
+    pub default_tier: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,8 +74,29 @@ pub async fn get(State(state): State<AppState>) -> Json<RoutesResponse> {
             service_tier: route.service_tier.clone(),
         })
         .collect();
-    tracing::info!(routes = data.len(), "served GET /routes discovery");
-    Json(RoutesResponse { data })
+    let routers: Vec<RouterEntry> = state
+        .config
+        .models
+        .iter()
+        .filter_map(|model| {
+            let router = model.stage_router.as_ref()?;
+            Some(RouterEntry {
+                model: model.id.clone(),
+                capable_target: router.capable_target.clone(),
+                efficient_target: router.efficient_target.clone(),
+                default_tier: match router.picker {
+                    crate::config::StageRouterPicker::EfficientFirst => "efficient",
+                    crate::config::StageRouterPicker::CapableFirst => "capable",
+                },
+            })
+        })
+        .collect();
+    tracing::info!(
+        routes = data.len(),
+        routers = routers.len(),
+        "served GET /routes discovery"
+    );
+    Json(RoutesResponse { data, routers })
 }
 
 #[cfg(test)]
@@ -58,7 +105,7 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        config::RouteConfig,
+        config::{ModelConfig, RouteConfig},
         server::{self, AppState},
     };
 
@@ -110,6 +157,80 @@ mod tests {
         let body = serde_json::to_value(response.0).unwrap();
 
         assert_eq!(body, json!({"data": []}));
+    }
+
+    fn stage_router_model(id: &str, picker: crate::config::StageRouterPicker) -> ModelConfig {
+        ModelConfig {
+            id: id.to_string(),
+            display_name: Some("Auto".to_string()),
+            upstream_model: None,
+            stage_router: Some(crate::config::StageRouterConfig {
+                capable_target: "claude-opus-4-8".to_string(),
+                efficient_target: "claude-sonnet-4-6".to_string(),
+                picker,
+                confidence_threshold: crate::config::DEFAULT_CONFIDENCE_THRESHOLD,
+                recent_turn_window: 3,
+                min_dwell_turns: 3,
+                deescalate_threshold: None,
+                session_ttl_seconds: 3600,
+            }),
+        }
+    }
+
+    /// A configured router is reported with both destinations, because a
+    /// router's targets need not have `[[routes]]` entries of their own — so
+    /// `data` alone would not name them.
+    #[tokio::test]
+    async fn returns_configured_stage_routers() {
+        let config = crate::config::Config {
+            models: vec![
+                stage_router_model(
+                    "claude-auto",
+                    crate::config::StageRouterPicker::EfficientFirst,
+                ),
+                ModelConfig {
+                    id: "claude-plain".to_string(),
+                    display_name: None,
+                    upstream_model: None,
+                    stage_router: None,
+                },
+            ],
+            ..crate::config::Config::default()
+        };
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        let response = get(State(state)).await;
+        let body = serde_json::to_value(response.0).unwrap();
+
+        assert_eq!(
+            body,
+            json!({
+                "data": [],
+                "routers": [{
+                    "model": "claude-auto",
+                    "capable_target": "claude-opus-4-8",
+                    "efficient_target": "claude-sonnet-4-6",
+                    "default_tier": "efficient"
+                }]
+            }),
+            "a `[[models]]` entry without a router must not appear in `routers`"
+        );
+    }
+
+    /// `default_tier` tracks `picker`, so it cannot be read as a constant.
+    #[tokio::test]
+    async fn default_tier_follows_the_configured_picker() {
+        let config = crate::config::Config {
+            models: vec![stage_router_model(
+                "claude-auto",
+                crate::config::StageRouterPicker::CapableFirst,
+            )],
+            ..crate::config::Config::default()
+        };
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        let body = serde_json::to_value(get(State(state)).await.0).unwrap();
+        assert_eq!(body["routers"][0]["default_tier"], "capable");
     }
 
     #[test]

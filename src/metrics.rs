@@ -47,6 +47,8 @@ struct OtelInstruments {
     gateway_telemetry_ingest: Counter<u64>,
     upstream_retries: Counter<u64>,
     failover: Counter<u64>,
+    stage_decisions: Counter<u64>,
+    stage_flips: Counter<u64>,
     requests_shed: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
@@ -126,6 +128,18 @@ fn otel_instruments() -> &'static OtelInstruments {
             failover: meter
                 .u64_counter("shunt.failover")
                 .with_description("Ordered upstream failover state transitions")
+                .build(),
+            stage_decisions: meter
+                .u64_counter("shunt.stage_router.decisions")
+                .with_description(
+                    "Stage-router tier decisions by routed model, tier, and decision source",
+                )
+                .build(),
+            stage_flips: meter
+                .u64_counter("shunt.stage_router.flips")
+                .with_description(
+                    "Stage-router decisions that moved a session off its pinned tier",
+                )
                 .build(),
             requests_shed: meter
                 .u64_counter("shunt.requests_shed")
@@ -522,6 +536,58 @@ pub fn record_failover(provider: &str, state: &'static str) {
     otel_instruments().failover.add(1, &attributes);
 }
 
+/// Record one stage-router tier decision (issue #543 follow-up; plan PR 6).
+///
+/// `model` is the **requested** id — the `[[models]]` entry carrying the
+/// router, not the tier target — so the series stays one per configured router
+/// rather than one per target. `tier` and `source` are closed sets
+/// (`StageTier::as_label`, `StageSource::as_label`), so the label space is the
+/// number of routers times ten, whatever the session count.
+///
+/// Called only for an admitted request. A turn rejected by inbound auth or the
+/// managed-model policy is routed but never served, and counting it would
+/// report traffic the gateway did not carry.
+pub fn record_stage_decision(model: &str, tier: &'static str, source: &'static str) {
+    sentry::metrics::counter("shunt.stage_router.decisions", 1)
+        .attribute("model", model.to_owned())
+        .attribute("tier", tier.to_owned())
+        .attribute("source", source.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("model", model.to_owned()),
+        KeyValue::new("tier", tier),
+        KeyValue::new("source", source),
+    ];
+    otel_instruments().stage_decisions.add(1, &attributes);
+}
+
+/// Record one stage-router decision that moved a session off its pinned tier.
+///
+/// A flip is the expensive event this design is built to ration: it forfeits a
+/// warmed prompt-cache prefix, forces a Codex continuation to resend its whole
+/// input, and drops pooled connections and sticky account slots. The decision
+/// counter above cannot show it — a session pinned to `capable` and a session
+/// that just moved there are the same row — so churn needs its own series.
+///
+/// `from` and `to` are tier labels, which makes the two directions separable:
+/// escalation is designed to be easy and de-escalation hard, so they are not
+/// expected to be symmetric and a single count would hide that.
+pub fn record_stage_flip(model: &str, from: &'static str, to: &'static str) {
+    sentry::metrics::counter("shunt.stage_router.flips", 1)
+        .attribute("model", model.to_owned())
+        .attribute("from", from.to_owned())
+        .attribute("to", to.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("model", model.to_owned()),
+        KeyValue::new("from", from),
+        KeyValue::new("to", to),
+    ];
+    otel_instruments().stage_flips.add(1, &attributes);
+}
+
 /// Record one inbound request shed at the `[server] max_concurrent_requests`
 /// limit (issue #260). A shed request never reaches a handler, so it is absent
 /// from [`record_proxied_request`] and from the per-request spans — without this
@@ -692,6 +758,14 @@ mod tests {
         super::record_failover("anthropic", "attempted");
         super::record_failover("openai", "advanced");
         super::record_failover("openai", "exhausted");
+    }
+
+    /// The stage-router counters honor the same opt-in no-op contract.
+    #[test]
+    fn record_stage_counters_are_noop_without_sinks() {
+        super::record_stage_decision("claude-auto", "capable", "override");
+        super::record_stage_decision("claude-auto", "efficient", "no_signal");
+        super::record_stage_flip("claude-auto", "efficient", "capable");
     }
 
     /// The Codex WebSocket overflow counter honors the same opt-in no-op

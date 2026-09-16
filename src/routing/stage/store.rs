@@ -87,6 +87,34 @@ pub(crate) struct PendingPin {
     session: StageSession,
 }
 
+/// What one [`StageRouterStore::apply`] call decided, and what it displaced.
+pub(crate) struct StageApplied {
+    pub decision: StageDecision,
+    /// The pin this turn earned, parked until the request is admitted. `None`
+    /// for a turn that records nothing: no session id, or a read-only probe.
+    pub pin: Option<PendingPin>,
+    /// The tier a live pin held before this turn, when one did and this turn
+    /// could have moved it. A value differing from `decision.tier` is a flip.
+    ///
+    /// `None` wherever a flip is not possible — an unpinned session, a probe,
+    /// a caller with no session header — so a counter reading this cannot
+    /// report churn on a turn that changed nothing. Like the pin itself, it is
+    /// only *reported* after the request is admitted: a rejected request must
+    /// no more count as a flip than it may write a pin.
+    pub previous_tier: Option<StageTier>,
+}
+
+impl StageApplied {
+    /// A decision that neither records a pin nor displaces one.
+    fn stateless(decision: StageDecision) -> Self {
+        Self {
+            decision,
+            pin: None,
+            previous_tier: None,
+        }
+    }
+}
+
 /// Per-session tier pins. Lives on `AppState` beside the account pool, so it
 /// survives a config reload rather than being rebuilt by one.
 #[derive(Debug, Default)]
@@ -128,14 +156,14 @@ impl StageRouterStore {
         estimate: StageDecision,
         read_only: bool,
         now: Instant,
-    ) -> (StageDecision, Option<PendingPin>) {
+    ) -> StageApplied {
         // An empty header is not a session. Without this every client that
         // sends a blank `x-claude-code-session-id` would hash to one key and
         // share a single tier pin for the model — the same reason the websocket
         // pool (`adapters/responses/mod.rs`) and the inbound Codex endpoint
         // already filter it before using the id as a sticky key.
         let Some(session_id) = session_id.filter(|session_id| !session_id.is_empty()) else {
-            return (estimate, None);
+            return StageApplied::stateless(estimate);
         };
         let key = session_key(model, session_id);
         let fingerprint = fingerprint(router);
@@ -167,7 +195,9 @@ impl StageRouterStore {
         let (decision, changed) = resolve(router, pinned, estimate);
 
         if read_only {
-            return (decision, None);
+            // A probe changes nothing, so it displaced nothing: reporting a
+            // previous tier here would let `count_tokens` count as a flip.
+            return StageApplied::stateless(decision);
         }
 
         let dwell_turns = match (pinned, changed) {
@@ -178,9 +208,10 @@ impl StageRouterStore {
             // may move again.
             _ => 1,
         };
-        (
+        StageApplied {
             decision,
-            Some(PendingPin {
+            previous_tier: pinned.map(|session| session.tier),
+            pin: Some(PendingPin {
                 key,
                 session: StageSession {
                     seq,
@@ -191,7 +222,7 @@ impl StageRouterStore {
                     ttl,
                 },
             }),
-        )
+        }
     }
 
     /// Write a pin [`StageRouterStore::apply`] prepared, once the request that
@@ -246,11 +277,11 @@ impl StageRouterStore {
         read_only: bool,
         now: Instant,
     ) -> StageDecision {
-        let (decision, pin) = self.apply(model, session_id, router, estimate, read_only, now);
-        if let Some(pin) = pin {
+        let applied = self.apply(model, session_id, router, estimate, read_only, now);
+        if let Some(pin) = applied.pin {
             self.commit(pin, now);
         }
-        decision
+        applied.decision
     }
 
     #[cfg(test)]

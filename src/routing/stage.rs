@@ -52,13 +52,9 @@ pub(crate) struct StageDecision {
 ///
 /// The variants libsy owns are carried as its own type rather than re-spelled,
 /// so adding one upstream fails to compile in the match below. Bounded metric
-/// cardinality, the reason the source used to be a `&'static str`, constrains
-/// only what reaches a label, and this type is closed, so the conversion
-/// belongs with the metric that consumes it. When one is added, a scorer label
-/// should come from [`DecisionSource::as_str`] rather than a fresh set of
-/// literals — libsy spells one of them `llm-classifier`, and the copy this
-/// type replaced had already drifted to `llm_classifier`. Nothing here
-/// enforces that; it is the reason the conversion is not written twice.
+/// cardinality — the reason the source used to be a `&'static str` — is a
+/// property of the label, not of this type, and [`StageSource::as_label`] is
+/// where it is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StageSource {
     /// The scorer reached this turn and stamped its own reason.
@@ -90,6 +86,21 @@ impl StageSource {
         }
     }
 
+    /// The metric and header label. A closed set, so it cannot inflate label
+    /// cardinality however many distinct sessions route through it.
+    ///
+    /// The scorer's variants delegate to libsy's own `as_str` rather than a
+    /// second set of literals here — including `llm-classifier`, the one label
+    /// libsy hyphenates, which the hand-written copy this replaced had spelled
+    /// `llm_classifier`.
+    pub(crate) fn as_label(self) -> &'static str {
+        match self {
+            Self::Scorer(source) => source.as_str(),
+            Self::NoSignal => "no_signal",
+            Self::Sticky => "sticky",
+        }
+    }
+
     /// libsy's hard de-escalation shortcut, which reports no confidence at all.
     ///
     /// Unreachable through the live path today: [`signals::extract`] pins
@@ -104,12 +115,49 @@ impl StageSource {
 }
 
 impl StageTier {
+    /// The metric and header label for this tier.
+    pub(crate) fn as_label(self) -> &'static str {
+        match self {
+            StageTier::Capable => "capable",
+            StageTier::Efficient => "efficient",
+        }
+    }
+
     /// The configured model id this tier routes to.
     pub(crate) fn target(self, router: &StageRouterConfig) -> &str {
         match self {
             StageTier::Capable => &router.capable_target,
             StageTier::Efficient => &router.efficient_target,
         }
+    }
+}
+
+/// What the router decided for one request, for observability only.
+///
+/// Nothing here steers routing — the chain is already resolved by the time this
+/// is read. It exists because the decision is otherwise invisible downstream:
+/// `Route.model` is deliberately re-stamped to the id the client asked for
+/// (issue #172), so neither the response nor the resolved chain says which tier
+/// served the turn or why.
+#[derive(Debug, Clone)]
+pub(crate) struct StageOutcome {
+    /// The configured model id the chosen tier routes to.
+    pub target: String,
+    pub tier: StageTier,
+    pub source: StageSource,
+    /// The tier a pin held before this turn, when this turn could have moved
+    /// it. See [`store::StageApplied::previous_tier`].
+    pub previous_tier: Option<StageTier>,
+}
+
+impl StageOutcome {
+    /// The `(from, to)` pair when this turn moved a session off the tier it was
+    /// pinned to, and `None` when it did not move one — an unpinned session, a
+    /// probe, or a turn that landed back on the tier already pinned.
+    pub(crate) fn flip(&self) -> Option<(StageTier, StageTier)> {
+        self.previous_tier
+            .filter(|previous| *previous != self.tier)
+            .map(|previous| (previous, self.tier))
     }
 }
 
@@ -137,6 +185,10 @@ pub(crate) struct StageContext<'a> {
     /// never proved it owns. [`StageContext::commit`] writes it once the
     /// request is known to be served.
     pub pending: Cell<Option<store::PendingPin>>,
+    /// What the router decided, parked for the observability surfaces to read
+    /// once the request is admitted. Set only when the requested id actually
+    /// carries a `[models.stage_router]` table.
+    pub decided: Cell<Option<StageOutcome>>,
 }
 
 impl StageContext<'_> {
@@ -171,7 +223,7 @@ pub(crate) fn select(
     };
 
     let estimate = decide(router, context.request.get("messages"));
-    let (decision, pin) = context.store.apply(
+    let applied = context.store.apply(
         model,
         context.session_id,
         router,
@@ -179,6 +231,16 @@ pub(crate) fn select(
         context.read_only,
         context.now,
     );
+    let (decision, pin) = (applied.decision, applied.pin);
+    // Parked for the observability surfaces, which read it only after the
+    // request is admitted — the same boundary the pin waits for, and for the
+    // same reason: a rejected request neither pins nor counts.
+    context.decided.set(Some(StageOutcome {
+        target: decision.tier.target(router).to_string(),
+        tier: decision.tier,
+        source: decision.source,
+        previous_tier: applied.previous_tier,
+    }));
     // Parked, not written: see [`StageContext::pending`]. Validation forbids a
     // router whose target is itself a router, so one request reaches this line
     // at most once and no earlier pin can be dropped here.

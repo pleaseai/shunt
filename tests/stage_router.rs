@@ -444,3 +444,87 @@ async fn a_rejected_request_does_not_pin_the_session() {
     capable.verify().await;
     efficient.verify().await;
 }
+
+/// The two observability headers name the tier and the reason.
+///
+/// They exist because the decision is otherwise invisible to the client:
+/// `x-gateway-model` is deliberately the id the caller asked for, and
+/// `x-gateway-upstream-model` is the name sent upstream, so neither says which
+/// configured target the router picked.
+///
+/// Non-vacuity: drop the `stage_stamp` argument at the success call site in
+/// `stamp_gateway_headers` and both assertions go red on a missing header.
+#[tokio::test]
+async fn a_routed_response_names_the_tier_and_the_reason() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let capable = MockServer::start().await;
+    let efficient = MockServer::start().await;
+    tier_mock(CAPABLE_UPSTREAM_MODEL, 1).mount(&capable).await;
+    let gateway = start_gateway(router_config(&capable, &efficient)).await;
+
+    let response = post(&gateway, erroring_messages()).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["x-gateway-routed-model"],
+        "capable-alias",
+        "the header names the configured target, not the upstream model name"
+    );
+    assert_ne!(
+        response.headers()["x-gateway-routed-model"],
+        response.headers()["x-gateway-upstream-model"],
+        "the two headers must be distinguishable, or the new one says nothing"
+    );
+    // Two trailing failures are scored as critical, which libsy reports as a
+    // hard override rather than a dimension score.
+    assert_eq!(response.headers()["x-gateway-route-source"], "override");
+}
+
+/// A model id with no `[models.stage_router]` table must not gain the headers:
+/// a client has to be able to tell "routed to a tier" from "not router-routed".
+///
+/// Non-vacuity: stamp the pair unconditionally — with an empty value, say —
+/// and this goes red.
+#[tokio::test]
+async fn an_unrouted_response_carries_no_stage_headers() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let capable = MockServer::start().await;
+    let efficient = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(tier_reply(EFFICIENT_UPSTREAM_MODEL))
+        .mount(&efficient)
+        .await;
+    let gateway = start_gateway(router_config(&capable, &efficient)).await;
+
+    // `efficient-alias` is an ordinary `[[models]]` entry in this config.
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("x-claude-code-session-id", SESSION)
+        .body(
+            json!({"model": "efficient-alias", "max_tokens": 16, "messages": quiet_messages()})
+                .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        !response.headers().contains_key("x-gateway-routed-model"),
+        "an ordinary model id must not report a routed tier"
+    );
+    assert!(
+        !response.headers().contains_key("x-gateway-route-source"),
+        "an ordinary model id must not report a decision source"
+    );
+    assert_eq!(
+        response.headers()["x-gateway-model"],
+        "efficient-alias",
+        "the ordinary headers are unaffected"
+    );
+}
