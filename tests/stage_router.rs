@@ -104,6 +104,7 @@ fn upstream_with(name: &str, base_url: String, auth: UpstreamAuth) -> UpstreamCo
             ..RetryConfig::default()
         },
         workspace_roots: Vec::new(),
+        profile_dir: None,
         sandbox: true,
     }
 }
