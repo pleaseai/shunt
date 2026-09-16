@@ -1,0 +1,25 @@
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_39aed1926c1efc::t_15f989a4577856 236-241
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_39aed1926c1efc::t_15f989a4577856 231-235
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_39aed1926c1efc::t_15f989a4577856 218-222
+site/src/content/docs/guides/switchyard.mdx
+  s_39aed1926c1efc::t_15f989a4577856 238-244
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a1c9cab1fa7096c2f827055cabc452af0ce3c7b1",
+  "prompts": {},
+  "sessions": {
+    "s_39aed1926c1efc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c81f3e94-7839-4ee6-b1bb-d32f7be00c39",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
