@@ -3,7 +3,9 @@
 Engineering note for the opt-in `[models.stage_router]`, implementing
 [ADR-0004](../.please/docs/decisions/0004-content-aware-stage-router.md).
 Status: **implemented.** User-facing documentation lives in the
-[stage router guide](https://shunt.sh/guides/stage-router/); this document is
+[stage router guide](https://shunt.sh/guides/stage-router/), with the scorer's
+provenance, the upstream benchmark results, and the scoring formula in
+[Switchyard Integration](https://shunt.sh/guides/switchyard/); this document is
 the implementation record — what the code does, why, and what a change to it must
 not break.
 
@@ -43,11 +45,16 @@ not GitHub, when checking the API.
 
 Two passes over `messages`:
 
-1. Walk assistant messages, building `tool_use.id → tool_use.name` plus a per-turn
-   id list. `recent` is the set of ids from the last `recent_turn_window`
-   assistant turns.
-2. Walk user messages' `tool_result` blocks, join each back to its call by
-   `tool_use_id`, and read `is_error` **off the result**.
+1. Walk assistant messages **backwards**, stopping once `recent_turn_window`
+   assistant turns have been read. `recent` is the set of `tool_use` ids from
+   those turns; a `tool_use` block missing either `id` or `name` is excluded,
+   since a call this extractor cannot name is one it cannot classify.
+2. Walk **forwards once over both roles**: map `tool_use.id → tool_use.name`
+   from assistant blocks and record each `tool_result` against the
+   `tool_use_id` it answered, reading `is_error` **off the result**. Names are
+   resolved after the walk rather than during it (`name_of`), so the join does
+   not depend on a call preceding its result
+   (`a_result_before_its_call_still_joins`).
 
 **A `tool_result` block does not carry the tool's name.** The `tool_use_id` join
 is the single point the extractor stands on, and it has its own test
@@ -79,7 +86,11 @@ classifying command strings is a new fingerprinting surface with its own failure
 mode. A future `tool_semantics` override is the intended door, not a default.
 
 A failed `Task` scores severity 1.0 against 0.7 for anything else: it is a whole
-delegated subagent run collapsing, not one command failing.
+delegated subagent run collapsing, not one command failing. Both grades are
+gated on `recent` — a failure outside `recent_turn_window` leaves severity at
+`0.0` (`severity_ignores_errors_outside_the_window`), and the "last two
+completed results both failed" critical rule requires both of them to be recent
+as well.
 
 ## 4. Hysteresis
 

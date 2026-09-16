@@ -53,7 +53,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: |
+            ui/package-lock.json
+            plugins/shunt/package-lock.json
 
       - name: Install admin UI dependencies
         working-directory: ui
@@ -68,6 +70,26 @@ jobs:
       # typechecks it.
       - name: Test admin UI bundle
         working-directory: ui
+        run: npm test
+
+      # The shunt mod answers /shunt:usage from TypeScript, not from the Rust
+      # binary, so its suite is a gate here rather than a local convenience.
+      # `claude plugin validate` (which checks the hooks module itself) needs a
+      # Claude Code binary and does not run here; the modules it cannot reach
+      # are the pure ones this suite covers.
+      - name: Install shunt mod dependencies
+        working-directory: plugins/shunt
+        run: npm ci
+
+      # `hooks/register.ts` is left out of the typecheck: it is the only module
+      # importing `claude-code`, whose types Claude Code generates locally via
+      # /plugin-types and which does not exist here (see plugins/shunt/tsconfig.json).
+      - name: Typecheck shunt mod
+        working-directory: plugins/shunt
+        run: npm run typecheck
+
+      - name: Test shunt mod
+        working-directory: plugins/shunt
         run: npm test
 
       - name: Format check
@@ -131,7 +153,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: |
+            ui/package-lock.json
+            plugins/shunt/package-lock.json
 
       - name: Install admin UI dependencies
         working-directory: ui

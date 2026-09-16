@@ -52,6 +52,9 @@ shunt 知道 Claude Code 实际的工具名称,这正是它能胜过通用路由
 当信号不足以定夺时,评分器会请求 LLM 裁决。**shunt 不设裁决模型**,而是 fall-open 到 picker
 的默认值,从而让热路径上不多出一次模型调用和一份凭据。
 
+完整的评分公式、支撑它的公开基准结果,以及 shunt 在其之上额外加入的东西,都在
+[Switchyard 集成](/zh-cn/guides/switchyard/)。
+
 [libsy]: https://crates.io/crates/switchyard-libsy
 [sy]: https://github.com/NVIDIA-NeMo/Switchyard
 

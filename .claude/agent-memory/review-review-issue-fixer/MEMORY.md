@@ -1,1 +1,3 @@
 - [Codex quota stable identity](codex-quota-stable-identity.md) — Pass AccountConfig to quota recording so UUID-backed state matches snapshots.
+- [Blank env override shadows fallback](shunt-mod-blank-env-override.md) — `a ?? b` is the bug shape, `a?.trim() || b` the fix; recurring defect class (#568 then endpoint.ts).
+- [shunt mod typecheck boundary](shunt-mod-typecheck-boundary.md) — plugins/shunt typechecks everything but hooks/register.ts; verify that file against a real claude-code.d.ts.
