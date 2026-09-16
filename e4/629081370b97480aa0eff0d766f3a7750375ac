@@ -1,0 +1,42 @@
+benches/stage_router.rs
+  s_3598e23a871543::t_dac778fb634d98 61-65,67,72,82-96,98-103,105-107
+  s_3598e23a871543::t_0930d341103d3f 18-22,24-33
+  s_943425e1a40587::t_36ea749f47254d 47,168-170,210-220,226,245-247,250-251
+src/bench_support.rs
+  s_3598e23a871543::t_9c15108e5af517 25,42-54
+  s_3598e23a871543::t_13253a8b82fe45 55
+docs/stage-router.md
+  s_9f444bfb000db9::t_dd897c07073fe4 317-326,330-355,358-366,370-380,383-391
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e4629081370b97480aa0eff0d766f3a7750375ac",
+  "prompts": {},
+  "sessions": {
+    "s_3598e23a871543": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "121eceb9-d260-4110-b4e8-1b14de7086df",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_943425e1a40587": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e1539eab-0471-436c-b376-ac1e6d332091",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_9f444bfb000db9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d26cc489-6874-425b-a30f-215db9d93de4",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
