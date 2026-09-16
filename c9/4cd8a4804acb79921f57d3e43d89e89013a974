@@ -1,0 +1,19 @@
+tests/antigravity_translate.rs
+  s_943425e1a40587::t_bac81c8caa27b5 527-539
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c94cd8a4804acb79921f57d3e43d89e89013a974",
+  "prompts": {},
+  "sessions": {
+    "s_943425e1a40587": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e1539eab-0471-436c-b376-ac1e6d332091",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
