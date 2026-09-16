@@ -311,7 +311,7 @@ impl ObserverState {
             // parses as a keepalive — the same predicate the frame parser
             // uses, so TTFT agrees with it even past the parse cap.
             let (event, data) = event_and_data(&self.buffer);
-            if !is_ping(event, data) {
+            if !is_keepalive(event, data, is_comment_only(&self.buffer)) {
                 self.record_ttft();
             }
         }
@@ -461,12 +461,22 @@ struct FrameObservation {
     tokens: TokenUsage,
 }
 
-/// A keepalive frame under either spelling the observer accepts: an
-/// `event:` line naming `ping`, or a data line carrying the ping JSON.
-/// The injected keepalive uses both, and the compact single-line forms are
-/// equally valid.
-fn is_ping(event: Option<&[u8]>, data: Option<&[u8]>) -> bool {
-    event == Some(b"ping") || data == Some(b"{\"type\": \"ping\"}")
+/// A keepalive frame under any spelling the observer accepts: an `event:`
+/// line naming `ping`, a data line carrying the ping JSON, or a frame whose
+/// lines are all SSE comments — no content under any of them, so none
+/// records TTFT. The injected keepalive uses both spellings, and the
+/// compact single-line forms are equally valid.
+fn is_keepalive(event: Option<&[u8]>, data: Option<&[u8]>, comment_only: bool) -> bool {
+    comment_only || event == Some(b"ping") || data == Some(b"{\"type\": \"ping\"}")
+}
+
+/// Whether the frame's lines are all SSE comments (`:`-prefixed) — the
+/// comment form of a keepalive, carrying no content.
+fn is_comment_only(frame: &[u8]) -> bool {
+    frame.split(|&byte| byte == b'\n').all(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        line.is_empty() || line.starts_with(b":")
+    })
 }
 
 /// Observe one complete SSE frame. The second element is the frame's `event:`
@@ -488,7 +498,7 @@ fn observe_frame(protocol: Protocol, frame: &[u8]) -> (FrameObservation, Option<
     }
 
     let (event, data) = event_and_data(frame);
-    if is_ping(event, data) {
+    if is_keepalive(event, data, is_comment_only(frame)) {
         return (
             FrameObservation {
                 ping: true,

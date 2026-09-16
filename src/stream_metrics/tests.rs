@@ -144,6 +144,70 @@ fn an_oversized_ping_frame_does_not_record_ttft() {
     );
 }
 
+/// A comment-form keepalive (`: keep-alive`, LF or CRLF) must not record
+/// TTFT: SSE comment lines carry no content, so the sample waits for the
+/// winner's first real frame.
+#[test]
+fn a_comment_keepalive_does_not_record_ttft() {
+    for comment_frame in [
+        b": keep-alive\n\n".as_slice(),
+        b": keep-alive\r\n\r\n".as_slice(),
+    ] {
+        let provider = Arc::new(Mutex::new("primary".to_string()));
+        let mut observer = ObserverState::new(
+            Protocol::Anthropic,
+            StatusCode::OK,
+            provider.clone(),
+            Arc::new(Mutex::new("model".to_string())),
+            Instant::now(),
+            tracing::Span::none(),
+        );
+        observer.observe_chunk(comment_frame);
+        assert!(
+            observer.ttft_ms.is_none(),
+            "a comment-frame keepalive must not record TTFT"
+        );
+        *provider.lock().expect("slot") = "fallback".to_string();
+        observer.observe_chunk(
+            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{}}}\n\n",
+        );
+        assert!(
+            observer.ttft_ms.is_some(),
+            "the winner's first frame records TTFT"
+        );
+    }
+}
+
+/// A comment line beside a content line is still content: the data is real
+/// payload, so the frame records TTFT — the comment exemption covers
+/// comment-only frames, never frames that mix a comment with content.
+#[test]
+fn a_comment_line_beside_content_records_ttft() {
+    let mut observer = state(Protocol::Anthropic);
+    observer.observe_chunk(
+        b": keep-alive\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{}}}\n\n",
+    );
+    assert!(
+        observer.ttft_ms.is_some(),
+        "a frame mixing a comment line with a data line is content"
+    );
+}
+
+/// An oversized comment frame past the parse cap is still a keepalive: the
+/// skip path consults the same predicate as the frame parser, so a padded
+/// `: keep-alive` comment stays content-free.
+#[test]
+fn an_oversized_comment_frame_does_not_record_ttft() {
+    let mut observer = state(Protocol::Anthropic);
+    let mut frame = Vec::from(&b": keep-alive\n"[..]);
+    frame.extend(std::iter::repeat_n(b':', 300 * 1024));
+    observer.observe_chunk(&frame);
+    assert!(
+        observer.ttft_ms.is_none(),
+        "an oversized comment frame must not record TTFT"
+    );
+}
+
 /// An oversized first frame that is not a ping still records TTFT: the
 /// event past the parse cap is content, and the sample must not vanish
 /// with it into the skip.
