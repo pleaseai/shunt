@@ -116,7 +116,10 @@ pub(super) async fn forward(
         // `outcome.model`, not `requested_model`: the router was matched on the
         // id with any `[1m]` hint stripped, and the session was keyed on it too,
         // so labelling by the raw id would split one router across two series.
-        if !is_count_tokens(uri) {
+        // `stage.read_only` rather than `is_count_tokens(uri)` again: it is the
+        // same value, and reading the field ties this exclusion to the flag the
+        // store already decided against instead of re-deriving it here.
+        if !stage.read_only {
             crate::metrics::record_stage_decision(
                 &outcome.model,
                 outcome.tier.as_label(),
