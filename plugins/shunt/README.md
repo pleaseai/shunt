@@ -66,10 +66,18 @@ stays behind the admin-only `GET /admin/api/pool`.
 
    ```toml
    [server.auth]
-   tokens = ["<your client token>"]
 
    # Presence alone opts in; the table takes no keys.
    [server.usage]
+   ```
+
+   `[server.auth]` takes its tokens from the environment rather than the TOML —
+   by default `SHUNT_CLIENT_TOKENS`, as `name:token` pairs — and the gateway
+   fails to start when it is unset. Export it where the gateway runs, using the
+   same token you set as `ANTHROPIC_AUTH_TOKEN` above:
+
+   ```bash
+   export SHUNT_CLIENT_TOKENS="claude-code:<your client token>"
    ```
 
 3. **Run Claude Code with function hooks enabled** — the feature is early access:
@@ -119,11 +127,18 @@ consumes the helper's output internally and never re-exports it. That covers bot
 `/shunt:usage` reports that it has no client token even though the session itself
 is authenticating fine.
 
-Export one for the mod to use alongside it:
+Export a client token for the mod to use alongside it — one of the `name:token`
+pairs the gateway was given in `SHUNT_CLIENT_TOKENS`:
 
 ```bash
-export SHUNT_TOKEN=$(shunt gateway token)
+export SHUNT_TOKEN=<your client token>
 ```
+
+It has to be a `[server.auth]` client token, and not the output of `shunt gateway
+token`: that command prints the `[server.gateway]` session's access token, which
+is a separate credential that rotates on refresh. `GET /usage` authenticates
+only against the configured client tokens, so a session token sent as a Bearer
+is refused with a 401.
 
 ## Why `/shunt:usage` and not `/usage`
 
