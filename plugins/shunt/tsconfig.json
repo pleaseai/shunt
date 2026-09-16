@@ -1,0 +1,30 @@
+{
+  // `hooks/register.ts` is excluded deliberately: it is the only module that
+  // imports `claude-code`, whose types come from an engine-generated
+  // `claude-code.d.ts` that Claude Code writes into a plugin author's project
+  // via `/plugin-types` and that does not exist in this repo or in CI. Every
+  // other module imports nothing from the engine, so `tsc` can check them.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2022"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": [
+    "hooks",
+    "tests",
+    "vitest.config.ts"
+  ],
+  "exclude": [
+    "hooks/register.ts"
+  ]
+}

@@ -141,8 +141,8 @@ intercepts `command.run` for that name and answers it directly.
 # environment variables it makes and reads.
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin validate plugins/shunt
 
-# The pure modules' suite (also a CI gate).
-cd plugins/shunt && npm ci && npm test
+# The pure modules' suite and typecheck (both CI gates).
+cd plugins/shunt && npm ci && npm run typecheck && npm test
 
 # Run it from source against a live gateway.
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir plugins/shunt
@@ -151,7 +151,10 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir plugins/shunt
 `hooks/register.ts` is the only file that imports `claude-code`. Typechecking it
 needs the engine's own `claude-code.d.ts`, which Claude Code writes into a plugin
 author's project via `/plugin-types`; the other modules import nothing from the
-engine, which is why the suite covers them without it.
+engine, which is why the suite covers them without it. For the same reason
+`tsconfig.json` excludes `hooks/register.ts` from `npm run typecheck` — that
+exclusion is deliberate, not an oversight, and typechecking that one file means
+running `/plugin-types` first.
 
 > Function hooks are early access. Hooks modules load only where they are
 > enabled, and the API this mod is written against may change between Claude Code

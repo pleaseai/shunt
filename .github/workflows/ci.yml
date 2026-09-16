@@ -81,6 +81,13 @@ jobs:
         working-directory: plugins/shunt
         run: npm ci
 
+      # `hooks/register.ts` is left out of the typecheck: it is the only module
+      # importing `claude-code`, whose types Claude Code generates locally via
+      # /plugin-types and which does not exist here (see plugins/shunt/tsconfig.json).
+      - name: Typecheck shunt mod
+        working-directory: plugins/shunt
+        run: npm run typecheck
+
       - name: Test shunt mod
         working-directory: plugins/shunt
         run: npm test
