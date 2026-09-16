@@ -63,10 +63,15 @@ The first block is the aggregate across every pooled provider; the rows beneath 
 
    ```toml
    [server.auth]
-   tokens = ["<your client token>"]
 
    # Presence alone opts in; the table takes no keys.
    [server.usage]
+   ```
+
+   `[server.auth]` takes its tokens from the environment rather than the TOML — by default `SHUNT_CLIENT_TOKENS`, as `name:token` pairs — and the gateway fails to start when it is unset. Export it where the gateway runs, using the same token you set as `ANTHROPIC_AUTH_TOKEN` above:
+
+   ```bash
+   export SHUNT_CLIENT_TOKENS="claude-code:<your client token>"
    ```
 
 3. Run Claude Code with function hooks enabled — the feature is early access:

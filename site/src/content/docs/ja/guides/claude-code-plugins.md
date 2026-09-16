@@ -63,10 +63,15 @@ mod がコマンドに自分で応答するため、モデルへは何も送ら�
 
    ```toml
    [server.auth]
-   tokens = ["<your client token>"]
 
    # Presence alone opts in; the table takes no keys.
    [server.usage]
+   ```
+
+   `[server.auth]` はトークンを TOML ではなく環境変数から読み取ります。既定では `SHUNT_CLIENT_TOKENS` で、`name:token` のペア形式です。この変数が未設定の場合、ゲートウェイは起動に失敗します。上で `ANTHROPIC_AUTH_TOKEN` に設定したものと同じトークンを使って、ゲートウェイを実行する側で設定してください。
+
+   ```bash
+   export SHUNT_CLIENT_TOKENS="claude-code:<your client token>"
    ```
 
 3. function hooks を有効にして Claude Code を実行します — この機能はアーリーアクセスです。

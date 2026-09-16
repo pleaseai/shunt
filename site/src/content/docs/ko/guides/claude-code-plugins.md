@@ -63,10 +63,15 @@ mod가 명령에 직접 답하므로, 모델로는 아무것도 전송되지 않
 
    ```toml
    [server.auth]
-   tokens = ["<your client token>"]
 
    # Presence alone opts in; the table takes no keys.
    [server.usage]
+   ```
+
+   `[server.auth]`는 토큰을 TOML이 아니라 환경 변수에서 읽습니다. 기본값은 `SHUNT_CLIENT_TOKENS`이며 `name:token` 쌍 형식이고, 이 변수가 설정되지 않으면 게이트웨이는 시작에 실패합니다. 위에서 `ANTHROPIC_AUTH_TOKEN`으로 설정한 것과 같은 토큰을 사용해, 게이트웨이가 실행되는 쪽에서 내보내세요:
+
+   ```bash
+   export SHUNT_CLIENT_TOKENS="claude-code:<your client token>"
    ```
 
 3. 함수 훅을 활성화한 채로 Claude Code를 실행하세요 — 이 기능은 얼리 액세스입니다:

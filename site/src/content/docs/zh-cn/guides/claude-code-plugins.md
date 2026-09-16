@@ -63,10 +63,15 @@ shunt: pool — degraded   http://127.0.0.1:3001
 
    ```toml
    [server.auth]
-   tokens = ["<your client token>"]
 
    # Presence alone opts in; the table takes no keys.
    [server.usage]
+   ```
+
+   `[server.auth]` 从环境变量而不是 TOML 中读取令牌,默认是 `SHUNT_CLIENT_TOKENS`,格式为 `name:token` 键值对;若该变量未设置,网关将启动失败。请在运行网关的一侧导出它,使用与上面 `ANTHROPIC_AUTH_TOKEN` 相同的令牌:
+
+   ```bash
+   export SHUNT_CLIENT_TOKENS="claude-code:<your client token>"
    ```
 
 3. 在启用 function hooks 的情况下运行 Claude Code —— 该功能处于早期访问阶段:
