@@ -1,0 +1,24 @@
+plugins/shunt/hooks/names.ts
+  s_a84d85fd6b2d07::t_7981a09ff48973 37,39-41
+  s_a84d85fd6b2d07::t_18b6b241f0ac78 38
+plugins/shunt/hooks/register.ts
+  s_a84d85fd6b2d07::t_7981a09ff48973 6,49-62,65,67,69,73-79,81-96,99-103,105,107-109,111-113,115-119,121-122,124-128
+  s_a84d85fd6b2d07::t_3e54f101fa6503 70-72
+  s_a84d85fd6b2d07::t_18b6b241f0ac78 17,123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0236d8e8d200fb2e163988d17bc19314fe26d80d",
+  "prompts": {},
+  "sessions": {
+    "s_a84d85fd6b2d07": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069ce642-e236-4f25-9254-70feab41ce47",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
