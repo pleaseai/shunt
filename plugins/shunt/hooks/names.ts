@@ -21,8 +21,8 @@ export const NO_BASE_URL_TEXT =
 
 export const NO_TOKEN_TEXT =
   'no client token to authenticate with — GET /usage requires ' +
-  '[server.auth], and neither ANTHROPIC_AUTH_TOKEN nor ANTHROPIC_API_KEY is ' +
-  'set. Ask the gateway operator for a client token.'
+  '[server.auth], and none of SHUNT_TOKEN, ANTHROPIC_AUTH_TOKEN or ' +
+  'ANTHROPIC_API_KEY is set. Ask the gateway operator for a client token.'
 
 export const NOT_ENABLED_TEXT =
   'the gateway answered, but GET /usage is not enabled on it. Add an ' +
@@ -30,9 +30,10 @@ export const NOT_ENABLED_TEXT =
   'no keys, but it requires [server.auth] to be set as well.'
 
 export const REFUSED_TEXT =
-  'the gateway refused the client token this session is using. Check ' +
-  'that ANTHROPIC_AUTH_TOKEN (or ANTHROPIC_API_KEY) is one of the tokens in ' +
-  "the gateway's [server.auth]."
+  'the gateway refused the client token this session is using. The first ' +
+  'of SHUNT_TOKEN, ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY that is set ' +
+  'is the one sent, and the rest are ignored — check that one against the ' +
+  "gateway's [server.auth]."
 
 export const HOOK_FAILED_TEXT =
   'could not read the pool usage — the hook that answers this command ' +
