@@ -61,6 +61,18 @@ describe('endpoint', () => {
     expect(resolved).toEqual({ problem: NO_BASE_URL_TEXT })
   })
 
+  test('a blank SHUNT_BASE_URL falls back rather than shadowing', () => {
+    const { base } = endpoint(
+      endpointOf({
+        shuntBaseUrl: '',
+        anthropicBaseUrl: 'http://127.0.0.1:3001',
+        anthropicAuthToken: 'token',
+      }),
+    )
+
+    expect(base).toBe('http://127.0.0.1:3001')
+  })
+
   test('ANTHROPIC_AUTH_TOKEN rides as a Bearer, as Claude Code sends it', () => {
     const { headers } = endpoint(
       endpointOf({
@@ -91,6 +103,18 @@ describe('endpoint', () => {
     )
 
     expect(headers).toEqual({ authorization: 'Bearer override' })
+  })
+
+  test('a blank SHUNT_TOKEN falls back rather than shadowing', () => {
+    const { headers } = endpoint(
+      endpointOf({
+        anthropicBaseUrl: 'http://gateway',
+        shuntToken: '   ',
+        anthropicAuthToken: 'token',
+      }),
+    )
+
+    expect(headers).toEqual({ authorization: 'Bearer token' })
   })
 
   test('with no credential it says so rather than asking unauthenticated', () => {

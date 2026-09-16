@@ -45,15 +45,19 @@ const usageUrlOf = (base: string) => `${base.replace(/\/+$/, '')}${USAGE_PATH}`
  * `ANTHROPIC_AUTH_TOKEN` as a `Bearer`, `ANTHROPIC_API_KEY` as `x-api-key` —
  * so whichever shape the operator's `[server.auth]` matches on, it matches the
  * same way here. `SHUNT_TOKEN` overrides both and rides as a `Bearer`.
+ *
+ * An override that is set but blank is no override: `$.env.get` reads an
+ * exported-but-empty variable as `''`, so each override is normalized to
+ * absent before the fallback is chosen rather than after.
  */
 export function endpointOf(env: Environment): Resolved {
-  const base = env.shuntBaseUrl ?? env.anthropicBaseUrl
+  const base = env.shuntBaseUrl?.trim() || env.anthropicBaseUrl
 
   if (base === undefined || base.trim() === '') {
     return { problem: NO_BASE_URL_TEXT }
   }
 
-  const bearer = env.shuntToken ?? env.anthropicAuthToken
+  const bearer = env.shuntToken?.trim() || env.anthropicAuthToken
   const apiKey = env.anthropicApiKey
 
   const headers: Record<string, string> | undefined = bearer
