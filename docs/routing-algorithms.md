@@ -79,9 +79,10 @@ breaks `is_signal_evidence`'s match; and `signals::extract` names the
 
 ### Not in this PR
 
-PR 0 introduces no new routing behaviour, no config key, and no new code path,
-so it adds no benchmark arm: the one function it touches, `signals::extract`,
-is already an arm of `benches/stage_router.rs`. The lanes, the
+Beyond the exact-threshold reclassification the table above notes, PR 0
+introduces no new routing behaviour, no config key, and no new code path, so
+it adds no benchmark arm: the one function it touches, `signals::extract`, is
+already an arm of `benches/stage_router.rs`. The lanes, the
 `[models.router]` discriminator, and the driven algorithms are PR 1 onward — see
 ADR-0005 §8 for the sequence and each step's definition of done. Nothing in that
 plan is implemented yet.
