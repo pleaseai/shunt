@@ -27,10 +27,11 @@
 //!   the "non-router traffic pays only one `Option::is_none()`" claim, which is
 //!   the assertion most worth protecting from regression.
 //! * `parse_body_to_value` — the denominator. It benchmarks
-//!   `RequestBody::parse`, the parser `src/proxy/failover.rs` actually calls,
-//!   not `serde_json::from_slice`: the custom visitor's duplicate-key rejection
-//!   is real work, and omitting it would understate what the request has
-//!   already paid before routing begins.
+//!   `RequestBody::parse(body.to_vec())`, the whole expression
+//!   `src/proxy/failover.rs` evaluates: not `serde_json::from_slice`, whose
+//!   visitor skips the duplicate-key rejection, and not the parse alone, which
+//!   would drop the linear copy the buffered request pays on the way in. Both
+//!   omissions shrink the denominator, and this arm exists only to be one.
 
 fn main() {
     #[cfg(feature = "bench")]
@@ -165,8 +166,16 @@ mod bench {
     #[divan::bench(args = TURN_COUNTS)]
     fn parse_body_to_value(bencher: divan::Bencher, turns: usize) {
         let body = serde_json::to_vec(&request(ROUTER_MODEL, turns)).unwrap();
-        bencher.with_inputs(|| body.clone()).bench_values(|body| {
-            divan::black_box(bench_support::parse_request_body(body).unwrap())
+        // `.to_vec()` is inside the timed closure because it is inside the
+        // production call too: `failover.rs` writes
+        // `RequestBody::parse(body.to_vec())`, so the buffered request pays that
+        // linear copy before the parser sees it. Generating the owned `Vec` in
+        // an untimed `with_inputs` would hand the denominator a discount the
+        // real path never gets, and this arm is only useful as the denominator.
+        bencher.bench(|| {
+            divan::black_box(
+                bench_support::parse_request_body(divan::black_box(&body).to_vec()).unwrap(),
+            )
         });
     }
 

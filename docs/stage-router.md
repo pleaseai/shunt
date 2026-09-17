@@ -319,45 +319,45 @@ detection; these are orders of magnitude, not a baseline to diff against.
 
 **Read the `fastest` column.** These arms allocate, so a sample can absorb an
 allocator or scheduler excursion but never finish faster than the work takes —
-`extract_signals` at 800 turns spans 207 µs to 805 µs. Taking its median (335 µs)
-against `resolve_chain_routed`'s (212 µs) would say a routed resolve is cheaper
-than the extraction it strictly contains, which is not a property of the code but
-of that spread. `fastest` is the low-noise estimator here; medians are given
-alongside so the spread stays visible.
+the widest arm here spans 196 µs to 415 µs. That is enough drift for a median to
+reorder two arms that stand in a containment relation, which would say a routed
+resolve is cheaper than the extraction it performs. `fastest` is the low-noise
+estimator; medians are given alongside so the spread stays visible.
 
 | Benchmark | 10 turns | 50 | 200 | 800 |
 |---|---|---|---|---|
-| `parse_body_to_value` | 31.6 µs *(32.1)* | 156 µs *(160)* | 648 µs *(722)* | 2.79 ms *(3.28)* |
-| `extract_signals` | 3.43 µs *(3.50)* | 12.7 µs *(12.9)* | 49.0 µs *(49.7)* | 207 µs *(335)* |
-| `resolve_chain_routed` | 4.78 µs *(5.13)* | 14.2 µs *(14.7)* | 50.8 µs *(52.8)* | 197 µs *(212)* |
-| `resolve_chain_unrouted` | 295 ns *(298)* | 294 ns *(297)* | 296 ns *(299)* | 295 ns *(299)* |
+| `parse_body_to_value` | 31.7 µs *(32.0)* | 156 µs *(157)* | 637 µs *(682)* | 2.75 ms *(3.15)* |
+| `extract_signals` | 3.37 µs *(3.41)* | 12.3 µs *(12.5)* | 49.0 µs *(49.9)* | 196 µs *(201)* |
+| `resolve_chain_routed` | 4.65 µs *(4.73)* | 14.3 µs *(14.5)* | 52.6 µs *(53.2)* | 195 µs *(202)* |
+| `resolve_chain_unrouted` | 294 ns *(297)* | 294 ns *(297)* | 295 ns *(298)* | 294 ns *(297)* |
 
 `fastest`, with the median in parentheses.
 
 **Extraction is linear in turn count, dominates a routed resolve, and is small
-against what the request already spent.** An 80× longer history costs ~60× more.
+against what the request already spent.** An 80× longer history costs ~58× more.
 `resolve_chain_routed` sits within a few percent of `extract_signals` at every
 width, which is what "dominates" means here — the two are not separable at this
 resolution, and §3's second pass reads the entire `messages` array every turn, so
 a session's *cumulative* extraction cost grows quadratically in its own length
 even though each call is linear.
 
-The denominator is measured, not assumed. `parse_body_to_value` benchmarks
-`RequestBody::parse` (`src/request.rs`) — the parser `src/proxy/failover.rs`
-actually calls, not `serde_json::from_slice` — which builds the whole
-`serde_json::Value` eagerly for every inbound request before routing runs.
-Extraction is **7.4–10.8% of it** across the range. (Its duplicate-key visitor
+The denominator is measured, not assumed, and it is the whole expression
+`src/proxy/failover.rs` evaluates: `RequestBody::parse(body.to_vec())`. Not
+`serde_json::from_slice`, whose visitor skips the duplicate-key rejection, and
+not the parse alone, which would drop the linear copy the buffered request pays
+on the way in — both omissions shrink a number that exists only to be a
+denominator. (Neither correction moved it much: the duplicate-key visitor
 inspects only *top-level* keys, nested values going through stock `Value`
-deserialization, so it costs about what the plain parser does on a body this
-shape; the distinction matters for what is being claimed, not for the number.)
-So the ceiling on optimizing §3 is roughly a tenth of a cost the gateway has
-already sunk by the time the router is consulted, which is why §3 is left as it
-stands (issue #553).
+deserialization, and a `memcpy` is far cheaper than parsing what it copied. The
+distinction matters for what is being claimed, not for the figure.) Against that,
+extraction is **7.1–10.6%** across the range. So the ceiling on optimizing §3 is
+roughly a tenth of a cost the gateway has already sunk by the time the router is
+consulted, which is why §3 is left as it stands (issue #553).
 
 **A request to a model with no `[models.stage_router]` table does not read
 `messages` at all.** Both `resolve_chain_*` arms send the identical body naming
 the identical model id; the configs differ only in whether that id's `[[models]]`
-entry carries the table. `resolve_chain_unrouted` is flat at ~295 ns across an
+entry carries the table. `resolve_chain_unrouted` is flat at ~294 ns across an
 80× range of history length, with the tightest spread of any arm here. That
 flatness is the property to protect: it is what makes the feature opt-in in cost
 as well as in behaviour, and any change that makes this row slope is a regression
@@ -369,20 +369,20 @@ second lookup is part of what routing costs, not a flaw in the pairing.
 
 | Benchmark | fastest | median |
 |---|---|---|
-| `store_turn_existing_session` | 512 ns | 517 ns |
-| `store_turn_new_session_at_capacity` | 32.6 µs | 32.8 µs |
+| `store_turn_existing_session` | 517 ns | 522 ns |
+| `store_turn_new_session_at_capacity` | 31.9 µs | 32.1 µs |
 
 Both run against a store already holding `MAX_TRACKED_SESSIONS` entries, and both
-build their session id outside the timed region, so the **64×** gap is the
+build their session id outside the timed region, so the **62×** gap is the
 eviction and not the map size, the id's allocation, or its hashing. An existing
 session's update never grows the map, returns at `evict`'s length check, and costs
 about half a microsecond. A previously unseen id at capacity pays a full `retain`
 walk of 4096 entries — one walk, not two: the pass that drops expired entries also
 remembers the oldest survivor, so the capacity trim needs no second scan.
 
-That ~32 µs gap is the eviction scan, and the scan runs while the store's single
+That ~31 µs gap is the eviction scan, and the scan runs while the store's single
 process-global mutex is held, so it serializes against every other router-backed
-request rather than costing only its own. (The 32 µs is the whole benchmarked
+request rather than costing only its own. (The 31.9 µs is the whole benchmarked
 turn, which also covers `stage::decide`, the SHA-256 session key, the router
 fingerprint, and two lock acquisitions — the control arm pays all of those too,
 which is why the *gap* rather than the total is what attributes to eviction.) It
