@@ -109,7 +109,7 @@ sha2 = "0.10"
 # 0.2.0 is the single published version and `main` (`0.3.0`-pre) has already
 # diverged from it — it exports `AdvisorGate`, `CompositeRouter`,
 # `SubagentRouter`, `ToolSemantics`, and `HandoffNoteConfig`, which 0.2.0 does
-# not, and its `ToolSignals` carries four fields the release lacks. shunt is
+# not, and its `ToolSignals` carries five fields the release lacks. shunt is
 # `publish = false`, so a git dependency is available here.
 #
 # A `rev` and no `branch` key, the same posture as the `tungstenite` pins below:

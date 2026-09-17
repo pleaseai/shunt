@@ -110,12 +110,15 @@ result.
 Two of those cut in opposite directions. shunt leaves `tests_passed`,
 `repeated_failure`, and `compacted` unpopulated, which costs it libsy's
 compaction override and its repeated-failure escalation — strictly less signal
-than the benchmark had. Each needs evidence the Anthropic Messages wire format
-does not carry: a compaction marker no test pins yet, and, for the other two,
-the *text* of a tool result, since Claude Code reports only a boolean
-`is_error`. Against that, shunt's hysteresis exists precisely because a per-turn
-flip is expensive in a Claude Code session in ways a benchmark harness never
-pays (see [below](#what-shunt-adds)).
+than the benchmark had. Each needs evidence this extractor does not have: a
+compaction marker no test pins yet, and, for the other two, the *text* of a tool
+result. The wire carries that text — a `tool_result` block has a `content`
+field — but the extractor deliberately does not read it: deciding these signals
+from free-form result text means content-pattern heuristics, and a structural
+proxy would fire for `ls` as readily as for a test run. Against that, shunt's
+hysteresis exists precisely because a per-turn flip is expensive in a Claude
+Code session in ways a benchmark harness never pays (see
+[below](#what-shunt-adds)).
 
 ## The routing algorithm
 
