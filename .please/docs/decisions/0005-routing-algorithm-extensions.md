@@ -220,7 +220,13 @@ id, and session id: stable across restarts and across replicas that load the
 same config; changing `seed`, `targets`, or `weights` can move the arm. A
 request with no non-blank session id takes a fresh weighted draw for that
 request — the blank id is never hashed as a shared key, so a 90/10 split
-stays 90/10 for clients that send no session. Under
+stays 90/10 for clients that send no session. Session affinity is
+stickiness, not access control: the id is client-supplied, so a caller who
+retries ids until the hash lands on the arm it wants can steer itself — but
+targets are public model ids that same caller may name directly, so the
+hash guards nothing the ladder does not already expose. Tier access is the
+managed-model policy's job, and a weighted split under `session` affinity
+is a canary aid for well-behaved clients, not an enforced ratio. Under
 `affinity = "request"` it keeps upstream's meaning and reproduces the
 selection sequence. `auto` is the stage-router preset with upstream's
 `picker` and `confidence_threshold`. `noop` returns a buffered `OK` without
@@ -260,12 +266,24 @@ the union:
 the caller must authenticate if *any* member injects a credential (a passthrough answer target with a
 credential-injecting judge is not a passthrough route), and the managed-model
 policy is enforced on the requested public id before `drive` is entered.
+The envelope governs turns, not probes: a `count_tokens` request on a
+driven entry is `read_only` as it is on the stage router today — it never
+enters `drive`, makes zero judge calls, resolves to the session's current
+pin or, when no live pin exists, the algorithm's no-model-call decision
+(the signal-only estimate on `stage_router`, which may be its default), and
+is gated and dispatched against that target's first route only, the rule
+`proxy::failover` applies to every probe now (`failover.rs:92`). So a
+passthrough answer target with a credential-injecting judge still answers
+an unauthenticated `count_tokens` probe as it does today.
 `serve` then receives a non-forgeable `AdmittedContext` minted by that gate,
 not a generic internal bypass; a judge call without one is a bug, not a
 request. Definition of done for PR 4 includes tests that an invalid
 credential and a policy-denied model each produce zero judge calls, including
 the passthrough-answer + injecting-judge shape and the shape where the
-injecting judge is reached only by fall-through to `server.default_provider`.
+injecting judge is reached only by fall-through to `server.default_provider`;
+and that an unauthenticated `count_tokens` probe on that passthrough-answer +
+injecting-judge entry is answered with zero judge calls, including an
+unpinned probe whose history carries decisive signals.
 
 `serve` builds an Anthropic Messages body from the neutral `Request` libsy
 hands it, stamps the candidate model id, and dispatches it through
@@ -394,7 +412,7 @@ outcome}`. `GET /routes` `routers[]` gains `algorithm`, `targets`, and a
 | 1 | `RouterContext` with the §11 request hints (session, agent id, request class, agent type, compacted), agent-scoped pin key, child budget, compaction latch | Behaviour-preserving without the hints; child errors leave the parent pin untouched; child fan-out at capacity cannot evict an idle capable parent; a `context-compacted` turn escalates and the next turn of that session still reads `compacted = true` |
 | 2 | `[models.router]` discriminator, `stage_router` alias, `random`, `auto`, `noop`, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Old configs load unchanged with one deprecation warning; `resolve_chain_unrouted` bench flat; sessionless requests under `random` session affinity follow the configured weights rather than one shared arm |
 | 3 | `subagents` passthrough form with `by_type` | A `subagent`/`workflow` request routes to its `by_type` target, else `target`, with no store access; `compaction` and `auxiliary` never take the overlay |
-| 4 | Dependency envelope + admission before `drive`, internal `serve`, translation boundary, per-call bounds | Invalid credential and policy-denied model each produce zero judge calls (incl. passthrough answer + injecting judge, and a judge reached only by fall-through to `server.default_provider`); a judge call appears as `caller = "router"` and consumes its target's pool quota; `200`-then-stall and endless-ping judges resolve as `fail_open` within the deadline |
+| 4 | Dependency envelope + admission before `drive`, internal `serve`, translation boundary, per-call bounds | Invalid credential and policy-denied model each produce zero judge calls (incl. passthrough answer + injecting judge, and a judge reached only by fall-through to `server.default_provider`); an unauthenticated `count_tokens` probe on a passthrough-answer + injecting-judge entry is answered with zero judge calls, including an unpinned probe with decisive signals; a judge call appears as `caller = "router"` and consumes its target's pool quota; `200`-then-stall and endless-ping judges resolve as `fail_open` within the deadline |
 | 5 | Driven lane: `llm_classifier` capability + custom, `stage_router.classifier`, `composite`, `subagents` classifier form | Verdict parsed from a real Anthropic tool-use reply and from an OpenAI `json_schema` reply |
 | 6 | Buffer-and-replay lane: `escalation`, `advisor` | Replayed `message_start.model` equals the router id on both adapters; a `stream: false` caller receives one JSON message on a gated turn, on both adapters; REDO never commits headers; oversized, idle, and over-duration gated turns resolve as `fail_open`; `AGENTS.md` amended in the same PR |
 | 7 | `prefill-router` feature | Builds with the feature on a machine with the Python package; load error names the feature when off |
