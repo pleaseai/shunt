@@ -75,6 +75,7 @@ fn zen_config(mock_base_url: String) -> Config {
         request_compression: true,
         retry: Default::default(),
         workspace_roots: Vec::new(),
+        profile_dir: None,
         sandbox: true,
     }];
     config.server.default_provider = "opencode".to_string();

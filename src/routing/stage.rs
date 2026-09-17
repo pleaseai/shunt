@@ -12,8 +12,8 @@
 //! inconclusive; shunt declines and falls open to the picker's default instead,
 //! which keeps the hot path free of an extra request and an extra credential.
 
-mod signals;
-mod store;
+pub(crate) mod signals;
+pub(crate) mod store;
 mod vocabulary;
 
 pub(crate) use store::StageRouterStore;

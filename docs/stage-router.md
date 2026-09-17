@@ -153,10 +153,45 @@ The fingerprint destructures `StageRouterConfig` rather than dotting into it, so
 key added to the table later fails to compile in `fingerprint` instead of quietly
 letting stale pins outlive it.
 
-Capacity: `MAX_TRACKED_SESSIONS = 4096`, one amortised O(n) pass on insert that
-drops TTL-expired entries first and then the oldest. No timer, no background task,
-nothing persisted. `apply` takes `now: Instant` so dwell, expiry, and eviction are
-tested against a clock the test moves.
+Capacity: `MAX_TRACKED_SESSIONS = 4096`, trimmed on insert — TTL-expired entries
+first, then the oldest. No timer, no background task, nothing persisted. `apply`
+takes `now: Instant` so dwell, expiry, and eviction are tested against a clock the
+test moves.
+
+The trim is O(log n) per entry removed, not a pass over the map. Two indexes
+stand beside the session map, and the trim's two halves each read one of them:
+
+* recency — a `BTreeMap` keyed by `seq`, a total order with no ties that is
+  exactly the order turns were decided, so the least recently decided entry is
+  one `pop_first`. `last_seen` could not index this: two turns of one session
+  routinely share an `Instant`, which is why `seq` exists at all.
+* expiry — a `BTreeSet` of `(last_seen + ttl, seq)`, so the sweep stops at the
+  first entry still inside its own window instead of walking the map.
+
+They have to be separate orders, because the oldest entry can be the live one
+and a newer entry the expired one. Three things produce that inversion, and only
+the first needs two routers:
+
+* two routers configured with different `session_ttl_seconds`;
+* one router reloaded with a new `session_ttl_seconds` — existing entries keep
+  the TTL they were recorded with (`StageSession::ttl`), so old and new entries
+  age out on different clocks under a single table;
+* concurrency alone. `seq` orders arrival at `apply`, not the `now` each caller
+  captured before it, so two turns can take their sequence numbers in the
+  opposite order from their `last_seen`.
+
+Sweeping the front of the recency order alone would stop at the live entry,
+leave the expired one behind, and then evict the live entry in its place. With
+both indexes the trim drops exactly what the whole-map pass dropped: every
+expired entry, then the oldest survivor if the store is still over.
+
+An entry whose `last_seen + ttl` overflows is absent from the expiry index —
+nothing bounds `session_ttl_seconds` above, and an entry that can never expire
+belongs in no expiry index. The capacity trim still reaches it.
+
+Eviction runs under the store's single process-global mutex, so the walk it
+replaces serialized against every router-backed request rather than only the one
+that triggered it (§9, issue #552).
 
 ### 4.1 Why the asymmetry exists
 
@@ -304,3 +339,114 @@ in the same series whenever both targets resolve through one provider. Where the
 targets sit on different providers the `provider` label happens to separate
 them, which is not a tier dimension and should not be read as one. Giving those
 series a real tier label is a change to metrics this feature does not own.
+
+## 9. Measured cost
+
+`benches/stage_router.rs`, run with `cargo bench --features bench --bench
+stage_router`. The whole path here is `pub(crate)` and both public routing entry
+points pass `stage: None`, so the benchmark reaches it through
+`shunt::bench_support` — a facade gated on that feature, described in its own
+module docs. CodSpeed passes the feature in `.github/workflows/codspeed.yml`;
+without it the target builds, runs, and registers nothing.
+
+One local run, `--sample-count 200`, Apple silicon. CodSpeed owns regression
+detection; these are orders of magnitude, not a baseline to diff against.
+
+**Read the `fastest` column.** These arms allocate, so a sample can absorb an
+allocator or scheduler excursion but never finish faster than the work takes.
+That drift is enough for a median to reorder two arms standing in a containment
+relation, which would say a routed resolve is cheaper than the extraction it
+performs. `fastest` is the low-noise estimator; medians are given alongside so
+the spread stays visible.
+
+| Benchmark | 10 turns | 50 | 200 | 800 |
+|---|---|---|---|---|
+| `parse_body_to_value` | 31.5 µs *(32.0)* | 155 µs *(156)* | 632 µs *(675)* | 2.63 ms *(2.97)* |
+| `extract_signals` | 3.48 µs *(3.60)* | 12.6 µs *(12.8)* | 49.5 µs *(50.5)* | 196 µs *(202)* |
+| `resolve_chain_routed` | 4.79 µs *(4.87)* | 14.2 µs *(14.5)* | 50.2 µs *(50.8)* | 195 µs *(198)* |
+| `resolve_chain_unrouted` | 298 ns *(300)* | 297 ns *(300)* | 300 ns *(303)* | 292 ns *(298)* |
+
+`fastest`, with the median in parentheses.
+
+**Extraction is linear in turn count, dominates a routed resolve, and is small
+against what the request already spent.** An 80× longer history costs ~56× more.
+`resolve_chain_routed` sits within a few percent of `extract_signals` at every
+width, which is what "dominates" means here — the two are not separable at this
+resolution, and §3's second pass reads the entire `messages` array every turn, so
+a session's *cumulative* extraction cost grows quadratically in its own length
+even though each call is linear.
+
+The denominator is measured, not assumed, and it is the whole expression
+`src/proxy/failover.rs` evaluates: `RequestBody::parse(body.to_vec())`. Not
+`serde_json::from_slice`, whose visitor skips the duplicate-key rejection, and
+not the parse alone, which would drop the linear copy the buffered request pays
+on the way in — both omissions shrink a number that exists only to be a
+denominator. (Neither correction moved it much: the duplicate-key visitor
+inspects only *top-level* keys, nested values going through stock `Value`
+deserialization, and a `memcpy` is far cheaper than parsing what it copied. The
+distinction matters for what is being claimed, not for the figure.) Against that,
+extraction is **7.4–11.0%** across the range. So the ceiling on optimizing §3 is
+roughly a tenth of a cost the gateway has already sunk by the time the router is
+consulted, which is why §3 is left as it stands (issue #553).
+
+**A request to a model with no `[models.stage_router]` table does not read
+`messages` at all.** Both `resolve_chain_*` arms send the identical body naming
+the identical model id; the configs differ only in whether that id's `[[models]]`
+entry carries the table. `resolve_chain_unrouted` is flat at ~295 ns across an
+80× range of history length, with the tightest spread of any arm here. That
+flatness is the property to protect: it is what makes the feature opt-in in cost
+as well as in behaviour, and any change that makes this row slope is a regression
+whatever it does to the routed rows. The routed arm additionally resolves its
+chosen tier's own id through `[[routes]]`, which the unrouted arm does not — that
+second lookup is part of what routing costs, not a flaw in the pairing.
+
+### 9.1 Eviction, before and after the indexes
+
+Both arms run against a store already holding `MAX_TRACKED_SESSIONS` entries and
+both build their session id outside the timed region, so what separates them is
+the eviction and not the map size, the id's allocation, or its hashing.
+
+| Benchmark | whole-map pass | indexed |
+|---|---|---|
+| `store_turn_existing_session` | 553 ns | 742 ns |
+| `store_turn_new_session_at_capacity` | 32.8 µs | 970 ns |
+| gap | 59× | 1.3× |
+
+`fastest`; the left column is the implementation described in issue #552, the
+right is §4's. Both columns were measured in one sitting, alternating between two
+checkouts and reading each arm twice, because this machine's run-to-run spread on
+the returning-session arm is wide enough to invent or erase a change of the size
+this table reports: the *same* binary measured 602 ns and 713 ns on separate
+days. The paired figures agreed to within 3 ns (baseline) and 18 ns (indexed),
+which is what makes the difference below readable at all. Treat single-run
+numbers from either column as unusable for this comparison.
+
+CodSpeed ran the same two arms in simulation mode on PR #580 and reached the same
+place by a different route — it counts instructions rather than timing anything,
+so a scheduler excursion cannot reach it: `store_turn_existing_session` 12.6 µs →
+16.6 µs (**+32%** work) and `store_turn_new_session_at_capacity` 346.6 µs → 18.3
+µs. Its absolute figures are not comparable with the wall-clock table above and
+are not meant to be; the agreement that matters is that two instruments with
+unrelated failure modes put the regression at +32% and +34%.
+
+A previously unseen id at capacity used to pay a `retain` walk of all 4096
+entries. It now pays one `pop_first` from each index, so the eviction stops
+dominating: **34× faster**, and the gap between a new session and a returning one
+collapses from 59× to 1.3×. Because that work runs under the store's single
+process-global mutex, the walk serialized against every other router-backed
+request rather than costing only the one that triggered it — which is why the
+issue framed this as blast radius and not as per-request latency.
+
+The returning-session path pays for it: **553 ns → 742 ns**, about 34%. That is
+the four index operations every write owes whether or not it evicts — retiring
+the replaced entry's slot in each of the two indexes, then adding the new one to
+each. It is a real regression on the common path and is reported as one. The
+trade is ~190 ns on every turn against 32 µs of mutex-held work on every new
+session id, and it is worth taking only because the expensive side is the side
+that serializes; a store that never saturates pays the write cost and collects
+nothing, which is the case for any deployment whose distinct session ids stay
+under `MAX_TRACKED_SESSIONS`. That is a count of tracked sessions, not of
+concurrent requests: a session is tracked from its first routed turn until it
+expires or is evicted — and expired entries are swept only when an insert takes
+the store over the cap — so a client that rotates its session id can accumulate
+far more tracked sessions than it ever has in flight.

@@ -60,6 +60,21 @@ use self::{
 /// The CLI's own default is 5 minutes, which truncates genuine multi-step
 /// agent runs and surfaces to the caller as a turn that delivered nothing.
 const PRINT_TIMEOUT: &str = "30m";
+/// Ambient Google/Gemini credentials removed from the `agy` child environment
+/// when a provider runs with its own [`profile_dir`](shunt::config::ProviderConfig).
+/// Without this the gateway host's configuration could override the profile's
+/// own sign-in, defeating the per-provider account isolation.
+const STRIPPED_ENV_KEYS: &[&str] = &[
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_CLOUD_QUOTA_PROJECT",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GCLOUD_PROJECT",
+    "CLOUDSDK_CORE_PROJECT",
+];
 
 /// Outer cap shunt enforces itself, independent of `--print-timeout`.
 ///
@@ -193,6 +208,16 @@ impl Adapter for AntigravityAdapter {
             // Without this the agent inherits the gateway process's directory
             // and operates on whatever tree shunt happened to be started in.
             cmd.current_dir(&workspace);
+            // Per-account isolation. `agy` resolves its whole state tree —
+            // credentials included — through `HOME`, so a private `HOME` gives
+            // each provider entry its own Google account and lets several be
+            // pooled concurrently. Verified against the real CLI: a fresh
+            // `HOME` makes it rebuild the profile and demand its own sign-in
+            // rather than reusing the ambient one.
+            if let Some(profile_dir) = state.config.provider_profile_dir(&route.provider) {
+                let profile_dir = prepare_profile_dir(profile_dir).await?;
+                apply_profile_env(&mut cmd, &profile_dir);
+            }
             cmd.stdin(Stdio::null());
             cmd.stdout(Stdio::piped());
             cmd.stderr(Stdio::piped());
@@ -717,6 +742,53 @@ pub fn truncate(text: &str, limit: usize) -> String {
     text[..end].to_string()
 }
 
+/// Point the child at `profile_dir` and strip the ambient Google credentials.
+///
+/// Both halves are needed for the account to be the configured one: `HOME`
+/// selects the profile `agy` reads, and the stripped variables are the ones
+/// that would otherwise override that profile's sign-in — letting the gateway
+/// host's own configuration decide which account, and whose billing, serves a
+/// request. Applied only when a profile is configured; without one the child
+/// inherits the gateway environment unchanged, which is the previous behavior.
+fn apply_profile_env(cmd: &mut Command, profile_dir: &Path) {
+    cmd.env("HOME", profile_dir);
+    // Windows resolves the home directory through USERPROFILE.
+    cmd.env("USERPROFILE", profile_dir);
+    for key in STRIPPED_ENV_KEYS {
+        cmd.env_remove(key);
+    }
+}
+
+/// Create `profile_dir` if needed and resolve it to an absolute path.
+///
+/// Absolute is load-bearing, not tidiness. The child's working directory is
+/// already the request workspace by the time it reads `HOME`, so a relative
+/// value is resolved against two different bases: `create_dir_all` makes it
+/// under the gateway's directory, and `agy` then looks for it under the
+/// workspace. The profile the operator signed into is not the one the CLI
+/// reads, which defeats the isolation and can scatter credential state through
+/// a project tree. `resolve_workspace` canonicalizes for the same reason — the
+/// same value becoming both `--add-dir` and `current_dir`.
+///
+/// Canonicalizing also folds in the existence check and resolves `..` and
+/// symlinks, so the directory handed to the child is the one that was created.
+async fn prepare_profile_dir(profile_dir: &str) -> Result<PathBuf, AdapterError> {
+    tokio::fs::create_dir_all(profile_dir)
+        .await
+        .map_err(|err| {
+            adapter_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("could not create the Antigravity profile directory {profile_dir}: {err}"),
+            )
+        })?;
+    tokio::fs::canonicalize(profile_dir).await.map_err(|err| {
+        adapter_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("could not resolve the Antigravity profile directory {profile_dir}: {err}"),
+        )
+    })
+}
+
 /// Directory `agy` is launched in and granted via `--add-dir`.
 ///
 /// This is a trust boundary, not a convenience. `agy` runs with
@@ -924,6 +996,99 @@ fn find_agy_binary_uncached() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A relative `profile_dir` must never reach the child. The child reads
+    /// `HOME` after its working directory has already moved to the request
+    /// workspace, so the gateway and the CLI would resolve the same string
+    /// against different bases and the profile the operator signed into would
+    /// not be the one `agy` opens. `src` already exists in the crate root, so
+    /// this resolves a relative path without creating anything.
+    #[tokio::test]
+    async fn relative_profile_dir_resolves_to_an_absolute_path() {
+        let resolved = prepare_profile_dir("src")
+            .await
+            .expect("an existing relative directory resolves");
+
+        assert!(
+            resolved.is_absolute(),
+            "a relative profile dir must not reach the child: {resolved:?}"
+        );
+        assert!(resolved.ends_with("src"), "{resolved:?}");
+    }
+
+    /// Canonicalizing is what makes the created directory and the child's
+    /// `HOME` the same directory, so `..` must be folded rather than passed on.
+    #[tokio::test]
+    async fn profile_dir_is_normalized_before_the_child_sees_it() {
+        let base = std::env::temp_dir().join(format!("shunt-profile-{}", std::process::id()));
+        let target = base.join("account-a");
+        std::fs::create_dir_all(&target).expect("fixture dir");
+        let detour = base.join("account-a/../account-a");
+
+        let resolved = prepare_profile_dir(&detour.to_string_lossy())
+            .await
+            .expect("profile dir resolves");
+
+        assert_eq!(resolved, target.canonicalize().expect("canonical fixture"));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// The directory is created on demand, so a first run against a fresh
+    /// profile path does not fail before `agy` can be asked to sign in.
+    #[tokio::test]
+    async fn missing_profile_dir_is_created() {
+        let dir = std::env::temp_dir().join(format!("shunt-profile-new-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+
+        let resolved = prepare_profile_dir(&dir.to_string_lossy())
+            .await
+            .expect("a missing profile dir is created");
+
+        assert!(resolved.is_dir());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn profile_env_sets_home_and_strips_ambient_credentials() {
+        let profile = Path::new("/tmp/shunt-profile-fixture");
+        let mut cmd = Command::new("true");
+
+        apply_profile_env(&mut cmd, profile);
+
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        for key in ["HOME", "USERPROFILE"] {
+            let (_, value) = envs
+                .iter()
+                .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+                .unwrap_or_else(|| panic!("{key} should be set"));
+            assert_eq!(
+                *value,
+                Some(profile.as_os_str()),
+                "{key} should point at the profile"
+            );
+        }
+        assert!(!STRIPPED_ENV_KEYS.is_empty());
+        for key in STRIPPED_ENV_KEYS {
+            let (_, value) = envs
+                .iter()
+                .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+                .unwrap_or_else(|| panic!("{key} should be removed from the child"));
+            assert!(value.is_none(), "{key} should be removed, not overwritten");
+        }
+    }
+
+    /// Stripping is conditional on a configured profile. With none, the child
+    /// inherits the gateway environment exactly as it did before this setting
+    /// existed — moving the strip loop out of that branch would break every
+    /// deployment that relies on ambient Google credentials.
+    #[test]
+    fn without_a_profile_no_environment_is_overridden() {
+        let cmd = Command::new("true");
+
+        let overrides: Vec<_> = cmd.as_std().get_envs().collect();
+
+        assert!(overrides.is_empty(), "unexpected overrides: {overrides:?}");
+    }
 
     fn status_of(error: &AdapterError) -> StatusCode {
         error.response.status()

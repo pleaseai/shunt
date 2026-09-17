@@ -8,6 +8,14 @@ description: 默认的透传提供方 —— 转发调用方自己的凭据、�
 上游本身就讲 Anthropic Messages API,因此 shunt 不做转换直接透传请求,只决定**哪一份凭据**
 被发往上游。
 
+只有一个请求字段例外。带有 shunt 为其他提供方生成的 `signature` 的 `thinking` 块会在转发请求前被
+移除(Responses、Gemini 和 Cursor 三条路径各自会生成一个 —— 因为思考块需要该字段才算格式完整),
+随之变为空壳的 assistant 轮次也会一并移除。Anthropic 会解密该字段并拒绝不是自己签发的值,原样
+转发会导致请求失败。Anthropic 签发的 signature 对 shunt 而言是不透明的,因此从不触碰。该移除不会
+读取会话历史,所以并不仅限于使用过映射提供方的会话 —— 完全没有 `signature` 的 `thinking` 块同样会
+被移除:shunt 自己的 Responses 路径在上游未返回 signature 时就会生成这种块,而 Anthropic 无论如何
+都会拒绝无法验证 signature 的 thinking 块。
+
 | 认证模式 | 凭据 | 使用场景 |
 | :-- | :-- | :-- |
 | `passthrough`(默认) | 调用方自己的 `x-api-key` / `Authorization` | 透明代理 —— 每个客户端自带密钥或 OAuth token |

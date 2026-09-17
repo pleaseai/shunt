@@ -3,6 +3,12 @@ pub mod adapters;
 pub mod admin;
 mod atomic_file;
 pub mod auth;
+/// Benchmark-only entry points into crate-private paths (issue #554). Gated so
+/// a normal build's public API is unchanged; `cargo bench --features bench`
+/// turns it on. See the module docs for why a facade rather than wider `pub`.
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench_support;
 pub mod blueprints;
 pub mod codex_analytics;
 pub mod codex_endpoint;

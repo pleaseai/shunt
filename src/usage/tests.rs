@@ -370,6 +370,7 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
             retry: Default::default(),
             workspace_roots: Vec::new(),
             sandbox: true,
+            profile_dir: None,
         },
     );
 
@@ -513,6 +514,7 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
             retry: Default::default(),
             workspace_roots: Vec::new(),
             sandbox: true,
+            profile_dir: None,
         },
     );
 

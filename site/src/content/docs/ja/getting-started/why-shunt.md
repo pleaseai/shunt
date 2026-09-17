@@ -30,7 +30,7 @@ shunt は受け取ったモデル id を尊重するだけです — エージ�
 
 ## shunt が実装するもの
 
-- **`POST /v1/messages`** — 推論。リクエストの `model` id に従ってルーティングされます。マッピングされていないモデルは、呼び出し元自身の認証情報を使ってバイト単位でそのまま Anthropic へ転送されます。
+- **`POST /v1/messages`** — 推論。リクエストの `model` id に従ってルーティングされます。マッピングされていないモデルは、呼び出し元自身の認証情報を使ってバイト単位でそのまま Anthropic へ転送されます。ただし shunt が他のプロバイダー向けに生成した [`thinking` の signature](/ja/providers/anthropic/) だけは、Anthropic が拒否する値のため取り除かれます。
 - **Anthropic Messages ⇄ OpenAI Responses 変換** — マッピングされた OpenAI ファミリーのモデル向け。ストリーミングを含みます。
 - **ChatGPT サブスクリプションの再利用** — `codex` プロバイダーは Codex CLI の `~/.codex/auth.json` ログインを再利用（かつ自動リフレッシュ）します。
 - **`GET /v1/models`** — Claude 命名のエイリアス向けの [model discovery](/ja/guides/model-discovery/)。

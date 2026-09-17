@@ -30,7 +30,7 @@ One model id can opt into deciding for itself: a [stage router](/guides/stage-ro
 
 ## What shunt implements
 
-- **`POST /v1/messages`** — inference, routed per the request's `model` id. Unmapped models are forwarded to Anthropic byte-for-byte with the caller's own credential.
+- **`POST /v1/messages`** — inference, routed per the request's `model` id. Unmapped models are forwarded to Anthropic byte-for-byte with the caller's own credential, except for a [`thinking` signature shunt minted for another provider](/providers/anthropic/) — a value Anthropic would reject.
 - **Anthropic Messages ⇄ OpenAI Responses translation** — for mapped OpenAI-family models, including streaming.
 - **ChatGPT subscription reuse** — the `codex` provider reuses (and auto-refreshes) the Codex CLI's `~/.codex/auth.json` login.
 - **`GET /v1/models`** — [model discovery](/guides/model-discovery/) for Claude-named aliases.
