@@ -73,6 +73,7 @@ fn chain_config(primary: (ProviderKind, String), fallback: (ProviderKind, String
                 ..Default::default()
             },
             workspace_roots: Vec::new(),
+            profile_dir: None,
             sandbox: true,
         },
         UpstreamConfig {
@@ -92,6 +93,7 @@ fn chain_config(primary: (ProviderKind, String), fallback: (ProviderKind, String
                 ..Default::default()
             },
             workspace_roots: Vec::new(),
+            profile_dir: None,
             sandbox: true,
         },
     ];
