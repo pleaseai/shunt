@@ -356,7 +356,7 @@ outcome}`. `GET /routes` `routers[]` gains `algorithm`, `targets`, and a
 | 0 | libsy git pin to `main`; fill the four new `ToolSignals` fields; handle `DecisionSource::CapableHold` | Behaviour-preserving; the `is_signal_evidence` match compiles with the new variant |
 | 1 | Agent-scoped pin key + child budget + `RouterContext` | Child errors leave the parent pin untouched; child fan-out at capacity cannot evict an idle capable parent |
 | 2 | `[models.router]` discriminator, `stage_router` alias, `random`, `auto`, `noop`, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Old configs load unchanged with one deprecation warning; `resolve_chain_unrouted` bench flat |
-| 3 | `subagents` passthrough form | Delegated request routes to `target` with no store access |
+| 3 | `subagents` passthrough form with `by_type` | A `subagent`/`workflow` request routes to its `by_type` target, else `target`, with no store access; `compaction` and `auxiliary` never take the overlay |
 | 4 | Dependency envelope + admission before `drive`, internal `serve`, translation boundary, per-call bounds | Invalid credential and policy-denied model each produce zero judge calls (incl. passthrough answer + injecting judge); a judge call appears as `caller = "router"` and consumes its target's pool quota; `200`-then-stall and endless-ping judges resolve as `fail_open` within the deadline |
 | 5 | Driven lane: `llm_classifier` capability + custom, `stage_router.classifier`, `composite`, `subagents` classifier form | Verdict parsed from a real Anthropic tool-use reply and from an OpenAI `json_schema` reply |
 | 6 | Buffer-and-replay lane: `escalation`, `advisor` | Replayed `message_start.model` equals the router id on both adapters; REDO never commits headers; oversized, idle, and over-duration gated turns resolve as `fail_open`; `AGENTS.md` amended in the same PR |
@@ -380,11 +380,75 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
 
 ### 10. Verification before code
 
-Two external facts to capture live through `shunt run` before the predicates
-are written, both recorded in `docs/notes/`: that a parent Claude Code turn
-sends no `x-claude-code-agent-id` and a `Task` child does; and that a forced
-tool-use reply from the current Claude models parses as the judge verdict
-schema without the `json_object` fallback.
+Three external facts to capture live through `shunt run` before the
+predicates are written, all recorded in `docs/notes/`: that a parent Claude
+Code turn sends no `x-claude-code-agent-id` and a `Task` child does; the
+literal `x-claude-code-agent-type` values the built-in agents send under
+`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` (§11 reads `fork` from the binary and
+infers the rest); and that a forced tool-use reply from the current Claude
+models parses as the judge verdict schema without the `json_object`
+fallback.
+
+### 11. Claude Code gateway hint headers (≥ 2.1.273)
+
+Claude Code 2.1.273 added five request headers for LLM gateways. What
+follows is read from the 2.1.274 binary, not the changelog, and is the
+contract this ADR builds on; live capture (§10) confirms the values.
+
+**The gate.** `CLAUDE_CODE_GATEWAY_HINT_HEADERS` wins when set. Otherwise the
+headers are on only when the base URL is a first-party Anthropic host; behind
+any other `ANTHROPIC_BASE_URL` — which is every shunt deployment — they are
+**off** unless the operator sets the variable to `1`. So the docs ship the
+variable alongside `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, every design
+point below has an "absent" branch equal to today's behaviour, and
+`/protocol` lists the five as consumed headers. Values are percent-encoded
+for `%` and anything outside printable ASCII.
+
+| Header | Values | When sent |
+|---|---|---|
+| `x-claude-code-request-class` | `main`, `subagent`, `workflow`, `compaction`, `auxiliary` | Every request that has a query source. `main` is the REPL main thread or the SDK; `subagent` is any `agent:*` source or a hook agent; `workflow` is a sub-agent under a workflow run; `compaction` is the compact call itself; `auxiliary` is everything else (title, summary, and other maintenance calls) |
+| `x-claude-code-agent-type` | `teammate`, a built-in agent id (`fork`, `Explore`, …), `custom` | Only on `agent:*` sources. A custom agent's name is **not** exposed, only `custom` |
+| `x-claude-code-compaction` | `manual`, `auto`, `reactive` | On the compaction request itself |
+| `x-claude-code-context-compacted` | `manual`, `auto`, `reactive` | **Once**, on the next `main` turn after a compaction; the flag is consumed when read |
+| `x-claude-code-prev-tool-durations` | `Name=ms;Name=ms…`, ≤ 32 entries, ≤ 4096 bytes | Turns that follow tool execution; the previous turn's tools and wall-clock durations |
+
+**What each one changes here.**
+
+- **Delegated work** (§5) is `request-class ∈ {subagent, workflow}`, falling
+  back to the agent-id rule when the header is absent. `compaction` and
+  `auxiliary` are *harness maintenance*: they never take the `subagents`
+  overlay (upstream's `SubagentOverride` abstains on `compact` for the same
+  reason), and the stage router treats them as `read_only` — decided so they
+  land on the session's tier, never recorded, so a title-generation call
+  cannot advance a dwell counter or evict a pin. Absent the header, they
+  route as they do today.
+- **`[models.subagents]` gains `by_type`**, a map from agent type to target
+  with `target` as the fallback, on the pure lane:
+
+  ```toml
+  [models.subagents]
+  type = "passthrough"
+  target = "claude-haiku-4-5"
+  by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+  ```
+
+  Keys are the header's literal values, matched exactly; `custom` is the only
+  key a custom agent can match. Every value is held to the one-hop rule.
+- **`compacted` finally has a source.** ADR-0004 left `ToolSignals.compacted`
+  at `false` for want of a marker; `x-claude-code-context-compacted` is that
+  marker, and libsy's hard-escalate override fires on it. But the header is
+  **one-shot** where libsy's own reading is self-latching (upstream reads the
+  compaction summary that stays in the prefix). So the latch lives on the
+  session pin: the turn that carries the header sets `compacted` on the
+  entry, later turns of that session read it back into `ToolSignals`, and it
+  clears with the pin's TTL. A sessionless request latches for that turn
+  only. This changes which turns escalate on a router that has been
+  deployed already, so it is called out in the PR 1 release note.
+- **`prev-tool-durations` is parsed and reserved.** libsy has no consumer for
+  it; a stalled long-running tool is a plausible `spinning` corroborator, but
+  that is a calibration change upstream owns. v1 exposes it as a histogram
+  (`shunt.router.prev_tool_duration_ms{tool}`, tool label from the built-in
+  vocabulary plus `other`) and nothing else.
 
 ## Consequences
 
