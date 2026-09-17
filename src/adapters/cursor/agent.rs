@@ -868,14 +868,17 @@ fn extract_tool_call(payload: &[u8]) -> Option<(String, String, Option<String>)>
 /// fields 7 and 11 ever carry one, so a `tool_*` id outside field 11 identifies
 /// an unbridged built-in call without enumerating Cursor's built-in catalog.
 ///
-/// The scan stays deliberately wide. Two narrower variants were built and
-/// measured against the live upstream on an identical request: pinning
-/// detection to the field position where the id was captured leaked silent
-/// turns (2 of 22), and additionally requiring the id body to be uuid-shaped
-/// leaked badly (8 of 16) -- even though every captured id satisfies that
-/// shape. The wide scan showed no silent turn in 38. A false positive fails a
-/// working turn and a miss restores the original silent truncation, so neither
-/// is free; the wide form is what the measurements support.
+/// The scan stays wide on the id body and narrow on nesting. Two variants that
+/// narrowed the *body* were built and measured against the live upstream on an
+/// identical request: pinning detection to the field position where the id was
+/// captured leaked silent turns (2 of 22), and additionally requiring the id
+/// body to be uuid-shaped leaked badly (8 of 16) -- even though every captured
+/// id satisfies that shape. Neither is used. Nesting is a separate axis: the
+/// recursive walk that once accompanied this scan re-parsed user content as
+/// protobuf and reported a tool call inside it (#426), so the scan now looks
+/// only at direct fields, where every captured id sits. A false positive fails
+/// a working turn and a miss restores the original silent truncation, so
+/// neither is free.
 fn extract_unbridged_builtin_tool_call(payload: &[u8]) -> Option<u64> {
     for esm in iter_fields(payload) {
         // AgentServerMessage.exec_server_message = field 2.
@@ -887,7 +890,7 @@ fn extract_unbridged_builtin_tool_call(payload: &[u8]) -> Option<u64> {
             if args.field == 11 || args.wire != 2 {
                 continue;
             }
-            if contains_tool_call_id(args.data, 0) {
+            if contains_tool_call_id(args.data) {
                 return Some(args.field);
             }
         }
@@ -895,14 +898,22 @@ fn extract_unbridged_builtin_tool_call(payload: &[u8]) -> Option<u64> {
     None
 }
 
-/// Whether `buf` contains a `tool_<...>` call-id string within [`MAX_TOOL_ID_SCAN_DEPTH`]
-/// levels of nesting.
+/// Whether a direct length-delimited field of `buf` is a `tool_<...>` call id.
+///
+/// The scan does not recurse. Protobuf does not distinguish a nested message
+/// from a string, so descending into a field re-parses whatever it holds --
+/// including the file contents a built-in read carries -- as wire format. Text
+/// that happens to begin with a valid tag and length followed by `tool_` then
+/// reads as a call id and fails a working turn; `\n` is `0x0a` (field 1, wire
+/// type 2) and a space is a length of 32, so a blank line before a
+/// one-space-indented `tool_` line is enough. The captured shape places the id
+/// at depth 0 -- `ExecServerMessage` field 7 = `{ 1: <path>, 2: "tool_<uuid>" }`
+/// -- so no recursion is needed to reach it.
 ///
 /// The prefix is matched on raw bytes. A length-delimited field is not required
-/// to decode as UTF-8 for its `tool_` prefix to count, which keeps the scan on
-/// the wide side the measurements above support and avoids running a full UTF-8
-/// validation over every nested field of every frame on the streaming path.
-fn contains_tool_call_id(buf: &[u8], depth: usize) -> bool {
+/// to decode as UTF-8 for its `tool_` prefix to count, which avoids running a
+/// full UTF-8 validation over every field of every frame on the streaming path.
+fn contains_tool_call_id(buf: &[u8]) -> bool {
     for field in iter_fields(buf) {
         if field.wire != 2 {
             continue;
@@ -910,19 +921,9 @@ fn contains_tool_call_id(buf: &[u8], depth: usize) -> bool {
         if field.data.starts_with(b"tool_") {
             return true;
         }
-        if depth < MAX_TOOL_ID_SCAN_DEPTH && contains_tool_call_id(field.data, depth + 1) {
-            return true;
-        }
     }
     false
 }
-
-/// Nesting depth scanned for a `tool_*` call id. Bounds recursion on a
-/// malformed payload. Deliberately far shallower than [`MAX_PROTOBUF_VALUE_DEPTH`]
-/// (64): a call id sits a level or two under the `ExecServerMessage` field that
-/// carries it, so a deeper walk buys nothing on a well-formed frame and only
-/// does more work on a malformed one.
-const MAX_TOOL_ID_SCAN_DEPTH: usize = 8;
 
 /// Decode `McpArgs { name=1, args=2 (map<string,Value>), tool_call_id=3,
 /// tool_name=5 }` into `(name, input JSON, tool_call_id)`. `tool_name`(5) wins
@@ -1456,6 +1457,26 @@ mod tests {
         let payload = field_ld(2, &field_ld(7, &builtin));
 
         assert_eq!(extract_unbridged_builtin_tool_call(&payload), Some(7));
+    }
+
+    #[test]
+    fn user_content_that_parses_as_protobuf_is_not_a_tool_call() {
+        // A built-in file read carries the file's contents. Protobuf does not
+        // distinguish a nested message from a string, so a scan that recursed
+        // would re-parse that content as wire format. This body is ordinary
+        // text -- a blank line, then a line indented one space -- whose bytes
+        // also form a valid tag (0x0a = field 1, wire 2) and length (0x20 = 32)
+        // followed by `tool_`. Recursing here reports a tool call in the user's
+        // own data and fails a working turn (#426).
+        let content = "\n tool_call_id_example_abcdefghijk";
+        let builtin = field_str(1, content);
+        let payload = field_ld(2, &field_ld(7, &builtin));
+
+        assert_eq!(
+            extract_unbridged_builtin_tool_call(&payload),
+            None,
+            "file content must not be re-parsed as a tool call"
+        );
     }
 
     #[test]
