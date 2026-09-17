@@ -213,16 +213,27 @@ exactly a fixed entry here. `random` carries one shunt addition,
 `affinity = "session" | "request"` (default `session`): the arm is
 `sha256(seed ‖ model ‖ session_id)` scaled into the weight range, so a Claude
 Code session keeps one arm without a store, survives restarts, and its
-`count_tokens` probes land where the turn does. `auto` is the stage-router
-preset with upstream's `picker` and `confidence_threshold`. `noop` returns a
-buffered `OK` without an upstream call.
+`count_tokens` probes land where the turn does. `seed` is upstream's own
+`random` key. Under `affinity = "session"` it is the hash salt, read from
+config and `0` when unset, so the arm is a pure function of config, model
+id, and session id: stable across restarts and across replicas that load the
+same config; changing `seed`, `targets`, or `weights` can move the arm.
+Under `affinity = "request"` it keeps upstream's meaning and reproduces the
+selection sequence. `auto` is the stage-router preset with upstream's
+`picker` and `confidence_threshold`. `noop` returns a buffered `OK` without
+an upstream call.
 
-The one-hop rule generalises: any target named by any router table must
-resolve, after `strip_context_window_hint`, to an entry that carries no router
-and no `subagents` table. Judge-only targets are not routing destinations but
-are held to the same rule. `stage_router`, `random`, and `upstream_model` on
-one entry: `router` and `upstream_model` are exclusive, as
-`stage_router` and `upstream_model` are today.
+The one-hop rule generalises: any target named by any router table that
+resolves, after `strip_context_window_hint`, to a `[[models]]` entry must
+resolve to one that carries no router and no `subagents` table. A target
+that names no entry keeps today's behaviour — it falls through `[[routes]]`,
+`[[route_prefixes]]`, and `server.default_provider` under
+`warn_stage_router_targets_unresolvable` (`docs/stage-router.md` §6) — so a
+deployed `[models.stage_router]` config still loads and routes; this ADR is
+not a migration of those targets. Judge-only targets are not routing
+destinations but are held to the same rule. `stage_router`, `random`, and
+`upstream_model` on one entry: `router` and `upstream_model` are exclusive,
+as `stage_router` and `upstream_model` are today.
 
 ### 3. The internal model call: `serve` for `CallModel`
 
@@ -277,8 +288,16 @@ collected. A gated executor or weak turn (§4) has its own three bounds:
 bound cancels the upstream call, refunds nothing, and resolves as the
 algorithm's `fail_open` outcome — for `advisor`, the collected turn is usable
 only after an authoritative terminal event (`message_stop`), never a partial
-one. A per-session `max_judge_calls` (default 8) bounds count on top. A
-caller disconnect cancels the in-flight internal call. Tests: `200`-then-stall,
+one. A per-session `max_judge_calls` bounds count on top. The six keys live
+on whichever table makes the internal calls, `[models.router]` or a
+classifier-form `[models.subagents]`, and each covers its own call type
+(`judge_*` the judge calls, `gated_*` the executor and weak turns), with
+defaults `judge_timeout_ms = 30000`, `judge_max_response_bytes = 65536`,
+`gated_max_bytes = 8388608`, `gated_idle_ms = 60000`,
+`gated_max_duration_ms = 600000`, and `max_judge_calls = 8`; PR 4 may
+recalibrate them against its stall tests, and the reference page changes
+with them. A caller disconnect cancels the in-flight internal call. Tests:
+`200`-then-stall,
 an endless ping stream, an oversized turn, and a disconnect mid-collection.
 Judge calls count against the pool quota they run on, which is why a judge
 target should map its own entry.
@@ -353,7 +372,7 @@ outcome}`. `GET /routes` `routers[]` gains `algorithm`, `targets`, and a
 
 | PR | Scope | Definition of done |
 |---|---|---|
-| 0 | libsy git pin to `main`; fill the four new `ToolSignals` fields; handle `DecisionSource::CapableHold` | Behaviour-preserving; the `is_signal_evidence` match compiles with the new variant |
+| 0 | libsy git pin at an immutable `rev` on upstream `main`, in the form the two `tungstenite` pins use (no `branch` key); fill the four new `ToolSignals` fields; handle `DecisionSource::CapableHold` | Behaviour-preserving; the `is_signal_evidence` match compiles with the new variant |
 | 1 | `RouterContext` with the §11 request hints (session, agent id, request class, agent type, compacted), agent-scoped pin key, child budget, compaction latch | Behaviour-preserving without the hints; child errors leave the parent pin untouched; child fan-out at capacity cannot evict an idle capable parent; a `context-compacted` turn escalates and the next turn of that session still reads `compacted = true` |
 | 2 | `[models.router]` discriminator, `stage_router` alias, `random`, `auto`, `noop`, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Old configs load unchanged with one deprecation warning; `resolve_chain_unrouted` bench flat |
 | 3 | `subagents` passthrough form with `by_type` | A `subagent`/`workflow` request routes to its `by_type` target, else `target`, with no store access; `compaction` and `auxiliary` never take the overlay |
@@ -463,9 +482,11 @@ for `%` and anything outside printable ASCII.
 
 ### Negative
 
-- A git-pinned dependency on a moving `main`, replacing a registry pin that
-  had one release. Mitigated by pinning a revision, and by the two-lane split
-  keeping the pure lane compilable against the scorer alone.
+- A git-pinned dependency on an unreleased upstream `main`, replacing a
+  registry pin that had one release. The pin is an immutable `rev` and
+  `Cargo.toml` never names the branch, so a bump is a reviewed diff rather
+  than a side effect of an unrelated update; the two-lane split keeps the
+  pure lane compilable against the scorer alone.
 - `switchyard-translation` enters the tree after ADR-0004 kept it out. Its
   scope is the routing boundary only, and that boundary is tested by
   round-tripping a captured Claude Code request.
@@ -506,5 +527,5 @@ for `%` and anything outside printable ASCII.
 
 - [ADR-0004](0004-content-aware-stage-router.md) — superseded in Decision 2, amended in Decision 3; §1, §4, §5 stand.
 - [ADR-0002](0002-ordered-upstreams-failover.md) — the post-2xx no-replay boundary §4 respects.
-- `docs/stage-router.md` — the signal-only path this ADR leaves in place.
+- [docs/stage-router.md](../../../docs/stage-router.md) — the signal-only path this ADR leaves in place.
 - [Switchyard TOML schema](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/docs/reference/toml_schema.md), [routing overview](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/docs/routing_algorithms/overview.md), [advisor gate](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/docs/routing_algorithms/advisor_gate_routing.md), [escalation](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/docs/routing_algorithms/escalation_router_routing.md), [sub-agent routing](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/docs/routing_algorithms/subagent_routing.md).
