@@ -49,8 +49,10 @@ shunt is `publish = false` and already pins two git revisions for
 **3. Two algorithms serve the answer while routing.** `escalation` calls the
 weak target, buffers the reply, judges the completed turn, and either serves
 the buffered reply or discards it for a strong call. `advisor` buffers each
-executor turn, reviews it on a trigger, and on REDO discards it. Both replay
-the buffered turn as SSE afterwards. `AGENTS.md` says "do not buffer upstream
+executor turn, reviews it on a trigger, and on REDO discards it. Both serve
+the buffered turn afterwards in the mode the caller asked for — an SSE
+replay for a streaming caller, one JSON message for a non-streaming one
+(§3, §4). `AGENTS.md` says "do not buffer upstream
 SSE responses unless the client requested non-streaming output." These two
 cannot be built without an amendment to that rule scoped to the routes that
 select them.
@@ -316,12 +318,13 @@ is an end-to-end deadline on a non-streaming judge call, headers *and* body
 (a `.send()`-only timeout stops at headers, and a `200` that then stalls
 would never reach `fail_open`); `judge_max_response_bytes` caps what is
 collected. A gated executor or weak turn (§4) has its own three bounds:
-`gated_max_bytes` on retained frames, `gated_idle_ms` between frames
-(pings do not reset it), and `gated_max_duration_ms` wall-clock. Crossing any
-bound cancels the upstream call, refunds nothing, and resolves as the
-algorithm's `fail_open` outcome — for `advisor`, the collected turn is usable
-only after an authoritative terminal event (`message_stop`), never a partial
-one. A per-session `max_judge_calls` bounds count on top. The six keys live
+`gated_max_bytes` on retained frames or JSON body bytes, `gated_idle_ms`
+between body chunks (SSE pings do not reset it), and
+`gated_max_duration_ms` wall-clock. Crossing any bound cancels the upstream
+call, refunds nothing, and resolves as the algorithm's `fail_open` outcome —
+for `advisor`, the collected turn is usable only after an authoritative
+terminal marker, never a partial one: `message_stop` on a streaming call, a
+complete body that parses as one message on a non-streaming call. A per-session `max_judge_calls` bounds count on top. The six keys live
 on whichever table makes the internal calls, `[models.router]` or a
 classifier-form `[models.subagents]`, and each covers its own call type
 (`judge_*` the judge calls, `gated_*` the executor and weak turns), with
@@ -363,8 +366,12 @@ the frames start replaying.
 
 ### 5. Sub-agent routing and the pin scope
 
-A request is **delegated work** when `x-claude-code-agent-id` is present and
-non-blank (upstream's `claude_lineage`; Claude Code ≥ 2.1.139). A
+A request is **delegated work** when `x-claude-code-request-class` is
+`subagent` or `workflow`; when that header is absent, when
+`x-claude-code-agent-id` is present and non-blank (upstream's
+`claude_lineage`; Claude Code ≥ 2.1.139). The class is authoritative when
+sent: `main` with an agent id is main traffic and never takes the overlay
+(§11). A
 `[models.subagents]` table takes `type = "passthrough"` with `target`, or
 `type = "llm_classifier"` with `mode = "custom"` and the upstream `models`
 groups, run on the driven lane with `classify_trigger = "new_session"` keyed
@@ -411,7 +418,7 @@ outcome}`. `GET /routes` `routers[]` gains `algorithm`, `targets`, and a
 | 0 | libsy git pin at an immutable `rev` on upstream `main`, in the form the two `tungstenite` pins use (no `branch` key); fill the four new `ToolSignals` fields; handle `DecisionSource::CapableHold` | Behaviour-preserving; the `is_signal_evidence` match compiles with the new variant |
 | 1 | `RouterContext` with the §11 request hints (session, agent id, request class, agent type, compacted), agent-scoped pin key, child budget, compaction latch | Behaviour-preserving without the hints; child errors leave the parent pin untouched; child fan-out at capacity cannot evict an idle capable parent; a `context-compacted` turn escalates and the next turn of that session still reads `compacted = true` |
 | 2 | `[models.router]` discriminator, `stage_router` alias, `random`, `auto`, `noop`, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Old configs load unchanged with one deprecation warning; `resolve_chain_unrouted` bench flat; sessionless requests under `random` session affinity follow the configured weights rather than one shared arm |
-| 3 | `subagents` passthrough form with `by_type` | A `subagent`/`workflow` request routes to its `by_type` target, else `target`, with no store access; `compaction` and `auxiliary` never take the overlay |
+| 3 | `subagents` passthrough form with `by_type` | A `subagent`/`workflow` request routes to its `by_type` target, else `target`, with no store access; `main` with an agent id, `compaction`, and `auxiliary` never take the overlay |
 | 4 | Dependency envelope + admission before `drive`, internal `serve`, translation boundary, per-call bounds | Invalid credential and policy-denied model each produce zero judge calls (incl. passthrough answer + injecting judge, and a judge reached only by fall-through to `server.default_provider`); an unauthenticated `count_tokens` probe on a passthrough-answer + injecting-judge entry is answered with zero judge calls, including an unpinned probe with decisive signals; a judge call appears as `caller = "router"` and consumes its target's pool quota; `200`-then-stall and endless-ping judges resolve as `fail_open` within the deadline |
 | 5 | Driven lane: `llm_classifier` capability + custom, `stage_router.classifier`, `composite`, `subagents` classifier form | Verdict parsed from a real Anthropic tool-use reply and from an OpenAI `json_schema` reply |
 | 6 | Buffer-and-replay lane: `escalation`, `advisor` | Replayed `message_start.model` equals the router id on both adapters; a `stream: false` caller receives one JSON message on a gated turn, on both adapters; REDO never commits headers; oversized, idle, and over-duration gated turns resolve as `fail_open`; `AGENTS.md` amended in the same PR |
