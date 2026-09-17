@@ -1,0 +1,24 @@
+docs/storage.md
+  s_fdeea4ec053461::t_8c8d4e39c4ad69 34-38
+docs/dashboard-metrics.md
+  s_fdeea4ec053461::t_2b4277b5f42f8a 1-54,58-81,87-174,177-208,211-267,270
+  s_fdeea4ec053461::t_c43bc018d36b39 82-86,209-210
+  s_fdeea4ec053461::t_3e4376f3e96df3 268-269
+  s_fdeea4ec053461::t_afe5aa8ff18456 55-57,175-176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9720c2b859cd51b5905d148c53e82371db0f7431",
+  "prompts": {},
+  "sessions": {
+    "s_fdeea4ec053461": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c0dfdde-b2d7-4a61-b973-8336033371ba",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
