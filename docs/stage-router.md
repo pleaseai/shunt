@@ -153,10 +153,25 @@ The fingerprint destructures `StageRouterConfig` rather than dotting into it, so
 key added to the table later fails to compile in `fingerprint` instead of quietly
 letting stale pins outlive it.
 
-Capacity: `MAX_TRACKED_SESSIONS = 4096`, one amortised O(n) pass on insert that
-drops TTL-expired entries first and then the oldest. No timer, no background task,
-nothing persisted. `apply` takes `now: Instant` so dwell, expiry, and eviction are
-tested against a clock the test moves.
+Capacity: `MAX_TRACKED_SESSIONS = 4096`, trimmed on insert — TTL-expired entries
+first, then the oldest. No timer, no background task, nothing persisted. `apply`
+takes `now: Instant` so dwell, expiry, and eviction are tested against a clock the
+test moves.
+
+The trim is O(log n) per entry removed, not a pass over the map. A `BTreeMap`
+indexes the sessions by `seq`, which is a total order with no ties and is exactly
+the order turns were decided — so the least recently seen entry is one
+`pop_first`. `last_seen` could not index this: two turns of one session routinely
+share an `Instant`, which is why `seq` exists at all. Eviction runs under the
+store's single process-global mutex, so the walk it replaces serialized against
+every router-backed request rather than only the one that triggered it (§9,
+issue #552).
+
+One consequence is worth stating rather than burying: the expiry sweep reaches
+only entries at the *front* of that order, so a live entry older than an expired
+one stops it and the capacity trim takes the live entry instead. That needs two
+routers with different `session_ttl_seconds` — under a single TTL, recency order
+and expiry order are the same order.
 
 ### 4.1 Why the asymmetry exists
 
@@ -318,23 +333,23 @@ One local run, `--sample-count 200`, Apple silicon. CodSpeed owns regression
 detection; these are orders of magnitude, not a baseline to diff against.
 
 **Read the `fastest` column.** These arms allocate, so a sample can absorb an
-allocator or scheduler excursion but never finish faster than the work takes —
-the widest arm here spans 196 µs to 415 µs. That is enough drift for a median to
-reorder two arms that stand in a containment relation, which would say a routed
-resolve is cheaper than the extraction it performs. `fastest` is the low-noise
-estimator; medians are given alongside so the spread stays visible.
+allocator or scheduler excursion but never finish faster than the work takes.
+That drift is enough for a median to reorder two arms standing in a containment
+relation, which would say a routed resolve is cheaper than the extraction it
+performs. `fastest` is the low-noise estimator; medians are given alongside so
+the spread stays visible.
 
 | Benchmark | 10 turns | 50 | 200 | 800 |
 |---|---|---|---|---|
-| `parse_body_to_value` | 31.7 µs *(32.0)* | 156 µs *(157)* | 637 µs *(682)* | 2.75 ms *(3.15)* |
-| `extract_signals` | 3.37 µs *(3.41)* | 12.3 µs *(12.5)* | 49.0 µs *(49.9)* | 196 µs *(201)* |
-| `resolve_chain_routed` | 4.65 µs *(4.73)* | 14.3 µs *(14.5)* | 52.6 µs *(53.2)* | 195 µs *(202)* |
-| `resolve_chain_unrouted` | 294 ns *(297)* | 294 ns *(297)* | 295 ns *(298)* | 294 ns *(297)* |
+| `parse_body_to_value` | 31.5 µs *(32.0)* | 155 µs *(156)* | 632 µs *(675)* | 2.63 ms *(2.97)* |
+| `extract_signals` | 3.48 µs *(3.60)* | 12.6 µs *(12.8)* | 49.5 µs *(50.5)* | 196 µs *(202)* |
+| `resolve_chain_routed` | 4.79 µs *(4.87)* | 14.2 µs *(14.5)* | 50.2 µs *(50.8)* | 195 µs *(198)* |
+| `resolve_chain_unrouted` | 298 ns *(300)* | 297 ns *(300)* | 300 ns *(303)* | 292 ns *(298)* |
 
 `fastest`, with the median in parentheses.
 
 **Extraction is linear in turn count, dominates a routed resolve, and is small
-against what the request already spent.** An 80× longer history costs ~58× more.
+against what the request already spent.** An 80× longer history costs ~56× more.
 `resolve_chain_routed` sits within a few percent of `extract_signals` at every
 width, which is what "dominates" means here — the two are not separable at this
 resolution, and §3's second pass reads the entire `messages` array every turn, so
@@ -350,14 +365,14 @@ denominator. (Neither correction moved it much: the duplicate-key visitor
 inspects only *top-level* keys, nested values going through stock `Value`
 deserialization, and a `memcpy` is far cheaper than parsing what it copied. The
 distinction matters for what is being claimed, not for the figure.) Against that,
-extraction is **7.1–10.6%** across the range. So the ceiling on optimizing §3 is
+extraction is **7.4–11.0%** across the range. So the ceiling on optimizing §3 is
 roughly a tenth of a cost the gateway has already sunk by the time the router is
 consulted, which is why §3 is left as it stands (issue #553).
 
 **A request to a model with no `[models.stage_router]` table does not read
 `messages` at all.** Both `resolve_chain_*` arms send the identical body naming
 the identical model id; the configs differ only in whether that id's `[[models]]`
-entry carries the table. `resolve_chain_unrouted` is flat at ~294 ns across an
+entry carries the table. `resolve_chain_unrouted` is flat at ~295 ns across an
 80× range of history length, with the tightest spread of any arm here. That
 flatness is the property to protect: it is what makes the feature opt-in in cost
 as well as in behaviour, and any change that makes this row slope is a regression
@@ -365,27 +380,34 @@ whatever it does to the routed rows. The routed arm additionally resolves its
 chosen tier's own id through `[[routes]]`, which the unrouted arm does not — that
 second lookup is part of what routing costs, not a flaw in the pairing.
 
-**Eviction dominates the store once it saturates.**
+### 9.1 Eviction, before and after the recency index
 
-| Benchmark | fastest | median |
+Both arms run against a store already holding `MAX_TRACKED_SESSIONS` entries and
+both build their session id outside the timed region, so what separates them is
+the eviction and not the map size, the id's allocation, or its hashing.
+
+| Benchmark | whole-map pass | `BTreeMap` index |
 |---|---|---|
-| `store_turn_existing_session` | 517 ns | 522 ns |
-| `store_turn_new_session_at_capacity` | 31.9 µs | 32.1 µs |
+| `store_turn_existing_session` | 517 ns | 602 ns |
+| `store_turn_new_session_at_capacity` | 31.9 µs | 873 ns |
+| gap | 62× | 1.45× |
 
-Both run against a store already holding `MAX_TRACKED_SESSIONS` entries, and both
-build their session id outside the timed region, so the **62×** gap is the
-eviction and not the map size, the id's allocation, or its hashing. An existing
-session's update never grows the map, returns at `evict`'s length check, and costs
-about half a microsecond. A previously unseen id at capacity pays a full `retain`
-walk of 4096 entries — one walk, not two: the pass that drops expired entries also
-remembers the oldest survivor, so the capacity trim needs no second scan.
+`fastest`; the left column is the implementation described in issue #552, the
+right is §4's.
 
-That ~31 µs gap is the eviction scan, and the scan runs while the store's single
-process-global mutex is held, so it serializes against every other router-backed
-request rather than costing only its own. (The 31.9 µs is the whole benchmarked
-turn, which also covers `stage::decide`, the SHA-256 session key, the router
-fingerprint, and two lock acquisitions — the control arm pays all of those too,
-which is why the *gap* rather than the total is what attributes to eviction.) It
-is reached only at capacity and only by an id the store has not seen, which is
-the normal-operation case for no one and the steady state for a client that
-rotates `x-claude-code-session-id` per request (issue #552).
+A previously unseen id at capacity used to pay a `retain` walk of all 4096
+entries. It now pays one `pop_first`, so the eviction stops dominating: **37×
+faster**, and the gap between a new session and a returning one collapses from
+62× to 1.45×. Because that work runs under the store's single process-global
+mutex, the walk serialized against every other router-backed request rather than
+costing only the one that triggered it — which is why the issue framed this as
+blast radius and not as per-request latency.
+
+The returning-session path pays for it: **517 ns → 602 ns**, about 16%. That is
+the index's two `BTreeMap` operations, which every write owes whether or not it
+evicts — retiring the replaced entry's slot and adding the new one. It is a real
+regression on the common path and is reported as one. The trade is 85 ns on every
+turn against 31 µs of mutex-held work on every new session id, and it is worth
+taking only because the expensive side is the side that serializes; a store that
+never saturates pays the 85 ns and collects nothing, which is the case for any
+deployment under 4096 concurrent sessions.

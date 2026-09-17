@@ -15,7 +15,7 @@
 //! clear a stricter threshold.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     hash::{Hash, Hasher},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -71,6 +71,75 @@ struct StageSession {
     ttl: Duration,
 }
 
+/// The session map and the recency index that orders it.
+///
+/// They live in one type because no write may touch only one of them: an
+/// `order` slot left behind by a replaced entry would grow without bound and
+/// point eviction at a key whose real recency is newer than the slot claims.
+#[derive(Debug, Default)]
+struct Entries {
+    sessions: HashMap<SessionKey, StageSession>,
+    /// `seq` → the key whose current entry carries it.
+    ///
+    /// `seq` comes from a monotonic counter and every committed turn takes a
+    /// fresh one, so this is a total order with no ties, and it is exactly the
+    /// order turns were decided — which is the recency order eviction wants.
+    /// `last_seen` could not index this: two turns of one session routinely
+    /// share an `Instant`, which is the same reason [`StageSession::seq`] exists
+    /// at all.
+    order: BTreeMap<u64, SessionKey>,
+}
+
+impl Entries {
+    fn get(&self, key: &SessionKey) -> Option<&StageSession> {
+        self.sessions.get(key)
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, key: &SessionKey) -> bool {
+        self.sessions.contains_key(key)
+    }
+
+    fn len(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// Record a pin, replacing whatever was under that key and retiring its
+    /// index slot with it.
+    ///
+    /// The returning-session path overwrites in place rather than re-inserting,
+    /// so the common case — a live session taking its next turn — clones no key.
+    /// Only a session the store has not seen pays for one, and it pays it once.
+    fn insert(&mut self, key: SessionKey, session: StageSession) {
+        match self.sessions.get_mut(&key) {
+            Some(replaced) => {
+                self.order.remove(&replaced.seq);
+                *replaced = session;
+            }
+            None => {
+                self.sessions.insert(key.clone(), session);
+            }
+        }
+        self.order.insert(session.seq, key);
+    }
+
+    /// The least recently decided entry, without removing it.
+    fn oldest(&self) -> Option<&StageSession> {
+        let (_, key) = self.order.first_key_value()?;
+        debug_assert!(
+            self.sessions.contains_key(key),
+            "the recency index named a key the session map does not hold"
+        );
+        self.sessions.get(key)
+    }
+
+    /// Drop the least recently decided entry. `None` once nothing is left.
+    fn remove_oldest(&mut self) -> Option<StageSession> {
+        let (_, key) = self.order.pop_first()?;
+        self.sessions.remove(&key)
+    }
+}
+
 /// A pin [`StageRouterStore::apply`] prepared but has not written.
 ///
 /// Deciding and recording are separate because routing runs *before* inbound
@@ -109,7 +178,7 @@ impl StageApplied {
 /// survives a config reload rather than being rebuilt by one.
 #[derive(Debug, Default)]
 pub(crate) struct StageRouterStore {
-    entries: Mutex<HashMap<SessionKey, StageSession>>,
+    entries: Mutex<Entries>,
     /// Hands out the `seq` above. Monotonic for the process, so it orders
     /// decisions across every session and router without a per-key counter.
     next_seq: AtomicU64,
@@ -352,44 +421,45 @@ fn resolve(
     }
 }
 
-/// Drop expired entries, then the oldest, until the store is back under its cap.
-/// Amortised onto the insert path: no timer, no background task.
+/// Drop expired entries from the front of the recency order, then the oldest,
+/// until the store is back under its cap. Amortised onto the insert path: no
+/// timer, no background task.
+///
+/// Every step is one `BTreeMap` pop, so this costs O(log n) per entry removed
+/// rather than a walk of the whole map. That is issue #552: the map is read
+/// under the store's single process-global mutex, so a full 4096-entry scan on
+/// every previously-unseen session id — the steady state for a client that
+/// rotates `x-claude-code-session-id` — serialized against every other
+/// router-backed request, not only its own.
 ///
 /// Each entry is expired against **its own** TTL, not the caller's — see
-/// [`StageSession::ttl`]. One pass does both jobs: the retain predicate drops
-/// what has expired and remembers the oldest survivor, so the capacity trim
-/// below needs no second scan of the map while the lock is held.
-fn evict(entries: &mut HashMap<SessionKey, StageSession>, now: Instant) {
+/// [`StageSession::ttl`].
+///
+/// The expiry sweep reaches only the entries *at the front* of the order, so a
+/// live entry older than an expired one stops it and the capacity trim takes
+/// that live entry instead. Reaching that needs two routers configured with
+/// different `session_ttl_seconds`: under a single TTL, recency order and
+/// expiry order are the same order, and the sweep drops exactly what the old
+/// whole-map pass dropped. What it costs is one session its hysteresis, which
+/// is what eviction at capacity costs someone either way.
+fn evict(entries: &mut Entries, now: Instant) {
     if entries.len() <= MAX_TRACKED_SESSIONS {
         return;
     }
-    let mut oldest: Option<(SessionKey, Instant)> = None;
-    entries.retain(|key, session| {
-        if now.saturating_duration_since(session.last_seen) > session.ttl {
-            return false;
-        }
-        if oldest
-            .as_ref()
-            .is_none_or(|(_, last_seen)| session.last_seen < *last_seen)
-        {
-            oldest = Some((key.clone(), session.last_seen));
-        }
-        true
-    });
-    // `apply` inserts exactly one entry before calling this and returns early
+    while entries
+        .oldest()
+        .is_some_and(|session| now.saturating_duration_since(session.last_seen) > session.ttl)
+    {
+        entries.remove_oldest();
+    }
+    // `commit` inserts exactly one entry before calling this and returns early
     // above while under the cap, so the store is at most one over it here and
     // a single removal is enough. The loop is still a loop so that a future
     // caller inserting in bulk cannot silently leave the cap exceeded.
     while entries.len() > MAX_TRACKED_SESSIONS {
-        let Some(key) = oldest.take().map(|(key, _)| key).or_else(|| {
-            entries
-                .iter()
-                .min_by_key(|(_, session)| session.last_seen)
-                .map(|(key, _)| key.clone())
-        }) else {
+        if entries.remove_oldest().is_none() {
             break;
-        };
-        entries.remove(&key);
+        }
     }
 }
 

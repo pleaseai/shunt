@@ -12,6 +12,14 @@
 //! exemption from the confidence gate and
 //! `a_passing_test_suite_de_escalates_without_a_confidence_score` goes red.
 //!
+//! `a_refreshed_session_is_not_evicted_as_the_oldest` pins the recency index's
+//! one invariant: stop retiring a replaced entry's `seq` slot in
+//! `Entries::insert` and it goes red, because the stale slot still names the key
+//! and the next eviction pops it — deleting a session one turn old while the
+//! entry it should have taken stays. `the_store_evicts_the_oldest_session_once_it_is_full`
+//! is its twin: an index that retired *every* slot, or none, fails there instead
+//! of satisfying both.
+//!
 //! Two of these pin an absence, so a stub satisfies them and the mutation has to
 //! be the narrower one: expire entries against the *caller's* TTL rather than
 //! each entry's own and `a_short_ttl_router_does_not_expire_another_models_pin`
@@ -421,6 +429,74 @@ fn the_store_evicts_the_oldest_session_once_it_is_full() {
             .contains_key(&key),
         "the least recently seen session is the one dropped"
     );
+}
+
+/// A session that keeps being seen must not be evicted as the oldest merely
+/// because it was seen *first*.
+///
+/// The recency index is keyed by `seq`, and a re-pinned session takes a fresh
+/// one — so the slot it used to occupy has to be retired with it. Leave the
+/// stale slot behind and it still names the key, so the very next eviction pops
+/// it and deletes a session that is one turn old while the entry it was meant
+/// to drop stays.
+#[test]
+fn a_refreshed_session_is_not_evicted_as_the_oldest() {
+    let store = StageRouterStore::new();
+    let router = router();
+    let start = Instant::now();
+
+    // Seen first, so this turn holds the lowest `seq` in the store.
+    store.apply_now(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        capable(),
+        false,
+        start,
+    );
+    // Fill to exactly the cap, every filler decided after that first turn and
+    // all of them well inside the TTL, so recency alone decides the victim.
+    for index in 0..MAX_TRACKED_SESSIONS - 1 {
+        let session = format!("filler-{index}");
+        store.apply_now(
+            "claude-auto",
+            Some(&session),
+            &router,
+            capable(),
+            false,
+            start + Duration::from_millis(index as u64 + 1),
+        );
+    }
+    // Touch the original again. It is now the *newest* entry, not the oldest.
+    let refreshed_at = start + Duration::from_millis(MAX_TRACKED_SESSIONS as u64);
+    store.apply_now(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        capable(),
+        false,
+        refreshed_at,
+    );
+    // One previously unseen id tips the store over the cap.
+    store.apply_now(
+        "claude-auto",
+        Some("overflow"),
+        &router,
+        capable(),
+        false,
+        refreshed_at + Duration::from_millis(1),
+    );
+
+    let key = session_key("claude-auto", SESSION);
+    assert!(
+        store
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&key),
+        "the refreshed session was the newest entry, so eviction must not take it"
+    );
+    assert_eq!(store.len(), MAX_TRACKED_SESSIONS);
 }
 
 #[test]
