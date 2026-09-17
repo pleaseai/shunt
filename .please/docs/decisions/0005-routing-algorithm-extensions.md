@@ -285,13 +285,26 @@ the passthrough-answer + injecting-judge shape and the shape where the
 injecting judge is reached only by fall-through to `server.default_provider`;
 and that an unauthenticated `count_tokens` probe on that passthrough-answer +
 injecting-judge entry is answered with zero judge calls, including an
-unpinned probe whose history carries decisive signals.
+unpinned probe whose history carries decisive signals; and that a
+passthrough judge on a different origin from the answer provider receives
+no caller credential.
 
 `serve` builds an Anthropic Messages body from the neutral `Request` libsy
 hands it, stamps the candidate model id, and dispatches it through
 `proxy::failover`'s own path under the admitted context — so it uses the same
 adapters, pools, and failover as client traffic, and the same metrics with
-`caller = "router"`. **The advertised id travels with it**: the internal
+`caller = "router"`. **The outer credential origin travels with it.**
+Today `proxy::failover` computes the passthrough origin from the *first
+route of the chain it is given* (`failover.rs:168`), which for an internal
+call would be the judge's or executor's own route, so a caller credential
+presented for the answer provider would be forwarded to whatever
+passthrough provider the target maps. `AdmittedContext` therefore carries
+the outer request's primary origin — the origin of the first route of the
+*advertised* entry's chain, or none when that route injects a credential —
+and every internal call forwards the caller's `Authorization`/`x-api-key`
+only to a passthrough route on that same origin and strips it everywhere
+else, first route included. A judge on another host never sees the answer
+provider's key. **The advertised id travels with it**: the internal
 dispatch carries the outer router id as the alias to render, so the adapter's
 response rendering (`Route.model` at `adapters/anthropic/mod.rs:1032`,
 `adapters/responses/context.rs:62`) writes the id the client asked for into
@@ -419,7 +432,7 @@ outcome}`. `GET /routes` `routers[]` gains `algorithm`, `targets`, and a
 | 1 | `RouterContext` with the §11 request hints (session, agent id, request class, agent type, compacted), agent-scoped pin key, child budget, compaction latch | Behaviour-preserving without the hints; child errors leave the parent pin untouched; child fan-out at capacity cannot evict an idle capable parent; a `context-compacted` turn escalates and the next turn of that session still reads `compacted = true` |
 | 2 | `[models.router]` discriminator, `stage_router` alias, `random`, `auto`, `noop`, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Old configs load unchanged with one deprecation warning; `resolve_chain_unrouted` bench flat; sessionless requests under `random` session affinity follow the configured weights rather than one shared arm |
 | 3 | `subagents` passthrough form with `by_type` | A `subagent`/`workflow` request routes to its `by_type` target, else `target`, with no store access; `main` with an agent id, `compaction`, and `auxiliary` never take the overlay |
-| 4 | Dependency envelope + admission before `drive`, internal `serve`, translation boundary, per-call bounds | Invalid credential and policy-denied model each produce zero judge calls (incl. passthrough answer + injecting judge, and a judge reached only by fall-through to `server.default_provider`); an unauthenticated `count_tokens` probe on a passthrough-answer + injecting-judge entry is answered with zero judge calls, including an unpinned probe with decisive signals; a judge call appears as `caller = "router"` and consumes its target's pool quota; `200`-then-stall and endless-ping judges resolve as `fail_open` within the deadline |
+| 4 | Dependency envelope + admission before `drive`, internal `serve`, translation boundary, per-call bounds | Invalid credential and policy-denied model each produce zero judge calls (incl. passthrough answer + injecting judge, and a judge reached only by fall-through to `server.default_provider`); an unauthenticated `count_tokens` probe on a passthrough-answer + injecting-judge entry is answered with zero judge calls, including an unpinned probe with decisive signals; a passthrough judge on a different origin from the answer provider receives no caller credential; a judge call appears as `caller = "router"` and consumes its target's pool quota; `200`-then-stall and endless-ping judges resolve as `fail_open` within the deadline |
 | 5 | Driven lane: `llm_classifier` capability + custom, `stage_router.classifier`, `composite`, `subagents` classifier form | Verdict parsed from a real Anthropic tool-use reply and from an OpenAI `json_schema` reply |
 | 6 | Buffer-and-replay lane: `escalation`, `advisor` | Replayed `message_start.model` equals the router id on both adapters; a `stream: false` caller receives one JSON message on a gated turn, on both adapters; REDO never commits headers; oversized, idle, and over-duration gated turns resolve as `fail_open`; `AGENTS.md` amended in the same PR |
 | 7 | `prefill-router` feature | Builds with the feature on a machine with the Python package; load error names the feature when off |
