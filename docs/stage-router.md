@@ -421,6 +421,14 @@ days. The paired figures agreed to within 3 ns (baseline) and 18 ns (indexed),
 which is what makes the difference below readable at all. Treat single-run
 numbers from either column as unusable for this comparison.
 
+CodSpeed ran the same two arms in simulation mode on PR #580 and reached the same
+place by a different route — it counts instructions rather than timing anything,
+so a scheduler excursion cannot reach it: `store_turn_existing_session` 12.6 µs →
+16.6 µs (**+32%** work) and `store_turn_new_session_at_capacity` 346.6 µs → 18.3
+µs. Its absolute figures are not comparable with the wall-clock table above and
+are not meant to be; the agreement that matters is that two instruments with
+unrelated failure modes put the regression at +32% and +34%.
+
 A previously unseen id at capacity used to pay a `retain` walk of all 4096
 entries. It now pays one `pop_first` from each index, so the eviction stops
 dominating: **34× faster**, and the gap between a new session and a returning one
