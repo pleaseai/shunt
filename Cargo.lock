@@ -2981,6 +2981,7 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -3228,17 +3229,18 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "switchyard-libsy"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85f12e1ffefa168604044ccf78535a34dcde38eb59653ac27465e44113cd848c"
+version = "0.3.0"
+source = "git+https://github.com/NVIDIA-NeMo/Switchyard?rev=3ddea9d30174ad835cf505a93617ba251c8eb8dd#3ddea9d30174ad835cf505a93617ba251c8eb8dd"
 dependencies = [
  "async-trait",
  "futures",
+ "http",
  "jsonptr",
  "jsonschema",
  "opentelemetry",
  "parking_lot",
  "rand 0.10.2",
+ "regex",
  "serde",
  "serde_json",
  "switchyard-protocol",
@@ -3247,13 +3249,13 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-opentelemetry",
+ "uuid",
 ]
 
 [[package]]
 name = "switchyard-protocol"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c8be18d2d2c600ba679651f9e31ec9eb9dff96060a078c39e50e42ccd4e2318"
+version = "0.3.0"
+source = "git+https://github.com/NVIDIA-NeMo/Switchyard?rev=3ddea9d30174ad835cf505a93617ba251c8eb8dd#3ddea9d30174ad835cf505a93617ba251c8eb8dd"
 dependencies = [
  "async-trait",
  "futures",

@@ -458,16 +458,17 @@ fn resolve(
         StageTier::Efficient => (estimate, true),
         // Down is the expensive direction, and must clear both gates.
         StageTier::Capable => {
-            // `tests_passed` is libsy's hard de-escalation shortcut: it skips
-            // the scorer outright and so reports no confidence at all. Holding
-            // it to a confidence floor would make the strongest reason to go
-            // cheap the one reason that can never fire. The dwell window still
-            // applies — that gate prices the forfeited prompt cache, which
-            // costs the same however good the evidence is.
-            let convincing = estimate.source.is_tests_passed()
-                || estimate
-                    .confidence
-                    .is_some_and(|confidence| confidence >= router.deescalate_threshold());
+            // Every source `is_signal_evidence` admits now reports a
+            // confidence, so the floor applies to all of them. libsy's one
+            // confidence-less de-escalation — the `tests_passed` shortcut,
+            // which used to need an exemption here — no longer exists: upstream
+            // dropped it, and a passing test now only clears libsy's own
+            // capable hold. The dwell window still applies on top; that gate
+            // prices the forfeited prompt cache, which costs the same however
+            // good the evidence is.
+            let convincing = estimate
+                .confidence
+                .is_some_and(|confidence| confidence >= router.deescalate_threshold());
             if session.dwell_turns >= router.min_dwell_turns && convincing {
                 (estimate, true)
             } else {

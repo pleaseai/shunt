@@ -8,9 +8,9 @@
 //! `Efficient` arm's immediate flip and `an_escalation_needs_no_dwell` goes red;
 //! stop recording in `read_only` mode and `a_count_tokens_probe_never_moves_the_pin`
 //! goes red; make the fingerprint constant and
-//! `a_reconfigured_router_abandons_its_pins` goes red; drop the `tests_passed`
-//! exemption from the confidence gate and
-//! `a_passing_test_suite_de_escalates_without_a_confidence_score` goes red.
+//! `a_reconfigured_router_abandons_its_pins` goes red; drop the confidence gate
+//! from the `Capable` arm and `a_de_escalation_without_a_confidence_score_is_held`
+//! goes red.
 //!
 //! `an_expired_entry_behind_a_live_one_is_still_the_one_evicted` pins the second
 //! index: sweep the front of the recency order instead of the expiry order —
@@ -69,12 +69,12 @@ use switchyard_libsy::DecisionSource;
 
 const SESSION: &str = "0199a0f2-2f4b-7c3e-9d61-4f1a2b3c4d5e";
 
-/// The two scorer reasons these tests construct by hand. Naming them through
+/// The scorer reason these tests construct by hand. Naming it through
 /// `StageSource` keeps the hand-built estimates on the same type the real
 /// scorer stamps, so a renamed or removed upstream variant fails to compile
-/// here instead of quietly no longer matching what `decide` produces.
+/// here instead of quietly no longer matching what `decide` produces — which is
+/// how the removal of libsy's `TestsPassed` surfaced.
 const DIMENSIONS: StageSource = StageSource::Scorer(DecisionSource::Dimensions);
-const TESTS_PASSED: StageSource = StageSource::Scorer(DecisionSource::TestsPassed);
 
 fn router() -> StageRouterConfig {
     StageRouterConfig {
@@ -238,40 +238,16 @@ fn a_de_escalation_also_needs_the_dwell_window() {
     assert_eq!(held.source, StageSource::Sticky);
 }
 
-/// libsy's hard de-escalation shortcut skips the scorer and reports no
-/// confidence at all (`resolved(Efficient, TestsPassed, 0.0, None)`), so a
-/// bare `confidence >= threshold` gate would make the single strongest
-/// reason to go cheap the one reason that can never fire.
+/// The confidence gate admits no exemption. libsy used to have one
+/// de-escalation that reported no confidence at all — the `tests_passed`
+/// shortcut, which skipped the scorer — and the gate carried an exemption for
+/// it; upstream dropped that rule, so every source `is_signal_evidence` admits
+/// now carries a confidence and a `None` must be held rather than trusted.
 #[test]
-fn a_passing_test_suite_de_escalates_without_a_confidence_score() {
+fn a_de_escalation_without_a_confidence_score_is_held() {
     let store = StageRouterStore::new();
     let router = router();
     pin(&store, &router, capable(), 5);
-
-    let dropped = store.apply_now(
-        "claude-auto",
-        Some(SESSION),
-        &router,
-        StageDecision {
-            tier: StageTier::Efficient,
-            source: TESTS_PASSED,
-            confidence: None,
-        },
-        false,
-        Instant::now(),
-    );
-
-    assert_eq!(dropped.tier, StageTier::Efficient);
-    assert_eq!(dropped.source, TESTS_PASSED);
-}
-
-/// It still waits out the dwell window: that gate prices the forfeited
-/// prompt cache, which costs the same however strong the evidence is.
-#[test]
-fn even_a_passing_test_suite_waits_out_the_dwell_window() {
-    let store = StageRouterStore::new();
-    let router = router();
-    pin(&store, &router, capable(), 1);
 
     let held = store.apply_now(
         "claude-auto",
@@ -279,14 +255,18 @@ fn even_a_passing_test_suite_waits_out_the_dwell_window() {
         &router,
         StageDecision {
             tier: StageTier::Efficient,
-            source: TESTS_PASSED,
+            source: DIMENSIONS,
             confidence: None,
         },
         false,
         Instant::now(),
     );
 
-    assert_eq!(held.tier, StageTier::Capable);
+    assert_eq!(
+        held.tier,
+        StageTier::Capable,
+        "a de-escalation that reports no confidence cannot clear the floor"
+    );
     assert_eq!(held.source, StageSource::Sticky);
 }
 
@@ -305,6 +285,7 @@ fn a_fall_open_estimate_cannot_move_a_pinned_tier() {
         StageSource::Scorer(DecisionSource::FallOpen),
         StageSource::Scorer(DecisionSource::Ambiguous),
         StageSource::Scorer(DecisionSource::LlmClassifier),
+        StageSource::Scorer(DecisionSource::CapableHold),
         StageSource::NoSignal,
         StageSource::Sticky,
     ] {

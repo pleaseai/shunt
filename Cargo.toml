@@ -102,15 +102,22 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
-# Stage-router scoring only (`switchyard_libsy::{ToolSignals, pick_tier, ...}`).
-# Held to the 0.2 line: 0.2.0 is the single published version and upstream `main`
-# has already diverged from it (its `ToolSignals` carries four fields the release
-# does not), so a 0.3 is likely to break the call contract. The caret range keeps
-# 0.3 out on its own; a bump to it is a deliberate, reviewed change, not something
-# `cargo update` can do. shunt fills `ToolSignals` from the Anthropic request
-# itself, so `switchyard-translation` is deliberately NOT a dependency — it would
-# duplicate src/model/responses_request.rs.
-switchyard-libsy = "0.2"
+# Stage-router scoring (`switchyard_libsy::{ToolSignals, pick_tier, ...}`), and
+# the base for the routing-algorithm work in ADR-0005.
+#
+# Pinned to an exact rev on upstream `main`, not to the crates.io release:
+# 0.2.0 is the single published version and `main` (`0.3.0`-pre) has already
+# diverged from it — it exports `AdvisorGate`, `CompositeRouter`,
+# `SubagentRouter`, `ToolSemantics`, and `HandoffNoteConfig`, which 0.2.0 does
+# not, and its `ToolSignals` carries four fields the release lacks. shunt is
+# `publish = false`, so a git dependency is available here.
+#
+# A `rev` and no `branch` key, the same posture as the `tungstenite` pins below:
+# a bump is a reviewed diff, not something an unrelated `cargo update` can do.
+# shunt fills `ToolSignals` from the Anthropic request itself, so
+# `switchyard-translation` is deliberately NOT a dependency — it would duplicate
+# src/model/responses_request.rs.
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard", rev = "3ddea9d30174ad835cf505a93617ba251c8eb8dd" }
 thiserror = "2"
 tiktoken-rs = "0.12.0"
 tokio = { version = "1", features = ["full"] }
