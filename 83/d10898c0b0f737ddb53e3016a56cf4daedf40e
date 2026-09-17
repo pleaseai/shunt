@@ -1,0 +1,21 @@
+benches/stage_router.rs
+  s_84a9b3dd034859::t_6817f4e0fc7bad 30-34,169-178
+docs/stage-router.md
+  s_84a9b3dd034859::t_eeaf0d65ac5cb0 322-325,329-332,337,344-349,351-355,360,372-373,376,383,385
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "83d10898c0b0f737ddb53e3016a56cf4daedf40e",
+  "prompts": {},
+  "sessions": {
+    "s_84a9b3dd034859": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf5c99ba-d1d5-47be-a9da-a612ec6f5020",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
