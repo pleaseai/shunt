@@ -123,3 +123,175 @@ pub fn resolve_chain(
     stage.commit();
     Ok(routes)
 }
+
+/// Facade tests.
+///
+/// These pin the facade to the production path it claims to expose, which is
+/// the property a benchmark cannot check for itself: it compiles, prints a
+/// number, and says nothing about whether the number is the one being claimed.
+/// Every test here failed at some point during this module's review.
+///
+/// Non-vacuity: point [`parse_request_body`] at `serde_json::from_slice` and
+/// `the_parser_rejects_a_duplicate_top_level_key` goes red — that swap is the
+/// exact defect three review engines found. Make [`extract_signals`] return
+/// `None` unconditionally and `signals_are_extracted_from_a_completed_call`
+/// goes red. Drop the `stage_router` check in [`resolve_chain`]'s config and
+/// `an_unrouted_id_resolves_without_the_router` and its routed twin report the
+/// same `upstream_model`, collapsing the benchmark's control arm.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ModelConfig, RouteConfig, StageRouterPicker};
+    use serde_json::json;
+
+    fn router() -> StageRouterConfig {
+        StageRouterConfig {
+            capable_target: "capable-model".to_string(),
+            efficient_target: "efficient-model".to_string(),
+            picker: StageRouterPicker::EfficientFirst,
+            confidence_threshold: 0.5,
+            recent_turn_window: 3,
+            min_dwell_turns: 3,
+            deescalate_threshold: None,
+            session_ttl_seconds: 3600,
+        }
+    }
+
+    fn config(with_router: bool) -> Config {
+        let route = |model: &str| RouteConfig {
+            model: model.to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        };
+        Config {
+            models: vec![ModelConfig {
+                id: "router-model".to_string(),
+                display_name: None,
+                upstream_model: None,
+                stage_router: with_router.then(router),
+            }],
+            routes: vec![
+                route("router-model"),
+                route("efficient-model"),
+                route("capable-model"),
+            ],
+            ..Config::default()
+        }
+    }
+
+    fn request() -> Value {
+        json!({
+            "model": "router-model",
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": false}
+                ]}
+            ]
+        })
+    }
+
+    /// The parse this module exposes is the proxy's, not `serde_json`'s. A
+    /// duplicate top-level key is the one input that tells them apart: stock
+    /// `Value` deserialization takes the last value, and `RequestBody::parse`
+    /// refuses the request outright.
+    #[test]
+    fn the_parser_rejects_a_duplicate_top_level_key() {
+        let duplicated = br#"{"model":"first","model":"second"}"#.to_vec();
+        assert!(
+            parse_request_body(duplicated).is_err(),
+            "a plain serde_json parse would accept this and keep the last value"
+        );
+
+        let single = br#"{"model":"only"}"#.to_vec();
+        let parsed = parse_request_body(single).expect("a well-formed body parses");
+        assert_eq!(parsed.get("model").and_then(Value::as_str), Some("only"));
+    }
+
+    #[test]
+    fn signals_are_extracted_from_a_completed_call() {
+        let request = request();
+        let messages = request.get("messages").expect("the fixture has messages");
+        assert!(
+            extract_signals(messages, 3).is_some(),
+            "one tool_use joined to its tool_result is a completed call"
+        );
+        assert!(
+            extract_signals(&json!([]), 3).is_none(),
+            "an empty conversation carries no stage to estimate"
+        );
+    }
+
+    /// The routed half of the benchmark's control pair: the same id, resolved
+    /// through a config that does carry the router, reaches a tier target.
+    ///
+    /// The tier shows up in `upstream_model`, not in `model` — `model` is
+    /// re-stamped to the id the client asked for, so a routed turn still reports
+    /// itself as the router (issue #172, `docs/stage-router.md` §5). Asserting
+    /// both pins the selection and the re-stamp at once.
+    #[test]
+    fn a_routed_id_resolves_to_a_tier_target() {
+        let store = StageStore::new();
+        let routes = resolve_chain(
+            &config(true),
+            &store,
+            &request(),
+            Some("session"),
+            false,
+            Instant::now(),
+        )
+        .expect("the fixture names a configured model");
+        assert_eq!(
+            routes[0].upstream_model, "efficient-model",
+            "the picker default sends the turn to the efficient tier"
+        );
+        assert_eq!(
+            routes[0].model, "router-model",
+            "the client-facing id stays the one that was requested"
+        );
+    }
+
+    /// The unrouted half. Same id, same body, same store — only the
+    /// `[models.stage_router]` table is absent, and the id then resolves as
+    /// itself. Without this the benchmark's flat `resolve_chain_unrouted` row
+    /// would prove nothing about the router.
+    #[test]
+    fn an_unrouted_id_resolves_without_the_router() {
+        let store = StageStore::new();
+        let routes = resolve_chain(
+            &config(false),
+            &store,
+            &request(),
+            Some("session"),
+            false,
+            Instant::now(),
+        )
+        .expect("the fixture names a configured model");
+        assert_eq!(
+            routes[0].upstream_model, "router-model",
+            "with no router the id is its own upstream, not a tier target"
+        );
+    }
+
+    /// `turn` reports whether its own write displaced a different tier. A first
+    /// turn displaces nothing, so the store must not report a flip for it.
+    #[test]
+    fn a_first_turn_displaces_no_tier() {
+        let store = StageStore::new();
+        let now = Instant::now();
+        assert!(!store.turn("router-model", "session", &router(), now));
+        assert!(
+            !store.turn("router-model", "session", &router(), now),
+            "a second turn landing on the pinned tier is not a flip either"
+        );
+    }
+
+    #[test]
+    fn the_session_cap_matches_the_store() {
+        assert_eq!(MAX_TRACKED_SESSIONS, 4096);
+    }
+}
