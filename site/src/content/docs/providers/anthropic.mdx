@@ -14,8 +14,10 @@ provider — the Responses, Gemini, and Cursor paths each mint one, because a th
 the field to be well-formed — is dropped before the request is forwarded, along with an assistant
 turn left holding nothing else. Anthropic decrypts that field and rejects a value it did not issue,
 so forwarding it would fail the request. A signature Anthropic issued is opaque to shunt and is
-never touched, so this can only affect a conversation that already ran on a mapped non-Anthropic
-model.
+never touched. The strip does not read conversation history, so it is not confined to sessions that
+used a mapped provider: a `thinking` block carrying **no** `signature` at all is dropped too, since
+shunt's own Responses path emits one when the upstream returned no signature, and Anthropic rejects
+a thinking block whose signature it cannot verify either way.
 
 | Auth mode | Credential | Use case |
 | :-- | :-- | :-- |
