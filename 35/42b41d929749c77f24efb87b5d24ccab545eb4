@@ -1,0 +1,25 @@
+site/src/content/docs/providers/anthropic.mdx
+  s_3598e23a871543::t_6c2316070ad171 17-20
+site/src/content/docs/ko/providers/anthropic.mdx
+  s_3598e23a871543::t_6c2316070ad171 16-19
+site/src/content/docs/zh-cn/providers/anthropic.mdx
+  s_3598e23a871543::t_6c2316070ad171 14-17
+site/src/content/docs/ja/providers/anthropic.mdx
+  s_3598e23a871543::t_6c2316070ad171 16-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3542b41d929749c77f24efb87b5d24ccab545eb4",
+  "prompts": {},
+  "sessions": {
+    "s_3598e23a871543": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "121eceb9-d260-4110-b4e8-1b14de7086df",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
