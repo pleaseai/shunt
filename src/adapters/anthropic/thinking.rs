@@ -56,30 +56,46 @@ fn strip_foreign_thinking_blocks(request: &mut Value) -> bool {
     let Some(messages) = request.get_mut("messages").and_then(Value::as_array_mut) else {
         return false;
     };
-    let mut changed = false;
+    // An assistant turn whose blocks are *all* foreign thinking leaves whole.
+    // Emptying its `content` is not an option — Anthropic rejects an empty array
+    // — and this is not the degenerate shape it looks like: `responses.rs` opens
+    // an empty thinking block purely to carry the round-trip signature, so a
+    // reasoning-only turn is a shape the Responses path routinely produces
+    // (`reasoning_only_turn_does_not_emit_empty_text_block`). Dropping the
+    // message is what the rest of this codebase already does with one:
+    // `inbound_responses::messages_request`'s `flush` drops any assistant turn
+    // left holding nothing but thinking, because "Anthropic rejects an assistant
+    // message holding nothing but a thinking block" — at any position, not only
+    // a trailing one.
+    let before_messages = messages.len();
+    messages.retain(|message| !is_all_foreign_assistant_turn(message));
+    let mut changed = messages.len() != before_messages;
     for message in messages {
         let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
             continue;
         };
-        if content.iter().all(is_foreign_thinking_block) {
-            // Every block would go. Anthropic rejects an empty `content` array,
-            // dropping the message would break user/assistant alternation, and
-            // inventing a replacement block would put words in the assistant's
-            // mouth — there is no local transform that makes this message valid,
-            // which is the same conclusion `proxy::normalize_empty_text_blocks`
-            // reaches about an all-empty-text message. Leave it: a turn that was
-            // *only* reasoning, with no text and no `tool_use`, fails upstream
-            // whether or not this pass touches it.
-            //
-            // Note this arm is also what `all` returns for an empty array, which
-            // is the right answer for one of those too.
-            continue;
-        }
         let before = content.len();
         content.retain(|block| !is_foreign_thinking_block(block));
         changed |= content.len() != before;
     }
     changed
+}
+
+/// True for an assistant message that would be emptied by the strip.
+///
+/// Restricted to `assistant` because that is the only role whose turn can be
+/// reconstructed from what survives it; a `user` message is the client's own
+/// content and is never dropped, however odd its blocks look. An empty `content`
+/// array is left alone too — `all` is vacuously true there, and an already-empty
+/// message is not this pass's to fix.
+fn is_all_foreign_assistant_turn(message: &Value) -> bool {
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return false;
+    }
+    message
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|content| !content.is_empty() && content.iter().all(is_foreign_thinking_block))
 }
 
 /// True for a thinking block that `api.anthropic.com` cannot have issued.
@@ -107,9 +123,23 @@ mod tests {
     //! thinking block and it goes red, along with
     //! `only_the_foreign_blocks_leave_and_other_turns_are_untouched`.
     //!
-    //! `a_reasoning_only_turn_is_left_alone` pins the one case this pass
-    //! declines to fix; drop its `all` guard and it goes red with an empty
-    //! `content` array, which is what the guard exists to avoid producing.
+    //! `an_all_foreign_assistant_turn_is_dropped_whole` pins the message-level
+    //! drop; remove the `retain` over `messages` and it goes red. Its twins are
+    //! `a_genuine_thinking_only_turn_is_not_dropped` (mutate the predicate to
+    //! match any thinking-only assistant turn) and `a_user_turn_is_never_dropped_whole`
+    //! (drop the `assistant` role check) — each mutation reds exactly one, so no
+    //! twin is carried by its neighbours. An earlier revision of this module left
+    //! that turn in place and had a test asserting so; it was codifying the leak,
+    //! since a reasoning-only turn is exactly what `responses.rs` emits when it
+    //! opens an empty thinking block to carry a signature.
+    //!
+    //! One trap, measured the hard way: a test whose request contains *no*
+    //! foreign block never reaches the strip at all, because
+    //! `request_carries_foreign_thinking` returns first. The first version of
+    //! `a_genuine_thinking_only_turn_is_not_dropped` was that shape and stayed
+    //! green under its own mutation. It now carries a foreign block in a later
+    //! turn purely to keep the pass running. Any test added here that asserts
+    //! something *survives* needs the same, or it asserts nothing.
     //!
     //! `a_body_with_nothing_to_strip_keeps_its_exact_bytes` is the odd one, and
     //! the honest statement is that **neither** single mutation turns it red:
@@ -205,24 +235,113 @@ mod tests {
         );
     }
 
+    /// The case this pass used to skip, and the one the Responses path produces
+    /// most readily: `responses.rs` opens an empty thinking block purely to carry
+    /// the round-trip signature, so an assistant turn can consist of nothing else.
+    /// Leaving it forwards the exact signature this module exists to remove.
     #[test]
-    fn a_reasoning_only_turn_is_left_alone() {
+    fn an_all_foreign_assistant_turn_is_dropped_whole() {
+        let mut request = body(json!({
+            "model": "claude-opus-4-8",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "go"}]},
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "thinking",
+                        "thinking": "nothing else in this turn",
+                        "signature": thinking_signature::GEMINI,
+                    }],
+                },
+                {"role": "user", "content": [{"type": "text", "text": "still there?"}]},
+            ],
+        }));
+        strip_foreign_thinking(&mut request);
+        let messages = request.json()["messages"]
+            .as_array()
+            .expect("messages")
+            .clone();
+        assert_eq!(
+            messages.len(),
+            2,
+            "an assistant turn holding nothing but a foreign thinking block has to \
+             leave with it — emptying its `content` is rejected upstream, and \
+             `inbound_responses::messages_request` drops the same shape"
+        );
+        assert!(
+            messages.iter().all(|message| message["role"] == "user"),
+            "the surviving messages are the client's own turns"
+        );
+    }
+
+    #[test]
+    fn a_genuine_thinking_only_turn_is_not_dropped() {
+        let mut request = body(json!({
+            "model": "claude-opus-4-8",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "thinking",
+                        "thinking": "Anthropic's own",
+                        "signature": "ErUBCkYIBBgCKkBQ0yIvVG9rZW4",
+                    }],
+                },
+                {"role": "user", "content": [{"type": "text", "text": "carry on"}]},
+                // Present only so the pass does not return early. Without it
+                // `request_carries_foreign_thinking` short-circuits and this test
+                // holds under any predicate at all — that was measured, not
+                // assumed: the earlier single-message version stayed green while
+                // the predicate was mutated to drop every thinking-only turn.
+                assistant_turn(Some(thinking_signature::GEMINI)),
+            ],
+        }));
+        strip_foreign_thinking(&mut request);
+        assert_eq!(
+            request.json()["messages"]
+                .as_array()
+                .expect("messages")
+                .len(),
+            3,
+            "the message-level drop is keyed on the signature, not on the shape: a \
+             thinking-only turn Anthropic signed stays"
+        );
+        assert_eq!(
+            content_types(request.json(), 0),
+            vec!["thinking"],
+            "and its block is untouched"
+        );
+        assert_eq!(
+            content_types(request.json(), 2),
+            vec!["text"],
+            "while the foreign block in the turn that kept the pass running did leave"
+        );
+    }
+
+    #[test]
+    fn a_user_turn_is_never_dropped_whole() {
+        // A `user` message carrying only a foreign-looking thinking block is not a
+        // turn this pass can reconstruct, and losing it would lose the client's
+        // own content — so the message-level drop is assistant-only.
         let mut request = body(json!({
             "model": "claude-opus-4-8",
             "messages": [{
-                "role": "assistant",
+                "role": "user",
                 "content": [{
                     "type": "thinking",
-                    "thinking": "nothing else in this turn",
+                    "thinking": "odd but the client's",
                     "signature": thinking_signature::GEMINI,
                 }],
             }],
         }));
         strip_foreign_thinking(&mut request);
         assert_eq!(
-            content_types(request.json(), 0),
-            vec!["thinking"],
-            "emptying the array would be rejected upstream too, so this pass declines it"
+            request.json()["messages"]
+                .as_array()
+                .expect("messages")
+                .len(),
+            1,
+            "only an assistant turn is dropped whole"
         );
     }
 

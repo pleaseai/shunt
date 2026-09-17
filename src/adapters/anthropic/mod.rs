@@ -65,7 +65,10 @@ async fn forward(
     // Only a subscription-OAuth bearer faces the client-shape gate; an API-key
     // Anthropic-compatible provider keeps byte-for-byte passthrough except for
     // deferred-tool fields that the upstream model cannot accept (OpenRouter
-    // stealth slugs, Kimi, …).
+    // stealth slugs, Kimi, …) and thinking blocks carrying a signature shunt
+    // minted rather than Anthropic — that one is unconditional, since such a
+    // signature is no more valid to an Anthropic-compatible host than to
+    // Anthropic itself.
     if oauth_client {
         auto_mode_classifier::restore_claude_code_identity(&mut body);
     }

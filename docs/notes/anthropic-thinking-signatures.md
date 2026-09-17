@@ -11,8 +11,11 @@ Not a checksum over the thinking text — the payload itself. Anthropic's
 reasoning that you pass back unchanged", and say the server "decrypts the
 `signature` to reconstruct the original thinking for prompt construction". A
 block whose `thinking` field is empty is still complete, because the signature
-carries the reasoning; `display: "omitted"` is the default on current models and
-returns exactly that shape.
+carries the reasoning — that is the `display: "omitted"` shape, which [the same
+page][thinking] lists as the default on Claude Fable 5.1, Mythos 5.1, Fable 5,
+Mythos 5, Opus 5, Sonnet 5, Opus 4.8, and Opus 4.7. (Named rather than
+generalised to "current models": the doc gives a list, and the list is what is
+citable.)
 
 That rules out one tempting reading: there is no mode in which a signature is
 advisory. A value the server cannot decrypt is not a weaker signature, it is not
@@ -58,6 +61,24 @@ For a history carrying an invalid block, the troubleshooting page says to
 each turn's other blocks in place". `src/adapters/anthropic/thinking.rs` does
 exactly that, narrowed to the blocks shunt can prove are its own.
 
+One case needs more than removing a block: an assistant turn holding *nothing*
+but foreign thinking. Emptying its `content` is rejected, so the whole message
+goes. That is not this module's invention — `inbound_responses::messages_request`
+has always done it on its own path, with the rule stated in `flush`: "Anthropic
+rejects an assistant message holding nothing but a thinking block", at any
+position and not only a trailing one. And the shape is common rather than
+degenerate: `src/model/responses.rs` opens an empty thinking block purely to
+carry the round-trip signature, so a reasoning-only turn is exactly what the
+Responses path produces when a turn has no text and no `tool_use`.
+
+`redacted_thinking` is deliberately *not* stripped, despite the quote naming it.
+It carries `data` and no signature, so there is no predicate that could tell a
+foreign one from a genuine one — and no shunt path mints one toward an
+Anthropic-protocol client. The only producer, `inbound_responses::reasoning`,
+reconstructs blocks shunt itself encoded from genuine Anthropic ones, for the
+inbound Codex endpoint. Stripping the type wholesale would break that round trip
+to fix a leak that does not exist.
+
 The narrowing matters: Anthropic's advice is aimed at a client that knows its
 history is broken, while shunt is a gateway that cannot verify a genuine
 signature and must not drop one. `crate::model::thinking_signature` is therefore
@@ -76,12 +97,14 @@ strip cannot fall out of step with them.
 | Gemini | `gemini_thinking` | Gemini issues no signature; the literal exists to make the block well-formed |
 | Cursor | `""` | the agent stream carries reasoning text and nothing signature-shaped |
 
-The empty string is the one to watch, because Anthropic also opens a streaming
-thinking block with `"signature": ""` before the `signature_delta` fills it. In a
-*request* that shape is still unusable — "sent back empty" is named above as a
-verification failure — so stripping it is right either way, but a reader
-comparing this table against a live SSE capture should know why the value
-appears on both sides.
+The empty string is the one to watch, because Anthropic's own streaming shape
+uses it too: [the thinking page][thinking]'s worked event sequence opens the
+block as `{"type": "thinking", "thinking": "", "signature": ""}` and fills it
+with a later `signature_delta`. That is a *response* mid-stream, though, and this
+strip reads *requests*, where the same value is unusable — "sent back empty" is
+named above as a verification failure. So stripping it is right, and a reader who
+meets `"signature": ""` in an SSE capture should know why the value appears on
+both sides without that being a contradiction.
 
 ## Why the reverse direction was already handled
 
