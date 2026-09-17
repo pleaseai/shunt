@@ -58,7 +58,7 @@ picker 기본값으로 fall-open합니다. 덕분에 핫패스에 모델 호출�
 전체 채점 공식, 그 근거가 된 공개 벤치마크 결과, 그리고 shunt가 그 위에 더한 것은
 [Switchyard 통합](/ko/guides/switchyard/)에 있습니다.
 
-[libsy]: https://crates.io/crates/switchyard-libsy
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/main/crates/libsy
 [sy]: https://github.com/NVIDIA-NeMo/Switchyard
 
 ## 내려오기가 올라가기보다 어려운 이유
@@ -115,9 +115,11 @@ POST /v1/messages   {"model": "claude-auto", ...}
 | `x-gateway-routed-model` | 라우터가 고른 타깃(`claude-opus-4-8`) |
 | `x-gateway-route-source` | 그 이유(`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`) |
 
-이 다섯 개가 오늘 shunt가 내보내는 라벨입니다. 스코어러에는 `tests_passed`라는
-여섯 번째 값이 있지만, 신호 추출기가 테스트 통과를 보고하지 않으므로 응답에
-실리지 않습니다.
+이 다섯 개가 오늘 shunt가 내보내는 라벨입니다. 스코어러는 `ambiguous`,
+`llm-classifier`, `capable_hold` 세 가지를 더 정의하지만 어느 것도 응답에 실릴 수
+없습니다. shunt는 결정을 못 내린 턴을 `fall_open`으로 보고하고, 판정 모델을 전혀
+호출하지 않으며, 스코어러의 히스테리시스 대신 자체 세션 히스테리시스를 쓰기
+때문입니다.
 
 라우터가 없는 model id에는 둘 다 붙지 않습니다. 그래야 "효율 티어로 라우팅됨"과
 "애초에 라우터를 거치지 않음"이 구분됩니다. `count_tokens` 탐침에는 붙이지

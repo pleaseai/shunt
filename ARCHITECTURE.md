@@ -48,7 +48,7 @@ For understanding **request proxying** (the hot path):
 
 - `src/proxy.rs` — `post` → `forward`: body buffering, config snapshot, inbound-auth gate, `count_tokens` short-circuit, adapter dispatch, metrics. Start here.
 - `src/routing.rs` — `resolve` / `resolve_model`: how a `model` id becomes a `Route` (exact → prefix → default), including the `[1m]` context-window suffix stripping.
-- `src/routing/stage.rs` — the opt-in content-aware tier selection layered on top of that: signal extraction, the `switchyard-libsy` scorer, and the per-session hysteresis store. See [`docs/stage-router.md`](docs/stage-router.md).
+- `src/routing/stage.rs` — the opt-in content-aware tier selection layered on top of that: signal extraction, the `switchyard-libsy` scorer, and the per-session hysteresis store. See [`docs/stage-router.md`](docs/stage-router.md), and [`docs/routing-algorithms.md`](docs/routing-algorithms.md) for the libsy dependency it scores through.
 - `src/adapters/mod.rs` — the `Adapter` trait and `AdapterError`; the seam every provider implements.
 
 For understanding **server startup & state**:

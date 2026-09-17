@@ -13,7 +13,7 @@ shunt의 [스테이지 라우터](/ko/guides/stage-router/)는 자체 스코어�
 턴을 어떻게 판정하는지를 다룹니다. 기능을 켜는 방법만 필요하다면
 [스테이지 라우터 가이드](/ko/guides/stage-router/)가 더 짧습니다.
 
-[libsy]: https://crates.io/crates/switchyard-libsy
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/main/crates/libsy
 [sy]: https://github.com/NVIDIA-NeMo/Switchyard
 
 ## shunt가 가져온 것
@@ -24,7 +24,7 @@ Switchyard는 게이트웨이 한 벌을 제공합니다. 프록시 서버, 프�
 
 | Switchyard 구성 요소 | shunt에서 |
 | :-- | :-- |
-| `switchyard-libsy` 스테이지 스코어러 | **사용** — `0.2` 라인에 고정 |
+| `switchyard-libsy` 스테이지 스코어러 | **사용** — 업스트림 `main`의 검토된 리비전에 고정 |
 | `switchyard-protocol` | libsy의 의존성으로 딸려옴. shunt는 `Request`를 만들지 않음 |
 | `switchyard-translation` | **미사용** — shunt의 `src/model/responses_request.rs`와 정면으로 중복 |
 | `switchyard-server` | **미사용** — shunt가 곧 서버 |
@@ -36,9 +36,13 @@ Switchyard는 게이트웨이 한 벌을 제공합니다. 프록시 서버, 프�
 libsy의 `ToolSignals` 구조체를 직접 채우고 `pick_tier`를 호출합니다. 그 구조체의
 모든 필드가 `pub`이라 사이에 번역 계층이 들어가지 않습니다.
 
-버전은 `0.2`로 고정하고 자동 업그레이드에서 제외합니다. `0.2.0`이 유일한 공개
-릴리스이고 업스트림 `main`은 이미 갈라졌습니다 — 그쪽 `ToolSignals`에는 필드가 네
-개 더 있습니다. API를 확인할 때는 GitHub이 아니라 레지스트리 소스를 읽으세요.
+의존성은 crates.io 릴리스가 아니라 업스트림 `main`의 **불변 리비전에 건 git 핀**이고,
+`branch` 키 없이 `rev`만 씁니다 — shunt의 `tungstenite` 핀 두 개와 같은 형태입니다.
+따라서 버전을 올리는 일은 검토를 거친 diff이지, 무관한 `cargo update`가 할 수 있는
+일이 아닙니다. `0.2.0`은 유일한 공개 릴리스이고 `main`은 이미 갈라졌습니다. 스테이지
+스코어링 너머의 알고리즘 — advisor gate, composite 라우팅, 서브에이전트 라우팅,
+tool semantics, handoff note — 은 `main`에만 있습니다. API를 확인할 때는 레지스트리
+소스도, 움직이는 GitHub 기본 브랜치도 아니라 cargo가 해석한 체크아웃을 읽으세요.
 
 ## 벤치마크 결과
 
@@ -95,16 +99,18 @@ Pro Python-75에서 도출된 별개의 작업입니다.
 | :-- | :-- | :-- |
 | 스코어링 코어 | `switchyard-libsy` | 같은 크레이트, 같은 상수 |
 | 신호 추출 | 업스트림의 프로바이더 중립 추출기 | shunt 자체 구현, Anthropic Messages 블록에서 |
-| `tests_passed` / `compacted` | 스코어러가 사용 가능 | 항상 `false` — 채워지지 않음 |
+| `tests_passed` / `repeated_failure` / `compacted` | 스코어러가 사용 가능 | 항상 `false` — 채워지지 않음 |
 | 모호한 턴의 판정자 | 선택적으로 사용 가능 | 없음. 피커 기본값으로 fall-open |
 | 턴 간 티어 안정성 | 턴마다 독립 채점 | 비대칭 히스테리시스를 건 세션 고정 |
 | 워크로드 | Terminal-Bench 2.1 태스크 | Claude Code 세션 |
 
-이 중 둘은 반대 방향으로 작용합니다. shunt는 `tests_passed`와 `compacted`를 채우지
-않으므로 libsy의 하드 강등 지름길과 컴팩션 오버라이드가 빠집니다 — 벤치마크보다
-엄격히 신호가 적습니다. 반대로 shunt의 히스테리시스는 벤치마크 하니스가 결코 치르지
-않는 비용, 즉 Claude Code 세션에서 턴마다 티어를 뒤집는 대가가 비싸기 때문에
-존재합니다([아래](#shunt가-더하는-것) 참고).
+이 중 둘은 반대 방향으로 작용합니다. shunt는 `tests_passed`, `repeated_failure`,
+`compacted`를 채우지 않으므로 libsy의 컴팩션 오버라이드와 반복 실패 승격이 빠집니다 —
+벤치마크보다 엄격히 신호가 적습니다. 셋 다 Anthropic Messages 와이어 포맷에 없는
+근거를 요구합니다. 컴팩션은 아직 아무 테스트도 고정하지 않은 마커가 필요하고, 나머지
+둘은 도구 결과의 *텍스트*가 필요한데 Claude Code는 불리언 `is_error`만 보냅니다.
+반대로 shunt의 히스테리시스는 벤치마크 하니스가 결코 치르지 않는 비용, 즉 Claude Code
+세션에서 턴마다 티어를 뒤집는 대가가 비싸기 때문에 존재합니다([아래](#shunt가-더하는-것) 참고).
 
 ## 라우팅 알고리즘
 
@@ -181,24 +187,24 @@ confidence = |score|
 
 ### 4. 판정
 
-`pick_tier`는 규칙 넷을 순서대로 돌리고, 먼저 발동한 것이 이깁니다.
+`pick_tier`는 규칙 셋을 순서대로 돌리고, 먼저 발동한 것이 이깁니다.
 
-1. **하드 승격** → capable. 심각도 critical 또는 컴팩션된 컨텍스트. 스코어러를
-   건너뛰고 `confidence: 1.0`을 보고합니다.
-2. **하드 강등** → efficient. 테스트가 통과했고, 코드가 최근 쓰였으며, 오류가 없음.
-   스코어러를 건너뛰고 **신뢰도를 아예 보고하지 않습니다**.
-3. **스코어러.** `confidence >= confidence_threshold`이면 부호를 따릅니다.
-4. **Fall-open.** 문턱 미달이면 libsy가 `ConsultClassifier`를 반환합니다. shunt는
+1. **하드 승격** → capable. 심각도 critical, 컴팩션된 컨텍스트, 또는 최근 창에서
+   같은 실패가 반복된 경우. 스코어러를 건너뛰고 `confidence: 1.0`을 보고합니다.
+2. **스코어러.** 중앙값 주변의 모호한 구간 밖이면 부호를 따릅니다.
+3. **Fall-open.** 구간 안이면 libsy가 `ConsultClassifier`를 반환합니다. shunt는
    분류기를 돌리지 않으므로 턴은 피커의 기본 티어에 안착합니다.
 
-승격이 강등보다 먼저 검사되므로, 때마침 테스트도 통과한 턴에서 critical 오류가 여전히
-이깁니다.
+예전에는 네 번째 규칙이 있었습니다. 테스트가 통과한 정착된 턴을 하드 *강등*하는
+규칙인데, 업스트림이 제거했습니다. 이제 테스트 통과는 libsy 자체의 capable hold를
+해제할 뿐이고, shunt는 그 hold를 쓰지 않습니다.
 
-오늘의 shunt에서 규칙 2는 발동할 수 없습니다. 추출기가 `tests_passed`를 무조건
-`false`로 두기 때문인데, 이를 판정하려면 Claude Code의 `Bash` 결과 *텍스트*를 패턴
-매칭해야 하고 그것을 틀리면 정확히 아픈 방향으로 비쌉니다. 규칙 1의 컴팩션 절반도
-같은 이유로 잠들어 있습니다 — 아직 고정된 컴팩션 마커가 없습니다. critical 심각도는
-위 심각도 표의 두 경로를 통해 여전히 규칙 1을 발동시킵니다.
+규칙 1의 세 가지 방아쇠 중 오늘의 shunt에서 발동하는 것은 critical 심각도뿐이며,
+위 심각도 표의 두 경로를 통해 발동합니다. 컴팩션 절반은 아직 고정된 컴팩션 마커가
+없어서 잠들어 있고, 반복 실패 절반은 libsy가 *같은 실패*인지를 결과 텍스트와 자체
+오류 표를 대조해 판정하는데 Claude Code가 보내는 `is_error` 불리언으로는 그것을
+뒷받침할 수 없어서 잠들어 있습니다. shunt 자체의 "마지막 완료 결과 둘이 모두 실패"
+규칙은 `severity`를 거쳐 이미 규칙 1에 도달합니다.
 
 ### 5. 히스테리시스
 
@@ -213,11 +219,13 @@ confidence = |score|
 Fall-open, 모호한 턴, 도구 활동이 없는 턴은 증거가 아니라 피커의 기본값이며, 어느
 방향으로도 핀을 움직일 수 없습니다.
 
-`tests_passed` 지름길은 *신뢰도* 게이트에서는 면제되지만 dwell에서는 아닙니다 —
-신뢰도를 아예 보고하지 않으므로, 맨 `confidence >= threshold` 검사를 걸면 싸게 내려갈
-가장 강한 근거가 유일하게 발동 불가능한 근거가 되어버립니다. 이 면제는 위에 적은
-이유로 오늘은 비활성이며, 나중에 신호를 채우는 일이 추출기만 고치면 되도록 남겨둔
-것입니다.
+신뢰도 게이트에는 면제가 없습니다. 예전에는 `tests_passed` 지름길을 위한 면제가
+있었습니다. 그 지름길은 신뢰도를 아예 보고하지 않았기 때문입니다. 업스트림에서 그
+규칙이 사라지면서, 이제 증거로 인정되는 모든 출처가 신뢰도를 보고하고, 신뢰도를
+보고하지 않는 턴은 신뢰하는 대신 붙잡아 둡니다. 그 자리를 대신한 libsy의
+`capable_hold` — 앞선 승격이 아직 유지되고 있다는 뜻 — 도 증거가 아닙니다. 위 표의
+`sticky` 행과 같은 개념이고, 그것을 찍는 것은 libsy의 상태 있는 분류기뿐인데 shunt는
+그것을 호출하지 않습니다.
 
 ## shunt가 더하는 것
 
@@ -291,7 +299,7 @@ Claude Code의 `/model` 표시와 `--resume` 모델 복원이 그대로 동작�
 
 ## 통합 비용
 
-의존성을 채택할 때 추정이 아니라 실측한 값입니다.
+의존성을 처음 채택할 때 `0.2.0`을 상대로 추정이 아니라 실측한 값입니다.
 
 | | |
 | :-- | :-- |
@@ -302,8 +310,13 @@ Claude Code의 `/model` 표시와 `--resume` 모델 복원이 그대로 동작�
 | 포팅 대안 | 137줄 |
 
 결정을 내린 것은 바이너리 결과였습니다. 링커가 분류기 트리를 통째로 떨어뜨리므로
-크레이트에 의존하는 비용은 0.3% 남짓입니다. 137줄 포팅은 고정된 릴리스가 낡을 경우의
-출구로 문서에 남아 있습니다.
+크레이트에 의존하는 비용은 0.3% 남짓입니다. 137줄 포팅은 핀이 낡을 경우의 출구로
+문서에 남아 있습니다.
+
+그 릴리스에서 `main` 핀으로 옮기면서 추가된 패키지는 **하나도 없습니다** — 락은 445에
+그대로입니다. 거기서 libsy가 새로 직접 의존하는 `http`, `regex`, `uuid`가 이미 shunt
+트리에 있었기 때문입니다. 링크 여부 결과도 새 핀에서 그대로입니다. 릴리스 바이너리에
+`jsonschema` 문자열 0건, `num-bigint` 심볼 0건입니다.
 
 ## 저작자 표시
 
@@ -311,4 +324,5 @@ Claude Code의 `/model` 표시와 `--resume` 모델 복원이 그대로 동작�
 스코어러를 수정 없이 사용합니다. 거절한 각 기능과 그 이유를 포함한 shunt 쪽 설계
 기록은
 [ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md)
-입니다.
+이고, 릴리스 대신 업스트림 `main`을 핀으로 잡은 결정은
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)입니다.

@@ -7,7 +7,9 @@ Status: **implemented.** User-facing documentation lives in the
 provenance, the upstream benchmark results, and the scoring formula in
 [Switchyard Integration](https://shunt.sh/guides/switchyard/); this document is
 the implementation record — what the code does, why, and what a change to it must
-not break.
+not break. The `switchyard-libsy` dependency it scores through — how it is
+pinned, how to read its API, and how to bump it — is
+[`routing-algorithms.md`](routing-algorithms.md) §1.
 
 ## 1. Scope
 
@@ -34,12 +36,28 @@ Out of scope, deliberately: the LLM classifier, mid-turn escalation, and
 | `src/routing.rs` | `resolve_chain`'s router arm and the `Route.model` re-stamp |
 | `src/proxy/failover.rs` | The single live call site |
 
-Scoring itself is `switchyard-libsy` 0.2 and is not reimplemented. The version is
-pinned to the `0.2` line and held out of automatic upgrades: 0.2.0 is the only
-published release and upstream `main` has already diverged from it — `ToolSignals`
-carries `tool_result_count`, `assistant_turn_count`, `new_count`, and
-`recent_new_count` there, and 0.2.0 has none of them. Read the registry source,
-not GitHub, when checking the API.
+Scoring itself is `switchyard-libsy` and is not reimplemented. The dependency is
+a **git pin at an immutable `rev` on upstream `main`**, not the crates.io
+release — the same form as the two `tungstenite` pins, with a `rev` and no
+`branch` key, so a bump is a reviewed diff rather than a side effect of an
+unrelated `cargo update` (ADR-0005 §9). 0.2.0 is the only published release and
+`main` (`0.3.0`-pre) carries the algorithms ADR-0005 builds on, which the
+release does not export at all. Read the checkout cargo resolved
+(`~/.cargo/git/checkouts/switchyard-*/<rev>/crates/libsy/`), not the registry
+source and not GitHub's default branch, when checking the API.
+
+Three things the pin changed for this subsystem:
+
+- `ToolSignals` gained `repeated_failure`, `tool_result_count`,
+  `assistant_turn_count`, `new_count`, and `recent_new_count` (§3).
+- `DecisionSource::TestsPassed` is gone. Upstream dropped the hard
+  de-escalation shortcut; a passing test now only clears libsy's own capable
+  hold, which shunt does not use.
+- `DecisionSource::CapableHold` is new — libsy's own hysteresis, which shunt
+  treats as not-evidence for the same reason `Sticky` is not evidence (§4).
+
+`score_signal` is byte-identical to 0.2.0's, so the calibration below is
+unchanged.
 
 ## 3. Signal extraction
 
@@ -64,11 +82,27 @@ the call has another (`errors_are_read_from_the_result_not_the_call`).
 Returns `None` when no completed call exists, which the caller treats as
 `no_signal` rather than as agreement.
 
-Two fields are deliberately left `false`, with the reasoning in the source:
+`tool_result_count` and `assistant_turn_count` are filled from the walk the
+extractor already does — the first is `completed.len()` (every Anthropic
+`tool_result` carries a `tool_use_id`, so that is the same set libsy counts),
+the second is every assistant message, not the windowed count the recency pass
+keeps.
 
-- `tests_passed` would need result-*text* matching, and it pushes hard toward the
-  cheap tier — guessing it wrong is expensive in exactly the wrong direction.
+The other three are deliberately left at their zero values, with the reasoning
+in the source:
+
+- `tests_passed` would need result-*text* matching.
+- `repeated_failure` is "the same hard-or-critical failure twice in the recent
+  window", and libsy decides *same* by matching result text against its error
+  table. Claude Code reports only a boolean `is_error` with no category, so
+  there is nothing here to compare. It is a hard escalation, so a proxy that
+  guessed would escalate on any two unrelated failures — and the trailing-pair
+  rule already covers that case through `severity`, on evidence this extractor
+  does have.
 - `compacted` needs a compaction marker no test here pins yet.
+- `new_count`/`recent_new_count` count tools an operator placed in libsy's
+  `tool_semantics.new` category. shunt exposes no such config yet, so the
+  category is empty.
 
 ### 3.1 Vocabulary
 
@@ -76,9 +110,9 @@ Two fields are deliberately left `false`, with the reasoning in the source:
 `BashOutput`. `Mutate`: `Edit`, `NotebookEdit` (edit-shaped), `Write`
 (write-shaped). `Plan`: `TodoWrite`, `Task`, `EnterPlanMode`, `ExitPlanMode`.
 Everything else, `Bash`, `Skill`, `KillShell` and `mcp__*` included, is
-uncategorised — which in 0.2.0 means it contributes through `pure_bash_streak`
-rather than through a `new` counter, since that counter does not exist in the
-published scorer.
+uncategorised, so it contributes through `pure_bash_streak` rather than through
+the `new` counter — that counter is fed by `tool_semantics.new`, which shunt
+does not configure yet.
 
 Matching is `eq_ignore_ascii_case`. `Bash` stays uncategorised on purpose: only
 `input.command` separates `git status` from `rm -rf` from `cargo test`, and
@@ -105,20 +139,22 @@ id)` — the session id is hashed and never stored, matching
 | Rejected before admission | Decided, not recorded |
 | Efficient → Capable | Immediate on any scorer-made decision |
 | Capable → Efficient | `dwell_turns >= min_dwell_turns` **and** confidence `>= deescalate_threshold` **and** a scorer-made decision |
-| `fall_open` / `no_signal` / `ambiguous` | Cannot move a pin in either direction |
+| `fall_open` / `no_signal` / `ambiguous` / `capable_hold` | Cannot move a pin in either direction |
 | Fingerprint mismatch or TTL expiry | That entry alone is treated as absent |
 
-`tests_passed` is exempt from the *confidence* gate but not the dwell one. It is
-libsy's hard de-escalation shortcut, which skips the scorer and returns
-`confidence: None` (`resolved(Efficient, TestsPassed, 0.0, None)`); a bare
-`confidence >= threshold` gate would make the strongest reason to go cheap the
-one reason that could never fire.
+The confidence gate admits no exemption. It used to carry one, for libsy's
+`tests_passed` shortcut — the single de-escalation that skipped the scorer and
+so reported `confidence: None`, which a bare `confidence >= threshold` check
+would have made the one reason to go cheap that could never fire. Upstream
+dropped that rule, so every source `is_signal_evidence` admits now reports a
+confidence and a `None` is held rather than trusted
+(`a_de_escalation_without_a_confidence_score_is_held`).
 
-That exemption is written against libsy's contract, not against a signal shunt
-produces today: §3 leaves `tests_passed` unconditionally `false`, so
-`DecisionSource::TestsPassed` cannot be returned and the exemption is inert. It
-is kept so that populating the signal later is a change to the extractor alone
-(ADR-0004).
+`DecisionSource::CapableHold`, upstream's replacement, is not evidence either.
+It means an earlier escalation is being held on the capable tier — which is what
+`StageSource::Sticky` already means here — and only libsy's stateful
+`StageClassifier` stamps it, which shunt does not call: shunt calls `pick_tier`
+directly.
 
 Deciding and recording are separate calls. Routing has to run before
 `check_inbound_auth` — that gate reads the resolved chain to decide whether the

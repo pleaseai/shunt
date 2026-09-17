@@ -11,7 +11,7 @@ shunt 的[阶段路由器](/zh-cn/guides/stage-router/)并没有自造评分逻�
 测的是什么,以及算法如何判定一个回合。如果你只想把功能打开,
 [阶段路由器指南](/zh-cn/guides/stage-router/)更短。
 
-[libsy]: https://crates.io/crates/switchyard-libsy
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/main/crates/libsy
 [sy]: https://github.com/NVIDIA-NeMo/Switchyard
 
 ## shunt 引入了什么
@@ -22,7 +22,7 @@ LLM 裁判分类器、升级路由、子代理路由。shunt 本身就是网关,
 
 | Switchyard 组件 | 在 shunt 中 |
 | :-- | :-- |
-| `switchyard-libsy` 阶段评分器 | **使用** —— 固定在 `0.2` 线 |
+| `switchyard-libsy` 阶段评分器 | **使用** —— 固定在上游 `main` 的一个经过审阅的修订 |
 | `switchyard-protocol` | 作为 libsy 自身的依赖引入;shunt 不构造 `Request` |
 | `switchyard-translation` | **不使用** —— 与 shunt 的 `src/model/responses_request.rs` 正面重复 |
 | `switchyard-server` | **不使用** —— shunt 自己就是服务器 |
@@ -34,9 +34,13 @@ LLM 裁判分类器、升级路由、子代理路由。shunt 本身就是网关,
 `ToolSignals` 结构体并调用 `pick_tier`;该结构体的每个字段都是 `pub`,中间不需要
 任何翻译层。
 
-版本固定在 `0.2` 并排除在自动升级之外。`0.2.0` 是唯一的已发布版本,而上游 `main`
-已经与它分叉 —— 那边的 `ToolSignals` 多出四个字段。核对 API 时请读 registry 源码,
-而不是 GitHub。
+这个依赖不是 crates.io 上的发布版,而是钉在上游 `main` 某个**不可变修订上的 git
+pin**,只写 `rev`、不写 `branch` —— 与 shunt 的两个 `tungstenite` pin 形式相同。
+因此升级它是一次经过审阅的 diff,而不是一次无关的 `cargo update` 能顺手做掉的事。
+`0.2.0` 是唯一的已发布版本,而 `main` 已经与它分叉:阶段评分之外的算法 —— advisor
+gate、composite 路由、子代理路由、tool semantics、handoff note —— 只存在于 `main`。
+核对 API 时请读 cargo 解析出的那份 checkout,既不是 registry 源码,也不是会移动的
+GitHub 默认分支。
 
 ## 基准结果
 
@@ -91,15 +95,17 @@ shunt 实现的正是阶段路由这一行:三种路由配置中最便宜,同时
 | :-- | :-- | :-- |
 | 评分内核 | `switchyard-libsy` | 同一 crate,同样的常量 |
 | 信号提取 | 上游的 provider 中立实现 | shunt 自己的实现,取自 Anthropic Messages 块 |
-| `tests_passed` / `compacted` | 评分器可用 | 恒为 `false` —— 从不填充 |
+| `tests_passed` / `repeated_failure` / `compacted` | 评分器可用 | 恒为 `false` —— 从不填充 |
 | 模糊回合上的裁判 | 可选启用 | 没有;fall-open 到选择器默认层 |
 | 跨回合的层级稳定性 | 每回合独立评分 | 带非对称迟滞的会话固定 |
 | 负载 | Terminal-Bench 2.1 任务 | Claude Code 会话 |
 
-其中两项作用方向相反。shunt 不填充 `tests_passed` 与 `compacted`,因此丢掉了 libsy
-的硬降级捷径和压缩覆盖 —— 信号严格少于基准当时所有。与之相对,shunt 的迟滞机制之所以
-存在,正是因为在 Claude Code 会话里逐回合翻转层级要付出基准测试框架从不承担的代价
-(见[下文](#shunt-额外提供的东西))。
+其中两项作用方向相反。shunt 不填充 `tests_passed`、`repeated_failure` 与
+`compacted`,因此丢掉了 libsy 的压缩覆盖和重复失败升级 —— 信号严格少于基准当时所有。
+这三项都需要 Anthropic Messages 线格式并不携带的证据:压缩需要一个还没有任何测试钉住
+的标记,另外两项需要工具结果的*文本*,而 Claude Code 只发送一个布尔 `is_error`。
+与之相对,shunt 的迟滞机制之所以存在,正是因为在 Claude Code 会话里逐回合翻转层级要
+付出基准测试框架从不承担的代价(见[下文](#shunt-额外提供的东西))。
 
 ## 路由算法
 
@@ -172,22 +178,24 @@ confidence = |score|
 
 ### 4. 判定
 
-`pick_tier` 按顺序执行四条规则,最先触发的那条获胜。
+`pick_tier` 按顺序执行三条规则,最先触发的那条获胜。
 
 1. **硬升级** → capable。critical 级严重度,或上下文被压缩。跳过评分器,报告
    `confidence: 1.0`。
 2. **硬降级** → efficient。测试通过、近期写过代码、且没有出错。跳过评分器,
    **完全不报告置信度**。
 3. **评分器。** 若 `confidence >= confidence_threshold`,则按符号走。
-4. **Fall-open。** 低于阈值时 libsy 返回 `ConsultClassifier`。shunt 不运行分类器,
+3. **Fall-open。** 落在带内时 libsy 返回 `ConsultClassifier`。shunt 不运行分类器,
    该回合落在选择器的默认层。
 
-升级先于降级判断,所以在一个恰好测试也通过的回合里,critical 错误依然获胜。
+以前还有第四条 —— 对测试已通过的收尾回合做硬*降级*。上游把它删掉了;测试通过如今
+只会清除 libsy 自己的 capable hold,而 shunt 并不使用那个 hold。
 
-在今天的 shunt 中规则 2 不可能触发:提取器无条件把 `tests_passed` 置为 `false`,
-因为判定它意味着对 Claude Code 的 `Bash` 结果*文本*做模式匹配,而猜错的代价恰好落在
-最痛的方向上。规则 1 的压缩那一半也因同样的理由处于休眠 —— 还没有固定下来的压缩
-标记。critical 严重度仍会通过上面严重度表中的两条路径触发规则 1。
+规则 1 的三个触发条件里,今天的 shunt 只会触发 critical 严重度,通过上面严重度表中的
+两条路径。压缩那一半处于休眠,因为还没有固定下来的压缩标记;重复失败那一半也处于休眠,
+因为 libsy 是把结果文本与自己的错误表比对来判定*同一个失败*的,而 Claude Code 发送的
+`is_error` 布尔值支撑不了这件事。shunt 自己的"最近两个已完成结果都失败"规则,已经通过
+`severity` 抵达规则 1。
 
 ### 5. 迟滞
 
@@ -202,10 +210,11 @@ confidence = |score|
 Fall-open、模糊回合,或没有工具活动的回合,都是选择器的默认值而非证据,不能朝任何
 方向移动固定层级。
 
-`tests_passed` 捷径豁免于*置信度*门槛,但不豁免驻留门槛 —— 它完全不报告置信度,
-因此一个朴素的 `confidence >= threshold` 检查会让"降到便宜层"最强的理由变成唯一
-永远无法触发的理由。出于上述原因,该豁免今天是惰性的;保留它是为了日后填充该信号时
-只需改动提取器。
+置信度门槛没有任何豁免。它曾经为 `tests_passed` 捷径留过一个,因为那条捷径完全不
+报告置信度。上游删掉那条规则之后,凡是算作证据的来源都会报告置信度,而一个不报告置信度
+的回合会被保留而不是被信任。接替它的 libsy `capable_hold` —— 意思是先前的升级仍在保持
+—— 同样不是证据:它与上表的 `sticky` 行是同一个概念,而且只有 libsy 那个有状态的分类器
+会打上它,shunt 并不调用它。
 
 ## shunt 额外提供的东西
 
@@ -274,7 +283,7 @@ Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 
 
 ## 集成的代价
 
-这些是采用该依赖时实测的数字,不是估算。
+这些是首次采用该依赖时针对 `0.2.0` 实测的数字,不是估算。
 
 | | |
 | :-- | :-- |
@@ -285,10 +294,17 @@ Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 
 | 移植这一备选 | 137 行 |
 
 做出决定的是二进制结果:链接器会整棵丢掉分类器依赖树,所以依赖这个 crate 的代价约为
-千分之三。那 137 行的移植方案留在记录里,作为固定版本日后陈旧时的退路。
+千分之三。那 137 行的移植方案留在记录里,作为这个 pin 日后陈旧时的退路。
+
+从那个发布版移到 `main` pin **没有新增任何包** —— 锁文件仍是 445,因为 libsy 在那边
+新增的直接依赖(`http`、`regex`、`uuid`)早已在 shunt 的依赖树里。是否被链接的结论在
+新 pin 上同样成立:release 二进制里 `jsonschema` 字符串仍是 0 处,`num-bigint` 符号
+仍是 0 个。
 
 ## 署名
 
 `switchyard-libsy` 采用 Apache-2.0 许可,© NVIDIA Corporation。shunt 未加修改地使用
 其阶段评分器。shunt 这一侧的设计记录 —— 包括每一项被拒绝的能力及其理由 —— 是
-[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md)。
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md);
+而选择固定上游 `main` 而非发布版的决定,记录在
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)。
