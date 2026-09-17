@@ -450,7 +450,7 @@ For a `passthrough` upstream, the client's own `authorization` / `x-api-key` is 
 
 Independent of origin, each retained slot is also checked by the value it actually holds: `authorization` and `x-api-key` are each cleared only when that slot's own value is shaped like a JWT shunt itself issued — three segments whose payload's `aud` claims `"shunt"`, whose `iss` claims this gateway's identity, or whose `shunt_token_use` claim is `"gateway-session"`, a dedicated marker that only shunt mints — or matches a configured `[server.auth]` client token. The JWT check is deliberately by shape, not by whether the token currently authenticates: an expired token, one minted by a sibling instance under a different `public_url`, or one that no longer verifies after a `jwt_secret` rotation is still shunt's own credential and is still cleared. The marker is an additional arm on that shape check, not a requirement: a token minted before the marker existed still matches by `aud`/`iss`, and `verify` does not require the marker either, so a token minted by an older shunt version still authenticates for as long as it remains within its TTL. An `apiKeyHelper` fills both slots with the same value, so either credential can land in either or both. A slot holding a genuine upstream credential is forwarded even when the other slot holds the gateway JWT or a static client token; only the gate-credential-bearing slot is cleared. `[server.auth] header` accepts any header name, including `authorization` itself; when it is set that way a client authenticates with a bare, unprefixed `Authorization: <token>`, so that slot is checked as a whole value as well as by its `Bearer` payload and such a token is never forwarded upstream. One caveat for that configuration: on inference requests shunt removes the configured header before routing, unconditionally, so that slot then carries nothing upstream — a caller's own credential in it is dropped too, not just a gate token. Keeping `header` at its dedicated `x-shunt-token` default avoids that collision.
 
-Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id) — except on the committed streaming chain path, where the response carries only `content-type` and `x-gateway-model` (the winner-dependent `x-gateway-upstream` and `x-gateway-upstream-model` are omitted and upstream response headers never reach the client). `count_tokens` uses only the first chain element and never fails over. `[server.codex_endpoint]` is pinned to its configured upstream for every model with no `[[server.codex_endpoint.routes]]` entry, and does not participate in this chain either way.
+Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id) — except on the committed streaming chain path, where the response carries only `content-type` and `x-gateway-model` (the winner-dependent `x-gateway-upstream` and `x-gateway-upstream-model` are omitted and upstream response headers never reach the client). A response routed by a [stage router](/guides/stage-router/) additionally carries `x-gateway-routed-model` (the target its chosen tier routes to) and `x-gateway-route-source` (why that tier was chosen); both are omitted for a model id that configures no router. `count_tokens` uses only the first chain element, never fails over, and is left unstamped by the stage-router pair. `[server.codex_endpoint]` is pinned to its configured upstream for every model with no `[[server.codex_endpoint.routes]]` entry, and does not participate in this chain either way.
 
 ### Migrating existing configurations
 
@@ -594,15 +594,17 @@ codex = "gpt-5.2"
 
 ### `[models.stage_router]` (optional)
 
-Content-aware tier selection for one advertised id: instead of naming a single
-destination, the entry names **two** — a capable tier and an efficient one.
+Content-aware tier selection for one advertised id. Instead of naming a single
+destination, the entry names **two** — a capable tier and an efficient one — and
+lets the request's recent tool-result history pick between them per turn. Absent
+this table a `[[models]]` entry behaves exactly as it did before; configure no
+router anywhere and routing is unchanged.
 
-**Not active in this release.** The table is parsed and validated, but the
-resolver does not read it yet, so an id carrying this table still routes by that
-literal id through the ordinary `[[routes]]` / prefix / `default_provider`
-ladder — not to either target. The keys are documented here so a configuration
-can be written and reviewed ahead of the change that activates them. Absent this
-table a `[[models]]` entry behaves exactly as it did before.
+Both targets are ordinary public model ids, so each resolves through the normal
+ladder and keeps its failover chain, account pool, adapter, `effort`, and
+`service_tier`. What the client is told it got stays the id it asked for — the
+tier travels upstream only. See the [stage router guide](/guides/stage-router/)
+for how the signals and the hysteresis work.
 
 ```toml
 [[models]]
@@ -622,7 +624,7 @@ efficient_target = "claude-sonnet-4-6"
 | `confidence_threshold` | `0.5` | Minimum scorer confidence to act on a signal, in `(0.0, 1.0]` |
 | `recent_turn_window` | `3` | Assistant turns of tool results fed to the scorer. Must be at least `1` |
 | `min_dwell_turns` | `3` | Turns a tier is held before a de-escalation may fire; counted from the turn that chose it, so `0` and `1` both mean no dwell floor |
-| `deescalate_threshold` | `0.75` | Confidence required to move *down* a tier. The default sits above `confidence_threshold`'s, making the down direction the harder one, but the two are range-checked independently — a value below `confidence_threshold` is accepted |
+| `deescalate_threshold` | `0.75` | Confidence required to move *down* a tier. The default sits above `confidence_threshold`'s, making the down direction the harder one, but the two are range-checked independently — a value below `confidence_threshold` is accepted, and warns at load |
 | `session_ttl_seconds` | `3600` | How long a quiet session's pinned tier survives |
 
 A target that is itself a router, a blank target, a threshold outside
@@ -633,8 +635,17 @@ entries may otherwise share an id, but a router names a routing policy rather
 than discovery metadata, so a duplicate would leave two policies for one id.
 Target ids are compared after the trailing `[1m]`/`[1M]` hint is stripped, the
 same way
-routing matches them. A target that matches no explicit route only warns — it
-still resolves through `server.default_provider` like any other unmatched id.
+routing matches them. Four shapes warn instead of failing the load, each
+because it has a coherent operator intent: a target that matches no explicit
+route (it still resolves through `server.default_provider` like any other
+unmatched id), `capable_target` and `efficient_target` resolving to the same id
+(both tiers deliberately flattened onto one model), a `deescalate_threshold`
+below `confidence_threshold` (de-escalation made the easier direction, which a
+cost-first deployment may want), and a `[[routes]]` entry naming the router's
+own id (inert, since the router decides that id's destination). A
+`[[route_prefixes]]` entry the id merely starts with is **not** reported — it
+still serves every other id matching it. Each is emitted once per load — and a hot reload is a load, so a
+config left unfixed warns again on each one.
 
 ## `[sentry]` (optional)
 
@@ -673,4 +684,11 @@ Extra headers on every OTLP request (e.g. a hosted-collector token). Merged unde
 
 ## Routing precedence
 
-A matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
+A matching `[models.stage_router]` entry → a matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
+
+The router comes first because it is matched on the `[[models]]` entry itself: a
+request for a router-backed id is answered by the router, which picks a tier and
+resolves **that target** through the rest of the ladder — so the target, not the
+router id, is what a `[[routes]]` entry should name. An exact entry naming the
+router id is never consulted and warns at load. A `[[route_prefixes]]` entry is
+unaffected: the router takes only its own id out of that prefix's reach.

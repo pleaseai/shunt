@@ -316,7 +316,7 @@ codex-fallback = "gpt-5.2"
 
 与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值与 shunt 自己签发的 JWT **形状相符**——三段式结构，且载荷的 `aud` 声明为 `"shunt"`、`iss` 声明与本网关的身份一致，或 `shunt_token_use` 声明为 `"gateway-session"`（仅由 shunt 签发的专用标记）——或匹配配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除。这项 JWT 检查刻意按“形状是否相符”而非“该令牌现在是否能通过认证”来判定：一个已过期的令牌、由使用不同 `public_url` 的兄弟实例签发的令牌，或在 `jwt_secret` 轮换后已不再能通过校验的令牌，仍然是 shunt 自己的凭据，因此仍会被清除。该标记只是形状检查新增的一个分支，而非必要条件：在该标记出现之前签发的令牌仍会按 `aud`/`iss` 匹配，`verify` 本身也不要求该标记，因此旧版本 shunt 签发的令牌只要仍在其 TTL 内就仍能通过认证 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或静态客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。`[server.auth] header` 可以是任意头名称，包括 `authorization` 本身；这样配置时客户端使用不带前缀的 `Authorization: <token>` 进行认证，因此该槽位除了按 `Bearer` 载荷检查外还会按整个值检查，此类令牌绝不会被转发到上游。该配置有一个注意事项：在推理请求上 shunt 会在路由前无条件移除配置的头部，因此该槽位不会向上游携带任何东西 —— 不只是门控令牌，调用方自己的凭据也会一并被丢弃。把 `header` 保持为默认的专用 `x-shunt-token` 可以避免这种冲突。
 
-每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）——已提交的流式链路路径除外：响应只带 `content-type` 和 `x-gateway-model`，取决于胜者的 `x-gateway-upstream` 和 `x-gateway-upstream-model` 会被省略，上游响应头不会到达客户端。`count_tokens` 只使用链中第一个条目，且不会故障转移。对于没有 `[[server.codex_endpoint.routes]]` 条目的模型，`[server.codex_endpoint]` 仍固定到所配置的单一上游；无论哪种情况都不参与此链。
+每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）——已提交的流式链路路径除外：响应只带 `content-type` 和 `x-gateway-model`，取决于胜者的 `x-gateway-upstream` 和 `x-gateway-upstream-model` 会被省略，上游响应头不会到达客户端。由[阶段路由器](/zh-cn/guides/stage-router/)路由的响应还会带上 `x-gateway-routed-model`（所选档位指向的目标）和 `x-gateway-route-source`（选中该档位的原因）；未配置路由器的模型 id 不会带这两个头。`count_tokens` 只使用链中第一个条目，不会故障转移，也不会带上这两个阶段路由器头。对于没有 `[[server.codex_endpoint.routes]]` 条目的模型，`[server.codex_endpoint]` 仍固定到所配置的单一上游；无论哪种情况都不参与此链。
 
 ### 迁移现有配置
 
@@ -396,13 +396,13 @@ codex = "gpt-5.2"
 
 ### `[models.stage_router]`(可选)
 
-针对单个对外 id 的内容感知档位选择。该条目不再指定一个目的地，而是指定**两个** ——
-一个强力档位和一个高效档位。
+针对某一个对外 id 的内容感知档位选择。该条目不再只指定一个目的地,而是指定**两个** ——
+一个强力档位和一个高效档位 —— 并让请求最近的 tool-result 历史逐轮在两者之间做选择。
+没有这张表时,`[[models]]` 条目的行为与之前完全一致;任何地方都不配置路由器,路由就不变。
 
-**本次发布中尚未生效。** 该表会被解析和校验，但解析器尚未读取它，因此带有该表的 id
-仍按其字面 id 经由普通的 `[[routes]]` / 前缀 / `default_provider` 阶梯路由，而不会
-去往任一目标。此处记录这些键，是为了在启用该功能的改动之前就能编写和评审配置。没有
-该表时，`[[models]]` 条目的行为与以往完全一致。
+两个目标都是普通的公开模型 id,因此各自沿常规阶梯解析,并保留自己的故障转移链、账户池、
+适配器、`effort` 和 `service_tier`。返回给客户端的 id 仍是它请求的那个 id,被选中的档位
+只向上游传递。信号与迟滞的工作方式见[阶段路由器指南](/zh-cn/guides/stage-router/)。
 
 ```toml
 [[models]]
@@ -422,15 +422,21 @@ efficient_target = "claude-sonnet-4-6"
 | `confidence_threshold` | `0.5` | 依据信号作出判定所需的最低评分器置信度，范围 `(0.0, 1.0]` |
 | `recent_turn_window` | `3` | 送入评分器的助手工具结果轮数。至少为 `1` |
 | `min_dwell_turns` | `3` | 降档可以触发之前档位需保持的轮数。从选定档位的那一轮开始计数，因此 `0` 和 `1` 都表示没有下限 |
-| `deescalate_threshold` | `0.75` | *降低*档位所需的置信度。默认值高于 `confidence_threshold` 的默认值，使下降方向更难触发；但两者各自独立做范围校验，因此低于 `confidence_threshold` 的值也会被接受 |
+| `deescalate_threshold` | `0.75` | *降低*档位所需的置信度。默认值高于 `confidence_threshold` 的默认值，使下降方向更难触发；但两者各自独立做范围校验，因此低于 `confidence_threshold` 的值也会被接受，并在加载时发出警告 |
 | `session_ttl_seconds` | `3600` | 空闲会话的固定档位可存续多久 |
 
 目标本身就是路由器、目标为空、阈值超出 `(0.0, 1.0]`、`recent_turn_window` 为 `0`、
 路由器 **id** 以 `[1m]` 或 `[1M]` 结尾、其中一项带有路由器表的重复 `[[models]]` id，或同一条目
 同时声明了 `[models.upstream_model]`，都会导致启动错误。不带映射的两个条目本可共用同一
-个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致。未匹配
-到任何显式路由的目标只会发出警告 —— 它仍会像其他未匹配的 id 一样经由
-`server.default_provider` 解析。
+个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致。以下四种情况
+只发出警告而不会让加载失败，因为每一种都可能是运维人员的本意 —— 未匹配到任何显式路由
+的目标（它仍会像其他未匹配的 id 一样经由 `server.default_provider` 解析）、解析到同一个
+id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同一个模型上）、低于
+`confidence_threshold` 的 `deescalate_threshold`（把下降方向变得更容易，这可能正是成本
+优先的部署所需要的），以及写了路由器自身 id 的 `[[routes]]` 条目（该 id 的去向由路由器
+决定，因此不会被查询）。仅仅是 id 以某个前缀开头的 `[[route_prefixes]]` 条目**不会**被
+报告 —— 匹配该前缀的其他 id 仍由它处理。每条警告在每次加载时各输出一次；热重载
+同样是一次加载，所以配置不改就会在每次重载时再次输出。
 
 ## `[sentry]`(可选)
 
@@ -469,4 +475,9 @@ efficient_target = "claude-sonnet-4-6"
 
 ## 路由优先级
 
-匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
+匹配的 `[models.stage_router]` 条目 → 匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
+
+路由器排在最前，是因为它在 `[[models]]` 条目本身上完成匹配：指向带路由器 id 的请求由路由器
+应答，路由器选定档位后再把**那个目标**交给其余的解析链。因此 `[[routes]]` 或
+条目应当写目标，而不是路由器 id。写了路由器 id 的精确条目永远不会被查询，并会在加载时
+发出警告。`[[route_prefixes]]` 条目不受影响：路由器只从该前缀中取走自己的 id。

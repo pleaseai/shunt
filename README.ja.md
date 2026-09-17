@@ -30,9 +30,9 @@ brew install pleaseai/tap/shunt
 cargo install --git https://github.com/pleaseai/shunt
 ```
 
-新しいバージョンは Homebrew と、各 [GitHub リリース](https://github.com/pleaseai/shunt/releases)に添付されるビルド済みバイナリ（macOS/Linux、arm64/x64）で配布されます。crates.io パッケージは、最後に公開されたバージョンで更新を停止します。ビルド済みバイナリおよびソースからのインストール手順は [インストール](https://shunt.dev/getting-started/installation/) を参照してください。
+新しいバージョンは Homebrew と、各 [GitHub リリース](https://github.com/pleaseai/shunt/releases)に添付されるビルド済みバイナリ（macOS/Linux、arm64/x64）で配布されます。crates.io パッケージは、最後に公開されたバージョンで更新を停止します。ビルド済みバイナリおよびソースからのインストール手順は [インストール](https://shunt.sh/getting-started/installation/) を参照してください。
 
-上の `cargo install` は管理ダッシュボードなしでビルドされます。ダッシュボードのバンドルには Node.js 22.12+ が必要で、埋め込むのは `--features ui` だけですが、Homebrew とリリースバイナリはすでにこのフラグを有効にしてビルドしています。管理 JSON API を含むそれ以外はどちらでも同じです。ソースからの手順は [インストール](https://shunt.dev/getting-started/installation/) にあります。
+上の `cargo install` は管理ダッシュボードなしでビルドされます。ダッシュボードのバンドルには Node.js 22.12+ が必要で、埋め込むのは `--features ui` だけですが、Homebrew とリリースバイナリはすでにこのフラグを有効にしてビルドしています。管理 JSON API を含むそれ以外はどちらでも同じです。ソースからの手順は [インストール](https://shunt.sh/getting-started/installation/) にあります。
 
 ### サービスとして実行する (macOS/Homebrew)
 
@@ -67,7 +67,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 claude                                              # /model -> pick gpt-5.6-sol
 ```
 
-マッピングされていないモデル（あなたのすべての `claude-*` id）は、これまでとまったく同じように動作します。shunt はあなた自身の認証情報を使って Anthropic へ転送します。詳しい手順は [クイックスタート](https://shunt.dev/getting-started/quickstart/) を参照してください。
+マッピングされていないモデル（あなたのすべての `claude-*` id）は、これまでとまったく同じように動作します。shunt はあなた自身の認証情報を使って Anthropic へ転送します。詳しい手順は [クイックスタート](https://shunt.sh/getting-started/quickstart/) を参照してください。
 
 ### スターター設定
 
@@ -115,7 +115,7 @@ anthropic-primary = "claude-opus-4-8"
 codex-fallback = "gpt-5.6-sol"
 ```
 
-このチェーンは `anthropic-primary`、次に `codex-fallback` を試行します。`auth` は mode 文字列またはマップを受け付け、`claude_oauth` と `chatgpt_oauth` のマップは `account = "name"` または `accounts = [...]` で認証情報の範囲を絞れます。レガシーな `[providers.<name>]` は引き続きサポートされ、名前順の暗黙的アップストリームになります。設定ファイル内で両方の形式を宣言しないでください。`[[upstreams]]` と `[providers.*]` の混在は設定エラーです。preset、失敗クラス、移行の詳細は [設定リファレンス](https://shunt.dev/reference/configuration/) を参照してください。
+このチェーンは `anthropic-primary`、次に `codex-fallback` を試行します。`auth` は mode 文字列またはマップを受け付け、`claude_oauth` と `chatgpt_oauth` のマップは `account = "name"` または `accounts = [...]` で認証情報の範囲を絞れます。レガシーな `[providers.<name>]` は引き続きサポートされ、名前順の暗黙的アップストリームになります。設定ファイル内で両方の形式を宣言しないでください。`[[upstreams]]` と `[providers.*]` の混在は設定エラーです。preset、失敗クラス、移行の詳細は [設定リファレンス](https://shunt.sh/reference/configuration/) を参照してください。
 
 ### 標準搭載
 
@@ -135,10 +135,10 @@ codex-fallback = "gpt-5.6-sol"
 
 順序付きの `[[upstreams]]` エントリーはこれに加えて `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode` のプリセットも受け付け、各バックエンドの `kind`、`base_url`、デフォルト認証を補完します。
 
-プロバイダーごとのセットアップ、モデル id、注意点は[プロバイダー](https://shunt.dev/ja/guides/providers/)にまとまっています。xAI の OAuth ティア制限（[xAI / Grok](https://shunt.dev/ja/guides/xai/)）、Cursor のエージェントモードのプレフィックス（[Cursor](https://shunt.dev/ja/providers/cursor/)）、Antigravity の 2 つのトランスポートと `kind = "antigravity"` の移行（[Antigravity](https://shunt.dev/ja/providers/antigravity/)）もそこにあります。
+プロバイダーごとのセットアップ、モデル id、注意点は[プロバイダー](https://shunt.sh/ja/guides/providers/)にまとまっています。xAI の OAuth ティア制限（[xAI / Grok](https://shunt.sh/ja/guides/xai/)）、Cursor のエージェントモードのプレフィックス（[Cursor](https://shunt.sh/ja/providers/cursor/)）、Antigravity の 2 つのトランスポートと `kind = "antigravity"` の移行（[Antigravity](https://shunt.sh/ja/providers/antigravity/)）もそこにあります。
 
 > [!WARNING]
-> `antigravity-cli` は非推奨であり、**任意コード実行**です。ローカルの `agy` バイナリを `--dangerously-skip-permissions` 付きでエージェントモードで、shunt を実行しているユーザーの権限で起動します。`sandbox` 設定は有効のままにし、バインドはループバックに保ってください。これらを一切必要としない上記の `antigravity` プロバイダーを推奨します。[非推奨のトランスポート](https://shunt.dev/ja/guides/providers/#非推奨の-antigravity_cli-転送)を参照してください。
+> `antigravity-cli` は非推奨であり、**任意コード実行**です。ローカルの `agy` バイナリを `--dangerously-skip-permissions` 付きでエージェントモードで、shunt を実行しているユーザーの権限で起動します。`sandbox` 設定は有効のままにし、バインドはループバックに保ってください。これらを一切必要としない上記の `antigravity` プロバイダーを推奨します。[非推奨のトランスポート](https://shunt.sh/ja/guides/providers/#非推奨の-antigravity_cli-転送)を参照してください。
 
 ### あらゆる Anthropic 互換バックエンド
 
@@ -169,7 +169,7 @@ model = "kimi-k3[1m]"
 provider = "kimi"
 ```
 
-上の表の行はほとんどが `auth = "api_key"` を使います。**Kimi Code** だけが例外です。従量課金の Moonshot API とは別のサブスクリプション課金サービスで、ホストが異なり、API キーではなく OAuth を使います。組み込みの `kimi-code` プリセットがあります。このプリセットは順序付きの `[[upstreams]]` エントリー内でのみ解決されるため（シードされたプロバイダーマップには含まれません）、そこで宣言したうえでログインしてください。[Kimi Code](https://shunt.dev/ja/providers/kimi/#kimi-codeoauth-サブスクリプション)を参照してください。
+上の表の行はほとんどが `auth = "api_key"` を使います。**Kimi Code** だけが例外です。従量課金の Moonshot API とは別のサブスクリプション課金サービスで、ホストが異なり、API キーではなく OAuth を使います。組み込みの `kimi-code` プリセットがあります。このプリセットは順序付きの `[[upstreams]]` エントリー内でのみ解決されるため（シードされたプロバイダーマップには含まれません）、そこで宣言したうえでログインしてください。[Kimi Code](https://shunt.sh/ja/providers/kimi/#kimi-codeoauth-サブスクリプション)を参照してください。
 
 ### サブスクリプションの再利用
 
@@ -189,27 +189,27 @@ OpenAI の Thibault Sottiaux は、他のコーディングハーネスを通じ
 
 | 機能 | 有効化 | ドキュメント |
 | :-- | :-- | :-- |
-| Anthropic マルチアカウントプーリング — スティッキーセッション、クォータを考慮したローテーション、予測的回避 | アカウント 2 つ以上の `auth = "claude_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.dev/ja/guides/anthropic-multi-account/) |
-| Codex マルチアカウントプーリング — `x-codex-*` ウィンドウの追跡、スロースタートのランプ、再プローブ | アカウント 2 つ以上の `auth = "chatgpt_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.dev/ja/guides/codex-multi-account/) |
-| 受信 Codex エンドポイント — **Codex CLI** 自体を shunt に向けて同じプールに載せ、モデル単位のルーティングも選択可能 | `[server.codex_endpoint]` | [ガイド](https://shunt.dev/ja/guides/inbound-codex-endpoint/) |
-| Claude アプリ向けゲートウェイログイン — OAuth デバイスフロー、managed settings、ユーザー単位のポリシー | `public_url`、32 バイト以上の JWT シークレット、静的ユーザーまたは `[server.gateway.oidc]` を備えた `[server.gateway]` | [ガイド](https://shunt.dev/ja/guides/gateway-login/) |
-| ゲートウェイテレメトリの受信 — 管理対象クライアントの OTLP をそのままリレー | 構成済みの `[server.gateway]` と、`forward_to` が空でない `[server.gateway.telemetry]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#servergatewaytelemetryオプション) |
-| 管理 Web 画面 — アカウントと使用量のダッシュボード、ブラウザーからのプロビジョニング | `[server.admin]` に管理者資格情報（`tokens_env`、`tokens_file`、または `write_keys` エントリ。`read_keys` エントリだけでもダッシュボードは読み取り専用で起動します — サインインと全ての閲覧はできますが、プロビジョニングには write が必要です）を自分で書くか、**または** `shunt dashboard setup` がテーブルの作成とトークンの発行をまとめて行います。ただしテーブルの作成とトークンの発行が起きるのは `[server.admin]` が存在しないときだけで、すでにある場合は既存の資格情報をそのままにし、欠けている `[server.oauth_usage]` だけを追加します。ダッシュボード本体は `--features ui` ビルドだけが埋め込むバンドルから配信されます — ビルド済みリリースバイナリと Homebrew formula には含まれ、素の `cargo build`/`cargo install` には含まれません | [ガイド](https://shunt.dev/ja/guides/admin-remote-provisioning/) |
-| 支出上限 Admin API — 組織単位・ユーザー単位の上限（ステージ 1 は保存のみで、まだ適用しません） | `[server.admin]`（管理者資格情報が必須: `tokens_env`、`tokens_file`、または `write_keys`/`read_keys` エントリ — read 階層は GET のみ処理） + `[server.spend]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#serverspendオプション) |
-| クライアント向け使用量エンドポイント — `GET /usage` がサニタイズ・集計されたプールの余裕を返す | `[server.auth]`（`tokens_env` にクライアントトークンが必須、既定値 `SHUNT_CLIENT_TOKENS`） + `[server.usage]` | [リファレンス](https://shunt.dev/ja/reference/configuration/#serverusageオプション) |
-| Claude Code CLI ネイティブ使用量バー — `GET /api/oauth/usage` を提供 | `[server.oauth_usage]`。ループバック以外の bind では `[server.auth]`（`tokens_env` にクライアントトークンが必須、既定値 `SHUNT_CLIENT_TOKENS`）または `[server.gateway]` も必要 | [リファレンス（英語）](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
-| アップストリームのステータスポーリング — Statuspage の指標をメトリクスとして、また `--features ui` ビルドではダッシュボードにも表示 | `[[server.status.sources]]` を 1 つ以上含む `[server.status]` | [リファレンス（英語）](https://shunt.dev/reference/configuration/#serverstatus-optional) |
-| 上限付きのアップストリームリトライ — **デフォルトで有効**、保守的で、ストリーム途中では決してリトライしません | `[providers.<name>.retry]` | [リファレンス（英語）](https://shunt.dev/reference/configuration/#providersnameretry) |
-| 共有デプロイの制限 — **デフォルトで有効**（同時 1024、ボディ 32 MiB、TTFB 120 秒、デバイスフローのレートリミット）。CIDR・ヘッダー・URL 制限はオプトイン | `[server] max_concurrent_requests`、`[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [ガイド](https://shunt.dev/ja/guides/shared-gateway/) |
-| シークレット参照 — 任意の文字列値で `${VAR}` または `${file:/abs/path}` を使え、ホットリロードごとに再解決（`[sentry]`・`[otel]` を除く。起動時に一度だけ構築されるため再起動が必要） | 設定内の任意の文字列（**常に有効**） | [リファレンス](https://shunt.dev/ja/reference/configuration/) |
-| OpenTelemetry のメトリクスとトレース | `endpoint` が空でない `[otel]` | [ガイド](https://shunt.dev/ja/guides/opentelemetry/) |
+| Anthropic マルチアカウントプーリング — スティッキーセッション、クォータを考慮したローテーション、予測的回避 | アカウント 2 つ以上の `auth = "claude_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.sh/ja/guides/anthropic-multi-account/) |
+| Codex マルチアカウントプーリング — `x-codex-*` ウィンドウの追跡、スロースタートのランプ、再プローブ | アカウント 2 つ以上の `auth = "chatgpt_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.sh/ja/guides/codex-multi-account/) |
+| 受信 Codex エンドポイント — **Codex CLI** 自体を shunt に向けて同じプールに載せ、モデル単位のルーティングも選択可能 | `[server.codex_endpoint]` | [ガイド](https://shunt.sh/ja/guides/inbound-codex-endpoint/) |
+| Claude アプリ向けゲートウェイログイン — OAuth デバイスフロー、managed settings、ユーザー単位のポリシー | `public_url`、32 バイト以上の JWT シークレット、静的ユーザーまたは `[server.gateway.oidc]` を備えた `[server.gateway]` | [ガイド](https://shunt.sh/ja/guides/gateway-login/) |
+| ゲートウェイテレメトリの受信 — 管理対象クライアントの OTLP をそのままリレー | 構成済みの `[server.gateway]` と、`forward_to` が空でない `[server.gateway.telemetry]` | [リファレンス](https://shunt.sh/ja/reference/configuration/#servergatewaytelemetryオプション) |
+| 管理 Web 画面 — アカウントと使用量のダッシュボード、ブラウザーからのプロビジョニング | `[server.admin]` に管理者資格情報（`tokens_env`、`tokens_file`、または `write_keys` エントリ。`read_keys` エントリだけでもダッシュボードは読み取り専用で起動します — サインインと全ての閲覧はできますが、プロビジョニングには write が必要です）を自分で書くか、**または** `shunt dashboard setup` がテーブルの作成とトークンの発行をまとめて行います。ただしテーブルの作成とトークンの発行が起きるのは `[server.admin]` が存在しないときだけで、すでにある場合は既存の資格情報をそのままにし、欠けている `[server.oauth_usage]` だけを追加します。ダッシュボード本体は `--features ui` ビルドだけが埋め込むバンドルから配信されます — ビルド済みリリースバイナリと Homebrew formula には含まれ、素の `cargo build`/`cargo install` には含まれません | [ガイド](https://shunt.sh/ja/guides/admin-remote-provisioning/) |
+| 支出上限 Admin API — 組織単位・ユーザー単位の上限（ステージ 1 は保存のみで、まだ適用しません） | `[server.admin]`（管理者資格情報が必須: `tokens_env`、`tokens_file`、または `write_keys`/`read_keys` エントリ — read 階層は GET のみ処理） + `[server.spend]` | [リファレンス](https://shunt.sh/ja/reference/configuration/#serverspendオプション) |
+| クライアント向け使用量エンドポイント — `GET /usage` がサニタイズ・集計されたプールの余裕を返す | `[server.auth]`（`tokens_env` にクライアントトークンが必須、既定値 `SHUNT_CLIENT_TOKENS`） + `[server.usage]` | [リファレンス](https://shunt.sh/ja/reference/configuration/#serverusageオプション) |
+| Claude Code CLI ネイティブ使用量バー — `GET /api/oauth/usage` を提供 | `[server.oauth_usage]`。ループバック以外の bind では `[server.auth]`（`tokens_env` にクライアントトークンが必須、既定値 `SHUNT_CLIENT_TOKENS`）または `[server.gateway]` も必要 | [リファレンス（英語）](https://shunt.sh/reference/configuration/#serveroauth_usage-optional) |
+| アップストリームのステータスポーリング — Statuspage の指標をメトリクスとして、また `--features ui` ビルドではダッシュボードにも表示 | `[[server.status.sources]]` を 1 つ以上含む `[server.status]` | [リファレンス（英語）](https://shunt.sh/reference/configuration/#serverstatus-optional) |
+| 上限付きのアップストリームリトライ — **デフォルトで有効**、保守的で、ストリーム途中では決してリトライしません | `[providers.<name>.retry]` | [リファレンス（英語）](https://shunt.sh/reference/configuration/#providersnameretry) |
+| 共有デプロイの制限 — **デフォルトで有効**（同時 1024、ボディ 32 MiB、TTFB 120 秒、デバイスフローのレートリミット）。CIDR・ヘッダー・URL 制限はオプトイン | `[server] max_concurrent_requests`、`[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [ガイド](https://shunt.sh/ja/guides/shared-gateway/) |
+| シークレット参照 — 任意の文字列値で `${VAR}` または `${file:/abs/path}` を使え、ホットリロードごとに再解決（`[sentry]`・`[otel]` を除く。起動時に一度だけ構築されるため再起動が必要） | 設定内の任意の文字列（**常に有効**） | [リファレンス](https://shunt.sh/ja/reference/configuration/) |
+| OpenTelemetry のメトリクスとトレース | `endpoint` が空でない `[otel]` | [ガイド](https://shunt.sh/ja/guides/opentelemetry/) |
 
 ## ドキュメント
 
-ユーザー向けドキュメントはすべて **[shunt.dev](https://shunt.dev)** にあります。
+ユーザー向けドキュメントはすべて **[shunt.sh](https://shunt.sh)** にあります。
 
-- [クイックスタート](https://shunt.dev/getting-started/quickstart/) · [なぜ shunt なのか？](https://shunt.dev/getting-started/why-shunt/) · [プロバイダー](https://shunt.dev/guides/providers/) · [設定](https://shunt.dev/guides/configuration/) · [トラブルシューティング](https://shunt.dev/reference/troubleshooting/)
-- **エージェント向け:** すべてのページに Markdown の双子版があります（任意の URL に `.md` を付けるか、ページの *Copy Markdown* / *Open in AI* ボタンを使用）。またサイトは [llms.txt spec](https://llmstxt.org/) に従って [`/llms.txt`](https://shunt.dev/llms.txt)、[`/llms-small.txt`](https://shunt.dev/llms-small.txt)、[`/llms-full.txt`](https://shunt.dev/llms-full.txt) を公開しています。
+- [クイックスタート](https://shunt.sh/getting-started/quickstart/) · [なぜ shunt なのか？](https://shunt.sh/getting-started/why-shunt/) · [プロバイダー](https://shunt.sh/guides/providers/) · [設定](https://shunt.sh/guides/configuration/) · [トラブルシューティング](https://shunt.sh/reference/troubleshooting/)
+- **エージェント向け:** すべてのページに Markdown の双子版があります（任意の URL に `.md` を付けるか、ページの *Copy Markdown* / *Open in AI* ボタンを使用）。またサイトは [llms.txt spec](https://llmstxt.org/) に従って [`/llms.txt`](https://shunt.sh/llms.txt)、[`/llms-small.txt`](https://shunt.sh/llms-small.txt)、[`/llms-full.txt`](https://shunt.sh/llms-full.txt) を公開しています。
 
 コントリビューター向けの設計ノートとマイルストーン仕様は [`docs/`](docs/) にあります。まずは [`docs/implementation-plan.md`](docs/implementation-plan.md) から読んでください。
 
@@ -223,14 +223,16 @@ Claude Code はすべてのターンを Anthropic API へ送信します。`shun
 
 選択性は**各リクエストの `model` id** によって駆動されます。Claude Code はこれをコンテキストごとに選べるようにすでにしています。メインセッション向けの `/model` ピッカー、サブエージェント定義の `model:` フロントマター、すべてのサブエージェント向けの `CLAUDE_CODE_SUBAGENT_MODEL`、あるいはピッカーにカスタムエントリを追加する `ANTHROPIC_CUSTOM_MODEL_OPTION` です。つまり「このエージェント／このセッションだけ振り分ける」は Claude Code 側で決まり、shunt は受け取ったモデル id を尊重するだけです。エージェントごとのシステムプロンプトの脆いフィンガープリンティングは不要です。グローバルなモデル一括切り替えプロキシとは異なり、メインセッションは Claude のまま残しつつ、あなたが指名したモデルだけを振り分けられます。
 
+モデル id をひとつ、自分で判断させることもできます。[`[models.stage_router]`](https://shunt.sh/ja/guides/stage-router/) エントリは強力なティアと効率的なティアを指定し、会話の直近の **tool-result メタデータ**（プロンプトのテキストではなく `tool_use.name` と `tool_result.is_error`）からターンごとにどちらかを選びます。ルーターを設定しなければ挙動は変わりません。
+
 ## Claude Code 統合（公式サーフェス）
 
 Claude Code は `ANTHROPIC_BASE_URL` の背後に**ファーストクラスのゲートウェイ契約**を公開しています。`shunt` は、これまでの Claude Code プロキシが頼ってきた「サブエージェントのシステムプロンプトをハッシュする」という脆いヒューリスティックではなく、この契約を実装します。
 
 - [LLM Gateway Protocol](https://code.claude.com/docs/en/llm-gateway-protocol) — エンドポイント、転送すべきヘッダー・ボディフィールドと消費すべきフィールド、機能のパススルー、アトリビューションを定めた API 契約です。稼働中のゲートウェイは `GET /protocol` で機械可読な仕様を提供します。Claude Code はクライアントバージョンと会話のフィンガープリントをシステムプロンプトの先頭に付加しますが、それを抑制するかは `CLAUDE_CODE_ATTRIBUTION_HEADER=0` による開発者の判断であるため、shunt はそのアトリビューションブロックをそのまま転送します。
-- [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code は起動時に `GET /v1/models?limit=1000` を照会し（`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` でオプトイン）、返されたモデルを `/model` ピッカーに追加します。shunt はキュレーションされた `[[models]]` エントリーに加え、`auto_include_builtin_models` が `true` の間は呼び出し元のライブカタログを返します。この取得は `server.default_provider` が Anthropic 種別のときのみ行われ、そうでない場合・認証情報がない場合・取得に失敗した場合は組み込みスナップショットにフォールバックします。**制約:** `id` が `claude`/`anthropic` で始まらないエントリーは無視されるため、Claude 系以外のモデルはエイリアスを作るか手動で追加する必要があります。[モデルディスカバリー](https://shunt.dev/ja/guides/model-discovery/)を参照してください。
+- [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code は起動時に `GET /v1/models?limit=1000` を照会し（`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` でオプトイン）、返されたモデルを `/model` ピッカーに追加します。shunt はキュレーションされた `[[models]]` エントリーに加え、`auto_include_builtin_models` が `true` の間は呼び出し元のライブカタログを返します。この取得は `server.default_provider` が Anthropic 種別のときのみ行われ、そうでない場合・認証情報がない場合・取得に失敗した場合は組み込みスナップショットにフォールバックします。**制約:** `id` が `claude`/`anthropic` で始まらないエントリーは無視されるため、Claude 系以外のモデルはエイリアスを作るか手動で追加する必要があります。[モデルディスカバリー](https://shunt.sh/ja/guides/model-discovery/)を参照してください。
 - [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` は組み込みエイリアスを置き換えずに、ゲートウェイ経由のエントリーを `/model` ピッカーへ追加します。ID は検証を通らないため、ゲートウェイが受け付ける文字列なら何でも使えます。上記のディスカバリー制約があるため、これが **Claude 系以外のモデルを選ぶ主な方法**です（例: `gpt-5.6-sol`）。
-- **ツール検索**（`ENABLE_TOOL_SEARCH`） — Claude Code は MCP/LSP のツールスキーマを遅延させ、必要になったときに開示してコンテキストを回収します。shunt は Anthropic のファーストパーティホストではないため、自分でオプトインしない限りこの機能は**無効**のままです。オプトイン後に遅延が維持されるかは設定だけでなくアップストリームが決めます。`claude*` と `anthropic/*` の id はプロトコルをバイト単位で維持し、それ以外の id はホストが拒否するため `defer_loading` マーカーが除去され、Responses 経路には独自の 3 状態の `tool_search` 設定があります。[ツール検索](https://shunt.dev/ja/guides/codex/#ツール検索)を参照してください。
+- **ツール検索**（`ENABLE_TOOL_SEARCH`） — Claude Code は MCP/LSP のツールスキーマを遅延させ、必要になったときに開示してコンテキストを回収します。shunt は Anthropic のファーストパーティホストではないため、自分でオプトインしない限りこの機能は**無効**のままです。オプトイン後に遅延が維持されるかは設定だけでなくアップストリームが決めます。`claude*` と `anthropic/*` の id はプロトコルをバイト単位で維持し、それ以外の id はホストが拒否するため `defer_loading` マーカーが除去され、Responses 経路には独自の 3 状態の `tool_search` 設定があります。[ツール検索](https://shunt.sh/ja/guides/codex/#ツール検索)を参照してください。
 
 **設計原則:** スペックに準拠した Anthropic-Messages ゲートウェイであること（`/v1/messages`、`/v1/models`、正しいヘッダー・アトリビューションのパススルー）、リクエストの `model` id でルーティングすること、マッピングされたモデルについて Anthropic Messages ⇄ OpenAI Responses API を変換すること。Claude Code のプロンプトが変わるたびに壊れるプロンプト形状のヒューリスティックは使いません。
 

@@ -198,6 +198,8 @@ Both metric sinks export the same low-cardinality series:
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation `hit` or full-input `fallback`. |
 | `shunt.codex_ws_overflow` | Counter | `provider`, `outcome` | Codex WebSocket dedicated overflow connection `opened` or ceiling-`refused` (issue #248). |
 | `shunt.upstream_retries` | Counter | `provider`, `reason` | Bounded transient retries. |
+| `shunt.stage_router.decisions` | Counter | `model`, `tier`, `source` | Stage-router tier decisions, by the router's model id (as matched, so with any `[1m]` hint already stripped), the chosen tier, and why it was chosen; `count_tokens` probes are excluded. |
+| `shunt.stage_router.flips` | Counter | `model`, `from`, `to` | Decisions that moved a session off its pinned tier. The two directions stay separate because escalation is deliberately easier than de-escalation. |
 | `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, non-stale accounts for `5h`, `7d`, or `7d_oi`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Account rotations and pool exhaustion by low-cardinality cause. |
 | `shunt.pool.reprobes` | Counter | `provider` | Reprobes committed at the first HTTP dispatch for stale near-quota Codex/ChatGPT accounts; WebSocket-enabled providers count inbound HTTP probes only. |
@@ -284,7 +286,7 @@ provider = "kimi-code"
 
 `kimi_oauth` is pool-capable like `claude_oauth`/`chatgpt_oauth` — use `accounts = [...]` in place
 of `account` to spread load across several stored Kimi accounts. See
-[Kimi → Kimi Code (OAuth subscription)](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription)
+[Kimi → Kimi Code (OAuth subscription)](https://shunt.sh/providers/kimi/#kimi-code-oauth-subscription)
 for the full walkthrough.
 
 For example, to route Kimi's (Moonshot) model through shunt:

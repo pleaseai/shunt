@@ -60,6 +60,8 @@ authorization = "Bearer <token>"
 | `shunt.gateway_telemetry_ingest` | カウンター | `signal`, `outcome` | インバウンドのゲートウェイ OTLP ペイロード(`metrics`/`logs`/`traces`)を受信結果別に集計: `relayed`、どの宛先も opt-in していなければ `discarded`、飛行中の中継上限で飽和していれば `shed`、不正なベアラーや上限超過ボディは `rejected`。 |
 | `shunt.upstream_retries` | カウンター | `provider`, `reason` | 回数制限付きの一時的な upstream retry。 |
 | `shunt.failover` | カウンター | `provider`, `state` | 順序付きアップストリームのフェイルオーバー遷移: `attempted`, `advanced`, `exhausted`。 |
+| `shunt.stage_router.decisions` | カウンター | `model`, `tier`, `source` | [ステージルーター](/ja/guides/stage-router/)のティア決定。ルーターの model id（マッチした形なので `[1m]` ヒントは除去済み）、選ばれたティア（`capable`/`efficient`）、選んだ理由ごとに数える。`count_tokens` のプローブは除外。 |
+| `shunt.stage_router.flips` | カウンター | `model`, `from`, `to` | セッションを固定済みのティアから動かした決定。昇格は容易に、降格は難しくという設計なので、2 つの方向を分けて数える。 |
 | `shunt.requests_shed` | カウンター | — | `max_concurrent_requests` の上限で拒否されたインバウンドリクエスト。拒否自体は `debug!` でのみログ出力されるため、ゲートウェイの飽和を可視化するのはこのカウンターです。 |
 | `shunt.pool.quota_utilization` | ゲージ | `provider`, `window` | `5h`, `7d`, `7d_oi` ごとに、有効で観測済みかつ期限切れでない quota 値の最小 utilization。 |
 | `shunt.pool.rotations` | カウンター | `provider`, `reason` | アカウントからの切り替えと pool exhaustion の回数。 |

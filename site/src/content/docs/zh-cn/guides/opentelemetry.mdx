@@ -60,6 +60,8 @@ authorization = "Bearer <token>"
 | `shunt.gateway_telemetry_ingest` | 计数器 | `signal`, `outcome` | 按接收结果统计入站网关 OTLP 载荷（`metrics`/`logs`/`traces`）：`relayed`；没有任何目标 opt-in 时为 `discarded`；在途中继上限饱和时为 `shed`；bearer 无效或 body 超限时为 `rejected`。 |
 | `shunt.upstream_retries` | 计数器 | `provider`, `reason` | 有次数限制的临时上游重试。 |
 | `shunt.failover` | 计数器 | `provider`, `state` | 有序上游故障转移状态：`attempted`、`advanced` 或 `exhausted`。 |
+| `shunt.stage_router.decisions` | 计数器 | `model`, `tier`, `source` | [阶段路由器](/zh-cn/guides/stage-router/)的档位决策，按路由器的模型 id（匹配后的形式，`[1m]` 提示已剥离）、选中的档位（`capable`/`efficient`）以及选中的原因计数。不含 `count_tokens` 探测。 |
+| `shunt.stage_router.flips` | 计数器 | `model`, `from`, `to` | 把会话从已固定档位移开的决策。升档刻意比降档容易，因此两个方向分开计数。 |
 | `shunt.requests_shed` | 计数器 | — | 在 `max_concurrent_requests` 上限处被拒绝的入站请求。拒绝本身仅以 `debug!` 记录，因此这个计数器才是网关饱和的可见信号。 |
 | `shunt.pool.quota_utilization` | 仪表 | `provider`, `window` | `5h`、`7d` 或 `7d_oi` 窗口中已启用、已观测且未过期的 quota 值的最小使用率。 |
 | `shunt.pool.rotations` | 计数器 | `provider`, `reason` | 离开账户的切换次数以及 pool 耗尽的请求数。 |

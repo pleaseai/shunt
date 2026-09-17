@@ -160,12 +160,12 @@ shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，�
 
 ## 与 `/v1/messages` 的差异
 
-- **没有转换。**入站的 Responses 请求体会逐字节转发到上游,而上游的响应 —— 无论 SSE 还是 JSON、成功还是错误 —— 都逐字中继回来(状态码与 `content-type` 保留)。完全没有 Anthropic Messages ⇄ Responses 的转换步骤。
-- **压缩的请求体直接透传。**当前的 Codex 版本在与 ChatGPT 后端通信时会用 zstd 压缩请求体,这也包括指向本端点的 `chatgpt_base_url` 形态。这些字节及其 `content-encoding: zstd` 头部会被原样转发;shunt 只是额外在内存中解码一份副本,用来读取请求的 `model` 以供指标、日志和 span 使用。shunt 无法解码的请求体照样能正常中继 —— 只有 `model` 标签会退化为 `unknown`,并附带一条说明原因的警告。
-- **基于模型的路由是可选项。**默认情况下每个请求都发往 `[server.codex_endpoint]` 中指定的那一个提供方,请求体的 `model` 字段原样转发。配置 `[[server.codex_endpoint.routes]]` 后,精确匹配的 `model` 会改为选中该条目的提供方 —— 参见[把模型路由到其他上游](#把模型路由到其他上游)。
-- **耗尽时逐字中继。**如果所有池化账户都已尝试过,并且至少收到过一个上游响应,shunt 会原样中继最后那个响应,而不是把它重新塑形成 Anthropic 风格的错误 —— 因为 Responses 客户端期待的是它从真实 ChatGPT 后端会得到的原始形态。
-- **网关自身的错误使用 OpenAI 形态。**当失败源自 shunt 自己时 —— 客户端 token 错误或缺失(`401`)、账户池不可用且没有任何上游响应(`502`)、请求体过大,或端点未配置 —— shunt 会以 OpenAI Responses 的错误形态(`{"error":{"message":…,"type":…,"code":null}}`)返回,并保持相同的状态码,这样 Codex CLI 就能走它自己的错误解析路径,而不是 Anthropic 的 `{"type":"error",…}` 信封。被中继的*上游*错误(来自后端的 429/4xx/5xx)仍然逐字透传。
-- **仅 HTTP/SSE。**即使目标提供方设置了 `websocket = true`,这个端点也始终使用 HTTP 传输。
+- **没有转换**。入站的 Responses 请求体会逐字节转发到上游,而上游的响应 —— 无论 SSE 还是 JSON、成功还是错误 —— 都逐字中继回来(状态码与 `content-type` 保留)。完全没有 Anthropic Messages ⇄ Responses 的转换步骤。
+- **压缩的请求体直接透传**。当前的 Codex 版本在与 ChatGPT 后端通信时会用 zstd 压缩请求体,这也包括指向本端点的 `chatgpt_base_url` 形态。这些字节及其 `content-encoding: zstd` 头部会被原样转发;shunt 只是额外在内存中解码一份副本,用来读取请求的 `model` 以供指标、日志和 span 使用。shunt 无法解码的请求体照样能正常中继 —— 只有 `model` 标签会退化为 `unknown`,并附带一条说明原因的警告。
+- **基于模型的路由是可选项**。默认情况下每个请求都发往 `[server.codex_endpoint]` 中指定的那一个提供方,请求体的 `model` 字段原样转发。配置 `[[server.codex_endpoint.routes]]` 后,精确匹配的 `model` 会改为选中该条目的提供方 —— 参见[把模型路由到其他上游](#把模型路由到其他上游)。
+- **耗尽时逐字中继**。如果所有池化账户都已尝试过,并且至少收到过一个上游响应,shunt 会原样中继最后那个响应,而不是把它重新塑形成 Anthropic 风格的错误 —— 因为 Responses 客户端期待的是它从真实 ChatGPT 后端会得到的原始形态。
+- **网关自身的错误使用 OpenAI 形态**。当失败源自 shunt 自己时 —— 客户端 token 错误或缺失(`401`)、账户池不可用且没有任何上游响应(`502`)、请求体过大,或端点未配置 —— shunt 会以 OpenAI Responses 的错误形态(`{"error":{"message":…,"type":…,"code":null}}`)返回,并保持相同的状态码,这样 Codex CLI 就能走它自己的错误解析路径,而不是 Anthropic 的 `{"type":"error",…}` 信封。被中继的*上游*错误(来自后端的 429/4xx/5xx)仍然逐字透传。
+- **仅 HTTP/SSE**。即使目标提供方设置了 `websocket = true`,这个端点也始终使用 HTTP 传输。
 
 ## 安全
 

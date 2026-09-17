@@ -50,10 +50,6 @@ route_prefixes:
 # nested mapping on the models entry rather than a [models.stage_router] section.
 # Absent this key, routing stays purely by model id. See shunt.toml.example for
 # every key and its default.
-#
-# NOT ACTIVE YET: this release parses and validates the key but the resolver does
-# not read it, so the id below still routes by that literal id rather than to
-# either target. Leave this example commented out until the routing change lands.
 # models:
 #   - id: claude-auto
 #     display_name: Auto (stage router)

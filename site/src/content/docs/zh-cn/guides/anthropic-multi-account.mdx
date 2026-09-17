@@ -115,7 +115,7 @@ Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude
 ## 选择与主动轮换
 
 - 带 `x-claude-code-session-id` 时:一个稳定的哈希选出粘性账户。如果该账户可用且低于切换阈值,shunt 会让它保持在首位。
-- 不带该头部时:每个提供方有自己的轮询计数器。
+- 不带该头部、或该头部为空值时:每个提供方有自己的轮询计数器。空值不是一次对话,因此它共享这个轮询,而不会被哈希到某个固定账户上。
 - 在 `claude_oauth` 账户池处理的每个上游响应上,shunt 会记录以下头部(如存在):
   - `anthropic-ratelimit-unified-5h-utilization`、`anthropic-ratelimit-unified-7d-utilization` 和 `anthropic-ratelimit-unified-7d_oi-utilization`;
   - `anthropic-ratelimit-unified-5h-reset`、`anthropic-ratelimit-unified-7d-reset` 和 `anthropic-ratelimit-unified-7d_oi-reset`(Unix 秒);以及
@@ -156,11 +156,11 @@ name = "spare"
 disabled = true              # 保留配置,但永不被选中
 ```
 
-- **阈值解析。**对每个窗口 `X`(`5h`、`7d`、`fable`),生效的软阈值为:账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`,并以 `hard_threshold` 为上限。所有取值都是 `[0.0, 1.0]` 范围内的使用率分数;超出范围会使 `shunt check` 失败。
-- **燃烧率余量。**根据每个窗口的使用率与重置时刻(窗口长度固定为 5 小时和 7 天),shunt 按观测到的平均速度预测触及软阈值所需的时间,再减去窗口重置所需的时间。余量为正意味着按当前速度该账户能撑到重置。`priority` 相同的可用账户按余量最大者优先排序;未观测到的窗口按无限余量计。
-- **预测性规避。**设置 `burn_rate_avoidance = true` 时,预测余量为负的账户被视为接近配额,在真正触及阈值*之前*就被轮换掉。默认关闭 —— 而按余量排序始终生效。
-- **全员接近配额的兜底。**当每个账户都超过了软阈值(或被预测将耗尽)时,池不会变空:接近配额的账户按最佳余量的顺序继续服务,而达到或超过 `hard_threshold` 的账户仍排在最后,其后才是冷却中的账户。
-- **适用范围。**这些配额旋钮作用于两个池家族: 本池依据 `anthropic-ratelimit-unified-*` 头部,[Codex 池](/zh-cn/guides/codex-multi-account/)依据上报的 `x-codex-*` 5h/7d 窗口(issue #195)。Codex 没有 Fable 专属的 `7d_oi` 窗口,因此 `default_threshold_fable` 在那里不起作用;`priority` 和 `disabled` 在所有池中都适用。
+- **阈值解析**。对每个窗口 `X`(`5h`、`7d`、`fable`),生效的软阈值为:账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`,并以 `hard_threshold` 为上限。所有取值都是 `[0.0, 1.0]` 范围内的使用率分数;超出范围会使 `shunt check` 失败。
+- **燃烧率余量**。根据每个窗口的使用率与重置时刻(窗口长度固定为 5 小时和 7 天),shunt 按观测到的平均速度预测触及软阈值所需的时间,再减去窗口重置所需的时间。余量为正意味着按当前速度该账户能撑到重置。`priority` 相同的可用账户按余量最大者优先排序;未观测到的窗口按无限余量计。
+- **预测性规避**。设置 `burn_rate_avoidance = true` 时,预测余量为负的账户被视为接近配额,在真正触及阈值*之前*就被轮换掉。默认关闭 —— 而按余量排序始终生效。
+- **全员接近配额的兜底**。当每个账户都超过了软阈值(或被预测将耗尽)时,池不会变空:接近配额的账户按最佳余量的顺序继续服务,而达到或超过 `hard_threshold` 的账户仍排在最后,其后才是冷却中的账户。
+- **适用范围**。这些配额旋钮作用于两个池家族: 本池依据 `anthropic-ratelimit-unified-*` 头部,[Codex 池](/zh-cn/guides/codex-multi-account/)依据上报的 `x-codex-*` 5h/7d 窗口(issue #195)。Codex 没有 Fable 专属的 `7d_oi` 窗口,因此 `default_threshold_fable` 在那里不起作用;`priority` 和 `disabled` 在所有池中都适用。
 - 管理池端点(`GET /admin/api/pool`)会报告每个账户的 `priority`、`disabled` 标志,以及在配置了 `[server.pool]` 时该账户当前以秒为单位的余量预测;仪表板的状态列会标记被禁用的账户。
 
 ## Usage-API 对账

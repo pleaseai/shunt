@@ -98,10 +98,11 @@ serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
 # Stage-router scoring only (`switchyard_libsy::{ToolSignals, pick_tier, ...}`).
-# Pinned to the 0.2 line and held out of automatic upgrades: 0.2.0 is the single
-# published version and upstream `main` has already diverged from it (its
-# `ToolSignals` carries four fields the release does not), so a 0.3 is likely to
-# break the call contract. shunt fills `ToolSignals` from the Anthropic request
+# Held to the 0.2 line: 0.2.0 is the single published version and upstream `main`
+# has already diverged from it (its `ToolSignals` carries four fields the release
+# does not), so a 0.3 is likely to break the call contract. The caret range keeps
+# 0.3 out on its own; a bump to it is a deliberate, reviewed change, not something
+# `cargo update` can do. shunt fills `ToolSignals` from the Anthropic request
 # itself, so `switchyard-translation` is deliberately NOT a dependency — it would
 # duplicate src/model/responses_request.rs.
 switchyard-libsy = "0.2"

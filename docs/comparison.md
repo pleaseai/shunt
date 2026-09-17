@@ -17,8 +17,13 @@ discovery, attribution/header pass-through) and does **selective, per-`model`-id
 diversion — keep the main session on Claude, divert only the models you name onto
 another provider (ChatGPT/Codex, OpenAI, Cursor, xAI, Grok). It translates Anthropic Messages ⇄
 the OpenAI Responses API for mapped models, and passes everything else through to
-Anthropic unchanged. Routing is purely by the request's `model` id — no
-prompt-shape fingerprinting (`README.md:104-131`).
+Anthropic unchanged. Routing is by the request's `model` id — no prompt-shape
+fingerprinting (`README.md:104-131`). The one exception is opt-in and reads no
+prompt text: a `[models.stage_router]` entry picks between two tiers from
+structured tool-result metadata (`tool_use.name`, `tool_result.is_error`), which
+is a stable wire contract rather than a prompt the next Claude Code release
+rewrites. See [ADR-0004](../.please/docs/decisions/0004-content-aware-stage-router.md)
+and [`stage-router.md`](stage-router.md).
 
 That focus is the axis every comparison below turns on. shunt optimizes for
 **translation fidelity and Claude-Code-native behavior**, with Anthropic and
@@ -305,6 +310,22 @@ toward being a fleet gateway and warrant a conscious decision first.
   cooldown state (`src/accounts.rs:46-63`); extending the same per-account view to
   ChatGPT/Codex subscription accounts (as CLIProxyAPI's ecosystem does) is the part
   still missing. Ties to the observability gap.
+
+- **J. Content-aware tier selection — Implemented, opt-in
+  ([ADR-0004](../.please/docs/decisions/0004-content-aware-stage-router.md)).**
+  A `[models.stage_router]` entry names a capable and an efficient target and
+  picks between them per turn from the recent tool-result history, using
+  [NVIDIA-NeMo/Switchyard][sy-router]'s scorer (`switchyard-libsy`). This is the
+  one place routing consults something other than the `model` id, and the
+  boundary it holds is the one §1 states: structured protocol metadata
+  (`tool_use.name`, `tool_result.is_error`), never prompt text. shunt adds
+  asymmetric session hysteresis Switchyard does not need — escalate at 0.5,
+  de-escalate at 0.75 plus a dwell window — because a tier flip forfeits the
+  per-model prompt-cache prefix and the Codex continuation signature. The LLM
+  classifier and mid-turn escalation were declined; see the ADR and
+  [`stage-router.md`](stage-router.md).
+
+[sy-router]: https://github.com/NVIDIA-NeMo/Switchyard
 
 - **I. Native Gemini backend — Implemented (Path B).** Reuses the Google One AI Pro / Code Assist subscription token (`google_oauth`) from the Gemini CLI credential file. Valid access tokens work directly; shunt-side refresh requires operator-supplied Google OAuth client credentials. Supports models like `gemini-3.1-pro-preview` and `gemini-3-flash-preview`.
 

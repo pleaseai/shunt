@@ -617,6 +617,10 @@ impl AccountPool {
 
     /// Return account indices in the order an adapter should try them.
     ///
+    /// A `session_id` of `Some("")` is treated as absent: a blank header is not
+    /// a conversation, so such requests round-robin rather than sharing one
+    /// sticky slot (issue #566).
+    ///
     /// `pool` is the optional `[server.pool]` tuning (issue #135). When
     /// absent, selection is the pre-#135 behavior: a single 0.98 hard
     /// threshold and weekly-reset ordering. When present, available accounts
@@ -709,6 +713,18 @@ impl AccountPool {
         self.sync_enabled_accounts(&provider, accounts);
         let ident_reps = collapse_representatives(&provider, accounts);
         let distinct = ident_reps.len();
+        // An empty header is not a session. `Some("")` would otherwise take the
+        // sticky branch and hash to `sha256("") % distinct` — one constant slot
+        // shared by every client that sends a blank `x-claude-code-session-id`,
+        // concentrating them on a single account instead of spreading them the
+        // way a session-less request is spread (issue #566).
+        //
+        // The guard lives here rather than at each header read so the property
+        // cannot depend on a caller remembering it: three public wrappers feed
+        // this function, and two of its call sites in `adapters/anthropic` were
+        // reading the header unfiltered. The stage-router store guards inside
+        // its consumer for the same reason (issue #546).
+        let session_id = session_id.filter(|session_id| !session_id.is_empty());
         let start_slot = match session_id {
             Some(session_id) => stable_session_index(session_id, distinct),
             None => {
@@ -7962,6 +7978,50 @@ mod tests {
         assert_eq!(pool.select_order("two", &accounts, None, None, None)[0], 0);
         assert_eq!(pool.select_order("one", &accounts, None, None, None)[0], 2);
         assert_eq!(pool.select_order("two", &accounts, None, None, None)[0], 1);
+    }
+
+    /// A blank `x-claude-code-session-id` is not a conversation.
+    ///
+    /// Non-vacuity: delete the `!session_id.is_empty()` filter in
+    /// `select_order_inner` and every call here hashes `""` to the same
+    /// constant slot, so the three assertions collapse onto one index.
+    #[test]
+    fn a_blank_session_id_round_robins_instead_of_pinning_one_account() {
+        let pool = AccountPool::new();
+        let accounts = accounts();
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, Some(""), None, None)[0],
+            0
+        );
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, Some(""), None, None)[0],
+            1
+        );
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, Some(""), None, None)[0],
+            2
+        );
+    }
+
+    /// The blank id must not merely be *different* from a real one — it must
+    /// share the round-robin counter a session-less request uses, or blank and
+    /// session-less callers would still be two separate rotations.
+    #[test]
+    fn a_blank_session_id_shares_the_session_less_rotation() {
+        let pool = AccountPool::new();
+        let accounts = accounts();
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, None, None, None)[0],
+            0
+        );
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, Some(""), None, None)[0],
+            1
+        );
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, None, None, None)[0],
+            2
+        );
     }
 
     #[test]

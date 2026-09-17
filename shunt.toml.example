@@ -335,13 +335,6 @@ provider = "openai"
 
 # Content-aware tier selection (opt-in).
 #
-# NOT ACTIVE YET: this release parses and validates the table but the resolver
-# does not read it, so a request for the id below still routes by that literal
-# id through the ordinary [[routes]] / prefix / default-provider ladder — not to
-# either target. Leave this example commented out until the routing change
-# lands; the keys and defaults are documented here so the schema can be reviewed
-# and a config written against it ahead of time.
-#
 # A [[models]] entry carrying a
 # [models.stage_router] table names TWO destinations instead of one and lets the
 # request's recent tool-result history pick between them: errors, investigation,

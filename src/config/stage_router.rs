@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// The scorer reports low confidence far more often than it reports a wrong
 /// answer, so this default — not the score — governs most early turns in a
 /// session.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageRouterPicker {
     /// Start efficient and escalate only when signals support capable.
@@ -39,8 +39,12 @@ pub enum StageRouterPicker {
 /// That ordering is the default, not an invariant: validation ranges each
 /// threshold independently, so an operator may set `deescalate_threshold`
 /// *below* `confidence_threshold` and make the down direction the easier one.
-/// Whether to reject that, warn about it, or keep it a documented choice is
-/// open — see issue #562, to be settled before these keys ship.
+/// A cost-first deployment may want exactly that, so the inverted pair loads —
+/// with a warning, once per load, from `Config::warn_stage_router_threshold_inversion`
+/// (issue #562). The same call decided the neighbouring rule: two targets that
+/// resolve to one id flatten both tiers onto one model, which is degenerate but
+/// a real way to test, so `Config::warn_stage_router_identical_targets` warns
+/// rather than rejecting.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StageRouterConfig {
@@ -57,6 +61,11 @@ pub struct StageRouterConfig {
     #[serde(default = "default_recent_turn_window")]
     pub recent_turn_window: usize,
     /// Turns the capable tier is held before a de-escalation may fire.
+    ///
+    /// Counted from the turn that chose the tier, so `0` and `1` both mean "no
+    /// dwell floor" — de-escalation then rests on `deescalate_threshold` alone.
+    /// Unlike `recent_turn_window`, `0` is accepted rather than rejected: it is
+    /// a degenerate but coherent setting, not a config that cannot work.
     #[serde(default = "default_min_dwell_turns")]
     pub min_dwell_turns: u32,
     /// Confidence required to move *down* to the efficient tier. Defaults to

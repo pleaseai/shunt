@@ -2961,6 +2961,9 @@ impl Config {
         // keeping it there would repeat the same warning on every validation.
         config.warn_reprobe_seconds_below_floor();
         config.warn_stage_router_targets_unresolvable();
+        config.warn_stage_router_threshold_inversion();
+        config.warn_stage_router_identical_targets();
+        config.warn_stage_router_shadows_exact_route();
         // One aggregated warning per load naming every `Secret` field whose
         // value was written literally in the config file — never the value
         // itself. A `Secret` populated from an env override, a `${...}`
@@ -4106,12 +4109,17 @@ impl Config {
     ///
     /// Not an error, and deliberately not part of [`Config::validate_stage_router`]:
     /// resolution always falls back to `server.default_provider`, so the target
-    /// still routes — it is just very likely not what the operator meant. Since
-    /// `validate` also runs on every hot reload (`reload.rs`) and on
-    /// `shunt check`, warning from there would repeat the line on each one;
-    /// emitting it at the successful load boundary fires it exactly once and
-    /// keeps repeated validation side-effect free, the same split
-    /// [`Config::warn_reprobe_seconds_below_floor`] uses.
+    /// still routes — it is just very likely not what the operator meant.
+    ///
+    /// Emitted at the successful load boundary rather than from `validate`, the
+    /// same split [`Config::warn_reprobe_seconds_below_floor`] uses. That is
+    /// **once per load, not once per process**: `reload::reload` calls
+    /// `Config::load`, so a hot reload that leaves the problem in place warns
+    /// again. What the split buys is that validation stays side-effect free —
+    /// `validate` runs strictly more often than `load` does (`Config::load`
+    /// calls it, `RuntimeState::from_config` calls it again on every reload, and
+    /// `shunt check` calls it), so warning from there would multiply the same
+    /// line per reload rather than emit it once.
     fn warn_stage_router_targets_unresolvable(&self) {
         for model in &self.models {
             let Some(router) = &model.stage_router else {
@@ -4142,6 +4150,111 @@ impl Config {
                         target = %target,
                         default_provider = %self.server.default_provider,
                         "stage_router target matches no [[models]] entry with an upstream_model map, no [[routes]] entry, and no [[route_prefixes]] entry; it will fall back to the default provider"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Warns once at load when a `[models.stage_router]` sets its de-escalation
+    /// gate *below* its escalation gate.
+    ///
+    /// The shipped defaults (0.5 / 0.75) make coming back down the harder
+    /// direction, because a tier flip forfeits the warm prompt-cache prefix and
+    /// any `previous_response_id` continuation. Inverting that is coherent —
+    /// a cost-sensitive deployment may genuinely want to drop to the efficient
+    /// tier readily and escalate only on strong evidence — so this is a warning
+    /// and not a [`ConfigError`]: the realistic failure is a typo, and rejecting
+    /// the pair would take away a configuration someone means (issue #562).
+    ///
+    /// Compared against [`StageRouterConfig::deescalate_threshold`], the
+    /// *effective* value, so leaving the key out and raising
+    /// `confidence_threshold` past the 0.75 default warns too — that config
+    /// inverts the design just as much as writing both keys does. Equal
+    /// thresholds are symmetric rather than inverted and stay silent.
+    fn warn_stage_router_threshold_inversion(&self) {
+        for model in &self.models {
+            let Some(router) = &model.stage_router else {
+                continue;
+            };
+            let deescalate = router.deescalate_threshold();
+            if deescalate < router.confidence_threshold {
+                tracing::warn!(
+                    model_id = %model.id,
+                    deescalate_threshold = deescalate,
+                    confidence_threshold = router.confidence_threshold,
+                    "stage_router deescalate_threshold is below confidence_threshold; de-escalation is the easier direction, which inverts the default design"
+                );
+            }
+        }
+    }
+
+    /// Warns once at load when a `[models.stage_router]`'s two targets resolve
+    /// to the same model id.
+    ///
+    /// The router then has nothing to choose between: whatever the signals say,
+    /// every decision lands on one destination. Degenerate, but a real operator
+    /// move — flattening both tiers onto one model while testing is a one-line
+    /// edit against restructuring the entry — so it warns rather than failing
+    /// the load (issue #562).
+    ///
+    /// Compared after [`crate::routing::strip_context_window_hint`], the same
+    /// normalization `resolve_chain` applies to a target before matching it, so
+    /// `"m[1m]"` and `"m"` are recognized as the one destination they route to.
+    /// Not case-insensitive: routing matches ids with `==`, so two ids differing
+    /// only in case really are two ids.
+    fn warn_stage_router_identical_targets(&self) {
+        for model in &self.models {
+            let Some(router) = &model.stage_router else {
+                continue;
+            };
+            let [capable, efficient] = router.targets();
+            if crate::routing::strip_context_window_hint(capable)
+                == crate::routing::strip_context_window_hint(efficient)
+            {
+                tracing::warn!(
+                    model_id = %model.id,
+                    capable_target = %capable,
+                    efficient_target = %efficient,
+                    "stage_router capable_target and efficient_target resolve to the same model; the router has no tier to choose between"
+                );
+            }
+        }
+    }
+
+    /// Warns once at load for every `[[routes]]` entry a `[models.stage_router]`
+    /// id shadows.
+    ///
+    /// `resolve_chain` matches `[[models]]` before either table and returns from
+    /// the router arm, so a route naming a router-backed id is never consulted.
+    /// Mutual exclusivity with `upstream_model` is what makes this reachable: a
+    /// router entry has no map, and a map-less `[[models]]` entry is exactly the
+    /// shape that *does* fall through to `[[routes]]` — so an operator
+    /// converting a routed alias into a router leaves a route behind that used
+    /// to do something and now does nothing.
+    ///
+    /// A warning rather than a `ConfigError`, for the reason issue #562 settled
+    /// for the sibling cross-field rules: the shadowed route is inert, not
+    /// wrong, and rejecting it would fail a config whose only fault is a leftover
+    /// line.
+    ///
+    /// `[[route_prefixes]]` is deliberately **not** checked. A prefix entry is
+    /// not dead just because one router id happens to start with it: it still
+    /// serves every other id that matches, and which ids those are is not
+    /// knowable at load — they arrive from `[[models]]`, from discovery, and
+    /// from whatever a client asks for. Only the exact-match entry has a single
+    /// purpose that the router takes away.
+    fn warn_stage_router_shadows_exact_route(&self) {
+        for model in &self.models {
+            if model.stage_router.is_none() {
+                continue;
+            }
+            for route in &self.routes {
+                if route.model == model.id {
+                    tracing::warn!(
+                        model_id = %model.id,
+                        provider = %route.provider,
+                        "a [[routes]] entry names a stage_router id; the router decides this id's destination, so the route is never consulted"
                     );
                 }
             }
@@ -7599,6 +7712,264 @@ id = "claude-sonnet-5"
             0,
             "both targets route explicitly, so the load must be silent: {ok_logs}"
         );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stage_router_warns_when_deescalation_is_the_easier_direction() {
+        // Written pair: the operator set both keys and inverted them.
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        let router = model.stage_router.as_mut().unwrap();
+        router.confidence_threshold = 0.9;
+        router.deescalate_threshold = Some(0.1);
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_stage_router_threshold_inversion());
+        assert_eq!(
+            logs.matches("deescalate_threshold is below confidence_threshold")
+                .count(),
+            1,
+            "an inverted pair warns once: {logs}"
+        );
+
+        // Effective value, not the written one: the key is absent, so the 0.75
+        // default applies and a `confidence_threshold` above it inverts the
+        // design just as much.
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        let router = model.stage_router.as_mut().unwrap();
+        router.confidence_threshold = 0.9;
+        router.deescalate_threshold = None;
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_stage_router_threshold_inversion());
+        assert_eq!(
+            logs.matches("deescalate_threshold is below confidence_threshold")
+                .count(),
+            1,
+            "the default de-escalation gate below a raised escalation gate warns: {logs}"
+        );
+
+        // Positive twins. Equal thresholds are symmetric, not inverted, and the
+        // shipped defaults are the design this warning defends — neither may
+        // fire, or the assertions above would pass on a warning that is always
+        // emitted.
+        for (confidence, deescalate) in [(0.6, Some(0.6)), (0.5, None), (0.5, Some(0.75))] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            let router = model.stage_router.as_mut().unwrap();
+            router.confidence_threshold = confidence;
+            router.deescalate_threshold = deescalate;
+            let config = Config {
+                models: vec![model],
+                ..Config::default()
+            };
+            let (_, logs) = capture_logs(|| config.warn_stage_router_threshold_inversion());
+            assert_eq!(
+                logs.matches("deescalate_threshold is below confidence_threshold")
+                    .count(),
+                0,
+                "{confidence}/{deescalate:?} does not invert the design: {logs}"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_router_warns_when_both_targets_resolve_to_one_model() {
+        // Identical as written, and identical only after the context-window
+        // hint is stripped — `resolve_chain` strips it before matching, so both
+        // pairs name the single destination every decision would land on.
+        for (capable, efficient) in [
+            ("claude-opus-4-8", "claude-opus-4-8"),
+            ("claude-opus-4-8[1m]", "claude-opus-4-8"),
+        ] {
+            let config = Config {
+                models: vec![router_model("claude-auto", capable, efficient)],
+                ..Config::default()
+            };
+            let (_, logs) = capture_logs(|| config.warn_stage_router_identical_targets());
+            assert_eq!(
+                logs.matches("resolve to the same model").count(),
+                1,
+                "{capable} and {efficient} route to one destination: {logs}"
+            );
+        }
+
+        // Positive twins: two genuinely different ids, and — the sub-point
+        // declined on #562 — two ids differing only in case. Routing matches
+        // with `==`, so those really are two ids and warning would be wrong.
+        for (capable, efficient) in [
+            ("claude-opus-4-8", "claude-sonnet-4-6"),
+            ("claude-opus-4-8", "CLAUDE-OPUS-4-8"),
+        ] {
+            let config = Config {
+                models: vec![router_model("claude-auto", capable, efficient)],
+                ..Config::default()
+            };
+            let (_, logs) = capture_logs(|| config.warn_stage_router_identical_targets());
+            assert_eq!(
+                logs.matches("resolve to the same model").count(),
+                0,
+                "{capable} and {efficient} are distinct ids: {logs}"
+            );
+        }
+    }
+
+    fn route_config(model: &str) -> super::RouteConfig {
+        super::RouteConfig {
+            model: model.to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        }
+    }
+
+    #[test]
+    fn stage_router_warns_for_a_route_its_id_shadows() {
+        // `resolve_chain` matches `[[models]]` first and returns from the router
+        // arm, so the exact route is inert — and silently so before this
+        // diagnostic. The prefix entry alongside it is *not*: it still serves
+        // every other id starting with `claude-`, so it must stay silent.
+        let config = Config {
+            models: vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                model_config(
+                    "claude-opus-4-8",
+                    Some(model_upstream("anthropic", "claude-opus-4-8")),
+                ),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("anthropic", "claude-sonnet-4-6")),
+                ),
+            ],
+            routes: vec![route_config("claude-auto")],
+            route_prefixes: vec![super::RoutePrefixConfig {
+                prefix: "claude-".to_string(),
+                provider: "anthropic".to_string(),
+            }],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_stage_router_shadows_exact_route());
+        assert_eq!(
+            logs.matches("the route is never consulted").count(),
+            1,
+            "the exact route naming the router id warns: {logs}"
+        );
+        assert_eq!(
+            logs.matches("route_prefixes").count(),
+            0,
+            "a prefix entry the router id happens to match is still live: {logs}"
+        );
+
+        // Positive twin: the same tables, with the routes naming the router's
+        // *targets* instead. Those really are consulted — the router resolves
+        // each target through the ordinary ladder — so neither may warn.
+        let config = Config {
+            models: vec![router_model(
+                "claude-auto",
+                "claude-opus-4-8",
+                "claude-sonnet-4-6",
+            )],
+            routes: vec![
+                route_config("claude-opus-4-8"),
+                route_config("claude-sonnet-4-6"),
+            ],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_stage_router_shadows_exact_route());
+        assert_eq!(
+            logs.matches("never consulted").count(),
+            0,
+            "a route naming a target, not the router id, is live: {logs}"
+        );
+    }
+
+    #[test]
+    fn stage_router_cross_field_warnings_are_load_only() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-stage-router-cross-field-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Both rules tripped at once: one target for both tiers, and a
+        // de-escalation gate under the escalation gate. Both targets are routed
+        // explicitly so the unresolvable-target warning stays out of the counts.
+        let degenerate = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.stage_router]\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-opus-4-8\"\n\
+             confidence_threshold = 0.9\ndeescalate_threshold = 0.1\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n";
+        let path = dir.join("degenerate.toml");
+        std::fs::write(&path, degenerate).unwrap();
+
+        let (loaded, load_logs) = capture_logs(|| Config::load(Some(&path)));
+        let config = loaded.expect("a degenerate stage_router still loads");
+        assert_eq!(
+            load_logs
+                .matches("deescalate_threshold is below confidence_threshold")
+                .count(),
+            1,
+            "the successful load warns once about the inverted thresholds: {load_logs}"
+        );
+        assert_eq!(
+            load_logs.matches("resolve to the same model").count(),
+            1,
+            "the successful load warns once about the single destination: {load_logs}"
+        );
+
+        // The point of the split: `validate` runs again on every hot reload
+        // (`reload.rs`) and on `shunt check`, and must stay silent.
+        let (_, validate_logs) = capture_logs(|| {
+            config
+                .clone()
+                .validate()
+                .expect("first validation succeeds");
+            config.validate().expect("second validation succeeds");
+        });
+        for message in [
+            "deescalate_threshold is below confidence_threshold",
+            "resolve to the same model",
+        ] {
+            assert_eq!(
+                validate_logs.matches(message).count(),
+                0,
+                "repeated validation must not repeat {message:?}: {validate_logs}"
+            );
+        }
+
+        // Positive twin: distinct targets and the default threshold ordering
+        // load silently, so neither assertion above is satisfied by a warning
+        // that never fires.
+        let sane = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.stage_router]\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-sonnet-4-6\"\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n\n\
+             [[routes]]\nmodel = \"claude-sonnet-4-6\"\nprovider = \"anthropic\"\n";
+        let ok_path = dir.join("sane.toml");
+        std::fs::write(&ok_path, sane).unwrap();
+        let (ok_loaded, ok_logs) = capture_logs(|| Config::load(Some(&ok_path)));
+        ok_loaded.expect("a well-formed stage_router loads");
+        for message in [
+            "deescalate_threshold is below confidence_threshold",
+            "resolve to the same model",
+        ] {
+            assert_eq!(
+                ok_logs.matches(message).count(),
+                0,
+                "a well-formed router must not emit {message:?}: {ok_logs}"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(dir);
     }

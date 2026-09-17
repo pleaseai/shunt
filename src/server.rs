@@ -20,6 +20,7 @@ use crate::{
     oauth_usage, protocol, proxy,
     reload::{RuntimeState, SharedState},
     routes,
+    routing::stage::StageRouterStore,
     upstream_status::StatusStore,
     usage,
 };
@@ -48,6 +49,11 @@ pub struct AppState {
     pub gateway_auth: Option<Arc<GatewayAuth>>,
     /// Process-lifetime device grants, IdP states/cache, refresh tokens, and limits.
     pub gateway_stores: Arc<GatewayStores>,
+    /// Process-lifetime per-session tier pins for `[models.stage_router]`.
+    /// Kept across reloads like [`AppState::accounts`] — a router's pins are
+    /// invalidated by a change to *that router's* table, not by any config edit
+    /// (see [`StageRouterStore::apply`]).
+    pub(crate) stage_router: Arc<StageRouterStore>,
     /// Whether the listener this process actually bound at startup is
     /// loopback. Fixed at boot like `server.bind` itself (see
     /// `reload::warn_on_restart_only_changes`): a reload can rewrite
@@ -78,18 +84,24 @@ impl AppState {
             Arc::new(StatusStore::new()),
             Arc::new(AdminStores::new()),
             Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
+            Arc::new(StageRouterStore::new()),
             boot_is_loopback,
         ))
     }
 
     /// Snapshot the current runtime state from an existing shared store.
-    pub fn from_shared(
+    // Five process-lifetime stores, each created once at boot and carried
+    // across reloads; grouping them behind a struct would only move the same
+    // list one level down.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_shared(
         shared: SharedState,
         http_client: reqwest::Client,
         accounts: Arc<AccountPool>,
         status: Arc<StatusStore>,
         admin_stores: Arc<AdminStores>,
         gateway_stores: Arc<GatewayStores>,
+        stage_router: Arc<StageRouterStore>,
         boot_is_loopback: bool,
     ) -> Self {
         let current = shared.load();
@@ -103,6 +115,7 @@ impl AppState {
             status,
             admin_stores,
             gateway_stores,
+            stage_router,
             boot_is_loopback,
             shared,
         }
@@ -119,6 +132,7 @@ impl AppState {
             self.status.clone(),
             self.admin_stores.clone(),
             self.gateway_stores.clone(),
+            self.stage_router.clone(),
             self.boot_is_loopback,
         )
     }
@@ -203,6 +217,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         Arc::new(StatusStore::new()),
         Arc::new(AdminStores::new()),
         Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
+        Arc::new(StageRouterStore::new()),
         boot_is_loopback,
     );
 
