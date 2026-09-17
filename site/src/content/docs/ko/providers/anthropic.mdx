@@ -8,6 +8,14 @@ description: 기본 패스스루 프로바이더 — 호출자 본인의 자격 
 이는 **`kind = "anthropic"`** 프로바이더입니다 — 업스트림이 이미 Anthropic Messages API를 사용하므로,
 shunt는 변환 없이 요청을 패스스루하고 **어떤 자격 증명**을 업스트림으로 보낼지만 결정합니다.
 
+요청 필드 하나만은 예외입니다. shunt가 다른 프로바이더용으로 생성한 `signature`를 담은 `thinking`
+블록은 요청을 전달하기 전에 제거되며(Responses·Gemini·Cursor 경로가 각각 하나씩 생성합니다 —
+블록이 형식을 갖추려면 이 필드가 필요하기 때문입니다), 그 결과 아무것도 남지 않은 assistant 턴도
+함께 제거됩니다. Anthropic은 이 필드를 복호화하므로 자신이 발급하지 않은 값은 거부하며, 그대로
+전달하면 요청이 실패합니다. Anthropic이 발급한 signature는 shunt에게 불투명하므로 절대 건드리지
+않습니다 — 따라서 이 동작은 이미 매핑된 비(非)Anthropic 모델로 실행된 적이 있는 대화에만 영향을
+줍니다.
+
 | 인증 모드 | 자격 증명 | 사용 사례 |
 | :-- | :-- | :-- |
 | `passthrough` (기본값) | 호출자 본인의 `x-api-key` / `Authorization` | 투명 프록시 — 각 클라이언트가 자신의 키나 OAuth 토큰을 가져옴 |

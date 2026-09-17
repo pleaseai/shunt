@@ -30,7 +30,7 @@ shunt 只是遵从它收到的 model id —— 没有脆弱的按 agent 系统�
 
 ## shunt 实现了什么
 
-- **`POST /v1/messages`** —— 推理,按请求的 `model` id 路由。未映射的模型使用调用方自己的凭据逐字节转发给 Anthropic。
+- **`POST /v1/messages`** —— 推理,按请求的 `model` id 路由。未映射的模型使用调用方自己的凭据逐字节转发给 Anthropic;但 shunt 为其他提供方生成的 [`thinking` signature](/zh-cn/providers/anthropic/) 例外——该值会被 Anthropic 拒绝,因此会被移除。
 - **Anthropic Messages ⇄ OpenAI Responses 转换** —— 面向映射的 OpenAI 系列模型,含流式传输。
 - **ChatGPT 订阅复用** —— `codex` 提供方复用(并自动刷新)Codex CLI 的 `~/.codex/auth.json` 登录。
 - **`GET /v1/models`** —— 面向 Claude 命名别名的 [模型发现](/zh-cn/guides/model-discovery/)。
