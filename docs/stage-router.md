@@ -158,20 +158,40 @@ first, then the oldest. No timer, no background task, nothing persisted. `apply`
 takes `now: Instant` so dwell, expiry, and eviction are tested against a clock the
 test moves.
 
-The trim is O(log n) per entry removed, not a pass over the map. A `BTreeMap`
-indexes the sessions by `seq`, which is a total order with no ties and is exactly
-the order turns were decided — so the least recently seen entry is one
-`pop_first`. `last_seen` could not index this: two turns of one session routinely
-share an `Instant`, which is why `seq` exists at all. Eviction runs under the
-store's single process-global mutex, so the walk it replaces serialized against
-every router-backed request rather than only the one that triggered it (§9,
-issue #552).
+The trim is O(log n) per entry removed, not a pass over the map. Two indexes
+stand beside the session map, and the trim's two halves each read one of them:
 
-One consequence is worth stating rather than burying: the expiry sweep reaches
-only entries at the *front* of that order, so a live entry older than an expired
-one stops it and the capacity trim takes the live entry instead. That needs two
-routers with different `session_ttl_seconds` — under a single TTL, recency order
-and expiry order are the same order.
+* recency — a `BTreeMap` keyed by `seq`, a total order with no ties that is
+  exactly the order turns were decided, so the least recently decided entry is
+  one `pop_first`. `last_seen` could not index this: two turns of one session
+  routinely share an `Instant`, which is why `seq` exists at all.
+* expiry — a `BTreeSet` of `(last_seen + ttl, seq)`, so the sweep stops at the
+  first entry still inside its own window instead of walking the map.
+
+They have to be separate orders, because the oldest entry can be the live one
+and a newer entry the expired one. Three things produce that inversion, and only
+the first needs two routers:
+
+* two routers configured with different `session_ttl_seconds`;
+* one router reloaded with a new `session_ttl_seconds` — existing entries keep
+  the TTL they were recorded with (`StageSession::ttl`), so old and new entries
+  age out on different clocks under a single table;
+* concurrency alone. `seq` orders arrival at `apply`, not the `now` each caller
+  captured before it, so two turns can take their sequence numbers in the
+  opposite order from their `last_seen`.
+
+Sweeping the front of the recency order alone would stop at the live entry,
+leave the expired one behind, and then evict the live entry in its place. With
+both indexes the trim drops exactly what the whole-map pass dropped: every
+expired entry, then the oldest survivor if the store is still over.
+
+An entry whose `last_seen + ttl` overflows is absent from the expiry index —
+nothing bounds `session_ttl_seconds` above, and an entry that can never expire
+belongs in no expiry index. The capacity trim still reaches it.
+
+Eviction runs under the store's single process-global mutex, so the walk it
+replaces serialized against every router-backed request rather than only the one
+that triggered it (§9, issue #552).
 
 ### 4.1 Why the asymmetry exists
 
@@ -380,34 +400,45 @@ whatever it does to the routed rows. The routed arm additionally resolves its
 chosen tier's own id through `[[routes]]`, which the unrouted arm does not — that
 second lookup is part of what routing costs, not a flaw in the pairing.
 
-### 9.1 Eviction, before and after the recency index
+### 9.1 Eviction, before and after the indexes
 
 Both arms run against a store already holding `MAX_TRACKED_SESSIONS` entries and
 both build their session id outside the timed region, so what separates them is
 the eviction and not the map size, the id's allocation, or its hashing.
 
-| Benchmark | whole-map pass | `BTreeMap` index |
+| Benchmark | whole-map pass | indexed |
 |---|---|---|
-| `store_turn_existing_session` | 517 ns | 602 ns |
-| `store_turn_new_session_at_capacity` | 31.9 µs | 873 ns |
-| gap | 62× | 1.45× |
+| `store_turn_existing_session` | 553 ns | 742 ns |
+| `store_turn_new_session_at_capacity` | 32.8 µs | 970 ns |
+| gap | 59× | 1.3× |
 
 `fastest`; the left column is the implementation described in issue #552, the
-right is §4's.
+right is §4's. Both columns were measured in one sitting, alternating between two
+checkouts and reading each arm twice, because this machine's run-to-run spread on
+the returning-session arm is wide enough to invent or erase a change of the size
+this table reports: the *same* binary measured 602 ns and 713 ns on separate
+days. The paired figures agreed to within 3 ns (baseline) and 18 ns (indexed),
+which is what makes the difference below readable at all. Treat single-run
+numbers from either column as unusable for this comparison.
 
 A previously unseen id at capacity used to pay a `retain` walk of all 4096
-entries. It now pays one `pop_first`, so the eviction stops dominating: **37×
-faster**, and the gap between a new session and a returning one collapses from
-62× to 1.45×. Because that work runs under the store's single process-global
-mutex, the walk serialized against every other router-backed request rather than
-costing only the one that triggered it — which is why the issue framed this as
-blast radius and not as per-request latency.
+entries. It now pays one `pop_first` from each index, so the eviction stops
+dominating: **34× faster**, and the gap between a new session and a returning one
+collapses from 59× to 1.3×. Because that work runs under the store's single
+process-global mutex, the walk serialized against every other router-backed
+request rather than costing only the one that triggered it — which is why the
+issue framed this as blast radius and not as per-request latency.
 
-The returning-session path pays for it: **517 ns → 602 ns**, about 16%. That is
-the index's two `BTreeMap` operations, which every write owes whether or not it
-evicts — retiring the replaced entry's slot and adding the new one. It is a real
-regression on the common path and is reported as one. The trade is 85 ns on every
-turn against 31 µs of mutex-held work on every new session id, and it is worth
-taking only because the expensive side is the side that serializes; a store that
-never saturates pays the 85 ns and collects nothing, which is the case for any
-deployment under 4096 concurrent sessions.
+The returning-session path pays for it: **553 ns → 742 ns**, about 34%. That is
+the four index operations every write owes whether or not it evicts — retiring
+the replaced entry's slot in each of the two indexes, then adding the new one to
+each. It is a real regression on the common path and is reported as one. The
+trade is ~190 ns on every turn against 32 µs of mutex-held work on every new
+session id, and it is worth taking only because the expensive side is the side
+that serializes; a store that never saturates pays the write cost and collects
+nothing, which is the case for any deployment whose distinct session ids stay
+under `MAX_TRACKED_SESSIONS`. That is a count of tracked sessions, not of
+concurrent requests: a session is tracked from its first routed turn until it
+expires or is evicted — and expired entries are swept only when an insert takes
+the store over the cap — so a client that rotates its session id can accumulate
+far more tracked sessions than it ever has in flight.

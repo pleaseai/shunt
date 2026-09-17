@@ -12,6 +12,14 @@
 //! exemption from the confidence gate and
 //! `a_passing_test_suite_de_escalates_without_a_confidence_score` goes red.
 //!
+//! `an_expired_entry_behind_a_live_one_is_still_the_one_evicted` pins the second
+//! index: sweep the front of the recency order instead of the expiry order —
+//! which is what this code did before the `BTreeSet` was added — and it goes
+//! red, because the live entry in front stops the sweep and is then evicted in
+//! the expired entry's place. It is the only test that separates the two
+//! orders, so it needs two routers with different `session_ttl_seconds`; under
+//! one TTL every other eviction test would pass either way.
+//!
 //! `a_refreshed_session_is_not_evicted_as_the_oldest` pins the recency index's
 //! one invariant: stop retiring a replaced entry's `seq` slot in
 //! `Entries::insert` and it goes red, because the stale slot still names the key
@@ -427,7 +435,7 @@ fn the_store_evicts_the_oldest_session_once_it_is_full() {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(&key),
-        "the least recently seen session is the one dropped"
+        "the least recently decided session is the one dropped"
     );
 }
 
@@ -497,6 +505,77 @@ fn a_refreshed_session_is_not_evicted_as_the_oldest() {
         "the refreshed session was the newest entry, so eviction must not take it"
     );
     assert_eq!(store.len(), MAX_TRACKED_SESSIONS);
+}
+
+/// An expired entry is dropped even when a *live* entry sits in front of it.
+///
+/// Recency and expiry are only the same order under a single TTL. Give one
+/// router a one-second window and another an hour, and the store can hold the
+/// live hour-long pin as its oldest entry with an expired one-second entry
+/// behind it. A trim that swept the front of the recency order would stop at
+/// the live pin, leave the expired entry in place, and then evict that live pin
+/// to get back under the cap — dropping the entry it had just decided to keep.
+#[test]
+fn an_expired_entry_behind_a_live_one_is_still_the_one_evicted() {
+    let store = StageRouterStore::new();
+    let long = router();
+    let short = StageRouterConfig {
+        session_ttl_seconds: 1,
+        ..router()
+    };
+    let start = Instant::now();
+
+    // Decided first, so it is the oldest entry in recency order — and it is
+    // still live an hour from now.
+    store.apply_now("claude-auto", Some(SESSION), &long, capable(), false, start);
+    // Decided second, so it sits *behind* the live pin in recency order, and
+    // its one-second window has elapsed by the time the overflow lands.
+    store.apply_now(
+        "claude-cheap",
+        Some("stale"),
+        &short,
+        capable(),
+        false,
+        start + Duration::from_millis(1),
+    );
+    // Long-TTL fillers up to exactly the cap: live, so only the pair above can
+    // decide what the sweep takes.
+    for index in 0..MAX_TRACKED_SESSIONS - 2 {
+        let session = format!("filler-{index}");
+        store.apply_now(
+            "claude-auto",
+            Some(&session),
+            &long,
+            capable(),
+            false,
+            start + Duration::from_millis(index as u64 + 2),
+        );
+    }
+
+    // One previously unseen id tips the store over the cap, two seconds in —
+    // past the short window, nowhere near the long one.
+    store.apply_now(
+        "claude-auto",
+        Some("overflow"),
+        &long,
+        capable(),
+        false,
+        start + Duration::from_secs(2),
+    );
+
+    let entries = store
+        .entries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(
+        !entries.contains_key(&session_key("claude-cheap", "stale")),
+        "the expired entry must be dropped even though a live entry precedes it"
+    );
+    assert!(
+        entries.contains_key(&session_key("claude-auto", SESSION)),
+        "an hour-long pin two seconds old must survive, oldest or not"
+    );
+    assert_eq!(entries.len(), MAX_TRACKED_SESSIONS);
 }
 
 #[test]

@@ -15,7 +15,7 @@
 //! clear a stricter threshold.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     hash::{Hash, Hasher},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -88,6 +88,34 @@ struct Entries {
     /// share an `Instant`, which is the same reason [`StageSession::seq`] exists
     /// at all.
     order: BTreeMap<u64, SessionKey>,
+    /// `(expires_at, seq)` for every entry whose TTL can actually elapse, so the
+    /// expiry sweep is a prefix of *this* order rather than a walk of the map.
+    ///
+    /// Separate from `order` because recency and expiry are different orders
+    /// whenever two routers configure different `session_ttl_seconds`: the
+    /// oldest entry can be the live one and a newer entry the expired one.
+    /// Sweeping the front of `order` would then stop at the live entry, leave
+    /// the expired one, and let the capacity trim take the live entry instead —
+    /// which is a pin the whole-map pass this replaced would have kept.
+    ///
+    /// Holds `seq`, not the key, so a returning session still clones nothing:
+    /// `order` already maps `seq` back to its key.
+    ///
+    /// An entry whose `last_seen + ttl` overflows is simply absent here. Nothing
+    /// validates `session_ttl_seconds` against an upper bound, so that addition
+    /// is fallible on a config that asks for one; an entry that can never expire
+    /// belongs in no expiry index, and the capacity trim still reaches it.
+    expiry: BTreeSet<(Instant, u64)>,
+}
+
+/// When an entry falls out of its own window, or `None` when the addition
+/// overflows and it therefore never does.
+///
+/// The mirror of [`is_live`]'s TTL half: `now.saturating_duration_since(last_seen)
+/// > ttl` is `now > last_seen + ttl` wherever the sum exists, including the
+/// boundary — a zero TTL read at its own `last_seen` is live under both.
+fn expires_at(session: &StageSession) -> Option<Instant> {
+    session.last_seen.checked_add(session.ttl)
 }
 
 impl Entries {
@@ -114,29 +142,57 @@ impl Entries {
         match self.sessions.get_mut(&key) {
             Some(replaced) => {
                 self.order.remove(&replaced.seq);
+                if let Some(at) = expires_at(replaced) {
+                    self.expiry.remove(&(at, replaced.seq));
+                }
                 *replaced = session;
             }
             None => {
                 self.sessions.insert(key.clone(), session);
             }
         }
+        if let Some(at) = expires_at(&session) {
+            self.expiry.insert((at, session.seq));
+        }
         self.order.insert(session.seq, key);
     }
 
-    /// The least recently decided entry, without removing it.
-    fn oldest(&self) -> Option<&StageSession> {
-        let (_, key) = self.order.first_key_value()?;
-        debug_assert!(
-            self.sessions.contains_key(key),
-            "the recency index named a key the session map does not hold"
-        );
-        self.sessions.get(key)
+    /// Drop every entry whose own TTL has elapsed, cheapest-first.
+    ///
+    /// Each removal is a pair of `BTreeMap`/`BTreeSet` pops, and each entry is
+    /// removed at most once, so the sweep costs O(log n) per entry dropped
+    /// rather than a pass over the map. When nothing has expired it is a single
+    /// comparison against the front of `expiry`.
+    fn drain_expired(&mut self, now: Instant) {
+        while let Some(&(at, seq)) = self.expiry.first() {
+            if at >= now {
+                break;
+            }
+            self.expiry.pop_first();
+            let key = self.order.remove(&seq);
+            debug_assert!(
+                key.is_some(),
+                "the expiry index named a seq the recency index does not hold"
+            );
+            if let Some(key) = key {
+                self.sessions.remove(&key);
+            }
+        }
     }
 
     /// Drop the least recently decided entry. `None` once nothing is left.
     fn remove_oldest(&mut self) -> Option<StageSession> {
         let (_, key) = self.order.pop_first()?;
-        self.sessions.remove(&key)
+        let session = self.sessions.remove(&key);
+        debug_assert!(
+            session.is_some(),
+            "the recency index named a key the session map does not hold"
+        );
+        let session = session?;
+        if let Some(at) = expires_at(&session) {
+            self.expiry.remove(&(at, session.seq));
+        }
+        Some(session)
     }
 }
 
@@ -435,23 +491,17 @@ fn resolve(
 /// Each entry is expired against **its own** TTL, not the caller's — see
 /// [`StageSession::ttl`].
 ///
-/// The expiry sweep reaches only the entries *at the front* of the order, so a
-/// live entry older than an expired one stops it and the capacity trim takes
-/// that live entry instead. Reaching that needs two routers configured with
-/// different `session_ttl_seconds`: under a single TTL, recency order and
-/// expiry order are the same order, and the sweep drops exactly what the old
-/// whole-map pass dropped. What it costs is one session its hysteresis, which
-/// is what eviction at capacity costs someone either way.
+/// Expiry and recency are indexed separately, so this drops the same entries the
+/// whole-map pass dropped: *every* expired one, and then the oldest survivor if
+/// the store is still over. Sweeping the front of the recency order alone would
+/// not — with two routers configuring different `session_ttl_seconds` the oldest
+/// entry can be the live one, which would stop the sweep and then be evicted in
+/// place of the expired entry behind it.
 fn evict(entries: &mut Entries, now: Instant) {
     if entries.len() <= MAX_TRACKED_SESSIONS {
         return;
     }
-    while entries
-        .oldest()
-        .is_some_and(|session| now.saturating_duration_since(session.last_seen) > session.ttl)
-    {
-        entries.remove_oldest();
-    }
+    entries.drain_expired(now);
     // `commit` inserts exactly one entry before calling this and returns early
     // above while under the cap, so the store is at most one over it here and
     // a single removal is enough. The loop is still a loop so that a future
