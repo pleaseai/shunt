@@ -231,8 +231,9 @@ managed-model policy's job, and a weighted split under `session` affinity
 is a canary aid for well-behaved clients, not an enforced ratio. Under
 `affinity = "request"` it keeps upstream's meaning and reproduces the
 selection sequence. `auto` is the stage-router preset with upstream's
-`picker` and `confidence_threshold`. `noop` returns a buffered `OK` without
-an upstream call.
+`picker` and `confidence_threshold`. `noop` makes no upstream call and synthesizes an empty terminal assistant
+message in the caller's mode: a valid SSE sequence (`message_start` through
+`message_stop`) for a streaming caller, one Message JSON object otherwise.
 
 The one-hop rule generalises: any target named by any router table that
 resolves, after `strip_context_window_hint`, to a `[[models]]` entry must
@@ -286,7 +287,8 @@ injecting judge is reached only by fall-through to `server.default_provider`;
 and that an unauthenticated `count_tokens` probe on that passthrough-answer +
 injecting-judge entry is answered with zero judge calls, including an
 unpinned probe whose history carries decisive signals; and that a
-judge call carries no caller credential, and a judge target on a
+judge call carries no inbound credential slot (reserved slots plus every
+`SHARED_SLOTS` name removed unconditionally, not a value match), and a judge target on a
 passthrough route is rejected at validation.
 
 `serve` builds an Anthropic Messages body from the neutral `Request` libsy
@@ -299,9 +301,15 @@ route of the chain it is given* (`failover.rs:168`), which for an internal
 call would be the judge's own route, so a caller credential presented for
 the answer provider would be forwarded to whatever passthrough provider the
 judge maps — and before `drive` has selected an answer there is no answer
-origin to compare against. So judge, classifier, and reviewer calls always
-strip the caller's `Authorization` and `x-api-key` and run only on the
-credential their target's route injects; a judge target that resolves to a
+origin to compare against. So judge, classifier, and reviewer calls start
+from a header set with every inbound credential slot removed: the
+reserved and configured slots `auth::slots::ShuntCredentials` strips at
+the outbound boundary (`strip_reserved_slots`, `cookie` included), then
+every `SHARED_SLOTS` name (`authorization`, `x-api-key`) removed
+*unconditionally* — not the value-conditional `strip_consumed_slots`,
+which deliberately keeps a caller's genuine upstream credential and would
+keep it here too — and they run only on the credential their target's
+route injects; a judge target that resolves to a
 passthrough route has nothing to run on and is rejected at validation.
 A gated weak or executor turn is the answer dispatch of the selected
 target, so it establishes its own primary origin from that target's chain
@@ -335,12 +343,18 @@ collected. A gated executor or weak turn (§4) has its own three bounds:
 `gated_max_bytes` on retained frames or JSON body bytes, `gated_idle_ms`
 between body chunks (SSE pings do not reset it), and
 `gated_max_duration_ms` wall-clock. Crossing any bound cancels the upstream
-call, refunds nothing, and resolves as the algorithm's `fail_open` outcome —
-for `advisor`, the collected turn is usable only after an authoritative
-terminal marker, never a partial one: `message_stop` on a streaming call, a
-complete body that parses as one message on a non-streaming call. A per-session `max_judge_calls` bounds count on top. The six keys live
-on whichever table makes the internal calls, `[models.router]` or a
-classifier-form `[models.subagents]`, and each covers its own call type
+call and refunds nothing. A judge or review bound failure *after a complete
+retained turn* resolves as the algorithm's `fail_open` outcome. A retained
+turn itself — the escalation weak turn as much as the advisor
+executor turn — is servable only after an authoritative terminal marker,
+never a partial one: `message_stop` on a streaming call, a complete body
+that parses as one message on a non-streaming call. A weak turn that
+crosses a bound or ends before its marker is discarded before any header
+is committed and escalation proceeds to the strong call; a truncated `200`
+is never replayed. A per-session `max_judge_calls` bounds count on top.
+The six keys live on whichever table makes the internal calls,
+`[models.router]` or a classifier-form `[models.subagents]`, and each
+covers its own call type
 (`judge_*` the judge calls, `gated_*` the executor and weak turns), with
 defaults `judge_timeout_ms = 30000`, `judge_max_response_bytes = 65536`,
 `gated_max_bytes = 8388608`, `gated_idle_ms = 60000`,
@@ -433,9 +447,9 @@ outcome}`. `GET /routes` `routers[]` gains `algorithm`, `targets`, and a
 | 1 | `RouterContext` with the §11 request hints (session, agent id, request class, agent type, compacted), agent-scoped pin key, child budget, compaction latch | Behaviour-preserving without the hints; child errors leave the parent pin untouched; child fan-out at capacity cannot evict an idle capable parent; a `context-compacted` turn escalates and the next turn of that session still reads `compacted = true` |
 | 2 | `[models.router]` discriminator, `stage_router` alias, `random`, `auto`, `noop`, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Old configs load unchanged with one deprecation warning; `resolve_chain_unrouted` bench flat; sessionless requests under `random` session affinity follow the configured weights rather than one shared arm |
 | 3 | `subagents` passthrough form with `by_type` | A `subagent`/`workflow` request routes to its `by_type` target, else `target`, with no store access; `main` with an agent id, `compaction`, and `auxiliary` never take the overlay |
-| 4 | Dependency envelope + admission before `drive`, internal `serve`, translation boundary, per-call bounds | Invalid credential and policy-denied model each produce zero judge calls (incl. passthrough answer + injecting judge, and a judge reached only by fall-through to `server.default_provider`); an unauthenticated `count_tokens` probe on a passthrough-answer + injecting-judge entry is answered with zero judge calls, including an unpinned probe with decisive signals; a judge call carries no caller credential, and a judge target on a passthrough route is rejected at validation; a judge call appears as `caller = "router"` and consumes its target's pool quota; `200`-then-stall and endless-ping judges resolve as `fail_open` within the deadline |
+| 4 | Dependency envelope + admission before `drive`, internal `serve`, translation boundary, per-call bounds | Invalid credential and policy-denied model each produce zero judge calls (incl. passthrough answer + injecting judge, and a judge reached only by fall-through to `server.default_provider`); an unauthenticated `count_tokens` probe on a passthrough-answer + injecting-judge entry is answered with zero judge calls, including an unpinned probe with decisive signals; a judge call carries no inbound credential slot (reserved slots plus every `SHARED_SLOTS` name removed unconditionally, not a value match), and a judge target on a passthrough route is rejected at validation; a judge call appears as `caller = "router"` and consumes its target's pool quota; `200`-then-stall and endless-ping judges resolve as `fail_open` within the deadline |
 | 5 | Driven lane: `llm_classifier` capability + custom, `stage_router.classifier`, `composite`, `subagents` classifier form | Verdict parsed from a real Anthropic tool-use reply and from an OpenAI `json_schema` reply |
-| 6 | Buffer-and-replay lane: `escalation`, `advisor` | Replayed `message_start.model` equals the router id on both adapters; a `stream: false` caller receives one JSON message on a gated turn, on both adapters; REDO never commits headers; oversized, idle, and over-duration gated turns resolve as `fail_open`; `AGENTS.md` amended in the same PR |
+| 6 | Buffer-and-replay lane: `escalation`, `advisor` | Replayed `message_start.model` equals the router id on both adapters; a `stream: false` caller receives one JSON message on a gated turn, on both adapters; REDO never commits headers; oversized, idle, and over-duration gated turns resolve as `fail_open`; a weak turn cut before `message_stop` is never replayed and the strong call is made instead; `AGENTS.md` amended in the same PR |
 | 7 | `prefill-router` feature | Builds with the feature on a machine with the Python package; load error names the feature when off |
 
 PR 0 through 3 need no new external dependency beyond the pin. PR 6 is gated
