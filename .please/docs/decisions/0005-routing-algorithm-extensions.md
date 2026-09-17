@@ -350,8 +350,12 @@ executor turn — is servable only after an authoritative terminal marker,
 never a partial one: `message_stop` on a streaming call, a complete body
 that parses as one message on a non-streaming call. A weak turn that
 crosses a bound or ends before its marker is discarded before any header
-is committed and escalation proceeds to the strong call; a truncated `200`
-is never replayed. A per-session `max_judge_calls` bounds count on top.
+is committed and escalation proceeds to the strong call; a nonterminal
+advisor executor turn is discarded the same way and the request fails as
+a gateway-owned upstream error in the Anthropic error shape (`502`), not a
+REDO and not a failover attempt — the upstream did answer `2xx`, so
+ADR-0002's post-2xx rule holds and the caller simply never saw it. A
+truncated `200` is never replayed. A per-session `max_judge_calls` bounds count on top.
 The six keys live on whichever table makes the internal calls,
 `[models.router]` or a classifier-form `[models.subagents]`, and each
 covers its own call type
@@ -449,7 +453,7 @@ outcome}`. `GET /routes` `routers[]` gains `algorithm`, `targets`, and a
 | 3 | `subagents` passthrough form with `by_type` | A `subagent`/`workflow` request routes to its `by_type` target, else `target`, with no store access; `main` with an agent id, `compaction`, and `auxiliary` never take the overlay |
 | 4 | Dependency envelope + admission before `drive`, internal `serve`, translation boundary, per-call bounds | Invalid credential and policy-denied model each produce zero judge calls (incl. passthrough answer + injecting judge, and a judge reached only by fall-through to `server.default_provider`); an unauthenticated `count_tokens` probe on a passthrough-answer + injecting-judge entry is answered with zero judge calls, including an unpinned probe with decisive signals; a judge call carries no inbound credential slot (reserved slots plus every `SHARED_SLOTS` name removed unconditionally, not a value match), and a judge target on a passthrough route is rejected at validation; a judge call appears as `caller = "router"` and consumes its target's pool quota; `200`-then-stall and endless-ping judges resolve as `fail_open` within the deadline |
 | 5 | Driven lane: `llm_classifier` capability + custom, `stage_router.classifier`, `composite`, `subagents` classifier form | Verdict parsed from a real Anthropic tool-use reply and from an OpenAI `json_schema` reply |
-| 6 | Buffer-and-replay lane: `escalation`, `advisor` | Replayed `message_start.model` equals the router id on both adapters; a `stream: false` caller receives one JSON message on a gated turn, on both adapters; REDO never commits headers; oversized, idle, and over-duration gated turns resolve as `fail_open`; a weak turn cut before `message_stop` is never replayed and the strong call is made instead; `AGENTS.md` amended in the same PR |
+| 6 | Buffer-and-replay lane: `escalation`, `advisor` | Replayed `message_start.model` equals the router id on both adapters; a `stream: false` caller receives one JSON message on a gated turn, on both adapters; REDO never commits headers; a judge or review bound failure after a complete retained turn resolves as `fail_open`; a weak turn cut before `message_stop` is never replayed and the strong call is made instead; a nonterminal advisor executor turn fails with a gateway-owned `502` before any header is committed; `AGENTS.md` amended in the same PR |
 | 7 | `prefill-router` feature | Builds with the feature on a machine with the Python package; load error names the feature when off |
 
 PR 0 through 3 need no new external dependency beyond the pin. PR 6 is gated
