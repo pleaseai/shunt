@@ -57,6 +57,12 @@ default branch (it moves; the pin does not).
    `Cargo.lock` diff for packages the bump adds.
 3. `cargo test --all-features --workspace`, then the stage-router bench with
    `--features bench`.
+4. Re-point every hard-coded copy of the rev — this note's snippet above and
+   the `[libsy]` link definitions in the site guides (`switchyard.mdx` and
+   `stage-router.mdx`, English plus `ja`, `ko`, `zh-cn`). `git grep <old
+   rev>` must come back empty: those links are pinned for the same reason
+   the dependency is, so one left behind sends readers to source the build
+   does not use.
 
 Two things in `src/routing/stage.rs` are deliberately built so an upstream
 change fails the build rather than drifting silently: `StageSource::Scorer`
