@@ -1,0 +1,36 @@
+site/src/content/docs/guides/stage-router.mdx
+  s_c39939ce20c986::t_b8c5ac38346fde 69
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_c39939ce20c986::t_b8c5ac38346fde 16
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_c39939ce20c986::t_b8c5ac38346fde 16
+docs/routing-algorithms.md
+  s_c39939ce20c986::t_484b97b464e20b 60
+  s_c39939ce20c986::t_d40e46bfb5693c 61-65
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_c39939ce20c986::t_b8c5ac38346fde 58
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_c39939ce20c986::t_b8c5ac38346fde 61
+site/src/content/docs/guides/switchyard.mdx
+  s_c39939ce20c986::t_b8c5ac38346fde 16
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_c39939ce20c986::t_b8c5ac38346fde 65
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_c39939ce20c986::t_b8c5ac38346fde 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "6d855cfd0cf4eb0563cd4675bb201d09cb122587",
+  "prompts": {},
+  "sessions": {
+    "s_c39939ce20c986": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "37c2542f-8211-4d8c-96a2-cd99ea0f99a3",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
