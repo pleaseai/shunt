@@ -1,0 +1,33 @@
+site/src/content/docs/getting-started/why-shunt.md
+  s_3598e23a871543::t_12b3fdd3f51318 33
+site/src/content/docs/ja/providers/anthropic.mdx
+  s_3598e23a871543::t_12b3fdd3f51318 11-18
+site/src/content/docs/ko/providers/anthropic.mdx
+  s_3598e23a871543::t_12b3fdd3f51318 11-18
+site/src/content/docs/ko/getting-started/why-shunt.md
+  s_3598e23a871543::t_12b3fdd3f51318 33
+site/src/content/docs/zh-cn/getting-started/why-shunt.md
+  s_3598e23a871543::t_12b3fdd3f51318 33
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_3598e23a871543::t_12b3fdd3f51318 33
+site/src/content/docs/zh-cn/providers/anthropic.mdx
+  s_3598e23a871543::t_12b3fdd3f51318 11-16
+site/src/content/docs/providers/anthropic.mdx
+  s_3598e23a871543::t_12b3fdd3f51318 12-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5fb9573bb372db8454140033a9f69a8ff6b2c8b3",
+  "prompts": {},
+  "sessions": {
+    "s_3598e23a871543": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "121eceb9-d260-4110-b4e8-1b14de7086df",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
