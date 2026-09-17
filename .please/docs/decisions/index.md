@@ -8,3 +8,4 @@
 | [ADR-0002](0002-ordered-upstreams-failover.md) | Ordered upstreams with cross-provider failover | 2026-07-20 | Accepted |
 | [ADR-0003](0003-admin-dashboard-extension.md) | Admin dashboard extension: UI platform first, optional SQLite history, no cost estimates | 2026-09-10 | Accepted |
 | [ADR-0004](0004-content-aware-stage-router.md) | Content-aware stage router: opt-in, signal-only, session-pinned | 2026-09-12 | Accepted |
+| [ADR-0005](0005-routing-algorithm-extensions.md) | Full Switchyard routing-algorithm parity on `[[models]]` | 2026-09-18 | Accepted |
