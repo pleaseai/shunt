@@ -1,0 +1,65 @@
+src/auth/slots/tests.rs
+  s_3320184ffd3f18::t_639b85be226008 800,817-820,833-836
+src/protocol.rs
+  s_3320184ffd3f18::t_ec1042c5182f2b 176-198,203-209
+  s_3320184ffd3f18::t_3661d24701dc0c 199-202
+  s_3320184ffd3f18::t_15823d47dbd8e4 117,121,127-138
+src/bench_support.rs
+  s_3320184ffd3f18::t_37d26477095988 120-122,139
+  s_3320184ffd3f18::t_b9839286b78970 28,35-38,42-43,46-49,207-212,272,298,315,317,322-329,334,336
+  s_3320184ffd3f18::t_86fe32bfab69fd 89-91,96,100-112,123,132
+  s_3320184ffd3f18::t_0ab91d11641b81 330
+  s_3320184ffd3f18::t_ce4172bba07ab1 331-332
+src/routing/stage/signals.rs
+  s_3320184ffd3f18::t_5cadc25bbf4449 174-177
+src/routing/stage/store.rs
+  s_3320184ffd3f18::t_3661d24701dc0c 132
+  s_3320184ffd3f18::t_79512c8d2a0e1c 16-24,37-38,40,49-51,91,93-104,121,123,133-135,137,152-159,164-168,195,252,254,260-283,297,365-366,378-382,385,389-391,396,399-400,451-452
+  s_3320184ffd3f18::t_0ab91d11641b81 305
+benches/stage_router.rs
+  s_3320184ffd3f18::t_3c7f16c24ea942 29-34,57,60,155-178,225,238,259-284,293,298-299,311-329,334-335
+src/proxy/failover.rs
+  s_3320184ffd3f18::t_1d49d19e07e6d3 58-60
+  s_3320184ffd3f18::t_37d26477095988 64
+src/routing/stage.rs
+  s_3320184ffd3f18::t_37d26477095988 23,162-167,223,226
+  s_3320184ffd3f18::t_2204f4d29f0cad 258-270,280-297
+  s_3320184ffd3f18::t_f9bac96ed04c03 25,28
+  s_3320184ffd3f18::t_2fbb90f825a8e4 219,222,228-231
+  s_3320184ffd3f18::t_2ddf08e53784e0 336
+src/routing.rs
+  s_3320184ffd3f18::t_37d26477095988 733-738,806,838
+  s_3320184ffd3f18::t_d65f38b0f03b59 707
+src/routing/stage/store/tests.rs
+  s_3320184ffd3f18::t_6bab6978fcd9bd 412,479,552,556,634,659,694,698,702,719,727,768,778,827,835,881,981,1021,1029,1066,1074,1110
+  s_3320184ffd3f18::t_781ab356ebdbd8 940
+src/routing/context.rs
+  s_3320184ffd3f18::t_781ab356ebdbd8 315-316,321-322
+  s_3320184ffd3f18::t_116c53dc9acfd5 122
+  s_3320184ffd3f18::t_daa7feeb68fe6a 1-121,123-248,254-314,317-320,323-329
+  s_3320184ffd3f18::t_3661d24701dc0c 249-253
+src/routing/stage/store/scope_tests.rs
+  s_3320184ffd3f18::t_2c28bd2319969d 1-145,151-163,169-300,305-336,341-374,380-465
+  s_3320184ffd3f18::t_3661d24701dc0c 146-150,164-168,301-304,337-340,375-379
+src/routing/stage/store/entries.rs
+  s_3320184ffd3f18::t_0cfa80e74754f9 1-193,195-290
+  s_3320184ffd3f18::t_116c53dc9acfd5 194
+src/routing/stage/tests.rs
+  s_3320184ffd3f18::t_b6a6f1af8106dd 1-186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7c912291ed21aa747b8d95a255d6121b73e3ba46",
+  "prompts": {},
+  "sessions": {
+    "s_3320184ffd3f18": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c745023-96e0-4776-93a4-9f66826f90c6",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
