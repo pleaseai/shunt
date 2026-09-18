@@ -190,6 +190,36 @@ pub(crate) fn token_refresh_client() -> reqwest::Client {
         .clone()
 }
 
+/// Build the credential-bearing Antigravity client for one configured target.
+/// Reqwest invokes this policy before following every redirect; validating the
+/// complete target URL prevents a bearer from crossing an origin or endpoint
+/// boundary, including redirects that remain on a lookalike host.
+pub(crate) fn antigravity_inference_client(
+    configured_base: &str,
+) -> anyhow::Result<reqwest::Client> {
+    let configured_base = configured_base.to_string();
+    let initial = configured_base.parse::<reqwest::Url>()?;
+    if !crate::auth::antigravity::auth::is_safe_inference_url(
+        &initial.join("/v1internal:streamGenerateContent?alt=sse")?,
+        &configured_base,
+    ) {
+        anyhow::bail!("unsafe Antigravity inference origin")
+    }
+    Ok(reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            let safe = crate::auth::antigravity::auth::is_safe_inference_url(
+                attempt.url(),
+                &configured_base,
+            );
+            if attempt.previous().len() >= 10 || !safe {
+                attempt.error("unsafe or excessive Antigravity inference redirect refused")
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()?)
+}
+
 pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<()> {
     let bytes = serde_json::to_vec_pretty(value)?;
     // Deliberately the no-mkdir entry point: a missing credential directory
