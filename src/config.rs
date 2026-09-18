@@ -3395,13 +3395,23 @@ impl Config {
     ///
     /// The upstream scope matters because a row prices one upstream: a model
     /// mapped only as the `codex` upstream model does not make an `anthropic`
-    /// row usable. A client model *id*, by contrast, is forwarded as-is to
-    /// whichever upstream serves it, so it is not scoped.
+    /// row usable. A client model *id* is scoped the same way — routing returns
+    /// as soon as a `[[models]]` entry claims the id, and only for the upstreams
+    /// that entry names — except under a `stage_router`, whose tier target is
+    /// resolved through the whole chain again and can land anywhere.
     ///
     /// `routing::resolve_model_chain` ends by routing anything no `[[routes]]`
     /// or `[[route_prefixes]]` entry claimed to `server.default_provider` as a
     /// single route, so every model string is requestable on that one upstream
     /// and a row naming it is never warned about.
+    ///
+    /// Every comparison here is case-insensitive, including the prefix one,
+    /// even though routing compares case-sensitively throughout. The two are
+    /// composed: `PriceTable::resolve` matches a row against the request model
+    /// case-insensitively, so the row prices a request as long as *some*
+    /// spelling of its model routes to this upstream — and the client, not the
+    /// operator, chooses the spelling. Mirroring routing's case-sensitivity
+    /// here would warn about rows that price real traffic.
     fn pricing_model_is_requestable(&self, row: &PricingOverride) -> bool {
         // Match against the string routing matches against: it strips the
         // `[1m]` hint before route lookup, and the resolver trims.
@@ -3414,7 +3424,29 @@ impl Config {
         }
         let matches = |candidate: &str| candidate.eq_ignore_ascii_case(model);
         self.models.iter().any(|entry| {
-            matches(&entry.id)
+            // The id alone is not enough: `resolve_chain` returns as soon as a
+            // `[[models]]` entry claims the id, and it returns only the
+            // upstreams that entry can route to. A row on any other upstream
+            // is inert however the id is spelled.
+            let id_reaches_this_upstream = matches(&entry.id)
+                && match (&entry.stage_router, &entry.upstream_model) {
+                    // A stage router resolves its tier target through the whole
+                    // chain again, so it can land on any upstream. Claiming
+                    // reachability is the safe answer: a warning here would be
+                    // a false one.
+                    (Some(_), _) => true,
+                    // An `upstream_model` map routes to the providers it names
+                    // and nowhere else.
+                    (None, Some(upstreams)) if !upstreams.is_empty() => {
+                        upstreams.contains_key(&row.upstream)
+                    }
+                    // Without a map the entry produces no route at all and
+                    // routing falls through, so let the `[[routes]]`,
+                    // `[[route_prefixes]]`, and default-provider arms answer
+                    // instead of claiming the id here.
+                    (None, _) => false,
+                };
+            id_reaches_this_upstream
                 || entry
                     .upstream_model
                     .as_ref()
@@ -3424,11 +3456,17 @@ impl Config {
             route.provider == row.upstream
                 && (matches(&route.model) || route.upstream_model.as_deref().is_some_and(matches))
         }) || self.route_prefixes.iter().any(|route| {
-            // Prefix routing is case-sensitive (`routing::resolve_model_chain`),
-            // so this predicate has to be too, or it would call a row usable
-            // that no request can ever reach. `starts_with` is also
-            // char-boundary safe, which a byte slice of the model is not.
-            route.provider == row.upstream && model.starts_with(&route.prefix)
+            // Case-insensitive on purpose, even though prefix routing itself is
+            // case-sensitive. An override row matches the request model
+            // case-insensitively, so the row is reachable if *any* spelling of
+            // it reaches this upstream — and the client picks the spelling. A
+            // row `VENDOR-x` behind the prefix `vendor-` prices every request
+            // for `vendor-x`. `get(..len)` yields `None` on a non-char-boundary
+            // index, so a multi-byte model is never sliced mid-character.
+            route.provider == row.upstream
+                && model
+                    .get(..route.prefix.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(&route.prefix))
         })
     }
 
@@ -6835,17 +6873,20 @@ cache_write = 4.125
     /// `[[route_prefixes]]` entry can actually produce **on that row's own
     /// upstream**, or any model at all on `server.default_provider` — routing
     /// falls through to that provider for everything it did not otherwise
-    /// claim.
+    /// claim. A `[[models]]` id is scoped like everything else: routing returns
+    /// it only on the upstreams its own entry names.
     #[test]
     fn pricing_override_model_is_requestable_only_via_builtins_models_and_routes() {
         // `default_provider` is `anthropic`, so the tables here belong to
         // `codex` and the negative cases use a third upstream that routing
         // never reaches.
         let config = Config {
-            models: vec![model_config(
-                "team-sonnet",
-                Some(model_upstream("codex", "gpt-5.2")),
-            )],
+            models: vec![
+                model_config("team-sonnet", Some(model_upstream("codex", "gpt-5.2"))),
+                // A stage router resolves its tier target through the whole
+                // chain again, so its id can land on any upstream.
+                router_model("router-model", "capable-tier", "efficient-tier"),
+            ],
             routes: vec![RouteConfig {
                 model: "legacy-alias".to_string(),
                 provider: "codex".to_string(),
@@ -6876,16 +6917,24 @@ cache_write = 4.125
         for (upstream, model) in [
             ("bedrock-eu", "claude-sonnet-4-6"),
             ("bedrock-eu", "us.anthropic.claude-sonnet-4-6-20260217-v1:0"),
-            // A client model id is forwarded as-is to whichever upstream serves
-            // it, so it is requestable on any of them.
-            ("bedrock-eu", "team-sonnet"),
-            // The `[[models]]` upstream_model map entry is keyed by upstream.
+            // The `[[models]]` upstream_model map entry is keyed by upstream —
+            // both the id and the mapped upstream model resolve on `codex`.
+            ("codex", "team-sonnet"),
             ("codex", "GPT-5.2"),
+            // A stage router's target is resolved through the whole chain
+            // again, so the router's id stays reachable anywhere.
+            ("bedrock-eu", "router-model"),
             ("codex", "legacy-alias"),
             ("codex", "vendor-sonnet"),
             // A prefix route on this row's upstream serves the model, at the
             // prefix's own case.
             ("codex", "vendor-anything"),
+            // ...and at any other case too. Prefix *routing* is case-sensitive,
+            // so `VENDOR-anything` itself falls through to the default
+            // provider — but the override row matches case-insensitively, so
+            // this row prices every `vendor-anything` request that the prefix
+            // does route to `codex`.
+            ("codex", "VENDOR-anything"),
             ("codex", "évariste"),
             // Everything routing did not claim goes to the default provider.
             ("anthropic", "my-sonnet-alias"),
@@ -6898,6 +6947,10 @@ cache_write = 4.125
         for (upstream, model) in [
             ("bedrock-eu", "my-sonnet-alias"),
             ("bedrock-eu", "gpt-5.3"),
+            // `resolve_chain` returns as soon as a `[[models]]` entry claims the
+            // id, and only for the upstreams that entry's `upstream_model` map
+            // names — so a row for it on any other upstream prices nothing.
+            ("bedrock-eu", "team-sonnet"),
             // Mapped only as the `codex` upstream model: a row on another
             // upstream naming it prices nothing.
             ("bedrock-eu", "gpt-5.2"),
@@ -6905,9 +6958,6 @@ cache_write = 4.125
             ("bedrock-eu", "legacy-alias"),
             ("bedrock-eu", "vendor-sonnet"),
             ("bedrock-eu", "vendor-anything"),
-            // Prefix routing is case-sensitive, so a model that differs from
-            // the prefix only in case reaches nothing.
-            ("codex", "VENDOR-anything"),
             // A model whose first char shares no byte-prefix boundary with the
             // configured `é` prefix: the check must answer, not panic.
             ("codex", "aé"),
