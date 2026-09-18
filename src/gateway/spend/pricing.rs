@@ -3,8 +3,8 @@
 //! usage into a cost.
 //!
 //! Pure and side-effect free. Nothing calls [`PriceTable::resolve`] yet — the
-//! meter that will is not implemented (see `docs/gateway-spend-limits.md`) —
-//! so this module owns no state and reads no request.
+//! meter that will is not implemented (see `docs/gateway-spend-limits.md`) — so
+//! this module owns no state and reads no request.
 //!
 //! Money is carried as **femto-USD** (1e-15 USD) in `u64` rather than as a
 //! float: rates are multiplied by token counts and summed across many requests,
@@ -13,12 +13,10 @@
 //!
 //! The unit has to be this fine because both configured floors apply at once:
 //! [`MIN_USD_PER_MILLION`] × [`MIN_MULTIPLIER`] is exactly 1 femto-USD per
-//! token, the smallest nonzero rate the type can carry. A coarser unit —
-//! nano-USD, say — quantizes that combination to zero, so a config stating a
-//! positive discount on a positive rate would price every request at $0. The
-//! headroom at the other end is ample: `u64::MAX` femto-USD is about $18,446,
-//! both per token and per request, far above any rate or request cost that
-//! exists.
+//! token, the smallest nonzero rate the type can carry, and a coarser unit —
+//! nano-USD, say — quantizes that combination to zero, pricing a valid discount
+//! at $0. The other end is [`MAX_USD_PER_MILLION`]: `u64::MAX` femto-USD is
+//! about $18,446, per token and per request alike.
 
 pub mod catalog;
 
@@ -197,18 +195,21 @@ fn list_price(row: &'static (&'static str, f64, f64, f64, f64)) -> Rates {
 }
 
 /// The smallest multiplier the parts-per-million scale can carry, and the
-/// smallest USD-per-million rate the config accepts.
-/// `Config::validate_pricing` rejects anything below these so a positive number
-/// in the config can never silently price requests at $0.
+/// smallest USD-per-million rate the config accepts; `Config::validate_pricing`
+/// rejects anything below them.
 ///
-/// They remain the right floors under the femto-USD unit because they are the
-/// floors that unit was chosen for: `MIN_USD_PER_MILLION` is 1e6 femto-USD per
-/// token, and scaling that by `MIN_MULTIPLIER` (1 part per million) leaves
-/// exactly 1 femto-USD per token — the smallest representable nonzero rate.
-/// Both floors can therefore be taken at once and the resolved rate is still
-/// positive.
+/// They are the floors the femto-USD unit was chosen for: `MIN_USD_PER_MILLION`
+/// is 1e6 femto-USD per token, which `MIN_MULTIPLIER` (1 part per million)
+/// scales to exactly 1 femto-USD per token — the smallest representable nonzero
+/// rate — so both floors can be taken at once and the rate stays positive.
 pub const MIN_MULTIPLIER: f64 = 1.0 / ONE_MILLION as f64;
 pub const MIN_USD_PER_MILLION: f64 = 0.001;
+
+/// The ceiling the same quantization imposes: the largest whole USD-per-million
+/// rate whose femto-USD-per-token value still fits `u64`. Above it
+/// `femto_usd_per_token` saturates, pricing at `u64::MAX` rather than at what
+/// the config states.
+pub const MAX_USD_PER_MILLION: f64 = 18_446_744_073.0;
 
 fn multiplier_ppm(multiplier: f64) -> u32 {
     if !multiplier.is_finite() || multiplier <= 0.0 || multiplier > 1.0 {
@@ -232,8 +233,8 @@ fn scale_femto_usd(value: u64, ppm: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        PriceTable, Rates, Usage, LIST_PRICES, MIN_MULTIPLIER, MIN_USD_PER_MILLION,
-        WEB_SEARCH_LIST_PRICE_FEMTO_USD,
+        PriceTable, Rates, Usage, LIST_PRICES, MAX_USD_PER_MILLION, MIN_MULTIPLIER,
+        MIN_USD_PER_MILLION, WEB_SEARCH_LIST_PRICE_FEMTO_USD,
     };
     use crate::config::{PricingConfig, PricingOverride};
 
@@ -323,31 +324,27 @@ mod tests {
             .is_some());
     }
 
-    /// The lookup strips Claude Code's `[1m]` hint from the request's model, so
-    /// a row that spells its `model` with the hint has to be stored stripped
-    /// too — otherwise it can never match anything.
+    /// A row's `model` is stored normalized exactly as the lookup normalizes the
+    /// request's: trimmed, stripped of Claude Code's `[1m]` hint, and compared
+    /// case-insensitively. A row spelling the hint would otherwise never match,
+    /// because the lookup strips it from the request.
     #[test]
-    fn override_model_carrying_the_context_window_hint_still_matches() {
+    fn override_model_matching_normalizes_case_whitespace_and_the_hint() {
         let pricing = PricingConfig {
             multiplier: 1.0,
-            overrides: vec![override_row("bedrock-eu", " custom[1m] ", 6.0)],
+            overrides: vec![
+                override_row("bedrock-eu", "Sonnet-Alias", 4.0),
+                override_row("bedrock-eu", " custom[1m] ", 6.0),
+            ],
         };
         let table = PriceTable::from_config(Some(&pricing));
+
         for model in ["custom", "custom[1m]", "CUSTOM[1M]"] {
             let rates = table
                 .resolve("bedrock-eu", model, "unknown")
                 .unwrap_or_else(|| panic!("the override matches {model}"));
             assert_eq!(rates.input, 6_000_000_000);
         }
-    }
-
-    #[test]
-    fn override_and_model_matching_are_case_insensitive() {
-        let pricing = PricingConfig {
-            multiplier: 1.0,
-            overrides: vec![override_row("bedrock-eu", "Sonnet-Alias", 4.0)],
-        };
-        let table = PriceTable::from_config(Some(&pricing));
 
         let rates = table
             .resolve("bedrock-eu", "SONNET-alias", "unknown")
@@ -418,8 +415,8 @@ mod tests {
         assert_eq!(rates.cost_femto_usd(&usage), 10_875_000_000_000);
 
         // Every class at its maximum: each product alone nearly fills `u128`,
-        // so the four summed overflow it. The sum must saturate rather than
-        // panic on the debug build CI runs.
+        // so the four summed overflow it and must saturate rather than panic on
+        // the debug build CI runs.
         let huge = Rates {
             input: u64::MAX,
             output: u64::MAX,
@@ -437,14 +434,14 @@ mod tests {
         );
     }
 
-    /// The two floors `Config::validate_pricing` enforces are the reason money
-    /// is carried in femto-USD: taken together they must still leave a positive
-    /// rate. Under a coarser unit the smallest catalog rate at the smallest
-    /// multiplier, and an override at the rate floor under any discount, both
-    /// quantize to zero — a config that reads as a valid discount pricing every
+    /// The bounds `Config::validate_pricing` enforces are the reason money is
+    /// carried in femto-USD: every rate inside them must quantize to a positive
+    /// value that has not saturated. Under a coarser unit the smallest catalog
+    /// rate at the smallest multiplier, and an override at the rate floor under
+    /// a discount, both quantize to zero — a valid-looking config pricing every
     /// request at $0.
     #[test]
-    fn the_configured_floors_never_resolve_to_a_zero_rate() {
+    fn the_configured_rate_bounds_neither_underflow_nor_saturate() {
         let table = PriceTable::from_config(Some(&PricingConfig {
             multiplier: MIN_MULTIPLIER,
             overrides: Vec::new(),
@@ -453,18 +450,29 @@ mod tests {
             let rates = table
                 .resolve("anthropic", id, id)
                 .unwrap_or_else(|| panic!("{id} is a built-in"));
-            for (class, rate) in [
-                ("input", rates.input),
-                ("output", rates.output),
-                ("cache_read", rates.cache_read),
-                ("cache_write", rates.cache_write),
-            ] {
-                assert!(
-                    rate > 0,
-                    "{id} {class} priced at zero at the min multiplier"
-                );
-            }
+            let classes = [
+                rates.input,
+                rates.output,
+                rates.cache_read,
+                rates.cache_write,
+            ];
+            assert!(
+                classes.iter().all(|rate| *rate > 0),
+                "{id} prices at zero at the min multiplier: {rates:?}"
+            );
         }
+
+        // The ceiling is the last rate that still fits; one whole USD per
+        // million more saturates instead of pricing what the config states.
+        let at_ceiling = Rates::from_usd_per_million(MAX_USD_PER_MILLION, 1.0, 1.0, 1.0).input;
+        assert!(
+            at_ceiling < u64::MAX && at_ceiling > u64::MAX - 1_000_000_000,
+            "{at_ceiling} must be the last rate below u64::MAX"
+        );
+        assert_eq!(
+            Rates::from_usd_per_million(MAX_USD_PER_MILLION + 1.0, 1.0, 1.0, 1.0).input,
+            u64::MAX
+        );
 
         // The rate floor under a real discount, and the rate floor under the
         // multiplier floor — the latter is exactly 1 femto-USD per token, the
@@ -472,26 +480,18 @@ mod tests {
         for (multiplier, expected) in [(0.85, 850_000), (MIN_MULTIPLIER, 1)] {
             let table = PriceTable::from_config(Some(&PricingConfig {
                 multiplier,
-                overrides: vec![PricingOverride {
-                    upstream: "bedrock-eu".into(),
-                    model: "vendor-alias".into(),
-                    input: MIN_USD_PER_MILLION,
-                    output: MIN_USD_PER_MILLION,
-                    cache_read: MIN_USD_PER_MILLION,
-                    cache_write: MIN_USD_PER_MILLION,
-                }],
+                overrides: vec![override_row(
+                    "bedrock-eu",
+                    "vendor-alias",
+                    MIN_USD_PER_MILLION,
+                )],
             }));
-            let rates = table
-                .resolve("bedrock-eu", "vendor-alias", "vendor-alias")
-                .expect("the override prices the alias");
             assert_eq!(
-                rates,
-                Rates {
-                    input: expected,
-                    output: expected,
-                    cache_read: expected,
-                    cache_write: expected,
-                },
+                table
+                    .resolve("bedrock-eu", "vendor-alias", "vendor-alias")
+                    .expect("the override prices the alias")
+                    .input,
+                expected,
                 "multiplier {multiplier}"
             );
         }
