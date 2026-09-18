@@ -1,0 +1,19 @@
+docs/dashboard-metrics.md
+  s_67bfbb6bdb1b8e::t_e3721e6139bd8f 114-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fdb20d59afebde51653f1f905837d1c4cb8793f1",
+  "prompts": {},
+  "sessions": {
+    "s_67bfbb6bdb1b8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "514c2f80-96a0-48a6-af5f-65a2c0b4b260",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
