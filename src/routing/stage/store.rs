@@ -17,9 +17,10 @@
 //! Pins are scoped per agent, not only per session: a `Task` child sends its
 //! parent's session id with its own agent id, and keys to an entry of its own
 //! ([`entries::SessionKey`]) with its own eviction budget
-//! ([`MAX_TRACKED_CHILD_PINS`]). The entry also carries the compaction latch
-//! ([`entries::StageSession::compacted`]), which is the one thing a pin holds
-//! that is read *before* the turn is scored rather than after.
+//! ([`entries::MAX_TRACKED_CHILD_PINS`]). The entry also carries the
+//! compaction latch ([`entries::StageSession::compacted`]), which is the one
+//! thing a pin holds that is read *before* the turn is scored rather than
+//! after.
 
 mod entries;
 
@@ -37,6 +38,12 @@ use crate::config::StageRouterConfig;
 use crate::routing::context::RouterContext;
 use entries::{session_key, Entries, PinScope, SessionKey, StageSession};
 
+// Re-exported for the two builds that actually read the caps: `tests` below
+// (via `use super::*`) and `bench_support` behind the `bench` feature. The
+// default build compiles neither, and an ungated re-export there is an
+// `unused_imports` error under CI's `-D warnings` (the `Test default build
+// (no ui feature)` job), which `--all-features` runs cannot see.
+#[cfg(any(test, feature = "bench"))]
 pub(crate) use entries::{MAX_TRACKED_CHILD_PINS, MAX_TRACKED_SESSIONS};
 
 /// A pin [`StageRouterStore::apply`] prepared but has not written.
