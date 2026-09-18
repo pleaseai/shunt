@@ -1213,23 +1213,20 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     json_secure(json!({ "providers": providers }))
 }
 
-/// Observation-only view of `[server.status]` polling, ordered by provider
-/// name. Configured sources that have not completed their first poll are
-/// returned as `unknown` so the dashboard can distinguish "enabled but not yet
-/// observed" from "disabled". Never consulted by routing, failover, or
-/// pool/cooldown decisions.
 /// `GET /admin/api/routes` — the resolved routing table, for the dashboard.
 ///
 /// The same view the proxy's unauthenticated `GET /routes` serves, built by the
 /// same `crate::routes::snapshot` so the two cannot drift. It is registered here
-/// rather than pointed at because the dashboard must keep working when
-/// `[server.admin].bind` puts the admin surface on its own listener: `/routes`
-/// is not registered on that listener, and a cross-origin fetch would fail the
-/// shell's `connect-src 'self'` besides.
+/// rather than pointed at so the admin namespace keeps its own authentication:
+/// this copy applies the admin credential independently of the proxy's
+/// discovery route, which is unauthenticated on purpose. Redirecting the
+/// dashboard at that route would make an admin-gated screen depend on an
+/// ungated endpoint; authenticating the route itself is not an option either,
+/// since discovery clients rely on it being open.
 ///
-/// Unlike its proxy twin this one authenticates, which costs nothing and means
-/// an operator who has deliberately left the proxy surface unauthenticated has
-/// not thereby widened what the admin credential gates.
+/// Authenticating here costs nothing and means an operator who has deliberately
+/// left the proxy surface unauthenticated has not thereby widened what the admin
+/// credential gates.
 async fn routes(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let state = state.refreshed();
     if authenticate(&state, &headers).is_none() {
@@ -1238,6 +1235,11 @@ async fn routes(State(state): State<AppState>, headers: HeaderMap) -> Response {
     json_secure(crate::routes::snapshot(&state))
 }
 
+/// Observation-only view of `[server.status]` polling, ordered by provider
+/// name. Configured sources that have not completed their first poll are
+/// returned as `unknown` so the dashboard can distinguish "enabled but not yet
+/// observed" from "disabled". Never consulted by routing, failover, or
+/// pool/cooldown decisions.
 async fn status(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let state = state.refreshed();
     if authenticate(&state, &headers).is_none() {
