@@ -8,7 +8,7 @@ import {
   createRoute,
   createRouter,
 } from '@tanstack/react-router';
-import { useEffect, useState, type ReactElement } from 'react';
+import { useLayoutEffect, useState, type ReactElement } from 'react';
 
 import { API } from './api';
 import { Dashboard } from './Dashboard';
@@ -31,16 +31,27 @@ function applyTheme(theme: Theme): void {
   else document.documentElement.dataset.theme = theme;
 }
 
+// Applied at module scope, not from `ThemeToggle`'s effect: the toggle does not
+// mount until the asynchronous session bootstrap resolves, so a returning
+// operator whose stored choice differs from their OS setting would see the
+// loading state -- and sometimes the shell's first frame -- on the wrong
+// palette. Running here keeps that inside the bundle, so the page needs no
+// inline script and the current CSP is unchanged.
+applyTheme(readTheme());
+
 export function ThemeToggle(): ReactElement {
   const [theme, setTheme] = useState<Theme>(readTheme);
 
-  useEffect(() => applyTheme(theme), [theme]);
+  // Layout, not passive: a passive effect runs after the browser paints, so the
+  // toggle's own pressed state would commit one frame before the palette did and
+  // every switch would flash the old colours. Applying it here keeps the DOM
+  // mutation in the same commit as the render that caused it.
+  useLayoutEffect(() => applyTheme(theme), [theme]);
 
   function select(values: Theme[]): void {
     const next = values[0];
     if (!next) return;
     setTheme(next);
-    applyTheme(next);
     try {
       localStorage.setItem(THEME_KEY, next);
     } catch {

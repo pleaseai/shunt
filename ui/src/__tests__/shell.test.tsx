@@ -43,6 +43,26 @@ describe('admin shell routing', () => {
 });
 
 describe('theme toggle', () => {
+  /**
+   * The stored preference has to reach the DOM when the bundle runs, not when
+   * `ThemeToggle` mounts: the toggle appears only after the session bootstrap
+   * resolves, so a returning operator whose choice differs from their OS
+   * setting would otherwise watch the loading state in the wrong palette.
+   *
+   * Importing the module *is* the behaviour under test -- the call sits at
+   * module scope and runs once per module instance -- so rendering `<App />`
+   * again would prove nothing. Reset the registry and re-import with the
+   * preference already seeded; deleting that line turns this red.
+   */
+  it('applies the stored theme when the module loads, before the toggle mounts', async () => {
+    vi.resetModules();
+    localStorage.setItem('shunt-admin-theme', 'dark');
+
+    await import('../router');
+
+    expect(document.documentElement.dataset.theme).toBe('dark');
+  });
+
   it('applies the chosen theme and remembers it', async () => {
     stubSession();
     render(<App />);
