@@ -59,6 +59,30 @@
   color-scheme: dark;
 }
 
+/* Stays unlayered, next to the `:root` blocks it overrides.
+ *
+ * Unlayered CSS beats every layered rule regardless of specificity, so inside
+ * `@layer base` this block could never win against the unlayered `:root`
+ * defaults above -- which hold the *dark* palette -- and a device set to
+ * `prefers-color-scheme: light` with no explicit choice rendered dark. It sits
+ * after the explicit-theme blocks so an operator's `data-theme` still decides:
+ * `dark` is excluded by the `:not()`, and `light` sets these same values.
+ */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #fff;
+    --text: #1a1f2e;
+    --text-secondary: #5a6a7e;
+    --border: rgba(208, 216, 224, 0.95);
+    --card: rgba(255, 255, 255, 0.78);
+    --track: #e8ecf2;
+    --shadow: 0 10px 28px rgba(0, 0, 0, 0.1);
+    --danger: #b42336;
+    --page-background: radial-gradient(ellipse 130% 70% at 50% -5%, #ddeafe 0%, #fff 55%);
+  }
+}
+
 /* The ported stylesheet lives in `@layer base` on purpose.
  *
  * Unlayered CSS beats every layered rule regardless of specificity, and
@@ -172,14 +196,6 @@
     .usage-meta { font-size: 0.76rem; }
     .status { white-space: normal; }
     .row-actions { white-space: normal; }
-  }
-  @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) {
-      color-scheme: light;
-      --bg: #fff; --text: #1a1f2e; --text-secondary: #5a6a7e; --border: rgba(208,216,224,0.95);
-      --card: rgba(255,255,255,0.78); --track: #e8ecf2; --shadow: 0 10px 28px rgba(0,0,0,0.10); --danger: #b42336;
-      --page-background: radial-gradient(ellipse 130% 70% at 50% -5%, #ddeafe 0%, #fff 55%);
-    }
   }
   @media (forced-colors: active) {
     .usage-track { border: 1px solid CanvasText; }
