@@ -105,9 +105,11 @@ opt-in and inert when unconfigured — to make one of them mandatory. The
 aggregates the dashboard needs are small; borrowing a general aggregation
 pipeline to compute them is not a saving.
 
-### C. shunt owns the aggregate; both sinks read from it
+### C. shunt owns the aggregate as an additional read model
 
-The gauge pattern, applied uniformly. Adopted below.
+The gauge pattern's *ownership* applied uniformly — shunt holds the value, and
+the dashboard reads it in-process. Not its *emission*: the sinks keep receiving
+individual observations, for the reason Decision 1 sets out. Adopted below.
 
 ## Decision 1 — shunt owns the aggregate
 
