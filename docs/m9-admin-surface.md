@@ -537,6 +537,16 @@ It is set from exactly three places, all terminal by construction:
   before any upstream POST, and that path marks the account too
   (`auth::resolve_claude_account_classified`).
 
+The Codex pool (`chatgpt_oauth`) marks from the same three places, with its
+own typed marker (`auth::codex::auth::TerminalRefresh`, carried on
+`ChatGptAuthError` next to the logged `detail`), since #616: a `token_env` 401
+and a still-401 retry set `ServedRequest`, and a terminal refresh — the
+`invalid_grant` code from `auth.openai.com`, no refresh token stored, or a
+rotated pair lost before writeback — sets `RefreshGrant` from both the
+resolution path and the 401 → force-refresh path. Before that fix every Codex
+refresh failure was one undifferentiated five-minute cooldown, so a dead Codex
+account read as live on the dashboard between attempts, indefinitely.
+
 It is cleared by proof the credential works again — but the proof has to match
 the cause. A served response (`mark_healthy_scoped`) clears any mark, and so
 does a re-login through `POST /admin/accounts/claude/{name}/complete`, which

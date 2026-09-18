@@ -285,7 +285,7 @@ async fn fetch_codex_usage(
     let credential = match resolve_chatgpt_account(account, client).await {
         Ok(credential) => credential,
         Err(error) => {
-            tracing::debug!(provider, account = %account.name, error = %error.message, "usage poller: failed to resolve codex account credential");
+            tracing::debug!(provider, account = %account.name, error = %error.detail, "usage poller: failed to resolve codex account credential");
             return None;
         }
     };

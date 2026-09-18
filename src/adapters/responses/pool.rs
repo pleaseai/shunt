@@ -1288,7 +1288,11 @@ pub(super) async fn admit_and_resolve(
 /// [`CodexAuthStore::get_valid_chatgpt`] using the credential path and keep that
 /// auth-layer guard through atomic writeback. On failure the account is cooled
 /// down for 5 minutes and logged, and `None` signals the caller to rotate to the
-/// next account.
+/// next account. A *terminal* failure — the provider rejected the stored refresh
+/// grant, or there is none to send — also marks the account `needs_relogin`:
+/// this is the dominant steady state for a dead account (once its access token
+/// expires, the refresh is rejected here rather than after a 401), and without
+/// the mark it cycles through the cooldown forever reported as `Live` (#616).
 pub(super) async fn resolve_or_cooldown(
     state: &AppState,
     route: &Route,
@@ -1303,10 +1307,18 @@ pub(super) async fn resolve_or_cooldown(
                 Duration::from_secs(5 * 60),
                 "auth",
             );
+            if error.is_terminal() {
+                state.accounts.mark_needs_relogin(
+                    &route.provider,
+                    account,
+                    accounts::ReloginCause::RefreshGrant,
+                );
+            }
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
-                error = %error.message,
+                error = %error.detail,
+                terminal = error.is_terminal(),
                 "failed to resolve ChatGPT OAuth account"
             );
             None
@@ -1341,6 +1353,14 @@ pub(super) async fn force_refresh_or_cooldown(
             account,
             Duration::from_secs(5 * 60),
             "auth",
+        );
+        // A static credential cannot be refreshed, so a 401 here means it is
+        // expired or revoked — terminal by definition, with no grant left to
+        // retry. Mark it so the operator sees a dead account on the dashboard.
+        state.accounts.mark_needs_relogin(
+            &route.provider,
+            account,
+            accounts::ReloginCause::ServedRequest,
         );
         tracing::warn!(
             provider = %route.provider,
@@ -1391,10 +1411,22 @@ pub(super) async fn force_refresh_or_cooldown(
                 Duration::from_secs(5 * 60),
                 "auth",
             );
+            // The provider will never accept this refresh token again, so the
+            // 5-minute retry loop can only repeat the same rejected grant. A
+            // transient failure (5xx, network, timeout) must not set the mark —
+            // that would report a healthy account as dead on a momentary blip.
+            if error.is_terminal() {
+                state.accounts.mark_needs_relogin(
+                    &route.provider,
+                    account,
+                    accounts::ReloginCause::RefreshGrant,
+                );
+            }
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
-                error = %error.message,
+                error = %error.detail,
+                terminal = error.is_terminal(),
                 "failed to force-refresh ChatGPT OAuth account"
             );
             None
@@ -1479,6 +1511,13 @@ pub(super) fn classify_retry(
             account,
             Duration::from_secs(5 * 60),
             "auth",
+        );
+        // A live grant yielding a bearer the API still rejects means the
+        // account is de-authorized upstream, not momentarily unlucky.
+        state.accounts.mark_needs_relogin(
+            &route.provider,
+            account,
+            accounts::ReloginCause::ServedRequest,
         );
         tracing::warn!(
             provider = %route.provider,
