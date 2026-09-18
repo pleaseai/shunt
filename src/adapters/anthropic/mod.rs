@@ -53,6 +53,18 @@ async fn forward(
         .config
         .provider(&route.provider)
         .expect("route provider was validated");
+    // Applied once, at the adapter's entry, so every path below — pool
+    // selection, fable detection, the body's `model` normalization, deferral
+    // stripping, the upstream URL — reads the same `upstream_model`. Doing it
+    // per path would leave one of them deciding on the model the client asked
+    // for while the wire carried another.
+    let mut route = route;
+    if let Some(classifier_model) =
+        auto_mode_classifier::classifier_upstream_model(provider, body.json())
+    {
+        route.upstream_model = classifier_model.to_string();
+    }
+    let route = route;
     if provider.auth == AuthMode::ClaudeOauth {
         return forward_claude_oauth(state, route, uri, headers, body).await;
     }

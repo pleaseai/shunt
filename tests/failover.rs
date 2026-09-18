@@ -93,6 +93,7 @@ fn upstream(
         auth: Some(auth),
         effort: None,
         service_tier: None,
+        classifier_model: None,
         count_tokens: CountTokens::Tiktoken,
         websocket: false,
         tool_search: None,

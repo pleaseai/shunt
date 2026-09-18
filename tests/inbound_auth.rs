@@ -58,6 +58,7 @@ fn test_config(upstream_base_url: &str, api_key_env: &'static str) -> Config {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             websocket: false,
             tool_search: None,

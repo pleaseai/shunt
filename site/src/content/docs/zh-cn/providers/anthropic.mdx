@@ -122,6 +122,44 @@ anthropic = "claude-sonnet-5"
 是 Anthropic 类型的情况下尝试它的实时模型列表;否则回退到 shunt
 内置的 Claude 目录快照 —— 见 [模型发现](/zh-cn/guides/model-discovery/)。
 
+## 自动模式分类器
+
+当 Claude Code 运行在自动模式时,每一个离开工作区或触及网络的动作都会经过一次**权限分类器**
+—— 一个带有独立系统提示、向模型索要待执行动作安全判定的 Messages 请求。它是唯一一个在订阅
+OAuth 凭据下缺少 `api.anthropic.com` 所查找的 Claude Code identity 块的第一方请求,因此 shunt
+只在这一个请求上恢复该块,其余请求仍然逐字节透传;这次修复所避免的故障见
+[429 故障排查条目](/zh-cn/reference/troubleshooting/)。
+
+分类器默认并不使用会话自身的模型。在 Claude Code 2.1.226 上实测:若服务端下发了模型就用它,
+否则用 **Sonnet 档位别名**,再否则才用会话自身的模型 —— 这正是
+`ANTHROPIC_DEFAULT_SONNET_MODEL` 同样会移动分类器的原因,已在链路上验证。该结论读自分发的
+客户端,因此它描述的是所测版本,而非一项契约。
+
+设置 `classifier_model` 可以在网关一侧把分类器请求固定到某个模型,而不改变会话自身各轮所用的
+模型:
+
+```toml
+[providers.anthropic]
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+classifier_model = "claude-sonnet-5"
+```
+
+该键仅在 `kind = "anthropic"` 的提供方上被接受,且它是**该提供方内部的模型重映射**,而不是通往
+另一个提供方的路由。分类器请求会携带 `stop_sequences`,而 shunt 的 Responses 转换会丢掉这个字段:
+经由 Sonnet 别名指向 Codex 上游后,分类器重试了它的第一阶段,每次权限检查多花 5–7 秒。不设置该键
+(默认)时,分类器仍使用客户端请求的模型。
+
+在网关登录部署中,你也可以改为通过[托管设置](/zh-cn/guides/gateway-login/#托管设置与模型策略)把别名下发给客户端:
+
+```toml
+[server.gateway.policies.cli.env]
+ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-5"
+```
+
+这同样会移动分类器,但它改变的是**整个会话**中 `sonnet` 的解析目标,而不仅仅是分类器 —— 并且当
+设置了 `availableModels` 列表时,该 id 也必须出现在列表中。
+
 ## 校验
 
 ```bash

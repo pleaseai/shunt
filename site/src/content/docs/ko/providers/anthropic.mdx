@@ -123,6 +123,47 @@ anthropic = "claude-sonnet-5"
 Anthropic 종류일 때 먼저 그쪽의 실시간 모델 목록을 시도합니다. 그렇지 않으면 shunt의 내장 Claude 카탈로그
 스냅샷으로 폴백합니다 — [모델 디스커버리](/ko/guides/model-discovery/)를 참고하세요.
 
+## 자동 모드 분류기
+
+Claude Code를 자동 모드로 실행하면, 워크스페이스를 벗어나거나 네트워크를 건드리는 모든 동작은
+**권한 분류기**를 거칩니다 — 대기 중인 동작에 대한 안전성 판정을 모델에게 묻는, 시스템 프롬프트가
+따로 붙은 별도의 Messages 요청입니다. 이 요청은 구독 OAuth 자격 증명에서 `api.anthropic.com`이
+확인하는 Claude Code identity 블록을 빠뜨리는 유일한 퍼스트파티 요청이므로, shunt는 이 요청에만
+그 블록을 복원하고 나머지는 전부 바이트 단위 그대로 둡니다. 이 복원이 막아주는 실패는
+[429 문제 해결 항목](/ko/reference/troubleshooting/)에 설명되어 있습니다.
+
+분류기는 기본적으로 세션의 모델을 쓰지 않습니다. Claude Code 2.1.226에서 측정한 바로는, 서버가
+모델을 지정해 주면 그것을, 아니면 **Sonnet 티어 별칭**을, 그마저도 없으면 세션 자신의 모델을
+씁니다 — `ANTHROPIC_DEFAULT_SONNET_MODEL`이 분류기까지 옮기는 이유이며, 와이어에서 확인했습니다.
+이는 배포된 클라이언트에서 읽어낸 내용이라 계약이 아니라 측정한 버전에 대한 설명입니다.
+
+`classifier_model`을 설정하면 세션 자신의 턴이 어떤 모델로 도는지는 그대로 둔 채, 게이트웨이 쪽에서
+분류기 요청만 특정 모델에 고정할 수 있습니다:
+
+```toml
+[providers.anthropic]
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+classifier_model = "claude-sonnet-5"
+```
+
+이 키는 `kind = "anthropic"` 프로바이더에서만 받으며, **해당 프로바이더 안에서의 모델 리맵**이지
+다른 프로바이더로 가는 라우트가 아닙니다. 분류기 요청에는 `stop_sequences`가 실려 있는데 shunt의
+Responses 변환은 이 필드를 떨어뜨립니다: Sonnet 별칭을 통해 Codex 업스트림을 가리키게 했더니
+분류기가 첫 단계를 재시도했고 권한 확인마다 5~7초가 더 걸렸습니다. 키를 설정하지 않으면(기본값)
+분류기는 클라이언트가 요청한 모델을 그대로 씁니다.
+
+게이트웨이 로그인 배포에서는 대신 [관리형 설정](/ko/guides/gateway-login/#관리형-설정과-모델-정책)으로 별칭을 클라이언트에
+내려보낼 수 있습니다:
+
+```toml
+[server.gateway.policies.cli.env]
+ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-5"
+```
+
+같은 방식으로 분류기를 옮기지만, 분류기만이 아니라 **세션 전체**에서 `sonnet`이 가리키는 대상이
+바뀝니다 — 그리고 `availableModels` 목록을 설정했다면 그 id가 목록에도 있어야 합니다.
+
 ## 검증
 
 ```bash

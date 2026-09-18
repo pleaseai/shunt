@@ -1490,6 +1490,27 @@ pub struct ProviderConfig {
     /// `Config::normalize_service_tiers`. Off by default (opt-in).
     #[serde(default)]
     pub service_tier: Option<String>,
+    /// Upstream model id for Claude Code's auto-mode permission classifier
+    /// request (`kind = "anthropic"` only).
+    ///
+    /// The classifier is identified by its request shape alone — the opening
+    /// sentence of its system prompt, the same predicate
+    /// [`crate::adapters::anthropic`] uses to restore the identity block — so
+    /// this only ever moves that one request and never ordinary traffic. Claude
+    /// Code picks the classifier's model from its Sonnet tier alias, which is
+    /// what makes the request follow `ANTHROPIC_DEFAULT_SONNET_MODEL` on the
+    /// client side; this key is the gateway-side equivalent, and unlike the
+    /// environment variable it moves the classifier without changing what
+    /// `sonnet` resolves to for the rest of the session.
+    ///
+    /// Deliberately a model *remap within this provider*, not a route: the
+    /// classifier request carries `stop_sequences`, which the Responses
+    /// translation drops, and a classifier pointed at a Responses upstream
+    /// retries its first stage and adds seconds to every permission check. Off
+    /// by default — an unset key leaves the classifier on whatever model the
+    /// client asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_model: Option<String>,
     /// How `POST /v1/messages/count_tokens` is answered for this provider.
     #[serde(default)]
     pub count_tokens: CountTokens,
@@ -2216,6 +2237,10 @@ pub enum ConfigError {
     AntigravityMigrationRequired(String),
     #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", or \"kimi_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
+    #[error("providers.{provider}.classifier_model requires kind = \"anthropic\"; it remaps Claude Code's auto-mode classifier request within the provider, and only the anthropic adapter carries that request shape")]
+    ClassifierModelWrongKind { provider: String },
+    #[error("providers.{provider}.classifier_model must not be empty")]
+    EmptyClassifierModel { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but kind is not \"anthropic\"")]
     ClaudeOauthWrongKind { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but base_url host {host} is not anthropic.com; refusing to send a subscription token off-origin")]
@@ -2499,6 +2524,7 @@ impl ProviderConfig {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -2524,6 +2550,7 @@ impl ProviderConfig {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -2549,6 +2576,7 @@ impl ProviderConfig {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -2574,6 +2602,7 @@ impl ProviderConfig {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -2621,6 +2650,7 @@ impl Default for Config {
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     service_tier: None,
+                    classifier_model: None,
                     count_tokens: CountTokens::default(),
                     accounts: Vec::new(),
                     account_scope: Vec::new(),
@@ -2694,6 +2724,7 @@ impl Default for Config {
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     service_tier: None,
+                    classifier_model: None,
                     count_tokens: CountTokens::default(),
                     accounts: Vec::new(),
                     account_scope: Vec::new(),
@@ -3505,6 +3536,24 @@ impl Config {
             // Bounded-retry sanity (issue #48): the bounds check lives on
             // RetryConfig so the invariant travels with the type.
             provider.retry.validate(name)?;
+            // `classifier_model` is read only by the anthropic adapter, and it
+            // is a remap *within* this provider — a value on any other kind
+            // would silently do nothing, so say so at boot rather than leave the
+            // operator to infer it from a classifier that never moved. Empty is
+            // rejected for the same reason: it is a typo that would otherwise
+            // rewrite the request's `model` to the empty string.
+            if let Some(classifier_model) = &provider.classifier_model {
+                if provider.kind != ProviderKind::Anthropic {
+                    return Err(ConfigError::ClassifierModelWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                if classifier_model.trim().is_empty() {
+                    return Err(ConfigError::EmptyClassifierModel {
+                        provider: name.clone(),
+                    });
+                }
+            }
             // A cursor_oauth provider injects the operator's stored Cursor
             // subscription bearer, so — like xai_oauth below — its base_url must
             // stay on a Cursor host over https, never a gateway or plaintext
@@ -4683,6 +4732,76 @@ mod tests {
         config
             .validate()
             .expect("a sandboxed provider is servable off-loopback");
+    }
+
+    #[test]
+    fn classifier_model_is_accepted_on_an_anthropic_provider() {
+        use crate::config::ProviderConfig;
+
+        let mut provider = ProviderConfig::anthropic("https://api.anthropic.com");
+        provider.classifier_model = Some("claude-sonnet-5".to_string());
+        let mut config = Config::default();
+        config.providers.insert("pinned".to_string(), provider);
+
+        let config = config
+            .validate()
+            .expect("classifier_model is an anthropic-kind key");
+        assert_eq!(
+            config
+                .provider("pinned")
+                .unwrap()
+                .classifier_model
+                .as_deref(),
+            Some("claude-sonnet-5")
+        );
+    }
+
+    #[test]
+    fn classifier_model_is_rejected_on_a_non_anthropic_provider() {
+        use crate::config::ProviderConfig;
+
+        // A `responses` provider never sees the classifier request shape, so a
+        // value here would silently do nothing.
+        let mut provider = ProviderConfig::responses(
+            "https://api.openai.com",
+            AuthMode::ApiKey,
+            Some("OPENAI_API_KEY"),
+        );
+        provider.classifier_model = Some("gpt-5.6".to_string());
+        let mut config = Config::default();
+        config.providers.insert("wrong-kind".to_string(), provider);
+
+        let error = config
+            .validate()
+            .expect_err("classifier_model must not be accepted on kind = \"responses\"");
+        assert!(
+            matches!(
+                &error,
+                ConfigError::ClassifierModelWrongKind { provider } if provider == "wrong-kind"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn an_empty_classifier_model_is_rejected() {
+        use crate::config::ProviderConfig;
+
+        let mut provider = ProviderConfig::anthropic("https://api.anthropic.com");
+        provider.classifier_model = Some("   ".to_string());
+        let mut config = Config::default();
+        config.providers.insert("blank".to_string(), provider);
+
+        let error = config
+            .validate()
+            .expect_err("a whitespace-only classifier_model must not rewrite `model` to it");
+        assert!(
+            matches!(
+                &error,
+                ConfigError::EmptyClassifierModel { provider } if provider == "blank"
+            ),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

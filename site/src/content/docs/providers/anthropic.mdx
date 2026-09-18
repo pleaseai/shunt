@@ -126,6 +126,49 @@ The map key is the `[[upstreams]].name`, not the preset id. With
 list from `server.default_provider` when it is Anthropic-kind; otherwise, it falls back to shunt's
 builtin Claude catalog snapshot — see [Model Discovery](/guides/model-discovery/).
 
+## Auto-mode classifier
+
+When Claude Code runs in auto mode, every action that leaves the workspace or touches the network
+goes through a **permission classifier** — a separate Messages request whose system prompt asks the
+model for a safety verdict on the pending action. It is the one first-party request that omits the
+Claude Code identity block `api.anthropic.com` looks for on a subscription-OAuth credential, so
+shunt restores that block on this request alone and leaves everything else byte-for-byte; the
+[429 troubleshooting row](/reference/troubleshooting/) describes the failure that repairs.
+
+The classifier does not use the session's model by default. Measured on Claude Code 2.1.226, it
+takes a server-supplied model if the client was given one, otherwise the **Sonnet tier alias**, and
+only then the session's own model — which is why `ANTHROPIC_DEFAULT_SONNET_MODEL` moves the
+classifier too, as seen on the wire. That was read out of the distributed client, so it describes
+the version measured rather than a contract.
+
+Set `classifier_model` to pin the classifier request to one model from the gateway side, without
+touching what the session's own turns run on:
+
+```toml
+[providers.anthropic]
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+classifier_model = "claude-sonnet-5"
+```
+
+The key is accepted on `kind = "anthropic"` providers only, and it is a **model remap inside that
+provider**, never a route to a different one. The classifier request carries `stop_sequences`, which
+shunt's Responses translation drops: pointed at a Codex upstream through the Sonnet alias, the
+classifier retried its first stage and every permission check took 5–7 s longer. An unset key (the
+default) leaves the classifier on whatever model the client asked for.
+
+On a gateway-login deployment you can push the alias to the client instead, through
+[managed settings](/guides/gateway-login/#managed-settings-and-model-policy):
+
+```toml
+[server.gateway.policies.cli.env]
+ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-5"
+```
+
+That moves the classifier the same way, but it changes what `sonnet` resolves to for the **whole
+session**, not just the classifier — and the id must also appear in `availableModels` when that list
+is set.
+
 ## Verify
 
 ```bash

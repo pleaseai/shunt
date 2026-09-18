@@ -69,6 +69,7 @@ fn zen_config(mock_base_url: String) -> Config {
         auth: None,
         effort: None,
         service_tier: None,
+        classifier_model: None,
         count_tokens: Default::default(),
         websocket: false,
         tool_search: None,
