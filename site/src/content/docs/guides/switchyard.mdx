@@ -102,20 +102,23 @@ result.
 | :-- | :-- | :-- |
 | Scoring core | `switchyard-libsy` | Same crate, same constants |
 | Signal extraction | Upstream's, provider-neutral | shunt's own, from Anthropic Messages blocks |
-| `tests_passed` / `repeated_failure` / `compacted` | Available to the scorer | Always `false` — never populated |
+| `tests_passed` / `repeated_failure` | Available to the scorer | Always `false` — never populated |
+| `compacted` | Available to the scorer | Set from `x-claude-code-context-compacted` and latched onto the session pin |
 | Judge on ambiguous turns | Optionally available | Never; falls open to the picker default |
 | Tier stability across turns | Scored per turn | Session-pinned with asymmetric hysteresis |
 | Workload | Terminal-Bench 2.1 tasks | Claude Code sessions |
 
-Two of those cut in opposite directions. shunt leaves `tests_passed`,
-`repeated_failure`, and `compacted` unpopulated, which costs it libsy's
-compaction override and its repeated-failure escalation — strictly less signal
-than the benchmark had. Each needs evidence this extractor does not have: a
-compaction marker no test pins yet, and, for the other two, the *text* of a tool
-result. The wire carries that text — a `tool_result` block has a `content`
+Two of those cut in opposite directions. shunt leaves `tests_passed` and
+`repeated_failure` unpopulated, which costs it libsy's repeated-failure
+escalation — strictly less signal than the benchmark had. Both need evidence
+this extractor does not have: the *text* of a tool result. The wire carries that
+text — a `tool_result` block has a `content`
 field — but the extractor deliberately does not read it: deciding these signals
 from free-form result text means content-pattern heuristics, and a structural
-proxy would fire for `ls` as readily as for a test run. Against that, shunt's
+proxy would fire for `ls` as readily as for a test run. `compacted` is not in
+that group: it comes from a request header rather than from the transcript, so
+libsy's compaction override does fire here — see
+[Stage Router](/guides/stage-router/). Against that, shunt's
 hysteresis exists precisely because a per-turn flip is expensive in a Claude
 Code session in ways a benchmark harness never pays (see
 [below](#what-shunt-adds)).
@@ -210,11 +213,13 @@ There used to be a fourth — a hard *de-escalate* on a settled turn whose tests
 had passed. Upstream removed it; a passing test now only clears libsy's own
 capable hold, which shunt does not use.
 
-Of rule 1's three triggers, only critical severity fires in shunt today, through
-the two paths in the severity table above. The compaction half is dormant because
-no compaction marker is pinned yet, and the repeated-failure half because libsy
-decides *same failure* by matching result text against its error table, which the
-`is_error` boolean Claude Code sends cannot support. shunt's own "the last two
+Two of rule 1's three triggers fire in shunt today. Critical severity reaches it
+through the two paths in the severity table above, and a compacted context
+reaches it from `x-claude-code-context-compacted` — a request header rather than
+anything in the transcript, which is also why that trigger can fire on a turn
+with no tool activity at all. The repeated-failure half stays dormant because
+libsy decides *same failure* by matching result text against its error table,
+which the `is_error` boolean Claude Code sends cannot support. shunt's own "the last two
 completed results both failed" rule already reaches rule 1 by way of `severity`.
 
 ### 5. Hysteresis
@@ -272,10 +277,20 @@ core of shunt's integration rather than a refinement on it.
 
 ### Session pinning that does not leak the session id
 
-Decisions are pinned per `(advertised model id, session id)`, keyed on a
-SHA-256 prefix — the session id is hashed and never stored. The store caps at
-4096 sessions, evicts on the insert path with no background task, and persists
-nothing.
+Decisions are pinned per `(advertised model id, session id, agent id)`, each id
+keyed on a SHA-256 prefix — both are hashed and never stored. The agent id is
+`x-claude-code-agent-id`, which Claude Code sends on every delegated turn, so a
+`Task` child pins apart from the parent that spawned it: its failures do not
+escalate the parent, and its turns do not advance the parent's dwell. The store
+caps at 4096 parent sessions and, separately, at 4096 child pins; it evicts on
+the insert path with no background task, persists nothing, and a trim only ever
+reaches the scope it grew, so a wide fan-out cannot evict the parent waiting on
+it.
+
+The pin also carries the compaction latch. The turn that sends
+`x-claude-code-context-compacted` is scored as compacted, and the flag is stored,
+so the turns after it — the header is sent once per compaction — are scored the
+same way until the pin expires or a reload drops it.
 
 A pin also remembers a fingerprint of the router table it was made under, so
 editing one router drops only its own pins across a hot reload. That fingerprint

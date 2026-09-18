@@ -90,5 +90,65 @@ introduces no new routing behaviour, no config key, and no new code path, so
 it adds no benchmark arm: the one function it touches, `signals::extract`, is
 already an arm of `benches/stage_router.rs`. The lanes, the
 `[models.router]` discriminator, and the driven algorithms are PR 1 onward — see
-ADR-0005 §8 for the sequence and each step's definition of done. Nothing in that
-plan is implemented yet.
+ADR-0005 §8 for the sequence and each step's definition of done. PR 1 is §2
+below; the rest of the sequence is not implemented yet.
+
+## 2. Request hints, the pin scope, and the compaction latch (PR 1)
+
+### What it is
+
+`src/routing/context.rs` reads five inbound headers into a `RouterContext`,
+built once per request and stored nowhere:
+
+| Header | Read as |
+| :-- | :-- |
+| `x-claude-code-session-id` | The session the pin is keyed on |
+| `x-claude-code-agent-id` | The delegated agent the pin is scoped to |
+| `x-claude-code-request-class` | `main`, `subagent`, `workflow`, `compaction`, or `auxiliary`; an unrecognised value reads as absent |
+| `x-claude-code-agent-type` | Carried for the `[models.subagents]` `by_type` map (ADR-0005 §8 PR 3); nothing routes on it yet |
+| `x-claude-code-context-compacted` | Read by presence of a non-blank value (`manual`, `auto`, `reactive`) |
+
+Nothing is percent-decoded: the class is compared against ASCII literals an
+encoded byte can never equal, and the two ids are only ever hashed, where the
+encoded form is as stable across turns as the decoded one.
+
+### Why the agent id and not the class
+
+Claude Code gates four of the five headers client-side — behind any
+non-Anthropic base URL, which is every shunt deployment, they are off until the
+operator sets `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`. `x-claude-code-agent-id` is
+not gated. So `RouterContext::is_delegated` reads the class when it is there
+(`subagent` and `workflow` are delegated; `main`, `compaction`, and `auxiliary`
+are not) and otherwise falls back to "a non-blank agent id means delegated
+work" — which is the live path on every default deployment, and is what makes
+child pins work with no operator action. What the gate additionally unlocks is
+the class-authoritative rule and the compaction latch.
+
+`main` carrying an agent id is parent traffic under that rule. The combination
+has never been observed on the wire, so the branch is defensive: it keeps the
+header that *names* the class ahead of the one that merely correlates with it.
+
+### What changed
+
+| Change | Effect |
+| :-- | :-- |
+| The pin key gained a third element | `(advertised model id, sha256(session id)[..16], sha256(agent id)[..16])`, all zeros for a parent. A `Task` child reads and writes its own pin, so its failures no longer escalate the parent and its turns no longer advance the parent's dwell (ADR-0005 fact 4) |
+| A second eviction budget | `MAX_TRACKED_CHILD_PINS = 4096` beside `MAX_TRACKED_SESSIONS = 4096`. A commit trims only the scope it grew, against that scope's cap, so a wide fan-out cannot evict the parents waiting on it. The TTL sweep stays scope-blind |
+| The pin carries `compacted` | The turn sending `x-claude-code-context-compacted` is scored with `ToolSignals.compacted`, reaching libsy's hard override — `capable`, source `override` — even with no tool activity in the transcript. The flag is latched onto the pin, so the turns after it (the header is one-shot) resolve the same way. It clears with the pin: TTL expiry, or a reload that changes the router table |
+| `GET /protocol` | `request_headers.consumed` now lists `x-claude-code-request-class`, `x-claude-code-agent-type`, and `x-claude-code-context-compacted` beside the session, agent, and parent-agent ids |
+| Two benchmark arms | `store_turn_new_child_at_capacity` (the child-budget twin of `store_turn_new_session_at_capacity`) and `resolve_chain_routed_delegated` (the routed path under a child's headers, read against `resolve_chain_routed`) |
+
+`docs/stage-router.md` §4 is the implementation record for the key, the budgets,
+and the latch; §4.2 covers the latch specifically.
+
+### Not in this PR
+
+The `[models.subagents]` `by_type` map and the read-only carve-out ADR-0005 §11
+describes for the `compaction` and `auxiliary` classes are later steps in the §8
+sequence. `x-claude-code-agent-type` is carried but routed on by nothing, and
+`x-claude-code-compaction` and `x-claude-code-prev-tool-durations` are read by
+nothing and are therefore deliberately absent from `/protocol`'s consumed list.
+
+A request carrying none of these hints — a bare `curl`, a Claude Code older than
+the headers, or the default gate-off deployment with no agent id — routes
+exactly as it did before.
