@@ -146,9 +146,10 @@ classifier_model = "claude-sonnet-5"
 ```
 
 该键仅在 `kind = "anthropic"` 的提供方上被接受,且它是**该提供方内部的模型重映射**,而不是通往
-另一个提供方的路由。分类器请求会携带 `stop_sequences`,而 shunt 的 Responses 转换会丢掉这个字段:
-经由 Sonnet 别名指向 Codex 上游后,分类器重试了它的第一阶段,每次权限检查多花 5–7 秒。不设置该键
-(默认)时,分类器仍使用客户端请求的模型。
+另一个提供方的路由。分类器请求依赖 `stop_sequences`。在 shunt 的 Responses 转换还会丢掉这个字段时,
+经由 Sonnet 别名指向 Codex 上游后,分类器重试了它的第一阶段,每次权限检查多花 5–7 秒。现在 shunt 会
+[在 Responses 路径上模拟 `stop_sequences`](/zh-cn/providers/openai/#停止序列),因此该失败不再适用,
+但该键仍然是提供方内部的重映射。不设置该键(默认)时,分类器仍使用客户端请求的模型。
 
 在网关登录部署中,你也可以改为通过[托管设置](/zh-cn/guides/gateway-login/#托管设置与模型策略)把别名下发给客户端:
 

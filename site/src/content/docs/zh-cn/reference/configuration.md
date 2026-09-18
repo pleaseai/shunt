@@ -343,7 +343,7 @@ codex-fallback = "gpt-5.2"
 | `api_key_header` | `bearer`(默认) \| `x_api_key` | 注入的密钥在哪个头部中发送。 |
 | `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。也适用于 `kind = "antigravity"`,会作为目录的 effort 后缀追加到不带后缀的 `gemini-*` `upstream_model` 上。 |
 | `count_tokens` | `tiktoken`(默认) \| `estimate` | `responses` 与 `cursor` provider:本地 tiktoken 计数 vs. `501 not_supported` 回退([详情](/zh-cn/guides/effort-and-context/#token-计数count_tokens))。 |
-| `classifier_model` | 模型 id | 仅 `anthropic` provider。Claude Code 自动模式权限分类器请求所用的上游模型,仅凭请求形态识别 —— 其余请求一律保持客户端请求的模型。它是**该 provider 内部的**重映射,而不是通往另一个 provider 的路由:分类器请求携带 `stop_sequences`,而 Responses 转换会丢掉该字段。默认不设置。参见 [Anthropic → 自动模式分类器](/zh-cn/providers/anthropic/#自动模式分类器)。 |
+| `classifier_model` | 模型 id | 仅 `anthropic` provider。Claude Code 自动模式权限分类器请求所用的上游模型,仅凭请求形态识别 —— 其余请求一律保持客户端请求的模型。它是**该 provider 内部的**重映射,而不是通往另一个 provider 的路由 —— 该键仅在 `anthropic` 上游上被接受。默认不设置。参见 [Anthropic → 自动模式分类器](/zh-cn/providers/anthropic/#自动模式分类器)。 |
 | `tool_search` | 未设置("auto",默认) \| `true` \| `false` | 在模型为 GPT-5.4+ 且风格不是 xAI/Grok 时,为 Claude Code 的工具搜索使用原生的客户端执行 `tool_search` 协议。未设置时仅对已验证支持的主机 —— ChatGPT/Codex 后端与 `api.openai.com` —— 默认使用原生协议,LiteLLM、vLLM、OpenRouter、自托管代理等其他所有 OpenAI 兼容端点都保留文本 shim。设为 `true` 可让已验证的自定义端点选择加入原生协议;设为 `false` 则始终强制使用 shim。见 [Codex → 工具搜索](/zh-cn/guides/codex/#原生协议)。 |
 
 只带名称的条目读取 `~/.shunt/accounts/claude/<name>.json`,该文件由 `shunt login claude --name <name> --mode oauth|import|setup-token` 创建。交互式 CLI 会提示选择这三种 mode,并推荐可刷新的 OAuth。`--long-lived` 保留为 `--mode setup-token` 的 deprecated alias。`SHUNT_CLAUDE_ACCOUNTS_DIR` 可覆盖存储目录。可刷新的 OAuth/import 文件会在 provider 轮换 refresh token 时原地更新,因此每个文件只能有一个正在运行的 owner。不要在多个 shunt 进程之间共享或独立复制该文件。请为每个进程分别预配,或在适合时使用静态 setup token。

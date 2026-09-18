@@ -152,10 +152,12 @@ classifier_model = "claude-sonnet-5"
 ```
 
 The key is accepted on `kind = "anthropic"` providers only, and it is a **model remap inside that
-provider**, never a route to a different one. The classifier request carries `stop_sequences`, which
-shunt's Responses translation drops: pointed at a Codex upstream through the Sonnet alias, the
-classifier retried its first stage and every permission check took 5–7 s longer. An unset key (the
-default) leaves the classifier on whatever model the client asked for.
+provider**, never a route to a different one. The classifier request depends on `stop_sequences`:
+while shunt's Responses translation still dropped that field, pointing the classifier at a Codex
+upstream through the Sonnet alias made it retry its first stage, and every permission check took
+5–7 s longer. shunt now [emulates `stop_sequences` on the Responses path](/providers/openai/#stop-sequences),
+so that particular failure no longer applies — the key stays an in-provider remap regardless. An
+unset key (the default) leaves the classifier on whatever model the client asked for.
 
 On a gateway-login deployment you can push the alias to the client instead, through
 [managed settings](/guides/gateway-login/#managed-settings-and-model-policy):

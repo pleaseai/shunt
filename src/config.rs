@@ -1503,12 +1503,14 @@ pub struct ProviderConfig {
     /// environment variable it moves the classifier without changing what
     /// `sonnet` resolves to for the rest of the session.
     ///
-    /// Deliberately a model *remap within this provider*, not a route: the
-    /// classifier request carries `stop_sequences`, which the Responses
-    /// translation drops, and a classifier pointed at a Responses upstream
-    /// retries its first stage and adds seconds to every permission check. Off
-    /// by default — an unset key leaves the classifier on whatever model the
-    /// client asked for.
+    /// Deliberately a model *remap within this provider*, not a route. The
+    /// classifier request depends on `stop_sequences`: while the Responses
+    /// translation still dropped that field, a classifier pointed at a
+    /// Responses upstream retried its first stage and added seconds to every
+    /// permission check. The `model::stop_sequences` scanner now emulates them
+    /// gateway-side (issue #605), so that failure no longer applies — the key
+    /// stays an in-provider remap regardless. Off by default — an unset key
+    /// leaves the classifier on whatever model the client asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classifier_model: Option<String>,
     /// How `POST /v1/messages/count_tokens` is answered for this provider.
