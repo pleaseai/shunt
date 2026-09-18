@@ -95,6 +95,7 @@ Presence of this table enables the admin web surface for browser account provisi
 | `tokens_file` | _(unset)_ | Path to a file holding `name:token` pairs (one per line, or comma-separated), used when `tokens_env` is unset/empty. Also the **write** tier |
 | `session_ttl_secs` | `3600` | Browser session lifetime after login, in seconds |
 | `pending_ttl_secs` | `600` | Time allowed to finish a started provisioning flow, in seconds |
+| `hide_observed` | `false` | When `true`, shunt does not read host CLI/app logins at all. `GET /admin/api/observed` still requires admin auth but returns an empty list, and the dashboard's **Accounts and usage** table lists managed pool accounts only. Hot-applies on config reload |
 
 Admin tokens can come from the environment or a file. The named environment variable must contain one or more credentials, for example `SHUNT_ADMIN_TOKENS="ops:<token>"`. Alternatively, set `tokens_file` to a path (`~` is expanded) and put the pairs there — this is what [`shunt dashboard setup`](/reference/cli/#shunt-dashboard-setup) writes to `~/.shunt/admin-token`, so no secret has to live in the launch environment. When both are set, a non-empty `tokens_env` wins.
 

@@ -18,6 +18,12 @@ export interface SessionBootstrap {
    * stops being usable.
    */
   expiry_buffer_ms: number;
+  /**
+   * `[server.admin] hide_observed`: the gateway does not read this machine's
+   * provider logins, so `GET /admin/api/observed` is always empty. Optional
+   * because a gateway older than the option omits it.
+   */
+  hide_observed?: boolean;
 }
 
 export interface QuotaBucket {

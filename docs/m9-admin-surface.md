@@ -72,6 +72,7 @@ header = "x-shunt-admin-token"
 tokens_env = "SHUNT_ADMIN_TOKENS"
 session_ttl_secs = 3600   # browser session lifetime after login
 pending_ttl_secs = 600    # time to open the authorize URL and paste the code back
+# hide_observed = false   # (default) read host CLI/app logins for the usage table
 
 # Per-credential keys with an id the audit trail records. The key must come
 # from ${VAR} / ${file:...} / a SHUNT_* override — a literal is rejected at load
@@ -391,7 +392,13 @@ name-only account entry and reload.
 
 The dashboard is usage-first. `GET /admin/observed` discovers supported local
 credentials on each request but keeps every token/session in a private,
-non-serializable model. Claude Code checks its configured/default credential file,
+non-serializable model. Set `[server.admin].hide_observed = true` to skip that
+discovery: `GET /admin/api/observed` still authenticates and returns an empty
+`accounts` list without reading any of those sources, and
+`GET /admin/api/session` reports `hide_observed` so the SPA skips the read. The
+**Accounts and usage** table stays, listing managed pool accounts alone — it is
+also where their usage is shown, so removing it would hide the pool's numbers
+along with the host's logins. Claude Code checks its configured/default credential file,
 then macOS Keychain service `Claude Code-credentials`; Codex, Gemini, Kimi, and
 Grok read their CLI credential stores; Cursor opens Cursor.app's `state.vscdb`
 with `SQLITE_OPEN_READ_ONLY`. The endpoint masks account identity, labels

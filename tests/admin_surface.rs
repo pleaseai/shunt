@@ -92,6 +92,7 @@ fn admin_config(tokens_env: &str) -> Config {
         read_keys: Vec::new(),
         session_ttl_secs: 3600,
         pending_ttl_secs: 600,
+        hide_observed: false,
         oidc: None,
     });
     config
@@ -608,6 +609,60 @@ async fn admin_pool_repeats_shared_physical_state_per_upstream() {
         assert_eq!(section["accounts"][0]["name"], "shared-account");
         assert_eq!(section["accounts"][0]["utilization_5h"], 0.73);
     }
+}
+
+#[tokio::test]
+async fn hide_observed_returns_empty_accounts_and_tells_the_dashboard() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let dir = unique_dir();
+    let credentials = dir.join(".credentials.json");
+    std::fs::write(
+        &credentials,
+        r#"{"claudeAiOauth":{"accessToken":"hide-observed-access","refreshToken":"must-not-escape","expiresAt":0,"subscriptionType":"max"}}"#,
+    )
+    .unwrap();
+    vars.set("CLAUDE_CREDENTIALS", &credentials);
+    vars.set("SHUNT_TEST_ADMIN_HIDE_OBSERVED", "ops:hide-secret");
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_HIDE_OBSERVED");
+    config.server.admin.as_mut().unwrap().hide_observed = true;
+    let gateway = start(config).await;
+    let client = reqwest::Client::new();
+
+    // Still an authenticated route: hiding observations must not turn it into
+    // an unauthenticated probe for whether the option is set.
+    let anonymous = client
+        .get(format!("{}/admin/api/observed", gateway.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+    // A discoverable Claude login exists, and the list is empty anyway.
+    let observed = client
+        .get(format!("{}/admin/api/observed", gateway.base_url))
+        .header("x-shunt-admin-token", "hide-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(observed.status(), StatusCode::OK);
+    let body: serde_json::Value = observed.json().await.unwrap();
+    assert_eq!(body["accounts"], serde_json::json!([]));
+
+    // The dashboard is a static bundle the server cannot edit per config, so
+    // the session bootstrap is where it learns to drop the observation copy.
+    let session = client
+        .get(format!("{}/admin/api/session", gateway.base_url))
+        .header("x-shunt-admin-token", "hide-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(session.status(), StatusCode::OK);
+    let session: serde_json::Value = session.json().await.unwrap();
+    assert_eq!(session["hide_observed"], true);
 }
 
 #[tokio::test]
@@ -4594,6 +4649,9 @@ async fn admin_session_bootstrap_serves_the_live_csrf_token_and_refresh_buffer()
     // The value routing itself enforces (`claude::auth::EXPIRY_BUFFER`), served
     // rather than duplicated in the bundle so the two cannot drift.
     assert_eq!(body["expiry_buffer_ms"], 300_000);
+    // Off unless `[server.admin] hide_observed` sets it, and always present so
+    // the dashboard never has to guess at an absent field.
+    assert_eq!(body["hide_observed"], false);
 
     // Cookie session: the served token must be the session's own.
     let login = client

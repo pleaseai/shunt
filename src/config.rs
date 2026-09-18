@@ -438,6 +438,11 @@ pub struct AdminConfig {
     /// Pending-login lifetime (time to open the authorize URL and paste back).
     #[serde(default = "default_admin_pending_ttl_secs")]
     pub pending_ttl_secs: u64,
+    /// When true, skip host CLI/app credential discovery. `GET /admin/api/observed`
+    /// still authenticates but returns an empty list without reading those
+    /// files, and the dashboard's usage table lists managed pool accounts only.
+    #[serde(default)]
+    pub hide_observed: bool,
     /// Optional external identity provider for browser sign-in.
     #[serde(default)]
     pub oidc: Option<AdminOidcConfig>,
@@ -4843,7 +4848,14 @@ mod tests {
         assert_eq!(admin.tokens_env, "SHUNT_ADMIN_TOKENS");
         assert_eq!(admin.session_ttl_secs, 3600);
         assert_eq!(admin.pending_ttl_secs, 600);
+        assert!(!admin.hide_observed);
         assert!(admin.oidc.is_none());
+    }
+
+    #[test]
+    fn admin_config_parses_hide_observed() {
+        let admin: AdminConfig = serde_json::from_str(r#"{"hide_observed":true}"#).unwrap();
+        assert!(admin.hide_observed);
     }
 
     #[test]
@@ -4860,6 +4872,7 @@ mod tests {
             read_keys: Vec::new(),
             session_ttl_secs: 3600,
             pending_ttl_secs: 600,
+            hide_observed: false,
             oidc: Some(AdminOidcConfig {
                 public_url: "http://127.0.0.1:8787".into(),
                 client_secret_env: secret_env.clone(),
@@ -4968,6 +4981,7 @@ mod tests {
             read_keys: Vec::new(),
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
+            hide_observed: false,
             oidc: None,
         };
 
@@ -5028,6 +5042,7 @@ mod tests {
             read_keys: Vec::new(),
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
+            hide_observed: false,
             oidc: None,
         };
 
@@ -6242,6 +6257,7 @@ provider = "deepseek"
             read_keys,
             session_ttl_secs: 3600,
             pending_ttl_secs: 600,
+            hide_observed: false,
             oidc: None,
         }
     }
