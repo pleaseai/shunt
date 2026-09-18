@@ -186,6 +186,18 @@ impl Entries {
         self.sessions.get(key)
     }
 
+    /// Set `compacted` on the entry under `key`, if one is there.
+    ///
+    /// Deliberately narrower than a general `get_mut`: `compacted` is the one
+    /// field no index orders, so writing it cannot desync the recency and
+    /// expiry orders this type exists to keep in step with the map. Every
+    /// indexed field — `seq`, `last_seen`, `ttl` — is left alone.
+    pub(crate) fn latch_compacted(&mut self, key: &SessionKey) {
+        if let Some(session) = self.sessions.get_mut(key) {
+            session.compacted = true;
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn contains_key(&self, key: &SessionKey) -> bool {
         self.sessions.contains_key(key)

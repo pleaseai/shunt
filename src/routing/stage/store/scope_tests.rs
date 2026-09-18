@@ -25,6 +25,13 @@
 //!   narrowing tests pin the latch's edges: it clears with the pin's TTL, a
 //!   probe reads it without writing it, and a sessionless request latches for
 //!   that one turn only.
+//! * *The latch survives two turns of one pin overlapping*:
+//!   `a_racing_ordinary_turn_does_not_clear_the_latch` and
+//!   `a_superseded_compacted_turn_still_latches` — the same interleaving with
+//!   the commits either way round, because the header is one-shot and neither
+//!   commit order may lose it. `an_inherited_latch_does_not_outlive_the_ttl`
+//!   bounds that: surviving a lost race is the header's privilege, not an
+//!   inherited flag's, or the latch would renew itself past every expiry.
 //!
 //! `main_with_an_agent_id_pins_as_the_parent` covers the class-authoritative
 //! branch §5 calls for and the live capture never observed.
@@ -461,5 +468,115 @@ fn the_latch_is_scoped_with_the_pin() {
     assert!(
         !turn_reads_compacted(&store, &child(CHILD), false, now),
         "a child spawned after the compaction starts with its own history"
+    );
+}
+
+/// Two turns of one pin overlap: the ordinary turn decides while the compacted
+/// turn is still between `apply` and `commit`, then commits after it. The
+/// latch must survive that later write.
+///
+/// Non-vacuity: drop the `session.compacted |=` merge in `commit` and this goes
+/// red — the ordinary turn writes the `false` it read from a snapshot taken
+/// before the header ever arrived.
+#[test]
+fn a_racing_ordinary_turn_does_not_clear_the_latch() {
+    let store = StageRouterStore::new();
+    let now = Instant::now();
+    let compacted_turn = RouterContext {
+        context_compacted: true,
+        ..parent()
+    };
+
+    // Both decide against the same empty store, in this order, so the ordinary
+    // turn takes the higher `seq` and cannot be superseded below.
+    let compacted = store.apply(
+        MODEL,
+        &compacted_turn,
+        &router(),
+        |_| efficient(),
+        false,
+        now,
+    );
+    let ordinary = store.apply(MODEL, &parent(), &router(), |_| efficient(), false, now);
+
+    store.commit(compacted.pin.expect("the compacted turn pins"), now);
+    store.commit(ordinary.pin.expect("the ordinary turn pins"), now);
+
+    assert!(
+        turn_reads_compacted(&store, &parent(), false, now),
+        "an older snapshot must not clear a latch it never saw"
+    );
+}
+
+/// The same interleaving with the commits the other way round: the ordinary
+/// turn wins the `seq` comparison, so the compacted turn's write arrives
+/// superseded. The flag must still land — the header is one-shot, so no later
+/// turn can resend it.
+///
+/// Non-vacuity: remove the `latch_compacted` call from the superseded branch
+/// and this goes red — `commit` returns early and the flag dies with the pin.
+#[test]
+fn a_superseded_compacted_turn_still_latches() {
+    let store = StageRouterStore::new();
+    let now = Instant::now();
+    let compacted_turn = RouterContext {
+        context_compacted: true,
+        ..parent()
+    };
+
+    let compacted = store.apply(
+        MODEL,
+        &compacted_turn,
+        &router(),
+        |_| efficient(),
+        false,
+        now,
+    );
+    let ordinary = store.apply(MODEL, &parent(), &router(), |_| efficient(), false, now);
+
+    // The later decision commits first, so the compacted one is superseded.
+    store.commit(ordinary.pin.expect("the ordinary turn pins"), now);
+    store.commit(compacted.pin.expect("the compacted turn pins"), now);
+
+    assert!(
+        turn_reads_compacted(&store, &parent(), false, now),
+        "a served compacted turn must latch even when its pin loses the seq race"
+    );
+}
+/// The superseded-path latch is the *header's* privilege, not an inherited
+/// flag's. A turn that merely read `compacted = true` can still be in flight
+/// when the pin it read expires; re-latching from it would write a dead latch
+/// onto the fresh entry that replaced it, for another full TTL, and could
+/// repeat for as long as turns keep overlapping.
+///
+/// Non-vacuity: key the superseded branch on `pin.session.compacted` instead of
+/// `pin.observed_compaction` and this goes red — the stalled turn revives a
+/// latch that `the_latch_clears_with_the_pin_ttl` just established must be gone.
+#[test]
+fn an_inherited_latch_does_not_outlive_the_ttl() {
+    let store = StageRouterStore::new();
+    let start = Instant::now();
+    let compacted_turn = RouterContext {
+        context_compacted: true,
+        ..parent()
+    };
+
+    // The real compaction, and a turn that inherits its latch without ever
+    // seeing the header.
+    turn_reads_compacted(&store, &compacted_turn, false, start);
+    let stalled = store.apply(MODEL, &parent(), &router(), |_| efficient(), false, start);
+
+    // The pin expires while that turn is still between `apply` and `commit`,
+    // and a later turn rebuilds the entry from scratch.
+    let expired = start + Duration::from_secs(router().session_ttl_seconds + 1);
+    let resumed = store.apply(MODEL, &parent(), &router(), |_| efficient(), false, expired);
+    store.commit(resumed.pin.expect("the resumed turn pins"), expired);
+
+    // Now the stalled turn lands, superseded by the entry built after expiry.
+    store.commit(stalled.pin.expect("the stalled turn pins"), expired);
+
+    assert!(
+        !turn_reads_compacted(&store, &parent(), false, expired),
+        "an inherited latch must not be revived onto a post-expiry pin"
     );
 }

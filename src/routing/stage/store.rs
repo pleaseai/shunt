@@ -60,6 +60,15 @@ pub(crate) use entries::{MAX_TRACKED_CHILD_PINS, MAX_TRACKED_SESSIONS};
 pub(crate) struct PendingPin {
     key: SessionKey,
     session: StageSession,
+    /// Whether *this* request carried `x-claude-code-context-compacted`, as
+    /// opposed to inheriting the latch from the pin it read.
+    ///
+    /// Only the header itself may re-latch a write that lost the `seq` race.
+    /// An inherited flag describes the pin as it was when this turn decided,
+    /// and that pin can expire while the turn is in flight — re-latching from
+    /// it would write a dead latch onto whatever fresh entry replaced it, for
+    /// another full TTL, and repeat for as long as turns keep overlapping.
+    observed_compaction: bool,
 }
 
 /// What one [`StageRouterStore::apply`] call decided, and what it displaced.
@@ -192,6 +201,7 @@ impl StageRouterStore {
             decision,
             pin: Some(PendingPin {
                 key,
+                observed_compaction: hints.context_compacted,
                 session: StageSession {
                     seq,
                     tier: decision.tier,
@@ -244,24 +254,47 @@ impl StageRouterStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current = entries.get(&pin.key).copied();
-        let superseded = current.is_some_and(|current| current.seq > pin.session.seq);
-        if superseded {
-            return None;
-        }
         // Filtered by the same predicate `apply` reads pins through: an entry
         // from another config generation, or one that has gone quiet past its
         // TTL, is absent to the next request and so displaces nothing. Without
         // the filter a resumed session would report a flip away from a tier no
         // request could have been served at.
-        let previous = current
-            .filter(|current| is_live(current, pin.session.fingerprint, now))
-            .map(|current| current.tier);
+        let live = current.filter(|current| is_live(current, pin.session.fingerprint, now));
+        let superseded = current.is_some_and(|current| current.seq > pin.session.seq);
+        if superseded {
+            // The tier this turn decided is stale, but the compaction flag it
+            // carried is not. `x-claude-code-context-compacted` is one-shot —
+            // the client consumes it as it sends it — so discarding the whole
+            // write would lose the escalation for the rest of the pin's life,
+            // and no later turn could reconstruct it. The turn was served, so
+            // keep just that flag and drop the tier and dwell it decided.
+            //
+            // Only onto a live entry: a pin from another config generation, or
+            // one past its TTL, is exactly where the latch is meant to clear.
+            //
+            // And only for the turn that actually carried the header —
+            // `session.compacted` may have been inherited from a pin that has
+            // since expired, and re-latching that would defeat the TTL reset.
+            if pin.observed_compaction && live.is_some() {
+                entries.latch_compacted(&pin.key);
+            }
+            return None;
+        }
+        let previous = live.map(|current| current.tier);
+        let mut session = pin.session;
+        // The latch only ever goes false -> true within one live pin. This turn
+        // decided against a snapshot read before the lock was released, so a
+        // `false` here means "no header on *this* turn", never "the session is
+        // no longer compacted"; without the merge an ordinary turn racing the
+        // compacted one would clear a latch it never saw. The two documented
+        // ways out — TTL expiry and a table reload — both make `live` `None`.
+        session.compacted |= live.is_some_and(|live| live.compacted);
         let scope = PinScope::of(&pin.key);
-        entries.insert(pin.key, pin.session);
+        entries.insert(pin.key, session);
         evict(&mut entries, scope, now);
         previous
-            .filter(|previous| *previous != pin.session.tier)
-            .map(|previous| (previous, pin.session.tier))
+            .filter(|previous| *previous != session.tier)
+            .map(|previous| (previous, session.tier))
     }
 
     /// [`StageRouterStore::apply`] with a session id in place of the full hint
