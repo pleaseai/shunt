@@ -41,7 +41,7 @@ use axum::{
     routing::{delete, get, post},
     Form, Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
@@ -264,6 +264,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/admin/api/observed", get(observed_accounts))
         .route("/admin/api/pool", get(pool))
         .route("/admin/api/status", get(status))
+        .route("/admin/api/routes", get(routes))
         .route("/admin/api/accounts/claude", post(add_account))
         .route(
             "/admin/api/accounts/claude/{name}/complete",
@@ -1217,6 +1218,26 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
 /// returned as `unknown` so the dashboard can distinguish "enabled but not yet
 /// observed" from "disabled". Never consulted by routing, failover, or
 /// pool/cooldown decisions.
+/// `GET /admin/api/routes` — the resolved routing table, for the dashboard.
+///
+/// The same view the proxy's unauthenticated `GET /routes` serves, built by the
+/// same `crate::routes::snapshot` so the two cannot drift. It is registered here
+/// rather than pointed at because the dashboard must keep working when
+/// `[server.admin].bind` puts the admin surface on its own listener: `/routes`
+/// is not registered on that listener, and a cross-origin fetch would fail the
+/// shell's `connect-src 'self'` besides.
+///
+/// Unlike its proxy twin this one authenticates, which costs nothing and means
+/// an operator who has deliberately left the proxy surface unauthenticated has
+/// not thereby widened what the admin credential gates.
+async fn routes(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = state.refreshed();
+    if authenticate(&state, &headers).is_none() {
+        return unauthorized();
+    }
+    json_secure(crate::routes::snapshot(&state))
+}
+
 async fn status(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let state = state.refreshed();
     if authenticate(&state, &headers).is_none() {
@@ -1875,7 +1896,7 @@ fn html_body_with_form_action(body: String, form_action: &str) -> Response {
 /// A JSON API response carrying admin data, with the same no-sniff / no-store
 /// guards as the HTML pages — account metadata and pool state are sensitive and
 /// must not be MIME-sniffed or cached by the browser or a shared intermediary.
-pub(super) fn json_secure(value: serde_json::Value) -> Response {
+pub(super) fn json_secure<T: Serialize>(value: T) -> Response {
     (
         [
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),

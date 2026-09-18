@@ -65,6 +65,25 @@ pub struct RouteEntry {
 pub async fn get(State(state): State<AppState>) -> Json<RoutesResponse> {
     // Snapshot the live config so this response reflects the latest reload.
     let state = state.refreshed();
+    let response = snapshot(&state);
+    tracing::info!(
+        routes = response.data.len(),
+        routers = response.routers.len(),
+        "served GET /routes discovery"
+    );
+    Json(response)
+}
+
+/// Build the `/routes` payload from an already-refreshed state.
+///
+/// Shared with the admin surface's `GET /admin/api/routes`, which serves this
+/// same view behind admin authentication. The duplication is deliberate rather
+/// than a redirect: `[server.admin].bind` may move the admin surface onto its
+/// own listener (`docs/admin-ui-delivery.md` Decision 2) while this route stays
+/// on the proxy's, and a dashboard that reached across listeners would break the
+/// moment an operator took that option. Both callers share this function so the
+/// table an operator reads cannot drift from the one a client resolves against.
+pub(crate) fn snapshot(state: &AppState) -> RoutesResponse {
     let data: Vec<RouteEntry> = state
         .config
         .routes
@@ -94,12 +113,7 @@ pub async fn get(State(state): State<AppState>) -> Json<RoutesResponse> {
             })
         })
         .collect();
-    tracing::info!(
-        routes = data.len(),
-        routers = routers.len(),
-        "served GET /routes discovery"
-    );
-    Json(RoutesResponse { data, routers })
+    RoutesResponse { data, routers }
 }
 
 #[cfg(test)]
