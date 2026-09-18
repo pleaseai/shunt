@@ -1,0 +1,36 @@
+site/src/content/docs/ja/reference/configuration.md
+  s_d39346c99c9c7e::t_246ea9f70ada22 346
+site/src/content/docs/ko/reference/configuration.md
+  s_d39346c99c9c7e::t_246ea9f70ada22 366
+src/config.rs
+  s_d39346c99c9c7e::t_0578d57866f95c 1506-1509,1511-1513
+  s_d39346c99c9c7e::t_4e182b2c1c3b85 1510
+site/src/content/docs/ja/providers/anthropic.mdx
+  s_d39346c99c9c7e::t_246ea9f70ada22 159-163
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_d39346c99c9c7e::t_246ea9f70ada22 346
+site/src/content/docs/ko/providers/anthropic.mdx
+  s_d39346c99c9c7e::t_246ea9f70ada22 151-155
+site/src/content/docs/zh-cn/providers/anthropic.mdx
+  s_d39346c99c9c7e::t_246ea9f70ada22 149-152
+site/src/content/docs/reference/configuration.md
+  s_d39346c99c9c7e::t_0578d57866f95c 482
+site/src/content/docs/providers/anthropic.mdx
+  s_d39346c99c9c7e::t_0578d57866f95c 155-160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8e70e6675a56687c875f24bfa73e42d39e28d86b",
+  "prompts": {},
+  "sessions": {
+    "s_d39346c99c9c7e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e54bc3ec-7ed1-41ae-8703-e02d135c1609",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
