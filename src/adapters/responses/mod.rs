@@ -152,10 +152,27 @@ async fn forward(
     } else {
         None
     };
+    // The Responses API has no `stop` parameter (Chat Completions does; Responses
+    // does not), so `stop_sequences` is emulated gateway-side in the
+    // Responses->Anthropic SSE translation rather than forwarded upstream
+    // (issue #605). Kept in request order: ties on the match position break by it.
+    let stop_sequences = request_json
+        .get("stop_sequences")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|sequence| !sequence.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     let turn = TurnOptions {
         client_wants_stream,
         thinking_enabled,
         tool_search_native,
+        stop_sequences,
     };
     let upstream_body = Arc::new(translate_request_value(
         request_json,
@@ -308,7 +325,7 @@ async fn forward(
         let websocket_options = ForwardOptions {
             upstream_body: upstream_body.clone(),
             auth,
-            turn,
+            turn: turn.clone(),
             codex_quota_account: codex_quota_account.clone(),
             estimate_input: estimate_input.clone(),
             started_at: None,
@@ -394,10 +411,26 @@ pub(crate) async fn chain_attempt(
     let tool_search_native = state
         .config
         .native_tool_search(&route.provider, &route.upstream_model);
+    // See `forward`'s matching extraction: the Responses API has no `stop`
+    // parameter, so `stop_sequences` is emulated gateway-side rather than
+    // forwarded upstream (issue #605).
+    let stop_sequences = request_json
+        .get("stop_sequences")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|sequence| !sequence.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     let turn = TurnOptions {
         client_wants_stream: true,
         thinking_enabled,
         tool_search_native,
+        stop_sequences,
     };
     let upstream_body = Arc::new(translate_request_value(
         request_json,

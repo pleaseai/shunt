@@ -36,6 +36,11 @@ pub(super) fn stream_events_response(
         .machine()
         .with_input_estimate(input_tokens_estimate)
         .without_content_accumulation();
+    // The receiver is held in an `Option` so an emulated stop sequence can drop
+    // it *with* the final chunk (issue #605): the codex_ws reader sees the
+    // receiver closed, abandons the turn and evicts the socket, which is exactly
+    // right for a turn shunt cut short — a half-consumed turn must not be pooled.
+    let events = Some(events);
     let output = stream::unfold(
         (buffered, events, machine, false),
         |(mut buffered, mut events, mut machine, finished)| async move {
@@ -45,15 +50,26 @@ pub(super) fn stream_events_response(
             loop {
                 let item = match buffered.take() {
                     Some(item) => Some(item),
-                    None => events.recv().await,
+                    None => match events.as_mut() {
+                        Some(events) => events.recv().await,
+                        None => return None,
+                    },
                 };
                 match item {
                     Some(Ok(event)) => {
                         let data = machine.apply(event).into_iter().collect::<String>();
                         if !data.is_empty() {
+                            // Only a stop-sequence stop aborts the upstream: a
+                            // normally completed turn must keep its receiver
+                            // alive so codex_ws can pool the socket instead of
+                            // reading a client cancellation into it.
+                            let aborted = machine.hit_stop_sequence();
+                            if aborted {
+                                events = None;
+                            }
                             return Some((
                                 Ok::<_, std::convert::Infallible>(Bytes::from(data)),
-                                (buffered, events, machine, false),
+                                (buffered, events, machine, aborted),
                             ));
                         }
                     }
@@ -123,6 +139,13 @@ pub(super) async fn json_events_response(
                 if let Some((status, error)) = machine.take_backend_error() {
                     return Err(backend_error(status, error));
                 }
+                // An emulated stop sequence (issue #605) is terminal for the same
+                // reason, except the upstream is still mid-turn: return now and
+                // let the dropped receiver abort it rather than draining the rest
+                // of an answer this message no longer contains.
+                if machine.hit_stop_sequence() {
+                    break;
+                }
             }
             Some(Err(error)) => {
                 tracing::warn!(error = %error.message, "codex websocket stream error");
@@ -167,12 +190,18 @@ mod tests {
     use super::{json_events_response, stream_events_response, ws_error_sse, RelayOptions};
 
     /// The default relay options for these tests: the `gpt-5.2-codex` model with
-    /// both protocol toggles off.
+    /// both protocol toggles off and no emulated stop sequences.
     fn relay_opts() -> RelayOptions {
+        relay_opts_with_stops(&[])
+    }
+
+    /// [`relay_opts`] plus emulated Anthropic `stop_sequences` (issue #605).
+    fn relay_opts_with_stops(sequences: &[&str]) -> RelayOptions {
         RelayOptions {
             model: "gpt-5.2-codex".to_string(),
             thinking_enabled: false,
             tool_search_native: false,
+            stop_sequences: sequences.iter().map(|s| (*s).to_string()).collect(),
         }
     }
 
@@ -398,5 +427,74 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes);
         // `response.created` opens the stream with `message_start`.
         assert!(text.contains("message_start"));
+    }
+
+    fn text_delta_event(delta: &str) -> ResponseEvent {
+        ResponseEvent {
+            event: Some("response.output_text.delta".to_string()),
+            data: json!({ "delta": delta }),
+        }
+    }
+
+    /// An emulated stop sequence is terminal for the collector even though the
+    /// upstream is still mid-turn: it must return without waiting for the channel
+    /// to close, mirroring the backend-error early return (issue #605).
+    #[tokio::test]
+    async fn json_events_response_returns_on_a_stop_sequence_without_channel_close() {
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Ok(created_event())).unwrap();
+        tx.try_send(Ok(text_delta_event("answer</block>garbage")))
+            .unwrap();
+        // Deliberately keep `tx` alive: the upstream is still generating, so the
+        // collector must return on the stop rather than draining to close.
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            json_events_response(None, rx, relay_opts_with_stops(&["</block>"])),
+        )
+        .await
+        .expect("collector returns without waiting for channel close")
+        .expect("a stop sequence is a successful turn");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["content"][0]["text"], "answer");
+        assert_eq!(body["stop_reason"], "stop_sequence");
+        assert_eq!(body["stop_sequence"], "</block>");
+
+        drop(tx);
+    }
+
+    /// The streaming path drops the event receiver the moment the stop fires, so
+    /// the codex_ws reader sees the turn abandoned and evicts the socket instead
+    /// of letting the upstream keep generating (issue #605).
+    #[tokio::test]
+    async fn stream_events_response_aborts_the_upstream_on_a_stop_sequence() {
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Ok(created_event())).unwrap();
+        tx.try_send(Ok(text_delta_event("answer</block>garbage")))
+            .unwrap();
+
+        let response = stream_events_response(
+            None,
+            rx,
+            relay_opts_with_stops(&["</block>"]),
+            0,
+            std::time::Duration::from_secs(15),
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(text.contains("\"text\":\"answer\""), "got: {text}");
+        assert!(!text.contains("garbage"), "post-stop text leaked: {text}");
+        assert!(
+            text.contains("\"stop_reason\":\"stop_sequence\""),
+            "got: {text}"
+        );
+        assert!(
+            tx.is_closed(),
+            "the receiver must be dropped so the upstream turn is aborted"
+        );
     }
 }

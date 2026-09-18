@@ -7,6 +7,7 @@ use crate::model::responses_request::TOOL_SEARCH_NAME;
 pub use crate::model::responses_request::{
     encode_reasoning_signature, translate_request, translate_request_value,
 };
+use crate::model::stop_sequences::StopScanner;
 
 #[derive(Debug, Clone)]
 pub struct ResponseEvent {
@@ -88,6 +89,10 @@ pub struct AnthropicSseMachine {
     /// ([`backend_error_status`]): `429` for an in-stream `rate_limit_exceeded`,
     /// else `502`.
     backend_error: Option<(StatusCode, Value)>,
+    /// The client's Anthropic `stop_sequences`, emulated gateway-side because the
+    /// Responses API has no `stop` parameter (issue #605). Empty — the common
+    /// case — leaves every text path byte-identical to before the feature.
+    stop: StopScanner,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +139,7 @@ impl AnthropicSseMachine {
             web_search_indexes: HashMap::new(),
             tool_search_native,
             backend_error: None,
+            stop: StopScanner::default(),
         }
     }
 
@@ -149,6 +155,33 @@ impl AnthropicSseMachine {
     /// Disable final-message reconstruction for a streaming relay. Incremental SSE
     /// output and usage tracking are unchanged, while text, tool, and reasoning
     /// payloads are no longer retained after being emitted.
+    /// Emulate the client's Anthropic `stop_sequences` on this Responses stream
+    /// (issue #605). Assistant text is truncated at the first occurrence of any
+    /// of them, the turn ends with `stop_reason: "stop_sequence"`, and the caller
+    /// aborts the upstream. An empty list is a no-op.
+    #[must_use]
+    pub fn with_stop_sequences(mut self, sequences: Vec<String>) -> Self {
+        self.stop = StopScanner::new(sequences);
+        self
+    }
+
+    /// Whether the machine has reached a terminal state — a real upstream
+    /// terminal, a backend error event, or an emulated stop sequence. Transports
+    /// poll this right after [`Self::apply`] to drop the upstream stream instead
+    /// of reading a response no one will see.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
+    /// Whether an emulated stop sequence fired (issue #605). Distinct from
+    /// [`Self::is_stopped`]: this is the only case where the *upstream* is still
+    /// mid-turn, so it is what the websocket transport keys its abort on — a
+    /// receiver dropped on a normally completed turn would evict a healthy
+    /// pooled socket (see `adapters::responses::codex_ws`).
+    pub fn hit_stop_sequence(&self) -> bool {
+        self.stop.matched().is_some()
+    }
+
     #[must_use]
     pub fn without_content_accumulation(mut self) -> Self {
         self.accumulate_content = false;
@@ -208,14 +241,6 @@ impl AnthropicSseMachine {
         self.backend_error.take()
     }
 
-    /// Whether a terminal event (`response.completed`/`response.done`/
-    /// `response.incomplete` or an error frame) has already been applied, so a
-    /// producer error after that point must not append an `error` event to a
-    /// completed turn.
-    pub fn is_stopped(&self) -> bool {
-        self.stopped
-    }
-
     pub fn finish(&mut self) -> Vec<String> {
         if self.stopped {
             return Vec::new();
@@ -229,14 +254,23 @@ impl AnthropicSseMachine {
         if !self.stopped {
             let _ = self.finish();
         }
+        // An emulated stop sequence (issue #605) takes precedence over the
+        // tool_use/end_turn choice: the turn ended because shunt cut it, and the
+        // accumulated `content` is already truncated at the match.
+        let matched = self.stop.matched().map(str::to_string);
+        let stop_reason = match (&matched, self.saw_tool) {
+            (Some(_), _) => "stop_sequence",
+            (None, true) => "tool_use",
+            (None, false) => "end_turn",
+        };
         json!({
             "id": self.id,
             "type": "message",
             "role": "assistant",
             "model": self.model,
             "content": self.content,
-            "stop_reason": if self.saw_tool { "tool_use" } else { "end_turn" },
-            "stop_sequence": null,
+            "stop_reason": stop_reason,
+            "stop_sequence": matched.map_or(Value::Null, Value::from),
             "usage": self.usage_value(),
         })
     }
@@ -569,19 +603,55 @@ impl AnthropicSseMachine {
         if delta.is_empty() {
             return Vec::new();
         }
+        if self.stop.is_empty() {
+            return self.emit_text(delta);
+        }
+        // Emulated `stop_sequences` (issue #605): the scanner emits everything up
+        // to a match (holding back only a partial stop that may still complete in
+        // the next delta) and reports the match, at which point the whole message
+        // ends here — text after the stop is neither emitted nor accumulated, and
+        // `stopped` makes every later event, `response.completed` included, a
+        // no-op.
+        let mut out = Vec::new();
+        // Open the text block on the delta itself, exactly as the unconfigured
+        // path does — not on the first byte that survives the scan. A delta that
+        // is held back in its entirety (the whole message so far is a proper
+        // prefix of a stop sequence) would otherwise leave no block open, and
+        // `close_any`'s flush — which is gated on an open text block, and cannot
+        // open one itself without recursing back through `open_text` — would
+        // never release it.
+        if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Text) {
+            out.extend(self.open_text());
+        }
+        let scan = self.stop.push(delta);
+        if !scan.emit.is_empty() {
+            out.extend(self.emit_text(&scan.emit));
+        }
+        if scan.matched.is_some() {
+            out.extend(self.close_any());
+            out.extend(self.stop_events("stop_sequence"));
+        }
+        out
+    }
+
+    /// Stream one run of assistant text: open the text block if this is the first
+    /// of it, record it for the non-streaming reconstruction, and emit the
+    /// `text_delta`. Only text that actually reaches the client passes through
+    /// here, so `text_buffer` and the streamed output can never disagree.
+    fn emit_text(&mut self, text: &str) -> Vec<String> {
         let mut out = Vec::new();
         if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Text) {
             out.extend(self.open_text());
         }
         if self.accumulate_content {
-            self.text_buffer.push_str(delta);
+            self.text_buffer.push_str(text);
         }
         out.push(sse(
             "content_block_delta",
             &json!({
                 "type": "content_block_delta",
                 "index": self.open_index(),
-                "delta": {"type": "text_delta", "text": delta}
+                "delta": {"type": "text_delta", "text": text}
             }),
         ));
         out
@@ -735,8 +805,23 @@ impl AnthropicSseMachine {
     }
 
     fn close_any(&mut self) -> Vec<String> {
+        // Text the stop-sequence scanner is still holding back is a partial stop
+        // that never completed — ordinary output. Flush it here, before this
+        // block's `content_block_stop` and before the accumulation below reads
+        // `text_buffer`, so every path that closes a text block (`close_current`,
+        // `open_tool`, `open_reasoning`, `output_item_done`, `complete`, `finish`)
+        // releases it exactly once.
+        let mut out = Vec::new();
+        if !self.stop.is_empty()
+            && self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Text)
+        {
+            let held = self.stop.flush();
+            if !held.is_empty() {
+                out.extend(self.emit_text(&held));
+            }
+        }
         let Some(open) = self.open.take() else {
-            return Vec::new();
+            return out;
         };
         match open.kind {
             BlockKind::Text => {
@@ -782,10 +867,11 @@ impl AnthropicSseMachine {
             }
         }
         self.index += 1;
-        vec![sse(
+        out.push(sse(
             "content_block_stop",
             &json!({"type": "content_block_stop", "index": open.index}),
-        )]
+        ));
+        out
     }
 
     fn complete(&mut self, data: &Value) -> Vec<String> {
@@ -802,12 +888,15 @@ impl AnthropicSseMachine {
 
     fn stop_events(&mut self, stop_reason: &str) -> Vec<String> {
         self.stopped = true;
+        // `stop_sequence` names the emulated stop that fired (issue #605), and is
+        // `null` on every other terminal — exactly as before the feature.
+        let stop_sequence = self.stop.matched().map_or(Value::Null, Value::from);
         vec![
             sse(
                 "message_delta",
                 &json!({
                     "type": "message_delta",
-                    "delta": {"stop_reason": stop_reason, "stop_sequence": null},
+                    "delta": {"stop_reason": stop_reason, "stop_sequence": stop_sequence},
                     // Carry input_tokens here (not message_start): the Responses
                     // API only reports usage at response.completed, so this is the
                     // first point shunt knows the prompt size. The Anthropic SDK
@@ -1538,6 +1627,302 @@ mod tests {
                 .any(|frame| frame.contains("citations_delta")
                     && frame.contains("https://example.com")),
             "pre-delta citation must be streamed as a citations_delta frame"
+        );
+    }
+    // ---- emulated `stop_sequences` (issue #605) ----------------------------
+
+    /// A streaming machine with `stop_sequences` configured, matching what the
+    /// HTTP/websocket transports build.
+    fn stop_machine(sequences: &[&str]) -> AnthropicSseMachine {
+        AnthropicSseMachine::new("test", true, false)
+            .with_stop_sequences(sequences.iter().map(|s| (*s).to_string()).collect())
+    }
+
+    /// The `delta` of every `text_delta` frame in `frames`, concatenated.
+    fn streamed_text(frames: &[String]) -> String {
+        frames
+            .iter()
+            .filter(|frame| frame.contains("\"type\":\"text_delta\""))
+            .filter_map(|frame| {
+                let data = frame.split("data: ").nth(1)?;
+                let value: Value = serde_json::from_str(data.trim_end()).ok()?;
+                value["delta"]["text"].as_str().map(str::to_string)
+            })
+            .collect()
+    }
+
+    /// The terminal `message_delta` payload, or `None` if the machine never
+    /// emitted one.
+    fn message_delta(frames: &[String]) -> Option<Value> {
+        frames
+            .iter()
+            .find(|frame| frame.contains("message_delta"))
+            .and_then(|frame| frame.split("data: ").nth(1))
+            .and_then(|data| serde_json::from_str(data.trim_end()).ok())
+    }
+
+    /// A stop sequence wholly inside one delta truncates the message there: the
+    /// preceding text is emitted, the turn ends with `stop_reason:
+    /// "stop_sequence"`, and every later event is a no-op.
+    #[test]
+    fn stop_sequence_inside_one_delta_ends_the_message() {
+        let mut machine = stop_machine(&["</block>"]);
+        let mut frames = machine.apply(event("response.created", json!({"id": "resp_1"})));
+        frames.extend(machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "allow</block>trailing junk"}),
+        )));
+
+        assert_eq!(streamed_text(&frames), "allow");
+        assert!(frames
+            .iter()
+            .any(|frame| frame.contains("content_block_stop")));
+        assert_eq!(
+            message_delta(&frames).expect("a stop sequence emits message_delta")["delta"],
+            json!({"stop_reason": "stop_sequence", "stop_sequence": "</block>"})
+        );
+        assert!(frames.iter().any(|frame| frame.contains("message_stop")));
+
+        // Everything after the stop is ignored, `response.completed` included.
+        assert!(machine
+            .apply(event(
+                "response.output_text.delta",
+                json!({"delta": "more"})
+            ))
+            .is_empty());
+        assert!(machine
+            .apply(event("response.completed", json!({"response": {}})))
+            .is_empty());
+    }
+
+    /// A stop sequence split across two deltas is still caught, and the partial
+    /// stop is never streamed as text.
+    #[test]
+    fn stop_sequence_split_across_deltas_is_caught() {
+        let mut machine = stop_machine(&["</block>"]);
+        let first = machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "allow</blo"}),
+        ));
+        assert_eq!(streamed_text(&first), "allow");
+
+        let second = machine.apply(event("response.output_text.delta", json!({"delta": "ck>"})));
+        assert_eq!(streamed_text(&second), "");
+        assert_eq!(
+            message_delta(&second).expect("the completed stop emits message_delta")["delta"],
+            json!({"stop_reason": "stop_sequence", "stop_sequence": "</block>"})
+        );
+    }
+
+    /// A held-back prefix that never completes is ordinary output: it is flushed
+    /// before the text block closes, and the turn ends normally.
+    #[test]
+    fn an_incomplete_stop_prefix_is_flushed_before_the_block_closes() {
+        let mut machine = stop_machine(&["</block>"]);
+        let mut frames = machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "abc </blo"}),
+        ));
+        frames.extend(machine.apply(event("response.output_text.done", json!({}))));
+        frames.extend(machine.apply(event("response.completed", json!({"response": {}}))));
+
+        assert_eq!(streamed_text(&frames), "abc </blo");
+        assert_eq!(
+            message_delta(&frames).expect("a clean turn emits message_delta")["delta"],
+            json!({"stop_reason": "end_turn", "stop_sequence": null})
+        );
+        // The flush lands before the block's `content_block_stop`, not after it.
+        let stop_at = frames
+            .iter()
+            .position(|frame| frame.contains("content_block_stop"))
+            .expect("the text block closes");
+        let flush_at = frames
+            .iter()
+            .rposition(|frame| frame.contains("</blo"))
+            .expect("the held prefix is streamed");
+        assert!(flush_at < stop_at);
+    }
+
+    /// A delta that is held back *in its entirety* — the whole message is a
+    /// proper prefix of a stop sequence that never completes — must still reach
+    /// the client. The text block has to be opened on the delta itself, because
+    /// `close_any`'s flush only runs while a text block is open.
+    #[test]
+    fn a_delta_that_is_entirely_held_back_is_still_delivered() {
+        let mut machine = stop_machine(&["</block>"]);
+        let mut frames = machine.apply(event("response.created", json!({"id": "resp_1"})));
+        frames.extend(machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "</blo"}),
+        )));
+        frames.extend(machine.apply(event("response.completed", json!({"response": {}}))));
+
+        assert_eq!(streamed_text(&frames), "</blo");
+        assert!(frames
+            .iter()
+            .any(|frame| frame.contains("content_block_start")));
+        assert!(frames
+            .iter()
+            .any(|frame| frame.contains("content_block_stop")));
+        assert_eq!(
+            message_delta(&frames).expect("a clean turn emits message_delta")["delta"],
+            json!({"stop_reason": "end_turn", "stop_sequence": null})
+        );
+    }
+
+    /// Only assistant text is scanned: a stop sequence inside a reasoning summary
+    /// or inside tool-call arguments must not end the turn.
+    #[test]
+    fn reasoning_and_tool_arguments_are_never_scanned() {
+        let mut machine = stop_machine(&["</block>"]);
+        let reasoning = machine.apply(event(
+            "response.reasoning_summary_text.delta",
+            json!({"delta": "thinking </block> still"}),
+        ));
+        assert!(reasoning
+            .iter()
+            .any(|frame| frame.contains("thinking_delta")));
+        assert!(message_delta(&reasoning).is_none());
+
+        let mut machine = stop_machine(&["</block>"]);
+        machine.apply(event(
+            "response.output_item.added",
+            json!({"item": {"type": "function_call", "call_id": "call_1", "name": "run"}}),
+        ));
+        let arguments = machine.apply(event(
+            "response.function_call_arguments.delta",
+            json!({"delta": "{\"cmd\":\"</block>\"}"}),
+        ));
+        assert!(arguments
+            .iter()
+            .any(|frame| frame.contains("input_json_delta")));
+        assert!(message_delta(&arguments).is_none());
+    }
+
+    /// Every event of a full turn, as a machine consumes it.
+    fn mixed_turn() -> Vec<ResponseEvent> {
+        vec![
+            event("response.created", json!({"id": "resp_1"})),
+            event(
+                "response.reasoning_summary_text.delta",
+                json!({"delta": "pondering"}),
+            ),
+            event(
+                "response.output_item.added",
+                json!({"item": {"type": "message"}}),
+            ),
+            event("response.output_text.delta", json!({"delta": "hello "})),
+            event("response.output_text.delta", json!({"delta": "world"})),
+            event("response.output_text.done", json!({})),
+            event(
+                "response.output_item.added",
+                json!({"item": {"type": "function_call", "call_id": "call_1", "name": "run"}}),
+            ),
+            event(
+                "response.function_call_arguments.delta",
+                json!({"delta": "{\"cmd\":\"ls\"}"}),
+            ),
+            event("response.function_call_arguments.done", json!({})),
+            event(
+                "response.completed",
+                json!({"response": {"usage": {"input_tokens": 7, "output_tokens": 3}}}),
+            ),
+        ]
+    }
+
+    fn drive(machine: &mut AnthropicSseMachine) -> Vec<String> {
+        mixed_turn()
+            .into_iter()
+            .flat_map(|event| machine.apply(event))
+            .collect()
+    }
+
+    /// With no stop sequence configured the translation must be byte-identical to
+    /// a machine that never heard of the feature — the fast path stays untouched.
+    #[test]
+    fn an_empty_stop_sequence_list_is_byte_identical() {
+        let mut baseline = AnthropicSseMachine::new("test", true, false);
+        let mut configured =
+            AnthropicSseMachine::new("test", true, false).with_stop_sequences(Vec::new());
+
+        assert_eq!(drive(&mut configured), drive(&mut baseline));
+    }
+
+    /// Stop sequences that never match change only how text is chunked, never the
+    /// text itself or the terminal events.
+    #[test]
+    fn unmatched_stop_sequences_preserve_the_turn() {
+        let mut baseline = AnthropicSseMachine::new("test", true, false);
+        let mut configured = stop_machine(&["</block>", "</severity>"]);
+        let baseline_frames = drive(&mut baseline);
+        let configured_frames = drive(&mut configured);
+
+        assert_eq!(
+            streamed_text(&configured_frames),
+            streamed_text(&baseline_frames)
+        );
+        assert_eq!(
+            message_delta(&configured_frames),
+            message_delta(&baseline_frames)
+        );
+        assert_eq!(configured.final_json(), baseline.final_json());
+    }
+
+    /// The non-streaming reconstruction is truncated at the stop too, and reports
+    /// the stop in `stop_reason` / `stop_sequence`.
+    #[test]
+    fn final_json_is_truncated_at_the_stop_sequence() {
+        let mut machine = stop_machine(&["</block>"]);
+        machine.apply(event("response.created", json!({"id": "resp_1"})));
+        machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "answer</block>garbage"}),
+        ));
+        machine.apply(event("response.completed", json!({"response": {}})));
+
+        let final_json = machine.final_json();
+        assert_eq!(final_json["content"][0]["text"], "answer");
+        assert_eq!(final_json["content"][1], Value::Null);
+        assert_eq!(final_json["stop_reason"], "stop_sequence");
+        assert_eq!(final_json["stop_sequence"], "</block>");
+    }
+
+    /// The holdback is sliced on char boundaries, so a multi-byte code point that
+    /// precedes a split stop sequence is emitted whole.
+    #[test]
+    fn a_multibyte_code_point_before_the_stop_survives() {
+        let mut machine = stop_machine(&["</block>"]);
+        let first = machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "한글</bl"}),
+        ));
+        let second = machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "ock>"}),
+        ));
+
+        assert_eq!(streamed_text(&first), "한글");
+        assert_eq!(streamed_text(&second), "");
+        assert_eq!(
+            message_delta(&second).expect("the stop emits message_delta")["delta"]["stop_sequence"],
+            "</block>"
+        );
+    }
+
+    /// With two stop sequences configured and both present, the one that starts
+    /// earliest wins regardless of the order they were configured in.
+    #[test]
+    fn the_earliest_stop_sequence_wins() {
+        let mut machine = stop_machine(&["</severity>", "</block>"]);
+        let frames = machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "a</block>b</severity>c"}),
+        ));
+
+        assert_eq!(streamed_text(&frames), "a");
+        assert_eq!(
+            message_delta(&frames).expect("the stop emits message_delta")["delta"]["stop_sequence"],
+            "</block>"
         );
     }
 }

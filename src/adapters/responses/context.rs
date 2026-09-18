@@ -28,6 +28,9 @@ pub(super) struct RelayOptions {
     pub model: String,
     pub thinking_enabled: bool,
     pub tool_search_native: bool,
+    /// The client's Anthropic `stop_sequences`, emulated gateway-side because
+    /// the Responses API has no `stop` parameter (issue #605). Usually empty.
+    pub stop_sequences: Vec<String>,
 }
 
 impl RelayOptions {
@@ -37,6 +40,7 @@ impl RelayOptions {
     /// no relay call site touches the options after building the machine).
     pub(super) fn machine(self) -> AnthropicSseMachine {
         AnthropicSseMachine::new(self.model, self.thinking_enabled, self.tool_search_native)
+            .with_stop_sequences(self.stop_sequences)
     }
 }
 
@@ -44,7 +48,7 @@ impl RelayOptions {
 /// `forward` and threaded through each transport. `model` is intentionally
 /// absent — it is taken from the [`Route`] at relay time via
 /// [`TurnOptions::relay`], keeping these flags transport-agnostic.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct TurnOptions {
     /// The client asked for a streaming (SSE) response.
     pub client_wants_stream: bool,
@@ -52,6 +56,10 @@ pub(super) struct TurnOptions {
     pub thinking_enabled: bool,
     /// Native client-executed `tool_search` is enabled for this provider/model.
     pub tool_search_native: bool,
+    /// The client's Anthropic `stop_sequences` (issue #605), in request order.
+    /// Never forwarded upstream — the Responses API has no `stop` parameter —
+    /// but emulated by the SSE translation.
+    pub stop_sequences: Vec<String>,
 }
 
 impl TurnOptions {
@@ -62,6 +70,7 @@ impl TurnOptions {
             model: route.model.clone(),
             thinking_enabled: self.thinking_enabled,
             tool_search_native: self.tool_search_native,
+            stop_sequences: self.stop_sequences.clone(),
         }
     }
 }

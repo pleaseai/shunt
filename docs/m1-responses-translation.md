@@ -226,6 +226,51 @@ instruction on how the agent should proceed. Claude Code surfaces only the error
 `detailed_explanation` / `error_type` fields are not forwarded — upstream treats them as
 sensitive and never persists them.
 
+## 8b. Emulated `stop_sequences` (issue #605)
+
+The Responses API has **no `stop` parameter** — Chat Completions does, Responses does not — so a
+client's Anthropic `stop_sequences` cannot be forwarded. Before #605 the field was simply never
+read, and every Responses upstream silently ignored it; Claude Code's auto-mode permission
+classifier sends `stop_sequences: ["</block>"]` / `["</severity>"]` and the trailing text past the
+stop broke its parser, costing a retry per classification.
+
+shunt emulates them inside the translation instead. `forward` reads the field once
+(`adapters/responses/mod.rs`), threads it through `TurnOptions` → `RelayOptions` →
+`AnthropicSseMachine::with_stop_sequences`, and **never** adds it to the upstream body.
+
+**Scanner** (`model/stop_sequences.rs`). Assistant text deltas only — reasoning summaries
+(`response.reasoning_summary_text.delta`) and tool-call arguments
+(`response.function_call_arguments.delta`) are never scanned, so a stop string inside a thinking
+block or a tool argument cannot end the turn. Each text delta is appended to a holdback, which is
+searched for the earliest occurrence of any stop sequence (earliest start byte wins; ties break by
+the client's order). Without a match, everything but the longest holdback suffix that is a *proper*
+prefix of some stop sequence is emitted immediately — so at most `max_len - 1` bytes are ever
+buffered and streaming is preserved, while a stop split across two deltas is still caught. Slicing
+only happens on `char` boundaries, so a multi-byte code point is never split.
+
+**Termination.** On a match the machine emits the text before it, closes the open block, and sends
+`message_delta` with `stop_reason: "stop_sequence"` and `stop_sequence: "<matched>"`, then
+`message_stop`; `stopped` makes every later event — `response.completed` included — a no-op. Text
+after the stop is neither streamed nor accumulated, so the non-streaming `final_json`
+reconstruction is truncated at exactly the same point and reports the same `stop_reason` /
+`stop_sequence`. A held-back prefix that never completes is ordinary output: `close_any` flushes it
+as a normal `text_delta` before the block's `content_block_stop`, on every path that closes a text
+block.
+
+**Abort.** The transports drop the upstream the moment the stop fires: `http.rs` drops the
+`reqwest` byte stream with the final chunk (streaming) or breaks out of the body read
+(non-streaming); `ws_stream.rs` drops the `CodexWsEvents` receiver, which makes the codex_ws
+reader abandon the turn and evict the socket — correct, since a half-consumed turn must not be
+pooled. The websocket paths key this on the stop sequence specifically rather than on "the machine
+is stopped": dropping the receiver on a *normally* completed turn would evict a healthy pooled
+socket.
+
+**Usage caveat.** Because the turn ends before `response.completed`, the upstream usage event never
+arrives. `usage_value`'s existing estimate substitution applies, so `message_delta.usage` carries
+the local input estimate and `output_tokens: 0`. Tokens the upstream generated between the match
+and the abort are still billed upstream — negligible for the short completions stop sequences are
+used for.
+
 ## 9. Test targets (M1)
 
 - `insta` snapshots: request translation for (plain text, multi-turn, tool_use+tool_result

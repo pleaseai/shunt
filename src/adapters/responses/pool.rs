@@ -949,7 +949,7 @@ pub(super) async fn forward_chatgpt_oauth(
                 ForwardOptions {
                     upstream_body: upstream_body.clone(),
                     auth,
-                    turn,
+                    turn: turn.clone(),
                     codex_quota_account: Some(account.clone()),
                     // Each account attempt gets its own cheap Arc clone;
                     // forward_websocket spawns its own blocking encode from it,
@@ -1577,6 +1577,7 @@ mod tests {
                 client_wants_stream: stream,
                 thinking_enabled: false,
                 tool_search_native: false,
+                stop_sequences: Vec::new(),
             },
             estimate_input: None,
         }

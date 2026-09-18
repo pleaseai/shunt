@@ -1017,6 +1017,7 @@ async fn forward_http_commits_before_resolving_the_credential() {
             client_wants_stream: true,
             thinking_enabled: false,
             tool_search_native: false,
+            stop_sequences: Vec::new(),
         },
         codex_quota_account: None,
         estimate_input: None,
