@@ -19,8 +19,8 @@ use crate::{
 use super::body::{prepare_body, PreparedBody};
 use super::context::{CredentialSource, ForwardOptions, RelayOptions};
 use super::early_stream::{
-    early_streaming_response, estimated_machine_factory, http_events_stream, parsed_events,
-    translated_stream, HttpSendContext,
+    bounded_input_estimate, early_streaming_response, estimated_machine_factory,
+    http_events_stream, parsed_events, translated_stream, HttpSendContext,
 };
 use super::error::{backend_error, mapped_upstream_error, own_error, transport_error};
 use super::request::request_builder;
@@ -151,7 +151,20 @@ pub(super) async fn forward_http(
     // a backend error event surfaced via `backend_error` (issue #113), so
     // the proxy's access log (`upstream_status`) and `record_proxied_request`
     // metrics reflect the failure instead of a hardcoded `200`.
-    let response = json_response(upstream, turn.relay(route)).await?;
+    // Resolved here rather than before the send: this arm has no commit to
+    // protect, and the estimate is only consumed after the whole body is read.
+    // Bounded like the streaming path so a saturated blocking pool cannot stall
+    // the response (see `bounded_input_estimate`).
+    let input_tokens_estimate = match estimate_input {
+        Some(request) => {
+            let handle = tokio::task::spawn_blocking(move || {
+                crate::count_tokens::count_input_tokens_value(&request)
+            });
+            bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await
+        }
+        None => 0,
+    };
+    let response = json_response(upstream, turn.relay(route), input_tokens_estimate).await?;
     Ok((response.status(), response))
 }
 
@@ -184,15 +197,23 @@ pub(super) fn stream_response(
 /// a backend failure for a truncated-but-successful result (issue #113). This
 /// mirrors the streaming path, which emits the same error inline as an SSE
 /// `error` event.
+///
+/// `input_tokens_estimate` seeds the same local prompt count the streaming path
+/// puts in `message_start`. It matters here only for an emulated stop sequence:
+/// the stop makes the upstream's `response.completed` usage a no-op, and
+/// `final_json` falls back to the estimate when no usage was observed, so
+/// without it a stopped turn would report `input_tokens: 0` (issue #605). On
+/// every other turn the upstream's real usage arrives and overrides it.
 pub(super) async fn json_response(
     upstream: reqwest::Response,
     relay: RelayOptions,
+    input_tokens_estimate: u64,
 ) -> Result<axum::response::Response, AdapterError> {
     let body = upstream
         .text()
         .await
         .map_err(|error| own_error(format!("failed to read Responses body: {error}")))?;
-    let mut machine = relay.machine();
+    let mut machine = relay.machine().with_input_estimate(input_tokens_estimate);
     for event in parse_sse_events(&body) {
         let _ = machine.apply(event);
     }
@@ -251,7 +272,7 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"Upstream failed\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let error = json_response(upstream, relay_opts())
+        let error = json_response(upstream, relay_opts(), 0)
             .await
             .expect_err("backend error event should stop failover");
 
@@ -276,7 +297,7 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let error = json_response(upstream, relay_opts())
+        let error = json_response(upstream, relay_opts(), 0)
             .await
             .expect_err("in-stream rate limit is an error");
 
@@ -304,7 +325,7 @@ mod tests {
             "data: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay_opts())
+        let response = json_response(upstream, relay_opts(), 0)
             .await
             .expect("json_response builds a response");
 
@@ -312,6 +333,41 @@ mod tests {
         let body = response_body_json(response).await;
         assert_eq!(body["type"], "message");
         assert_eq!(body["content"][0]["text"], "hello");
+    }
+
+    /// A non-streaming turn cut short by an emulated stop sequence reports the
+    /// seeded local input estimate. The stop makes the upstream's own
+    /// `response.completed` usage a no-op, so without the seed this turn would
+    /// serialize `input_tokens: 0` for a non-empty prompt (issue #605).
+    #[tokio::test]
+    async fn json_response_reports_the_input_estimate_for_a_stopped_turn() {
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"item\":{\"type\":\"message\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"delta\":\"keep<<STOP>>drop\"}\n\n",
+            "event: response.output_text.done\n",
+            "data: {}\n\n",
+            "event: response.completed\n",
+            "data: {\"response\":{\"usage\":{\"input_tokens\":42,\"output_tokens\":7}}}\n\n",
+        );
+        let relay = super::super::context::RelayOptions {
+            stop_sequences: vec!["<<STOP>>".to_string()],
+            ..relay_opts()
+        };
+        let upstream = upstream_response(200, sse).await;
+        let response = json_response(upstream, relay, 11)
+            .await
+            .expect("json_response builds a response");
+
+        let body = response_body_json(response).await;
+        assert_eq!(body["content"][0]["text"], "keep");
+        assert_eq!(body["stop_reason"], "stop_sequence");
+        assert_eq!(body["stop_sequence"], "<<STOP>>");
+        // The seed, not the upstream's 42: the stop made that usage a no-op.
+        assert_eq!(body["usage"]["input_tokens"], 11);
     }
 
     /// The streaming path prefixes a synthesized completion with

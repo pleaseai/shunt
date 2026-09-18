@@ -124,22 +124,43 @@ async fn forward(
         tool_search_native,
         "resolved tool_search protocol"
     );
+    // The Responses API has no `stop` parameter (Chat Completions does; Responses
+    // does not), so `stop_sequences` is emulated gateway-side in the
+    // Responses->Anthropic SSE translation rather than forwarded upstream
+    // (issue #605). Kept in request order: ties on the match position break by it.
+    let stop_sequences: Vec<String> = request_json
+        .get("stop_sequences")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|sequence| !sequence.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     // Seed message_start's usage.input_tokens with a local tiktoken estimate of
     // the (already-parsed) request so Claude Code's per-subagent progress
     // tracker — which reads that first snapshot and never re-reads the merged
     // total — shows a live context figure for codex subagents instead of a stuck
     // 0. The Responses API only reports real usage at response.completed, by
     // which point message_start is long sent; the accurate total still lands in
-    // the terminal message_delta. Only streaming turns emit message_start, so
-    // non-streaming requests carry `None` and skip the work; gated on the
-    // provider's local-counting opt-in (the same CountTokens knob as the
-    // count_tokens endpoint). The CPU-bound tiktoken encode itself is deferred to
+    // the terminal message_delta. Gated on the provider's local-counting opt-in
+    // (the same CountTokens knob as the count_tokens endpoint). The CPU-bound tiktoken encode itself is deferred to
     // each transport, where it runs on the blocking pool overlapped with the
     // upstream round-trip rather than serially in front of it (see forward_http /
     // forward_websocket); the multi-upstream chain races it against each
     // attempt's dispatch (the pool's first poll via `pooled_first_poll`, the
     // non-pooled send via `send_classified_with_estimate`). See model/responses.rs.
-    let estimate_input = if client_wants_stream
+    //
+    // A non-streaming turn emits no `message_start` and would otherwise skip the
+    // work, but one carrying `stop_sequences` needs the estimate for a second
+    // reason: an emulated stop makes the upstream's own `response.completed`
+    // usage a no-op, so without a seed the final JSON reports `input_tokens: 0`
+    // for a non-empty prompt (issue #605). `final_json` falls back to the
+    // estimate exactly when no usage was observed, so seeding it here is enough.
+    let estimate_input = if (client_wants_stream || !stop_sequences.is_empty())
         && matches!(
             state
                 .config
@@ -152,22 +173,6 @@ async fn forward(
     } else {
         None
     };
-    // The Responses API has no `stop` parameter (Chat Completions does; Responses
-    // does not), so `stop_sequences` is emulated gateway-side in the
-    // Responses->Anthropic SSE translation rather than forwarded upstream
-    // (issue #605). Kept in request order: ties on the match position break by it.
-    let stop_sequences = request_json
-        .get("stop_sequences")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .filter(|sequence| !sequence.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
     let turn = TurnOptions {
         client_wants_stream,
         thinking_enabled,
