@@ -88,6 +88,7 @@ pub async fn resolve_credential(
                     access_token: credential.access_token,
                     account_id: credential.account_id,
                 })
+                .map_err(|failure| failure.error)
         }
         AuthMode::CursorOauth => {
             let base_url = cursor::resolve_base_url(provider.base_url.clone());
@@ -321,17 +322,17 @@ pub async fn resolve_kimi_account(
 pub async fn resolve_chatgpt_account(
     account: &crate::config::AccountConfig,
     client: &reqwest::Client,
-) -> Result<Credential, AdapterError> {
+) -> Result<Credential, codex::auth::ChatGptAuthError> {
     if let Some(token_env) = account.token_env.as_deref() {
         let access_token = env::var(token_env)
             .ok()
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| auth_error(format!("{token_env} is not set")))?;
+            .ok_or_else(|| codex::auth::ChatGptAuthError::new(format!("{token_env} is not set")))?;
         let account_id = codex::auth::jwt_account_id(&access_token).ok_or_else(|| {
             // This account's token came from `token_env`, not a `codex login`, so
             // point the operator at the environment variable rather than telling
             // them to re-run a login they never performed.
-            auth_error(format!(
+            codex::auth::ChatGptAuthError::new(format!(
                 "ChatGPT account id missing from the access token in environment variable {token_env}"
             ))
         })?;
@@ -639,7 +640,7 @@ mod tests {
             .await
             .unwrap_err();
         std::env::remove_var(&env_name);
-        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+        let bytes = to_bytes(error.error.response.into_body(), usize::MAX)
             .await
             .unwrap();
         let body = String::from_utf8_lossy(&bytes);

@@ -90,6 +90,9 @@ impl Match for BearerToken {
 
 struct TestGateway {
     base_url: String,
+    /// The router's pool state, so a test can read health verdicts (such as
+    /// `needs_relogin`) that the wire response does not carry.
+    state: server::AppState,
     task: JoinHandle<()>,
 }
 
@@ -266,6 +269,7 @@ async fn start_gateway_with(mut config: Config) -> TestGateway {
 
     TestGateway {
         base_url: format!("http://{addr}"),
+        state,
         task,
     }
 }
@@ -2106,4 +2110,129 @@ async fn streaming_ttfb_timeout_emits_error_envelope() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
     assert!(body.contains("\"type\":\"error\""), "body: {body}");
+}
+
+/// A store account whose access token expired long ago, so the pool has to
+/// refresh it on read: the resolution path, not the upstream-401 path, is
+/// what carries the token endpoint's verdict here (#616).
+fn write_expired_store_account(dir: &std::path::Path, name: &str, account_id: &str) {
+    let expired = chatgpt_token(1_000_000, account_id);
+    write_store_account(dir, name, &expired, &format!("refresh-token-{name}"));
+}
+
+#[tokio::test]
+async fn terminal_refresh_rejection_marks_needs_relogin() {
+    // The token endpoint rejects the stored refresh grant outright
+    // (`invalid_grant`): no retry can recover it, so besides the cooldown and
+    // the rotation the account must be marked `needs_relogin` — otherwise it
+    // cycles through the five-minute cooldown forever, reported as live.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-terminal-b");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_TERMINAL_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("terminal");
+    write_expired_store_account(&accounts_dir, "account-a", "acct-terminal-a");
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"error":"invalid_grant"}"#))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("account b served")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let account_a = store_account("account-a");
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account("account-b", "SHUNT_TEST_CODEX_TERMINAL_B"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    assert!(
+        gateway.state.accounts.needs_relogin("codex", &account_a),
+        "an invalid_grant refresh rejection must mark the account needs_relogin"
+    );
+    upstream.verify().await;
+    auth.verify().await;
+
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+#[tokio::test]
+async fn transient_refresh_failure_does_not_mark_needs_relogin() {
+    // A 503 from the token endpoint says nothing about the grant: the account
+    // is cooled down and the pool rotates, but a healthy account must not be
+    // reported as dead on a momentary provider blip.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-transient-b");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_TRANSIENT_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("transient");
+    write_expired_store_account(&accounts_dir, "account-a", "acct-transient-a");
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("upstream unavailable"))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("account b served")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let account_a = store_account("account-a");
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account("account-b", "SHUNT_TEST_CODEX_TRANSIENT_B"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    assert!(
+        !gateway.state.accounts.needs_relogin("codex", &account_a),
+        "a transient token-endpoint failure must only cool the account down"
+    );
+    upstream.verify().await;
+    auth.verify().await;
+
+    fs::remove_dir_all(&accounts_dir).ok();
 }
