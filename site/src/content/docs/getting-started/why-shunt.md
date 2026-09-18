@@ -26,9 +26,11 @@ Selectivity is decided in Claude Code itself, which already lets you choose a mo
 
 shunt just honors the model id it receives — no fragile per-agent system-prompt fingerprinting. That same selectivity reaches down to individual agents without shunt ever inspecting who the caller is.
 
+One model id can opt into deciding for itself: a [stage router](/guides/stage-router/) names a capable and an efficient target and picks between them per turn from the conversation's recent tool-result metadata — `tool_use.name` and `tool_result.is_error`, never prompt text. Configure no router and nothing changes.
+
 ## What shunt implements
 
-- **`POST /v1/messages`** — inference, routed per the request's `model` id. Unmapped models are forwarded to Anthropic byte-for-byte with the caller's own credential.
+- **`POST /v1/messages`** — inference, routed per the request's `model` id. Unmapped models are forwarded to Anthropic byte-for-byte with the caller's own credential, except for a [`thinking` signature shunt minted for another provider](/providers/anthropic/) — a value Anthropic would reject.
 - **Anthropic Messages ⇄ OpenAI Responses translation** — for mapped OpenAI-family models, including streaming.
 - **ChatGPT subscription reuse** — the `codex` provider reuses (and auto-refreshes) the Codex CLI's `~/.codex/auth.json` login.
 - **`GET /v1/models`** — [model discovery](/guides/model-discovery/) for Claude-named aliases.

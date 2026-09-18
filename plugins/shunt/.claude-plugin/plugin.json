@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "shunt",
+  "displayName": "shunt · gateway",
+  "version": "0.1.0",
+  "description": "A Claude Mod for the shunt gateway: /shunt:usage reads the shared account pool's remaining headroom and reset times from shunt's GET /usage, so you can see how close the pool is to throttling without the admin dashboard.",
+  "author": {
+    "name": "Minsu Lee",
+    "email": "minsu.lee@pleaseai.dev",
+    "url": "https://github.com/amondnet"
+  },
+  "homepage": "https://github.com/pleaseai/shunt",
+  "repository": "https://github.com/pleaseai/shunt",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["shunt", "llm-gateway", "usage", "quota", "mod", "function-hooks"]
+}

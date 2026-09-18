@@ -22,7 +22,16 @@ pub(super) async fn mapped_upstream_error(
     let retry_after = upstream.headers().get("retry-after").cloned();
     let shunt_status = crate::model::responses::client_facing_status(status);
     let stream = futures_util::stream::once(async move {
-        let text = upstream.text().await.unwrap_or_default();
+        // A budget trip or read failure must not leave the envelope with an
+        // empty message: name the status instead, matching the anthropic
+        // fallback.
+        let text = crate::error::bounded_upstream_text(
+            upstream,
+            crate::error::ERROR_ENVELOPE_BUDGET,
+            crate::error::ERROR_ENVELOPE_BYTES,
+        )
+        .await
+        .unwrap_or_else(|| format!("upstream returned {status}"));
         tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
         let value = upstream_error_value(status, &text, auth);
         let body = serde_json::to_vec(&map_error_value(&value, status)).unwrap_or_default();
@@ -143,17 +152,29 @@ pub(super) fn backend_error(status: StatusCode, error: Value) -> AdapterError {
     }
 }
 
+/// Extract the already-mapped Anthropic error envelope from an
+/// [`AdapterError`] so the streaming transports can re-emit it as one SSE
+/// `error` event after the early `message_start` has already committed the
+/// response. Every error this module builds serializes the envelope as its
+/// JSON body, so the body bytes ARE the envelope. The extraction is
+/// [`crate::error::error_body_value`] — the same response-body-to-envelope
+/// conversion, kept in one place.
+pub(super) async fn adapter_error_envelope(error: AdapterError) -> Value {
+    crate::error::error_body_value(*error.response).await
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;
     use axum::http::StatusCode;
+    use axum::response::IntoResponse;
     use serde_json::Value;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::config::AuthMode;
 
-    use super::mapped_upstream_error;
+    use super::{adapter_error_envelope, mapped_upstream_error};
 
     /// Serves `body` at `status` from a mock server and returns the resulting
     /// `reqwest::Response`, mirroring the shape `mapped_upstream_error` sees in
@@ -330,5 +351,20 @@ mod tests {
             mapped_upstream_error(StatusCode::TOO_MANY_REQUESTS, upstream, AuthMode::ApiKey).await;
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.response.headers().get("retry-after").unwrap(), "7");
+    }
+
+    #[tokio::test]
+    async fn adapter_error_envelope_preserves_the_mapped_body() {
+        use crate::adapters::AdapterError;
+        let error = crate::error::ShuntError::bad_gateway("upstream timed out");
+        let adapter = AdapterError {
+            message: "responses adapter failed".into(),
+            response: Box::new(error.into_response()),
+            failure: None,
+        };
+        let envelope = adapter_error_envelope(adapter).await;
+        assert_eq!(envelope["type"], "error");
+        assert_eq!(envelope["error"]["type"], "api_error");
+        assert_eq!(envelope["error"]["message"], "upstream timed out");
     }
 }

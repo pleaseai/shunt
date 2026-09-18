@@ -53,13 +53,32 @@ pub(super) async fn forward(
             response: Box::new(error.into_response()),
         })?;
     normalize_request_body(&mut body);
+    // Context for a `[models.stage_router]` entry, should the requested id turn
+    // out to be one. Built unconditionally because construction is a handful of
+    // field moves and one header lookup; the router itself is still only
+    // consulted by a `[[models]]` entry that configures one.
+    let stage = routing::stage::StageContext {
+        store: &state.stage_router,
+        request: body.json(),
+        session_id: headers
+            .get("x-claude-code-session-id")
+            .and_then(|value| value.to_str().ok()),
+        // A count_tokens probe must reach the same tier as the turn it is
+        // measuring without recording it: Claude Code sends those with a history
+        // one turn behind, so a committing probe would let the stale history
+        // drive the session's pin.
+        read_only: is_count_tokens(uri),
+        now: started_at,
+        pending: std::cell::Cell::new(None),
+        decided: std::cell::Cell::new(None),
+    };
     let (mut routes, requested_model) =
-        routing::resolve_request_chain_value(&state.config, body.json()).map_err(|error| {
-            ForwardError {
+        routing::resolve_request_chain_value(&state.config, body.json(), Some(&stage)).map_err(
+            |error| ForwardError {
                 message: "failed to route request".to_string(),
                 response: Box::new(error.into_response()),
-            }
-        })?;
+            },
+        )?;
     crate::observability::record_requested_model(&requested_model);
     // Records the request's final outcome exactly once, at whichever terminal
     // return point below is taken — the intermediate per-attempt failover
@@ -81,6 +100,40 @@ pub(super) async fn forward(
         check_inbound_auth(&state, &routes, headers).map_err(|error| *error)?;
     enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)
         .map_err(|error| *error)?;
+    // The request is admitted, so the tier it was routed at may be recorded.
+    // Both gates above rejected before this line, and neither had run when the
+    // chain was resolved — `check_inbound_auth` needs that chain to decide.
+    // The write reports the tier change it actually made, which is what the
+    // flip counter must count: two concurrent turns of one session decide
+    // against the same snapshot, so a flip derived from that snapshot would be
+    // counted twice for a session that moved once.
+    let stage_flip = stage.commit();
+    // The same boundary governs the counters: a rejected request is routed but
+    // never served, so counting it would report traffic the gateway did not
+    // carry. `None` for every request whose id carries no router.
+    let stage_outcome = stage.decided.take();
+    if let Some(outcome) = &stage_outcome {
+        // `outcome.model`, not `requested_model`: the router was matched on the
+        // id with any `[1m]` hint stripped, and the session was keyed on it too,
+        // so labelling by the raw id would split one router across two series.
+        // `stage.read_only` rather than `is_count_tokens(uri)` again: it is the
+        // same value, and reading the field ties this exclusion to the flag the
+        // store already decided against instead of re-deriving it here.
+        if !stage.read_only {
+            crate::metrics::record_stage_decision(
+                &outcome.model,
+                outcome.tier.as_label(),
+                outcome.source.as_label(),
+            );
+        }
+        if let Some((from, to)) = stage_flip {
+            crate::metrics::record_stage_flip(&outcome.model, from.as_label(), to.as_label());
+        }
+    }
+    let stage_stamp = stage_outcome.as_ref().map(|outcome| StageStamp {
+        routed_model: outcome.target.as_str(),
+        source: outcome.source.as_label(),
+    });
 
     let first_route = routes
         .first()
@@ -115,6 +168,26 @@ pub(super) async fn forward(
     let primary_origin = (attempted_total > 1 && is_passthrough_route(&state, first_route))
         .then(|| provider_origin(&state, &first_route.provider))
         .flatten();
+    if super::chain_stream::chain_stream_applies(
+        &state,
+        &routes,
+        body.as_ref().expect("request body is present"),
+    ) {
+        return super::chain_stream::forward_chain_stream(
+            super::chain_stream::ChainStreamRequest {
+                state,
+                routes,
+                uri: uri.clone(),
+                base_headers,
+                inbound,
+                primary_origin,
+                body: body.take().expect("request body is present"),
+                requested_model,
+                started_at,
+            },
+        )
+        .await;
+    }
     let mut remembered: Option<RememberedFailure> = None;
     for (index, route) in routes.into_iter().enumerate() {
         crate::metrics::record_failover(&route.provider, "attempted");
@@ -144,7 +217,18 @@ pub(super) async fn forward(
         };
         let result = dispatch(state.clone(), route, uri, &attempt_headers, attempt_body).await;
 
-        if !is_count_tokens(uri) {
+        if !is_count_tokens(uri)
+            && !result.as_ref().is_ok_and(|(_, response)| {
+                // The early-commit streaming responses sample their metrics
+                // in-stream at classification: the dispatch-time return
+                // precedes the upstream send, so recording here would count a
+                // fake 200 with a near-zero latency.
+                response
+                    .extensions()
+                    .get::<crate::adapters::responses::InStreamMetrics>()
+                    .is_some()
+            })
+        {
             let status = match &result {
                 Ok((status, _)) => status.as_u16(),
                 Err(error) => error.response.status().as_u16(),
@@ -159,7 +243,13 @@ pub(super) async fn forward(
 
         match result {
             Ok((status, mut response)) => {
-                stamp_gateway_headers(&mut response, &provider, &requested_model, &upstream_model);
+                stamp_gateway_headers(
+                    &mut response,
+                    &provider,
+                    &requested_model,
+                    &upstream_model,
+                    stage_stamp,
+                );
                 if !is_advance_status(status) {
                     finish(&provider, status);
                     return Ok(observe_response(
@@ -186,7 +276,13 @@ pub(super) async fn forward(
                     mut response,
                     failure,
                 } = error;
-                stamp_gateway_headers(&mut response, &provider, &requested_model, &upstream_model);
+                stamp_gateway_headers(
+                    &mut response,
+                    &provider,
+                    &requested_model,
+                    &upstream_model,
+                    stage_stamp,
+                );
                 match failure {
                     Some(AdapterFailure::UpstreamStatus(raw_status))
                         if is_advance_status(raw_status) =>
@@ -256,6 +352,7 @@ pub(super) async fn forward(
         &last_route.provider,
         &requested_model,
         &last_route.upstream_model,
+        stage_stamp,
     );
     finish(&last_route.provider, StatusCode::BAD_GATEWAY);
     Err(ForwardError {
@@ -317,14 +414,38 @@ async fn count_tokens_response(
     };
     match result {
         Ok((status, mut response)) => {
-            stamp_gateway_headers(&mut response, &provider, requested_model, &upstream_model);
+            // Deliberately unstamped with the stage pair. A `count_tokens`
+            // probe is routed but not recorded, and on a session that is not
+            // yet pinned it scores its own one-turn-behind history — so the
+            // tier it resolves to is not necessarily the tier the turn it is
+            // measuring will get. Reporting it as this session's routed tier
+            // would state something the gateway has not decided.
+            stamp_gateway_headers(
+                &mut response,
+                &provider,
+                requested_model,
+                &upstream_model,
+                None,
+            );
             crate::observability::record_span_outcome(&provider, status);
             crate::observability::capture_upstream_outcome(&provider, requested_model, status);
             Ok((status, response))
         }
         Err(error) => {
             let mut response = error.response;
-            stamp_gateway_headers(&mut response, &provider, requested_model, &upstream_model);
+            // Deliberately unstamped with the stage pair. A `count_tokens`
+            // probe is routed but not recorded, and on a session that is not
+            // yet pinned it scores its own one-turn-behind history — so the
+            // tier it resolves to is not necessarily the tier the turn it is
+            // measuring will get. Reporting it as this session's routed tier
+            // would state something the gateway has not decided.
+            stamp_gateway_headers(
+                &mut response,
+                &provider,
+                requested_model,
+                &upstream_model,
+                None,
+            );
             let status = response.status();
             crate::observability::record_span_outcome(&provider, status);
             crate::observability::capture_upstream_outcome(&provider, requested_model, status);
@@ -389,7 +510,7 @@ fn observe_response(
     (status, response)
 }
 
-fn is_advance_status(status: StatusCode) -> bool {
+pub(crate) fn is_advance_status(status: StatusCode) -> bool {
     matches!(
         status,
         StatusCode::TOO_MANY_REQUESTS
@@ -399,7 +520,7 @@ fn is_advance_status(status: StatusCode) -> bool {
     ) || status.is_server_error()
 }
 
-fn failure_priority(status: StatusCode) -> u8 {
+pub(crate) fn failure_priority(status: StatusCode) -> u8 {
     match status {
         StatusCode::TOO_MANY_REQUESTS => 4,
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => 3,
@@ -477,6 +598,7 @@ fn enforce_managed_model_policy(
     }))
 }
 
+#[derive(Clone)]
 pub(crate) struct InboundContext {
     gateway_claims: Option<crate::gateway::jwt::Claims>,
     client: Option<String>,
@@ -698,17 +820,46 @@ fn reason_label(reason: ConsumedBy) -> &'static str {
     }
 }
 
+pub(crate) fn stamp_gateway_model_header(response: &mut axum::response::Response, model: &str) {
+    if let Ok(value) = HeaderValue::from_str(model) {
+        response.headers_mut().insert("x-gateway-model", value);
+    }
+}
+
+/// What a stage router decided, for the two headers that report it.
+///
+/// Absent for every request whose model id carries no `[models.stage_router]`
+/// table, which is why both headers are omitted rather than sent empty: a
+/// client cannot otherwise tell "routed to the efficient tier" from "not
+/// routed by a router at all".
+#[derive(Clone, Copy)]
+struct StageStamp<'a> {
+    /// The configured model id the chosen tier routes to. Distinct from
+    /// `x-gateway-upstream-model`, which is the name sent upstream — for a
+    /// router these differ whenever the target maps its own `upstream_model`.
+    routed_model: &'a str,
+    source: &'static str,
+}
+
 fn stamp_gateway_headers(
     response: &mut axum::response::Response,
     upstream: &str,
     model: &str,
     upstream_model: &str,
+    stage: Option<StageStamp<'_>>,
 ) {
     for (name, value) in [
         ("x-gateway-upstream", upstream),
         ("x-gateway-model", model),
         ("x-gateway-upstream-model", upstream_model),
-    ] {
+    ]
+    .into_iter()
+    .chain(stage.into_iter().flat_map(|stage| {
+        [
+            ("x-gateway-routed-model", stage.routed_model),
+            ("x-gateway-route-source", stage.source),
+        ]
+    })) {
         if let Ok(value) = HeaderValue::from_str(value) {
             response.headers_mut().insert(name, value);
         }

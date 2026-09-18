@@ -284,6 +284,25 @@ async fn oidc_device_page_modes_and_disabled_password_post() {
     assert!(html.contains("method=\"post\" action=\"/device/authorize\""));
     assert!(!html.contains("Approve device"));
 
+    // The SSO form's POST redirects to the IdP, and browsers enforce CSP
+    // `form-action` against that redirect, so the page carrying the form must
+    // allow the IdP origin rather than only `'self'`.
+    let response = router
+        .clone()
+        .oneshot(get_request("/device?user_code=BCDF-GHJK"))
+        .await
+        .unwrap();
+    let csp = response
+        .headers()
+        .get(header::CONTENT_SECURITY_POLICY)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        csp.contains("form-action 'self' https: http://127.0.0.1:* http://localhost:*;"),
+        "{csp}"
+    );
+
     let (_, html) = html_response(
         router,
         Request::builder()
@@ -1263,6 +1282,35 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
     assert_eq!(response.status(), StatusCode::OK);
     let html = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     assert!(String::from_utf8_lossy(&html).contains("another site"));
+
+    // What a real browser sends when it submits the device page's own form:
+    // `Origin: null` (the page is served with `Referrer-Policy: no-referrer`)
+    // plus `Sec-Fetch-Site: same-origin`. The guard must let it through to
+    // credential verification instead of blocking it as cross-site.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/device")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::ORIGIN, "null")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(format!(
+                    "user_code={user_code}&login=dev%40example.com&secret=wrong"
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8_lossy(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+        .into_owned();
+    assert!(!html.contains("another site"), "{html}");
+    assert!(
+        html.contains("The login or secret was not accepted."),
+        "{html}"
+    );
     assert!(state.gateway_stores.device_grants.approve(
         user_code,
         Identity {
@@ -1434,6 +1482,7 @@ async fn gateway_jwt_and_static_client_token_compose_on_models() {
         id: "claude-via-gateway".into(),
         display_name: None,
         upstream_model: None,
+        stage_router: None,
     }];
     let (router, _, _) = build_router(config).unwrap();
 
@@ -1503,6 +1552,7 @@ async fn gateway_session_secret_rotation_accepts_every_listed_secret_and_rejects
         id: "claude-via-gateway".into(),
         display_name: None,
         upstream_model: None,
+        stage_router: None,
     }];
     let (router, _, _) = build_router(config).unwrap();
 

@@ -1,5 +1,93 @@
 # Changelog
 
+## [0.45.1](https://github.com/pleaseai/shunt/compare/v0.45.0...v0.45.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **codex:** enable native tool search for gpt-6-astra ([#557](https://github.com/pleaseai/shunt/issues/557)) ([830584e](https://github.com/pleaseai/shunt/commit/830584e3cb650299d2774a4952706570d2a79bbf))
+
+## [0.45.0](https://github.com/pleaseai/shunt/compare/v0.44.0...v0.45.0) (2026-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **admin:** `POST /admin/login` answers `303` with a session cookie for a `[server.admin] read_keys` credential where it previously answered `401`. The session is read-tier and every mutation still answers `403`, so the cookie carries no permission the read key did not already have through the header slot -- but it carries its own lifetime. Browser sessions are validated against the in-memory session store alone, so rotating a compromised read key now stops its header credential at the next reload while its cookie goes on reading the admin surface until `session_ttl_secs` (default 1h) elapses; restart rather than reload to drop it. A deployment that treated "read keys cannot open a browser session" as a revocation property no longer has it. Dropping stale sessions on reload is tracked in #100, which this widens from write-tier credentials to both tiers.
+* **admin:** `GET /admin` answers `200` with the SPA shell instead of `303 /admin/login` when the caller is unauthenticated. The shell is one static file embedded at compile time and identical for every visitor, so it carries no operator data and needs no credential; the redirect did not disappear but moved into the bundle, which follows a `401` from `GET /admin/api/session` to the same page. A script that treated the `303` as "not signed in" must read the bootstrap endpoint instead.
+* **admin:** The admin JSON and mutation routes moved from `/admin/*` to `/admin/api/*` and the old paths were removed rather than aliased, so every scripted caller must be updated. The path gains one `/api` segment after `/admin`. A complete before/after table for all 13 routes is in the "Admin path migration" section of site/src/content/docs/reference/endpoints.md. `/admin`, `/admin/login` and `/admin/oidc/callback` are unaffected.
+
+### Features
+
+* **admin:** move the admin JSON and mutation routes to /admin/api/* ([#499](https://github.com/pleaseai/shunt/issues/499)) ([67c27ca](https://github.com/pleaseai/shunt/commit/67c27caec4bb1d6f391516cce9453cb5df73fdef))
+* **admin:** port the dashboard views onto the embedded SPA bundle ([#508](https://github.com/pleaseai/shunt/issues/508)) ([82a4b8c](https://github.com/pleaseai/shunt/commit/82a4b8c6d0ff20126762bd76ae9e82a3cbbaa9c2))
+* **admin:** scaffold the embedded admin SPA behind --features ui ([#503](https://github.com/pleaseai/shunt/issues/503)) ([84f6249](https://github.com/pleaseai/shunt/commit/84f6249017a28a920c99344299049f7b2d432860))
+* **admin:** serve the dashboard from the SPA bundle and delete the string literals ([#526](https://github.com/pleaseai/shunt/issues/526)) ([29ff675](https://github.com/pleaseai/shunt/commit/29ff67515ea8235d0ec012636970d690ef6eb146))
+* **admin:** sign read keys in to a read-only dashboard ([#541](https://github.com/pleaseai/shunt/issues/541)) ([363434b](https://github.com/pleaseai/shunt/commit/363434b1912b9794614f06b03f7418350efd8587))
+* **server:** bound graceful shutdown drain with configurable timeout ([#517](https://github.com/pleaseai/shunt/issues/517)) ([fe48249](https://github.com/pleaseai/shunt/commit/fe482498ea5d1524c42479026f519d25f829f34f))
+
+
+### Bug Fixes
+
+* **admin:** converge the dashboard state ladders and stop the add form misreporting a login ([#530](https://github.com/pleaseai/shunt/issues/530)) ([833d439](https://github.com/pleaseai/shunt/commit/833d439c8de859fa0ee4c7ad80cc303810845185))
+* **admin:** drop script-src and connect-src from the login page CSP ([#538](https://github.com/pleaseai/shunt/issues/538)) ([dc4a0fd](https://github.com/pleaseai/shunt/commit/dc4a0fd7f7e42c7c3989b5ce106374f63695da34)), closes [#525](https://github.com/pleaseai/shunt/issues/525)
+* **admin:** say when a refused start closed the authorization step ([#540](https://github.com/pleaseai/shunt/issues/540)) ([8963f7f](https://github.com/pleaseai/shunt/commit/8963f7fe626057464d6f66b73313035d79fd88d4))
+* **admin:** serialize the completions for one pending login ([#550](https://github.com/pleaseai/shunt/issues/550)) ([c917026](https://github.com/pleaseai/shunt/commit/c9170267c9ee54673b9803c428b82242091be0a4)), closes [#440](https://github.com/pleaseai/shunt/issues/440)
+* **admin:** serve the SPA shell on /admin/ as well as /admin ([#528](https://github.com/pleaseai/shunt/issues/528)) ([c7bc752](https://github.com/pleaseai/shunt/commit/c7bc752b3735e1092a483d5822f2b21f9ddafc2c))
+* **deps:** update h2 for empty-frame denial of service ([#502](https://github.com/pleaseai/shunt/issues/502)) ([c139e93](https://github.com/pleaseai/shunt/commit/c139e93aabcd1e9b7f76927f2fd9aa9cc0ecad97))
+* **discovery:** use the negotiated error shape for Codex catalog failures ([#510](https://github.com/pleaseai/shunt/issues/510)) ([dc2644a](https://github.com/pleaseai/shunt/commit/dc2644ae5dc920cc293822af94d38ee3b7538dd8))
+* **responses:** preserve optional function parameters ([#506](https://github.com/pleaseai/shunt/issues/506)) ([49813b1](https://github.com/pleaseai/shunt/commit/49813b12f74679c63d651faca0d5affc033e4363))
+* **review:** drop the cubic default flags that produced a false clean review ([#529](https://github.com/pleaseai/shunt/issues/529)) ([dcdc019](https://github.com/pleaseai/shunt/commit/dcdc0196956564db13ece8e639aea756cc0b7f5c))
+
+## [0.44.0](https://github.com/pleaseai/shunt/compare/v0.43.0...v0.44.0) (2026-09-09)
+
+
+### Features
+
+* **codex:** translate routed inbound Responses requests for Anthropic and Chat Completions upstreams ([#481](https://github.com/pleaseai/shunt/issues/481)) ([078c6fe](https://github.com/pleaseai/shunt/commit/078c6fead6573f66975c87f601cdf1810e7d0382))
+
+
+### Bug Fixes
+
+* **codex:** record the in-stream codex.rate_limits event on the WebSocket transport ([#491](https://github.com/pleaseai/shunt/issues/491)) ([dbe7168](https://github.com/pleaseai/shunt/commit/dbe7168362bfd75938fc337e5b1cd1ee77e0f22e))
+* **responses:** drop tool-schema regex patterns the OpenAI validator cannot compile ([#488](https://github.com/pleaseai/shunt/issues/488)) ([5821280](https://github.com/pleaseai/shunt/commit/5821280f44cc4ea42d7823b01df7ad9f5766a39d))
+
+## [0.43.0](https://github.com/pleaseai/shunt/compare/v0.42.0...v0.43.0) (2026-09-08)
+
+
+### Features
+
+* **usage:** per-provider breakdown on GET /usage ([#483](https://github.com/pleaseai/shunt/issues/483)) ([3e5262b](https://github.com/pleaseai/shunt/commit/3e5262b6ee64b151789206da163a34e1199f4b23))
+* **usage:** report mean pool headroom instead of the least-utilized account on GET /usage ([#484](https://github.com/pleaseai/shunt/issues/484)) ([efe6ddd](https://github.com/pleaseai/shunt/commit/efe6ddda0be334adc0ffa99888fe529e58e0f606))
+
+## [0.42.0](https://github.com/pleaseai/shunt/compare/v0.41.3...v0.42.0) (2026-09-07)
+
+
+### Features
+
+* **codex:** support model-routed third-party upstreams on the inbound Responses endpoint ([#478](https://github.com/pleaseai/shunt/issues/478)) ([42f63b2](https://github.com/pleaseai/shunt/commit/42f63b29fdd56790239ca923e5ce36c710396186))
+
+## [0.41.3](https://github.com/pleaseai/shunt/compare/v0.41.2...v0.41.3) (2026-09-07)
+
+
+### Bug Fixes
+
+* **grok:** keep a product with no usagePercent from blanking the quota row ([#469](https://github.com/pleaseai/shunt/issues/469)) ([209b1dd](https://github.com/pleaseai/shunt/commit/209b1ddd9ea149568c7b9f4bdc1f2ae25f87c0d4))
+
+## [0.41.2](https://github.com/pleaseai/shunt/compare/v0.41.1...v0.41.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* **gateway:** allow the device page's SSO form to redirect to the identity provider ([#473](https://github.com/pleaseai/shunt/issues/473)) ([0890922](https://github.com/pleaseai/shunt/commit/08909221a7004373911827636519edcce157d385))
+
+## [0.41.1](https://github.com/pleaseai/shunt/compare/v0.41.0...v0.41.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **antigravity:** keep an undelivered agy handoff from failing a completed turn ([#414](https://github.com/pleaseai/shunt/issues/414)) ([07ac6d4](https://github.com/pleaseai/shunt/commit/07ac6d4605fbe0953fc7a89fb23b74b85c728abc))
+* **gateway:** accept the device page's own form POST despite a null Origin ([#471](https://github.com/pleaseai/shunt/issues/471)) ([cd84174](https://github.com/pleaseai/shunt/commit/cd841744e4259d9697067384efcd44d60c2800b2))
+
 ## [0.41.0](https://github.com/pleaseai/shunt/compare/v0.40.2...v0.41.0) (2026-09-05)
 
 

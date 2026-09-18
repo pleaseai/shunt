@@ -125,6 +125,13 @@ workspace_roots = ["/Users/you/repos"]
 无法移动该监听器,因此重新加载一个回环 `bind` 并不能让你在公开监听器仍然存活时关闭沙箱。请保持沙箱开启,或以回环绑定
 重启。不要在非回环绑定上把该提供方暴露给不受信任的客户端。
 
+第三个设置 `profile_dir` 为每个条目提供独立的 `HOME`。`agy` 通过 `HOME` 解析包括凭据在内的整个状态树，因此不设置时
+所有条目都共享网关主机上唯一的 ambient `~/.gemini` 配置，最终只能服务一个 Google 账号。给每个条目指定各自的目录后，
+它们会分别登录自己的账号，并可以同时池化多个账号。该目录按需创建并规范化为绝对路径，开头的 `~` 会被展开。每个目录都
+需要各自执行一次 `agy` 登录。仅对使用了该设置的条目，子进程的 `GOOGLE_*` / `GEMINI_*` 环境变量会被剥离，这样主机自身
+的配置就无法悄悄改变由哪个账号 —— 以及谁的账单 —— 来处理请求。不设置（默认）则与既有行为完全一致。有序
+`[[upstreams]]` 条目同样支持该设置。
+
 建议优先使用上面那个原生的 `antigravity` HTTP 提供方,它完全不需要这些。本节是精简版 —— 包含模型 / effort 矩阵在内的
 完整文档在英文指南的
 [The deprecated antigravity-cli transport](/guides/providers/#the-deprecated-antigravity-cli-transport)。
@@ -196,6 +203,7 @@ ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受�
 | [智谱（GLM 国内版）](/zh-cn/providers/zhipu/) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`、`glm-5.3-flash` |
 | [MiniMax](/zh-cn/providers/minimax/) | `https://api.minimax.io/anthropic` | 见 [MiniMax 文档](https://platform.minimax.io/docs/token-plan/claude-code) |
 | [MiniMax 国内版](/zh-cn/providers/minimax-cn/) | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
+| [OpenCode Zen](/zh-cn/providers/opencode/) | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — 精选跨厂商目录(读取 `x-api-key`) |
 | [Mimo (Xiaomi)](/zh-cn/providers/mimo/) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — 见 [Mimo 文档](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
 | [OpenRouter](/zh-cn/providers/openrouter/) | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | [Vercel AI Gateway](/zh-cn/providers/vercel-ai-gateway/) | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8`(接受 `x_api_key`) |

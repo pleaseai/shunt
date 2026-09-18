@@ -27,7 +27,7 @@
   own auth service, storing the result as a named, shunt-owned account file rather than a single
   fixed-path credential (multi-account pooling from day one, mirroring Claude/Codex/xAI).
 - Multi-account pool integration (`StoreFamily::Kimi`) so `kimi_oauth` providers rotate across
-  accounts exactly like `claude_oauth`/`chatgpt_oauth`, and appear in `GET /admin/pool` and
+  accounts exactly like `claude_oauth`/`chatgpt_oauth`, and appear in `GET /admin/api/pool` and
   `GET /usage`.
 - Read-only Kimi visibility in the admin web surface (the existing pool dashboard); no
   browser-driven provisioning — accounts are added with the CLI only (§9).
@@ -195,15 +195,15 @@ and [`m10-codex-multi-account.md`](m10-codex-multi-account.md)):
   its own `membership` pool-rotation reason. A pool where *every* account is 402 still relays the
   last upstream response verbatim through the existing exhaustion path, so a single-account
   deployment continues to see Kimi's real status and error body rather than a gateway-owned one.
-- `GET /admin/pool` and `GET /usage` both include Kimi accounts via the same generic
+- `GET /admin/api/pool` and `GET /usage` both include Kimi accounts via the same generic
   `AuthMode::ClaudeOauth | AuthMode::ChatgptOauth | AuthMode::KimiOauth` filter, each with a
   dedicated `StoreFamily::Kimi` resolution arm.
 
 ## 9. Admin web surface
 
-The admin web surface's pool dashboard lists Kimi accounts (read-only, via the `GET /admin/pool`
+The admin web surface's pool dashboard lists Kimi accounts (read-only, via the `GET /admin/api/pool`
 integration above), but there is no browser-driven provisioning route for Kimi — unlike Claude
-(`/admin/accounts`) and Codex (`/admin/accounts/codex`), no `/admin/accounts/kimi` route (GET,
+(`/admin/api/accounts`) and Codex (`/admin/api/accounts/codex`), no `/admin/api/accounts/kimi` route (GET,
 POST, or DELETE) is registered anywhere in `src/admin/mod.rs`. A Kimi Code account can only be
 added or removed with the CLI (`shunt login kimi --name <account-name>`, or by deleting its
 account file).

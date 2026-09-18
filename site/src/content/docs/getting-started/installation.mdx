@@ -26,7 +26,9 @@ brew services start shunt
 ```
 
 Logs go to `$(brew --prefix)/var/log/shunt.log`. `brew services stop` sends `SIGTERM`, and shunt
-drains in-flight requests before exiting. On Unix, Antigravity agent turns are terminated when
+drains in-flight requests before exiting — for up to `[server] shutdown_timeout_seconds`
+(default 30; changing this one does need a restart), after which shunt stops waiting and exits. On
+Unix, Antigravity agent turns are terminated when
 shutdown starts so their isolated process groups cannot hold the drain open. Config changes don't need
 a restart — shunt [hot-reloads](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)
 the file automatically. See [Running as a
@@ -66,6 +68,19 @@ cargo build --release   # -> target/release/shunt
 ```
 
 You can also run straight from the source tree with `cargo run -- <args>`.
+
+A default build needs no Node toolchain and ships no admin dashboard bundle. To
+build the binary with the embedded admin SPA, build the bundle first and enable
+the `ui` feature. The bundle build requires Node.js 22.12 or newer:
+
+```bash
+cd ui && npm ci && npm run build && cd ..
+cargo build --release --features ui
+```
+
+The prebuilt release binaries above are built this way, so this step matters only
+for a from-source build. See [`/admin` endpoints](/reference/endpoints/) for what
+the feature adds.
 
 ## Prerequisites for connecting Claude Code
 

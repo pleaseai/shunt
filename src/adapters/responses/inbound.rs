@@ -1,4 +1,12 @@
-//! Raw inbound Codex/OpenAI Responses passthrough served by `[server.codex_endpoint]`.
+//! Raw inbound Codex/OpenAI Responses passthrough served by
+//! `[server.codex_endpoint]` over a **ChatGPT/Codex account pool**.
+//!
+//! This is the endpoint's pool path, reached for the configured fixed provider
+//! (which validation pins to `auth = "chatgpt_oauth"`) and for a
+//! `[[server.codex_endpoint.routes]]` entry naming another `chatgpt_oauth`
+//! provider. A route to any other provider goes to [`super::inbound_routed`]
+//! instead, which sends a single credential over a fresh header allowlist
+//! rather than relaying the client's own headers.
 
 use std::time::Duration;
 
@@ -320,15 +328,17 @@ const PASSTHROUGH_STRIP_REQUEST_HEADERS: &[&str] = &[
     "content-length",
     "authorization",
     "chatgpt-account-id",
-    // `Config::validate` (`ConfigError::CodexEndpointWrongAuth`) rejects any
-    // `[server.codex_endpoint]` whose provider is not `auth = "chatgpt_oauth"`,
-    // and that backend authenticates solely via `Authorization: Bearer` +
-    // `chatgpt-account-id`, both injected per pool account in
-    // [`passthrough_send`]. No inbound `x-api-key` value can therefore ever be a
-    // valid credential for this upstream — stripping it unconditionally cannot
-    // break a legitimate relay, and forwarding it would leak a caller's secret
-    // (e.g. an Anthropic key from Claude Code's `apiKeyHelper`, which populates
-    // both `Authorization` and `x-api-key` with the same value) to a third party.
+    // Every provider reaching this file is `auth = "chatgpt_oauth"` — the fixed
+    // `[server.codex_endpoint]` provider (`ConfigError::CodexEndpointWrongAuth`)
+    // or a `[[server.codex_endpoint.routes]]` entry naming another one; a route
+    // to anything else goes to `super::inbound_routed` instead. That backend
+    // authenticates solely via `Authorization: Bearer` + `chatgpt-account-id`,
+    // both injected per pool account in [`passthrough_send`]. No inbound
+    // `x-api-key` value can therefore ever be a valid credential for this
+    // upstream — stripping it unconditionally cannot break a legitimate relay,
+    // and forwarding it would leak a caller's secret (e.g. an Anthropic key from
+    // Claude Code's `apiKeyHelper`, which populates both `Authorization` and
+    // `x-api-key` with the same value) to a third party.
     "x-api-key",
     "accept-encoding",
     // hop-by-hop (RFC 7230 §6.1)
@@ -403,8 +413,10 @@ pub(crate) fn passthrough_request_headers(
 /// path. Unlike the translating path's [`request_builder`], this forwards the
 /// Codex CLI's own request headers (`passthrough_headers`, built by
 /// [`passthrough_request_headers`]) and swaps in **only** the selected pool
-/// account's credential — no shunt-synthesized client identity — so
-/// codex -> shunt -> codex is byte-faithful end to end.
+/// account's credential (via [`apply_credential`]) — no shunt-synthesized client
+/// identity — so codex -> shunt -> codex is byte-faithful end to end. Only
+/// `chatgpt_oauth` providers reach here; a route to any other provider is served
+/// by [`super::inbound_routed`].
 async fn passthrough_send(
     state: &AppState,
     route: &Route,
@@ -412,30 +424,41 @@ async fn passthrough_send(
     passthrough_headers: &HeaderMap,
     body: &Bytes,
 ) -> Result<reqwest::Response, SendError<reqwest::Error>> {
-    let mut request = state
+    let request = state
         .http_client
         .post(responses_url(&state.config, &route.provider))
         .headers(passthrough_headers.clone());
+    crate::upstream_timeout::wait(
+        state.config.server.timeouts.upstream_ttfb_ms,
+        apply_credential(request, credential)
+            .body(body.clone())
+            .send(),
+    )
+    .await
+}
+
+/// Attach a resolved credential to an inbound-endpoint upstream request, with
+/// **no** synthesized client identity. Shared with [`super::inbound_routed`] so
+/// the two inbound paths cannot disagree about which credential kinds are sent
+/// and which fail closed. The `ApiKey` arm bearers regardless of the provider's
+/// `api_key_header`: the Responses API is always Bearer-authenticated, and that
+/// knob only governs the Anthropic passthrough adapter (same rule as
+/// `request::request_builder`).
+pub(super) fn apply_credential(
+    request: reqwest::RequestBuilder,
+    credential: Credential,
+) -> reqwest::RequestBuilder {
     match credential {
         Credential::ChatGptOAuth {
             access_token,
             account_id,
-        } => {
-            request = request
-                .bearer_auth(access_token)
-                .header("chatgpt-account-id", account_id);
-        }
-        // A codex_endpoint provider is validated to be chatgpt_oauth, so only the
-        // arm above runs in practice; the rest keep the credential swap defensive
-        // without ever adding a synthetic client-identity header.
-        Credential::ApiKey { value, .. } => {
-            request = request.bearer_auth(value);
-        }
+        } => request
+            .bearer_auth(access_token)
+            .header("chatgpt-account-id", account_id),
+        Credential::ApiKey { value, .. } => request.bearer_auth(value),
         Credential::XaiOauth { access_token }
         | Credential::ClaudeOauth { access_token, .. }
-        | Credential::GoogleOauth { access_token, .. } => {
-            request = request.bearer_auth(access_token);
-        }
+        | Credential::GoogleOauth { access_token, .. } => request.bearer_auth(access_token),
         // Send nothing rather than bearer an off-origin subscription token:
         // neither an Antigravity nor a Kimi credential can legitimately reach a
         // Responses upstream (validation pins them to `kind = "antigravity"`
@@ -444,17 +467,16 @@ async fn passthrough_send(
         Credential::CursorOauth { .. }
         | Credential::KimiOauth { .. }
         | Credential::AntigravityOauth { .. }
-        | Credential::Passthrough => {}
+        | Credential::Passthrough => request,
     }
-    crate::upstream_timeout::wait(
-        state.config.server.timeouts.upstream_ttfb_ms,
-        request.body(body.clone()).send(),
-    )
-    .await
 }
 
-fn send_error(error: SendError<reqwest::Error>) -> AdapterError {
-    error.into_adapter_error(|error| own_error(error.to_string()))
+pub(super) fn send_error(error: SendError<reqwest::Error>) -> AdapterError {
+    // `without_url`: a `reqwest::Error`'s `Display` embeds the URL it was
+    // attempting, and this message goes into the client-facing 502 body — so a
+    // transport failure would disclose the operator's configured upstream
+    // (host, path, and any query it carries) to whoever sent the request.
+    error.into_adapter_error(|error| own_error(error.without_url().to_string()))
 }
 
 /// Relay an upstream Responses response to the inbound client **verbatim**:
@@ -467,7 +489,7 @@ fn send_error(error: SendError<reqwest::Error>) -> AdapterError {
 /// body bytes stream through unbuffered — no keepalive pings, no SSE parsing, no
 /// translation — so the Codex CLI consumes the same bytes the ChatGPT/Codex
 /// backend produced.
-fn relay_passthrough(upstream: reqwest::Response) -> axum::response::Response {
+pub(super) fn relay_passthrough(upstream: reqwest::Response) -> axum::response::Response {
     let status = upstream.status();
     let mut builder = Response::builder().status(status);
     for (name, value) in upstream.headers() {

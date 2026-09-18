@@ -1,0 +1,310 @@
+---
+title: Switchyard 集成
+description: shunt 阶段路由器背后的评分器来自 NVIDIA 的 Switchyard 项目。shunt 引入了什么、舍弃了什么、已公开的基准结果,以及路由算法本身。
+---
+
+shunt 的[阶段路由器](/zh-cn/guides/stage-router/)并没有自造评分逻辑,而是依赖
+[NVIDIA-NeMo/Switchyard][sy] 的路由库 [`switchyard-libsy`][libsy] —— 该项目的目标
+是"把每次 LLM 调用路由到仍然能把活干完的最便宜的模型"。
+
+本页是集成记录:shunt 用了 Switchyard 的哪一部分、刻意没用哪些部分、公开数字实际
+测的是什么,以及算法如何判定一个回合。如果你只想把功能打开,
+[阶段路由器指南](/zh-cn/guides/stage-router/)更短。
+
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
+[sy]: https://github.com/NVIDIA-NeMo/Switchyard
+
+## shunt 引入了什么
+
+Switchyard 提供的是整套网关:代理服务器、provider 中立的协议、请求/响应翻译、
+LLM 裁判分类器、升级路由、子代理路由。shunt 本身就是网关,所以只取评分器一件,
+其余留下。
+
+| Switchyard 组件 | 在 shunt 中 |
+| :-- | :-- |
+| `switchyard-libsy` 阶段评分器 | **使用** —— 固定在上游 `main` 的一个经过审阅的修订 |
+| `switchyard-protocol` | 作为 libsy 自身的依赖引入;shunt 不构造 `Request` |
+| `switchyard-translation` | **不使用** —— 与 shunt 的 `src/model/responses_request.rs` 正面重复 |
+| `switchyard-server` | **不使用** —— shunt 自己就是服务器 |
+| LLM 分类器 / 裁判 | **不使用** —— 见[下文](#不在热路径上放-llm-裁判) |
+| 升级路由(回合中途) | **不使用** —— 与 shunt 的 post-2xx 不重放规则冲突 |
+| 交接备注、顾问门、子代理路由 | **不使用** |
+
+整个耦合就是一次函数调用。shunt 从解析后的 Anthropic Messages 报文直接填充 libsy 的
+`ToolSignals` 结构体并调用 `pick_tier`;该结构体的每个字段都是 `pub`,中间不需要
+任何翻译层。
+
+这个依赖不是 crates.io 上的发布版,而是钉在上游 `main` 某个**不可变修订上的 git
+pin**,只写 `rev`、不写 `branch` —— 与 shunt 的两个 `tungstenite` pin 形式相同。
+因此升级它是一次经过审阅的 diff,而不是一次无关的 `cargo update` 能顺手做掉的事。
+`0.2.0` 是唯一的已发布版本,而 `main` 已经与它分叉:阶段评分之外的算法 —— advisor
+gate、composite 路由、子代理路由、tool semantics、handoff note —— 只存在于 `main`。
+核对 API 时请读 cargo 解析出的那份 checkout,既不是 registry 源码,也不是会移动的
+GitHub 默认分支。
+
+## 基准结果
+
+以下是**上游 Switchyard 的**数字,不是 shunt 的。shunt 没有跑过 Terminal-Bench,
+紧接着的一节讨论这些结果有多少能迁移过来。
+
+Terminal-Bench 2.1,对比 Opus 4.8 基线:
+
+| 配置 | 准确率 | 总成本 | 相对基线 |
+| :-- | --: | --: | :-- |
+| Opus 4.8 基线 | 76.0% | $98.06 | — |
+| 升级路由 | 75.7% | $85.00 | 准确率的 99.6%,便宜 13.3% |
+| **阶段路由** | **72.7%** | **$68.19** | **准确率的 95.7%,便宜 30.5%** |
+| 能力路由 | 71.2% | $79.32 | 准确率的 93.7%,便宜 19.1% |
+| 仅 Kimi K2.6 | 55.8% | $76.28 | |
+| 仅 GLM 5.2 | 52.4% | $16.47 | |
+| 仅 DeepSeek V4 Pro | 48.7% | $96.92 | |
+| 仅 Ultra 3 | 39.0% | $29.66 | |
+
+shunt 实现的正是阶段路由这一行:三种路由配置中最便宜,同时保住了基线解决率的
+95.7%。下面四行才是让这个数字有意义的对照组 —— 每一个固定单模型,包括比路由器还贵
+的那些,都落在 56% 以下。
+
+产生 `0.5` 默认值的置信度阈值标定,是另一项独立工作,来自 SWE-Bench Pro Python-75,
+而非 Terminal-Bench。
+
+### 出处与保留
+
+- 这些数字是上游自己的 [Benchmark Provenance][provenance] 表中公布的 **v0.2.0**
+  Terminal-Bench 2.1 结果,而该表又把出处标为
+  [Route AI Agent Workloads Across Models with NVIDIA NeMo Switchyard][blog]
+  (NVIDIA,2026 年 8 月 11 日)。博客正文本身并没有登出这张表,所以要核对某个数字时
+  应看 README 而不是博客。
+- 那些运行使用了 **NVIDIA 内部推理端点**,上游明确表示在别的服务栈上绝对解决率可能
+  变化。
+- 上游只签入了*升级*这一份配置
+  (`benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml`)。72.7% 那行
+  阶段路由背后确切的层级模型对并未公开,因此不要把它读作对你在 shunt 中配置的某个
+  特定模型对的承诺。
+- 该表未随附任何延迟或单请求路由开销数字;上游把这个问题交给了它自己的 soak 测试
+  文档。
+
+[provenance]: https://github.com/NVIDIA-NeMo/Switchyard#benchmark-provenance
+[blog]: https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/
+
+### 哪些能迁移到 shunt,哪些不能
+
+评分器是同一份代码,外面的一切都是 shunt 的。所以请把上游那张表读作*这套思路*划算
+的证据,而不是 shunt 自己的成绩。
+
+| | 上游基准 | shunt |
+| :-- | :-- | :-- |
+| 评分内核 | `switchyard-libsy` | 同一 crate,同样的常量 |
+| 信号提取 | 上游的 provider 中立实现 | shunt 自己的实现,取自 Anthropic Messages 块 |
+| `tests_passed` / `repeated_failure` / `compacted` | 评分器可用 | 恒为 `false` —— 从不填充 |
+| 模糊回合上的裁判 | 可选启用 | 没有;fall-open 到选择器默认层 |
+| 跨回合的层级稳定性 | 每回合独立评分 | 带非对称迟滞的会话固定 |
+| 负载 | Terminal-Bench 2.1 任务 | Claude Code 会话 |
+
+其中两项作用方向相反。shunt 不填充 `tests_passed`、`repeated_failure` 与
+`compacted`,因此丢掉了 libsy 的压缩覆盖和重复失败升级 —— 信号严格少于基准当时所有。
+这三项都需要本提取器并不具备的证据:压缩需要一个还没有任何测试钉住的标记,另外两项
+需要工具结果的*文本*。线格式本身是携带这段文本的 —— `tool_result` 块有一个 `content`
+字段 —— 但提取器有意不去读它:从自由格式的结果文本判定这些信号意味着内容模式启发式,
+而结构性的替代指标对 `ls` 的发火会和对一次测试运行一样容易。
+与之相对,shunt 的迟滞机制之所以存在,正是因为在 Claude Code 会话里逐回合翻转层级要
+付出基准测试框架从不承担的代价(见[下文](#shunt-额外提供的东西))。
+
+## 路由算法
+
+### 1. 信号
+
+shunt 会两次遍历请求的 `messages` 数组。第一次只从后往前遍历 assistant 消息,走到
+`recent_turn_window` 覆盖的范围为止,收集算作*最近*的 `tool_use` id。第二次从前往后
+一次遍历两种角色,既建立 `tool_use.id → tool_use.name`,也把每个 `tool_result` 记到
+它所回答的 `tool_use_id` 上。名字是在遍历之后才解析而不是边走边解析,所以即使结果
+出现在它自己的调用之前也照样能接上。`tool_result` 块不携带工具名,所以这次关联是
+整个提取器唯一的立足点。
+
+除了用于关联的 id,只读取两个字段 —— `tool_use.name` 和 `tool_result.is_error`。
+不读系统提示、不读用户文本、不读工具参数。
+
+Claude Code 只用一个没有分级的布尔值报告失败,所以由 shunt 自己把它映射到 libsy 的
+`0.0 / 0.3 / 0.7 / 1.0` 严重度刻度上。
+
+| 条件 | `severity` |
+| :-- | :-- |
+| 窗口内没有失败结果 | `0.0` |
+| 窗口内有失败结果 | `0.7`(hard) |
+| 窗口内的 `Task` 失败 —— 整个被委派的子代理运行崩塌 | `1.0`(critical) |
+| 最后两条完成结果都失败且都在窗口内 —— 没有在恢复 | `1.0`(critical) |
+
+工具名按[工具词汇](/zh-cn/guides/stage-router/#工具词汇)分入 `Observe`、`Mutate`、
+`Plan` 和未分类。`Bash` 是刻意不分类的 —— 区分 `git status`、`rm -rf` 和
+`cargo test` 只能靠读 `input.command`,而那正是这套设计要避开的脆弱推断。
+
+如果一次已完成的工具调用都没有,提取返回空,该回合走选择器默认层。空对话不会被评为
+"efficient"。
+
+### 2. 维度
+
+信号被投影到两个轴上 —— 是否*出了问题*,以及代理是否在*产出*。
+
+| 维度 | 含义 | 推向 |
+| :-- | :-- | :-- |
+| `severity` | 窗口内最大错误严重度,`[0, 1]` | Capable |
+| `spinning` | 既无读取、计划,也无写入、编辑的深回合 —— 纯空转 | Capable |
+| `exploring` | 有读取或计划,但不写不改的深回合 | Capable |
+| `production_intensity` | 写入+编辑占近期工具操作的比例 | Efficient |
+
+`spinning` 与 `exploring` 都要求 `turn_depth >= 8`:早期没有写入的回合是正常探索,
+不是停滞。二者按是否有调查性活动划分同一个"未产出"状态,因此至多触发一个,产出轴
+不会被重复计算。
+
+### 3. 评分
+
+每个达到满值的维度贡献一个 `0.10` 的信号单位;`severity` 按其 hard 上限 `0.7`
+归一化,从而落在同一权重上。
+
+```
+raw   = 0.10 × (severity / 0.7 + spinning + exploring − production_intensity)
+score = tanh(5.0 × raw)          // 符号:+ capable,− efficient
+confidence = |score|
+```
+
+增益 `5.0` 才让取值范围可用 —— 没有它,置信度会封顶在 `±0.20` 附近,任何有意义的阈值
+都永远够不着。
+
+这套设计是**需要互证的**:没有任何单一轴能独自定下结论。
+
+| 一致的信号 | `raw` | `confidence` | 能过 `0.5` 默认阈值吗 |
+| :-- | --: | --: | :-- |
+| 一个饱和 | `0.10` | `tanh(0.5) ≈ 0.46` | 否 |
+| 两个互证 | `0.20` | `tanh(1.0) ≈ 0.76` | 是 |
+
+`0.5` 这个默认值正来源于此:单独一个错误信号不足以让回合改道,两个一致的信号则够了。
+
+### 4. 判定
+
+`pick_tier` 按顺序执行三条规则,最先触发的那条获胜。
+
+1. **硬升级** → capable。critical 级严重度、上下文被压缩,或最近窗口内同一个失败
+   重复出现。跳过评分器,报告 `confidence: 1.0`。
+2. **评分器。** 落在中位值周围那条模糊带之外时,按符号走。
+3. **Fall-open。** 落在带内时 libsy 返回 `ConsultClassifier`。shunt 不运行分类器,
+   该回合落在选择器的默认层。
+
+以前还有第四条 —— 对测试已通过的收尾回合做硬*降级*。上游把它删掉了;测试通过如今
+只会清除 libsy 自己的 capable hold,而 shunt 并不使用那个 hold。
+
+规则 1 的三个触发条件里,今天的 shunt 只会触发 critical 严重度,通过上面严重度表中的
+两条路径。压缩那一半处于休眠,因为还没有固定下来的压缩标记;重复失败那一半也处于休眠,
+因为 libsy 是把结果文本与自己的错误表比对来判定*同一个失败*的,而 Claude Code 发送的
+`is_error` 布尔值支撑不了这件事。shunt 自己的"最近两个已完成结果都失败"规则,已经通过
+`severity` 抵达规则 1。
+
+### 5. 迟滞
+
+以上都是孤立地判定单个回合。之后 shunt 会在允许该判定改变会话已固定层级之前,加上
+自己的门槛。
+
+| 方向 | 要求 |
+| :-- | :-- |
+| Efficient → Capable | 评分器实际作出的判定,且越过 `confidence_threshold`(0.5) |
+| Capable → Efficient | 评分器实际作出的判定,**且** `min_dwell_turns` 已过,**且**满足 `deescalate_threshold`(0.75) |
+
+Fall-open、模糊回合,或没有工具活动的回合,都是选择器的默认值而非证据,不能朝任何
+方向移动固定层级。
+
+置信度门槛没有任何豁免。它曾经为 `tests_passed` 捷径留过一个,因为那条捷径完全不
+报告置信度。上游删掉那条规则之后,凡是算作证据的来源都会报告置信度,而一个不报告置信度
+的回合会被保留而不是被信任。接替它的 libsy `capable_hold` —— 意思是先前的升级仍在保持
+—— 同样不是证据:它与上表的 `sticky` 行是同一个概念,而且只有 libsy 那个有状态的分类器
+会打上它,shunt 并不调用它。
+
+## shunt 额外提供的东西
+
+Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 Claude Code 网关,
+必须定价,而下面列出的大部分都源自这个差别。
+
+### Claude Code 真实的工具词汇
+
+评分器想知道的是某次调用是在观察、修改还是计划。provider 中立的路由器只能推断,
+而 shunt 知道名字,并直接匹配其中 14 个:观察类是 `Read`、`Glob`、`Grep`、
+`NotebookRead`、`WebFetch`、`WebSearch`、`BashOutput`,修改类是 `Edit`、`NotebookEdit`、
+`Write`,计划类是 `TodoWrite`、`Task`、`EnterPlanMode`、`ExitPlanMode`。其中一个享有超出
+其类别的待遇:*失败的* `Task` 会被评为 critical 而非仅仅 hard,因为那是整个被委派的子代理
+运行崩塌,而不是一条命令失败。
+
+### 切换并不免费,所以迟滞是非对称的
+
+在长时间的 Claude Code 会话里,一次层级切换要具体付出三样东西:
+
+- **提示缓存是按模型建键的** —— 切换会放弃已预热的前缀,并在新层级上支付整笔缓存
+  写入。
+- **Codex 续接**把模型哈希进签名,所以切换会强制整份重传,把 shunt 刚省下的上传
+  削减还回去。
+- **跨 provider 的切换**还会丢掉该会话已池化的连接和粘滞的账号槽位。
+
+若每个回合都独立评分,长会话反而可能比不路由*更贵*。这就是两个方向被刻意做成不对等
+的原因,也是迟滞在 shunt 的集成中属于核心而非枝节的原因。
+
+### 不泄漏 session id 的会话固定
+
+判定按 `(对外模型 id, session id)` 固定,键是 SHA-256 前缀 —— session id 被哈希,
+从不存储。存储上限为 4096 个会话,在插入路径上完成淘汰,没有后台任务,也不持久化
+任何东西。
+
+固定项还记住了它所依据的路由表指纹,所以跨热重载编辑某一个路由器时,只有它自己的
+固定项会被丢弃。该指纹以解构方式读取配置结构体而不是点号取字段,因此日后新增键时
+会编译失败,而不是让过期的固定项悄悄存活下来。
+
+### 不在热路径上放 LLM 裁判
+
+当信号不足以定论时,libsy 返回
+`PickOutcome::ConsultClassifier { default_tier }`。shunt 把它当作答案,直接采用
+`default_tier`。拒绝裁判并不是在跟 API 对抗 —— 这*本身就是* API 文档化的 fall-open
+路径。
+
+换来的是:没有第二次模型调用、没有第二份凭据,并且在路由器最没把握的那些回合上不
+增加延迟。付出的是:在那些回合上裁判本可以挽回的准确率,而这正是上游"分类器辅助"
+配置所测到的实质组成部分。
+
+### 路由目标就是普通的模型 id
+
+路由器的输出是一个公开模型 id,因此会重新进入 shunt 常规的路由阶梯,免费继承故障
+转移链、账号池、适配器选择、`effort` 和 `service_tier`,并且无需额外代码就出现在
+`/v1/models` 发现结果中。目标本身若也是路由器则属启动错误,所以解析**在结构上**就是
+一跳,而不是靠深度计数器。
+
+### 客户端看到的仍是它请求的那个 id
+
+层级只随 `upstream_model` 上行,除此之外不出现在任何地方。响应报告的是被请求的 id,
+所以 Claude Code 的 `/model` 显示和 `--resume` 模型恢复都照常工作。
+
+### 不要求就不生效
+
+没有 `[models.stage_router]` 表时,路由器分支只是对一个现有部署并不具备的配置字段做
+一次 `Option` 检查。路由路径上没有任何变化。
+
+## 集成的代价
+
+这些是首次采用该依赖时针对 `0.2.0` 实测的数字,不是估算。
+
+| | |
+| :-- | :-- |
+| Release 二进制 | **+115,376 字节(+0.31%)** |
+| `Cargo.lock` 包数 | **+33**(412 → 445) |
+| 其中未使用 | 约 26 个,属于 shunt 从不调用的分类器路径所需的 `jsonschema` 依赖树 |
+| 是否真的被链接 | `jsonschema` 树**没有**被链接 —— 构建出的二进制里 `jsonschema` 字符串 0 处、`num-bigint` 符号 0 个 |
+| 移植这一备选 | 137 行 |
+
+做出决定的是二进制结果:链接器会整棵丢掉分类器依赖树,所以依赖这个 crate 的代价约为
+千分之三。那 137 行的移植方案留在记录里,作为这个 pin 日后陈旧时的退路。
+
+从那个发布版移到 `main` pin **没有新增任何包** —— 锁文件仍是 445,因为 libsy 在那边
+新增的直接依赖(`http`、`regex`、`uuid`)早已在 shunt 的依赖树里。是否被链接的结论在
+新 pin 上同样成立:release 二进制里 `jsonschema` 字符串仍是 0 处,`num-bigint` 符号
+仍是 0 个。
+
+## 署名
+
+`switchyard-libsy` 采用 Apache-2.0 许可,© NVIDIA Corporation。shunt 未加修改地使用
+其阶段评分器。shunt 这一侧的设计记录 —— 包括每一项被拒绝的能力及其理由 —— 是
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md);
+而选择固定上游 `main` 而非发布版的决定,记录在
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)。

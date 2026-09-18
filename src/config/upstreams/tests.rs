@@ -88,6 +88,71 @@ fn api_key_map_absorbs_env_and_header() {
 }
 
 #[test]
+fn opencode_preset_fills_kind_base_url_env_and_x_api_key_header() {
+    // A preset reference alone must yield a working credential: zen reads
+    // Anthropic-style `x-api-key` only, so the preset carries the header the
+    // way kimi/zhipu presets carry their env var.
+    let upstream = parse("name = \"zen\"\nprovider = \"opencode\"");
+    let (providers, _) = normalize(&[upstream]).unwrap();
+    assert_eq!(providers["zen"].kind, ProviderKind::Anthropic);
+    assert_eq!(providers["zen"].base_url, "https://opencode.ai/zen");
+    assert_eq!(providers["zen"].auth, AuthMode::ApiKey);
+    assert_eq!(
+        providers["zen"].api_key_env.as_deref(),
+        Some("OPENCODE_API_KEY")
+    );
+    assert_eq!(providers["zen"].api_key_header, ApiKeyHeader::XApiKey);
+}
+
+#[test]
+fn opencode_preset_header_is_overridable_and_other_presets_stay_bearer() {
+    // An explicit auth map wins over the preset's header, and presets without
+    // a header keep the bearer default.
+    let override_header = parse(
+        "name = \"zen\"\nprovider = \"opencode\"\nauth = { mode = \"api_key\", header = \"bearer\" }",
+    );
+    let (providers, _) = normalize(&[override_header]).unwrap();
+    assert_eq!(providers["zen"].api_key_header, ApiKeyHeader::Bearer);
+
+    let bearer_preset = parse("name = \"z\"\nprovider = \"zhipu\"");
+    let (providers, _) = normalize(&[bearer_preset]).unwrap();
+    assert_eq!(providers["z"].api_key_header, ApiKeyHeader::Bearer);
+}
+
+#[test]
+fn env_only_or_bare_api_key_map_keeps_the_preset_header() {
+    // `env` and `header` in an api_key map are independent overrides: naming
+    // only the env must not flip the preset's x-api-key choice back to
+    // bearer (zen rejects a bearer credential), and a bare mode-only map
+    // changes nothing about the credential shape.
+    let env_only = parse(
+        "name = \"zen\"\nprovider = \"opencode\"\nauth = { mode = \"api_key\", env = \"OTHER_KEY\" }",
+    );
+    let (providers, _) = normalize(&[env_only]).unwrap();
+    assert_eq!(providers["zen"].api_key_header, ApiKeyHeader::XApiKey);
+    assert_eq!(providers["zen"].api_key_env.as_deref(), Some("OTHER_KEY"));
+
+    let bare_map = parse("name = \"zen\"\nprovider = \"opencode\"\nauth = { mode = \"api_key\" }");
+    let (providers, _) = normalize(&[bare_map]).unwrap();
+    assert_eq!(providers["zen"].api_key_header, ApiKeyHeader::XApiKey);
+    assert_eq!(
+        providers["zen"].api_key_env.as_deref(),
+        Some("OPENCODE_API_KEY")
+    );
+}
+
+#[test]
+fn upstream_without_a_preset_keeps_the_bearer_default() {
+    // The no-preset branch of the header expression: an explicit kind and
+    // base_url with no `provider` reference leaves the bearer default.
+    let manual = parse(
+        "name = \"custom\"\nkind = \"anthropic\"\nbase_url = \"https://api.example\"\nauth = \"api_key\"",
+    );
+    let (providers, _) = normalize(&[manual]).unwrap();
+    assert_eq!(providers["custom"].api_key_header, ApiKeyHeader::Bearer);
+}
+
+#[test]
 fn oauth_scope_separates_store_references_and_inline_accounts() {
     let upstream = parse(
         r#"name = "claude"

@@ -24,7 +24,7 @@ One entry is one failover unit: a named route with its own credential scope.
 | `base_url` | if no preset | Upstream base URL. For `kind = "cursor"`, this is the login/token-refresh surface only; inference uses the fixed agent host `https://agentn.global.api5.cursor.sh`, overridable only with `SHUNT_CURSOR_AGENT_BASE_URL`. |
 | `auth` | no | String or map (§1.3). Default: preset's default auth, else `passthrough`. |
 | other provider fields | no | `effort`, `service_tier`, `count_tokens`, `websocket`, `tool_search`, `retry` — unchanged semantics, now per upstream, except that normalized `retry` settings do not apply to the Cursor streaming turn. |
-| `workspace_roots`, `sandbox` | no | `kind = "antigravity_cli"` only; unchanged semantics and defaults (`[]` and `true`), now per upstream. `sandbox = false` is refused at startup when `server.bind` is non-loopback, and the adapter re-checks it per request against the listener bound at boot, so a reload cannot disable the sandbox under a public listener. |
+| `workspace_roots`, `sandbox`, `profile_dir` | no | `kind = "antigravity_cli"` only; unchanged semantics and defaults (`[]`, `true` and unset), now per upstream. `profile_dir` gives the entry its own `HOME`, so each ordered upstream can sign in to its own Google account. `sandbox = false` is refused at startup when `server.bind` is non-loopback, and the adapter re-checks it per request against the listener bound at boot, so a reload cannot disable the sandbox under a public listener. |
 
 Explicit fields always override preset-supplied values.
 
@@ -45,6 +45,7 @@ branching). Unknown preset name → config error listing available presets.
 | `kimi-code` | anthropic | `https://api.kimi.com/coding` | `kimi_oauth` |
 | `zhipu` | anthropic | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
 | `minimax-cn` | anthropic | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
+| `opencode` | anthropic | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, header `x-api-key` |
 
 `kimi` and `kimi-code` are distinct presets for distinct services: `kimi` is the metered Moonshot
 API (`auth = "api_key"`, env `MOONSHOT_API_KEY`), while `kimi-code` is the subscription-billed Kimi
@@ -69,7 +70,7 @@ existing `AuthMode` strings) and absorbs the legacy sibling fields:
 | mode | map fields |
 |---|---|
 | `passthrough` | — |
-| `api_key` | `env` (required unless preset supplies it), `header` (default as today) |
+| `api_key` | `env` (required unless preset supplies it), `header` (default: the preset's header when the preset supplies one, else `bearer`) |
 | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` | optional scope: `account = "name"` (single) **or** `accounts = [...]` (subset; entries are full `AccountConfig` tables or bare name strings referencing the store). No scope → whole store scan (`~/.shunt/accounts/kimi/` for `kimi_oauth`); for `chatgpt_oauth` an empty store additionally falls through to the single-account `~/.codex/auth.json` path (both preserved today's behavior). `kimi_oauth` has no such single-account fallback — the shunt-managed store is its only source. Setting both `account` and `accounts` is an error. |
 | `xai_oauth` / `cursor_oauth` / `antigravity_oauth` | as today (no scoping fields yet) |
 
@@ -150,7 +151,11 @@ Wraps adapter dispatch in `forward()`. Per attempt, in chain order:
 
 Response headers on every proxied response (success or final failure):
 `x-gateway-upstream` (upstream name), `x-gateway-model` (client-requested id),
-`x-gateway-upstream-model` (mapped upstream id).
+`x-gateway-upstream-model` (mapped upstream id). A response whose model id
+configures a stage router (`docs/stage-router.md`) additionally carries
+`x-gateway-routed-model` (the target the chosen tier routes to) and
+`x-gateway-route-source` (why that tier was chosen); a model id with no router
+carries neither, and `count_tokens` carries neither either.
 
 Cross-cutting:
 
@@ -195,9 +200,7 @@ Cross-cutting:
   shared with model discovery; see `docs/m4-inbound-auth.md` §2).
 - **count_tokens**: answered from the first chain element, as a chain has one
   advertised id; no failover for count_tokens.
-- **Metrics**: per-attempt `record_proxied_request` labeled by upstream name,
-  plus a failover counter (attempted/advanced/exhausted) so dashboards can see
-  chain pressure. Exact metric name settled at implementation.
+- **Metrics**: per-attempt `record_proxied_request` (the `shunt.requests` counter and `shunt.latency` distribution, labeled by upstream name, model, and status) plus a `shunt.failover` counter (attempted/advanced/exhausted) so dashboards can see chain pressure.
 - **`[server.codex_endpoint]`**: out of scope; stays pinned to its configured
   upstream.
 
@@ -292,6 +295,14 @@ Documented user-facing in the site guide; summarized here.
   Cursor adapter-owned errors, or WebSocket header construction failures —
   return immediately without advancing the chain. This keeps configuration
   errors visible instead of masking them behind another upstream.
+- **Early-committed streaming chains fail over inside the committed stream.** A multi-upstream streaming chain whose elements are all `Anthropic`/`Responses` kinds, with at least one `Responses` route (the only kind that early-commits), without the websocket transport, and without a pooled `claude_oauth`/`kimi_oauth` Anthropic route, runs its chain inside the committed SSE response (`proxy/chain_stream`): the response commits `200` immediately (keepalive pings cover the wait), the synthetic `message_start` is deferred until an upstream wins, and pre-header failures — transport errors and advance-status non-2xx — advance to the next upstream, while the configured TTFB timeout stays terminal (`504 timeout_error` event, exactly like the pre-commit loop). An Anthropic-kind winner relays its own SSE (`message_start` included), so the client sees exactly one start either way. A pooled (`chatgpt_oauth`) route's pre-frame account-pool exhaustion is classified like the pre-commit loop (§4): a relayed advance status advances the chain and is eligible as the remembered best failure, transport exhaustion advances without remembering, and the TTFB timeout stays terminal; the synthetic start is deferred until an account actually responds. The remaining streaming deviations, each terminal on the committed stream instead of advancing:
+  - a chain containing the websocket transport, a kind other than `Anthropic`/`Responses`, or an Anthropic-kind route on a pooled `claude_oauth`/`kimi_oauth` auth, keeps the pre-commit loop (a Responses element before the chain's end still commits early and pre-empts failover);
+  - a terminal non-2xx (e.g. `400`) from an Anthropic-kind fallback surfaces as the terminal `error` event carrying the upstream's error body, rather than a relayed `400` response (headers are already committed as `200`);
+  - a `2xx` whose body is not `text/event-stream` from an Anthropic-kind winner becomes one terminal `error` event (the committed stream cannot relay a non-SSE body), where the pre-commit loop relays it verbatim;
+  - the winner's relay ends at the terminal frame — a relayed `message_stop`, or a relayed `error` frame (an Anthropic-kind upstream's own mid-stream error, or a translated backend `error`/`response.failed` event): a mid-relay body failure before it becomes one terminal `error` event (the observer classifies the stream as failed), one after it surfaces nowhere, and the still-open upstream drains detached under a bounded budget so the client's stream completes at the turn and a keepalive ping can never follow the terminal frame — an appended `error` event to a completed response would corrupt it and record the completed request as failed;
+  - the committed response carries only `content-type` and `x-gateway-model`: the winner-dependent gateway headers (`x-gateway-upstream`/`x-gateway-upstream-model`) are omitted because the winner is unknown at commit time, and upstream response headers (request ids, `anthropic-ratelimit-*` quota metadata included) never reach the client on this path, even from an Anthropic-kind winner; the stream metrics and span outcome attribute the winner once the stream knows it, and the remembered best-failure preference (`429` > `401`/`403` > `404` > other `5xx`) plus the all-pre-header `502` synthesis follow the pre-commit loop exactly;
+  - the access log records the committed `200` (the stream-metrics observer still classifies the error event), exactly like the single-route early-commit path; request metrics stay per-attempt (§3): each failed attempt records its classified status (`429`, `5xx`, …) and the winner records `200`.
+  Non-streaming turns are unchanged.
 
 ## 7. Implementation surface
 

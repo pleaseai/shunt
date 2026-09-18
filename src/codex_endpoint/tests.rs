@@ -67,6 +67,43 @@ async fn reads_the_model_from_a_zstd_body() {
     );
 }
 
+/// `keep_decoded` hands the routed path the buffer the label parse already
+/// materialized, so it never decodes the same body twice (PR #478 review, P2).
+/// The bytes must equal the plain fixture — anything else would silently ship a
+/// different body upstream than the one the label was read from.
+#[tokio::test]
+async fn keeps_the_decoded_zstd_body_only_when_asked() {
+    let plain = request_body("gpt-5.2-codex");
+    let body = crate::compression::compress_request_body(plain.clone())
+        .await
+        .expect("compression should succeed")
+        .expect("the fixture should be large enough to compress");
+
+    let kept = super::model::resolve_model(&zstd_headers(), &body, TEST_REQUEST_LIMIT, true).await;
+    assert_eq!(kept.model.as_deref(), Some("gpt-5.2-codex"));
+    assert_eq!(kept.decoded.as_ref(), Some(&plain));
+
+    let dropped =
+        super::model::resolve_model(&zstd_headers(), &body, TEST_REQUEST_LIMIT, false).await;
+    assert_eq!(dropped.model.as_deref(), Some("gpt-5.2-codex"));
+    assert!(dropped.decoded.is_none());
+}
+
+/// An identity body has nothing to reuse — the caller already holds the bytes —
+/// so `keep_decoded` is a no-op there rather than an extra copy.
+#[tokio::test]
+async fn never_keeps_a_decoded_copy_of_an_identity_body() {
+    let resolved = super::model::resolve_model(
+        &HeaderMap::new(),
+        &request_body("gpt-5.2-codex"),
+        TEST_REQUEST_LIMIT,
+        true,
+    )
+    .await;
+    assert_eq!(resolved.model.as_deref(), Some("gpt-5.2-codex"));
+    assert!(resolved.decoded.is_none());
+}
+
 /// A body that claims `zstd` but cannot be decoded degrades to the `unknown`
 /// label — the request itself still relays verbatim.
 #[tokio::test]

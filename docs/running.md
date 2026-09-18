@@ -14,7 +14,7 @@ subscription). Everything else passes through to Anthropic unchanged.
 ## 1. Prerequisites
 
 - **Rust** (stable) with `cargo` — see `Cargo.toml`. Build with `cargo build`.
-- **Claude Code** v2.1.129+ (only if you want [model discovery](#54-optional-model-discovery);
+- **Claude Code** v2.1.129+ (only if you want [model discovery](#55-optional-model-discovery);
   the primary `ANTHROPIC_CUSTOM_MODEL_OPTION` path works on any recent version).
 - A credential for whichever provider you map:
   - **OpenAI API key** for the `openai` provider, or
@@ -76,6 +76,7 @@ cp shunt.yaml.example shunt.yaml  # YAML
 bind = "127.0.0.1:3001"        # address shunt listens on
 default_provider = "anthropic" # provider for any model with no route (pass-through)
 max_concurrent_requests = 1024  # shed excess in-flight requests with 503; 0 disables
+shutdown_timeout_seconds = 30   # drain deadline after first SIGTERM/SIGINT; 1..=3600
 
 # Each provider is a [providers.<name>] table (see §3.2 for every key).
 [providers.anthropic]
@@ -190,13 +191,15 @@ Both metric sinks export the same low-cardinality series:
 | Series | Type | Attributes | Meaning |
 | :-- | :-- | :-- | :-- |
 | `shunt.requests` | Counter | `provider`, `model`, `http.response.status_code` | Inference requests; token-count requests are excluded. |
-| `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code` | Time to response headers for streams and full latency for non-streaming responses. |
-| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Time from request start to the first SSE body chunk. |
+| `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code` | Time to response headers for streams and full latency for non-streaming responses; the committed streaming responses sample from dispatch to attempt classification, since their headers commit before the upstream responds. |
+| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Time from request start to the first complete non-keepalive SSE frame. |
 | `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | Exactly one stream result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
 | `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming usage for `input`, `output`, `cache_read`, or `cache_creation`; non-streaming usage is not recorded. |
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation `hit` or full-input `fallback`. |
 | `shunt.codex_ws_overflow` | Counter | `provider`, `outcome` | Codex WebSocket dedicated overflow connection `opened` or ceiling-`refused` (issue #248). |
 | `shunt.upstream_retries` | Counter | `provider`, `reason` | Bounded transient retries. |
+| `shunt.stage_router.decisions` | Counter | `model`, `tier`, `source` | Stage-router tier decisions, by the router's model id (as matched, so with any `[1m]` hint already stripped), the chosen tier, and why it was chosen; `count_tokens` probes are excluded. |
+| `shunt.stage_router.flips` | Counter | `model`, `from`, `to` | Decisions that moved a session off its pinned tier. The two directions stay separate because escalation is deliberately easier than de-escalation. |
 | `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, non-stale accounts for `5h`, `7d`, or `7d_oi`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Account rotations and pool exhaustion by low-cardinality cause. |
 | `shunt.pool.reprobes` | Counter | `provider` | Reprobes committed at the first HTTP dispatch for stale near-quota Codex/ChatGPT accounts; WebSocket-enabled providers count inbound HTTP probes only. |
@@ -241,11 +244,12 @@ fields. Ready-to-use entries (uncomment in
 | Zhipu (GLM China) — built-in preset | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
 | MiniMax China — built-in preset | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
+| OpenCode Zen — built-in preset | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — curated cross-vendor catalog; reads `x-api-key` |
 | Mimo (Xiaomi) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — see [Mimo docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8`, `~anthropic/claude-sonnet-latest` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |
 
-`zhipu` and `minimax-cn` are also built-in presets, so they do not need a `[providers.*]` table
+`zhipu`, `minimax-cn`, and `opencode` are also built-in presets, so they do not need a `[providers.*]` table
 from `shunt.toml.example`. Use the ordered `[[upstreams]]` form instead — for example,
 `provider = "zhipu"` or `provider = "minimax-cn"` — and keep the `anthropic` passthrough default.
 
@@ -282,7 +286,7 @@ provider = "kimi-code"
 
 `kimi_oauth` is pool-capable like `claude_oauth`/`chatgpt_oauth` — use `accounts = [...]` in place
 of `account` to spread load across several stored Kimi accounts. See
-[Kimi → Kimi Code (OAuth subscription)](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription)
+[Kimi → Kimi Code (OAuth subscription)](https://shunt.sh/providers/kimi/#kimi-code-oauth-subscription)
 for the full walkthrough.
 
 For example, to route Kimi's (Moonshot) model through shunt:
@@ -334,7 +338,7 @@ The optional `[server.admin]` dashboard can provision full-OAuth or setup-token 
 
 Refreshable files contain rotating credentials. A successful refresh can replace the refresh token and invalidate its previous value, so give each file exactly one active shunt owner. Do not share the same file across processes or independently run copied snapshots on multiple hosts; provision each process separately. Setup-token accounts are non-refreshable and do not have this rotation hazard.
 
-See [`m8-anthropic-multi-account.md`](m8-anthropic-multi-account.md), [`m9-admin-surface.md`](m9-admin-surface.md), and the user-facing [CLI reference](../site/src/content/docs/reference/cli.md) for the complete pool and provisioning behavior.
+See [`m8-anthropic-multi-account.md`](m8-anthropic-multi-account.md), [`m9-admin-surface.md`](m9-admin-surface.md), and the user-facing [CLI reference](../site/src/content/docs/reference/cli.mdx) for the complete pool and provisioning behavior.
 
 ### 3.4 Validate the config
 
@@ -376,15 +380,18 @@ Installed via Homebrew, shunt can run under `brew services` instead of a foregro
 ```bash
 brew services start shunt    # launches `shunt run` in the background
 brew services restart shunt  # e.g. after a binary upgrade
-brew services stop shunt     # sends SIGTERM; shunt drains in-flight requests, then exits
+brew services stop shunt     # sends SIGTERM; shunt drains to its deadline, then exits
 brew services info shunt
 ```
 
-`SIGTERM` and ctrl-c both start the same drain. On Unix, Antigravity `agy` runs are the exception:
-shunt terminates their isolated process groups as soon as shutdown starts, because gateway signals do
-not reach those groups and an unattended agent must not hold the drain open. Other in-flight requests
-continue draining with no deadline — an open SSE stream keeps the process alive for as long as its
-client keeps reading. Send a **second** signal (another ctrl-c, or `kill` again) to skip the drain and
+`SIGTERM` and ctrl-c both stop new admission and start the same bounded drain. Active HTTP responses,
+SSE streams, and upgraded WebSocket sessions may finish within `[server] shutdown_timeout_seconds`
+(default `30`, valid `1..=3600`). One absolute deadline starts at the first signal and covers every
+connection; when it expires, shunt cancels the remaining server work and returns normally so Rust
+drop cleanup and telemetry flushing still run. See [Bounded shutdown](bounded-shutdown.md).
+On Unix, Antigravity `agy` runs are the exception: shunt terminates their isolated process groups as soon
+as shutdown starts, because gateway signals do not reach those groups and an unattended agent must not hold
+the drain open. Send a **second** signal (another ctrl-c, or `kill` again) to skip the drain and
 exit immediately with the conventional 128+signal exit status: 143 for a second `SIGTERM`, 130 for
 a second ctrl-c/`SIGINT`. The immediate-exit path also terminates any Antigravity groups before the
 process exits.
@@ -550,7 +557,7 @@ file, so the static + `setup-token` route stays the simplest and safest default.
 > the copy echoed into `x-api-key` would otherwise make `api.anthropic.com` reject the request as
 > an invalid API key. shunt normalizes this on the passthrough path: when the forwarded bearer is
 > an OAuth token it drops the duplicated `x-api-key` before forwarding, leaving the bearer to stand
-> alone (`outbound_headers`, `src/adapters/anthropic.rs`). A real API key (the `ANTHROPIC_API_KEY`
+> alone (`outbound_headers`, `src/adapters/anthropic/mod.rs`). A real API key (the `ANTHROPIC_API_KEY`
 > path, which sends `x-api-key` and no bearer) is never touched. Without this normalization,
 > `apiKeyHelper` + an OAuth token would only satisfy the discovery gate and mapped-model routes —
 > Claude passthrough would 401.

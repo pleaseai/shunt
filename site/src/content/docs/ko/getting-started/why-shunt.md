@@ -26,14 +26,16 @@ Claude Code는 모든 턴을 Anthropic API로 보냅니다. `shunt`는 그 앞(`
 
 shunt는 받은 model id만 그대로 존중합니다. 취약한 에이전트별 시스템 프롬프트 지문 인식은 없습니다. 그 동일한 선택성이 shunt가 호출자가 누구인지 조사하지 않고도 개별 에이전트까지 도달합니다.
 
+model id 하나를 스스로 판단하게 만들 수도 있습니다. [스테이지 라우터](/ko/guides/stage-router/)는 강한 티어와 효율 티어를 지정하고, 대화의 최근 tool-result 메타데이터(`tool_use.name`과 `tool_result.is_error`이며 프롬프트 텍스트는 절대 아닙니다)로 턴마다 둘 중 하나를 고릅니다. 라우터를 설정하지 않으면 동작은 그대로입니다.
+
 ## shunt가 구현하는 것
 
-- **`POST /v1/messages`** — 요청의 `model` id에 따라 라우팅되는 추론. 매핑되지 않은 모델은 호출자 본인의 자격 증명으로 바이트 단위 그대로 Anthropic에 전달됩니다.
+- **`POST /v1/messages`** — 요청의 `model` id에 따라 라우팅되는 추론. 매핑되지 않은 모델은 호출자 본인의 자격 증명으로 바이트 단위 그대로 Anthropic에 전달됩니다. 단, shunt가 다른 프로바이더용으로 생성한 [`thinking` signature](/ko/providers/anthropic/)만은 Anthropic이 거부하는 값이므로 제거됩니다.
 - **Anthropic Messages ⇄ OpenAI Responses 변환** — 매핑된 OpenAI 계열 모델에 대해 스트리밍을 포함하여 변환합니다.
 - **ChatGPT 구독 재사용** — `codex` 프로바이더는 Codex CLI의 `~/.codex/auth.json` 로그인을 재사용(및 자동 갱신)합니다.
 - **`GET /v1/models`** — Claude 이름 별칭에 대한 [모델 디스커버리](/ko/guides/model-discovery/).
 - **토큰 카운팅** — 변환 프로바이더에 대한 로컬 tiktoken 카운트, 패스스루에 대한 정확한 업스트림 카운트.
-- **스트리밍 복원력** — Cloudflare 같은 프록시가 긴 추론 구간을 끊지 않도록 하는 [SSE keepalive ping](/ko/guides/shared-gateway/#sse-keepalive-pings).
+- **스트리밍 복원력** — Cloudflare 같은 프록시가 긴 추론 구간을 끊지 않도록 하는 [SSE keepalive ping](/ko/guides/shared-gateway/#sse-keepalive-ping).
 - **선택적 인바운드 인증** — 공유 배포를 위한 [클라이언트별 토큰](/ko/guides/shared-gateway/).
 
 사용해 볼 준비가 되셨나요? [설치](/ko/getting-started/installation/)로 이동하세요.

@@ -126,7 +126,12 @@ struct GrokBillingConfig {
 #[serde(rename_all = "camelCase")]
 struct GrokProductUsage {
     product: String,
-    usage_percent: f64,
+    // The billing payload omits `usagePercent` entirely for a product the
+    // account has not touched (observed on `GrokChat`). A required field there
+    // fails the whole response, so one unused product would blank every Grok
+    // bucket -- including the credit total -- and surface as "quota could not
+    // be read" rather than as the missing product.
+    usage_percent: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -843,17 +848,15 @@ fn grok_quota_snapshot(
             reset_time: reset_time.clone(),
         });
     }
-    buckets.extend(
-        billing
-            .product_usage
-            .into_iter()
-            .map(|product| QuotaBucket {
-                label: normalize_grok_name(&product.product),
-                remaining: Some((1.0 - product.usage_percent / 100.0).clamp(0.0, 1.0)),
-                remaining_amount: None,
-                reset_time: reset_time.clone(),
-            }),
-    );
+    buckets.extend(billing.product_usage.into_iter().filter_map(|product| {
+        let used_percent = product.usage_percent?;
+        Some(QuotaBucket {
+            label: normalize_grok_name(&product.product),
+            remaining: Some((1.0 - used_percent / 100.0).clamp(0.0, 1.0)),
+            remaining_amount: None,
+            reset_time: reset_time.clone(),
+        })
+    }));
     let plan = user
         .as_ref()
         .and_then(|user| user.subscription_tier.as_deref())
@@ -1564,6 +1567,56 @@ mod tests {
         assert_eq!(snapshot.buckets[1].label, "Grok code");
         assert_eq!(snapshot.buckets[1].remaining, Some(0.6));
         assert_eq!(snapshot.buckets[2].remaining, Some(0.9));
+    }
+
+    #[tokio::test]
+    async fn grok_product_without_usage_percent_is_skipped_not_fatal() {
+        use wiremock::matchers::{bearer_token, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // The live payload omits `usagePercent` for a product the account has
+        // not used. That product carries no reading, but it must not cost the
+        // ones that do -- nor the credit total -- their buckets.
+        Mock::given(method("GET"))
+            .and(path("/billing"))
+            .and(query_param("format", "credits"))
+            .and(bearer_token("access"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "config": {
+                    "creditUsagePercent": 100,
+                    "billingPeriodEnd": "2026-09-07T13:57:33Z",
+                    "productUsage": [
+                        {"product": "GrokBuild", "usagePercent": 99},
+                        {"product": "GrokImagine", "usagePercent": 1},
+                        {"product": "GrokChat"}
+                    ]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .and(query_param("include", "subscription"))
+            .and(bearer_token("access"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let snapshot = fetch_grok_quota_from(&reqwest::Client::new(), "access", &server.uri())
+            .await
+            .expect("a product with no usagePercent must not fail the response");
+
+        assert_eq!(snapshot.buckets.len(), 3);
+        assert_eq!(snapshot.buckets[0].label, "Credits");
+        assert_eq!(snapshot.buckets[0].remaining, Some(0.0));
+        assert!((snapshot.buckets[1].remaining.unwrap() - 0.01).abs() < 1e-9);
+        assert!((snapshot.buckets[2].remaining.unwrap() - 0.99).abs() < 1e-9);
+        assert!(snapshot
+            .buckets
+            .iter()
+            .all(|bucket| !bucket.label.contains("Chat")));
     }
 
     #[tokio::test]

@@ -136,6 +136,14 @@ shunt는 `sandbox = false`가 루프백이 아닌 `bind`와 결합되면 기동�
 동안에는 샌드박스를 끌 수 없습니다. 샌드박스를 켜 두거나, 루프백 바인드로 다시 기동하세요. 신뢰할 수 없는 클라이언트에게
 루프백이 아닌 바인드로 이 프로바이더를 노출하지 마세요.
 
+세 번째 설정인 `profile_dir`은 항목마다 자기 `HOME`을 줍니다. `agy`는 크리덴셜을 포함한 상태 트리 전체를 `HOME`으로
+해석하므로, 설정하지 않으면 모든 항목이 게이트웨이 호스트의 단일 ambient `~/.gemini` 프로필을 공유하고 결국 한 Google
+계정만 서비스합니다. 항목별로 디렉터리를 지정하면 각자 자기 계정에 로그인하고 여러 계정을 동시에 풀링할 수 있습니다.
+디렉터리는 필요할 때 생성되고 절대 경로로 정규화되며, 맨 앞의 `~`는 확장됩니다. 각 디렉터리마다 `agy` 로그인을 한 번씩
+해 줘야 합니다. 이 설정을 쓴 항목에 한해 자식 프로세스의 `GOOGLE_*` / `GEMINI_*` 환경 변수가 제거되므로, 호스트의 설정이
+어느 계정 — 그리고 누구의 청구서 — 이 요청을 처리할지 조용히 바꿔 버릴 수 없습니다. 지정하지 않으면(기본값) 기존 동작
+그대로입니다. 정렬 업스트림(`[[upstreams]]`)에서도 같은 설정을 쓸 수 있습니다.
+
 이런 설정이 전혀 필요 없는 위의 네이티브 `antigravity` HTTP 프로바이더를 사용하는 편이 좋습니다. 이 절은 요약본입니다 —
 모델/effort 행렬을 비롯한 전체 문서는 영문 가이드의
 [The deprecated antigravity-cli transport](/guides/providers/#the-deprecated-antigravity-cli-transport)에 있습니다.
@@ -182,9 +190,9 @@ ChatGPT 계정 Codex 백엔드는 `gpt-*-codex` 슬러그를 **거부**합니다
 
 ### xai / grok 프로바이더 (Grok)
 
-두 개의 내장 프로바이더가 xAI의 **Grok** 모델에 도달하며, 자격 증명으로 갈립니다: **`grok`**은
+두 개의 내장 프로바이더가 xAI의 **Grok** 모델에 도달하며, 자격 증명으로 갈립니다: `grok`은
 OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`shunt login xai`, 토큰당 과금 없음),
-**`xai`**는 측정된 개발자 API에 대해 `XAI_API_KEY`를 사용합니다. 구독 bearer와 API 키는 서로 교체할 수
+`xai`는 측정된 개발자 API에 대해 `XAI_API_KEY`를 사용합니다. 구독 bearer와 API 키는 서로 교체할 수
 **없습니다** — 각각은 자신의 프로바이더에서만 동작합니다.
 
 전체 설정 — 로그인, 두 프로바이더 블록, 모델 슬러그, 옵트인 노력 다이얼, 자격 관련 함정 — 은 전용
@@ -203,6 +211,7 @@ OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`
 | [Zhipu (GLM 중국)](/ko/providers/zhipu/) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | [MiniMax](/ko/providers/minimax/) | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
 | [MiniMax 중국](/ko/providers/minimax-cn/) | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
+| [OpenCode Zen](/ko/providers/opencode/) | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — 큐레이션된 크로스 벤더 카탈로그 (`x-api-key` 읽음) |
 | [Mimo (Xiaomi)](/ko/providers/mimo/) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — [Mimo 문서](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) 참고 |
 | [OpenRouter](/ko/providers/openrouter/) | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | [Vercel AI Gateway](/ko/providers/vercel-ai-gateway/) | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8`(`x_api_key`를 받아들임) |

@@ -47,6 +47,8 @@ struct OtelInstruments {
     gateway_telemetry_ingest: Counter<u64>,
     upstream_retries: Counter<u64>,
     failover: Counter<u64>,
+    stage_decisions: Counter<u64>,
+    stage_flips: Counter<u64>,
     requests_shed: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
@@ -126,6 +128,18 @@ fn otel_instruments() -> &'static OtelInstruments {
             failover: meter
                 .u64_counter("shunt.failover")
                 .with_description("Ordered upstream failover state transitions")
+                .build(),
+            stage_decisions: meter
+                .u64_counter("shunt.stage_router.decisions")
+                .with_description(
+                    "Stage-router tier decisions by routed model, tier, and decision source",
+                )
+                .build(),
+            stage_flips: meter
+                .u64_counter("shunt.stage_router.flips")
+                .with_description(
+                    "Stage-router decisions that moved a session off its pinned tier",
+                )
                 .build(),
             requests_shed: meter
                 .u64_counter("shunt.requests_shed")
@@ -427,6 +441,55 @@ pub fn record_proxied_request(provider: &str, model: &str, status: u16, latency_
     let instruments = otel_instruments();
     instruments.requests.add(1, &attributes);
     instruments.latency.record(latency_ms, &attributes);
+
+    #[cfg(test)]
+    {
+        let mut samples = test_proxied_samples()
+            .lock()
+            .expect("test proxied-request sample lock poisoned");
+        let entry = samples
+            .entry((provider.to_owned(), model.to_owned(), status))
+            .or_default();
+        entry.count += 1;
+        entry.latencies.push(latency_ms);
+    }
+}
+
+/// One test-observed [`record_proxied_request`] sample: the count and every
+/// latency for one (provider, model, status) key.
+#[cfg(test)]
+#[derive(Default)]
+struct ProxiedRequestSample {
+    count: u64,
+    latencies: Vec<f64>,
+}
+
+#[cfg(test)]
+type ProxiedSampleStore = Mutex<HashMap<(String, String, u16), ProxiedRequestSample>>;
+
+#[cfg(test)]
+fn test_proxied_samples() -> &'static ProxiedSampleStore {
+    static SAMPLES: OnceLock<ProxiedSampleStore> = OnceLock::new();
+    SAMPLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Test-only observation point for [`record_proxied_request`]: both metric
+/// sinks are inert unless an endpoint is configured, so tests that must
+/// prove a sample was recorded — or skipped — read the per-key count and
+/// latencies from the test store instead.
+#[cfg(test)]
+pub fn proxied_request_samples_for_tests(
+    provider: &str,
+    model: &str,
+    status: u16,
+) -> (u64, Vec<f64>) {
+    test_proxied_samples()
+        .lock()
+        .expect("test proxied-request sample lock poisoned")
+        .get(&(provider.to_owned(), model.to_owned(), status))
+        .map_or((0, Vec::new()), |sample| {
+            (sample.count, sample.latencies.clone())
+        })
 }
 
 /// Record a Codex WebSocket continuation decision on a reused connection: a
@@ -520,6 +583,72 @@ pub fn record_failover(provider: &str, state: &'static str) {
         KeyValue::new("state", state),
     ];
     otel_instruments().failover.add(1, &attributes);
+}
+
+/// Record one stage-router tier decision (issue #543 follow-up; plan PR 6).
+///
+/// `model` is the `[[models]]` entry carrying the router, not the tier target,
+/// so the series stays one per configured router rather than one per target.
+/// It must be the id the router was *matched* on rather than the raw request
+/// id: a client-side `[1m]` context-window hint is stripped before the lookup
+/// and before the session is keyed, so labelling by the raw id would report one
+/// router as two series and one session's pin under both. `StageOutcome::model`
+/// carries that id out of routing for exactly this reason.
+///
+/// `tier` and `source` are closed sets (`StageTier::as_label`,
+/// `StageSource::as_label`), so the label space is the number of routers times
+/// ten, whatever the session count.
+///
+/// Called only for an admitted request. A turn rejected by inbound auth or the
+/// managed-model policy is routed but never served, and counting it would
+/// report traffic the gateway did not carry.
+pub fn record_stage_decision(model: &str, tier: &'static str, source: &'static str) {
+    sentry::metrics::counter("shunt.stage_router.decisions", 1)
+        .attribute("model", model.to_owned())
+        .attribute("tier", tier)
+        .attribute("source", source)
+        .capture();
+
+    let attributes = [
+        KeyValue::new("model", model.to_owned()),
+        KeyValue::new("tier", tier),
+        KeyValue::new("source", source),
+    ];
+    otel_instruments().stage_decisions.add(1, &attributes);
+}
+
+/// Record one stage-router decision that moved a session off its pinned tier.
+///
+/// A flip is the expensive event this design is built to ration. It always
+/// forfeits a warmed prompt-cache prefix, since caching is keyed per model; on
+/// the Codex transport it also forces a full-input re-send, because `model` is
+/// hashed into the continuation signature; and a flip that crosses providers
+/// abandons the session's pooled socket and sticky account slot too. The decision
+/// counter above cannot show it — a session pinned to `capable` and a session
+/// that just moved there are the same row — so churn needs its own series.
+///
+/// `from` and `to` are tier labels, which makes the two directions separable:
+/// escalation is designed to be easy and de-escalation hard, so they are not
+/// expected to be symmetric and a single count would hide that.
+///
+/// The pair comes from what `StageRouterStore::commit` actually wrote, not from
+/// the tier the deciding request saw. Those differ under concurrency: the store
+/// lock is released between deciding and committing, so two turns of one
+/// session can both read `efficient` and both choose `capable`, and only one of
+/// them displaces anything.
+pub fn record_stage_flip(model: &str, from: &'static str, to: &'static str) {
+    sentry::metrics::counter("shunt.stage_router.flips", 1)
+        .attribute("model", model.to_owned())
+        .attribute("from", from)
+        .attribute("to", to)
+        .capture();
+
+    let attributes = [
+        KeyValue::new("model", model.to_owned()),
+        KeyValue::new("from", from),
+        KeyValue::new("to", to),
+    ];
+    otel_instruments().stage_flips.add(1, &attributes);
 }
 
 /// Record one inbound request shed at the `[server] max_concurrent_requests`
@@ -692,6 +821,14 @@ mod tests {
         super::record_failover("anthropic", "attempted");
         super::record_failover("openai", "advanced");
         super::record_failover("openai", "exhausted");
+    }
+
+    /// The stage-router counters honor the same opt-in no-op contract.
+    #[test]
+    fn record_stage_counters_are_noop_without_sinks() {
+        super::record_stage_decision("claude-auto", "capable", "override");
+        super::record_stage_decision("claude-auto", "efficient", "no_signal");
+        super::record_stage_flip("claude-auto", "efficient", "capable");
     }
 
     /// The Codex WebSocket overflow counter honors the same opt-in no-op

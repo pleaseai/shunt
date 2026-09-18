@@ -6,6 +6,8 @@ use shunt::adapters::antigravity::{
     stream::{AgyEnd, Translator},
 };
 
+mod common;
+
 /// One id per usable `<model>-<effort>` combination, plus a bare model name
 /// where the model takes no `--effort` flag.
 ///
@@ -45,11 +47,11 @@ fn test_antigravity_prompt_extraction() {
 fn test_find_agy_binary_honors_env_override() {
     let fake_bin = std::env::temp_dir().join(format!("shunt-test-agy-{}", std::process::id()));
     std::fs::write(&fake_bin, b"#!/bin/sh\n").unwrap();
-    std::env::set_var("AGY_BIN", &fake_bin);
+    let mut vars = common::set_env_blocking(&[]);
+    vars.set("AGY_BIN", &fake_bin);
 
     let found = find_agy_binary();
 
-    std::env::remove_var("AGY_BIN");
     std::fs::remove_file(&fake_bin).unwrap();
     assert_eq!(found, Some(fake_bin));
 }
@@ -386,6 +388,11 @@ fn request_naming(dir: &std::path::Path) -> serde_json::Value {
 
 #[test]
 fn test_workspace_accepts_prompt_path_inside_a_configured_root() {
+    // `resolve_workspace` reads `SHUNT_AGY_WORKSPACE`, so this test is a
+    // *reader* and needs the lock as much as a writer does — a sibling
+    // writing `AGY_BIN` under the guard reallocates `environ` underneath
+    // this read otherwise (issue #539).
+    let _env = common::set_env_blocking(&[]);
     let root = std::env::temp_dir().join(format!("shunt-agy-root-{}", std::process::id()));
     let project = root.join("project");
     std::fs::create_dir_all(&project).unwrap();
@@ -400,6 +407,11 @@ fn test_workspace_accepts_prompt_path_inside_a_configured_root() {
 
 #[test]
 fn test_workspace_refuses_prompt_path_outside_every_root() {
+    // `resolve_workspace` reads `SHUNT_AGY_WORKSPACE`, so this test is a
+    // *reader* and needs the lock as much as a writer does — a sibling
+    // writing `AGY_BIN` under the guard reallocates `environ` underneath
+    // this read otherwise (issue #539).
+    let _env = common::set_env_blocking(&[]);
     let root = std::env::temp_dir().join(format!("shunt-agy-in-{}", std::process::id()));
     let outside = std::env::temp_dir().join(format!("shunt-agy-out-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
@@ -418,6 +430,11 @@ fn test_workspace_refuses_prompt_path_outside_every_root() {
 
 #[test]
 fn test_workspace_refuses_traversal_out_of_a_root() {
+    // `resolve_workspace` reads `SHUNT_AGY_WORKSPACE`, so this test is a
+    // *reader* and needs the lock as much as a writer does — a sibling
+    // writing `AGY_BIN` under the guard reallocates `environ` underneath
+    // this read otherwise (issue #539).
+    let _env = common::set_env_blocking(&[]);
     let base = std::env::temp_dir().join(format!("shunt-agy-trav-{}", std::process::id()));
     let root = base.join("allowed");
     let secret = base.join("secret");
@@ -439,6 +456,11 @@ fn test_workspace_refuses_traversal_out_of_a_root() {
 
 #[test]
 fn test_workspace_ignores_prompt_path_when_no_roots_configured() {
+    // `resolve_workspace` reads `SHUNT_AGY_WORKSPACE`, so this test is a
+    // *reader* and needs the lock as much as a writer does — a sibling
+    // writing `AGY_BIN` under the guard reallocates `environ` underneath
+    // this read otherwise (issue #539).
+    let _env = common::set_env_blocking(&[]);
     let dir = std::env::temp_dir().join(format!("shunt-agy-noroot-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -463,4 +485,61 @@ fn test_stderr_truncation_never_splits_a_utf8_character() {
     assert!(cut.chars().all(|c| c == 'é'));
     // Short input is returned intact.
     assert_eq!(truncate("short", 2000), "short");
+}
+
+/// `profile_dir` is what gives each Antigravity provider its own Google
+/// account: the `agy` CLI resolves its whole credential tree through `HOME`,
+/// so an isolated `HOME` is what lets several accounts be pooled at once.
+#[test]
+fn test_profile_dir_parses_and_expands_tilde() {
+    let dir = std::env::temp_dir().join(format!("shunt-profile-cfg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("shunt.toml");
+    std::fs::write(
+        &path,
+        r#"
+[server]
+default_provider = "antigravity-a"
+
+[[upstreams]]
+name = "antigravity-a"
+kind = "antigravity_cli"
+base_url = "http://localhost"
+profile_dir = "~/.shunt/antigravity/account-a"
+
+[[upstreams]]
+name = "antigravity-b"
+kind = "antigravity_cli"
+base_url = "http://localhost"
+"#,
+    )
+    .unwrap();
+
+    let config = shunt::config::Config::load(Some(&path)).unwrap();
+
+    let expanded = config
+        .provider_profile_dir("antigravity-a")
+        .expect("configured profile_dir is exposed to the adapter");
+    assert!(
+        !expanded.starts_with('~'),
+        "a leading ~ must be expanded before it reaches Command::env: {expanded}"
+    );
+    // Compared by component, not as a string: `expand_tilde` joins with
+    // `PathBuf`, so the separator is a backslash on the Windows platform its
+    // `USERPROFILE` fallback exists for, and a `/`-spelled suffix never matches.
+    let tail: Vec<_> = std::path::Path::new(expanded)
+        .components()
+        .rev()
+        .take(3)
+        .collect();
+    let expected: Vec<_> = std::path::Path::new(".shunt/antigravity/account-a")
+        .components()
+        .rev()
+        .collect();
+    assert_eq!(tail, expected, "unexpected expansion: {expanded}");
+
+    // Unset means the previous behavior: inherit the gateway's ambient profile.
+    assert_eq!(config.provider_profile_dir("antigravity-b"), None);
+
+    std::fs::remove_dir_all(&dir).ok();
 }

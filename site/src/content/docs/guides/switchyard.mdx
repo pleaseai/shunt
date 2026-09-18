@@ -1,0 +1,346 @@
+---
+title: Switchyard Integration
+description: The scorer behind shunt's stage router comes from NVIDIA's Switchyard project. What shunt vendors, what it leaves behind, the published benchmark results, and the routing algorithm itself.
+---
+
+shunt's [stage router](/guides/stage-router/) does not invent its own scoring. It
+depends on [`switchyard-libsy`][libsy], the routing library from
+[NVIDIA-NeMo/Switchyard][sy] — a project that describes itself as routing
+"each LLM call to the cheapest model that can still do the job."
+
+This page is the integration record: which part of Switchyard shunt uses, which
+parts it deliberately does not, what the published numbers actually measure, and
+how the algorithm decides a turn. If you only want to turn the feature on, the
+[stage router guide](/guides/stage-router/) is the shorter read.
+
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
+[sy]: https://github.com/NVIDIA-NeMo/Switchyard
+
+## What shunt vendors
+
+Switchyard ships a whole gateway: a proxy server, a provider-neutral protocol,
+request/response translation, an LLM-judge classifier, escalation, sub-agent
+routing. shunt already is a gateway, so it takes one piece — the scorer — and
+leaves the rest.
+
+| Switchyard component | In shunt |
+| :-- | :-- |
+| `switchyard-libsy` stage scorer | **Yes** — pinned to a reviewed revision of upstream `main` |
+| `switchyard-protocol` | Pulled in as libsy's own dependency; shunt builds no `Request` |
+| `switchyard-translation` | **No** — it duplicates shunt's `src/model/responses_request.rs` head-on |
+| `switchyard-server` | **No** — shunt is the server |
+| LLM classifier / judge | **No** — see [below](#no-llm-judge-on-the-hot-path) |
+| Escalation routing (mid-turn) | **No** — collides with shunt's post-2xx no-replay rule |
+| Handoff notes, advisor gate, sub-agent routing | **No** |
+
+The whole coupling is one function call. shunt fills libsy's `ToolSignals`
+struct straight from the parsed Anthropic Messages body and calls `pick_tier`;
+every field on that struct is public, so no translation layer sits in between.
+
+The dependency is a **git pin at an immutable revision** of upstream `main`,
+not the crates.io release, and carries a `rev` with no `branch` key — the same
+form as shunt's two `tungstenite` pins. A bump is therefore a reviewed diff, not
+something an unrelated `cargo update` can do. `0.2.0` is the only published
+release, and `main` has diverged from it: the algorithms beyond stage scoring —
+the advisor gate, composite routing, sub-agent routing, tool semantics, handoff
+notes — exist only there. When checking the API, read the checkout cargo
+resolved, not the registry source and not GitHub's default branch, which moves.
+
+## Benchmark results
+
+These are **upstream Switchyard's** numbers, not shunt's. shunt has not run
+Terminal-Bench, and the section after this one is about how much of the result
+should be expected to carry over.
+
+Terminal-Bench 2.1, against an Opus 4.8 baseline:
+
+| Configuration | Accuracy | Total cost | vs. baseline |
+| :-- | --: | --: | :-- |
+| Opus 4.8 baseline | 76.0% | $98.06 | — |
+| Escalation routing | 75.7% | $85.00 | 99.6% of accuracy, 13.3% cheaper |
+| **Stage routing** | **72.7%** | **$68.19** | **95.7% of accuracy, 30.5% cheaper** |
+| Capability routing | 71.2% | $79.32 | 93.7% of accuracy, 19.1% cheaper |
+| Kimi K2.6 alone | 55.8% | $76.28 | |
+| GLM 5.2 alone | 52.4% | $16.47 | |
+| DeepSeek V4 Pro alone | 48.7% | $96.92 | |
+| Ultra 3 alone | 39.0% | $29.66 | |
+
+Stage routing — the row shunt implements — is the cheapest of the three routed
+configurations and keeps 95.7% of the baseline's solve rate. The bottom four rows
+are the control that makes the number interesting: every single fixed model,
+including ones that cost more than the router did, lands below 56%.
+
+The separate confidence-threshold calibration that produced the `0.5` default was
+derived from SWE-Bench Pro Python-75, not from Terminal-Bench.
+
+### Provenance and caveats
+
+- The figures are the **v0.2.0** Terminal-Bench 2.1 results published in
+  upstream's own [Benchmark Provenance][provenance] table, which in turn
+  attributes them to [Route AI Agent Workloads Across Models with NVIDIA NeMo
+  Switchyard][blog] (NVIDIA, 11 August 2026). The blog post does not print the
+  table itself, so check a number against the README rather than against it.
+- Those runs used **NVIDIA-internal inference endpoints**, so upstream states
+  absolute solve rates may shift on another serving stack.
+- Upstream checks in only the *escalation* profile
+  (`benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml`). The
+  exact tier pair behind the 72.7% stage-routing row is not published, so do not
+  read it as a claim about any specific model pair you might configure in shunt.
+- No latency or per-request routing-overhead figures are published with the
+  table; upstream directs that question to its own soak-test docs.
+
+[provenance]: https://github.com/NVIDIA-NeMo/Switchyard#benchmark-provenance
+[blog]: https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/
+
+### What carries over to shunt, and what does not
+
+The scorer is the same code. Everything around it is shunt's, so treat the
+upstream table as evidence that *the approach* pays rather than as shunt's own
+result.
+
+| | Upstream benchmark | shunt |
+| :-- | :-- | :-- |
+| Scoring core | `switchyard-libsy` | Same crate, same constants |
+| Signal extraction | Upstream's, provider-neutral | shunt's own, from Anthropic Messages blocks |
+| `tests_passed` / `repeated_failure` / `compacted` | Available to the scorer | Always `false` — never populated |
+| Judge on ambiguous turns | Optionally available | Never; falls open to the picker default |
+| Tier stability across turns | Scored per turn | Session-pinned with asymmetric hysteresis |
+| Workload | Terminal-Bench 2.1 tasks | Claude Code sessions |
+
+Two of those cut in opposite directions. shunt leaves `tests_passed`,
+`repeated_failure`, and `compacted` unpopulated, which costs it libsy's
+compaction override and its repeated-failure escalation — strictly less signal
+than the benchmark had. Each needs evidence this extractor does not have: a
+compaction marker no test pins yet, and, for the other two, the *text* of a tool
+result. The wire carries that text — a `tool_result` block has a `content`
+field — but the extractor deliberately does not read it: deciding these signals
+from free-form result text means content-pattern heuristics, and a structural
+proxy would fire for `ls` as readily as for a test run. Against that, shunt's
+hysteresis exists precisely because a per-turn flip is expensive in a Claude
+Code session in ways a benchmark harness never pays (see
+[below](#what-shunt-adds)).
+
+## The routing algorithm
+
+### 1. Signals
+
+shunt walks the request's `messages` array twice. The first pass runs backwards
+over assistant messages, only as far as `recent_turn_window` reaches, collecting
+the `tool_use` ids that count as *recent*. The second runs forwards, once, over
+both roles: it maps `tool_use.id → tool_use.name` and records every
+`tool_result` against the `tool_use_id` it answered. Names are resolved after
+that walk rather than during it, so a result that precedes its own call still
+joins. A `tool_result` block does not carry the tool's name, so that join is the
+single point the whole extractor stands on.
+
+Past the ids that make the join, only two fields are read — `tool_use.name` and
+`tool_result.is_error`. No system prompt, no user text, no tool arguments.
+
+Claude Code reports failure as a bare boolean, with no grading, so shunt maps it
+onto libsy's `0.0 / 0.3 / 0.7 / 1.0` severity scale itself:
+
+| Condition | `severity` |
+| :-- | :-- |
+| No failed result in the window | `0.0` |
+| Any failed result in the window | `0.7` (hard) |
+| A failed `Task` in the window — a whole delegated subagent run collapsing | `1.0` (critical) |
+| The last two completed results both failed, both in the window — not recovering | `1.0` (critical) |
+
+Tool names are bucketed by the [vocabulary](/guides/stage-router/#the-vocabulary):
+`Observe`, `Mutate`, `Plan`, and uncategorised. `Bash` stays uncategorised on
+purpose — `git status`, `rm -rf`, and `cargo test` are only separable by reading
+`input.command`, which is the fragile inference this design avoids.
+
+If no completed tool call exists, extraction returns nothing and the turn takes
+the picker default. An empty conversation is not scored as "efficient."
+
+### 2. Dimensions
+
+The signals project onto two axes — is something *wrong*, and is the agent
+*producing*:
+
+| Dimension | Meaning | Pushes toward |
+| :-- | :-- | :-- |
+| `severity` | Windowed max error severity, `[0, 1]` | Capable |
+| `spinning` | A deep turn with no reads, plans, writes, or edits — pure churn | Capable |
+| `exploring` | A deep turn that reads or plans but does not write or edit | Capable |
+| `production_intensity` | Writes + edits as a fraction of recent tool ops | Efficient |
+
+`spinning` and `exploring` both require `turn_depth >= 8`: early turns with no
+writes are ordinary exploration, not a stall. They partition the same
+"not producing" case by whether investigative activity happened, so at most one
+fires and the production axis is never double-counted.
+
+### 3. Score
+
+Each maxed dimension contributes one signal unit of `0.10`, with `severity`
+normalised by its hard cap of `0.7` so it lands at the same weight:
+
+```
+raw   = 0.10 × (severity / 0.7 + spinning + exploring − production_intensity)
+score = tanh(5.0 × raw)          // signed: + capable, − efficient
+confidence = |score|
+```
+
+The gain of `5.0` is what makes the range usable — without it confidence would
+cap near `±0.20` and no meaningful threshold would ever be reachable.
+
+The design is **corroborative**: no single axis can peg the decision.
+
+| Signals agreeing | `raw` | `confidence` | Clears the `0.5` default? |
+| :-- | --: | --: | :-- |
+| One saturated | `0.10` | `tanh(0.5) ≈ 0.46` | No |
+| Two corroborating | `0.20` | `tanh(1.0) ≈ 0.76` | Yes |
+
+That is where the `0.5` default comes from: one wrong signal on its own is not
+enough to move a turn, and two agreeing signals are.
+
+### 4. Decision
+
+`pick_tier` runs three rules in order; the first to fire wins.
+
+1. **Hard escalate** → capable. A critical severity, a compacted context, or the
+   same failure repeated in the recent window. Skips the scorer, reports
+   `confidence: 1.0`.
+2. **Scorer.** Outside the ambiguous band around the midpoint, follow the sign.
+3. **Fall open.** Inside the band, libsy returns `ConsultClassifier`. shunt runs
+   no classifier, so the turn lands on the picker's default tier.
+
+There used to be a fourth — a hard *de-escalate* on a settled turn whose tests
+had passed. Upstream removed it; a passing test now only clears libsy's own
+capable hold, which shunt does not use.
+
+Of rule 1's three triggers, only critical severity fires in shunt today, through
+the two paths in the severity table above. The compaction half is dormant because
+no compaction marker is pinned yet, and the repeated-failure half because libsy
+decides *same failure* by matching result text against its error table, which the
+`is_error` boolean Claude Code sends cannot support. shunt's own "the last two
+completed results both failed" rule already reaches rule 1 by way of `severity`.
+
+### 5. Hysteresis
+
+Everything above decides a turn in isolation. shunt then applies its own gate
+before the decision is allowed to move a session's pinned tier:
+
+| Direction | Requires |
+| :-- | :-- |
+| Efficient → Capable | A scorer-made decision, clearing `confidence_threshold` (0.5) |
+| Capable → Efficient | A scorer-made decision, **and** `min_dwell_turns` elapsed, **and** `deescalate_threshold` (0.75) |
+
+A fall-open, an ambiguous turn, or a turn with no tool activity is the picker's
+default rather than evidence, and cannot move a pin in either direction.
+
+The confidence gate admits no exemption. It used to carry one, for the
+`tests_passed` shortcut, which reported no confidence at all; with that rule gone
+upstream, every source that counts as evidence reports a confidence, and a turn
+that reports none is held rather than trusted. libsy's own `capable_hold` — its
+replacement, meaning an earlier escalation is still being held — is not evidence
+either: it is the same idea as the `sticky` row above, and only libsy's stateful
+classifier stamps it, which shunt does not call.
+
+## What shunt adds
+
+Switchyard is provider-neutral and does not have to price a tier flip.
+shunt is a Claude Code gateway and does, and that difference produces most of
+what is listed here.
+
+### Claude Code's actual tool vocabulary
+
+The scorer wants to know whether a call observed, mutated, or planned.
+A provider-neutral router has to infer that; shunt knows the names, and matches
+fourteen of them directly: `Read`, `Glob`, `Grep`, `NotebookRead`, `WebFetch`,
+`WebSearch`, and `BashOutput` as observation; `Edit`, `NotebookEdit`, and
+`Write` as mutation; `TodoWrite`, `Task`, `EnterPlanMode`, and `ExitPlanMode` as
+planning. One of them gets more than its category: a *failed* `Task` is scored
+critical rather than merely hard, because it is a whole delegated subagent run
+collapsing rather than one command failing.
+
+### Asymmetric hysteresis, because a flip is not free
+
+On a long Claude Code session a tier flip costs three concrete things:
+
+- **Prompt caching is keyed per model** — a flip forfeits the warm prefix and
+  pays a full cache write on the new tier.
+- **Codex continuation** hashes the model into its signature, so a flip forces a
+  full re-send and gives back the upload trimming shunt just earned.
+- **A cross-provider flip** also abandons the session's pooled connection and its
+  sticky account slot.
+
+Scored independently every turn, a long session can cost *more* routed than
+unrouted. That is why the two directions are unequal and why hysteresis is the
+core of shunt's integration rather than a refinement on it.
+
+### Session pinning that does not leak the session id
+
+Decisions are pinned per `(advertised model id, session id)`, keyed on a
+SHA-256 prefix — the session id is hashed and never stored. The store caps at
+4096 sessions, evicts on the insert path with no background task, and persists
+nothing.
+
+A pin also remembers a fingerprint of the router table it was made under, so
+editing one router drops only its own pins across a hot reload. That fingerprint
+destructures the config struct rather than dotting into it, so a key added later
+fails to compile instead of quietly letting stale pins outlive it.
+
+### No LLM judge on the hot path
+
+When the signals are inconclusive, libsy returns
+`PickOutcome::ConsultClassifier { default_tier }`. shunt treats that as the
+answer and takes `default_tier`. Declining the judge is not fighting the API — it
+*is* the API's documented fall-open path.
+
+What that buys: no second model call, no second credential, and no added latency
+on the turns where the router is least sure. What it costs: shunt gives up the
+accuracy a judge would recover on those turns, which is a real part of what the
+upstream classifier-assisted configurations measured.
+
+### The routed target is an ordinary model id
+
+The router's output is a public model id, so it re-enters shunt's normal routing
+ladder and inherits failover chains, account pools, adapter selection, `effort`,
+and `service_tier` for free, and appears in `/v1/models` discovery with no extra
+code. A target that is itself a router is a startup error, so resolution is one
+hop **by construction** rather than by a depth counter.
+
+### The client still sees the id it asked for
+
+The tier travels upstream in `upstream_model` and nowhere else. Responses report
+the requested id, so Claude Code's `/model` display and `--resume` model
+restoration keep working.
+
+### Inert unless you ask for it
+
+Absent a `[models.stage_router]` table the router arm is a single
+`Option` check on a config field existing deployments do not have. Nothing
+about the routing path changes.
+
+## What the integration cost
+
+Measured, not estimated, against `0.2.0` when the dependency was first adopted:
+
+| | |
+| :-- | :-- |
+| Release binary | **+115,376 bytes (+0.31%)** |
+| `Cargo.lock` packages | **+33** (412 → 445) |
+| Of which unused | ~26, the `jsonschema` tree serving the classifier path shunt never calls |
+| Actually linked | The `jsonschema` tree is **not** — zero `jsonschema` strings and zero `num-bigint` symbols in the built binary |
+| Porting alternative | 137 lines |
+
+The binary result is what decided it: the linker drops the classifier tree
+entirely, so the cost of depending on the crate is roughly 0.3%. The
+137-line port stays on file as the exit if the pin goes stale.
+
+Moving from that release to the `main` pin added **no packages at all** — the
+lock stayed at 445, because libsy's new direct dependencies there (`http`,
+`regex`, `uuid`) were already in shunt's tree. The linked-or-not result holds on
+the new pin too: the release binary still carries zero `jsonschema` strings and
+zero `num-bigint` symbols.
+
+## Attribution
+
+`switchyard-libsy` is Apache-2.0, © NVIDIA Corporation. shunt uses its stage
+scorer unmodified. The design record for shunt's side — including each capability
+declined and why — is
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md),
+and the decision to pin upstream `main` rather than the release is
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md).

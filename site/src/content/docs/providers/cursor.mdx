@@ -99,6 +99,12 @@ with that result in history), and forwards **inline images** (base64 sources; UR
 skipped). Cursor's own agentic file/shell tools are not exposed — only the tools your request
 advertises.
 
+Treat `tool_use.id` as opaque. When Cursor identifies the call on the wire, shunt passes that
+identity straight through, so the id carries Cursor's own `tool_<uuid>` shape rather than the
+`toolu_<uuid>` an Anthropic upstream would mint; when it does not, shunt mints a `toolu_<uuid>`
+itself. Either way the id only has to round-trip: send it back unchanged as the `tool_result`
+`tool_use_id`.
+
 Composer nevertheless chooses per turn whether to answer through a bridged tool or through one of
 Cursor's built-in tools, and a built-in call arrives on the wire with no tool name, carrying only
 its arguments and a call id. shunt cannot map that onto a tool your client owns, so it fails the
@@ -112,6 +118,18 @@ The choice is not deterministic — retrying the same request usually lands on t
 Detection does not depend on what the request advertised: shunt recognizes the built-in call from
 the response frame alone, so a request that carries no `tools` can raise the same error whenever
 Composer reaches for a built-in. Retrying is the mitigation in both cases.
+
+A turn also ends only on an authoritative terminal from Cursor. If the upstream stream is cut
+before that terminal arrives — a dropped connection, a truncated body — shunt fails the turn
+instead of handing back the partial answer as a finished one:
+
+```json
+{"type":"error","error":{"type":"api_error","message":"cursor: upstream EOF without an authoritative terminal"}}
+```
+
+The exception is a turn that has already produced output and then goes quiet: Cursor holds the
+response open waiting for a tool result the stateless bridge never sends, so an idle stream there
+is the normal end of a turn, not a cut one.
 
 ## Verify
 

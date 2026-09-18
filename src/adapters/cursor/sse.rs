@@ -220,7 +220,7 @@ impl CursorSseFramer {
             "content_block": {
                 "type": "thinking",
                 "thinking": "",
-                "signature": ""
+                "signature": crate::model::thinking_signature::CURSOR
             }
         });
         append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_START, &data);

@@ -10,8 +10,13 @@
 //! are CSRF-exempt (no ambient cookie).
 //! An admin credential is either a `tokens_env`/`tokens_file` `name:token` pair
 //! or a `[[server.admin.write_keys]]`/`[[server.admin.read_keys]]` entry; the
-//! read tier passes every GET and is refused on every mutation, the login form
-//! included.
+//! read tier passes every GET and is refused on every mutation. It signs in at
+//! the login form too: the session records the tier it was minted with, so a
+//! read key's cookie is refused on a mutation exactly as its header is.
+//! Built with `--features ui`, the SPA shell and its bundle files are the one
+//! part of this surface served without any admin credential — they carry no
+//! operator data, and everything the SPA reads sits behind `/admin/api/*`,
+//! which authenticates normally (see [`ui`]).
 //! The provisioning flow reuses provider OAuth internals for Claude full/setup
 //! logins and refreshable ChatGPT/Codex logins; token values are never returned
 //! to the browser or logged. See `docs/m9-admin-surface.md`.
@@ -22,10 +27,13 @@ mod codex;
 mod html;
 mod oidc;
 mod plan;
-mod script;
+#[cfg(feature = "ui")]
+mod ui;
 
 use std::{collections::HashSet, io, sync::Arc, time::Duration};
 
+#[cfg(feature = "ui")]
+use axum::routing::any;
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
     http::{header, HeaderMap, HeaderName, StatusCode},
@@ -49,8 +57,10 @@ use crate::{
 
 pub use plan::reset_profile_cache;
 pub use session::AdminStores;
+#[cfg(feature = "ui")]
+pub use ui::embedded_file_count;
 
-use session::{PendingAttempt, PendingKind};
+use session::{PendingAttempt, PendingKind, COMPLETION_EXCHANGE_TIMEOUT};
 
 const SESSION_COOKIE: &str = "shunt_admin_session";
 
@@ -183,12 +193,17 @@ impl AdminAuth {
             })
     }
 
-    /// Whether a raw token (from the login form) may mint a browser session.
-    /// Read-tier credentials may not: a session carries full access today, so
-    /// minting one from a read key would silently escalate it to write.
-    fn authenticate_login_token(&self, token: &str) -> bool {
+    /// The privilege a raw token (from the login form) may mint a browser
+    /// session with, or `None` when it is not an admin credential at all.
+    ///
+    /// A read-tier credential mints a *read-tier* session. That is safe only
+    /// because [`SessionStore`](session::SessionStore) records the tier and
+    /// [`authenticate`] reads it back: while a session carried full access
+    /// unconditionally, minting one from a read key silently escalated it to
+    /// write, which is why this used to refuse them outright.
+    fn login_access(&self, token: &str) -> Option<AdminAccess> {
         self.authenticate_value(token.as_bytes())
-            .is_some_and(|credential| credential.access >= AdminAccess::Write)
+            .map(|credential| credential.access)
     }
 }
 
@@ -218,42 +233,76 @@ fn keep_higher(
 }
 
 /// The admin route tree, merged into the main router only when admin is enabled.
+///
+/// With `--features ui` the tree also carries the three embedded-SPA routes (see
+/// [`ui`]). They are catch-alls, and matchit prefers a static or `{param}`
+/// segment over one, so every exact route above keeps answering; `/admin/api/`
+/// gets its own catch-all so an unmatched JSON path stays a `404` rather than
+/// becoming the HTML shell (`docs/admin-ui-delivery.md`, Decision 3).
+///
+/// Two roots are spelled twice for the same reason — `/admin` with `/admin/`,
+/// and `/admin/api` with `/admin/api/` — because a wildcard segment cannot
+/// match the empty string.
 pub fn admin_router() -> Router<AppState> {
-    Router::new()
+    let router = Router::new()
         .route("/admin", get(dashboard))
+        // The mount root needs both spellings, for the same reason `/admin/api`
+        // does below: a `{*path}` segment must match at least one character, so
+        // `/admin/` matches neither `/admin` nor `/admin/{*path}` and answered a
+        // bare `404` on the dashboard's own root (#527). It is registered here
+        // rather than beside the UI catch-alls so that the trailing-slash form
+        // keeps the feature-naming `404` in a default build, exactly like
+        // `/admin` — a browser or proxy appending the slash must not change
+        // which of the two answers an operator gets.
+        .route("/admin/", get(dashboard))
         .route("/admin/login", get(login_page).post(login_submit))
-        .route("/admin/oidc/start", post(oidc::start))
+        .route("/admin/api/oidc/start", post(oidc::start))
         .route("/admin/oidc/callback", get(oidc::callback))
-        .route("/admin/logout", post(logout))
-        .route("/admin/accounts", get(list_accounts))
-        .route("/admin/observed", get(observed_accounts))
-        .route("/admin/pool", get(pool))
-        .route("/admin/status", get(status))
-        .route("/admin/accounts/claude", post(add_account))
+        .route("/admin/api/logout", post(logout))
+        .route("/admin/api/session", get(session_bootstrap))
+        .route("/admin/api/accounts", get(list_accounts))
+        .route("/admin/api/observed", get(observed_accounts))
+        .route("/admin/api/pool", get(pool))
+        .route("/admin/api/status", get(status))
+        .route("/admin/api/accounts/claude", post(add_account))
         .route(
-            "/admin/accounts/claude/{name}/complete",
+            "/admin/api/accounts/claude/{name}/complete",
             post(complete_account),
         )
         .route(
-            "/admin/accounts/claude/{name}/refresh",
+            "/admin/api/accounts/claude/{name}/refresh",
             post(refresh_account),
         )
         .route(
-            "/admin/accounts/claude/{name}",
+            "/admin/api/accounts/claude/{name}",
             delete(remove_account_handler),
         )
         .route(
-            "/admin/accounts/codex",
+            "/admin/api/accounts/codex",
             get(codex::list_codex_accounts).post(codex::add_codex_account),
         )
         .route(
-            "/admin/accounts/codex/{name}/complete",
+            "/admin/api/accounts/codex/{name}/complete",
             post(codex::complete_codex_account),
         )
         .route(
-            "/admin/accounts/codex/{name}",
+            "/admin/api/accounts/codex/{name}",
             delete(codex::remove_codex_account_handler),
-        )
+        );
+
+    #[cfg(feature = "ui")]
+    let router = router
+        .route("/admin/assets/{*path}", get(ui::asset))
+        // The namespace root needs its own registration: a `{*path}` segment
+        // must match at least one character, so `/admin/api` and `/admin/api/`
+        // would otherwise fall through to `/admin/{*path}` and answer the HTML
+        // shell — the failure the separate JSON catch-all exists to prevent.
+        .route("/admin/api", any(ui::api_not_found))
+        .route("/admin/api/", any(ui::api_not_found))
+        .route("/admin/api/{*path}", any(ui::api_not_found))
+        .route("/admin/{*path}", get(ui::shell));
+
+    router
 }
 
 /// How a request authenticated, which decides whether CSRF applies.
@@ -284,13 +333,16 @@ pub(super) fn authenticate(state: &AppState, headers: &HeaderMap) -> Option<Auth
         });
     }
     let sid = session_cookie(headers)?;
-    let csrf = state.admin_stores.sessions.csrf_for(&sid)?;
+    let session = state.admin_stores.sessions.lookup(&sid)?;
     Some(AuthOk {
-        kind: Authenticated::Session { csrf },
+        kind: Authenticated::Session { csrf: session.csrf },
         auth,
-        // A session can only be minted by a write-tier credential or OIDC
-        // (`login_submit`, `oidc::callback`), so it carries full access.
-        access: AdminAccess::Write,
+        // The tier the minting credential carried, not a constant: `read_keys`
+        // sign in too (`login_submit`), so a cookie no longer implies write.
+        // Every mutation still goes through `require_write`, which is what
+        // makes a read session read-only on the server rather than by the
+        // dashboard's good manners.
+        access: session.access,
     })
 }
 
@@ -554,6 +606,25 @@ async fn login_submit(
     let Some(auth) = state.admin_auth.clone() else {
         return not_found();
     };
+    // Same-origin, for the same reason [`logout`] checks it: this is a
+    // navigation form POST, so it carries no `x-csrf-token`, and `SameSite=Strict`
+    // governs whether the browser *sends* an existing cookie -- not whether it
+    // stores the `Set-Cookie` this hands back. Without the guard a cross-site
+    // page could submit a token it holds and overwrite the visitor's session
+    // with one of its own choosing.
+    //
+    // That became worth guarding when `read_keys` gained the ability to sign in:
+    // a read key is handed to someone deliberately given less privilege, and
+    // this was the one lever it had against a write operator -- silently
+    // downgrading their dashboard to read-only until they signed in again. A
+    // write-key holder could always do this, but gains nothing by it.
+    //
+    // Non-browser callers are unaffected: `same_origin` returns `true` when
+    // neither `Sec-Fetch-Site` nor `Origin` is present, so a scripted login
+    // still works.
+    if !same_origin(&headers) {
+        return forbidden("cross-origin admin request rejected");
+    }
     // Throttle admin-token guessing (defense-in-depth behind the constant-time
     // compare); every POST counts, before the token is checked.
     if !state.admin_stores.login_rate.check() {
@@ -563,14 +634,17 @@ async fn login_submit(
         Ok(Form(form)) => form.token,
         Err(_) => String::new(),
     };
-    if !auth.authenticate_login_token(&token) {
+    let Some(access) = auth.login_access(&token) else {
         return login_response(
             StatusCode::UNAUTHORIZED,
             Some("Invalid admin token."),
             auth.oidc().map(crate::gateway::ResolvedIdp::button_label),
         );
-    }
-    let (sid, _csrf) = state.admin_stores.sessions.create(auth.session_ttl());
+    };
+    let (sid, _csrf) = state
+        .admin_stores
+        .sessions
+        .create(auth.session_ttl(), access);
     let cookie = set_cookie(&sid, secure_cookie(&headers), auth.session_ttl());
     (
         StatusCode::SEE_OTHER,
@@ -604,21 +678,86 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
         .into_response()
 }
 
-async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Response {
+/// `GET /admin` — the operator dashboard, now the SPA shell.
+///
+/// Unauthenticated, like every other path the shell answers (`ui::shell`): the
+/// shell is one static file embedded at compile time, identical for every
+/// visitor, and carries no operator data. The bundle bootstraps over
+/// `GET /admin/api/session`, which authenticates like the rest of the namespace
+/// and sends a `401` to `/admin/login` (`ui/src/App.tsx`) — the redirect the
+/// server-rendered page used to answer with directly.
+#[cfg(feature = "ui")]
+async fn dashboard() -> Response {
+    ui::shell().await
+}
+
+/// `GET /admin` without `--features ui` — there is no dashboard in this build.
+///
+/// A default `cargo build` needs no Node toolchain and so embeds no bundle
+/// (ADR-0003 / `docs/admin-ui-delivery.md` Resolution 1, which accepts exactly
+/// this gap for from-source builds; release binaries enable the feature). The
+/// route stays registered rather than disappearing, because axum's own `404`
+/// for an unregistered path has an empty body: an operator who typed the
+/// documented URL would get nothing back to explain why. The JSON API under
+/// `/admin/api/*` is unaffected by the feature and still serves this build.
+#[cfg(not(feature = "ui"))]
+async fn dashboard() -> Response {
+    ShuntError::new(
+        StatusCode::NOT_FOUND,
+        "not_found_error",
+        "this build has no embedded admin dashboard; rebuild with `--features ui` (see ui/README.md) \
+         or use the JSON API under /admin/api/*",
+    )
+    .into_response()
+}
+
+// --- JSON API routes -----------------------------------------------------------
+
+/// `GET /admin/api/session` — the three per-session values the dashboard needs
+/// before it can render, for a client that cannot have them interpolated into
+/// its own source: the CSRF token, the session's access tier, and the refresh
+/// buffer.
+///
+/// The server-rendered dashboard this replaced substituted both into the page
+/// it emitted. The SPA shell (`ui::shell`) cannot be served that way: it is one
+/// static file embedded at compile time and served without a credential, so it
+/// is identical for every visitor and knows nothing about the session that
+/// requested it.
+///
+/// Returning the CSRF token over a cookie-authenticated `GET` does not weaken
+/// the guard it belongs to. A cross-origin page can *send* this request with the
+/// browser's cookie, but no response header on this surface permits it to read
+/// the reply: there is no CORS layer anywhere on the admin router, so the
+/// same-origin policy stops the read. That is the same property the
+/// server-rendered dashboard relied on — a cross-origin page could not read
+/// `GET /admin` either.
+///
+/// A header-credential caller gets an empty `csrf`: it has no ambient cookie, so
+/// [`check_csrf`] exempts it and there is no token to hand out.
+async fn session_bootstrap(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let state = state.refreshed();
     let Some(authok) = authenticate(&state, &headers) else {
-        return redirect("/admin/login");
+        return unauthorized();
     };
-    // Header-token callers hitting the HTML page have no CSRF token; render with
-    // an empty one (mutations from the page then require a real session).
     let csrf = match authok.kind {
         Authenticated::Session { csrf } => csrf,
         Authenticated::Header => String::new(),
     };
-    html_page(html::dashboard_page(&csrf))
+    json_secure(json!({
+        "csrf": csrf,
+        // The dashboard renders write affordances from this. It is a display
+        // signal only -- `require_write` is the enforcement, and a client that
+        // ignored this field would get `403`s rather than extra powers.
+        "access": authok.access,
+        // Served rather than duplicated in the bundle for the same reason the
+        // server-rendered page substituted it: the dashboard reports a setup
+        // token as expired once it is inside this buffer, and routing refuses
+        // one on the same boundary (`Tokens::is_valid_at`). A copy in
+        // TypeScript could drift from the Rust constant; a served value cannot.
+        "expiry_buffer_ms": u64::try_from(claude_auth::EXPIRY_BUFFER.as_millis())
+            .unwrap_or(u64::MAX),
+    }))
 }
-
-// --- JSON API routes -----------------------------------------------------------
 
 async fn list_accounts(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let state = state.refreshed();
@@ -1218,10 +1357,24 @@ async fn complete_account(
     if claude_store::validate_account_name(&name).is_err() {
         return bad_request("account name must match [a-z0-9-]+");
     }
+    // Held for the rest of the handler: the entry survives the exchange below,
+    // so without this a second completion started in that window stores a second
+    // credential for this account and the two land in an arbitrary order (#440).
+    let _completion = state.admin_stores.pending.lock_completion(&name).await;
     let pending = match state.admin_stores.pending.attempt(&name) {
         PendingAttempt::Ready(pending) => pending,
         PendingAttempt::NotFound => {
-            return bad_request("no pending login for this account; start again")
+            // Three causes share this response: no start, an expired entry, and
+            // — since a completion consumes the entry under the lock above — a
+            // concurrent completion for this account that finished first. The
+            // operator cannot tell them apart from the message, and widening it
+            // would leak whether an account exists, so the server's own timeline
+            // is where they are distinguishable (#440).
+            tracing::info!(
+                account = %name,
+                "admin: completion found no pending login (no start, expired, or consumed by a concurrent completion)"
+            );
+            return bad_request("no pending login for this account; start again");
         }
         PendingAttempt::TooManyAttempts => return bad_request("too many attempts; start again"),
     };
@@ -1240,7 +1393,7 @@ async fn complete_account(
         PendingKind::CodexOauth => return internal("unexpected codex pending on the claude route"),
     };
     let token_url = admin_token_url();
-    let tokens = match claude_login::exchange_code(
+    let exchange = claude_login::exchange_code(
         &state.http_client,
         code,
         &pending.state,
@@ -1248,15 +1401,20 @@ async fn complete_account(
         &token_url,
         claude_login::MANUAL_REDIRECT_URL,
         expires_in,
-    )
-    .await
-    {
-        Ok(tokens) => tokens,
+    );
+    // Bounded because the completion lock is held across it; see
+    // `COMPLETION_EXCHANGE_TIMEOUT`.
+    let tokens = match tokio::time::timeout(COMPLETION_EXCHANGE_TIMEOUT, exchange).await {
+        Ok(Ok(tokens)) => tokens,
         // Log full detail server-side; keep the browser response deliberately
         // generic (never echo upstream detail, which may carry hints).
-        Err(error) => {
+        Ok(Err(error)) => {
             tracing::warn!(account = %name, %error, "admin: Claude token exchange failed");
             return bad_gateway("Claude token exchange failed");
+        }
+        Err(_elapsed) => {
+            tracing::warn!(account = %name, "admin: Claude token exchange timed out");
+            return bad_gateway("Claude token exchange timed out");
         }
     };
     let account_uuid = tokens
@@ -1502,7 +1660,7 @@ async fn refresh_account(
             );
             // Report the state the pool is actually in, not the state the grant
             // implies. A `ServedRequest` mark survives the clear above, and
-            // saying "this login is alive" while `/admin/pool` still demands a
+            // saying "this login is alive" while `/admin/api/pool` still demands a
             // re-login would hand callers two contradictory answers.
             let still_marked = state.accounts.store_account_needs_relogin(
                 crate::accounts::StoreFamily::Claude,
@@ -1653,31 +1811,22 @@ fn admin_token_url() -> String {
 
 // --- response helpers ----------------------------------------------------------
 
-pub(super) fn html_page(body: String) -> Response {
-    html_body(body).into_response()
-}
-
-pub(super) fn html_body(body: String) -> Response {
-    html_body_with_form_action(body, "'self'")
-}
-
 /// The login page, with the CSP `form-action` widened to the identity provider
 /// when the SSO form is present: Chrome and WebKit enforce `form-action`
 /// against the post-submission redirect chain (w3c/webappsec-csp#8), so the
 /// strict `'self'` policy would block the
-/// `POST /admin/oidc/start` -> `302` -> IdP hop. The discovered authorization
-/// endpoint is not known when this page renders, so allow what
-/// `idp_client::validate_endpoint` accepts: any `https` origin plus loopback
-/// `http` (IPv6 loopback is not expressible as a CSP host-source).
+/// `POST /admin/api/oidc/start` -> `302` -> IdP hop. See
+/// [`IDP_REDIRECT_FORM_ACTION`](crate::gateway::idp_client) for the source
+/// list and the loopback hosts it cannot express.
 pub(super) fn login_response(
     status: StatusCode,
     error: Option<&str>,
     sso_label: Option<&str>,
 ) -> Response {
     let form_action = if sso_label.is_some() {
-        "'self' https: http://127.0.0.1:* http://localhost:*"
+        crate::gateway::idp_client::IDP_REDIRECT_FORM_ACTION
     } else {
-        "'self'"
+        crate::gateway::idp_client::SELF_FORM_ACTION
     };
     let mut response = html_body_with_form_action(html::login_page(error, sso_label), form_action);
     *response.status_mut() = status;
@@ -1685,15 +1834,26 @@ pub(super) fn login_response(
 }
 
 fn html_body_with_form_action(body: String, form_action: &str) -> Response {
-    // Defense-in-depth headers for the admin pages: a tight CSP (the pages use
-    // only same-origin fetch plus inline script/style, no external resources),
-    // clickjacking/sniffing guards, a conservative referrer policy, and
-    // `no-store` so the session-specific CSRF token and account data are never
-    // cached by the browser or a shared intermediary.
+    // Defense-in-depth headers for the one page still rendered here — the login
+    // form: a tight CSP, clickjacking/sniffing guards, a conservative referrer
+    // policy, and `no-store` so a submitted token is never cached by the browser
+    // or a shared intermediary.
+    //
+    // `script-src`/`connect-src` are `'none'` because this page has neither a
+    // script nor a fetch. They carried `'unsafe-inline'`/`'self'` while the
+    // server-rendered dashboard shared this helper and inlined a script that
+    // called `/admin/api/*`; that dashboard is gone. `style-src` genuinely
+    // still needs `'unsafe-inline'`: `html::STYLE` is inlined in a `<style>`
+    // element, which is the difference between this policy and the bundle's
+    // (`ui::SHELL_CSP`), whose stylesheet is an external asset.
+    //
+    // `form-action` stays the one widened directive, and is what the SSO
+    // button depends on — it is a form POST to `/admin/api/oidc/start`, not a
+    // fetch, so tightening `connect-src` does not reach it.
     let csp = format!(
-        "default-src 'none'; script-src 'unsafe-inline'; \
-style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action {form_action}; \
-base-uri 'none'; frame-ancestors 'none'"
+        "default-src 'none'; script-src 'none'; \
+         style-src 'unsafe-inline'; connect-src 'none'; img-src 'self'; \
+         form-action {form_action}; base-uri 'none'; frame-ancestors 'none'"
     );
     (
         [
@@ -1874,6 +2034,7 @@ mod tests {
                 retry: Default::default(),
                 workspace_roots: Vec::new(),
                 sandbox: true,
+                profile_dir: None,
             },
         );
         let config = crate::config::Config {

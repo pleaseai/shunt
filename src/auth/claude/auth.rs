@@ -30,9 +30,9 @@ pub(crate) const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub(crate) const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 pub(crate) const SCOPE: &str =
     "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
-/// Also rendered into the admin dashboard's inline script, so the Status column
-/// applies the same deadline `Tokens::is_valid_at` does rather than a copy of it
-/// (`admin::html::dashboard_page` substitutes it; `admin::script`).
+/// Also served to the admin dashboard over `GET /admin/api/session`, so its
+/// Status column applies the same deadline `Tokens::is_valid_at` does rather
+/// than a copy of it (`admin::session_bootstrap`; `ui/src/accounts.ts`).
 pub(crate) const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 
 /// Resolve a usable token: a static override if present, else the refreshed

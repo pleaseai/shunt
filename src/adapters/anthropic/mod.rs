@@ -1,10 +1,11 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration, time::Instant};
 
 use axum::{
     body::Body,
     http::{HeaderMap, HeaderValue, Response, StatusCode, Uri},
     response::IntoResponse,
 };
+use futures_util::StreamExt;
 
 use crate::{
     accounts::{self, FailoverAction},
@@ -24,6 +25,7 @@ use crate::{
 mod auto_mode_classifier;
 mod deferral;
 mod model_rewrite;
+mod thinking;
 
 pub struct AnthropicAdapter;
 
@@ -64,12 +66,16 @@ async fn forward(
     // Only a subscription-OAuth bearer faces the client-shape gate; an API-key
     // Anthropic-compatible provider keeps byte-for-byte passthrough except for
     // deferred-tool fields that the upstream model cannot accept (OpenRouter
-    // stealth slugs, Kimi, …).
+    // stealth slugs, Kimi, …) and thinking blocks carrying a signature shunt
+    // minted rather than Anthropic — that one is unconditional, since such a
+    // signature is no more valid to an Anthropic-compatible host than to
+    // Anthropic itself.
     if oauth_client {
         auto_mode_classifier::restore_claude_code_identity(&mut body);
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    thinking::strip_foreign_thinking(&mut body);
     let body = body.into_raw();
     // Bounded transient retry (issue #48) for this single-credential path. Kept
     // off `count_tokens`, which passes through here for Anthropic-kind providers
@@ -176,6 +182,7 @@ async fn forward_claude_oauth(
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    thinking::strip_foreign_thinking(&mut body);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
@@ -761,6 +768,7 @@ async fn forward_kimi_oauth(
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    thinking::strip_foreign_thinking(&mut body);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
@@ -1331,6 +1339,212 @@ fn upstream_error(error: reqwest::Error) -> AdapterError {
     }
 }
 
+/// One Anthropic-kind attempt for the multi-upstream streaming chain
+/// (`proxy::chain_stream`): resolve the credential, normalize the request, and
+/// run the bounded-retry send inside the committed stream. A winner relays its
+/// own SSE — `message_start` included, so no synthetic start is needed — and a
+/// failure hands back the client-facing error envelope plus the status for the
+/// chain to classify. A pre-terminal mid-relay body failure becomes the
+/// chain's terminal error event; one after the winner's `message_stop` relayed
+/// ends the stream silently (the chain's post-terminal rule).
+pub(crate) async fn chain_attempt(
+    state: &AppState,
+    route: &Route,
+    uri: &Uri,
+    headers: &HeaderMap,
+    mut body: crate::request::RequestBody,
+) -> crate::proxy::chain_stream::Attempt {
+    let credential = match resolve_credential(&state.config, route, &state.http_client).await {
+        Ok(credential) => credential,
+        Err(error) => {
+            // Capture before the error is consumed: the envelope the stream
+            // emits is the credential error's own (a missing key is a 401),
+            // and the chain must classify the attempt with that status, not
+            // a gateway-synthesized 502.
+            let status = error.response.status();
+            let envelope = crate::error::error_body_value(*error.response).await;
+            return crate::proxy::chain_stream::Attempt::Failed {
+                advance: false,
+                remember: false,
+                envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
+                status,
+            };
+        }
+    };
+    let request_headers = outbound_headers(headers, &credential);
+    let oauth_client = bearer_is_subscription_oauth(&request_headers);
+    if oauth_client {
+        auto_mode_classifier::restore_claude_code_identity(&mut body);
+    }
+    normalize_upstream_model_request(&mut body, &route.upstream_model);
+    deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    let body = bytes::Bytes::from(body.into_raw());
+    let provider = state
+        .config
+        .provider(&route.provider)
+        .expect("route provider was validated");
+    let policy = provider.retry.policy();
+    let url = upstream_url(state, route, uri);
+    let client = state.http_client.clone();
+    let (upstream, headers_at) = match crate::retry::send_with_retry_with_safety(
+        policy,
+        &route.provider,
+        crate::retry::RetrySafety::NonIdempotentPost,
+        || {
+            crate::upstream_timeout::wait(
+                state.config.server.timeouts.upstream_ttfb_ms,
+                client
+                    .post(url.as_str())
+                    .headers(request_headers.clone())
+                    .body(body.clone())
+                    .send(),
+            )
+        },
+    )
+    .await
+    {
+        // The send resolves when the upstream's headers arrive; the frame
+        // mapping below is post-header work and must not inflate the
+        // header-latency sample the chain records.
+        Ok(response) => (response, Instant::now()),
+        Err(error) => {
+            let is_timeout = matches!(error, crate::upstream_timeout::SendError::Timeout);
+            let envelope = crate::error::error_body_value(
+                *error
+                    .into_adapter_error(|error| upstream_error(error.without_url()))
+                    .response,
+            )
+            .await;
+            return crate::proxy::chain_stream::Attempt::Failed {
+                // A TTFB timeout is the configured 504 answer, not a
+                // transport failure: terminal, never advanced.
+                advance: !is_timeout,
+                remember: false,
+                envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
+                status: if is_timeout {
+                    StatusCode::GATEWAY_TIMEOUT
+                } else {
+                    StatusCode::BAD_GATEWAY
+                },
+            };
+        }
+    };
+    let status = upstream.status();
+    if !status.is_success() {
+        // The single-route path relays a non-2xx upstream response as the HTTP
+        // response; inside the committed stream it becomes the terminal error
+        // event carrying the upstream's own error body when that body is JSON
+        // (the usual Anthropic error shape). The chain decides whether the
+        // status advances (mirroring the loop's relayed-429 advance). Every
+        // relayed status defers its body read (the pre-commit loop's
+        // lazy-body rule): the fallback must not wait on a slow or
+        // non-terminating error body when the status alone suffices to
+        // advance, and the chain's latency sample lands at header arrival
+        // instead of after the budgeted read — mirroring the Responses arm.
+        let envelope = crate::proxy::chain_stream::LazyEnvelope::Deferred(Box::pin(
+            mapped_error_envelope(status, upstream),
+        ));
+        return crate::proxy::chain_stream::Attempt::Failed {
+            advance: crate::proxy::failover::is_advance_status(status),
+            remember: true,
+            envelope,
+            status,
+        };
+    }
+    let is_sse = upstream
+        .headers()
+        .get("content-type")
+        .is_some_and(crate::stream_metrics::content_type_is_event_stream);
+    if !is_sse {
+        // The committed response is already `text/event-stream`; a non-SSE
+        // success body cannot be relayed inside it (the pre-commit loop
+        // relays it verbatim — a deviation the committed shape forces, see
+        // `docs/upstreams-failover.md` §6). One terminal error event
+        // instead.
+        let envelope = crate::proxy::chain_stream::LazyEnvelope::Ready(
+            crate::error::error_body_value(
+                crate::error::ShuntError::bad_gateway(
+                    "upstream answered the streaming request with a non-SSE response",
+                )
+                .into_response(),
+            )
+            .await,
+        );
+        return crate::proxy::chain_stream::Attempt::Failed {
+            advance: false,
+            remember: false,
+            envelope,
+            status: StatusCode::BAD_GATEWAY,
+        };
+    }
+    let alias = (route.model != route.upstream_model).then(|| route.model.clone());
+    let frames = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias)
+        .map(|chunk| {
+            chunk.map_err(|error| {
+                // A pre-terminal mid-relay body failure becomes the terminal
+                // SSE error event (the chain records the failure), never a
+                // silently truncated stream; once the terminal frame has
+                // relayed, the chain ends the relay silently.
+                serde_json::json!({
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": error.without_url().to_string()
+                    }
+                })
+            })
+        })
+        .boxed();
+    crate::proxy::chain_stream::Attempt::Winner {
+        headers_at,
+        relay: crate::proxy::chain_stream::RelayBuild::Ready {
+            start: None,
+            frames,
+        },
+    }
+}
+
+/// The mapped envelope for an upstream error status: the upstream's own JSON
+/// error body when it parses to the Anthropic error envelope shape
+/// (`type: "error"` with an object-valued `error`), else a generic
+/// `api_error` naming the status. An arbitrary JSON body must never relay as
+/// terminal error data a client parses as an envelope. The body read happens
+/// on demand, so an advance-worthy status can move the chain on before it.
+pub(crate) async fn mapped_error_envelope(
+    status: StatusCode,
+    upstream: reqwest::Response,
+) -> serde_json::Value {
+    // Budgeted: the terminal error event must not stall on a body the
+    // upstream keeps open, and a huge body must not be buffered whole.
+    let Some(bytes) = crate::error::bounded_upstream_text(
+        upstream,
+        crate::error::ERROR_ENVELOPE_BUDGET,
+        crate::error::ERROR_ENVELOPE_BYTES,
+    )
+    .await
+    else {
+        return serde_json::json!({
+            "type": "error",
+            "error": {"type": "api_error", "message": format!("upstream returned {status}")}
+        });
+    };
+    serde_json::from_slice::<serde_json::Value>(bytes.as_bytes())
+        .ok()
+        .filter(|value| {
+            value.get("type").and_then(serde_json::Value::as_str) == Some("error")
+                && value.get("error").is_some_and(serde_json::Value::is_object)
+        })
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": format!("upstream returned {status}")
+                }
+            })
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use axum::{
@@ -1492,6 +1706,105 @@ mod tests {
         .expect("a 200 send should not fail")
         .expect("a 200 upstream should be handed back to the caller");
         assert!(response.status().is_success());
+    }
+
+    /// A credential resolution failure keeps the credential's own status:
+    /// the terminal envelope is a 401 authentication error, so the chain
+    /// must classify the attempt as 401 — a 502 would misreport the
+    /// emitted envelope in `shunt.requests` and the request span.
+    #[tokio::test]
+    async fn chain_attempt_keeps_the_credential_failure_status() {
+        let mut config = crate::config::Config::default();
+        // Deterministic 401 with no env or store reads: an api-key provider
+        // whose key env var is absent.
+        let anthropic = config
+            .providers
+            .get_mut("anthropic")
+            .expect("built-in anthropic provider");
+        anthropic.auth = crate::config::AuthMode::ApiKey;
+        anthropic.api_key_env = Some("SHUNT_CHAIN_TEST_API_KEY_MISSING".to_string());
+        let state = super::AppState::new(config, reqwest::Client::new()).unwrap();
+        let route = super::Route {
+            provider: "anthropic".to_string(),
+            adapter: crate::routing::AdapterKind::Anthropic,
+            model: "claude-test".to_string(),
+            upstream_model: "claude-test".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+        let uri: axum::http::Uri = "https://api.example.invalid/v1/messages".parse().unwrap();
+        let body = crate::request::RequestBody::parse(
+            b"{\"model\":\"claude-test\",\"max_tokens\":16,\"messages\":[]}".to_vec(),
+        )
+        .unwrap();
+        let attempt = super::chain_attempt(&state, &route, &uri, &client_headers(), body).await;
+        match attempt {
+            crate::proxy::chain_stream::Attempt::Failed { status, .. } => {
+                assert_eq!(status, StatusCode::UNAUTHORIZED);
+            }
+            _ => panic!("expected a failed attempt, got a winner"),
+        }
+    }
+
+    /// An upstream body that parses but is not an Anthropic error envelope
+    /// must not relay verbatim as the terminal error data: clients parse the
+    /// data field as an envelope, and an arbitrary object would break them.
+    #[tokio::test]
+    async fn mapped_error_envelope_rejects_a_non_envelope_json_body() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string(r#"{"foo": "not an envelope"}"#),
+            )
+            .mount(&server)
+            .await;
+        let upstream = reqwest::Client::new()
+            .get(format!("{}/e", server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        let envelope =
+            super::mapped_error_envelope(StatusCode::INTERNAL_SERVER_ERROR, upstream).await;
+
+        assert_eq!(envelope["error"]["type"], "api_error");
+        assert!(
+            envelope["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("500"),
+            "the fallback names the upstream status, got: {envelope}"
+        );
+    }
+
+    /// A body in the real Anthropic error shape relays as-is: the upstream's
+    /// own error type and message are the diagnosis the client sees.
+    #[tokio::test]
+    async fn mapped_error_envelope_relays_a_valid_envelope() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(529).set_body_string(
+                r#"{"type":"error","error":{"type":"overloaded_error","message":"try later"}}"#,
+            ))
+            .mount(&server)
+            .await;
+        let upstream = reqwest::Client::new()
+            .get(format!("{}/e", server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        let envelope =
+            super::mapped_error_envelope(StatusCode::SERVICE_UNAVAILABLE, upstream).await;
+
+        assert_eq!(envelope["error"]["type"], "overloaded_error");
+        assert_eq!(envelope["error"]["message"], "try later");
     }
 
     #[tokio::test]
@@ -1870,5 +2183,64 @@ mod tests {
         let original = body.clone();
         let out = normalize_upstream_model(body, "claude-sonnet-4-6");
         assert_eq!(out, original);
+    }
+
+    /// A terminal non-advance status defers its error-body read like the
+    /// Responses arm: the chain records the latency sample when the attempt
+    /// returns at header arrival, never after the (budgeted) body read.
+    #[tokio::test]
+    async fn chain_attempt_defers_the_terminal_status_body_read() {
+        let stalled = crate::testutil::StalledBody::start(StatusCode::BAD_REQUEST, "{", "}").await;
+        let mut config = crate::config::Config::default();
+        let anthropic = config
+            .providers
+            .get_mut("anthropic")
+            .expect("built-in anthropic provider");
+        anthropic.auth = crate::config::AuthMode::ApiKey;
+        anthropic.api_key_env = Some("SHUNT_CHAIN_STALLED_400_KEY".to_string());
+        anthropic.base_url = stalled.base_url.clone();
+        std::env::set_var("SHUNT_CHAIN_STALLED_400_KEY", "stalled-400-probe");
+        let state = super::AppState::new(config, reqwest::Client::new()).unwrap();
+        let route = super::Route {
+            provider: "anthropic".to_string(),
+            adapter: crate::routing::AdapterKind::Anthropic,
+            model: "claude-test".to_string(),
+            upstream_model: "claude-test".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+        let uri: axum::http::Uri = "https://api.example.invalid/v1/messages".parse().unwrap();
+        let body = crate::request::RequestBody::parse(
+            b"{\"model\":\"claude-test\",\"max_tokens\":16,\"messages\":[]}".to_vec(),
+        )
+        .unwrap();
+        let attempt = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            super::chain_attempt(&state, &route, &uri, &client_headers(), body),
+        )
+        .await
+        .expect(
+            "the classified failure returns at header arrival, before the stalled body resolves",
+        );
+        let envelope = match attempt {
+            crate::proxy::chain_stream::Attempt::Failed {
+                advance,
+                remember,
+                envelope,
+                status,
+            } => {
+                assert!(!advance, "a 400 is terminal");
+                assert!(remember, "a relayed status is remembered");
+                assert_eq!(status, StatusCode::BAD_REQUEST);
+                envelope
+            }
+            _ => panic!("expected a failed attempt, got a winner"),
+        };
+        let (resolved, _) = tokio::join!(async { envelope.resolve().await }, stalled.release());
+        assert!(
+            resolved.get("error").is_some(),
+            "the envelope maps the 400, got {resolved:?}"
+        );
+        std::env::remove_var("SHUNT_CHAIN_STALLED_400_KEY");
     }
 }

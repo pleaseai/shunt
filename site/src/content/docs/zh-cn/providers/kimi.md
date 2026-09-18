@@ -191,12 +191,12 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 ### 池化账号与管理后台
 
 一个 `kimi_oauth` 池参与与 Claude 和 Codex 池相同的负载均衡、故障转移和配额感知的
-账号轮换,并且在启用了 `GET /admin/pool` 和经过脱敏的 `GET /usage` 聚合时,
+账号轮换,并且在启用了 `GET /admin/api/pool` 和经过脱敏的 `GET /usage` 聚合时,
 其账号会出现在其中。它比其他池多一个轮换条件:上文那个
 `402` 会员响应。由于失效的会员在每个请求上都返回 402,shunt 会把它当作
 账号级别的失败 —— 它会给该账号降温并尝试下一个,而不是把这个 402 交给你的客户端、
 让健康的账号闲着。如果池中*每一个*账号都失效了,你仍会拿回 Kimi 自己的 402 状态和消息,
 所以原因依然可见。
-[管理后台 web 界面](https://shunt.dev/guides/admin-remote-provisioning/) 中由浏览器驱动的
+[管理后台 web 界面](https://shunt.sh/guides/admin-remote-provisioning/) 中由浏览器驱动的
 账号开通不支持 Kimi 账号 —— 该界面的池视图对 Kimi 是只读的;请在 CLI 上用
 `shunt login kimi` 开通 Kimi 账号。

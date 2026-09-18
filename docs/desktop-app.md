@@ -83,7 +83,7 @@ In scope:
   the existing OAuth/setup-token flows and stores. API-key upstreams accept a key
   entered in the UI, stored in the OS keychain.
 - **Pool dashboard.** The read-only per-account quota/cooldown view
-  (`AccountPool::snapshot`), same data as `GET /admin/pool`.
+  (`AccountPool::snapshot`), same data as `GET /admin/api/pool`.
 - **Config safety.** Every write is validated (the `shunt check` logic) before it
   lands; a rejected edit never reaches the file.
 
@@ -159,10 +159,13 @@ state; in-process only for editing the shared config file."
   location `Config::find_config_file` searches) and generates the
   `SHUNT_ADMIN_TOKENS` value it injects into the sidecar. Injecting that env only
   lets the sidecar *validate* the token — the embedded webview must still
-  authenticate, or `/admin` redirects to `/admin/login`. So the app logs in on the
-  operator's behalf: it POSTs the token to `/admin/login` to obtain the session
-  cookie for the webview (or attaches the admin header to webview requests). The
-  operator does no manual login either way.
+  authenticate, or the SPA it loads at `/admin` sends the operator to
+  `/admin/login` (the shell itself is served unauthenticated; the bundle
+  redirects after `GET /admin/api/session` answers `401`). So the app logs in on
+  the operator's behalf: it POSTs the token to `/admin/login` to obtain the
+  session cookie for the webview (or attaches the admin header to webview
+  requests). The operator does no manual login either way. The sidecar must also
+  be a `--features ui` build, or `/admin` has no bundle to load at all.
 
 ### Phase B — native upstream/account CRUD
 
@@ -269,7 +272,7 @@ owner that can rewrite the child's environment and restart it.
    (`presets.rs`) prefill provider defaults.
 3. **Accounts** — Claude and Codex accounts: add (OAuth/setup-token flow),
    remove; per-account metadata (name, kind, expiry) — never the token.
-4. **Pool** — read-only quota/cooldown dashboard via `GET /admin/pool` on the
+4. **Pool** — read-only quota/cooldown dashboard via `GET /admin/api/pool` on the
    sidecar (the endpoint returns `AccountPool::snapshot` data; the desktop process
    never calls the type directly, since the live pool is sidecar-local).
 5. **Settings** — bind address, `[server.auth]` client tokens, admin token
@@ -284,9 +287,9 @@ Native commands, mapping to existing shunt logic rather than the HTTP admin API:
 | `config_read` | `Config::load` + read raw file for `toml_edit` |
 | `config_validate` | full `Config::load` (figment parse + `Config::validate`) |
 | `upstream_upsert` / `upstream_remove` / `upstream_reorder` | `toml_edit` mutation + full `Config::load` validation + atomic write (in-process — the config file is shared on disk) |
-| `account_add_claude` / `account_add_codex` / `account_remove` | **call the sidecar admin HTTP** (`POST`/`DELETE /admin/accounts/*`, carrying the configured admin header — see note below). The Claude OAuth helpers (`auth/claude/login.rs`) are crate-private and the Codex handlers (`admin/codex.rs`) are admin-module-private and need server state, so direct reuse from a separate `desktop/` crate would not compile unless shunt exports them (see Open questions) |
+| `account_add_claude` / `account_add_codex` / `account_remove` | **call the sidecar admin HTTP** (`POST`/`DELETE /admin/api/accounts/*`, carrying the configured admin header — see note below). The Claude OAuth helpers (`auth/claude/login.rs`) are crate-private and the Codex handlers (`admin/codex.rs`) are admin-module-private and need server state, so direct reuse from a separate `desktop/` crate would not compile unless shunt exports them (see Open questions) |
 | `secret_set` / `secret_delete` | keychain plugin + env-name assignment |
-| `pool_snapshot` | **`GET /admin/pool` on the sidecar** (with the configured admin header). `AccountPool` is the *sidecar* process's live runtime state (quota/cooldown accrued while serving), so calling `AccountPool::snapshot` from the desktop process would read an empty local pool, not the sidecar's |
+| `pool_snapshot` | **`GET /admin/api/pool` on the sidecar** (with the configured admin header). `AccountPool` is the *sidecar* process's live runtime state (quota/cooldown accrued while serving), so calling `AccountPool::snapshot` from the desktop process would read an empty local pool, not the sidecar's |
 | `gateway_start` / `gateway_stop` / `gateway_restart` | sidecar process control |
 
 Every admin-HTTP command (`account_*`, `pool_snapshot`) sends the app's admin token

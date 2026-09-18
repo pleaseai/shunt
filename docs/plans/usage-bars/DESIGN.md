@@ -30,7 +30,9 @@ weekly windows, while its Fable-scoped (`7d_oi`) window remains unreported; a mi
 may still supply Fable data. PR #430 now adds an optional out-of-band poller for imported,
 refreshable Codex accounts through the private, undocumented `GET /wham/usage` endpoint. The
 poller updates utilization and observation timestamps. Codex reset metadata remains
-header-derived: future header boundaries survive, while an elapsed stored reset is dropped for a
+response-derived (the `x-codex-*` headers and, since the WebSocket rate-limit tap, the in-stream
+`codex.rate_limits` event): a response-supplied reset replaces the stored one, and when the
+response omits it a future stored boundary survives while an elapsed stored reset is dropped for a
 reported window before fresh utilization is written; parsed wham `reset_at` is not adopted as
 live reset metadata. Status metadata remains header-derived, and failed or unrecognized
 observations preserve prior state. The historical M12
@@ -199,12 +201,14 @@ bar tracks Codex traffic). M-A's snapshot loop therefore filters providers to
 `AuthMode::ClaudeOauth` only — worth its own regression test (see Tests).
 
 **Deviation 2 — routing-aware, priority-tiered worst case, not pool-wide least-utilized.**
-`usage::window_status` reports `1 - min(utilization)` across every non-disabled account,
-ignoring `priority`, `available` (cooldown/near-quota), and everything else
+`usage::window_status` reports `1 - min(utilization)` across every non-disabled account
+(as of #482 it reports `mean(1 - utilization)` instead — a pool-capacity figure that is still
+routing-blind, so the argument below holds unchanged), ignoring `priority`, `available` (cooldown/near-quota), and everything else
 `AccountPool::select_order` (`src/accounts.rs`) actually weighs when picking which account
 serves the *next* request. Reused verbatim, that produces exactly the failure the critique
 flagged: a priority-1 (preferred) account at 95% utilization plus a priority-100 (backup)
-account at 5% utilization would report "~5% used" — an optimistic number — while real
+account at 5% utilization would report "~5% used" (or "~50% used" under the #482 mean) —
+an optimistic number either way — while real
 traffic keeps hitting the priority-1 account until it is actually exhausted or cooling.
 That is not a rounding error, it is the aggregate answering a different question than the
 one the label implies.
@@ -642,7 +646,7 @@ which does not apply here — this route serves an Anthropic-protocol client):
   loopback-vs-non-loopback auth distinction and the self-poll-loop warning below.
 - `site/src/content/docs/reference/endpoints.md` — new endpoint entry for
   `GET /api/oauth/usage`.
-- `site/src/content/docs/guides/anthropic-multi-account.md` — note the exact preconditions
+- `site/src/content/docs/guides/anthropic-multi-account.mdx` — note the exact preconditions
   (login type, single-vs-multi-account aggregation behavior) instead of "works out of the
   box"; add: never point a `claude_oauth` provider's `base_url` at this gateway's own bind —
   doing so with `[server.oauth_usage]` enabled makes the outbound usage poller read back its

@@ -72,6 +72,8 @@ surface shunt expects, put an OIDC identity provider such as [Dex](https://dexid
 in front of it and configure the Dex issuer here. Direct provider-specific OAuth2
 integrations are out of scope.
 
+The issuer and every endpoint must use HTTPS. Plain HTTP is accepted only at `localhost` or `127.0.0.1`: those are the only loopback hosts the approval page's Content Security Policy can name, so an IdP on `[::1]` or another `127.0.0.0/8` address is refused at startup rather than blocked later in the browser.
+
 At least one non-empty `allowed_domains` or `allowed_emails` entry is required;
 shunt refuses to start without it. `users_env` becomes optional when
 `[server.gateway.oidc]` is configured. Leave `SHUNT_GATEWAY_USERS` set to show
@@ -106,7 +108,7 @@ Start Claude Code and run `/login`. The CLI shows a device code and opens the ga
 2. Select the SSO button (**Sign in with Google** for Google, **Sign in with SSO** for other providers), then finish the provider login. If static users are also configured, entering an email and secret and selecting **Approve device** remains available.
 3. Return to Claude Code after the success page appears.
 
-Pre-filling the code never auto-approves it. The password approval POST is same-origin protected. The external callback instead binds the cross-site redirect with a single-use, ten-minute OAuth state and PKCE; provider errors are never echoed into the page.
+Pre-filling the code never auto-approves it. The password approval POST is same-origin protected: the gateway trusts the browser's `Sec-Fetch-Site: same-origin` Fetch Metadata signal, because the page's `Referrer-Policy: no-referrer` makes the browser send `Origin: null` on its own form submission. A reverse proxy that strips `Sec-Fetch-*` headers therefore blocks every approval with "This request came from another site and was blocked.". The external callback instead binds the cross-site redirect with a single-use, ten-minute OAuth state and PKCE; provider errors are never echoed into the page.
 
 ## Sign in from the terminal instead
 

@@ -191,6 +191,43 @@ the listener bound at boot. Because a hot reload cannot move that listener, relo
 loopback `bind` does not permit you to disable the sandbox while a public listener remains
 active. Either keep the sandbox on or restart shunt with a loopback bind.
 
+#### Pooling several Google accounts
+
+Every `antigravity_cli` entry runs the same local `agy`, which resolves its whole state
+tree — credentials included — through `HOME`. Left alone they all share the gateway host's
+single ambient `~/.gemini` profile, so every route serves one Google account.
+
+`profile_dir` gives an entry its own `HOME`. Point each at its own directory and each
+signs in to its own account, and several can serve concurrently:
+
+```toml
+[providers.antigravity]
+kind = "antigravity_cli"
+base_url = "http://localhost"
+auth = "none"
+# no profile_dir: keeps the ambient ~/.gemini profile
+
+[providers.antigravity-second]
+kind = "antigravity_cli"
+base_url = "http://localhost"
+auth = "none"
+profile_dir = "~/.shunt/antigravity/second-account"
+```
+
+The directory is created on demand and resolved to an absolute path, and a leading `~` is
+expanded. Each one needs its own one-time `agy` sign-in — run the CLI once with that
+directory as `HOME`. Unset (the default) changes nothing: the child inherits the gateway's
+environment and its ambient profile.
+
+The child environment is also stripped of `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
+`GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`,
+`GOOGLE_CLOUD_QUOTA_PROJECT`, `GOOGLE_GENAI_USE_VERTEXAI`, `GCLOUD_PROJECT` and
+`CLOUDSDK_CORE_PROJECT`, so the gateway host's own configuration cannot silently decide
+which account — and whose billing — serves a request. Stripping applies only to entries
+that set `profile_dir`.
+
+The same setting is available on an ordered `[[upstreams]]` entry.
+
 The model/effort matrix is discovered in the background at startup, so no request pays
 for it. Until it lands, or if `agy models` fails, configured values are passed through
 and `agy` validates them itself — a failed discovery is retried rather than cached, after
@@ -203,6 +240,13 @@ discovery in the background, at most once a minute. That request, and any that a
 before the discovery finishes, still pass through to `agy` unvalidated; once a discovery
 that lists the model lands, later requests resolve normally. Without this, a model released
 after startup would stay unknown until shunt restarted.
+
+Discovery is process-wide, and that matters once `profile_dir` is in play: the matrix is
+built by one `agy models` run under the gateway's own environment and shared by every
+entry, so it describes the ambient profile's catalog rather than each pooled account's.
+Antigravity catalogs do differ per account, so treat the matrix as advisory when pooling
+— a model the matrix does not list is passed through to `agy` unvalidated anyway, and
+`agy` itself is the authority on what the signed-in account can run.
 
 The configured upstream slug proves which model shunt asks `agy` to run; it does not
 independently attest Google's internal serving identity.
@@ -276,6 +320,7 @@ Most third-party "use Claude Code with X" gateways are Anthropic-Messages-compat
 | [Zhipu (GLM China)](/providers/zhipu/) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | [MiniMax](/providers/minimax/) | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
 | [MiniMax China](/providers/minimax-cn/) | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
+| [OpenCode Zen](/providers/opencode/) | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — curated cross-vendor catalog (reads `x-api-key`) |
 | [Mimo (Xiaomi)](/providers/mimo/) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — see [Mimo docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
 | [OpenRouter](/providers/openrouter/) | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | [Vercel AI Gateway](/providers/vercel-ai-gateway/) | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |

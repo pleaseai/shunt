@@ -19,7 +19,7 @@ shunt → Codex) share an upstream but differ in kind:
 | Inbound → upstream body | **Translated**: `translate_request` builds a Responses body from the Anthropic Messages request | **Raw passthrough**: the inbound Responses body is forwarded upstream byte-for-byte, no translation |
 | Upstream → outbound response | **Re-shaped**: `AnthropicSseMachine` turns Responses SSE into Anthropic SSE (or a single Anthropic JSON body) | **Raw passthrough**: the upstream response (SSE or JSON) is relayed verbatim, preserving status and content-type |
 | On pool exhaustion | Re-shapes the last upstream response into an Anthropic-style error envelope (`build_upstream_error`) | Relays the last upstream response verbatim — **not** re-shaped (see below) |
-| Model selects provider? | Yes, via `[models.upstream_model]` / `[[routes]]` / `[[route_prefixes]]` | No — every request goes to the one configured provider; `model` forwards verbatim as a label only |
+| Model selects provider? | Yes, via `[models.upstream_model]` / `[[routes]]` / `[[route_prefixes]]` | **Opt-in.** By default no — every request goes to the one configured provider and `model` forwards verbatim as a label only. With `[[server.codex_endpoint.routes]]`, an exactly-matching `model` selects that entry's provider instead |
 
 Everything else — the M10 account pool, session-sticky selection, cooldowns, and refresh — is
 shared unchanged between the two paths.
@@ -32,11 +32,18 @@ A new opt-in `[server.codex_endpoint]` table, mirroring the [M9](m9-admin-surfac
 ```toml
 [server.codex_endpoint]
 provider = "codex"   # default; the target chatgpt_oauth provider
+
+# Optional: per-model routing to other Responses-compatible upstreams.
+[[server.codex_endpoint.routes]]
+model = "glm-5.3"          # what the Codex CLI asks for
+provider = "glm"           # kind = "responses", with a real credential
+upstream_model = "glm-5.3" # optional; defaults to `model`
 ```
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `provider` | `"codex"` | Which `chatgpt_oauth` provider's account pool serves inbound Responses requests. |
+| `provider` | `"codex"` | Which `chatgpt_oauth` provider's account pool serves inbound Responses requests whose `model` matches no route. |
+| `routes` | `[]` | Opt-in per-model routing. Each `[[server.codex_endpoint.routes]]` entry maps one public `model` to a configured `provider`, optionally rewriting the body `model` to `upstream_model`. |
 
 **Absent ⇒ none of the routes are registered** — the default HTTP surface is unchanged. Present ⇒
 config validation requires the named provider to exist and use `auth = "chatgpt_oauth"`; otherwise
@@ -44,9 +51,21 @@ shunt fails to start with a `ConfigError` naming the problem (unknown provider, 
 mode). This is the same bearer-leak discipline M8/M10 apply elsewhere: only a `chatgpt_oauth`
 provider has the Codex OAuth injection this endpoint depends on.
 
+Each `[[server.codex_endpoint.routes]]` entry is validated at boot too: the named provider must
+exist, be `kind = "responses"` (the endpoint relays raw Responses bytes, so an Anthropic-kind
+provider cannot serve them — pointing a route at the built-in `kimi` preset, which is
+`kind = "anthropic"`, is rejected for exactly this reason), and must not use a credential-free auth
+mode (`passthrough` or `none`) — the inbound client's own `Authorization` is always stripped, so
+`passthrough` would have nothing to forward and `none` sends nothing by design, leaving the routed
+request unauthenticated either way. Every other auth mode a `kind = "responses"` provider can
+legally carry — `api_key`, `chatgpt_oauth`, `xai_oauth` — is accepted. Duplicate `model` entries and blank fields are rejected.
+Routes are read from the live config snapshot on every request, so adding, editing, or removing one
+takes effect on **reload**; only toggling the `[server.codex_endpoint]` table itself on or off needs
+a restart (it registers the HTTP routes).
+
 ## Routes
 
-When opted in, shunt registers three routes, all mapping to one passthrough handler:
+When opted in, shunt registers three Responses routes mapping to one passthrough handler:
 
 | Method | Path |
 | :-- | :-- |
@@ -60,6 +79,21 @@ literal path the real ChatGPT backend uses), a base ending in `/v1` produces `/v
 a bare base produces `/responses`. Registering all three lets an operator use either CLI setup
 style (§ "Codex CLI setup" below) without shunt needing to know which one a given client chose.
 
+In addition, shunt registers dedicated Codex model discovery routes:
+
+| Method | Path |
+| :-- | :-- |
+| `GET` | `/models` |
+| `GET` | `/backend-api/codex/models` |
+
+Codex 0.152 and later also requests `<base>/models?client_version=...` and requires a Codex
+`{"models":[...]}` envelope. shunt does not synthesize partial `ModelInfo` records: the two
+Codex-only paths above return the valid fallback `{"models":[]}`. A request to the shared
+`/v1/models` path returns that same Codex fallback when the `client_version` query field is
+present, with the query marker taking precedence over Anthropic-looking headers. Without that
+query field, `/v1/models` preserves the existing Anthropic discovery response unchanged. All
+three variants pass the existing model-discovery authentication gate first, and the Codex-only
+paths remain absent when `[server.codex_endpoint]` was not enabled at boot.
 ### Client analytics sink
 
 The same opt-in also registers `POST /backend-api/codex/analytics-events/events` and
@@ -77,14 +111,75 @@ sinks. Event names are limited to 64 bytes and to lowercase ASCII letters, digit
 `unparsed`. Oversized or unreadable bodies also succeed and are counted as `unparsed`. With no
 metric sink configured, these routes are pure discard sinks.
 
-## Fixed provider routing
+## Provider selection: fixed by default, per-model when configured
 
-Unlike `/v1/messages`, this endpoint does not route by model. Every inbound request goes to the
-**one** provider named in `[server.codex_endpoint]`. The inbound body's `model` field is forwarded
-upstream verbatim — it is read only for metrics/logging labels, never used to pick a provider — so
-a request naming a model the account pool's ChatGPT subscription isn't entitled to fails exactly
-the way it would talking to the real ChatGPT backend directly (see
+By default this endpoint does not route by model. Every inbound request goes to the **one**
+provider named in `[server.codex_endpoint]`, and the inbound body's `model` field is forwarded
+upstream verbatim — read only for metrics/logging labels, never used to pick a provider — so a
+request naming a model the account pool's ChatGPT subscription isn't entitled to fails exactly the
+way it would talking to the real ChatGPT backend directly (see
 [`codex-configuration.md` §5](codex-configuration.md#5-model-slugs)).
+
+`[[server.codex_endpoint.routes]]` opts a specific model out of that. When the body's `model`
+**exactly** equals a route's `model`, the request goes to that route's provider instead. The match
+is byte-exact and case-sensitive: no prefix matching, and no `[1m]` context-window stripping (the
+Codex CLI never appends that hint, so a looser match would only over-capture). Model ids are opaque
+— `.`, `/`, `~`, and mixed case all route as written, which matters because vendor slugs look like
+`openai/gpt-5.6-sol` (Vercel AI Gateway), `~openai/gpt-latest` (OpenRouter), and `MiniMax-M3`
+(MiniMax). A `model` that cannot be read at all never matches a route: `unknown` is a
+shunt-authored label, not a model id, so a route declared for the literal model `unknown` cannot
+capture a malformed body — it falls through to the fixed provider as before.
+
+Metrics, spans, and Sentry label a routed request with the **routed provider** and the **public**
+model the client asked for; only the wire body and `upstream_model` carry the upstream id.
+
+### Routed requests to non-ChatGPT upstreams
+
+A route naming another `chatgpt_oauth` provider keeps the whole passthrough described below — its
+own account pool, session-sticky selection, failover, refresh, `x-shunt-account`, and verbatim
+header forwarding. One header is the exception: when the route rewrites `upstream_model`, the
+client's `x-codex-routing-hint` (which names the *public* model it asked for) no longer describes
+the body, so it is dropped rather than forwarded contradicting it. shunt does not re-synthesize the
+hint — it does not own that grammar for a routed id — and lets the backend route on the body alone.
+A route naming any other provider (a native Responses API such as Z.ai GLM,
+DeepSeek, Kimi Code, MiniMax, OpenRouter, Vercel AI Gateway, or stock OpenAI) takes a deliberately
+narrower path:
+
+- **Header allowlist, not a strip list.** Verbatim header forwarding exists to be byte-faithful to
+  the *ChatGPT* backend, which gates on the CLI's real identity. A third party has no use for
+  `originator`, `version`, `user-agent`, `session-id`, or `x-codex-*`, and forwarding an inbound
+  `authorization` / `x-api-key` would leak a caller's own secret to a host it was never issued for.
+  So the routed request is built from scratch: only `content-type` (defaulted to
+  `application/json`) and `accept` come from the client. Added to that are the resolved credential
+  and whatever identity the *routed upstream itself* gates on: `OpenAI-Beta: responses=experimental`
+  under the same flavor gate the outbound path uses (skipped for xAI/Grok), and — for an
+  `xai_oauth` route — the four Grok-CLI headers the subscription chat proxy requires, shared with
+  the outbound path so the two cannot drift. Everything else is dropped by construction, so a header
+  added later cannot start reaching a third party because nobody remembered to deny it.
+- **Body `model` rewrite.** When the route's `upstream_model` differs from what the client asked
+  for, shunt parses the body, replaces the top-level `model`, and re-serializes it. Every other
+  field is preserved. A body that is not a JSON object cannot be rewritten and is rejected with a
+  gateway-owned `400 invalid_request_error` (in the OpenAI error envelope) rather than sent on
+  naming a model the upstream does not serve; an over-cap zstd expansion is the same `413` the
+  label path reports.
+- **Identity encoding.** The routed body is always sent uncompressed — a zstd request body is a
+  ChatGPT/Codex-backend convention that a stock Responses API does not accept — so a compressed
+  inbound body is decoded even when nothing needs rewriting, and `content-encoding` is not
+  forwarded. The decode is not repeated: when any route is configured, the bounded blocking task
+  that already decoded the body to read its `model` hands that same buffer to the routed path. The
+  rewrite itself is bounded too — inline for a small body, on the blocking pool under its own
+  admission slots above the calibrated inline gate — so a multi-megabyte `serde_json` round trip
+  never runs on the async executor.
+- **One credential, no pool, no failover.** shunt resolves the routed provider's single credential
+  (`api_key` from its `api_key_env`, or an OAuth bearer) and sends exactly one request. There is no
+  account rotation to fall back to.
+- **Verbatim relay.** The upstream response is relayed unchanged — status, body, and headers,
+  including `retry-after` on a 429 — so the Codex CLI backs off against the third party's real
+  signal instead of a rotation shunt invented. A 429 or 5xx is *not* a failover trigger here.
+
+The URL is the provider's `base_url` with `/responses` appended (a `chatgpt_oauth` provider gets
+`/codex/responses` instead), so an operator configures the same `base_url` the vendor documents for
+the Codex CLI.
 
 Reading that label has to account for compression. Current Codex releases zstd-compress the
 Responses request body whenever they talk to the ChatGPT backend, which is true of the
@@ -94,7 +189,9 @@ decodes an in-memory copy first (bounded by the same 64 MiB cap the endpoint alr
 uncompressed body). If the body still cannot be read — an undecodable frame, an over-cap expansion,
 or a content coding shunt does not decode — the request relays normally and only the label degrades
 to `unknown`, with a `warn` naming the reason. It is never silently swallowed: an unexplained
-`model="unknown"` on every metric, log line, and span was the original symptom.
+`model="unknown"` on every metric, log line, and span was the original symptom. With no routes
+configured that decoded copy is dropped as soon as the label is read; with routes configured it is
+kept and handed to the routed path, which would otherwise decode the same body a second time.
 
 ## Raw passthrough
 
@@ -215,7 +312,7 @@ outbound path. A user with one Codex login therefore works out of the box the mo
 ## Transport: HTTP/SSE only
 
 Even if the configured provider sets `websocket = true`, this endpoint always uses the HTTP path.
-The experimental [Codex WebSocket v2 transport](codex-websocket-v2-protocol.md) is out of scope for
+The experimental [Codex WebSocket v2 transport](m7-codex-websocket.md) is out of scope for
 M11 and is tracked as a follow-up (see below).
 
 ## Reload behavior
@@ -271,10 +368,21 @@ shunt this way — shunt supplies the account from its own pool, not the CLI's l
 
 - **WebSocket transport.** This endpoint is HTTP/SSE-only even when the target provider has
   `websocket = true`; wiring the inbound path onto the
-  [Codex WebSocket v2 transport](codex-websocket-v2-protocol.md) is a separate follow-up.
-- **Model-based provider selection.** The endpoint is pinned to one provider by config; routing
-  inbound Responses requests to different providers by `model` (mirroring `[[routes]]`) is not
-  implemented and would need its own design (this endpoint has no Anthropic-shaped request to key
-  routing decisions off of the way `/v1/messages` does).
+  [Codex WebSocket v2 transport](m7-codex-websocket.md) is a separate follow-up.
+- **Chat-Completions-only upstreams.** A route may only name an upstream that natively implements
+  the **Responses** API. The endpoint relays raw Responses bytes, so a provider that speaks only
+  `/chat/completions` cannot serve them yet (the adapter exists, see the translation bullet below). Vendors
+  that document a native Responses endpoint for the Codex CLI (Z.ai GLM, DeepSeek, Kimi Code,
+  MiniMax, Mimo, OpenRouter, Vercel AI Gateway) are the supported shape; anything else is not.
+- **Custom model discovery records for the Codex CLI.** shunt serves the valid empty fallback
+  `{"models":[]}` for Codex CLI discovery but does not synthesize custom `ModelInfo` records or
+  advertise third-party Codex routes. The Codex CLI learns non-OpenAI slugs the way these vendors
+  document it — a `~/.codex/models.json` catalog referenced by `model_catalog_json` in
+  `~/.codex/config.toml` — while the CLI's own `model` setting is what selects a shunt route.
+  See [`codex-configuration.md` §17.5](codex-configuration.md#175-route-models-to-third-party-upstreams).
+- **Translation for non-Responses upstreams.** The translation core for routing an inbound
+  Responses request to an Anthropic-Messages or Chat-Completions upstream exists under
+  `src/model/inbound_responses/` ([M16](m16-codex-inbound-translation.md)) but is not yet
+  dispatched to; wiring it behind the per-model routes above is the follow-up for #477.
 - **Admin surface integration.** [M9's](m9-admin-surface.md) dashboard reports `claude_oauth` pool
   health only; extending it to show inbound-Codex-endpoint traffic is a separate follow-up.

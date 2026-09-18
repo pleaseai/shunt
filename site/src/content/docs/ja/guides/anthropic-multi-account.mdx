@@ -115,7 +115,7 @@ admin web インターフェースを通じてストア管理アカウントを�
 ## 選択とプロアクティブなローテーション
 
 - `x-claude-code-session-id` がある場合：安定したハッシュがスティッキーなアカウントを選びます。そのアカウントが利用可能で切り替えしきい値未満なら、shunt はそれを先頭に保ちます。
-- ヘッダーがない場合：プロバイダーごとに独自のラウンドロビンカウンターを持ちます。
+- ヘッダーがない場合、または空の値で送られた場合：プロバイダーごとに独自のラウンドロビンカウンターを持ちます。空の値はひとつの会話ではないため、固定のアカウント 1 つにハッシュされず、このローテーションを共有します。
 - `claude_oauth` アカウントプールが処理するすべての上流レスポンスで、shunt は次のヘッダーが存在すれば記録します。
   - `anthropic-ratelimit-unified-5h-utilization`、`anthropic-ratelimit-unified-7d-utilization`、`anthropic-ratelimit-unified-7d_oi-utilization`
   - `anthropic-ratelimit-unified-5h-reset`、`anthropic-ratelimit-unified-7d-reset`、`anthropic-ratelimit-unified-7d_oi-reset`（Unix 秒）
@@ -161,7 +161,7 @@ disabled = true              # kept configured, never selected
 - **予測的な回避。** `burn_rate_avoidance = true` にすると、予測された余裕がマイナスのアカウントはクォータに近いものとして扱われ、しきい値に達する*前に*ローテーションで外されます。デフォルトはオフです — 余裕による順序付け自体は、この設定に関係なく行われます。
 - **全アカウント接近時のガード。** すべてのアカウントがソフトしきい値を超えている（または使い切ると予測される）場合でも、プールが空になることはありません。接近しているアカウントは余裕が大きい順に提供され、`hard_threshold` 以上のアカウントは引き続き最後にソートされ、その後にクールダウン中のアカウントだけが続きます。
 - **適用範囲。** クォータ関連のノブは両方のプールファミリーに作用します: このプールは `anthropic-ratelimit-unified-*` ヘッダーから、[Codex プール](/ja/guides/codex-multi-account/)は報告された `x-codex-*` 5h/7d ウィンドウから動作します（issue #195）。Codex には Fable スコープの `7d_oi` ウィンドウがないため `default_threshold_fable` はそこでは無効ですが、`priority` と `disabled` はどこでも適用されます。
-- 管理プールエンドポイント（`GET /admin/pool`）は、各アカウントの `priority`、`disabled` フラグ、そして `[server.pool]` が設定されている場合は現在の余裕予測（秒単位）を報告します。ダッシュボードの状態列は無効化されたアカウントを示します。
+- 管理プールエンドポイント（`GET /admin/api/pool`）は、各アカウントの `priority`、`disabled` フラグ、そして `[server.pool]` が設定されている場合は現在の余裕予測（秒単位）を報告します。ダッシュボードの状態列は無効化されたアカウントを示します。
 
 ## Usage-API との突き合わせ
 

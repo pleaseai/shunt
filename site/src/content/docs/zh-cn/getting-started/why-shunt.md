@@ -26,14 +26,16 @@ Claude Code 会把每一轮都发送到 Anthropic API。`shunt` 位于前面(通
 
 shunt 只是遵从它收到的 model id —— 没有脆弱的按 agent 系统提示指纹识别。同样的选择性无需 shunt 检查调用方身份即可下探到单个 agent。
 
+也可以让某一个 model id 自己做决定:[阶段路由器](/zh-cn/guides/stage-router/)指定一个强力档位和一个高效档位,并根据对话最近的 tool-result 元数据(`tool_use.name` 与 `tool_result.is_error`,绝不是提示词文本)逐轮在两者之间选择。不配置路由器则行为不变。
+
 ## shunt 实现了什么
 
-- **`POST /v1/messages`** —— 推理,按请求的 `model` id 路由。未映射的模型使用调用方自己的凭据逐字节转发给 Anthropic。
+- **`POST /v1/messages`** —— 推理,按请求的 `model` id 路由。未映射的模型使用调用方自己的凭据逐字节转发给 Anthropic;但 shunt 为其他提供方生成的 [`thinking` signature](/zh-cn/providers/anthropic/) 例外——该值会被 Anthropic 拒绝,因此会被移除。
 - **Anthropic Messages ⇄ OpenAI Responses 转换** —— 面向映射的 OpenAI 系列模型,含流式传输。
 - **ChatGPT 订阅复用** —— `codex` 提供方复用(并自动刷新)Codex CLI 的 `~/.codex/auth.json` 登录。
 - **`GET /v1/models`** —— 面向 Claude 命名别名的 [模型发现](/zh-cn/guides/model-discovery/)。
 - **Token 计数** —— 转换类提供方用本地 tiktoken 计数,透传时用上游的精确计数。
-- **流式韧性** —— [SSE keepalive ping](/zh-cn/guides/shared-gateway/#sse-keepalive-pings),使 Cloudflare 之类的代理不会中断长时间的推理过程。
+- **流式韧性** —— [SSE keepalive ping](/zh-cn/guides/shared-gateway/#sse-keepalive-ping),使 Cloudflare 之类的代理不会中断长时间的推理过程。
 - **可选的入站认证** —— 面向共享部署的 [按客户端 token](/zh-cn/guides/shared-gateway/)。
 
 准备好试试了?前往 [安装](/zh-cn/getting-started/installation/)。

@@ -49,7 +49,7 @@ export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 
 该别名会出现在 `/model` 中,标记为 *From gateway*;选择它会发送 `claude-gpt-5.6-sol-via-codex`,shunt 将其路由到 `codex` 并重写为 `gpt-5.6-sol`。
 
-对于没有别名的 `gpt-*` id,请改用 `ANTHROPIC_CUSTOM_MODEL_OPTION` —— 见 [连接 Claude Code](/zh-cn/guides/connect-claude-code/#4-select-a-mapped-model)。
+对于没有别名的 `gpt-*` id,请改用 `ANTHROPIC_CUSTOM_MODEL_OPTION` —— 见 [连接 Claude Code](/zh-cn/guides/connect-claude-code/#4-选择一个映射的模型)。
 
 ## Claude Desktop 只识别 tier 命名的 id
 
@@ -68,7 +68,7 @@ upstream_model = "gpt-5.6-sol"   # 真实后端 slug
 
 ## 发现需要一个网关凭据
 
-仅有 claude.ai OAuth *登录* 不会触发发现。只有当设置了 `ANTHROPIC_AUTH_TOKEN`、一个 API 密钥或一个 `apiKeyHelper` 时,Claude Code 才会发起 `/v1/models` 请求;在纯 Max/Pro 订阅登录下它什么都不发送 —— 没有请求抵达 shunt,也没有缓存被写入 —— 即使开启了标志也是如此。见 [选择凭据](/zh-cn/guides/connect-claude-code/#2-choose-the-anthropic-credential);`claude setup-token` 是推荐路径。
+仅有 claude.ai OAuth *登录* 不会触发发现。只有当设置了 `ANTHROPIC_AUTH_TOKEN`、一个 API 密钥或一个 `apiKeyHelper` 时,Claude Code 才会发起 `/v1/models` 请求;在纯 Max/Pro 订阅登录下它什么都不发送 —— 没有请求抵达 shunt,也没有缓存被写入 —— 即使开启了标志也是如此。见 [选择凭据](/zh-cn/guides/connect-claude-code/#2-选择-anthropic-凭据);`claude setup-token` 是推荐路径。
 
 ## 调试
 

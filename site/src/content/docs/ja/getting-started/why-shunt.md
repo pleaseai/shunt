@@ -26,14 +26,16 @@ Claude Code はすべてのターンを Anthropic API へ送信します。`shun
 
 shunt は受け取ったモデル id を尊重するだけです — エージェントごとのシステムプロンプトの脆いフィンガープリンティングは不要です。その同じ選択性が、shunt が呼び出し元を一切詮索することなく、個々のエージェントにまで届きます。
 
+モデル id をひとつ、自分で判断させることもできます。[ステージルーター](/ja/guides/stage-router/)は強力なティアと効率的なティアを指定し、会話の直近の tool-result メタデータ（`tool_use.name` と `tool_result.is_error` であり、プロンプトのテキストでは決してありません）からターンごとにどちらかを選びます。ルーターを設定しなければ挙動は変わりません。
+
 ## shunt が実装するもの
 
-- **`POST /v1/messages`** — 推論。リクエストの `model` id に従ってルーティングされます。マッピングされていないモデルは、呼び出し元自身の認証情報を使ってバイト単位でそのまま Anthropic へ転送されます。
+- **`POST /v1/messages`** — 推論。リクエストの `model` id に従ってルーティングされます。マッピングされていないモデルは、呼び出し元自身の認証情報を使ってバイト単位でそのまま Anthropic へ転送されます。ただし shunt が他のプロバイダー向けに生成した [`thinking` の signature](/ja/providers/anthropic/) だけは、Anthropic が拒否する値のため取り除かれます。
 - **Anthropic Messages ⇄ OpenAI Responses 変換** — マッピングされた OpenAI ファミリーのモデル向け。ストリーミングを含みます。
 - **ChatGPT サブスクリプションの再利用** — `codex` プロバイダーは Codex CLI の `~/.codex/auth.json` ログインを再利用（かつ自動リフレッシュ）します。
 - **`GET /v1/models`** — Claude 命名のエイリアス向けの [model discovery](/ja/guides/model-discovery/)。
 - **トークンカウント** — 変換されるプロバイダーにはローカルの tiktoken カウント、パススルーには上流の正確なカウント。
-- **ストリーミングの堅牢性** — [SSE キープアライブ ping](/ja/guides/shared-gateway/#sse-keepalive-pings) により、Cloudflare のようなプロキシが長い推論の合間を切断しないようにします。
+- **ストリーミングの堅牢性** — [SSE キープアライブ ping](/ja/guides/shared-gateway/#sse-キープアライブ-ping) により、Cloudflare のようなプロキシが長い推論の合間を切断しないようにします。
 - **オプションのインバウンド認証** — 共有デプロイ向けの[クライアント単位トークン](/ja/guides/shared-gateway/)。
 
 試す準備はできましたか？ [Installation](/ja/getting-started/installation/) へ進んでください。
