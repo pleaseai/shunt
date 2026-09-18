@@ -79,14 +79,17 @@ self-monitoring — it is a second view of data you already exported.
 
 ### A. `ManualReader` on the existing meter provider
 
-`opentelemetry_sdk` 0.32.1 ships both `ManualReader` and
-`InMemoryMetricExporter`, neither feature-gated — both are re-exported
-unconditionally from `opentelemetry_sdk::metrics`. A provider may carry several
-readers, so the dashboard could collect on demand alongside the periodic OTLP
-export.
+`opentelemetry_sdk` 0.32.1 gates both types: `ManualReader` behind
+`experimental_metrics_custom_reader` and `InMemoryMetricExporter` behind
+`testing`. This crate takes the SDK's default features (`Cargo.toml:73`) and
+enables neither, so neither type is reachable in the current build. A provider
+may carry several readers, so the dashboard could collect on demand alongside
+the periodic OTLP export.
 
 Rejected on the conditional-provider constraint above: this works only where
-`[otel]` is configured, which is the deployment that least needs it.
+`[otel]` is configured, which is the deployment that least needs it. The gating
+is a second, independent blocker — adopting it would also mean turning on an
+experimental SDK feature.
 
 ### B. Install a meter provider unconditionally, with only a `ManualReader`
 
