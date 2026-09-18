@@ -1,0 +1,27 @@
+site/src/content/docs/ja/reference/configuration.md
+  s_ce69ea718ceeae::t_cfec8636bd2f1e 138
+site/src/content/docs/ko/reference/configuration.md
+  s_ce69ea718ceeae::t_cfec8636bd2f1e 138
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_ce69ea718ceeae::t_cfec8636bd2f1e 138
+site/src/content/docs/reference/configuration.md
+  s_ce69ea718ceeae::t_cfec8636bd2f1e 199
+docs/gateway-spend-limits.md
+  s_ce69ea718ceeae::t_cfec8636bd2f1e 44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "850abade0a1e84d87152a141fe95536b2266880e",
+  "prompts": {},
+  "sessions": {
+    "s_ce69ea718ceeae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf3847db-e201-4d79-9b6a-befd4591b630",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
