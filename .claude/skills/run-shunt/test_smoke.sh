@@ -31,20 +31,22 @@ cleanup() {
 trap cleanup EXIT
 
 # Portable stand-in for GNU `timeout` (absent on stock macOS): the child
-# runs in the background, a timer subshell kills it at the deadline, and
-# `wait` passes the child's own status through.
+# runs in the background, a timer kills it at the deadline, and `wait`
+# passes the child's own status through. The timer's fds go to /dev/null
+# (an inherited stdout would hold the caller's command-substitution pipe
+# open for the whole deadline) and its kill is disarmed once the child
+# exits (a guard file, so the late timer cannot hit a recycled pid).
 run_with_deadline() {
   local seconds=$1
   shift
-  local child timer
+  local child guard
+  guard=$(mktemp) || return 1
   "$@" &
   child=$!
-  ( sleep "$seconds" && kill "$child" 2>/dev/null ) &
-  timer=$!
+  ( sleep "$seconds" && { [ -e "$guard" ] && kill "$child" 2>/dev/null; } ) >/dev/null 2>&1 &
   wait "$child"
   local rc=$?
-  kill "$timer" 2>/dev/null
-  wait "$timer" 2>/dev/null || true
+  rm -f "$guard"
   return "$rc"
 }
 
