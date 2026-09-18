@@ -1,0 +1,23 @@
+ui/src/index.css
+  s_59c88807fbaec7::t_6a40afa5be5173 62-156,158-174,176-187
+  s_59c88807fbaec7::t_a0cbabe8fa5abc 3-25,27
+  s_59c88807fbaec7::t_063767742bb392 188
+ui/src/test/harness.tsx
+  s_59c88807fbaec7::t_bb89035bd2aa26 131-137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a43928a612845aa4fe2f5b3977f5fa3b6f0f9fad",
+  "prompts": {},
+  "sessions": {
+    "s_59c88807fbaec7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9664f04a-74a8-439b-88cd-bbe6980b6815",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
