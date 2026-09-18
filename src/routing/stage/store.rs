@@ -13,9 +13,17 @@
 //! symmetric: escalation is the cheap direction and fires as soon as the signals
 //! clear the threshold, while de-escalation must also outlast a dwell window and
 //! clear a stricter threshold.
+//!
+//! Pins are scoped per agent, not only per session: a `Task` child sends its
+//! parent's session id with its own agent id, and keys to an entry of its own
+//! ([`entries::SessionKey`]) with its own eviction budget
+//! ([`MAX_TRACKED_CHILD_PINS`]). The entry also carries the compaction latch
+//! ([`entries::StageSession::compacted`]), which is the one thing a pin holds
+//! that is read *before* the turn is scored rather than after.
+
+mod entries;
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
     hash::{Hash, Hasher},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -24,177 +32,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use sha2::{Digest, Sha256};
-
 use super::{StageDecision, StageSource, StageTier};
 use crate::config::StageRouterConfig;
+use crate::routing::context::RouterContext;
+use entries::{session_key, Entries, PinScope, SessionKey, StageSession};
 
-/// Upper bound on tracked sessions. Each entry is well under 100 bytes, so the
-/// whole store stays in the low hundreds of kilobytes.
-pub(crate) const MAX_TRACKED_SESSIONS: usize = 4096;
-
-/// `(advertised model id, SHA-256 prefix of the session id)`.
-///
-/// Two router-backed models used inside one Claude Code session keep
-/// independent tiers. The session id is hashed and never stored, matching how
-/// `accounts::stable_session_index` treats it.
-type SessionKey = (String, [u8; 16]);
-
-#[derive(Debug, Clone, Copy)]
-struct StageSession {
-    /// Which decision this entry came from, in the order `apply` made them.
-    ///
-    /// The ordering [`StageRouterStore::commit`] needs, and `last_seen` cannot
-    /// supply: two turns of one session routinely share an `Instant` — the work
-    /// between them can be finer than the clock's resolution, and a test injects
-    /// one `now` for several turns — so a timestamp comparison cannot tell
-    /// "already superseded" from "decided in the same tick", and would drop the
-    /// second turn's write.
-    seq: u64,
-    tier: StageTier,
-    /// Hash of the router table in force when this tier was chosen. A config
-    /// reload that changes the table invalidates this entry alone, so an
-    /// unrelated edit elsewhere in the config does not drop every live pin.
-    fingerprint: u64,
-    /// Turns served at this tier, counting the one that chose it.
-    dwell_turns: u32,
-    last_seen: Instant,
-    /// The `session_ttl_seconds` of the router that wrote this entry.
-    ///
-    /// Carried per entry because the store is shared across every
-    /// router-backed model, and [`evict`] runs over all of them on whichever
-    /// request happened to overflow the cap. Expiring with the *caller's* TTL
-    /// would let a model configured with a one-second window delete another
-    /// model's seconds-old pin out from under a one-hour window — and an
-    /// unpinned session is free to de-escalate immediately, which is the exact
-    /// flip the dwell gate exists to prevent.
-    ttl: Duration,
-}
-
-/// The session map and the recency index that orders it.
-///
-/// They live in one type because no write may touch only one of them: an
-/// `order` slot left behind by a replaced entry would grow without bound and
-/// point eviction at a key whose real recency is newer than the slot claims.
-#[derive(Debug, Default)]
-struct Entries {
-    sessions: HashMap<SessionKey, StageSession>,
-    /// `seq` → the key whose current entry carries it.
-    ///
-    /// `seq` comes from a monotonic counter and every committed turn takes a
-    /// fresh one, so this is a total order with no ties, and it is exactly the
-    /// order turns were decided — which is the recency order eviction wants.
-    /// `last_seen` could not index this: two turns of one session routinely
-    /// share an `Instant`, which is the same reason [`StageSession::seq`] exists
-    /// at all.
-    order: BTreeMap<u64, SessionKey>,
-    /// `(expires_at, seq)` for every entry whose TTL can actually elapse, so the
-    /// expiry sweep is a prefix of *this* order rather than a walk of the map.
-    ///
-    /// Separate from `order` because recency and expiry are different orders
-    /// whenever two routers configure different `session_ttl_seconds`: the
-    /// oldest entry can be the live one and a newer entry the expired one.
-    /// Sweeping the front of `order` would then stop at the live entry, leave
-    /// the expired one, and let the capacity trim take the live entry instead —
-    /// which is a pin the whole-map pass this replaced would have kept.
-    ///
-    /// Holds `seq`, not the key, so a returning session still clones nothing:
-    /// `order` already maps `seq` back to its key.
-    ///
-    /// An entry whose `last_seen + ttl` overflows is simply absent here. Nothing
-    /// validates `session_ttl_seconds` against an upper bound, so that addition
-    /// is fallible on a config that asks for one; an entry that can never expire
-    /// belongs in no expiry index, and the capacity trim still reaches it.
-    expiry: BTreeSet<(Instant, u64)>,
-}
-
-/// When an entry falls out of its own window, or `None` when the addition
-/// overflows and it therefore never does.
-///
-/// The mirror of [`is_live`]'s TTL half: `now.saturating_duration_since(last_seen)
-/// > ttl` is `now > last_seen + ttl` wherever the sum exists, including the
-/// boundary — a zero TTL read at its own `last_seen` is live under both.
-fn expires_at(session: &StageSession) -> Option<Instant> {
-    session.last_seen.checked_add(session.ttl)
-}
-
-impl Entries {
-    fn get(&self, key: &SessionKey) -> Option<&StageSession> {
-        self.sessions.get(key)
-    }
-
-    #[cfg(test)]
-    fn contains_key(&self, key: &SessionKey) -> bool {
-        self.sessions.contains_key(key)
-    }
-
-    fn len(&self) -> usize {
-        self.sessions.len()
-    }
-
-    /// Record a pin, replacing whatever was under that key and retiring its
-    /// index slot with it.
-    ///
-    /// The returning-session path overwrites in place rather than re-inserting,
-    /// so the common case — a live session taking its next turn — clones no key.
-    /// Only a session the store has not seen pays for one, and it pays it once.
-    fn insert(&mut self, key: SessionKey, session: StageSession) {
-        match self.sessions.get_mut(&key) {
-            Some(replaced) => {
-                self.order.remove(&replaced.seq);
-                if let Some(at) = expires_at(replaced) {
-                    self.expiry.remove(&(at, replaced.seq));
-                }
-                *replaced = session;
-            }
-            None => {
-                self.sessions.insert(key.clone(), session);
-            }
-        }
-        if let Some(at) = expires_at(&session) {
-            self.expiry.insert((at, session.seq));
-        }
-        self.order.insert(session.seq, key);
-    }
-
-    /// Drop every entry whose own TTL has elapsed, cheapest-first.
-    ///
-    /// Each removal is a pair of `BTreeMap`/`BTreeSet` pops, and each entry is
-    /// removed at most once, so the sweep costs O(log n) per entry dropped
-    /// rather than a pass over the map. When nothing has expired it is a single
-    /// comparison against the front of `expiry`.
-    fn drain_expired(&mut self, now: Instant) {
-        while let Some(&(at, seq)) = self.expiry.first() {
-            if at >= now {
-                break;
-            }
-            self.expiry.pop_first();
-            let key = self.order.remove(&seq);
-            debug_assert!(
-                key.is_some(),
-                "the expiry index named a seq the recency index does not hold"
-            );
-            if let Some(key) = key {
-                self.sessions.remove(&key);
-            }
-        }
-    }
-
-    /// Drop the least recently decided entry. `None` once nothing is left.
-    fn remove_oldest(&mut self) -> Option<StageSession> {
-        let (_, key) = self.order.pop_first()?;
-        let session = self.sessions.remove(&key);
-        debug_assert!(
-            session.is_some(),
-            "the recency index named a key the session map does not hold"
-        );
-        let session = session?;
-        if let Some(at) = expires_at(&session) {
-            self.expiry.remove(&(at, session.seq));
-        }
-        Some(session)
-    }
-}
+pub(crate) use entries::{MAX_TRACKED_CHILD_PINS, MAX_TRACKED_SESSIONS};
 
 /// A pin [`StageRouterStore::apply`] prepared but has not written.
 ///
@@ -203,9 +46,9 @@ impl Entries {
 /// chain, so it cannot run first. Committing inside `apply` therefore let a
 /// request that was about to be rejected create or evict pins, and let a caller
 /// who guessed another client's session id steer that client's next turn
-/// without ever presenting a credential. The decision still happens under one
-/// lock with the pin it read; only the write-back is deferred, to the point
-/// where the request is known to be served.
+/// without ever presenting a credential. The decision still happens against the
+/// pin it read; only the write-back is deferred, to the point where the request
+/// is known to be served.
 #[derive(Debug)]
 pub(crate) struct PendingPin {
     key: SessionKey,
@@ -245,11 +88,20 @@ impl StageRouterStore {
         Self::default()
     }
 
-    /// Apply hysteresis to one turn's `estimate` and return the tier that serves it.
+    /// Apply hysteresis to one turn and return the tier that serves it.
     ///
-    /// `session_id` is `None` for a caller that sends no
-    /// `x-claude-code-session-id` (Claude Code always does; a bare `curl` does
-    /// not). Such a request is scored statelessly and never touches the store.
+    /// `hints` carries the request's `x-claude-code-*` headers. A caller that
+    /// sends no session id (Claude Code always does; a bare `curl` does not)
+    /// is scored statelessly and never touches the store. A delegated turn —
+    /// see [`RouterContext::is_delegated`] — keys to a pin of its own, so a
+    /// `Task` child neither reads nor overwrites its parent's.
+    ///
+    /// `estimate` scores the turn. It is a closure rather than a value because
+    /// one of its inputs is read out of the pin: the compaction latch, which
+    /// the turn that carried `x-claude-code-context-compacted` set and every
+    /// later turn of the session reads back. It runs with the store lock
+    /// released — the pin is copied out first — so scoring a long transcript
+    /// never serializes other router-backed requests behind it.
     ///
     /// `read_only` is set for `count_tokens`, which must reach the same tier as
     /// the real turn without recording anything: Claude Code sends those probes
@@ -266,9 +118,9 @@ impl StageRouterStore {
     pub(crate) fn apply(
         &self,
         model: &str,
-        session_id: Option<&str>,
+        hints: &RouterContext<'_>,
         router: &StageRouterConfig,
-        estimate: StageDecision,
+        estimate: impl FnOnce(bool) -> StageDecision,
         read_only: bool,
         now: Instant,
     ) -> StageApplied {
@@ -277,22 +129,17 @@ impl StageRouterStore {
         // share a single tier pin for the model — the same reason the websocket
         // pool (`adapters/responses/mod.rs`) and the inbound Codex endpoint
         // already filter it before using the id as a sticky key.
-        let Some(session_id) = session_id.filter(|session_id| !session_id.is_empty()) else {
-            return StageApplied::stateless(estimate);
+        let Some(session_id) = hints.session_id.filter(|session_id| !session_id.is_empty()) else {
+            // A sessionless request has no pin to latch onto, so the header
+            // counts for this turn alone.
+            return StageApplied::stateless(estimate(hints.context_compacted));
         };
-        let key = session_key(model, session_id);
+        let key = session_key(model, session_id, hints.pin_agent_id());
         let fingerprint = fingerprint(router);
         // Taken before the lock, so the number reflects the order requests
         // arrived at this function rather than the order they won the mutex.
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let ttl = Duration::from_secs(router.session_ttl_seconds);
-
-        // A shared borrow: `apply` only reads. The write that used to happen
-        // here now waits for [`StageRouterStore::commit`].
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // A pin from a different router table, or one that has gone quiet longer
         // than its TTL, is treated as absent.
@@ -302,12 +149,23 @@ impl StageRouterStore {
         // differs also hashes to a different `fingerprint`, which this filter
         // already rejects — but only by way of the hash, which is not something
         // these two lines show on their own.
-        let pinned = entries
+        //
+        // The lock is held for the lookup alone: `apply` only reads, the entry
+        // is `Copy`, and the write that used to happen here now waits for
+        // [`StageRouterStore::commit`].
+        let pinned = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&key)
             .copied()
             .filter(|session| is_live(session, fingerprint, now));
 
-        let (decision, changed) = resolve(router, pinned, estimate);
+        // The latch: this turn's header, or what an earlier turn of the session
+        // recorded. Read before scoring because libsy's compaction override is
+        // an input to the estimate, not a filter on it.
+        let compacted = hints.context_compacted || pinned.is_some_and(|session| session.compacted);
+        let (decision, changed) = resolve(router, pinned, estimate(compacted));
 
         if read_only {
             // A probe changes nothing, so it displaced nothing: reporting a
@@ -334,6 +192,7 @@ impl StageRouterStore {
                     dwell_turns,
                     last_seen: now,
                     ttl,
+                    compacted,
                 },
             }),
         }
@@ -390,11 +249,36 @@ impl StageRouterStore {
         let previous = current
             .filter(|current| is_live(current, pin.session.fingerprint, now))
             .map(|current| current.tier);
+        let scope = PinScope::of(&pin.key);
         entries.insert(pin.key, pin.session);
-        evict(&mut entries, now);
+        evict(&mut entries, scope, now);
         previous
             .filter(|previous| *previous != pin.session.tier)
             .map(|previous| (previous, pin.session.tier))
+    }
+
+    /// [`StageRouterStore::apply`] with a session id in place of the full hint
+    /// set and a ready estimate in place of the closure — the signature the
+    /// store had before the hints existed. Tests that are not about the hints
+    /// use this so they assert on the same end-to-end behaviour.
+    #[cfg(test)]
+    fn apply_session(
+        &self,
+        model: &str,
+        session_id: Option<&str>,
+        router: &StageRouterConfig,
+        estimate: StageDecision,
+        read_only: bool,
+        now: Instant,
+    ) -> StageApplied {
+        self.apply(
+            model,
+            &RouterContext::session(session_id),
+            router,
+            |_| estimate,
+            read_only,
+            now,
+        )
     }
 
     /// `apply` followed immediately by `commit`, the shape the store had before
@@ -410,7 +294,7 @@ impl StageRouterStore {
         read_only: bool,
         now: Instant,
     ) -> StageDecision {
-        let applied = self.apply(model, session_id, router, estimate, read_only, now);
+        let applied = self.apply_session(model, session_id, router, estimate, read_only, now);
         if let Some(pin) = applied.pin {
             self.commit(pin, now);
         }
@@ -418,7 +302,7 @@ impl StageRouterStore {
     }
 
     #[cfg(test)]
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -478,9 +362,8 @@ fn resolve(
     }
 }
 
-/// Drop expired entries from the front of the recency order, then the oldest,
-/// until the store is back under its cap. Amortised onto the insert path: no
-/// timer, no background task.
+/// Drop expired entries, then the oldest of `scope`, until that scope is back
+/// under its cap. Amortised onto the insert path: no timer, no background task.
 ///
 /// Every step is one `BTreeMap` pop, so this costs O(log n) per entry removed
 /// rather than a walk of the whole map. That is issue #552: the map is read
@@ -492,23 +375,29 @@ fn resolve(
 /// Each entry is expired against **its own** TTL, not the caller's — see
 /// [`StageSession::ttl`].
 ///
+/// Only the scope the insert grew is trimmed, and only against its own
+/// budget: a full child budget pops the oldest *child*, never a parent that is
+/// idle because it is waiting on those children (ADR-0005 §5). The expiry
+/// sweep is scope-blind, as expiry is.
+///
 /// Expiry and recency are indexed separately, so this drops the same entries the
 /// whole-map pass dropped: *every* expired one, and then the oldest survivor if
-/// the store is still over. Sweeping the front of the recency order alone would
+/// the scope is still over. Sweeping the front of the recency order alone would
 /// not — with two routers configuring different `session_ttl_seconds` the oldest
 /// entry can be the live one, which would stop the sweep and then be evicted in
 /// place of the expired entry behind it.
-fn evict(entries: &mut Entries, now: Instant) {
-    if entries.len() <= MAX_TRACKED_SESSIONS {
+fn evict(entries: &mut Entries, scope: PinScope, now: Instant) {
+    let cap = scope.cap();
+    if entries.len_of(scope) <= cap {
         return;
     }
     entries.drain_expired(now);
     // `commit` inserts exactly one entry before calling this and returns early
-    // above while under the cap, so the store is at most one over it here and
+    // above while under the cap, so the scope is at most one over it here and
     // a single removal is enough. The loop is still a loop so that a future
     // caller inserting in bulk cannot silently leave the cap exceeded.
-    while entries.len() > MAX_TRACKED_SESSIONS {
-        if entries.remove_oldest().is_none() {
+    while entries.len_of(scope) > cap {
+        if entries.remove_oldest(scope).is_none() {
             break;
         }
     }
@@ -523,12 +412,6 @@ fn evict(entries: &mut Entries, now: Instant) {
 fn is_live(session: &StageSession, fingerprint: u64, now: Instant) -> bool {
     session.fingerprint == fingerprint
         && now.saturating_duration_since(session.last_seen) <= session.ttl
-}
-
-fn session_key(model: &str, session_id: &str) -> SessionKey {
-    let digest = Sha256::digest(session_id.as_bytes());
-    let prefix = digest[..16].try_into().expect("SHA-256 prefix is 16 bytes");
-    (model.to_string(), prefix)
 }
 
 /// Hash the router table a pinned decision was made under.
@@ -565,5 +448,7 @@ fn fingerprint(router: &StageRouterConfig) -> u64 {
     hasher.finish()
 }
 
+#[cfg(test)]
+mod scope_tests;
 #[cfg(test)]
 mod tests;

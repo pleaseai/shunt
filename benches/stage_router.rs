@@ -26,6 +26,12 @@
 //!   `[[models]]` entry carries a `[models.stage_router]` table. That pair is
 //!   the "non-router traffic pays only one `Option::is_none()`" claim, which is
 //!   the assertion most worth protecting from regression.
+//!   `resolve_chain_routed_delegated` is the routed arm with a `Task` child's
+//!   headers — agent id, class, type — so the ADR-0005 PR 1 additions (header
+//!   parsing, the agent-scoped key, the latch read) are priced against the
+//!   parent turn, not hidden inside it.
+//! * `store_turn_new_child_at_capacity` — the child budget's eviction cost,
+//!   the twin of `store_turn_new_session_at_capacity` for the second scope.
 //! * `parse_body_to_value` — the denominator. It benchmarks
 //!   `RequestBody::parse(body.to_vec())`, the whole expression
 //!   `src/proxy/failover.rs` evaluates: not `serde_json::from_slice`, whose
@@ -48,9 +54,10 @@ mod bench {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
+    use axum::http::HeaderMap;
     use serde_json::{json, Value};
     use shunt::{
-        bench_support::{self, StageStore, MAX_TRACKED_SESSIONS},
+        bench_support::{self, StageStore, MAX_TRACKED_CHILD_PINS, MAX_TRACKED_SESSIONS},
         config::{Config, ModelConfig, RouteConfig, StageRouterConfig, StageRouterPicker},
     };
 
@@ -145,6 +152,30 @@ mod bench {
         messages
     }
 
+    /// A parent turn's headers as Claude Code sends them behind a gateway with
+    /// the hint gate off: the session id and nothing else.
+    fn session_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-claude-code-session-id",
+            "0f0a2cc3-d5f1-4200-b9c8-f56a081194ce".parse().unwrap(),
+        );
+        headers
+    }
+
+    /// A `Task` child's turn with the hint gate on — the captured shape from
+    /// `docs/notes/adr-0005-routing-live-captures.md`, fact (a).
+    fn child_headers() -> HeaderMap {
+        let mut headers = session_headers();
+        headers.insert(
+            "x-claude-code-agent-id",
+            "a7a11c2e22e29e67a".parse().unwrap(),
+        );
+        headers.insert("x-claude-code-agent-type", "Explore".parse().unwrap());
+        headers.insert("x-claude-code-request-class", "subagent".parse().unwrap());
+        headers
+    }
+
     fn request(model: &str, turns: usize) -> Value {
         json!({
             "model": model,
@@ -191,7 +222,7 @@ mod bench {
     fn saturated_store(router: &StageRouterConfig, now: Instant) -> StageStore {
         let store = StageStore::new();
         for index in 0..MAX_TRACKED_SESSIONS {
-            store.turn(ROUTER_MODEL, &format!("seed-{index}"), router, now);
+            store.turn(ROUTER_MODEL, &format!("seed-{index}"), None, router, now);
         }
         store
     }
@@ -204,7 +235,7 @@ mod bench {
         let now = Instant::now();
         let store = saturated_store(&router, now);
         bencher.bench(|| {
-            divan::black_box(store.turn(ROUTER_MODEL, "seed-0", &router, now));
+            divan::black_box(store.turn(ROUTER_MODEL, "seed-0", None, &router, now));
         });
     }
 
@@ -225,7 +256,32 @@ mod bench {
         bencher
             .with_inputs(|| format!("fresh-{}", nonce.fetch_add(1, Ordering::Relaxed)))
             .bench_values(|session_id| {
-                divan::black_box(store.turn(ROUTER_MODEL, &session_id, &router, now));
+                divan::black_box(store.turn(ROUTER_MODEL, &session_id, None, &router, now));
+            });
+    }
+
+    /// The child budget's twin of the arm above: one parent, and every
+    /// iteration a previously unseen child of it against a full child budget.
+    #[divan::bench]
+    fn store_turn_new_child_at_capacity(bencher: divan::Bencher) {
+        let router = router();
+        let now = Instant::now();
+        let store = StageStore::new();
+        store.turn(ROUTER_MODEL, "parent", None, &router, now);
+        for index in 0..MAX_TRACKED_CHILD_PINS {
+            store.turn(
+                ROUTER_MODEL,
+                "parent",
+                Some(&format!("seed-{index}")),
+                &router,
+                now,
+            );
+        }
+        let nonce = AtomicUsize::new(0);
+        bencher
+            .with_inputs(|| format!("fresh-{}", nonce.fetch_add(1, Ordering::Relaxed)))
+            .bench_values(|agent_id| {
+                divan::black_box(store.turn(ROUTER_MODEL, "parent", Some(&agent_id), &router, now));
             });
     }
 
@@ -234,19 +290,13 @@ mod bench {
     fn resolve_chain_routed(bencher: divan::Bencher, turns: usize) {
         let config = config(true);
         let request = request(ROUTER_MODEL, turns);
+        let headers = session_headers();
         let store = StageStore::new();
         let now = Instant::now();
         bencher.bench(|| {
             divan::black_box(
-                bench_support::resolve_chain(
-                    &config,
-                    &store,
-                    &request,
-                    Some("bench-session"),
-                    false,
-                    now,
-                )
-                .unwrap(),
+                bench_support::resolve_chain(&config, &store, &request, &headers, false, now)
+                    .unwrap(),
             )
         });
     }
@@ -258,19 +308,31 @@ mod bench {
     fn resolve_chain_unrouted(bencher: divan::Bencher, turns: usize) {
         let config = config(false);
         let request = request(ROUTER_MODEL, turns);
+        let headers = session_headers();
         let store = StageStore::new();
         let now = Instant::now();
         bencher.bench(|| {
             divan::black_box(
-                bench_support::resolve_chain(
-                    &config,
-                    &store,
-                    &request,
-                    Some("bench-session"),
-                    false,
-                    now,
-                )
-                .unwrap(),
+                bench_support::resolve_chain(&config, &store, &request, &headers, false, now)
+                    .unwrap(),
+            )
+        });
+    }
+
+    /// The routed arm again, as a `Task` child sends it: the same body, plus the
+    /// agent id, class, and type headers. Reads against `resolve_chain_routed`
+    /// to price the hint parsing, the agent digest, and the latch read.
+    #[divan::bench(args = TURN_COUNTS)]
+    fn resolve_chain_routed_delegated(bencher: divan::Bencher, turns: usize) {
+        let config = config(true);
+        let request = request(ROUTER_MODEL, turns);
+        let headers = child_headers();
+        let store = StageStore::new();
+        let now = Instant::now();
+        bencher.bench(|| {
+            divan::black_box(
+                bench_support::resolve_chain(&config, &store, &request, &headers, false, now)
+                    .unwrap(),
             )
         });
     }

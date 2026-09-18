@@ -55,14 +55,13 @@ pub(super) async fn forward(
     normalize_request_body(&mut body);
     // Context for a `[models.stage_router]` entry, should the requested id turn
     // out to be one. Built unconditionally because construction is a handful of
-    // field moves and one header lookup; the router itself is still only
-    // consulted by a `[[models]]` entry that configures one.
+    // field moves — the headers are borrowed, not read; the `x-claude-code-*`
+    // hints are parsed inside `stage::select`, which only a `[[models]]` entry
+    // that configures a router ever reaches.
     let stage = routing::stage::StageContext {
         store: &state.stage_router,
         request: body.json(),
-        session_id: headers
-            .get("x-claude-code-session-id")
-            .and_then(|value| value.to_str().ok()),
+        headers,
         // A count_tokens probe must reach the same tier as the turn it is
         // measuring without recording it: Claude Code sends those with a history
         // one turn behind, so a committing probe would let the stale history

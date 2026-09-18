@@ -20,10 +20,12 @@ pub(crate) use store::StageRouterStore;
 
 use std::{cell::Cell, time::Instant};
 
+use axum::http::HeaderMap;
 use serde_json::Value;
-use switchyard_libsy::{pick_tier, DecisionSource, PickOutcome, PickerMode, Tier};
+use switchyard_libsy::{pick_tier, DecisionSource, PickOutcome, PickerMode, Tier, ToolSignals};
 
 use crate::config::{StageRouterConfig, StageRouterPicker};
+use crate::routing::context::RouterContext;
 
 /// Which tier a request was routed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,9 +159,12 @@ pub(crate) struct StageContext<'a> {
     /// The parsed request body. `messages` is read out of it for scoring; a
     /// request without that field simply yields no signals.
     pub request: &'a Value,
-    /// `x-claude-code-session-id`. Absent for callers that send no session
-    /// header, which are then routed statelessly.
-    pub session_id: Option<&'a str>,
+    /// The inbound headers, read for the `x-claude-code-*` hints
+    /// ([`RouterContext`]) only once the requested id turns out to carry a
+    /// router — so non-router traffic pays no header lookup at all. A caller
+    /// that sends no session header is routed statelessly; a delegated turn
+    /// keys to its own pin.
+    pub headers: &'a HeaderMap,
     /// Set for `count_tokens`, which must reach the same tier as the real turn
     /// without recording it.
     pub read_only: bool,
@@ -211,15 +216,19 @@ pub(crate) fn select(
     context: Option<&StageContext<'_>>,
 ) -> StageDecision {
     let Some(context) = context else {
-        return decide(router, None);
+        return decide(router, None, false);
     };
 
-    let estimate = decide(router, context.request.get("messages"));
+    let messages = context.request.get("messages");
+    let hints = RouterContext::from_headers(context.headers);
     let applied = context.store.apply(
         model,
-        context.session_id,
+        &hints,
         router,
-        estimate,
+        // Scored inside `apply`, against the compaction latch the pin holds:
+        // the store copies the pin out and releases its lock before calling
+        // this, so a long transcript is never scored under the mutex.
+        |compacted| decide(router, messages, compacted),
         context.read_only,
         context.now,
     );
@@ -246,7 +255,19 @@ pub(crate) fn select(
 /// and the public `resolve_model`), and a conversation with no completed tool
 /// call yields no signals either. Both cases land on the picker's default rather
 /// than scoring silence as agreement.
-pub(crate) fn decide(router: &StageRouterConfig, messages: Option<&Value>) -> StageDecision {
+///
+/// `compacted` is the compaction latch (ADR-0005 §11): set on the turn that
+/// carries `x-claude-code-context-compacted` and read back from the session
+/// pin on the turns after it. It is the one signal that comes from the headers
+/// rather than the transcript, and it is fed to the scorer even when the
+/// transcript has no tool activity to score — the history right after a
+/// compaction is typically the summary and nothing else, and libsy's
+/// compaction override must still fire on it.
+pub(crate) fn decide(
+    router: &StageRouterConfig,
+    messages: Option<&Value>,
+    compacted: bool,
+) -> StageDecision {
     let mode = match router.picker {
         StageRouterPicker::EfficientFirst => PickerMode::EfficientFirst,
         StageRouterPicker::CapableFirst => PickerMode::CapableFirst,
@@ -256,14 +277,24 @@ pub(crate) fn decide(router: &StageRouterConfig, messages: Option<&Value>) -> St
         StageRouterPicker::CapableFirst => StageTier::Capable,
     };
 
-    let Some(signals) =
-        messages.and_then(|messages| signals::extract(messages, router.recent_turn_window))
-    else {
-        return StageDecision {
-            tier: default_tier,
-            source: StageSource::NoSignal,
-            confidence: None,
-        };
+    let extracted =
+        messages.and_then(|messages| signals::extract(messages, router.recent_turn_window));
+    let signals = match (extracted, compacted) {
+        (Some(mut signals), _) => {
+            signals.compacted = compacted;
+            signals
+        }
+        (None, true) => ToolSignals {
+            compacted: true,
+            ..ToolSignals::default()
+        },
+        (None, false) => {
+            return StageDecision {
+                tier: default_tier,
+                source: StageSource::NoSignal,
+                confidence: None,
+            }
+        }
     };
 
     match pick_tier(&signals, mode, router.confidence_threshold) {
@@ -301,136 +332,5 @@ fn tier_from(tier: Tier) -> StageTier {
     }
 }
 
-/// Decision tests.
-///
-/// These pin shunt's wiring — the fall-open path, the picker default, and the
-/// direction signals push — not libsy's calibration, which is the dependency's
-/// own contract. Non-vacuity: make [`decide`] always return `Efficient` and
-/// `an_erroring_session_escalates` goes red; make it always return the picker
-/// default and that test plus `confidence_is_reported_when_the_scorer_decided`
-/// go red.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn router(picker: StageRouterPicker) -> StageRouterConfig {
-        StageRouterConfig {
-            capable_target: "claude-opus-4-8".to_string(),
-            efficient_target: "claude-sonnet-4-6".to_string(),
-            picker,
-            confidence_threshold: crate::config::DEFAULT_CONFIDENCE_THRESHOLD,
-            recent_turn_window: 3,
-            min_dwell_turns: 3,
-            deescalate_threshold: None,
-            session_ttl_seconds: 3600,
-        }
-    }
-
-    /// A conversation whose recent turns are failing investigation.
-    fn erroring() -> Value {
-        json!([
-            {"role": "assistant", "content": [{"type": "tool_use", "id": "a", "name": "Read"}]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "a", "is_error": true}]},
-            {"role": "assistant", "content": [{"type": "tool_use", "id": "b", "name": "Grep"}]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "b", "is_error": true}]},
-        ])
-    }
-
-    #[test]
-    fn a_request_without_messages_lands_on_the_picker_default() {
-        // The body-less entry points (/routes, discovery, resolve_model) must
-        // still resolve, and must not score silence as agreement.
-        for (picker, expected) in [
-            (StageRouterPicker::EfficientFirst, StageTier::Efficient),
-            (StageRouterPicker::CapableFirst, StageTier::Capable),
-        ] {
-            let decision = decide(&router(picker), None);
-            assert_eq!(decision.tier, expected);
-            assert_eq!(decision.source, StageSource::NoSignal);
-            assert_eq!(decision.confidence, None);
-        }
-    }
-
-    #[test]
-    fn a_conversation_without_tool_activity_lands_on_the_picker_default() {
-        let messages = json!([{"role": "user", "content": [{"type": "text", "text": "hi"}]}]);
-        let decision = decide(&router(StageRouterPicker::EfficientFirst), Some(&messages));
-
-        assert_eq!(decision.tier, StageTier::Efficient);
-        assert_eq!(decision.source, StageSource::NoSignal);
-    }
-
-    /// The whole point of the router: repeated failures move the turn up.
-    #[test]
-    fn an_erroring_session_escalates() {
-        let messages = erroring();
-        let decision = decide(&router(StageRouterPicker::EfficientFirst), Some(&messages));
-
-        assert_eq!(
-            decision.tier,
-            StageTier::Capable,
-            "two failed investigative turns must escalate (source {:?}, confidence {:?})",
-            decision.source,
-            decision.confidence
-        );
-    }
-
-    #[test]
-    fn confidence_is_reported_when_the_scorer_decided() {
-        let messages = erroring();
-        let decision = decide(&router(StageRouterPicker::EfficientFirst), Some(&messages));
-
-        assert!(
-            matches!(
-                decision.source,
-                StageSource::Scorer(DecisionSource::Dimensions | DecisionSource::Override)
-            ),
-            "an escalation must name its evidence, got {:?}",
-            decision.source
-        );
-    }
-
-    /// libsy asks for an LLM judge when the signals are weak. shunt runs none,
-    /// so that request must resolve to the picker default rather than error.
-    #[test]
-    fn weak_signals_fall_open_to_the_picker_default() {
-        // One clean read: real activity, but far too little to decide.
-        let messages = json!([
-            {"role": "assistant", "content": [{"type": "tool_use", "id": "a", "name": "Read"}]},
-            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a"}]},
-        ]);
-
-        for (picker, expected) in [
-            (StageRouterPicker::EfficientFirst, StageTier::Efficient),
-            (StageRouterPicker::CapableFirst, StageTier::Capable),
-        ] {
-            let decision = decide(&router(picker), Some(&messages));
-            assert_eq!(
-                decision.tier, expected,
-                "a weak signal must land on the picker default, got source {:?}",
-                decision.source
-            );
-            assert_eq!(
-                decision.source,
-                StageSource::Scorer(DecisionSource::FallOpen)
-            );
-            // The picker chose this tier, not the scorer, so there is no
-            // confidence *in it* to report — see the arm in `decide`.
-            assert_eq!(
-                decision.confidence, None,
-                "a fall-open decision must not look scored"
-            );
-        }
-    }
-
-    #[test]
-    fn each_tier_resolves_to_its_configured_target() {
-        let router = router(StageRouterPicker::EfficientFirst);
-
-        assert_eq!(StageTier::Capable.target(&router), "claude-opus-4-8");
-        assert_eq!(StageTier::Efficient.target(&router), "claude-sonnet-4-6");
-    }
-}
+mod tests;
