@@ -257,22 +257,34 @@ reconstruction is truncated at exactly the same point and reports the same `stop
 as a normal `text_delta` before the block's `content_block_stop`, on every path that closes a text
 block.
 
-**Abort.** The transports drop the upstream the moment the stop fires: `http.rs` drops the
-`reqwest` byte stream with the final chunk (streaming) or breaks out of the body read
-(non-streaming); `ws_stream.rs` drops the `CodexWsEvents` receiver, which makes the codex_ws
-reader abandon the turn and evict the socket — correct, since a half-consumed turn must not be
-pooled. Both transports key this on the stop sequence specifically rather than on "the machine is
+**Abort.** Every transport but one drops the upstream the moment the stop fires: `sse_parse.rs`
+drops the `reqwest` byte stream with the final chunk (streaming HTTP), and `ws_stream.rs` drops
+the `CodexWsEvents` receiver (both websocket paths), which makes the codex_ws reader abandon the
+turn and evict the socket — correct, since a half-consumed turn must not be pooled. The exception
+is non-streaming HTTP: `json_response` reads the whole body with `upstream.text()` before the
+machine sees an event, so it truncates at the match like every other path but cannot cut the
+upstream short. That is the pre-existing shape of the non-streaming relay, not something the stop
+emulation introduced.
+
+Each transport keys the abort on the stop sequence specifically rather than on "the machine is
 stopped": on a *normally* completed turn the upstream is not mid-turn, and aborting it there would
 evict a healthy pooled socket (websocket) or close a connection reqwest could otherwise return to
 its idle pool (HTTP). So an ordinary terminal — `response.completed` / `response.done` /
-`response.incomplete`, or a backend error event — keeps reading to EOF; the trailing bytes
+`response.incomplete`, or a backend error event — leaves the upstream to finish; on streaming HTTP
+the rest of the body goes to `spawn_terminal_drain`, a detached read bounded by
+`TERMINAL_DRAIN_BUDGET`, so the connection still returns to the idle pool. The trailing bytes
 translate to nothing, since `stopped` already makes every later event a no-op.
 
-**Usage caveat.** Because the turn ends before `response.completed`, the upstream usage event never
-arrives. `usage_value`'s existing estimate substitution applies, so `message_delta.usage` carries
-the local input estimate and `output_tokens: 0`. Tokens the upstream generated between the match
-and the abort are still billed upstream — negligible for the short completions stop sequences are
-used for.
+**Usage caveat.** The stop makes every later event a no-op, so the upstream's `response.completed`
+usage is never applied — on the aborting transports it never arrives, and on non-streaming HTTP it
+is read but discarded. `usage_value`'s existing estimate substitution applies instead, so the turn
+reports the local input estimate and `output_tokens: 0`: in `message_delta.usage` when streaming,
+in the final JSON's `usage` when not. A non-streaming turn emits no `message_start` and normally
+skips the estimate altogether, so `forward` widens its gate to cover a request carrying
+`stop_sequences` — otherwise a stopped turn would report `input_tokens: 0` for a non-empty prompt.
+The estimate stays subject to the same `count_tokens = "tiktoken"` opt-in as every other path.
+Tokens the upstream generated between the match and the abort are still billed upstream —
+negligible for the short completions stop sequences are used for.
 
 ## 9. Test targets (M1)
 

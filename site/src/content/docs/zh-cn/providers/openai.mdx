@@ -113,11 +113,15 @@ Responses API **没有 `stop` 参数** —— Chat Completions 有,Responses 没
 - 助手文本会在任一停止序列首次出现处被截断,其后的文本不会到达客户端;
 - 该轮以 `stop_reason: "stop_sequence"` 结束,`stop_sequence` 写明命中的那个字符串,与原生 Anthropic
   上游的上报方式完全一致;
-- 命中时会中止上游请求,而不是任其继续。上游在命中到中止之间生成的 token 仍由上游计费 —— 对停止
-  序列通常服务的那种短回复来说可以忽略不计。
+- 命中时会中止上游请求,而不是任其继续 —— 这适用于流式 HTTP 和两条 WebSocket 路径。非流式 HTTP
+  是例外:它会先把整个响应体读完再做转换,因此截断行为与其他路径一致,但上游会一直跑到结束。
+  上游在命中到中止之间生成的 token 仍由上游计费 —— 对停止序列通常服务的那种短回复来说可以忽略
+  不计。
 
-有一点需要留意:由于该轮在上游的 `response.completed` 事件之前就结束了,上游的用量报告不会到达。
-这类轮次的 `message_delta.usage` 携带的是 shunt 的本地输入估算值和 `output_tokens: 0`。
+有一点需要留意:停止会让该轮在上游的 `response.completed` 用量被采纳之前就结束,因此 shunt 改用
+自己的本地输入估算值,并报告 `output_tokens: 0` —— 流式轮次放在 `message_delta.usage` 里,非流式
+轮次放在响应的 `usage` 里。该估算值需要提供方开启 `count_tokens = "tiktoken"`;若未开启,被停止
+的轮次会报告 `input_tokens: 0`。
 
 ## 校验
 

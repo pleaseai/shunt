@@ -115,13 +115,17 @@ transport (HTTP and WebSocket, streaming and non-streaming):
   never reaches the client;
 - the turn ends with `stop_reason: "stop_sequence"` and `stop_sequence` naming the match, exactly
   as a native Anthropic upstream would report it;
-- the upstream request is aborted at the match rather than left running. Tokens the upstream
-  generated between the match and the abort are still billed by the upstream — negligible for the
-  short completions stop sequences are typically used for.
+- the upstream request is aborted at the match rather than left running — on streaming HTTP and on
+  both WebSocket paths. Non-streaming HTTP is the exception: it reads the whole response body
+  before translating any of it, so it truncates like the others but lets the upstream finish.
+  Tokens the upstream generated between the match and the abort are still billed by the upstream —
+  negligible for the short completions stop sequences are typically used for.
 
-One consequence to be aware of: because the turn ends before the upstream's `response.completed`
-event, its usage report never arrives. The `message_delta.usage` of such a turn carries shunt's
-local input estimate and `output_tokens: 0`.
+One consequence to be aware of: the stop ends the turn before the upstream's `response.completed`
+usage can be applied, so shunt substitutes its own local input estimate and reports
+`output_tokens: 0` — in `message_delta.usage` on a streaming turn, in the response's `usage` on a
+non-streaming one. The estimate needs the provider's `count_tokens = "tiktoken"` opt-in; without
+it, a stopped turn reports `input_tokens: 0`.
 
 ## Verify
 
