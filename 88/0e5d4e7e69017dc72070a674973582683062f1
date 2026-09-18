@@ -1,0 +1,22 @@
+docs/notes/adr-0005-routing-live-captures.md
+  s_0e7c8c6ebb1c09::t_d79c999ef9c651 209
+  s_0e7c8c6ebb1c09::t_5a7382049a6ec0 206-208,212-222,224-233,282-294,323-324,331-354,374-384
+  s_0e7c8c6ebb1c09::t_5b50efb7657ad9 210-211,223
+  s_0e7c8c6ebb1c09::t_716f6f7fbd8421 355-357
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "880e5d4e7e69017dc72070a674973582683062f1",
+  "prompts": {},
+  "sessions": {
+    "s_0e7c8c6ebb1c09": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "644c8738-c336-4073-8705-7d048e41a1c9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
