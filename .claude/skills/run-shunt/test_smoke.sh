@@ -115,7 +115,7 @@ server.serve_forever()
 PY
   IMPOSTOR_PID=$!
   local ready=0
-  for _ in $(seq 1 50); do
+  for ((tries = 1; tries <= 50; tries++)); do
     if [ -s "$PORT_FILE" ]; then
       ready=1
       break
@@ -152,6 +152,34 @@ assert_impostor_answers() {
     { printf 'impostor did not answer GET /health\n' >&2; exit 1; }
   jq -e '.status == "ok"' >/dev/null <<<"$body" ||
     { printf 'impostor health body would not satisfy the driver: %s\n' "$body" >&2; exit 1; }
+  body="$(curl -sf "${deadline[@]}" "http://127.0.0.1:$port/v1/models?limit=1000")" ||
+    { printf 'impostor did not answer GET /v1/models\n' >&2; exit 1; }
+  jq -e '.data[0].id == "claude-opus-via-codex"' >/dev/null <<<"$body" ||
+    { printf 'impostor models body would not satisfy the driver: %s\n' "$body" >&2; exit 1; }
+  body="$(curl -sf "${deadline[@]}" "http://127.0.0.1:$port/protocol")" ||
+    { printf 'impostor did not answer GET /protocol\n' >&2; exit 1; }
+  jq -e '.name == "shunt" and .format == "anthropic-messages"
+      and (.endpoints | map(.path) | index("/v1/messages")) != null' >/dev/null <<<"$body" ||
+    { printf 'impostor protocol body would not satisfy the driver: %s\n' "$body" >&2; exit 1; }
+  body="$(curl -sf "${deadline[@]}" "http://127.0.0.1:$port/routes")" ||
+    { printf 'impostor did not answer GET /routes\n' >&2; exit 1; }
+  jq -e '.data == [{"model": "claude-opus-via-codex", "provider": "anthropic"}]' >/dev/null <<<"$body" ||
+    { printf 'impostor routes body would not satisfy the driver: %s\n' "$body" >&2; exit 1; }
+  body="$(curl -sf "${deadline[@]}" -X POST "http://127.0.0.1:$port/v1/messages/count_tokens" \
+    -H 'content-type: application/json' -d '{"model":"claude-opus-via-codex","messages":[{"role":"user","content":"hi"}]}')" ||
+    { printf 'impostor did not answer POST /v1/messages/count_tokens\n' >&2; exit 1; }
+  jq -e '.content[0].text == "hello from the mock upstream /v1/messages/count_tokens"' >/dev/null <<<"$body" ||
+    { printf 'impostor count_tokens body would not satisfy the driver: %s\n' "$body" >&2; exit 1; }
+  local code
+  code="$(curl -s "${deadline[@]}" -o "$WORKDIR/err.json" -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$port/v1/messages" -H 'content-type: application/json' -d '{}')" ||
+    { printf 'impostor did not answer the no-model POST\n' >&2; exit 1; }
+  if [ "$code" = "400" ] && jq -e '.error.type == "invalid_request_error"' "$WORKDIR/err.json" >/dev/null; then
+    :
+  else
+    printf 'impostor no-model branch would not satisfy the driver: got %s %s\n' "$code" "$(<"$WORKDIR/err.json")" >&2
+    exit 1
+  fi
 }
 
 job_running() {

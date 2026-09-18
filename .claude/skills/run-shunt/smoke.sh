@@ -115,7 +115,10 @@ validate_port SHUNT_PORT "$SHUNT_PORT"
 validate_port MOCK_PORT "$MOCK_PORT"
 
 echo "==> Building shunt (cargo build)"
-cargo build --locked --message-format=json-render-diagnostics > "$BUILD_LOG"
+cargo build --locked --message-format=json-render-diagnostics > "$BUILD_LOG" || {
+  tail -n 20 "$BUILD_LOG" >&2 || true
+  fail "cargo build failed: rendered errors above"
+}
 BIN="$(jq -sr '
   [ .[]
     | select(.reason == "compiler-artifact")
@@ -168,7 +171,7 @@ PY
 MOCK_PID=$!
 
 echo "==> Waiting for mock upstream readiness"
-for i in $(seq 1 50); do
+for ((i = 1; i <= 50; i++)); do
   [ -s "$MOCK_READY" ] && break
   if ! job_running "$MOCK_PID"; then
     wait "$MOCK_PID" 2>/dev/null || true
@@ -223,7 +226,7 @@ SHUNT_PID=$!
 
 echo "==> Waiting for shunt to bind"
 READY_PORT=""
-for i in $(seq 1 50); do
+for ((i = 1; i <= 50; i++)); do
   if ! job_running "$SHUNT_PID"; then
     wait "$SHUNT_PID" 2>/dev/null || true
     fail "shunt exited during startup: $(<"$SHUNT_LOG")"
@@ -243,7 +246,7 @@ SHUNT_PORT=$READY_PORT
 echo "==> Waiting for readiness (HEAD /)"
 # The health request carries its own deadline: a shunt holding the port without
 # serving it must fail the driver rather than block it.
-for i in $(seq 1 10); do
+for ((i = 1; i <= 10; i++)); do
   curl -sf --connect-timeout 1 --max-time 1 -I "http://127.0.0.1:$SHUNT_PORT/" >/dev/null 2>&1 && break
   if ! job_running "$SHUNT_PID"; then
     wait "$SHUNT_PID" 2>/dev/null || true
