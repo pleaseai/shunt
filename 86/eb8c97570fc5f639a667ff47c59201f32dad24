@@ -1,0 +1,20 @@
+src/routing/stage/store.rs
+  s_8b4e897f1528c0::t_57df8f50d6cac5 20-23
+  s_8b4e897f1528c0::t_7ac34dff8bdcd6 41-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "86eb8c97570fc5f639a667ff47c59201f32dad24",
+  "prompts": {},
+  "sessions": {
+    "s_8b4e897f1528c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f49dc818-1250-4558-b962-1d1547b8d203",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
