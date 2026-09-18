@@ -1,0 +1,19 @@
+.please/docs/review/rejected-findings.jsonl
+  s_fc002d4a17166b::t_31cbd050f87be3 87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "95f31ac40b627943341a9d2af78136da07f954ff",
+  "prompts": {},
+  "sessions": {
+    "s_fc002d4a17166b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15450f63-cfc0-4025-90b3-845d812460e8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
