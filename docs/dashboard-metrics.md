@@ -153,7 +153,8 @@ field is retained for the window and served over the admin API. Capping
 cardinality bounds how many distinct labels are kept, not what any one of them
 contains. The label set admitted to the ring therefore needs an explicit policy —
 allowlist the configured ids, or redact or hash an unmatched one — and that
-belongs with Decision 3's bounding rather than after it.
+belongs with Decision 3's bounding rather than after it. Which transform is the
+fifth open question; this record does not settle it.
 
 Its limitations are exact and should be documented rather than engineered
 around: **history does not survive a restart, and the ring is process-local.**
@@ -253,6 +254,12 @@ the memory of the process.
 4. Should the read API also back a future Prometheus exposition endpoint? Nothing
    here requires one, but the same aggregate would serve it, and deciding now
    affects whether the API is shaped around label sets or around charts.
+5. Which transform applies to a `model` value outside the configured set — fold
+   it into Decision 3's reserved bucket, redact it, or hash it? Decision 3 bounds
+   how many distinct labels the ring keeps; this decides what an admitted one may
+   contain, and it is the open half of the retention question above. Until it is
+   answered an implementer cannot tell what reaches the ring, so it gates
+   Decision 2's retention as much as Decision 3's bounding.
 
 ## Testing
 
