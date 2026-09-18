@@ -135,7 +135,7 @@ cache_read = 0.33
 cache_write = 4.125
 ```
 
-超出范围的 multiplier、缺失或超出范围的费率、空的 `upstream`、指向未配置 upstream 的 `upstream`,以及在同一个 upstream 上为同一模型配置的两行,都会导致启动时校验失败。两行冲突的判定依据是指向同一个模型,而非字符串相同:`claude-sonnet-4-6` 与 `claude-sonnet-4-6-20260217` 是同一个模型。若 `model` 既不是内置模型,也不是**在该行自己的 `upstream` 上**任何 `[[models]]`、`[[routes]]`、`[[route_prefixes]]` 条目能够请求的模型,则只记录警告。该检查按 upstream 进行,并涵盖前缀路由,且与路由一样按大小写敏感匹配前缀:仅作为其他 upstream 的 `upstream_model` 映射的模型仍会告警,而由该行 upstream 上的 `[[route_prefixes]]` 条目提供的模型则不会。指向 `server.default_provider` 的行不会告警,因为路由会把所有未被 route 或 prefix 认领的模型都发往该 provider。
+超出范围的 multiplier、缺失或超出范围的费率、空的 `upstream`、指向未配置 upstream 的 `upstream`,以及在同一个 upstream 上为同一模型配置的两行,都会导致启动时校验失败。两行冲突的判定依据是指向同一个模型,而非字符串相同:`claude-sonnet-4-6` 与 `claude-sonnet-4-6-20260217` 是同一个模型。若 `model` 既不是内置模型,也不是**在该行自己的 `upstream` 上**任何 `[[models]]`、`[[routes]]`、`[[route_prefixes]]` 条目能够请求的模型,则只记录警告。该检查按 upstream 进行,并涵盖前缀路由,且与路由不同,按大小写不敏感匹配前缀——行与请求模型按大小写不敏感匹配,因此只要该模型的任一拼写能路由到该 upstream,该行就是可达的,而拼写由客户端决定:仅作为其他 upstream 的 `upstream_model` 映射的模型仍会告警,而由该行 upstream 上的 `[[route_prefixes]]` 条目提供的模型则不会。指向 `server.default_provider` 的行不会告警,因为路由会把所有未被 route 或 prefix 认领的模型都发往该 provider。
 
 模型 id 在匹配前会被规范化:Claude Code 的 `[1m]` 上下文窗口提示、Bedrock 区域前缀与 `anthropic.` 命名空间、Bedrock 的 `-v<major>:<minor>` 版本后缀、日期快照后缀(`-20260217`、`@20251101`),以及 OpenRouter / Vercel AI Gateway 形式——后者会去掉 `anthropic/` 命名空间并把点号版本改为连字符,因此 `anthropic/claude-opus-4.8` 按 `claude-opus-4-8` 计价;而 `~anthropic/claude-sonnet-latest` 这类浮动别名未指定版本,仍无法计价。
 
