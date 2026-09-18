@@ -105,9 +105,13 @@ pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<Too
     // it, but `messages` is the client's body and nothing here enforces that.
     let mut names: HashMap<&str, &str> = HashMap::new();
     let mut completed = Vec::new();
+    // Every assistant message, not the windowed count pass 1 keeps: libsy's
+    // `assistant_turn_count` is a whole-request figure.
+    let mut assistant_turn_count = 0u32;
     for message in messages {
         match message.get("role").and_then(Value::as_str) {
             Some("assistant") => {
+                assistant_turn_count += 1;
                 for block in content_blocks(message) {
                     if block.get("type").and_then(Value::as_str) != Some("tool_use") {
                         continue;
@@ -146,19 +150,38 @@ pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<Too
 
     let mut signals = ToolSignals {
         turn_depth: messages.len() as u32,
-        // Both left at their defaults in this revision, deliberately:
+        // Counted per block and including empty-content results, which is what
+        // libsy counts: it tallies these before its own empty-text filter. Every
+        // Anthropic `tool_result` carries a `tool_use_id`, so `completed` — which
+        // is keyed on that field being present — is the same set.
+        tool_result_count: completed.len() as u32,
+        assistant_turn_count,
+        // The rest are left at their defaults in this revision, deliberately:
         //
-        // `tests_passed` is libsy's "a recent result matched a test-pass
-        // pattern". Claude Code runs tests through `Bash`, so deciding it means
-        // reading result *text* — and it is a strong, immediate push to the
-        // efficient tier, so guessing it wrong is expensive in exactly the
-        // direction that hurts. A structural proxy ("a clean Bash result after a
-        // write") would fire for `ls` just as readily.
+        // `tests_passed` is libsy's "a result after the latest recent failure
+        // matched a test-pass pattern". Claude Code runs tests through `Bash`, so
+        // deciding it means reading result *text*, and a structural proxy ("a
+        // clean Bash result after a write") would fire for `ls` just as readily.
+        //
+        // `repeated_failure` is "the same hard-or-critical failure appeared at
+        // least twice in the recent window" — libsy decides *same* by matching
+        // result text against its error table. Claude Code reports only a boolean
+        // `is_error` with no category, so there is nothing here to compare. It is
+        // a hard escalation, so a proxy that guessed would escalate on any two
+        // unrelated failures. The trailing-pair rule below already covers that
+        // case through `severity`, on evidence this extractor actually has.
         //
         // `compacted` needs a reliable marker for Claude Code's context-compaction
         // summary, which is not pinned by any test here yet.
+        //
+        // `new_count`/`recent_new_count` count calls to tools an operator put in
+        // libsy's `tool_semantics.new` category. shunt exposes no such config
+        // yet, so the category is empty and both counts are zero.
         tests_passed: false,
+        repeated_failure: false,
         compacted: false,
+        new_count: 0,
+        recent_new_count: 0,
         ..ToolSignals::default()
     };
 

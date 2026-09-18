@@ -159,13 +159,16 @@ originator: codex_cli_rs
 OpenAI-Beta: responses=experimental
 ```
 
-Pooled responses identify the account:
+Pooled responses identify the account — non-streaming and websocket-streaming responses with
+an `x-shunt-account` response header, early-committed HTTP streaming with an `event: account`
+SSE frame before the relayed content (the committed `200` headers cannot wait for the winning
+account):
 
 ```http
 x-shunt-account: backup
 ```
 
-Use neutral account names on a shared gateway — this header exposes the configured label to every authorized client that receives the response. The final translated-error relay after pool exhaustion omits `x-shunt-account`.
+Use neutral account names on a shared gateway — the header and the frame expose the configured label to every authorized client that receives the response. The final translated-error relay after pool exhaustion omits the attribution.
 
 ### WebSocket transport
 

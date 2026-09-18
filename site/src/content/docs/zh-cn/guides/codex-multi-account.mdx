@@ -159,13 +159,13 @@ originator: codex_cli_rs
 OpenAI-Beta: responses=experimental
 ```
 
-经过池的响应会标识账户:
+经过池的响应会标识账户 —— 非流式响应和 WebSocket 流式响应带 `x-shunt-account` 响应头部,早期提交的 HTTP 流式响应则在中继内容之前带 `event: account` SSE 帧(已提交的 `200` 头部无法等待获胜账户):
 
 ```http
 x-shunt-account: backup
 ```
 
-在共享网关上请使用中性的账户名 —— 该头部会把配置的标签暴露给收到响应的每个已授权客户端。池耗尽后那次经过转换的错误中继会省略 `x-shunt-account`。
+在共享网关上请使用中性的账户名 —— 该头部和该帧会把配置的标签暴露给收到响应的每个已授权客户端。池耗尽后那次经过转换的错误中继会省略该标注。
 
 ### WebSocket 传输
 

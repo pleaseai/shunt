@@ -7,7 +7,9 @@ Status: **implemented.** User-facing documentation lives in the
 provenance, the upstream benchmark results, and the scoring formula in
 [Switchyard Integration](https://shunt.sh/guides/switchyard/); this document is
 the implementation record — what the code does, why, and what a change to it must
-not break.
+not break. The `switchyard-libsy` dependency it scores through — how it is
+pinned, how to read its API, and how to bump it — is
+[`routing-algorithms.md`](routing-algorithms.md) §1.
 
 ## 1. Scope
 
@@ -34,12 +36,28 @@ Out of scope, deliberately: the LLM classifier, mid-turn escalation, and
 | `src/routing.rs` | `resolve_chain`'s router arm and the `Route.model` re-stamp |
 | `src/proxy/failover.rs` | The single live call site |
 
-Scoring itself is `switchyard-libsy` 0.2 and is not reimplemented. The version is
-pinned to the `0.2` line and held out of automatic upgrades: 0.2.0 is the only
-published release and upstream `main` has already diverged from it — `ToolSignals`
-carries `tool_result_count`, `assistant_turn_count`, `new_count`, and
-`recent_new_count` there, and 0.2.0 has none of them. Read the registry source,
-not GitHub, when checking the API.
+Scoring itself is `switchyard-libsy` and is not reimplemented. The dependency is
+a **git pin at an immutable `rev` on upstream `main`**, not the crates.io
+release — the same form as the two `tungstenite` pins, with a `rev` and no
+`branch` key, so a bump is a reviewed diff rather than a side effect of an
+unrelated `cargo update` (ADR-0005 §9). 0.2.0 is the only published release and
+`main` (`0.3.0`-pre) carries the algorithms ADR-0005 builds on, which the
+release does not export at all. Read the checkout cargo resolved
+(`~/.cargo/git/checkouts/switchyard-*/<rev>/crates/libsy/`), not the registry
+source and not GitHub's default branch, when checking the API.
+
+Three things the pin changed for this subsystem:
+
+- `ToolSignals` gained `repeated_failure`, `tool_result_count`,
+  `assistant_turn_count`, `new_count`, and `recent_new_count` (§3).
+- `DecisionSource::TestsPassed` is gone. Upstream dropped the hard
+  de-escalation shortcut; a passing test now only clears libsy's own capable
+  hold, which shunt does not use.
+- `DecisionSource::CapableHold` is new — libsy's own hysteresis, which shunt
+  treats as not-evidence for the same reason `Sticky` is not evidence (§4).
+
+`score_signal` is byte-identical to 0.2.0's, so the calibration below is
+unchanged.
 
 ## 3. Signal extraction
 
@@ -64,11 +82,27 @@ the call has another (`errors_are_read_from_the_result_not_the_call`).
 Returns `None` when no completed call exists, which the caller treats as
 `no_signal` rather than as agreement.
 
-Two fields are deliberately left `false`, with the reasoning in the source:
+`tool_result_count` and `assistant_turn_count` are filled from the walk the
+extractor already does — the first is `completed.len()` (every Anthropic
+`tool_result` carries a `tool_use_id`, so that is the same set libsy counts),
+the second is every assistant message, not the windowed count the recency pass
+keeps.
 
-- `tests_passed` would need result-*text* matching, and it pushes hard toward the
-  cheap tier — guessing it wrong is expensive in exactly the wrong direction.
+The other three are deliberately left at their zero values, with the reasoning
+in the source:
+
+- `tests_passed` would need result-*text* matching.
+- `repeated_failure` is "the same hard-or-critical failure twice in the recent
+  window", and libsy decides *same* by matching result text against its error
+  table. Claude Code reports only a boolean `is_error` with no category, so
+  there is nothing here to compare. It is a hard escalation, so a proxy that
+  guessed would escalate on any two unrelated failures — and the trailing-pair
+  rule already covers that case through `severity`, on evidence this extractor
+  does have.
 - `compacted` needs a compaction marker no test here pins yet.
+- `new_count`/`recent_new_count` count tools an operator placed in libsy's
+  `tool_semantics.new` category. shunt exposes no such config yet, so the
+  category is empty.
 
 ### 3.1 Vocabulary
 
@@ -76,9 +110,9 @@ Two fields are deliberately left `false`, with the reasoning in the source:
 `BashOutput`. `Mutate`: `Edit`, `NotebookEdit` (edit-shaped), `Write`
 (write-shaped). `Plan`: `TodoWrite`, `Task`, `EnterPlanMode`, `ExitPlanMode`.
 Everything else, `Bash`, `Skill`, `KillShell` and `mcp__*` included, is
-uncategorised — which in 0.2.0 means it contributes through `pure_bash_streak`
-rather than through a `new` counter, since that counter does not exist in the
-published scorer.
+uncategorised, so it contributes through `pure_bash_streak` rather than through
+the `new` counter — that counter is fed by `tool_semantics.new`, which shunt
+does not configure yet.
 
 Matching is `eq_ignore_ascii_case`. `Bash` stays uncategorised on purpose: only
 `input.command` separates `git status` from `rm -rf` from `cargo test`, and
@@ -105,20 +139,22 @@ id)` — the session id is hashed and never stored, matching
 | Rejected before admission | Decided, not recorded |
 | Efficient → Capable | Immediate on any scorer-made decision |
 | Capable → Efficient | `dwell_turns >= min_dwell_turns` **and** confidence `>= deescalate_threshold` **and** a scorer-made decision |
-| `fall_open` / `no_signal` / `ambiguous` | Cannot move a pin in either direction |
+| `fall_open` / `no_signal` / `ambiguous` / `capable_hold` | Cannot move a pin in either direction |
 | Fingerprint mismatch or TTL expiry | That entry alone is treated as absent |
 
-`tests_passed` is exempt from the *confidence* gate but not the dwell one. It is
-libsy's hard de-escalation shortcut, which skips the scorer and returns
-`confidence: None` (`resolved(Efficient, TestsPassed, 0.0, None)`); a bare
-`confidence >= threshold` gate would make the strongest reason to go cheap the
-one reason that could never fire.
+The confidence gate admits no exemption. It used to carry one, for libsy's
+`tests_passed` shortcut — the single de-escalation that skipped the scorer and
+so reported `confidence: None`, which a bare `confidence >= threshold` check
+would have made the one reason to go cheap that could never fire. Upstream
+dropped that rule, so every source `is_signal_evidence` admits now reports a
+confidence and a `None` is held rather than trusted
+(`a_de_escalation_without_a_confidence_score_is_held`).
 
-That exemption is written against libsy's contract, not against a signal shunt
-produces today: §3 leaves `tests_passed` unconditionally `false`, so
-`DecisionSource::TestsPassed` cannot be returned and the exemption is inert. It
-is kept so that populating the signal later is a change to the extractor alone
-(ADR-0004).
+`DecisionSource::CapableHold`, upstream's replacement, is not evidence either.
+It means an earlier escalation is being held on the capable tier — which is what
+`StageSource::Sticky` already means here — and only libsy's stateful
+`StageClassifier` stamps it, which shunt does not call: shunt calls `pick_tier`
+directly.
 
 Deciding and recording are separate calls. Routing has to run before
 `check_inbound_auth` — that gate reads the resolved chain to decide whether the
@@ -153,10 +189,45 @@ The fingerprint destructures `StageRouterConfig` rather than dotting into it, so
 key added to the table later fails to compile in `fingerprint` instead of quietly
 letting stale pins outlive it.
 
-Capacity: `MAX_TRACKED_SESSIONS = 4096`, one amortised O(n) pass on insert that
-drops TTL-expired entries first and then the oldest. No timer, no background task,
-nothing persisted. `apply` takes `now: Instant` so dwell, expiry, and eviction are
-tested against a clock the test moves.
+Capacity: `MAX_TRACKED_SESSIONS = 4096`, trimmed on insert — TTL-expired entries
+first, then the oldest. No timer, no background task, nothing persisted. `apply`
+takes `now: Instant` so dwell, expiry, and eviction are tested against a clock the
+test moves.
+
+The trim is O(log n) per entry removed, not a pass over the map. Two indexes
+stand beside the session map, and the trim's two halves each read one of them:
+
+* recency — a `BTreeMap` keyed by `seq`, a total order with no ties that is
+  exactly the order turns were decided, so the least recently decided entry is
+  one `pop_first`. `last_seen` could not index this: two turns of one session
+  routinely share an `Instant`, which is why `seq` exists at all.
+* expiry — a `BTreeSet` of `(last_seen + ttl, seq)`, so the sweep stops at the
+  first entry still inside its own window instead of walking the map.
+
+They have to be separate orders, because the oldest entry can be the live one
+and a newer entry the expired one. Three things produce that inversion, and only
+the first needs two routers:
+
+* two routers configured with different `session_ttl_seconds`;
+* one router reloaded with a new `session_ttl_seconds` — existing entries keep
+  the TTL they were recorded with (`StageSession::ttl`), so old and new entries
+  age out on different clocks under a single table;
+* concurrency alone. `seq` orders arrival at `apply`, not the `now` each caller
+  captured before it, so two turns can take their sequence numbers in the
+  opposite order from their `last_seen`.
+
+Sweeping the front of the recency order alone would stop at the live entry,
+leave the expired one behind, and then evict the live entry in its place. With
+both indexes the trim drops exactly what the whole-map pass dropped: every
+expired entry, then the oldest survivor if the store is still over.
+
+An entry whose `last_seen + ttl` overflows is absent from the expiry index —
+nothing bounds `session_ttl_seconds` above, and an entry that can never expire
+belongs in no expiry index. The capacity trim still reaches it.
+
+Eviction runs under the store's single process-global mutex, so the walk it
+replaces serialized against every router-backed request rather than only the one
+that triggered it (§9, issue #552).
 
 ### 4.1 Why the asymmetry exists
 
@@ -318,23 +389,23 @@ One local run, `--sample-count 200`, Apple silicon. CodSpeed owns regression
 detection; these are orders of magnitude, not a baseline to diff against.
 
 **Read the `fastest` column.** These arms allocate, so a sample can absorb an
-allocator or scheduler excursion but never finish faster than the work takes —
-the widest arm here spans 196 µs to 415 µs. That is enough drift for a median to
-reorder two arms that stand in a containment relation, which would say a routed
-resolve is cheaper than the extraction it performs. `fastest` is the low-noise
-estimator; medians are given alongside so the spread stays visible.
+allocator or scheduler excursion but never finish faster than the work takes.
+That drift is enough for a median to reorder two arms standing in a containment
+relation, which would say a routed resolve is cheaper than the extraction it
+performs. `fastest` is the low-noise estimator; medians are given alongside so
+the spread stays visible.
 
 | Benchmark | 10 turns | 50 | 200 | 800 |
 |---|---|---|---|---|
-| `parse_body_to_value` | 31.7 µs *(32.0)* | 156 µs *(157)* | 637 µs *(682)* | 2.75 ms *(3.15)* |
-| `extract_signals` | 3.37 µs *(3.41)* | 12.3 µs *(12.5)* | 49.0 µs *(49.9)* | 196 µs *(201)* |
-| `resolve_chain_routed` | 4.65 µs *(4.73)* | 14.3 µs *(14.5)* | 52.6 µs *(53.2)* | 195 µs *(202)* |
-| `resolve_chain_unrouted` | 294 ns *(297)* | 294 ns *(297)* | 295 ns *(298)* | 294 ns *(297)* |
+| `parse_body_to_value` | 31.5 µs *(32.0)* | 155 µs *(156)* | 632 µs *(675)* | 2.63 ms *(2.97)* |
+| `extract_signals` | 3.48 µs *(3.60)* | 12.6 µs *(12.8)* | 49.5 µs *(50.5)* | 196 µs *(202)* |
+| `resolve_chain_routed` | 4.79 µs *(4.87)* | 14.2 µs *(14.5)* | 50.2 µs *(50.8)* | 195 µs *(198)* |
+| `resolve_chain_unrouted` | 298 ns *(300)* | 297 ns *(300)* | 300 ns *(303)* | 292 ns *(298)* |
 
 `fastest`, with the median in parentheses.
 
 **Extraction is linear in turn count, dominates a routed resolve, and is small
-against what the request already spent.** An 80× longer history costs ~58× more.
+against what the request already spent.** An 80× longer history costs ~56× more.
 `resolve_chain_routed` sits within a few percent of `extract_signals` at every
 width, which is what "dominates" means here — the two are not separable at this
 resolution, and §3's second pass reads the entire `messages` array every turn, so
@@ -350,14 +421,14 @@ denominator. (Neither correction moved it much: the duplicate-key visitor
 inspects only *top-level* keys, nested values going through stock `Value`
 deserialization, and a `memcpy` is far cheaper than parsing what it copied. The
 distinction matters for what is being claimed, not for the figure.) Against that,
-extraction is **7.1–10.6%** across the range. So the ceiling on optimizing §3 is
+extraction is **7.4–11.0%** across the range. So the ceiling on optimizing §3 is
 roughly a tenth of a cost the gateway has already sunk by the time the router is
 consulted, which is why §3 is left as it stands (issue #553).
 
 **A request to a model with no `[models.stage_router]` table does not read
 `messages` at all.** Both `resolve_chain_*` arms send the identical body naming
 the identical model id; the configs differ only in whether that id's `[[models]]`
-entry carries the table. `resolve_chain_unrouted` is flat at ~294 ns across an
+entry carries the table. `resolve_chain_unrouted` is flat at ~295 ns across an
 80× range of history length, with the tightest spread of any arm here. That
 flatness is the property to protect: it is what makes the feature opt-in in cost
 as well as in behaviour, and any change that makes this row slope is a regression
@@ -365,27 +436,53 @@ whatever it does to the routed rows. The routed arm additionally resolves its
 chosen tier's own id through `[[routes]]`, which the unrouted arm does not — that
 second lookup is part of what routing costs, not a flaw in the pairing.
 
-**Eviction dominates the store once it saturates.**
+### 9.1 Eviction, before and after the indexes
 
-| Benchmark | fastest | median |
+Both arms run against a store already holding `MAX_TRACKED_SESSIONS` entries and
+both build their session id outside the timed region, so what separates them is
+the eviction and not the map size, the id's allocation, or its hashing.
+
+| Benchmark | whole-map pass | indexed |
 |---|---|---|
-| `store_turn_existing_session` | 517 ns | 522 ns |
-| `store_turn_new_session_at_capacity` | 31.9 µs | 32.1 µs |
+| `store_turn_existing_session` | 553 ns | 742 ns |
+| `store_turn_new_session_at_capacity` | 32.8 µs | 970 ns |
+| gap | 59× | 1.3× |
 
-Both run against a store already holding `MAX_TRACKED_SESSIONS` entries, and both
-build their session id outside the timed region, so the **62×** gap is the
-eviction and not the map size, the id's allocation, or its hashing. An existing
-session's update never grows the map, returns at `evict`'s length check, and costs
-about half a microsecond. A previously unseen id at capacity pays a full `retain`
-walk of 4096 entries — one walk, not two: the pass that drops expired entries also
-remembers the oldest survivor, so the capacity trim needs no second scan.
+`fastest`; the left column is the implementation described in issue #552, the
+right is §4's. Both columns were measured in one sitting, alternating between two
+checkouts and reading each arm twice, because this machine's run-to-run spread on
+the returning-session arm is wide enough to invent or erase a change of the size
+this table reports: the *same* binary measured 602 ns and 713 ns on separate
+days. The paired figures agreed to within 3 ns (baseline) and 18 ns (indexed),
+which is what makes the difference below readable at all. Treat single-run
+numbers from either column as unusable for this comparison.
 
-That ~31 µs gap is the eviction scan, and the scan runs while the store's single
-process-global mutex is held, so it serializes against every other router-backed
-request rather than costing only its own. (The 31.9 µs is the whole benchmarked
-turn, which also covers `stage::decide`, the SHA-256 session key, the router
-fingerprint, and two lock acquisitions — the control arm pays all of those too,
-which is why the *gap* rather than the total is what attributes to eviction.) It
-is reached only at capacity and only by an id the store has not seen, which is
-the normal-operation case for no one and the steady state for a client that
-rotates `x-claude-code-session-id` per request (issue #552).
+CodSpeed ran the same two arms in simulation mode on PR #580 and reached the same
+place by a different route — it counts instructions rather than timing anything,
+so a scheduler excursion cannot reach it: `store_turn_existing_session` 12.6 µs →
+16.6 µs (**+32%** work) and `store_turn_new_session_at_capacity` 346.6 µs → 18.3
+µs. Its absolute figures are not comparable with the wall-clock table above and
+are not meant to be; the agreement that matters is that two instruments with
+unrelated failure modes put the regression at +32% and +34%.
+
+A previously unseen id at capacity used to pay a `retain` walk of all 4096
+entries. It now pays one `pop_first` from each index, so the eviction stops
+dominating: **34× faster**, and the gap between a new session and a returning one
+collapses from 59× to 1.3×. Because that work runs under the store's single
+process-global mutex, the walk serialized against every other router-backed
+request rather than costing only the one that triggered it — which is why the
+issue framed this as blast radius and not as per-request latency.
+
+The returning-session path pays for it: **553 ns → 742 ns**, about 34%. That is
+the four index operations every write owes whether or not it evicts — retiring
+the replaced entry's slot in each of the two indexes, then adding the new one to
+each. It is a real regression on the common path and is reported as one. The
+trade is ~190 ns on every turn against 32 µs of mutex-held work on every new
+session id, and it is worth taking only because the expensive side is the side
+that serializes; a store that never saturates pays the write cost and collects
+nothing, which is the case for any deployment whose distinct session ids stay
+under `MAX_TRACKED_SESSIONS`. That is a count of tracked sessions, not of
+concurrent requests: a session is tracked from its first routed turn until it
+expires or is evicted — and expired entries are swept only when an insert takes
+the store over the cap — so a client that rotates its session id can accumulate
+far more tracked sessions than it ever has in flight.

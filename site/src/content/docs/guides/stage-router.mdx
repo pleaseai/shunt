@@ -66,7 +66,7 @@ free of an extra model call and an extra credential.
 The full scoring formula, the published benchmark results behind it, and what
 shunt adds on top are in [Switchyard Integration](/guides/switchyard/).
 
-[libsy]: https://crates.io/crates/switchyard-libsy
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
 [sy]: https://github.com/NVIDIA-NeMo/Switchyard
 
 ## Why going down is harder than going up
@@ -126,9 +126,10 @@ Two response headers report the decision, so you do not have to infer it:
 | `x-gateway-routed-model` | The target the router chose (`claude-opus-4-8`) |
 | `x-gateway-route-source` | Why (`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`) |
 
-Those five are the labels shunt emits today. The scorer defines a sixth,
-`tests_passed`, but the signal extractor never reports a passing test run, so no
-response carries it.
+Those five are the labels shunt emits today. The scorer defines three more —
+`ambiguous`, `llm-classifier`, and `capable_hold` — and none can reach a
+response: shunt reports an inconclusive turn as `fall_open`, runs no judge, and
+keeps its own session hysteresis instead of the scorer's.
 
 Both are absent for a model id that has no router, so "routed to the efficient
 tier" stays distinguishable from "not routed by a router at all". A

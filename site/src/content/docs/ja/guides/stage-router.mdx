@@ -62,7 +62,7 @@ shunt は Claude Code の実際のツール名を知っています。プロバ�
 採点式の全体、その裏付けとなる公開ベンチマーク結果、そして shunt がその上に加えた
 ものは [Switchyard 統合](/ja/guides/switchyard/)にあります。
 
-[libsy]: https://crates.io/crates/switchyard-libsy
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
 [sy]: https://github.com/NVIDIA-NeMo/Switchyard
 
 ## 下りが上りより難しい理由
@@ -120,9 +120,11 @@ POST /v1/messages     {"model": "claude-auto", ...}
 | `x-gateway-routed-model` | ルーターが選んだターゲット（`claude-opus-4-8`） |
 | `x-gateway-route-source` | その理由（`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`） |
 
-この 5 つが今日 shunt が出力するラベルです。スコアラーには 6 つ目の
-`tests_passed` がありますが、シグナル抽出器がテストの成功を報告しないため、
-レスポンスに載ることはありません。
+この 5 つが今日 shunt が出力するラベルです。スコアラーはさらに `ambiguous`、
+`llm-classifier`、`capable_hold` の 3 つを定義していますが、どれもレスポンスには
+載りません。shunt は決着しなかったターンを `fall_open` として報告し、ジャッジを
+一切呼ばず、スコアラーのヒステリシスではなく自前のセッションヒステリシスを使う
+ためです。
 
 ルーターを持たないモデル id には両方とも付きません。そうすることで「効率ティアに
 ルーティングされた」と「そもそもルーター経由ではない」が区別できます。

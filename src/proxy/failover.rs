@@ -168,6 +168,26 @@ pub(super) async fn forward(
     let primary_origin = (attempted_total > 1 && is_passthrough_route(&state, first_route))
         .then(|| provider_origin(&state, &first_route.provider))
         .flatten();
+    if super::chain_stream::chain_stream_applies(
+        &state,
+        &routes,
+        body.as_ref().expect("request body is present"),
+    ) {
+        return super::chain_stream::forward_chain_stream(
+            super::chain_stream::ChainStreamRequest {
+                state,
+                routes,
+                uri: uri.clone(),
+                base_headers,
+                inbound,
+                primary_origin,
+                body: body.take().expect("request body is present"),
+                requested_model,
+                started_at,
+            },
+        )
+        .await;
+    }
     let mut remembered: Option<RememberedFailure> = None;
     for (index, route) in routes.into_iter().enumerate() {
         crate::metrics::record_failover(&route.provider, "attempted");
@@ -197,7 +217,18 @@ pub(super) async fn forward(
         };
         let result = dispatch(state.clone(), route, uri, &attempt_headers, attempt_body).await;
 
-        if !is_count_tokens(uri) {
+        if !is_count_tokens(uri)
+            && !result.as_ref().is_ok_and(|(_, response)| {
+                // The early-commit streaming responses sample their metrics
+                // in-stream at classification: the dispatch-time return
+                // precedes the upstream send, so recording here would count a
+                // fake 200 with a near-zero latency.
+                response
+                    .extensions()
+                    .get::<crate::adapters::responses::InStreamMetrics>()
+                    .is_some()
+            })
+        {
             let status = match &result {
                 Ok((status, _)) => status.as_u16(),
                 Err(error) => error.response.status().as_u16(),
@@ -479,7 +510,7 @@ fn observe_response(
     (status, response)
 }
 
-fn is_advance_status(status: StatusCode) -> bool {
+pub(crate) fn is_advance_status(status: StatusCode) -> bool {
     matches!(
         status,
         StatusCode::TOO_MANY_REQUESTS
@@ -489,7 +520,7 @@ fn is_advance_status(status: StatusCode) -> bool {
     ) || status.is_server_error()
 }
 
-fn failure_priority(status: StatusCode) -> u8 {
+pub(crate) fn failure_priority(status: StatusCode) -> u8 {
     match status {
         StatusCode::TOO_MANY_REQUESTS => 4,
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => 3,
@@ -567,6 +598,7 @@ fn enforce_managed_model_policy(
     }))
 }
 
+#[derive(Clone)]
 pub(crate) struct InboundContext {
     gateway_claims: Option<crate::gateway::jwt::Claims>,
     client: Option<String>,
@@ -785,6 +817,12 @@ fn reason_label(reason: ConsumedBy) -> &'static str {
         ConsumedBy::GatewayJwt => "gateway_jwt",
         ConsumedBy::StaticToken => "static_token",
         ConsumedBy::AdminCredential => "admin_credential",
+    }
+}
+
+pub(crate) fn stamp_gateway_model_header(response: &mut axum::response::Response, model: &str) {
+    if let Ok(value) = HeaderValue::from_str(model) {
+        response.headers_mut().insert("x-gateway-model", value);
     }
 }
 

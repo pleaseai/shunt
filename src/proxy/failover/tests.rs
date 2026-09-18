@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::http::{HeaderMap, HeaderName, HeaderValue};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 
 use crate::admin::AdminAuth;
 use crate::auth::inbound::{is_consumed_by_shunt, InboundAuth};
@@ -758,4 +758,154 @@ fn admin_header_pointed_at_a_shared_slot_still_strips_an_admin_credential() {
             "admin credential survived the shared slot"
         );
     }
+}
+
+/// A config routing one streaming model to a single Responses upstream —
+/// the loop path, not the multi-upstream chain. `auth = ApiKey` pins the
+/// single-credential `forward_http` path: the built-in codex provider
+/// defaults to `chatgpt_oauth`, whose committed pool stream would consult
+/// the real account store and make the test box-dependent.
+fn single_route_config(provider: &str, model: &str, base_url: String) -> Config {
+    let mut config = Config::default();
+    config.providers.insert(
+        provider.to_string(),
+        config
+            .providers
+            .get("codex")
+            .expect("codex provider is built in")
+            .clone(),
+    );
+    let provider_config = config.providers.get_mut(provider).expect("just inserted");
+    provider_config.base_url = base_url;
+    provider_config.auth = AuthMode::ApiKey;
+    provider_config.api_key_env = Some(format!("{provider}_key"));
+    config.models = vec![crate::config::ModelConfig {
+        id: model.to_string(),
+        display_name: None,
+        upstream_model: Some(
+            [(provider.to_string(), "gpt-5.2-codex".to_string())]
+                .into_iter()
+                .collect(),
+        ),
+        stage_router: None,
+    }];
+    config
+}
+
+async fn forward_streaming_turn(
+    config: Config,
+    model: &str,
+) -> (StatusCode, axum::response::Response) {
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    let body = axum::body::Body::from(
+        serde_json::json!({
+            "model": model,
+            "stream": true,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        .to_string(),
+    );
+    match super::forward(state, &uri, &headers, body, std::time::Instant::now()).await {
+        Ok(result) => result,
+        Err(error) => panic!("forward failed: {}", error.message),
+    }
+}
+
+/// A streaming Responses request through the failover loop commits before
+/// the upstream send; its `record_proxied_request` sample must come from the
+/// stream's classification (real status, real latency) and the loop's
+/// dispatch-time sample must be skipped.
+#[tokio::test]
+async fn an_early_committed_streaming_request_samples_metrics_at_classification() {
+    use axum::body::to_bytes;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let sse = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(100))
+                .set_body_string(sse.to_string()),
+        )
+        .mount(&server)
+        .await;
+    let config = single_route_config("loop-metrics-probe", "loop-metrics-model", server.uri());
+    let _env = crate::auth::shared::EnvVarGuard::set("loop-metrics-probe_key", "probe");
+    let (status, response) = forward_streaming_turn(config, "loop-metrics-model").await;
+    assert_eq!(status, StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body is readable");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("event: message_stop"), "got: {text}");
+    let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+        "loop-metrics-probe",
+        "loop-metrics-model",
+        200,
+    );
+    assert_eq!(
+        count, 1,
+        "exactly one sample: the dispatch-time record is skipped and the in-stream classification records"
+    );
+    assert!(
+        latencies.iter().all(|latency| *latency >= 50.0),
+        "the sample covers the upstream round-trip, not the near-zero commit, got {latencies:?}"
+    );
+}
+
+/// A streaming request whose upstream answers non-2xx classifies in-stream:
+/// the sample records the real status instead of the committed 200 the loop
+/// saw at dispatch.
+#[tokio::test]
+async fn an_early_committed_streaming_request_records_the_classified_status() {
+    use axum::body::to_bytes;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let config = single_route_config(
+        "loop-metrics-fail-probe",
+        "loop-metrics-fail-model",
+        server.uri(),
+    );
+    let _env = crate::auth::shared::EnvVarGuard::set("loop-metrics-fail-probe_key", "probe");
+    let (status, response) = forward_streaming_turn(config, "loop-metrics-fail-model").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the response committed before the send"
+    );
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body is readable");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("event: error"), "got: {text}");
+    let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+        "loop-metrics-fail-probe",
+        "loop-metrics-fail-model",
+        500,
+    );
+    assert_eq!(count, 1, "the classified failure records its real status");
+    let (fake, _) = crate::metrics::proxied_request_samples_for_tests(
+        "loop-metrics-fail-probe",
+        "loop-metrics-fail-model",
+        200,
+    );
+    assert_eq!(fake, 0, "the committed 200 must not be sampled");
 }

@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::body::Bytes;
 use futures_util::{stream, Stream, StreamExt};
 
-const PING_EVENT: &str = "event: ping\ndata: {\"type\": \"ping\"}\n\n";
+pub(crate) const PING_EVENT: &str = "event: ping\ndata: {\"type\": \"ping\"}\n\n";
 
 /// Tracks whether the bytes forwarded so far end at an SSE event boundary
 /// (`\n\n` or `\r\n\r\n`), across arbitrary chunk splits. Injecting anywhere

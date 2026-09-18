@@ -15,7 +15,7 @@
 //! clear a stricter threshold.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     hash::{Hash, Hasher},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -71,6 +71,131 @@ struct StageSession {
     ttl: Duration,
 }
 
+/// The session map and the recency index that orders it.
+///
+/// They live in one type because no write may touch only one of them: an
+/// `order` slot left behind by a replaced entry would grow without bound and
+/// point eviction at a key whose real recency is newer than the slot claims.
+#[derive(Debug, Default)]
+struct Entries {
+    sessions: HashMap<SessionKey, StageSession>,
+    /// `seq` → the key whose current entry carries it.
+    ///
+    /// `seq` comes from a monotonic counter and every committed turn takes a
+    /// fresh one, so this is a total order with no ties, and it is exactly the
+    /// order turns were decided — which is the recency order eviction wants.
+    /// `last_seen` could not index this: two turns of one session routinely
+    /// share an `Instant`, which is the same reason [`StageSession::seq`] exists
+    /// at all.
+    order: BTreeMap<u64, SessionKey>,
+    /// `(expires_at, seq)` for every entry whose TTL can actually elapse, so the
+    /// expiry sweep is a prefix of *this* order rather than a walk of the map.
+    ///
+    /// Separate from `order` because recency and expiry are different orders
+    /// whenever two routers configure different `session_ttl_seconds`: the
+    /// oldest entry can be the live one and a newer entry the expired one.
+    /// Sweeping the front of `order` would then stop at the live entry, leave
+    /// the expired one, and let the capacity trim take the live entry instead —
+    /// which is a pin the whole-map pass this replaced would have kept.
+    ///
+    /// Holds `seq`, not the key, so a returning session still clones nothing:
+    /// `order` already maps `seq` back to its key.
+    ///
+    /// An entry whose `last_seen + ttl` overflows is simply absent here. Nothing
+    /// validates `session_ttl_seconds` against an upper bound, so that addition
+    /// is fallible on a config that asks for one; an entry that can never expire
+    /// belongs in no expiry index, and the capacity trim still reaches it.
+    expiry: BTreeSet<(Instant, u64)>,
+}
+
+/// When an entry falls out of its own window, or `None` when the addition
+/// overflows and it therefore never does.
+///
+/// The mirror of [`is_live`]'s TTL half: `now.saturating_duration_since(last_seen)
+/// > ttl` is `now > last_seen + ttl` wherever the sum exists, including the
+/// boundary — a zero TTL read at its own `last_seen` is live under both.
+fn expires_at(session: &StageSession) -> Option<Instant> {
+    session.last_seen.checked_add(session.ttl)
+}
+
+impl Entries {
+    fn get(&self, key: &SessionKey) -> Option<&StageSession> {
+        self.sessions.get(key)
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, key: &SessionKey) -> bool {
+        self.sessions.contains_key(key)
+    }
+
+    fn len(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// Record a pin, replacing whatever was under that key and retiring its
+    /// index slot with it.
+    ///
+    /// The returning-session path overwrites in place rather than re-inserting,
+    /// so the common case — a live session taking its next turn — clones no key.
+    /// Only a session the store has not seen pays for one, and it pays it once.
+    fn insert(&mut self, key: SessionKey, session: StageSession) {
+        match self.sessions.get_mut(&key) {
+            Some(replaced) => {
+                self.order.remove(&replaced.seq);
+                if let Some(at) = expires_at(replaced) {
+                    self.expiry.remove(&(at, replaced.seq));
+                }
+                *replaced = session;
+            }
+            None => {
+                self.sessions.insert(key.clone(), session);
+            }
+        }
+        if let Some(at) = expires_at(&session) {
+            self.expiry.insert((at, session.seq));
+        }
+        self.order.insert(session.seq, key);
+    }
+
+    /// Drop every entry whose own TTL has elapsed, cheapest-first.
+    ///
+    /// Each removal is a pair of `BTreeMap`/`BTreeSet` pops, and each entry is
+    /// removed at most once, so the sweep costs O(log n) per entry dropped
+    /// rather than a pass over the map. When nothing has expired it is a single
+    /// comparison against the front of `expiry`.
+    fn drain_expired(&mut self, now: Instant) {
+        while let Some(&(at, seq)) = self.expiry.first() {
+            if at >= now {
+                break;
+            }
+            self.expiry.pop_first();
+            let key = self.order.remove(&seq);
+            debug_assert!(
+                key.is_some(),
+                "the expiry index named a seq the recency index does not hold"
+            );
+            if let Some(key) = key {
+                self.sessions.remove(&key);
+            }
+        }
+    }
+
+    /// Drop the least recently decided entry. `None` once nothing is left.
+    fn remove_oldest(&mut self) -> Option<StageSession> {
+        let (_, key) = self.order.pop_first()?;
+        let session = self.sessions.remove(&key);
+        debug_assert!(
+            session.is_some(),
+            "the recency index named a key the session map does not hold"
+        );
+        let session = session?;
+        if let Some(at) = expires_at(&session) {
+            self.expiry.remove(&(at, session.seq));
+        }
+        Some(session)
+    }
+}
+
 /// A pin [`StageRouterStore::apply`] prepared but has not written.
 ///
 /// Deciding and recording are separate because routing runs *before* inbound
@@ -109,7 +234,7 @@ impl StageApplied {
 /// survives a config reload rather than being rebuilt by one.
 #[derive(Debug, Default)]
 pub(crate) struct StageRouterStore {
-    entries: Mutex<HashMap<SessionKey, StageSession>>,
+    entries: Mutex<Entries>,
     /// Hands out the `seq` above. Monotonic for the process, so it orders
     /// decisions across every session and router without a per-key counter.
     next_seq: AtomicU64,
@@ -333,16 +458,17 @@ fn resolve(
         StageTier::Efficient => (estimate, true),
         // Down is the expensive direction, and must clear both gates.
         StageTier::Capable => {
-            // `tests_passed` is libsy's hard de-escalation shortcut: it skips
-            // the scorer outright and so reports no confidence at all. Holding
-            // it to a confidence floor would make the strongest reason to go
-            // cheap the one reason that can never fire. The dwell window still
-            // applies — that gate prices the forfeited prompt cache, which
-            // costs the same however good the evidence is.
-            let convincing = estimate.source.is_tests_passed()
-                || estimate
-                    .confidence
-                    .is_some_and(|confidence| confidence >= router.deescalate_threshold());
+            // Every source `is_signal_evidence` admits now reports a
+            // confidence, so the floor applies to all of them. libsy's one
+            // confidence-less de-escalation — the `tests_passed` shortcut,
+            // which used to need an exemption here — no longer exists: upstream
+            // dropped it, and a passing test now only clears libsy's own
+            // capable hold. The dwell window still applies on top; that gate
+            // prices the forfeited prompt cache, which costs the same however
+            // good the evidence is.
+            let convincing = estimate
+                .confidence
+                .is_some_and(|confidence| confidence >= router.deescalate_threshold());
             if session.dwell_turns >= router.min_dwell_turns && convincing {
                 (estimate, true)
             } else {
@@ -352,44 +478,39 @@ fn resolve(
     }
 }
 
-/// Drop expired entries, then the oldest, until the store is back under its cap.
-/// Amortised onto the insert path: no timer, no background task.
+/// Drop expired entries from the front of the recency order, then the oldest,
+/// until the store is back under its cap. Amortised onto the insert path: no
+/// timer, no background task.
+///
+/// Every step is one `BTreeMap` pop, so this costs O(log n) per entry removed
+/// rather than a walk of the whole map. That is issue #552: the map is read
+/// under the store's single process-global mutex, so a full 4096-entry scan on
+/// every previously-unseen session id — the steady state for a client that
+/// rotates `x-claude-code-session-id` — serialized against every other
+/// router-backed request, not only its own.
 ///
 /// Each entry is expired against **its own** TTL, not the caller's — see
-/// [`StageSession::ttl`]. One pass does both jobs: the retain predicate drops
-/// what has expired and remembers the oldest survivor, so the capacity trim
-/// below needs no second scan of the map while the lock is held.
-fn evict(entries: &mut HashMap<SessionKey, StageSession>, now: Instant) {
+/// [`StageSession::ttl`].
+///
+/// Expiry and recency are indexed separately, so this drops the same entries the
+/// whole-map pass dropped: *every* expired one, and then the oldest survivor if
+/// the store is still over. Sweeping the front of the recency order alone would
+/// not — with two routers configuring different `session_ttl_seconds` the oldest
+/// entry can be the live one, which would stop the sweep and then be evicted in
+/// place of the expired entry behind it.
+fn evict(entries: &mut Entries, now: Instant) {
     if entries.len() <= MAX_TRACKED_SESSIONS {
         return;
     }
-    let mut oldest: Option<(SessionKey, Instant)> = None;
-    entries.retain(|key, session| {
-        if now.saturating_duration_since(session.last_seen) > session.ttl {
-            return false;
-        }
-        if oldest
-            .as_ref()
-            .is_none_or(|(_, last_seen)| session.last_seen < *last_seen)
-        {
-            oldest = Some((key.clone(), session.last_seen));
-        }
-        true
-    });
-    // `apply` inserts exactly one entry before calling this and returns early
+    entries.drain_expired(now);
+    // `commit` inserts exactly one entry before calling this and returns early
     // above while under the cap, so the store is at most one over it here and
     // a single removal is enough. The loop is still a loop so that a future
     // caller inserting in bulk cannot silently leave the cap exceeded.
     while entries.len() > MAX_TRACKED_SESSIONS {
-        let Some(key) = oldest.take().map(|(key, _)| key).or_else(|| {
-            entries
-                .iter()
-                .min_by_key(|(_, session)| session.last_seen)
-                .map(|(key, _)| key.clone())
-        }) else {
+        if entries.remove_oldest().is_none() {
             break;
-        };
-        entries.remove(&key);
+        }
     }
 }
 

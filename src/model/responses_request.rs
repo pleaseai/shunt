@@ -270,6 +270,15 @@ pub fn encode_reasoning_signature(id: &str, encrypted_content: &str) -> String {
     URL_SAFE_NO_PAD.encode(payload.to_string())
 }
 
+/// True when `signature` is one [`encode_reasoning_signature`] produced.
+///
+/// The accept half of [`decode_reasoning_signature`] without its payload, so the
+/// Anthropic outbound strip can recognise shunt's own signatures without
+/// duplicating the encoding — see [`crate::model::thinking_signature`].
+pub fn is_reasoning_signature(signature: &str) -> bool {
+    decode_reasoning_signature(signature).is_some()
+}
+
 /// Inverse of [`encode_reasoning_signature`]. Returns `None` for signatures shunt
 /// did not produce (e.g. a genuine Anthropic thinking signature), which are dropped
 /// rather than forwarded — the Responses backend rejects reasoning it never issued.

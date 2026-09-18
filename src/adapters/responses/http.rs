@@ -1,25 +1,27 @@
-//! The HTTP Responses transport: send the request, then relay the upstream
-//! answer to the client as Anthropic SSE or a single JSON body. The default
-//! path for every provider and the fallback when the websocket transport fails
-//! to connect (see [`super::forward`]).
+//! The HTTP Responses transport: for a streaming client, commit the SSE
+//! response with a synthetic `message_start` immediately and drive the
+//! upstream send inside the stream; for a non-streaming client, send the
+//! request and relay the single JSON answer. The default path for every
+//! provider and the fallback when the websocket transport fails to connect
+//! (see [`super::forward`]).
 
 use axum::{
-    body::{Body, Bytes},
+    body::Body,
     http::{Response, StatusCode},
     response::IntoResponse,
 };
-use futures_util::{stream, StreamExt};
 
 use crate::{
-    adapters::AdapterError,
-    auth::Credential,
-    model::responses::{parse_sse_events, ResponseEvent},
-    routing::Route,
+    adapters::AdapterError, auth::Credential, model::responses::parse_sse_events, routing::Route,
     server::AppState,
 };
 
 use super::body::{prepare_body, PreparedBody};
-use super::context::{ForwardOptions, RelayOptions};
+use super::context::{CredentialSource, ForwardOptions, RelayOptions};
+use super::early_stream::{
+    early_streaming_response, estimated_machine_factory, http_events_stream, parsed_events,
+    translated_stream, HttpSendContext,
+};
 use super::error::{backend_error, mapped_upstream_error, own_error, transport_error};
 use super::request::request_builder;
 
@@ -61,27 +63,70 @@ pub(super) async fn forward_http(
     state: &AppState,
     route: &Route,
     forward: ForwardOptions,
+    credential: CredentialSource,
     session_id: Option<&str>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let ForwardOptions {
         upstream_body,
-        credential,
         auth,
         turn,
         codex_quota_account,
         estimate_input,
+        started_at,
     } = forward;
-    // Kick off the CPU-bound tiktoken encode on the blocking pool *before* the
-    // upstream request so it overlaps that round-trip; the result is not needed
-    // until the response stream (and thus message_start) begins. `None` on
-    // non-streaming turns and non-tiktoken providers (gated in `forward`).
-    let estimate_handle = estimate_input.map(|request| {
-        tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
-    });
+    let policy = provider_retry_policy(state, route);
+    if turn.client_wants_stream {
+        // Commit the SSE response now, before any upstream byte: the synthetic
+        // `message_start` keeps the client's stall watchdog fed while the
+        // upstream thinks in silence, and the send (with its bounded retry)
+        // runs inside the stream. The estimate must not hold the commit: if
+        // the blocking-pool encode has not finished by the time the stream
+        // builds its start, the snapshot seeds `0` (the estimate is a
+        // best-effort progress figure, the bound exists so a saturated pool
+        // cannot stall the first byte).
+        let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
+        let route_for_start = route.clone();
+        // The credential resolves inside the committed stream: a refreshable
+        // credential's refresh may be networked and is outside the TTFB
+        // timeout, so awaiting it before the commit would starve the client
+        // of headers and keepalive pings (the watchdog failure this commit
+        // exists to prevent).
+        let events = http_events_stream(
+            HttpSendContext {
+                state: state.clone(),
+                route: route.clone(),
+                policy,
+                credential: None,
+                session_id: session_id.map(str::to_string),
+                upstream_body: upstream_body.clone(),
+                auth,
+                codex_quota_account: None,
+            },
+            credential,
+            codex_quota_account,
+            started_at,
+        );
+        return Ok((
+            StatusCode::OK,
+            early_streaming_response(
+                estimated_machine_factory(turn, route_for_start, estimate_input),
+                keepalive,
+                events,
+            ),
+        ));
+    }
     // The account-pool path drives its own failover and deliberately does not
     // layer retry on top. This single-credential path retries only before any
-    // response body is handed to the streaming/JSON relay.
-    let policy = provider_retry_policy(state, route);
+    // response body is handed to the streaming/JSON relay. The streaming arm
+    // prepares the body inside the committed stream (`send_classified`), so
+    // compression cannot delay the commit; this non-streaming arm has no
+    // commit to protect and prepares here.
+    let credential = match credential {
+        CredentialSource::Resolved(credential) => credential,
+        CredentialSource::Deferred(resolve) => resolve.await?,
+    };
+    let codex_quota_account =
+        codex_quota_account.or_else(|| super::codex_quota_account(&credential));
     let body = prepare_body(state, route, upstream_body.as_ref()).await;
     let upstream = crate::retry::send_with_retry_with_safety(
         policy,
@@ -90,7 +135,9 @@ pub(super) async fn forward_http(
         || http_send(state, route, credential.clone(), session_id, body.clone()),
     )
     .await
-    .map_err(|error| error.into_adapter_error(|error| transport_error(error.to_string())))?;
+    .map_err(|error| {
+        error.into_adapter_error(|error| transport_error(error.without_url().to_string()))
+    })?;
     if let Some(account) = &codex_quota_account {
         state
             .accounts
@@ -100,29 +147,12 @@ pub(super) async fn forward_http(
     if !status.is_success() {
         return Err(mapped_upstream_error(status, upstream, auth).await);
     }
-    if turn.client_wants_stream {
-        let input_tokens_estimate = match estimate_handle {
-            Some(handle) => handle.await.unwrap_or(0),
-            None => 0,
-        };
-        let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
-        Ok((
-            StatusCode::OK,
-            stream_response(
-                upstream,
-                turn.relay(route),
-                input_tokens_estimate,
-                keepalive,
-            ),
-        ))
-    } else {
-        // Thread the real response status: `json_response` returns a `502` when
-        // a backend error event surfaced via `backend_error` (issue #113), so
-        // the proxy's access log (`upstream_status`) and `record_proxied_request`
-        // metrics reflect the failure instead of a hardcoded `200`.
-        let response = json_response(upstream, turn.relay(route)).await?;
-        Ok((response.status(), response))
-    }
+    // Thread the real response status: `json_response` returns a `502` when
+    // a backend error event surfaced via `backend_error` (issue #113), so
+    // the proxy's access log (`upstream_status`) and `record_proxied_request`
+    // metrics reflect the failure instead of a hardcoded `200`.
+    let response = json_response(upstream, turn.relay(route)).await?;
+    Ok((response.status(), response))
 }
 
 pub(super) fn stream_response(
@@ -131,61 +161,11 @@ pub(super) fn stream_response(
     input_tokens_estimate: u64,
     keepalive: std::time::Duration,
 ) -> axum::response::Response {
-    let bytes = upstream.bytes_stream();
-    let parser = SseParser::default();
     let machine = relay
         .machine()
         .with_input_estimate(input_tokens_estimate)
         .without_content_accumulation();
-    let output = stream::unfold((bytes, parser, machine, false), |state| async move {
-        let (mut bytes, mut parser, mut machine, mut finished) = state;
-        if finished {
-            return None;
-        }
-        loop {
-            match bytes.next().await {
-                Some(Ok(chunk)) => {
-                    let events = parser.push(&chunk);
-                    let data = events
-                        .into_iter()
-                        .flat_map(|event| machine.apply(event))
-                        .collect::<String>();
-                    if !data.is_empty() {
-                        return Some((
-                            Ok::<_, reqwest::Error>(Bytes::from(data)),
-                            (bytes, parser, machine, false),
-                        ));
-                    }
-                }
-                Some(Err(error)) => return Some((Err(error), (bytes, parser, machine, true))),
-                None => {
-                    let data = machine.finish().join("");
-                    finished = true;
-                    if data.is_empty() {
-                        return None;
-                    }
-                    // `machine.finish()` only produced output here because
-                    // the upstream connection ended before a real
-                    // terminal/error event (see `AnthropicSseMachine::finish`):
-                    // prefix the synthesized completion with an SSE comment
-                    // marker so `stream_metrics::observe_response` can still
-                    // classify this as an upstream cut instead of a normal
-                    // completion. Real clients ignore `:`-prefixed comment
-                    // lines per the WHATWG EventSource spec, so the
-                    // client-visible stream stays exactly as well-formed as
-                    // before.
-                    let mut marked = Vec::with_capacity(
-                        crate::stream_metrics::UPSTREAM_TRUNCATED_MARKER.len() + 2 + data.len(),
-                    );
-                    marked.extend_from_slice(crate::stream_metrics::UPSTREAM_TRUNCATED_MARKER);
-                    marked.extend_from_slice(b"\n\n");
-                    marked.extend_from_slice(data.as_bytes());
-                    return Some((Ok(Bytes::from(marked)), (bytes, parser, machine, finished)));
-                }
-            }
-        }
-    });
-
+    let output = translated_stream(parsed_events(upstream.bytes_stream()), machine);
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
@@ -222,68 +202,16 @@ pub(super) async fn json_response(
     Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
 }
 
-/// Frame-buffers the upstream SSE byte stream. Buffering raw bytes — rather than
-/// decoding each transport chunk with `from_utf8_lossy` — keeps a multi-byte
-/// UTF-8 code point intact when it straddles a chunk boundary: the incomplete
-/// trailing bytes stay in the buffer until the next chunk completes them. Frame
-/// boundaries are the ASCII `\n\n`, which can never fall inside a multi-byte
-/// sequence, so every extracted frame is already complete UTF-8.
-#[derive(Default)]
-struct SseParser {
-    buffer: Vec<u8>,
-    scan_from: usize,
-}
-
-impl SseParser {
-    fn push(&mut self, chunk: &[u8]) -> Vec<ResponseEvent> {
-        self.buffer.extend_from_slice(chunk);
-
-        let mut complete_end = None;
-        let mut scan = self.scan_from;
-        while scan + 1 < self.buffer.len() {
-            if self.buffer[scan] == b'\n' && self.buffer[scan + 1] == b'\n' {
-                complete_end = Some(scan + 2);
-                scan += 2;
-            } else {
-                scan += 1;
-            }
-        }
-
-        let Some(complete_end) = complete_end else {
-            // The final byte may be the first half of a frame terminator, so scan
-            // it again after the next chunk arrives. Everything before it has
-            // already been ruled out.
-            self.scan_from = self.buffer.len().saturating_sub(1);
-            return Vec::new();
-        };
-
-        // Parse all complete frames in one UTF-8 decode, then compact the buffer
-        // once. Front-draining each frame shifts the same trailing bytes over and
-        // over when one transport chunk contains many SSE events.
-        let out = parse_sse_events(&String::from_utf8_lossy(&self.buffer[..complete_end]));
-        self.buffer.drain(..complete_end);
-        self.scan_from = self.buffer.len().saturating_sub(1);
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::context::TurnOptions;
     use super::*;
     use axum::body::to_bytes;
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// The default relay options for these tests: the `gpt-5.2-codex` model with
-    /// both protocol toggles off.
-    fn relay_opts() -> RelayOptions {
-        RelayOptions {
-            model: "gpt-5.2-codex".to_string(),
-            thinking_enabled: false,
-            tool_search_native: false,
-        }
-    }
+    use super::super::early_stream::{codex_route, relay_opts};
 
     /// Serves `body` at `status` from a mock server and returns the resulting
     /// `reqwest::Response`, mirroring the shape `json_response` reads in
@@ -462,66 +390,125 @@ mod tests {
         assert!(body.contains("event: message_stop"));
     }
 
-    /// A multi-byte code point split across two transport chunks must survive
-    /// intact. Decoding each chunk with `from_utf8_lossy` in isolation would
-    /// replace the straddling bytes with U+FFFD; buffering raw bytes until a
-    /// frame boundary keeps the text whole.
-    #[test]
-    fn sse_parser_preserves_multibyte_char_split_across_chunks() {
-        let frame = "event: delta\ndata: {\"text\":\"안녕\"}\n\n";
-        // Split one byte into the 3-byte '녕' so the first chunk ends
-        // mid-code-point.
-        let split = frame.find('녕').unwrap() + 1;
-        let (head, tail) = frame.as_bytes().split_at(split);
-
-        let mut parser = SseParser::default();
-        // No frame boundary yet, and the incomplete byte must be held back
-        // rather than decoded and corrupted.
-        assert!(parser.push(head).is_empty());
-
-        let events = parser.push(tail);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event.as_deref(), Some("delta"));
-        assert_eq!(events[0].data["text"], "안녕");
+    /// The streaming arm of `forward_http` commits the first chunk (the
+    /// synthetic start) before the upstream has even sent its response headers.
+    #[tokio::test]
+    async fn forward_http_streaming_commits_first_chunk_before_upstream_headers() {
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(30))
+                    .set_body_string(sse.to_string()),
+            )
+            .mount(&server)
+            .await;
+        let mut config = crate::config::Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = server.uri();
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let forward = ForwardOptions {
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: crate::config::AuthMode::ApiKey,
+            turn: TurnOptions {
+                client_wants_stream: true,
+                thinking_enabled: false,
+                tool_search_native: false,
+            },
+            codex_quota_account: None,
+            estimate_input: None,
+            started_at: None,
+        };
+        let credential = CredentialSource::Resolved(Credential::ApiKey {
+            value: "probe".to_string(),
+            header: crate::config::ApiKeyHeader::Bearer,
+        });
+        let (status, response) = forward_http(&state, &codex_route(), forward, credential, None)
+            .await
+            .expect("forward_http builds the response without upstream headers");
+        assert_eq!(status, StatusCode::OK);
+        use futures_util::StreamExt;
+        let mut body = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), body.next())
+            .await
+            .expect("first chunk arrives while the upstream is still silent")
+            .expect("stream yields")
+            .expect("chunk is ok");
+        let text = String::from_utf8(first.to_vec()).expect("chunk is utf8");
+        assert!(
+            text.starts_with("event: message_start\ndata: "),
+            "got: {text}"
+        );
     }
 
-    /// A completed frame followed by an incomplete frame is emitted immediately,
-    /// while the trailing bytes remain buffered and are not rescanned from the
-    /// beginning when the next chunk arrives.
-    #[test]
-    fn sse_parser_retains_an_incomplete_trailing_frame() {
-        let mut parser = SseParser::default();
-        let events = parser.push(b"event: a\ndata: {\"n\":1}\n\nevent: b\ndata: {\"n\":");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].data["n"], 1);
-
-        let events = parser.push(b"2}\n\n");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event.as_deref(), Some("b"));
-        assert_eq!(events[0].data["n"], 2);
-    }
-
-    /// A frame terminator split across chunks is detected by rescanning the
-    /// previous chunk's final byte.
-    #[test]
-    fn sse_parser_detects_terminator_split_across_chunks() {
-        let mut parser = SseParser::default();
-        assert!(parser.push(b"event: a\ndata: {\"n\":1}\n").is_empty());
-
-        let events = parser.push(b"\n");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].data["n"], 1);
-    }
-
-    /// A frame that arrives split at an arbitrary ASCII byte still parses once
-    /// the terminator lands, and only completed frames are emitted per push.
-    #[test]
-    fn sse_parser_emits_only_completed_frames() {
-        let mut parser = SseParser::default();
-        assert!(parser.push(b"event: a\ndata: {\"n\":1}\n").is_empty());
-        let events = parser.push(b"\nevent: b\ndata: {\"n\":2}\n\n");
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].data["n"], 1);
-        assert_eq!(events[1].data["n"], 2);
+    /// The committed single-account sample starts at the pre-dispatch instant
+    /// the caller seeded (the empty-scan fallback after an in-dispatch account
+    /// scan): a back-dated start shows up in the recorded latency.
+    #[tokio::test]
+    async fn forward_http_seeds_the_committed_sample_from_the_pre_dispatch_start() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let mut config = crate::config::Config::default();
+        config.providers.insert(
+            "forward-http-start-probe".to_string(),
+            config
+                .providers
+                .get("codex")
+                .expect("codex provider is built in")
+                .clone(),
+        );
+        config
+            .providers
+            .get_mut("forward-http-start-probe")
+            .expect("just inserted")
+            .base_url = server.uri();
+        let mut route = codex_route();
+        route.provider = "forward-http-start-probe".to_string();
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let forward = ForwardOptions {
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: crate::config::AuthMode::ApiKey,
+            turn: TurnOptions {
+                client_wants_stream: true,
+                thinking_enabled: false,
+                tool_search_native: false,
+            },
+            codex_quota_account: None,
+            estimate_input: None,
+            started_at: Some(std::time::Instant::now() - std::time::Duration::from_millis(300)),
+        };
+        let credential = CredentialSource::Resolved(Credential::ApiKey {
+            value: "probe".to_string(),
+            header: crate::config::ApiKeyHeader::Bearer,
+        });
+        let (status, response) = forward_http(&state, &route, forward, credential, None)
+            .await
+            .expect("forward_http builds the committed response");
+        assert_eq!(status, StatusCode::OK);
+        to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the committed stream completes");
+        let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+            "forward-http-start-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 1, "one committed sample");
+        assert!(
+            latencies[0] >= 150.0,
+            "the sample must start at the seeded instant: {}ms",
+            latencies[0]
+        );
     }
 }

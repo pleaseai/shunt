@@ -71,15 +71,18 @@ impl StageSource {
     /// standing in for a decision. Only evidence may move a pinned tier.
     pub(crate) fn is_signal_evidence(self) -> bool {
         match self {
-            Self::Scorer(
-                DecisionSource::Override | DecisionSource::TestsPassed | DecisionSource::Dimensions,
-            ) => true,
+            Self::Scorer(DecisionSource::Override | DecisionSource::Dimensions) => true,
             // `Ambiguous` is the scorer declining to decide, `FallOpen` is the
-            // picker's default standing in, and `LlmClassifier` cannot occur
-            // because shunt runs no judge. None of the three is evidence.
+            // picker's default standing in, `LlmClassifier` cannot occur because
+            // shunt runs no judge, and `CapableHold` is libsy's own hysteresis —
+            // an earlier escalation being held, which is what `Sticky` already
+            // means here — and cannot occur either, because only libsy's stateful
+            // `StageClassifier` stamps it and shunt calls `pick_tier` directly.
+            // None of the four is evidence.
             Self::Scorer(
                 DecisionSource::Ambiguous
                 | DecisionSource::LlmClassifier
+                | DecisionSource::CapableHold
                 | DecisionSource::FallOpen,
             ) => false,
             Self::NoSignal | Self::Sticky => false,
@@ -99,18 +102,6 @@ impl StageSource {
             Self::NoSignal => "no_signal",
             Self::Sticky => "sticky",
         }
-    }
-
-    /// libsy's hard de-escalation shortcut, which reports no confidence at all.
-    ///
-    /// Unreachable through the live path today: [`signals::extract`] pins
-    /// `ToolSignals::tests_passed` to `false` because Claude Code runs tests
-    /// through `Bash`, so recognizing a pass would mean reading result text.
-    /// The branch this gates is kept because it is the correct handling the
-    /// moment the extractor learns to set the flag, and because removing it
-    /// would silently change de-escalation if it ever did.
-    pub(crate) fn is_tests_passed(self) -> bool {
-        matches!(self, Self::Scorer(DecisionSource::TestsPassed))
     }
 }
 

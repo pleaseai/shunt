@@ -55,7 +55,7 @@ shunt 知道 Claude Code 实际的工具名称,这正是它能胜过通用路由
 完整的评分公式、支撑它的公开基准结果,以及 shunt 在其之上额外加入的东西,都在
 [Switchyard 集成](/zh-cn/guides/switchyard/)。
 
-[libsy]: https://crates.io/crates/switchyard-libsy
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
 [sy]: https://github.com/NVIDIA-NeMo/Switchyard
 
 ## 为什么下行比上行更难
@@ -107,8 +107,9 @@ POST /v1/messages   {"model": "claude-auto", ...}
 | `x-gateway-routed-model` | 路由器选中的目标(`claude-opus-4-8`) |
 | `x-gateway-route-source` | 原因(`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`) |
 
-这五个就是 shunt 今天会发出的标签。评分器还定义了第六个 `tests_passed`,但信号
-提取器从不报告测试通过,因此没有响应会带上它。
+这五个就是 shunt 今天会发出的标签。评分器还定义了另外三个 —— `ambiguous`、
+`llm-classifier` 和 `capable_hold` —— 但没有一个能出现在响应里:shunt 把无法定夺的
+一轮报告为 `fall_open`,从不调用判定模型,并且用自己的会话滞后机制取代评分器的那一套。
 
 没有路由器的模型 id 不会带上这两个头,这样"被路由到高效档位"与"根本没走路由器"才能
 区分开。`count_tokens` 探测不加这两个头:在尚未固定的会话上,探测按自己落后一轮的

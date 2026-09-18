@@ -34,14 +34,15 @@ pub(super) async fn forward_websocket(
     route: &Route,
     pool_key: Option<&str>,
     forward: ForwardOptions,
+    credential: Credential,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let ForwardOptions {
         upstream_body,
-        credential,
         auth,
         turn,
         codex_quota_account,
         estimate_input,
+        started_at: _,
     } = forward;
     let pool_key = pool_key.filter(|key| !key.is_empty());
     let http_url = responses_url(&state.config, &route.provider);
