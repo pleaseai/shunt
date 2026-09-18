@@ -1,0 +1,63 @@
+src/adapters/responses/context.rs
+  s_052500d6680279::t_4dbbd32d47c0a6 31-33,43,51,59-62,73
+src/adapters/responses/pool.rs
+  s_052500d6680279::t_77b9643682defa 191
+site/src/content/docs/providers/openai.mdx
+  s_052500d6680279::t_0b5cd80d34fe36 107-125
+src/model/stop_sequences.rs
+  s_052500d6680279::t_6d2d5fdb0942dc 1-211
+site/src/content/docs/zh-cn/providers/openai.mdx
+  s_052500d6680279::t_0b5cd80d34fe36 107-121
+site/src/content/docs/ko/providers/openai.mdx
+  s_052500d6680279::t_0b5cd80d34fe36 105-123
+site/src/content/docs/ja/providers/openai.mdx
+  s_052500d6680279::t_0b5cd80d34fe36 109-128
+docs/m1-responses-translation.md
+  s_052500d6680279::t_8f491eeb36bee6 229-273
+site/src/content/docs/ja/reference/configuration.md
+  s_052500d6680279::t_28470d9c45900c 339
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_052500d6680279::t_28470d9c45900c 339
+site/src/content/docs/ko/reference/configuration.md
+  s_052500d6680279::t_28470d9c45900c 358
+src/model/mod.rs
+  s_052500d6680279::t_834986d90928fa 8
+src/adapters/responses/http.rs
+  s_052500d6680279::t_b28b1f1942b1a0 150-156
+  s_052500d6680279::t_9522ef00e3e79b 228-234,236-244,246
+  s_052500d6680279::t_0e4fbc82fbe01a 134-138,164-170,173
+  s_052500d6680279::t_9fec37d03092a0 307,309-313,318,561-629
+tests/responses_stop_sequences.rs
+  s_052500d6680279::t_4803d0f4191529 1-147,149-165,167-231
+  s_052500d6680279::t_0307ef0ee50ed3 148
+  s_052500d6680279::t_6378810e888099 166
+src/adapters/responses/mod.rs
+  s_052500d6680279::t_4dbbd32d47c0a6 134-149,154
+src/adapters/responses/ws_stream.rs
+  s_052500d6680279::t_9522ef00e3e79b 39-43,53-56,62-69,72,142-147
+  s_052500d6680279::t_15c1263b4960c3 148,193,195-199,204,431-499
+src/model/responses.rs
+  s_052500d6680279::t_9dfd0a305f63f1 257-265,272-273,588-597,609-623,629,636,790-804,806,852,855-856,873-875,881
+  s_052500d6680279::t_114d85c012c739 598-608
+  s_052500d6680279::t_b6dbcccbde22b9 10,1537-1650,1655,1657-1660,1662-1663,1666-1667,1669-1676,1678-1832
+  s_052500d6680279::t_536085fd37519b 92-95,142,158-184
+  s_052500d6680279::t_1ad4954e8e62b8 1651-1654,1656,1661,1664-1665,1668,1677
+site/src/content/docs/reference/configuration.md
+  s_052500d6680279::t_28470d9c45900c 473
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9da627802050da63c39f9799f7e7a3dd13a810ff",
+  "prompts": {},
+  "sessions": {
+    "s_052500d6680279": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0845c0df-ed8b-423f-abeb-13346677781e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
