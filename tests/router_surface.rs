@@ -85,7 +85,7 @@ const BASE_PATHS: [(&str, &str); 7] = [
 /// method sets are unchanged by the move — the same handlers are registered at
 /// new paths — and `every_registered_method_set_matches_the_inventory` proves it
 /// against the live router rather than taking it on trust.
-const ADMIN_PATHS: [(&str, &str); 18] = [
+const ADMIN_PATHS: [(&str, &str); 19] = [
     ("/admin", "GET,HEAD"),
     // The same handler under the spelling a browser or proxy produces by
     // appending a slash. A `{*path}` segment cannot match the empty string, so
@@ -101,6 +101,7 @@ const ADMIN_PATHS: [(&str, &str); 18] = [
     ("/admin/api/observed", "GET,HEAD"),
     ("/admin/api/pool", "GET,HEAD"),
     ("/admin/api/status", "GET,HEAD"),
+    ("/admin/api/routes", "GET,HEAD"),
     ("/admin/api/accounts/claude", "POST"),
     ("/admin/api/accounts/claude/{name}/complete", "POST"),
     ("/admin/api/accounts/claude/{name}/refresh", "POST"),
@@ -679,14 +680,14 @@ fn the_source_scan_finds_every_literal_registration() {
         .iter()
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
-    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 18 admin plus
+    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 19 admin plus
     // the 5 UI routes, 7 gateway (its 3 OTLP paths come from `Signal::path()`),
     // 2 spend. The UI five are counted unconditionally: this scan reads source
     // text, and `#[cfg(feature = "ui")]` does not remove the `.route("…"`
     // literals from it.
     assert_eq!(
-        found, 41,
-        "the literal-path scan found {found} registrations, not 41; either a route was added or \
+        found, 42,
+        "the literal-path scan found {found} registrations, not 42; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }

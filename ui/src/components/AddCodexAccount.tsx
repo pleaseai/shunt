@@ -42,7 +42,7 @@ export const AddCodexAccount = forwardRef<AddAccountHandle, { onStored: () => vo
       <>
         <h2>Add Codex account</h2>
         <div className="card">
-          <p className="muted" style={{ marginTop: 0 }}>
+          <p className="muted mt-0">
             ChatGPT OAuth creates a refreshable login that shunt manages.
           </p>
           <label htmlFor="codex-name">
@@ -61,13 +61,13 @@ export const AddCodexAccount = forwardRef<AddAccountHandle, { onStored: () => vo
           <button
             id="start-codex"
             type="button"
-            style={{ marginTop: '.7rem' }}
+            className="mt-3"
             onClick={() => void flow.start({ name: flow.name.trim() })}
           >
             Start Codex login
           </button>
           {flow.authorizeUrl ? (
-            <div id="codex-step2" style={{ marginTop: '1rem' }}>
+            <div id="codex-step2" className="mt-4">
               <p>1. Open this URL, sign in to the target ChatGPT account, and approve:</p>
               <p className="overflow">
                 <a
@@ -94,7 +94,7 @@ export const AddCodexAccount = forwardRef<AddAccountHandle, { onStored: () => vo
                 value={flow.code}
                 onChange={(event) => flow.setCode(event.target.value)}
               />
-              <div style={{ marginTop: '.6rem' }}>
+              <div className="mt-2.5">
                 <button
                   id="complete-codex"
                   type="button"

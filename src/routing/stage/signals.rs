@@ -171,8 +171,10 @@ pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<Too
         // unrelated failures. The trailing-pair rule below already covers that
         // case through `severity`, on evidence this extractor actually has.
         //
-        // `compacted` needs a reliable marker for Claude Code's context-compaction
-        // summary, which is not pinned by any test here yet.
+        // `compacted` is not decided here. Its marker is a header, not the
+        // transcript — `x-claude-code-context-compacted`, latched per session
+        // by the store — so `stage::decide` writes it over this default from
+        // the `RouterContext` after extraction (ADR-0005 §11).
         //
         // `new_count`/`recent_new_count` count calls to tools an operator put in
         // libsy's `tool_semantics.new` category. shunt exposes no such config

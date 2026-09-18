@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { vi } from 'vitest';
 
 import { App } from '../App';
@@ -111,10 +111,30 @@ export function mockApi(routes: Routes): Api {
  * `App`, not `Dashboard`: the bootstrap fetch is part of every property here —
  * the refresh buffer and the CSRF token both reach the page through it.
  */
-export async function renderDashboard(fixtures: Fixtures = {}, extra: Routes = {}): Promise<Api> {
+export interface RenderOptions {
+  /**
+   * Expand the pool-management disclosure before returning. On by default: the
+   * panel is `hidden="until-found"` while closed, so its controls sit in the
+   * DOM but outside the accessibility tree, and almost every suite here asserts
+   * on those controls. Pass `false` to assert on the collapsed state itself.
+   */
+  expandPool?: boolean;
+}
+
+export async function renderDashboard(
+  fixtures: Fixtures = {},
+  extra: Routes = {},
+  options: RenderOptions = {},
+): Promise<Api> {
   const api = mockApi({ ...defaultRoutes(fixtures), ...extra });
   render(<App />);
-  await screen.findByRole('heading', { name: 'Accounts and usage' });
+  // Generous on purpose. `App` resolves the session fetch and only then mounts
+  // the router, which resolves the initial route on a later tick, so first paint
+  // of the index route is two async hops away. Testing Library's 1000 ms default
+  // is close enough to that under a full parallel run -- 13 workers on one
+  // machine -- that this line failed intermittently at ~1.3 s while passing
+  // 14/14 when the file ran alone.
+  await screen.findByRole('heading', { name: 'Accounts and usage' }, { timeout: 5000 });
   // Every table settles before a test asserts: leaving one on "Loading…" is how
   // an assertion about a missing row passes for the wrong reason.
   await waitFor(() => expect(screen.queryAllByText('Loading…')).toHaveLength(0));
@@ -128,6 +148,15 @@ export async function renderDashboard(fixtures: Fixtures = {}, extra: Routes = {
   // configured `null` is the settled state and there is nothing to wait for.
   if (fixtures.status?.length) {
     await screen.findByRole('heading', { name: 'Upstream status' });
+  }
+  // Pool management ships collapsed -- it is the rarer, riskier task -- so the
+  // disclosure is opened once, centrally, rather than in every test that needs
+  // what is behind it: those suites are about the pool tables, not about the
+  // disclosure guarding them. `layout.test.tsx` opts out to assert the
+  // collapsed state itself.
+  if (options.expandPool !== false) {
+    fireEvent.click(screen.getByRole('button', { name: /Manage pool accounts/ }));
+    await screen.findByRole('heading', { name: 'Claude accounts' });
   }
   return api;
 }

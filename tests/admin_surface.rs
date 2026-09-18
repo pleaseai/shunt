@@ -12,7 +12,7 @@ use reqwest::StatusCode;
 use shunt::{
     config::{
         AccountConfig, AdminConfig, AdminKey, AdminOidcConfig, AuthMode, Config, InboundAuthConfig,
-        OidcProviderConfig,
+        OidcProviderConfig, RouteConfig,
     },
     server,
 };
@@ -538,6 +538,7 @@ async fn admin_routes_are_absent_without_the_block() {
         "/admin/api/observed",
         "/admin/api/pool",
         "/admin/api/status",
+        "/admin/api/routes",
         "/admin/api/session",
     ] {
         let response = client
@@ -1119,6 +1120,101 @@ async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
     assert_eq!(section["accounts"][0]["name"], "kimi-primary");
 }
 
+/// The admin routing view must be byte-identical to the proxy's `/routes`.
+///
+/// The two are separate registrations on purpose -- `[server.admin].bind` can
+/// put them on different listeners -- so nothing about the routing stops them
+/// drifting apart. This is what stops it: the dashboard must describe the same
+/// table a client resolves against, or it is worse than no page at all. Both
+/// optional-field shapes are configured so a serializer change that dropped an
+/// omitted field on one path and not the other would fail here.
+#[tokio::test]
+async fn admin_routes_match_the_proxy_routes_response() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_ROUTES", "ops:routes-secret");
+    let mut config = admin_config("SHUNT_TEST_ADMIN_ROUTES");
+    config.routes = vec![
+        RouteConfig {
+            model: "fully-specified".to_string(),
+            provider: "codex".to_string(),
+            upstream_model: Some("gpt-5.6-luna".to_string()),
+            effort: Some("high".to_string()),
+            service_tier: Some("priority".to_string()),
+        },
+        RouteConfig {
+            model: "bare".to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        },
+    ];
+    let gateway = start(config).await;
+    let client = reqwest::Client::new();
+
+    let admin: serde_json::Value = client
+        .get(format!("{}/admin/api/routes", gateway.base_url))
+        .header("x-shunt-admin-token", "routes-secret")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let proxy: serde_json::Value = client
+        .get(format!("{}/routes", gateway.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(admin, proxy);
+    // Pinned separately so an empty-on-both-sides response cannot satisfy the
+    // equality above.
+    let data = admin["data"].as_array().unwrap();
+    assert_eq!(data.len(), 2);
+    assert_eq!(data[0]["model"], "fully-specified");
+    assert_eq!(data[0]["upstream_model"], "gpt-5.6-luna");
+    assert_eq!(data[0]["effort"], "high");
+    assert_eq!(data[0]["service_tier"], "priority");
+    assert_eq!(data[1]["model"], "bare");
+    assert!(data[1].get("upstream_model").is_none());
+}
+
+/// The admin twin authenticates even though its proxy counterpart does not, so
+/// an operator who leaves `/routes` open has not widened the admin credential.
+#[tokio::test]
+async fn admin_routes_refuses_the_client_token_that_passes_the_proxy_route() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_ROUTES_AUTH", "ops:routes-auth-secret");
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_ROUTES_AUTH")).await;
+    let client = reqwest::Client::new();
+
+    // The proxy route carries no authentication at all.
+    let open = client
+        .get(format!("{}/routes", gateway.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(open.status(), StatusCode::OK);
+
+    // The admin twin still demands the admin credential.
+    let refused = client
+        .get(format!("{}/admin/api/routes", gateway.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+}
+
 /// `[server.status]` is absent from `admin_config`, so `/admin/api/status` must
 /// report an empty `sources` list -- the shape the dashboard reads as "hide
 /// the whole section" rather than an empty table.
@@ -1326,6 +1422,7 @@ async fn read_key_passes_gets_is_refused_on_mutations_and_signs_in_read_only() {
     for route in [
         "/admin/api/pool",
         "/admin/api/status",
+        "/admin/api/routes",
         "/admin/api/accounts",
     ] {
         let response = client
@@ -1600,6 +1697,7 @@ async fn admin_api_requires_authentication() {
         "/admin/api/observed",
         "/admin/api/pool",
         "/admin/api/status",
+        "/admin/api/routes",
     ] {
         let response = client
             .get(format!("{}{route}", gateway.base_url))
