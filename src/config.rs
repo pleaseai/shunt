@@ -2284,7 +2284,7 @@ pub enum ConfigError {
     SpendRequiresAdmin,
     #[error("[server.spend.pricing].multiplier must be a finite number of at least 0.000001 and at most 1, got {multiplier}")]
     InvalidPricingMultiplier { multiplier: f64 },
-    #[error("server.spend.pricing.overrides[{index}].{field} must be a finite USD-per-million rate of at least 0.001, got {value}")]
+    #[error("server.spend.pricing.overrides[{index}].{field} must be a finite USD-per-million rate of at least 0.001 and at most 18446744073, got {value}")]
     InvalidPricingRate {
         index: usize,
         field: &'static str,
@@ -3181,7 +3181,9 @@ impl Config {
                 ("cache_read", row.cache_read),
                 ("cache_write", row.cache_write),
             ] {
-                if !value.is_finite() || value < crate::gateway::spend::pricing::MIN_USD_PER_MILLION
+                if !value.is_finite()
+                    || value < crate::gateway::spend::pricing::MIN_USD_PER_MILLION
+                    || value > crate::gateway::spend::pricing::MAX_USD_PER_MILLION
                 {
                     return Err(ConfigError::InvalidPricingRate {
                         index,
@@ -3245,15 +3247,18 @@ impl Config {
     /// row usable. A client model *id*, by contrast, is forwarded as-is to
     /// whichever upstream serves it, so it is not scoped.
     ///
-    /// A config with none of the three tables forwards the client's raw model
-    /// string to the default provider, so *every* string is requestable there
-    /// and the caller's "will never match" warning would be a false positive.
+    /// `routing::resolve_model_chain` ends by routing anything no `[[routes]]`
+    /// or `[[route_prefixes]]` entry claimed to `server.default_provider` as a
+    /// single route, so every model string is requestable on that one upstream
+    /// and a row naming it is never warned about.
     fn pricing_model_is_requestable(&self, row: &PricingOverride) -> bool {
-        let model = row.model.as_str();
+        // Match against the string routing matches against: it strips the
+        // `[1m]` hint before route lookup, and the resolver trims.
+        let model = crate::routing::strip_context_window_hint(row.model.trim());
         if crate::gateway::spend::pricing::canonical_builtin_id(model).is_some() {
             return true;
         }
-        if self.models.is_empty() && self.routes.is_empty() && self.route_prefixes.is_empty() {
+        if row.upstream == self.server.default_provider {
             return true;
         }
         let matches = |candidate: &str| candidate.eq_ignore_ascii_case(model);
@@ -3268,10 +3273,11 @@ impl Config {
             route.provider == row.upstream
                 && (matches(&route.model) || route.upstream_model.as_deref().is_some_and(matches))
         }) || self.route_prefixes.iter().any(|route| {
-            route.provider == row.upstream
-                && model.len() >= route.prefix.len()
-                && model.as_bytes()[..route.prefix.len()]
-                    .eq_ignore_ascii_case(route.prefix.as_bytes())
+            // Prefix routing is case-sensitive (`routing::resolve_model_chain`),
+            // so this predicate has to be too, or it would call a row usable
+            // that no request can ever reach. `starts_with` is also
+            // char-boundary safe, which a byte slice of the model is not.
+            route.provider == row.upstream && model.starts_with(&route.prefix)
         })
     }
 
@@ -5805,6 +5811,26 @@ mod tests {
                 .unwrap_or_else(|error| panic!("multiplier {multiplier} must validate: {error}"));
         }
 
+        // The bounds themselves are accepted; only past them is an error.
+        for rate in [
+            crate::gateway::spend::pricing::MIN_USD_PER_MILLION,
+            crate::gateway::spend::pricing::MAX_USD_PER_MILLION,
+        ] {
+            let config = pricing_config(PricingConfig {
+                multiplier: 1.0,
+                overrides: vec![PricingOverride {
+                    input: rate,
+                    output: rate,
+                    cache_read: rate,
+                    cache_write: rate,
+                    ..pricing_override("anthropic", "claude-opus-5", 1.0)
+                }],
+            });
+            config
+                .validate()
+                .unwrap_or_else(|error| panic!("rate {rate} must validate: {error}"));
+        }
+
         // Every rate is required and must be positive. TOML omission is caught
         // by serde, so the remaining cases are zero and negative.
         for (field, row) in [
@@ -5829,6 +5855,16 @@ mod tests {
                     cache_write: f64::NAN,
                     ..pricing_override("anthropic", "claude-opus-5", 1.0)
                 },
+            ),
+            // Above the ceiling the femto-USD conversion saturates, so the row
+            // would price at `u64::MAX` rather than at what it states.
+            (
+                "input",
+                pricing_override(
+                    "anthropic",
+                    "claude-opus-5",
+                    crate::gateway::spend::pricing::MAX_USD_PER_MILLION + 1.0,
+                ),
             ),
         ] {
             let config = pricing_config(PricingConfig {
@@ -5963,11 +5999,16 @@ cache_write = 4.125
     }
 
     /// The unusable-row warning must fire on an alias no request can carry, and
-    /// stay quiet for a built-in or a model some `[[models]]`/`[[routes]]`/
+    /// stay quiet for a built-in, a model some `[[models]]`/`[[routes]]`/
     /// `[[route_prefixes]]` entry can actually produce **on that row's own
-    /// upstream**.
+    /// upstream**, or any model at all on `server.default_provider` — routing
+    /// falls through to that provider for everything it did not otherwise
+    /// claim.
     #[test]
     fn pricing_override_model_is_requestable_only_via_builtins_models_and_routes() {
+        // `default_provider` is `anthropic`, so the tables here belong to
+        // `codex` and the negative cases use a third upstream that routing
+        // never reaches.
         let config = Config {
             models: vec![model_config(
                 "team-sonnet",
@@ -5975,67 +6016,81 @@ cache_write = 4.125
             )],
             routes: vec![RouteConfig {
                 model: "legacy-alias".to_string(),
-                provider: "anthropic".to_string(),
+                provider: "codex".to_string(),
                 upstream_model: Some("vendor-sonnet".to_string()),
                 effort: None,
                 service_tier: None,
             }],
-            route_prefixes: vec![RoutePrefixConfig {
-                prefix: "vendor-".to_string(),
-                provider: "anthropic".to_string(),
-            }],
+            route_prefixes: vec![
+                RoutePrefixConfig {
+                    prefix: "vendor-".to_string(),
+                    provider: "codex".to_string(),
+                },
+                // A non-ASCII prefix: the reachability check must not index
+                // into the model string by byte offset.
+                RoutePrefixConfig {
+                    prefix: "é".to_string(),
+                    provider: "codex".to_string(),
+                },
+            ],
             ..Config::default()
         };
+        assert_eq!(config.server.default_provider, "anthropic");
 
-        let requestable = |upstream: &str, model: &str| {
+        let requestable = |config: &Config, upstream: &str, model: &str| {
             config.pricing_model_is_requestable(&pricing_override(upstream, model, 1.0))
         };
 
         for (upstream, model) in [
-            ("anthropic", "claude-sonnet-4-6"),
-            ("codex", "us.anthropic.claude-sonnet-4-6-20260217-v1:0"),
+            ("bedrock-eu", "claude-sonnet-4-6"),
+            ("bedrock-eu", "us.anthropic.claude-sonnet-4-6-20260217-v1:0"),
             // A client model id is forwarded as-is to whichever upstream serves
             // it, so it is requestable on any of them.
-            ("anthropic", "team-sonnet"),
+            ("bedrock-eu", "team-sonnet"),
             // The `[[models]]` upstream_model map entry is keyed by upstream.
             ("codex", "GPT-5.2"),
-            ("anthropic", "legacy-alias"),
-            ("anthropic", "vendor-sonnet"),
-            // A prefix route on this row's upstream serves the model.
-            ("anthropic", "vendor-anything"),
-            ("anthropic", "VENDOR-anything"),
+            ("codex", "legacy-alias"),
+            ("codex", "vendor-sonnet"),
+            // A prefix route on this row's upstream serves the model, at the
+            // prefix's own case.
+            ("codex", "vendor-anything"),
+            ("codex", "évariste"),
+            // Everything routing did not claim goes to the default provider.
+            ("anthropic", "my-sonnet-alias"),
         ] {
             assert!(
-                requestable(upstream, model),
+                requestable(&config, upstream, model),
                 "{model} is requestable on {upstream}"
             );
         }
         for (upstream, model) in [
-            ("anthropic", "my-sonnet-alias"),
-            ("anthropic", "gpt-5.3"),
-            // Mapped only as the `codex` upstream model: an `anthropic` row
-            // naming it prices nothing.
-            ("anthropic", "gpt-5.2"),
-            // Route and prefix both belong to `anthropic`, so a `codex` row
-            // naming what they serve prices nothing either.
-            ("codex", "legacy-alias"),
-            ("codex", "vendor-sonnet"),
-            ("codex", "vendor-anything"),
+            ("bedrock-eu", "my-sonnet-alias"),
+            ("bedrock-eu", "gpt-5.3"),
+            // Mapped only as the `codex` upstream model: a row on another
+            // upstream naming it prices nothing.
+            ("bedrock-eu", "gpt-5.2"),
+            // Route and prefix both belong to `codex`.
+            ("bedrock-eu", "legacy-alias"),
+            ("bedrock-eu", "vendor-sonnet"),
+            ("bedrock-eu", "vendor-anything"),
+            // Prefix routing is case-sensitive, so a model that differs from
+            // the prefix only in case reaches nothing.
+            ("codex", "VENDOR-anything"),
+            // A model whose first char shares no byte-prefix boundary with the
+            // configured `é` prefix: the check must answer, not panic.
+            ("codex", "aé"),
         ] {
             assert!(
-                !requestable(upstream, model),
+                !requestable(&config, upstream, model),
                 "{model} is not requestable on {upstream}"
             );
         }
 
-        // With none of the three tables configured the client's raw model
-        // string is forwarded to the default provider, so nothing warns.
+        // With no tables at all every model still routes to the default
+        // provider, and only there.
         let passthrough = Config::default();
-        assert!(passthrough.pricing_model_is_requestable(&pricing_override(
-            "anthropic",
-            "my-sonnet-alias",
-            1.0
-        )));
+        assert!(requestable(&passthrough, "anthropic", "my-sonnet-alias"));
+        assert!(!requestable(&passthrough, "codex", "my-sonnet-alias"));
     }
 
     /// `Config` derives `Debug`, and shunt's convention elsewhere is to keep only

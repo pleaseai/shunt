@@ -117,7 +117,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | :-- | :-- | :-- |
 | `upstream` | 예 | 구성된 upstream 이름이어야 함 |
 | `model` | 예 | 클라이언트 또는 upstream 모델 id. 대소문자 구분 없이 매칭 |
-| `input`, `output`, `cache_read`, `cache_write` | 예 | 100만 토큰당 USD. 각각 최소 `0.001` |
+| `input`, `output`, `cache_read`, `cache_write` | 예 | 100만 토큰당 USD. 각각 최소 `0.001`, 최대 `18,446,744,073` |
 
 rate는 토큰당 정수 femto-USD(1e-15 USD)로 저장됩니다. 두 하한은 그 곱이 정확히 토큰당 1 femto-USD, 즉 meter가 표현할 수 있는 가장 작은 0이 아닌 rate가 되도록 정해져 있습니다. 어느 한쪽이라도 하한 아래면 `0`으로 양자화되어, 유효한 할인처럼 보이면서 실제로는 요청 가격이 0이 됩니다.
 
@@ -134,7 +134,7 @@ cache_read = 0.33
 cache_write = 4.125
 ```
 
-범위를 벗어난 multiplier, 누락되었거나 범위를 벗어난 rate, 비어 있는 `upstream`, 구성되지 않은 upstream을 가리키는 `upstream`, 한 upstream에서 같은 모델을 가리키는 두 행은 모두 부팅 시 검증에 실패합니다. 두 행은 문자열이 같을 때가 아니라 같은 모델을 가리킬 때 충돌합니다. `claude-sonnet-4-6`과 `claude-sonnet-4-6-20260217`은 하나의 모델입니다. 내장 모델도 아니고, **해당 행의 `upstream`에서** 어떤 `[[models]]`·`[[routes]]`·`[[route_prefixes]]` 항목으로도 요청할 수 없는 `model`은 오류 대신 경고를 기록합니다. 이 검사는 upstream 단위이며 prefix 라우트도 포함합니다. 다른 upstream의 `upstream_model`로만 매핑된 모델은 여전히 경고 대상이고, 해당 행의 upstream에 있는 `[[route_prefixes]]` 항목이 서빙하는 모델은 경고하지 않습니다.
+범위를 벗어난 multiplier, 누락되었거나 범위를 벗어난 rate, 비어 있는 `upstream`, 구성되지 않은 upstream을 가리키는 `upstream`, 한 upstream에서 같은 모델을 가리키는 두 행은 모두 부팅 시 검증에 실패합니다. 두 행은 문자열이 같을 때가 아니라 같은 모델을 가리킬 때 충돌합니다. `claude-sonnet-4-6`과 `claude-sonnet-4-6-20260217`은 하나의 모델입니다. 내장 모델도 아니고, **해당 행의 `upstream`에서** 어떤 `[[models]]`·`[[routes]]`·`[[route_prefixes]]` 항목으로도 요청할 수 없는 `model`은 오류 대신 경고를 기록합니다. 이 검사는 upstream 단위이며 prefix 라우트도 포함하고, prefix는 라우팅과 똑같이 대소문자를 구분해 비교합니다. 다른 upstream의 `upstream_model`로만 매핑된 모델은 여전히 경고 대상이고, 해당 행의 upstream에 있는 `[[route_prefixes]]` 항목이 서빙하는 모델은 경고하지 않습니다. `server.default_provider`를 가리키는 행은 경고하지 않습니다. 라우팅이 어떤 route나 prefix도 잡지 않은 모델을 모두 그 provider로 보내기 때문입니다.
 
 모델 id는 매칭 전에 정규화됩니다. Claude Code의 `[1m]` 컨텍스트 윈도 힌트, Bedrock 리전 접두사와 `anthropic.` 네임스페이스, Bedrock `-v<major>:<minor>` 버전 접미사, 날짜 스냅샷 접미사(`-20260217`, `@20251101`), 그리고 OpenRouter·Vercel AI Gateway 형식이 대상입니다. 후자는 `anthropic/` 네임스페이스를 제거하고 점으로 쓴 버전을 하이픈으로 바꾸므로 `anthropic/claude-opus-4.8`은 `claude-opus-4-8`로 가격이 매겨집니다. `~anthropic/claude-sonnet-latest` 같은 부동 별칭은 버전을 지정하지 않으므로 가격을 매길 수 없는 상태로 남습니다.
 

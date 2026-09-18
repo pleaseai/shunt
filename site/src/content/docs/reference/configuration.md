@@ -178,7 +178,7 @@ Each `[[server.spend.pricing.overrides]]` row replaces the list price for one mo
 | :-- | :-- | :-- |
 | `upstream` | yes | Must name a configured upstream |
 | `model` | yes | Client or upstream model id, matched case-insensitively |
-| `input`, `output`, `cache_read`, `cache_write` | yes | USD per million tokens, each at least `0.001` |
+| `input`, `output`, `cache_read`, `cache_write` | yes | USD per million tokens, each at least `0.001` and at most `18,446,744,073` |
 
 Rates are stored as whole femto-USD (1e-15 USD) per token. The two floors are set so their product is exactly 1 femto-USD per token, the smallest nonzero rate the meter can carry; anything below either floor would quantize to `0` and price requests at nothing while looking like a valid discount.
 
@@ -195,7 +195,7 @@ cache_read = 0.33
 cache_write = 4.125
 ```
 
-An out-of-range multiplier, a missing or out-of-range rate, a blank `upstream`, an `upstream` naming no configured upstream, and two rows pricing the same model on one upstream all fail validation at boot. Two rows collide when they name the same model, not merely the same string: `claude-sonnet-4-6` and `claude-sonnet-4-6-20260217` are one model. A `model` that is neither a built-in nor a model any `[[models]]`, `[[routes]]`, or `[[route_prefixes]]` entry can request **on that row's own `upstream`** logs a warning instead: the check is per upstream and covers prefix routes, so a model mapped only as another upstream's `upstream_model` still warns, while one served by a `[[route_prefixes]]` entry on the row's upstream does not.
+An out-of-range multiplier, a missing or out-of-range rate, a blank `upstream`, an `upstream` naming no configured upstream, and two rows pricing the same model on one upstream all fail validation at boot. Two rows collide when they name the same model, not merely the same string: `claude-sonnet-4-6` and `claude-sonnet-4-6-20260217` are one model. A `model` that is neither a built-in nor a model any `[[models]]`, `[[routes]]`, or `[[route_prefixes]]` entry can request **on that row's own `upstream`** logs a warning instead: the check is per upstream and covers prefix routes, matched case-sensitively as routing matches them, so a model mapped only as another upstream's `upstream_model` still warns, while one served by a `[[route_prefixes]]` entry on the row's upstream does not. A row on `server.default_provider` never warns, because routing sends everything no route or prefix claimed to that provider.
 
 Model ids are normalized before matching: Claude Code's `[1m]` context-window hint, a Bedrock region prefix and `anthropic.` namespace, a Bedrock `-v<major>:<minor>` version suffix, a dated snapshot suffix (`-20260217`, `@20251101`), and the OpenRouter / Vercel AI Gateway form — the `anthropic/` namespace is stripped and the dotted version hyphenated, so `anthropic/claude-opus-4.8` prices as `claude-opus-4-8`, while a floating alias such as `~anthropic/claude-sonnet-latest` names no version and stays unpriceable.
 
