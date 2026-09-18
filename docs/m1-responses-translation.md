@@ -261,9 +261,12 @@ block.
 `reqwest` byte stream with the final chunk (streaming) or breaks out of the body read
 (non-streaming); `ws_stream.rs` drops the `CodexWsEvents` receiver, which makes the codex_ws
 reader abandon the turn and evict the socket — correct, since a half-consumed turn must not be
-pooled. The websocket paths key this on the stop sequence specifically rather than on "the machine
-is stopped": dropping the receiver on a *normally* completed turn would evict a healthy pooled
-socket.
+pooled. Both transports key this on the stop sequence specifically rather than on "the machine is
+stopped": on a *normally* completed turn the upstream is not mid-turn, and aborting it there would
+evict a healthy pooled socket (websocket) or close a connection reqwest could otherwise return to
+its idle pool (HTTP). So an ordinary terminal — `response.completed` / `response.done` /
+`response.incomplete`, or a backend error event — keeps reading to EOF; the trailing bytes
+translate to nothing, since `stopped` already makes every later event a no-op.
 
 **Usage caveat.** Because the turn ends before `response.completed`, the upstream usage event never
 arrives. `usage_value`'s existing estimate substitution applies, so `message_delta.usage` carries

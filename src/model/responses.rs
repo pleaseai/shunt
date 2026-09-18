@@ -152,9 +152,6 @@ impl AnthropicSseMachine {
         self
     }
 
-    /// Disable final-message reconstruction for a streaming relay. Incremental SSE
-    /// output and usage tracking are unchanged, while text, tool, and reasoning
-    /// payloads are no longer retained after being emitted.
     /// Emulate the client's Anthropic `stop_sequences` on this Responses stream
     /// (issue #605). Assistant text is truncated at the first occurrence of any
     /// of them, the turn ends with `stop_reason: "stop_sequence"`, and the caller
@@ -182,6 +179,9 @@ impl AnthropicSseMachine {
         self.stop.matched().is_some()
     }
 
+    /// Disable final-message reconstruction for a streaming relay. Incremental SSE
+    /// output and usage tracking are unchanged, while text, tool, and reasoning
+    /// payloads are no longer retained after being emitted.
     #[must_use]
     pub fn without_content_accumulation(mut self) -> Self {
         self.accumulate_content = false;
@@ -219,6 +219,12 @@ impl AnthropicSseMachine {
                 self.complete(&event.data)
             }
             "error" | "response.failed" => {
+                // Release the stop-sequence holdback first: it is ordinary output
+                // the client would already have received had `stop_sequences` been
+                // unset, and once `stopped` is set nothing else can emit it. The
+                // open block is deliberately *not* closed here — this arm has
+                // always left it open, with or without stop sequences.
+                let mut out = self.flush_stop_holdback();
                 self.stopped = true;
                 let status = backend_error_status(&event.data);
                 let value = map_error_value(&event.data, status);
@@ -226,7 +232,8 @@ impl AnthropicSseMachine {
                 // ownership into `backend_error` — avoids cloning the envelope.
                 let sse_event = sse("error", &value);
                 self.backend_error = Some((status, value));
-                vec![sse_event]
+                out.push(sse_event);
+                out
             }
             _ => Vec::new(),
         }
@@ -804,13 +811,13 @@ impl AnthropicSseMachine {
         self.close_any()
     }
 
-    fn close_any(&mut self) -> Vec<String> {
-        // Text the stop-sequence scanner is still holding back is a partial stop
-        // that never completed — ordinary output. Flush it here, before this
-        // block's `content_block_stop` and before the accumulation below reads
-        // `text_buffer`, so every path that closes a text block (`close_current`,
-        // `open_tool`, `open_reasoning`, `output_item_done`, `complete`, `finish`)
-        // releases it exactly once.
+    /// Release whatever the stop-sequence scanner is still holding back as an
+    /// ordinary `text_delta`. A holdback is only ever a *partial* stop that never
+    /// completed, so it is output the client is owed — and it is owed it on every
+    /// terminal, not only on the ones that close the block ([`Self::close_any`]).
+    /// Empty unless stop sequences are configured, something is actually held,
+    /// and the open block is text.
+    fn flush_stop_holdback(&mut self) -> Vec<String> {
         let mut out = Vec::new();
         if !self.stop.is_empty()
             && self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Text)
@@ -820,6 +827,17 @@ impl AnthropicSseMachine {
                 out.extend(self.emit_text(&held));
             }
         }
+        out
+    }
+
+    fn close_any(&mut self) -> Vec<String> {
+        // Text the stop-sequence scanner is still holding back is a partial stop
+        // that never completed — ordinary output. Flush it here, before this
+        // block's `content_block_stop` and before the accumulation below reads
+        // `text_buffer`, so every path that closes a text block (`close_current`,
+        // `open_tool`, `open_reasoning`, `output_item_done`, `complete`, `finish`)
+        // releases it exactly once.
+        let mut out = self.flush_stop_holdback();
         let Some(open) = self.open.take() else {
             return out;
         };
@@ -1923,6 +1941,40 @@ mod tests {
         assert_eq!(
             message_delta(&frames).expect("the stop emits message_delta")["delta"]["stop_sequence"],
             "</block>"
+        );
+    }
+
+    /// A backend `error` / `response.failed` event is terminal, so it is the last
+    /// chance to release the holdback: the partial stop never completed, which
+    /// makes it ordinary output the client would already have seen had
+    /// `stop_sequences` been unset. It must reach the client *before* the `error`
+    /// frame.
+    #[test]
+    fn a_backend_error_releases_the_held_back_stop_prefix() {
+        let mut machine = stop_machine(&["</block>"]);
+        let mut frames = machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "answer</blo"}),
+        ));
+        assert_eq!(streamed_text(&frames), "answer");
+
+        frames.extend(machine.apply(event(
+            "response.failed",
+            json!({"response": {"error": {"code": "server_error", "message": "boom"}}}),
+        )));
+
+        assert_eq!(streamed_text(&frames), "answer</blo");
+        let held_at = frames
+            .iter()
+            .position(|frame| frame.contains("</blo"))
+            .expect("the holdback is streamed as a text_delta");
+        let error_at = frames
+            .iter()
+            .position(|frame| frame.contains("event: error"))
+            .expect("the backend error is streamed");
+        assert!(
+            held_at < error_at,
+            "the holdback must precede the error frame; got: {frames:?}"
         );
     }
 }
