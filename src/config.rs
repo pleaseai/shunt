@@ -3416,6 +3416,15 @@ impl Config {
         // Match against the string routing matches against: it strips the
         // `[1m]` hint before route lookup, and the resolver trims.
         let model = crate::routing::strip_context_window_hint(row.model.trim());
+        // A blank model reaches nothing, including on `server.default_provider`.
+        // `PriceTable::resolve` compares against the trimmed request model, and
+        // no routed request carries an empty one, so the row prices nothing and
+        // the operator's intended rate silently falls back to the catalog.
+        // Answering `false` here warns instead of letting the default-provider
+        // arm below wave it through.
+        if model.is_empty() {
+            return false;
+        }
         if crate::gateway::spend::pricing::canonical_builtin_id(model).is_some() {
             return true;
         }
@@ -6961,6 +6970,9 @@ cache_write = 4.125
             // A model whose first char shares no byte-prefix boundary with the
             // configured `é` prefix: the check must answer, not panic.
             ("codex", "aé"),
+            // A blank model reaches nothing, not even on the default provider.
+            ("anthropic", "   "),
+            ("anthropic", ""),
         ] {
             assert!(
                 !requestable(&config, upstream, model),
