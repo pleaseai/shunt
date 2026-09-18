@@ -30,6 +30,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+for dependency in python3 curl jq; do
+  command -v "$dependency" >/dev/null 2>&1 || {
+    printf 'required command not found: %s\n' "$dependency" >&2
+    exit 1
+  }
+done
+
 # Portable stand-in for GNU `timeout` (absent on stock macOS): polls the
 # child once a second and kills it at the deadline. Bash reaps an exited
 # background child eagerly (3.2 and 5.x alike), so `kill -0` reads false
