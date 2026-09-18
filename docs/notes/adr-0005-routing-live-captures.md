@@ -166,8 +166,10 @@ request-to-request and not inferred.
 
 So §11's rule holds as stated: a built-in agent's id travels verbatim,
 **case included** (`Explore`, not `explore`; `Plan`, not `plan`), and a custom
-agent's own name never appears — `marker-finder` arrived as `custom`. The
-`by_type` keys in §11's example config are therefore correct as written.
+agent's own name never appears — `marker-finder` arrived as `custom`. Of the
+three `by_type` keys in §11's example config that confirms two as written,
+`Explore` and `fork`; `teammate` never reached the wire, so its spelling rests
+on the binary's own literal rather than on this capture (both caveats below).
 
 Three details §11's "…" leaves open:
 
