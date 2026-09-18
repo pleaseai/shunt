@@ -143,7 +143,17 @@ What this buys is a dashboard that draws real charts while leaving **all four of
 `storage.md`'s open questions unanswered** — including the first, "is
 single-instance a documented limitation or a documented decision?", which that
 document says every other question follows from. A ring buffer needs no schema,
-no migration, no retention policy, no PII decision, and no answer on replicas.
+no migration, and no answer on replicas.
+
+Leaving a question unanswered is not the same as escaping it, and the fourth —
+retention and PII — the ring inherits rather than defers. A fixed window is
+itself a retention policy, and Decision 3 establishes that `model` is
+client-controlled and passed through verbatim, so whatever a client puts in that
+field is retained for the window and served over the admin API. Capping
+cardinality bounds how many distinct labels are kept, not what any one of them
+contains. The label set admitted to the ring therefore needs an explicit policy —
+allowlist the configured ids, or redact or hash an unmatched one — and that
+belongs with Decision 3's bounding rather than after it.
 
 Its limitations are exact and should be documented rather than engineered
 around: **history does not survive a restart, and the ring is process-local.**
