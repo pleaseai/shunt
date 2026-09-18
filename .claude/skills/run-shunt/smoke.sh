@@ -82,11 +82,16 @@ validate_port() {
 
 job_running() {
   local wanted=$1
-  local pid
-  while IFS= read -r pid; do
-    [ "$pid" = "$wanted" ] && return 0
-  done < <(jobs -pr)
-  return 1
+  local jobs_file
+  local found
+  jobs_file=$(mktemp) || return 1
+  # The redirect keeps `jobs` in this shell: a subshell capture (process or
+  # command substitution) may not see the parent's job table on every bash.
+  jobs -pr > "$jobs_file"
+  grep -qx "$wanted" "$jobs_file"
+  found=$?
+  rm -f "$jobs_file"
+  return "$found"
 }
 
 listener_port() {

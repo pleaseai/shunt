@@ -30,6 +30,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Portable stand-in for GNU `timeout` (absent on stock macOS): the child
+# runs in the background, a timer subshell kills it at the deadline, and
+# `wait` passes the child's own status through.
+run_with_deadline() {
+  local seconds=$1
+  shift
+  local child timer
+  "$@" &
+  child=$!
+  ( sleep "$seconds" && kill "$child" 2>/dev/null ) &
+  timer=$!
+  wait "$child"
+  local rc=$?
+  kill "$timer" 2>/dev/null
+  wait "$timer" 2>/dev/null || true
+  return "$rc"
+}
+
 start_impostor() {
   python3 - "$PORT_FILE" > "$IMPOSTOR_LOG" 2>&1 <<'PY' &
 import json
@@ -133,11 +151,16 @@ assert_impostor_answers() {
 
 job_running() {
   local wanted=$1
-  local pid
-  while IFS= read -r pid; do
-    [ "$pid" = "$wanted" ] && return 0
-  done < <(jobs -pr)
-  return 1
+  local jobs_file
+  local found
+  jobs_file=$(mktemp) || return 1
+  # The redirect keeps `jobs` in this shell: a subshell capture (process or
+  # command substitution) may not see the parent's job table on every bash.
+  jobs -pr > "$jobs_file"
+  grep -qx "$wanted" "$jobs_file"
+  found=$?
+  rm -f "$jobs_file"
+  return "$found"
 }
 
 run_collision() {
@@ -152,14 +175,14 @@ run_collision() {
   if [ "$occupied" = mock ]; then
     expected="mock upstream exited during startup"
     if output="$(SHUNT_PORT=0 MOCK_PORT="$occupied_port" \
-      timeout 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
+      run_with_deadline 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
       printf 'smoke accepted a mock-port impostor\n%s\n' "$output" >&2
       exit 1
     fi
   else
     expected="shunt exited during startup"
     if output="$(SHUNT_PORT="$occupied_port" MOCK_PORT=0 \
-      timeout 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
+      run_with_deadline 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
       printf 'smoke accepted a shunt-port impostor\n%s\n' "$output" >&2
       exit 1
     fi
@@ -178,7 +201,7 @@ run_bad_port() {
   local output
   # validate_port runs before the build, so this case costs nothing.
   if output="$(SHUNT_PORT=99999999999999999999999 MOCK_PORT=0 \
-    timeout 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
+    run_with_deadline 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
     printf 'smoke accepted a port outside 0..65535\n%s\n' "$output" >&2
     exit 1
   fi
@@ -199,7 +222,7 @@ run_live_impostor() {
   start_impostor
   occupied_port="$(<"$PORT_FILE")"
   if output="$(SHUNT_PORT="$occupied_port" MOCK_PORT=0 SHUNT_SERVER__BIND=127.0.0.1:0 \
-    timeout 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
+    run_with_deadline 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
     printf 'smoke asserted against a live impostor on the requested port\n%s\n' "$output" >&2
     exit 1
   fi
@@ -218,7 +241,7 @@ run_wrong_port() {
   # SHUNT_SERVER__BIND outranks the config file, so shunt binds an ephemeral
   # port while the driver asked for a fixed one.
   if output="$(SHUNT_PORT=31799 MOCK_PORT=0 SHUNT_SERVER__BIND=127.0.0.1:0 \
-    timeout 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
+    run_with_deadline 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
     printf 'smoke accepted a shunt bound to a port it never requested\n%s\n' "$output" >&2
     exit 1
   fi
@@ -235,7 +258,7 @@ run_wrong_port
 run_live_impostor
 
 if ! positive_output="$(SHUNT_PORT=0 MOCK_PORT=0 \
-  timeout 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
+  run_with_deadline 600 "$REPO_ROOT/.claude/skills/run-shunt/smoke.sh" 2>&1)"; then
   printf 'positive smoke failed\n%s\n' "$positive_output" >&2
   exit 1
 fi
