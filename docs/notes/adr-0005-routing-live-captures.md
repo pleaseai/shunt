@@ -39,7 +39,7 @@ upstream replies carried Anthropic request ids, so the origin of each `200`,
   "the REPL main thread or the SDK", and driving only the headless path would
   leave the primary case unverified.
 * **Isolation**: every run after the first used a throwaway `HOME`, so the only
-  agents in scope were the built-ins plus one deliberately-custom project
+  agents in scope were the built-ins plus one deliberately custom project
   agent. This matters — the first attempt at fact (b) reported `custom` for
   `Explore`, because the real `HOME` has a `~/.claude/agents/Explore.md` that
   shadows the built-in of that name.
