@@ -71,11 +71,14 @@ pub(super) async fn forward_websocket(
         tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
     });
     let (buffered, events) = open_ws_turn(&ctx).await?;
+    // Both branches consume it: the streaming arm seeds `message_start`, and a
+    // non-streaming turn cut short by an emulated stop sequence needs it because
+    // the stop makes the upstream's own usage a no-op (issue #605).
+    let input_tokens_estimate = match estimate_handle {
+        Some(handle) => handle.await.unwrap_or(0),
+        None => 0,
+    };
     if turn.client_wants_stream {
-        let input_tokens_estimate = match estimate_handle {
-            Some(handle) => handle.await.unwrap_or(0),
-            None => 0,
-        };
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
         Ok((
             StatusCode::OK,
@@ -91,7 +94,9 @@ pub(super) async fn forward_websocket(
         // See `forward_http`: surface the real status (a `502` when a backend
         // error event fired, issue #113) to the access log and metrics rather
         // than a hardcoded `200`.
-        let response = json_events_response(buffered, events, turn.relay(route)).await?;
+        let response =
+            json_events_response(buffered, events, turn.relay(route), input_tokens_estimate)
+                .await?;
         Ok((response.status(), response))
     }
 }

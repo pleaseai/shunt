@@ -128,6 +128,13 @@ pub(super) async fn forward_http(
     let codex_quota_account =
         codex_quota_account.or_else(|| super::codex_quota_account(&credential));
     let body = prepare_body(state, route, upstream_body.as_ref()).await;
+    // Spawned before the send, like the pool loop's own estimate handle, so the
+    // CPU-bound tiktoken encode overlaps this request's connect/RTT instead of
+    // landing on the response's critical path. Only a non-streaming turn
+    // carrying `stop_sequences` reaches here with `Some` (see `forward`'s gate).
+    let estimate_handle = estimate_input.map(|request| {
+        tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
+    });
     let upstream = crate::retry::send_with_retry_with_safety(
         policy,
         &route.provider,
@@ -147,23 +154,17 @@ pub(super) async fn forward_http(
     if !status.is_success() {
         return Err(mapped_upstream_error(status, upstream, auth).await);
     }
+    // Bounded like every other path so a saturated blocking pool cannot stall
+    // the response (see `bounded_input_estimate`); by now the encode has had the
+    // whole upstream round-trip to finish, so this normally resolves instantly.
+    let input_tokens_estimate = match estimate_handle {
+        Some(handle) => bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await,
+        None => 0,
+    };
     // Thread the real response status: `json_response` returns a `502` when
     // a backend error event surfaced via `backend_error` (issue #113), so
     // the proxy's access log (`upstream_status`) and `record_proxied_request`
     // metrics reflect the failure instead of a hardcoded `200`.
-    // Resolved here rather than before the send: this arm has no commit to
-    // protect, and the estimate is only consumed after the whole body is read.
-    // Bounded like the streaming path so a saturated blocking pool cannot stall
-    // the response (see `bounded_input_estimate`).
-    let input_tokens_estimate = match estimate_input {
-        Some(request) => {
-            let handle = tokio::task::spawn_blocking(move || {
-                crate::count_tokens::count_input_tokens_value(&request)
-            });
-            bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await
-        }
-        None => 0,
-    };
     let response = json_response(upstream, turn.relay(route), input_tokens_estimate).await?;
     Ok((response.status(), response))
 }

@@ -121,8 +121,13 @@ pub(super) async fn json_events_response(
     buffered: BufferedEvent,
     mut events: CodexWsEvents,
     relay: RelayOptions,
+    input_tokens_estimate: u64,
 ) -> Result<axum::response::Response, AdapterError> {
-    let mut machine = relay.machine();
+    // Seeded like every other path: an emulated stop sequence makes the
+    // upstream's `response.completed` usage a no-op, and `final_json` falls back
+    // to this estimate when no usage was observed, so without it a stopped turn
+    // reports `input_tokens: 0` for a non-empty prompt (issue #605).
+    let mut machine = relay.machine().with_input_estimate(input_tokens_estimate);
     let mut buffered = buffered;
     loop {
         let item = match buffered.take() {
@@ -245,7 +250,7 @@ mod tests {
             .unwrap();
         drop(tx);
 
-        let error = json_events_response(None, rx, relay_opts())
+        let error = json_events_response(None, rx, relay_opts(), 0)
             .await
             .expect_err("mid-stream transport error should stop failover");
         assert!(error.failure.is_none());
@@ -269,7 +274,7 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let response = json_events_response(None, rx, relay_opts())
+        let response = json_events_response(None, rx, relay_opts(), 0)
             .await
             .expect("clean events should build a response");
         assert_eq!(response.status(), StatusCode::OK);
@@ -298,7 +303,7 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let error = json_events_response(None, rx, relay_opts())
+        let error = json_events_response(None, rx, relay_opts(), 0)
             .await
             .expect_err("backend error event should stop failover");
 
@@ -329,7 +334,7 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let error = json_events_response(None, rx, relay_opts())
+        let error = json_events_response(None, rx, relay_opts(), 0)
             .await
             .expect_err("in-stream rate limit is an error");
 
@@ -364,7 +369,7 @@ mod tests {
 
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            json_events_response(None, rx, relay_opts()),
+            json_events_response(None, rx, relay_opts(), 0),
         )
         .await
         .expect("collector returns without waiting for channel close")
@@ -450,7 +455,7 @@ mod tests {
 
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            json_events_response(None, rx, relay_opts_with_stops(&["</block>"])),
+            json_events_response(None, rx, relay_opts_with_stops(&["</block>"]), 0),
         )
         .await
         .expect("collector returns without waiting for channel close")
@@ -462,6 +467,33 @@ mod tests {
         assert_eq!(body["content"][0]["text"], "answer");
         assert_eq!(body["stop_reason"], "stop_sequence");
         assert_eq!(body["stop_sequence"], "</block>");
+
+        drop(tx);
+    }
+
+    /// A non-streaming websocket turn cut short by a stop sequence reports the
+    /// seeded input estimate. The stop makes the upstream's own `response.completed`
+    /// usage a no-op, so without the seed this path returns `input_tokens: 0` for a
+    /// non-empty prompt — the websocket sibling of the HTTP case (issue #605).
+    #[tokio::test]
+    async fn json_events_response_reports_the_input_estimate_for_a_stopped_turn() {
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Ok(created_event())).unwrap();
+        tx.try_send(Ok(text_delta_event("answer</block>garbage")))
+            .unwrap();
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            json_events_response(None, rx, relay_opts_with_stops(&["</block>"]), 19),
+        )
+        .await
+        .expect("collector returns without waiting for channel close")
+        .expect("a stop sequence is a successful turn");
+
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["stop_reason"], "stop_sequence");
+        assert_eq!(body["usage"]["input_tokens"], 19);
 
         drop(tx);
     }
