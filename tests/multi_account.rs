@@ -1566,21 +1566,6 @@ async fn pool_classifier_request_on_a_non_oauth_token_env_account_is_not_rewritt
     upstream.verify().await;
 }
 
-/// Asserts the forwarded body's `model` field. The pool path also rewrites
-/// `system` and the account uuid, so pinning the whole body would couple these
-/// tests to mutations they are not about.
-struct BodyModelIs(&'static str);
-
-impl Match for BodyModelIs {
-    fn matches(&self, request: &Request) -> bool {
-        serde_json::from_slice::<serde_json::Value>(&request.body)
-            .ok()
-            .and_then(|body| body["model"].as_str().map(str::to_string))
-            .as_deref()
-            == Some(self.0)
-    }
-}
-
 #[tokio::test]
 async fn pool_classifier_request_is_pinned_to_the_configured_classifier_model() {
     if !can_bind_loopback() {
@@ -1597,7 +1582,7 @@ async fn pool_classifier_request_is_pinned_to_the_configured_classifier_model() 
         // The override is applied before the pool loop, so the identity repair
         // the loop performs still lands on the same request.
         .and(BodyCarriesIdentity)
-        .and(BodyModelIs("claude-sonnet-5"))
+        .and(common::BodyModelIs("claude-sonnet-5"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
         .expect(1)
         .mount(&upstream)
@@ -1638,7 +1623,7 @@ async fn pool_ordinary_request_keeps_its_model_under_a_classifier_pin() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(BearerToken(token.clone()))
-        .and(BodyModelIs("pooled-model"))
+        .and(common::BodyModelIs("pooled-model"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
         .expect(1)
         .mount(&upstream)

@@ -1366,6 +1366,25 @@ pub(crate) async fn chain_attempt(
     headers: &HeaderMap,
     mut body: crate::request::RequestBody,
 ) -> crate::proxy::chain_stream::Attempt {
+    let provider = state
+        .config
+        .provider(&route.provider)
+        .expect("route provider was validated");
+    // The same pin `forward` applies at its own entry, for the same reason:
+    // this is the chain's Anthropic entry point, so without it a streaming
+    // classifier request on a mixed chain would reach upstream on the model the
+    // client asked for while the single-upstream path pinned it.
+    let pinned;
+    let route = match auto_mode_classifier::classifier_upstream_model(provider, body.json()) {
+        Some(classifier_model) => {
+            pinned = Route {
+                upstream_model: classifier_model.to_string(),
+                ..route.clone()
+            };
+            &pinned
+        }
+        None => route,
+    };
     let credential = match resolve_credential(&state.config, route, &state.http_client).await {
         Ok(credential) => credential,
         Err(error) => {
@@ -1391,10 +1410,6 @@ pub(crate) async fn chain_attempt(
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
     let body = bytes::Bytes::from(body.into_raw());
-    let provider = state
-        .config
-        .provider(&route.provider)
-        .expect("route provider was validated");
     let policy = provider.retry.policy();
     let url = upstream_url(state, route, uri);
     let client = state.http_client.clone();
@@ -1755,6 +1770,81 @@ mod tests {
                 assert_eq!(status, StatusCode::UNAUTHORIZED);
             }
             _ => panic!("expected a failed attempt, got a winner"),
+        }
+    }
+
+    /// The classifier pin is applied at `forward`'s entry, but the multi-upstream
+    /// streaming chain enters this adapter through `chain_attempt` instead. That
+    /// path has to pin the model too, or a streaming classifier request on a
+    /// mixed chain reaches upstream on the model the client asked for while the
+    /// single-upstream path pins it (PR #608 review).
+    #[tokio::test]
+    async fn chain_attempt_pins_the_classifier_request_to_the_configured_model() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(BodyModelIs("claude-sonnet-5"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+
+        let mut config = crate::config::Config::default();
+        let anthropic = config
+            .providers
+            .get_mut("anthropic")
+            .expect("built-in anthropic provider");
+        // Default `passthrough` auth: the credential is the client's own header,
+        // so the attempt resolves without reading the environment or a store.
+        anthropic.base_url = upstream.uri();
+        anthropic.classifier_model = Some("claude-sonnet-5".to_string());
+        let state = super::AppState::new(config, reqwest::Client::new()).unwrap();
+
+        let route = super::Route {
+            provider: "anthropic".to_string(),
+            adapter: crate::routing::AdapterKind::Anthropic,
+            model: "claude-opus-5".to_string(),
+            upstream_model: "claude-opus-5".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+        let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
+        let body = crate::request::RequestBody::parse(
+            serde_json::to_vec(&serde_json::json!({
+                "model": "claude-opus-5",
+                "max_tokens": 16,
+                "system": [{
+                    "type": "text",
+                    "text": "You are a security monitor for autonomous AI coding agents.",
+                }],
+                "messages": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let _ = super::chain_attempt(&state, &route, &uri, &client_headers(), body).await;
+
+        // The mock's `.expect(1)` is what asserts the pin: it only matches a
+        // forwarded body whose `model` is the configured classifier model, so a
+        // `chain_attempt` that normalized on `route.upstream_model` fails here.
+        upstream.verify().await;
+    }
+
+    /// Matches on the forwarded body's `model` field alone — the classifier path
+    /// also rewrites `system`, so pinning the whole body would couple this test
+    /// to a mutation it is not about.
+    struct BodyModelIs(&'static str);
+
+    impl wiremock::Match for BodyModelIs {
+        fn matches(&self, request: &wiremock::Request) -> bool {
+            let Ok(body) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
+                return false;
+            };
+            body.get("model").and_then(serde_json::Value::as_str) == Some(self.0)
         }
     }
 

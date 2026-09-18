@@ -120,10 +120,7 @@ pub(super) fn restore_claude_code_identity(body: &mut RequestBody) {
 /// prompt as an array, so a string `system` — what `claude --system-prompt`
 /// produces — can never match, and neither can a client that omits `system`.
 fn needs_identity(request: &Value) -> bool {
-    if !is_classifier_request(request) {
-        return false;
-    }
-    let Some(blocks) = request.get("system").and_then(Value::as_array) else {
+    let Some(blocks) = classifier_blocks(request) else {
         return false;
     };
     // Suppression scans every block: an accepted marker anywhere in the array is
@@ -137,7 +134,13 @@ fn needs_identity(request: &Value) -> bool {
     })
 }
 
-/// Whether `request` carries the auto-mode classifier's request shape.
+/// The `system` blocks of `request` when it carries the auto-mode classifier's
+/// request shape, or `None` when it does not.
+///
+/// Returning the blocks rather than a bool is what lets [`needs_identity`] scan
+/// them without extracting `system` a second time — and so without the
+/// unreachable "the array stopped being an array between the two calls" arm
+/// that a second extraction has to write.
 ///
 /// Deliberately independent of [`ACCEPTED_MARKER_PREFIXES`]: that list only
 /// decides whether the *identity repair* would be redundant, and a classifier
@@ -149,13 +152,18 @@ fn needs_identity(request: &Value) -> bool {
 /// what the relay acts on past anything that was measured — and the trigger is
 /// client-supplied text, so the narrower it is, the fewer requests the gateway
 /// touches that it was never meant to.
-pub(super) fn is_classifier_request(request: &Value) -> bool {
-    request
-        .get("system")
-        .and_then(Value::as_array)
-        .and_then(|blocks| blocks.first())
+fn classifier_blocks(request: &Value) -> Option<&Vec<Value>> {
+    let blocks = request.get("system").and_then(Value::as_array)?;
+    blocks
+        .first()
         .and_then(block_text)
         .is_some_and(|text| text.starts_with(CLASSIFIER_PROMPT_PREFIX))
+        .then_some(blocks)
+}
+
+/// Whether `request` carries the auto-mode classifier's request shape.
+pub(super) fn is_classifier_request(request: &Value) -> bool {
+    classifier_blocks(request).is_some()
 }
 
 /// The upstream model `provider` pins the auto-mode classifier to, when

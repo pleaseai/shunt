@@ -323,21 +323,6 @@ async fn classifier_request_on_an_api_key_credential_is_forwarded_byte_for_byte(
     upstream.verify().await;
 }
 
-/// Matches on the forwarded body's `model` field alone. The classifier paths
-/// also rewrite `system`, so pinning the whole body would couple these tests to
-/// mutations they are not about.
-struct BodyModelIs(&'static str);
-
-impl Match for BodyModelIs {
-    fn matches(&self, request: &Request) -> bool {
-        serde_json::from_slice::<Value>(&request.body)
-            .ok()
-            .and_then(|body| body["model"].as_str().map(str::to_string))
-            .as_deref()
-            == Some(self.0)
-    }
-}
-
 /// `classifier_model` is an operator choice about which model answers a
 /// permission check, so — unlike the identity repair — it is not gated on the
 /// bearer, and it applies on this single-credential path too.
@@ -346,10 +331,15 @@ async fn classifier_model_pins_the_classifier_request_to_the_configured_model() 
     if !can_bind_loopback() {
         return;
     }
+    // `Config::default()` and the gateway's own startup read the process
+    // environment, and a concurrent write anywhere in this binary can make an
+    // unrelated read come back empty — so a reader holds the guard too
+    // (`tests/AGENTS.md`).
+    let _env = common::env_lock().await;
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(BodyModelIs("claude-sonnet-5"))
+        .and(common::BodyModelIs("claude-sonnet-5"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
         .expect(1)
         .mount(&upstream)
@@ -377,12 +367,17 @@ async fn classifier_model_leaves_an_ordinary_request_on_its_own_model() {
     if !can_bind_loopback() {
         return;
     }
+    // `Config::default()` and the gateway's own startup read the process
+    // environment, and a concurrent write anywhere in this binary can make an
+    // unrelated read come back empty — so a reader holds the guard too
+    // (`tests/AGENTS.md`).
+    let _env = common::env_lock().await;
     // Same config, a body that is not the classifier's: the key must move the
     // one request shape it names and nothing else.
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(BodyModelIs("claude-opus-5"))
+        .and(common::BodyModelIs("claude-opus-5"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
         .expect(1)
         .mount(&upstream)
