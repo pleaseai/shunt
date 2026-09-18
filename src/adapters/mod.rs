@@ -48,6 +48,8 @@ pub enum AdapterFailure {
     UpstreamStatus(StatusCode),
     /// The attempt failed before any upstream response headers were received.
     BeforeHeaders,
+    /// The adapter failed without an upstream request attempt.
+    NoUpstreamAttempt,
 }
 
 #[derive(Debug)]

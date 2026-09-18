@@ -20,6 +20,8 @@ OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax 중국, Open
 > [!NOTE]
 > `shunt`는 활발히 개발 중인 1.0 미만(pre-1.0) 소프트웨어입니다. [SemVer](https://semver.org/lang/ko/#spec) 관례에 따라 `0.x` 릴리스에는 설정 키, CLI, 동작에 대한 호환성이 깨지는 변경(breaking change)이 포함될 수 있으니, 업그레이드 전에 [릴리스 노트](https://github.com/pleaseai/shunt/releases)를 확인하세요.
 
+Claude Code의 Messages 요청은 `[server.weekly_fallback]`으로 주간 한도 fallback을 설정합니다. 선택한 제공자의 활성 계정 전부에 최신 공통 주간 한도 소진 증거가 있을 때만 제공자를 바꿉니다. Fable/Astra, Opus/Sol, Sonnet/Terra, Haiku/Luna를 양방향으로 대응하며 Fable 실패 시 Opus fallback도 설정합니다. 기본값은 비활성입니다. 자세한 내용은 [설정과 동작 문서](docs/messages-weekly-fallback.md)를 참고하세요.
+
 ## 설치
 
 ```bash

@@ -18,7 +18,7 @@ use crate::{
 use super::body::{prepare_body, PreparedBody};
 use super::context::{ForwardOptions, PoolForward, RelayOptions};
 use super::error::{mapped_upstream_error, own_error, transport_error};
-use super::http::{http_send, json_response, stream_response};
+use super::http::{http_send, json_response, send_error, stream_response};
 use super::websocket::forward_websocket;
 
 fn select_pool_order(
@@ -139,6 +139,7 @@ pub(super) async fn forward_chatgpt_oauth(
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
+    let mut upstream_attempted = false;
     // The translated request is immutable across account attempts, so serialize
     // (and, on the ChatGPT backend, zstd-compress — issue #285) it at most once
     // per turn and give each attempt (including a 401 refresh retry) a cheap
@@ -206,6 +207,8 @@ pub(super) async fn forward_chatgpt_oauth(
                     return Ok((status, with_account_header(response, &account.name)));
                 }
                 Err(error) if error.failure.is_some() => {
+                    upstream_attempted |=
+                        error.failure != Some(crate::adapters::AdapterFailure::NoUpstreamAttempt);
                     // A pre-stream websocket failure (connect/handshake/send) falls
                     // back to HTTP on the SAME account, exactly like the
                     // single-account path in `forward` — only an HTTP failure
@@ -257,11 +260,15 @@ pub(super) async fn forward_chatgpt_oauth(
         )
         .await
         {
-            Ok(response) => response,
+            Ok(response) => {
+                upstream_attempted = true;
+                response
+            }
             Err(error @ crate::upstream_timeout::SendError::Timeout) => {
-                return Err(error.into_adapter_error(|error| transport_error(error.to_string())));
+                return Err(send_error(error));
             }
             Err(crate::upstream_timeout::SendError::Transport(error)) => {
+                upstream_attempted |= error.is_transport();
                 state.accounts.cooldown(
                     &route.provider,
                     account,
@@ -342,9 +349,7 @@ pub(super) async fn forward_chatgpt_oauth(
                 {
                     Ok(response) => response,
                     Err(error @ crate::upstream_timeout::SendError::Timeout) => {
-                        return Err(
-                            error.into_adapter_error(|error| transport_error(error.to_string()))
-                        );
+                        return Err(send_error(error));
                     }
                     Err(crate::upstream_timeout::SendError::Transport(error)) => {
                         state.accounts.cooldown(
@@ -404,9 +409,15 @@ pub(super) async fn forward_chatgpt_oauth(
             let status = upstream.status();
             Err(mapped_upstream_error(status, upstream, auth).await)
         }
-        None => Err(transport_error(
-            "all Codex OAuth accounts failed before receiving an upstream response".to_string(),
-        )),
+        None => {
+            let mut error = transport_error(
+                "all Codex OAuth accounts failed before receiving an upstream response".to_string(),
+            );
+            if !upstream_attempted {
+                error.failure = Some(crate::adapters::AdapterFailure::NoUpstreamAttempt);
+            }
+            Err(error)
+        }
     }
 }
 
@@ -743,6 +754,9 @@ pub(super) fn classify_retry(
         FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
     }
 }
+
+#[cfg(test)]
+mod provenance_tests;
 
 #[cfg(test)]
 mod tests {

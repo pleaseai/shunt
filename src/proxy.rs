@@ -12,6 +12,7 @@ use tracing::Instrument;
 use crate::{error::ShuntError, model::responses::anthropic_error_type, server::AppState};
 
 pub(crate) mod failover;
+mod weekly;
 
 pub async fn post(
     State(state): State<AppState>,

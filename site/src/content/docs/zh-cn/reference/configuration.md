@@ -473,6 +473,68 @@ id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同�
 | :-- | :-- |
 | 任意 | header 名称 → 值,例如 `authorization = "Bearer <token>"` |
 
+## `[server.weekly_fallback]` (可选)
+
+此策略为 Claude Code 的 `/v1/messages` 请求提供 Claude OAuth 与 ChatGPT OAuth 之间的双向切换.
+此功能默认关闭. 只有所选全部启用账户都有最新的共享每周配额耗尽证据时才切换提供方.
+缺失, 过期或不完整的观测不能证明耗尽. 5小时上限, Fable 专用上限, cooldown 和 soft threshold 也不能证明耗尽.
+观测在300秒后失效. 同一观测必须包含未来的重置时间.
+
+收到无效每周数值时, 即使普通使用量 snapshot 为空, 策略也会清除先前的耗尽证据.
+策略不会使用 Codex 使用量响应中相互矛盾的每周窗口或未知 duration 作为耗尽证据.
+
+| 键 | 默认值 | 含义 |
+| --- | --- | --- |
+| `enabled` | `false` | 对匹配的单一路由启用策略 |
+| `claude_provider` | 启用时必填 | 使用 `claude_oauth` 的现有提供方 |
+| `codex_provider` | 启用时必填 | 使用 `chatgpt_oauth` 和 ChatGPT backend 的现有提供方 |
+| `models` | 空列表 | 明确的 backend 模型配对 |
+| `models[].claude` | 必填 | Claude backend ID |
+| `models[].codex` | 必填 | Codex backend ID |
+| `models[].claude_fallback` | 未设置 | 对应 Claude 失败后在同一提供方使用的模型 |
+
+```toml
+[server.weekly_fallback]
+enabled = true
+claude_provider = "anthropic"
+codex_provider = "codex"
+
+[[server.weekly_fallback.models]]
+claude = "claude-fable-5"
+codex = "gpt-6-astra"
+claude_fallback = "claude-opus-5"
+
+[[server.weekly_fallback.models]]
+claude = "claude-opus-5"
+codex = "gpt-5.6-sol"
+
+[[server.weekly_fallback.models]]
+claude = "claude-sonnet-5"
+codex = "gpt-5.6-terra"
+
+[[server.weekly_fallback.models]]
+claude = "claude-haiku-4-5-20251001"
+codex = "gpt-5.6-luna"
+```
+
+请使用配置中已存在的提供方名称. 启用前请确认 backend 访问权限.
+策略在解析别名和 context hint 后精确匹配提供方与 backend ID.
+启用此策略时, 通用多路由链不能包含这两个提供方.
+
+配置的 Claude fallback 在 upstream 4xx, 5xx 或响应头之前失败时向同一提供方额外尝试一次.
+本地验证错误和成功响应头之后的错误直接返回. 策略不会在部分输出后重放请求.
+账户池未尝试任何 upstream 请求时也会直接返回.
+
+Fable 使用 Opus 后再因共享每周配额耗尽而切换时, Codex 目标仍然是 Astra.
+每个请求最多切换一次提供方. 两个账户池都耗尽时返回 Anthropic HTTP 429 和 `rate_limit_error`.
+
+目标提供方使用自己的默认值与凭据. managed model 授权检查原始请求别名.
+fallback 表定义该别名可访问的替代 backend.
+
+`x-gateway-model` 保留包含 context hint 的原始模型字符串.
+`x-gateway-upstream` 和 `x-gateway-upstream-model` 标识最终提供方与 backend.
+inbound Codex endpoint 和 `count_tokens` 保持现有行为.
+
 ## 路由优先级
 
 匹配的 `[models.stage_router]` 条目 → 匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。

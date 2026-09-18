@@ -14,6 +14,9 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::config::{AccountConfig, PoolConfig};
 
+mod weekly;
+pub(crate) use weekly::WeeklyUsageEvidence;
+
 /// Credential-store namespace. Stable account ids only coalesce inside their
 /// own store family, so a Claude UUID can never collide with a ChatGPT account id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -384,6 +387,11 @@ struct AccountHealth {
     /// state_path` persists quota alone, so a restart clears this and the
     /// account's next terminal failure re-establishes it.
     needs_relogin: Option<ReloginCause>,
+    /// Strict shared-weekly evidence for the `[server.weekly_fallback]` policy,
+    /// captured from one response alongside its utilization. Memory-only and
+    /// never imported from persisted quota: an observation only proves
+    /// exhaustion while it is fresh, so a restart starts with none.
+    strict_weekly: Option<weekly::Observation>,
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
@@ -984,6 +992,11 @@ impl AccountPool {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let health = entries.entry(account_key(provider, account)).or_default();
             health.observed = true;
+            if let Some(observation) =
+                weekly::Observation::anthropic(headers, Instant::now(), unix_now())
+            {
+                health.strict_weekly = Some(observation);
+            }
             let quota = &mut health.quota;
             let now = unix_now();
 
@@ -1084,6 +1097,11 @@ impl AccountPool {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let health = entries.entry(account_key(provider, account)).or_default();
             health.observed = true;
+            if let Some(observation) =
+                weekly::Observation::codex(headers, Instant::now(), unix_now())
+            {
+                health.strict_weekly = Some(observation);
+            }
             let quota = &mut health.quota;
             let now = unix_now();
 
@@ -1202,7 +1220,30 @@ impl AccountPool {
     /// account observed, so the admin dashboard reports its usage even before
     /// the first proxied request.
     pub fn note_usage(&self, provider: &str, account: &AccountConfig, usage: &UsageSnapshot) {
-        self.note_usage_inner(provider, account, usage, false, false);
+        self.note_claude_usage(
+            provider,
+            account,
+            usage,
+            &WeeklyUsageEvidence::from_snapshot(usage),
+        );
+    }
+
+    /// Apply normalized Claude usage and strict evidence from the same response.
+    pub(crate) fn note_claude_usage(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        usage: &UsageSnapshot,
+        weekly: &WeeklyUsageEvidence,
+    ) {
+        self.note_usage_inner(
+            provider,
+            account,
+            usage,
+            (false, false),
+            weekly::Source::AnthropicUsage,
+            weekly,
+        );
     }
 
     /// Apply one successfully parsed, non-empty Codex `wham/usage` report.
@@ -1225,11 +1266,29 @@ impl AccountPool {
         usage: &UsageSnapshot,
         clear_five_hour: bool,
         clear_seven_day: bool,
+        weekly: &WeeklyUsageEvidence,
     ) {
+        let observed_at = Instant::now();
+        let observed_unix = unix_now();
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let health = entries.entry(account_key(provider, account)).or_default();
             health.observed = true;
+            if clear_seven_day {
+                health.strict_weekly = None;
+            }
+            match weekly {
+                WeeklyUsageEvidence::Unreported => {}
+                WeeklyUsageEvidence::Invalid => health.strict_weekly = None,
+                WeeklyUsageEvidence::Reported(window) => {
+                    health.strict_weekly = Some(weekly::Observation::usage(
+                        window,
+                        weekly::Source::CodexUsage,
+                        observed_at,
+                        observed_unix,
+                    ));
+                }
+            }
             let now = unix_now();
             {
                 let quota = &mut health.quota;
@@ -1275,13 +1334,32 @@ impl AccountPool {
         provider: &str,
         account: &AccountConfig,
         usage: &UsageSnapshot,
-        clear_five_hour: bool,
-        clear_seven_day: bool,
+        clear_windows: (bool, bool),
+        source: weekly::Source,
+        weekly: &WeeklyUsageEvidence,
     ) {
+        let (clear_five_hour, clear_seven_day) = clear_windows;
+        let observed_at = Instant::now();
+        let observed_unix = unix_now();
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let health = entries.entry(account_key(provider, account)).or_default();
             health.observed = true;
+            if clear_seven_day {
+                health.strict_weekly = None;
+            }
+            match weekly {
+                WeeklyUsageEvidence::Unreported => {}
+                WeeklyUsageEvidence::Invalid => health.strict_weekly = None,
+                WeeklyUsageEvidence::Reported(window) => {
+                    health.strict_weekly = Some(weekly::Observation::usage(
+                        window,
+                        source,
+                        observed_at,
+                        observed_unix,
+                    ));
+                }
+            }
             let quota = &mut health.quota;
             let now = unix_now();
             expire_stale_quota(quota, now);
@@ -7686,6 +7764,7 @@ mod tests {
             },
             false,
             true,
+            &WeeklyUsageEvidence::Unreported,
         );
 
         let target_after = pool
@@ -7785,6 +7864,7 @@ mod tests {
             },
             false,
             false,
+            &WeeklyUsageEvidence::Unreported,
         );
 
         let target_after = pool

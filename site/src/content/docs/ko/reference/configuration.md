@@ -245,6 +245,7 @@ headers = { "x-api-key" = "..." }
 
 `reprobe_seconds`는 out-of-band usage 폴러가 없거나 다음 폴링을 기다리는 Codex/ChatGPT 풀을 위한 안전망입니다. rotation 대표 계정이 Codex/ChatGPT 계열이고 근접 쿼터이며 쿨다운이 아니고 최신 관측 시각이 이 간격보다 오래됐으면 간격당 한 번 선택 순서 맨 앞으로 승격하고 예약합니다. 신선도는 네 논리 값으로 판단합니다. 5h, 공유 7d, Fable 7d_oi에서는 각각 사용률 관측 시각과 status 관측 시각 중 최신 값을 사용하고, 네 번째 값으로 독립된 aggregate status 관측 시각을 사용합니다. 사용률만 갱신하는 폴링은 사용률 신선도만 갱신하고 창별 status 신선도는 갱신하지 않습니다. admission이나 자격 증명 확인에 실패하면 예약을 취소하고 첫 실제 HTTP 전송이 시작될 때 probe 시각과 `shunt.pool.reprobes`를 커밋합니다. 그러면 다음 실제 요청이 그 계정의 쿼터를 갱신하므로 먼 미래의 주간 리셋까지 계정이 계속 배제 상태로 남는 일을 막습니다. Codex/ChatGPT 계정만 대상입니다. Claude와 Kimi는 일반 429 거부 시 더 느린 쿨다운 복구(`PauseSame`, 최대 5분)를 쓰므로 기회적 탐침이 실제 요청을 지연시킬 위험이 있고 Claude 계정에는 대신 위의 `usage_refresh_seconds`가 있습니다. 구성한 폴러는 imported이며 갱신 가능한 `chatgpt_oauth` 계정에만 조기 복구를 제공하고, 폴러가 없거나 대상이 아닌 계정의 outbound 마크는 관측시각 기반 창 수명 경계에서 만료됩니다. 재탐침은 out-of-band 메타데이터 폴링인 `usage_refresh_seconds`와 달리 승격마다 실제 업스트림 요청 하나만큼의 트래픽 비용이 듭니다. 프로바이더의 WebSocket 전송을 켜면 outbound Responses 풀은 예약을 만들지 않고 재탐침을 억제합니다. 선택형 inbound Codex HTTP 엔드포인트는 계속 탐침하며 해당 프로바이더의 `shunt.pool.reprobes`는 inbound 탐침만 셉니다.
 
+
 ## `[server.status]` (선택)
 
 provider Statuspage `summary.json` 엔드포인트를 관측 목적으로만 백그라운드 폴링합니다. 이 정보는 라우팅, 페일오버, pool/cooldown 동작에 영향을 주지 않습니다. 공유 상태는 `shunt.upstream.status` 메트릭과 admin dashboard의 "Upstream status" 영역에만 표시됩니다. 테이블이 없거나 `sources`가 비어 있으면 poller가 시작되지 않습니다.
@@ -498,6 +499,68 @@ id에 두 정책이 남습니다. 타깃 id는
 | 키 | 의미 |
 | :-- | :-- |
 | 임의 | 헤더 이름 → 값, 예: `authorization = "Bearer <token>"` |
+
+## `[server.weekly_fallback]` (선택 사항)
+
+이 정책은 Claude Code의 `/v1/messages` 요청에서 Claude OAuth와 ChatGPT OAuth 사이의 양방향 전환을 지원합니다.
+기본값은 비활성이며 선택한 활성 계정 전부의 공통 주간 한도 소진을 최신 증거로 확인한 경우에만 제공자를 바꿉니다.
+누락되거나 만료되거나 불완전한 관측은 소진 증거가 아닙니다. 5시간 한도, Fable 전용 한도, cooldown과 soft threshold도 근거로 쓰지 않습니다.
+관측은 300초 뒤 만료되며 같은 관측에 미래 초기화 시각이 있어야 합니다.
+
+잘못된 주간 값을 받으면 일반 사용량 스냅샷이 비어 있어도 이전 소진 증거를 지웁니다.
+Codex 사용량 응답의 서로 모순된 주간 창과 알 수 없는 duration도 소진 증거로 쓰지 않습니다.
+
+| 키 | 기본값 | 의미 |
+| --- | --- | --- |
+| `enabled` | `false` | 대응하는 단일 라우트에 정책을 적용합니다 |
+| `claude_provider` | 활성화 시 필수 | `claude_oauth`를 쓰는 기존 제공자입니다 |
+| `codex_provider` | 활성화 시 필수 | `chatgpt_oauth`와 ChatGPT backend를 쓰는 기존 제공자입니다 |
+| `models` | 빈 목록 | 명시한 backend 모델 쌍입니다 |
+| `models[].claude` | 필수 | Claude backend ID입니다 |
+| `models[].codex` | 필수 | Codex backend ID입니다 |
+| `models[].claude_fallback` | 미설정 | 해당 Claude 실패 시 같은 제공자에서 사용할 모델입니다 |
+
+```toml
+[server.weekly_fallback]
+enabled = true
+claude_provider = "anthropic"
+codex_provider = "codex"
+
+[[server.weekly_fallback.models]]
+claude = "claude-fable-5"
+codex = "gpt-6-astra"
+claude_fallback = "claude-opus-5"
+
+[[server.weekly_fallback.models]]
+claude = "claude-opus-5"
+codex = "gpt-5.6-sol"
+
+[[server.weekly_fallback.models]]
+claude = "claude-sonnet-5"
+codex = "gpt-5.6-terra"
+
+[[server.weekly_fallback.models]]
+claude = "claude-haiku-4-5-20251001"
+codex = "gpt-5.6-luna"
+```
+
+설정에 이미 있는 제공자 이름을 사용하세요. 활성화 전에 backend 접근 권한을 확인하세요.
+별칭과 context hint를 처리한 라우트의 제공자와 backend ID가 정확히 일치할 때만 모델 쌍을 적용합니다.
+정책을 활성화하면 두 제공자를 일반 다중 라우트 체인에 넣을 수 없습니다.
+
+설정한 Claude fallback은 upstream 4xx, 5xx 또는 헤더 이전 실패에 같은 제공자로 한 번 시도합니다.
+로컬 검증 오류와 성공 헤더 이후 오류는 즉시 반환하며 부분 출력이 있으면 요청을 다시 보내지 않습니다.
+계정 풀에서 upstream 요청을 한 번도 시도하지 못한 경우에도 즉시 종료합니다.
+
+Fable 요청이 Opus를 사용한 뒤 공통 주간 한도를 소진해도 Codex 대상은 Astra로 유지합니다.
+요청마다 제공자 전환은 한 번만 허용합니다. 두 계정 풀 모두 소진되면 Anthropic HTTP 429와 `rate_limit_error`를 반환합니다.
+
+대상 제공자는 자체 기본값과 자격 증명을 사용하며 managed model 권한 검사는 원래 요청한 별칭을 기준으로 합니다.
+fallback 테이블은 그 별칭으로 접근할 대체 backend를 정의합니다.
+
+`x-gateway-model`은 context hint를 포함한 원래 모델 문자열을 유지합니다.
+`x-gateway-upstream`과 `x-gateway-upstream-model`은 최종 제공자와 backend를 표시합니다.
+inbound Codex endpoint와 `count_tokens`는 기존 동작을 유지합니다.
 
 ## 라우팅 우선순위
 

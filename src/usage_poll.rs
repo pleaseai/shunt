@@ -5,9 +5,12 @@
 //! boot that periodically polls, for every imported (refreshable) account:
 //! `GET /api/oauth/usage` across all `claude_oauth` providers, and the private
 //! `GET /wham/usage` (see [`crate::auth::codex::usage`]) across all ChatGPT
-//! backend `chatgpt_oauth` providers — applying the returned utilization to the
-//! account pool via [`AccountPool::note_usage`] for Claude and the Codex-only
-//! [`AccountPool::note_codex_usage`] reconciliation path for wham.
+//! backend `chatgpt_oauth` providers — applying the returned utilization (and
+//! strict shared-weekly evidence) to the account pool via
+//! [`AccountPool::note_claude_usage`] for Claude and
+//! [`AccountPool::note_codex_usage`] for wham, and clearing stale weekly
+//! evidence with [`AccountPool::invalidate_weekly_usage`] when a recognizable
+//! report carries no windows.
 //!
 //! Why: the pool's primary quota signal is the response headers on proxied
 //! traffic (`anthropic-ratelimit-unified-*` for Claude, `x-codex-*` for Codex),
@@ -35,14 +38,16 @@ use std::{
 use serde_json::Value;
 
 use crate::{
-    accounts::{account_key, AccountKey, UsageSnapshot},
+    accounts::{account_key, AccountKey, AccountPool},
     auth::{self, claude, codex, resolve_chatgpt_account, resolve_claude_account, Credential},
     config::{AccountConfig, AuthMode},
     server::AppState,
 };
 
+use crate::auth::claude::usage::ClaudeUsageReport;
+
 #[cfg(test)]
-use crate::{accounts::AccountPool, config::Config};
+use crate::config::Config;
 
 /// Spawn the usage poller if `[server.pool] usage_refresh_seconds` enables it.
 /// A no-op otherwise, so the default deployment adds no background work. Whether
@@ -118,9 +123,14 @@ async fn poll_all(state: &AppState) {
                 state.accounts.sync_enabled_accounts(name, &accounts);
                 for account in &accounts {
                     let key = account_key(name, account);
-                    if let Some(CachedUsage::Claude(snapshot)) = cached.get(&key) {
+                    if let Some(CachedUsage::Claude(report)) = cached.get(&key) {
                         if applied.insert((key.clone(), name.clone())) {
-                            state.accounts.note_usage(name, account, snapshot);
+                            state.accounts.note_claude_usage(
+                                name,
+                                account,
+                                &report.usage,
+                                &report.weekly,
+                            );
                         }
                         continue;
                     }
@@ -144,17 +154,28 @@ async fn poll_all(state: &AppState) {
                     if !account_is_refreshable(account).await {
                         continue;
                     }
-                    let Some(snapshot) =
-                        fetch_claude_usage(&state.http_client, &provider.base_url, account).await
+                    let Some(report) = fetch_claude_usage(
+                        &state.accounts,
+                        name,
+                        &state.http_client,
+                        &provider.base_url,
+                        account,
+                    )
+                    .await
                     else {
                         continue;
                     };
                     for (provider, account) in pending.remove(&key).unwrap_or_default() {
                         if applied.insert((key.clone(), provider.clone())) {
-                            state.accounts.note_usage(&provider, &account, &snapshot);
+                            state.accounts.note_claude_usage(
+                                &provider,
+                                &account,
+                                &report.usage,
+                                &report.weekly,
+                            );
                         }
                     }
-                    cached.insert(key, CachedUsage::Claude(snapshot));
+                    cached.insert(key, CachedUsage::Claude(report));
                 }
             }
             AuthMode::ChatgptOauth if state.config.is_chatgpt_backend(name) => {
@@ -185,6 +206,7 @@ async fn poll_all(state: &AppState) {
                                 &report.usage,
                                 report.clear_five_hour,
                                 report.clear_seven_day,
+                                &report.weekly,
                             );
                         }
                         continue;
@@ -209,9 +231,14 @@ async fn poll_all(state: &AppState) {
                     if !codex_account_is_refreshable(account).await {
                         continue;
                     }
-                    let Some(report) =
-                        fetch_codex_usage(&state.http_client, name, &provider.base_url, account)
-                            .await
+                    let Some(report) = fetch_codex_usage(
+                        &state.accounts,
+                        &state.http_client,
+                        name,
+                        &provider.base_url,
+                        account,
+                    )
+                    .await
                     else {
                         continue;
                     };
@@ -223,6 +250,7 @@ async fn poll_all(state: &AppState) {
                                 &report.usage,
                                 report.clear_five_hour,
                                 report.clear_seven_day,
+                                &report.weekly,
                             );
                         }
                     }
@@ -240,17 +268,21 @@ async fn poll_all(state: &AppState) {
 /// family, so the two parser variants cannot cross-apply.
 #[derive(Clone)]
 enum CachedUsage {
-    Claude(UsageSnapshot),
+    Claude(ClaudeUsageReport),
     Codex(codex::usage::WhamUsageReport),
 }
 
-/// Fetch and parse one Claude account's usage without mutating pool state.
-/// Empty snapshots and every failure stay uncached so a later alias can retry.
+/// Fetch and parse one Claude account's usage without mutating quota state.
+/// Empty snapshots and every failure stay uncached so a later alias can retry,
+/// but an empty snapshot still clears any prior strict weekly evidence through
+/// the pool so a recovered account stops looking exhausted.
 async fn fetch_claude_usage(
+    pool: &AccountPool,
+    provider: &str,
     client: &reqwest::Client,
     base_url: &str,
     account: &AccountConfig,
-) -> Option<UsageSnapshot> {
+) -> Option<ClaudeUsageReport> {
     let credential = match resolve_claude_account(account, client).await {
         Ok(credential) => credential,
         Err(error) => {
@@ -261,9 +293,10 @@ async fn fetch_claude_usage(
     let Credential::ClaudeOauth { access_token, .. } = credential else {
         return None;
     };
-    match claude::usage::fetch_usage(client, base_url, &access_token).await {
-        Ok(snapshot) if !snapshot.is_empty() => Some(snapshot),
-        Ok(_) => {
+    match claude::usage::fetch_usage_report(client, base_url, &access_token).await {
+        Ok(report) if !report.usage.is_empty() => Some(report),
+        Ok(report) => {
+            pool.invalidate_weekly_usage(provider, account, &report.weekly);
             tracing::debug!(account = %account.name, "usage poller: claude usage snapshot reported no windows, skipping");
             None
         }
@@ -274,9 +307,12 @@ async fn fetch_claude_usage(
     }
 }
 
-/// Fetch and parse one Codex account's wham report without mutating pool state.
-/// Empty reports and every failure stay uncached so a later alias can retry.
+/// Fetch and parse one Codex account's wham report without mutating quota state.
+/// Empty reports and every failure stay uncached so a later alias can retry, but
+/// an empty report still clears any prior strict weekly evidence through the
+/// pool so a recovered account stops looking exhausted.
 async fn fetch_codex_usage(
+    pool: &AccountPool,
     client: &reqwest::Client,
     provider: &str,
     base_url: &str,
@@ -298,7 +334,8 @@ async fn fetch_codex_usage(
     };
     match codex::usage::fetch_usage_report(client, base_url, &access_token, &account_id).await {
         Ok(report) if !report.usage.is_empty() => Some(report),
-        Ok(_) => {
+        Ok(report) => {
+            pool.invalidate_weekly_usage(provider, account, &report.weekly);
             tracing::debug!(provider, account = %account.name, "usage poller: codex wham usage snapshot reported no windows, skipping");
             None
         }
@@ -327,10 +364,10 @@ async fn poll_account(
     if !account_is_refreshable(account).await {
         return false;
     }
-    let Some(snapshot) = fetch_claude_usage(client, base_url, account).await else {
+    let Some(snapshot) = fetch_claude_usage(pool, provider, client, base_url, account).await else {
         return false;
     };
-    pool.note_usage(provider, account, &snapshot);
+    pool.note_claude_usage(provider, account, &snapshot.usage, &snapshot.weekly);
     tracing::debug!(provider, account = %account.name, "usage poller: applied usage snapshot");
     true
 }
@@ -359,7 +396,7 @@ async fn poll_codex_account(
     if !codex_account_is_refreshable(account).await {
         return false;
     }
-    let Some(report) = fetch_codex_usage(client, provider, base_url, account).await else {
+    let Some(report) = fetch_codex_usage(pool, client, provider, base_url, account).await else {
         return false;
     };
     pool.note_codex_usage(
@@ -368,6 +405,7 @@ async fn poll_codex_account(
         &report.usage,
         report.clear_five_hour,
         report.clear_seven_day,
+        &report.weekly,
     );
     tracing::debug!(provider, account = %account.name, "usage poller: applied codex wham usage snapshot");
     true

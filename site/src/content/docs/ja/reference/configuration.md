@@ -246,6 +246,7 @@ headers = { "x-api-key" = "..." }
 
 `reprobe_seconds` は、帯域外の usage ポーラーが無効または次のポーリングを待つ Codex/ChatGPT プールのための安全網です。rotation の代表アカウントが Codex/ChatGPT ファミリーで、近接クォータで、クールダウン中でなく、最新の観測がこの間隔より古い場合、間隔ごとに 1 回だけ選択順の先頭に昇格され予約されます。鮮度は 4 つの論理値で判定します。5h、共有 7d、Fable 7d_oi では、それぞれ使用量観測と status 観測の新しい方を使い、4 つ目には独立した aggregate status 観測を使います。使用量だけのポーリングは使用量の鮮度だけを更新し、各ウィンドウの status 鮮度は更新しません。admission または認証情報の解決に失敗すると予約を取り消し、最初の実際の HTTP 送信時にプローブ時刻と `shunt.pool.reprobes` をコミットします。次の実際のリクエストがそのアカウントのクォータを更新するため、遠い将来の週次リセットまでアカウントが除外されたままになることを防ぎます。対象は Codex/ChatGPT アカウントのみです。Claude と Kimi は一般的な 429 拒否に対してより遅いクールダウン復帰（`PauseSame`、最大 5 分）を使うため、日和見的なプローブは実際のリクエストを停滞させるリスクがあり、Claude アカウントには代わりに上記の `usage_refresh_seconds` があります。設定されたポーラーが早期復旧を提供するのは imported かつ更新可能な `chatgpt_oauth` アカウントだけで、ポーラーがない場合や対象外のアカウントでは outbound マークは観測時刻に基づくウィンドウ寿命の上限で期限切れになります。再プローブは、帯域外のメタデータポーリングである `usage_refresh_seconds` と異なり、昇格のたびに実際のアップストリームリクエスト 1 回分のトラフィックコストがかかります。プロバイダーの WebSocket 転送が有効な場合、outbound Responses プールは予約を作らず再プローブを抑止します。オプションの inbound Codex HTTP エンドポイントは引き続きプローブし、そのプロバイダーの `shunt.pool.reprobes` は inbound プローブだけを数えます。
 
+
 ## `[[upstreams]]`（順序付きフェイルオーバー）
 
 `[[upstreams]]` は、名前付きアップストリームの順序付き配列です。宣言順がグローバルなフェイルオーバー順となり、モデルの `[models.upstream_model]` マップが参加するエントリを選択します。マップ内の記述順はルーティングに影響しません。
@@ -481,6 +482,68 @@ efficient_target = "claude-sonnet-4-6"
 | キー | 意味 |
 | :-- | :-- |
 | 任意 | ヘッダー名 → 値、例: `authorization = "Bearer <token>"` |
+
+## `[server.weekly_fallback]` (任意)
+
+このポリシーは Claude Code の `/v1/messages` で Claude OAuth と ChatGPT OAuth の双方向切り替えを提供します.
+デフォルトは無効です. 選択した全有効アカウントに新しい共有週間上限の消尽情報がある場合だけ切り替えます.
+不足した情報や期限切れの情報は消尽の根拠になりません. 5時間上限, Fable 専用上限, cooldown, soft threshold も根拠にしません.
+観測は300秒で失効します. 同じ観測に将来のリセット時刻が必要です.
+
+不正な週間値を受信すると, 通常の使用量 snapshot が空でも以前の消尽証拠を削除します.
+Codex 使用量応答の矛盾する週間窓や不明な duration も消尽証拠に使いません.
+
+| キー | デフォルト | 意味 |
+| --- | --- | --- |
+| `enabled` | `false` | 対応する単一ルートに適用 |
+| `claude_provider` | 有効時は必須 | `claude_oauth` を使う既存プロバイダー |
+| `codex_provider` | 有効時は必須 | `chatgpt_oauth` と ChatGPT backend を使う既存プロバイダー |
+| `models` | 空 | 明示的な backend モデルの組 |
+| `models[].claude` | 必須 | Claude backend ID |
+| `models[].codex` | 必須 | Codex backend ID |
+| `models[].claude_fallback` | 未設定 | 対象の Claude 失敗後に同じプロバイダーで使うモデル |
+
+```toml
+[server.weekly_fallback]
+enabled = true
+claude_provider = "anthropic"
+codex_provider = "codex"
+
+[[server.weekly_fallback.models]]
+claude = "claude-fable-5"
+codex = "gpt-6-astra"
+claude_fallback = "claude-opus-5"
+
+[[server.weekly_fallback.models]]
+claude = "claude-opus-5"
+codex = "gpt-5.6-sol"
+
+[[server.weekly_fallback.models]]
+claude = "claude-sonnet-5"
+codex = "gpt-5.6-terra"
+
+[[server.weekly_fallback.models]]
+claude = "claude-haiku-4-5-20251001"
+codex = "gpt-5.6-luna"
+```
+
+設定に存在するプロバイダー名を使用してください. 有効化の前に backend へのアクセスを確認してください.
+エイリアスと context hint の処理後にプロバイダー名と backend ID を完全一致で照合します.
+有効時は一般の複数ルートのチェーンにこの二つのプロバイダーを含められません.
+
+設定した Claude fallback は upstream 4xx, 5xx, またはヘッダー到着前の失敗後に同じプロバイダーで一度だけ試行します.
+ローカル検証エラーと成功ヘッダー到着後のエラーは直ちに返します. 部分出力後は再送しません.
+プールが upstream リクエストを一度も試行しなかった場合も直ちに終了します.
+
+Fable が Opus を使った後に共有週間上限へ達しても Codex の対象は Astra のままです.
+リクエストごとのプロバイダー切り替えは一度だけです. 両方のプールが消尽すると Anthropic HTTP 429 と `rate_limit_error` を返します.
+
+切り替え先は独自のデフォルト値と認証情報を使います. managed model の認可は元のエイリアスで判定します.
+fallback テーブルはそのエイリアスの代替 backend を定義します.
+
+`x-gateway-model` は context hint を含む元のモデル文字列を保持します.
+`x-gateway-upstream` と `x-gateway-upstream-model` は最終プロバイダーと backend を示します.
+inbound Codex endpoint と `count_tokens` の動作は変わりません.
 
 ## ルーティング優先順位
 

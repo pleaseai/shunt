@@ -339,6 +339,8 @@ pub struct CodexWsError {
     /// Set when the backend rejected a replayed `previous_response_id`
     /// (`previous_response_not_found`), so the caller can retry with full input.
     pub previous_response_missing: bool,
+    /// Set when this invocation failed before any upstream I/O.
+    pub no_upstream_attempt: bool,
 }
 
 impl CodexWsError {
@@ -349,7 +351,20 @@ impl CodexWsError {
             body: String::new(),
             message: message.into(),
             previous_response_missing: false,
+            no_upstream_attempt: false,
         }
+    }
+
+    fn local(message: impl Into<String>) -> Self {
+        Self {
+            no_upstream_attempt: true,
+            ..Self::transport(message)
+        }
+    }
+
+    fn after_upstream_attempt(mut self) -> Self {
+        self.no_upstream_attempt = false;
+        self
     }
 
     fn previous_response_missing() -> Self {
@@ -375,7 +390,7 @@ pub fn to_websocket_url(url: &str) -> Result<String, CodexWsError> {
     } else if url.starts_with("ws://") || url.starts_with("wss://") {
         Ok(url.to_string())
     } else {
-        Err(CodexWsError::transport(format!(
+        Err(CodexWsError::local(format!(
             "unsupported websocket url scheme: {url}"
         )))
     }
@@ -574,6 +589,7 @@ pub async fn begin(
     provider: &str,
 ) -> Result<Turn, CodexWsError> {
     let mut overflow = false;
+    let mut upstream_attempted = false;
     if let Some(key) = pool_key {
         if let Some(entry) = pool_get(key) {
             let conn = entry.conn.clone();
@@ -582,16 +598,19 @@ pub async fn begin(
             // to a dedicated handshake so concurrent requests make progress.
             match conn.turn_lock.clone().try_lock_owned() {
                 Ok(slot) => {
-                    if conn.alive.load(Ordering::SeqCst) && probe_live(&conn).await {
-                        *conn.last_used_at.lock().unwrap() = Instant::now();
-                        return Ok(Turn {
-                            conn,
-                            handshake_headers: None,
-                            slot: Some(slot),
-                            reused: true,
-                            pool_key: Some(key.to_string()),
-                            streamed: false,
-                        });
+                    if conn.alive.load(Ordering::SeqCst) {
+                        upstream_attempted = true;
+                        if probe_live(&conn).await {
+                            *conn.last_used_at.lock().unwrap() = Instant::now();
+                            return Ok(Turn {
+                                conn,
+                                handshake_headers: None,
+                                slot: Some(slot),
+                                reused: true,
+                                pool_key: Some(key.to_string()),
+                                streamed: false,
+                            });
+                        }
                     }
                     // Stale: the reader saw a close, or no Pong returned in time.
                     // Evict and reconnect — the stored `previous_response_id` no
@@ -621,7 +640,7 @@ pub async fn begin(
                 provider,
                 crate::metrics::CodexWsOverflowOutcome::Refused,
             );
-            CodexWsError::transport(format!(
+            CodexWsError::local(format!(
                 "codex websocket overflow connection ceiling reached ({MAX_OVERFLOW_CONNECTIONS}); falling back to HTTP"
             ))
         })?;
@@ -643,7 +662,15 @@ pub async fn begin(
         (pool_key.map(str::to_string), None)
     };
     let (conn, handshake_headers) =
-        Connection::open(ws_url, headers, connection_pool_key.clone(), overflow_slot).await?;
+        Connection::open(ws_url, headers, connection_pool_key.clone(), overflow_slot)
+            .await
+            .map_err(|error| {
+                if upstream_attempted {
+                    error.after_upstream_attempt()
+                } else {
+                    error
+                }
+            })?;
     let slot = conn.turn_lock.clone().lock_owned().await;
     Ok(Turn {
         conn,
@@ -742,11 +769,16 @@ async fn connect(
     ensure_crypto_provider();
     let mut request = ws_url
         .into_client_request()
-        .map_err(|error| CodexWsError::transport(format!("invalid websocket request: {error}")))?;
+        .map_err(|error| CodexWsError::local(format!("invalid websocket request: {error}")))?;
     // `into_client_request` fills the mandatory upgrade headers (Host,
     // Connection, Upgrade, Sec-WebSocket-Key/Version); layer the Codex identity
     // and beta-protocol headers on top.
     request.headers_mut().extend(headers);
+    for (name, value) in request.headers() {
+        value.to_str().map_err(|error| {
+            CodexWsError::local(format!("invalid websocket header {name}: {error}"))
+        })?;
+    }
 
     let connect = tokio_tungstenite::connect_async_with_config(request, Some(ws_config()), false);
     match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
@@ -1205,6 +1237,7 @@ fn map_handshake_error(error: tungstenite::Error) -> CodexWsError {
             body,
             message: format!("websocket handshake rejected with {}", response.status()),
             previous_response_missing: false,
+            no_upstream_attempt: false,
         };
     }
     CodexWsError::transport(format!("websocket connect error: {error}"))
@@ -1242,7 +1275,48 @@ mod tests {
             "ws://127.0.0.1:4141/codex/responses"
         );
         assert_eq!(to_websocket_url("wss://host/x").unwrap(), "wss://host/x");
-        assert!(to_websocket_url("ftp://host/x").is_err());
+        let error = to_websocket_url("ftp://host/x").expect_err("ftp is not supported");
+        assert!(error.no_upstream_attempt);
+    }
+
+    #[tokio::test]
+    async fn handshake_request_build_failure_has_no_upstream_attempt() {
+        let error = match begin("ws://[", HeaderMap::new(), None, "codex").await {
+            Ok(_) => panic!("an invalid URL must fail before the handshake"),
+            Err(error) => error,
+        };
+        assert!(error.no_upstream_attempt);
+        assert!(error.message.contains("invalid websocket request"));
+    }
+
+    #[tokio::test]
+    async fn non_utf8_final_header_fails_before_connect() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-test-opaque",
+            axum::http::HeaderValue::from_bytes(&[0xff, 0xfe, b'x']).expect("opaque header value"),
+        );
+
+        let error = match connect(&format!("ws://{addr}/codex/responses"), headers).await {
+            Ok(_) => panic!("the final header map must reject non-UTF-8 values"),
+            Err(error) => error,
+        };
+        assert!(error.no_upstream_attempt);
+        assert!(error.message.contains("invalid websocket header"));
+        assert!(
+            matches!(
+                listener
+                    .into_std()
+                    .expect("convert the test listener")
+                    .accept(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            ),
+            "header validation must run before TCP connect"
+        );
     }
 
     #[test]
@@ -1554,6 +1628,33 @@ mod tests {
         .expect_err("handshake should be refused");
         assert_eq!(error.status, Some(StatusCode::TOO_MANY_REQUESTS));
         assert_eq!(error.retry_after.as_deref(), Some("7"));
+        assert!(!error.no_upstream_attempt);
+    }
+
+    #[tokio::test]
+    async fn malformed_handshake_response_retains_transport_attempt() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 1024];
+            let _ = socket.read(&mut buffer).await;
+            socket
+                .write_all(b"not an HTTP response\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let error = match connect(&format!("ws://{addr}/codex/responses"), HeaderMap::new()).await {
+            Ok(_) => panic!("the malformed handshake response must fail"),
+            Err(error) => error,
+        };
+        assert!(!error.no_upstream_attempt);
+        assert!(error.status.is_none());
+        server.await.unwrap();
     }
 
     /// A `response.completed` turn pools its connection under the session key, and
@@ -2046,6 +2147,7 @@ mod tests {
             "unexpected error: {}",
             error.message
         );
+        assert!(error.no_upstream_attempt);
         assert_eq!(
             accepted.load(Ordering::SeqCst),
             accepts_before_refusal,
@@ -2504,6 +2606,7 @@ mod tests {
         while let Some(item) = turn2.recv().await {
             if let Err(error) = item {
                 assert!(error.previous_response_missing);
+                assert!(!error.no_upstream_attempt);
                 saw_missing = true;
             }
         }
@@ -2581,6 +2684,154 @@ mod tests {
             .unwrap();
 
         clear_pool_for_tests();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn local_reopen_failure_retains_prior_probe_attempt() {
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        tokio::time::resume();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (probe_seen, observe_probe) = oneshot::channel::<()>();
+        let (release_server, hold_server) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
+            let mut probe_seen = Some(probe_seen);
+            let mut hold_server = Some(hold_server);
+            while let Some(message) = ws.next().await {
+                match message.unwrap() {
+                    Message::Text(_) => {
+                        for event in [
+                            r#"{"type":"response.created","response":{"id":"resp_probe"}}"#,
+                            r#"{"type":"response.completed","response":{"id":"resp_probe"}}"#,
+                        ] {
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    Message::Ping(_) => {
+                        probe_seen.take().unwrap().send(()).unwrap();
+                        let _ = hold_server.take().unwrap().await;
+                        break;
+                    }
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break,
+                    other => panic!("unexpected frame: {other:?}"),
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
+        let mut first = open_simple(&url, HeaderMap::new(), &frame, Some("probe-then-local"))
+            .await
+            .expect("the first turn connects");
+        drain(&mut first).await;
+        assert!(pool_contains_for_tests("probe-then-local"));
+
+        let reopen = tokio::spawn(async {
+            begin(
+                "ws://[",
+                HeaderMap::new(),
+                Some("probe-then-local"),
+                "codex",
+            )
+            .await
+        });
+        observe_probe.await.expect("the server observes the probe");
+        tokio::time::pause();
+        tokio::time::advance(REUSE_PROBE_TIMEOUT + Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+
+        let error = match reopen.await.unwrap() {
+            Ok(_) => panic!("the invalid reopen URL must fail"),
+            Err(error) => error,
+        };
+        assert!(!error.no_upstream_attempt);
+        assert!(error.message.contains("invalid websocket request"));
+
+        clear_pool_for_tests();
+        release_server.send(()).expect("release the server");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dead_pooled_socket_does_not_count_as_current_attempt() {
+        use tokio::net::TcpListener;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
+            while let Some(message) = ws.next().await {
+                match message.unwrap() {
+                    Message::Text(_) => {
+                        for event in [
+                            r#"{"type":"response.created","response":{"id":"resp_dead"}}"#,
+                            r#"{"type":"response.completed","response":{"id":"resp_dead"}}"#,
+                        ] {
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                    Message::Close(_) => break,
+                    Message::Pong(_) => {}
+                    other => panic!("unexpected frame: {other:?}"),
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
+        let mut first = open_simple(&url, HeaderMap::new(), &frame, Some("dead-before-probe"))
+            .await
+            .expect("the first turn connects");
+        drain(&mut first).await;
+        let entry = pool_get("dead-before-probe").expect("the first turn is pooled");
+        entry.conn.alive.store(false, Ordering::SeqCst);
+        drop(entry);
+
+        let error = match begin(
+            "ws://[",
+            HeaderMap::new(),
+            Some("dead-before-probe"),
+            "codex",
+        )
+        .await
+        {
+            Ok(_) => panic!("the invalid reopen URL must fail"),
+            Err(error) => error,
+        };
+        assert!(error.no_upstream_attempt);
+
+        clear_pool_for_tests();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the server exits after pool cleanup")
+            .unwrap();
     }
 
     /// Issue #93: a pooled connection the backend has closed (e.g. after a

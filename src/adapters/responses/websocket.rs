@@ -332,12 +332,14 @@ fn websocket_headers(
     let mut hint = None;
     let mut set = |name: &'static str, value: String| -> Result<(), AdapterError> {
         let value = HeaderValue::from_str(&value).map_err(|error| {
+            // A malformed header is built locally, before any upstream I/O, so
+            // it can never authorize a provider switch (see `ws_transport_error`).
             let message = format!("invalid {name} header: {error}");
             let response = ShuntError::bad_gateway(message.clone()).into_response();
             AdapterError {
                 message,
                 response: Box::new(response),
-                failure: Some(crate::adapters::AdapterFailure::BeforeHeaders),
+                failure: Some(crate::adapters::AdapterFailure::NoUpstreamAttempt),
             }
         })?;
         headers.insert(name, value);
@@ -391,7 +393,21 @@ fn websocket_headers(
 }
 
 fn ws_transport_error(error: CodexWsError) -> AdapterError {
-    ws_before_headers_error(error.message)
+    // A failure flagged `no_upstream_attempt` never reached the upstream, so it
+    // must not be classified as an attempted-but-failed turn: the weekly
+    // fallback policy treats `NoUpstreamAttempt` as terminal while
+    // `BeforeHeaders` authorizes a provider switch.
+    let failure = if error.no_upstream_attempt {
+        crate::adapters::AdapterFailure::NoUpstreamAttempt
+    } else {
+        crate::adapters::AdapterFailure::BeforeHeaders
+    };
+    let response = ShuntError::bad_gateway(error.message.clone()).into_response();
+    AdapterError {
+        message: error.message,
+        response: Box::new(response),
+        failure: Some(failure),
+    }
 }
 
 /// Every websocket failure before connection or the first event is safe to
@@ -528,6 +544,7 @@ mod tests {
             body: String::new(),
             message: "socket dropped before first event".to_string(),
             previous_response_missing: false,
+            no_upstream_attempt: false,
         };
         assert!(
             commit_or_fallback(Some(Err(error)), rx).is_err(),
@@ -711,9 +728,12 @@ mod tests {
         )
         .expect_err("a malformed header value is rejected");
         assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        // A malformed credential header is built locally, before any upstream
+        // I/O, so it is `NoUpstreamAttempt`, not `BeforeHeaders`: the weekly
+        // fallback policy must not switch providers on a local error.
         assert_eq!(
             error.failure,
-            Some(crate::adapters::AdapterFailure::BeforeHeaders)
+            Some(crate::adapters::AdapterFailure::NoUpstreamAttempt)
         );
     }
 
@@ -730,6 +750,7 @@ mod tests {
                 body: String::new(),
                 message: "dns failure".to_string(),
                 previous_response_missing: false,
+                no_upstream_attempt: false,
             },
             AuthMode::ChatgptOauth,
         );

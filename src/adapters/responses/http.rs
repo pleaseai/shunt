@@ -12,37 +12,15 @@ use futures_util::{stream, StreamExt};
 
 use crate::{
     adapters::AdapterError,
-    auth::Credential,
     model::responses::{parse_sse_events, ResponseEvent},
     routing::Route,
     server::AppState,
 };
 
-use super::body::{prepare_body, PreparedBody};
+use super::body::prepare_body;
 use super::context::{ForwardOptions, RelayOptions};
-use super::error::{backend_error, mapped_upstream_error, own_error, transport_error};
-use super::request::request_builder;
-
-/// Send the upstream Responses HTTP request and return the raw response
-/// without judging its status. Split out of [`forward_http`] so the account
-/// pool path ([`forward_chatgpt_oauth`]) can classify a response for failover
-/// before deciding whether to relay, retry, or rotate. Returns the raw
-/// `reqwest::Error` so the bounded-retry layer can distinguish transient
-/// transport failures from deterministic ones.
-pub(super) async fn http_send(
-    state: &AppState,
-    route: &Route,
-    credential: Credential,
-    session_id: Option<&str>,
-    body: PreparedBody,
-) -> Result<reqwest::Response, crate::upstream_timeout::SendError<reqwest::Error>> {
-    crate::upstream_timeout::wait(
-        state.config.server.timeouts.upstream_ttfb_ms,
-        body.attach(request_builder(state, route, credential, session_id))
-            .send(),
-    )
-    .await
-}
+use super::error::{backend_error, mapped_upstream_error, own_error};
+pub(super) use super::http_send::{http_send, send_error};
 
 /// The bounded-retry policy for `route`'s provider (issue #48), or a disabled
 /// policy when the provider somehow isn't found (it was validated at routing).
@@ -90,7 +68,7 @@ pub(super) async fn forward_http(
         || http_send(state, route, credential.clone(), session_id, body.clone()),
     )
     .await
-    .map_err(|error| error.into_adapter_error(|error| transport_error(error.to_string())))?;
+    .map_err(send_error)?;
     if let Some(account) = &codex_quota_account {
         state
             .accounts

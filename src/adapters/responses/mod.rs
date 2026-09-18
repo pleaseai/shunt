@@ -5,6 +5,7 @@ mod body;
 mod context;
 mod error;
 mod http;
+mod http_send;
 pub(crate) mod inbound;
 mod inbound_routed;
 mod pool;
@@ -21,7 +22,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use serde_json::Value;
 
 use crate::{
-    adapters::{Adapter, AdapterError, AdapterFuture},
+    adapters::{Adapter, AdapterError, AdapterFailure, AdapterFuture},
     auth::{self, resolve_credential, Credential},
     config::{AuthMode, CountTokens},
     model::responses::translate_request_value,
@@ -215,6 +216,23 @@ async fn forward(
         codex_quota_account,
         estimate_input,
     };
+    forward_single(
+        &state,
+        &route,
+        pool_key.as_deref(),
+        forward_options,
+        session_id.as_deref(),
+    )
+    .await
+}
+
+async fn forward_single(
+    state: &AppState,
+    route: &Route,
+    pool_key: Option<&str>,
+    forward_options: ForwardOptions,
+    session_id: Option<&str>,
+) -> crate::adapters::AdapterResult {
     // Codex WebSocket v2 transport (issue #32), opt-in per provider and only for
     // the ChatGPT/Codex backend. HTTP stays the path for every other upstream, and
     // is the documented safety net: any websocket failure before the first event
@@ -224,11 +242,12 @@ async fn forward(
     // failure *after* the first event surfaces mid-stream — an Anthropic `error`
     // event to a streaming client, or a gateway error to a non-streaming one —
     // since by then the response has already begun and cannot be safely restarted.
+    let mut websocket_attempted = false;
     if state.config.codex_websocket_enabled(&route.provider) {
-        match forward_websocket(&state, &route, pool_key.as_deref(), forward_options.clone()).await
-        {
+        match forward_websocket(state, route, pool_key, forward_options.clone()).await {
             Ok(response) => return Ok(response),
             Err(error) if error.failure.is_some() => {
+                websocket_attempted = error.failure != Some(AdapterFailure::NoUpstreamAttempt);
                 tracing::warn!(
                     provider = %route.provider,
                     error = %error.message,
@@ -238,5 +257,12 @@ async fn forward(
             Err(error) => return Err(error),
         }
     }
-    forward_http(&state, &route, forward_options, session_id.as_deref()).await
+    forward_http(state, route, forward_options, session_id)
+        .await
+        .map_err(|mut error| {
+            if websocket_attempted && error.failure == Some(AdapterFailure::NoUpstreamAttempt) {
+                error.failure = Some(AdapterFailure::BeforeHeaders);
+            }
+            error
+        })
 }

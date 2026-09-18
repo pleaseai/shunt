@@ -683,6 +683,68 @@ Extra headers on every OTLP request (e.g. a hosted-collector token). Merged unde
 | :-- | :-- |
 | any | Header name → value, e.g. `authorization = "Bearer <token>"` |
 
+## `[server.weekly_fallback]` (optional)
+
+This policy supports Claude Code requests through `/v1/messages` in both directions between Claude OAuth and ChatGPT OAuth.
+It is off by default. It changes providers only when every enabled selected account has fresh shared weekly exhaustion evidence.
+A missing, expired, or incomplete observation cannot prove exhaustion. Five-hour limits, Fable-only limits, cooldowns, and soft thresholds cannot prove it either.
+Observations expire after 300 seconds and require a future reset from the same observation.
+
+An invalid reported weekly value removes prior strict evidence even when the ordinary usage snapshot is empty.
+The policy rejects contradictory weekly windows and unknown durations in Codex usage reports.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Enable the policy for mapped single routes |
+| `claude_provider` | Required when enabled | Existing provider with `claude_oauth` |
+| `codex_provider` | Required when enabled | Existing provider with `chatgpt_oauth` and the ChatGPT backend |
+| `models` | Empty | Explicit backend pairs |
+| `models[].claude` | Required | Claude backend ID |
+| `models[].codex` | Required | Codex backend ID |
+| `models[].claude_fallback` | Unset | Same-provider fallback after an eligible Claude failure |
+
+```toml
+[server.weekly_fallback]
+enabled = true
+claude_provider = "anthropic"
+codex_provider = "codex"
+
+[[server.weekly_fallback.models]]
+claude = "claude-fable-5"
+codex = "gpt-6-astra"
+claude_fallback = "claude-opus-5"
+
+[[server.weekly_fallback.models]]
+claude = "claude-opus-5"
+codex = "gpt-5.6-sol"
+
+[[server.weekly_fallback.models]]
+claude = "claude-sonnet-5"
+codex = "gpt-5.6-terra"
+
+[[server.weekly_fallback.models]]
+claude = "claude-haiku-4-5-20251001"
+codex = "gpt-5.6-luna"
+```
+
+Use provider names that already exist in your configuration. Confirm backend access before activation.
+Pairs match the resolved provider and backend ID exactly after alias and context-hint resolution.
+Generic chains cannot contain either bound provider when this policy is enabled.
+
+The configured Claude fallback permits one same-provider attempt after upstream 4xx, upstream 5xx, or failure before headers.
+Local validation errors and errors after successful headers remain terminal. The policy never replays partial output.
+A pool that never attempts an upstream request also remains terminal.
+
+A Fable request that uses Opus still selects Astra if shared weekly exhaustion later requires a provider change.
+Each request permits at most one provider change. Dual exhaustion returns Anthropic HTTP 429 with `rate_limit_error`.
+
+The destination uses its own defaults and credentials. Managed model authorization checks the original requested alias.
+The fallback table defines the alternative backends for that alias.
+
+`x-gateway-model` retains the raw requested model, including its context hint.
+`x-gateway-upstream` and `x-gateway-upstream-model` identify the final provider and backend.
+The inbound Codex endpoint and `count_tokens` retain their existing behavior.
+
 ## Routing precedence
 
 A matching `[models.stage_router]` entry → a matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.

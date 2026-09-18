@@ -323,3 +323,23 @@ follow-up.
 - First-body-frame peek before committing a 2xx to the client, so
   header-successful-but-immediately-dead upstreams could still fail over
   (precedent: the Codex WS first-event peek fallback).
+
+## Weekly quota policy
+
+The optional `server.weekly_fallback` policy adds quota-dependent provider selection for Messages requests.
+It applies only to a matched single-route chain and leaves this document's generic loop unchanged for other chains.
+Configuration rejects multi-route model chains that contain either bound provider when the weekly policy is enabled.
+The weekly policy changes providers only after every enabled selected account has fresh shared weekly exhaustion evidence.
+Its configured Claude fallback also permits one same-provider attempt after upstream 4xx, upstream 5xx, or failure before headers.
+This predicate is separate from the generic loop's status predicate and includes upstream 400.
+
+The weekly policy stops when every pool attempt fails locally without an upstream request.
+The generic loop retains its existing advance after pooled local exhaustion.
+The adapters expose that distinction through `AdapterFailure::NoUpstreamAttempt`.
+Ordinary local validation errors retain their existing terminal behavior.
+
+The weekly policy permits one provider change per request. Confirmed dual exhaustion returns Anthropic HTTP 429 with `rate_limit_error`.
+It preserves the raw requested model in `x-gateway-model` and records the final provider and backend in the other gateway headers.
+It returns a successful response immediately and never replays partial output.
+The inbound Codex endpoint and `count_tokens` retain their existing behavior.
+See [Messages weekly fallback](messages-weekly-fallback.md) for the configuration, evidence rules, and model pairs.

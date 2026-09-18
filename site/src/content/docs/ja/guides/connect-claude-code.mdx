@@ -193,3 +193,7 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
 ```
 
 その後 `claude` を起動し、`/status` を実行して、**Anthropic base URL** の行にあなたのゲートウェイが表示されていることを確認します。reasoning エフォートとコンテキストウィンドウのチューニングについては [Effort & Context](/ja/guides/effort-and-context/) も参照してください。
+
+## 週間上限のフォールバック
+
+選択したプロバイダーの全有効アカウントが共有週間上限に達した場合だけ切り替えるには `[server.weekly_fallback]` を設定してください. モデルの組は Messages で双方向に動作します. Fable の失敗時には Opus を設定できます. デフォルトは無効です. [設定リファレンス](/ja/reference/configuration/#serverweekly_fallback-任意)で全モデルと条件を確認してください. inbound Codex endpoint と `count_tokens` の動作は変わりません.

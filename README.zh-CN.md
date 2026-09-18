@@ -20,6 +20,8 @@
 > [!NOTE]
 > `shunt` 是仍在活跃开发中的 1.0 之前(pre-1.0)软件。按照 [SemVer](https://semver.org/lang/zh-CN/#spec) 惯例,`0.x` 版本可能包含对配置键、CLI 和行为的破坏性变更(breaking change) —— 升级前请查看[发布说明](https://github.com/pleaseai/shunt/releases)。
 
+Claude Code 的 Messages 请求可以通过 `[server.weekly_fallback]` 配置每周配额回退. 只有所选提供方的全部启用账户都有最新的共享每周配额耗尽证据时才切换提供方. 映射双向支持 Fable/Astra, Opus/Sol, Sonnet/Terra 和 Haiku/Luna. Fable 失败时也可以配置 Opus 回退. 此功能默认关闭. 请参阅[配置与行为](docs/messages-weekly-fallback.md).
+
 ## 安装
 
 ```bash

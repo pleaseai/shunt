@@ -15,7 +15,9 @@
 
 use anyhow::Context;
 
-use crate::accounts::{UsageSnapshot, UsageWindow};
+use crate::accounts::{UsageSnapshot, UsageWindow, WeeklyUsageEvidence};
+
+mod strict_reset;
 
 /// Path appended to a provider's base URL to reach the usage endpoint.
 pub const USAGE_PATH: &str = "/api/oauth/usage";
@@ -36,6 +38,17 @@ pub async fn fetch_usage(
     base_url: &str,
     access_token: &str,
 ) -> anyhow::Result<UsageSnapshot> {
+    Ok(fetch_usage_report(client, base_url, access_token)
+        .await?
+        .usage)
+}
+
+/// Fetch normalized usage and strict evidence from one Claude response.
+pub(crate) async fn fetch_usage_report(
+    client: &reqwest::Client,
+    base_url: &str,
+    access_token: &str,
+) -> anyhow::Result<ClaudeUsageReport> {
     let url = format!("{}{USAGE_PATH}", base_url.trim_end_matches('/'));
     let response = client
         .get(&url)
@@ -58,7 +71,34 @@ pub async fn fetch_usage(
     }
     let value: serde_json::Value = serde_json::from_str(&text)
         .map_err(|error| anyhow::anyhow!("invalid usage response: {error}"))?;
-    Ok(parse_usage(&value))
+    Ok(parse_usage_report(&value))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClaudeUsageReport {
+    pub(crate) usage: UsageSnapshot,
+    pub(crate) weekly: WeeklyUsageEvidence,
+}
+
+fn parse_usage_report(value: &serde_json::Value) -> ClaudeUsageReport {
+    let weekly = match value.get("seven_day") {
+        None => WeeklyUsageEvidence::Unreported,
+        Some(window) => window
+            .get("resets_at")
+            .and_then(serde_json::Value::as_str)
+            .and_then(strict_reset::parse)
+            .and_then(|reset| {
+                let mut parsed = parse_window(Some(window))?;
+                parsed.resets_at = Some(reset);
+                Some(parsed)
+            })
+            .map(WeeklyUsageEvidence::Reported)
+            .unwrap_or(WeeklyUsageEvidence::Invalid),
+    };
+    ClaudeUsageReport {
+        usage: parse_usage(value),
+        weekly,
+    }
 }
 
 /// Parse the usage JSON into a [`UsageSnapshot`]. Tolerant of missing fields: an

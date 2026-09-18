@@ -19,6 +19,7 @@ mod session;
 mod spend;
 mod stage_router;
 mod upstreams;
+mod weekly_fallback;
 
 pub use admin_keys::{AdminAccess, AdminCredential, AdminKey, AdminKeyring};
 pub use http_tuning::{
@@ -33,6 +34,7 @@ pub use stage_router::{
     DEFAULT_DEESCALATE_THRESHOLD,
 };
 pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
+pub use weekly_fallback::{WeeklyFallbackConfig, WeeklyFallbackModel};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -82,6 +84,9 @@ pub type ProvidersConfig = BTreeMap<String, ProviderConfig>;
 pub struct ServerConfig {
     pub bind: String,
     pub default_provider: String,
+    /// Use shared weekly quota evidence for Messages fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekly_fallback: Option<WeeklyFallbackConfig>,
     /// Optional inbound client authentication for shared gateways (M4).
     /// Absent ⇒ no inbound auth (loopback-only personal use).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2257,6 +2262,8 @@ pub enum ConfigError {
     },
     #[error("server.default_provider references unknown provider: {0}")]
     UnknownDefaultProvider(String),
+    #[error("[server.weekly_fallback] is invalid: {message}")]
+    InvalidWeeklyFallback { message: String },
     #[error("[server.codex_endpoint] references unknown provider: {0}")]
     UnknownCodexEndpointProvider(String),
     #[error("[server.codex_endpoint] provider {0} must use auth = \"chatgpt_oauth\"; the inbound Responses endpoint injects the operator's Codex bearer")]
@@ -2711,6 +2718,7 @@ impl Default for Config {
             server: ServerConfig {
                 bind: "127.0.0.1:3001".to_string(),
                 default_provider: "anthropic".to_string(),
+                weekly_fallback: None,
                 auth: None,
                 admin: None,
                 spend: None,
@@ -3280,6 +3288,9 @@ impl Config {
         // Runs after `normalize_upstreams` so it sees `self.providers` merged
         // from either declaration form ([[upstreams]] or [providers.*]).
         self.normalize_service_tiers()?;
+        if let Some(policy) = &self.server.weekly_fallback {
+            policy.validate(&self)?;
+        }
         self.server.bind_addr()?;
         // `tokio::sync::Semaphore::new` panics above `MAX_PERMITS`, so an
         // out-of-range limit would pass `shunt check` and then abort at boot

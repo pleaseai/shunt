@@ -183,6 +183,7 @@ mod tests {
             body: body.to_string(),
             message: message.to_string(),
             previous_response_missing: false,
+            no_upstream_attempt: false,
         }
     }
 

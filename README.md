@@ -20,6 +20,8 @@ Providers for OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMa
 > [!NOTE]
 > `shunt` is pre-1.0 software under active development. Per [SemVer](https://semver.org/#spec), `0.x` releases may include breaking changes to configuration keys, the CLI, and behavior — check the [release notes](https://github.com/pleaseai/shunt/releases) before upgrading.
 
+Weekly quota fallback is available through `[server.weekly_fallback]` for Claude Code Messages requests. It preserves the selected provider until every enabled account has fresh shared weekly exhaustion evidence. Explicit pairs support Fable/Astra, Opus/Sol, Sonnet/Terra, and Haiku/Luna in both directions. Fable failures can use a configured Opus fallback. The policy is off by default. See the [configuration and behavior](docs/messages-weekly-fallback.md).
+
 ## Install
 
 ```bash

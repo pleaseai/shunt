@@ -96,8 +96,13 @@ pub(super) async fn forward(
         // count_tokens request.
         routes.truncate(1);
     }
+    let weekly = (!is_count_tokens(uri))
+        .then(|| super::weekly::Policy::select(&state.config, &routes))
+        .flatten();
+    let auth_routes = weekly.as_ref().map(|policy| policy.auth_routes());
     let (base_headers, inbound) =
-        check_inbound_auth(&state, &routes, headers).map_err(|error| *error)?;
+        check_inbound_auth(&state, auth_routes.as_deref().unwrap_or(&routes), headers)
+            .map_err(|error| *error)?;
     enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)
         .map_err(|error| *error)?;
     // The request is admitted, so the tier it was routed at may be recorded.
@@ -149,6 +154,21 @@ pub(super) async fn forward(
             &requested_model,
         )
         .await;
+    }
+
+    if let Some(policy) = weekly {
+        return policy
+            .forward(super::weekly::Request {
+                state,
+                uri,
+                headers: &base_headers,
+                inbound: &inbound,
+                body,
+                requested_model: &requested_model,
+                started_at,
+                stage_stamp,
+            })
+            .await;
     }
 
     let attempted_total = routes.len();
@@ -271,7 +291,7 @@ pub(super) async fn forward(
                             model,
                         );
                     }
-                    Some(AdapterFailure::BeforeHeaders) => {
+                    Some(AdapterFailure::BeforeHeaders | AdapterFailure::NoUpstreamAttempt) => {
                         tracing::warn!(
                             provider = %provider,
                             model = %model,
@@ -426,7 +446,7 @@ async fn count_tokens_response(
     }
 }
 
-async fn dispatch(
+pub(super) async fn dispatch(
     state: AppState,
     route: routing::Route,
     uri: &Uri,
@@ -462,7 +482,7 @@ async fn dispatch(
     }
 }
 
-fn observe_response(
+pub(super) fn observe_response(
     status: StatusCode,
     response: axum::response::Response,
     provider: String,
@@ -571,6 +591,19 @@ pub(crate) struct InboundContext {
     gateway_claims: Option<crate::gateway::jwt::Claims>,
     client: Option<String>,
     static_client: bool,
+}
+
+impl InboundContext {
+    /// An unauthenticated context for tests that exercise downstream policy
+    /// paths without running the inbound-auth prelude.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            gateway_claims: None,
+            client: None,
+            static_client: false,
+        }
+    }
 }
 
 /// Authenticate once against the whole route chain. Client credential stripping
@@ -795,7 +828,7 @@ fn reason_label(reason: ConsumedBy) -> &'static str {
 /// client cannot otherwise tell "routed to the efficient tier" from "not
 /// routed by a router at all".
 #[derive(Clone, Copy)]
-struct StageStamp<'a> {
+pub(super) struct StageStamp<'a> {
     /// The configured model id the chosen tier routes to. Distinct from
     /// `x-gateway-upstream-model`, which is the name sent upstream — for a
     /// router these differ whenever the target maps its own `upstream_model`.
@@ -803,7 +836,19 @@ struct StageStamp<'a> {
     source: &'static str,
 }
 
-fn stamp_gateway_headers(
+impl<'a> StageStamp<'a> {
+    /// A hand-built stamp for tests that assert the headers a stamped response
+    /// carries without driving a full stage-router request.
+    #[cfg(test)]
+    pub(super) fn for_test(routed_model: &'a str, source: &'static str) -> Self {
+        Self {
+            routed_model,
+            source,
+        }
+    }
+}
+
+pub(super) fn stamp_gateway_headers(
     response: &mut axum::response::Response,
     upstream: &str,
     model: &str,

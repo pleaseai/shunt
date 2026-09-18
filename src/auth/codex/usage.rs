@@ -39,7 +39,9 @@
 use anyhow::Context;
 use serde_json::Value;
 
-use crate::accounts::{codex_window_bucket, CodexWindow, UsageSnapshot, UsageWindow};
+use crate::accounts::{
+    codex_window_bucket, CodexWindow, UsageSnapshot, UsageWindow, WeeklyUsageEvidence,
+};
 use crate::adapters::responses::request::{CODEX_CLIENT_VERSION, CODEX_USER_AGENT};
 
 /// Path appended to a provider's base URL to reach the usage endpoint.
@@ -100,17 +102,21 @@ pub(crate) async fn fetch_usage_report(
 }
 
 /// A parsed wham report plus the buckets whose utilization the response
-/// authoritatively omitted. Unlike Claude's usage API, wham enumerates the
-/// account's 5h/7d windows, so a missing bucket can clear stale response-derived
+/// authoritatively omitted, and the strict weekly evidence the weekly-fallback
+/// policy consumes. Unlike Claude's usage API, wham enumerates the account's
+/// 5h/7d windows, so a missing bucket can clear stale response-derived
 /// utilization. Reset metadata stays response-derived (headers and the websocket
 /// `codex.rate_limits` event) and status metadata header-derived. An
 /// unknown-duration window suppresses both clear decisions because its bucket
-/// cannot be inferred safely.
+/// cannot be inferred safely. `weekly` records the shared weekly window as
+/// strict evidence: an absent, malformed, or contradictory weekly candidate
+/// yields `Invalid`, and an unknown-duration candidate suppresses it too.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WhamUsageReport {
     pub(crate) usage: UsageSnapshot,
     pub(crate) clear_five_hour: bool,
     pub(crate) clear_seven_day: bool,
+    pub(crate) weekly: WeeklyUsageEvidence,
 }
 
 /// Parse the wham usage JSON into a [`WhamUsageReport`]. Every non-null value in
@@ -148,6 +154,7 @@ fn parse_usage(value: &serde_json::Value) -> anyhow::Result<WhamUsageReport> {
     let mut has_five_hour_candidate = false;
     let mut has_seven_day_candidate = false;
     let mut has_unknown_duration_candidate = false;
+    let mut weekly = WeeklyUsageEvidence::Unreported;
     for window in windows.into_iter().flatten() {
         if window.is_null() {
             continue;
@@ -161,8 +168,20 @@ fn parse_usage(value: &serde_json::Value) -> anyhow::Result<WhamUsageReport> {
             CodexWindow::Weekly => has_seven_day_candidate = true,
         }
         let Some(parsed) = parse_window(window) else {
+            if matches!(bucket, CodexWindow::Weekly) {
+                weekly = WeeklyUsageEvidence::Invalid;
+            }
             continue;
         };
+        if matches!(bucket, CodexWindow::Weekly) {
+            weekly = match weekly {
+                WeeklyUsageEvidence::Unreported => WeeklyUsageEvidence::Reported(parsed.clone()),
+                WeeklyUsageEvidence::Reported(previous) if previous == parsed => {
+                    WeeklyUsageEvidence::Reported(previous)
+                }
+                _ => WeeklyUsageEvidence::Invalid,
+            };
+        }
         match bucket {
             CodexWindow::FiveHour if five_hour.is_none() => five_hour = Some(parsed),
             CodexWindow::Weekly if seven_day.is_none() => seven_day = Some(parsed),
@@ -183,6 +202,11 @@ fn parse_usage(value: &serde_json::Value) -> anyhow::Result<WhamUsageReport> {
         },
         clear_five_hour: !has_unknown_duration_candidate && !has_five_hour_candidate,
         clear_seven_day: !has_unknown_duration_candidate && !has_seven_day_candidate,
+        weekly: if has_unknown_duration_candidate || !has_seven_day_candidate {
+            WeeklyUsageEvidence::Invalid
+        } else {
+            weekly
+        },
     })
 }
 

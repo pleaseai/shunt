@@ -193,3 +193,7 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
 ```
 
 그런 다음 `claude`를 시작하고, `/status`를 실행하여 **Anthropic base URL** 줄이 게이트웨이를 표시하는지 확인하세요. 추론 노력과 컨텍스트 윈도우 튜닝은 [노력 & 컨텍스트](/ko/guides/effort-and-context/)도 참고하세요.
+
+## 주간 한도 fallback
+
+선택한 제공자의 활성 계정 풀이 공통 주간 한도를 소진했을 때만 전환하려면 `[server.weekly_fallback]`을 설정하세요. 모델 쌍은 Messages에서 양방향으로 동작하며 Fable 실패 시 Opus를 사용하도록 설정합니다. 기본값은 비활성입니다. 모델 대응과 적용 조건은 [설정 레퍼런스](/ko/reference/configuration/#serverweekly_fallback-선택-사항)를 참고하세요. inbound Codex endpoint와 `count_tokens`는 기존 동작을 유지합니다.

@@ -193,3 +193,7 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
 ```
 
 然后启动 `claude`,运行 `/status`,并检查 **Anthropic base URL** 那一行显示的是你的网关。关于推理力度和上下文窗口调优,另见 [力度与上下文](/zh-cn/guides/effort-and-context/)。
+
+## 每周配额回退
+
+配置 `[server.weekly_fallback]` 后, 只有所选提供方的全部启用账户耗尽共享每周配额时才切换. 模型配对在 Messages 中双向生效. Fable 失败时可以配置 Opus 回退. 此功能默认关闭. 全部配对与条件请参阅[配置参考](/zh-cn/reference/configuration/#serverweekly_fallback-可选). inbound Codex endpoint 与 `count_tokens` 保持现有行为.
