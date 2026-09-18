@@ -1,0 +1,100 @@
+site/src/content/docs/ja/reference/configuration.md
+  s_45726bf871e10f::t_2599369eb3b436 346
+  s_45726bf871e10f::t_7ad97eac38338c 287
+src/config.rs
+  s_45726bf871e10f::t_791c9465166e90 4742,4755
+  s_45726bf871e10f::t_aff4f4ad55ddda 2527,2553,2579,2605,2653,2727
+  s_45726bf871e10f::t_f05d50fd8582ca 4737-4741,4743-4754,4756-4806
+  s_45726bf871e10f::t_f0b80bf9f89f4c 1493-1513
+  s_45726bf871e10f::t_ebd473066bf98e 2240-2243
+  s_45726bf871e10f::t_2c2e794b2ea14a 3539-3556
+site/src/content/docs/providers/anthropic.mdx
+  s_45726bf871e10f::t_1d2179ba6eba83 129-150,152-164,166-171
+  s_45726bf871e10f::t_791c9465166e90 151,165
+tests/multi_account.rs
+  s_45726bf871e10f::t_791c9465166e90 1600,1618,1659
+  s_45726bf871e10f::t_c20f3b4bf56f15 1569-1599,1601-1617,1619-1658,1660-1665
+site/src/content/docs/reference/troubleshooting.md
+  s_45726bf871e10f::t_76358430a3315b 31
+tests/failover.rs
+  s_45726bf871e10f::t_aff4f4ad55ddda 96
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_45726bf871e10f::t_2599369eb3b436 27
+tests/inbound_auth.rs
+  s_45726bf871e10f::t_aff4f4ad55ddda 61
+site/src/content/docs/ja/providers/anthropic.mdx
+  s_45726bf871e10f::t_bd35d8ebb867da 131-153,155-162,164-167,169-173
+  s_45726bf871e10f::t_791c9465166e90 154,168
+  s_45726bf871e10f::t_2599369eb3b436 163
+src/usage/tests.rs
+  s_45726bf871e10f::t_aff4f4ad55ddda 364,509
+src/config/upstreams.rs
+  s_45726bf871e10f::t_41025d1181e845 242
+  s_45726bf871e10f::t_534ee6f4b057e9 27-30
+tests/stage_router.rs
+  s_45726bf871e10f::t_aff4f4ad55ddda 98
+src/config/upstreams/tests.rs
+  s_45726bf871e10f::t_ff3c7897184d0c 77-83,85-87,89-91
+  s_45726bf871e10f::t_fec34d70ba90f1 84,88
+  s_45726bf871e10f::t_3f42aff5dfb3fe 76
+src/admin/mod.rs
+  s_45726bf871e10f::t_aff4f4ad55ddda 2028
+tests/opencode_zen.rs
+  s_45726bf871e10f::t_aff4f4ad55ddda 72
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_45726bf871e10f::t_7ad97eac38338c 287
+  s_45726bf871e10f::t_2599369eb3b436 346
+site/src/content/docs/reference/configuration.md
+  s_45726bf871e10f::t_7ad97eac38338c 420,482
+site/src/content/docs/ko/providers/anthropic.mdx
+  s_45726bf871e10f::t_bd35d8ebb867da 126-146,148-155,157-160,162-166
+  s_45726bf871e10f::t_791c9465166e90 147,161
+  s_45726bf871e10f::t_2599369eb3b436 156
+src/adapters/anthropic/auto_mode_classifier.rs
+  s_45726bf871e10f::t_791c9465166e90 479,486
+  s_45726bf871e10f::t_d0421a3c2e3afe 433-435,439
+  s_45726bf871e10f::t_091e619546a936 53
+  s_45726bf871e10f::t_238c9de8e89c6d 214,216,219-228
+  s_45726bf871e10f::t_00fe46bcf6ac54 123-125,131,137-156,161-183
+  s_45726bf871e10f::t_1cf13168c16a91 422-432,436-438,440-478,480-485,487-495
+  s_45726bf871e10f::t_a82fd5ced70052 184,229
+site/src/content/docs/reference/client-environment.md
+  s_45726bf871e10f::t_76358430a3315b 48
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_45726bf871e10f::t_2599369eb3b436 27
+src/adapters/anthropic/mod.rs
+  s_45726bf871e10f::t_ae595017774524 56-67
+src/usage_poll.rs
+  s_45726bf871e10f::t_aff4f4ad55ddda 834,897,968,1159,2614
+site/src/content/docs/ko/reference/configuration.md
+  s_45726bf871e10f::t_2599369eb3b436 366
+  s_45726bf871e10f::t_7ad97eac38338c 306
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_45726bf871e10f::t_2599369eb3b436 27
+docs/implementation-plan.md
+  s_45726bf871e10f::t_c8e17994479f46 58
+site/src/content/docs/zh-cn/providers/anthropic.mdx
+  s_45726bf871e10f::t_bd35d8ebb867da 125-144,146-152,154-156,158-162
+  s_45726bf871e10f::t_791c9465166e90 145,157
+  s_45726bf871e10f::t_2599369eb3b436 153
+tests/passthrough.rs
+  s_45726bf871e10f::t_b59c273f894bfc 248,323-351,353-359,361-392,394-410,412
+  s_45726bf871e10f::t_791c9465166e90 352,360,393
+  s_45726bf871e10f::t_45d55ca65bd1ba 411
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e18e2c2bc6b62bdea72a8cf8eb193767a2a4af43",
+  "prompts": {},
+  "sessions": {
+    "s_45726bf871e10f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ea54da9-b466-4e33-b72e-ced2cc12a6b7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
