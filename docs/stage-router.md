@@ -292,7 +292,7 @@ to hold, because the compaction summary stays in the prefix for the turns after
 it. So the turn that carries the header is scored with
 `ToolSignals.compacted = true`, which reaches libsy's hard override and resolves
 to `capable` with source `override`; the pin that turn commits stores
-`compacted = true`; and every later turn of the session reads that flag back
+`compacted = true`; and every later turn keyed to that pin reads that flag back
 into its own `ToolSignals` and resolves the same way.
 
 `override` is signal evidence, so the escalation moves an efficient pin on the
