@@ -1,0 +1,208 @@
+src/stream_metrics.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 151-155,172-178,201-202,212-213,224,247-261,289-291,309-317,413-417,427-428,441-446,458-460,464-481,501-508,672-690,714-726,745-749
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_fc002d4a17166b::t_e24c2beda862f6 27
+src/adapters/responses/mod.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 6,12-17,40-49,53-57,139-141,183,189-237,268-289,301-323,336-773
+site/src/content/docs/zh-cn/providers/anthropic.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 11-18
+site/src/content/docs/getting-started/why-shunt.md
+  s_fc002d4a17166b::t_e24c2beda862f6 33
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 53-54
+site/src/content/docs/providers/anthropic.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 12-21
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_fc002d4a17166b::t_e24c2beda862f6 34,311,319
+site/src/content/docs/ko/reference/configuration.md
+  s_fc002d4a17166b::t_e24c2beda862f6 34,330,338
+src/auth/codex/auth.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 983,1003
+tests/codex_websocket_fallback.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 149-186,260,331,597,642,700,749,793,873
+docs/notes/anthropic-thinking-signatures.md
+  s_fc002d4a17166b::t_e24c2beda862f6 1-120
+tests/codex_multi_account.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 1224-1230,1237-1251,1309-1313,1760-2109
+src/auth/claude/auth/tests.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 103
+site/src/content/docs/guides/stage-router.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 69,129-132
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 53-54
+docs/m5-sse-keepalive.md
+  s_fc002d4a17166b::t_e24c2beda862f6 60,62-70
+src/adapters/cursor/client.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 203-206,237-241,414-432
+src/adapters/anthropic/thinking.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 1-397
+src/proxy/failover.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 171-190,220-231,513,523,601,823-826
+  s_fc002d4a17166b::t_8dc0722df6d6f5 827-828
+docs/running.md
+  s_fc002d4a17166b::t_e24c2beda862f6 194-195,560
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 58,110-112
+src/proxy.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 14
+site/src/content/docs/guides/opentelemetry.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 53-54
+.please/docs/review/rejected-findings.jsonl
+  s_fc002d4a17166b::t_e24c2beda862f6 87
+site/src/content/docs/ja/guides/connect-codex-cli.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 205,255-258,267
+src/routing/stage/store/tests.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 11-29,72,75-76,241-245,247,258,265-269,288,419-557,559
+src/retry.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 94,100-104,124-138,256-258,321-324,481-485,490-493,550-553
+tests/failover.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 345-349,447-450,544-547
+ARCHITECTURE.md
+  s_fc002d4a17166b::t_e24c2beda862f6 51
+src/model/mod.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 8
+tests/responses_chain_stream.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 1-851
+src/proxy/chain_stream.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 1-1202
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_fc002d4a17166b::t_e24c2beda862f6 33
+src/testutil.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 1-59
+docs/m10-codex-multi-account.md
+  s_fc002d4a17166b::t_e24c2beda862f6 158,164
+src/model/thinking_signature.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 1-104
+site/src/content/docs/ja/guides/codex-multi-account.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 162,168
+src/upstream_timeout.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 23-29
+docs/upstreams-failover.md
+  s_fc002d4a17166b::t_e24c2beda862f6 203,298-305
+src/adapters/responses/sse_parse.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 1-687
+src/adapters/responses/websocket.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 37,45
+src/adapters/responses/early_stream_tests.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 1-1906
+src/lib.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 48-50
+Cargo.toml
+  s_fc002d4a17166b::t_e24c2beda862f6 99,105-120,156
+src/stream_metrics/tests.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 28-29,77-253
+  s_fc002d4a17166b::t_19e0ef7421d4dc 254
+src/routing/stage.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 74,76-81,85
+site/src/content/docs/reference/configuration.md
+  s_fc002d4a17166b::t_e24c2beda862f6 59,445,453,533
+site/src/content/docs/reference/troubleshooting.md
+  s_fc002d4a17166b::t_e24c2beda862f6 31
+src/metrics.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 444-492
+src/model/responses.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 211-218,253-271,895,899-923,1124,1139-1206
+  s_fc002d4a17166b::t_d7abefc0b12e73 1207
+site/src/content/docs/ja/reference/configuration.md
+  s_fc002d4a17166b::t_e24c2beda862f6 34,311,319
+site/src/content/docs/zh-cn/guides/connect-codex-cli.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 200-201,249-251,260-261
+docs/stage-router.md
+  s_fc002d4a17166b::t_e24c2beda862f6 10-12,39-60,85-101,103-105,113-115,142,145-151,153-157,192-230,392-396,400-403,408,424,431,439-443,445,447-488
+src/adapters/responses/http.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 1-6,9,15,20-24,66,75,77-117,120-129,138-140,150-155,168,207,210,214,393-446,449-512
+src/adapters/responses/pool.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 5-8,11-12,19,25-30,33,84-796,841-878,958,960,1213-1215,1519,1526-1733,2041-2529
+site/src/content/docs/ko/getting-started/why-shunt.md
+  s_fc002d4a17166b::t_e24c2beda862f6 33
+src/model/responses_request.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 273-281
+src/proxy/failover/tests.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 4,762-911
+src/routing/stage/signals.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 108-110,114,153-159,161-172,176-179,181,183-184
+site/src/content/docs/ko/guides/connect-codex-cli.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 214,266-269,278-279
+src/adapters/responses/context.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 72-100,112-115
+src/adapters/responses/early_stream.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 1-535
+src/adapters/anthropic/mod.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 1,8,28,69-72,78,185,771,1342-1547,1711-1809,2187-2245
+site/src/content/docs/guides/switchyard.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 16,28,40-47,105,110-120,200,202-206,209-211,213-218,233-239,319,331-337,344-346
+src/routing/stage/store.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 18,74-198,237,461-471,481-490,493-501,505-506,511,513
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 61,118-122
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 16,27,39-45,102,107-116,193,195-198,201-203,205-210,225-231,305,316-322,330-331
+site/src/content/docs/zh-cn/getting-started/why-shunt.md
+  s_fc002d4a17166b::t_e24c2beda862f6 33
+site/src/content/docs/guides/codex-multi-account.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 162-165,171
+docs/research/anthropic-responses-translation-audit.md
+  s_fc002d4a17166b::t_e24c2beda862f6 61
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 65,123-127
+site/src/content/docs/ja/providers/anthropic.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 11-21
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_fc002d4a17166b::t_e24c2beda862f6 27
+src/adapters/cursor/sse.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 223
+docs/notes/adr-0005-routing-live-captures.md
+  s_fc002d4a17166b::t_e24c2beda862f6 1-407
+site/src/content/docs/guides/connect-codex-cli.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 213-216,266-268,277-278
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 16,28,40-48,105,110-120,199,201-205,208-210,212-217,232-238,317,328-334,341-342
+src/adapters/responses/error.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 25-34,155-165,170,177,355-368
+  s_fc002d4a17166b::t_1ab1b6f297b440 369
+site/src/content/docs/zh-cn/guides/codex-multi-account.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 162,168
+site/src/content/docs/ko/guides/codex-multi-account.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 162,168
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 14,25,37-43,98,103-110,183,185-188,191-192,194-198,213-217,286,297-302,308-310
+.please/docs/decisions/index.md
+  s_fc002d4a17166b::t_e24c2beda862f6 11
+docs/routing-algorithms.md
+  s_fc002d4a17166b::t_e24c2beda862f6 1-94
+src/keepalive.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 11
+src/model/gemini.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 210,347
+src/observability.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 31-35,202-221,240-243,560-563,843-891
+  s_fc002d4a17166b::t_709fa459df3622 892
+src/error.rs
+  s_fc002d4a17166b::t_e24c2beda862f6 96-169,252-336
+site/src/content/docs/ko/providers/anthropic.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 11-20
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_fc002d4a17166b::t_e24c2beda862f6 27
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_fc002d4a17166b::t_e24c2beda862f6 53-54
+.please/docs/decisions/0005-routing-algorithm-extensions.md
+  s_fc002d4a17166b::t_e24c2beda862f6 1-606
+Cargo.lock
+  s_fc002d4a17166b::t_ded61e11bb41e6 176,178,186,188,2699,2701,2764,2766,2984,3126,3233-3234,3238,3244,3253,3258-3259
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "00699c49e7cfb8db0267f7ec06601be9d2d40139",
+  "prompts": {},
+  "sessions": {
+    "s_fc002d4a17166b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15450f63-cfc0-4025-90b3-845d812460e8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
