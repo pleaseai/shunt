@@ -128,7 +128,13 @@ export async function renderDashboard(
 ): Promise<Api> {
   const api = mockApi({ ...defaultRoutes(fixtures), ...extra });
   render(<App />);
-  await screen.findByRole('heading', { name: 'Accounts and usage' });
+  // Generous on purpose. `App` resolves the session fetch and only then mounts
+  // the router, which resolves the initial route on a later tick, so first paint
+  // of the index route is two async hops away. Testing Library's 1000 ms default
+  // is close enough to that under a full parallel run -- 13 workers on one
+  // machine -- that this line failed intermittently at ~1.3 s while passing
+  // 14/14 when the file ran alone.
+  await screen.findByRole('heading', { name: 'Accounts and usage' }, { timeout: 5000 });
   // Every table settles before a test asserts: leaving one on "Loading…" is how
   // an assertion about a missing row passes for the wrong reason.
   await waitFor(() => expect(screen.queryAllByText('Loading…')).toHaveLength(0));
