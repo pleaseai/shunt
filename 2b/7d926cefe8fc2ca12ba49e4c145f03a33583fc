@@ -1,0 +1,19 @@
+tests/responses_chain_stream.rs
+  s_08e53c03226d2e::t_52dfa017a94b5f 66,88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2b7d926cefe8fc2ca12ba49e4c145f03a33583fc",
+  "prompts": {},
+  "sessions": {
+    "s_08e53c03226d2e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5aaffb5f-cbae-4092-a173-6b3fc463e5df",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
