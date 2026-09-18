@@ -145,11 +145,16 @@ single-instance a documented limitation or a documented decision?", which that
 document says every other question follows from. A ring buffer needs no schema,
 no migration, no retention policy, no PII decision, and no answer on replicas.
 
-Its limitation is exact and should be documented rather than engineered around:
-**history does not survive a restart.** For a gateway whose operator restarts it
-to change config, a day of in-memory history is a genuine product, not a
-placeholder — but it is not an audit trail, and nothing that needs durability
-(`/audit`, spend counters) may be built on it.
+Its limitations are exact and should be documented rather than engineered
+around: **history does not survive a restart, and the ring is process-local.**
+For a gateway whose operator restarts it to change config, a day of in-memory
+history is a genuine product, not a placeholder — but it is not an audit trail,
+and nothing that needs durability (`/audit`, spend counters) may be built on it.
+Across several processes each ring sees only its own replica's traffic, so a
+chart drawn from it inherits the caveat
+[`admin-ui-delivery.md`](admin-ui-delivery.md) already puts on
+`/admin/api/pool`: it is this instance's view, not the fleet's, and the UI must
+label it that way rather than implying a fleet-wide total.
 
 The read API is the load-bearing part. Because the dashboard talks to it rather
 than to the ring, `storage.md`'s eventual SQLite — should it be adopted on its

@@ -177,17 +177,20 @@ balancer, which Decision 2 makes natural.
 
 ## Storage — evaluated separately
 
-The topology above says scaling out needs a shared store, and a dashboard worth
-building needs durable history. Both are storage questions that outgrew this
-document; they are recorded in [`storage.md`](storage.md), which evaluates
+The topology above says scaling out needs a shared store, and history that
+outlives a restart needs durable storage. Both are storage questions that
+outgrew this document; they are recorded in [`storage.md`](storage.md), which evaluates
 SQLite, Turso, and PostgreSQL and adopts none of them.
 
 Two conclusions from there bear on the decisions below:
 
-- **History is a prerequisite, not a feature.** Everything the dashboard can show
-  today is a point-in-time value in memory, so a store is what separates a
-  dashboard from a status page. That argues for keeping Decision 4's frontend
-  work independent of the store decision, so neither blocks the other.
+- **Durable history is a prerequisite, not a feature.** A store is what separates
+  history that outlives a restart from a point-in-time value in memory — but it
+  is no longer what separates a dashboard from a status page.
+  [`dashboard-metrics.md`](dashboard-metrics.md) adopts a bounded in-memory ring
+  that serves a recent window with no store, so charts are not blocked here.
+  That argues for keeping Decision 4's frontend work independent of the store
+  decision, so neither blocks the other.
 - **Single-instance is not created by the UI.** shunt's gateway device-flow
   rendezvous already needs cross-replica state and does not have it. A dashboard
   only makes that visible.
@@ -548,14 +551,20 @@ tree.
 
 ### What this does not decide
 
-Two of the three features motivating this are blocked behind other decisions,
-and naming a frontend stack must not obscure that:
+One of the three features motivating this is still blocked behind another
+decision, and a second is only partly unblocked. Naming a frontend stack must
+not obscure either:
 
-- **Monitoring is blocked on [`storage.md`](storage.md).** Every observable is a
-  point-in-time value in memory, and `src/metrics.rs` emits to the Sentry and
-  OTel sinks rather than to a scrape endpoint. Until a store lands, a
-  "monitoring" screen is a status page, and calling it one is more honest than
-  picking a charting library for it.
+- **Monitoring is no longer blocked on [`storage.md`](storage.md) for a recent
+  window.** [`dashboard-metrics.md`](dashboard-metrics.md) removes that block:
+  shunt owns the aggregate, and a bounded in-memory ring retains that window
+  without a store, so a monitoring screen draws real charts. Two constraints
+  survive — it does not outlive a restart and is this instance's view only, and
+  the per-account history over days that [`storage.md`](storage.md) describes
+  still needs a store. The prerequisite is the aggregate in that record, not a
+  charting library: `src/metrics.rs` emits to the Sentry and OTel sinks rather
+  than to a scrape endpoint, and sixteen of its eighteen series cannot be read
+  back in-process at all.
 - **Access-permission management is display-only** until the same decision. A
   UI cannot mint keys: every `write_keys` / `read_keys` entry must come from a
   `${VAR}` / `${file:}` reference, and a literal in the config file fails the
