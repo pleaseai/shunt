@@ -1,0 +1,53 @@
+docs/stage-router.md
+  s_3320184ffd3f18::t_3853da244092c6 246-247,286-308,463-467
+  s_3320184ffd3f18::t_62529a9dc98732 187-192,226-244
+  s_3320184ffd3f18::t_41bfa9b7841976 142-159,166-167
+  s_3320184ffd3f18::t_db56d82d324473 32,36-37,93-94,108-116
+  s_3320184ffd3f18::t_b01c9da921a6fb 460-462,567-599
+  s_3320184ffd3f18::t_605ee707e1c447 245,468
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_3320184ffd3f18::t_1844780f753e18 86-107,116-117
+README.md
+  s_3320184ffd3f18::t_67b8bf3b9cda88 234-235
+README.ko.md
+  s_3320184ffd3f18::t_67b8bf3b9cda88 235-236
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_3320184ffd3f18::t_cda686eeb04e4f 98-99,104-106,108-110,196-198,251-260
+docs/routing-algorithms.md
+  s_3320184ffd3f18::t_fc5542140370f4 93-154
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_3320184ffd3f18::t_1d49d19e07e6d3 105-106,111-114,118-121,215-219,278-291
+site/src/content/docs/guides/switchyard.mdx
+  s_3320184ffd3f18::t_37d26477095988 105-106,111-115,118-121,216-222,280-293
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_3320184ffd3f18::t_1844780f753e18 91-117,126-127
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_3320184ffd3f18::t_a43703e3b22e67 102-103,108-116,207-210,269-279
+README.ja.md
+  s_3320184ffd3f18::t_67b8bf3b9cda88 234-235
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_3320184ffd3f18::t_1844780f753e18 81-99,105-106
+README.zh-CN.md
+  s_3320184ffd3f18::t_66d699146b72af 232
+  s_3320184ffd3f18::t_67b8bf3b9cda88 233
+site/src/content/docs/guides/stage-router.mdx
+  s_3320184ffd3f18::t_c11016be2dcc05 95-121,131-132
+site/src/content/docs/reference/client-environment.md
+  s_3320184ffd3f18::t_81f893adaed817 51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a3d284ec9a64bd7eae0fa545f7152d244a7e9311",
+  "prompts": {},
+  "sessions": {
+    "s_3320184ffd3f18": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c745023-96e0-4776-93a4-9f66826f90c6",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
