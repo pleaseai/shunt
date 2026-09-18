@@ -203,14 +203,34 @@ Neither the `/compact` command nor an auto-compaction was triggered in these
 runs, so §11's one-shot claim about `context-compacted` — the claim PR 1's
 session latch is built on — is still binary-derived only.
 
-## Fact (c) — a forced tool-use reply against the judge verdict schema
+## Fact (c) — a forced tool-use probe against the judge verdict schema
 
-The Anthropic Messages API has no `response_format`, so libsy's
-`ClassifierResponseFormat::JsonSchema` maps onto forced tool use: the packaged
-verdict schema becomes a tool's `input_schema` and `tool_choice` names it. The
-question §10 poses is whether the reply then validates against that schema
-strictly enough to skip `ClassifierResponseFormat::JsonObject`, which moves the
-schema into the prompt and validates locally.
+**This probe sent forced tool use, which is not the shape the pinned code
+produces.** The Anthropic Messages API does have a structured-output field —
+`output_config.format` — and libsy uses it. At `3ddea9d3`,
+`ClassifierResponseFormat::JsonSchema` passes the packaged
+`{"type": "json_schema", "json_schema": {…}}` document straight through
+(`crates/libsy/src/algorithms/util/classifier_contract.rs:92-95`); it lands on
+`LlmRequest.output.response_format`
+(`crates/libsy/src/algorithms/llm_class.rs:1654-1655`); and the Anthropic codec
+emits it as `output_config.format`
+(`crates/switchyard-translation/src/codecs/anthropic/buffered.rs:267-280`). No
+tool and no `tool_choice` is constructed anywhere on that path. Forced tool use
+is what *this capture* chose to send, so everything below exercises a different
+request shape from the pinned translation path.
+
+The two shapes do not meet on the reply side either: an Anthropic `tool_use`
+reply decodes to `ContentBlock::ToolCall` (same codec file, ~617) and
+`completion_text` (`crates/protocol/src/lib.rs:75-88`) keeps only `Text` blocks,
+so `parse_json_verdict`
+(`crates/libsy/src/algorithms/util/llm_judge.rs:374-380`) would be handed an
+empty string. A forced-tool reply is not merely an alternative encoding of the
+production one; on the pinned path it would fail to parse.
+
+The question §10 poses is whether the reply validates against the packaged
+schema strictly enough to skip `ClassifierResponseFormat::JsonObject`, which
+moves the schema into the prompt and validates locally. What follows answers
+that for the forced-tool-use shape only.
 
 The inner schema from each packaged response-format document was sent verbatim
 from the pinned libsy revision (`3ddea9d3`) — `EscalationVerdict`
@@ -259,10 +279,19 @@ packaged schema, `additionalProperties: false` included:
 ```
 
 `primary_rule` and `capability_boundary` landed inside their enums and
-`p_solve` inside `[0.0, 1.0]`; no extra property appeared in either object.
-Validation covered every keyword the two schemas use — `type`, `properties`,
-`required`, `additionalProperties`, `enum`, `minimum`, `maximum`, `minLength` —
-with no keyword left unchecked.
+`p_solve` inside `[0.0, 1.0]`; no extra property appeared in either object. The
+captured replies satisfied every keyword the two schemas use — `type`,
+`properties`, `required`, `additionalProperties`, `enum`, `minimum`, `maximum`,
+`minLength` — with no keyword left unchecked.
+
+That coverage belongs to the forced-tool-use shape, where the schema travels as
+an `input_schema` verbatim. On the pinned `output_config.format` path it is
+narrower: the codec runs `strip_anthropic_unsupported_constraints`
+(`crates/switchyard-translation/src/codecs/anthropic/buffered.rs:490-511`),
+which recursively removes `minimum`, `maximum`, `minLength`, and `maxLength`
+from the schema before the request is sent. Those bounds are never exercised in
+production, so this capture says nothing about them there — only about the
+probe.
 
 ### Where this contradicts §10
 
@@ -291,18 +320,41 @@ narrow but real: a `[models.router]` entry whose judge resolves to a Fable
 target cannot take the forced-tool-use path at all, and what comes back is a
 `400` at the first judge call rather than a parse failure.
 
-That distinction decides the blast radius, and libsy's own test settles it
-rather than leaving it to inference: in
+That distinction decides the blast radius, and libsy's own test speaks to it —
+but for a different boundary than the one shunt is building. In
 `classifier_stops_on_client_errors_and_records_verdict_fallback`
 (`libsy-llm-client/tests/observability.rs`), a `JudgeOutcome::CallFailure`
 makes `run_classifier` return `Err`, and the case asserts
 `switchyard.classifier_fail_open` is **not** incremented — "client failures and
 valid verdicts must not increment switchyard.classifier_fail_open". Only the
 `"not json at all"` reply counts as a fail-open, under `reason = "parse_error"`.
-So a Fable judge does not degrade into the algorithm's fallback; it fails the
-classifier. Whether `tool_choice: {"type": "auto"}` yields a usable verdict
-there was not tested — the model had no pool headroom left by the time this
-question came up.
+That is accurate for what it covers: the test drives
+`switchyard_llm_client::run`, the HTTP client runner, whose own `serve`
+(`crates/libsy-llm-client/src/run.rs:190-204`) does `call_one(…).await?` and
+only then `call.respond(Ok(response))` — the `?` returns `Err` without ever
+calling `respond`, aborting the run before the error can reach
+`JudgeClassifier::verdict`. On that boundary a failed model call ends the run
+and is correctly not a fail-open.
+
+shunt's planned boundary is the other one, and the documented contract there
+points the other way. ADR-0005 §1 commits shunt to
+`drive(algorithm, request, models, serve)` with shunt authoring its own `serve`
+closure (§3), and `drive`'s contract
+(`crates/libsy/src/core/algorithm.rs:364-367`) reads: "A failed *model* call
+belongs in `respond` — the algorithm may route around it. Returning `Err` from
+`serve` aborts the whole run, so reserve it for infrastructure failures." On
+that contract-compliant path a `respond(Err(..))` does reach
+`JudgeClassifier::verdict`
+(`crates/libsy/src/algorithms/util/llm_judge.rs:263-278`), which catches it via
+`inspect_err`, records `classifier_fail_open`, folds it into `None`, and runs
+the policy fallback — the opposite outcome.
+
+So which of the two a Fable `400` produces depends on how shunt writes its
+`serve` closure, and the ADR has not pinned that. Treat it as an open design
+decision for PR 5, not a settled fact: the captured `400` is solid, the
+behaviour it triggers downstream is still ours to choose. And whether
+`tool_choice: {"type": "auto"}` yields a usable verdict there was not tested —
+the model had no pool headroom left by the time this question came up.
 
 ## What this capture does not establish
 
@@ -319,6 +371,17 @@ Stated plainly so a later reader does not over-read the table above.
   request as much as on the tool request, through repeated probes over ~30
   minutes. So the fact is **established for one model, contradicted for one
   other, and untested for nine** — untested is not passing.
+* **The pinned `output_config.format` path was not exercised at all.** Fact (c)
+  sent forced tool use, which is not what `ClassifierResponseFormat::JsonSchema`
+  produces at `3ddea9d3` (above). §10's question about the production
+  structured-output path — whether an `output_config.format` reply validates
+  strictly enough to skip `JsonObject` — is therefore still open and needs a
+  re-capture against that shape.
+* **The `drive`/`CallModel` failure path was not exercised.** Nothing here shows
+  what shunt's own `serve` closure does with a Fable `400`; the libsy test cited
+  above covers the HTTP client runner instead. Whether such a call surfaces as a
+  classifier failure or as a `classifier_fail_open` with the policy fallback is
+  an open decision, not an observation (above).
 * **`teammate` was not seen on the wire** (above).
 * **The two compaction headers were not exercised** (above).
 * **`main` carrying an agent id was never observed.** §5 makes the class
