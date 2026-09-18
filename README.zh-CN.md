@@ -1,5 +1,7 @@
 # shunt
 
+离线凭据导入：`shunt import opencodex --dry-run` 可预览兼容 API 密钥和 Cursor/Command Code 访问令牌。导出会创建新的私有快照，不修改现有设置，也不复制刷新令牌。参见[导入指南（英文）](docs/credential-import.md)。
+
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/pleaseai/shunt?utm_source=badge)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
