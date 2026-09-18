@@ -111,10 +111,19 @@ The gauge pattern, applied uniformly. Adopted below.
 
 ## Decision 1 — shunt owns the aggregate
 
-Every series keeps its current value in a shunt-owned structure. Sentry and OTel
-become readers of that structure rather than its only home; the recording
-functions in `src/metrics.rs` keep their present signatures, so no call site
-changes.
+Every series keeps its current value in a shunt-owned structure. That structure
+is an **additional read model, not a replacement sink**: the recording functions
+in `src/metrics.rs` keep their present signatures *and* their present emissions,
+so both sinks stay event-driven and no call site changes.
+
+The distinction is load-bearing for the sixteen counters and histograms. They
+push once per observation — Sentry `capture()`, OTel `add()`/`record()`
+(`src/metrics.rs:423-443`) — and only the two observable gauges are read by a
+callback at collection time. Feeding a running aggregate into `add()` would
+accumulate it a second time (1 + 2 + 3 + …), and replacing the per-observation
+writes with a callback would stop those series exporting at all. So the
+aggregate is updated alongside the existing emissions: the gauge pattern is the
+model for *reading* a value in-process, not for how a counter reaches a sink.
 
 Three properties follow, and each is independently worth the change:
 
