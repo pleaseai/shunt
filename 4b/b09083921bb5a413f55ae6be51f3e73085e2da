@@ -1,0 +1,23 @@
+.please/docs/review/rejected-findings.jsonl
+  s_d39346c99c9c7e::t_c9ae83a78275ad 88-89
+.claude/agent-memory/review-review-issue-fixer/MEMORY.md
+  s_d39346c99c9c7e::t_6b6e8ef5be951a 4
+.claude/agent-memory/review-review-issue-fixer/abort-predicate-breadth-drops-pooling.md
+  s_d39346c99c9c7e::t_704847c250e05c 1-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4bb09083921bb5a413f55ae6be51f3e73085e2da",
+  "prompts": {},
+  "sessions": {
+    "s_d39346c99c9c7e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e54bc3ec-7ed1-41ae-8703-e02d135c1609",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
