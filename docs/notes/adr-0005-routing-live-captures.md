@@ -25,9 +25,9 @@ Claude Code 2.1.276  ──http──▶  shunt run (127.0.0.1:31801)
                                 (pooled Anthropic subscription credentials)
 ```
 
-The second shunt hop is only how this machine reaches Anthropic; every reply
-quoted below carries Anthropic's own `request-id` and `cf-ray`, so the origin
-of a `200`, a `400`, or a `429` is never in doubt.
+The second shunt hop is only how this machine reaches Anthropic. The captured
+upstream replies carried Anthropic request ids, so the origin of each `200`,
+`400`, or `429` was never in doubt.
 
 * **shunt**: `0.45.1`, debug build of `b4fa5fd1`, started as
   `shunt run --config …` with `default_provider = "anthropic"` and the
@@ -43,8 +43,9 @@ of a `200`, a `400`, or a `429` is never in doubt.
   agent. This matters — the first attempt at fact (b) reported `custom` for
   `Explore`, because the real `HOME` has a `~/.claude/agents/Explore.md` that
   shadows the built-in of that name.
-* **Model**: `claude-haiku-4-5-20251001`, the only Claude id with pool headroom
-  during the capture window (see "What this capture does not establish").
+* **Model**: `claude-haiku-4-5-20251001`, the only Claude id that completed
+  either forced tool-use request during the capture window (see "What this
+  capture does not establish").
 * Date: 2026-09-18. Credentials, account names, and org/workspace ids are
   redacted; nothing else in the quoted header blocks is altered.
 
@@ -68,10 +69,10 @@ carried it, and no `subagent` turn ever omitted it.
 | `… (external, sdk-cli)` | *absent (gate off)* | absent | absent | 5 |
 | `… (external, sdk-cli)` | *absent (gate off)* | **present** | absent | 2 |
 
-Two of the four `custom` rows predate the throwaway `HOME` and came from the
-shadowed `~/.claude/agents/Explore.md` — which is a custom agent, so `custom`
-is the right value for them. The other two are the project's `marker-finder`
-(fact (b)).
+Two of the four requests whose agent type was `custom` predate the throwaway
+`HOME` and came from the shadowed `~/.claude/agents/Explore.md` — which is a
+custom agent, so `custom` is the right value for them. The other two are the
+project's `marker-finder` (fact (b)).
 
 A parent turn that went on to spawn an `Explore` child, verbatim — this one
 from the headless driver; the `host` line is shunt's rewrite to the tap, not
@@ -148,10 +149,10 @@ latch.
 ## Fact (b) — the literal `x-claude-code-agent-type` values
 
 §11 reads the value set from the binary as "`teammate`, a built-in agent id
-(`fork`, `Explore`, …), `custom`" and asks for live confirmation. Each row
-below is one drive that spawned exactly that agent, with the `subagent_type`
-read back out of the parent's own `Agent` tool-use block in the captured body,
-so the mapping is request-to-request and not inferred.
+(`fork`, `Explore`, …), `custom`" and asks for live confirmation. For each
+verified mapping below, the `subagent_type` was read back out of the parent's
+own `Agent` tool-use block in the captured body, so the mapping is
+request-to-request and not inferred.
 
 | `subagent_type` sent by the parent | `x-claude-code-agent-type` on the wire | verified |
 |---|---|---|
@@ -187,11 +188,11 @@ Three details §11's "…" leaves open:
 * **`teammate` is not wire-verified here.** Agent Teams is gated behind
   `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, and with that flag set a headless
   run still surfaces no team-creation tool — team spawning appears to need an
-  interactive surface this rig did not drive. The literal is present in the
-  2.1.276 binary's header-derivation function, which returns `"teammate"`
-  ahead of the `agent:builtin:` prefix check, so §11's value is very likely
-  right; it is simply not something this capture observed. **Treat `teammate`
-  as the one unverified key in the table.**
+  interactive team-creation flow this rig did not exercise. The literal is
+  present in the 2.1.276 binary's header-derivation function, which returns
+  `"teammate"` ahead of the `agent:builtin:` prefix check, so §11's value is
+  very likely right; it is simply not something this capture observed.
+  **Treat `teammate` as the one unverified key in the table.**
 
 `x-claude-code-prev-tool-durations` came along for the ride and its format
 matches §11 exactly — `Name=ms` joined with `;`: `Agent=5`, `Glob=47`,
@@ -211,9 +212,9 @@ question §10 poses is whether the reply then validates against that schema
 strictly enough to skip `ClassifierResponseFormat::JsonObject`, which moves the
 schema into the prompt and validates locally.
 
-Both packaged schemas were sent verbatim from the pinned libsy revision
-(`3ddea9d3`) — `EscalationVerdict` (`prompts/escalation/schema.json`) and
-`CapabilityClassifierDecision`
+The inner schema from each packaged response-format document was sent verbatim
+from the pinned libsy revision (`3ddea9d3`) — `EscalationVerdict`
+(`prompts/escalation/schema.json`) and `CapabilityClassifierDecision`
 (`prompts/capability-classifier/schema.json`) — with each schema's packaged
 `prompt.md` as the `system` block. The request shape:
 
@@ -287,11 +288,21 @@ Reproduced twice, minutes apart, on both schemas, with an Anthropic
 `request-id` on every response — so it is the model endpoint refusing forced
 tool choice, not a gateway or pool artifact. The consequence for PR 5 is
 narrow but real: a `[models.router]` entry whose judge resolves to a Fable
-target cannot take the forced-tool-use path at all, and the failure is a `400`
-at the first judge call rather than a parse failure that `fail_open` would
-absorb. Whether `tool_choice: {"type": "auto"}` yields a usable verdict there
-was not tested — the model had no pool headroom left by the time the question
-came up.
+target cannot take the forced-tool-use path at all, and what comes back is a
+`400` at the first judge call rather than a parse failure.
+
+That distinction decides the blast radius, and libsy's own test settles it
+rather than leaving it to inference: in
+`classifier_stops_on_client_errors_and_records_verdict_fallback`
+(`libsy-llm-client/tests/observability.rs`), a `JudgeOutcome::CallFailure`
+makes `run_classifier` return `Err`, and the case asserts
+`switchyard.classifier_fail_open` is **not** incremented — "client failures and
+valid verdicts must not increment switchyard.classifier_fail_open". Only the
+`"not json at all"` reply counts as a fail-open, under `reason = "parse_error"`.
+So a Fable judge does not degrade into the algorithm's fallback; it fails the
+classifier. Whether `tool_choice: {"type": "auto"}` yields a usable verdict
+there was not tested — the model had no pool headroom left by the time this
+question came up.
 
 ## What this capture does not establish
 
@@ -323,8 +334,9 @@ Stated plainly so a later reader does not over-read the table above.
 
 The rig is three pieces and no repo change: a config pointing the `anthropic`
 provider at a recording tap, the tap, and a driver. The client must be run with
-its own `HOME` (agent shadowing, above) and with
-`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` supplied through `--settings` or that
-`HOME`'s `settings.json` — an exported environment variable loses to a
-`settings.json` `env` entry, which is how the first attempt silently bypassed
-the gateway entirely and recorded nothing.
+its own `HOME` (agent shadowing, above). Supply the local gateway's
+`ANTHROPIC_BASE_URL`, credential, and `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`
+through `--settings` or that `HOME`'s `settings.json`: a same-named
+`settings.json` `env` entry overrides a shell export. In the first attempt an
+existing `ANTHROPIC_BASE_URL` setting won that precedence contest, silently
+bypassed the local gateway, and recorded nothing.
