@@ -30,24 +30,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Portable stand-in for GNU `timeout` (absent on stock macOS): the child
-# runs in the background, a timer kills it at the deadline, and `wait`
-# passes the child's own status through. The timer's fds go to /dev/null
-# (an inherited stdout would hold the caller's command-substitution pipe
-# open for the whole deadline) and its kill is disarmed once the child
-# exits (a guard file, so the late timer cannot hit a recycled pid).
+# Portable stand-in for GNU `timeout` (absent on stock macOS): polls the
+# child once a second and kills it at the deadline. Bash reaps an exited
+# background child eagerly (3.2 and 5.x alike), so `kill -0` reads false
+# the moment the child is gone and `wait` still returns its real status.
 run_with_deadline() {
   local seconds=$1
   shift
-  local child guard
-  guard=$(mktemp) || return 1
+  local child waited
   "$@" &
   child=$!
-  ( sleep "$seconds" && { [ -e "$guard" ] && kill "$child" 2>/dev/null; } ) >/dev/null 2>&1 &
+  waited=0
+  while kill -0 "$child" 2>/dev/null; do
+    if [ "$waited" -ge "$seconds" ]; then
+      kill "$child" 2>/dev/null
+      wait "$child" 2>/dev/null
+      return 143
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
   wait "$child"
-  local rc=$?
-  rm -f "$guard"
-  return "$rc"
 }
 
 start_impostor() {
