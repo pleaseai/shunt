@@ -91,7 +91,7 @@ The command is offline and read-only: it prints guidance but never edits files, 
 
 ## Providers
 
-A provider is either an ordered `[[upstreams]]` entry or a legacy `[providers.<name>]` TOML table (under YAML, an entry in the corresponding sequence or mapping). Two adapter kinds cover most upstreams: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included). A third native kind, `kind = "cursor"`, bridges Cursor's ConnectRPC/protobuf AgentService so a Cursor subscription is reachable through the same Anthropic-Messages interface.
+A provider is either an ordered `[[upstreams]]` entry or a legacy `[providers.<name>]` TOML table (under YAML, an entry in the corresponding sequence or mapping). Two adapter kinds cover most upstreams: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included, and emulates `stop_sequences` gateway-side because the Responses API has no `stop` parameter). A third native kind, `kind = "cursor"`, bridges Cursor's ConnectRPC/protobuf AgentService so a Cursor subscription is reachable through the same Anthropic-Messages interface.
 
 Ordered upstreams enable cross-provider failover. Declaration order is the attempt order; a model's `upstream_model` map selects the participating entries and maps its public id to each backend's id:
 
