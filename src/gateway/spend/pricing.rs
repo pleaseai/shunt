@@ -76,13 +76,13 @@ impl Rates {
         u64::try_from(total).unwrap_or(u64::MAX)
     }
 
-    /// Every rate scaled by `ppm` parts per million, rounding down.
-    pub fn scaled(&self, ppm: u32) -> Self {
+    /// Every rate scaled by `ppb` parts per billion, rounding down.
+    pub fn scaled(&self, ppb: u32) -> Self {
         Self {
-            input: scale_femto_usd(self.input, ppm),
-            output: scale_femto_usd(self.output, ppm),
-            cache_read: scale_femto_usd(self.cache_read, ppm),
-            cache_write: scale_femto_usd(self.cache_write, ppm),
+            input: scale_femto_usd(self.input, ppb),
+            output: scale_femto_usd(self.output, ppb),
+            cache_read: scale_femto_usd(self.cache_read, ppb),
+            cache_write: scale_femto_usd(self.cache_write, ppb),
         }
     }
 }
@@ -103,7 +103,7 @@ struct Override {
 /// whatever wins.
 #[derive(Debug, Clone)]
 pub struct PriceTable {
-    multiplier_ppm: u32,
+    multiplier_ppb: u32,
     overrides: Vec<Override>,
 }
 
@@ -112,12 +112,12 @@ impl PriceTable {
     pub fn from_config(pricing: Option<&PricingConfig>) -> Self {
         let Some(pricing) = pricing else {
             return Self {
-                multiplier_ppm: ONE_MILLION,
+                multiplier_ppb: ONE_BILLION,
                 overrides: Vec::new(),
             };
         };
         Self {
-            multiplier_ppm: multiplier_ppm(pricing.multiplier),
+            multiplier_ppb: multiplier_ppb(pricing.multiplier),
             overrides: pricing.overrides.iter().map(resolve_override).collect(),
         }
     }
@@ -149,13 +149,13 @@ impl PriceTable {
             // a built-in client id remapped to a non-Anthropic upstream model
             // must not bill that provider's tokens at Anthropic rates.
             .or_else(|| upstream_row.map(list_price))?;
-        Some(rates.scaled(self.multiplier_ppm))
+        Some(rates.scaled(self.multiplier_ppb))
     }
 
     /// The cost of one server-side web search, in femto-USD. Priced per request
     /// rather than per token, so only the multiplier applies.
     pub fn web_search_cost_femto_usd(&self) -> u64 {
-        scale_femto_usd(WEB_SEARCH_LIST_PRICE_FEMTO_USD, self.multiplier_ppm)
+        scale_femto_usd(WEB_SEARCH_LIST_PRICE_FEMTO_USD, self.multiplier_ppb)
     }
 
     fn literal_override(&self, upstream: &str, model: &str) -> Option<Rates> {
@@ -175,6 +175,7 @@ impl PriceTable {
 }
 
 const ONE_MILLION: u32 = 1_000_000;
+const ONE_BILLION: u32 = 1_000_000_000;
 
 fn resolve_override(row: &PricingOverride) -> Override {
     Override {
@@ -194,14 +195,27 @@ fn list_price(row: &'static (&'static str, f64, f64, f64, f64)) -> Rates {
     Rates::from_usd_per_million(*input, *output, *cache_read, *cache_write)
 }
 
-/// The smallest multiplier the parts-per-million scale can carry, and the
-/// smallest USD-per-million rate the config accepts; `Config::validate_pricing`
-/// rejects anything below them.
+/// The smallest multiplier and the smallest USD-per-million rate the config
+/// accepts; `Config::validate_pricing` rejects anything below them.
 ///
 /// They are the floors the femto-USD unit was chosen for: `MIN_USD_PER_MILLION`
-/// is 1e6 femto-USD per token, which `MIN_MULTIPLIER` (1 part per million)
+/// is 1e6 femto-USD per token, which `MIN_MULTIPLIER` (one part per million)
 /// scales to exactly 1 femto-USD per token — the smallest representable nonzero
 /// rate — so both floors can be taken at once and the rate stays positive.
+///
+/// The floor is a property of that femto-USD product, not of the scale the
+/// multiplier is stored at. Multipliers are carried as parts per *billion*,
+/// which is a quantization and not an exact representation: an accepted value
+/// is rounded to the nearest part per billion, so the applied discount can
+/// differ from the configured one by at most 5e-10 in absolute terms. That
+/// bound is worst in relative terms at `MIN_MULTIPLIER`, where it is 0.05%, and
+/// shrinks proportionally as the multiplier rises.
+///
+/// The scale is parts per billion rather than per million because per-million
+/// quantization was coarse enough to change the discount materially: it rounded
+/// an accepted `0.0000014` down onto the `0.000001` floor — a 29% undercharge
+/// the config never asked for — and an accepted `0.9999996` up to an
+/// undiscounted `1.0`.
 pub const MIN_MULTIPLIER: f64 = 1.0 / ONE_MILLION as f64;
 pub const MIN_USD_PER_MILLION: f64 = 0.001;
 
@@ -211,11 +225,11 @@ pub const MIN_USD_PER_MILLION: f64 = 0.001;
 /// the config states.
 pub const MAX_USD_PER_MILLION: f64 = 18_446_744_073.0;
 
-fn multiplier_ppm(multiplier: f64) -> u32 {
+fn multiplier_ppb(multiplier: f64) -> u32 {
     if !multiplier.is_finite() || multiplier <= 0.0 || multiplier > 1.0 {
-        return ONE_MILLION;
+        return ONE_BILLION;
     }
-    (multiplier * f64::from(ONE_MILLION)).round() as u32
+    (multiplier * f64::from(ONE_BILLION)).round() as u32
 }
 
 fn femto_usd_per_token(usd_per_million: f64) -> u64 {
@@ -225,8 +239,8 @@ fn femto_usd_per_token(usd_per_million: f64) -> u64 {
     (usd_per_million * 1_000_000_000.0).round() as u64
 }
 
-fn scale_femto_usd(value: u64, ppm: u32) -> u64 {
-    let scaled = u128::from(value) * u128::from(ppm) / u128::from(ONE_MILLION);
+fn scale_femto_usd(value: u64, ppb: u32) -> u64 {
+    let scaled = u128::from(value) * u128::from(ppb) / u128::from(ONE_BILLION);
     u64::try_from(scaled).unwrap_or(u64::MAX)
 }
 
@@ -393,7 +407,8 @@ mod tests {
             input: 3,
             ..Rates::default()
         };
-        assert_eq!(rates.scaled(850_000).input, 2); // 2.55 -> 2
+        // Parts per billion: 850_000_000 ppb is a 0.85 multiplier.
+        assert_eq!(rates.scaled(850_000_000).input, 2); // 2.55 -> 2
     }
 
     #[test]
@@ -432,6 +447,69 @@ mod tests {
             }),
             u64::MAX
         );
+    }
+
+    /// An accepted multiplier is applied to the nearest part per billion.
+    /// `validate_pricing` takes any finite value in `[MIN_MULTIPLIER, 1.0]`, and
+    /// no fixed-point scale represents every such `f64` exactly — the guarantee
+    /// is the quantization bound, not exactness. What must not happen is the
+    /// per-million behavior this replaced, where a value the validator accepted
+    /// moved to a *materially* different discount.
+    #[test]
+    fn an_accepted_multiplier_is_applied_to_the_nearest_part_per_billion() {
+        // Both spellings round to the *same* parts-per-million bucket as a
+        // neighbouring value, which is what made the coarser store wrong:
+        // `0.0000014` collapsed onto the `0.000001` floor (a 29% undercharge)
+        // and `0.9999996` collapsed onto an undiscounted `1.0`.
+        for (multiplier, rate_usd_per_million, expected) in [
+            // 1 USD/M = 1e9 femto-USD/token, so the femto rate reads as the
+            // multiplier itself shifted nine places.
+            (0.0000014_f64, 1.0_f64, 1_400_u64),
+            (0.9999996, 1.0, 999_999_600),
+            // The floor still lands on exactly 1 femto-USD per token.
+            (MIN_MULTIPLIER, MIN_USD_PER_MILLION, 1),
+        ] {
+            let table = PriceTable::from_config(Some(&PricingConfig {
+                multiplier,
+                overrides: vec![override_row(
+                    "bedrock-eu",
+                    "vendor-alias",
+                    rate_usd_per_million,
+                )],
+            }));
+            assert_eq!(
+                table
+                    .resolve("bedrock-eu", "vendor-alias", "vendor-alias")
+                    .expect("the override prices the alias")
+                    .input,
+                expected,
+                "multiplier {multiplier} at {rate_usd_per_million} USD/M"
+            );
+        }
+
+        // The residual is a rounding bound, not exactness: a multiplier between
+        // two parts per billion moves to the nearer one. The error that leaves
+        // is at most 5e-10 absolute, which is worst relative to the smallest
+        // accepted multiplier — 0.05% at `MIN_MULTIPLIER`, and less above it.
+        for (multiplier, nearest_ppb) in [
+            (0.000_001_000_4_f64, 1_000_u64),
+            (0.999_999_999_6, 1_000_000_000),
+        ] {
+            let applied = PriceTable::from_config(Some(&PricingConfig {
+                multiplier,
+                overrides: vec![override_row("bedrock-eu", "vendor-alias", 1.0)],
+            }))
+            .resolve("bedrock-eu", "vendor-alias", "vendor-alias")
+            .expect("the override prices the alias")
+            .input;
+            assert_eq!(applied, nearest_ppb, "multiplier {multiplier}");
+
+            let configured = multiplier * 1e9;
+            assert!(
+                (applied as f64 - configured).abs() <= 0.5,
+                "multiplier {multiplier} moved more than half a part per billion"
+            );
+        }
     }
 
     /// The bounds `Config::validate_pricing` enforces are the reason money is
