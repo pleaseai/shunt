@@ -1,0 +1,70 @@
+src/routing/stage/store/tests.rs
+  s_03e6e5fa64e4a1::t_20700781400a09 1126-1138,1140-1170
+  s_03e6e5fa64e4a1::t_4b126620fa564f 1139
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_03e6e5fa64e4a1::t_ef5cbee27f6d68 498-499
+  s_03e6e5fa64e4a1::t_d59b78e22b496e 548
+site/src/content/docs/ja/reference/configuration.md
+  s_03e6e5fa64e4a1::t_ef5cbee27f6d68 505-507
+  s_03e6e5fa64e4a1::t_d59b78e22b496e 559
+src/routing/random/tests.rs
+  s_03e6e5fa64e4a1::t_b94b97811beaee 52
+src/routing/random.rs
+  s_03e6e5fa64e4a1::t_b2b121aac0f86f 108-113,121-125,128-129
+  s_03e6e5fa64e4a1::t_8bfb15ef831c47 165-180
+src/routing/stage/store.rs
+  s_03e6e5fa64e4a1::t_76195d9987985c 232
+  s_03e6e5fa64e4a1::t_eaa66b6f3816fc 82-89,98
+  s_03e6e5fa64e4a1::t_f76718eb9083fa 229-231
+src/routing/outcome.rs
+  s_03e6e5fa64e4a1::t_abb420f6e37094 79-90
+src/routing/stage.rs
+  s_03e6e5fa64e4a1::t_0cc9d6c91db887 227
+  s_03e6e5fa64e4a1::t_c87bd7f12b3acd 164-170
+src/bench_support.rs
+  s_03e6e5fa64e4a1::t_b94b97811beaee 151
+docs/routing-algorithms.md
+  s_03e6e5fa64e4a1::t_d59b78e22b496e 202
+  s_03e6e5fa64e4a1::t_ef5cbee27f6d68 312-318
+src/routing/handoff.rs
+  s_03e6e5fa64e4a1::t_146520f003925f 195-223
+  s_03e6e5fa64e4a1::t_02ad5c4275e3e2 46-48
+  s_03e6e5fa64e4a1::t_20700781400a09 121-126
+  s_03e6e5fa64e4a1::t_3449dba439cc22 138,154-155,160,171-172,183-184,189
+  s_03e6e5fa64e4a1::t_19d5023cf70839 25-39,44
+src/routing.rs
+  s_03e6e5fa64e4a1::t_b94b97811beaee 884,917,970,1014
+  s_03e6e5fa64e4a1::t_b4b91e408f573a 182
+docs/stage-router.md
+  s_03e6e5fa64e4a1::t_ef5cbee27f6d68 377-383
+site/src/content/docs/ko/reference/configuration.md
+  s_03e6e5fa64e4a1::t_ef5cbee27f6d68 523-525
+  s_03e6e5fa64e4a1::t_d59b78e22b496e 575
+src/proxy/failover.rs
+  s_03e6e5fa64e4a1::t_b94b97811beaee 73
+  s_03e6e5fa64e4a1::t_8c103503d82e8c 422-423
+site/src/content/docs/reference/configuration.md
+  s_03e6e5fa64e4a1::t_ef5cbee27f6d68 710-712
+  s_03e6e5fa64e4a1::t_d59b78e22b496e 763
+src/config.rs
+  s_03e6e5fa64e4a1::t_babeeb0d33009e 7913-7923,7927-7954
+  s_03e6e5fa64e4a1::t_b017d523c617b9 2177-2186
+  s_03e6e5fa64e4a1::t_c7381e6148426a 7924-7926
+  s_03e6e5fa64e4a1::t_104606e4461c84 2480-2483
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9f8c88d0a1a3b33f19d8084957e60f33ddf6826a",
+  "prompts": {},
+  "sessions": {
+    "s_03e6e5fa64e4a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be5b5ce2-855f-4ccb-8df8-dfc0f459dbb1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
