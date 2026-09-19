@@ -1,0 +1,26 @@
+src/routing/stage/store/tests.rs
+  s_03e6e5fa64e4a1::t_84cbad07539530 1126-1128,1130-1137,1139,1147-1148,1152-1154,1162-1164,1168,1170
+src/routing/handoff.rs
+  s_03e6e5fa64e4a1::t_46835b33d0f535 25-33
+src/proxy/failover.rs
+  s_03e6e5fa64e4a1::t_84cbad07539530 151-157,415-418
+  s_03e6e5fa64e4a1::t_46835b33d0f535 392-401,441
+src/routing/random.rs
+  s_03e6e5fa64e4a1::t_11b535c9bacd6e 200-213,232-244,247-248
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1d0d2c1fec4e6c9f623aee8c2e14f02b8113c93c",
+  "prompts": {},
+  "sessions": {
+    "s_03e6e5fa64e4a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be5b5ce2-855f-4ccb-8df8-dfc0f459dbb1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
