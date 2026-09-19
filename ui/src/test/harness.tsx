@@ -46,7 +46,12 @@ export interface RecordedCall {
 }
 
 export interface Fixtures {
-  session?: { csrf: string; expiry_buffer_ms: number; access?: AdminAccess };
+  session?: {
+    csrf: string;
+    expiry_buffer_ms: number;
+    access?: AdminAccess;
+    hide_observed?: boolean;
+  };
   observed?: ObservedAccount[];
   pool?: PoolProvider[];
   accounts?: ClaudeStoreAccount[];

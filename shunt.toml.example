@@ -41,6 +41,9 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # tokens_env = "SHUNT_ADMIN_TOKENS"    # (default) env var with name:token pairs
 # session_ttl_secs = 3600              # (default) browser session lifetime
 # pending_ttl_secs = 600               # (default) provisioning-flow lifetime
+# hide_observed = false                # (default) read host CLI/app logins for
+                                       # the dashboard usage table; true never
+                                       # reads them, leaving managed accounts only
 
 # Per-credential admin keys with an id the spend audit trail records. Keys must
 # be at least 32 characters and must come from ${VAR} / ${file:...} or a SHUNT_*

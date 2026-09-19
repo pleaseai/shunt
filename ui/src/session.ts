@@ -9,6 +9,11 @@ export interface Session {
   expiryBufferMs: number;
   /** The privilege this session authenticates with. */
   access: AdminAccess;
+  /**
+   * `[server.admin] hide_observed`: local provider logins are not read, so the
+   * usage table lists managed pool accounts only.
+   */
+  hideObserved: boolean;
 }
 
 const SessionContext = createContext<Session | null>(null);

@@ -29,6 +29,7 @@ export function App(): ReactElement {
         csrf: result.data.csrf,
         expiryBufferMs: result.data.expiry_buffer_ms,
         access: result.data.access ?? 'read',
+        hideObserved: result.data.hide_observed === true,
       });
     })();
   }, []);

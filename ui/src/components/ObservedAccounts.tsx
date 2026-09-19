@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { effectiveState, rowStatusText } from '../accounts';
 import { untilShort } from '../format';
 import { ProviderName, providerLabel } from '../providers';
+import { useSession } from '../session';
 import type { AccountRow, QuotaBucket } from '../types';
 import type { Loadable } from '../useDashboard';
 import { UsageBar } from './UsageBar';
@@ -156,15 +157,27 @@ export function ObservedAccounts({
 }: {
   observed: Loadable<Map<string, AccountRow[]>>;
 }): ReactElement {
+  // `[server.admin] hide_observed`: the gateway reads no provider login on its
+  // host, so the table holds managed pool accounts alone. It stays rather than
+  // disappearing -- their usage is what a remote operator opens the page for --
+  // but copy that sends the reader to a provider CLI would be wrong here.
+  const { hideObserved } = useSession();
   return (
     <>
       <h2>Accounts and usage</h2>
-      <p className="muted">
-        Read-only signals from provider clients on this machine.{' '}
-        <strong>Waiting for traffic</strong> means GPT has not returned quota headers to this shunt
-        yet; <strong>Needs login</strong> means the provider-owned access token expired and must be
-        renewed by that provider client.
-      </p>
+      {hideObserved ? (
+        <p className="muted">
+          Managed pool accounts only. This gateway is configured not to read provider logins on
+          its host (<code>hide_observed</code>).
+        </p>
+      ) : (
+        <p className="muted">
+          Read-only signals from provider clients on this machine.{' '}
+          <strong>Waiting for traffic</strong> means GPT has not returned quota headers to this
+          shunt yet; <strong>Needs login</strong> means the provider-owned access token expired and
+          must be renewed by that provider client.
+        </p>
+      )}
       <div className="card overflow">
         <table id="observed-table">
           <thead>
@@ -185,7 +198,9 @@ export function ObservedAccounts({
                   if (!total) {
                     return (
                       <Message muted>
-                        No supported local provider login found. Sign in with a provider CLI.
+                        {hideObserved
+                          ? 'No managed pool accounts yet.'
+                          : 'No supported local provider login found. Sign in with a provider CLI.'}
                       </Message>
                     );
                   }

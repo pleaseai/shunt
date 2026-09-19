@@ -757,7 +757,21 @@ async fn session_bootstrap(State(state): State<AppState>, headers: HeaderMap) ->
         // TypeScript could drift from the Rust constant; a served value cannot.
         "expiry_buffer_ms": u64::try_from(claude_auth::EXPIRY_BUFFER.as_millis())
             .unwrap_or(u64::MAX),
+        // `[server.admin] hide_observed`. Display signal only, like `access`: the
+        // dashboard skips the observation read and rewords the usage table, which
+        // then lists managed pool accounts alone. `observed_accounts` is what
+        // keeps the credential files unread.
+        "hide_observed": hide_observed(&state),
     }))
+}
+
+fn hide_observed(state: &AppState) -> bool {
+    state
+        .config
+        .server
+        .admin
+        .as_ref()
+        .is_some_and(|admin| admin.hide_observed)
 }
 
 async fn list_accounts(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -782,6 +796,9 @@ async fn observed_accounts(State(state): State<AppState>, headers: HeaderMap) ->
     let state = Arc::new(state.refreshed());
     if authenticate(&state, &headers).is_none() {
         return unauthorized();
+    }
+    if hide_observed(&state) {
+        return json_secure(json!({ "accounts": [] }));
     }
 
     let discovered = match tokio::task::spawn_blocking(observation::discover).await {
