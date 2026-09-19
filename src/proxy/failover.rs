@@ -159,6 +159,12 @@ pub(super) async fn forward(
         routed_model: outcome.target.as_str(),
         source: outcome.source.as_label(),
     });
+    // The same decision, owned, for the committed streaming chain below: it
+    // consumes its request and awaits, so it cannot carry the borrow above.
+    let owned_router_stamp = router_outcome.as_ref().map(|outcome| OwnedRouterStamp {
+        routed_model: outcome.target.clone(),
+        source: outcome.source.as_label(),
+    });
 
     let first_route = routes
         .first()
@@ -209,6 +215,7 @@ pub(super) async fn forward(
                 body: body.take().expect("request body is present"),
                 requested_model,
                 started_at,
+                router_stamp: owned_router_stamp,
             },
         )
         .await;
@@ -929,6 +936,35 @@ fn reason_label(reason: ConsumedBy) -> &'static str {
 pub(crate) fn stamp_gateway_model_header(response: &mut axum::response::Response, model: &str) {
     if let Ok(value) = HeaderValue::from_str(model) {
         response.headers_mut().insert("x-gateway-model", value);
+    }
+}
+
+/// [`RouterStamp`] with the model id owned.
+///
+/// The committed streaming chain (`chain_stream`) takes its inputs by value and
+/// awaits, so it cannot hold the borrow the synchronous paths use.
+pub(super) struct OwnedRouterStamp {
+    pub(super) routed_model: String,
+    pub(super) source: &'static str,
+}
+
+/// Stamp only the router pair, for the committed streaming chain.
+///
+/// Both values come from the router decision, which is made before any upstream
+/// is contacted — so unlike `x-gateway-upstream` and `x-gateway-upstream-model`,
+/// they do not depend on which attempt wins the race and are correct on this
+/// path too.
+pub(super) fn stamp_router_headers(
+    response: &mut axum::response::Response,
+    stamp: &OwnedRouterStamp,
+) {
+    for (name, value) in [
+        ("x-gateway-routed-model", stamp.routed_model.as_str()),
+        ("x-gateway-route-source", stamp.source),
+    ] {
+        if let Ok(value) = HeaderValue::from_str(value) {
+            response.headers_mut().insert(name, value);
+        }
     }
 }
 
