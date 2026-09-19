@@ -25,6 +25,7 @@ use crate::{
 mod auto_mode_classifier;
 mod deferral;
 mod model_rewrite;
+mod safeguards;
 mod thinking;
 
 pub struct AnthropicAdapter;
@@ -73,7 +74,8 @@ async fn forward(
     }
 
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
-    let request_headers = outbound_headers(headers, &credential);
+    let mut request_headers = outbound_headers(headers, &credential);
+    safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
     // Only a subscription-OAuth bearer faces the client-shape gate; an API-key
     // Anthropic-compatible provider keeps byte-for-byte passthrough except for
@@ -87,6 +89,7 @@ async fn forward(
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
     thinking::strip_foreign_thinking(&mut body);
     let body = body.into_raw();
     // Bounded transient retry (issue #48) for this single-credential path. Kept
@@ -194,6 +197,7 @@ async fn forward_claude_oauth(
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
     thinking::strip_foreign_thinking(&mut body);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
@@ -266,7 +270,8 @@ async fn forward_claude_oauth(
         };
         let mut request_body = base_body.clone();
         rewrite_account_uuid_request(&mut request_body, account_uuid);
-        let request_headers = outbound_headers(headers, &credential);
+        let mut request_headers = outbound_headers(headers, &credential);
+        safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
         // Gate on the bearer that actually goes out rather than on the pool's
         // shape. Every account here resolves to `Credential::ClaudeOauth`, but
         // the `token_env` branch of `resolve_claude_account` wraps whatever the
@@ -547,7 +552,8 @@ async fn forward_claude_oauth(
                     access_token,
                     account_uuid: account.uuid.clone(),
                 };
-                let retry_headers = outbound_headers(headers, &refreshed);
+                let mut retry_headers = outbound_headers(headers, &refreshed);
+                safeguards::strip_safeguard_betas(&mut retry_headers, &provider.base_url);
                 let Some(retry) = retry_upstream(
                     &state,
                     &route,
@@ -780,6 +786,7 @@ async fn forward_kimi_oauth(
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
     thinking::strip_foreign_thinking(&mut body);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
@@ -828,7 +835,8 @@ async fn forward_kimi_oauth(
                 }
             }
         };
-        let request_headers = outbound_headers(headers, &credential);
+        let mut request_headers = outbound_headers(headers, &credential);
+        safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
         let request_body = base_body.clone().into_raw();
 
         let upstream = match post_upstream(&state, &url, request_headers, request_body).await {
@@ -1402,13 +1410,15 @@ pub(crate) async fn chain_attempt(
             };
         }
     };
-    let request_headers = outbound_headers(headers, &credential);
+    let mut request_headers = outbound_headers(headers, &credential);
+    safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
     if oauth_client {
         auto_mode_classifier::restore_claude_code_identity(&mut body);
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
     let body = bytes::Bytes::from(body.into_raw());
     let policy = provider.retry.policy();
     let url = upstream_url(state, route, uri);

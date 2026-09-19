@@ -233,6 +233,7 @@ Claude Code 在 `ANTHROPIC_BASE_URL` 后暴露了一个**一等公民的网关�
 
 - [添加自定义模型选项](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) —— `ANTHROPIC_CUSTOM_MODEL_OPTION` 会在不替换内置别名的前提下,向 `/model` 选择器添加一个经网关路由的条目;该 ID 不做校验,因此网关接受的任何字符串都可用。鉴于上面的发现约束,**这是选择非 Claude 模型的主要方式**(例如 `gpt-5.6-sol`)。
 - **工具搜索**(`ENABLE_TOOL_SEARCH`)—— Claude Code 会延迟加载 MCP/LSP 工具 schema,按需揭示,从而回收上下文。由于 shunt 不是 Anthropic 第一方主机,除非你主动开启,Claude Code 会保持其**关闭**。开启后延迟能否保留取决于上游而不只是设置:`claude*` 和 `anthropic/*` id 会逐字节保留该协议,其他 id 的 `defer_loading` 标记会被剥离(因为这些主机会拒绝),而 Responses 路径有自己的三态 `tool_search` 设置。参见[工具搜索](https://shunt.sh/zh-cn/guides/codex/#工具搜索)。
+- **auto 模式的服务端分类器**(`dangerous-tool-use-*`)—— auto 模式会免费请求 API 在服务端对每次工具使用进行分类。在 Anthropic 路由上,shunt 原样中继该请求及其判定。当上游无法作答时(翻译路由,或尚未确认接受该字段的 Anthropic 协议第三方),shunt 不是什么都不返回,而是逐个动作回复“无法评估”,于是客户端只在本地分类那一个动作,并在下一轮继续询问服务端,而不会在整个会话中放弃该功能。参见[故障排查](https://shunt.sh/zh-cn/reference/troubleshooting/)。
 
 **设计原则:** 做一个符合规范的 Anthropic-Messages 网关(`/v1/messages`、`/v1/models`、正确的头部与归属透传),按请求的 `model` id 路由,并为已映射的模型在 Anthropic Messages ⇄ OpenAI Responses API 之间做转换 —— 不使用会随 Claude Code 提示变更而失效的提示形状启发式。
 

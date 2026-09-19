@@ -235,6 +235,7 @@ Claude Code は `ANTHROPIC_BASE_URL` の背後に**ファーストクラスの�
 
 - [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` は組み込みエイリアスを置き換えずに、ゲートウェイ経由のエントリーを `/model` ピッカーへ追加します。ID は検証を通らないため、ゲートウェイが受け付ける文字列なら何でも使えます。上記のディスカバリー制約があるため、これが **Claude 系以外のモデルを選ぶ主な方法**です（例: `gpt-5.6-sol`）。
 - **ツール検索**（`ENABLE_TOOL_SEARCH`） — Claude Code は MCP/LSP のツールスキーマを遅延させ、必要になったときに開示してコンテキストを回収します。shunt は Anthropic のファーストパーティホストではないため、自分でオプトインしない限りこの機能は**無効**のままです。オプトイン後に遅延が維持されるかは設定だけでなくアップストリームが決めます。`claude*` と `anthropic/*` の id はプロトコルをバイト単位で維持し、それ以外の id はホストが拒否するため `defer_loading` マーカーが除去され、Responses 経路には独自の 3 状態の `tool_search` 設定があります。[ツール検索](https://shunt.sh/ja/guides/codex/#ツール検索)を参照してください。
+- **auto モードのサーバーサイド分類器**（`dangerous-tool-use-*`） — auto モードは各ツール使用の分類を、追加課金なしで API に依頼します。Anthropic ルートでは、shunt がそのリクエストと判定をそのまま中継します。アップストリームが応答できない場合（翻訳ルート、またはこのフィールドを受け付けると確認できていない Anthropic プロトコルのサードパーティ）、shunt は何も返さない代わりにアクションごとに「評価不能」と応答します。これによりクライアントはそのアクションだけをローカルで分類し、次のターンでも引き続きサーバーに問い合わせるため、セッション中にこの機能を諦めることはありません。[トラブルシューティング](https://shunt.sh/ja/reference/troubleshooting/)を参照してください。
 
 **設計原則:** スペックに準拠した Anthropic-Messages ゲートウェイであること（`/v1/messages`、`/v1/models`、正しいヘッダー・アトリビューションのパススルー）、リクエストの `model` id でルーティングすること、マッピングされたモデルについて Anthropic Messages ⇄ OpenAI Responses API を変換すること。Claude Code のプロンプトが変わるたびに壊れるプロンプト形状のヒューリスティックは使いません。
 
