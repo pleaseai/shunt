@@ -316,7 +316,7 @@ codex-fallback = "gpt-5.2"
 
 与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值与 shunt 自己签发的 JWT **形状相符**——三段式结构，且载荷的 `aud` 声明为 `"shunt"`、`iss` 声明与本网关的身份一致，或 `shunt_token_use` 声明为 `"gateway-session"`（仅由 shunt 签发的专用标记）——或匹配配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除。这项 JWT 检查刻意按“形状是否相符”而非“该令牌现在是否能通过认证”来判定：一个已过期的令牌、由使用不同 `public_url` 的兄弟实例签发的令牌，或在 `jwt_secret` 轮换后已不再能通过校验的令牌，仍然是 shunt 自己的凭据，因此仍会被清除。该标记只是形状检查新增的一个分支，而非必要条件：在该标记出现之前签发的令牌仍会按 `aud`/`iss` 匹配，`verify` 本身也不要求该标记，因此旧版本 shunt 签发的令牌只要仍在其 TTL 内就仍能通过认证 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或静态客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。`[server.auth] header` 可以是任意头名称，包括 `authorization` 本身；这样配置时客户端使用不带前缀的 `Authorization: <token>` 进行认证，因此该槽位除了按 `Bearer` 载荷检查外还会按整个值检查，此类令牌绝不会被转发到上游。该配置有一个注意事项：在推理请求上 shunt 会在路由前无条件移除配置的头部，因此该槽位不会向上游携带任何东西 —— 不只是门控令牌，调用方自己的凭据也会一并被丢弃。把 `header` 保持为默认的专用 `x-shunt-token` 可以避免这种冲突。
 
-每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）——已提交的流式链路路径除外：响应只带 `content-type` 和 `x-gateway-model`，取决于胜者的 `x-gateway-upstream` 和 `x-gateway-upstream-model` 会被省略，上游响应头不会到达客户端。由[阶段路由器](/zh-cn/guides/stage-router/)路由的响应还会带上 `x-gateway-routed-model`（所选档位指向的目标）和 `x-gateway-route-source`（选中该档位的原因）；未配置路由器的模型 id 不会带这两个头。`count_tokens` 只使用链中第一个条目，不会故障转移，也不会带上这两个阶段路由器头。对于没有 `[[server.codex_endpoint.routes]]` 条目的模型，`[server.codex_endpoint]` 仍固定到所配置的单一上游；无论哪种情况都不参与此链。
+每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）——已提交的流式链路路径除外：响应只带 `content-type` 和 `x-gateway-model`，取决于胜者的 `x-gateway-upstream` 和 `x-gateway-upstream-model` 会被省略，上游响应头不会到达客户端。由 [`[models.router]`](#modelsrouter可选) 条目路由的响应还会带上 `x-gateway-routed-model`（路由器选中的目标）和 `x-gateway-route-source`（选中它的原因）；这对所有路由器 `type` 都成立，不限于[阶段路由器](/zh-cn/guides/stage-router/)，未配置路由器的模型 id 不会带这两个头。`count_tokens` 只使用链中第一个条目，不会故障转移，也不会带上这两个头。对于没有 `[[server.codex_endpoint.routes]]` 条目的模型，`[server.codex_endpoint]` 仍固定到所配置的单一上游；无论哪种情况都不参与此链。
 
 ### 迁移现有配置
 
@@ -378,7 +378,7 @@ codex-fallback = "gpt-5.2"
 
 发现的模型在 shunt 能取到实际上游列表时来自该列表。仅当 `server.default_provider` 为 Anthropic 类型时,它才会对该上游发起 `GET /v1/models`,并按其认证模式选择凭据。`auth = "passthrough"` 时使用调用方转发的凭据,因此每个调用方看到的都是该凭据有权使用的列表——但如果某个槽位中存放的不是真正的上游凭据,而是 shunt 自身的 `[server.gateway]` JWT 或配置的 `[server.auth]` 客户端令牌,则该槽位不会被转发。`authorization` 与 `x-api-key` 各自独立过滤,因此另一槽位中的真实凭据仍会被转发;只有当两个槽位都没有可转发的凭据时,发现才会回退到内置快照。`api_key` 时使用配置的密钥。`claude_oauth` 时使用推理路径所用的同一有效账户集合中第一个可解析且未禁用的账户。该集合包含从存储中扫描到的账户,并遵循 `account_scope` 顺序。发现不会进行账户池选择、冷却或配额记账。因此,后两种使用网关自有凭据的模式下,所有调用方共享由该凭据范围决定的目录。shunt 不做缓存。若 `server.default_provider` 不是 Anthropic 类型、没有凭据,或调用失败、超时(上限 2 秒),则回退到内置 Claude 目录快照。无论哪种情况,这些 id 都不需要专门的 `[[routes]]` 条目;它们按常规路由规则解析,当 `[[routes]]` 与 `[[route_prefixes]]` 均未匹配时回退到 `server.default_provider`。
 
-在维护的条目中添加 `[models.upstream_model]`，即可通过同一声明公开 id、进行路由并转换为上游 id。对于精确 id 路由，建议使用此形式而不是 `[[routes]]`。使用有序 `[[upstreams]]` 时，映射可包含一个或多个 `upstream = "backend-id"` 键值对，并按 `[[upstreams]]` 声明顺序解析为故障转移链。旧式 `[providers.*]` 没有声明顺序，因此只能包含一个键值对。对于这个 id，该映射优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`；每个上游的默认 `effort` 会应用到相应链条目。空映射、空或仅含空白字符的上游名称或后端 id、未知上游、同 id 的 `[[routes]]` 条目、以 `[1m]` 或 `[1M]` 结尾的带映射 id，以及至少有一项带映射的重复 `[[models]]` id 都会导致启动错误。client 会在匹配前移除 context-window hint，因此在带映射 id 中包含该 suffix 会使该条目无法命中。仅由不带映射条目组成的重复 id 保持原有行为，但其中一项带有 `[models.stage_router]` 表时除外 —— 参见下文。
+在维护的条目中添加 `[models.upstream_model]`，即可通过同一声明公开 id、进行路由并转换为上游 id。对于精确 id 路由，建议使用此形式而不是 `[[routes]]`。使用有序 `[[upstreams]]` 时，映射可包含一个或多个 `upstream = "backend-id"` 键值对，并按 `[[upstreams]]` 声明顺序解析为故障转移链。旧式 `[providers.*]` 没有声明顺序，因此只能包含一个键值对。对于这个 id，该映射优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`；每个上游的默认 `effort` 会应用到相应链条目。空映射、空或仅含空白字符的上游名称或后端 id、未知上游、同 id 的 `[[routes]]` 条目、以 `[1m]` 或 `[1M]` 结尾的带映射 id，以及至少有一项带映射的重复 `[[models]]` id 都会导致启动错误。client 会在匹配前移除 context-window hint，因此在带映射 id 中包含该 suffix 会使该条目无法命中。仅由不带映射条目组成的重复 id 保持原有行为，但其中一项带有 `[models.router]` 表时除外 —— 参见下文。
 
 ```toml
 [[models]]
@@ -395,28 +395,53 @@ codex = "gpt-5.2"
 | `display_name` | — | 在 `/model` 选择器中显示的标签 |
 | `upstream_model` | — | 从已配置上游名称到后端模型 id 的映射；有序 `[[upstreams]]` 可形成多条目故障转移链，旧式 provider 只允许一个条目 |
 
-### `[models.stage_router]`(可选)
+### `[models.router]`(可选)
 
-针对某一个对外 id 的内容感知档位选择。该条目不再只指定一个目的地,而是指定**两个** ——
-一个强力档位和一个高效档位 —— 并让请求最近的 tool-result 历史逐轮在两者之间做选择。
-没有这张表时,`[[models]]` 条目的行为与之前完全一致;任何地方都不配置路由器,路由就不变。
+针对某一个对外 id 的按请求路由。该条目不再只指定一个目的地,而是带一张 `[models.router]`
+表,由表中的 `type` 键挑选路由算法,再由算法挑选目的地。没有这张表时,`[[models]]` 条目的
+行为与之前完全一致;任何地方都不配置路由器,路由就不变。
 
-两个目标都是普通的公开模型 id,因此各自沿常规阶梯解析,并保留自己的故障转移链、账户池、
-适配器、`effort` 和 `service_tier`。返回给客户端的 id 仍是它请求的那个 id,被选中的档位
-只向上游传递。信号与迟滞的工作方式见[阶段路由器指南](/zh-cn/guides/stage-router/)。
+这里用的是 `type` 而不是 shunt 惯用的 `kind` 或 `mode`,这是**对 shunt 自身命名约定的有意
+破例**,而参考文档只在这一处说明它。这些路由算法来自
+[NVIDIA-NeMo/Switchyard](https://github.com/NVIDIA-NeMo/Switchyard),保留上游的键名意味着
+它的 schema 文档和 `type` 取值可以原样照搬,不必再翻译一遍。
+
+任何路由器指定的目标都是普通的公开模型 id,因此各自沿常规阶梯解析,并保留自己的故障转移
+链、账户池、适配器、`effort` 和 `service_tier`。返回给客户端的 id 仍是它请求的那个 id,
+被选中的目标只向上游传递。
+
+| `type` | 依据什么选择 | 是否读取请求体 |
+| :-- | :-- | :-- |
+| `stage_router` | 最近的 tool-result 元数据,逐轮选择 | 读 —— 只读 `tool_use.name` 与 `tool_result.is_error` |
+| `auto` | 同一个路由器,套用上游预设 | 同上 |
+| `random` | 按权重抽取,默认按会话固定 | 不读 |
+| `noop` | 不做选择 —— 直接返回空消息 | 不读 |
+
+需要调用 LLM 裁判的算法(`llm_classifier`、`composite`、`advisor`、`prefill_router`)以及
+`[models.subagents]` 覆盖层**尚不可用**:指定它们会导致启动错误,它们会在后续版本中加入。
+
+同一条目不能同时声明 `[models.router]` 和 `[models.upstream_model]`。
+
+#### `type = "stage_router"`
+
+内容感知的档位选择。条目指定**两个**目标 —— 一个强力档位和一个高效档位 —— 并让请求最近的
+tool-result 历史逐轮在两者之间做选择。信号与迟滞的工作方式见
+[阶段路由器指南](/zh-cn/guides/stage-router/)。
 
 ```toml
 [[models]]
 id = "claude-auto"
 display_name = "Auto (stage router)"
 
-[models.stage_router]
+[models.router]
+type = "stage_router"
 capable_target = "claude-opus-4-8"
 efficient_target = "claude-sonnet-4-6"
 ```
 
 | 键 | 默认值 | 含义 |
 | :-- | :-- | :-- |
+| `type` | ✅ 必填 | `stage_router` |
 | `capable_target` | ✅ 必填 | 负责高难度推理、排查与错误恢复的模型 id |
 | `efficient_target` | ✅ 必填 | 计划确定后负责常规产出的模型 id |
 | `picker` | `efficient_first` | 信号不明确时使用的档位。`efficient_first` 或 `capable_first` |
@@ -425,13 +450,150 @@ efficient_target = "claude-sonnet-4-6"
 | `min_dwell_turns` | `3` | 降档可以触发之前档位需保持的轮数。从选定档位的那一轮开始计数，因此 `0` 和 `1` 都表示没有下限 |
 | `deescalate_threshold` | `0.75` | *降低*档位所需的置信度。默认值高于 `confidence_threshold` 的默认值，使下降方向更难触发；但两者各自独立做范围校验，因此低于 `confidence_threshold` 的值也会被接受，并在加载时发出警告 |
 | `session_ttl_seconds` | `3600` | 空闲会话的固定档位可存续多久 |
+| `capable_hold_turns` | `0` | 由信号触发升档后，强力档位继续保持的轮数。这些轮次的路由来源报告为 `capable_hold`；保持不算证据，因此无法把已固定的档位往任何方向推动。默认值 `0` 让固定行为与以前完全一致；上游自己的默认值是 `2` |
+
+#### `[models.router.tool_semantics]`(可选)
+
+为单个路由器扩展 shunt 内置 Claude Code 工具词表的四个列表。它们在内置表**之后**生效,
+而不是取代它,因此只能触及内置表未分类的名字 —— `Bash`、`Skill` 以及 `mcp__*` 服务器工具。
+指定内置表已归入 observe、mutate 或 plan 的名字(`Read`、`Edit`、`TodoWrite` 等)会导致
+**启动错误**。含空白字符的名字(`" Read "`、`"some tool"`)同样如此:名字按精确匹配处理,
+带空白的名字在运行时不会匹配到任何工具。
+
+```toml
+[models.router.tool_semantics]
+observe = ["mcp__jbcontext__code_search"]
+mutate = []
+plan = []
+new = []
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `observe` | `[]` | 只读取、不改变任何东西的工具名 |
+| `mutate` | `[]` | 会改变状态的工具名；按整文件写入计分 |
+| `plan` | `[]` | 用于规划或委派的工具名 |
+| `new` | `[]` | 评分器视为新引入工具的名字 |
+
+改动其中任意一个列表，都会在下次加载时丢弃该路由器已有的会话固定，和改动阈值一样。
+
+#### `[models.router.handoff_notes]`(可选)
+
+只在信号改变档位的那一轮，向**转发出去的**请求追加一个 system 块，告诉接手的模型它是在
+接替工作。
+
+```toml
+[models.router.handoff_notes]
+escalation_note = "the previous model was stalling; pick up the diagnosis"
+deescalation_note = "routine work resumes"
+only_on_wrong_signal_escalation = true
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `escalation_note` | — | 信号把这一轮升到强力档位时追加 |
+| `deescalation_note` | — | 评分器把工作交还高效档位时追加 |
+| `only_on_wrong_signal_escalation` | `true` | 把 `escalation_note` 限制在由信号驱动的升档(路由来源 `override` 与 `dimensions`)。设为 `false` 则每次评分器作出的升档都会追加 |
+
+这个块追加在 `system` 数组的**末尾**;Claude Code 的 attribution 块是第一个元素,不会被动。
+沿用固定档位的轮次、没有信号的轮次以及 `count_tokens` 探测都不带这个块;没有发生交接的轮次
+同样不带 —— 会话的第一个轮次,以及只是再次确认已固定档位的轮次。空的备注是启动错误。
+
+**每切换一次就付一次提示缓存未命中。** `system` 数组属于被缓存的前缀,追加或去掉这个块都会
+让前缀失效 —— 这是在档位切换本身已经放弃的按模型前缀之上再加的代价。这正是这张表需要显式
+开启的原因,也是 `only_on_wrong_signal_escalation` 默认取较窄一侧的原因。
+
+#### `type = "auto"`
+
+上游的阶段路由器预设:`picker = "efficient_first"` 与 `confidence_threshold = 0.5`,其余
+阶段键全部取 shunt 的默认值。除 `type` 外它只接受两个目标;要设置其他阶段键,请改用
+`type = "stage_router"`。
+
+```toml
+[[models]]
+id = "claude-quick"
+
+[models.router]
+type = "auto"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必填 | `auto` |
+| `capable_target` | ✅ 必填 | 同 `stage_router` |
+| `efficient_target` | ✅ 必填 | 同 `stage_router` |
+
+#### `type = "random"`
+
+在两个或更多目标之间按权重分流,用于金丝雀发布。默认情况下,一个 Claude Code 会话会固定
+落在同一路上。
+
+```toml
+[[models]]
+id = "claude-canary"
+
+[models.router]
+type = "random"
+targets = ["claude-sonnet-4-6", "gpt-5.6-terra"]
+weights = [9, 1]
+# seed = 0
+# affinity = "session"
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必填 | `random` |
+| `targets` | ✅ 必填 | 参与分流的模型 id |
+| `weights` | 均等 | 每个目标一个非负权重；`0` 表示停用该目标。每个权重都必须是有限值，其总和也必须是有限值 —— 总和溢出为无穷大的列表会在加载时被拒绝 |
+| `seed` | `0` | 在 `session` 亲和下是哈希盐值，在 `request` 亲和下是抽取种子 |
+| `affinity` | `session` | `session` 让一个会话固定在一路，`request` 每次请求都抽取 |
+
+在 `affinity = "session"` 下,这一路是把 `sha256(seed ‖ model ‖ 会话 id)` 映射到权重区间得到
+的。不保存任何状态,因此重启后仍是同一路,加载同一份配置的多个副本之间也完全一致;代价是
+改动 `seed`、`targets` 或 `weights` 都可能让它换一路。没有发送
+`x-claude-code-session-id` 的请求不会共用同一路,而是为该请求单独做一次按权重的抽取,所以
+对不发送会话 id 的客户端,90/10 的分流仍然是 90/10。在 `affinity = "request"` 下每个请求都
+抽取,设置 `seed` 后抽取序列可复现。
+
+会话亲和是**粘性,不是访问控制。** 会话 id 由客户端给出,所以不断换 id 重试的调用方可以把
+自己导向想要的那一路 —— 但这并不能守住什么,因为每个目标都是同一个调用方可以直接点名请求
+的公开模型 id。访问控制是 managed model 策略的职责。
+
+没有请求体的接口 —— `GET /routes`、`/v1/models` 发现和 `shunt check` —— 报告第一个权重为正
+的目标。
+
+#### `type = "noop"`
+
+完全不调用上游就作答:用调用方自己的模式合成一条空的终止助手消息。对 `stream: true` 是一段
+合法的 SSE 序列(`message_start`、带 `stop_reason: "end_turn"` 的 `message_delta`、
+`message_stop`),否则是一个 Message JSON 对象。`count_tokens` 返回 `input_tokens: 0`。这条
+路由和其他路由一样要经过鉴权,所以它不是一个免鉴权的口子 —— 它是客户端接线的冒烟测试,不花
+一个 token 就能验证整条入站链路。
+
+```toml
+[[models]]
+id = "claude-noop"
+
+[models.router]
+type = "noop"
+```
+
+它只接受 `type` 一个键。
+
+#### 校验
 
 目标本身就是路由器、目标为空、阈值超出 `(0.0, 1.0]`、`recent_turn_window` 为 `0`、
-路由器 **id** 以 `[1m]` 或 `[1M]` 结尾、其中一项带有路由器表的重复 `[[models]]` id，或同一条目
-同时声明了 `[models.upstream_model]`，都会导致启动错误。不带映射的两个条目本可共用同一
-个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致。以下四种情况
+路由器 **id** 以 `[1m]` 或 `[1M]` 结尾、其中一项带有路由器表的重复 `[[models]]` id、本次构建
+尚未实现的 `type`，或同一条目同时声明了 `[models.upstream_model]`，都会导致启动错误。不带
+映射的两个条目本可共用同一个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id
+留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致；因此
+只要目标解析到一个自带路由器的条目，无论两者的 `type` 是什么都会被拒绝，这正是把解析限制在
+一跳之内的办法。以下四种情况
 只发出警告而不会让加载失败，因为每一种都可能是运维人员的本意 —— 未匹配到任何显式路由
-的目标（它仍会像其他未匹配的 id 一样经由 `server.default_provider` 解析）、解析到同一个
+的目标（它仍会像其他未匹配的 id 一样经由 `server.default_provider` 解析，该警告现在覆盖
+所有路由器 `type`）、解析到同一个
 id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同一个模型上）、低于
 `confidence_threshold` 的 `deescalate_threshold`（把下降方向变得更容易，这可能正是成本
 优先的部署所需要的），以及写了路由器自身 id 的 `[[routes]]` 条目（该 id 的去向由路由器
@@ -476,7 +638,7 @@ id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同�
 
 ## 路由优先级
 
-匹配的 `[models.stage_router]` 条目 → 匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
+匹配的 `[models.router]` 条目 → 匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
 
 路由器排在最前，是因为它在 `[[models]]` 条目本身上完成匹配：指向带路由器 id 的请求由路由器
 应答，路由器选定档位后再把**那个目标**交给其余的解析链。因此 `[[routes]]` 或

@@ -6,7 +6,7 @@ use crate::server::AppState;
 #[derive(Debug, Serialize)]
 pub struct RoutesResponse {
     pub data: Vec<RouteEntry>,
-    /// The `[[models]]` entries carrying a `[models.stage_router]` table.
+    /// The `[[models]]` entries carrying a `[models.router]` table.
     ///
     /// Omitted entirely when none is configured, so a deployment without a
     /// router serves the byte-identical response it served before routers
@@ -15,26 +15,40 @@ pub struct RoutesResponse {
     pub routers: Vec<RouterEntry>,
 }
 
-/// One configured stage router, as `/routes` reports it.
+/// One configured router, as `/routes` reports it.
 ///
-/// The tunables (`confidence_threshold`, dwell, TTL) are deliberately absent:
-/// this endpoint answers "where can a request go", and a client that needs the
-/// calibration reads the config. What it does report is the pair of ids the
+/// The tunables (`confidence_threshold`, dwell, TTL, weights) are deliberately
+/// absent: this endpoint answers "where can a request go", and a client that
+/// needs the calibration reads the config. What it does report is every id the
 /// router chooses between, because nothing else in this response is required
 /// to name them: a router's targets need not have `[[routes]]` entries of
 /// their own, though one that does still appears in `data` as itself.
+///
+/// The three stage fields stay `Option` with `skip_serializing_if` so a
+/// `random` or `noop` entry does not report a tier pair it does not have —
+/// a reader that finds `capable_target` present knows it is looking at a
+/// two-tier algorithm.
 #[derive(Debug, Serialize)]
 pub struct RouterEntry {
     /// The advertised id clients request.
     pub model: String,
-    pub capable_target: String,
-    pub efficient_target: String,
+    /// The `[models.router] type` that decides this id.
+    pub algorithm: String,
+    /// Every target the router can name, in declared order. `[capable,
+    /// efficient]` for a stage or auto entry, the configured list for a
+    /// `random` one, and empty for `noop`, which answers as itself.
+    pub targets: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capable_target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub efficient_target: Option<String>,
     /// The tier `picker` falls back to when no signal decides a turn. A
     /// body-less caller resolving this id gets it for that reason, which is
     /// what makes it worth naming. It is not "where a session starts": a first
     /// turn that already carries decisive tool-result history is scored like
     /// any other and can land on the opposite tier.
-    pub default_tier: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_tier: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,15 +117,18 @@ pub(crate) fn snapshot(state: &AppState) -> RoutesResponse {
         .models
         .iter()
         .filter_map(|model| {
-            let router = model.stage_router.as_ref()?;
+            let router = model.router.as_ref()?;
+            let stage = router.stage();
             Some(RouterEntry {
                 model: model.id.clone(),
-                capable_target: router.capable_target.clone(),
-                efficient_target: router.efficient_target.clone(),
-                default_tier: match router.picker {
+                algorithm: router.algorithm().to_string(),
+                targets: router.targets().into_iter().map(str::to_string).collect(),
+                capable_target: stage.map(|stage| stage.capable_target.clone()),
+                efficient_target: stage.map(|stage| stage.efficient_target.clone()),
+                default_tier: stage.map(|stage| match stage.picker {
                     crate::config::StageRouterPicker::EfficientFirst => "efficient",
                     crate::config::StageRouterPicker::CapableFirst => "capable",
-                },
+                }),
             })
         })
         .collect();
@@ -183,16 +200,22 @@ mod tests {
             id: id.to_string(),
             display_name: Some("Auto".to_string()),
             upstream_model: None,
-            stage_router: Some(crate::config::StageRouterConfig {
-                capable_target: "claude-opus-4-8".to_string(),
-                efficient_target: "claude-sonnet-4-6".to_string(),
-                picker,
-                confidence_threshold: crate::config::DEFAULT_CONFIDENCE_THRESHOLD,
-                recent_turn_window: 3,
-                min_dwell_turns: 3,
-                deescalate_threshold: None,
-                session_ttl_seconds: 3600,
-            }),
+            router: Some(crate::config::RouterConfig::StageRouter(
+                crate::config::StageRouterConfig {
+                    capable_target: "claude-opus-4-8".to_string(),
+                    efficient_target: "claude-sonnet-4-6".to_string(),
+                    picker,
+                    confidence_threshold: crate::config::DEFAULT_CONFIDENCE_THRESHOLD,
+                    recent_turn_window: 3,
+                    min_dwell_turns: 3,
+                    deescalate_threshold: None,
+                    session_ttl_seconds: 3600,
+                    capable_hold_turns: 0,
+                    tool_semantics: Default::default(),
+                    handoff_notes: None,
+                },
+            )),
+            stage_router: None,
         }
     }
 
@@ -211,6 +234,7 @@ mod tests {
                     id: "claude-plain".to_string(),
                     display_name: None,
                     upstream_model: None,
+                    router: None,
                     stage_router: None,
                 },
             ],
@@ -227,12 +251,75 @@ mod tests {
                 "data": [],
                 "routers": [{
                     "model": "claude-auto",
+                    "algorithm": "stage_router",
+                    "targets": ["claude-opus-4-8", "claude-sonnet-4-6"],
                     "capable_target": "claude-opus-4-8",
                     "efficient_target": "claude-sonnet-4-6",
                     "default_tier": "efficient"
                 }]
             }),
             "a `[[models]]` entry without a router must not appear in `routers`"
+        );
+    }
+
+    /// A `random` entry reports its whole target list and none of the stage
+    /// fields, so a reader cannot mistake it for a two-tier algorithm.
+    #[tokio::test]
+    async fn a_random_router_reports_its_targets_without_a_tier_pair() {
+        let config = crate::config::Config {
+            models: vec![ModelConfig {
+                id: "claude-canary".to_string(),
+                display_name: None,
+                upstream_model: None,
+                router: Some(crate::config::RouterConfig::Random(
+                    crate::config::RandomRouterConfig {
+                        targets: vec!["claude-sonnet-4-6".to_string(), "gpt-5.6-terra".to_string()],
+                        weights: Some(vec![9.0, 1.0]),
+                        seed: None,
+                        affinity: crate::config::RandomAffinity::Session,
+                    },
+                )),
+                stage_router: None,
+            }],
+            ..crate::config::Config::default()
+        };
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        let body = serde_json::to_value(get(State(state)).await.0).unwrap();
+
+        assert_eq!(
+            body["routers"][0],
+            json!({
+                "model": "claude-canary",
+                "algorithm": "random",
+                "targets": ["claude-sonnet-4-6", "gpt-5.6-terra"]
+            }),
+            "the weights are calibration, not destinations, and the stage \
+             fields must be absent rather than null"
+        );
+    }
+
+    /// A `noop` entry names no destination at all, which is the one case where
+    /// `targets` is legitimately empty.
+    #[tokio::test]
+    async fn a_noop_router_reports_an_empty_target_list() {
+        let config = crate::config::Config {
+            models: vec![ModelConfig {
+                id: "claude-quiet".to_string(),
+                display_name: None,
+                upstream_model: None,
+                router: Some(crate::config::RouterConfig::Noop {}),
+                stage_router: None,
+            }],
+            ..crate::config::Config::default()
+        };
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        let body = serde_json::to_value(get(State(state)).await.0).unwrap();
+
+        assert_eq!(
+            body["routers"][0],
+            json!({"model": "claude-quiet", "algorithm": "noop", "targets": []})
         );
     }
 

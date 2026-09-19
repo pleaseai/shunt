@@ -1,5 +1,5 @@
-//! Content-aware tier selection for a `[[models]]` entry carrying a
-//! `[models.stage_router]` table.
+//! Content-aware tier selection for a `[[models]]` entry whose
+//! `[models.router]` table is `type = "stage_router"` or `type = "auto"`.
 //!
 //! shunt extracts [`ToolSignals`] from the buffered Anthropic request
 //! ([`signals`]) using Claude Code's own tool names ([`vocabulary`]), then hands
@@ -14,7 +14,7 @@
 
 pub(crate) mod signals;
 pub(crate) mod store;
-mod vocabulary;
+pub(crate) mod vocabulary;
 
 pub(crate) use store::StageRouterStore;
 
@@ -26,6 +26,7 @@ use switchyard_libsy::{pick_tier, DecisionSource, PickOutcome, PickerMode, Tier,
 
 use crate::config::{StageRouterConfig, StageRouterPicker};
 use crate::routing::context::RouterContext;
+use crate::routing::outcome::RouterOutcome;
 
 /// Which tier a request was routed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,12 +76,14 @@ impl StageSource {
         match self {
             Self::Scorer(DecisionSource::Override | DecisionSource::Dimensions) => true,
             // `Ambiguous` is the scorer declining to decide, `FallOpen` is the
-            // picker's default standing in, `LlmClassifier` cannot occur because
-            // shunt runs no judge, and `CapableHold` is libsy's own hysteresis —
-            // an earlier escalation being held, which is what `Sticky` already
-            // means here — and cannot occur either, because only libsy's stateful
-            // `StageClassifier` stamps it and shunt calls `pick_tier` directly.
-            // None of the four is evidence.
+            // picker's default standing in, and `LlmClassifier` cannot occur
+            // because shunt runs no judge. `CapableHold` *can* now occur —
+            // `StageRouterStore::resolve` stamps it while a `capable_hold_turns`
+            // window is open — and it is deliberately not evidence: it is an
+            // earlier escalation being held, which is what `Sticky` already
+            // means here, and a held turn must not be read as a fresh signal
+            // that could move the pin it is holding. None of the four is
+            // evidence.
             Self::Scorer(
                 DecisionSource::Ambiguous
                 | DecisionSource::LlmClassifier
@@ -125,31 +128,6 @@ impl StageTier {
     }
 }
 
-/// What the router decided for one request, for observability only.
-///
-/// Nothing here steers routing — the chain is already resolved by the time this
-/// is read. It exists because the decision is otherwise invisible downstream:
-/// `Route.model` is deliberately re-stamped to the id the client asked for
-/// (issue #172), so neither the response nor the resolved chain says which tier
-/// served the turn or why.
-#[derive(Debug, Clone)]
-pub(crate) struct StageOutcome {
-    /// The configured model id that carries the router — the id
-    /// [`crate::routing::resolve_chain`] matched, so already past
-    /// `strip_context_window_hint`.
-    ///
-    /// Carried rather than re-derived at the reporting site: a client-side
-    /// `[1m]` suffix is stripped before the router is looked up and before the
-    /// session is keyed, so a counter labelled with the raw request id would
-    /// split one router's series in two and attribute one session's pin to
-    /// both halves.
-    pub model: String,
-    /// The configured model id the chosen tier routes to.
-    pub target: String,
-    pub tier: StageTier,
-    pub source: StageSource,
-}
-
 /// Everything a live request carries that a body-less caller does not.
 ///
 /// Held by reference for the length of one routing call; nothing here is stored.
@@ -179,8 +157,17 @@ pub(crate) struct StageContext<'a> {
     pub pending: Cell<Option<store::PendingPin>>,
     /// What the router decided, parked for the observability surfaces to read
     /// once the request is admitted. Set only when the requested id actually
-    /// carries a `[models.stage_router]` table.
-    pub decided: Cell<Option<StageOutcome>>,
+    /// carries a `[models.router]` table, by
+    /// [`crate::routing::resolve_chain`] — every algorithm stamps one, so the
+    /// two headers and the new counter do not have to know which ran.
+    pub decided: Cell<Option<RouterOutcome>>,
+    /// Whether [`select`] moved the tier off a pin an earlier turn of this
+    /// session set. Parked like [`StageContext::pending`] because the store is
+    /// the only place that can tell a handoff from a signal merely confirming
+    /// the tier already pinned, and `[models.router.handoff_notes]` — read much
+    /// later, on the failover path — is the one consumer that must not conflate
+    /// them. `false` until `select` runs, and for every body-less entry point.
+    pub handed_off: Cell<bool>,
 }
 
 impl StageContext<'_> {
@@ -233,19 +220,11 @@ pub(crate) fn select(
         context.now,
     );
     let (decision, pin) = (applied.decision, applied.pin);
-    // Parked for the observability surfaces, which read it only after the
-    // request is admitted — the same boundary the pin waits for, and for the
-    // same reason: a rejected request neither pins nor counts.
-    context.decided.set(Some(StageOutcome {
-        model: model.to_string(),
-        target: decision.tier.target(router).to_string(),
-        tier: decision.tier,
-        source: decision.source,
-    }));
     // Parked, not written: see [`StageContext::pending`]. Validation forbids a
     // router whose target is itself a router, so one request reaches this line
     // at most once and no earlier pin can be dropped here.
     context.pending.set(pin);
+    context.handed_off.set(applied.handed_off);
     decision
 }
 
@@ -277,8 +256,9 @@ pub(crate) fn decide(
         StageRouterPicker::CapableFirst => StageTier::Capable,
     };
 
-    let extracted =
-        messages.and_then(|messages| signals::extract(messages, router.recent_turn_window));
+    let extracted = messages.and_then(|messages| {
+        signals::extract(messages, router.recent_turn_window, &router.tool_semantics)
+    });
     let signals = match (extracted, compacted) {
         (Some(mut signals), _) => {
             signals.compacted = compacted;

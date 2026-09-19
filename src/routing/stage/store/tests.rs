@@ -86,6 +86,9 @@ fn router() -> StageRouterConfig {
         min_dwell_turns: 3,
         deescalate_threshold: None,
         session_ttl_seconds: 3600,
+        capable_hold_turns: 0,
+        tool_semantics: Default::default(),
+        handoff_notes: None,
     }
 }
 
@@ -1118,4 +1121,307 @@ fn a_pin_that_expired_is_not_flipped_away_from() {
     let flip = store.commit(pin.expect("the resumed turn earns a pin"), resumed);
 
     assert_eq!(flip, None);
+}
+
+/// `handed_off` marks the turns that actually moved the tier off a pin — the
+/// only turns `[models.router.handoff_notes]` may speak on.
+///
+/// Non-vacuity: make `handed_off` mirror `Resolved::changed` and the first-turn
+/// assertion goes red; make it a constant `true` and the confirming-turn
+/// assertion goes red; make it a constant `false` and the escalation assertion
+/// goes red.
+#[test]
+fn only_a_turn_that_moves_an_existing_pin_is_a_handoff() {
+    let router = router();
+    let store = StageRouterStore::new();
+    let start = Instant::now();
+
+    let turn = |estimate, at| {
+        let applied =
+            store.apply_session("claude-auto", Some(SESSION), &router, estimate, false, at);
+        if let Some(pin) = applied.pin {
+            store.commit(pin, at);
+        }
+        (applied.decision.source, applied.handed_off)
+    };
+
+    let (_, first) = turn(efficient(0.9), start);
+    assert!(
+        !first,
+        "the first turn of a session hands nothing over: no earlier turn was served at another tier"
+    );
+
+    let (confirming_source, confirming) = turn(efficient(0.9), start + Duration::from_secs(1));
+    assert_eq!(
+        confirming_source, DIMENSIONS,
+        "a confirming signal keeps its scorer source, which is why the source alone cannot gate the note"
+    );
+    assert!(
+        !confirming,
+        "the signals re-confirmed the tier already pinned, so nothing changed hands"
+    );
+
+    let (_, escalated) = turn(capable(), start + Duration::from_secs(2));
+    assert!(
+        escalated,
+        "the turn that took the session off its efficient pin is the handoff"
+    );
+}
+
+/// `capable_hold_turns` tests.
+///
+/// The regression guard for the whole feature is that every test above runs at
+/// the shunt default of `0` and is unchanged by its existence. These four pin
+/// what a non-zero window does.
+///
+/// Non-vacuity: drop the hold branch from `resolve` and
+/// `a_capable_hold_refuses_a_convincing_de_escalation` goes red; make the
+/// counter never decrement and `a_capable_hold_expires_after_its_configured_turns`
+/// goes red; consume the hold on a read-only turn and
+/// `a_probe_neither_sets_nor_consumes_the_hold` goes red.
+mod capable_hold {
+    use super::*;
+
+    fn held_router(turns: u32) -> StageRouterConfig {
+        StageRouterConfig {
+            // No dwell floor, and a de-escalation threshold the estimate below
+            // clears: without the hold this config de-escalates on turn two, so
+            // the hold is the only thing the test can be measuring.
+            min_dwell_turns: 0,
+            deescalate_threshold: Some(0.5),
+            capable_hold_turns: turns,
+            ..router()
+        }
+    }
+
+    /// A de-escalation that clears both shipped gates is still refused while
+    /// the window is open, and the refusal is stamped as libsy's own
+    /// `capable_hold` rather than as a sticky pin.
+    #[test]
+    fn a_capable_hold_refuses_a_convincing_de_escalation() {
+        let router = held_router(2);
+        let store = StageRouterStore::new();
+        let now = Instant::now();
+
+        store.apply_now("claude-auto", Some(SESSION), &router, capable(), false, now);
+        let decision = store.apply_now(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            efficient(0.99),
+            false,
+            now,
+        );
+
+        assert_eq!(decision.tier, StageTier::Capable);
+        assert_eq!(
+            decision.source,
+            StageSource::Scorer(DecisionSource::CapableHold)
+        );
+        assert_eq!(
+            decision.source.as_label(),
+            "capable_hold",
+            "the held turn reports libsy's own label"
+        );
+        assert!(
+            !decision.source.is_signal_evidence(),
+            "a held turn is not evidence and must not be able to move a pin"
+        );
+    }
+
+    /// The window is exactly `capable_hold_turns` long: the same estimate that
+    /// was refused N times is honoured on the turn after.
+    #[test]
+    fn a_capable_hold_expires_after_its_configured_turns() {
+        const HOLD: u32 = 3;
+        let router = held_router(HOLD);
+        let store = StageRouterStore::new();
+        let now = Instant::now();
+
+        store.apply_now("claude-auto", Some(SESSION), &router, capable(), false, now);
+        for turn in 0..HOLD {
+            let decision = store.apply_now(
+                "claude-auto",
+                Some(SESSION),
+                &router,
+                efficient(0.99),
+                false,
+                now,
+            );
+            assert_eq!(
+                decision.tier,
+                StageTier::Capable,
+                "turn {turn} is still inside the {HOLD}-turn window"
+            );
+        }
+
+        let decision = store.apply_now(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            efficient(0.99),
+            false,
+            now,
+        );
+        assert_eq!(
+            decision.tier,
+            StageTier::Efficient,
+            "the window is spent, so the shipped gates decide again"
+        );
+    }
+
+    /// A signal that re-earns the capable tier *inside* an open window does not
+    /// extend it: the window is `capable_hold_turns` long from the escalation,
+    /// full stop.
+    ///
+    /// The expiry test above feeds de-escalating estimates through the window,
+    /// so it cannot see this case. Pinned separately because the alternative —
+    /// re-arming on every confirming turn — turns the hold into a latch that
+    /// never closes for a session that keeps scoring capable, and the two are
+    /// indistinguishable unless the estimates inside the window say `capable`.
+    #[test]
+    fn a_confirming_signal_inside_the_window_does_not_extend_it() {
+        const HOLD: u32 = 2;
+        let router = held_router(HOLD);
+        let store = StageRouterStore::new();
+        let now = Instant::now();
+
+        store.apply_now("claude-auto", Some(SESSION), &router, capable(), false, now);
+        for turn in 0..HOLD {
+            let decision =
+                store.apply_now("claude-auto", Some(SESSION), &router, capable(), false, now);
+            assert_eq!(
+                decision.source,
+                StageSource::Scorer(DecisionSource::CapableHold),
+                "turn {turn} is inside the window, so the hold answers it"
+            );
+        }
+
+        let decision = store.apply_now(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            efficient(0.99),
+            false,
+            now,
+        );
+        assert_eq!(
+            decision.tier,
+            StageTier::Efficient,
+            "the window is spent after exactly {HOLD} turns however often the signals re-confirmed capable"
+        );
+    }
+
+    /// A `count_tokens` probe records nothing, so it must neither open a window
+    /// nor spend a turn of one. Spending one would let a client shorten
+    /// another's hold by probing.
+    #[test]
+    fn a_probe_neither_sets_nor_consumes_the_hold() {
+        let router = held_router(1);
+        let store = StageRouterStore::new();
+        let now = Instant::now();
+
+        store.apply_now("claude-auto", Some(SESSION), &router, capable(), false, now);
+        // A probe covered by the window is held, and spends nothing.
+        let probe = store.apply_now(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            efficient(0.99),
+            true,
+            now,
+        );
+        assert_eq!(probe.tier, StageTier::Capable);
+
+        // So the *next* real turn is still the first one the window covers.
+        let held = store.apply_now(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            efficient(0.99),
+            false,
+            now,
+        );
+        assert_eq!(
+            held.tier,
+            StageTier::Capable,
+            "the probe must not have spent the one held turn"
+        );
+        let released = store.apply_now(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            efficient(0.99),
+            false,
+            now,
+        );
+        assert_eq!(released.tier, StageTier::Efficient);
+    }
+
+    /// The default: with `capable_hold_turns = 0` the window never opens, which
+    /// is what leaves every other test in this file describing the shipped
+    /// hysteresis and nothing else.
+    #[test]
+    fn the_shunt_default_opens_no_window() {
+        let router = StageRouterConfig {
+            min_dwell_turns: 0,
+            deescalate_threshold: Some(0.5),
+            ..router()
+        };
+        assert_eq!(router.capable_hold_turns, 0);
+        let store = StageRouterStore::new();
+        let now = Instant::now();
+
+        store.apply_now("claude-auto", Some(SESSION), &router, capable(), false, now);
+        let decision = store.apply_now(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            efficient(0.99),
+            false,
+            now,
+        );
+
+        assert_eq!(
+            decision.tier,
+            StageTier::Efficient,
+            "no hold, so the convincing de-escalation lands immediately"
+        );
+    }
+
+    /// The window only opens on a *signal-driven* move. A picker default that
+    /// happens to land capable is not an escalation and must not arm a hold.
+    #[test]
+    fn a_picker_default_does_not_open_a_window() {
+        let router = held_router(2);
+        let store = StageRouterStore::new();
+        let now = Instant::now();
+
+        store.apply_now(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            StageDecision {
+                tier: StageTier::Capable,
+                source: StageSource::NoSignal,
+                confidence: None,
+            },
+            false,
+            now,
+        );
+        let decision = store.apply_now(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            efficient(0.99),
+            false,
+            now,
+        );
+
+        assert_eq!(
+            decision.tier,
+            StageTier::Efficient,
+            "a default is not an escalation, so it arms no hold"
+        );
+    }
 }

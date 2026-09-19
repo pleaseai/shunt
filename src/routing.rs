@@ -2,10 +2,11 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 
 use crate::{
-    config::{Config, ProviderKind},
+    config::{Config, ProviderKind, RouterConfig},
     error::ShuntError,
 };
 
+use outcome::{RouteSource, RouterOutcome};
 use stage::StageContext;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +18,12 @@ pub enum AdapterKind {
     /// Local `agy` subprocess execution. Deprecated alongside
     /// [`ProviderKind::AntigravityCli`].
     AntigravityCli,
+    /// `[models.router] type = "noop"`: answer without an upstream call.
+    ///
+    /// Reached only from the router arm of [`resolve_chain`], never from a
+    /// [`ProviderKind`] — there is no provider kind that maps to it, which is
+    /// why [`From<ProviderKind>`] has no arm for it.
+    Noop,
 }
 
 impl From<ProviderKind> for AdapterKind {
@@ -128,7 +135,8 @@ pub fn resolve_model(config: &Config, model: &str) -> Route {
 
 /// Resolve a model id to its failover chain, without a request to score.
 ///
-/// A `[models.stage_router]` entry reached this way reports its picker default,
+/// A stage or auto `[models.router]` entry reached this way reports its picker
+/// default,
 /// which is what a body-less surface should show: the tier the picker falls
 /// back to when no signal decides. Live requests go through [`resolve_request_chain_value`].
 pub fn resolve_model_chain(config: &Config, model: &str) -> Vec<Route> {
@@ -139,19 +147,55 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
     let model = strip_context_window_hint(model);
     for configured_model in &config.models {
         if configured_model.id == model {
-            if let Some(router) = configured_model.stage_router.as_ref() {
-                let target = stage::select(router, model, stage).tier.target(router);
+            // One `Option` check for every unrouted id — the whole cost
+            // non-router traffic pays, and the property `resolve_chain_unrouted`
+            // benchmarks against its routed twin.
+            if let Some(router) = configured_model.router.as_ref() {
+                let (target, source) = match router {
+                    // `Auto` carries a pre-built stage table, so the preset form
+                    // costs the same per request as the explicit one.
+                    RouterConfig::StageRouter(_) | RouterConfig::Auto(_) => {
+                        let stage_config = router
+                            .stage()
+                            .expect("stage and auto both carry a stage table");
+                        let decision = stage::select(stage_config, model, stage);
+                        (
+                            decision.tier.target(stage_config),
+                            RouteSource::Stage(decision.tier, decision.source),
+                        )
+                    }
+                    RouterConfig::Random(random) => random::select(random, model, stage),
+                    // A noop entry names no destination: it answers as itself.
+                    RouterConfig::Noop {} => (model, RouteSource::Noop),
+                };
+                if let Some(stage) = stage {
+                    // Parked for the observability surfaces, which read it only
+                    // after the request is admitted — the same boundary the pin
+                    // waits for, and for the same reason: a rejected request
+                    // neither pins nor counts. Stamped here rather than inside
+                    // each algorithm so a new type cannot ship unobservable.
+                    stage.decided.set(Some(RouterOutcome {
+                        model: model.to_string(),
+                        target: target.to_string(),
+                        algorithm: router.algorithm(),
+                        source,
+                        handed_off: stage.handed_off.get(),
+                    }));
+                }
+                if matches!(router, RouterConfig::Noop {}) {
+                    return vec![noop_route(model)];
+                }
                 // One hop only: config validation rejects a router whose target
                 // is itself a router, so the recursive call cannot re-enter this
-                // arm. That holds only while `validate_stage_router` compares
-                // targets through the same `strip_context_window_hint` applied
-                // at the top of this function — if the two normalizations drift,
-                // a `"<this model>[1m]"` target recurses without bound.
+                // arm. That holds only while `validate_router` compares targets
+                // through the same `strip_context_window_hint` applied at the
+                // top of this function — if the two normalizations drift, a
+                // `"<this model>[1m]"` target recurses without bound.
                 let mut routes = resolve_chain(config, target, None);
                 for route in &mut routes {
                     // `Route.model` is the id reported back to the client, and
                     // Claude Code records it to restore the model on `--resume`.
-                    // It must stay the id the caller asked for; the tier the
+                    // It must stay the id the caller asked for; the target the
                     // router picked travels upstream in `upstream_model` and
                     // nowhere else (issue #172).
                     route.model = model.to_string();
@@ -216,6 +260,23 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
     )]
 }
 
+/// The route a `type = "noop"` entry resolves to.
+///
+/// `provider` is the literal `"noop"`, which names no `[providers.*]` entry, so
+/// every provider lookup on this route misses — deliberately: the adapter makes
+/// no upstream call and has nothing to look one up for. `is_passthrough_route`
+/// short-circuits on the adapter rather than the provider name for that reason.
+fn noop_route(model: &str) -> Route {
+    Route {
+        provider: "noop".to_string(),
+        adapter: AdapterKind::Noop,
+        model: model.to_string(),
+        upstream_model: model.to_string(),
+        effort: None,
+        service_tier: None,
+    }
+}
+
 fn route_for(
     config: &Config,
     provider: &str,
@@ -262,6 +323,7 @@ mod tests {
                 provider.to_string(),
                 upstream_model.to_string(),
             )])),
+            router: None,
             stage_router: None,
         }
     }
@@ -383,6 +445,7 @@ mod tests {
                 id: "claude-route".to_string(),
                 display_name: None,
                 upstream_model: None,
+                router: None,
                 stage_router: None,
             }],
             routes: vec![RouteConfig {
@@ -603,6 +666,7 @@ mod tests {
                     ("codex".into(), "gpt-codex".into()),
                     ("openai".into(), "gpt-openai".into()),
                 ])),
+                router: None,
                 stage_router: None,
             }],
             ..Config::default()
@@ -672,6 +736,7 @@ mod tests {
                     ("openai".into(), "gpt-openai".into()),
                     ("codex".into(), "gpt-codex".into()),
                 ])),
+                router: None,
                 stage_router: None,
             }],
             ..Config::default()
@@ -705,6 +770,9 @@ mod tests {
 }
 
 pub(crate) mod context;
+pub(crate) mod handoff;
+pub(crate) mod outcome;
+pub(crate) mod random;
 pub(crate) mod stage;
 
 /// Stage-router resolution tests.
@@ -722,7 +790,7 @@ mod stage_router_tests {
     use serde_json::json;
 
     use crate::{
-        config::{Config, ModelConfig, StageRouterConfig, StageRouterPicker},
+        config::{Config, ModelConfig, RouterConfig, StageRouterConfig, StageRouterPicker},
         routing::stage::{StageContext, StageRouterStore},
     };
 
@@ -746,6 +814,9 @@ mod stage_router_tests {
             min_dwell_turns: 3,
             deescalate_threshold: None,
             session_ttl_seconds: 3600,
+            capable_hold_turns: 0,
+            tool_semantics: Default::default(),
+            handoff_notes: None,
         }
     }
 
@@ -757,6 +828,7 @@ mod stage_router_tests {
                 "codex".to_string(),
                 upstream_model.to_string(),
             )])),
+            router: None,
             stage_router: None,
         }
     }
@@ -768,7 +840,8 @@ mod stage_router_tests {
                     id: ROUTER_ID.to_string(),
                     display_name: None,
                     upstream_model: None,
-                    stage_router: Some(router()),
+                    router: Some(RouterConfig::StageRouter(router())),
+                    stage_router: None,
                 },
                 mapped("capable-alias", "upstream-capable"),
                 mapped("efficient-alias", "upstream-efficient"),
@@ -808,6 +881,7 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
+            handed_off: std::cell::Cell::new(false),
         };
 
         let (routes, requested) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -840,6 +914,7 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
+            handed_off: std::cell::Cell::new(false),
         };
 
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -861,12 +936,121 @@ mod stage_router_tests {
         assert_eq!(route.upstream_model, "upstream-efficient");
         assert_eq!(route.model, ROUTER_ID);
 
-        config.models[0].stage_router = Some(StageRouterConfig {
+        config.models[0].router = Some(RouterConfig::StageRouter(StageRouterConfig {
             picker: StageRouterPicker::CapableFirst,
             ..router()
-        });
+        }));
         let route = resolve_model(&config, ROUTER_ID);
         assert_eq!(route.upstream_model, "upstream-capable");
+    }
+
+    /// `type = "auto"` is the stage router with upstream's preset, so it must
+    /// resolve through the identical path — including the re-stamp — rather
+    /// than through a second implementation.
+    #[test]
+    fn an_auto_entry_resolves_exactly_like_its_stage_preset() {
+        let auto: crate::config::AutoRouterConfig = serde_json::from_value(serde_json::json!({
+            "capable_target": "capable-alias",
+            "efficient_target": "efficient-alias",
+        }))
+        .expect("the preset parses");
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::Auto(auto));
+
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let context = StageContext {
+            store: &store,
+            request: &request,
+            headers: &session_headers(),
+            read_only: false,
+            now: Instant::now(),
+            pending: std::cell::Cell::new(None),
+            decided: std::cell::Cell::new(None),
+            handed_off: std::cell::Cell::new(false),
+        };
+        let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("an auto-backed id resolves");
+
+        assert_eq!(routes[0].upstream_model, "upstream-capable");
+        assert_eq!(routes[0].model, ROUTER_ID);
+        let outcome = context.decided.take().expect("an outcome is stamped");
+        assert_eq!(outcome.algorithm, "auto");
+        assert_eq!(outcome.target, "capable-alias");
+
+        // And the body-less surface reports the preset's `efficient_first`
+        // default rather than the explicit table's picker by accident.
+        assert_eq!(
+            resolve_model(&config, ROUTER_ID).upstream_model,
+            "upstream-efficient"
+        );
+    }
+
+    /// A `random` entry resolves its chosen target through the ordinary ladder
+    /// and re-stamps the requested id, exactly as the stage router does.
+    #[test]
+    fn a_random_entry_resolves_its_target_and_restamps_the_requested_id() {
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::Random(crate::config::RandomRouterConfig {
+            // One enabled target, so the assertion is about resolution and
+            // not about which arm was drawn — the draw itself is pinned in
+            // `routing::random`'s own tests.
+            targets: vec!["efficient-alias".to_string(), "capable-alias".to_string()],
+            weights: Some(vec![1.0, 0.0]),
+            seed: Some(3),
+            affinity: crate::config::RandomAffinity::Session,
+        }));
+
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let context = StageContext {
+            store: &store,
+            request: &request,
+            headers: &session_headers(),
+            read_only: false,
+            now: Instant::now(),
+            pending: std::cell::Cell::new(None),
+            decided: std::cell::Cell::new(None),
+            handed_off: std::cell::Cell::new(false),
+        };
+        let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("a random-backed id resolves");
+
+        assert_eq!(routes[0].upstream_model, "upstream-efficient");
+        assert_eq!(routes[0].model, ROUTER_ID);
+        assert_eq!(routes[0].provider, "codex");
+        let outcome = context.decided.take().expect("an outcome is stamped");
+        assert_eq!(outcome.algorithm, "random");
+        assert_eq!(outcome.source.as_label(), "random_session");
+        assert!(
+            context.pending.take().is_none(),
+            "a random router keeps no tier pin"
+        );
+    }
+
+    /// A `noop` entry answers as itself: no provider lookup, no target, and the
+    /// adapter that synthesizes the reply.
+    #[test]
+    fn a_noop_entry_resolves_to_the_noop_adapter() {
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::Noop {});
+
+        let routes = super::resolve_model_chain(&config, ROUTER_ID);
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].adapter, AdapterKind::Noop);
+        assert_eq!(routes[0].provider, "noop");
+        assert_eq!(routes[0].model, ROUTER_ID);
+        assert_eq!(routes[0].upstream_model, ROUTER_ID);
+        assert_eq!(routes[0].effort, None);
+        assert_eq!(routes[0].service_tier, None);
+
+        // A `[1m]` request lands on the same route with the bare id.
+        assert_eq!(
+            resolve_model(&config, "claude-auto[1m]").model,
+            ROUTER_ID,
+            "the hint is stripped before the router is looked up"
+        );
     }
 
     /// A `[1m]` request still names the bare id back to the client, exactly as a

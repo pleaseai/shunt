@@ -111,6 +111,7 @@ fn chain_config(primary: (ProviderKind, String), fallback: (ProviderKind, String
             .into_iter()
             .collect(),
         ),
+        router: None,
         stage_router: None,
     }];
     config
