@@ -84,6 +84,55 @@ describe('folding managed accounts and local observations into one row', () => {
   });
 
   /**
+   * The Codex CLI login and a managed Codex account are routinely the same
+   * ChatGPT account; the observed row carries that account id as its `uuid`
+   * and the Codex store exposes it as `account_id`. One subscription, one row.
+   */
+  it('coalesces a Codex observation into the chatgpt_oauth account with the same id', async () => {
+    await renderDashboard({
+      observed: [
+        {
+          provider: 'codex',
+          source: 'local credential file',
+          identity: 'ChatGPT · Pro',
+          detail: 'f•••@example.com',
+          state: 'waiting-for-traffic',
+          signal: 'response-derived',
+          uuid: 'chatgpt-account-id',
+        },
+      ],
+      codexAccounts: [{ name: 'codex-a', account_id: 'chatgpt-account-id' }],
+      pool: poolWith('chatgpt_oauth', 'codex', { name: 'codex-a' }),
+    });
+
+    expect(observed().getByText('codex-a')).toBeInTheDocument();
+    expect(observed().queryByText('ChatGPT · Pro')).toBeNull();
+  });
+
+  /** A Codex store id must never be applied to a Claude login of the same name. */
+  it('does not apply a Codex store id to a claude_oauth account', async () => {
+    await renderDashboard({
+      observed: [
+        {
+          provider: 'codex',
+          source: 'local credential file',
+          identity: 'ChatGPT · Pro',
+          detail: null,
+          state: 'waiting-for-traffic',
+          signal: 'response-derived',
+          uuid: 'chatgpt-account-id',
+        },
+      ],
+      codexAccounts: [{ name: 'pool-a', account_id: 'chatgpt-account-id' }],
+      pool: poolWith('claude_oauth', 'anthropic', {}),
+    });
+
+    // Two rows: the Codex id was never matched against a Claude login.
+    expect(observed().getByText('pool-a')).toBeInTheDocument();
+    expect(observed().getByText('ChatGPT · Pro')).toBeInTheDocument();
+  });
+
+  /**
    * The visible label, the `data-state` the stylesheet colours from, and the
    * remediation note are three renderings of one decision. Deriving them
    * separately is what produced a "Needs login" label beside a green dot with no
