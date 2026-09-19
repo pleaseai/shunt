@@ -1567,6 +1567,88 @@ async fn pool_classifier_request_on_a_non_oauth_token_env_account_is_not_rewritt
 }
 
 #[tokio::test]
+async fn pool_classifier_request_is_pinned_to_the_configured_classifier_model() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token = ["sk-ant-oat01-", "pool-classifier-model"].concat();
+    vars.set("SHUNT_TEST_MULTI_CLASSIFIER_MODEL", &token);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token.clone()))
+        // The override is applied before the pool loop, so the identity repair
+        // the loop performs still lands on the same request.
+        .and(BodyCarriesIdentity)
+        .and(common::BodyModelIs("claude-sonnet-5"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut config = test_config_accounts(
+        &upstream.uri(),
+        vec![account(
+            "oauth-account",
+            "SHUNT_TEST_MULTI_CLASSIFIER_MODEL",
+            "uuid-classifier-model",
+        )],
+    );
+    config
+        .providers
+        .get_mut("anthropic")
+        .unwrap()
+        .classifier_model = Some("claude-sonnet-5".to_string());
+    let gateway = start_gateway_with(config).await;
+
+    assert_eq!(
+        post_classifier_request(&gateway).await.status(),
+        StatusCode::OK
+    );
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn pool_ordinary_request_keeps_its_model_under_a_classifier_pin() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token = ["sk-ant-oat01-", "pool-classifier-twin"].concat();
+    vars.set("SHUNT_TEST_MULTI_CLASSIFIER_TWIN", &token);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token.clone()))
+        .and(common::BodyModelIs("pooled-model"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut config = test_config_accounts(
+        &upstream.uri(),
+        vec![account(
+            "oauth-account",
+            "SHUNT_TEST_MULTI_CLASSIFIER_TWIN",
+            "uuid-classifier-twin",
+        )],
+    );
+    config
+        .providers
+        .get_mut("anthropic")
+        .unwrap()
+        .classifier_model = Some("claude-sonnet-5".to_string());
+    let gateway = start_gateway_with(config).await;
+
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+#[tokio::test]
 async fn classifier_gate_is_re_evaluated_for_each_candidate_during_rotation() {
     if !can_bind_loopback() {
         return;

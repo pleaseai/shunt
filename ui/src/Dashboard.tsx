@@ -1,6 +1,6 @@
+import { Collapsible } from '@base-ui/react/collapsible';
 import { useCallback, useRef, type ReactElement } from 'react';
 
-import { API } from './api';
 import { AddClaudeAccount, type AddAccountHandle } from './components/AddClaudeAccount';
 import { AddCodexAccount } from './components/AddCodexAccount';
 import { ClaudeAccounts } from './components/ClaudeAccounts';
@@ -10,30 +10,6 @@ import { PoolHealth } from './components/PoolHealth';
 import { UpstreamStatus } from './components/UpstreamStatus';
 import { useCanWrite } from './session';
 import { useDashboard } from './useDashboard';
-
-/**
- * Sign-out is a scripted POST rather than the server-rendered page's form: the
- * shell is served under `form-action 'none'` (`src/admin/ui.rs`), which is what
- * lets that policy stay tight for a bundle that posts no forms at all. The
- * endpoint answers `303` to `/admin/login` and clears the cookie on the way, and
- * `same_origin` — not a CSRF token — is what guards it, which a same-origin
- * `fetch` satisfies.
- */
-function SignOut(): ReactElement {
-  async function signOut(): Promise<void> {
-    try {
-      await fetch(`${API}/logout`, { method: 'POST' });
-    } catch {
-      // The cookie may or may not be cleared; the login page settles it.
-    }
-    window.location.assign('/admin/login');
-  }
-  return (
-    <button className="secondary" type="button" onClick={() => void signOut()}>
-      Sign out
-    </button>
-  );
-}
 
 export function Dashboard(): ReactElement {
   const data = useDashboard();
@@ -60,12 +36,7 @@ export function Dashboard(): ReactElement {
   }, [reloadObserved, reloadCodexAccounts, reloadPool]);
 
   return (
-    <main>
-      <header>
-        <h1>shunt admin</h1>
-        <SignOut />
-      </header>
-
+    <>
       <UpstreamStatus sources={data.status} />
 
       {/* Usage first: it is what an operator opens this page for. Pool
@@ -73,10 +44,12 @@ export function Dashboard(): ReactElement {
           rather than above the numbers. */}
       <ObservedAccounts observed={data.observed} />
 
-      <details style={{ marginTop: '2rem' }}>
-        <summary>
-          <strong>Manage pool accounts</strong> <span className="muted">(advanced)</span>
-        </summary>
+      <Collapsible.Root className="mt-8" data-pool-management>
+        <Collapsible.Trigger className="collapsible-trigger secondary w-full justify-start text-left text-text-secondary">
+          <strong className="text-text">Manage pool accounts</strong>{' '}
+          <span className="muted">(advanced)</span>
+        </Collapsible.Trigger>
+        <Collapsible.Panel className="pt-1" hiddenUntilFound>
         <p className="muted">
           Managed accounts are separate credential copies owned and refreshed by shunt for
           load-balancing. You do not need them merely to view usage.
@@ -110,7 +83,8 @@ export function Dashboard(): ReactElement {
           onMessage={(text, ok) => codexForm.current?.report(text, ok)}
         />
         <PoolHealth pool={data.pool} />
-      </details>
-    </main>
+        </Collapsible.Panel>
+      </Collapsible.Root>
+    </>
   );
 }

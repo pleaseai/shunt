@@ -5,3 +5,4 @@ pub mod inbound_responses;
 pub mod responses;
 pub mod responses_request;
 pub mod responses_schema;
+pub mod thinking_signature;

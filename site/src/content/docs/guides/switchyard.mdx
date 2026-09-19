@@ -13,7 +13,7 @@ parts it deliberately does not, what the published numbers actually measure, and
 how the algorithm decides a turn. If you only want to turn the feature on, the
 [stage router guide](/guides/stage-router/) is the shorter read.
 
-[libsy]: https://crates.io/crates/switchyard-libsy
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
 [sy]: https://github.com/NVIDIA-NeMo/Switchyard
 
 ## What shunt vendors
@@ -25,7 +25,7 @@ leaves the rest.
 
 | Switchyard component | In shunt |
 | :-- | :-- |
-| `switchyard-libsy` stage scorer | **Yes** — pinned to the `0.2` line |
+| `switchyard-libsy` stage scorer | **Yes** — pinned to a reviewed revision of upstream `main` |
 | `switchyard-protocol` | Pulled in as libsy's own dependency; shunt builds no `Request` |
 | `switchyard-translation` | **No** — it duplicates shunt's `src/model/responses_request.rs` head-on |
 | `switchyard-server` | **No** — shunt is the server |
@@ -37,10 +37,14 @@ The whole coupling is one function call. shunt fills libsy's `ToolSignals`
 struct straight from the parsed Anthropic Messages body and calls `pick_tier`;
 every field on that struct is public, so no translation layer sits in between.
 
-The version is pinned to `0.2` and held out of automatic upgrades. `0.2.0` is
-the only published release and upstream `main` has already diverged from it —
-`ToolSignals` carries four extra fields there. When checking the API, read the
-registry source, not GitHub.
+The dependency is a **git pin at an immutable revision** of upstream `main`,
+not the crates.io release, and carries a `rev` with no `branch` key — the same
+form as shunt's two `tungstenite` pins. A bump is therefore a reviewed diff, not
+something an unrelated `cargo update` can do. `0.2.0` is the only published
+release, and `main` has diverged from it: the algorithms beyond stage scoring —
+the advisor gate, composite routing, sub-agent routing, tool semantics, handoff
+notes — exist only there. When checking the API, read the checkout cargo
+resolved, not the registry source and not GitHub's default branch, which moves.
 
 ## Benchmark results
 
@@ -98,16 +102,25 @@ result.
 | :-- | :-- | :-- |
 | Scoring core | `switchyard-libsy` | Same crate, same constants |
 | Signal extraction | Upstream's, provider-neutral | shunt's own, from Anthropic Messages blocks |
-| `tests_passed` / `compacted` | Available to the scorer | Always `false` — never populated |
+| `tests_passed` / `repeated_failure` | Available to the scorer | Always `false` — never populated |
+| `compacted` | Available to the scorer | Set from `x-claude-code-context-compacted` and latched onto the session pin |
 | Judge on ambiguous turns | Optionally available | Never; falls open to the picker default |
 | Tier stability across turns | Scored per turn | Session-pinned with asymmetric hysteresis |
 | Workload | Terminal-Bench 2.1 tasks | Claude Code sessions |
 
 Two of those cut in opposite directions. shunt leaves `tests_passed` and
-`compacted` unpopulated, which removes libsy's hard de-escalation shortcut and
-its compaction override — strictly less signal than the benchmark had. Against
-that, shunt's hysteresis exists precisely because a per-turn flip is expensive in
-a Claude Code session in ways a benchmark harness never pays (see
+`repeated_failure` unpopulated, which costs it libsy's repeated-failure
+escalation — strictly less signal than the benchmark had. Both need evidence
+this extractor does not have: the *text* of a tool result. The wire carries that
+text — a `tool_result` block has a `content`
+field — but the extractor deliberately does not read it: deciding these signals
+from free-form result text means content-pattern heuristics, and a structural
+proxy would fire for `ls` as readily as for a test run. `compacted` is not in
+that group: it comes from a request header rather than from the transcript, so
+libsy's compaction override does fire here — see
+[Stage Router](/guides/stage-router/). Against that, shunt's
+hysteresis exists precisely because a per-turn flip is expensive in a Claude
+Code session in ways a benchmark harness never pays (see
 [below](#what-shunt-adds)).
 
 ## The routing algorithm
@@ -187,25 +200,27 @@ enough to move a turn, and two agreeing signals are.
 
 ### 4. Decision
 
-`pick_tier` runs four rules in order; the first to fire wins.
+`pick_tier` runs three rules in order; the first to fire wins.
 
-1. **Hard escalate** → capable. A critical severity or a compacted context.
-   Skips the scorer, reports `confidence: 1.0`.
-2. **Hard de-escalate** → efficient. Tests passed, code was recently written, and
-   nothing errored. Skips the scorer, reports **no confidence at all**.
-3. **Scorer.** If `confidence >= confidence_threshold`, follow the sign.
-4. **Fall open.** Below threshold, libsy returns `ConsultClassifier`. shunt runs
+1. **Hard escalate** → capable. A critical severity, a compacted context, or the
+   same failure repeated in the recent window. Skips the scorer, reports
+   `confidence: 1.0`.
+2. **Scorer.** Outside the ambiguous band around the midpoint, follow the sign.
+3. **Fall open.** Inside the band, libsy returns `ConsultClassifier`. shunt runs
    no classifier, so the turn lands on the picker's default tier.
 
-Escalate is checked before de-escalate, so a critical error still wins on a turn
-whose tests also happened to pass.
+There used to be a fourth — a hard *de-escalate* on a settled turn whose tests
+had passed. Upstream removed it; a passing test now only clears libsy's own
+capable hold, which shunt does not use.
 
-In shunt today, rule 2 cannot fire: the extractor leaves `tests_passed`
-unconditionally `false`, because deciding it means pattern-matching Claude Code's
-`Bash` result *text*, and guessing it wrong is expensive in exactly the direction
-that hurts. Rule 1's compaction half is dormant for the same reason — no
-compaction marker is pinned yet. Critical severity still triggers rule 1 through
-the two paths in the severity table above.
+Two of rule 1's three triggers fire in shunt today. Critical severity reaches it
+through the two paths in the severity table above, and a compacted context
+reaches it from `x-claude-code-context-compacted` — a request header rather than
+anything in the transcript, which is also why that trigger can fire on a turn
+with no tool activity at all. The repeated-failure half stays dormant because
+libsy decides *same failure* by matching result text against its error table,
+which the `is_error` boolean Claude Code sends cannot support. shunt's own "the last two
+completed results both failed" rule already reaches rule 1 by way of `severity`.
 
 ### 5. Hysteresis
 
@@ -220,11 +235,13 @@ before the decision is allowed to move a session's pinned tier:
 A fall-open, an ambiguous turn, or a turn with no tool activity is the picker's
 default rather than evidence, and cannot move a pin in either direction.
 
-The `tests_passed` shortcut is exempt from the *confidence* gate but not the
-dwell one — it reports no confidence at all, so a bare `confidence >= threshold`
-check would make the strongest reason to go cheap the one reason that could never
-fire. The exemption is inert today for the reason given above, and is kept so
-that populating the signal later is a change to the extractor alone.
+The confidence gate admits no exemption. It used to carry one, for the
+`tests_passed` shortcut, which reported no confidence at all; with that rule gone
+upstream, every source that counts as evidence reports a confidence, and a turn
+that reports none is held rather than trusted. libsy's own `capable_hold` — its
+replacement, meaning an earlier escalation is still being held — is not evidence
+either: it is the same idea as the `sticky` row above, and only libsy's stateful
+classifier stamps it, which shunt does not call.
 
 ## What shunt adds
 
@@ -260,10 +277,20 @@ core of shunt's integration rather than a refinement on it.
 
 ### Session pinning that does not leak the session id
 
-Decisions are pinned per `(advertised model id, session id)`, keyed on a
-SHA-256 prefix — the session id is hashed and never stored. The store caps at
-4096 sessions, evicts on the insert path with no background task, and persists
-nothing.
+Decisions are pinned per `(advertised model id, session id, agent id)`, each id
+keyed on a SHA-256 prefix — both are hashed and never stored. The agent id is
+`x-claude-code-agent-id`, which Claude Code sends on every delegated turn, so a
+`Task` child pins apart from the parent that spawned it: its failures do not
+escalate the parent, and its turns do not advance the parent's dwell. The store
+caps at 4096 parent sessions and, separately, at 4096 child pins; it evicts on
+the insert path with no background task, persists nothing, and a trim only ever
+reaches the scope it grew, so a wide fan-out cannot evict the parent waiting on
+it.
+
+The pin also carries the compaction latch. The turn that sends
+`x-claude-code-context-compacted` is scored as compacted, and the flag is stored,
+so the turns after it — the header is sent once per compaction — are scored the
+same way until the pin expires or a reload drops it.
 
 A pin also remembers a fingerprint of the router table it was made under, so
 editing one router drops only its own pins across a hot reload. That fingerprint
@@ -304,7 +331,7 @@ about the routing path changes.
 
 ## What the integration cost
 
-Measured, not estimated, when the dependency was adopted:
+Measured, not estimated, against `0.2.0` when the dependency was first adopted:
 
 | | |
 | :-- | :-- |
@@ -316,11 +343,19 @@ Measured, not estimated, when the dependency was adopted:
 
 The binary result is what decided it: the linker drops the classifier tree
 entirely, so the cost of depending on the crate is roughly 0.3%. The
-137-line port stays on file as the exit if the pinned release goes stale.
+137-line port stays on file as the exit if the pin goes stale.
+
+Moving from that release to the `main` pin added **no packages at all** — the
+lock stayed at 445, because libsy's new direct dependencies there (`http`,
+`regex`, `uuid`) were already in shunt's tree. The linked-or-not result holds on
+the new pin too: the release binary still carries zero `jsonschema` strings and
+zero `num-bigint` symbols.
 
 ## Attribution
 
 `switchyard-libsy` is Apache-2.0, © NVIDIA Corporation. shunt uses its stage
 scorer unmodified. The design record for shunt's side — including each capability
 declined and why — is
-[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md).
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md),
+and the decision to pin upstream `main` rather than the release is
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md).

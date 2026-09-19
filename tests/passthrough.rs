@@ -245,7 +245,7 @@ async fn messages_preserves_matching_model_body_byte_for_byte() {
 /// This is the one request shape `auto_mode_classifier` repairs.
 fn classifier_body() -> Vec<u8> {
     serde_json::to_vec(&json!({
-        "model": "claude-sonnet-4-5",
+        "model": "claude-opus-5",
         "max_tokens": 64,
         "messages": [],
         "system": [{
@@ -315,6 +315,91 @@ async fn classifier_request_on_an_api_key_credential_is_forwarded_byte_for_byte(
         .post(format!("{}/v1/messages", gateway.base_url))
         .header("x-api-key", "sk-ant-api03-test")
         .body(body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+/// `classifier_model` is an operator choice about which model answers a
+/// permission check, so — unlike the identity repair — it is not gated on the
+/// bearer, and it applies on this single-credential path too.
+#[tokio::test]
+async fn classifier_model_pins_the_classifier_request_to_the_configured_model() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // `Config::default()` and the gateway's own startup read the process
+    // environment, and a concurrent write anywhere in this binary can make an
+    // unrelated read come back empty — so a reader holds the guard too
+    // (`tests/AGENTS.md`).
+    let _env = common::env_lock().await;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(common::BodyModelIs("claude-sonnet-5"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let mut config = Config::default();
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = upstream.uri();
+    provider.classifier_model = Some("claude-sonnet-5".to_string());
+    let gateway = start_gateway_with(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("x-api-key", "sk-ant-api03-test")
+        .body(classifier_body())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn classifier_model_leaves_an_ordinary_request_on_its_own_model() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // `Config::default()` and the gateway's own startup read the process
+    // environment, and a concurrent write anywhere in this binary can make an
+    // unrelated read come back empty — so a reader holds the guard too
+    // (`tests/AGENTS.md`).
+    let _env = common::env_lock().await;
+    // Same config, a body that is not the classifier's: the key must move the
+    // one request shape it names and nothing else.
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(common::BodyModelIs("claude-opus-5"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let mut config = Config::default();
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = upstream.uri();
+    provider.classifier_model = Some("claude-sonnet-5".to_string());
+    let gateway = start_gateway_with(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("x-api-key", "sk-ant-api03-test")
+        .body(
+            serde_json::to_vec(&json!({
+                "model": "claude-opus-5",
+                "max_tokens": 64,
+                "messages": [],
+                "system": [{"type": "text", "text": "You are a triage bot."}],
+            }))
+            .unwrap(),
+        )
         .send()
         .await
         .unwrap();

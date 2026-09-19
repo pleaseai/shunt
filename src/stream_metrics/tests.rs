@@ -25,8 +25,8 @@ fn state(protocol: Protocol) -> ObserverState {
     ObserverState::new(
         protocol,
         StatusCode::OK,
-        "provider".to_string(),
-        "model".to_string(),
+        std::sync::Arc::new(std::sync::Mutex::new("provider".to_string())),
+        std::sync::Arc::new(std::sync::Mutex::new("model".to_string())),
         Instant::now(),
         tracing::Span::none(),
     )
@@ -72,6 +72,184 @@ impl<S: tracing::Subscriber> Layer<S> for CapturingLayer {
 
 fn anth_event(name: &str, data: serde_json::Value) -> String {
     format!("event: {name}\ndata: {data}\n\n")
+}
+
+/// A first frame split across body chunks records TTFT once the frame
+/// completes — never on the partial bytes (a split keepalive must not
+/// count), and never waiting for a second frame.
+#[test]
+fn ttft_records_on_a_split_first_frame() {
+    let provider = Arc::new(Mutex::new("provider".to_string()));
+    let mut observer = ObserverState::new(
+        Protocol::Anthropic,
+        StatusCode::OK,
+        provider.clone(),
+        Arc::new(Mutex::new("model".to_string())),
+        Instant::now(),
+        tracing::Span::none(),
+    );
+    observer.observe_chunk(b"event: message_st");
+    assert!(
+        observer.ttft_ms.is_none(),
+        "a partial first frame is not yet classifiable"
+    );
+    observer.observe_chunk(b"art\ndata: {}\n\n");
+    assert!(
+        observer.ttft_ms.is_some(),
+        "the completed split frame is content, not a keepalive"
+    );
+}
+
+/// A compact keepalive (`event: ping` with no data line) must not record
+/// the one-shot TTFT sample either: the sample would attribute the routed
+/// (failed) provider, and the winner's real first frame must own it.
+#[test]
+fn compact_ping_does_not_record_ttft_before_the_winner() {
+    let provider = Arc::new(Mutex::new("primary".to_string()));
+    let mut observer = ObserverState::new(
+        Protocol::Anthropic,
+        StatusCode::OK,
+        provider.clone(),
+        Arc::new(Mutex::new("model".to_string())),
+        Instant::now(),
+        tracing::Span::none(),
+    );
+    observer.observe_chunk(b"event: ping\n\n");
+    assert!(
+        observer.ttft_ms.is_none(),
+        "a compact pre-winner ping must not record TTFT"
+    );
+    *provider.lock().expect("slot") = "fallback".to_string();
+    observer.observe_chunk(
+        b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{}}}\n\n",
+    );
+    assert!(
+        observer.ttft_ms.is_some(),
+        "the winner's first frame records TTFT"
+    );
+}
+
+/// An oversized first frame that parses as a ping must not record TTFT:
+/// the skip path consults the same ping predicate as the frame parser,
+/// so an `event: ping` padded past the parse cap stays a keepalive.
+#[test]
+fn an_oversized_ping_frame_does_not_record_ttft() {
+    let mut observer = state(Protocol::Anthropic);
+    let mut frame = Vec::from(&b"event: ping\ndata: "[..]);
+    frame.extend(std::iter::repeat_n(b'x', 300 * 1024));
+    observer.observe_chunk(&frame);
+    assert!(
+        observer.ttft_ms.is_none(),
+        "an oversized ping frame must not record TTFT"
+    );
+}
+
+/// A comment-form keepalive (`: keep-alive`, LF or CRLF) must not record
+/// TTFT: SSE comment lines carry no content, so the sample waits for the
+/// winner's first real frame.
+#[test]
+fn a_comment_keepalive_does_not_record_ttft() {
+    for comment_frame in [
+        b": keep-alive\n\n".as_slice(),
+        b": keep-alive\r\n\r\n".as_slice(),
+    ] {
+        let provider = Arc::new(Mutex::new("primary".to_string()));
+        let mut observer = ObserverState::new(
+            Protocol::Anthropic,
+            StatusCode::OK,
+            provider.clone(),
+            Arc::new(Mutex::new("model".to_string())),
+            Instant::now(),
+            tracing::Span::none(),
+        );
+        observer.observe_chunk(comment_frame);
+        assert!(
+            observer.ttft_ms.is_none(),
+            "a comment-frame keepalive must not record TTFT"
+        );
+        *provider.lock().expect("slot") = "fallback".to_string();
+        observer.observe_chunk(
+            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{}}}\n\n",
+        );
+        assert!(
+            observer.ttft_ms.is_some(),
+            "the winner's first frame records TTFT"
+        );
+    }
+}
+
+/// A comment line beside a content line is still content: the data is real
+/// payload, so the frame records TTFT — the comment exemption covers
+/// comment-only frames, never frames that mix a comment with content.
+#[test]
+fn a_comment_line_beside_content_records_ttft() {
+    let mut observer = state(Protocol::Anthropic);
+    observer.observe_chunk(
+        b": keep-alive\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{}}}\n\n",
+    );
+    assert!(
+        observer.ttft_ms.is_some(),
+        "a frame mixing a comment line with a data line is content"
+    );
+}
+
+/// An oversized comment frame past the parse cap is still a keepalive: the
+/// skip path consults the same predicate as the frame parser, so a padded
+/// `: keep-alive` comment stays content-free.
+#[test]
+fn an_oversized_comment_frame_does_not_record_ttft() {
+    let mut observer = state(Protocol::Anthropic);
+    let mut frame = Vec::from(&b": keep-alive\n"[..]);
+    frame.extend(std::iter::repeat_n(b':', 300 * 1024));
+    observer.observe_chunk(&frame);
+    assert!(
+        observer.ttft_ms.is_none(),
+        "an oversized comment frame must not record TTFT"
+    );
+}
+
+/// An oversized first frame that is not a ping still records TTFT: the
+/// event past the parse cap is content, and the sample must not vanish
+/// with it into the skip.
+#[test]
+fn an_oversized_content_frame_records_ttft() {
+    let mut observer = state(Protocol::Anthropic);
+    let mut frame = Vec::from(&b"event: message_start\ndata: "[..]);
+    frame.extend(std::iter::repeat_n(b'x', 300 * 1024));
+    observer.observe_chunk(&frame);
+    assert!(
+        observer.ttft_ms.is_some(),
+        "an oversized content frame must record TTFT"
+    );
+}
+
+/// A keepalive ping emitted before the chain selects its winner must not
+/// record the one-shot TTFT sample: the provider slot still names the routed
+/// primary at that moment, and a later failover win cannot repair the sample.
+#[test]
+fn keepalive_ping_does_not_record_ttft_before_the_winner() {
+    let provider = Arc::new(Mutex::new("primary".to_string()));
+    let mut observer = ObserverState::new(
+        Protocol::Anthropic,
+        StatusCode::OK,
+        provider.clone(),
+        Arc::new(Mutex::new("model".to_string())),
+        Instant::now(),
+        tracing::Span::none(),
+    );
+    observer.observe_chunk(b"event: ping\ndata: {\"type\": \"ping\"}\n\n");
+    assert!(
+        observer.ttft_ms.is_none(),
+        "a pre-winner ping must not record TTFT"
+    );
+    *provider.lock().expect("slot") = "fallback".to_string();
+    observer.observe_chunk(
+        b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{}}}\n\n",
+    );
+    assert!(
+        observer.ttft_ms.is_some(),
+        "the winner's first frame records TTFT"
+    );
 }
 
 #[test]

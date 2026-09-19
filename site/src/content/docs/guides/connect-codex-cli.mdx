@@ -210,8 +210,10 @@ name = "backup"     # each declared name must be provisioned above; an unprovisi
 
 Selection is **session-sticky**: the Codex CLI's own `session-id` request header keys the account,
 so one conversation stays on one account for as long as it stays healthy, then fails over (429 →
-rotate, 401 → refresh + retry, 5xx → cool down + rotate). A successful pooled response carries an
-`x-shunt-account: <name>` header. On a shared gateway with [`[server.auth]`](/reference/configuration/)
+rotate, 401 → refresh + retry, 5xx → cool down + rotate). A successful pooled response on this endpoint carries an `x-shunt-account: <name>` header —
+streaming included, since the inbound passthrough commits only after the winning upstream
+responds. (The outbound Responses pool's early-committed HTTP streaming attributes the account
+with an `event: account` frame instead; see the Codex multi-account guide.) On a shared gateway with [`[server.auth]`](/reference/configuration/)
 enabled, the sticky key is scoped per authenticated client, so different clients that happen to send
 the same `session-id` use distinct sticky keys — preventing cross-client sticky-key collisions. (The
 keys are distinct; two distinct keys can still hash to the same account.)
@@ -261,8 +263,9 @@ list. A request naming a model your subscription lacks fails exactly as it would
 
 ## 6. Verify
 
-A raw Responses request against any of the three routes should relay verbatim and (when pooled)
-return an `x-shunt-account` header:
+A raw Responses request against any of the three routes should relay verbatim and, when a pooled
+account wins, carry an `x-shunt-account` header naming it — the inbound passthrough waits for the
+winning upstream before committing, so the header names the account that actually served the turn:
 
 ```bash
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
@@ -271,8 +274,8 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -d '{"model":"gpt-5.6-sol","input":"say hi","stream":true}'
 ```
 
-- A `200` with `content-type: text/event-stream` and an `x-shunt-account:` header ⇒ the pool served
-  the request and the SSE is relayed unchanged.
+- A `200` with `content-type: text/event-stream` and an `x-shunt-account:` header naming the pool
+  account ⇒ the pool served the request and the SSE is relayed unchanged.
 - A `401 authentication_error` ⇒ missing/invalid `x-shunt-token` (step 3).
 - A `400` naming the model ⇒ the account isn't entitled to that slug (step 5).
 

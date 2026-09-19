@@ -2,24 +2,35 @@
 //! websocket-first when enabled with an HTTP fallback per account, classifying
 //! each raw upstream status to decide relay / rotate / refresh-and-retry.
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use axum::http::{HeaderValue, StatusCode};
+use futures_util::{stream, Stream, StreamExt};
+use serde_json::Value;
 
 use crate::{
     accounts::{self, FailoverAction, ReprobeReservation},
     adapters::AdapterError,
     auth::{self, codex::auth::CodexAuthStore, resolve_chatgpt_account, Credential},
     config::{AccountConfig, AuthMode},
+    model::responses::ResponseEvent,
     routing::Route,
     server::AppState,
 };
 
 use super::body::{prepare_body, PreparedBody};
-use super::context::{ForwardOptions, PoolForward, RelayOptions};
-use super::error::{mapped_upstream_error, own_error, transport_error};
+use super::context::{CredentialSource, ForwardOptions, PoolForward, RelayOptions, TurnOptions};
+use super::early_stream::{
+    bounded_input_estimate, estimated_machine_factory, http_events_stream, parsed_events,
+    pool_streaming_response, HttpSendContext, PoolEvent, PoolItem,
+};
+use super::error::{adapter_error_envelope, mapped_upstream_error, own_error, transport_error};
 use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
+use crate::proxy::chain_stream::LazyEnvelope;
 
 fn select_pool_order(
     state: &AppState,
@@ -70,6 +81,719 @@ pub(super) fn commit_reprobe_for_account(
     }
 }
 
+/// Everything the streaming pool producer needs to run the account loop inside
+/// the already-committed stream.
+pub(super) struct PoolStreamContext {
+    pub(super) state: AppState,
+    pub(super) route: Route,
+    pub(super) auth: AuthMode,
+    pub(super) session_id: Option<String>,
+    pub(super) upstream_body: std::sync::Arc<Value>,
+    pub(super) accounts_config: std::sync::Arc<Vec<AccountConfig>>,
+    pub(super) order: Vec<usize>,
+    pub(super) reprobe: Option<ReprobeReservation>,
+    pub(super) ramp_initial: Option<u32>,
+    /// Whether this pool stream owns the request's `record_proxied_request`
+    /// sample (the committed single-route paths) or the enclosing chain does.
+    pub(super) record_metrics: bool,
+    /// A pre-commit instant the sample clock starts at when the stream owns
+    /// it — the committed pool's account scan ran inside this stream — else
+    /// the first poll of the account loop.
+    pub(super) started_at: Option<std::time::Instant>,
+}
+
+/// One streaming pool turn's event feed: the account loop (admission,
+/// credential resolution, send, classification, refresh-and-retry) runs inside
+/// the stream after the early commit, and the winning account's parsed events
+/// are yielded one at a time. Every terminal failure — the TTFB timeout, a
+/// non-failover non-2xx status, or pool exhaustion — becomes the same Anthropic
+/// error envelope the pre-commit path returned as a JSON body, emitted as one
+/// terminal SSE `error` event by [`pool_streaming_response`].
+///
+/// The request-derived fields the committed streaming `chatgpt_oauth` turn
+/// needs beyond `state`/`route`: the deferred account scan, the
+/// single-credential fallback's deferred credential, and the shared
+/// translation inputs.
+pub(super) struct PoolForwardStream {
+    pub session_id: Option<String>,
+    pub upstream_body: std::sync::Arc<Value>,
+    pub turn: TurnOptions,
+    pub estimate_input: Option<std::sync::Arc<Value>>,
+    pub scan: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<AccountConfig>, String>> + Send>,
+    >,
+    pub credential: CredentialSource,
+}
+
+/// The committed variant of [`forward_chatgpt_oauth`] for streaming turns
+/// without the websocket transport: the response commits before the account
+/// scan, so a slow filesystem scan or a saturated blocking pool cannot starve
+/// the client of headers and keepalive pings. The scan, the all-disabled
+/// check, the empty-scan single-credential fallback, and the pool itself all
+/// run inside the stream ([`pool_or_single_events`]).
+pub(super) async fn forward_chatgpt_oauth_stream(
+    state: AppState,
+    route: Route,
+    forward: PoolForwardStream,
+) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let PoolForwardStream {
+        session_id,
+        upstream_body,
+        turn,
+        estimate_input,
+        scan,
+        credential,
+    } = forward;
+    let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
+    let route_for_start = route.clone();
+    let single = HttpSendContext {
+        state: state.clone(),
+        route: route.clone(),
+        policy: state
+            .config
+            .provider(&route.provider)
+            .map(|provider| provider.retry.policy())
+            .unwrap_or(crate::retry::RetryPolicy::DISABLED),
+        credential: None,
+        session_id: session_id.clone(),
+        upstream_body: upstream_body.clone(),
+        auth: AuthMode::ChatgptOauth,
+        codex_quota_account: None,
+    };
+    let events = pool_or_single_events(
+        scan,
+        state.clone(),
+        route.clone(),
+        session_id,
+        upstream_body,
+        single,
+        credential,
+    );
+    Ok((
+        StatusCode::OK,
+        pool_streaming_response(
+            estimated_machine_factory(turn, route_for_start, estimate_input),
+            keepalive,
+            events,
+        ),
+    ))
+}
+
+/// One committed stream for a streaming `chatgpt_oauth` turn: the account
+/// scan, the all-disabled check, the empty-scan single-credential fallback,
+/// and the pool itself all run inside the committed response, so neither a
+/// slow filesystem scan nor a saturated blocking pool can delay the commit
+/// (keepalive pings cover the wait).
+pub(super) fn pool_or_single_events(
+    scan: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<AccountConfig>, String>> + Send>,
+    >,
+    state: AppState,
+    route: Route,
+    session_id: Option<String>,
+    upstream_body: std::sync::Arc<Value>,
+    single: HttpSendContext,
+    single_credential: CredentialSource,
+) -> impl Stream<Item = Result<PoolItem, Value>> + Send + 'static {
+    type Inner = std::pin::Pin<Box<dyn Stream<Item = Result<PoolItem, Value>> + Send>>;
+    struct Init {
+        scan: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<AccountConfig>, String>> + Send>,
+        >,
+        state: AppState,
+        route: Route,
+        session_id: Option<String>,
+        upstream_body: std::sync::Arc<Value>,
+        single: HttpSendContext,
+        single_credential: CredentialSource,
+    }
+    enum Phase {
+        Init(Box<Init>),
+        Inner(Inner),
+        Done,
+    }
+    stream::unfold(
+        Phase::Init(Box::new(Init {
+            scan,
+            state,
+            route,
+            session_id,
+            upstream_body,
+            single,
+            single_credential,
+        })),
+        move |phase| async move {
+            match phase {
+                Phase::Init(init) => {
+                    let attempt_started = Instant::now();
+                    let Init {
+                        scan,
+                        state,
+                        route,
+                        session_id,
+                        upstream_body,
+                        single,
+                        single_credential,
+                    } = *init;
+                    let accounts = match scan.await {
+                        Ok(accounts) => accounts,
+                        Err(error) => {
+                            // A scan failure is a classified gateway
+                            // failure (502), recorded here so the committed
+                            // response does not leave the request unsampled —
+                            // the chain records the same shape for its own
+                            // scan failure.
+                            crate::metrics::record_proxied_request(
+                                &route.provider,
+                                &route.model,
+                                StatusCode::BAD_GATEWAY.as_u16(),
+                                attempt_started.elapsed().as_secs_f64() * 1000.0,
+                            );
+                            let envelope = adapter_error_envelope(own_error(error)).await;
+                            return Some((Err(envelope), Phase::Done));
+                        }
+                    };
+                    if !accounts.is_empty() && accounts.iter().all(|account| account.disabled) {
+                        crate::metrics::record_proxied_request(
+                            &route.provider,
+                            &route.model,
+                            StatusCode::BAD_GATEWAY.as_u16(),
+                            attempt_started.elapsed().as_secs_f64() * 1000.0,
+                        );
+                        let envelope = adapter_error_envelope(own_error(format!(
+                            "provider '{}' has {} account(s) but all are `disabled = true`; none are selectable",
+                            route.provider,
+                            accounts.len()
+                        )))
+                        .await;
+                        return Some((Err(envelope), Phase::Done));
+                    }
+                    let ramp_initial = state.config.storm_ramp_initial();
+                    let mut inner: Inner = if accounts.is_empty() {
+                        Box::pin(
+                            http_events_stream(
+                                single,
+                                single_credential,
+                                None,
+                                Some(attempt_started),
+                            )
+                            .map(|item| item.map(|event| PoolItem::Event(PoolEvent::Event(event)))),
+                        )
+                    } else {
+                        let accounts_config = std::sync::Arc::new(accounts);
+                        let (order, reprobe) = state.accounts.select_order_deferred(
+                            &route.provider,
+                            &accounts_config,
+                            session_id.as_deref(),
+                            Some(route.upstream_model.as_str()),
+                            state.config.server.pool.as_ref(),
+                        );
+                        Box::pin(pool_events_stream(PoolStreamContext {
+                            state,
+                            route,
+                            auth: AuthMode::ChatgptOauth,
+                            session_id,
+                            upstream_body,
+                            accounts_config,
+                            order,
+                            reprobe,
+                            ramp_initial,
+                            record_metrics: true,
+                            started_at: Some(attempt_started),
+                        }))
+                    };
+                    inner.next().await.map(|item| (item, Phase::Inner(inner)))
+                }
+                Phase::Inner(mut inner) => {
+                    inner.next().await.map(|item| (item, Phase::Inner(inner)))
+                }
+                Phase::Done => None,
+            }
+        },
+    )
+}
+
+/// The winning account's admission guard rides in the relay phase so the
+/// storm-control slot
+/// stays held until the stream ends. Mirrors the ws-fallback/non-streaming
+/// loop below arm for arm; the duplication is deliberate until the websocket
+/// transport joins the early commit. The committed response
+/// cannot carry the winning account's `x-shunt-account` header — the headers
+/// go out with the synthetic start, before the account is known — so the
+/// winner is attributed with an `event: account` frame before its first
+/// relayed frame instead; the non-streaming and websocket paths still attach
+/// the header.
+pub(super) fn pool_events_stream(
+    context: PoolStreamContext,
+) -> impl Stream<Item = Result<PoolItem, Value>> + Send + 'static {
+    let PoolStreamContext {
+        state,
+        route,
+        auth,
+        session_id,
+        upstream_body,
+        accounts_config,
+        order,
+        reprobe,
+        ramp_initial,
+        record_metrics,
+        started_at,
+    } = context;
+    type Parsed = std::pin::Pin<Box<dyn Stream<Item = Result<ResponseEvent, Value>> + Send>>;
+    enum Phase {
+        NextAccount,
+        Relay {
+            parsed: Parsed,
+            guard: Option<accounts::AdmissionGuard>,
+            account: Option<String>,
+        },
+        Done,
+    }
+    let candidates = order.len();
+    stream::unfold(
+        (
+            Phase::NextAccount,
+            order.into_iter().enumerate(),
+            None::<PreparedBody>,
+            None::<reqwest::Response>,
+            reprobe,
+            started_at,
+        ),
+        move |(phase, order_iter, http_body, last_response, reprobe, attempt_started)| {
+            let state = state.clone();
+            let route = route.clone();
+            let accounts_config = accounts_config.clone();
+            let session_id = session_id.clone();
+            let upstream_body = upstream_body.clone();
+            async move {
+                let mut phase = phase;
+                let mut order_iter = order_iter;
+                let mut http_body = http_body;
+                let mut last_response = last_response;
+                let mut reprobe = reprobe;
+                let mut attempt_started = attempt_started;
+                loop {
+                    match phase {
+                        Phase::Relay {
+                            mut parsed,
+                            guard,
+                            mut account,
+                        } => {
+                            // Attribute the winner once, before its first
+                            // relayed frame.
+                            if let Some(name) = account.take() {
+                                return Some((
+                                    Ok(PoolItem::Event(PoolEvent::Account(name))),
+                                    (
+                                        Phase::Relay {
+                                            parsed,
+                                            guard,
+                                            account,
+                                        },
+                                        order_iter,
+                                        http_body,
+                                        last_response,
+                                        reprobe,
+                                        attempt_started,
+                                    ),
+                                ));
+                            }
+                            match parsed.next().await {
+                                Some(Ok(event)) => {
+                                    return Some((
+                                        Ok(PoolItem::Event(PoolEvent::Event(event))),
+                                        (
+                                            Phase::Relay {
+                                                parsed,
+                                                guard,
+                                                account,
+                                            },
+                                            order_iter,
+                                            http_body,
+                                            last_response,
+                                            reprobe,
+                                            attempt_started,
+                                        ),
+                                    ));
+                                }
+                                Some(Err(envelope)) => {
+                                    return Some((
+                                        Err(envelope),
+                                        (
+                                            Phase::Done,
+                                            order_iter,
+                                            http_body,
+                                            last_response,
+                                            reprobe,
+                                            attempt_started,
+                                        ),
+                                    ));
+                                }
+                                None => return None,
+                            }
+                        }
+                        Phase::NextAccount => {
+                            // The response committed before the account loop
+                            // ran: the failover loop's dispatch-time sample
+                            // would read a fake 200 and a near-zero elapsed
+                            // (skipped via `InStreamMetrics`); the real
+                            // sample lands here, once per committed attempt,
+                            // when the pool classifies its outcome — matching
+                            // the chain's per-attempt record. The chain
+                            // builds its own pool streams with
+                            // `record_metrics: false` and records the attempt
+                            // itself. A caller that ran pre-commit work
+                            // inside the committed stream (the committed
+                            // pool's account scan) seeds the clock at that
+                            // work's start.
+                            let started = *attempt_started.get_or_insert_with(Instant::now);
+                            let record = |status: StatusCode| {
+                                if record_metrics {
+                                    crate::metrics::record_proxied_request(
+                                        &route.provider,
+                                        &route.model,
+                                        status.as_u16(),
+                                        started.elapsed().as_secs_f64() * 1000.0,
+                                    );
+                                }
+                            };
+                            let Some((position, index)) = order_iter.next() else {
+                                crate::metrics::record_pool_rotation(&route.provider, "exhausted");
+                                // Classified pre-frame exhaustion: the
+                                // committed chain advances on it exactly like
+                                // the pre-commit loop (§4) — a relayed
+                                // advance status is advance-worthy and
+                                // remembered, transport exhaustion advances
+                                // without remembering.
+                                let (status, advance, remember, envelope) =
+                                    match last_response.take() {
+                                        Some(upstream) => {
+                                            let status = upstream.status();
+                                            let envelope =
+                                                LazyEnvelope::Deferred(Box::pin(async move {
+                                                    adapter_error_envelope(
+                                                        mapped_upstream_error(
+                                                            status, upstream, auth,
+                                                        )
+                                                        .await,
+                                                    )
+                                                    .await
+                                                }));
+                                            (
+                                                status,
+                                                crate::proxy::failover::is_advance_status(status),
+                                                true,
+                                                envelope,
+                                            )
+                                        }
+                                        None => (
+                                            StatusCode::BAD_GATEWAY,
+                                            true,
+                                            false,
+                                            LazyEnvelope::Ready(
+                                                adapter_error_envelope(transport_error(
+                                                    "all Codex OAuth accounts failed before receiving an upstream response"
+                                                        .to_string(),
+                                                ))
+                                                .await,
+                                            ),
+                                        ),
+                                    };
+                                record(status);
+                                return Some((
+                                    Ok(PoolItem::Exhausted {
+                                        status,
+                                        advance,
+                                        remember,
+                                        envelope,
+                                    }),
+                                    (
+                                        Phase::Done,
+                                        order_iter,
+                                        http_body,
+                                        last_response,
+                                        reprobe,
+                                        attempt_started,
+                                    ),
+                                ));
+                            };
+                            let account = &accounts_config[index];
+                            let Some((admission, credential)) = admit_and_resolve(
+                                &state,
+                                &route,
+                                account,
+                                ramp_initial,
+                                position,
+                                candidates,
+                            )
+                            .await
+                            else {
+                                cancel_reprobe_for_account(&mut reprobe, index);
+                                continue;
+                            };
+
+                            let body = match &http_body {
+                                Some(body) => body.clone(),
+                                None => {
+                                    let prepared =
+                                        prepare_body(&state, &route, upstream_body.as_ref()).await;
+                                    http_body = Some(prepared.clone());
+                                    prepared
+                                }
+                            };
+                            // Commit at the dispatch boundary (mirrors the loop):
+                            // after admission, credential, and body preparation
+                            // have all succeeded.
+                            commit_reprobe_for_account(&mut reprobe, index);
+                            let upstream = match http_send(
+                                &state,
+                                &route,
+                                credential.clone(),
+                                session_id.as_deref(),
+                                body.clone(),
+                            )
+                            .await
+                            {
+                                Ok(response) => response,
+                                Err(error @ crate::upstream_timeout::SendError::Timeout) => {
+                                    let envelope =
+                                        adapter_error_envelope(error.into_adapter_error(|error| {
+                                            transport_error(error.without_url().to_string())
+                                        }))
+                                        .await;
+                                    // The TTFB timeout is the configured 504
+                                    // answer: terminal, never advanced (the
+                                    // pre-commit loop's mapping).
+                                    record(StatusCode::GATEWAY_TIMEOUT);
+                                    return Some((
+                                        Ok(PoolItem::Exhausted {
+                                            status: StatusCode::GATEWAY_TIMEOUT,
+                                            advance: false,
+                                            remember: false,
+                                            envelope: LazyEnvelope::Ready(envelope),
+                                        }),
+                                        (
+                                            Phase::Done,
+                                            order_iter,
+                                            http_body,
+                                            last_response,
+                                            reprobe,
+                                            attempt_started,
+                                        ),
+                                    ));
+                                }
+                                Err(crate::upstream_timeout::SendError::Transport(error)) => {
+                                    state.accounts.cooldown(
+                                        &route.provider,
+                                        account,
+                                        Duration::from_secs(30),
+                                        "transport",
+                                    );
+                                    tracing::warn!(
+                                        provider = %route.provider,
+                                        account = %account.name,
+                                        error = %error.without_url(),
+                                        "ChatGPT OAuth upstream request failed"
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            state.accounts.note_codex_quota(
+                                &route.provider,
+                                account,
+                                upstream.headers(),
+                            );
+                            match classify_first(&state, &route, account, upstream) {
+                                FirstOutcome::Relay(upstream) => {
+                                    let status = upstream.status();
+                                    state.accounts.mark_healthy(
+                                        &route.provider,
+                                        account,
+                                        status.is_success(),
+                                    );
+                                    if status.is_success() {
+                                        record(StatusCode::OK);
+                                        let parsed: Parsed =
+                                            Box::pin(parsed_events(upstream.bytes_stream()));
+                                        phase = Phase::Relay {
+                                            parsed,
+                                            guard: admission,
+                                            account: Some(account.name.clone()),
+                                        };
+                                    } else {
+                                        // A non-failover 4xx (e.g. 400) is a
+                                        // client error, not the account's fault:
+                                        // relay it re-shaped, as everywhere on
+                                        // this path. Terminal, carrying its
+                                        // real status for metrics.
+                                        record(status);
+                                        let envelope = adapter_error_envelope(
+                                            mapped_upstream_error(status, upstream, auth).await,
+                                        )
+                                        .await;
+                                        return Some((
+                                            Ok(PoolItem::Exhausted {
+                                                status,
+                                                advance: false,
+                                                remember: true,
+                                                envelope: LazyEnvelope::Ready(envelope),
+                                            }),
+                                            (
+                                                Phase::Done,
+                                                order_iter,
+                                                http_body,
+                                                last_response,
+                                                reprobe,
+                                                attempt_started,
+                                            ),
+                                        ));
+                                    }
+                                }
+                                FirstOutcome::Rotate(upstream) => {
+                                    last_response = Some(upstream);
+                                }
+                                FirstOutcome::NeedRefresh(upstream) => {
+                                    let retry_credential = match force_refresh_or_cooldown(
+                                        &state,
+                                        &route,
+                                        account,
+                                        &credential,
+                                    )
+                                    .await
+                                    {
+                                        Some(credential) => credential,
+                                        None => {
+                                            last_response = Some(upstream);
+                                            continue;
+                                        }
+                                    };
+                                    let retry = match http_send(
+                                        &state,
+                                        &route,
+                                        retry_credential,
+                                        session_id.as_deref(),
+                                        body.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(response) => response,
+                                        Err(
+                                            error @ crate::upstream_timeout::SendError::Timeout,
+                                        ) => {
+                                            let envelope = adapter_error_envelope(
+                                                error.into_adapter_error(|error| {
+                                                    transport_error(error.without_url().to_string())
+                                                }),
+                                            )
+                                            .await;
+                                            // Terminal, never advanced (the
+                                            // pre-commit loop's mapping).
+                                            record(StatusCode::GATEWAY_TIMEOUT);
+                                            return Some((
+                                                Ok(PoolItem::Exhausted {
+                                                    status: StatusCode::GATEWAY_TIMEOUT,
+                                                    advance: false,
+                                                    remember: false,
+                                                    envelope: LazyEnvelope::Ready(envelope),
+                                                }),
+                                                (
+                                                    Phase::Done,
+                                                    order_iter,
+                                                    http_body,
+                                                    last_response,
+                                                    reprobe,
+                                                    attempt_started,
+                                                ),
+                                            ));
+                                        }
+                                        Err(crate::upstream_timeout::SendError::Transport(
+                                            error,
+                                        )) => {
+                                            state.accounts.cooldown(
+                                                &route.provider,
+                                                account,
+                                                Duration::from_secs(30),
+                                                "transport",
+                                            );
+                                            tracing::warn!(
+                                                provider = %route.provider,
+                                                account = %account.name,
+                                                error = %error.without_url(),
+                                                "ChatGPT OAuth refresh retry failed"
+                                            );
+                                            last_response = Some(upstream);
+                                            continue;
+                                        }
+                                    };
+                                    state.accounts.note_codex_quota(
+                                        &route.provider,
+                                        account,
+                                        retry.headers(),
+                                    );
+                                    match classify_retry(&state, &route, account, retry) {
+                                        RetryOutcome::Relay(retry) => {
+                                            let retry_status = retry.status();
+                                            if retry_status.is_success() {
+                                                state.accounts.mark_healthy(
+                                                    &route.provider,
+                                                    account,
+                                                    true,
+                                                );
+                                                record(StatusCode::OK);
+                                                let parsed: Parsed =
+                                                    Box::pin(parsed_events(retry.bytes_stream()));
+                                                phase = Phase::Relay {
+                                                    parsed,
+                                                    guard: admission,
+                                                    account: Some(account.name.clone()),
+                                                };
+                                            } else {
+                                                let envelope = adapter_error_envelope(
+                                                    mapped_upstream_error(
+                                                        retry_status,
+                                                        retry,
+                                                        auth,
+                                                    )
+                                                    .await,
+                                                )
+                                                .await;
+                                                // Terminal, carrying its real
+                                                // status for metrics.
+                                                record(retry_status);
+                                                return Some((
+                                                    Ok(PoolItem::Exhausted {
+                                                        status: retry_status,
+                                                        advance: false,
+                                                        remember: true,
+                                                        envelope: LazyEnvelope::Ready(envelope),
+                                                    }),
+                                                    (
+                                                        Phase::Done,
+                                                        order_iter,
+                                                        http_body,
+                                                        last_response,
+                                                        reprobe,
+                                                        attempt_started,
+                                                    ),
+                                                ));
+                                            }
+                                        }
+                                        RetryOutcome::Rotate(retry) => {
+                                            last_response = Some(retry);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Phase::Done => return None,
+                    }
+                }
+            }
+        },
+    )
+}
+
 /// Drive a Responses turn over the Codex/ChatGPT OAuth account pool (M10),
 /// mirroring the Anthropic adapter's `forward_claude_oauth` as closely as this
 /// adapter's structure allows. Each account in `order` is tried in turn:
@@ -114,6 +838,44 @@ pub(super) async fn forward_chatgpt_oauth(
     // Codex has no fable-scoped window, so the model only picks the shared
     // weekly bucket.
     let ws_enabled = state.config.codex_websocket_enabled(&route.provider);
+    if turn.client_wants_stream && !ws_enabled {
+        // Commit the SSE response before the account loop runs: the synthetic
+        // `message_start` feeds the client's stall watchdog while admission,
+        // credential resolution, and the send still run inside the stream. The
+        // estimate must land in that first snapshot, so encode it up front
+        // rather than overlapping it with the upstream round-trip as the
+        // loop-based paths do.
+        let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
+        let route_for_start = route.clone();
+        let (order, reprobe) = state.accounts.select_order_deferred(
+            &route.provider,
+            &accounts_config,
+            session_id.as_deref(),
+            Some(route.upstream_model.as_str()),
+            state.config.server.pool.as_ref(),
+        );
+        let events = pool_events_stream(PoolStreamContext {
+            state: state.clone(),
+            route: route.clone(),
+            auth: AuthMode::ChatgptOauth,
+            session_id,
+            upstream_body: upstream_body.clone(),
+            accounts_config: std::sync::Arc::new(accounts_config),
+            order,
+            reprobe,
+            ramp_initial: state.config.storm_ramp_initial(),
+            record_metrics: true,
+            started_at: None,
+        });
+        return Ok((
+            StatusCode::OK,
+            pool_streaming_response(
+                estimated_machine_factory(turn, route_for_start, estimate_input),
+                keepalive,
+                events,
+            ),
+        ));
+    }
     let (order, mut reprobe_reservation) = if ws_enabled {
         (
             select_pool_order(
@@ -186,7 +948,6 @@ pub(super) async fn forward_chatgpt_oauth(
                 account_pool_key.as_deref(),
                 ForwardOptions {
                     upstream_body: upstream_body.clone(),
-                    credential: credential.clone(),
                     auth,
                     turn,
                     codex_quota_account: Some(account.clone()),
@@ -194,7 +955,9 @@ pub(super) async fn forward_chatgpt_oauth(
                     // forward_websocket spawns its own blocking encode from it,
                     // identical to the single-account path (see ForwardOptions).
                     estimate_input: estimate_input.clone(),
+                    started_at: None,
                 },
+                credential.clone(),
             )
             .await
             {
@@ -447,7 +1210,9 @@ async fn relay_success(
 /// handle, for streaming turns), which naturally yields `0` below.
 async fn take_estimate(estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>) -> u64 {
     match estimate_handle.take() {
-        Some(handle) => handle.await.unwrap_or(0),
+        // Bounded like `forward_http`: the committed `message_start` must not
+        // wait on the estimator (see `bounded_input_estimate`).
+        Some(handle) => bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await,
         None => 0,
     }
 }
@@ -751,12 +1516,221 @@ mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use serde_json::json;
 
+    use super::super::context::TurnOptions;
     use super::*;
     use crate::{
         accounts::{account_key, QuotaState, StoreFamily},
         config::{Config, PoolConfig},
         routing::{AdapterKind, Route},
     };
+    use axum::http::StatusCode;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Serializes the env vars the pool-probe tests write; every test in this
+    /// module that calls `std::env::set_var` must hold it for its whole body.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn pool_route() -> Route {
+        Route {
+            provider: "codex".to_string(),
+            adapter: AdapterKind::Responses,
+            model: "gpt-5.2-codex".to_string(),
+            upstream_model: "gpt-5.2-codex".to_string(),
+            effort: None,
+            service_tier: None,
+        }
+    }
+
+    fn pool_account(name: &str, token_env: &str) -> AccountConfig {
+        AccountConfig {
+            name: name.to_string(),
+            token_env: Some(token_env.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn pool_state(base_url: String) -> AppState {
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = base_url;
+        AppState::new(config, reqwest::Client::new()).unwrap()
+    }
+
+    /// A minimal unverified JWT carrying only the ChatGPT account-id claim in
+    /// the nested shape `codex::auth::jwt_account_id` reads — enough for
+    /// `resolve_chatgpt_account`'s `token_env` path, which decodes the payload
+    /// and never checks a signature or expiry.
+    fn probe_token(account_id: &str) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(
+            json!({"https://api.openai.com/auth": {"chatgpt_account_id": account_id}}).to_string(),
+        );
+        format!("e30.{payload}.e30")
+    }
+
+    fn pool_turn(accounts: Vec<AccountConfig>, stream: bool) -> PoolForward {
+        PoolForward {
+            pool_key: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            accounts_config: accounts,
+            turn: TurnOptions {
+                client_wants_stream: stream,
+                thinking_enabled: false,
+                tool_search_native: false,
+            },
+            estimate_input: None,
+        }
+    }
+
+    /// The pool's streaming arm commits the synthetic start before any
+    /// upstream byte — the client's stall watchdog is fed while the account
+    /// loop (admission, credential resolution, the send itself) still runs.
+    #[tokio::test]
+    async fn pool_streaming_arm_commits_synthetic_start_before_any_upstream_byte() {
+        use futures_util::StreamExt;
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(30))
+                    .set_body_string(
+                        "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                         event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+                    ),
+            )
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
+        let state = pool_state(server.uri());
+        let (status, response) =
+            forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+                .await
+                .expect("streaming pool turn builds the response without upstream headers");
+        assert_eq!(status, StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(Duration::from_secs(2), body.next())
+            .await
+            .expect("first chunk arrives while the upstream is silent")
+            .expect("stream yields")
+            .expect("chunk is ok");
+        let text = String::from_utf8(first.to_vec()).expect("chunk is utf8");
+        assert!(
+            text.starts_with("event: message_start\ndata: "),
+            "got: {text}"
+        );
+        assert!(text.contains("\"id\":\"msg_"), "synthetic id, got: {text}");
+    }
+
+    /// A transport-level rotation still emits exactly one message_start, and
+    /// the relayed content flows after it.
+    #[tokio::test]
+    async fn pool_streaming_arm_rotates_and_relays_from_the_second_account() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_2\"}}\n\n\
+                 event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let accounts = vec![
+            pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let state = pool_state(server.uri());
+        let (_, response) = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+            .await
+            .expect("pool turn succeeds on the second account");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(
+            text.matches("event: message_start").count(),
+            1,
+            "got: {text}"
+        );
+        assert!(text.contains("\"id\":\"msg_"), "synthetic id, got: {text}");
+        assert!(text.contains("\"text\":\"hi\""), "got: {text}");
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock records requests")
+                .len(),
+            2,
+            "one rotation then one success"
+        );
+    }
+
+    /// Pool exhaustion surfaces as one terminal SSE error event on the
+    /// committed stream — never a synthesized completion.
+    #[tokio::test]
+    async fn pool_streaming_arm_emits_error_event_on_exhaustion() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
+        let state = pool_state(server.uri());
+        let (status, response) =
+            forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+                .await
+                .expect("pool turn commits and reports the failure in-stream");
+        assert_eq!(status, StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(text.matches("event: message_start").count(), 1);
+        assert!(text.contains("event: error\ndata: "), "got: {text}");
+        assert!(
+            text.contains("\"type\":\"api_error\""),
+            "a mapped 500 exhaustion carries the api_error envelope, got: {text}"
+        );
+        assert!(
+            !text.contains("event: message_stop"),
+            "no synthesized completion after an error, got: {text}"
+        );
+    }
+
+    /// The non-streaming arm keeps its pre-commit status relay: a 429 stays an
+    /// error response with the real status, not an early-committed stream.
+    #[tokio::test]
+    async fn pool_non_streaming_arm_keeps_the_status_relay() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
+        let state = pool_state(server.uri());
+        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
+            .await
+            .expect_err("non-streaming 429 stays an error response");
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
 
     #[test]
     fn websocket_gate_controls_reprobe_selection_and_stamp() {
@@ -1063,5 +2037,494 @@ mod tests {
             Some(access_token.as_str())
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A state whose provider `name` is a clone of the built-in codex
+    /// provider with `base_url` repointed — the per-test provider names keep
+    /// the global test sample store free of cross-test interference.
+    fn pool_state_with_provider(name: &str, base_url: String) -> (AppState, Route) {
+        let mut config = Config::default();
+        config.providers.insert(
+            name.to_string(),
+            config
+                .providers
+                .get("codex")
+                .expect("codex provider is built in")
+                .clone(),
+        );
+        config
+            .providers
+            .get_mut(name)
+            .expect("just inserted")
+            .base_url = base_url;
+        let mut route = pool_route();
+        route.provider = name.to_string();
+        (
+            AppState::new(config, reqwest::Client::new()).unwrap(),
+            route,
+        )
+    }
+
+    /// The committed pool stream records the request sample at
+    /// classification: one `200` with the real upstream latency once an
+    /// account relays, never the near-zero dispatch/commit time.
+    #[tokio::test]
+    async fn pool_stream_records_the_sample_at_classification() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_PROBE",
+            probe_token("acc-metrics"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_string(
+                        "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                         event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+                    ),
+            )
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-probe-a",
+            "SHUNT_POOL_METRICS_PROBE",
+        )];
+        let (state, route) = pool_state_with_provider("pool-metrics-probe", server.uri());
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and relays");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: message_stop"), "got: {text}");
+        let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 1, "exactly one sample at classification");
+        assert!(
+            latencies.iter().all(|latency| *latency >= 50.0),
+            "the sample covers the upstream round-trip, not the near-zero commit, got {latencies:?}"
+        );
+    }
+
+    /// Pool exhaustion records the classified terminal status, not the
+    /// committed 200.
+    #[tokio::test]
+    async fn pool_stream_records_the_terminal_status_on_exhaustion() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_FAIL_PROBE",
+            probe_token("acc-metrics-fail"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-fail-probe-a",
+            "SHUNT_POOL_METRICS_FAIL_PROBE",
+        )];
+        let (state, route) = pool_state_with_provider("pool-metrics-fail-probe", server.uri());
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and reports the failure in-stream");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: error"), "got: {text}");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-fail-probe",
+            "gpt-5.2-codex",
+            500,
+        );
+        assert_eq!(
+            count, 1,
+            "the classified exhaustion records its real status"
+        );
+    }
+
+    /// The chain owns its attempt's sample: a pool stream built for the
+    /// chain (`record_metrics: false`) must record nothing itself, or the
+    /// chain's per-attempt record would double-count.
+    #[tokio::test]
+    async fn a_chain_pool_stream_leaves_the_sample_to_the_chain() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_CHAIN_PROBE",
+            probe_token("acc-metrics-chain"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-chain-probe-a",
+            "SHUNT_POOL_METRICS_CHAIN_PROBE",
+        )];
+        let (state, route) = pool_state_with_provider("pool-metrics-chain-probe", server.uri());
+        let (order, reprobe) = state.accounts.select_order_deferred(
+            &route.provider,
+            &accounts,
+            None,
+            Some(route.upstream_model.as_str()),
+            state.config.server.pool.as_ref(),
+        );
+        let events = pool_events_stream(PoolStreamContext {
+            state: state.clone(),
+            route: route.clone(),
+            auth: AuthMode::ChatgptOauth,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            accounts_config: std::sync::Arc::new(accounts),
+            order,
+            reprobe,
+            ramp_initial: state.config.storm_ramp_initial(),
+            record_metrics: false,
+            started_at: None,
+        });
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert!(!collected.is_empty(), "the pool relays the account's turn");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-chain-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 0, "the chain records its attempt's sample");
+    }
+
+    /// The TTFB timeout on the committed pool stream classifies as 504 and
+    /// records the sample.
+    #[tokio::test]
+    async fn pool_stream_records_the_ttfb_timeout_status() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_TTFB_PROBE",
+            probe_token("acc-metrics-ttfb"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-ttfb-probe-a",
+            "SHUNT_POOL_METRICS_TTFB_PROBE",
+        )];
+        let mut config = Config::default();
+        config.providers.insert(
+            "pool-metrics-ttfb-probe".to_string(),
+            config
+                .providers
+                .get("codex")
+                .expect("codex provider is built in")
+                .clone(),
+        );
+        config
+            .providers
+            .get_mut("pool-metrics-ttfb-probe")
+            .expect("just inserted")
+            .base_url = server.uri();
+        config.server.timeouts.upstream_ttfb_ms = 100;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let mut route = pool_route();
+        route.provider = "pool-metrics-ttfb-probe".to_string();
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and reports the timeout in-stream");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: error"), "got: {text}");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-ttfb-probe",
+            "gpt-5.2-codex",
+            504,
+        );
+        assert_eq!(count, 1, "the TTFB timeout records its 504");
+    }
+
+    /// Transport exhaustion (every account failed before a response) records
+    /// the classified 502 from the exhaustion arm, never a committed 200.
+    #[tokio::test]
+    async fn pool_stream_records_the_transport_exhaustion_status() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_REFUSED_PROBE",
+            probe_token("acc-metrics-refused"),
+        );
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .unwrap();
+        socket
+            .bind(
+                &"127.0.0.1:0"
+                    .parse::<std::net::SocketAddr>()
+                    .unwrap()
+                    .into(),
+            )
+            .unwrap();
+        let port = socket.local_addr().unwrap().as_socket().unwrap().port();
+        let accounts = vec![pool_account(
+            "pool-metrics-refused-probe-a",
+            "SHUNT_POOL_METRICS_REFUSED_PROBE",
+        )];
+        let mut config = Config::default();
+        config.providers.insert(
+            "pool-metrics-refused-probe".to_string(),
+            config
+                .providers
+                .get("codex")
+                .expect("codex provider is built in")
+                .clone(),
+        );
+        let provider = config
+            .providers
+            .get_mut("pool-metrics-refused-probe")
+            .expect("just inserted");
+        provider.base_url = format!("http://127.0.0.1:{port}");
+        provider.retry = crate::config::RetryConfig {
+            max_retries: 0,
+            ..Default::default()
+        };
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let mut route = pool_route();
+        route.provider = "pool-metrics-refused-probe".to_string();
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and reports the exhaustion in-stream");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: error"), "got: {text}");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-refused-probe",
+            "gpt-5.2-codex",
+            502,
+        );
+        assert_eq!(count, 1, "transport exhaustion records its 502");
+        drop(socket);
+    }
+
+    /// A scan failure inside the committed pool stream classifies as 502 and
+    /// records the sample — the committed response must not leave the
+    /// request unsampled.
+    #[tokio::test]
+    async fn pool_or_single_records_the_scan_failure_status() {
+        let (state, route) =
+            pool_state_with_provider("pool-metrics-scan-probe", "http://127.0.0.1:1".to_string());
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ChatgptOauth,
+            codex_quota_account: None,
+        };
+        let events = pool_or_single_events(
+            Box::pin(async { Err("scan failed".to_string()) }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert_eq!(collected.len(), 1, "one terminal item");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-scan-probe",
+            "gpt-5.2-codex",
+            502,
+        );
+        assert_eq!(count, 1, "the scan failure records its 502");
+    }
+
+    /// An all-disabled pool classifies as 502 and records the sample.
+    #[tokio::test]
+    async fn pool_or_single_records_the_all_disabled_status() {
+        let (state, route) = pool_state_with_provider(
+            "pool-metrics-disabled-probe",
+            "http://127.0.0.1:1".to_string(),
+        );
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ChatgptOauth,
+            codex_quota_account: None,
+        };
+        let accounts = vec![AccountConfig {
+            name: "disabled-metrics-a".to_string(),
+            disabled: true,
+            ..Default::default()
+        }];
+        let events = pool_or_single_events(
+            Box::pin(async { Ok(accounts) }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert_eq!(collected.len(), 1, "one terminal item");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-disabled-probe",
+            "gpt-5.2-codex",
+            502,
+        );
+        assert_eq!(count, 1, "the all-disabled pool records its 502");
+    }
+
+    /// A slow successful scan is inside the committed sample: the pre-scan
+    /// start seeds the single-credential producer, so `shunt.latency` keeps
+    /// the dispatch-to-classification span the pre-commit loop records.
+    #[tokio::test]
+    async fn pool_or_single_carries_the_scan_time_into_the_single_sample() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let (state, route) =
+            pool_state_with_provider("pool-metrics-scan-latency-probe", server.uri());
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ApiKey,
+            codex_quota_account: None,
+        };
+        let events = pool_or_single_events(
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                Ok(vec![])
+            }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert!(!collected.is_empty(), "the turn relays");
+        let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-scan-latency-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 1, "one committed sample");
+        assert!(
+            latencies[0] >= 150.0,
+            "the sample must include the scan: {}ms",
+            latencies[0]
+        );
+    }
+
+    /// The pool producer's sample starts at the pre-scan instant too: the
+    /// committed pool sample covers the scan exactly like the chain's
+    /// per-attempt record.
+    #[tokio::test]
+    async fn pool_or_single_carries_the_scan_time_into_the_pool_sample() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_SCAN_LATENCY_POOL_PROBE",
+            probe_token("pool-metrics-scan-latency-pool"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let (state, route) =
+            pool_state_with_provider("pool-metrics-scan-latency-pool-probe", server.uri());
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ChatgptOauth,
+            codex_quota_account: None,
+        };
+        let accounts = vec![pool_account(
+            "pool-metrics-scan-latency-pool-a",
+            "SHUNT_POOL_SCAN_LATENCY_POOL_PROBE",
+        )];
+        let events = pool_or_single_events(
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                Ok(accounts)
+            }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert!(!collected.is_empty(), "the pool relays the account's turn");
+        let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-scan-latency-pool-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 1, "one committed sample");
+        assert!(
+            latencies[0] >= 150.0,
+            "the sample must include the scan: {}ms",
+            latencies[0]
+        );
     }
 }

@@ -30,7 +30,7 @@ model id 하나를 스스로 판단하게 만들 수도 있습니다. [스테이
 
 ## shunt가 구현하는 것
 
-- **`POST /v1/messages`** — 요청의 `model` id에 따라 라우팅되는 추론. 매핑되지 않은 모델은 호출자 본인의 자격 증명으로 바이트 단위 그대로 Anthropic에 전달됩니다.
+- **`POST /v1/messages`** — 요청의 `model` id에 따라 라우팅되는 추론. 매핑되지 않은 모델은 호출자 본인의 자격 증명으로 바이트 단위 그대로 Anthropic에 전달됩니다. 단, shunt가 다른 프로바이더용으로 생성한 [`thinking` signature](/ko/providers/anthropic/)만은 Anthropic이 거부하는 값이므로 제거됩니다.
 - **Anthropic Messages ⇄ OpenAI Responses 변환** — 매핑된 OpenAI 계열 모델에 대해 스트리밍을 포함하여 변환합니다.
 - **ChatGPT 구독 재사용** — `codex` 프로바이더는 Codex CLI의 `~/.codex/auth.json` 로그인을 재사용(및 자동 갱신)합니다.
 - **`GET /v1/models`** — Claude 이름 별칭에 대한 [모델 디스커버리](/ko/guides/model-discovery/).

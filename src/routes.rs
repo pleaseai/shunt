@@ -65,6 +65,27 @@ pub struct RouteEntry {
 pub async fn get(State(state): State<AppState>) -> Json<RoutesResponse> {
     // Snapshot the live config so this response reflects the latest reload.
     let state = state.refreshed();
+    let response = snapshot(&state);
+    tracing::info!(
+        routes = response.data.len(),
+        routers = response.routers.len(),
+        "served GET /routes discovery"
+    );
+    Json(response)
+}
+
+/// Build the `/routes` payload from an already-refreshed state.
+///
+/// Shared with the admin surface's `GET /admin/api/routes`, which serves this
+/// same view behind admin authentication. The duplication is deliberate rather
+/// than a redirect: this route is discovery, deliberately unauthenticated so any
+/// client can resolve a model against it, while everything under `/admin` is
+/// gated by the admin credential. Pointing one at the other would tie the two
+/// namespaces' authentication together -- either widening what the admin
+/// credential gates or putting an auth challenge in front of discovery. Both
+/// callers share this function so the table an operator reads cannot drift from
+/// the one a client resolves against.
+pub(crate) fn snapshot(state: &AppState) -> RoutesResponse {
     let data: Vec<RouteEntry> = state
         .config
         .routes
@@ -94,12 +115,7 @@ pub async fn get(State(state): State<AppState>) -> Json<RoutesResponse> {
             })
         })
         .collect();
-    tracing::info!(
-        routes = data.len(),
-        routers = routers.len(),
-        "served GET /routes discovery"
-    );
-    Json(RoutesResponse { data, routers })
+    RoutesResponse { data, routers }
 }
 
 #[cfg(test)]

@@ -8,9 +8,25 @@
 //! `Efficient` arm's immediate flip and `an_escalation_needs_no_dwell` goes red;
 //! stop recording in `read_only` mode and `a_count_tokens_probe_never_moves_the_pin`
 //! goes red; make the fingerprint constant and
-//! `a_reconfigured_router_abandons_its_pins` goes red; drop the `tests_passed`
-//! exemption from the confidence gate and
-//! `a_passing_test_suite_de_escalates_without_a_confidence_score` goes red.
+//! `a_reconfigured_router_abandons_its_pins` goes red; drop the confidence gate
+//! from the `Capable` arm and `a_de_escalation_without_a_confidence_score_is_held`
+//! goes red.
+//!
+//! `an_expired_entry_behind_a_live_one_is_still_the_one_evicted` pins the second
+//! index: sweep the front of the recency order instead of the expiry order —
+//! which is what this code did before the `BTreeSet` was added — and it goes
+//! red, because the live entry in front stops the sweep and is then evicted in
+//! the expired entry's place. It is the only test that separates the two
+//! orders, so it needs two routers with different `session_ttl_seconds`; under
+//! one TTL every other eviction test would pass either way.
+//!
+//! `a_refreshed_session_is_not_evicted_as_the_oldest` pins the recency index's
+//! one invariant: stop retiring a replaced entry's `seq` slot in
+//! `Entries::insert` and it goes red, because the stale slot still names the key
+//! and the next eviction pops it — deleting a session one turn old while the
+//! entry it should have taken stays. `the_store_evicts_the_oldest_session_once_it_is_full`
+//! is its twin: an index that retired *every* slot, or none, fails there instead
+//! of satisfying both.
 //!
 //! Two of these pin an absence, so a stub satisfies them and the mutation has to
 //! be the narrower one: expire entries against the *caller's* TTL rather than
@@ -53,12 +69,12 @@ use switchyard_libsy::DecisionSource;
 
 const SESSION: &str = "0199a0f2-2f4b-7c3e-9d61-4f1a2b3c4d5e";
 
-/// The two scorer reasons these tests construct by hand. Naming them through
+/// The scorer reason these tests construct by hand. Naming it through
 /// `StageSource` keeps the hand-built estimates on the same type the real
 /// scorer stamps, so a renamed or removed upstream variant fails to compile
-/// here instead of quietly no longer matching what `decide` produces.
+/// here instead of quietly no longer matching what `decide` produces — which is
+/// how the removal of libsy's `TestsPassed` surfaced.
 const DIMENSIONS: StageSource = StageSource::Scorer(DecisionSource::Dimensions);
-const TESTS_PASSED: StageSource = StageSource::Scorer(DecisionSource::TestsPassed);
 
 fn router() -> StageRouterConfig {
     StageRouterConfig {
@@ -222,40 +238,16 @@ fn a_de_escalation_also_needs_the_dwell_window() {
     assert_eq!(held.source, StageSource::Sticky);
 }
 
-/// libsy's hard de-escalation shortcut skips the scorer and reports no
-/// confidence at all (`resolved(Efficient, TestsPassed, 0.0, None)`), so a
-/// bare `confidence >= threshold` gate would make the single strongest
-/// reason to go cheap the one reason that can never fire.
+/// The confidence gate admits no exemption. libsy used to have one
+/// de-escalation that reported no confidence at all — the `tests_passed`
+/// shortcut, which skipped the scorer — and the gate carried an exemption for
+/// it; upstream dropped that rule, so every source `is_signal_evidence` admits
+/// now carries a confidence and a `None` must be held rather than trusted.
 #[test]
-fn a_passing_test_suite_de_escalates_without_a_confidence_score() {
+fn a_de_escalation_without_a_confidence_score_is_held() {
     let store = StageRouterStore::new();
     let router = router();
     pin(&store, &router, capable(), 5);
-
-    let dropped = store.apply_now(
-        "claude-auto",
-        Some(SESSION),
-        &router,
-        StageDecision {
-            tier: StageTier::Efficient,
-            source: TESTS_PASSED,
-            confidence: None,
-        },
-        false,
-        Instant::now(),
-    );
-
-    assert_eq!(dropped.tier, StageTier::Efficient);
-    assert_eq!(dropped.source, TESTS_PASSED);
-}
-
-/// It still waits out the dwell window: that gate prices the forfeited
-/// prompt cache, which costs the same however strong the evidence is.
-#[test]
-fn even_a_passing_test_suite_waits_out_the_dwell_window() {
-    let store = StageRouterStore::new();
-    let router = router();
-    pin(&store, &router, capable(), 1);
 
     let held = store.apply_now(
         "claude-auto",
@@ -263,14 +255,18 @@ fn even_a_passing_test_suite_waits_out_the_dwell_window() {
         &router,
         StageDecision {
             tier: StageTier::Efficient,
-            source: TESTS_PASSED,
+            source: DIMENSIONS,
             confidence: None,
         },
         false,
         Instant::now(),
     );
 
-    assert_eq!(held.tier, StageTier::Capable);
+    assert_eq!(
+        held.tier,
+        StageTier::Capable,
+        "a de-escalation that reports no confidence cannot clear the floor"
+    );
     assert_eq!(held.source, StageSource::Sticky);
 }
 
@@ -289,6 +285,7 @@ fn a_fall_open_estimate_cannot_move_a_pinned_tier() {
         StageSource::Scorer(DecisionSource::FallOpen),
         StageSource::Scorer(DecisionSource::Ambiguous),
         StageSource::Scorer(DecisionSource::LlmClassifier),
+        StageSource::Scorer(DecisionSource::CapableHold),
         StageSource::NoSignal,
         StageSource::Sticky,
     ] {
@@ -412,15 +409,154 @@ fn the_store_evicts_the_oldest_session_once_it_is_full() {
     }
 
     assert_eq!(store.len(), MAX_TRACKED_SESSIONS);
-    let key = session_key("claude-auto", SESSION);
+    let key = session_key("claude-auto", SESSION, None);
     assert!(
         !store
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(&key),
-        "the least recently seen session is the one dropped"
+        "the least recently decided session is the one dropped"
     );
+}
+
+/// A session that keeps being seen must not be evicted as the oldest merely
+/// because it was seen *first*.
+///
+/// The recency index is keyed by `seq`, and a re-pinned session takes a fresh
+/// one — so the slot it used to occupy has to be retired with it. Leave the
+/// stale slot behind and it still names the key, so the very next eviction pops
+/// it and deletes a session that is one turn old while the entry it was meant
+/// to drop stays.
+#[test]
+fn a_refreshed_session_is_not_evicted_as_the_oldest() {
+    let store = StageRouterStore::new();
+    let router = router();
+    let start = Instant::now();
+
+    // Seen first, so this turn holds the lowest `seq` in the store.
+    store.apply_now(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        capable(),
+        false,
+        start,
+    );
+    // Fill to exactly the cap, every filler decided after that first turn and
+    // all of them well inside the TTL, so recency alone decides the victim.
+    for index in 0..MAX_TRACKED_SESSIONS - 1 {
+        let session = format!("filler-{index}");
+        store.apply_now(
+            "claude-auto",
+            Some(&session),
+            &router,
+            capable(),
+            false,
+            start + Duration::from_millis(index as u64 + 1),
+        );
+    }
+    // Touch the original again. It is now the *newest* entry, not the oldest.
+    let refreshed_at = start + Duration::from_millis(MAX_TRACKED_SESSIONS as u64);
+    store.apply_now(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        capable(),
+        false,
+        refreshed_at,
+    );
+    // One previously unseen id tips the store over the cap.
+    store.apply_now(
+        "claude-auto",
+        Some("overflow"),
+        &router,
+        capable(),
+        false,
+        refreshed_at + Duration::from_millis(1),
+    );
+
+    let key = session_key("claude-auto", SESSION, None);
+    assert!(
+        store
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&key),
+        "the refreshed session was the newest entry, so eviction must not take it"
+    );
+    assert_eq!(store.len(), MAX_TRACKED_SESSIONS);
+}
+
+/// An expired entry is dropped even when a *live* entry sits in front of it.
+///
+/// Recency and expiry are only the same order under a single TTL. Give one
+/// router a one-second window and another an hour, and the store can hold the
+/// live hour-long pin as its oldest entry with an expired one-second entry
+/// behind it. A trim that swept the front of the recency order would stop at
+/// the live pin, leave the expired entry in place, and then evict that live pin
+/// to get back under the cap — dropping the entry it had just decided to keep.
+#[test]
+fn an_expired_entry_behind_a_live_one_is_still_the_one_evicted() {
+    let store = StageRouterStore::new();
+    let long = router();
+    let short = StageRouterConfig {
+        session_ttl_seconds: 1,
+        ..router()
+    };
+    let start = Instant::now();
+
+    // Decided first, so it is the oldest entry in recency order — and it is
+    // still live an hour from now.
+    store.apply_now("claude-auto", Some(SESSION), &long, capable(), false, start);
+    // Decided second, so it sits *behind* the live pin in recency order, and
+    // its one-second window has elapsed by the time the overflow lands.
+    store.apply_now(
+        "claude-cheap",
+        Some("stale"),
+        &short,
+        capable(),
+        false,
+        start + Duration::from_millis(1),
+    );
+    // Long-TTL fillers up to exactly the cap: live, so only the pair above can
+    // decide what the sweep takes.
+    for index in 0..MAX_TRACKED_SESSIONS - 2 {
+        let session = format!("filler-{index}");
+        store.apply_now(
+            "claude-auto",
+            Some(&session),
+            &long,
+            capable(),
+            false,
+            start + Duration::from_millis(index as u64 + 2),
+        );
+    }
+
+    // One previously unseen id tips the store over the cap, two seconds in —
+    // past the short window, nowhere near the long one.
+    store.apply_now(
+        "claude-auto",
+        Some("overflow"),
+        &long,
+        capable(),
+        false,
+        start + Duration::from_secs(2),
+    );
+
+    let entries = store
+        .entries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(
+        !entries.contains_key(&session_key("claude-cheap", "stale", None)),
+        "the expired entry must be dropped even though a live entry precedes it"
+    );
+    assert!(
+        entries.contains_key(&session_key("claude-auto", SESSION, None)),
+        "an hour-long pin two seconds old must survive, oldest or not"
+    );
+    assert_eq!(entries.len(), MAX_TRACKED_SESSIONS);
 }
 
 #[test]
@@ -495,7 +631,7 @@ fn a_short_ttl_router_does_not_expire_another_models_pin() {
         start + Duration::from_secs(4),
     );
 
-    let key = session_key("claude-auto", SESSION);
+    let key = session_key("claude-auto", SESSION, None);
     assert!(
         store
             .entries
@@ -520,7 +656,7 @@ fn a_decided_turn_records_nothing_until_it_is_committed() {
         decision: decided,
         pin,
         ..
-    } = store.apply("claude-auto", Some(SESSION), &router, capable(), false, now);
+    } = store.apply_session("claude-auto", Some(SESSION), &router, capable(), false, now);
     assert_eq!(decided.tier, StageTier::Capable);
     assert_eq!(store.len(), 0, "apply alone must not write");
 
@@ -555,15 +691,15 @@ fn a_read_only_or_sessionless_turn_earns_no_pin() {
     let now = Instant::now();
 
     let StageApplied { pin: probe, .. } =
-        store.apply("claude-auto", Some(SESSION), &router, capable(), true, now);
+        store.apply_session("claude-auto", Some(SESSION), &router, capable(), true, now);
     assert!(probe.is_none(), "a count_tokens probe earns no pin");
 
     let StageApplied { pin: stateless, .. } =
-        store.apply("claude-auto", None, &router, capable(), false, now);
+        store.apply_session("claude-auto", None, &router, capable(), false, now);
     assert!(stateless.is_none(), "a sessionless turn earns no pin");
 
     let StageApplied { pin: blank, .. } =
-        store.apply("claude-auto", Some(""), &router, capable(), false, now);
+        store.apply_session("claude-auto", Some(""), &router, capable(), false, now);
     assert!(blank.is_none(), "a blank session header earns no pin");
 
     assert_eq!(store.len(), 0);
@@ -580,7 +716,7 @@ fn a_late_commit_does_not_overwrite_a_newer_decision() {
     let start = Instant::now();
 
     // Both read an empty store, so both are first-turn decisions.
-    let StageApplied { pin: older, .. } = store.apply(
+    let StageApplied { pin: older, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -588,7 +724,7 @@ fn a_late_commit_does_not_overwrite_a_newer_decision() {
         false,
         start,
     );
-    let StageApplied { pin: newer, .. } = store.apply(
+    let StageApplied { pin: newer, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -629,7 +765,7 @@ fn an_in_order_commit_still_replaces_the_pin() {
     let router = router();
     let start = Instant::now();
 
-    let StageApplied { pin: first, .. } = store.apply(
+    let StageApplied { pin: first, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -639,7 +775,7 @@ fn an_in_order_commit_still_replaces_the_pin() {
     );
     store.commit(first.expect("the first turn earns a pin"), start);
 
-    let StageApplied { pin: second, .. } = store.apply(
+    let StageApplied { pin: second, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -688,7 +824,7 @@ fn a_pre_reload_commit_does_not_overwrite_a_post_reload_pin() {
     // A surviving *capable* post-reload pin holds an efficient probe back; a
     // pre-reload pin that overwrote it is rejected on fingerprint, leaving the
     // probe unpinned and free to answer from its own estimate.
-    let StageApplied { pin: stale, .. } = store.apply(
+    let StageApplied { pin: stale, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &before,
@@ -696,7 +832,7 @@ fn a_pre_reload_commit_does_not_overwrite_a_post_reload_pin() {
         false,
         start,
     );
-    let StageApplied { pin: fresh, .. } = store.apply(
+    let StageApplied { pin: fresh, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &after,
@@ -742,7 +878,7 @@ fn a_post_reload_decision_still_replaces_an_old_table_pin() {
         false,
         start,
     );
-    let StageApplied { pin: fresh, .. } = store.apply(
+    let StageApplied { pin: fresh, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &after,
@@ -801,7 +937,7 @@ fn a_real_scorer_decision_is_evidence_that_moves_a_pin() {
         {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "b", "is_error": true}]},
     ]);
-    let estimate = super::super::decide(&router, Some(&messages));
+    let estimate = super::super::decide(&router, Some(&messages), false);
     assert_eq!(
         estimate.tier,
         StageTier::Capable,
@@ -842,7 +978,7 @@ fn a_committed_escalation_is_reported_as_a_flip() {
         start,
     );
 
-    let StageApplied { pin, .. } = store.apply(
+    let StageApplied { pin, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -882,7 +1018,7 @@ fn two_concurrent_turns_that_agree_report_one_flip() {
     );
 
     // Both decide against the same `efficient` pin: neither has committed yet.
-    let StageApplied { pin: first, .. } = store.apply(
+    let StageApplied { pin: first, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -890,7 +1026,7 @@ fn two_concurrent_turns_that_agree_report_one_flip() {
         false,
         start + Duration::from_secs(1),
     );
-    let StageApplied { pin: second, .. } = store.apply(
+    let StageApplied { pin: second, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -927,7 +1063,7 @@ fn a_superseded_commit_reports_no_flip() {
     let router = router();
     let start = Instant::now();
 
-    let StageApplied { pin: older, .. } = store.apply(
+    let StageApplied { pin: older, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -935,7 +1071,7 @@ fn a_superseded_commit_reports_no_flip() {
         false,
         start,
     );
-    let StageApplied { pin: newer, .. } = store.apply(
+    let StageApplied { pin: newer, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -971,7 +1107,7 @@ fn a_pin_that_expired_is_not_flipped_away_from() {
 
     // Past the table's `session_ttl_seconds`, so the entry is stale to `apply`.
     let resumed = start + Duration::from_secs(router.session_ttl_seconds + 1);
-    let StageApplied { pin, .. } = store.apply(
+    let StageApplied { pin, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
