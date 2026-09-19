@@ -56,7 +56,7 @@ baseline for any new route.
 | always | `GET` | `/health` — unauthenticated, exempt from the concurrency gate |
 | always | `GET` | `/protocol`, `/v1/models`, `/routes` |
 | always | `POST` | `/v1/messages`, `/v1/messages/count_tokens` |
-| `[server.admin]` | — | 18 paths under `/admin`, 20 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which moved to `/admin/api/status`, and `GET /admin/api/session` ([Decision 5](#decision-5--the-spa-bootstraps-its-session-over-the-api)) |
+| `[server.admin]` | — | 19 paths under `/admin`, 21 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which moved to `/admin/api/status`, `GET /admin/api/session` ([Decision 5](#decision-5--the-spa-bootstraps-its-session-over-the-api)), and `GET /admin/api/routes`, which postdates M9 and serves the same body the public `/routes` returns, behind the admin credential |
 | `[server.gateway]` | `GET` | `/.well-known/oauth-authorization-server`, `/device`, `/device/callback`, `/managed/settings` |
 | `[server.gateway]` | `POST` | `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize` |
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |

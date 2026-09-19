@@ -704,6 +704,7 @@ mod tests {
     }
 }
 
+pub(crate) mod context;
 pub(crate) mod stage;
 
 /// Stage-router resolution tests.
@@ -728,6 +729,12 @@ mod stage_router_tests {
     use super::{resolve_model, resolve_request_chain_value, AdapterKind};
 
     const ROUTER_ID: &str = "claude-auto";
+
+    fn session_headers() -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-claude-code-session-id", "session-a".parse().unwrap());
+        headers
+    }
 
     fn router() -> StageRouterConfig {
         StageRouterConfig {
@@ -796,7 +803,7 @@ mod stage_router_tests {
         let context = StageContext {
             store: &store,
             request: &request,
-            session_id: Some("session-a"),
+            headers: &session_headers(),
             read_only: false,
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
@@ -828,7 +835,7 @@ mod stage_router_tests {
         let context = StageContext {
             store: &store,
             request: &request,
-            session_id: None,
+            headers: &axum::http::HeaderMap::new(),
             read_only: false,
             now: Instant::now(),
             pending: std::cell::Cell::new(None),

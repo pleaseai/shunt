@@ -19,6 +19,7 @@ use crate::{
 use super::codex_continuation;
 use super::codex_ws::{self, CodexWsError, CodexWsEvents};
 use super::context::ForwardOptions;
+use super::early_stream::bounded_input_estimate;
 use super::error::build_upstream_error;
 use super::request::{responses_url, routing_hint, CODEX_CLIENT_VERSION, CODEX_USER_AGENT};
 use super::ws_stream::{json_events_response, stream_events_response};
@@ -34,14 +35,15 @@ pub(super) async fn forward_websocket(
     route: &Route,
     pool_key: Option<&str>,
     forward: ForwardOptions,
+    credential: Credential,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let ForwardOptions {
         upstream_body,
-        credential,
         auth,
         turn,
         codex_quota_account,
         estimate_input,
+        started_at: _,
     } = forward;
     let pool_key = pool_key.filter(|key| !key.is_empty());
     let http_url = responses_url(&state.config, &route.provider);
@@ -70,11 +72,21 @@ pub(super) async fn forward_websocket(
         tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
     });
     let (buffered, events) = open_ws_turn(&ctx).await?;
+    // Both branches consume it: the streaming arm seeds `message_start`, and a
+    // non-streaming turn cut short by an emulated stop sequence needs it because
+    // the stop makes the upstream's own usage a no-op (issue #605).
+    //
+    // Bounded, unlike the bare `handle.await` this replaces: the turn is already
+    // open by now, so blocking here stops the collector consuming events and
+    // backpressures the bounded `CodexWsEvents` channel until tokenization ends.
+    // The encode has had the whole `open_ws_turn` to finish, so the bound only
+    // bites when the blocking pool is saturated — the same trade the HTTP and
+    // pooled paths already make.
+    let input_tokens_estimate = match estimate_handle {
+        Some(handle) => bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await,
+        None => 0,
+    };
     if turn.client_wants_stream {
-        let input_tokens_estimate = match estimate_handle {
-            Some(handle) => handle.await.unwrap_or(0),
-            None => 0,
-        };
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
         Ok((
             StatusCode::OK,
@@ -90,7 +102,9 @@ pub(super) async fn forward_websocket(
         // See `forward_http`: surface the real status (a `502` when a backend
         // error event fired, issue #113) to the access log and metrics rather
         // than a hardcoded `200`.
-        let response = json_events_response(buffered, events, turn.relay(route)).await?;
+        let response =
+            json_events_response(buffered, events, turn.relay(route), input_tokens_estimate)
+                .await?;
         Ok((response.status(), response))
     }
 }

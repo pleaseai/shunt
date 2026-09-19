@@ -25,19 +25,27 @@ use std::cell::Cell;
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::http::HeaderMap;
 use serde_json::Value;
 
 pub use switchyard_libsy::ToolSignals;
 
 use crate::config::{Config, StageRouterConfig};
 use crate::error::ShuntError;
-use crate::routing::stage::store::MAX_TRACKED_SESSIONS as STORE_CAP;
+use crate::routing::context::RouterContext;
+use crate::routing::stage::store::{
+    MAX_TRACKED_CHILD_PINS as CHILD_CAP, MAX_TRACKED_SESSIONS as STORE_CAP,
+};
 use crate::routing::stage::{self, signals, StageContext, StageRouterStore};
 use crate::routing::{self, Route};
 
-/// The session cap `StageRouterStore` evicts against — the point past which
-/// eviction stops being O(1) (issue #552).
+/// The parent-session cap `StageRouterStore` evicts against — the point past
+/// which eviction stops being O(1) (issue #552).
 pub const MAX_TRACKED_SESSIONS: usize = STORE_CAP;
+
+/// The separate cap for delegated-turn pins, evicted only against each other
+/// (ADR-0005 §5).
+pub const MAX_TRACKED_CHILD_PINS: usize = CHILD_CAP;
 
 /// Parse a request body exactly as the proxy does.
 ///
@@ -78,17 +86,30 @@ impl StageStore {
     /// which [`stage::decide`] reaches without reading any `messages` — so what
     /// this measures is the mutex-held get/resolve/insert/evict of issue #552
     /// and nothing else. Use [`resolve_chain`] for the whole request path.
+    ///
+    /// `agent_id` keys the turn as a delegated child of `session_id`, the way
+    /// a `Task` child's `x-claude-code-agent-id` does; `None` is the parent.
     pub fn turn(
         &self,
         model: &str,
         session_id: &str,
+        agent_id: Option<&str>,
         router: &StageRouterConfig,
         now: Instant,
     ) -> bool {
-        let estimate = stage::decide(router, None);
-        let applied = self
-            .0
-            .apply(model, Some(session_id), router, estimate, false, now);
+        let hints = RouterContext {
+            session_id: Some(session_id),
+            agent_id,
+            ..RouterContext::default()
+        };
+        let applied = self.0.apply(
+            model,
+            &hints,
+            router,
+            |compacted| stage::decide(router, None, compacted),
+            false,
+            now,
+        );
         applied
             .pin
             .is_some_and(|pin| self.0.commit(pin, now).is_some())
@@ -96,8 +117,10 @@ impl StageStore {
 }
 
 /// Resolve one live request through the stage router, exactly as
-/// `src/proxy/failover.rs` does: score the conversation, apply hysteresis, then
-/// commit the pin once the request is admitted.
+/// `src/proxy/failover.rs` does: hand routing the inbound headers, and — only
+/// for a router-backed id — read the request hints off them, score the
+/// conversation, apply hysteresis, then commit the pin once the request is
+/// admitted.
 ///
 /// This is the only path that reaches `resolve_request_chain_value` with a
 /// `StageContext`, and so the only one that measures what a router-backed
@@ -106,14 +129,14 @@ pub fn resolve_chain(
     config: &Config,
     store: &StageStore,
     request: &Value,
-    session_id: Option<&str>,
+    headers: &HeaderMap,
     read_only: bool,
     now: Instant,
 ) -> Result<Vec<Route>, ShuntError> {
     let stage = StageContext {
         store: &store.0,
         request,
-        session_id,
+        headers,
         read_only,
         now,
         pending: Cell::new(None),
@@ -181,6 +204,12 @@ mod tests {
         }
     }
 
+    fn session_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-claude-code-session-id", "session".parse().unwrap());
+        headers
+    }
+
     fn request() -> Value {
         json!({
             "model": "router-model",
@@ -240,7 +269,7 @@ mod tests {
             &config(true),
             &store,
             &request(),
-            Some("session"),
+            &session_headers(),
             false,
             Instant::now(),
         )
@@ -266,7 +295,7 @@ mod tests {
             &config(false),
             &store,
             &request(),
-            Some("session"),
+            &session_headers(),
             false,
             Instant::now(),
         )
@@ -283,15 +312,27 @@ mod tests {
     fn a_first_turn_displaces_no_tier() {
         let store = StageStore::new();
         let now = Instant::now();
-        assert!(!store.turn("router-model", "session", &router(), now));
+        assert!(!store.turn("router-model", "session", None, &router(), now));
         assert!(
-            !store.turn("router-model", "session", &router(), now),
+            !store.turn("router-model", "session", None, &router(), now),
             "a second turn landing on the pinned tier is not a flip either"
         );
     }
 
+    /// The facade's `agent_id` reaches the store as a child key: a child turn
+    /// must not land on — or count as — the parent's pin.
     #[test]
-    fn the_session_cap_matches_the_store() {
+    fn a_child_turn_pins_apart_from_its_parent() {
+        let store = StageStore::new();
+        let now = Instant::now();
+        store.turn("router-model", "session", None, &router(), now);
+        store.turn("router-model", "session", Some("child-1"), &router(), now);
+        assert_eq!(store.0.len(), 2, "parent and child hold one pin each");
+    }
+
+    #[test]
+    fn the_caps_match_the_store() {
         assert_eq!(MAX_TRACKED_SESSIONS, 4096);
+        assert_eq!(MAX_TRACKED_CHILD_PINS, 4096);
     }
 }

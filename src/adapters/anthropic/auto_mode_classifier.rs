@@ -50,7 +50,7 @@
 
 use serde_json::{json, Value};
 
-use crate::request::RequestBody;
+use crate::{config::ProviderConfig, request::RequestBody};
 
 /// The block inserted when the classifier omits it — the string Claude Code's
 /// own main loop sends, and the one measured to flip the rejection above.
@@ -120,29 +120,74 @@ pub(super) fn restore_claude_code_identity(body: &mut RequestBody) {
 /// prompt as an array, so a string `system` — what `claude --system-prompt`
 /// produces — can never match, and neither can a client that omits `system`.
 fn needs_identity(request: &Value) -> bool {
-    let Some(blocks) = request.get("system").and_then(Value::as_array) else {
+    let Some(blocks) = classifier_blocks(request) else {
         return false;
     };
     // Suppression scans every block: an accepted marker anywhere in the array is
     // enough for upstream, so its position is not ours to assume.
-    if blocks.iter().any(|block| {
+    !blocks.iter().any(|block| {
         block_text(block).is_some_and(|text| {
             ACCEPTED_MARKER_PREFIXES
                 .iter()
                 .any(|prefix| text.starts_with(prefix))
         })
-    }) {
-        return false;
-    }
-    // The trigger checks the first block alone. Every classifier request
-    // captured on the wire carried the prompt at `system[0]`, so matching deeper
-    // would widen what the relay rewrites past anything that was measured — and
-    // the trigger is client-supplied text, so the narrower it is, the fewer
-    // requests the gateway touches that it was never meant to.
+    })
+}
+
+/// The `system` blocks of `request` when it carries the auto-mode classifier's
+/// request shape, or `None` when it does not.
+///
+/// Returning the blocks rather than a bool is what lets [`needs_identity`] scan
+/// them without extracting `system` a second time — and so without the
+/// unreachable "the array stopped being an array between the two calls" arm
+/// that a second extraction has to write.
+///
+/// Deliberately independent of [`ACCEPTED_MARKER_PREFIXES`]: that list only
+/// decides whether the *identity repair* would be redundant, and a classifier
+/// request that already carries an accepted marker is still the classifier
+/// request as far as which model should serve it is concerned.
+///
+/// The trigger checks the first block alone. Every classifier request captured
+/// on the wire carried the prompt at `system[0]`, so matching deeper would widen
+/// what the relay acts on past anything that was measured — and the trigger is
+/// client-supplied text, so the narrower it is, the fewer requests the gateway
+/// touches that it was never meant to.
+fn classifier_blocks(request: &Value) -> Option<&Vec<Value>> {
+    let blocks = request.get("system").and_then(Value::as_array)?;
     blocks
         .first()
         .and_then(block_text)
         .is_some_and(|text| text.starts_with(CLASSIFIER_PROMPT_PREFIX))
+        .then_some(blocks)
+}
+
+/// Whether `request` carries the auto-mode classifier's request shape.
+pub(super) fn is_classifier_request(request: &Value) -> bool {
+    classifier_blocks(request).is_some()
+}
+
+/// The upstream model `provider` pins the auto-mode classifier to, when
+/// `request` is a classifier request and the provider configures one.
+///
+/// Unlike the identity repair this is not gated on the bearer: it is an operator
+/// config choice about which model answers a permission check, not a repair of a
+/// shape upstream would otherwise reject.
+pub(super) fn classifier_upstream_model<'a>(
+    provider: &'a ProviderConfig,
+    request: &Value,
+) -> Option<&'a str> {
+    let classifier_model = provider.classifier_model.as_deref()?;
+    if !is_classifier_request(request) {
+        return None;
+    }
+    // Same reasoning as the identity repair's line: the gateway does not
+    // otherwise pick a model the client did not ask for, so record the one case
+    // where it does. `debug` because it marks configured routine behavior.
+    tracing::debug!(
+        classifier_model,
+        "pinned an auto-mode classifier request to the configured classifier model"
+    );
+    Some(classifier_model)
 }
 
 /// A system block's text with leading whitespace trimmed, or `None` when the
@@ -174,8 +219,21 @@ fn insert_identity(request: &mut Value) -> bool {
 mod tests {
     use serde_json::{json, Value};
 
+    use super::{classifier_upstream_model, is_classifier_request};
     use super::{restore_claude_code_identity, CLASSIFIER_PROMPT_PREFIX, CLAUDE_CODE_IDENTITY};
+    use crate::config::{Config, ProviderConfig};
     use crate::request::RequestBody;
+
+    /// The seeded `anthropic` provider, which is `kind = "anthropic"` and
+    /// carries no `classifier_model` — the state every assertion below starts
+    /// from.
+    fn anthropic_provider() -> ProviderConfig {
+        Config::default()
+            .providers
+            .get("anthropic")
+            .expect("the default config seeds an anthropic provider")
+            .clone()
+    }
 
     fn classifier_prompt() -> String {
         format!("{CLASSIFIER_PROMPT_PREFIX}\n\n## Context\n\nThe agent you are monitoring is …")
@@ -368,5 +426,79 @@ mod tests {
     #[test]
     fn empty_block_array_is_untouched() {
         assert_verbatim(r#"{"system":[]}"#);
+    }
+
+    #[test]
+    fn a_classifier_request_is_detected() {
+        assert!(is_classifier_request(&json!({
+            "system": [{"type": "text", "text": classifier_prompt()}],
+        })));
+    }
+
+    #[test]
+    fn a_classifier_request_carrying_an_accepted_marker_is_still_detected() {
+        // The accepted-marker list suppresses the identity *repair*, which is
+        // redundant once a marker sits anywhere in the array. It must not
+        // suppress detection: the request is still the classifier's, and still
+        // the one an operator pinned a model to.
+        let request = json!({
+            "system": [
+                {"type": "text", "text": classifier_prompt()},
+                {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.226.000;"},
+            ],
+        });
+
+        assert!(!super::needs_identity(&request));
+        assert!(is_classifier_request(&request));
+    }
+
+    #[test]
+    fn an_ordinary_request_is_not_a_classifier_request() {
+        assert!(!is_classifier_request(&json!({
+            "system": [{"type": "text", "text": "You are a triage bot."}],
+        })));
+    }
+
+    #[test]
+    fn a_string_system_is_not_a_classifier_request() {
+        assert!(!is_classifier_request(&json!({
+            "system": format!("{CLASSIFIER_PROMPT_PREFIX} …"),
+        })));
+    }
+
+    #[test]
+    fn a_request_without_a_system_prompt_is_not_a_classifier_request() {
+        assert!(!is_classifier_request(&json!({"model": "claude-opus-5"})));
+    }
+
+    #[test]
+    fn the_override_is_none_when_the_key_is_unset() {
+        let request = json!({"system": [{"type": "text", "text": classifier_prompt()}]});
+
+        assert_eq!(
+            classifier_upstream_model(&anthropic_provider(), &request),
+            None
+        );
+    }
+
+    #[test]
+    fn the_override_applies_only_to_a_classifier_request() {
+        let mut provider = anthropic_provider();
+        provider.classifier_model = Some("claude-sonnet-5".to_string());
+
+        assert_eq!(
+            classifier_upstream_model(
+                &provider,
+                &json!({"system": [{"type": "text", "text": classifier_prompt()}]}),
+            ),
+            Some("claude-sonnet-5"),
+        );
+        assert_eq!(
+            classifier_upstream_model(
+                &provider,
+                &json!({"system": [{"type": "text", "text": "You are a triage bot."}]}),
+            ),
+            None,
+        );
     }
 }

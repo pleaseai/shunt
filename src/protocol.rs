@@ -114,15 +114,27 @@ pub async fn get() -> Json<ProtocolDescriptor> {
                 },
                 HeaderDescriptor {
                     name: "x-claude-code-session-id",
-                    description: "Claude Code session identifier used for tracing and transport connection reuse",
+                    description: "Claude Code session identifier used for tracing, transport connection reuse, and the stage router's per-session tier pin",
                 },
                 HeaderDescriptor {
                     name: "x-claude-code-agent-id",
-                    description: "Claude Code agent metadata accepted by the gateway",
+                    description: "Claude Code delegated-agent identifier; a turn carrying it pins its stage-router tier apart from the parent session's",
                 },
                 HeaderDescriptor {
                     name: "x-claude-code-parent-agent-id",
                     description: "Claude Code parent-agent metadata accepted by the gateway",
+                },
+                HeaderDescriptor {
+                    name: "x-claude-code-request-class",
+                    description: "Claude Code request class (main, subagent, workflow, compaction, auxiliary); subagent and workflow mark delegated work for the stage router, and the class wins over x-claude-code-agent-id when both are sent",
+                },
+                HeaderDescriptor {
+                    name: "x-claude-code-agent-type",
+                    description: "Claude Code agent type on delegated turns (teammate, a built-in agent id, or custom); read into the router context, not yet routed on",
+                },
+                HeaderDescriptor {
+                    name: "x-claude-code-context-compacted",
+                    description: "Sent once on the first main turn after a compaction; the stage router escalates that turn and latches compacted onto the session pin until it expires",
                 },
             ],
         },
@@ -160,5 +172,39 @@ mod tests {
         assert!(endpoints
             .iter()
             .any(|endpoint| endpoint["path"] == "/v1/messages"));
+    }
+
+    /// The descriptor names every `x-claude-code-*` header the router reads.
+    /// `compaction` and `prev-tool-durations` are deliberately absent: nothing
+    /// consumes them yet, and a header listed as consumed must be one the
+    /// gateway actually reads.
+    #[tokio::test]
+    async fn lists_the_router_hint_headers_as_consumed() {
+        let response = get().await;
+        let body = serde_json::to_value(response.0).unwrap();
+        let consumed: Vec<&str> = body["request_headers"]["consumed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|header| header["name"].as_str().unwrap())
+            .collect();
+
+        for name in [
+            crate::routing::context::SESSION_ID_HEADER,
+            crate::routing::context::AGENT_ID_HEADER,
+            crate::routing::context::REQUEST_CLASS_HEADER,
+            crate::routing::context::AGENT_TYPE_HEADER,
+            crate::routing::context::CONTEXT_COMPACTED_HEADER,
+        ] {
+            assert!(
+                consumed.contains(&name),
+                "{name} must be listed as consumed"
+            );
+        }
+        assert!(
+            !consumed.contains(&"x-claude-code-compaction")
+                && !consumed.contains(&"x-claude-code-prev-tool-durations"),
+            "a header nothing reads must not be listed as consumed"
+        );
     }
 }

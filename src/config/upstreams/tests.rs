@@ -74,6 +74,22 @@ fn request_compression_defaults_true_and_can_be_disabled() {
 }
 
 #[test]
+fn classifier_model_is_carried_from_an_ordered_upstream() {
+    let default = parse("name = \"a\"\nprovider = \"anthropic\"");
+    assert_eq!(default.classifier_model, None);
+    let (providers, _) = normalize(&[default]).unwrap();
+    assert_eq!(providers["a"].classifier_model, None);
+
+    let pinned =
+        parse("name = \"a\"\nprovider = \"anthropic\"\nclassifier_model = \"claude-sonnet-5\"");
+    let (providers, _) = normalize(&[pinned]).unwrap();
+    assert_eq!(
+        providers["a"].classifier_model.as_deref(),
+        Some("claude-sonnet-5")
+    );
+}
+
+#[test]
 fn api_key_map_absorbs_env_and_header() {
     let upstream = parse(
         "name = \"custom\"\nkind = \"responses\"\nbase_url = \"https://api.example\"\nauth = { mode = \"api_key\", env = \"CUSTOM_KEY\", header = \"x_api_key\" }",

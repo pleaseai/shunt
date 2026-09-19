@@ -148,8 +148,11 @@ struct TokenUsage {
 
 struct ObserverState {
     protocol: Protocol,
-    provider: String,
-    model: String,
+    // Shared so a committed chain can update the attribution once its winner
+    // is known mid-stream (the response already went out stamped with the
+    // routed provider).
+    provider: std::sync::Arc<std::sync::Mutex<String>>,
+    model: std::sync::Arc<std::sync::Mutex<String>>,
     started_at: Instant,
     // The upstream response status the stream opened with. `finish` gates
     // `record_stream_failure` on this being 2xx: a non-2xx SSE response was
@@ -166,7 +169,13 @@ struct ObserverState {
     // See `crate::observability`'s module docs for why this is the only
     // reliable way to reach the span from here.
     span: tracing::Span,
-    first_chunk_seen: bool,
+    /// True once the first non-keepalive complete frame was observed (or an
+    /// oversized first frame hit the parse cap, which proves it content).
+    /// TTFT records on that frame, so a pre-winner ping never becomes the
+    /// attributed first sample. A first frame split across chunks counts as
+    /// soon as the frame completes — pings in any spelling are excluded by
+    /// the same predicate the frame parser uses.
+    first_content_seen: bool,
     buffer: Vec<u8>,
     skipping_oversized: bool,
     skip_tail: [u8; 4],
@@ -189,8 +198,8 @@ struct ObserverState {
     /// `last_event_len == 0` means none was seen.
     last_event: [u8; MAX_LAST_EVENT_BYTES],
     last_event_len: usize,
-    /// Milliseconds from `started_at` to the first body chunk, recorded
-    /// alongside the `shunt.ttft` histogram.
+    /// Milliseconds from `started_at` to the first non-keepalive complete
+    /// frame, recorded alongside the `shunt.ttft` histogram.
     ttft_ms: Option<u64>,
     tokens: TokenUsage,
     finished: bool,
@@ -200,8 +209,8 @@ impl ObserverState {
     fn new(
         protocol: Protocol,
         status: StatusCode,
-        provider: String,
-        model: String,
+        provider: std::sync::Arc<std::sync::Mutex<String>>,
+        model: std::sync::Arc<std::sync::Mutex<String>>,
         started_at: Instant,
         span: tracing::Span,
     ) -> Self {
@@ -212,7 +221,7 @@ impl ObserverState {
             started_at,
             status,
             span,
-            first_chunk_seen: false,
+            first_content_seen: false,
             buffer: Vec::with_capacity(4096),
             skipping_oversized: false,
             skip_tail: [0; 4],
@@ -231,14 +240,23 @@ impl ObserverState {
     }
 
     fn observe_chunk(&mut self, chunk: &[u8]) {
-        if !self.first_chunk_seen {
-            self.first_chunk_seen = true;
-            let ttft = self.started_at.elapsed();
-            crate::metrics::record_ttft(&self.provider, &self.model, ttft.as_secs_f64() * 1000.0);
-            self.ttft_ms = Some(millis(ttft));
-        }
         self.bytes_forwarded = self.bytes_forwarded.saturating_add(chunk.len() as u64);
         self.push_bytes(chunk);
+    }
+
+    /// Record the one-shot TTFT sample and mark it taken. Called on the
+    /// first complete frame the parser classifies as content: a keepalive
+    /// ping the committed chain emits before its winner is selected must
+    /// not attribute the sample to the routed (failed) provider.
+    fn record_ttft(&mut self) {
+        self.first_content_seen = true;
+        let ttft = self.started_at.elapsed();
+        crate::metrics::record_ttft(
+            &self.provider.lock().expect("provider slot"),
+            &self.model.lock().expect("model slot"),
+            ttft.as_secs_f64() * 1000.0,
+        );
+        self.ttft_ms = Some(millis(ttft));
     }
 
     fn push_bytes(&mut self, mut bytes: &[u8]) {
@@ -268,6 +286,9 @@ impl ObserverState {
             // Copied out before anything else touches `self`: `event` borrows
             // the buffer this loop is about to drain.
             let last_event = event.map(inline_event_name);
+            if !self.first_content_seen && !observation.ping {
+                self.record_ttft();
+            }
             self.sse_events = self.sse_events.saturating_add(1);
             self.terminal_seen |= observation.terminal;
             self.error_seen |= observation.error;
@@ -285,6 +306,15 @@ impl ObserverState {
         let retained = self.buffer.len().min(4);
         self.skip_tail_len = retained;
         self.skip_tail[..retained].copy_from_slice(&self.buffer[self.buffer.len() - retained..]);
+        if !self.first_content_seen {
+            // An oversized first frame is content unless its buffered prefix
+            // parses as a keepalive — the same predicate the frame parser
+            // uses, so TTFT agrees with it even past the parse cap.
+            let (event, data) = event_and_data(&self.buffer);
+            if !is_keepalive(event, data, is_comment_only(&self.buffer)) {
+                self.record_ttft();
+            }
+        }
         self.buffer.clear();
         self.skipping_oversized = true;
     }
@@ -380,7 +410,11 @@ impl ObserverState {
         }
         self.finished = true;
         let outcome = self.outcome(end.natural());
-        crate::metrics::record_stream_outcome(&self.provider, &self.model, outcome.as_str());
+        crate::metrics::record_stream_outcome(
+            &self.provider.lock().expect("provider slot"),
+            &self.model.lock().expect("model slot"),
+            outcome.as_str(),
+        );
         // Only a stream that actually opened `200` can have "failed mid-stream"
         // in the sense this reports: a non-2xx response was already recorded
         // at header time (`record_span_outcome` / `capture_upstream_outcome`),
@@ -390,8 +424,8 @@ impl ObserverState {
             if let Some(failure) = outcome.as_stream_failure() {
                 crate::observability::record_stream_failure(
                     &self.span,
-                    &self.provider,
-                    &self.model,
+                    &self.provider.lock().expect("provider slot"),
+                    &self.model.lock().expect("model slot"),
                     failure,
                     &self.failure_context(failure, &end),
                 );
@@ -404,7 +438,12 @@ impl ObserverState {
             ("cache_creation", self.tokens.cache_creation),
         ] {
             if let Some(count) = count {
-                crate::metrics::record_stream_tokens(&self.provider, &self.model, kind, count);
+                crate::metrics::record_stream_tokens(
+                    &self.provider.lock().expect("provider slot"),
+                    &self.model.lock().expect("model slot"),
+                    kind,
+                    count,
+                );
             }
         }
     }
@@ -416,7 +455,28 @@ struct FrameObservation {
     error: bool,
     /// Set only for the [`UPSTREAM_TRUNCATED_MARKER`] comment frame.
     truncated: bool,
+    /// Set only for a keepalive frame, so the TTFT check and the frame
+    /// parser share one classification.
+    ping: bool,
     tokens: TokenUsage,
+}
+
+/// A keepalive frame under any spelling the observer accepts: an `event:`
+/// line naming `ping`, a data line carrying the ping JSON, or a frame whose
+/// lines are all SSE comments — no content under any of them, so none
+/// records TTFT. The injected keepalive uses both spellings, and the
+/// compact single-line forms are equally valid.
+fn is_keepalive(event: Option<&[u8]>, data: Option<&[u8]>, comment_only: bool) -> bool {
+    comment_only || event == Some(b"ping") || data == Some(b"{\"type\": \"ping\"}")
+}
+
+/// Whether the frame's lines are all SSE comments (`:`-prefixed) — the
+/// comment form of a keepalive, carrying no content.
+fn is_comment_only(frame: &[u8]) -> bool {
+    frame.split(|&byte| byte == b'\n').all(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        line.is_empty() || line.starts_with(b":")
+    })
 }
 
 /// Observe one complete SSE frame. The second element is the frame's `event:`
@@ -438,8 +498,14 @@ fn observe_frame(protocol: Protocol, frame: &[u8]) -> (FrameObservation, Option<
     }
 
     let (event, data) = event_and_data(frame);
-    if event == Some(b"ping") || data == Some(b"{\"type\": \"ping\"}") {
-        return (FrameObservation::default(), None);
+    if is_keepalive(event, data, is_comment_only(frame)) {
+        return (
+            FrameObservation {
+                ping: true,
+                ..Default::default()
+            },
+            None,
+        );
     }
 
     let observation = match protocol {
@@ -604,6 +670,25 @@ pub fn observe_response(
     model: String,
     started_at: Instant,
 ) -> Response<Body> {
+    observe_response_with_slot(
+        response,
+        protocol,
+        std::sync::Arc::new(std::sync::Mutex::new(provider)),
+        std::sync::Arc::new(std::sync::Mutex::new(model)),
+        started_at,
+    )
+}
+
+/// [`observe_response`] over caller-owned provider and model slots, so a
+/// committed chain can point the observer at the winning upstream once the
+/// stream knows it.
+pub fn observe_response_with_slot(
+    response: Response<Body>,
+    protocol: Protocol,
+    provider: std::sync::Arc<std::sync::Mutex<String>>,
+    model: std::sync::Arc<std::sync::Mutex<String>>,
+    started_at: Instant,
+) -> Response<Body> {
     if !is_sse(&response) {
         return response;
     }
@@ -626,13 +711,19 @@ fn is_sse(response: &Response<Body>) -> bool {
     response
         .headers()
         .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(';')
-                .next()
-                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
-        })
+        .is_some_and(content_type_is_event_stream)
+}
+
+/// Whether a content-type value names `text/event-stream`, tolerating media
+/// type parameters and case differences the way a conforming upstream may
+/// send them. Shared with the committed chain's Anthropic winner check.
+pub(crate) fn content_type_is_event_stream(value: &axum::http::HeaderValue) -> bool {
+    value.to_str().ok().is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+    })
 }
 
 fn find_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
@@ -651,7 +742,11 @@ fn find_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-fn event_and_data(frame: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
+/// Parse a complete frame's `event:` and `data:` field values under the SSE
+/// optional-space rule. `pub(crate)` so the chain relay's terminal scan
+/// shares the observer's parser: two normalizations of the same field drift
+/// apart and disagree about a frame's event name.
+pub(crate) fn event_and_data(frame: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
     let mut event = None;
     let mut data = None;
     for raw_line in frame.split(|&byte| byte == b'\n') {

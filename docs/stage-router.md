@@ -29,10 +29,12 @@ Out of scope, deliberately: the LLM classifier, mid-turn escalation, and
 |---|---|
 | `src/config/stage_router.rs` | `StageRouterConfig`, `StageRouterPicker`, defaults |
 | `src/config.rs` | `ModelConfig.stage_router`, `validate_stage_router` |
+| `src/routing/context.rs` | `RouterContext` — the `x-claude-code-*` request hints |
 | `src/routing/stage.rs` | `StageContext`, `select`, `decide`, tier → target |
 | `src/routing/stage/vocabulary.rs` | Claude Code tool names → categories |
 | `src/routing/stage/signals.rs` | Anthropic Messages JSON → `ToolSignals` |
-| `src/routing/stage/store.rs` | Session pins and hysteresis |
+| `src/routing/stage/store.rs` | The decide/commit protocol and hysteresis |
+| `src/routing/stage/store/entries.rs` | The pin map, its key, and the indexes that order it |
 | `src/routing.rs` | `resolve_chain`'s router arm and the `Route.model` re-stamp |
 | `src/proxy/failover.rs` | The single live call site |
 
@@ -88,8 +90,8 @@ extractor already does — the first is `completed.len()` (every Anthropic
 the second is every assistant message, not the windowed count the recency pass
 keeps.
 
-The other three are deliberately left at their zero values, with the reasoning
-in the source:
+The rest are deliberately left at their zero values, with the reasoning in the
+source:
 
 - `tests_passed` would need result-*text* matching.
 - `repeated_failure` is "the same hard-or-critical failure twice in the recent
@@ -99,11 +101,19 @@ in the source:
   guessed would escalate on any two unrelated failures — and the trailing-pair
   rule already covers that case through `severity`, on evidence this extractor
   does have.
-- `compacted` needs a compaction marker no test here pins yet.
 - `new_count`/`recent_new_count` count tools an operator placed in libsy's
   `tool_semantics.new` category. shunt exposes no such config yet, so the
   category is empty.
 
+`compacted` is no longer one of them. It does not come from the transcript at
+all: `stage::decide` takes it as an argument, set from the turn's
+`x-claude-code-context-compacted` header or from the latch the session's pin
+carries (§4). Because of that it is the one signal that can decide a turn the
+extractor returned `None` for — `decide` then builds a `ToolSignals` carrying
+`compacted: true` and nothing else, rather than reporting `no_signal`, since the
+history right after a compaction is typically the summary alone and libsy's
+compaction override has to fire on it anyway. With the flag clear that same turn
+still lands on `no_signal`.
 ### 3.1 Vocabulary
 
 `Observe`: `Read`, `Glob`, `Grep`, `NotebookRead`, `WebFetch`, `WebSearch`,
@@ -129,14 +139,32 @@ as well.
 ## 4. Hysteresis
 
 `StageRouterStore` keys on `(advertised model id, SHA-256 prefix of the session
-id)` — the session id is hashed and never stored, matching
-`accounts::stable_session_index`.
+id, SHA-256 prefix of the agent id)` — both ids are hashed and never stored, at
+the sixteen-byte width `accounts::stable_session_index` keeps. The third element
+is all zeros for the session's own thread, so a parent and its children never
+share an entry: a `Task` child sends the parent's session id with its own
+`x-claude-code-agent-id`, and reads and writes a pin of its own. Before that
+element existed the child's failures escalated the parent and the child's turns
+advanced the parent's dwell (ADR-0005 fact 4).
+
+Which turns count as delegated is `RouterContext::is_delegated` (§2). The
+`x-claude-code-request-class` header is authoritative when it is sent —
+`subagent` and `workflow` are delegated, `main`, `compaction`, and `auxiliary`
+are not, and a value this build does not recognise reads as absent. Absent the
+class, a non-blank `x-claude-code-agent-id` is the rule. That fallback is the
+live path on every default deployment: Claude Code gates the class header (and
+the agent-type and compaction ones) behind `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`
+or a first-party Anthropic base URL, and gates the agent id behind neither. A
+delegated turn that sent no agent id has no scope of its own and lands in the
+parent's.
 
 | Situation | Behavior |
 |---|---|
 | No session id (absent or blank) | Decided statelessly; the store is not touched |
 | `read_only` (count_tokens) | Decided, not recorded |
 | Rejected before admission | Decided, not recorded |
+| Delegated turn (`Task` child, hook agent, workflow sub-agent) | Keyed and pinned apart from the parent; its own dwell, its own budget |
+| Turn carrying `x-claude-code-context-compacted` | Scored with `compacted`, and the flag is latched onto the pin it commits |
 | Efficient → Capable | Immediate on any scorer-made decision |
 | Capable → Efficient | `dwell_turns >= min_dwell_turns` **and** confidence `>= deescalate_threshold` **and** a scorer-made decision |
 | `fall_open` / `no_signal` / `ambiguous` / `capable_hold` | Cannot move a pin in either direction |
@@ -155,6 +183,12 @@ It means an earlier escalation is being held on the capable tier — which is wh
 `StageSource::Sticky` already means here — and only libsy's stateful
 `StageClassifier` stamps it, which shunt does not call: shunt calls `pick_tier`
 directly.
+
+`apply` takes the estimate as a **closure of one `bool`**, not as a value. The
+compaction latch is an input to scoring rather than a filter on it, and the
+latched flag lives in the pin, so the pin has to be read before the turn can be
+scored. The closure runs with the store lock released — `apply` copies the entry
+out and drops the guard first — so scoring never happens on the mutex.
 
 Deciding and recording are separate calls. Routing has to run before
 `check_inbound_auth` — that gate reads the resolved chain to decide whether the
@@ -189,16 +223,28 @@ The fingerprint destructures `StageRouterConfig` rather than dotting into it, so
 key added to the table later fails to compile in `fingerprint` instead of quietly
 letting stale pins outlive it.
 
-Capacity: `MAX_TRACKED_SESSIONS = 4096`, trimmed on insert — TTL-expired entries
-first, then the oldest. No timer, no background task, nothing persisted. `apply`
-takes `now: Instant` so dwell, expiry, and eviction are tested against a clock the
-test moves.
+Capacity is **two budgets**, not one: `MAX_TRACKED_SESSIONS = 4096` for parent
+entries and `MAX_TRACKED_CHILD_PINS = 4096` for child ones, trimmed on insert —
+TTL-expired entries first, then the oldest. No timer, no background task,
+nothing persisted. `apply` takes `now: Instant` so dwell, expiry, and eviction
+are tested against a clock the test moves.
 
-The trim is O(log n) per entry removed, not a pass over the map. Two indexes
-stand beside the session map, and the trim's two halves each read one of them:
+A commit trims **only the scope it grew, and only against that scope's cap**. A
+full child budget pops the oldest child and never a parent; a parent trim never
+reaches a child. The reason is that eviction takes the least recently decided
+entry, and a parent blocked on its children is exactly the entry that stops
+refreshing: under one shared cap a wide fan-out would evict the waiting parents
+and resume them on the picker default with no dwell gate consulted — the same
+sub-agent-induced flip the agent-scoped key removes, arriving through eviction
+instead (ADR-0005 §5). The TTL sweep is scope-blind, because expiry is a
+property of the entry rather than of its budget.
 
-* recency — a `BTreeMap` keyed by `seq`, a total order with no ties that is
-  exactly the order turns were decided, so the least recently decided entry is
+The trim is O(log n) per entry removed, not a pass over the map. Three indexes
+stand beside the session map — one recency order per scope and one shared expiry
+order — and the trim's two halves each read one kind:
+
+* recency — a `BTreeMap` per scope, keyed by `seq`, a total order with no ties
+  that is exactly the order turns were decided, so the least recently decided entry is
   one `pop_first`. `last_seen` could not index this: two turns of one session
   routinely share an `Instant`, which is why `seq` exists at all.
 * expiry — a `BTreeSet` of `(last_seen + ttl, seq)`, so the sweep stops at the
@@ -236,6 +282,29 @@ A tier flip forfeits the per-model prompt-cache prefix; it forces
 `model`; and across providers it abandons the pooled socket and sticky account
 slot. Scored independently every turn, a long session can cost more routed than
 unrouted. Anything that makes de-escalation cheaper must re-derive this.
+
+### 4.2 The compaction latch
+
+The pin entry carries a `compacted: bool`. `x-claude-code-context-compacted` is
+**one-shot** — Claude Code sends it on the first `main` turn after a compaction
+and consumes the flag as it reads it — but libsy's compaction override is meant
+to hold, because the compaction summary stays in the prefix for the turns after
+it. So the turn that carries the header is scored with
+`ToolSignals.compacted = true`, which reaches libsy's hard override and resolves
+to `capable` with source `override`; the pin that turn commits stores
+`compacted = true`; and every later turn keyed to that pin reads that flag back
+into its own `ToolSignals` and resolves the same way.
+
+`override` is signal evidence, so the escalation moves an efficient pin on the
+turn it arrives rather than waiting for the transcript to agree — and it fires
+even when the post-compaction transcript has no tool activity at all, which
+before the latch landed on the picker default with `no_signal` (§3).
+
+It clears with the pin and by no other means: TTL expiry
+(`session_ttl_seconds`), or a config reload that changes the router table and so
+the fingerprint. A `count_tokens` probe reads the latch like any other turn but
+records nothing, so it cannot set one. A request with no session id has no pin
+to latch onto, so its header counts for that turn alone.
 
 ## 5. Resolution and the client-facing id
 
@@ -388,6 +457,15 @@ without it the target builds, runs, and registers nothing.
 One local run, `--sample-count 200`, Apple silicon. CodSpeed owns regression
 detection; these are orders of magnitude, not a baseline to diff against.
 
+Two arms are newer than the table below and are measured separately in §9.2,
+from their own run: `store_turn_new_child_at_capacity`, the child-budget twin
+of `store_turn_new_session_at_capacity` (§4's second budget), and
+`resolve_chain_routed_delegated`, the routed path driven with a `Task` child's
+headers, which is read against `resolve_chain_routed` rather than on its own.
+`bench_support::resolve_chain` takes a `HeaderMap` so the delegated arm can send
+those hints, and `StageStore::turn` takes an `agent_id: Option<&str>` so the
+store arms can address either scope.
+
 **Read the `fastest` column.** These arms allocate, so a sample can absorb an
 allocator or scheduler excursion but never finish faster than the work takes.
 That drift is enough for a median to reorder two arms standing in a containment
@@ -486,3 +564,36 @@ concurrent requests: a session is tracked from its first routed turn until it
 expires or is evicted — and expired entries are swept only when an insert takes
 the store over the cap — so a client that rotates its session id can accumulate
 far more tracked sessions than it ever has in flight.
+
+### 9.2 The agent-scoped key and the latch (ADR-0005 PR 1)
+
+One local run, divan's default sampling, Apple silicon — a different run from
+the tables above, so its control arms differ from theirs by run-to-run noise and
+are repeated here so the comparison stays within one run. `fastest`, median in
+parentheses.
+
+| Arm | 10 turns | 50 | 200 | 800 |
+|---|---|---|---|---|
+| `resolve_chain_routed` | 6.41 µs *(6.53)* | 20.6 µs *(21.3)* | 76.1 µs *(79.4)* | 291 µs *(302)* |
+| `resolve_chain_routed_delegated` | 6.86 µs *(6.92)* | 20.8 µs *(21.0)* | 75.1 µs *(75.6)* | 293 µs *(308)* |
+| `resolve_chain_unrouted` | 290 ns *(302)* | 291 ns *(301)* | 288 ns *(300)* | 328 ns *(339)* |
+
+| Arm | `fastest` |
+|---|---|
+| `store_turn_existing_session` | 796 ns |
+| `store_turn_new_session_at_capacity` | 1.05 µs |
+| `store_turn_new_child_at_capacity` | 1.32 µs |
+
+Three things the run settles. `resolve_chain_unrouted` is still flat and still
+where it was: the five hint headers are read inside `stage::select`, which only
+a router-backed id reaches, so non-router traffic pays no header lookup. An
+earlier shape of this change parsed them in `proxy::failover` for every request
+and doubled this row to ~575 ns — flat, but a cost the feature is meant not to
+impose on traffic that never asked for it; that is why the parse moved.
+
+The delegated arm costs what it should: four more header lookups and a second
+SHA-256 over the agent id, ~0.4 µs at 10 turns and within noise of the routed
+arm from 50 turns up, where scoring dominates. A child pin at capacity evicts
+in the same O(log n) as a parent one — the ~0.3 µs over the parent arm is the
+extra recency index the child scope keeps — and neither eviction touches the
+other scope.

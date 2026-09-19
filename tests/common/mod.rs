@@ -138,3 +138,19 @@ pub fn set_env_blocking(vars: &[(&str, &str)]) -> EnvVars {
     }
     guard
 }
+
+/// Matches on the forwarded body's `model` field alone.
+///
+/// The classifier and pool paths also rewrite `system` — and the pool path the
+/// account uuid — so pinning the whole body would couple a test to mutations it
+/// is not about.
+pub struct BodyModelIs(pub &'static str);
+
+impl wiremock::Match for BodyModelIs {
+    fn matches(&self, request: &wiremock::Request) -> bool {
+        let Ok(body) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
+            return false;
+        };
+        body.get("model").and_then(serde_json::Value::as_str) == Some(self.0)
+    }
+}

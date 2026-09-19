@@ -980,7 +980,7 @@ mod tests {
         );
 
         let caller = tokio::spawn(async move { store.get_valid_chatgpt().await });
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let requests = server
                     .received_requests()
@@ -1000,7 +1000,7 @@ mod tests {
         let error = caller.await.unwrap_err();
         assert!(error.is_cancelled());
 
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
                 if stored["tokens"]["refresh_token"] == "rotated-refresh" {

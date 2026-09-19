@@ -41,7 +41,7 @@ use axum::{
     routing::{delete, get, post},
     Form, Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
@@ -264,6 +264,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/admin/api/observed", get(observed_accounts))
         .route("/admin/api/pool", get(pool))
         .route("/admin/api/status", get(status))
+        .route("/admin/api/routes", get(routes))
         .route("/admin/api/accounts/claude", post(add_account))
         .route(
             "/admin/api/accounts/claude/{name}/complete",
@@ -1212,6 +1213,28 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     json_secure(json!({ "providers": providers }))
 }
 
+/// `GET /admin/api/routes` — the resolved routing table, for the dashboard.
+///
+/// The same view the proxy's unauthenticated `GET /routes` serves, built by the
+/// same `crate::routes::snapshot` so the two cannot drift. It is registered here
+/// rather than pointed at so the admin namespace keeps its own authentication:
+/// this copy applies the admin credential independently of the proxy's
+/// discovery route, which is unauthenticated on purpose. Redirecting the
+/// dashboard at that route would make an admin-gated screen depend on an
+/// ungated endpoint; authenticating the route itself is not an option either,
+/// since discovery clients rely on it being open.
+///
+/// Authenticating here costs nothing and means an operator who has deliberately
+/// left the proxy surface unauthenticated has not thereby widened what the admin
+/// credential gates.
+async fn routes(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = state.refreshed();
+    if authenticate(&state, &headers).is_none() {
+        return unauthorized();
+    }
+    json_secure(crate::routes::snapshot(&state))
+}
+
 /// Observation-only view of `[server.status]` polling, ordered by provider
 /// name. Configured sources that have not completed their first poll are
 /// returned as `unknown` so the dashboard can distinguish "enabled but not yet
@@ -1875,7 +1898,7 @@ fn html_body_with_form_action(body: String, form_action: &str) -> Response {
 /// A JSON API response carrying admin data, with the same no-sniff / no-store
 /// guards as the HTML pages — account metadata and pool state are sensitive and
 /// must not be MIME-sniffed or cached by the browser or a shared intermediary.
-pub(super) fn json_secure(value: serde_json::Value) -> Response {
+pub(super) fn json_secure<T: Serialize>(value: T) -> Response {
     (
         [
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
@@ -2025,6 +2048,7 @@ mod tests {
                 api_key_header: Default::default(),
                 effort: None,
                 service_tier: None,
+                classifier_model: None,
                 count_tokens: Default::default(),
                 accounts,
                 account_scope,

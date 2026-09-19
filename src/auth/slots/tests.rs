@@ -797,7 +797,7 @@ async fn stripping_the_cookie_header_leaves_the_callers_own_credential_alone() {
 /// would slip through. Files named `tests.rs` are skipped so fixtures need no
 /// entry; an in-file `#[cfg(test)] mod tests` helper is *not* skipped and is
 /// listed below as noise.
-const HEADER_PRODUCER_ALLOWLIST: [&str; 11] = [
+const HEADER_PRODUCER_ALLOWLIST: [&str; 13] = [
     // noise — `#[cfg(test)] mod tests` fixture builder.
     "src/accounts.rs",
     // registered forward site — consumes the map `headers_for_route` produced
@@ -814,6 +814,10 @@ const HEADER_PRODUCER_ALLOWLIST: [&str; 11] = [
     "src/adapters/responses/inbound_routed.rs",
     // noise — `#[cfg(test)] mod tests` fixture builder.
     "src/admin/mod.rs",
+    // noise — `#[cfg(test)] mod tests` fixture builder for the bench facade's
+    // `resolve_chain`, which reads the router hints off a `HeaderMap` the way
+    // `proxy/failover.rs` does and forwards nothing.
+    "src/bench_support.rs",
     // noise — `#[cfg(test)] mod tests` fixture builder.
     "src/codex_endpoint/routing.rs",
     // registered forward site — site 2, discovery's passthrough branch.
@@ -826,6 +830,10 @@ const HEADER_PRODUCER_ALLOWLIST: [&str; 11] = [
     "src/headers.rs",
     // registered forward site — site 1, `check_inbound_auth` + `headers_for_route`.
     "src/proxy/failover.rs",
+    // noise — `#[cfg(test)] mod tests` fixture builder. The module itself only
+    // reads `x-claude-code-*` hints off the inbound map (`RouterContext`); it
+    // builds no outbound map.
+    "src/routing/context.rs",
 ];
 
 #[test]

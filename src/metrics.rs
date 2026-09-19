@@ -441,6 +441,55 @@ pub fn record_proxied_request(provider: &str, model: &str, status: u16, latency_
     let instruments = otel_instruments();
     instruments.requests.add(1, &attributes);
     instruments.latency.record(latency_ms, &attributes);
+
+    #[cfg(test)]
+    {
+        let mut samples = test_proxied_samples()
+            .lock()
+            .expect("test proxied-request sample lock poisoned");
+        let entry = samples
+            .entry((provider.to_owned(), model.to_owned(), status))
+            .or_default();
+        entry.count += 1;
+        entry.latencies.push(latency_ms);
+    }
+}
+
+/// One test-observed [`record_proxied_request`] sample: the count and every
+/// latency for one (provider, model, status) key.
+#[cfg(test)]
+#[derive(Default)]
+struct ProxiedRequestSample {
+    count: u64,
+    latencies: Vec<f64>,
+}
+
+#[cfg(test)]
+type ProxiedSampleStore = Mutex<HashMap<(String, String, u16), ProxiedRequestSample>>;
+
+#[cfg(test)]
+fn test_proxied_samples() -> &'static ProxiedSampleStore {
+    static SAMPLES: OnceLock<ProxiedSampleStore> = OnceLock::new();
+    SAMPLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Test-only observation point for [`record_proxied_request`]: both metric
+/// sinks are inert unless an endpoint is configured, so tests that must
+/// prove a sample was recorded — or skipped — read the per-key count and
+/// latencies from the test store instead.
+#[cfg(test)]
+pub fn proxied_request_samples_for_tests(
+    provider: &str,
+    model: &str,
+    status: u16,
+) -> (u64, Vec<f64>) {
+    test_proxied_samples()
+        .lock()
+        .expect("test proxied-request sample lock poisoned")
+        .get(&(provider.to_owned(), model.to_owned(), status))
+        .map_or((0, Vec::new()), |sample| {
+            (sample.count, sample.latencies.clone())
+        })
 }
 
 /// Record a Codex WebSocket continuation decision on a reused connection: a

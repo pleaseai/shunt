@@ -155,13 +155,13 @@ originator: codex_cli_rs
 OpenAI-Beta: responses=experimental
 ```
 
-A pooled upstream response includes:
+A pooled upstream response identifies the winning account — non-streaming and WebSocket-streaming responses with an `x-shunt-account` response header, early-committed HTTP streaming with an `event: account` SSE frame before the relayed content (the committed `200` headers go out before the winning account is known):
 
 ```http
 x-shunt-account: backup
 ```
 
-Same caveat as M8: use neutral labels (`primary`, `backup-1`, `pool-a`) rather than names or emails on a shared gateway, since this header exposes the configured account name to clients. The final translated-error relay after pool exhaustion does not include `x-shunt-account`; a name that fails the `[a-z0-9-]+` pre-validation is silently omitted rather than causing an error.
+Same caveat as M8: use neutral labels (`primary`, `backup-1`, `pool-a`) rather than names or emails on a shared gateway, since the header and the frame expose the configured account name to clients. The final translated-error relay after pool exhaustion carries neither; a name that fails the `[a-z0-9-]+` pre-validation is silently omitted rather than causing an error.
 
 ### WebSocket transport (`websocket = true`)
 

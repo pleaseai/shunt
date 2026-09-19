@@ -68,7 +68,7 @@ export const AddClaudeAccount = forwardRef<
     <>
       <h2>Add Claude account</h2>
       <div className="card">
-        <p id="modehelp" className="muted" style={{ marginTop: 0 }}>
+        <p id="modehelp" className="muted mt-0">
           {modeHelp(mode)}
         </p>
         <label htmlFor="name">
@@ -133,7 +133,7 @@ export const AddClaudeAccount = forwardRef<
           Start account login
         </button>
         {flow.authorizeUrl ? (
-          <div id="step2" style={{ marginTop: '1rem' }}>
+          <div id="step2" className="mt-4">
             <p>1. Open this URL, sign in to the target Claude account, and approve:</p>
             <p className="overflow">
               <a id="authlink" href={flow.authorizeUrl} target="_blank" rel="noopener noreferrer">
@@ -148,7 +148,7 @@ export const AddClaudeAccount = forwardRef<
               value={flow.code}
               onChange={(event) => flow.setCode(event.target.value)}
             />
-            <div style={{ marginTop: '.6rem' }}>
+            <div className="mt-2.5">
               <button
                 id="complete"
                 type="button"

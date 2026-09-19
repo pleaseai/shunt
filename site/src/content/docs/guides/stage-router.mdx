@@ -92,11 +92,33 @@ evidence, and cannot move a tier in either direction.
 
 ## Session pinning
 
-Decisions are pinned per `(model id, session id)`, read from
-`x-claude-code-session-id`. The session id is hashed and never stored. Two
-router-backed models used in the same session keep independent tiers.
+Decisions are pinned per `(model id, session id, agent id)`, read from
+`x-claude-code-session-id` and `x-claude-code-agent-id`. Both ids are hashed and
+never stored. Two router-backed models used in the same session keep independent
+tiers.
 
-- A caller that sends no session header is routed statelessly.
+**A sub-agent keeps a pin of its own.** A `Task` child sends its parent's
+session id with an agent id of its own, so it reads and writes a separate entry:
+its failures no longer escalate the parent, and its turns no longer count toward
+the parent's dwell. Claude Code sends that header on every delegated turn
+without any opt-in, so this holds on a default shunt deployment with no client
+change. Child pins are evicted against a budget of their own — 4096, beside the
+4096 parent sessions — and a trim only ever reaches the scope it grew, so a wide
+fan-out cannot evict the parent that is waiting on it.
+
+**A compaction escalates, and the escalation holds.** Claude Code marks the
+first turn after a context compaction with `x-claude-code-context-compacted`,
+once. shunt scores that turn as compacted, which reaches the scorer's hard
+override and routes to the capable tier even when the post-compaction history
+has no tool activity to read, and latches the flag onto the session's pin so the
+turns after it resolve the same way. This header only reaches shunt when the
+client sets `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` (see
+[Client Environment Variables](/reference/client-environment/)); the same
+variable also sends `x-claude-code-request-class`, which then decides which
+turns count as delegated in place of the agent-id rule above.
+
+- A caller that sends no session header is routed statelessly, and a compaction
+  flag on such a request counts for that turn alone.
 - A `count_tokens` probe records nothing — Claude Code sends those with a
   history one turn behind, so a committing probe would let stale history drive
   the pin. Once a session is pinned, the probe and the turn that follows read the
@@ -106,6 +128,8 @@ router-backed models used in the same session keep independent tiers.
 - Pins survive a config reload, but a pin remembers the router table it was made
   under: edit one router and only its own pins are dropped.
 - Pins expire after `session_ttl_seconds`. Nothing is persisted across restarts.
+  The compaction latch clears with the pin that carries it — on that expiry, or
+  when a reload changes the router table.
 
 ## What the client sees
 

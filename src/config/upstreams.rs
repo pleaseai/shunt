@@ -24,6 +24,10 @@ pub struct UpstreamConfig {
     /// See [`ProviderConfig::service_tier`]; Codex CLI's "Fast" mode opt-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    /// See [`ProviderConfig::classifier_model`] (`kind = "anthropic"` only);
+    /// unset by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_model: Option<String>,
     #[serde(default)]
     pub count_tokens: CountTokens,
     #[serde(default)]
@@ -235,6 +239,7 @@ pub(super) fn normalize(
             }),
             effort: upstream.effort.clone(),
             service_tier: upstream.service_tier.clone(),
+            classifier_model: upstream.classifier_model.clone(),
             count_tokens: upstream.count_tokens,
             accounts: Vec::new(),
             account_scope: Vec::new(),

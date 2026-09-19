@@ -409,7 +409,7 @@ fn the_store_evicts_the_oldest_session_once_it_is_full() {
     }
 
     assert_eq!(store.len(), MAX_TRACKED_SESSIONS);
-    let key = session_key("claude-auto", SESSION);
+    let key = session_key("claude-auto", SESSION, None);
     assert!(
         !store
             .entries
@@ -476,7 +476,7 @@ fn a_refreshed_session_is_not_evicted_as_the_oldest() {
         refreshed_at + Duration::from_millis(1),
     );
 
-    let key = session_key("claude-auto", SESSION);
+    let key = session_key("claude-auto", SESSION, None);
     assert!(
         store
             .entries
@@ -549,11 +549,11 @@ fn an_expired_entry_behind_a_live_one_is_still_the_one_evicted() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(
-        !entries.contains_key(&session_key("claude-cheap", "stale")),
+        !entries.contains_key(&session_key("claude-cheap", "stale", None)),
         "the expired entry must be dropped even though a live entry precedes it"
     );
     assert!(
-        entries.contains_key(&session_key("claude-auto", SESSION)),
+        entries.contains_key(&session_key("claude-auto", SESSION, None)),
         "an hour-long pin two seconds old must survive, oldest or not"
     );
     assert_eq!(entries.len(), MAX_TRACKED_SESSIONS);
@@ -631,7 +631,7 @@ fn a_short_ttl_router_does_not_expire_another_models_pin() {
         start + Duration::from_secs(4),
     );
 
-    let key = session_key("claude-auto", SESSION);
+    let key = session_key("claude-auto", SESSION, None);
     assert!(
         store
             .entries
@@ -656,7 +656,7 @@ fn a_decided_turn_records_nothing_until_it_is_committed() {
         decision: decided,
         pin,
         ..
-    } = store.apply("claude-auto", Some(SESSION), &router, capable(), false, now);
+    } = store.apply_session("claude-auto", Some(SESSION), &router, capable(), false, now);
     assert_eq!(decided.tier, StageTier::Capable);
     assert_eq!(store.len(), 0, "apply alone must not write");
 
@@ -691,15 +691,15 @@ fn a_read_only_or_sessionless_turn_earns_no_pin() {
     let now = Instant::now();
 
     let StageApplied { pin: probe, .. } =
-        store.apply("claude-auto", Some(SESSION), &router, capable(), true, now);
+        store.apply_session("claude-auto", Some(SESSION), &router, capable(), true, now);
     assert!(probe.is_none(), "a count_tokens probe earns no pin");
 
     let StageApplied { pin: stateless, .. } =
-        store.apply("claude-auto", None, &router, capable(), false, now);
+        store.apply_session("claude-auto", None, &router, capable(), false, now);
     assert!(stateless.is_none(), "a sessionless turn earns no pin");
 
     let StageApplied { pin: blank, .. } =
-        store.apply("claude-auto", Some(""), &router, capable(), false, now);
+        store.apply_session("claude-auto", Some(""), &router, capable(), false, now);
     assert!(blank.is_none(), "a blank session header earns no pin");
 
     assert_eq!(store.len(), 0);
@@ -716,7 +716,7 @@ fn a_late_commit_does_not_overwrite_a_newer_decision() {
     let start = Instant::now();
 
     // Both read an empty store, so both are first-turn decisions.
-    let StageApplied { pin: older, .. } = store.apply(
+    let StageApplied { pin: older, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -724,7 +724,7 @@ fn a_late_commit_does_not_overwrite_a_newer_decision() {
         false,
         start,
     );
-    let StageApplied { pin: newer, .. } = store.apply(
+    let StageApplied { pin: newer, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -765,7 +765,7 @@ fn an_in_order_commit_still_replaces_the_pin() {
     let router = router();
     let start = Instant::now();
 
-    let StageApplied { pin: first, .. } = store.apply(
+    let StageApplied { pin: first, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -775,7 +775,7 @@ fn an_in_order_commit_still_replaces_the_pin() {
     );
     store.commit(first.expect("the first turn earns a pin"), start);
 
-    let StageApplied { pin: second, .. } = store.apply(
+    let StageApplied { pin: second, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -824,7 +824,7 @@ fn a_pre_reload_commit_does_not_overwrite_a_post_reload_pin() {
     // A surviving *capable* post-reload pin holds an efficient probe back; a
     // pre-reload pin that overwrote it is rejected on fingerprint, leaving the
     // probe unpinned and free to answer from its own estimate.
-    let StageApplied { pin: stale, .. } = store.apply(
+    let StageApplied { pin: stale, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &before,
@@ -832,7 +832,7 @@ fn a_pre_reload_commit_does_not_overwrite_a_post_reload_pin() {
         false,
         start,
     );
-    let StageApplied { pin: fresh, .. } = store.apply(
+    let StageApplied { pin: fresh, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &after,
@@ -878,7 +878,7 @@ fn a_post_reload_decision_still_replaces_an_old_table_pin() {
         false,
         start,
     );
-    let StageApplied { pin: fresh, .. } = store.apply(
+    let StageApplied { pin: fresh, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &after,
@@ -937,7 +937,7 @@ fn a_real_scorer_decision_is_evidence_that_moves_a_pin() {
         {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "b", "is_error": true}]},
     ]);
-    let estimate = super::super::decide(&router, Some(&messages));
+    let estimate = super::super::decide(&router, Some(&messages), false);
     assert_eq!(
         estimate.tier,
         StageTier::Capable,
@@ -978,7 +978,7 @@ fn a_committed_escalation_is_reported_as_a_flip() {
         start,
     );
 
-    let StageApplied { pin, .. } = store.apply(
+    let StageApplied { pin, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -1018,7 +1018,7 @@ fn two_concurrent_turns_that_agree_report_one_flip() {
     );
 
     // Both decide against the same `efficient` pin: neither has committed yet.
-    let StageApplied { pin: first, .. } = store.apply(
+    let StageApplied { pin: first, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -1026,7 +1026,7 @@ fn two_concurrent_turns_that_agree_report_one_flip() {
         false,
         start + Duration::from_secs(1),
     );
-    let StageApplied { pin: second, .. } = store.apply(
+    let StageApplied { pin: second, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -1063,7 +1063,7 @@ fn a_superseded_commit_reports_no_flip() {
     let router = router();
     let start = Instant::now();
 
-    let StageApplied { pin: older, .. } = store.apply(
+    let StageApplied { pin: older, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -1071,7 +1071,7 @@ fn a_superseded_commit_reports_no_flip() {
         false,
         start,
     );
-    let StageApplied { pin: newer, .. } = store.apply(
+    let StageApplied { pin: newer, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -1107,7 +1107,7 @@ fn a_pin_that_expired_is_not_flipped_away_from() {
 
     // Past the table's `session_ttl_seconds`, so the entry is stale to `apply`.
     let resumed = start + Duration::from_secs(router.session_ttl_seconds + 1);
-    let StageApplied { pin, .. } = store.apply(
+    let StageApplied { pin, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
