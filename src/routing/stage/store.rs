@@ -79,14 +79,6 @@ pub(crate) struct StageApplied {
     /// The pin this turn earned, parked until the request is admitted. `None`
     /// for a turn that records nothing: no session id, or a read-only probe.
     pub pin: Option<PendingPin>,
-    /// Whether this turn took the tier *off* one an earlier turn of the same
-    /// session had pinned — the only thing that makes a turn a handoff.
-    ///
-    /// Narrower than [`Resolved::changed`], which also covers the first turn of
-    /// a session: that one restarts the dwell window, but hands nothing over,
-    /// because no earlier turn was served at another tier. A sessionless turn
-    /// and a `count_tokens` probe are `false` for the same reason.
-    pub handed_off: bool,
 }
 
 impl StageApplied {
@@ -95,7 +87,6 @@ impl StageApplied {
         Self {
             decision,
             pin: None,
-            handed_off: false,
         }
     }
 }
@@ -226,10 +217,6 @@ impl StageRouterStore {
         };
         StageApplied {
             decision,
-            // `changed` alone would also count the first turn of a session,
-            // which restarts dwell but hands nothing over: there is no earlier
-            // tier for the note to explain.
-            handed_off: pinned.is_some() && changed,
             pin: Some(PendingPin {
                 key,
                 observed_compaction: hints.context_compacted,

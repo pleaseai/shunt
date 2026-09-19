@@ -1123,15 +1123,20 @@ fn a_pin_that_expired_is_not_flipped_away_from() {
     assert_eq!(flip, None);
 }
 
-/// `handed_off` marks the turns that actually moved the tier off a pin — the
-/// only turns `[models.router.handoff_notes]` may speak on.
+/// The committed transition is what `[models.router.handoff_notes]` gates on,
+/// so pin which turns produce one: not a session's first turn, not a signal
+/// that only re-confirms the pinned tier, only a turn that moves it.
 ///
-/// Non-vacuity: make `handed_off` mirror `Resolved::changed` and the first-turn
-/// assertion goes red; make it a constant `true` and the confirming-turn
-/// assertion goes red; make it a constant `false` and the escalation assertion
-/// goes red.
+/// Gating on the *commit* rather than on the decision is what makes the
+/// concurrent case in `a_later_decision_is_not_overwritten_by_an_older_one`
+/// safe as well — two turns that both decide the same move commit one
+/// transition between them, not two.
+///
+/// Non-vacuity: return the decision's own `changed` instead of the committed
+/// transition and the first-turn assertion goes red; report a transition
+/// whenever a pin is written and the confirming-turn assertion goes red.
 #[test]
-fn only_a_turn_that_moves_an_existing_pin_is_a_handoff() {
+fn only_a_turn_that_moves_an_existing_pin_commits_a_transition() {
     let router = router();
     let store = StageRouterStore::new();
     let start = Instant::now();
@@ -1139,16 +1144,14 @@ fn only_a_turn_that_moves_an_existing_pin_is_a_handoff() {
     let turn = |estimate, at| {
         let applied =
             store.apply_session("claude-auto", Some(SESSION), &router, estimate, false, at);
-        if let Some(pin) = applied.pin {
-            store.commit(pin, at);
-        }
-        (applied.decision.source, applied.handed_off)
+        let flip = applied.pin.and_then(|pin| store.commit(pin, at));
+        (applied.decision.source, flip)
     };
 
     let (_, first) = turn(efficient(0.9), start);
-    assert!(
-        !first,
-        "the first turn of a session hands nothing over: no earlier turn was served at another tier"
+    assert_eq!(
+        first, None,
+        "the first turn of a session moves nothing: no earlier turn was served at another tier"
     );
 
     let (confirming_source, confirming) = turn(efficient(0.9), start + Duration::from_secs(1));
@@ -1156,14 +1159,15 @@ fn only_a_turn_that_moves_an_existing_pin_is_a_handoff() {
         confirming_source, DIMENSIONS,
         "a confirming signal keeps its scorer source, which is why the source alone cannot gate the note"
     );
-    assert!(
-        !confirming,
-        "the signals re-confirmed the tier already pinned, so nothing changed hands"
+    assert_eq!(
+        confirming, None,
+        "the signals re-confirmed the tier already pinned, so the write moved nothing"
     );
 
     let (_, escalated) = turn(capable(), start + Duration::from_secs(2));
-    assert!(
+    assert_eq!(
         escalated,
+        Some((StageTier::Efficient, StageTier::Capable)),
         "the turn that took the session off its efficient pin is the handoff"
     );
 }

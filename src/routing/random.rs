@@ -197,6 +197,20 @@ struct Stream {
     rng: rand::rngs::StdRng,
 }
 
+impl Stream {
+    /// A stream keyed to `fingerprint`. A configured `seed` reproduces the
+    /// sequence across restarts; without one it is entropy-backed.
+    fn new(fingerprint: u64, seed: Option<u64>) -> Self {
+        Self {
+            fingerprint,
+            rng: match seed {
+                Some(seed) => rand::rngs::StdRng::seed_from_u64(seed),
+                None => rand::rngs::StdRng::from_os_rng(),
+            },
+        }
+    }
+}
+
 impl std::fmt::Debug for DrawState {
     /// Hand-written because `StdRng` is not `Debug` — and would not be worth
     /// printing if it were: the state that matters is which fingerprint each
@@ -215,24 +229,23 @@ impl DrawState {
     /// entropy-backed.
     pub(crate) fn next(&self, model: &str, fingerprint: u64, seed: Option<u64>) -> u64 {
         let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
-        let reseed = streams
-            .get(model)
-            .is_none_or(|stream| stream.fingerprint != fingerprint);
-        if reseed {
-            streams.insert(
-                model.to_string(),
-                Stream {
-                    fingerprint,
-                    rng: match seed {
-                        Some(seed) => rand::rngs::StdRng::seed_from_u64(seed),
-                        None => rand::rngs::StdRng::from_os_rng(),
-                    },
-                },
-            );
+        // One lookup and no key allocation on the path every request takes.
+        // `get_mut` borrows the stream already there, a reload writes the new
+        // stream through that same borrow, and only a model seen for the first
+        // time in this process pays the `to_string`. The draw itself stays
+        // inside the lock because it is a few ns of CPU on a `StdRng` the
+        // borrow owns — releasing and re-taking the lock around it would cost
+        // more than it saves and would let two turns of one session draw the
+        // same value.
+        if let Some(stream) = streams.get_mut(model) {
+            if stream.fingerprint != fingerprint {
+                *stream = Stream::new(fingerprint, seed);
+            }
+            return stream.rng.random();
         }
         streams
-            .get_mut(model)
-            .expect("the stream was just inserted or already matched")
+            .entry(model.to_string())
+            .or_insert_with(|| Stream::new(fingerprint, seed))
             .rng
             .random()
     }

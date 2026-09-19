@@ -70,7 +70,6 @@ pub(super) async fn forward(
         now: started_at,
         pending: std::cell::Cell::new(None),
         decided: std::cell::Cell::new(None),
-        handed_off: std::cell::Cell::new(false),
     };
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json(), Some(&stage)).map_err(
@@ -149,7 +148,13 @@ pub(super) async fn forward(
     // The handoff note rides the admitted request, so it is applied on the same
     // boundary the counters are: a rejected turn never reaches an upstream and
     // must not have its prompt rewritten on the way to being refused.
-    apply_handoff_note(&state, &mut body, router_outcome.as_ref(), read_only);
+    apply_handoff_note(
+        &state,
+        &mut body,
+        router_outcome.as_ref(),
+        stage_flip,
+        read_only,
+    );
     let router_stamp = router_outcome.as_ref().map(|outcome| RouterStamp {
         routed_model: outcome.target.as_str(),
         source: outcome.source.as_label(),
@@ -384,6 +389,16 @@ pub(super) async fn forward(
 /// Append the entry's `handoff_notes` text to the forwarded system prompt, on
 /// the turns a signal moved the tier.
 ///
+/// `flip` is [`StageContext::commit`]'s return — the transition the write
+/// *actually made* — and not a flag the decision computed against the pin it
+/// read. Those differ under concurrency, which is the same reason the flip
+/// counter above is stamped from it: two admitted turns of one session can both
+/// read an efficient pin, both choose capable, and both believe they moved the
+/// tier, but only the first commit does. Gating on the commit keeps the second
+/// from telling its model it is taking over a conversation that had already
+/// changed hands. It also subsumes the sequential cases — a first turn, and a
+/// signal that merely re-confirms the pinned tier, both commit no transition.
+///
 /// Runs after admission, so a rejected turn's prompt is never rewritten, and
 /// never for a `count_tokens` probe: a probe measures the turn the client is
 /// about to send, and adding a block the real turn may not carry would make the
@@ -397,6 +412,10 @@ fn apply_handoff_note(
     state: &AppState,
     body: &mut crate::request::RequestBody,
     outcome: Option<&crate::routing::outcome::RouterOutcome>,
+    flip: Option<(
+        crate::routing::stage::StageTier,
+        crate::routing::stage::StageTier,
+    )>,
     read_only: bool,
 ) {
     if read_only {
@@ -419,8 +438,7 @@ fn apply_handoff_note(
     else {
         return;
     };
-    let Some(note) = crate::routing::handoff::note_for(notes, tier, source, outcome.handed_off)
-    else {
+    let Some(note) = crate::routing::handoff::note_for(notes, tier, source, flip.is_some()) else {
         return;
     };
     let note = note.to_string();

@@ -49,7 +49,6 @@ fn pick<'a>(
         now: Instant::now(),
         pending: Cell::new(None),
         decided: Cell::new(None),
-        handed_off: Cell::new(false),
     };
     select(router, "claude-canary", Some(&context))
 }

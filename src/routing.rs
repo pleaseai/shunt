@@ -179,7 +179,6 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                         target: target.to_string(),
                         algorithm: router.algorithm(),
                         source,
-                        handed_off: stage.handed_off.get(),
                     }));
                 }
                 if matches!(router, RouterConfig::Noop {}) {
@@ -881,7 +880,6 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
-            handed_off: std::cell::Cell::new(false),
         };
 
         let (routes, requested) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -914,7 +912,6 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
-            handed_off: std::cell::Cell::new(false),
         };
 
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -967,7 +964,6 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
-            handed_off: std::cell::Cell::new(false),
         };
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
             .expect("an auto-backed id resolves");
@@ -1011,7 +1007,6 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
-            handed_off: std::cell::Cell::new(false),
         };
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
             .expect("a random-backed id resolves");

@@ -22,15 +22,15 @@ use crate::routing::stage::{StageSource, StageTier};
 
 /// The note this turn carries, or `None`.
 ///
-/// `handed_off` is the first gate: the note tells the receiving tier why it got
-/// the turn, so a turn that received nothing must not carry one. It is false on
-/// the first turn of a session (there is no previous model to explain), on a
-/// sessionless turn, and — the case neither `tier` nor `source` can express —
-/// on a turn whose signals merely *confirmed* the tier already pinned, which
-/// keeps its `Scorer(Override | Dimensions)` source and is otherwise
-/// indistinguishable from the signal that first earned the tier. Without this
-/// gate every such turn re-appends "the previous model was stalling" to a
-/// conversation that never changed hands.
+/// `handed_off` is the first gate, and the caller derives it from the pin write
+/// this turn committed — not from the decision, which is made against a pin read
+/// before the write and can be overtaken. The note tells the receiving tier why
+/// it got the turn, so a turn that moved nothing must not carry one. It is false
+/// on the first turn of a session (no previous model to explain), on a
+/// sessionless turn, on a turn whose signals merely *confirmed* the tier already
+/// pinned — the case neither `tier` nor `source` can express, since a confirming
+/// signal keeps its `Scorer(Override | Dimensions)` source — and on a turn whose
+/// write lost the race to a concurrent turn that had already made the move.
 ///
 /// A `Sticky` or `NoSignal` turn never carries one either: the first is a pin
 /// holding through an estimate that did not earn a move, the second is the
