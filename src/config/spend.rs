@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use super::PricingConfig;
+
 /// How a limit is chosen when several group limits apply to one request.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +46,10 @@ pub struct SpendConfig {
     pub state_path: Option<PathBuf>,
     #[serde(default)]
     pub enforcement: SpendEnforcementConfig,
+    /// `[server.spend.pricing]`. Absent means the built-in list prices at
+    /// multiplier 1; `crate::gateway::spend::pricing::PriceTable` reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<PricingConfig>,
 }
 
 impl Default for SpendConfig {
@@ -56,6 +62,7 @@ impl Default for SpendConfig {
             group_limit_mode: GroupLimitMode::default(),
             state_path: default_spend_state_path(),
             enforcement: SpendEnforcementConfig::default(),
+            pricing: None,
         }
     }
 }

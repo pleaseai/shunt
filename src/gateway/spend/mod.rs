@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod persist;
+pub mod pricing;
 pub mod store;
 
 use axum::{routing::get, Router};

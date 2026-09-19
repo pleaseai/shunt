@@ -14,6 +14,7 @@ use thiserror::Error;
 mod admin_keys;
 mod http_tuning;
 mod presets;
+mod pricing;
 mod secrets;
 mod session;
 mod spend;
@@ -25,6 +26,7 @@ pub use http_tuning::{
     AccessControlConfig, LimitsConfig, RateLimitConfig, RateLimitsConfig, TimeoutsConfig,
 };
 pub use presets::{provider_presets, ProviderPresetView};
+pub use pricing::{PricingConfig, PricingOverride};
 pub use secrets::Secret;
 pub use session::GatewaySessionConfig;
 pub use spend::{GroupLimitMode, SpendConfig, SpendEnforcementConfig};
@@ -2445,6 +2447,30 @@ pub enum ConfigError {
     LiteralAdminKey { path: String },
     #[error("[server.spend] requires [server.admin]: the spend-limit API authenticates with the admin credential")]
     SpendRequiresAdmin,
+    #[error("[server.spend.pricing].multiplier must be a finite number of at least 0.000001 and at most 1, got {multiplier}")]
+    InvalidPricingMultiplier { multiplier: f64 },
+    #[error("server.spend.pricing.overrides[{index}].{field} must be a finite USD-per-million rate of at least 0.001 and at most 18446744073, got {value}")]
+    InvalidPricingRate {
+        index: usize,
+        field: &'static str,
+        value: f64,
+    },
+    #[error(
+        "server.spend.pricing.overrides[{index}].upstream must be non-empty and non-whitespace"
+    )]
+    EmptyPricingOverrideUpstream { index: usize },
+    #[error("server.spend.pricing.overrides[{index}].upstream references unknown upstream \"{upstream}\"; available upstreams: {available}")]
+    UnknownPricingOverrideUpstream {
+        index: usize,
+        upstream: String,
+        available: String,
+    },
+    #[error("server.spend.pricing.overrides[{index}].model \"{model}\" prices the same model as an earlier row for upstream \"{upstream}\"; give each model at most one override row per upstream")]
+    DuplicatePricingOverride {
+        index: usize,
+        upstream: String,
+        model: String,
+    },
     /// The header value is deliberately not echoed — it is typically a
     /// collector API key.
     #[error(
@@ -3308,6 +3334,184 @@ impl Config {
         Ok(())
     }
 
+    /// `[server.spend.pricing]` shape checks. Runs after `normalize_upstreams`
+    /// so `self.providers` holds the merged upstream map an override row's
+    /// `upstream` must name.
+    fn validate_pricing(&self) -> Result<(), ConfigError> {
+        let Some(pricing) = self
+            .server
+            .spend
+            .as_ref()
+            .and_then(|spend| spend.pricing.as_ref())
+        else {
+            return Ok(());
+        };
+        if !pricing.multiplier.is_finite()
+            || pricing.multiplier < crate::gateway::spend::pricing::MIN_MULTIPLIER
+            || pricing.multiplier > 1.0
+        {
+            return Err(ConfigError::InvalidPricingMultiplier {
+                multiplier: pricing.multiplier,
+            });
+        }
+        // Keyed by (upstream, canonical model): a built-in and one of its dated
+        // snapshots name the same model, so two such rows on one upstream are a
+        // duplicate even though the strings differ.
+        let mut seen: HashSet<(&str, String)> = HashSet::new();
+        for (index, row) in pricing.overrides.iter().enumerate() {
+            for (field, value) in [
+                ("input", row.input),
+                ("output", row.output),
+                ("cache_read", row.cache_read),
+                ("cache_write", row.cache_write),
+            ] {
+                if !value.is_finite()
+                    || value < crate::gateway::spend::pricing::MIN_USD_PER_MILLION
+                    || value > crate::gateway::spend::pricing::MAX_USD_PER_MILLION
+                {
+                    return Err(ConfigError::InvalidPricingRate {
+                        index,
+                        field,
+                        value,
+                    });
+                }
+            }
+            if row.upstream.trim().is_empty() {
+                return Err(ConfigError::EmptyPricingOverrideUpstream { index });
+            }
+            if !self.providers.contains_key(&row.upstream) {
+                return Err(ConfigError::UnknownPricingOverrideUpstream {
+                    index,
+                    upstream: row.upstream.clone(),
+                    available: self
+                        .providers
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                });
+            }
+            // The key has to normalize exactly as the resolver's stored key
+            // does — trimmed and stripped of the `[1m]` context-window hint,
+            // lowercased because the resolver compares case-insensitively.
+            // Otherwise `"alias"`, `" alias "`, and `"alias[1m]"` all pass
+            // validation as distinct rows and then shadow each other.
+            let model_key = crate::gateway::spend::pricing::canonical_builtin_id(&row.model)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    crate::routing::strip_context_window_hint(row.model.trim()).to_ascii_lowercase()
+                });
+            if !seen.insert((row.upstream.as_str(), model_key)) {
+                return Err(ConfigError::DuplicatePricingOverride {
+                    index,
+                    upstream: row.upstream.clone(),
+                    model: row.model.clone(),
+                });
+            }
+            if !self.pricing_model_is_requestable(row) {
+                tracing::warn!(
+                    upstream = %row.upstream,
+                    model = %row.model,
+                    "server.spend.pricing.overrides[{index}].model is neither a built-in model id \
+                     nor a model any [[models]], [[routes]], or [[route_prefixes]] entry can \
+                     request on that upstream; the row will never price anything"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether some request could actually be priced by `row`: its `model` is a
+    /// built-in, or it is a model id or upstream model name that `[[models]]`,
+    /// `[[routes]]`, or `[[route_prefixes]]` can produce **on that row's own
+    /// upstream**.
+    ///
+    /// The upstream scope matters because a row prices one upstream: a model
+    /// mapped only as the `codex` upstream model does not make an `anthropic`
+    /// row usable. A client model *id* is scoped the same way — routing returns
+    /// as soon as a `[[models]]` entry claims the id, and only for the upstreams
+    /// that entry names — except under a `stage_router`, whose tier target is
+    /// resolved through the whole chain again and can land anywhere.
+    ///
+    /// `routing::resolve_model_chain` ends by routing anything no `[[routes]]`
+    /// or `[[route_prefixes]]` entry claimed to `server.default_provider` as a
+    /// single route, so every model string is requestable on that one upstream
+    /// and a row naming it is never warned about.
+    ///
+    /// Every comparison here is case-insensitive, including the prefix one,
+    /// even though routing compares case-sensitively throughout. The two are
+    /// composed: `PriceTable::resolve` matches a row against the request model
+    /// case-insensitively, so the row prices a request as long as *some*
+    /// spelling of its model routes to this upstream — and the client, not the
+    /// operator, chooses the spelling. Mirroring routing's case-sensitivity
+    /// here would warn about rows that price real traffic.
+    fn pricing_model_is_requestable(&self, row: &PricingOverride) -> bool {
+        // Match against the string routing matches against: it strips the
+        // `[1m]` hint before route lookup, and the resolver trims.
+        let model = crate::routing::strip_context_window_hint(row.model.trim());
+        // A blank model reaches nothing, including on `server.default_provider`.
+        // `PriceTable::resolve` compares against the trimmed request model, and
+        // no routed request carries an empty one, so the row prices nothing and
+        // the operator's intended rate silently falls back to the catalog.
+        // Answering `false` here warns instead of letting the default-provider
+        // arm below wave it through.
+        if model.is_empty() {
+            return false;
+        }
+        if crate::gateway::spend::pricing::canonical_builtin_id(model).is_some() {
+            return true;
+        }
+        if row.upstream == self.server.default_provider {
+            return true;
+        }
+        let matches = |candidate: &str| candidate.eq_ignore_ascii_case(model);
+        self.models.iter().any(|entry| {
+            // The id alone is not enough: `resolve_chain` returns as soon as a
+            // `[[models]]` entry claims the id, and it returns only the
+            // upstreams that entry can route to. A row on any other upstream
+            // is inert however the id is spelled.
+            let id_reaches_this_upstream = matches(&entry.id)
+                && match (&entry.stage_router, &entry.upstream_model) {
+                    // A stage router resolves its tier target through the whole
+                    // chain again, so it can land on any upstream. Claiming
+                    // reachability is the safe answer: a warning here would be
+                    // a false one.
+                    (Some(_), _) => true,
+                    // An `upstream_model` map routes to the providers it names
+                    // and nowhere else.
+                    (None, Some(upstreams)) if !upstreams.is_empty() => {
+                        upstreams.contains_key(&row.upstream)
+                    }
+                    // Without a map the entry produces no route at all and
+                    // routing falls through, so let the `[[routes]]`,
+                    // `[[route_prefixes]]`, and default-provider arms answer
+                    // instead of claiming the id here.
+                    (None, _) => false,
+                };
+            id_reaches_this_upstream
+                || entry
+                    .upstream_model
+                    .as_ref()
+                    .and_then(|map| map.get(&row.upstream))
+                    .is_some_and(|upstream_model| matches(upstream_model))
+        }) || self.routes.iter().any(|route| {
+            route.provider == row.upstream
+                && (matches(&route.model) || route.upstream_model.as_deref().is_some_and(matches))
+        }) || self.route_prefixes.iter().any(|route| {
+            // Case-insensitive on purpose, even though prefix routing itself is
+            // case-sensitive. An override row matches the request model
+            // case-insensitively, so the row is reachable if *any* spelling of
+            // it reaches this upstream — and the client picks the spelling. A
+            // row `VENDOR-x` behind the prefix `vendor-` prices every request
+            // for `vendor-x`. `get(..len)` yields `None` on a non-char-boundary
+            // index, so a multi-byte model is never sliced mid-character.
+            route.provider == row.upstream
+                && model
+                    .get(..route.prefix.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(&route.prefix))
+        })
+    }
+
     pub fn validate(mut self) -> Result<Self, ConfigError> {
         self.normalize_upstreams()?;
         // Runs after `normalize_upstreams` so it sees `self.providers` merged
@@ -3373,6 +3577,10 @@ impl Config {
         if self.server.spend.is_some() && self.server.admin.is_none() {
             return Err(ConfigError::SpendRequiresAdmin);
         }
+        // The pricing table is read by the (not yet implemented) spend meter,
+        // which has no way to report a bad rate per request. Reject an
+        // unusable multiplier, rate, or upstream reference at boot instead.
+        self.validate_pricing()?;
         // Fail closed at boot: an unsandboxed Antigravity provider runs an
         // autonomous agent with shell access and no workspace boundary, as the
         // user running shunt. That is defensible as a personal loopback
@@ -4575,9 +4783,10 @@ mod tests {
         CodexEndpointConfig, CodexRouteConfig, Config, ConfigError, ConfigFormat, GatewayConfig,
         GatewayOidcConfig, GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig,
         GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, ModelConfig,
-        OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderConfig, ProviderKind,
-        ResponsesFlavor, RetryConfig, Secret, SpendConfig, StatusConfig, StatusSource,
-        UsageEndpointConfig, CONFIG_ENV_LOCK, MAX_SHUTDOWN_TIMEOUT_SECONDS,
+        OauthUsageConfig, OidcProviderConfig, PoolConfig, PricingConfig, PricingOverride,
+        ProviderConfig, ProviderKind, ResponsesFlavor, RetryConfig, RouteConfig, RoutePrefixConfig,
+        Secret, SpendConfig, StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
+        MAX_SHUTDOWN_TIMEOUT_SECONDS,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -4586,6 +4795,17 @@ mod tests {
             display_name: None,
             upstream_model,
             stage_router: None,
+        }
+    }
+
+    fn pricing_override(upstream: &str, model: &str, input: f64) -> PricingOverride {
+        PricingOverride {
+            upstream: upstream.to_string(),
+            model: model.to_string(),
+            input,
+            output: input * 5.0,
+            cache_read: 0.5,
+            cache_write: 1.5,
         }
     }
 
@@ -6543,6 +6763,349 @@ provider = "deepseek"
         config
             .validate()
             .expect("[server.spend] with [server.admin] validates");
+    }
+
+    /// `[server.spend.pricing]` feeds a meter that prices requests without a
+    /// per-request way to report a bad rate, so every shape error must be a
+    /// boot error.
+    #[test]
+    fn pricing_validation_rejects_each_unusable_value() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        fn pricing_config(pricing: PricingConfig) -> Config {
+            let mut config = Config::default();
+            config.server.admin = Some(admin_config_with_keys(
+                "SHUNT_TEST_PRICING_UNUSED",
+                vec![admin_key("terraform", ADMIN_KEY_A)],
+                Vec::new(),
+            ));
+            config.server.spend = Some(SpendConfig {
+                pricing: Some(pricing),
+                ..SpendConfig::default()
+            });
+            config
+        }
+
+        for multiplier in [0.0, -0.5, 1.5, f64::NAN, f64::INFINITY] {
+            let config = pricing_config(PricingConfig {
+                multiplier,
+                overrides: Vec::new(),
+            });
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::InvalidPricingMultiplier { .. })
+                ),
+                "multiplier {multiplier} must be rejected"
+            );
+        }
+        for multiplier in [1.0, 0.85] {
+            let config = pricing_config(PricingConfig {
+                multiplier,
+                overrides: Vec::new(),
+            });
+            config
+                .validate()
+                .unwrap_or_else(|error| panic!("multiplier {multiplier} must validate: {error}"));
+        }
+
+        // The bounds themselves are accepted; only past them is an error.
+        for rate in [
+            crate::gateway::spend::pricing::MIN_USD_PER_MILLION,
+            crate::gateway::spend::pricing::MAX_USD_PER_MILLION,
+        ] {
+            let config = pricing_config(PricingConfig {
+                multiplier: 1.0,
+                overrides: vec![PricingOverride {
+                    input: rate,
+                    output: rate,
+                    cache_read: rate,
+                    cache_write: rate,
+                    ..pricing_override("anthropic", "claude-opus-5", 1.0)
+                }],
+            });
+            config
+                .validate()
+                .unwrap_or_else(|error| panic!("rate {rate} must validate: {error}"));
+        }
+
+        // Every rate is required and must be positive. TOML omission is caught
+        // by serde, so the remaining cases are zero and negative.
+        for (field, row) in [
+            ("input", pricing_override("anthropic", "claude-opus-5", 0.0)),
+            (
+                "output",
+                PricingOverride {
+                    output: -1.0,
+                    ..pricing_override("anthropic", "claude-opus-5", 1.0)
+                },
+            ),
+            (
+                "cache_read",
+                PricingOverride {
+                    cache_read: 0.0,
+                    ..pricing_override("anthropic", "claude-opus-5", 1.0)
+                },
+            ),
+            (
+                "cache_write",
+                PricingOverride {
+                    cache_write: f64::NAN,
+                    ..pricing_override("anthropic", "claude-opus-5", 1.0)
+                },
+            ),
+            // Above the ceiling the femto-USD conversion saturates, so the row
+            // would price at `u64::MAX` rather than at what it states.
+            (
+                "input",
+                pricing_override(
+                    "anthropic",
+                    "claude-opus-5",
+                    crate::gateway::spend::pricing::MAX_USD_PER_MILLION + 1.0,
+                ),
+            ),
+        ] {
+            let config = pricing_config(PricingConfig {
+                multiplier: 1.0,
+                overrides: vec![row],
+            });
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::InvalidPricingRate { field: rejected, .. }) if rejected == field
+                ),
+                "{field} must be rejected"
+            );
+        }
+
+        let config = pricing_config(PricingConfig {
+            multiplier: 1.0,
+            overrides: vec![pricing_override("   ", "claude-opus-5", 1.0)],
+        });
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::EmptyPricingOverrideUpstream { index: 0 })
+        ));
+
+        let config = pricing_config(PricingConfig {
+            multiplier: 1.0,
+            overrides: vec![pricing_override("bedrock-eu", "claude-opus-5", 1.0)],
+        });
+        let error = config
+            .validate()
+            .expect_err("an override naming no configured upstream must fail");
+        let rendered = error.to_string();
+        assert!(
+            matches!(error, ConfigError::UnknownPricingOverrideUpstream { .. }),
+            "{rendered}"
+        );
+        // The message has to say which names would have worked.
+        assert!(rendered.contains("anthropic"), "{rendered}");
+        assert!(rendered.contains("codex"), "{rendered}");
+
+        // Same upstream, same model by two ids: the second row would silently
+        // shadow or be shadowed by the first depending on lookup order.
+        let config = pricing_config(PricingConfig {
+            multiplier: 1.0,
+            overrides: vec![
+                pricing_override("anthropic", "claude-sonnet-4-6", 1.0),
+                pricing_override("anthropic", "claude-sonnet-4-6-20260217", 2.0),
+            ],
+        });
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::DuplicatePricingOverride { index: 1, .. })
+        ));
+
+        // The same model on two different upstreams is not a duplicate.
+        let config = pricing_config(PricingConfig {
+            multiplier: 1.0,
+            overrides: vec![
+                pricing_override("anthropic", "claude-sonnet-4-6", 1.0),
+                pricing_override("codex", "claude-sonnet-4-6-20260217", 2.0),
+            ],
+        });
+        config.validate().expect("one row per upstream validates");
+
+        // The resolver stores each row's model trimmed and stripped of the
+        // `[1m]` hint, and compares case-insensitively, so spellings that
+        // differ only in those are one row at runtime: without the same
+        // normalization here they both validate and then shadow each other.
+        for second in [" alias ", "alias[1m]", " ALIAS[1M] "] {
+            let config = pricing_config(PricingConfig {
+                multiplier: 1.0,
+                overrides: vec![
+                    pricing_override("anthropic", "alias", 1.0),
+                    pricing_override("anthropic", second, 2.0),
+                ],
+            });
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::DuplicatePricingOverride { index: 1, .. })
+                ),
+                "{second:?} must collide with \"alias\""
+            );
+        }
+    }
+
+    #[test]
+    fn pricing_section_round_trips_through_config_load_and_validation() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut config: Config =
+            figment::Figment::from(figment::providers::Serialized::defaults(Config::default()))
+                .merge(figment::providers::Toml::string(
+                    r#"
+[server.spend]
+
+[server.spend.pricing]
+multiplier = 0.85
+
+[[server.spend.pricing.overrides]]
+upstream = "anthropic"
+model = "claude-sonnet-4-6"
+input = 3.30
+output = 16.50
+cache_read = 0.33
+cache_write = 4.125
+"#,
+                ))
+                .extract()
+                .expect("the pricing section parses");
+
+        let tokens_env = format!("SHUNT_TEST_PRICING_ROUNDTRIP_{}", std::process::id());
+        std::env::remove_var(&tokens_env);
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            Vec::new(),
+        ));
+        let config = config.validate().expect("the pricing section validates");
+
+        let pricing = config
+            .server
+            .spend
+            .as_ref()
+            .and_then(|spend| spend.pricing.as_ref())
+            .expect("[server.spend.pricing] survives the round trip");
+        assert_eq!(pricing.multiplier, 0.85);
+        assert_eq!(pricing.overrides.len(), 1);
+        assert_eq!(pricing.overrides[0].upstream, "anthropic");
+        assert_eq!(pricing.overrides[0].cache_write, 4.125);
+    }
+
+    /// The unusable-row warning must fire on an alias no request can carry, and
+    /// stay quiet for a built-in, a model some `[[models]]`/`[[routes]]`/
+    /// `[[route_prefixes]]` entry can actually produce **on that row's own
+    /// upstream**, or any model at all on `server.default_provider` — routing
+    /// falls through to that provider for everything it did not otherwise
+    /// claim. A `[[models]]` id is scoped like everything else: routing returns
+    /// it only on the upstreams its own entry names.
+    #[test]
+    fn pricing_override_model_is_requestable_only_via_builtins_models_and_routes() {
+        // `default_provider` is `anthropic`, so the tables here belong to
+        // `codex` and the negative cases use a third upstream that routing
+        // never reaches.
+        let config = Config {
+            models: vec![
+                model_config("team-sonnet", Some(model_upstream("codex", "gpt-5.2"))),
+                // A stage router resolves its tier target through the whole
+                // chain again, so its id can land on any upstream.
+                router_model("router-model", "capable-tier", "efficient-tier"),
+            ],
+            routes: vec![RouteConfig {
+                model: "legacy-alias".to_string(),
+                provider: "codex".to_string(),
+                upstream_model: Some("vendor-sonnet".to_string()),
+                effort: None,
+                service_tier: None,
+            }],
+            route_prefixes: vec![
+                RoutePrefixConfig {
+                    prefix: "vendor-".to_string(),
+                    provider: "codex".to_string(),
+                },
+                // A non-ASCII prefix: the reachability check must not index
+                // into the model string by byte offset.
+                RoutePrefixConfig {
+                    prefix: "é".to_string(),
+                    provider: "codex".to_string(),
+                },
+            ],
+            ..Config::default()
+        };
+        assert_eq!(config.server.default_provider, "anthropic");
+
+        let requestable = |config: &Config, upstream: &str, model: &str| {
+            config.pricing_model_is_requestable(&pricing_override(upstream, model, 1.0))
+        };
+
+        for (upstream, model) in [
+            ("bedrock-eu", "claude-sonnet-4-6"),
+            ("bedrock-eu", "us.anthropic.claude-sonnet-4-6-20260217-v1:0"),
+            // The `[[models]]` upstream_model map entry is keyed by upstream —
+            // both the id and the mapped upstream model resolve on `codex`.
+            ("codex", "team-sonnet"),
+            ("codex", "GPT-5.2"),
+            // A stage router's target is resolved through the whole chain
+            // again, so the router's id stays reachable anywhere.
+            ("bedrock-eu", "router-model"),
+            ("codex", "legacy-alias"),
+            ("codex", "vendor-sonnet"),
+            // A prefix route on this row's upstream serves the model, at the
+            // prefix's own case.
+            ("codex", "vendor-anything"),
+            // ...and at any other case too. Prefix *routing* is case-sensitive,
+            // so `VENDOR-anything` itself falls through to the default
+            // provider — but the override row matches case-insensitively, so
+            // this row prices every `vendor-anything` request that the prefix
+            // does route to `codex`.
+            ("codex", "VENDOR-anything"),
+            ("codex", "évariste"),
+            // Everything routing did not claim goes to the default provider.
+            ("anthropic", "my-sonnet-alias"),
+        ] {
+            assert!(
+                requestable(&config, upstream, model),
+                "{model} is requestable on {upstream}"
+            );
+        }
+        for (upstream, model) in [
+            ("bedrock-eu", "my-sonnet-alias"),
+            ("bedrock-eu", "gpt-5.3"),
+            // `resolve_chain` returns as soon as a `[[models]]` entry claims the
+            // id, and only for the upstreams that entry's `upstream_model` map
+            // names — so a row for it on any other upstream prices nothing.
+            ("bedrock-eu", "team-sonnet"),
+            // Mapped only as the `codex` upstream model: a row on another
+            // upstream naming it prices nothing.
+            ("bedrock-eu", "gpt-5.2"),
+            // Route and prefix both belong to `codex`.
+            ("bedrock-eu", "legacy-alias"),
+            ("bedrock-eu", "vendor-sonnet"),
+            ("bedrock-eu", "vendor-anything"),
+            // A model whose first char shares no byte-prefix boundary with the
+            // configured `é` prefix: the check must answer, not panic.
+            ("codex", "aé"),
+            // A blank model reaches nothing, not even on the default provider.
+            ("anthropic", "   "),
+            ("anthropic", ""),
+        ] {
+            assert!(
+                !requestable(&config, upstream, model),
+                "{model} is not requestable on {upstream}"
+            );
+        }
+
+        // With no tables at all every model still routes to the default
+        // provider, and only there.
+        let passthrough = Config::default();
+        assert!(requestable(&passthrough, "anthropic", "my-sonnet-alias"));
+        assert!(!requestable(&passthrough, "codex", "my-sonnet-alias"));
     }
 
     /// `Config` derives `Debug`, and shunt's convention elsewhere is to keep only
