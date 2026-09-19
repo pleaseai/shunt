@@ -1270,6 +1270,48 @@ mod capable_hold {
         );
     }
 
+    /// A signal that re-earns the capable tier *inside* an open window does not
+    /// extend it: the window is `capable_hold_turns` long from the escalation,
+    /// full stop.
+    ///
+    /// The expiry test above feeds de-escalating estimates through the window,
+    /// so it cannot see this case. Pinned separately because the alternative —
+    /// re-arming on every confirming turn — turns the hold into a latch that
+    /// never closes for a session that keeps scoring capable, and the two are
+    /// indistinguishable unless the estimates inside the window say `capable`.
+    #[test]
+    fn a_confirming_signal_inside_the_window_does_not_extend_it() {
+        const HOLD: u32 = 2;
+        let router = held_router(HOLD);
+        let store = StageRouterStore::new();
+        let now = Instant::now();
+
+        store.apply_now("claude-auto", Some(SESSION), &router, capable(), false, now);
+        for turn in 0..HOLD {
+            let decision =
+                store.apply_now("claude-auto", Some(SESSION), &router, capable(), false, now);
+            assert_eq!(
+                decision.source,
+                StageSource::Scorer(DecisionSource::CapableHold),
+                "turn {turn} is inside the window, so the hold answers it"
+            );
+        }
+
+        let decision = store.apply_now(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            efficient(0.99),
+            false,
+            now,
+        );
+        assert_eq!(
+            decision.tier,
+            StageTier::Efficient,
+            "the window is spent after exactly {HOLD} turns however often the signals re-confirmed capable"
+        );
+    }
+
     /// A `count_tokens` probe records nothing, so it must neither open a window
     /// nor spend a turn of one. Spending one would let a client shorten
     /// another's hold by probing.

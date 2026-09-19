@@ -481,6 +481,8 @@ efficient_target = "claude-sonnet-4-6"
 테이블을 대체하는 것이 아니라 그 **뒤에** 적용되므로, 내장 테이블이 분류하지 않고 남겨 둔
 이름 — `Bash`, `Skill`, `mcp__*` 서버 툴 — 에만 닿습니다. 내장 테이블이 이미 observe,
 mutate, plan으로 분류한 이름(`Read`, `Edit`, `TodoWrite` 등)을 지정하면 **시작 오류**입니다.
+공백이 섞인 이름(`" Read "`, `"some tool"`)도 마찬가지입니다. 이름은 정확히 일치해야 하므로
+앞뒤에 공백이 붙은 이름은 런타임에 아무것도 매칭하지 못합니다.
 
 ```toml
 [models.router.tool_semantics]

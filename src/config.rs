@@ -2209,6 +2209,22 @@ fn validate_tool_semantics(
                     category,
                 });
             }
+            // Matching is an exact `eq_ignore_ascii_case` against the tool name
+            // the client sent, and no Claude Code tool name carries whitespace.
+            // So `" Read "` would pass every other check here — it is not blank,
+            // and `classify_builtin` does not recognize it either, so it does
+            // not even trip the builtin-collision guard below — and then match
+            // nothing at runtime. Silently classifying no tool is exactly what
+            // that guard exists to prevent, so reject the name rather than
+            // trimming it: an operator who wrote a space meant a name, and
+            // guessing which one is how the two diverge again later.
+            if name.chars().any(char::is_whitespace) {
+                return Err(ConfigError::InvalidToolSemanticsName {
+                    model: model_id.to_string(),
+                    name: name.clone(),
+                    category,
+                });
+            }
             if crate::routing::stage::vocabulary::classify_builtin(name)
                 != crate::routing::stage::vocabulary::ToolCategory::Other
             {
@@ -2484,6 +2500,14 @@ pub enum ConfigError {
     #[error("models entry {model} router tool_semantics.{category} contains an empty tool name")]
     EmptyToolSemanticsName {
         model: String,
+        category: &'static str,
+    },
+    #[error(
+        "models entry {model} router tool_semantics.{category} tool name {name:?} contains whitespace; tool names are matched exactly and no tool name contains a space"
+    )]
+    InvalidToolSemanticsName {
+        model: String,
+        name: String,
         category: &'static str,
     },
     #[error("models entry {model} router lists tool {name} in both tool_semantics.{first} and tool_semantics.{second}")]
@@ -8116,6 +8140,56 @@ efficient_target = "claude-sonnet-4-6"
             .unwrap_err(),
             ConfigError::DuplicateToolSemanticsName { .. }
         ));
+    }
+
+    /// A padded name passes every other gate and then matches nothing.
+    ///
+    /// `" Read "` is not blank, and `classify_builtin` does not recognize it
+    /// either — so it clears the builtin-collision guard that exists to stop an
+    /// operator silently re-classifying a built-in tool, and would then fail to
+    /// match the `Read` the client actually sends.
+    ///
+    /// Non-vacuity: the two assertions below pin that the padded form is
+    /// rejected *as whitespace* while the trimmed form is accepted, so a fix
+    /// that rejected both (or neither) goes red.
+    #[test]
+    fn tool_semantics_rejects_a_name_padded_with_whitespace() {
+        let padded_clears_the_other_gates = " Read ";
+        assert!(!padded_clears_the_other_gates.trim().is_empty());
+        assert_eq!(
+            crate::routing::stage::vocabulary::classify_builtin(padded_clears_the_other_gates),
+            crate::routing::stage::vocabulary::ToolCategory::Other,
+            "the builtin guard does not catch the padded form, which is why this check is needed"
+        );
+
+        let mut padded = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        stage_mut(&mut padded)
+            .tool_semantics
+            .observe
+            .push(padded_clears_the_other_gates.to_string());
+        assert!(matches!(
+            Config {
+                models: vec![padded],
+                ..Config::default()
+            }
+            .validate()
+            .unwrap_err(),
+            ConfigError::InvalidToolSemanticsName { .. }
+        ));
+
+        // The trimmed form is a different name than any built-in, so it stays
+        // valid: the rule is "no whitespace", not "no names like this one".
+        let mut trimmed = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        stage_mut(&mut trimmed)
+            .tool_semantics
+            .observe
+            .push("mcp__x__probe".to_string());
+        assert!(Config {
+            models: vec![trimmed],
+            ..Config::default()
+        }
+        .validate()
+        .is_ok());
     }
 
     /// A notes table with nothing to say is a config that does nothing.

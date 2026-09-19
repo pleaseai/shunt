@@ -68,9 +68,18 @@ pub(super) fn resolve(
         return Resolved {
             decision: estimate,
             changed: false,
-            // Already capable and the signals say so again: re-arm, so a
-            // session that keeps earning the capable tier keeps its hold rather
-            // than dropping out of it mid-stream.
+            // Re-arm, so a session that keeps earning the capable tier gets a
+            // fresh window instead of one that never comes back.
+            //
+            // This is reached only once the previous window is *spent*: an open
+            // hold is caught by the branch above, which stamps `CapableHold` and
+            // decrements. So the window is exactly `capable_hold_turns` long
+            // from the escalation — a re-confirming signal inside it does not
+            // extend it — and a signal that re-earns the tier on the turn after
+            // it closes opens a full one again. That bound is the point: a hold
+            // that any confirming turn could extend would never close for a
+            // session that keeps scoring capable, which is a latch rather than
+            // the price of one escalation.
             capable_hold_remaining: opened_hold(router, estimate),
         };
     }

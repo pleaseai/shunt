@@ -667,7 +667,8 @@ router. They are applied **after** the built-in table, never instead of it, so
 they reach only the names that table leaves uncategorised — `Bash`, `Skill`, and
 `mcp__*` server tools. Naming a tool the built-in table already classifies as
 observe, mutate, or plan (`Read`, `Edit`, `TodoWrite`, …) is a **startup
-error**.
+error**. So is a name carrying whitespace (`" Read "`, `"some tool"`): names are
+matched exactly, so a padded one would match nothing at runtime.
 
 ```toml
 [models.router.tool_semantics]

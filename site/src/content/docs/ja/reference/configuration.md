@@ -462,7 +462,8 @@ efficient_target = "claude-sonnet-4-6"
 組み込みテーブルを置き換えるのではなく、その**後に**適用されるため、テーブルが分類せずに
 残した名前 — `Bash`、`Skill`、`mcp__*` のサーバーツール — にだけ届きます。組み込みテーブル
 がすでに observe、mutate、plan に分類している名前（`Read`、`Edit`、`TodoWrite` など）を
-指定すると**起動エラー**です。
+指定すると**起動エラー**です。空白を含む名前（`" Read "`、`"some tool"`）も同様です。
+名前は厳密に一致させるため、空白の付いた名前は実行時に何にもマッチしません。
 
 ```toml
 [models.router.tool_semantics]

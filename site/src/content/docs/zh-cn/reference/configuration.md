@@ -457,7 +457,8 @@ efficient_target = "claude-sonnet-4-6"
 为单个路由器扩展 shunt 内置 Claude Code 工具词表的四个列表。它们在内置表**之后**生效,
 而不是取代它,因此只能触及内置表未分类的名字 —— `Bash`、`Skill` 以及 `mcp__*` 服务器工具。
 指定内置表已归入 observe、mutate 或 plan 的名字(`Read`、`Edit`、`TodoWrite` 等)会导致
-**启动错误**。
+**启动错误**。含空白字符的名字(`" Read "`、`"some tool"`)同样如此:名字按精确匹配处理,
+带空白的名字在运行时不会匹配到任何工具。
 
 ```toml
 [models.router.tool_semantics]

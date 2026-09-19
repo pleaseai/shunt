@@ -296,6 +296,12 @@ names the table deliberately leaves uncategorised — `Bash`, `Skill`, and
 `mcp__*` server tools (`stage-router.md` §3.1). An operator `mutate` name is
 scored as a whole-file write.
 
+A name carrying whitespace is rejected at load too. Matching is an exact
+`eq_ignore_ascii_case`, so `" Read "` is neither blank nor a recognised built-in:
+it would clear both of the checks above and then match nothing. Rejecting beats
+trimming — an operator who typed a space meant some name, and guessing which is
+how the config and the runtime drift apart again.
+
 The lists join the store fingerprint, so a reload that changes them drops the
 pins made under the old ones — the same rule every other router key follows.
 
