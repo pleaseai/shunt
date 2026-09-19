@@ -49,7 +49,7 @@ pub struct AppState {
     pub gateway_auth: Option<Arc<GatewayAuth>>,
     /// Process-lifetime device grants, IdP states/cache, refresh tokens, and limits.
     pub gateway_stores: Arc<GatewayStores>,
-    /// Process-lifetime per-session tier pins for `[models.stage_router]`.
+    /// Process-lifetime per-session tier pins for `[models.router]`.
     /// Kept across reloads like [`AppState::accounts`] — a router's pins are
     /// invalidated by a change to *that router's* table, not by any config edit
     /// (see [`StageRouterStore::apply`]).

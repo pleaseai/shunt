@@ -59,6 +59,9 @@ fn router() -> StageRouterConfig {
         min_dwell_turns: 3,
         deescalate_threshold: None,
         session_ttl_seconds: 3600,
+        capable_hold_turns: 0,
+        tool_semantics: Default::default(),
+        handoff_notes: None,
     }
 }
 

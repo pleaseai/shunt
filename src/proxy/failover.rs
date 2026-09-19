@@ -53,7 +53,7 @@ pub(super) async fn forward(
             response: Box::new(error.into_response()),
         })?;
     normalize_request_body(&mut body);
-    // Context for a `[models.stage_router]` entry, should the requested id turn
+    // Context for a `[models.router]` entry, should the requested id turn
     // out to be one. Built unconditionally because construction is a handful of
     // field moves — the headers are borrowed, not read; the `x-claude-code-*`
     // hints are parsed inside `stage::select`, which only a `[[models]]` entry
@@ -110,26 +110,46 @@ pub(super) async fn forward(
     // The same boundary governs the counters: a rejected request is routed but
     // never served, so counting it would report traffic the gateway did not
     // carry. `None` for every request whose id carries no router.
-    let stage_outcome = stage.decided.take();
-    if let Some(outcome) = &stage_outcome {
+    let router_outcome = stage.decided.take();
+    // `stage` borrows the parsed body, and the handoff note below mutates it.
+    // Both of its outputs — the flip and the outcome — have already been taken,
+    // so the borrow has nothing left to serve; `read_only` is copied out rather
+    // than re-derived from the URI so the note's exclusion stays tied to the
+    // same flag the store decided against.
+    let read_only = stage.read_only;
+    drop(stage);
+    if let Some(outcome) = &router_outcome {
         // `outcome.model`, not `requested_model`: the router was matched on the
         // id with any `[1m]` hint stripped, and the session was keyed on it too,
         // so labelling by the raw id would split one router across two series.
-        // `stage.read_only` rather than `is_count_tokens(uri)` again: it is the
-        // same value, and reading the field ties this exclusion to the flag the
-        // store already decided against instead of re-deriving it here.
-        if !stage.read_only {
-            crate::metrics::record_stage_decision(
+        // `read_only` rather than `is_count_tokens(uri)` again: it is the same
+        // value, and reading the flag ties this exclusion to the one the store
+        // already decided against instead of re-deriving it here.
+        if !read_only {
+            // Every algorithm, including stage: one series a reader can total
+            // across router types (ADR-0005 §7).
+            crate::metrics::record_router_decision(
                 &outcome.model,
-                outcome.tier.as_label(),
+                outcome.algorithm,
+                &outcome.target,
                 outcome.source.as_label(),
             );
+            // The shipped stage counter, unchanged: `None` for every algorithm
+            // that has no tier, so `random` and `noop` traffic never appears in
+            // a series a dashboard reads as stage-router decisions.
+            if let Some((tier, source)) = outcome.source.stage_labels() {
+                crate::metrics::record_stage_decision(&outcome.model, tier, source);
+            }
         }
         if let Some((from, to)) = stage_flip {
             crate::metrics::record_stage_flip(&outcome.model, from.as_label(), to.as_label());
         }
     }
-    let stage_stamp = stage_outcome.as_ref().map(|outcome| StageStamp {
+    // The handoff note rides the admitted request, so it is applied on the same
+    // boundary the counters are: a rejected turn never reaches an upstream and
+    // must not have its prompt rewritten on the way to being refused.
+    apply_handoff_note(&state, &mut body, router_outcome.as_ref(), read_only);
+    let router_stamp = router_outcome.as_ref().map(|outcome| RouterStamp {
         routed_model: outcome.target.as_str(),
         source: outcome.source.as_label(),
     });
@@ -247,7 +267,7 @@ pub(super) async fn forward(
                     &provider,
                     &requested_model,
                     &upstream_model,
-                    stage_stamp,
+                    router_stamp,
                 );
                 if !is_advance_status(status) {
                     finish(&provider, status);
@@ -280,7 +300,7 @@ pub(super) async fn forward(
                     &provider,
                     &requested_model,
                     &upstream_model,
-                    stage_stamp,
+                    router_stamp,
                 );
                 match failure {
                     Some(AdapterFailure::UpstreamStatus(raw_status))
@@ -351,13 +371,58 @@ pub(super) async fn forward(
         &last_route.provider,
         &requested_model,
         &last_route.upstream_model,
-        stage_stamp,
+        router_stamp,
     );
     finish(&last_route.provider, StatusCode::BAD_GATEWAY);
     Err(ForwardError {
         message,
         response: Box::new(response),
     })
+}
+
+/// Append the entry's `handoff_notes` text to the forwarded system prompt, on
+/// the turns a signal moved the tier.
+///
+/// Runs after admission, so a rejected turn's prompt is never rewritten, and
+/// never for a `count_tokens` probe: a probe measures the turn the client is
+/// about to send, and adding a block the real turn may not carry would make the
+/// count describe a different request.
+///
+/// The config is re-read here rather than carried on the outcome because the
+/// outcome is deliberately observability-only (ADR-0004 §5) — it holds labels,
+/// not policy — and `outcome.model` is already the id validation guarantees
+/// uniquely names one `[[models]]` entry.
+fn apply_handoff_note(
+    state: &AppState,
+    body: &mut crate::request::RequestBody,
+    outcome: Option<&crate::routing::outcome::RouterOutcome>,
+    read_only: bool,
+) {
+    if read_only {
+        return;
+    }
+    let Some(outcome) = outcome else {
+        return;
+    };
+    let crate::routing::outcome::RouteSource::Stage(tier, source) = outcome.source else {
+        return;
+    };
+    let Some(notes) = state
+        .config
+        .models
+        .iter()
+        .find(|model| model.id == outcome.model)
+        .and_then(|model| model.router.as_ref())
+        .and_then(crate::config::RouterConfig::stage)
+        .and_then(|stage| stage.handoff_notes.as_ref())
+    else {
+        return;
+    };
+    let Some(note) = crate::routing::handoff::note_for(notes, tier, source) else {
+        return;
+    };
+    let note = note.to_string();
+    body.mutate(|request| crate::routing::handoff::append_system_block(request, &note));
 }
 
 async fn count_tokens_response(
@@ -371,7 +436,15 @@ async fn count_tokens_response(
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     let provider = route.provider.clone();
     let upstream_model = route.upstream_model.clone();
-    let result = if matches!(
+    let result = if route.adapter == AdapterKind::Noop {
+        // A noop entry never calls an upstream, so there is no provider whose
+        // `count_tokens` mode could apply and nothing to count: the turn it is
+        // probing will carry no content either.
+        Ok((
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "input_tokens": 0 })).into_response(),
+        ))
+    } else if matches!(
         route.adapter,
         AdapterKind::Responses
             | AdapterKind::Cursor
@@ -486,6 +559,11 @@ async fn dispatch(
         }
         AdapterKind::AntigravityCli => {
             crate::adapters::antigravity::AntigravityAdapter
+                .forward(state, route, uri, headers, body)
+                .await
+        }
+        AdapterKind::Noop => {
+            crate::adapters::noop::NoopAdapter
                 .forward(state, route, uri, headers, body)
                 .await
         }
@@ -787,6 +865,15 @@ pub(crate) fn headers_for_route(
 /// the default when `auth` is omitted, honouring it here would let anyone
 /// reach a protected gateway and execute code as the user running shunt.
 fn is_passthrough_route(state: &AppState, route: &routing::Route) -> bool {
+    // A noop route is never passthrough, whatever an operator named a provider.
+    // Its `provider` is the literal `"noop"`, which normally names no
+    // `[providers.*]` entry and so already fails closed — but a provider an
+    // operator happened to call `noop` would otherwise flip this to true and
+    // drop `[server.auth]` for the route. Deciding on the adapter instead makes
+    // that impossible rather than unlikely.
+    if route.adapter == AdapterKind::Noop {
+        return false;
+    }
     state
         .config
         .provider(&route.provider)
@@ -825,14 +912,14 @@ pub(crate) fn stamp_gateway_model_header(response: &mut axum::response::Response
     }
 }
 
-/// What a stage router decided, for the two headers that report it.
+/// What a router decided, for the two headers that report it.
 ///
-/// Absent for every request whose model id carries no `[models.stage_router]`
-/// table, which is why both headers are omitted rather than sent empty: a
-/// client cannot otherwise tell "routed to the efficient tier" from "not
-/// routed by a router at all".
+/// Absent for every request whose model id carries no `[models.router]` table,
+/// which is why both headers are omitted rather than sent empty: a client
+/// cannot otherwise tell "routed to the efficient tier" from "not routed by a
+/// router at all".
 #[derive(Clone, Copy)]
-struct StageStamp<'a> {
+struct RouterStamp<'a> {
     /// The configured model id the chosen tier routes to. Distinct from
     /// `x-gateway-upstream-model`, which is the name sent upstream — for a
     /// router these differ whenever the target maps its own `upstream_model`.
@@ -845,7 +932,7 @@ fn stamp_gateway_headers(
     upstream: &str,
     model: &str,
     upstream_model: &str,
-    stage: Option<StageStamp<'_>>,
+    stage: Option<RouterStamp<'_>>,
 ) {
     for (name, value) in [
         ("x-gateway-upstream", upstream),

@@ -48,6 +48,7 @@ struct OtelInstruments {
     upstream_retries: Counter<u64>,
     failover: Counter<u64>,
     stage_decisions: Counter<u64>,
+    router_decisions: Counter<u64>,
     stage_flips: Counter<u64>,
     requests_shed: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
@@ -133,6 +134,12 @@ fn otel_instruments() -> &'static OtelInstruments {
                 .u64_counter("shunt.stage_router.decisions")
                 .with_description(
                     "Stage-router tier decisions by routed model, tier, and decision source",
+                )
+                .build(),
+            router_decisions: meter
+                .u64_counter("shunt.router.decisions")
+                .with_description(
+                    "[models.router] decisions by routed model, algorithm, target, and source",
                 )
                 .build(),
             stage_flips: meter
@@ -617,6 +624,45 @@ pub fn record_stage_decision(model: &str, tier: &'static str, source: &'static s
     otel_instruments().stage_decisions.add(1, &attributes);
 }
 
+/// Record one `[models.router]` decision, whatever the algorithm (ADR-0005 §7).
+///
+/// The series a reader totals *across* router types, which
+/// `shunt.stage_router.decisions` cannot be: that counter reports a tier, and
+/// `random` and `noop` have none. Both are recorded for a stage turn — the
+/// shipped one keeps its exact shape, and this one adds the algorithm and the
+/// chosen target beside it.
+///
+/// `model` is the `[[models]]` entry carrying the router, matched past
+/// `strip_context_window_hint` for the same reason
+/// [`record_stage_decision`] documents. `algorithm` and `source` are closed
+/// sets (`RouterConfig::algorithm`, `RouteSource::as_label`). `target` is a
+/// configured model id, so its cardinality is the operator's target list, not
+/// the client's traffic.
+///
+/// Called only for an admitted request, and never for a `count_tokens` probe —
+/// the same admission boundary [`record_stage_decision`] observes.
+pub fn record_router_decision(
+    model: &str,
+    algorithm: &'static str,
+    target: &str,
+    source: &'static str,
+) {
+    sentry::metrics::counter("shunt.router.decisions", 1)
+        .attribute("model", model.to_owned())
+        .attribute("algorithm", algorithm)
+        .attribute("target", target.to_owned())
+        .attribute("source", source)
+        .capture();
+
+    let attributes = [
+        KeyValue::new("model", model.to_owned()),
+        KeyValue::new("algorithm", algorithm),
+        KeyValue::new("target", target.to_owned()),
+        KeyValue::new("source", source),
+    ];
+    otel_instruments().router_decisions.add(1, &attributes);
+}
+
 /// Record one stage-router decision that moved a session off its pinned tier.
 ///
 /// A flip is the expensive event this design is built to ration. It always
@@ -826,6 +872,7 @@ mod tests {
     /// The stage-router counters honor the same opt-in no-op contract.
     #[test]
     fn record_stage_counters_are_noop_without_sinks() {
+        super::record_router_decision("claude-auto", "random", "claude-sonnet-4-6", "random");
         super::record_stage_decision("claude-auto", "capable", "override");
         super::record_stage_decision("claude-auto", "efficient", "no_signal");
         super::record_stage_flip("claude-auto", "efficient", "capable");
