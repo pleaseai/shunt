@@ -22,16 +22,30 @@ use crate::routing::stage::{StageSource, StageTier};
 
 /// The note this turn carries, or `None`.
 ///
-/// A `Sticky` or `NoSignal` turn never carries one: the first is a pin holding
-/// through an estimate that did not earn a move, the second is the picker's
-/// default. Neither is a handoff — nothing changed hands — and telling the
-/// capable model "the previous model was stalling" on such a turn is the exact
-/// false statement `only_on_wrong_signal_escalation` exists to prevent.
+/// `handed_off` is the first gate: the note tells the receiving tier why it got
+/// the turn, so a turn that received nothing must not carry one. It is false on
+/// the first turn of a session (there is no previous model to explain), on a
+/// sessionless turn, and — the case neither `tier` nor `source` can express —
+/// on a turn whose signals merely *confirmed* the tier already pinned, which
+/// keeps its `Scorer(Override | Dimensions)` source and is otherwise
+/// indistinguishable from the signal that first earned the tier. Without this
+/// gate every such turn re-appends "the previous model was stalling" to a
+/// conversation that never changed hands.
+///
+/// A `Sticky` or `NoSignal` turn never carries one either: the first is a pin
+/// holding through an estimate that did not earn a move, the second is the
+/// picker's default. Neither is a handoff — nothing changed hands — and telling
+/// the capable model "the previous model was stalling" on such a turn is the
+/// exact false statement `only_on_wrong_signal_escalation` exists to prevent.
 pub(crate) fn note_for(
     notes: &HandoffNotesConfig,
     tier: StageTier,
     source: StageSource,
+    handed_off: bool,
 ) -> Option<&str> {
+    if !handed_off {
+        return None;
+    }
     let scored = matches!(source, StageSource::Scorer(_));
     let signal_driven = matches!(
         source,
@@ -104,7 +118,12 @@ mod tests {
         let notes = notes(true, None);
         for source in [DecisionSource::Override, DecisionSource::Dimensions] {
             assert_eq!(
-                note_for(&notes, StageTier::Capable, StageSource::Scorer(source)),
+                note_for(
+                    &notes,
+                    StageTier::Capable,
+                    StageSource::Scorer(source),
+                    true
+                ),
                 Some("pick up the diagnosis"),
                 "{source:?} is a signal-driven escalation"
             );
@@ -116,7 +135,7 @@ mod tests {
             StageSource::NoSignal,
         ] {
             assert_eq!(
-                note_for(&notes, StageTier::Capable, source),
+                note_for(&notes, StageTier::Capable, source, true),
                 None,
                 "{source:?} must not claim the previous model was stalling"
             );
@@ -132,12 +151,13 @@ mod tests {
             note_for(
                 &notes,
                 StageTier::Capable,
-                StageSource::Scorer(DecisionSource::FallOpen)
+                StageSource::Scorer(DecisionSource::FallOpen),
+                true
             ),
             Some("pick up the diagnosis")
         );
         for source in [StageSource::Sticky, StageSource::NoSignal] {
-            assert_eq!(note_for(&notes, StageTier::Capable, source), None);
+            assert_eq!(note_for(&notes, StageTier::Capable, source, true), None);
         }
     }
 
@@ -148,7 +168,8 @@ mod tests {
             note_for(
                 &without,
                 StageTier::Efficient,
-                StageSource::Scorer(DecisionSource::Dimensions)
+                StageSource::Scorer(DecisionSource::Dimensions),
+                true
             ),
             None,
             "no note configured for the down direction"
@@ -159,15 +180,45 @@ mod tests {
             note_for(
                 &with,
                 StageTier::Efficient,
-                StageSource::Scorer(DecisionSource::Dimensions)
+                StageSource::Scorer(DecisionSource::Dimensions),
+                true
             ),
             Some("the plan is settled")
         );
         assert_eq!(
-            note_for(&with, StageTier::Efficient, StageSource::Sticky),
+            note_for(&with, StageTier::Efficient, StageSource::Sticky, true),
             None,
             "a pin that held is not a handoff"
         );
+    }
+
+    /// The gate the tier and the source cannot express: a signal that merely
+    /// re-confirms the tier already pinned carries the *same*
+    /// `Scorer(Dimensions)` as the signal that first earned it, so without
+    /// `handed_off` every confirming turn re-appends the escalation note to a
+    /// conversation that never changed hands.
+    #[test]
+    fn a_turn_that_handed_nothing_over_carries_no_note() {
+        let escalation = notes(true, Some("the plan is settled"));
+        for (tier, expected) in [
+            (StageTier::Capable, "pick up the diagnosis"),
+            (StageTier::Efficient, "the plan is settled"),
+        ] {
+            let source = StageSource::Scorer(DecisionSource::Dimensions);
+            // Positive twin: the identical tier and source *do* produce the note
+            // once the turn actually moved the tier, so the `None` below is the
+            // handoff gate and not the source gate answering.
+            assert_eq!(
+                note_for(&escalation, tier, source, true),
+                Some(expected),
+                "{tier:?} on a real handoff"
+            );
+            assert_eq!(
+                note_for(&escalation, tier, source, false),
+                None,
+                "{tier:?}: a confirming signal on an already-pinned tier hands nothing over"
+            );
+        }
     }
 
     /// The attribution block is the first element and the upstream matches it

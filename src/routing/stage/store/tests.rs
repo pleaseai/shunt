@@ -1123,6 +1123,51 @@ fn a_pin_that_expired_is_not_flipped_away_from() {
     assert_eq!(flip, None);
 }
 
+/// `handed_off` marks the turns that actually moved the tier off a pin — the
+/// only turns `[models.router.handoff_notes]` may speak on.
+///
+/// Non-vacuity: make `handed_off` mirror `Resolved::changed` and the first-turn
+/// assertion goes red; make it a constant `true` and the confirming-turn
+/// assertion goes red; make it a constant `false` and the escalation assertion
+/// goes red.
+#[test]
+fn only_a_turn_that_moves_an_existing_pin_is_a_handoff() {
+    let router = router();
+    let store = StageRouterStore::new();
+    let start = Instant::now();
+
+    let turn = |estimate, at| {
+        let applied =
+            store.apply_session("claude-auto", Some(SESSION), &router, estimate, false, at);
+        if let Some(pin) = applied.pin {
+            store.commit(pin, at);
+        }
+        (applied.decision.source, applied.handed_off)
+    };
+
+    let (_, first) = turn(efficient(0.9), start);
+    assert!(
+        !first,
+        "the first turn of a session hands nothing over: no earlier turn was served at another tier"
+    );
+
+    let (confirming_source, confirming) = turn(efficient(0.9), start + Duration::from_secs(1));
+    assert_eq!(
+        confirming_source, DIMENSIONS,
+        "a confirming signal keeps its scorer source, which is why the source alone cannot gate the note"
+    );
+    assert!(
+        !confirming,
+        "the signals re-confirmed the tier already pinned, so nothing changed hands"
+    );
+
+    let (_, escalated) = turn(capable(), start + Duration::from_secs(2));
+    assert!(
+        escalated,
+        "the turn that took the session off its efficient pin is the handoff"
+    );
+}
+
 /// `capable_hold_turns` tests.
 ///
 /// The regression guard for the whole feature is that every test above runs at

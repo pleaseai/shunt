@@ -374,6 +374,13 @@ sources `override` and `dimensions`, or every scorer-made decision once
 goes on a scorer-driven hand-back to the efficient tier. A sticky turn, a
 `no_signal` turn, and a `count_tokens` probe carry no note.
 
+Neither does a turn that handed nothing over, which the route source cannot
+express on its own: a signal confirming the tier already pinned carries the same
+`dimensions` source as the signal that first earned it. `StageApplied.handed_off`
+carries the distinction — the tier moved off an *existing* pin — through
+`RouterOutcome` to `note_for`, which gates on it first. The first turn of a
+session is false for the same reason: it restarts dwell, but hands nothing over.
+
 The note is appended as a **new block at the end of the `system` array**. The
 Claude Code attribution block is the first element and is never edited
 (ADR-0005 §6); the note sits after it, so a client that reads its own

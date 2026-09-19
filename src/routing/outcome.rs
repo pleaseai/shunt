@@ -76,4 +76,16 @@ pub(crate) struct RouterOutcome {
     /// The `type` that decided, as a `/routes` and metric label.
     pub algorithm: &'static str,
     pub source: RouteSource,
+    /// Whether this turn moved a stage or auto router off the tier an earlier
+    /// turn of the same session had pinned. Always `false` for the algorithms
+    /// that hold no tier.
+    ///
+    /// The one field here that is read for something other than a label:
+    /// `[models.router.handoff_notes]` appends a note only on a turn that
+    /// actually handed the conversation over, and `source` cannot express that
+    /// — a signal confirming the tier already pinned carries the same
+    /// `Scorer(Dimensions)` as the signal that first earned it. Carried rather
+    /// than recomputed because the pin it was compared against is gone by the
+    /// time the failover path reads this.
+    pub handed_off: bool,
 }

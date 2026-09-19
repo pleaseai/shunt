@@ -105,8 +105,12 @@ fn session_hash(seed: Option<u64>, model: &str, session_id: &str) -> u64 {
 /// Scale `draw` into the cumulative positive-weight total and walk the enabled
 /// targets.
 ///
-/// `draw / 2^64` lands in `[0, 1)`, so the running total is never reached
-/// exactly and the trailing `unwrap_or` is a floating-point guard rather than a
+/// The draw is scaled through the top 53 bits rather than all 64: `f64` carries
+/// a 53-bit mantissa, so `draw as f64` rounds — and `u64::MAX` rounds *up* to
+/// exactly `2^64`, which would put `point` at `total` and silently hand that
+/// draw to the trailing `last`. `draw >> 11` is exact in an `f64`, so the
+/// quotient lands in `[0, 1)` for every draw and the running total is never
+/// reached: the trailing `last` is a floating-point guard rather than a
 /// reachable arm. Zero-weight targets are skipped, not shifted: the weights
 /// list stays aligned with `targets` whatever an operator disables.
 fn arm(router: &RandomRouterConfig, draw: u64) -> &str {
@@ -114,10 +118,15 @@ fn arm(router: &RandomRouterConfig, draw: u64) -> &str {
         .enabled()
         .map(|(index, _)| router.weight(index))
         .sum();
-    if total <= 0.0 {
+    // `is_finite` as well as positive: validation rejects a weight list whose
+    // total overflows to infinity, so this cannot fire on a loaded config, but
+    // an infinite `total` would make every `point < weight` false and collapse
+    // the split onto the last enabled target rather than failing.
+    if !(total > 0.0 && total.is_finite()) {
         return first_enabled(router);
     }
-    let mut point = (draw as f64 / 2f64.powi(64)) * total;
+    // 2^53, the largest integer an `f64` represents exactly.
+    let mut point = ((draw >> 11) as f64 / 9_007_199_254_740_992.0) * total;
     let mut last = first_enabled(router);
     for (index, target) in router.enabled() {
         let weight = router.weight(index);
@@ -153,11 +162,22 @@ fn fingerprint(router: &RandomRouterConfig) -> u64 {
     // `f64` is not `Hash`; `to_bits` is, and distinguishes the values that
     // matter here. Two NaN spellings would hash apart, which validation has
     // already rejected.
-    weights
-        .as_ref()
-        .map(|weights| weights.iter().map(|weight| weight.to_bits()).collect())
-        .unwrap_or_else(Vec::<u64>::new)
-        .hash(&mut hasher);
+    //
+    // Hashed element by element rather than collected: `fingerprint` runs on
+    // every request routed through a `random` entry, and a temporary `Vec<u64>`
+    // per turn buys nothing. The length prefix keeps the digest identical to
+    // the slice's own `Hash` — `<[T]>::hash` writes `len` and then each
+    // element — so `None` and an empty list stay distinguishable from a
+    // one-element one.
+    match weights.as_ref() {
+        Some(weights) => {
+            weights.len().hash(&mut hasher);
+            for weight in weights {
+                weight.to_bits().hash(&mut hasher);
+            }
+        }
+        None => 0usize.hash(&mut hasher),
+    }
     seed.hash(&mut hasher);
     hasher.finish()
 }

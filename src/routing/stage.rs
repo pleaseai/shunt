@@ -161,6 +161,13 @@ pub(crate) struct StageContext<'a> {
     /// [`crate::routing::resolve_chain`] — every algorithm stamps one, so the
     /// two headers and the new counter do not have to know which ran.
     pub decided: Cell<Option<RouterOutcome>>,
+    /// Whether [`select`] moved the tier off a pin an earlier turn of this
+    /// session set. Parked like [`StageContext::pending`] because the store is
+    /// the only place that can tell a handoff from a signal merely confirming
+    /// the tier already pinned, and `[models.router.handoff_notes]` — read much
+    /// later, on the failover path — is the one consumer that must not conflate
+    /// them. `false` until `select` runs, and for every body-less entry point.
+    pub handed_off: Cell<bool>,
 }
 
 impl StageContext<'_> {
@@ -217,6 +224,7 @@ pub(crate) fn select(
     // router whose target is itself a router, so one request reaches this line
     // at most once and no earlier pin can be dropped here.
     context.pending.set(pin);
+    context.handed_off.set(applied.handed_off);
     decision
 }
 

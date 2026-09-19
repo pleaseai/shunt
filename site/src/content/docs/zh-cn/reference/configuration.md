@@ -495,7 +495,8 @@ only_on_wrong_signal_escalation = true
 | `only_on_wrong_signal_escalation` | `true` | 把 `escalation_note` 限制在由信号驱动的升档(路由来源 `override` 与 `dimensions`)。设为 `false` 则每次评分器作出的升档都会追加 |
 
 这个块追加在 `system` 数组的**末尾**;Claude Code 的 attribution 块是第一个元素,不会被动。
-沿用固定档位的轮次、没有信号的轮次以及 `count_tokens` 探测都不带这个块。空的备注是启动错误。
+沿用固定档位的轮次、没有信号的轮次以及 `count_tokens` 探测都不带这个块;没有发生交接的轮次
+同样不带 —— 会话的第一个轮次,以及只是再次确认已固定档位的轮次。空的备注是启动错误。
 
 **每切换一次就付一次提示缓存未命中。** `system` 数组属于被缓存的前缀,追加或去掉这个块都会
 让前缀失效 —— 这是在档位切换本身已经放弃的按模型前缀之上再加的代价。这正是这张表需要显式
@@ -544,7 +545,7 @@ weights = [9, 1]
 | :-- | :-- | :-- |
 | `type` | ✅ 必填 | `random` |
 | `targets` | ✅ 必填 | 参与分流的模型 id |
-| `weights` | 均等 | 每个目标一个非负权重；`0` 表示停用该目标 |
+| `weights` | 均等 | 每个目标一个非负权重；`0` 表示停用该目标。每个权重都必须是有限值，其总和也必须是有限值 —— 总和溢出为无穷大的列表会在加载时被拒绝 |
 | `seed` | `0` | 在 `session` 亲和下是哈希盐值，在 `request` 亲和下是抽取种子 |
 | `affinity` | `session` | `session` 让一个会话固定在一路，`request` 每次请求都抽取 |
 

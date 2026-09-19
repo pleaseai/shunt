@@ -2174,6 +2174,16 @@ fn validate_random_router(model_id: &str, random: &RandomRouterConfig) -> Result
             model: model_id.to_string(),
         });
     }
+    // Every weight being finite does not make their sum finite: `[1e308, 1e308]`
+    // passes the loop above and totals `+inf`. `arm` scales each draw by that
+    // total, so an infinite one makes every `point < weight` test false and
+    // collapses the advertised split onto the last enabled target — a silent
+    // 100/0 rather than a load failure.
+    if !weights.iter().sum::<f64>().is_finite() {
+        return Err(ConfigError::RandomWeightTotal {
+            model: model_id.to_string(),
+        });
+    }
     Ok(())
 }
 
@@ -2467,6 +2477,10 @@ pub enum ConfigError {
     InvalidRandomWeight { model: String, value: f64 },
     #[error("models entry {model} random router requires at least one weight must be positive")]
     NoPositiveRandomWeight { model: String },
+    #[error(
+        "models entry {model} random router weights sum to a non-finite total; lower the weights so their sum stays within f64 range"
+    )]
+    RandomWeightTotal { model: String },
     #[error("models entry {model} router tool_semantics.{category} contains an empty tool name")]
     EmptyToolSemanticsName {
         model: String,
@@ -7894,6 +7908,48 @@ efficient_target = "claude-sonnet-4-6"
                 "{label} must be rejected at load"
             );
         }
+    }
+
+    /// Each weight being finite does not make their sum finite, and the sum is
+    /// what `arm` scales every draw by: an infinite total makes each
+    /// `point < weight` test false, so the walk falls through to the last
+    /// enabled target and an advertised 50/50 serves 100/0 in silence.
+    ///
+    /// Non-vacuity: this pair passes every other weight rule — two finite,
+    /// positive weights, one per target — so only the total check can reject it.
+    #[test]
+    fn a_random_router_rejects_weights_whose_total_overflows() {
+        let overflowing = vec![f64::MAX, f64::MAX];
+        assert!(
+            overflowing
+                .iter()
+                .all(|weight| weight.is_finite() && *weight > 0.0),
+            "each weight on its own clears the per-weight rule"
+        );
+
+        let config = Config {
+            models: vec![ModelConfig {
+                id: "claude-canary".to_string(),
+                display_name: None,
+                upstream_model: None,
+                router: Some(super::RouterConfig::Random(super::RandomRouterConfig {
+                    targets: vec!["a".to_string(), "b".to_string()],
+                    weights: Some(overflowing),
+                    seed: None,
+                    affinity: super::RandomAffinity::Session,
+                })),
+                stage_router: None,
+            }],
+            ..Config::default()
+        };
+
+        assert!(
+            matches!(
+                config.validate(),
+                Err(ConfigError::RandomWeightTotal { ref model }) if model == "claude-canary"
+            ),
+            "an infinite total must be rejected as such, not as some other weight rule"
+        );
     }
 
     fn random_model(id: &str, targets: &[&str]) -> ModelConfig {

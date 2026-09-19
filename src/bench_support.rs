@@ -148,6 +148,7 @@ pub fn resolve_chain(
         now,
         pending: Cell::new(None),
         decided: Cell::new(None),
+        handed_off: Cell::new(false),
     };
     let (routes, _model) = routing::resolve_request_chain_value(config, request, Some(&stage))?;
     stage.commit();

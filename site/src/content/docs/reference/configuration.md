@@ -707,8 +707,9 @@ only_on_wrong_signal_escalation = true
 
 The note is a new block at the **end** of the `system` array; Claude Code's
 attribution block is the first element and is never touched. Sticky turns,
-turns with no signal, and `count_tokens` probes carry no note. A blank note is a
-startup error.
+turns with no signal, and `count_tokens` probes carry no note — nor does a turn
+that hands nothing over: the first turn of a session, and a later signal that
+only re-confirms the tier already pinned. A blank note is a startup error.
 
 **Each toggle costs a prompt-cache miss.** The system array is part of the
 cached prefix, so appending or dropping the note invalidates it — on top of the
@@ -759,7 +760,7 @@ weights = [9, 1]
 | :-- | :-- | :-- |
 | `type` | ✅ required | `random` |
 | `targets` | ✅ required | Model ids to split across |
-| `weights` | equal | One positive-or-zero weight per target; a weight of `0` disables that target |
+| `weights` | equal | One positive-or-zero weight per target; a weight of `0` disables that target. Each weight must be finite, and so must their sum — a list that overflows to infinity is rejected at load |
 | `seed` | `0` | Hash salt under `session` affinity; the draw seed under `request` affinity |
 | `affinity` | `session` | `session` keeps one session on one arm; `request` draws per request |
 

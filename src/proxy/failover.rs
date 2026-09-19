@@ -70,6 +70,7 @@ pub(super) async fn forward(
         now: started_at,
         pending: std::cell::Cell::new(None),
         decided: std::cell::Cell::new(None),
+        handed_off: std::cell::Cell::new(false),
     };
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json(), Some(&stage)).map_err(
@@ -418,7 +419,8 @@ fn apply_handoff_note(
     else {
         return;
     };
-    let Some(note) = crate::routing::handoff::note_for(notes, tier, source) else {
+    let Some(note) = crate::routing::handoff::note_for(notes, tier, source, outcome.handed_off)
+    else {
         return;
     };
     let note = note.to_string();

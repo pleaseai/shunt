@@ -199,6 +199,7 @@ id = "claude-canary"
 type = "random"
 targets = ["claude-sonnet-4-6", "gpt-5.6-terra"]
 weights = [9, 1]                     # optional; equal when omitted, and a zero disables a target
+                                     # each weight finite, and their sum finite too
 seed = 0                             # optional
 affinity = "session"                 # shunt addition; "session" (default) or "request"
 
@@ -307,6 +308,13 @@ and `dimensions`, or every scorer decision when
 scorer-driven hand-back to the efficient tier, `deescalation_note` is, when it
 is set. Sticky and no-signal turns carry no note, and neither does
 `count_tokens`.
+
+Both notes require the turn to actually **move** the tier. Two turns look like
+escalations and are not: the first turn of a session, which has no earlier tier
+to explain, and a later signal that merely re-confirms the tier already pinned —
+which keeps its `dimensions` source and so is indistinguishable from the signal
+that first earned the tier. `RouterOutcome.handed_off`, not the route source, is
+what separates them.
 
 The Claude Code attribution block is the first system block and is left
 untouched (ADR-0005 §6): the note is a separate block after it, never an edit
