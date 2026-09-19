@@ -378,7 +378,8 @@ Stated plainly so a later reader does not over-read the table above.
   produces at `3ddea9d3` (above). §10's question about the production
   structured-output path — whether an `output_config.format` reply validates
   strictly enough to skip `JsonObject` — is therefore still open and needs a
-  re-capture against that shape.
+  re-capture against that shape. **Re-captured 2026-09-19; see "Fact (c),
+  re-captured against the pinned `output_config.format` shape" below.**
 * **The `drive`/`CallModel` failure path was not exercised.** Nothing here shows
   what shunt's own `serve` closure does with a Fable `400`; the libsy test cited
   above covers the HTTP client runner instead. Whether such a call surfaces as a
@@ -405,3 +406,271 @@ through `--settings` or that `HOME`'s `settings.json`: a same-named
 `settings.json` `env` entry overrides a shell export. In the first attempt an
 existing `ANTHROPIC_BASE_URL` setting won that precedence contest, silently
 bypassed the local gateway, and recorded nothing.
+
+## Fact (c), re-captured against the pinned `output_config.format` shape
+
+Second capture, 2026-09-19, answering the question the section above left
+open (issue #601): does a reply produced by the **production** request shape —
+`output_config.format` carrying the packaged schema, no tool, no
+`tool_choice` — validate against that schema strictly enough to skip
+`ClassifierResponseFormat::JsonObject`? This section supersedes the two
+"not established" bullets above that concern the structured-output path; it
+does not amend the ADR.
+
+### The rig, second run
+
+Same three pieces as before, one hop shorter on the client side because no
+Claude Code session is involved — the driver is a script that builds the body
+the codec would build:
+
+```
+driver (python, urllib)  ──http──▶  shunt run (127.0.0.1:31801)
+                                      │  auth = "passthrough", provider base_url → tap
+                                      ▼
+                                    recording tap (127.0.0.1:31802)
+                                      │  logs method/path/headers/body, forwards unmodified
+                                      ▼
+                                    the same hosted shunt 0.44.0 deployment ──▶ api.anthropic.com
+                                    (pooled Anthropic subscription credentials)
+```
+
+* **shunt**: `0.45.1`, debug build of `d374cc16` (the tip of `main` at the
+  time of this note), `shunt run --config …` with the `anthropic` provider's
+  `base_url` pointed at the tap. shunt itself does not read or rewrite
+  `output_config` on the Anthropic path — the only `output_config` handling
+  in `src/` is the Antigravity adapter's `effort` mapping — so what the tap
+  logged is what the driver sent.
+* **Window**: 05:30–05:33 UTC, **30** `POST /v1/messages` requests, every
+  reply carrying an Anthropic `request-id` and `x-gateway-upstream: anthropic`.
+* Credentials, account names, and org/workspace ids are redacted; nothing else
+  in the quoted blocks is altered.
+
+### The shape, exactly as the pinned codec emits it
+
+Two corrections to how #601 words the shape, both read off the pinned
+revision (`3ddea9d3`) rather than assumed:
+
+1. **On the wire it is `format.schema`, not `format.json_schema`.**
+   `encode_anthropic_output_format`
+   (`crates/switchyard-translation/src/codecs/anthropic/buffered.rs:451-487`)
+   reads the neutral, OpenAI-shaped `{"type":"json_schema","json_schema":{name,
+   strict, schema}}` that `ClassifierResponseFormat::JsonSchema` passes
+   through, and emits `{"type": "json_schema", "schema": <schema>}`. The
+   packaged `name` (`EscalationVerdict`, `CapabilityClassifierDecision`) and
+   `strict: true` never reach Anthropic. (The `json_schema.name = "response"`
+   wrapper at line 444 is the *decode* direction — Anthropic → neutral — and is
+   not sent.)
+2. **Four keywords are stripped before sending.**
+   `strip_anthropic_unsupported_constraints` (`…/buffered.rs:490-511`)
+   recursively removes `minimum`, `maximum`, `minLength`, and `maxLength`.
+   `EscalationVerdict` uses none of them, so it goes out unchanged; `CapabilityClassifierDecision` loses `p_solve`'s `[0.0, 1.0]`
+   bounds and `crux`'s `minLength: 1`.
+
+The rest of the body follows `JudgeClassifier::build_request`
+(`crates/libsy/src/algorithms/util/llm_judge.rs:158-178`): the packaged
+`prompt.md` as a single `System` instruction block, which the codec joins into
+a **string** `system`; `max_tokens` = `DEFAULT_JUDGE_MAX_OUTPUT_TOKENS`
+(`4_096`, `crates/libsy/src/algorithms/util.rs:32`); no `temperature`, no
+`stream`, no `thinking`, no `tools`, no `tool_choice`. The client adds
+`anthropic-version` and nothing else — in particular **no `anthropic-beta`**
+header (`crates/libsy-llm-client/src/backend.rs:164-183`), so this capture
+also shows the field is accepted without a beta opt-in. What the tap logged
+for the escalation case, verbatim apart from the transcript body:
+
+```json
+{
+  "model": "claude-haiku-4-5-20251001",
+  "system": "<prompts/escalation/prompt.md verbatim>",
+  "messages": [{"role": "user", "content": "<condensed session transcript>"}],
+  "max_tokens": 4096,
+  "output_config": {
+    "format": {
+      "type": "json_schema",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "escalate": {"type": "boolean", "description": "True when the run is likely doomed without escalation to the strong tier."},
+          "reason":   {"type": "string",  "description": "One short sentence naming the trouble pattern, or stating why the run is progressing."}
+        },
+        "required": ["escalate", "reason"],
+        "additionalProperties": false
+      }
+    }
+  }
+}
+```
+
+The two user transcripts are the same condensed sessions as in the forced-tool
+capture above, so the two captures differ only in the response-format field.
+
+### Results
+
+| model id | `EscalationVerdict` | `CapabilityClassifierDecision` | outcome |
+|---|---|---|---|
+| `claude-haiku-4-5-20251001` | 3/3 `200`, **valid** | 3/3 `200`, **valid** | fact established |
+| `claude-sonnet-5` | `429` | `429` | untested (below) |
+| `claude-opus-5` | `429` | `429` | untested |
+| `claude-fable-5-1` | `429` | `429` | untested |
+| `claude-fable-5` | `429` | `429` | untested |
+| `claude-opus-4-8` | `429` | `429` | untested |
+| `claude-opus-4-7` | `429` | `429` | untested |
+| `claude-opus-4-6` | `429` | `429` | untested |
+| `claude-sonnet-4-6` | `429` | `429` | untested |
+| `claude-opus-4-5-20251101` | `429` | `429` | untested |
+| `claude-sonnet-4-5-20250929` | `429` | `429` | untested |
+
+**On `claude-haiku-4-5-20251001`, all six replies validated — against the
+schema as sent and against the full packaged schema, bounds included, with
+no `JsonObject` fallback.** Each reply had `stop_reason: end_turn` and a
+`content` array of exactly one `text` block: no preamble, no trailing
+commentary, no Markdown fence (`strip_json_fence` was a no-op on all six).
+Fed through the pinned parse path — `completion_text` concatenates the `Text`
+blocks, `parse_json_verdict` trims and deserialises — every reply satisfied
+`type`, `properties`, `required`, `additionalProperties: false`, and `enum`,
+and the two bounds the codec had stripped held anyway: `p_solve` came back as
+`0.82`, `0.78`, `0.82`, and `crux` was 215–350 characters. No unchecked
+keyword remained. One reply of each, verbatim:
+
+```json
+{"escalate": true, "reason": "same ImportError 4 times while editing unrelated config files instead of addressing the missing import"}
+```
+
+```json
+{"crux": "Implement a --json flag for the report subcommand that produces output matching both the text renderer's rows and the exact object shape defined in the test file tests/test_report_json.py, verified by passing pytest", "primary_rule": "SUP-1", "capability_boundary": "supported", "p_solve": 0.82}
+```
+
+(`req_011CfCFNNYRbwDibAVNwfM9Q`, `req_011CfCFPyMiACTLCndL92Bki`, then two
+repeats each: `req_011CfCFVxR5Gvxp17aW8n4c6`, `req_011CfCFW9GgRjDbzpiwERYKg`,
+`req_011CfCFWPB6fhMDFTMfcvWao`, `req_011CfCFWaP3HZkB8Mi9oXhpc`.) Output was
+33–37 tokens for the escalation verdict and 79–103 for the classifier
+decision, against a `max_tokens` of 4096 — the budget is not close to binding.
+
+### The rejection shape — and it is not the field being rejected
+
+Every one of the other ten ids answered both schemas the same way, twenty
+times out of twenty:
+
+```http
+HTTP/1.1 429 Too Many Requests
+content-type: application/json
+request-id: req_011CfCFNiKZC5o89FDCe9BLi
+x-gateway-model: claude-sonnet-5
+x-gateway-upstream: anthropic
+x-gateway-upstream-model: claude-sonnet-5
+x-should-retry: true
+x-shunt-account: <redacted>
+```
+```json
+{"type": "error",
+ "error": {"type": "rate_limit_error", "message": "Error"},
+ "request_id": "req_011CfCFNiKZC5o89FDCe9BLi"}
+```
+
+Three things about that reply decide what it is. It carries **no
+`retry-after` and no `anthropic-ratelimit-*` header** — checked across all
+twenty. The same ten ids returned the identical status and body to a bare
+four-token text request with no `output_config` at all, minutes earlier
+through the same deployment. And `claude-haiku-4-5-20251001` returned `200`
+to the very same body during the same window, while an interactive Claude
+Code session on `claude-fable-5-1` was completing turns through the same
+deployment. That is the signature shunt already classifies: a headerless
+`rate_limit_error` on a subscription-OAuth credential is
+`client-shape-rejection` (`rate_limit_kind`,
+`src/adapters/anthropic/mod.rs:1101-1112`) — api.anthropic.com refusing a
+request that does not look like a first-party client, the same gate the
+auto-mode classifier module documents
+(`src/adapters/anthropic/auto_mode_classifier.rs`). A judge request has no
+first-party identity marker in its `system` by construction, so on an
+OAuth-pooled deployment it trips that gate on every non-haiku Claude id
+**before `output_config.format` is ever evaluated**. There is no reply to
+validate, and nothing in the exchange is a verdict on the field.
+
+This also corrects the attribution in the 2026-09-18 section above, which
+read the same `429`s as "no pool headroom". They carried the same headerless
+signature then; a quota limit would have arrived with `retry-after` or
+`anthropic-ratelimit-*`. Why `claude-haiku-4-5-20251001` is admitted is not
+something this capture explains — it is observed, not understood — and the
+one ordering clue is from the earlier capture: `claude-fable-5-1` answered a
+forced-`tool_choice` request with a `400 invalid_request_error` rather than
+this `429`, which is consistent with request validation running ahead of the
+gate. If so, a schema-keyword `400` (next) would still surface on a gated
+model, while a well-formed judge request gets the `429`.
+
+A diagnostic arm that would prepend Claude Code's identity sentence to
+`system`, purely to get the ten ids past the gate and observe their
+structured-output behaviour, was prepared and **not run**. Sending a
+first-party identity marker on a judge request is impersonation of the
+client — the line PR #331 drew when it declined to do this for anything but
+the auto-mode classifier — and this rig did not cross it.
+
+### What a rejection of the field itself looks like
+
+No model rejected `output_config.format`. To record the shape a judge target
+does produce when the *schema* carries something the grammar refuses, the
+packaged `CapabilityClassifierDecision` was sent to
+`claude-haiku-4-5-20251001` **without** the codec's strip:
+
+```http
+HTTP/1.1 400 Bad Request
+request-id: req_011CfCFX7pQ534gNu2T3Tj1Y
+x-gateway-upstream: anthropic
+x-gateway-upstream-model: claude-haiku-4-5-20251001
+```
+```json
+{"type": "error",
+ "error": {"type": "invalid_request_error",
+           "message": "output_config.format.schema: For 'number' type, properties maximum, minimum are not supported"},
+ "request_id": "req_011CfCFX7pQ534gNu2T3Tj1Y"}
+```
+
+So the strip of `minimum`/`maximum` is load-bearing — without it the
+production classifier request is a `400` at the first call. The other two
+stripped keywords are a different story: the same schema with `minimum` and
+`maximum` removed but `crux.minLength: 1` kept was accepted
+(`200`, `req_011CfCFZ39uvrCw4fqQpFk6f`), as was one with `maxLength: 2000`
+added to `crux` (`200`, `req_011CfCFamFkcja24zpmTrPuH`). One request each,
+one model, so read it narrowly: the endpoint *accepted* string-length bounds
+it is documented by the codec as not supporting; whether it *enforces* them
+was not tested (`crux` was non-empty either way). The codec's strip is wider
+than this endpoint required on this day, and harmless — the packaged schemas'
+`minLength` is only ever `1`.
+
+### What this capture establishes, and does not
+
+* **Fact (c) on the production shape is established for one model and
+  untested for ten.** `claude-haiku-4-5-20251001`: 6/6 replies parse on the
+  pinned path and validate against the packaged schemas with
+  `additionalProperties: false`, no fallback needed. `claude-sonnet-5`,
+  `claude-opus-5`, `claude-fable-5-1`, `claude-fable-5`, `claude-opus-4-8`,
+  `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`,
+  `claude-opus-4-5-20251101`, `claude-sonnet-4-5-20250929`: **untested**, not
+  failing — none of them evaluated the field. §10's "the current Claude
+  models" is still not a universal this note can back.
+* **No model rejected `output_config.format`.** The field is accepted without
+  a beta header on the one model that reached it; the only field-level
+  rejection observed is Anthropic refusing `minimum`/`maximum` on a `number`,
+  which the pinned codec already strips.
+* **The blocker for the other ten is the OAuth client-shape gate, not
+  headroom and not the field.** For PR 4 (#594) this is the concrete first
+  failure a `[models.router]` judge target hits on an OAuth-pooled deployment
+  with any of those ids: a headerless `429 rate_limit_error` with an Anthropic
+  `request-id`, on the first call, before any structured-output behaviour.
+  Whether that surfaces as a classifier failure or as `classifier_fail_open`
+  is the same open `serve` decision recorded above; it now has two inputs
+  (the fable `400` and this `429`), not one.
+* **The API-key path was not exercised.** Every credential on this rig is a
+  pooled subscription OAuth token, so whether an `x-api-key` credential lets
+  those ten ids evaluate the field is unknown here, not implied either way.
+* **`minLength`/`maxLength` enforcement was not tested** (above); only
+  acceptance was.
+
+### Reproducing, second run
+
+Same rig as "Reproducing" above minus the Claude Code client: the driver
+POSTs the body shown under "The shape" to the local gateway with the
+deployment's bearer token and `anthropic-version: 2023-06-01`, reads
+`content[].text` back, and validates the parsed object against the packaged
+`schema.json` with the same keyword-by-keyword checker used for the forced
+tool-use capture. Build the schema from the pinned checkout under
+`~/.cargo/git/checkouts/`, not from a copy, and apply the four-keyword strip
+before sending or the classifier request is the `400` above.
