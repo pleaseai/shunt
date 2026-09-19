@@ -933,6 +933,11 @@ fn build_codex_observed_row(
         "provider": provider,
         "identity": observed.identity,
         "detail": observed.detail,
+        // The ChatGPT account id, so the dashboard can fold this observation
+        // into a managed Codex account holding the same subscription instead
+        // of listing one account twice. `GET /admin/api/accounts/codex`
+        // already returns the same id unmasked to the same caller.
+        "uuid": observed.account_id,
         "source": source,
         "ownership": "observed",
         "signal": "response-derived",
@@ -2218,6 +2223,36 @@ mod tests {
 
         assert_eq!(row["state"], "expired");
         assert_eq!(row["uuid"], "acct-uuid-expired");
+    }
+
+    #[tokio::test]
+    async fn codex_observation_carries_its_account_id_as_uuid() {
+        // The Codex CLI login and a managed Codex account are routinely the
+        // same ChatGPT account. Without a `uuid` on the observed row the
+        // dashboard cannot recognise that and renders the login as a second,
+        // unrelated account with an identical weekly bar (issue #623).
+        // The id is emitted whether or not a `chatgpt_oauth` provider is
+        // configured, so the stock Claude-kind test state suffices.
+        let state = state_with_explicit_provider(
+            "anthropic",
+            AuthMode::ClaudeOauth,
+            Vec::new(),
+            Vec::new(),
+        );
+        let observed = ObservedCredential {
+            provider: ObservedProvider::Codex,
+            identity: "ChatGPT · Pro".to_string(),
+            detail: None,
+            source: observation::ObservedSource::File,
+            valid: true,
+            access_token: String::new(),
+            account_id: Some("chatgpt-account-id".to_string()),
+        };
+
+        let row = build_observed_row(Arc::new(state), observed).await;
+
+        assert_eq!(row["state"], "waiting-for-traffic");
+        assert_eq!(row["uuid"], "chatgpt-account-id");
     }
 
     #[test]
