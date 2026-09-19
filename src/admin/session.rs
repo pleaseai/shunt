@@ -178,6 +178,7 @@ pub enum PendingKind {
     SetupToken,
     FullOauth,
     CodexOauth,
+    AntigravityOauth,
 }
 
 /// The secrets and credential kind needed to complete a pending provider login.

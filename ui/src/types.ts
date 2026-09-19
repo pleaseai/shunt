@@ -82,6 +82,13 @@ export interface CodexStoreAccount {
   account_id?: string | null;
 }
 
+export interface AntigravityStoreAccount {
+  name: string;
+  expires_at?: number | null;
+  email?: string | null;
+  project_id?: string | null;
+}
+
 export interface StatusSource {
   provider: string;
   indicator: string;

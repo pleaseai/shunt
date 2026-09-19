@@ -23,6 +23,7 @@
 
 pub mod session;
 
+mod antigravity;
 mod codex;
 mod html;
 mod oidc;
@@ -46,6 +47,7 @@ use serde_json::{json, Value};
 
 use crate::{
     auth::{
+        antigravity::store as antigravity_store,
         claude::{auth as claude_auth, login as claude_login, store as claude_store},
         inbound::constant_time_eq,
         observation::{self, ObservedCredential, ObservedProvider},
@@ -289,6 +291,22 @@ pub fn admin_router() -> Router<AppState> {
         .route(
             "/admin/api/accounts/codex/{name}",
             delete(codex::remove_codex_account_handler),
+        )
+        .route(
+            "/admin/api/accounts/antigravity",
+            get(antigravity::list_antigravity_accounts).post(antigravity::add_antigravity_account),
+        )
+        .route(
+            "/admin/api/accounts/antigravity/{name}/complete",
+            post(antigravity::complete_antigravity_account),
+        )
+        .route(
+            "/admin/api/accounts/antigravity/{name}/refresh",
+            post(antigravity::refresh_antigravity_account),
+        )
+        .route(
+            "/admin/api/accounts/antigravity/{name}",
+            delete(antigravity::remove_antigravity_account_handler),
         );
 
     #[cfg(feature = "ui")]
@@ -1119,7 +1137,10 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     for (name, provider) in &state.config.providers {
         if !matches!(
             provider.auth,
-            AuthMode::ClaudeOauth | AuthMode::ChatgptOauth | AuthMode::KimiOauth
+            AuthMode::ClaudeOauth
+                | AuthMode::ChatgptOauth
+                | AuthMode::KimiOauth
+                | AuthMode::AntigravityOauth
         ) {
             continue;
         }
@@ -1154,6 +1175,17 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                     crate::accounts::StoreFamily::Kimi,
                     crate::auth::kimi::store::default_accounts_dir(),
                     crate::auth::kimi::store::scan_accounts,
+                )
+                .await
+            }
+            AuthMode::AntigravityOauth => {
+                crate::auth::shared::resolve_pool_accounts(
+                    "Antigravity",
+                    &provider.accounts,
+                    &provider.account_scope,
+                    crate::accounts::StoreFamily::Antigravity,
+                    antigravity_store::default_accounts_dir(),
+                    antigravity_store::scan_accounts,
                 )
                 .await
             }
@@ -1414,6 +1446,9 @@ async fn complete_account(
         PendingKind::SetupToken => Some(claude_login::SETUP_TOKEN_EXPIRES_SECS),
         PendingKind::FullOauth => None,
         PendingKind::CodexOauth => return internal("unexpected codex pending on the claude route"),
+        PendingKind::AntigravityOauth => {
+            return internal("unexpected antigravity pending on the claude route")
+        }
     };
     let token_url = admin_token_url();
     let exchange = claude_login::exchange_code(
@@ -1502,6 +1537,9 @@ async fn complete_account(
             .await
         }
         PendingKind::CodexOauth => return internal("unexpected codex pending on the claude route"),
+        PendingKind::AntigravityOauth => {
+            return internal("unexpected antigravity pending on the claude route")
+        }
     };
     // The OAuth code is already consumed (single-use) by the time we get here, so
     // a persist failure is unrecoverable for this attempt — log the real cause
@@ -1578,6 +1616,9 @@ async fn complete_account(
         }
         (PendingKind::CodexOauth, _) => {
             return internal("unexpected codex pending on the claude route")
+        }
+        (PendingKind::AntigravityOauth, _) => {
+            return internal("unexpected antigravity pending on the claude route")
         }
     };
     json_secure(json!({ "name": name, "stored": true, "live": live, "message": message }))

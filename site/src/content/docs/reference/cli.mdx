@@ -29,7 +29,7 @@ shunt check
 
 Reports specific errors: a bad bind address, an unknown provider in a route, a missing `api_key_env`, a bad `base_url`, a wrong adapter/auth combination.
 
-It also runs the same routed-Antigravity credential guard `shunt run` boots with: a config that routes to the native `antigravity` upstream with no credential stored fails the check and names [`shunt login antigravity`](#shunt-login-antigravity), instead of reporting `config ok` and then failing at startup. The check stays offline — it reads the routes and probes whether the credential file exists, never refreshing a token or contacting the backend. A config that merely declares the built-in `antigravity` provider without routing to it is unaffected, as is `kind = "antigravity_cli"` routing.
+It also runs the same routed-Antigravity credential guard `shunt run` boots with: a config that routes to the native `antigravity` upstream with no credential stored fails the check and names [`shunt login antigravity`](#shunt-login-antigravity), instead of reporting `config ok` and then failing at startup. The check stays offline — it reads the routes and probes whether a credential exists (the singleton file or any named-pool candidate), never refreshing a token or contacting the backend. A config that merely declares the built-in `antigravity` provider without routing to it is unaffected, as is `kind = "antigravity_cli"` routing.
 
 ## `shunt init`
 
@@ -220,7 +220,16 @@ Run Antigravity's Google authorization-code flow and save its refreshable creden
 
 ```bash
 shunt login antigravity
+shunt login antigravity --name <account-name>
 ```
+
+With `--name` the credential lands at `~/.shunt/accounts/antigravity/<account-name>.json` (0600, in
+a 0700 directory; `SHUNT_ANTIGRAVITY_ACCOUNTS_DIR` overrides the store) instead of the singleton
+file, so named logins never overwrite it. `--mode` and `--long-lived` are rejected, since
+Antigravity OAuth tokens are always refreshable; `--manual` is claude-only. Reference named
+accounts from a provider with `auth = { mode = "antigravity_oauth", accounts = [...] }`, or omit
+account selection to scan the whole store; with no configured accounts and an empty store the
+provider falls back to the singleton file.
 
 The browser callback uses the fixed loopback port **51121**, because that is the redirect URI
 registered for Antigravity's OAuth client — unlike shunt's other loopback logins it cannot fall back
@@ -299,5 +308,6 @@ For an Anthropic provider with `auth = "claude_oauth"`, an account can use a nam
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | Alternate shunt-managed Claude account-store directory |
 | `SHUNT_KIMI_ACCOUNTS_DIR` | Alternate shunt-managed Kimi Code account-store directory |
 | `SHUNT_ANTIGRAVITY_AUTH_FILE` | Alternate credential file for `shunt login antigravity` (default `~/.shunt/antigravity-auth.json`) |
+| `SHUNT_ANTIGRAVITY_ACCOUNTS_DIR` | Alternate shunt-managed Antigravity account-store directory |
 | Account-specific variable named by `token_env` | Setup token for an Anthropic `claude_oauth` pool entry; used verbatim |
 | `OPENAI_API_KEY` | Default key env for the `openai` provider (per-provider via `api_key_env`) |

@@ -40,7 +40,15 @@ shunt login antigravity
 ```
 
 这会使用 Antigravity 自有的 OAuth 客户端运行一个 Google authorization-code 流程,并写入
-`~/.shunt/antigravity-auth.json`,shunt 会读取并自动刷新它。该流程申请五个
+`~/.shunt/antigravity-auth.json`,shunt 会读取并自动刷新它。如果有多个 Google 账号,请分别为它们具名登录:
+
+```bash
+shunt login antigravity --name <account-name>
+```
+
+具名登录运行相同的流程,但把凭据存到 `~/.shunt/accounts/antigravity/<account-name>.json`(0700
+目录下的 0600 文件;可用 `SHUNT_ANTIGRAVITY_ACCOUNTS_DIR` 覆盖存储位置),而不是单例文件,因此两者永不
+相互覆盖。这里会拒绝 `--long-lived` 和 `--mode`。该流程申请五个
 scope:
 
 ```text
@@ -79,6 +87,11 @@ auth = "antigravity_oauth"
 
 有序的 `[[upstreams]]` 会替换 shunt 的内置提供方,因此显式配置还必须声明它仍然回退到的
 `anthropic` 默认项(`server.default_provider` 默认为 `anthropic`)。
+
+`antigravity_oauth` 与 `claude_oauth`、`chatgpt_oauth`、`kimi_oauth` 一样支持池化:用
+`auth = { mode = "antigravity_oauth", accounts = ["personal", "work"] }` 选择账号(也可以用单个
+`account = "..."`,两者互斥)。两者都省略时会扫描整个由 shunt 管理的 Antigravity 账号存储。如果既没有
+配置账号、存储也为空,提供方会回退到第 1 步的单例凭据。
 
 旧的 `[providers.antigravity]` 表形式仍然受支持 —— 但不要在同一个文件中混用 `[[upstreams]]`
 和 `[providers.*]`。
@@ -188,6 +201,13 @@ schema 未声明类型的数组,除非元素通过 `enum` 或 `properties` 暗�
   源会被以 `400` 拒绝**(`URL image sources are not supported by the Gemini adapter`)。
 - **工具结果不能携带富媒体。** 内容中包含 `image` 或 `document` 块的 `tool_result` 会被拒绝。
 
+## 账号池与故障转移
+
+池中的每次尝试都会解析该账号专属的凭据 —— 访问令牌和缓存的项目 id —— 并为该账号重建请求(含目录
+查询),因此轮换过程中一个账号的项目绝不会混入另一个账号的请求。遇到 `429 RESOURCE_EXHAUSTED`
+会冷却该账号并尝试下一个;客户端错误(401/429 之外的 4xx)直接透传、不轮换。响应会携带
+`x-shunt-account` 标明实际处理请求的账号。如果所有账号都失败,则透传最后一个上游错误,原因始终可见。
+
 ## 校验
 
 ```bash
@@ -205,7 +225,7 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 <Aside type="note" title="覆盖项">
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE` 可覆盖凭据路径(空值会回退到
-默认值)。`antigravity_oauth` 上游被固定到两个主机:它接受的非回环 `base_url` 只能是
+默认值)。`SHUNT_ANTIGRAVITY_ACCOUNTS_DIR` 可覆盖具名账号存储(`~/.shunt/accounts/antigravity`)。`antigravity_oauth` 上游被固定到两个主机:它接受的非回环 `base_url` 只能是
 `daily-cloudcode-pa.googleapis.com`(默认)或在校验阶段仍被接受、以便照着旧文档写的配置继续能加载的
 `cloudcode-pa.googleapis.com` 上的 HTTPS —— 包括 `daily-cloudcode-pa.sandbox.googleapis.com` 在内,
 **没有其他 `googleapis.com` 主机合格**。回环主机可用于本地代理。其他任何情况都会在配置
@@ -239,7 +259,8 @@ Antigravity 上游做发现 —— 或者在你还没接好路由之前,针对�
 
 ```text
 provider `antigravity` is routed but has no credential. It is now the native HTTP upstream, not the
-local `agy` CLI. Run `shunt login antigravity` to authenticate it, or route to `antigravity-cli` to
+local `agy` CLI. Run `shunt login antigravity` (or `shunt login antigravity --name <name>` for an
+account pool) to authenticate it, or route to `antigravity-cli` to
 stay on the deprecated subprocess transport.
 ```
 

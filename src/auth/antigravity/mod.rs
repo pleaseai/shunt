@@ -8,6 +8,7 @@ use crate::config::{AuthMode, Config, ProviderConfig, ProviderKind};
 pub mod auth;
 pub mod catalog;
 pub mod login;
+pub mod store;
 pub mod version;
 
 /// shunt-owned Antigravity credential file: `$SHUNT_ANTIGRAVITY_AUTH_FILE`, else
@@ -131,7 +132,8 @@ pub fn warn_if_antigravity_pinned_to_production(config: &Config) {
 pub fn antigravity_migration_error(credential_exists: bool) -> Option<String> {
     (!credential_exists).then(|| {
         "provider `antigravity` is routed but has no credential. It is now the native HTTP \
-         upstream, not the local `agy` CLI. Run `shunt login antigravity` to authenticate it, \
+         upstream, not the local `agy` CLI. Run `shunt login antigravity` (or `shunt login \
+         antigravity --name <name>` for an account pool) to authenticate it, \
          or route to `antigravity-cli` to stay on the deprecated subprocess transport."
             .to_string()
     })
@@ -153,7 +155,35 @@ pub fn routed_antigravity_credential_error(config: &Config) -> Option<String> {
     if !routes_to_antigravity(config) {
         return None;
     }
-    antigravity_migration_error(default_antigravity_auth_path().exists())
+    if default_antigravity_auth_path().exists() {
+        return None;
+    }
+    if routed_antigravity_pool_has_candidates(config) {
+        return None;
+    }
+    antigravity_migration_error(false)
+}
+
+/// A routed native Antigravity provider is servable without the singleton
+/// credential file when its account pool has candidates: explicitly configured
+/// `account`/`accounts` selection, or named files in the Antigravity account
+/// store (see [`store`]). Presence-only, like the singleton probe above — a
+/// selected name whose file is missing fails at request time, not here.
+fn routed_antigravity_pool_has_candidates(config: &Config) -> bool {
+    let routed = routed_provider_names(config);
+    if config
+        .providers
+        .iter()
+        .filter(|(name, provider)| {
+            routed.contains(name.as_str()) && is_vetted_antigravity(provider)
+        })
+        .any(|(_, provider)| !provider.accounts.is_empty() || !provider.account_scope.is_empty())
+    {
+        return true;
+    }
+    store::scan_accounts()
+        .map(|accounts| !accounts.is_empty())
+        .unwrap_or(false)
 }
 
 /// The Code Assist host `shunt login antigravity` runs project discovery
@@ -338,6 +368,51 @@ mod tests {
     #[test]
     fn a_present_credential_starts_normally() {
         assert_eq!(antigravity_migration_error(true), None);
+    }
+
+    #[test]
+    fn a_routed_pool_without_the_singleton_starts_normally() {
+        use super::routed_antigravity_credential_error;
+        use crate::auth::shared::EnvVarGuard;
+        let _file_lock = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _store_lock = super::store::TEST_ENV_LOCK.blocking_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-agy-readiness-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let absent_singleton = dir.join("absent-auth.json");
+        let _auth_file = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &absent_singleton);
+        let _accounts_dir =
+            EnvVarGuard::set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", dir.join("accounts"));
+
+        let mut routed = base();
+        routed.server.default_provider = "antigravity".to_string();
+        assert!(super::routes_to_antigravity(&routed));
+        assert!(
+            routed_antigravity_credential_error(&routed).is_some(),
+            "no singleton, no pool: must still refuse"
+        );
+
+        let mut scoped = routed.clone();
+        scoped
+            .providers
+            .get_mut("antigravity")
+            .unwrap()
+            .account_scope = vec!["primary".into()];
+        assert_eq!(routed_antigravity_credential_error(&scoped), None);
+
+        std::fs::create_dir_all(dir.join("accounts")).unwrap();
+        std::fs::write(dir.join("accounts").join("primary.json"), "{}").unwrap();
+        assert_eq!(routed_antigravity_credential_error(&routed), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

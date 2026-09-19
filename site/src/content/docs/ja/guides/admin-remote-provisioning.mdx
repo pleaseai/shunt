@@ -3,7 +3,7 @@ title: 管理とリモートプロビジョニング
 description: shunt の管理 Web サーフェスを有効化し、Claude と Codex のアカウントをリモートでプロビジョニングして、アカウントプールの状態を確認する。
 ---
 
-shunt は、上流の Claude と Codex/ChatGPT のアカウントをプロビジョニングし、`claude_oauth` と `chatgpt_oauth` のアカウントプール状態を表示する、管理者認証付きの Web サーフェスを公開できます。これはオプトインです。`[server.admin]` がなければ `/admin*` ルートは一切登録されず、shunt のデフォルトの HTTP サーフェスは変わりません。
+shunt は、上流の Claude、Codex/ChatGPT、Antigravity のアカウントをプロビジョニングし、`claude_oauth`、`chatgpt_oauth`、`antigravity_oauth` のアカウントプール状態を表示する、管理者認証付きの Web サーフェスを公開できます。これはオプトインです。`[server.admin]` がなければ `/admin*` ルートは一切登録されず、shunt のデフォルトの HTTP サーフェスは変わりません。
 
 これは [Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/)のストアと選択の挙動の上に成り立っています。ブラウザーフォームでは、リフレッシュ可能な Full OAuth アカウントまたは 1 年間・推論専用の setup token アカウントを作成できます。既存の Claude Code credential ファイルのインポートは CLI 専用です。
 
@@ -61,9 +61,19 @@ shunt run
 
 `accounts` が空の `chatgpt_oauth` provider（デフォルトの `codex` を含む）は、次のリクエストで新しいアカウントを検出します。明示的なアカウント一覧を使う場合は、名前だけの entry を追加してください。`SHUNT_CODEX_TOKEN_URL` はローカル統合テスト用の token endpoint override です。production では設定しないでください。
 
+## ブラウザーで Antigravity アカウントをプロビジョニングする
+
+1. **Add Antigravity account** で小文字のアカウント名を入力し、**Start Antigravity login** を選択します。
+2. authorize URL を開き、対象の Google アカウントでサインインしてアクセスを承認します。
+3. ブラウザーは `http://localhost:51121/oauth-callback` にリダイレクトされます。ローカルページが読み込めないのは想定どおりです。
+4. ブラウザーのアドレスバーの **URL 全体** をコピーして管理ページに貼り付け、**Complete Antigravity login** を選択します。JSON API では `<code>#<state>` も使えます。
+5. shunt が code を交換し、Code Assist project を解決した上で(失敗しても致命的ではなく、アカウントの最初のリクエストで再試行されます)、非公開のアカウントファイルへ保存します。
+
+`accounts` が空の `antigravity_oauth` provider（デフォルトの `antigravity` を含む）は、次のリクエストで新しいアカウントを検出します。明示的なアカウント一覧を使う場合は、名前だけの entry を追加してください。Codex と異なり、Antigravity の表には **Refresh** ボタンもあり、保存された refresh グラントをその場で実行してログインがまだ生きているかを報告します。`SHUNT_ANTIGRAVITY_TOKEN_URL` はローカル統合テスト用の token endpoint override です。production では設定しないでください。
+
 ## プールの健全性を確認する
 
-ダッシュボードは、`auth = "claude_oauth"` または `auth = "chatgpt_oauth"` の provider について、アカウントストアのメタデータと現在の状態を表示します。Claude の行には、上流の応答から観測した 5 時間・共有 7 日・`7d_oi` の使用率が、ステータスやクールダウン状態とともに表示されます。上流がリセット時刻を報告している場合は、各ウィンドウのセルにリセットまでの残り時間（例: `3d 4h`）も表示され、ホバーすると絶対リセット時刻を確認できます。Codex の行には、`x-codex-*` 応答ヘッダーで報告される 5 時間・7 日のウィンドウが表示されます。未対応のウィンドウは無視され、Codex には相当するものがないため `7d_oi` は `—` のままです。Codex の使用量は、Claude の使用量とまったく同じように、クォータを考慮したアカウント選択にも供給されます（issue #195）。
+ダッシュボードは、`auth = "claude_oauth"`、`auth = "chatgpt_oauth"`、または `auth = "antigravity_oauth"` の provider について、アカウントストアのメタデータと現在の状態を表示します。Claude の行には、上流の応答から観測した 5 時間・共有 7 日・`7d_oi` の使用率が、ステータスやクールダウン状態とともに表示されます。上流がリセット時刻を報告している場合は、各ウィンドウのセルにリセットまでの残り時間（例: `3d 4h`）も表示され、ホバーすると絶対リセット時刻を確認できます。Codex の行には、`x-codex-*` 応答ヘッダーで報告される 5 時間・7 日のウィンドウが表示されます。未対応のウィンドウは無視され、Codex には相当するものがないため `7d_oi` は `—` のままです。Codex の使用量は、Claude の使用量とまったく同じように、クォータを考慮したアカウント選択にも供給されます（issue #195）。
 
 ### 死んだクレデンシャルと Refresh ボタン
 
@@ -75,7 +85,7 @@ shunt run
 
 アカウント一覧が公開するのはメタデータのみです。アカウント名、認証情報の種類（`setup_token` または `imported`）、有効期限、UUID。トークン本体を返すことはありません。shunt がアカウント選択時にクォータ状態・クールダウン・モデルを認識した週次バケットをどう使うかは [Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/#選択とプロアクティブなローテーション)を参照してください。
 
-ダッシュボードの Claude テーブルは、この有効期限を認証情報の種類から導出した **Status** として表示します。生の値は約 8 時間の *access* token の期限であり、種類によって意味が正反対になるためです。`imported` アカウントは refresh token を持ち shunt が必要に応じて更新するので **Auto-refreshes** と表示され（生のタイムスタンプはホバーで確認）、過去の日付でも正常です。`setup_token` アカウントは更新自体ができないため、1 年の有効期限は実際に対処が必要です。更新バッファより余裕があれば **Valid until** と日付、バッファ内に入るか日付を過ぎていれば danger スタイルの **Expired** と再ログインの案内が表示されます。バッファはルーティングが適用するものと同じ 5 分（`EXPIRY_BUFFER`）なので、ルーティングがすでに refresh token なしの経路で失敗させる区間を、ダッシュボードが利用可能と表示することはありません。各行には **Re-login** ボタンもあり、上の追加フォームにそのアカウントの名前とログイン方法を入力します — 既存の名前で通常のフローを完了すると、そのアカウントはその場で上書きされます。Codex テーブルにも同じ **Status** 列がありますが、こちらは無条件です。その store には更新できない種類が存在せず（書き込み経路が 2 つとも refresh token を必須とします）、shunt がすべての Codex アカウントを更新するため、各行は **Auto-refreshes** と表示され、生のタイムスタンプは同様にホバーで確認できます。Codex の行にも同じ **Re-login** ボタンがありますが、ログイン方法の事前選択はありません — その store への入口は ChatGPT OAuth だけだからです。上部の使用量テーブルの読み取り専用の行は影響を受けません。そちらの認証情報を更新するのは shunt ではなく、所有している provider クライアントです。 ここでの行アクションはすべて書き込み権限です。`read_keys` でログインした場合、同じテーブルと同じ **Status** 列は表示されますが、行アクションのボタンとアカウント追加フォームは表示されません: サーバー側の `require_write` がその変更を拒否するため、ダッシュボードは最初から提示しません。
+ダッシュボードの Claude テーブルは、この有効期限を認証情報の種類から導出した **Status** として表示します。生の値は約 8 時間の *access* token の期限であり、種類によって意味が正反対になるためです。`imported` アカウントは refresh token を持ち shunt が必要に応じて更新するので **Auto-refreshes** と表示され（生のタイムスタンプはホバーで確認）、過去の日付でも正常です。`setup_token` アカウントは更新自体ができないため、1 年の有効期限は実際に対処が必要です。更新バッファより余裕があれば **Valid until** と日付、バッファ内に入るか日付を過ぎていれば danger スタイルの **Expired** と再ログインの案内が表示されます。バッファはルーティングが適用するものと同じ 5 分（`EXPIRY_BUFFER`）なので、ルーティングがすでに refresh token なしの経路で失敗させる区間を、ダッシュボードが利用可能と表示することはありません。各行には **Re-login** ボタンもあり、上の追加フォームにそのアカウントの名前とログイン方法を入力します — 既存の名前で通常のフローを完了すると、そのアカウントはその場で上書きされます。Codex テーブルにも同じ **Status** 列がありますが、こちらは無条件です。その store には更新できない種類が存在せず（書き込み経路が 2 つとも refresh token を必須とします）、shunt がすべての Codex アカウントを更新するため、各行は **Auto-refreshes** と表示され、生のタイムスタンプは同様にホバーで確認できます。Codex の行にも同じ **Re-login** ボタンがありますが、ログイン方法の事前選択はありません — その store への入口は ChatGPT OAuth だけだからです。Antigravity テーブルも同様に無条件で **Auto-refreshes** を表示し、**Re-login** ボタンに加えて上で説明した **Refresh** ボタンも持ちます。上部の使用量テーブルの読み取り専用の行は影響を受けません。そちらの認証情報を更新するのは shunt ではなく、所有している provider クライアントです。 ここでの行アクションはすべて書き込み権限です。`read_keys` でログインした場合、同じテーブルと同じ **Status** 列は表示されますが、行アクションのボタンとアカウント追加フォームは表示されません: サーバー側の `require_write` がその変更を拒否するため、ダッシュボードは最初から提示しません。
 
 アカウントの metadata、プールの健全性、プロビジョニング、またはアカウント削除に API/curl でアクセスするには、設定したヘッダー（デフォルト `x-shunt-admin-token`）または `x-api-key` で管理認証情報を送り（どちらのスロットも管理ルートでのみ受け付けられ、推論ルートでは受け付けられません）、[HTTP エンドポイント](/ja/reference/endpoints/)に記載の JSON route を使ってください。ヘッダー認証されたリクエストはブラウザーセッションを使わず、CSRF チェックの対象外です。プロビジョニングの開始時には `{ "name": "backup", "mode": "oauth" }` または `mode: "setup_token"` を送ります。`mode` を省略した場合は、API の後方互換性のため `setup_token` がデフォルトです。完了呼び出しのアップストリームトークン交換には、サーバー側で 30 秒の上限があります。これを超えると shunt は `502` と `Claude token exchange timed out`（Codex では `Codex token exchange timed out`）を返し、何も保存しません。タイムアウトしても保留中のログインは残り、その試行も 5 回の上限に数えられますが、認可コードはアップストリームですでに消費されている可能性があります。同じコードを再送するのではなく、フローをやり直して新しいコードを取得してください。
 
@@ -99,7 +109,7 @@ shunt login claude --name primary --mode import
 shunt login claude --name ci --mode setup-token
 ```
 
-`--long-lived` は `--mode setup-token` の deprecated alias です。管理サーフェスは Claude の Full OAuth/setup-token と Codex の ChatGPT OAuth プロビジョニングをサポートします。既存 credential ファイルの import だけはホストへのアクセスが必要なため CLI 専用です。
+`--long-lived` は `--mode setup-token` の deprecated alias です。管理サーフェスは Claude の Full OAuth/setup-token、Codex の ChatGPT OAuth、Antigravity OAuth のプロビジョニングをサポートします。既存 credential ファイルの import だけはホストへのアクセスが必要なため CLI 専用です。
 
 
 

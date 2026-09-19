@@ -96,7 +96,7 @@ enum Command {
         /// `antigravity`, or `kimi`).
         provider: String,
         /// Stable account name used by a name-only pool entry (`claude`,
-        /// `codex`, and `kimi` only).
+        /// `codex`, `kimi`, and `antigravity` only).
         #[arg(long)]
         name: Option<String>,
         /// Generate and store a one-year `claude setup-token` value (`claude`
@@ -417,7 +417,34 @@ fn login(
                 "--mode is not supported for `shunt login codex`; Codex OAuth tokens are always refreshable"
             )
         }
-        "antigravity" if name.is_none() && !long_lived && mode.is_none() => {
+        "antigravity" if long_lived => {
+            anyhow::bail!(
+                "--long-lived is not supported for `shunt login antigravity`; Antigravity OAuth tokens are always refreshable"
+            )
+        }
+        "antigravity" if mode.is_some() => {
+            anyhow::bail!(
+                "--mode is not supported for `shunt login antigravity`; Antigravity OAuth tokens are always refreshable"
+            )
+        }
+        "antigravity" if name.is_some() => {
+            let name = name.expect("checked by the guard above");
+            runtime()?.block_on(async {
+                let config = match Config::load(config_path) {
+                    Ok(config) => Some(config),
+                    Err(error) => {
+                        eprintln!(
+                            "Could not read the config ({error}); signing in against the default \
+                             Antigravity endpoint. A configured base_url will not be used."
+                        );
+                        None
+                    }
+                };
+                let base_url = shunt::auth::antigravity::login_base_url(config.as_ref());
+                shunt::auth::antigravity::login::run_named(&base_url, name).await
+            })
+        }
+        "antigravity" => {
             runtime()?.block_on(async {
                 // Logging in should not require a fully valid gateway config,
                 // so a config that will not load is not fatal here — but it
@@ -439,11 +466,6 @@ fn login(
                 let base_url = shunt::auth::antigravity::login_base_url(config.as_ref());
                 shunt::auth::antigravity::login::run(&base_url).await
             })
-        }
-        "antigravity" => {
-            anyhow::bail!(
-                "--name, --long-lived, and --mode are only valid for `shunt login claude`"
-            )
         }
         "codex" => {
             let name = name.ok_or_else(|| {
@@ -1370,6 +1392,47 @@ mod tests {
         let error = login("unknown", None, false, None, false, None)
             .expect_err("unknown provider must fail");
         assert!(error.to_string().contains("unknown login provider"));
+    }
+
+    #[test]
+    fn antigravity_login_parses_name_and_rejects_long_lived_or_mode() {
+        assert!(
+            Cli::try_parse_from(["shunt", "login", "antigravity", "--name", "ci"]).is_ok(),
+            "--name must parse for antigravity"
+        );
+        let parsed =
+            Cli::try_parse_from(["shunt", "login", "antigravity", "--name", "ci"]).unwrap();
+        let Some(Command::Login {
+            provider,
+            name,
+            long_lived,
+            mode,
+            manual,
+        }) = parsed.command
+        else {
+            panic!("expected login command");
+        };
+        assert_eq!(provider, "antigravity");
+        assert_eq!(name.as_deref(), Some("ci"));
+        assert!(!long_lived);
+        assert!(mode.is_none());
+        assert!(!manual);
+
+        // The rejections return before touching the network or runtime.
+        let error = login("antigravity", Some("ci"), true, None, false, None)
+            .expect_err("--long-lived must be rejected for antigravity");
+        assert!(error.to_string().contains("--long-lived is not supported"));
+
+        let error = login(
+            "antigravity",
+            Some("ci"),
+            false,
+            Some(LoginMode::Oauth),
+            false,
+            None,
+        )
+        .expect_err("--mode must be rejected for antigravity");
+        assert!(error.to_string().contains("--mode is not supported"));
     }
 
     #[test]

@@ -131,7 +131,7 @@ codex-fallback = "gpt-5.6-sol"
 | `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` — Grok CLI 프록시, `~/.shunt/xai-auth.json`을 재사용(SuperGrok / X Premium+ 구독으로 `shunt login xai`) |
 | `cursor` | `cursor` | Cursor OAuth | `api2.cursor.sh` — `~/.shunt/cursor-auth.json`(`shunt login cursor`)을 재사용 |
 | `gemini` | `gemini` | Google OAuth | `cloudcode-pa.googleapis.com` — Google Code Assist 백엔드, `~/.gemini/oauth_creds.json`을 재사용 |
-| `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — HTTP로 통신하는 Google Antigravity 백엔드, `~/.shunt/antigravity-auth.json`(`shunt login antigravity`)을 사용 |
+| `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — HTTP로 통신하는 Google Antigravity 백엔드, `~/.shunt/antigravity-auth.json`(`shunt login antigravity`)을 사용(또는 `shunt login antigravity --name`으로 `~/.shunt/accounts/antigravity` 아래 이름 지정 계정을 만들어 `accounts = [...]`로 선택) |
 | `antigravity-cli` | `antigravity_cli` | 없음(로컬 CLI) | **Deprecated.** 로컬 `agy` 바이너리 — 서브프로세스로 동일한 백엔드를 사용하며, 위의 `antigravity`로 대체되었습니다 |
 
 순서가 있는 `[[upstreams]]` 항목은 여기에 더해 `kimi`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode` 프리셋도 받으며, 각 백엔드의 `kind`, `base_url`, 기본 인증을 채워 넣습니다.

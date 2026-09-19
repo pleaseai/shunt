@@ -13,6 +13,7 @@ export function providerLabel(provider: string): string {
     kimi: 'Kimi',
     gemini: 'Gemini',
     cursor: 'Cursor',
+    antigravity: 'Antigravity',
   };
   return labels[provider] ?? provider;
 }

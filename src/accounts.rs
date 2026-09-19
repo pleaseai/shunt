@@ -22,6 +22,7 @@ pub enum StoreFamily {
     Claude,
     Chatgpt,
     Kimi,
+    Antigravity,
 }
 
 /// Stable physical-account identity used by every runtime state map.
@@ -3149,6 +3150,18 @@ pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverActio
         return FailoverAction::Rotate;
     }
     FailoverAction::Relay
+}
+
+/// Classify an Antigravity (Code Assist) upstream response for account-pool
+/// failover. The backend reports quota exhaustion as a plain 429
+/// (`RESOURCE_EXHAUSTED` in the body, no Anthropic-style quota headers), so a
+/// headerless 429 rotates rather than pausing the same account — the same
+/// treatment `classify_codex` gives Codex's display-only headers.
+pub fn classify_antigravity(status: StatusCode, headers: &HeaderMap) -> FailoverAction {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return FailoverAction::Rotate;
+    }
+    classify(status, headers)
 }
 
 pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {

@@ -3,6 +3,8 @@ import { useCallback, useRef, type ReactElement } from 'react';
 
 import { AddClaudeAccount, type AddAccountHandle } from './components/AddClaudeAccount';
 import { AddCodexAccount } from './components/AddCodexAccount';
+import { AddAntigravityAccount } from './components/AddAntigravityAccount';
+import { AntigravityAccounts } from './components/AntigravityAccounts';
 import { ClaudeAccounts } from './components/ClaudeAccounts';
 import { CodexAccounts } from './components/CodexAccounts';
 import { ObservedAccounts } from './components/ObservedAccounts';
@@ -16,8 +18,15 @@ export function Dashboard(): ReactElement {
   const canWrite = useCanWrite();
   const claudeForm = useRef<AddAccountHandle>(null);
   const codexForm = useRef<AddAccountHandle>(null);
+  const antigravityForm = useRef<AddAccountHandle>(null);
 
-  const { reloadObserved, reloadAccounts, reloadCodexAccounts, reloadPool } = data;
+  const {
+    reloadObserved,
+    reloadAccounts,
+    reloadCodexAccounts,
+    reloadAntigravityAccounts,
+    reloadPool,
+  } = data;
 
   // Every store mutation re-reads the grouped table too, not just the store
   // table it changed: that view renders `needs_relogin` and the coalesced
@@ -34,6 +43,12 @@ export function Dashboard(): ReactElement {
     void reloadCodexAccounts();
     void reloadPool();
   }, [reloadObserved, reloadCodexAccounts, reloadPool]);
+
+  const afterAntigravityMutation = useCallback(() => {
+    void reloadObserved();
+    void reloadAntigravityAccounts();
+    void reloadPool();
+  }, [reloadObserved, reloadAntigravityAccounts, reloadPool]);
 
   return (
     <>
@@ -62,6 +77,7 @@ export function Dashboard(): ReactElement {
           <>
             <AddClaudeAccount ref={claudeForm} onStored={afterClaudeMutation} />
             <AddCodexAccount ref={codexForm} onStored={afterCodexMutation} />
+            <AddAntigravityAccount ref={antigravityForm} onStored={afterAntigravityMutation} />
           </>
         ) : (
           <p className="msg">
@@ -81,6 +97,12 @@ export function Dashboard(): ReactElement {
           onRelogin={(name) => codexForm.current?.prime(name)}
           onMutated={afterCodexMutation}
           onMessage={(text, ok) => codexForm.current?.report(text, ok)}
+        />
+        <AntigravityAccounts
+          accounts={data.antigravityAccounts}
+          onRelogin={(name) => antigravityForm.current?.prime(name)}
+          onMutated={afterAntigravityMutation}
+          onMessage={(text, ok) => antigravityForm.current?.report(text, ok)}
         />
         <PoolHealth pool={data.pool} />
         </Collapsible.Panel>

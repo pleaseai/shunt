@@ -3207,6 +3207,169 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
 }
 
 #[tokio::test]
+async fn antigravity_provisioning_add_complete_refresh_list_pool_remove() {
+    // Closes the dashboard gap this PR exists for: a configured
+    // `antigravity_oauth` provider with pooled accounts must show up in
+    // `/admin/api/pool` exactly like Claude/GPT, and the account itself must
+    // be addable/refreshable/removable from the admin surface, not just the
+    // CLI's `shunt login antigravity --name`.
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let dir = unique_dir();
+    vars.set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_ANTIGRAVITY", "ops:secret-agy");
+
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "SECRET-AGY-ACCESS",
+            "refresh_token": "SECRET-AGY-REFRESH",
+            "expires_in": 3599
+        })))
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"email": "a@example.com"})),
+        )
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1internal:loadCodeAssist"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"cloudaicompanionProject": "proj-1"})),
+        )
+        .mount(&mock_server)
+        .await;
+    vars.set(
+        "SHUNT_ANTIGRAVITY_TOKEN_URL",
+        format!("{}/token", mock_server.uri()),
+    );
+    vars.set("SHUNT_ANTIGRAVITY_USERINFO_URL", mock_server.uri());
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_ANTIGRAVITY");
+    // The built-in `antigravity` provider already carries `antigravity_oauth`
+    // with an empty accounts list (`Config::default()`), which is what makes
+    // it scan the (isolated, via the env var above) store — same shape the
+    // codex flow above relies on. Point it at the mock server so project
+    // discovery never reaches the real Antigravity backend.
+    config.providers.get_mut("antigravity").unwrap().base_url = mock_server.uri();
+    let gateway = start(config).await;
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-agy")
+            .header("content-type", "application/json")
+    };
+
+    let response = auth(client.post(format!(
+        "{}/admin/api/accounts/antigravity",
+        gateway.base_url
+    )))
+    .body(r#"{"name":"agy-a"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (authorize_url, state) = authorize_state(&body);
+    let params = authorize_url
+        .query_pairs()
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        params.get("redirect_uri").map(|value| value.as_ref()),
+        Some("http://localhost:51121/oauth-callback")
+    );
+    assert_eq!(
+        params.get("access_type").map(|value| value.as_ref()),
+        Some("offline")
+    );
+
+    let response = auth(client.post(format!(
+        "{}/admin/api/accounts/antigravity/agy-a/complete",
+        gateway.base_url
+    )))
+    .body(serde_json::json!({"code": format!("oauth-code#{state}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = response.text().await.unwrap();
+    assert!(!text.contains("SECRET-AGY-ACCESS"));
+    assert!(!text.contains("SECRET-AGY-REFRESH"));
+
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("agy-a.json")).unwrap()).unwrap();
+    assert_eq!(stored["access_token"], "SECRET-AGY-ACCESS");
+    assert_eq!(stored["refresh_token"], "SECRET-AGY-REFRESH");
+    assert_eq!(stored["email"], "a@example.com");
+    assert_eq!(stored["project_id"], "proj-1");
+
+    // `/admin/api/accounts/antigravity` lists token-free metadata only.
+    let response = auth(client.get(format!(
+        "{}/admin/api/accounts/antigravity",
+        gateway.base_url
+    )))
+    .send()
+    .await
+    .unwrap();
+    let text = response.text().await.unwrap();
+    assert!(!text.contains("SECRET-AGY-ACCESS"));
+    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let accounts = body["accounts"].as_array().unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0]["name"], "agy-a");
+    assert_eq!(accounts[0]["email"], "a@example.com");
+
+    // The gap this PR closes: the configured `antigravity_oauth` provider now
+    // appears in `/admin/api/pool`, exactly like Claude/GPT.
+    let response = auth(client.get(format!("{}/admin/api/pool", gateway.base_url)))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let antigravity = body["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["provider"] == "antigravity")
+        .expect("pool includes the built-in antigravity provider");
+    assert!(antigravity["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|account| account["name"] == "agy-a"));
+
+    let response = auth(client.post(format!(
+        "{}/admin/api/accounts/antigravity/agy-a/refresh",
+        gateway.base_url
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(body["refreshed"], true);
+    assert_eq!(body["needs_relogin"], false);
+
+    let response = auth(client.delete(format!(
+        "{}/admin/api/accounts/antigravity/agy-a",
+        gateway.base_url
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("agy-a.json").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_health() {
     // Regression test for the admin Codex reprovisioning identity-health
     // cleanup: reprovisioning "account-a" from an old upstream identity to a

@@ -130,7 +130,7 @@ These providers are seeded by default, so `provider = "<name>"` routes to them w
 | `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` (`shunt login xai` with a SuperGrok / X Premium+ subscription) |
 | `cursor` | `cursor` | Cursor OAuth | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 | `gemini` | `gemini` | Google OAuth | `cloudcode-pa.googleapis.com` — Google Code Assist backend; reuses `~/.gemini/oauth_creds.json` |
-| `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — Google Antigravity backend over HTTP; uses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
+| `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — Google Antigravity backend over HTTP; uses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`), or named accounts under `~/.shunt/accounts/antigravity` (`shunt login antigravity --name`, selected via `accounts = [...]`) |
 | `antigravity-cli` | `antigravity_cli` | None (local CLI) | **Deprecated.** Local `agy` binary — same backend via subprocess; superseded by `antigravity` above |
 
 Ordered `[[upstreams]]` entries additionally accept the presets `kimi`, `kimi-code`, `zhipu`, `minimax-cn`, and `opencode`, which fill in `kind`, `base_url`, and the default auth for those backends.

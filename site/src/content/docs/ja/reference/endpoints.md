@@ -26,7 +26,8 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `GET` | `/admin/api/session` | 管理 SPA がレンダリング前に必要とするセッション固有の 3 値: セッションの `csrf` トークン、`expiry_buffer_ms`(`claude::auth::EXPIRY_BUFFER` のミリ秒値で、setup token が使用不可になる境界)、そして `access` — このセッションが認証する階層で `read` または `write` であり、ダッシュボードはこの値から書き込み操作を出すかどうかを決める。ヘッダー資格情報の呼び出し元は CSRF 免除のため空の `csrf` を受け取る。このサーフェスには CORS レイヤーがないため、クロスオリジンのページはリクエストを送れても応答を読めない。したがって `GET` でトークンを返しても安全 |
 | `GET` | `/admin/api/accounts` | Claude アカウントストアのメタデータ: 名前、種類、有効期限、UUID。トークン本体は決して返さない |
 | `GET` | `/admin/api/accounts/codex` | Codex アカウントストアのメタデータ: 名前、有効期限、ChatGPT アカウント ID。トークン本体は決して返さない |
-| `GET` | `/admin/api/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider ごとのプール状態。各 account オブジェクトには任意の `plan` 文字列が含まれることがあり、ファイルから読んだ値は後の profile 照会でより精密な値に補正されることがあり、Codex の行には報告された 5h/7d 使用量が含まれる(`7d_oi` に対応する Codex の項目はない)。各 account には真偽値 `needs_relogin` も含まれる。クレデンシャルが終端的に拒否された(`invalid_grant`)か、リフレッシュトークンをそもそも持たないか、ローテーションされたトークン対を保存できずに失った場合で、どのリトライでも回復せず、オペレーターの再ログインだけが解決策となる。クールダウンのフィールドとは**独立に**報告される — クールダウンは自然に失効するが、この印は残る — ダッシュボードの二つの表はいずれもクォータ一時停止の `cooling` ではなく **needs re-login** と表示する。メモリ上のみで保持されるため、再起動でクリアされ、そのアカウントの次の終端的な失敗で再び立つ。どの provider テーブルも一度も選択したことのないアカウントについても — `has_state: false` と並んで — 報告される。admin の refresh プローブが判定をストア名で記録するためである。 |
+| `GET` | `/admin/api/accounts/antigravity` | Antigravity アカウントストアのメタデータ: 名前、有効期限、メールアドレス（Google が返した場合）。トークン本体は決して返さない |
+| `GET` | `/admin/api/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` / `antigravity_oauth` provider ごとのプール状態。各 account オブジェクトには任意の `plan` 文字列が含まれることがあり、ファイルから読んだ値は後の profile 照会でより精密な値に補正されることがあり、Codex の行には報告された 5h/7d 使用量が含まれる(`7d_oi` に対応する Codex の項目はない)。各 account には真偽値 `needs_relogin` も含まれる。クレデンシャルが終端的に拒否された(`invalid_grant`)か、リフレッシュトークンをそもそも持たないか、ローテーションされたトークン対を保存できずに失った場合で、どのリトライでも回復せず、オペレーターの再ログインだけが解決策となる。クールダウンのフィールドとは**独立に**報告される — クールダウンは自然に失効するが、この印は残る — ダッシュボードの二つの表はいずれもクォータ一時停止の `cooling` ではなく **needs re-login** と表示する。メモリ上のみで保持されるため、再起動でクリアされ、そのアカウントの次の終端的な失敗で再び立つ。どの provider テーブルも一度も選択したことのないアカウントについても — `has_state: false` と並んで — 報告される。admin の refresh プローブが判定をストア名で記録するためである。 |
 | `GET` | `/admin/api/routes` | 管理者資格情報で保護された解決済みのルーティング表で、ダッシュボードから利用できます — 上の `GET /routes` が返すものと同じボディで、同じスナップショットから構築されるため、運用者が見る表とクライアントが実際に解決する表が食い違うことはありません。リダイレクトではなく個別に登録しているのは、管理面が自前の認証を保つためです。公開の `/routes` は意図的に認証を持たないので、こちらをそちらへ向けると両者の認証が結び付いてしまいます。ここで管理者資格情報を要求するため、`/routes` を開放していても当該資格情報が守る範囲は広がりません |
 | `POST` | `/admin/api/accounts/claude` | `{name, mode}` で Claude のブラウザープロビジョニングを開始。`mode` は `oauth` または `setup_token` で、省略時は `setup_token`。`{authorize_url}` を返す |
 | `POST` | `/admin/api/accounts/claude/{name}/complete` | `<code>#<state>` を含む `{code}` で Claude プロビジョニングを完了。アカウントを保存し、有効（live）かどうかを報告 |
@@ -35,6 +36,10 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/admin/api/accounts/codex` | `{name}` で ChatGPT OAuth を開始し、`{authorize_url}` を返す |
 | `POST` | `/admin/api/accounts/codex/{name}/complete` | localhost の redirect URL 全体または `<code>#<state>` を含む `{code}` で Codex プロビジョニングを完了 |
 | `DELETE` | `/admin/api/accounts/codex/{name}` | 指定した Codex アカウントのストアファイルを削除 |
+| `POST` | `/admin/api/accounts/antigravity` | `{name}` で Antigravity OAuth を開始し、`{authorize_url}` を返す |
+| `POST` | `/admin/api/accounts/antigravity/{name}/complete` | localhost の redirect URL 全体または `<code>#<state>` を含む `{code}` で Antigravity プロビジョニングを完了 |
+| `POST` | `/admin/api/accounts/antigravity/{name}/refresh` | Antigravity アカウントの refresh グラントをその場で実行し、ログインがまだ生きているかを報告。上記 Claude の refresh ルートと同じプローブ |
+| `DELETE` | `/admin/api/accounts/antigravity/{name}` | 指定した Antigravity アカウントのストアファイルを削除 |
 | `GET` | `/admin/assets/{*path}` | 埋め込まれた管理 SPA バンドルのファイル。拡張子に応じた `Content-Type` と `X-Content-Type-Options: nosniff` を付けて返します。`--features ui` でビルドしたバイナリにのみ存在 |
 | `GET` | `/admin/{*path}` | `/admin` マウント配下でどのルートにも一致しないパスに対する SPA シェル。クライアント側のディープリンクがリロード後も維持されます。`--features ui` でビルドしたバイナリにのみ存在 |
 | `POST` | `/backend-api/codex/responses` | Inbound Codex CLI パススルー — 実際の ChatGPT バックエンドパスをミラー |

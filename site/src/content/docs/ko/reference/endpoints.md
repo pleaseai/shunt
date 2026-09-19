@@ -26,7 +26,8 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `GET` | `/admin/api/session` | 관리자 SPA가 렌더링 전에 필요한 세션별 값 세 가지: 세션의 `csrf` 토큰, `expiry_buffer_ms`(`claude::auth::EXPIRY_BUFFER`의 밀리초 값으로, setup token이 사용 불가로 바뀌는 경계), 그리고 `access` — 이 세션이 인증하는 등급으로 `read` 또는 `write`이며, 대시보드는 이 값으로 쓰기 동작의 노출 여부를 결정한다. 헤더 자격 증명 호출자는 CSRF 면제 대상이라 빈 `csrf`를 받는다. 이 표면에는 CORS 레이어가 없어 교차 출처 페이지가 요청은 보낼 수 있어도 응답은 읽지 못하므로, `GET`으로 토큰을 반환해도 안전하다 |
 | `GET` | `/admin/api/accounts` | Claude 계정 스토어 메타데이터: 이름, 종류, 만료, UUID; 토큰 자체는 절대 반환하지 않음 |
 | `GET` | `/admin/api/accounts/codex` | Codex 계정 스토어 메타데이터: 이름, 만료, ChatGPT 계정 ID; 토큰 자체는 절대 반환하지 않음 |
-| `GET` | `/admin/api/pool` | `claude_oauth`, `chatgpt_oauth`, `kimi_oauth` 프로바이더별 풀 상태; 각 account 객체에는 선택적인 `plan` 문자열이 포함될 수 있고 파일에서 읽은 값은 이후 profile 조회로 더 정밀하게 보정될 수 있으며, Codex 행은 보고된 5시간/7일 사용량을 담으며 `7d_oi`에는 Codex 대응 항목이 없음; 각 account에는 불리언 `needs_relogin`도 실린다: 크리덴셜이 종결적으로 거부되었거나(`invalid_grant`), 리프레시 토큰이 아예 없거나, 회전된 토큰 쌍을 저장하지 못해 잃어버린 경우로, 어떤 재시도로도 되살릴 수 없고 운영자 재로그인만이 해결한다. 쿨다운 필드와 **독립적으로** 보고된다 — 쿨다운은 저절로 만료되지만 이 표식은 남는다 — 그리고 대시보드의 두 표 모두 쿼터 일시정지의 `cooling`이 아니라 **needs re-login**으로 표시한다. 인메모리라 재시작하면 초기화되고, 해당 계정의 다음 종결 실패에서 다시 세워진다. 어떤 provider 테이블도 선택한 적 없는 계정에도 — `has_state: false`와 함께 — 보고된다. admin refresh 프로브가 판정을 스토어 이름으로 기록하기 때문이다. |
+| `GET` | `/admin/api/accounts/antigravity` | Antigravity 계정 스토어 메타데이터: 이름, 만료, 이메일(Google이 반환한 경우); 토큰 자체는 절대 반환하지 않음 |
+| `GET` | `/admin/api/pool` | `claude_oauth`, `chatgpt_oauth`, `kimi_oauth`, `antigravity_oauth` 프로바이더별 풀 상태; 각 account 객체에는 선택적인 `plan` 문자열이 포함될 수 있고 파일에서 읽은 값은 이후 profile 조회로 더 정밀하게 보정될 수 있으며, Codex 행은 보고된 5시간/7일 사용량을 담으며 `7d_oi`에는 Codex 대응 항목이 없음; 각 account에는 불리언 `needs_relogin`도 실린다: 크리덴셜이 종결적으로 거부되었거나(`invalid_grant`), 리프레시 토큰이 아예 없거나, 회전된 토큰 쌍을 저장하지 못해 잃어버린 경우로, 어떤 재시도로도 되살릴 수 없고 운영자 재로그인만이 해결한다. 쿨다운 필드와 **독립적으로** 보고된다 — 쿨다운은 저절로 만료되지만 이 표식은 남는다 — 그리고 대시보드의 두 표 모두 쿼터 일시정지의 `cooling`이 아니라 **needs re-login**으로 표시한다. 인메모리라 재시작하면 초기화되고, 해당 계정의 다음 종결 실패에서 다시 세워진다. 어떤 provider 테이블도 선택한 적 없는 계정에도 — `has_state: false`와 함께 — 보고된다. admin refresh 프로브가 판정을 스토어 이름으로 기록하기 때문이다. |
 | `GET` | `/admin/api/routes` | 관리자 자격 증명 뒤에서 제공하는 해석된 라우팅 표로, 대시보드가 사용할 수 있습니다 — 위의 `GET /routes`가 반환하는 것과 같은 본문이며, 같은 스냅샷에서 만들어지므로 운영자가 보는 표와 클라이언트가 실제로 해석하는 표가 어긋날 수 없습니다. 리다이렉트가 아니라 별도로 등록하는 이유는 관리자 네임스페이스가 자체 인증을 유지하기 위해서입니다. 공개 `/routes`는 의도적으로 인증을 두지 않으므로, 이 엔드포인트를 그쪽으로 넘기면 두 표면의 인증이 한데 묶입니다. 여기서 관리자 자격 증명을 요구하므로 `/routes`를 열어 두어도 그 자격 증명이 가리는 범위가 넓어지지 않습니다 |
 | `POST` | `/admin/api/accounts/claude` | `{name, mode}`로 Claude 브라우저 프로비저닝 시작. `mode`는 `oauth` 또는 `setup_token`이며, 생략하면 `setup_token`; `{authorize_url}` 반환 |
 | `POST` | `/admin/api/accounts/claude/{name}/complete` | `<code>#<state>`가 담긴 `{code}`로 Claude 프로비저닝 완료; 계정을 저장하고 실제 사용 여부(live)를 보고 |
@@ -35,6 +36,10 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/admin/api/accounts/codex` | `{name}`으로 ChatGPT OAuth 시작; `{authorize_url}` 반환 |
 | `POST` | `/admin/api/accounts/codex/{name}/complete` | 전체 localhost redirect URL 또는 `<code>#<state>`가 담긴 `{code}`로 Codex 프로비저닝 완료 |
 | `DELETE` | `/admin/api/accounts/codex/{name}` | 해당 이름 Codex 계정의 스토어 파일 제거 |
+| `POST` | `/admin/api/accounts/antigravity` | `{name}`으로 Antigravity OAuth 시작; `{authorize_url}` 반환 |
+| `POST` | `/admin/api/accounts/antigravity/{name}/complete` | 전체 localhost redirect URL 또는 `<code>#<state>`가 담긴 `{code}`로 Antigravity 프로비저닝 완료 |
+| `POST` | `/admin/api/accounts/antigravity/{name}/refresh` | Antigravity 계정의 refresh 그랜트를 즉시 실행해 로그인이 아직 살아 있는지 보고. 위 Claude refresh 라우트와 같은 프로브 |
+| `DELETE` | `/admin/api/accounts/antigravity/{name}` | 해당 이름 Antigravity 계정의 스토어 파일 제거 |
 | `GET` | `/admin/assets/{*path}` | 내장된 관리자 SPA 번들 파일. 확장자에 해당하는 `Content-Type`과 `X-Content-Type-Options: nosniff`를 함께 반환합니다. `--features ui`로 빌드한 바이너리에만 존재 |
 | `GET` | `/admin/{*path}` | `/admin` 마운트 아래에서 다른 라우트에 걸리지 않은 경로에 대한 SPA 셸. 클라이언트 측 딥링크가 새로고침에도 유지됩니다. `--features ui`로 빌드한 바이너리에만 존재 |
 | `POST` | `/backend-api/codex/responses` | 인바운드 Codex CLI 패스스루 — 실제 ChatGPT 백엔드 경로 미러 |

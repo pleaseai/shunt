@@ -150,6 +150,65 @@ pub async fn resolve_credential(
     }
 }
 
+pub async fn resolve_antigravity_account(
+    account: &crate::config::AccountConfig,
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Result<Credential, AdapterError> {
+    if account.token_env.is_some() {
+        return Err(auth_error(
+            "Antigravity accounts require a credential file containing a project id",
+        ));
+    }
+    let path = match account.credentials.as_deref() {
+        Some(path) => std::path::PathBuf::from(path),
+        None => {
+            antigravity::store::validate_account_name(&account.name)
+                .map_err(|error| auth_error(error.to_string()))?;
+            antigravity::store::account_path(&account.name)
+        }
+    };
+    let store = antigravity::auth::AntigravityAuthStore::new(path, client.clone(), base_url);
+    with_credential_timeout(
+        ANTIGRAVITY_CREDENTIAL_TIMEOUT,
+        store.get_valid(),
+        "Antigravity credential resolution timed out",
+    )
+    .await
+    .map(|credential| Credential::AntigravityOauth {
+        access_token: credential.access_token,
+        project_id: credential.project_id,
+    })
+}
+
+/// Force-refresh one Antigravity OAuth account's stored credential under a
+/// rejected access token, mirroring `resolve_antigravity_account`'s path
+/// resolution — so a 401 can retry the same account instead of only rotating
+/// off a token whose local expiry math still calls valid. The caller already
+/// resolved this account successfully once via `resolve_antigravity_account`
+/// (which rejects `token_env` and validates the name), so neither check is
+/// repeated here.
+pub(crate) async fn force_refresh_antigravity_account(
+    account: &crate::config::AccountConfig,
+    client: &reqwest::Client,
+    base_url: &str,
+    rejected_access_token: &str,
+) -> Result<Credential, antigravity::auth::AntigravityRefreshError> {
+    let path = account
+        .credentials
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| antigravity::store::account_path(&account.name));
+    let store = antigravity::auth::AntigravityAuthStore::new(path, client.clone(), base_url);
+    store
+        .force_refresh_if_access_token(rejected_access_token)
+        .await
+        .map(|credential| Credential::AntigravityOauth {
+            access_token: credential.access_token,
+            project_id: credential.project_id,
+        })
+}
+
 /// A Claude account credential-resolution failure, plus the two facts the
 /// account pool needs that a bare [`AdapterError`] cannot carry: whether the
 /// provider *terminally* rejected the stored refresh grant, and the underlying
