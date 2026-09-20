@@ -4233,7 +4233,7 @@ impl Config {
                 // it names a routing policy — so a duplicate on either side
                 // leaves two policies for one public id, settled by declaration
                 // order once the resolver reads the table.
-                let declares_policy = model.router.is_some() || model.subagents.is_some();
+                let declares_policy = names_a_policy(model);
                 if duplicate_id
                     && (model_upstream_ids.contains(&model.id)
                         || model_router_ids.contains(&model.id)
