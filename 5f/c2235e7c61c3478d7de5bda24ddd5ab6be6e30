@@ -1,0 +1,19 @@
+src/adapters/cursor/mod.rs
+  s_e9c7bce466358a::t_b5d8a0ad548875 60-66,69,77,140,442-445,456-463,677-725,729,738,747,756,765,788
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5fc2235e7c61c3478d7de5bda24ddd5ab6be6e30",
+  "prompts": {},
+  "sessions": {
+    "s_e9c7bce466358a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52c4e84c-87ad-4bd6-aebe-df807ab7e91c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
