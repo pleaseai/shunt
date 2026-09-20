@@ -20,18 +20,20 @@ shunt の[ステージルーター](/ja/guides/stage-router/)は独自のスコ�
 
 Switchyard はゲートウェイ一式を提供します。プロキシサーバー、プロバイダー中立の
 プロトコル、リクエスト／レスポンス変換、LLM ジャッジ分類器、エスカレーション、
-サブエージェントルーティング。shunt はすでにゲートウェイなので、スコアラー 1 つだけを
-取り込み、残りは置いてきます。
+サブエージェントルーティング。shunt はすでにゲートウェイなので、スコアラーと、オプトイン
+のテーブルの背後にあるジャッジ分類器、その境界でだけ使う翻訳コーデックを取り込み、残りは
+置いてきます。
 
 | Switchyard コンポーネント | shunt では |
 | :-- | :-- |
 | `switchyard-libsy` ステージスコアラー | **使用** — アップストリーム `main` のレビュー済みリビジョンに固定 |
 | `switchyard-protocol` | libsy の依存として入るのみ。shunt は `Request` を組み立てない |
-| `switchyard-translation` | **不使用** — shunt の `src/model/responses_request.rs` と真正面から重複 |
+| `switchyard-translation` | **ルーティング境界でのみ使用** — ジャッジのリクエストとその応答における中立 ⇄ Anthropic の変換。Anthropic → Responses のワイヤ変換は引き続き shunt 自身の `src/model/responses_request.rs` |
 | `switchyard-server` | **不使用** — shunt 自身がサーバー |
-| LLM 分類器／ジャッジ | **不使用** — [後述](#ホットパスに-llm-ジャッジを置かない)を参照 |
+| LLM 分類器／ジャッジ | **エントリ単位のオプトイン** — `stage_router` の [`[models.router.classifier]`](/ja/guides/stage-router/#ジャッジのフォールバック)。シグナルが決着させられなかったターンでのみ呼ばれる。[後述](#ホットパスに-llm-ジャッジを置かない)を参照 |
 | エスカレーションルーティング（ターン途中） | **不使用** — shunt の post-2xx 無再生ルールと衝突 |
-| ハンドオフノート、アドバイザーゲート、サブエージェントルーティング | **不使用** |
+| ハンドオフノート | **使用** — [`[models.router.handoff_notes]`](/ja/reference/configuration/#modelsrouterhandoff_notesオプション) |
+| アドバイザーゲート、サブエージェントルーティング | **不使用** |
 
 結合点は関数呼び出し 1 つだけです。shunt はパース済みの Anthropic Messages ボディから
 libsy の `ToolSignals` 構造体を直接埋め、`pick_tier` を呼びます。その構造体の全
@@ -298,14 +300,20 @@ hard ではなく critical として採点されます。
 ### ホットパスに LLM ジャッジを置かない
 
 シグナルが決め手を欠くとき、libsy は
-`PickOutcome::ConsultClassifier { default_tier }` を返します。shunt はそれを答えとして
-扱い、`default_tier` を採ります。ジャッジを断るのは API と戦うことではなく、API が
+`PickOutcome::ConsultClassifier { default_tier }` を返します。既定では shunt はそれを
+答えとして扱い、`default_tier` を採ります。だからホットパスにジャッジはありません —
+2 回目のモデル呼び出しも、2 つ目の資格情報も、ルーターがもっとも自信のないターンで
+増えるレイテンシもありません。fall-open するのは API と戦うことではなく、API が
 文書化した fall-open の経路*そのもの*です。
 
-得られるのは、2 回目のモデル呼び出しがないこと、2 つ目の資格情報がないこと、そして
-ルーターがもっとも自信のないターンでレイテンシが増えないことです。支払うのは、
-そうしたターンでジャッジが取り戻したはずの正解率であり、これはアップストリームの
-分類器併用構成が測ったものの実質的な一部です。
+エントリ単位で opt-in し直すことはできます。`stage_router` に
+[`[models.router.classifier]`](/ja/guides/stage-router/#ジャッジのフォールバック)
+を置けばよいだけです。そうすると、まさにそうしたターンでジャッジが取り戻す正解率が
+戻ってきます — アップストリームの分類器併用構成が測ったものの実質的な一部です — 代わりに
+レイテンシと、ジャッジのターゲット自身のプールのクォータを支払います。ジャッジが呼ばれる
+のは決着しなかったターンだけ、しかもリクエストが認証を通ったあとだけで、`count_tokens`
+のプローブでは呼ばれません。つまりコストはもっとも不確かだったターンにだけ乗り、ほかには
+乗りません。ジャッジの失敗はすべて `default_tier` に戻ります。
 
 ### ルーティング先は普通のモデル id
 
@@ -348,6 +356,10 @@ hard ではなく critical として採点されます。
 445 のままです。向こうで libsy が新たに直接依存する `http`、`regex`、`uuid` は、すでに
 shunt のツリーにありました。リンクされるかどうかの結果も新しいピンでそのままです。
 リリースバイナリの `jsonschema` 文字列は 0 件、`num-bigint` シンボルも 0 件です。
+
+ジャッジの境界のために `switchyard-translation` を取り込んだことで、ロックのエントリは
+3 つ増えました。クレイト本体と `async-stream`、`async-stream-impl` です。
+`switchyard-protocol` は libsy 自身の依存としてすでにツリーにありました。
 
 ## クレジット
 

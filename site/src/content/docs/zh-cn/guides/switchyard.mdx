@@ -17,18 +17,19 @@ shunt 的[阶段路由器](/zh-cn/guides/stage-router/)并没有自造评分逻�
 ## shunt 引入了什么
 
 Switchyard 提供的是整套网关:代理服务器、provider 中立的协议、请求/响应翻译、
-LLM 裁判分类器、升级路由、子代理路由。shunt 本身就是网关,所以只取评分器一件,
-其余留下。
+LLM 裁判分类器、升级路由、子代理路由。shunt 本身就是网关,所以只取评分器、可选表背后
+的裁判分类器,以及仅在该边界使用的翻译编解码器,其余留下。
 
 | Switchyard 组件 | 在 shunt 中 |
 | :-- | :-- |
 | `switchyard-libsy` 阶段评分器 | **使用** —— 固定在上游 `main` 的一个经过审阅的修订 |
 | `switchyard-protocol` | 作为 libsy 自身的依赖引入;shunt 不构造 `Request` |
-| `switchyard-translation` | **不使用** —— 与 shunt 的 `src/model/responses_request.rs` 正面重复 |
+| `switchyard-translation` | **仅用于路由边界** —— 裁判请求及其回复上的中立 ⇄ Anthropic 转换。Anthropic → Responses 的线上转换仍由 shunt 自己的 `src/model/responses_request.rs` 负责 |
 | `switchyard-server` | **不使用** —— shunt 自己就是服务器 |
-| LLM 分类器 / 裁判 | **不使用** —— 见[下文](#不在热路径上放-llm-裁判) |
+| LLM 分类器 / 裁判 | **按条目可选启用** —— `stage_router` 上的 [`[models.router.classifier]`](/zh-cn/guides/stage-router/#裁判回退),只在信号无法定夺的轮次被咨询;见[下文](#不在热路径上放-llm-裁判) |
 | 升级路由(回合中途) | **不使用** —— 与 shunt 的 post-2xx 不重放规则冲突 |
-| 交接备注、顾问门、子代理路由 | **不使用** |
+| 交接备注 | **使用** —— [`[models.router.handoff_notes]`](/zh-cn/reference/configuration/#modelsrouterhandoff_notes可选) |
+| 顾问门、子代理路由 | **不使用** |
 
 整个耦合就是一次函数调用。shunt 从解析后的 Anthropic Messages 报文直接填充 libsy 的
 `ToolSignals` 结构体并调用 `pick_tier`;该结构体的每个字段都是 `pub`,中间不需要
@@ -266,13 +267,17 @@ Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 
 ### 不在热路径上放 LLM 裁判
 
 当信号不足以定论时,libsy 返回
-`PickOutcome::ConsultClassifier { default_tier }`。shunt 把它当作答案,直接采用
-`default_tier`。拒绝裁判并不是在跟 API 对抗 —— 这*本身就是* API 文档化的 fall-open
-路径。
+`PickOutcome::ConsultClassifier { default_tier }`。默认情况下 shunt 把它当作答案,直接
+采用 `default_tier`,因此热路径上没有裁判:没有第二次模型调用、没有第二份凭据,并且在
+路由器最没把握的那些回合上不增加延迟。fall-open 并不是在跟 API 对抗 —— 这*本身就是*
+API 文档化的 fall-open 路径。
 
-换来的是:没有第二次模型调用、没有第二份凭据,并且在路由器最没把握的那些回合上不
-增加延迟。付出的是:在那些回合上裁判本可以挽回的准确率,而这正是上游"分类器辅助"
-配置所测到的实质组成部分。
+可以按条目重新启用:在 `stage_router` 上配置
+[`[models.router.classifier]`](/zh-cn/guides/stage-router/#裁判回退)。这会把裁判在那些
+回合上本可以挽回的准确率赚回来 —— 那正是上游"分类器辅助"配置所测到的实质组成部分 ——
+代价是延迟,以及裁判目标自己的账号池配额。裁判只在无法定夺的轮次被咨询,而且只在请求通过
+鉴权之后,`count_tokens` 探测上从不咨询,所以代价只落在最没把握的那些回合上,别处不受
+影响。裁判的任何失败都会回到 `default_tier`。
 
 ### 路由目标就是普通的模型 id
 
@@ -311,6 +316,10 @@ Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 
 新增的直接依赖(`http`、`regex`、`uuid`)早已在 shunt 的依赖树里。是否被链接的结论在
 新 pin 上同样成立:release 二进制里 `jsonschema` 字符串仍是 0 处,`num-bigint` 符号
 仍是 0 个。
+
+为裁判边界引入 `switchyard-translation` 让锁文件多出三条:crate 本身,加上
+`async-stream` 和 `async-stream-impl`。`switchyard-protocol` 作为 libsy 自身的依赖,
+本来就已经在依赖树里。
 
 ## 署名
 

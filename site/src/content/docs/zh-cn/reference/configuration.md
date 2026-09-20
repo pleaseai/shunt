@@ -417,8 +417,10 @@ codex = "gpt-5.2"
 | `random` | 按权重抽取,默认按会话固定 | 不读 |
 | `noop` | 不做选择 —— 直接返回空消息 | 不读 |
 
-需要调用 LLM 裁判的算法(`llm_classifier`、`composite`、`advisor`、`prefill_router`)以及
+`llm_classifier`、`composite`、`advisor`、`prefill_router` 这几种 `type` 以及
 `[models.subagents]` 覆盖层**尚不可用**:指定它们会导致启动错误,它们会在后续版本中加入。
+目前唯一可用的裁判形态,是阶段路由器自身的
+[`[models.router.classifier]`](#modelsrouterclassifier可选) 回退。
 
 同一条目不能同时声明 `[models.router]` 和 `[models.upstream_model]`。
 
@@ -503,11 +505,61 @@ only_on_wrong_signal_escalation = true
 让前缀失效 —— 这是在档位切换本身已经放弃的按模型前缀之上再加的代价。这正是这张表需要显式
 开启的原因,也是 `only_on_wrong_signal_escalation` 默认取较窄一侧的原因。
 
+#### `[models.router.classifier]`(可选)
+
+为信号无法判定的轮次准备的 LLM **裁判**。配置这张表会把该条目移到需要裁判调用的那条
+路径上:在打分器无法判定的轮次 —— 也就是本来会报告路由来源 `fall_open` 的轮次 —— 且会话
+没有被 pin 占住时,shunt 会询问裁判并按它的判定路由。只有 `type = "stage_router"` 接受这
+张表。
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+```
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `target` | ✅ 必填 | 裁判的公开 model id。只被询问,永远不会提供给客户端 |
+| `base_threshold` | `0.5` | 让受支持的任务留在高效档位的 `p_solve` 下限,取值范围 `(0.0, 1.0]` |
+
+裁判目标同样是普通的公开 model id,和档位目标一样受一跳规则约束,并且多一条要求:裁判调用
+使用自己那条路由注入的凭证,因此目标若解析到 passthrough 上游就没有可用的凭证,属于启动
+错误。调用方的凭证槽位一个都不会随行 —— 保留的 `x-shunt-*` 槽位以及 `cookie`、
+`authorization`、`x-api-key`、`anthropic-beta` 全部会被移除。调用消耗的是该目标自己的
+账号池配额,所以应当给裁判单独配一条 `[[models]]` 条目。
+
+由裁判判定的轮次报告路由来源 `llm-classifier`,并和其他决策一样把会话 pin 住。裁判失败
+不论何种形式 —— 超时、响应过大、上游错误、无法解析的判定、预算耗尽 —— 都按 picker 的默认
+值 `fall_open` 处理。`count_tokens` 探测不会调用裁判,请求通过鉴权与策略检查之前也不会
+调用。入站鉴权覆盖的范围是被请求的 id,加上该条目可能指定的每一个目标和裁判,并且各自连
+整条故障转移链一起计入。因此当一个 passthrough 应答目标配上会注入凭证的裁判时,就需要客户
+端凭证;而鉴权失败或被策略拒绝的请求一次裁判调用都不会发出。
+
+#### 每次调用的上限
+
+`[models.router]` 上的六个键为该条目发起的每一次内部调用设定上限。越过上限会取消对应的
+上游调用。每个值至少为 `1`,填 `0` 是会指明该键的启动错误。
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `judge_timeout_ms` | `30000` | 非流式裁判调用的端到端期限,同时覆盖响应头*和*响应体,所以先返回 `200` 再卡住的响应也会在这里被切断 |
+| `judge_max_response_bytes` | `65536` | 收集裁判响应的最大字节数;超过则按 `fall_open` 处理 |
+| `gated_max_bytes` | `8388608` | 被保留轮次的最大字节数 |
+| `gated_idle_ms` | `60000` | 被保留轮次中响应体分块之间允许的最长间隔。SSE 的 ping 帧不会重置它 |
+| `gated_max_duration_ms` | `600000` | 被保留轮次的墙钟时间上限 |
+| `max_judge_calls` | `8` | 单个会话可以发起的裁判调用次数 |
+
+三个 `gated_*` 键会被接受、校验,并由保留轮次的收集器真正执行,但**目前还不存在被保留的
+轮次** —— 它们所准备的缓冲升档轮次和 advisor 轮次会在后续版本中加入。在那之前这三个键在
+运行时不约束任何东西。
+
 #### `type = "auto"`
 
 上游的阶段路由器预设:`picker = "efficient_first"` 与 `confidence_threshold = 0.5`,其余
 阶段键全部取 shunt 的默认值。除 `type` 外它只接受两个目标;要设置其他阶段键,请改用
-`type = "stage_router"`。
+`type = "stage_router"`。这也包括 `[models.router.classifier]` 和每次调用的上限键 ——
+预设不带裁判,在 `auto` 条目上写 classifier 表属于启动错误。
 
 ```toml
 [[models]]
@@ -590,7 +642,12 @@ type = "noop"
 映射的两个条目本可共用同一个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id
 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致；因此
 只要目标解析到一个自带路由器的条目，无论两者的 `type` 是什么都会被拒绝，这正是把解析限制在
-一跳之内的办法。以下四种情况
+一跳之内的办法。[`[models.router.classifier]`](#modelsrouterclassifier可选) 的目标同样
+受这条一跳规则约束，并且多两项检查：`classifier.base_threshold` 与
+`confidence_threshold` 以完全相同的方式做范围校验；裁判目标必须解析到会注入凭证的路由
+—— 实际链路中包含 passthrough 上游的目标没有可用来运行裁判的凭证，属于启动错误。
+[每次调用的上限](#每次调用的上限)这六个键中任何一个为 `0`，都是会指明该键的启动错误。
+以下四种情况
 只发出警告而不会让加载失败，因为每一种都可能是运维人员的本意 —— 未匹配到任何显式路由
 的目标（它仍会像其他未匹配的 id 一样经由 `server.default_provider` 解析，该警告现在覆盖
 所有路由器 `type`）、解析到同一个

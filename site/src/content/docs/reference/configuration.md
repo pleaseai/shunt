@@ -621,10 +621,12 @@ id it asked for — the chosen target travels upstream only.
 | `random` | A weighted draw, session-sticky by default | No |
 | `noop` | Nothing — answers with an empty message | No |
 
-The driven algorithms (`llm_classifier`, `composite`, `advisor`,
-`prefill_router`) and the `[models.subagents]` overlay are **not available
-yet**; naming one is a startup error. They call an LLM judge and land in later
-releases.
+The `llm_classifier`, `composite`, `advisor`, and `prefill_router` types and
+the `[models.subagents]` overlay are **not available yet**; naming one is a
+startup error, and they land in later releases. The one judge-backed shape that
+does ship is the stage router's own
+[`[models.router.classifier]`](#modelsrouterclassifier-optional) fallback,
+below.
 
 `[models.router]` and `[models.upstream_model]` on the same entry are mutually
 exclusive.
@@ -717,12 +719,72 @@ cached prefix, so appending or dropping the note invalidates it — on top of th
 per-model prefix a tier change already forfeits. That is why the table is
 opt-in, and why `only_on_wrong_signal_escalation` defaults to the narrower set.
 
+#### `[models.router.classifier]` (optional)
+
+An LLM **judge** for the turns the signals cannot decide. Adding this table
+moves the entry onto the driven lane: on a turn the scorer leaves undecided —
+one that would otherwise report route source `fall_open` — on a session no pin
+is holding, shunt consults the judge and routes on its verdict. It is accepted
+on `type = "stage_router"` only.
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `target` | ✅ required | Public model id of the judge. Consulted, never served — it never answers the client |
+| `base_threshold` | `0.5` | Lowest `p_solve` that keeps a supported task on the efficient tier, in `(0.0, 1.0]` |
+
+The judge target is an ordinary public model id held to the same one-hop rule
+as the tier targets, plus one more: it must resolve to credential-injecting
+routes. The call runs on the credential its own route injects, so a target
+resolving to a passthrough upstream has nothing to run on and is a startup
+error. None of the caller's credential slots travel with it — the reserved
+`x-shunt-*` slots and `cookie`, `authorization`, `x-api-key`, and
+`anthropic-beta` are all removed. The call consumes that target's own account
+pool quota, which is why a judge should map its own `[[models]]` entry.
+
+A judged turn reports route source `llm-classifier` and pins the session like
+any other decision. A judge failure of any kind — a timeout, an oversized
+reply, an upstream error, an unparseable verdict, or an exhausted budget —
+resolves as `fall_open`, the picker default. The judge is never consulted on a
+`count_tokens` probe, and never before the request is admitted: inbound auth
+ranges over the requested id plus every target and judge the entry can name,
+each with its whole failover chain, so a passthrough answer target with a
+credential-injecting judge requires the client credential, and an
+unauthenticated or policy-denied request makes zero judge calls.
+
+#### Per-call bounds
+
+Six keys on `[models.router]` bound every internal call the entry makes.
+Crossing one cancels the upstream call. Each must be at least `1`; a `0` is a
+startup error naming the key.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `judge_timeout_ms` | `30000` | End-to-end deadline on the non-streaming judge call — headers *and* body, so a `200` that then stalls is cut here rather than left hanging |
+| `judge_max_response_bytes` | `65536` | Largest judge reply collected; a larger one resolves as `fall_open` |
+| `gated_max_bytes` | `8388608` | Largest retained turn |
+| `gated_idle_ms` | `60000` | Longest gap between body chunks of a retained turn. SSE ping frames do not reset it |
+| `gated_max_duration_ms` | `600000` | Wall-clock ceiling on a retained turn |
+| `max_judge_calls` | `8` | Judge calls one session may make |
+
+The three `gated_*` keys are accepted, validated, and enforced by the
+retained-turn collector, but **no gated turn exists yet** — the buffered
+escalation and advisor turns they are built for land in a later release. Until
+then they bound nothing at runtime.
+
 #### `type = "auto"`
 
 Upstream's stage-router preset: `picker = "efficient_first"` and
 `confidence_threshold = 0.5`, with every other stage key at its shunt default.
 Only the two targets are accepted beside `type`; set any other stage key and use
-`type = "stage_router"` instead.
+`type = "stage_router"` instead. That includes `[models.router.classifier]` and
+the per-call bounds — the preset carries no judge, and a classifier table on an
+`auto` entry is a startup error.
 
 ```toml
 [[models]]
@@ -813,7 +875,15 @@ share an id, but a router names a routing policy rather than discovery metadata,
 so a duplicate would leave two policies for one id. Target ids are compared
 after the trailing `[1m]`/`[1M]` hint is stripped, the same way routing matches
 them — so a target resolving to any entry that carries its own router is
-rejected whatever the two types are, which is what keeps resolution one hop.
+rejected whatever the two types are, which is what keeps resolution one hop. A
+[`[models.router.classifier]`](#modelsrouterclassifier-optional) target is held
+to that same one-hop rule and to two more checks:
+`classifier.base_threshold` is range-checked exactly like
+`confidence_threshold`, and the judge must resolve to credential-injecting
+routes — a target whose effective chain contains a passthrough upstream is a
+startup error, because a judge has no credential to run on there. Any of the
+six [per-call bounds](#per-call-bounds) set to `0` is a startup error naming
+the key.
 
 Four shapes warn instead of failing the load, each because it has a coherent
 operator intent: a target that matches no explicit route (it still resolves

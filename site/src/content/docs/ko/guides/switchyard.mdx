@@ -20,17 +20,19 @@ shunt의 [스테이지 라우터](/ko/guides/stage-router/)는 자체 스코어�
 
 Switchyard는 게이트웨이 한 벌을 제공합니다. 프록시 서버, 프로바이더 중립 프로토콜,
 요청/응답 번역, LLM 판정자 분류기, 에스컬레이션, 서브에이전트 라우팅까지. shunt는
-이미 게이트웨이이므로 스코어러 하나만 가져오고 나머지는 두고 옵니다.
+이미 게이트웨이이므로 스코어러와, 옵트인 테이블 뒤의 판정자 분류기, 그 경계에서만 쓰는
+번역 코덱을 가져오고 나머지는 두고 옵니다.
 
 | Switchyard 구성 요소 | shunt에서 |
 | :-- | :-- |
 | `switchyard-libsy` 스테이지 스코어러 | **사용** — 업스트림 `main`의 검토된 리비전에 고정 |
 | `switchyard-protocol` | libsy의 의존성으로 딸려옴. shunt는 `Request`를 만들지 않음 |
-| `switchyard-translation` | **미사용** — shunt의 `src/model/responses_request.rs`와 정면으로 중복 |
+| `switchyard-translation` | **라우팅 경계에서만 사용** — 판정 요청과 그 응답의 중립 ⇄ Anthropic 변환. Anthropic → Responses 와이어 변환은 계속 shunt 자신의 `src/model/responses_request.rs`가 맡음 |
 | `switchyard-server` | **미사용** — shunt가 곧 서버 |
-| LLM 분류기 / 판정자 | **미사용** — [아래](#핫-패스에-llm-판정자를-두지-않는다) 참고 |
+| LLM 분류기 / 판정자 | **항목별 옵트인** — `stage_router`의 [`[models.router.classifier]`](/ko/guides/stage-router/#판정-모델-폴백). 신호가 결론을 내지 못한 턴에서만 호출됨. [아래](#핫-패스에-llm-판정자를-두지-않는다) 참고 |
 | 에스컬레이션 라우팅(턴 중간) | **미사용** — shunt의 post-2xx 무재생 규칙과 충돌 |
-| 핸드오프 노트, 어드바이저 게이트, 서브에이전트 라우팅 | **미사용** |
+| 핸드오프 노트 | **사용** — [`[models.router.handoff_notes]`](/ko/reference/configuration/#modelsrouterhandoff_notes-선택) |
+| 어드바이저 게이트, 서브에이전트 라우팅 | **미사용** |
 
 결합점은 함수 호출 하나가 전부입니다. shunt는 파싱된 Anthropic Messages 본문에서
 libsy의 `ToolSignals` 구조체를 직접 채우고 `pick_tier`를 호출합니다. 그 구조체의
@@ -286,13 +288,19 @@ compacted로 채점되고 그 플래그가 저장되므로 — 헤더는 컴팩�
 ### 핫 패스에 LLM 판정자를 두지 않는다
 
 신호가 불확실하면 libsy는 `PickOutcome::ConsultClassifier { default_tier }`를
-반환합니다. shunt는 그것을 답으로 취급하고 `default_tier`를 씁니다. 판정자를 거절하는
-것은 API와 싸우는 게 아니라, API가 문서화한 fall-open 경로 *그 자체* 입니다.
+반환합니다. 기본값에서 shunt는 그것을 답으로 취급하고 `default_tier`를 씁니다. 그래서
+핫 패스에는 판정자가 없습니다 — 두 번째 모델 호출도, 두 번째 자격 증명도, 라우터가 가장
+불확실한 바로 그 턴에서 늘어나는 지연도 없습니다. fall-open하는 것은 API와 싸우는 게
+아니라, API가 문서화한 fall-open 경로 *그 자체* 입니다.
 
-얻는 것은 두 번째 모델 호출 없음, 두 번째 자격 증명 없음, 그리고 라우터가 가장
-불확실한 바로 그 턴에서 지연이 늘지 않음입니다. 치르는 것은 그런 턴에서 판정자가
-회복해줬을 정확도이며, 이는 업스트림의 분류기 보조 구성이 측정한 것의 실질적인
-일부입니다.
+항목 단위로 다시 켤 수는 있습니다. `stage_router`에
+[`[models.router.classifier]`](/ko/guides/stage-router/#판정-모델-폴백)를 두면 됩니다.
+그러면 바로 그 턴들에서 판정자가 회복해주는 정확도를 되찾습니다 — 업스트림의 분류기
+보조 구성이 측정한 것의 실질적인 일부입니다 — 대신 지연 시간과 판정 타깃 자신의 풀
+쿼터를 치릅니다. 판정자는 결론이 나지 않은 턴에서만, 그리고 요청이 통과된 뒤에만
+호출되며 `count_tokens` 탐침에는 호출되지 않습니다. 비용이 가장 불확실했던 턴에만
+얹히고 다른 곳에는 얹히지 않는다는 뜻입니다. 판정 실패는 모두 `default_tier`로
+돌아옵니다.
 
 ### 라우팅된 타깃은 평범한 모델 id
 
@@ -332,6 +340,10 @@ Claude Code의 `/model` 표시와 `--resume` 모델 복원이 그대로 동작�
 그대로입니다. 거기서 libsy가 새로 직접 의존하는 `http`, `regex`, `uuid`가 이미 shunt
 트리에 있었기 때문입니다. 링크 여부 결과도 새 핀에서 그대로입니다. 릴리스 바이너리에
 `jsonschema` 문자열 0건, `num-bigint` 심볼 0건입니다.
+
+판정 경계를 위해 `switchyard-translation`을 가져오면서 락 항목이 셋 늘었습니다. 크레이트
+자체와 `async-stream`, `async-stream-impl`입니다. `switchyard-protocol`은 libsy의 의존성
+으로 이미 트리에 있었습니다.
 
 ## 저작자 표시
 

@@ -49,8 +49,8 @@ authorization = "Bearer <token>"
 
 | 계열 | 유형 | 속성 | 의미 |
 | :-- | :-- | :-- | :-- |
-| `shunt.requests` | 카운터 | `provider`, `model`, `http.response.status_code` | 프록시된 추론 요청. |
-| `shunt.latency` | 히스토그램(ms) | `provider`, `model`, `http.response.status_code` | 스트림은 헤더 지연 시간, 그 외에는 전체 지연 시간. 커밋형 스트리밍 응답은 헤더가 업스트림 응답보다 먼저 커밋되므로 디스패치부터 시도 분류까지를 측정합니다. |
+| `shunt.requests` | 카운터 | `provider`, `model`, `http.response.status_code`, `caller` | 프록시된 추론 요청. `caller`는 인바운드 트래픽이면 `client`, [`[models.router]`](/ko/reference/configuration/) 항목이 호출자를 대신해 만든 판정 호출이면 `router`입니다. |
+| `shunt.latency` | 히스토그램(ms) | `provider`, `model`, `http.response.status_code`, `caller` | 스트림은 헤더 지연 시간, 그 외에는 전체 지연 시간. 커밋형 스트리밍 응답은 헤더가 업스트림 응답보다 먼저 커밋되므로 디스패치부터 시도 분류까지를 측정합니다. |
 | `shunt.ttft` | 히스토그램(ms) | `provider`, `model` | 요청 시작부터 첫 번째 완전한 비-킵얼라이브 SSE 프레임까지의 시간. |
 | `shunt.stream_outcome` | 카운터 | `provider`, `model`, `outcome` | SSE 최종 결과 하나: `completed`, `error_event`, `upstream_cut`, `client_disconnect`. |
 | `shunt.tokens` | 카운터 | `provider`, `model`, `kind` | 마지막으로 보고된 스트리밍 토큰 사용량(`input`, `output`, `cache_read`, `cache_creation`). 비스트리밍 사용량은 기록하지 않음. |
@@ -62,6 +62,7 @@ authorization = "Bearer <token>"
 | `shunt.failover` | 카운터 | `provider`, `state` | 순서 있는 업스트림 페일오버 전환: `attempted`, `advanced`, `exhausted`. |
 | `shunt.router.decisions` | 카운터 | `model`, `algorithm`, `target`, `source` | 모든 [`[models.router]`](/ko/reference/configuration/) `type`의 라우팅 결정. 라우터의 model id(매칭된 형태라 `[1m]` 힌트는 이미 제거됨), 설정된 `type`, 결정이 해석된 model id, 그렇게 고른 이유별로 집계합니다. `count_tokens` 프로브는 제외됩니다. |
 | `shunt.stage_router.decisions` | 카운터 | `model`, `tier`, `source` | [스테이지 라우터](/ko/guides/stage-router/)의 티어 결정. 라우터의 model id(매칭된 형태라 `[1m]` 힌트는 이미 제거됨), 선택된 티어(`capable`/`efficient`), 그렇게 고른 이유별로 집계합니다. `count_tokens` 프로브는 제외됩니다. |
+| `shunt.router.judge_calls` | 카운터 | `model`, `algorithm`, `outcome` | 판정 모델을 설정한 [`[models.router]`](/ko/reference/configuration/#modelsrouterclassifier-선택) 항목이 만든 판정 호출. 라우터의 model id, 설정된 `type`, 호출이 어떻게 끝났는지(`decided`, 또는 `timeout`, `oversized`, `upstream_error`, `invalid_reply`, `translation_failed`, `budget_exhausted` 중 하나 — 어느 쪽이든 그 턴은 picker 기본값으로 라우팅됩니다)별로 집계합니다. |
 | `shunt.stage_router.flips` | 카운터 | `model`, `from`, `to` | 세션을 고정된 티어에서 옮긴 결정. 올라가기는 쉽고 내려오기는 어렵게 설계했으므로 두 방향을 분리해 셉니다. |
 | `shunt.requests_shed` | 카운터 | — | `max_concurrent_requests` 상한에서 거부된 인바운드 요청. 거부 자체는 `debug!`로만 로깅되므로, 게이트웨이 포화 상태를 드러내는 것은 이 카운터입니다. |
 | `shunt.pool.quota_utilization` | 게이지 | `provider`, `window` | `5h`, `7d`, `7d_oi`별 활성 상태이고 관측됐으며 만료되지 않은 quota 값 중 최소 사용률. |

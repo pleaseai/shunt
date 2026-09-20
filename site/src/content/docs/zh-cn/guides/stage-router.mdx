@@ -57,8 +57,9 @@ shunt 知道 Claude Code 实际的工具名称,这正是它能胜过通用路由
 校准的部分,这里不重新实现。单个饱和信号约为 `0.46`,不足以决定一轮;两个互相印证的信号可
 达到约 `0.76`。
 
-当信号不足以定夺时,评分器会请求 LLM 裁决。**shunt 不设裁决模型**,而是 fall-open 到 picker
-的默认值,从而让热路径上不多出一次模型调用和一份凭据。
+当信号不足以定夺时,评分器会请求 LLM 裁决。**shunt 默认不设裁决模型**,而是 fall-open 到
+picker 的默认值,从而让热路径上不多出一次模型调用和一份凭据。下文的
+[裁判回退](#裁判回退)就是把这些轮次交给裁判的可选开关,而且只影响这些轮次。
 
 完整的评分公式、支撑它的公开基准结果,以及 shunt 在其之上额外加入的东西,都在
 [Switchyard 集成](/zh-cn/guides/switchyard/)。
@@ -143,11 +144,12 @@ POST /v1/messages   {"model": "claude-auto", ...}
 | 头部 | 值 |
 | :-- | :-- |
 | `x-gateway-routed-model` | 路由器选中的目标(`claude-opus-4-8`) |
-| `x-gateway-route-source` | 原因(`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`、`capable_hold`) |
+| `x-gateway-route-source` | 原因(`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`、`capable_hold`、`llm-classifier`) |
 
-这六个就是这个路由器会发出的标签。评分器还定义了另外两个 —— `ambiguous` 和
-`llm-classifier` —— 但都不能出现在响应里:shunt 把无法定夺的一轮报告为 `fall_open`,
-并且从不调用判定模型。其他路由器类型有自己的标签(`random`、`random_session`、`noop`)。
+七个里有六个是信号标签。`llm-classifier` 只会出现在配置了下文
+[裁判回退](#裁判回退)的条目上,并且只出现在由裁判决定的那一轮;没有配置时,无法定夺的
+一轮仍然报告为 `fall_open`,也不会发出裁判调用。评分器还定义了 `ambiguous`,它不能出现
+在响应里。其他路由器类型有自己的标签(`random`、`random_session`、`noop`)。
 
 没有路由器的模型 id 不会带上这两个头,这样"被路由到高效档位"与"根本没走路由器"才能
 区分开。`count_tokens` 探测不加这两个头:在尚未固定的会话上,探测按自己落后一轮的
@@ -155,8 +157,10 @@ POST /v1/messages   {"model": "claude-auto", ...}
 
 `GET /routes` 会在 `routers` 中列出每个已配置的路由器,附带它的 `algorithm` 与 `targets`;
 对这个类型还会给出两个档位的目标,以及当没有信号做出决定时 picker 回退到的档位。启用指标后
+配置了裁判的路由器还会把它列在 `judges` 里。启用指标后
 会导出三个计数器:覆盖所有路由器类型的 `shunt.router.decisions`,以及
-`shunt.stage_router.decisions` 和 `shunt.stage_router.flips`。档位切换是昂贵事件,而决策
+`shunt.stage_router.decisions` 和 `shunt.stage_router.flips` —— 一旦配置了裁判,还会多出
+第四个 `shunt.router.judge_calls`。档位切换是昂贵事件,而决策
 计数器无法区分刚刚迁移过来的会话和本来就在那里的会话,所以 flip 单独计数。
 
 ## 如何配置
@@ -188,10 +192,45 @@ efficient_target = "claude-sonnet-4-6"
 `[models.router]` 判别键和其余算法的记录见
 [ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)。
 
+## 裁判回退
+
+信号能决定大多数轮次,但不是全部。可选的
+[`[models.router.classifier]`](/zh-cn/reference/configuration/#modelsrouterclassifier可选)
+表用来指定一个**裁判** —— 一个只在信号无法定夺的轮次被问及该轮需要哪个档位的模型。
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"    # 只被询问,从不提供
+base_threshold = 0.5           # 让任务留在高效档位的 p_solve 下限
+```
+
+不配置这张表,一切照旧:无法定夺的一轮 fall-open 到 picker 默认值。配置之后,只有那一轮
+会交给裁判。已经被 pin 占住的会话不会被裁判,`count_tokens` 探测不会被裁判,请求通过鉴权
+之前也不会发出任何裁判调用。
+
+裁判是普通的公开 model id,使用的是**它自己**的凭证而非调用方的:保留的 `x-shunt-*`
+槽位以及 `cookie`、`authorization`、`x-api-key`、`anthropic-beta` 都会在调用发出前被剥离;
+解析到 passthrough 上游的裁判目标属于启动错误,因为那里没有由网关注入的凭证可用。调用
+消耗的是该目标自己的账号池配额,所以请给裁判单独配一条 `[[models]]` 条目。
+
+由于鉴权覆盖的是整个条目 —— 被请求的 id、两个档位目标,再加上裁判,并且各自连整条故障转移
+链一起计入 —— 给一个应答目标全是 passthrough 的条目加上会注入凭证的裁判,就会让该条目开始
+要求客户端凭证。鉴权失败或被策略拒绝的请求一次裁判调用都不会发出。
+
+`[models.router]` 上的六个键为每一次内部调用设定上限:`judge_timeout_ms`(默认 `30000`,
+同时覆盖响应头*和*响应体的端到端期限)、`judge_max_response_bytes`(`65536`)、每个会话的
+`max_judge_calls`(`8`),以及为后续版本的缓冲轮次预留的三个 `gated_*` 键。越过上限会取消
+对应的上游调用。
+
+由裁判判定的轮次报告 `x-gateway-route-source: llm-classifier`,并和其他决策一样把会话
+pin 住。超时、响应过大或无法解析、上游错误、预算耗尽 —— 所有失败都按 `fall_open` 处理,
+所以裁判挂掉付出的是延迟而不是可用性。每一次调用都会带着它的结果记入
+`shunt.router.judge_calls`。
+
 ## 限制
 
 - **没有轮次中途升档。** 响应头一旦提交,shunt 不会重放该轮,因此在一轮开始时选定的档位会
   承担整轮。
-- **没有 LLM 裁决。** 不足以定夺的信号 fall-open 到 picker 默认值。需要裁决的类型 ——
-  `llm_classifier`、`composite`、`advisor` —— 尚不可用,指定它们会导致启动错误。
+- **裁判只决定档位。** 其他需要裁决的类型 —— `llm_classifier`、`composite`、`advisor`
+  —— 尚不可用,指定它们会导致启动错误。
 - **`[server.codex_endpoint]` 不在范围内**,它使用自己的路由表。

@@ -71,8 +71,10 @@ reimplemented here. One saturated signal alone scores about `0.46` and cannot
 decide a turn; two corroborating signals reach about `0.76`.
 
 When the signals are inconclusive the scorer asks for an LLM judge. **shunt runs
-none** — it falls open to the picker's default instead, which keeps the hot path
-free of an extra model call and an extra credential.
+none by default** — it falls open to the picker's default instead, which keeps
+the hot path free of an extra model call and an extra credential.
+[The judge fallback](#the-judge-fallback) below is the opt-in that answers those
+turns with a judge after all, and only those turns.
 
 The full scoring formula, the published benchmark results behind it, and what
 shunt adds on top are in [Switchyard Integration](/guides/switchyard/).
@@ -176,12 +178,14 @@ Two response headers report the decision, so you do not have to infer it:
 | Header | Value |
 | :-- | :-- |
 | `x-gateway-routed-model` | The target the router chose (`claude-opus-4-8`) |
-| `x-gateway-route-source` | Why (`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`, `capable_hold`) |
+| `x-gateway-route-source` | Why (`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`, `capable_hold`, `llm-classifier`) |
 
-Those six are the labels this router emits. The scorer defines two more —
-`ambiguous` and `llm-classifier` — and neither can reach a response: shunt
-reports an inconclusive turn as `fall_open` and runs no judge. The other router
-types have labels of their own (`random`, `random_session`, `noop`).
+Six of those seven are signal labels. `llm-classifier` appears only on an entry
+that configures [the judge fallback](#the-judge-fallback) below, on a turn the
+judge decided; without one, an inconclusive turn still reports `fall_open` and
+runs no judge. The scorer defines one more label, `ambiguous`, which cannot
+reach a response. The other router types have labels of their own (`random`,
+`random_session`, `noop`).
 
 Both are absent for a model id that has no router, so "routed to the efficient
 tier" stays distinguishable from "not routed by a router at all". A
@@ -191,9 +195,11 @@ of the turn it is measuring.
 
 `GET /routes` lists every configured router under `routers`, with its
 `algorithm` and `targets`, and — for this type — both tier targets and the tier
-its picker falls back to when no signal decides. Three counters are exported
-when you enable metrics: `shunt.router.decisions`, which covers every router
-type, plus `shunt.stage_router.decisions` and `shunt.stage_router.flips`. Flips
+its picker falls back to when no signal decides. A router that configures a
+judge also lists it under `judges`. Three counters are exported when you enable
+metrics: `shunt.router.decisions`, which covers every router type, plus
+`shunt.stage_router.decisions` and `shunt.stage_router.flips` — and a fourth,
+`shunt.router.judge_calls`, once a judge is configured. Flips
 are counted separately because a tier change is the expensive event, and a
 decision counter cannot distinguish a session that just moved from one that was
 already there.
@@ -231,12 +237,58 @@ including what was deliberately left out, is
 is the record for the `[models.router]` discriminator and the rest of the
 algorithms.
 
+## The judge fallback
+
+The signals decide most turns, but not all of them. An optional
+[`[models.router.classifier]`](/reference/configuration/#modelsrouterclassifier-optional)
+table names a **judge** — a model asked which tier the turn needs, on the turns
+the signals leave undecided:
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"    # consulted, never served
+base_threshold = 0.5           # lowest p_solve that keeps a task on the efficient tier
+```
+
+Without the table nothing changes: an inconclusive turn falls open to the
+picker default, as it always has. With it, that same turn is put to the judge
+instead — but only that turn. A session whose pin already holds the turn is
+never judged, a `count_tokens` probe is never judged, and no judge call is made
+before the request has been authenticated.
+
+The judge is an ordinary public model id and runs on **its own** credential,
+never the caller's: the reserved `x-shunt-*` slots and `cookie`,
+`authorization`, `x-api-key`, and `anthropic-beta` are all stripped before the
+call goes out, and a judge target that resolves to a passthrough upstream is a
+startup error, because there is no gateway-injected credential to run it on.
+The call spends that target's own account-pool quota, so give the judge its own
+`[[models]]` entry.
+
+Because admission ranges over the whole entry — the requested id plus both tier
+targets plus the judge, each with its full failover chain — adding an injecting
+judge to an entry whose answer targets are all passthrough makes that entry
+require a client credential. An unauthenticated or policy-denied request makes
+zero judge calls.
+
+Six keys on `[models.router]` bound every internal call: `judge_timeout_ms`
+(default `30000`, an end-to-end deadline covering headers *and* body),
+`judge_max_response_bytes` (`65536`), `max_judge_calls` per session (`8`), and
+the three `gated_*` keys reserved for the buffered turns of a later release.
+Crossing a bound cancels the upstream call.
+
+A judged turn reports `x-gateway-route-source: llm-classifier` and pins the
+session like any other decision. Every failure — a timeout, an oversized or
+unparseable reply, an upstream error, an exhausted budget — resolves as
+`fall_open`, so a judge that is down costs latency, never availability. Each
+call is counted by `shunt.router.judge_calls` with the outcome that resolved
+it.
+
 ## Limits
 
 - **No mid-turn escalation.** Once response headers are committed shunt does not
   replay a turn, so a tier chosen at the start of a turn serves all of it.
-- **No LLM judge.** Inconclusive signals fall open to the picker default. The
-  judge-backed types — `llm_classifier`, `composite`, `advisor` — are not
-  available yet; naming one is a startup error.
+- **The judge decides a tier, nothing more.** The other judge-backed types —
+  `llm_classifier`, `composite`, `advisor` — are not available yet; naming one
+  is a startup error.
 - **Out of scope for `[server.codex_endpoint]`**, which uses its own routing
   table.

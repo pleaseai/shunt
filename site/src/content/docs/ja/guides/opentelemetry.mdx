@@ -49,8 +49,8 @@ authorization = "Bearer <token>"
 
 | 系列 | 種類 | 属性 | 意味 |
 | :-- | :-- | :-- | :-- |
-| `shunt.requests` | カウンター | `provider`, `model`, `http.response.status_code` | プロキシされた推論リクエスト。 |
-| `shunt.latency` | ヒストグラム(ms) | `provider`, `model`, `http.response.status_code` | ストリームではヘッダーまで、それ以外では応答全体のレイテンシ。コミット型ストリーミング応答はヘッダーがアップストリーム応答より先にコミットされるため、ディスパッチから試行分類までを測定します。 |
+| `shunt.requests` | カウンター | `provider`, `model`, `http.response.status_code`, `caller` | プロキシされた推論リクエスト。`caller` はインバウンドのトラフィックなら `client`、[`[models.router]`](/ja/reference/configuration/) エントリが呼び出し元に代わって行ったジャッジ呼び出しなら `router`。 |
+| `shunt.latency` | ヒストグラム(ms) | `provider`, `model`, `http.response.status_code`, `caller` | ストリームではヘッダーまで、それ以外では応答全体のレイテンシ。コミット型ストリーミング応答はヘッダーがアップストリーム応答より先にコミットされるため、ディスパッチから試行分類までを測定します。 |
 | `shunt.ttft` | ヒストグラム(ms) | `provider`, `model` | リクエスト開始から最初の完全な非キープアライブ SSE フレームまでの時間。 |
 | `shunt.stream_outcome` | カウンター | `provider`, `model`, `outcome` | SSE の最終結果を 1 件記録: `completed`, `error_event`, `upstream_cut`, `client_disconnect`。 |
 | `shunt.tokens` | カウンター | `provider`, `model`, `kind` | 最後に報告されたストリーミング token usage (`input`, `output`, `cache_read`, `cache_creation`)。非ストリーミングは記録しない。 |
@@ -62,6 +62,7 @@ authorization = "Bearer <token>"
 | `shunt.failover` | カウンター | `provider`, `state` | 順序付きアップストリームのフェイルオーバー遷移: `attempted`, `advanced`, `exhausted`。 |
 | `shunt.router.decisions` | カウンター | `model`, `algorithm`, `target`, `source` | すべての [`[models.router]`](/ja/reference/configuration/) `type` のルーティング決定。ルーターの model id（マッチした形なので `[1m]` ヒントは除去済み）、設定された `type`、決定が解決したモデル id、選んだ理由ごとに数える。`count_tokens` のプローブは除外。 |
 | `shunt.stage_router.decisions` | カウンター | `model`, `tier`, `source` | [ステージルーター](/ja/guides/stage-router/)のティア決定。ルーターの model id（マッチした形なので `[1m]` ヒントは除去済み）、選ばれたティア（`capable`/`efficient`）、選んだ理由ごとに数える。`count_tokens` のプローブは除外。 |
+| `shunt.router.judge_calls` | カウンター | `model`, `algorithm`, `outcome` | ジャッジを設定した [`[models.router]`](/ja/reference/configuration/#modelsrouterclassifierオプション) エントリが行ったジャッジ呼び出し。ルーターの model id、設定された `type`、呼び出しがどう決着したか（`decided`、または `timeout`、`oversized`、`upstream_error`、`invalid_reply`、`translation_failed`、`budget_exhausted` のいずれか — いずれの場合もそのターンは picker の既定値にルーティングされる）ごとに数える。 |
 | `shunt.stage_router.flips` | カウンター | `model`, `from`, `to` | セッションを固定済みのティアから動かした決定。昇格は容易に、降格は難しくという設計なので、2 つの方向を分けて数える。 |
 | `shunt.requests_shed` | カウンター | — | `max_concurrent_requests` の上限で拒否されたインバウンドリクエスト。拒否自体は `debug!` でのみログ出力されるため、ゲートウェイの飽和を可視化するのはこのカウンターです。 |
 | `shunt.pool.quota_utilization` | ゲージ | `provider`, `window` | `5h`, `7d`, `7d_oi` ごとに、有効で観測済みかつ期限切れでない quota 値の最小 utilization。 |

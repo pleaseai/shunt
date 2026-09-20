@@ -49,8 +49,8 @@ authorization = "Bearer <token>"
 
 | 序列 | 类型 | 属性 | 含义 |
 | :-- | :-- | :-- | :-- |
-| `shunt.requests` | 计数器 | `provider`, `model`, `http.response.status_code` | 代理的推理请求。 |
-| `shunt.latency` | 直方图(ms) | `provider`, `model`, `http.response.status_code` | 流式响应为到 header 的延迟；其他响应为完整延迟。提交式流式响应因 header 在上游响应前提交，测量从分发到尝试分类的时间。 |
+| `shunt.requests` | 计数器 | `provider`, `model`, `http.response.status_code`, `caller` | 代理的推理请求。`caller` 对入站流量为 `client`，对 [`[models.router]`](/zh-cn/reference/configuration/) 条目代表调用方发起的裁判调用为 `router`。 |
+| `shunt.latency` | 直方图(ms) | `provider`, `model`, `http.response.status_code`, `caller` | 流式响应为到 header 的延迟；其他响应为完整延迟。提交式流式响应因 header 在上游响应前提交，测量从分发到尝试分类的时间。 |
 | `shunt.ttft` | 直方图(ms) | `provider`, `model` | 从请求开始到第一个完整的非保活 SSE 帧的时间。 |
 | `shunt.stream_outcome` | 计数器 | `provider`, `model`, `outcome` | 每个 SSE 记录一个最终结果：`completed`、`error_event`、`upstream_cut` 或 `client_disconnect`。 |
 | `shunt.tokens` | 计数器 | `provider`, `model`, `kind` | 最后报告的流式 token 用量（`input`、`output`、`cache_read`、`cache_creation`）；不记录非流式用量。 |
@@ -62,6 +62,7 @@ authorization = "Bearer <token>"
 | `shunt.failover` | 计数器 | `provider`, `state` | 有序上游故障转移状态：`attempted`、`advanced` 或 `exhausted`。 |
 | `shunt.router.decisions` | 计数器 | `model`, `algorithm`, `target`, `source` | 所有 [`[models.router]`](/zh-cn/reference/configuration/) `type` 的路由决策，按路由器的模型 id（匹配后的形式，`[1m]` 提示已剥离）、配置的 `type`、该决策解析到的模型 id 以及选中的原因计数。不含 `count_tokens` 探测。 |
 | `shunt.stage_router.decisions` | 计数器 | `model`, `tier`, `source` | [阶段路由器](/zh-cn/guides/stage-router/)的档位决策，按路由器的模型 id（匹配后的形式，`[1m]` 提示已剥离）、选中的档位（`capable`/`efficient`）以及选中的原因计数。不含 `count_tokens` 探测。 |
+| `shunt.router.judge_calls` | 计数器 | `model`, `algorithm`, `outcome` | 配置了裁判的 [`[models.router]`](/zh-cn/reference/configuration/#modelsrouterclassifier可选) 条目发起的裁判调用，按路由器的模型 id、配置的 `type` 以及该次调用的结果计数：`decided`，或 `timeout`、`oversized`、`upstream_error`、`invalid_reply`、`translation_failed`、`budget_exhausted` 之一 —— 后几种都会把该轮路由到 picker 的默认值。 |
 | `shunt.stage_router.flips` | 计数器 | `model`, `from`, `to` | 把会话从已固定档位移开的决策。升档刻意比降档容易，因此两个方向分开计数。 |
 | `shunt.requests_shed` | 计数器 | — | 在 `max_concurrent_requests` 上限处被拒绝的入站请求。拒绝本身仅以 `debug!` 记录，因此这个计数器才是网关饱和的可见信号。 |
 | `shunt.pool.quota_utilization` | 仪表 | `provider`, `window` | `5h`、`7d` 或 `7d_oi` 窗口中已启用、已观测且未过期的 quota 值的最小使用率。 |

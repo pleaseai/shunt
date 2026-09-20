@@ -62,8 +62,10 @@ shunt는 Claude Code의 실제 도구 이름을 압니다. 범용 라우터보�
 맡습니다. 캘리브레이션된 부분이라 여기서 다시 구현하지 않습니다. 포화된 신호 하나만으로는
 약 `0.46`이라 턴을 결정하지 못하고, 서로를 뒷받침하는 신호 둘이면 약 `0.76`에 도달합니다.
 
-신호가 불충분하면 스코어러는 LLM 판정을 요청합니다. **shunt는 판정 모델을 두지 않고**
-picker 기본값으로 fall-open합니다. 덕분에 핫패스에 모델 호출과 크리덴셜이 추가되지 않습니다.
+신호가 불충분하면 스코어러는 LLM 판정을 요청합니다. **shunt는 기본적으로 판정 모델을 두지
+않고** picker 기본값으로 fall-open합니다. 덕분에 핫패스에 모델 호출과 크리덴셜이 추가되지
+않습니다. 아래 [판정 모델 폴백](#판정-모델-폴백)은 바로 그 턴만 판정 모델에게 넘기는
+옵트인입니다.
 
 전체 채점 공식, 그 근거가 된 공개 벤치마크 결과, 그리고 shunt가 그 위에 더한 것은
 [Switchyard 통합](/ko/guides/switchyard/)에 있습니다.
@@ -159,12 +161,13 @@ POST /v1/messages   {"model": "claude-auto", ...}
 | 헤더 | 값 |
 | :-- | :-- |
 | `x-gateway-routed-model` | 라우터가 고른 타깃(`claude-opus-4-8`) |
-| `x-gateway-route-source` | 그 이유(`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`, `capable_hold`) |
+| `x-gateway-route-source` | 그 이유(`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`, `capable_hold`, `llm-classifier`) |
 
-이 여섯 개가 이 라우터가 내보내는 라벨입니다. 스코어러는 `ambiguous`와
-`llm-classifier` 두 가지를 더 정의하지만 어느 것도 응답에 실릴 수 없습니다. shunt는
-결정을 못 내린 턴을 `fall_open`으로 보고하고 판정 모델을 전혀 호출하지 않기
-때문입니다. 다른 라우터 타입은 자기 라벨(`random`, `random_session`, `noop`)을 씁니다.
+일곱 개 가운데 여섯 개는 신호 라벨입니다. `llm-classifier`는 아래
+[판정 모델 폴백](#판정-모델-폴백)을 설정한 항목에서, 판정 모델이 결정한 턴에만
+나타납니다. 설정하지 않으면 결정을 못 내린 턴은 지금처럼 `fall_open`으로 보고되고 판정
+호출도 없습니다. 스코어러는 `ambiguous` 라벨을 하나 더 정의하지만 이것은 응답에 실릴 수
+없습니다. 다른 라우터 타입은 자기 라벨(`random`, `random_session`, `noop`)을 씁니다.
 
 라우터가 없는 model id에는 둘 다 붙지 않습니다. 그래야 "효율 티어로 라우팅됨"과
 "애초에 라우터를 거치지 않음"이 구분됩니다. `count_tokens` 탐침에는 붙이지
@@ -173,9 +176,11 @@ POST /v1/messages   {"model": "claude-auto", ...}
 
 `GET /routes`는 설정된 라우터를 `routers`에 모두 싣고 `algorithm`과 `targets`를 보여주며,
 이 타입에 대해서는 두 티어 타깃과 신호가 아무것도 결정하지 못했을 때 picker가 돌아가는
-티어까지 함께 보여줍니다. 메트릭을 켜면 카운터 세 개가 나갑니다 — 모든 라우터 타입을
+티어까지 함께 보여줍니다. 판정 모델을 설정한 라우터는 그 id를 `judges`로도 함께
+보여줍니다. 메트릭을 켜면 카운터 세 개가 나갑니다 — 모든 라우터 타입을
 포괄하는 `shunt.router.decisions`, 그리고 `shunt.stage_router.decisions`와
-`shunt.stage_router.flips`. 티어 전환이 비싼 사건이고, 결정 카운터만으로는 방금 옮겨온
+`shunt.stage_router.flips` — 판정 모델을 설정하면 네 번째로
+`shunt.router.judge_calls`가 더해집니다. 티어 전환이 비싼 사건이고, 결정 카운터만으로는 방금 옮겨온
 세션과 원래 거기 있던 세션을 구분할 수 없어서 flip을 따로 셉니다.
 
 ## 설정
@@ -209,11 +214,50 @@ efficient_target = "claude-sonnet-4-6"
 [ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)에
 있습니다.
 
+## 판정 모델 폴백
+
+신호는 대부분의 턴을 결정하지만 전부는 아닙니다. 선택적인
+[`[models.router.classifier]`](/ko/reference/configuration/#modelsrouterclassifier-선택)
+테이블은 **판정 모델**을 지정합니다. 신호가 결론을 내지 못한 턴에 한해 어느 티어가
+필요한지 물어보는 모델입니다.
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"    # 물어보기만 하고 제공하지는 않습니다
+base_threshold = 0.5           # 작업을 효율 티어에 두는 p_solve 하한
+```
+
+이 테이블이 없으면 달라지는 것은 없습니다. 결론이 나지 않은 턴은 지금까지처럼 picker
+기본값으로 fall-open합니다. 테이블이 있으면 바로 그 턴만 판정 모델에게 넘어갑니다. 이미
+고정(pin)이 턴을 잡고 있는 세션은 판정하지 않고, `count_tokens` 탐침도 판정하지 않으며,
+요청이 인증을 통과하기 전에는 판정 호출을 만들지 않습니다.
+
+판정 모델은 평범한 공개 model id이고 호출자의 자격 증명이 아니라 **자기** 자격 증명으로
+실행됩니다. 예약된 `x-shunt-*` 슬롯과 `cookie`, `authorization`, `x-api-key`,
+`anthropic-beta`는 호출이 나가기 전에 모두 제거되며, passthrough 업스트림으로 해석되는
+판정 타깃은 게이트웨이가 주입할 자격 증명이 없으므로 시작 오류입니다. 호출은 그 타깃
+자신의 계정 풀 쿼터를 쓰므로, 판정 모델에는 자기 `[[models]]` 항목을 주세요.
+
+인증 대상은 항목 전체입니다 — 요청된 id에 두 티어 타깃과 판정 모델을, 각각의 페일오버
+체인 전체까지 포함합니다. 그래서 응답 타깃이 모두 passthrough인 항목에 자격 증명을
+주입하는 판정 모델을 더하면 그 항목은 클라이언트 자격 증명을 요구하게 됩니다. 인증에
+실패했거나 정책이 거부한 요청은 판정 호출을 한 번도 만들지 않습니다.
+
+`[models.router]`의 여섯 개 키가 모든 내부 호출에 한도를 겁니다 — `judge_timeout_ms`
+(기본 `30000`, 헤더*와* 본문을 모두 덮는 종단 간 기한), `judge_max_response_bytes`
+(`65536`), 세션당 `max_judge_calls`(`8`), 그리고 이후 릴리스의 버퍼링된 턴을 위해
+예약된 `gated_*` 세 개입니다. 한도를 넘기면 업스트림 호출을 취소합니다.
+
+판정이 내려진 턴은 `x-gateway-route-source: llm-classifier`로 보고되고 다른 결정과
+똑같이 세션을 고정합니다. 타임아웃, 크기 초과나 해석 불가 응답, 업스트림 오류, 예산 소진
+등 모든 실패는 `fall_open`으로 해결되므로, 판정 모델이 죽어 있으면 지연 시간을 잃을 뿐
+가용성을 잃지는 않습니다. 각 호출은 그 결과와 함께 `shunt.router.judge_calls`로 집계
+됩니다.
+
 ## 한계
 
 - **턴 중간 상향 전환은 없습니다.** 응답 헤더가 커밋된 뒤에는 shunt가 턴을 재구동하지
   않으므로, 턴 시작 시점에 고른 티어가 그 턴 전체를 맡습니다.
-- **LLM 판정은 없습니다.** 불충분한 신호는 picker 기본값으로 fall-open합니다. 판정을
-  쓰는 타입 — `llm_classifier`, `composite`, `advisor` — 은 아직 쓸 수 없고, 지정하면
-  시작 오류입니다.
+- **판정 모델은 티어만 결정합니다.** 판정을 쓰는 다른 타입 — `llm_classifier`,
+  `composite`, `advisor` — 은 아직 쓸 수 없고, 지정하면 시작 오류입니다.
 - **`[server.codex_endpoint]`는 범위 밖**입니다. 자체 라우팅 테이블을 사용합니다.

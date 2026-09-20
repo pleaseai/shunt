@@ -20,18 +20,20 @@ how the algorithm decides a turn. If you only want to turn the feature on, the
 
 Switchyard ships a whole gateway: a proxy server, a provider-neutral protocol,
 request/response translation, an LLM-judge classifier, escalation, sub-agent
-routing. shunt already is a gateway, so it takes one piece — the scorer — and
-leaves the rest.
+routing. shunt already is a gateway, so it takes the scorer, the judge
+classifier behind an opt-in table, and the translation codec at that one
+boundary — and leaves the rest.
 
 | Switchyard component | In shunt |
 | :-- | :-- |
 | `switchyard-libsy` stage scorer | **Yes** — pinned to a reviewed revision of upstream `main` |
 | `switchyard-protocol` | Pulled in as libsy's own dependency; shunt builds no `Request` |
-| `switchyard-translation` | **No** — it duplicates shunt's `src/model/responses_request.rs` head-on |
+| `switchyard-translation` | **At the routing boundary only** — neutral ⇄ Anthropic on the judge request and its reply. The Anthropic → Responses wire translation stays shunt's own `src/model/responses_request.rs` |
 | `switchyard-server` | **No** — shunt is the server |
-| LLM classifier / judge | **No** — see [below](#no-llm-judge-on-the-hot-path) |
+| LLM classifier / judge | **Opt-in per entry** — [`[models.router.classifier]`](/guides/stage-router/#the-judge-fallback) on a `stage_router`, consulted only on the turns the signals leave undecided; see [below](#no-llm-judge-on-the-hot-path) |
 | Escalation routing (mid-turn) | **No** — collides with shunt's post-2xx no-replay rule |
-| Handoff notes, advisor gate, sub-agent routing | **No** |
+| Handoff notes | **Yes** — [`[models.router.handoff_notes]`](/reference/configuration/#modelsrouterhandoff_notes-optional) |
+| Advisor gate, sub-agent routing | **No** |
 
 The whole coupling is one function call. shunt fills libsy's `ToolSignals`
 struct straight from the parsed Anthropic Messages body and calls `pick_tier`;
@@ -300,14 +302,21 @@ fails to compile instead of quietly letting stale pins outlive it.
 ### No LLM judge on the hot path
 
 When the signals are inconclusive, libsy returns
-`PickOutcome::ConsultClassifier { default_tier }`. shunt treats that as the
-answer and takes `default_tier`. Declining the judge is not fighting the API — it
-*is* the API's documented fall-open path.
+`PickOutcome::ConsultClassifier { default_tier }`. By default shunt treats that
+as the answer and takes `default_tier`, so the hot path carries no judge: no
+second model call, no second credential, and no added latency on the turns where
+the router is least sure. Falling open is not fighting the API — it *is* the
+API's documented fall-open path.
 
-What that buys: no second model call, no second credential, and no added latency
-on the turns where the router is least sure. What it costs: shunt gives up the
-accuracy a judge would recover on those turns, which is a real part of what the
-upstream classifier-assisted configurations measured.
+An entry can opt back in, one entry at a time, with
+[`[models.router.classifier]`](/guides/stage-router/#the-judge-fallback) on a
+`stage_router`. That recovers the accuracy a judge buys on exactly those turns —
+a real part of what the upstream classifier-assisted configurations measured —
+and pays for it in latency and in the judge target's own pool quota. The judge
+is consulted only on the undecided turns, only after the request has been
+admitted, and never on a `count_tokens` probe, so the cost lands on the turns
+that were least certain and nowhere else. Every judge failure resolves back to
+`default_tier`.
 
 ### The routed target is an ordinary model id
 
@@ -351,6 +360,10 @@ lock stayed at 445, because libsy's new direct dependencies there (`http`,
 `regex`, `uuid`) were already in shunt's tree. The linked-or-not result holds on
 the new pin too: the release binary still carries zero `jsonschema` strings and
 zero `num-bigint` symbols.
+
+Taking `switchyard-translation` for the judge boundary added three lock entries:
+the crate itself plus `async-stream` and `async-stream-impl`.
+`switchyard-protocol` was already in the tree as libsy's own dependency.
 
 ## Attribution
 

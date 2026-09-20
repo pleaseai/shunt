@@ -65,9 +65,11 @@ shunt は Claude Code の実際のツール名を知っています。プロバ�
 しません。飽和したシグナル 1 つだけでは約 `0.46` でターンを決められず、互いに裏付ける
 シグナルが 2 つあれば約 `0.76` に達します。
 
-シグナルが決め手に欠けるとき、スコアラーは LLM の判定を要求します。**shunt は判定モデルを
-持たず**、picker の既定値へ fall-open します。これによりホットパスに追加のモデル呼び出しも
-追加の資格情報も入りません。
+シグナルが決め手に欠けるとき、スコアラーは LLM の判定を要求します。**shunt は既定では判定
+モデルを持たず**、picker の既定値へ fall-open します。これによりホットパスに追加のモデル
+呼び出しも追加の資格情報も入りません。下の
+[ジャッジのフォールバック](#ジャッジのフォールバック)は、そのターンだけをジャッジに
+委ねるためのオプトインです。
 
 採点式の全体、その裏付けとなる公開ベンチマーク結果、そして shunt がその上に加えた
 ものは [Switchyard 統合](/ja/guides/switchyard/)にあります。
@@ -169,11 +171,13 @@ POST /v1/messages     {"model": "claude-auto", ...}
 | ヘッダー | 値 |
 | :-- | :-- |
 | `x-gateway-routed-model` | ルーターが選んだターゲット（`claude-opus-4-8`） |
-| `x-gateway-route-source` | その理由（`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`、`capable_hold`） |
+| `x-gateway-route-source` | その理由（`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`、`capable_hold`、`llm-classifier`） |
 
-この 6 つがこのルーターの出力するラベルです。スコアラーはさらに `ambiguous` と
-`llm-classifier` の 2 つを定義していますが、どちらもレスポンスには載りません。shunt は
-決着しなかったターンを `fall_open` として報告し、ジャッジを一切呼ばないためです。ほかの
+7 つのうち 6 つはシグナルのラベルです。`llm-classifier` は、下の
+[ジャッジのフォールバック](#ジャッジのフォールバック)を設定したエントリで、ジャッジが
+決めたターンにだけ現れます。設定しなければ、決着しなかったターンは従来どおり
+`fall_open` として報告され、ジャッジは呼ばれません。スコアラーはもう 1 つ `ambiguous`
+というラベルを定義していますが、これはレスポンスには載りません。ほかの
 ルーターの type は自分のラベル（`random`、`random_session`、`noop`）を使います。
 
 ルーターを持たないモデル id には両方とも付きません。そうすることで「効率ティアに
@@ -184,9 +188,11 @@ POST /v1/messages     {"model": "claude-auto", ...}
 
 `GET /routes` は設定済みのルーターを `routers` にすべて載せ、その `algorithm` と `targets`
 を、そしてこの type については 2 つのティアのターゲットと、シグナルが何も決めなかった
-ときに picker が戻るティアを示します。メトリクスを有効にすると 3 つのカウンターが出力
+ときに picker が戻るティアを示します。ジャッジを設定したルーターは、その id を
+`judges` としても示します。メトリクスを有効にすると 3 つのカウンターが出力
 されます。すべてのルーター type を対象とする `shunt.router.decisions` と、
-`shunt.stage_router.decisions`、`shunt.stage_router.flips` です。ティア切り替えが高価な
+`shunt.stage_router.decisions`、`shunt.stage_router.flips` です。ジャッジを設定すると
+4 つ目として `shunt.router.judge_calls` が加わります。ティア切り替えが高価な
 事象であり、決定カウンターだけでは移ってきたばかりのセッションと元からそこにいた
 セッションを区別できないため、flip は別に数えます。
 
@@ -222,12 +228,55 @@ efficient_target = "claude-sonnet-4-6"
 [ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)
 にあります。
 
+## ジャッジのフォールバック
+
+シグナルはほとんどのターンを決めますが、すべてではありません。任意の
+[`[models.router.classifier]`](/ja/reference/configuration/#modelsrouterclassifierオプション)
+テーブルは **ジャッジ** を指定します。シグナルで決着しなかったターンに限り、どちらの
+ティアが必要かを尋ねるモデルです。
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"    # 尋ねるだけで、提供はしません
+base_threshold = 0.5           # タスクを効率ティアに留める p_solve の下限
+```
+
+このテーブルがなければ何も変わりません。決着しなかったターンは従来どおり picker の
+既定値へ fall-open します。あれば、そのターンだけがジャッジに回ります。ピンがすでに
+ターンを押さえているセッションは判定されず、`count_tokens` のプローブも判定されず、
+リクエストが認証を通る前にジャッジ呼び出しが行われることもありません。
+
+ジャッジは通常の公開モデル id で、呼び出し元のものではなく **自分の** 資格情報で実行
+されます。予約済みの `x-shunt-*` スロットと `cookie`、`authorization`、`x-api-key`、
+`anthropic-beta` は呼び出しの前にすべて取り除かれ、passthrough のアップストリームに
+解決されるジャッジのターゲットは、ゲートウェイが注入する資格情報がないため起動エラーに
+なります。呼び出しはそのターゲット自身のアカウントプールのクォータを消費するので、
+ジャッジには専用の `[[models]]` エントリを与えてください。
+
+認証の対象はエントリ全体です — 要求された id に 2 つのティアのターゲットとジャッジを、
+それぞれのフェイルオーバーチェーン全体まで含めて対象にします。そのため応答ターゲットが
+すべて passthrough のエントリに資格情報を注入するジャッジを加えると、そのエントリは
+クライアントの資格情報を要求するようになります。認証に失敗したリクエストやポリシーが
+拒否したリクエストは、ジャッジ呼び出しを 1 回も行いません。
+
+`[models.router]` の 6 つのキーがすべての内部呼び出しに上限を課します —
+`judge_timeout_ms`（既定 `30000`、ヘッダー*と*ボディを覆うエンドツーエンド期限）、
+`judge_max_response_bytes`（`65536`）、セッションごとの `max_judge_calls`（`8`）、
+そして後続のリリースのバッファリングされたターンのために予約された 3 つの `gated_*`
+です。上限を超えるとアップストリーム呼び出しはキャンセルされます。
+
+ジャッジが決めたターンは `x-gateway-route-source: llm-classifier` として報告され、他の
+決定と同じようにセッションをピン留めします。タイムアウト、サイズ超過や解釈できない応答、
+アップストリームエラー、予算切れ — すべての失敗は `fall_open` に解決されるので、ジャッジ
+が落ちていてもコストはレイテンシであって可用性ではありません。各呼び出しは決着した結果
+とともに `shunt.router.judge_calls` で数えられます。
+
 ## 制限
 
 - **ターン途中のエスカレーションはありません。** レスポンスヘッダーがコミットされた後、
   shunt はターンを再実行しないため、ターン開始時に選ばれたティアがそのターン全体を担当
   します。
-- **LLM の判定はありません。** 決め手に欠けるシグナルは picker の既定値へ fall-open します。
-  ジャッジを使う type — `llm_classifier`、`composite`、`advisor` — はまだ利用できず、
-  指定すると起動エラーになります。
+- **ジャッジが決めるのはティアだけです。** ジャッジを使うほかの type —
+  `llm_classifier`、`composite`、`advisor` — はまだ利用できず、指定すると起動エラーに
+  なります。
 - **`[server.codex_endpoint]` は対象外**です。独自のルーティングテーブルを使います。

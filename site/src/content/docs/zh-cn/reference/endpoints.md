@@ -9,7 +9,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/` | 人类可读的落地页(版本 + 端点列表) |
 | `GET` | `/health` | 健康检查 —— `{"status":"ok","version":"x.y.z"}` |
 | `GET` | `/v1/models` | [模型发现](/zh-cn/guides/model-discovery/) —— 返回你的 `[[models]]` 条目 |
-| `GET` | `/routes` | shunt 原生路由发现 —— 逐字返回配置的 `[[routes]]` 表(model → provider/upstream_model/effort 映射,包括 claude 前缀的发现别名);区别于 `/v1/models`,后者提供更窄的 Anthropic 协议发现响应(`id`、`display_name` 以及上游模型元数据)。只要有一个 `[[models]]` 条目配置了 `[models.router]` 表,响应就会多出一个 `routers` 数组,列出每个路由器的模型 id、`algorithm`(即配置的 `type`)以及它可以路由到的全部 `targets` id;[阶段路由器](/zh-cn/guides/stage-router/)和 `auto` 条目还会额外给出两个档位的目标,以及没有信号做出决定时 picker 回退到的档位 |
+| `GET` | `/routes` | shunt 原生路由发现 —— 逐字返回配置的 `[[routes]]` 表(model → provider/upstream_model/effort 映射,包括 claude 前缀的发现别名);区别于 `/v1/models`,后者提供更窄的 Anthropic 协议发现响应(`id`、`display_name` 以及上游模型元数据)。只要有一个 `[[models]]` 条目配置了 `[models.router]` 表,响应就会多出一个 `routers` 数组,列出每个路由器的模型 id、`algorithm`(即配置的 `type`)以及它可以路由到的全部 `targets` id;配置了裁判的路由器还会给出 `judges`,即它只询问、从不提供的那些 id(没有时省略);[阶段路由器](/zh-cn/guides/stage-router/)和 `auto` 条目还会额外给出两个档位的目标,以及没有信号做出决定时 picker 回退到的档位 |
 | `POST` | `/v1/messages` | 推理 —— 按请求的 `model` id 路由 |
 | `POST` | `/v1/messages/count_tokens` | [Token 计数](/zh-cn/guides/effort-and-context/#token-计数count_tokens) |
 | `GET` | `/managed/settings` | 按网关 JWT 提供的 Claude Code managed settings;支持 `ETag`、`If-None-Match` 与 `304 Not Modified` |
