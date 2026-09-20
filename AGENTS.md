@@ -19,13 +19,13 @@
   reaches the crate-private stage-router path. Without the feature that target
   builds and runs but registers no benchmarks, so pass it (CodSpeed does).
 - CodSpeed (`.github/workflows/codspeed.yml`) is a **required** check, and it
-  compares the PR against the stored baseline from main — not against the merge
-  base. A red CodSpeed on a diff that changes no Rust is therefore expected to
-  be environmental, not a regression you introduced. Before treating one as
-  real: confirm the build inputs actually differ
-  (`git diff <base-sha> HEAD --name-only | grep -E '\.rs$|Cargo|rust-toolchain|\.github/'`),
+  compares the PR against the stored baseline from `main` — not against the
+  merge base. A red CodSpeed on a diff that changes no Rust is therefore
+  expected to be environmental, not a regression you introduced. Before
+  treating one as real: confirm the build inputs actually differ
+  (`git diff "$BASE_SHA" HEAD --name-only | grep -E '\.rs$|Cargo|rust-toolchain|\.github/'`),
   then compare the `Record the measurement environment` step between the PR run
-  and the baseline run on main. The Rust toolchain is pinned there, and
+  and the baseline run on `main`. The Rust toolchain is pinned there, and
   `runs-on` names one OS version rather than a moving `latest` — but GitHub
   still revises that image, and the CPU model is **not** pinnable on hosted
   runners at all. CodSpeed names both the runner image and differing CPU models
@@ -33,7 +33,8 @@
   and a consistent CPU type
   (<https://codspeed.io/docs/instruments/cpu/regression-causes>); the logged
   image and CPU lines are what tell you which one moved. Bumping the toolchain
-  pin, or GitHub revising the image, re-seeds the baseline on the next main run.
+  pin, or GitHub revising the image, re-seeds the baseline on the next `main`
+  run.
 
 ## Project Structure
 
