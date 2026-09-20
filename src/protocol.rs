@@ -130,7 +130,7 @@ pub async fn get() -> Json<ProtocolDescriptor> {
                 },
                 HeaderDescriptor {
                     name: "x-claude-code-agent-type",
-                    description: "Claude Code agent type on delegated turns (teammate, a built-in agent id, or custom); read into the router context, not yet routed on",
+                    description: "Claude Code agent type on delegated turns (teammate, a built-in agent id, or custom); the exact key the [models.subagents] by_type map routes delegated work on",
                 },
                 HeaderDescriptor {
                     name: "x-claude-code-context-compacted",
