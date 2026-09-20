@@ -33,6 +33,45 @@ use crate::{
     request::RequestBody,
 };
 
+/// Record an advance caused by a mapped upstream **error** response.
+///
+/// A named function rather than an inline `tracing::warn!` so the emission has
+/// a call site a test can drive on one thread: the chain itself runs inside
+/// spawned tasks, where a `with_default` subscriber never reaches.
+///
+/// `upstream_message` is deliberately not called `message`. `message` is the
+/// field `tracing` records the event's own literal under, so passing the
+/// upstream's text as `message` does not add a field — it emits the upstream
+/// string bare and unlabelled next to the gateway's own wording, where neither
+/// an operator reading the line nor a parser keying on `message` can tell the
+/// two apart. The string is upstream-controlled, which is exactly the input
+/// that should never land in the slot naming what happened.
+///
+/// Recorded with `?` rather than `%` for the same reason: `Debug` quotes the
+/// value and escapes newlines, so an upstream cannot embed a line break and
+/// have the remainder of its text read as a separate log record.
+fn log_error_advance(provider: &str, model: &str, status: StatusCode, upstream_message: &str) {
+    tracing::warn!(
+        provider = %provider,
+        model = %model,
+        status = status.as_u16(),
+        upstream_message = ?upstream_message,
+        "upstream error triggered failover advance"
+    );
+}
+
+/// Record an advance caused by a failure that arrived before response headers.
+///
+/// Same `upstream_message` naming rule as [`log_error_advance`].
+fn log_before_headers_advance(provider: &str, model: &str, upstream_message: &str) {
+    tracing::warn!(
+        provider = %provider,
+        model = %model,
+        upstream_message = ?upstream_message,
+        "upstream failed before response headers; advancing failover"
+    );
+}
+
 /// One dispatch through an ordered failover chain.
 pub(crate) struct ChainRequest<'a> {
     pub state: AppState,
@@ -212,13 +251,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                     Some(AdapterFailure::UpstreamStatus(raw_status))
                         if is_advance_status(raw_status) =>
                     {
-                        tracing::warn!(
-                            provider = %provider,
-                            model = %model,
-                            status = raw_status.as_u16(),
-                            message = %message,
-                            "upstream error triggered failover advance"
-                        );
+                        log_error_advance(&provider, &model, raw_status, &message);
                         remember_failure(
                             &mut remembered,
                             raw_status,
@@ -228,12 +261,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                         );
                     }
                     Some(AdapterFailure::BeforeHeaders) => {
-                        tracing::warn!(
-                            provider = %provider,
-                            model = %model,
-                            message = %message,
-                            "upstream failed before response headers; advancing failover"
-                        );
+                        log_before_headers_advance(&provider, &model, &message);
                     }
                     _ => {
                         finish(&provider, response.status());
@@ -357,4 +385,113 @@ fn remember_failure(
         provider,
         model,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex},
+    };
+
+    use axum::http::StatusCode;
+
+    use super::{log_before_headers_advance, log_error_advance};
+
+    struct BufferWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for BufferWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture(operation: impl FnOnce()) -> String {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter(Arc::clone(&writer_output)))
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, operation);
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        logs
+    }
+
+    /// The upstream's text must travel under its own key.
+    ///
+    /// Naming the field `message` does not add a field: `tracing` already
+    /// records the event's literal under `message`, so the upstream string is
+    /// emitted bare — no `key=` in front of it — immediately after the
+    /// gateway's own wording. That is the defect this asserts against, and it
+    /// is why the assertion is on the labelled form rather than on the text
+    /// merely appearing somewhere in the line.
+    #[test]
+    fn an_error_advance_labels_the_upstream_text_instead_of_shadowing_the_event_message() {
+        let logs = capture(|| {
+            log_error_advance(
+                "anthropic",
+                "claude-sonnet-4-6",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "upstream said boom",
+            );
+        });
+
+        assert!(
+            logs.contains("upstream_message=\"upstream said boom\""),
+            "upstream text must be a labelled field; got: {logs}"
+        );
+        assert!(
+            logs.contains("upstream error triggered failover advance"),
+            "the event keeps its own wording; got: {logs}"
+        );
+        assert!(
+            logs.contains("status=500"),
+            "the advance status is recorded; got: {logs}"
+        );
+    }
+
+    /// Same rule on the before-headers arm.
+    ///
+    /// A second test rather than a loop because the two call sites take
+    /// different arguments, and a shared helper that papered over that is how
+    /// one of them would quietly stop being covered.
+    #[test]
+    fn a_before_headers_advance_labels_the_upstream_text() {
+        let logs = capture(|| {
+            log_before_headers_advance("anthropic", "claude-sonnet-4-6", "connection reset");
+        });
+
+        assert!(
+            logs.contains("upstream_message=\"connection reset\""),
+            "upstream text must be a labelled field; got: {logs}"
+        );
+        assert!(
+            logs.contains("upstream failed before response headers"),
+            "the event keeps its own wording; got: {logs}"
+        );
+    }
+
+    /// Guard the assertion above against passing for the wrong reason.
+    ///
+    /// `upstream_message="..."` could in principle appear because the text was
+    /// quoted inside the event literal. Emitting a value that is distinctive
+    /// and *not* present in either literal keeps the check tied to the field.
+    #[test]
+    fn the_labelled_field_carries_the_value_it_was_given() {
+        let logs = capture(|| {
+            log_error_advance("p", "m", StatusCode::BAD_GATEWAY, "zzdistinctzz");
+        });
+
+        assert!(
+            logs.contains("upstream_message=\"zzdistinctzz\""),
+            "got: {logs}"
+        );
+    }
 }
