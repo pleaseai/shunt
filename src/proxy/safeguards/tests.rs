@@ -6,7 +6,7 @@ use axum::{
 use futures_util::{stream, StreamExt};
 use serde_json::{json, Value};
 
-use super::{requested_types, synthesize, transform_stream, MAX_FRAME_BYTES};
+use super::{requested_types, synthesize, transform_stream, MAX_FRAME_BYTES, MIN_SYNTHESIS_BYTES};
 
 type Item = Result<Bytes, std::convert::Infallible>;
 
@@ -93,6 +93,40 @@ async fn message_delta_gains_results_for_every_tool_use_seen() {
         results[0]["status"]["tool_uses"],
         json!({"toolu_a": {"type": "unavailable", "reason": "error"}}),
         "only the tool_use block contributes an id"
+    );
+}
+
+#[tokio::test]
+async fn a_payload_split_over_several_data_lines_is_parsed_as_one_event() {
+    // The SSE spec joins an event's `data:` lines with newlines. Parsed one at
+    // a time, neither line is valid JSON, so the tool id would go unrecorded
+    // and the delta unrewritten — the session-wide fallback this module
+    // prevents. The rewritten delta folds back into a single `data:` line.
+    let relayed = relay(vec![
+        chunk("event: content_block_start\ndata: {\"type\":\"content_block_start\",\ndata: \"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_multi\"}}\n\n"),
+        chunk("event: message_delta\ndata: {\"type\":\"message_delta\",\ndata: \"delta\":{\"stop_reason\":\"tool_use\"}}\n\n"),
+    ])
+    .await;
+
+    let delta = message_delta(&relayed);
+    assert_eq!(delta["delta"]["stop_reason"], "tool_use");
+    assert_eq!(
+        delta["delta"]["safeguard_results"][0]["status"]["tool_uses"],
+        json!({"toolu_multi": {"type": "unavailable", "reason": "error"}}),
+        "the id from the split content_block_start must reach the results"
+    );
+    // The start event is not rewritten, so it relays byte-for-byte with both of
+    // its data lines; only the rewritten delta folds into a single one.
+    let (start, delta_event) = relayed.split_once("event: message_delta").unwrap();
+    assert_eq!(
+        start.matches("data:").count(),
+        2,
+        "an unrewritten frame keeps its own framing\n{relayed}"
+    );
+    assert_eq!(
+        delta_event.matches("data:").count(),
+        1,
+        "the re-serialized delta occupies one data line\n{relayed}"
     );
 }
 
@@ -213,8 +247,28 @@ async fn a_non_2xx_response_is_relayed_unchanged() {
 }
 
 #[tokio::test]
-async fn a_body_past_the_inbound_limit_is_relayed_unchanged() {
-    let body = r#"{"type":"message","content":[]}"#;
-    let response = synthesize(json_response(StatusCode::OK, body), &types(), 4).await;
+async fn a_body_past_the_synthesis_budget_is_relayed_unchanged() {
+    // Still bounded: past the resolved budget the body is relayed as it
+    // arrived rather than buffered whole.
+    let padding = "x".repeat(MIN_SYNTHESIS_BYTES);
+    let body = format!(r#"{{"type":"message","content":[],"pad":"{padding}"}}"#);
+    let response = synthesize(json_response(StatusCode::OK, &body), &types(), 4).await;
     assert_eq!(body_string(response).await, body);
+}
+
+#[tokio::test]
+async fn a_lowered_inbound_limit_does_not_disable_synthesis() {
+    // The budget reaching this module is `server.limits.max_request_bytes`, an
+    // inbound upload cap. Before the floor, an operator lowering it relayed
+    // every response without `safeguard_results`, which retires the client's
+    // server classifier for the whole session (#622 review).
+    let body = r#"{"type":"message","content":[{"type":"tool_use","id":"toolu_c"}]}"#;
+    let response = synthesize(json_response(StatusCode::OK, body), &types(), 4).await;
+    let value: Value = serde_json::from_str(&body_string(response).await).unwrap();
+
+    assert_eq!(
+        value["safeguard_results"][0]["status"]["tool_uses"],
+        json!({"toolu_c": {"type": "unavailable", "reason": "error"}}),
+        "a 4-byte inbound limit must not suppress the response-side answer"
+    );
 }

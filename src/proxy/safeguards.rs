@@ -74,10 +74,24 @@ pub(crate) async fn synthesize(
     }
     match essence(&response).as_deref() {
         Some("text/event-stream") => wrap_stream(response, types),
-        Some("application/json") => inject_json(response, types, max_body_bytes).await,
+        Some("application/json") => {
+            inject_json(response, types, max_body_bytes.max(MIN_SYNTHESIS_BYTES)).await
+        }
         _ => response,
     }
 }
+
+/// Floor for the non-streaming synthesis buffer.
+///
+/// `max_body_bytes` reaches this module as `server.limits.max_request_bytes`,
+/// which bounds what a *client* may upload. An operator who lowers it to
+/// constrain uploads is not asking to stop answering `safeguards` on the
+/// response path — but that is what it did: a relayed response carrying no
+/// `safeguard_results` makes Claude Code retire the server classifier for the
+/// rest of the session, so an unrelated config choice silently disabled the
+/// feature this module exists to provide. Flooring the response budget
+/// decouples the two; a limit raised past this is still honoured (#622 review).
+const MIN_SYNTHESIS_BYTES: usize = 1024 * 1024;
 
 /// The response's content type with parameters and case folded away.
 fn essence(response: &Response) -> Option<String> {
@@ -233,42 +247,72 @@ fn complete_frames_end(buf: &[u8]) -> Option<usize> {
 /// Record any `tool_use` id this frame starts, and inject `safeguard_results`
 /// into a `message_delta` that lacks it. `Some` only when the frame was
 /// actually rewritten; every other frame is forwarded by the caller untouched.
+/// True for a line that carries part of the event's `data:` payload.
+fn is_data_line(segment: &str) -> bool {
+    segment.trim_end_matches(['\n', '\r']).starts_with("data:")
+}
+
+/// Join the event's `data:` lines into one payload, then rewrite it if it is
+/// the turn's `message_delta`.
+///
+/// The SSE spec lets one event spread its payload over several `data:` lines,
+/// joined with newlines. Parsing them one at a time leaves a split
+/// `content_block_start` or `message_delta` unrecognized — on exactly the
+/// non-first-party upstreams this module exists for — so the turn would relay
+/// without `safeguard_results` and the client would retire the classifier for
+/// the rest of the session (#622 review). The rewritten event folds those
+/// lines into the single `data:` line the re-serialized JSON now occupies.
 fn rewrite_frame(frame: &str, tool_ids: &mut Vec<String>, types: &[String]) -> Option<String> {
-    let mut out = String::with_capacity(frame.len());
-    let mut rewritten = false;
-    for segment in frame.split_inclusive('\n') {
+    let segments: Vec<&str> = frame.split_inclusive('\n').collect();
+    let mut payload = String::new();
+    let mut first_data = None;
+    let mut ending = "";
+    for (index, segment) in segments.iter().enumerate() {
         let content_len = segment.trim_end_matches(['\n', '\r']).len();
-        let (content, ending) = segment.split_at(content_len);
-        if let Some(payload) = content.strip_prefix("data:") {
-            if let Ok(mut value) = serde_json::from_str::<Value>(payload.trim_start()) {
-                match value.get("type").and_then(Value::as_str) {
-                    Some("content_block_start") => record_tool_use(&value, tool_ids),
-                    Some("message_delta")
-                        // A first-party relay answers the request itself; its
-                        // verdict is forwarded verbatim, never re-serialized.
-                        if value.pointer("/delta/safeguard_results").is_none() =>
-                    {
-                        if let Some(delta) = value.get_mut("delta").and_then(Value::as_object_mut) {
-                            delta.insert(
-                                "safeguard_results".to_string(),
-                                results_value(types, tool_ids),
-                            );
-                            if let Ok(reserialized) = serde_json::to_string(&value) {
-                                out.push_str("data: ");
-                                out.push_str(&reserialized);
-                                out.push_str(ending);
-                                rewritten = true;
-                                continue;
-                            }
-                        }
-                    }
-                    _ => {}
+        let (content, line_ending) = segment.split_at(content_len);
+        let Some(chunk) = content.strip_prefix("data:") else {
+            continue;
+        };
+        if first_data.is_none() {
+            first_data = Some(index);
+        } else {
+            payload.push('\n');
+        }
+        // The spec strips one optional space after the colon, not every run of
+        // whitespace: a payload line's own leading spaces are part of it.
+        payload.push_str(chunk.strip_prefix(' ').unwrap_or(chunk));
+        ending = line_ending;
+    }
+    let first_data = first_data?;
+    let mut value = serde_json::from_str::<Value>(&payload).ok()?;
+    match value.get("type").and_then(Value::as_str)? {
+        "content_block_start" => {
+            record_tool_use(&value, tool_ids);
+            None
+        }
+        // A first-party relay answers the request itself; its verdict is
+        // forwarded verbatim, never re-serialized.
+        "message_delta" if value.pointer("/delta/safeguard_results").is_none() => {
+            let delta = value.get_mut("delta").and_then(Value::as_object_mut)?;
+            delta.insert(
+                "safeguard_results".to_string(),
+                results_value(types, tool_ids),
+            );
+            let reserialized = serde_json::to_string(&value).ok()?;
+            let mut out = String::with_capacity(frame.len() + reserialized.len());
+            for (index, segment) in segments.iter().enumerate() {
+                if index == first_data {
+                    out.push_str("data: ");
+                    out.push_str(&reserialized);
+                    out.push_str(ending);
+                } else if !is_data_line(segment) {
+                    out.push_str(segment);
                 }
             }
+            Some(out)
         }
-        out.push_str(segment);
+        _ => None,
     }
-    rewritten.then_some(out)
 }
 
 fn record_tool_use(value: &Value, tool_ids: &mut Vec<String>) {
@@ -283,9 +327,13 @@ fn record_tool_use(value: &Value, tool_ids: &mut Vec<String>) {
     }
 }
 
-/// Buffer a non-streaming body and insert `safeguard_results`. The client asked
-/// for a non-streaming turn, so buffering changes no streaming semantics; a body
-/// past the inbound limit is forwarded unmodified instead.
+/// Buffer a JSON body and insert `safeguard_results`.
+///
+/// Reached only for an `application/json` response, never for `text/event-stream`
+/// — so this never buffers an upstream SSE relay, whatever the request's
+/// `stream` flag said. A JSON reply is not a stream: it has no frames to
+/// forward incrementally, and the field cannot be inserted without the whole
+/// body. A body past `max_body_bytes` is forwarded unmodified instead.
 async fn inject_json(response: Response, types: &[String], max_body_bytes: usize) -> Response {
     let (mut parts, body) = response.into_parts();
     let mut data = body.into_data_stream();
@@ -297,6 +345,19 @@ async fn inject_json(response: Response, types: &[String], max_body_bytes: usize
                 total = total.saturating_add(chunk.len());
                 collected.push(chunk);
                 if total > max_body_bytes {
+                    // Forwarded unmodified, which the client reads as "this
+                    // gateway does not answer safeguards" and acts on for the
+                    // whole session — so say so once rather than degrading
+                    // silently. `max_body_bytes` is the inbound request limit;
+                    // an operator who lowered it to constrain uploads has no
+                    // other signal that it also governs this path (#622 review).
+                    tracing::warn!(
+                        bytes = total,
+                        max_body_bytes,
+                        "relayed a message response past the synthesis budget, so \
+                         safeguard_results was not added; the client will stop \
+                         asking for the rest of the session"
+                    );
                     let head = stream::iter(collected.into_iter().map(Ok::<_, axum::Error>));
                     return Response::from_parts(parts, Body::from_stream(head.chain(data)));
                 }

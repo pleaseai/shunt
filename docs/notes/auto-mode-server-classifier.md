@@ -94,11 +94,19 @@ the field in where responses leave the inbound Messages surface — the
   records each `content_block_start` whose `content_block.type` is `tool_use`
   and re-serializes exactly one frame, the `message_delta`. Every other frame,
   ping and comment line is forwarded byte-for-byte, nothing is buffered past a
-  frame boundary, and a frame larger than 64 KiB is forwarded unparsed;
-* non-streaming — the body is buffered (the client asked for non-streaming, so
-  no streaming semantics are at stake), capped at
-  `server.limits.max_request_bytes`, and the field inserted with the ids of the
-  `content[]` blocks whose type is `tool_use`.
+  frame boundary, and a frame larger than 64 KiB is forwarded unparsed. An
+  event whose payload arrives as several `data:` lines is joined before parsing,
+  as the SSE spec requires — parsed line by line, a split `message_delta` would
+  relay unrecognized and retire the classifier for the session;
+* non-streaming — the body is buffered (a JSON reply is not a stream, so no
+  streaming semantics are at stake) and the field inserted with the ids of the
+  `content[]` blocks whose type is `tool_use`. The buffer is capped at
+  `server.limits.max_request_bytes` or 1 MiB, whichever is larger: that key
+  bounds what a client may *upload*, so without the floor an operator who
+  lowered it to constrain uploads would silently stop every response being
+  answered. A body past the resolved cap is relayed unmodified, which retires
+  the classifier for that session — shunt logs a warning naming the budget when
+  it happens.
 
 The synthesized value reports every observed tool use as
 `{"type": "unavailable", "reason": "error"}` under a status-level `available`.
