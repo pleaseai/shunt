@@ -26,9 +26,11 @@ pub use http_tuning::{
 };
 pub use presets::{provider_presets, ProviderPresetView};
 pub use router::{
-    AutoRouterConfig, HandoffNotesConfig, RandomAffinity, RandomRouterConfig, RouterConfig,
-    StageRouterConfig, StageRouterPicker, ToolSemanticsConfig, DEFAULT_CONFIDENCE_THRESHOLD,
-    DEFAULT_DEESCALATE_THRESHOLD,
+    AutoRouterConfig, CallBounds, HandoffNotesConfig, RandomAffinity, RandomRouterConfig,
+    RouterConfig, StageClassifierConfig, StageRouterConfig, StageRouterPicker, ToolSemanticsConfig,
+    DEFAULT_BASE_THRESHOLD, DEFAULT_CONFIDENCE_THRESHOLD, DEFAULT_DEESCALATE_THRESHOLD,
+    DEFAULT_GATED_IDLE_MS, DEFAULT_GATED_MAX_BYTES, DEFAULT_GATED_MAX_DURATION_MS,
+    DEFAULT_JUDGE_MAX_RESPONSE_BYTES, DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_MAX_JUDGE_CALLS,
 };
 pub use secrets::Secret;
 pub use session::GatewaySessionConfig;
@@ -2479,6 +2481,14 @@ pub enum ConfigError {
     },
     #[error("models entry {model} router recent_turn_window must be at least 1")]
     InvalidStageRouterWindow { model: String },
+    #[error("model \"{model}\": [models.router] {key} must be at least 1")]
+    ZeroCallBound { model: String, key: &'static str },
+    #[error("model \"{model}\": [models.router.classifier] target \"{target}\" resolves to passthrough upstream \"{provider}\"; a judge runs only on a credential the gateway injects")]
+    PassthroughJudgeTarget {
+        model: String,
+        target: String,
+        provider: String,
+    },
     #[error("models entry {model} random router targets must not be empty")]
     EmptyRandomTargets { model: String },
     #[error("models entry {model} random router has {weights} weights but {targets} targets; weights follow target order, one per target")]
@@ -4300,6 +4310,11 @@ impl Config {
     /// `resolve_model_chain` matches on — a predicate that normalized
     /// differently would enforce the rule on the written string while routing
     /// resolved a different one.
+    ///
+    /// Judge targets ([`RouterConfig::named_judges`]) are held to the same
+    /// one-hop rule as answer targets, and **additionally** must resolve to
+    /// credential-injecting routes: a judge call carries no caller credential
+    /// (ADR-0005 §3), so a passthrough judge would have nothing to run on.
     fn validate_router(&self, model_id: &str, router: &RouterConfig) -> Result<(), ConfigError> {
         // Suffix, not substring: `strip_context_window_hint` only strips a
         // trailing hint, so an id merely containing `[1m]` mid-string is an
@@ -4312,10 +4327,15 @@ impl Config {
                 model: model_id.to_string(),
             });
         }
-        // The one-hop rule, over every target the algorithm can name — the
-        // enumeration lives on `RouterConfig::named_targets` so a new type
-        // cannot reach this check with a destination the rule never saw.
-        for (key, target) in router.named_targets() {
+        // The one-hop rule, over every id the algorithm can name — answer
+        // targets and judges alike. The enumeration lives on
+        // `RouterConfig::named_targets`/`named_judges` so a new type cannot
+        // reach this check with a destination the rule never saw.
+        for (key, target) in router
+            .named_targets()
+            .into_iter()
+            .chain(router.named_judges())
+        {
             if target.trim().is_empty() {
                 return Err(ConfigError::EmptyRouterTarget {
                     model: model_id.to_string(),
@@ -4359,7 +4379,14 @@ impl Config {
         for (key, value) in [
             ("confidence_threshold", router.confidence_threshold),
             ("deescalate_threshold", router.deescalate_threshold()),
-        ] {
+        ]
+        .into_iter()
+        .chain(router.classifier.as_ref().map(|classifier| {
+            // The judge's own gate, held to the same range as the signal
+            // scorer's: it is the same kind of number, so it reuses the same
+            // error with the key the operator wrote.
+            ("classifier.base_threshold", classifier.base_threshold)
+        })) {
             // `!(0.0 < v && v <= 1.0)` rather than a negated range so NaN, which
             // compares false against every bound, is rejected too.
             if !(value > 0.0 && value <= 1.0) {
@@ -4369,6 +4396,13 @@ impl Config {
                     value,
                 });
             }
+        }
+        // Runs for `auto` too. Its preset writes the six defaults, all
+        // non-zero, so the check is inert there rather than skipped — a
+        // skipped check is one a later preset change could quietly outgrow.
+        CallBounds::validate(model_id, router.bound_keys())?;
+        if let Some(classifier) = &router.classifier {
+            self.validate_judge_is_injecting(model_id, &classifier.target)?;
         }
         if router.recent_turn_window == 0 {
             return Err(ConfigError::InvalidStageRouterWindow {
@@ -4397,9 +4431,93 @@ impl Config {
         Ok(())
     }
 
-    /// Warns once at load for every `[models.router]` target — of any type —
-    /// that matches no `[[models]]`, `[[routes]]`, or `[[route_prefixes]]`
-    /// entry.
+    /// Reject a judge whose effective chain contains a passthrough route.
+    ///
+    /// A judge call is made with every inbound credential slot removed —
+    /// reserved slots plus both `SHARED_SLOTS` names, unconditionally
+    /// (ADR-0005 §3) — so it can only run on a credential the gateway itself
+    /// injects. A passthrough route has none: the call would reach the upstream
+    /// unauthenticated, or worse, carry a credential that was presented for a
+    /// different origin. Every member of the chain is checked, not just the
+    /// primary, because failover reaches all of them; and the chain is resolved
+    /// through the full ladder, so a judge id that names no `[[models]]` entry
+    /// is judged on `server.default_provider`'s route, which is where it would
+    /// actually land.
+    ///
+    /// Called from `validate_stage_router`, which runs after
+    /// `normalize_upstreams` has materialised `self.providers` — the map
+    /// `route_is_passthrough` reads.
+    fn validate_judge_is_injecting(&self, model_id: &str, target: &str) -> Result<(), ConfigError> {
+        for route in crate::routing::resolve_model_chain(self, target) {
+            if self.route_is_passthrough(&route) {
+                return Err(ConfigError::PassthroughJudgeTarget {
+                    model: model_id.to_string(),
+                    target: target.to_string(),
+                    provider: route.provider,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a route's provider forwards the caller's own upstream credential
+    /// (`AuthMode::Passthrough`) rather than injecting a gateway-held one. An
+    /// unknown provider is treated as credential-injecting (fail closed).
+    ///
+    /// Lives on `Config` rather than on the request path because two callers
+    /// now need it and only one of them has an `AppState`: the inbound auth
+    /// gate (`proxy::failover::is_passthrough_route`, a one-line delegate to
+    /// this) and config validation, which has no request at all. One definition
+    /// keeps the two from drifting — a judge validation that disagreed with the
+    /// auth gate about what "passthrough" means would accept configs the gate
+    /// then refuses to serve.
+    ///
+    /// A noop route is never passthrough, whatever an operator named a
+    /// provider. Its `provider` is the literal `"noop"`, which normally names
+    /// no `[providers.*]` entry and so already fails closed — but a provider an
+    /// operator happened to call `noop` would otherwise flip this to true and
+    /// drop `[server.auth]` for the route. Deciding on the adapter instead
+    /// makes that impossible rather than unlikely.
+    ///
+    /// Antigravity is never passthrough, whatever its `auth` says. The
+    /// exemption exists because a passthrough route lends the caller nothing —
+    /// their own credential goes upstream, so gating it behind `[server.auth]`
+    /// would protect nothing. That reasoning does not survive contact with this
+    /// kind: the adapter ignores the caller's credential entirely and runs the
+    /// operator's local `agy` with `--dangerously-skip-permissions`. Since
+    /// `AuthMode::Passthrough` is also the default when `auth` is omitted,
+    /// honouring it here would let anyone reach a protected gateway and execute
+    /// code as the user running shunt.
+    pub fn route_is_passthrough(&self, route: &crate::routing::Route) -> bool {
+        if route.adapter == crate::routing::AdapterKind::Noop {
+            return false;
+        }
+        self.provider(&route.provider).is_some_and(|provider| {
+            provider.auth == AuthMode::Passthrough && provider.kind != ProviderKind::AntigravityCli
+        })
+    }
+
+    /// The stage table and classifier of a driven `[[models]]` entry, looked up
+    /// by its advertised id.
+    ///
+    /// `None` for every id that names no entry, names one with no router, or
+    /// names a router on the pure lane — which is the answer the request path
+    /// needs before it does anything driven-lane-shaped at all (compute an
+    /// envelope, mint an admitted context, construct a driver). `id` is
+    /// expected already stripped of a `[1m]` hint, the same normalization
+    /// `resolve_chain` matches on.
+    pub fn driven_stage(&self, id: &str) -> Option<(&StageRouterConfig, &StageClassifierConfig)> {
+        self.models
+            .iter()
+            .find(|model| model.id == id)?
+            .router
+            .as_ref()?
+            .stage_classifier()
+    }
+
+    /// Warns once at load for every `[models.router]` target or judge — of any
+    /// type — that matches no `[[models]]`, `[[routes]]`, or
+    /// `[[route_prefixes]]` entry.
     ///
     /// Not an error, and deliberately not part of [`Config::validate_router`]:
     /// resolution always falls back to `server.default_provider`, so the target
@@ -4419,7 +4537,7 @@ impl Config {
             let Some(router) = &model.router else {
                 continue;
             };
-            for target in router.targets() {
+            for target in router.targets().into_iter().chain(router.judges()) {
                 // Same normalization the validation and the resolver apply.
                 let resolved = crate::routing::strip_context_window_hint(target);
                 // A `[[models]]` entry routes its own id only when it carries
@@ -7744,6 +7862,13 @@ id = "claude-sonnet-5"
                 capable_hold_turns: 0,
                 tool_semantics: Default::default(),
                 handoff_notes: None,
+                classifier: None,
+                judge_timeout_ms: crate::config::DEFAULT_JUDGE_TIMEOUT_MS,
+                judge_max_response_bytes: crate::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+                gated_max_bytes: crate::config::DEFAULT_GATED_MAX_BYTES,
+                gated_idle_ms: crate::config::DEFAULT_GATED_IDLE_MS,
+                gated_max_duration_ms: crate::config::DEFAULT_GATED_MAX_DURATION_MS,
+                max_judge_calls: crate::config::DEFAULT_MAX_JUDGE_CALLS,
             })),
             stage_router: None,
         }
@@ -8472,6 +8597,328 @@ escalation_note = "pick up the diagnosis"
                 "expected {key} to be rejected when blank"
             );
         }
+    }
+
+    /// The judge table parses with nothing but its target, and every bound it
+    /// shares a table with lands on the shipped default. Going red here means
+    /// an operator who wrote only `target` got a different judge than the docs
+    /// describe — or, for a bound, an unbounded one.
+    #[test]
+    fn the_classifier_table_parses_with_its_defaults() {
+        let router = parsed_router(
+            r#"
+id = "claude-auto"
+[router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+[router.classifier]
+target = "judge-alias"
+"#,
+        );
+
+        let stage = router.stage().expect("a stage table");
+        let classifier = stage.classifier.as_ref().expect("a classifier table");
+        assert_eq!(classifier.target, "judge-alias");
+        assert_eq!(classifier.base_threshold, super::DEFAULT_BASE_THRESHOLD);
+        assert_eq!(stage.judge_timeout_ms, super::DEFAULT_JUDGE_TIMEOUT_MS);
+        assert_eq!(
+            stage.judge_max_response_bytes,
+            super::DEFAULT_JUDGE_MAX_RESPONSE_BYTES
+        );
+        assert_eq!(stage.gated_max_bytes, super::DEFAULT_GATED_MAX_BYTES);
+        assert_eq!(stage.gated_idle_ms, super::DEFAULT_GATED_IDLE_MS);
+        assert_eq!(
+            stage.gated_max_duration_ms,
+            super::DEFAULT_GATED_MAX_DURATION_MS
+        );
+        assert_eq!(stage.max_judge_calls, super::DEFAULT_MAX_JUDGE_CALLS);
+        assert!(
+            router.is_driven(),
+            "a classifier table is what moves an entry to the driven lane"
+        );
+    }
+
+    /// Zero is the one value that turns a bound into no bound at all — a
+    /// timeout that fires immediately, a cap that admits nothing, a call budget
+    /// that would make the judge unreachable. Each key is checked by name: an
+    /// error naming the wrong key sends the operator to a line they did not
+    /// write.
+    #[test]
+    fn stage_router_rejects_a_zero_call_bound() {
+        type Zero = fn(&mut super::StageRouterConfig);
+        for (key, zero) in [
+            (
+                "judge_timeout_ms",
+                (|stage| stage.judge_timeout_ms = 0) as Zero,
+            ),
+            ("judge_max_response_bytes", |stage| {
+                stage.judge_max_response_bytes = 0
+            }),
+            ("gated_max_bytes", |stage| stage.gated_max_bytes = 0),
+            ("gated_idle_ms", |stage| stage.gated_idle_ms = 0),
+            ("gated_max_duration_ms", |stage| {
+                stage.gated_max_duration_ms = 0
+            }),
+            ("max_judge_calls", |stage| stage.max_judge_calls = 0),
+        ] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            zero(stage_mut(&mut model));
+            let config = Config {
+                models: vec![model],
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::ZeroCallBound { key: found, .. } if found == key
+                ),
+                "expected {key} = 0 to be rejected naming itself"
+            );
+        }
+    }
+
+    /// The judge's gate is a probability like the scorer's, so it reuses that
+    /// error — with the key the operator wrote, not the scorer's.
+    #[test]
+    fn stage_router_rejects_an_out_of_range_classifier_threshold() {
+        for value in [0.0, -0.1, 1.1, f64::NAN] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            stage_mut(&mut model).classifier = Some(super::StageClassifierConfig {
+                target: "judge-alias".to_string(),
+                base_threshold: value,
+            });
+            let mut config = Config {
+                models: vec![judge_model(), model],
+                providers: injecting_providers(),
+                ..Config::default()
+            };
+            config.server.default_provider = "keyed".to_string();
+
+            assert!(
+                matches!(
+                    config.clone().validate().unwrap_err(),
+                    ConfigError::InvalidStageRouterThreshold { key, .. }
+                        if key == "classifier.base_threshold"
+                ),
+                "expected classifier.base_threshold {value} to be rejected, got {:?}",
+                config.validate().unwrap_err()
+            );
+        }
+    }
+
+    /// The judge target is held to the same shape rules as an answer target,
+    /// and reports them under its own key. Drop `named_judges` from the
+    /// validation loop and all three of these are accepted.
+    #[test]
+    fn stage_router_rejects_a_malformed_classifier_target() {
+        // Blank.
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        stage_mut(&mut model).classifier = Some(super::StageClassifierConfig {
+            target: "   ".to_string(),
+            base_threshold: 0.5,
+        });
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::EmptyRouterTarget { key, .. } if key == "classifier.target"
+        ));
+
+        // A router, written plainly and written with a trailing hint that
+        // resolves to the same entry.
+        for target in ["claude-nested", "claude-nested[1m]"] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            stage_mut(&mut model).classifier = Some(super::StageClassifierConfig {
+                target: target.to_string(),
+                base_threshold: 0.5,
+            });
+            let config = Config {
+                models: vec![
+                    model,
+                    router_model("claude-nested", "claude-opus-4-8", "claude-sonnet-4-6"),
+                ],
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::RouterRecursion { target: ref found, .. } if found == target
+                ),
+                "expected the judge target {target} to be rejected as a router"
+            );
+        }
+    }
+
+    /// A judge call carries no caller credential, so a passthrough judge would
+    /// reach its upstream with nothing at all. Both members of the chain are
+    /// checked, not only the primary: failover reaches the fallback too, so a
+    /// rule that stopped at the head would accept a judge that lands
+    /// unauthenticated the moment the primary fails.
+    #[test]
+    fn stage_router_rejects_a_passthrough_judge_target() {
+        // The primary is passthrough, on the legacy single-provider map.
+        let mut config = Config {
+            models: vec![
+                model_config(
+                    "judge-alias",
+                    Some(model_upstream("open", "judge-upstream")),
+                ),
+                driven_model("judge-alias"),
+            ],
+            providers: mixed_providers(),
+            ..Config::default()
+        };
+        config.server.default_provider = "keyed".to_string();
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::PassthroughJudgeTarget { ref provider, .. } if provider == "open"
+        ));
+
+        // The primary injects and a *later* member of the ordered chain does
+        // not. Ordered `[[upstreams]]`, because that is the only shape in which
+        // one id resolves to more than one route.
+        let mut config = Config {
+            models: vec![
+                ModelConfig {
+                    id: "judge-alias".to_string(),
+                    display_name: None,
+                    upstream_model: Some(BTreeMap::from([
+                        ("keyed".to_string(), "judge-upstream".to_string()),
+                        ("open".to_string(), "judge-upstream".to_string()),
+                    ])),
+                    router: None,
+                    stage_router: None,
+                },
+                driven_model("judge-alias"),
+            ],
+            upstreams: vec![
+                parse_upstream(
+                    r#"
+name = "keyed"
+kind = "anthropic"
+base_url = "https://judge.example"
+auth = { mode = "api_key", env = "SHUNT_TEST_JUDGE_KEY" }
+"#,
+                ),
+                parse_upstream(
+                    r#"
+name = "open"
+kind = "anthropic"
+base_url = "https://open.example"
+auth = "passthrough"
+"#,
+                ),
+            ],
+            ..Config::default()
+        };
+        config.server.default_provider = "keyed".to_string();
+        assert!(
+            matches!(
+                config.validate().unwrap_err(),
+                ConfigError::PassthroughJudgeTarget { ref provider, .. } if provider == "open"
+            ),
+            "a passthrough fallback is still a route the judge can land on"
+        );
+    }
+
+    /// A judge naming no `[[models]]` entry is not exempt: it falls through to
+    /// `server.default_provider`, and that is the route it would run on.
+    #[test]
+    fn stage_router_rejects_a_judge_falling_through_to_a_passthrough_default() {
+        let mut config = Config {
+            models: vec![driven_model("no-such-entry")],
+            providers: mixed_providers(),
+            ..Config::default()
+        };
+        config.server.default_provider = "open".to_string();
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::PassthroughJudgeTarget { ref target, ref provider, .. }
+                if target == "no-such-entry" && provider == "open"
+        ));
+    }
+
+    /// The `auto` preset has no judge: it is the pure lane by construction.
+    /// `deny_unknown_fields` on its table is what keeps a `classifier` key from
+    /// being read, accepted, and silently ignored.
+    #[test]
+    fn the_auto_router_rejects_a_classifier_key() {
+        let error = parse_model(
+            r#"
+id = "claude-auto"
+[router]
+type = "auto"
+[router.classifier]
+target = "judge-alias"
+"#,
+        )
+        .expect_err("an auto table has no classifier");
+        assert!(
+            error.to_string().contains("classifier"),
+            "the rejection must name the key the operator wrote, got: {error}"
+        );
+    }
+
+    /// `open` is passthrough and `keyed` injects — the two provider shapes the
+    /// judge rules turn on.
+    fn mixed_providers() -> BTreeMap<String, ProviderConfig> {
+        BTreeMap::from([
+            (
+                "open".to_string(),
+                provider_with_auth(AuthMode::Passthrough),
+            ),
+            ("keyed".to_string(), provider_with_auth(AuthMode::ApiKey)),
+        ])
+    }
+
+    fn injecting_providers() -> BTreeMap<String, ProviderConfig> {
+        BTreeMap::from([("keyed".to_string(), provider_with_auth(AuthMode::ApiKey))])
+    }
+
+    /// Built from the shipped `anthropic` entry: these tests are about `auth`,
+    /// and spelling out the other provider keys would read as if they mattered.
+    fn provider_with_auth(auth: AuthMode) -> ProviderConfig {
+        let mut provider = Config::default()
+            .providers
+            .remove("anthropic")
+            .expect("the default config ships an anthropic provider");
+        provider.auth = auth;
+        if auth == AuthMode::ApiKey {
+            // `ApiKey` without a key source is rejected before any judge rule
+            // runs, which would make every assertion below match the wrong
+            // error.
+            provider.api_key_env = Some("SHUNT_TEST_JUDGE_KEY".to_string());
+        }
+        provider
+    }
+
+    /// One `[[upstreams]]` entry, parsed the way an operator writes it.
+    fn parse_upstream(toml: &str) -> super::upstreams::UpstreamConfig {
+        toml::from_str(toml).unwrap_or_else(|error| panic!("{toml}\nmust parse: {error}"))
+    }
+
+    fn judge_model() -> ModelConfig {
+        model_config(
+            "judge-alias",
+            Some(model_upstream("keyed", "judge-upstream")),
+        )
+    }
+
+    /// A stage router with a judge, and answer targets on the injecting
+    /// provider so the only passthrough in play is the one under test.
+    fn driven_model(target: &str) -> ModelConfig {
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        stage_mut(&mut model).classifier = Some(super::StageClassifierConfig {
+            target: target.to_string(),
+            base_threshold: 0.5,
+        });
+        model
     }
 
     #[test]

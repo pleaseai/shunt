@@ -148,10 +148,28 @@ pub fn resolve_chain(
         now,
         pending: Cell::new(None),
         decided: Cell::new(None),
+        consult: Cell::new(None),
     };
     let (routes, _model) = routing::resolve_request_chain_value(config, request, Some(&stage))?;
-    stage.commit();
+    // The commit `proxy::failover` performs once the request is admitted: take
+    // the parked pin and write it. Spelled out here rather than hidden behind a
+    // helper because production spells it out too — the driven lane may rewrite
+    // the pin's tier between these two lines.
+    if let Some(pin) = stage.pending.take() {
+        store.0.commit(pin, now);
+    }
     Ok(routes)
+}
+
+/// Every route admission must consider for one requested id (ADR-0005 §3).
+///
+/// The driven lane's added cost on the admission path, measured against the
+/// routed arms above: a driven entry gates against this list instead of against
+/// the chain its router picked, so the extra work is one `resolve_model_chain`
+/// per target and judge. `dependency_envelope` is `pub(crate)`, which is why it
+/// needs a facade at all.
+pub fn dependency_envelope(config: &Config, model: &str) -> Vec<Route> {
+    routing::envelope::dependency_envelope(config, model)
 }
 
 /// Facade tests.
@@ -187,6 +205,13 @@ mod tests {
             capable_hold_turns: 0,
             tool_semantics: Default::default(),
             handoff_notes: None,
+            classifier: None,
+            judge_timeout_ms: crate::config::DEFAULT_JUDGE_TIMEOUT_MS,
+            judge_max_response_bytes: crate::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+            gated_max_bytes: crate::config::DEFAULT_GATED_MAX_BYTES,
+            gated_idle_ms: crate::config::DEFAULT_GATED_IDLE_MS,
+            gated_max_duration_ms: crate::config::DEFAULT_GATED_MAX_DURATION_MS,
+            max_judge_calls: crate::config::DEFAULT_MAX_JUDGE_CALLS,
         }
     }
 

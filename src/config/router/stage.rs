@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::bounds;
+
 /// Which tier serves a turn whose signals are too weak to decide.
 ///
 /// The scorer reports low confidence far more often than it reports a wrong
@@ -95,6 +97,83 @@ pub struct StageRouterConfig {
     /// tier, so the receiving model knows why it was handed the turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_notes: Option<HandoffNotesConfig>,
+    /// `[models.router.classifier]` — the judge consulted on turns the signals
+    /// leave undecided. Its presence is what moves this entry to the driven
+    /// lane (ADR-0005 §1); absent, the table is the signal-only router it has
+    /// always been and costs exactly what it costs today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier: Option<StageClassifierConfig>,
+    /// The six per-call bounds (ADR-0005 §3), spelled as explicit fields rather
+    /// than a flattened [`CallBounds`]: serde forbids `flatten` beside
+    /// `deny_unknown_fields`, and this table needs the latter. Read them
+    /// through [`StageRouterConfig::bounds`].
+    #[serde(default = "default_judge_timeout_ms")]
+    pub judge_timeout_ms: u64,
+    #[serde(default = "default_judge_max_response_bytes")]
+    pub judge_max_response_bytes: usize,
+    #[serde(default = "default_gated_max_bytes")]
+    pub gated_max_bytes: usize,
+    #[serde(default = "default_gated_idle_ms")]
+    pub gated_idle_ms: u64,
+    #[serde(default = "default_gated_max_duration_ms")]
+    pub gated_max_duration_ms: u64,
+    #[serde(default = "default_max_judge_calls")]
+    pub max_judge_calls: u32,
+}
+
+/// `[models.router.classifier]` — the judge a stage router consults when its
+/// signals cannot decide a turn.
+///
+/// The target is a public model id like any other, so the judge inherits
+/// failover, pools, adapter, `effort`, and `service_tier` from the entry it
+/// names, and sits on its own quota by pointing at an entry that maps one
+/// (ADR-0005 §2). It is **consulted, never served**: it appears in `/routes`
+/// under `judges`, not `targets`, and no client request is ever routed to it.
+///
+/// Policy only, like its parent table: no credential can land here, so a
+/// derived `Debug` cannot leak one.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageClassifierConfig {
+    /// Public model id of the judge. Consulted, never served.
+    pub target: String,
+    /// Lowest `p_solve` that keeps a *supported* task on the efficient tier —
+    /// libsy's `TaskClassifierConfig::base_threshold`. Range-checked exactly
+    /// like `confidence_threshold`.
+    #[serde(default = "default_base_threshold")]
+    pub base_threshold: f64,
+}
+
+/// libsy's own capability-classifier calibration point, and the same number
+/// [`DEFAULT_CONFIDENCE_THRESHOLD`] uses for the signal scorer.
+pub const DEFAULT_BASE_THRESHOLD: f64 = 0.5;
+
+fn default_base_threshold() -> f64 {
+    DEFAULT_BASE_THRESHOLD
+}
+
+fn default_judge_timeout_ms() -> u64 {
+    bounds::DEFAULT_JUDGE_TIMEOUT_MS
+}
+
+fn default_judge_max_response_bytes() -> usize {
+    bounds::DEFAULT_JUDGE_MAX_RESPONSE_BYTES
+}
+
+fn default_gated_max_bytes() -> usize {
+    bounds::DEFAULT_GATED_MAX_BYTES
+}
+
+fn default_gated_idle_ms() -> u64 {
+    bounds::DEFAULT_GATED_IDLE_MS
+}
+
+fn default_gated_max_duration_ms() -> u64 {
+    bounds::DEFAULT_GATED_MAX_DURATION_MS
+}
+
+fn default_max_judge_calls() -> u32 {
+    bounds::DEFAULT_MAX_JUDGE_CALLS
 }
 
 /// `[models.router.tool_semantics]` — exact tool names added to the built-in
@@ -251,6 +330,17 @@ impl StageRouterConfig {
             capable_hold_turns: 0,
             tool_semantics: ToolSemanticsConfig::default(),
             handoff_notes: None,
+            // `type = "auto"` is the two-key preset and never carries a judge:
+            // its wire shape has exactly `capable_target` and
+            // `efficient_target`, so a classifier here would be a table no
+            // operator could have written.
+            classifier: None,
+            judge_timeout_ms: default_judge_timeout_ms(),
+            judge_max_response_bytes: default_judge_max_response_bytes(),
+            gated_max_bytes: default_gated_max_bytes(),
+            gated_idle_ms: default_gated_idle_ms(),
+            gated_max_duration_ms: default_gated_max_duration_ms(),
+            max_judge_calls: default_max_judge_calls(),
         }
     }
 }

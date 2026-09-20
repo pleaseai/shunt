@@ -1,0 +1,228 @@
+//! Byte, idle, and wall-clock fences for the bodies a driven router reads
+//! (ADR-0005 §3, issue #594).
+//!
+//! What this module guards is the half of a bound a `.send()`-style timeout
+//! cannot reach. An upstream that answers `200` and then stalls, or that keeps
+//! a stream alive with nothing but SSE keep-alive pings, has committed headers
+//! — so every deadline that stops at headers has already passed, and the call
+//! would hang for as long as the upstream cared to hold it. Both collectors
+//! here measure the **body**.
+//!
+//! [`collect_bounded`] is the judge side: one non-streaming reply, refused the
+//! moment it passes its cap rather than after it is buffered.
+//! [`bound_stream`] is the retained-turn side PR 6's gated `escalation` and
+//! `advisor` turns will use — nothing gated exists yet, so it is wired to
+//! nothing and unit-tested instead of dead-coded later.
+
+use std::time::Duration;
+
+use bytes::Bytes;
+use futures_util::{Stream, StreamExt};
+// `tokio::time::Instant`, not `std`'s: every deadline here is awaited through
+// `tokio::time`, and mixing the two clocks makes the bounds untestable under a
+// paused runtime clock — the std clock keeps advancing while tokio's does not.
+use tokio::time::Instant;
+
+/// A body that passed [`collect_bounded`]'s cap. Carries no partial body:
+/// the point of the cap is that the bytes past it are never held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Oversized {
+    /// The cap that was crossed, for the log line that reports it.
+    pub(crate) max_bytes: usize,
+}
+
+impl std::fmt::Display for Oversized {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "response body exceeded {} bytes", self.max_bytes)
+    }
+}
+
+impl std::error::Error for Oversized {}
+
+/// Read a whole body, refusing it the moment it passes `max_bytes`.
+///
+/// Stops *reading* on the crossing rather than buffering the body and checking
+/// afterwards: an unbounded reply is exactly the case the cap exists for, so
+/// collecting it first would spend the memory the bound is meant to deny.
+pub(crate) async fn collect_bounded(
+    body: axum::body::Body,
+    max_bytes: usize,
+) -> Result<Bytes, Oversized> {
+    let mut data = body.into_data_stream();
+    let mut collected = Vec::new();
+    let mut total = 0usize;
+    while let Some(chunk) = data.next().await {
+        // A transport error ends the body; what was read so far is what there
+        // is, and the caller's JSON parse is what rejects a truncated reply.
+        // Treating it as oversized would name the wrong bound.
+        let Ok(chunk) = chunk else { break };
+        total = total.saturating_add(chunk.len());
+        if total > max_bytes {
+            return Err(Oversized { max_bytes });
+        }
+        collected.extend_from_slice(&chunk);
+    }
+    Ok(Bytes::from(collected))
+}
+
+/// The three bounds a retained (gated) turn runs under (ADR-0005 §3).
+///
+/// Constructed by nothing yet: the gated lane is PR 6 (`escalation`,
+/// `advisor`). It ships here, with the rest of the bound set it belongs to and
+/// with its own tests, rather than arriving later as an untested prerequisite.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatedBounds {
+    /// Bytes retained before the turn is discarded.
+    pub(crate) max_bytes: usize,
+    /// Gap allowed between two chunks that carry content.
+    pub(crate) idle: Duration,
+    /// Wall-clock ceiling, measured from the first poll.
+    pub(crate) max_duration: Duration,
+}
+
+/// Which bound a gated turn crossed. A closed set: each variant is a distinct
+/// operational failure an operator tunes with a distinct key, and collapsing
+/// them into one "bound exceeded" would leave the log naming no key.
+///
+/// Unused until PR 6 wires the gated lane; see [`GatedBounds`].
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundExceeded {
+    /// `gated_max_bytes`.
+    MaxBytes,
+    /// `gated_idle_ms` elapsed with no content chunk.
+    Idle,
+    /// `gated_max_duration_ms` elapsed.
+    Duration,
+}
+
+impl std::fmt::Display for BoundExceeded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::MaxBytes => "gated_max_bytes",
+            Self::Idle => "gated_idle_ms",
+            Self::Duration => "gated_max_duration_ms",
+        })
+    }
+}
+
+/// Wrap a body stream in the three gated bounds, ending it with the bound it
+/// crossed.
+///
+/// Takes already-unwrapped chunks rather than a `Result` stream because
+/// [`BoundExceeded`] is deliberately closed: an upstream transport failure is
+/// not a bound the operator configured, and folding it in here would put a
+/// fourth, untunable reason behind a name that promises three. The caller ends
+/// the stream on a transport error before it reaches this wrapper.
+///
+/// The idle timer is **not reset by a chunk that carries only SSE ping
+/// frames**. A keep-alive is the upstream saying the socket is alive, not that
+/// the turn is progressing, so an endless ping stream is exactly what this
+/// bound is for; resetting on one would make the idle gap unreachable
+/// (ADR-0005 §3 names the endless-ping stall as a required test).
+///
+/// Called by nothing yet; see [`GatedBounds`].
+#[allow(dead_code)]
+pub(crate) fn bound_stream<S>(
+    stream: S,
+    gated: GatedBounds,
+) -> impl Stream<Item = Result<Bytes, BoundExceeded>>
+where
+    S: Stream<Item = Bytes> + Send + 'static,
+{
+    struct State<S> {
+        stream: std::pin::Pin<Box<S>>,
+        gated: GatedBounds,
+        /// Wall-clock origin, taken on the first poll rather than at
+        /// construction: the caller may build the wrapper before it is awaited,
+        /// and the bound is on the turn, not on the value's lifetime.
+        started_at: Option<Instant>,
+        /// When the idle gap runs out, refreshed only by a content chunk.
+        idle_deadline: Option<Instant>,
+        total: usize,
+        finished: bool,
+    }
+
+    futures_util::stream::unfold(
+        State {
+            stream: Box::pin(stream),
+            gated,
+            started_at: None,
+            idle_deadline: None,
+            total: 0,
+            finished: false,
+        },
+        |mut state| async move {
+            if state.finished {
+                return None;
+            }
+            let now = Instant::now();
+            let started_at = *state.started_at.get_or_insert(now);
+            let idle_deadline = *state
+                .idle_deadline
+                .get_or_insert_with(|| now + state.gated.idle);
+            let hard_deadline = started_at + state.gated.max_duration;
+            // Whichever fence comes first decides how long this poll may wait,
+            // so a stream that never yields again still ends at the earlier of
+            // the two rather than at the idle gap alone.
+            let deadline = idle_deadline.min(hard_deadline);
+            let next = tokio::time::timeout_at(deadline, state.stream.next()).await;
+            let chunk = match next {
+                Ok(Some(chunk)) => chunk,
+                // The source ended on its own; no bound was crossed.
+                Ok(None) => return None,
+                Err(_) => {
+                    state.finished = true;
+                    let exceeded = if hard_deadline <= idle_deadline {
+                        BoundExceeded::Duration
+                    } else {
+                        BoundExceeded::Idle
+                    };
+                    return Some((Err(exceeded), state));
+                }
+            };
+            if Instant::now() >= hard_deadline {
+                state.finished = true;
+                return Some((Err(BoundExceeded::Duration), state));
+            }
+            state.total = state.total.saturating_add(chunk.len());
+            if state.total > state.gated.max_bytes {
+                state.finished = true;
+                return Some((Err(BoundExceeded::MaxBytes), state));
+            }
+            if !is_ping_only(&chunk) {
+                state.idle_deadline = Some(Instant::now() + state.gated.idle);
+            }
+            Some((Ok(chunk), state))
+        },
+    )
+}
+
+/// Whether a chunk carries nothing but SSE ping frames.
+///
+/// Frame-level, not substring-level: a frame counts as a ping only when its own
+/// `event:` line names `ping`, so a real `content_block_delta` whose text
+/// happens to mention the word does not disarm the idle bound. A chunk with no
+/// complete frame in it is not a ping chunk either — it is a partial frame,
+/// which is progress.
+fn is_ping_only(chunk: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(chunk) else {
+        return false;
+    };
+    let mut frames = 0usize;
+    for frame in text.split("\n\n") {
+        if frame.trim().is_empty() {
+            continue;
+        }
+        frames += 1;
+        let is_ping = frame.lines().any(|line| {
+            line.strip_prefix("event:")
+                .is_some_and(|event| event.trim() == "ping")
+        });
+        if !is_ping {
+            return false;
+        }
+    }
+    frames > 0
+}

@@ -190,16 +190,7 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                 // through the same `strip_context_window_hint` applied at the
                 // top of this function — if the two normalizations drift, a
                 // `"<this model>[1m]"` target recurses without bound.
-                let mut routes = resolve_chain(config, target, None);
-                for route in &mut routes {
-                    // `Route.model` is the id reported back to the client, and
-                    // Claude Code records it to restore the model on `--resume`.
-                    // It must stay the id the caller asked for; the target the
-                    // router picked travels upstream in `upstream_model` and
-                    // nowhere else (issue #172).
-                    route.model = model.to_string();
-                }
-                return routes;
+                return resolve_target_chain(config, target, model);
             }
             if let Some(upstream_models) = configured_model.upstream_model.as_ref() {
                 // Preserve the legacy single-map path even for a Config assembled
@@ -257,6 +248,30 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
         None,
         None,
     )]
+}
+
+/// Resolve one router-chosen id and re-stamp the chain with the advertised id.
+///
+/// `target` is resolved with `stage = None`, because a router target may not
+/// itself be a router (config validation's one-hop rule), so there is no second
+/// decision to make and nothing for a stage context to record.
+///
+/// `advertised` is the id the client asked for, written onto every
+/// [`Route::model`] in the chain. That field is what the adapter renders into
+/// `message_start.model`, and Claude Code records it to restore the model on
+/// `--resume`, so it must stay the requested id; the target the router picked
+/// travels upstream in `upstream_model` and nowhere else (issue #172).
+///
+/// Shared by the answer path above and by the judge step in
+/// `proxy::failover`, which re-resolves the chain after a verdict moves the
+/// tier: one function, so a judge-selected tier is re-stamped exactly as the
+/// scorer-selected one is.
+pub(crate) fn resolve_target_chain(config: &Config, target: &str, advertised: &str) -> Vec<Route> {
+    let mut routes = resolve_chain(config, target, None);
+    for route in &mut routes {
+        route.model = advertised.to_string();
+    }
+    routes
 }
 
 /// The route a `type = "noop"` entry resolves to.
@@ -769,9 +784,12 @@ mod tests {
 }
 
 pub(crate) mod context;
+pub(crate) mod envelope;
 pub(crate) mod handoff;
+pub(crate) mod judge;
 pub(crate) mod outcome;
 pub(crate) mod random;
+pub(crate) mod serve;
 pub(crate) mod stage;
 
 /// Stage-router resolution tests.
@@ -816,6 +834,13 @@ mod stage_router_tests {
             capable_hold_turns: 0,
             tool_semantics: Default::default(),
             handoff_notes: None,
+            classifier: None,
+            judge_timeout_ms: crate::config::DEFAULT_JUDGE_TIMEOUT_MS,
+            judge_max_response_bytes: crate::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+            gated_max_bytes: crate::config::DEFAULT_GATED_MAX_BYTES,
+            gated_idle_ms: crate::config::DEFAULT_GATED_IDLE_MS,
+            gated_max_duration_ms: crate::config::DEFAULT_GATED_MAX_DURATION_MS,
+            max_judge_calls: crate::config::DEFAULT_MAX_JUDGE_CALLS,
         }
     }
 
@@ -880,6 +905,7 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
+            consult: std::cell::Cell::new(None),
         };
 
         let (routes, requested) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -912,6 +938,7 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
+            consult: std::cell::Cell::new(None),
         };
 
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -964,6 +991,7 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
+            consult: std::cell::Cell::new(None),
         };
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
             .expect("an auto-backed id resolves");
@@ -1007,6 +1035,7 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
+            consult: std::cell::Cell::new(None),
         };
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
             .expect("a random-backed id resolves");

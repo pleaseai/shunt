@@ -49,6 +49,7 @@ struct OtelInstruments {
     failover: Counter<u64>,
     stage_decisions: Counter<u64>,
     router_decisions: Counter<u64>,
+    judge_calls: Counter<u64>,
     stage_flips: Counter<u64>,
     requests_shed: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
@@ -140,6 +141,12 @@ fn otel_instruments() -> &'static OtelInstruments {
                 .u64_counter("shunt.router.decisions")
                 .with_description(
                     "[models.router] decisions by routed model, algorithm, target, and source",
+                )
+                .build(),
+            judge_calls: meter
+                .u64_counter("shunt.router.judge_calls")
+                .with_description(
+                    "[models.router] judge consultations by routed model, algorithm, and outcome",
                 )
                 .build(),
             stage_flips: meter
@@ -427,22 +434,45 @@ impl ContinuationOutcome {
 /// `shunt.latency` distribution, both tagged with provider, model (the
 /// client-requested id), and the response status code. Emitted to Sentry and
 /// OpenTelemetry; each sink is inert unless configured.
+///
+/// Client traffic. An internal call a driven `[models.router]` makes goes
+/// through [`record_proxied_request_as`] with `caller = "router"`.
 pub fn record_proxied_request(provider: &str, model: &str, status: u16, latency_ms: f64) {
+    record_proxied_request_as("client", provider, model, status, latency_ms);
+}
+
+/// [`record_proxied_request`] with the `caller` attribute spelled out.
+///
+/// `caller` separates a client turn from an internal judge call (ADR-0005 §3):
+/// both ride the same failover chain, the same adapters, and the same account
+/// pools, so both belong in the same series — but an operator reading request
+/// volume or latency needs to know which half is the gateway's own. A closed
+/// two-value set, so it costs one dimension of two.
+pub fn record_proxied_request_as(
+    caller: &'static str,
+    provider: &str,
+    model: &str,
+    status: u16,
+    latency_ms: f64,
+) {
     sentry::metrics::counter("shunt.requests", 1)
         .attribute("provider", provider.to_owned())
         .attribute("model", model.to_owned())
+        .attribute("caller", caller)
         .attribute("http.response.status_code", i64::from(status))
         .capture();
     sentry::metrics::distribution("shunt.latency", latency_ms)
         .unit(Unit::Millisecond)
         .attribute("provider", provider.to_owned())
         .attribute("model", model.to_owned())
+        .attribute("caller", caller)
         .attribute("http.response.status_code", i64::from(status))
         .capture();
 
     let attributes = [
         KeyValue::new("provider", provider.to_owned()),
         KeyValue::new("model", model.to_owned()),
+        KeyValue::new("caller", caller),
         KeyValue::new("http.response.status_code", i64::from(status)),
     ];
     let instruments = otel_instruments();
@@ -455,7 +485,7 @@ pub fn record_proxied_request(provider: &str, model: &str, status: u16, latency_
             .lock()
             .expect("test proxied-request sample lock poisoned");
         let entry = samples
-            .entry((provider.to_owned(), model.to_owned(), status))
+            .entry((caller, provider.to_owned(), model.to_owned(), status))
             .or_default();
         entry.count += 1;
         entry.latencies.push(latency_ms);
@@ -472,7 +502,7 @@ struct ProxiedRequestSample {
 }
 
 #[cfg(test)]
-type ProxiedSampleStore = Mutex<HashMap<(String, String, u16), ProxiedRequestSample>>;
+type ProxiedSampleStore = Mutex<HashMap<(&'static str, String, String, u16), ProxiedRequestSample>>;
 
 #[cfg(test)]
 fn test_proxied_samples() -> &'static ProxiedSampleStore {
@@ -490,10 +520,37 @@ pub fn proxied_request_samples_for_tests(
     model: &str,
     status: u16,
 ) -> (u64, Vec<f64>) {
+    // Summed across callers, deliberately: this is the whole-series view its
+    // existing callers have always read, and a judge call is a proxied request
+    // like any other. Use `proxied_request_samples_by_caller_for_tests` to
+    // separate the two halves.
     test_proxied_samples()
         .lock()
         .expect("test proxied-request sample lock poisoned")
-        .get(&(provider.to_owned(), model.to_owned(), status))
+        .iter()
+        .filter(|((_, sample_provider, sample_model, sample_status), _)| {
+            sample_provider == provider && sample_model == model && *sample_status == status
+        })
+        .fold((0, Vec::new()), |(count, mut latencies), (_, sample)| {
+            latencies.extend(sample.latencies.iter().copied());
+            (count + sample.count, latencies)
+        })
+}
+
+/// [`proxied_request_samples_for_tests`] narrowed to one `caller`, for the
+/// tests that must prove a judge call is attributed to the router and a client
+/// turn is not.
+#[cfg(test)]
+pub fn proxied_request_samples_by_caller_for_tests(
+    caller: &'static str,
+    provider: &str,
+    model: &str,
+    status: u16,
+) -> (u64, Vec<f64>) {
+    test_proxied_samples()
+        .lock()
+        .expect("test proxied-request sample lock poisoned")
+        .get(&(caller, provider.to_owned(), model.to_owned(), status))
         .map_or((0, Vec::new()), |sample| {
             (sample.count, sample.latencies.clone())
         })
@@ -663,6 +720,72 @@ pub fn record_router_decision(
     otel_instruments().router_decisions.add(1, &attributes);
 }
 
+/// Record one judge consultation a driven `[models.router]` turn earned
+/// (ADR-0005 §7).
+///
+/// Counted per *turn that wanted a judge*, not per upstream call: a turn whose
+/// session had already spent `max_judge_calls` is recorded here with
+/// `outcome = "budget_exhausted"` without any call being made, which is what
+/// makes this series the one an operator tunes that key against. The upstream
+/// call itself, when there is one, appears in `shunt.requests` with
+/// `caller = "router"`.
+///
+/// `model` is the `[[models]]` entry carrying the router, matched past
+/// `strip_context_window_hint` for the same reason [`record_router_decision`]
+/// documents. `algorithm` is a closed set (`RouterConfig::algorithm`), and so
+/// is `outcome` — `decided` plus the fail-open labels on
+/// `crate::routing::judge::JudgeOutcome`. Nothing from the verdict itself
+/// reaches this series.
+pub fn record_judge_call(model: &str, algorithm: &'static str, outcome: &'static str) {
+    sentry::metrics::counter("shunt.router.judge_calls", 1)
+        .attribute("model", model.to_owned())
+        .attribute("algorithm", algorithm)
+        .attribute("outcome", outcome)
+        .capture();
+
+    let attributes = [
+        KeyValue::new("model", model.to_owned()),
+        KeyValue::new("algorithm", algorithm),
+        KeyValue::new("outcome", outcome),
+    ];
+    otel_instruments().judge_calls.add(1, &attributes);
+
+    #[cfg(test)]
+    {
+        *test_judge_call_samples()
+            .lock()
+            .expect("test judge-call sample lock poisoned")
+            .entry((model.to_owned(), algorithm, outcome))
+            .or_default() += 1;
+    }
+}
+
+#[cfg(test)]
+type JudgeCallSampleStore = Mutex<HashMap<(String, &'static str, &'static str), u64>>;
+
+#[cfg(test)]
+fn test_judge_call_samples() -> &'static JudgeCallSampleStore {
+    static SAMPLES: OnceLock<JudgeCallSampleStore> = OnceLock::new();
+    SAMPLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Test-only observation point for [`record_judge_call`]: both metric sinks are
+/// inert unless an endpoint is configured, so a test that must prove a
+/// consultation was counted — or skipped — reads the per-key count here.
+#[cfg(test)]
+pub fn judge_call_samples_for_tests(
+    model: &str,
+    algorithm: &'static str,
+    outcome: &'static str,
+) -> u64 {
+    test_judge_call_samples()
+        .lock()
+        .expect("test judge-call sample lock poisoned")
+        .get(&(model.to_owned(), algorithm, outcome))
+        .copied()
+        .unwrap_or(0)
+}
+
 /// Record one stage-router decision that moved a session off its pinned tier.
 ///
 /// A flip is the expensive event this design is built to ration. It always
@@ -786,10 +909,11 @@ fn test_overflow_counts() -> &'static Mutex<HashMap<(String, &'static str), u64>
 #[cfg(test)]
 mod tests {
     use super::{
+        judge_call_samples_for_tests, proxied_request_samples_by_caller_for_tests,
         record_codex_client_event, record_continuation_outcome, record_gateway_telemetry_ingest,
-        record_pool_rotation, record_pool_utilization, record_proxied_request,
-        record_stream_outcome, record_stream_tokens, record_ttft, record_upstream_status,
-        upstream_status_value_for_tests, ContinuationOutcome,
+        record_judge_call, record_pool_rotation, record_pool_utilization, record_proxied_request,
+        record_proxied_request_as, record_stream_outcome, record_stream_tokens, record_ttft,
+        record_upstream_status, upstream_status_value_for_tests, ContinuationOutcome,
     };
 
     /// The core opt-in contract: recording a proxied request must never panic,
@@ -801,6 +925,53 @@ mod tests {
     fn record_is_noop_without_sinks() {
         record_proxied_request("openai", "gpt-5.2", 200, 123.4);
         record_proxied_request("anthropic", "claude-opus-4-8", 502, 0.0);
+    }
+
+    /// A consultation is counted per turn that wanted a judge, keyed by model,
+    /// algorithm and outcome. Two outcomes of one model must not collapse into
+    /// one series — the fail-open labels are the whole point of the counter, and
+    /// an operator reads `budget_exhausted` against `max_judge_calls` and
+    /// `timeout` against `judge_timeout_ms`.
+    #[test]
+    fn a_judge_consultation_is_counted_per_outcome() {
+        // A model id of this test's own, because the sample store is
+        // process-wide and shared with every other test in the binary.
+        let model = "claude-auto-judge-metric";
+        record_judge_call(model, "stage_router", "decided");
+        record_judge_call(model, "stage_router", "decided");
+        record_judge_call(model, "stage_router", "timeout");
+
+        assert_eq!(
+            judge_call_samples_for_tests(model, "stage_router", "decided"),
+            2
+        );
+        assert_eq!(
+            judge_call_samples_for_tests(model, "stage_router", "timeout"),
+            1
+        );
+        assert_eq!(
+            judge_call_samples_for_tests(model, "stage_router", "budget_exhausted"),
+            0,
+            "an outcome nothing recorded must not borrow another's count"
+        );
+    }
+
+    /// The judge's upstream call lands in `shunt.requests` like any other, and
+    /// the `caller` attribute is what separates it from the client turn it was
+    /// made on behalf of. Drop the attribute and an operator reading per-model
+    /// request volume cannot tell the two apart.
+    #[test]
+    fn the_caller_attribute_separates_a_judge_call_from_a_client_turn() {
+        let model = "claude-judge-caller-metric";
+        record_proxied_request("judge", model, 200, 1.0);
+        record_proxied_request_as("router", "judge", model, 200, 2.0);
+
+        let (client, _) =
+            proxied_request_samples_by_caller_for_tests("client", "judge", model, 200);
+        let (router, _) =
+            proxied_request_samples_by_caller_for_tests("router", "judge", model, 200);
+        assert_eq!(client, 1, "the plain recorder is the client caller");
+        assert_eq!(router, 1, "the judge call is attributed to the router");
     }
 
     /// Stream metrics honor the same opt-in no-op contract.

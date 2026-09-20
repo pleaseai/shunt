@@ -89,6 +89,13 @@ fn router() -> StageRouterConfig {
         capable_hold_turns: 0,
         tool_semantics: Default::default(),
         handoff_notes: None,
+        classifier: None,
+        judge_timeout_ms: crate::config::DEFAULT_JUDGE_TIMEOUT_MS,
+        judge_max_response_bytes: crate::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+        gated_max_bytes: crate::config::DEFAULT_GATED_MAX_BYTES,
+        gated_idle_ms: crate::config::DEFAULT_GATED_IDLE_MS,
+        gated_max_duration_ms: crate::config::DEFAULT_GATED_MAX_DURATION_MS,
+        max_judge_calls: crate::config::DEFAULT_MAX_JUDGE_CALLS,
     }
 }
 
@@ -804,6 +811,208 @@ fn an_in_order_commit_still_replaces_the_pin() {
         held.tier,
         StageTier::Capable,
         "the pin is still capable, so the second commit did not vanish"
+    );
+}
+
+/// The judge budget is a property of the pin, so it has to survive the
+/// decide/commit split: `apply` reports what the session had already spent and
+/// `commit` adds this turn's call to whatever the live entry holds. Stop
+/// charging in `commit` and the budget never rises, so `max_judge_calls` is
+/// unreachable and every turn of a session consults.
+#[test]
+fn judge_calls_accumulate_across_commits() {
+    let store = StageRouterStore::new();
+    let router = router();
+    let start = Instant::now();
+
+    let StageApplied {
+        pin,
+        judge_calls_used,
+        ..
+    } = store.apply_session(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        capable(),
+        false,
+        start,
+    );
+    assert_eq!(judge_calls_used, 0, "a first turn has spent nothing");
+    let mut pin = pin.expect("a session-bearing turn earns a pin");
+    pin.record_judge_call();
+    store.commit(pin, start);
+
+    let StageApplied {
+        pin,
+        judge_calls_used,
+        ..
+    } = store.apply_session(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        capable(),
+        false,
+        start + Duration::from_secs(1),
+    );
+    assert_eq!(judge_calls_used, 1, "the first turn's call is charged");
+    let mut pin = pin.expect("a session-bearing turn earns a pin");
+    pin.record_judge_call();
+    store.commit(pin, start + Duration::from_secs(1));
+
+    let StageApplied {
+        judge_calls_used, ..
+    } = store.apply_session(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        capable(),
+        false,
+        start + Duration::from_secs(2),
+    );
+    assert_eq!(judge_calls_used, 2, "calls add up rather than replacing");
+}
+
+/// A turn whose pin lost the supersession race made its judge call, but the pin
+/// it was made against is no longer the session's — and the surviving pin
+/// carries its own count. Charging it anyway would let two concurrent turns
+/// spend a one-call budget twice over.
+#[test]
+fn a_superseded_commit_does_not_charge_the_budget() {
+    let store = StageRouterStore::new();
+    let router = router();
+    let start = Instant::now();
+
+    let StageApplied { pin: older, .. } = store.apply_session(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        capable(),
+        false,
+        start,
+    );
+    let StageApplied { pin: newer, .. } = store.apply_session(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        capable(),
+        false,
+        start + Duration::from_secs(1),
+    );
+
+    let mut newer = newer.expect("the newer turn earns a pin");
+    newer.record_judge_call();
+    store.commit(newer, start);
+
+    let mut older = older.expect("the older turn earns a pin");
+    older.record_judge_call();
+    store.commit(older, start);
+
+    let StageApplied {
+        judge_calls_used, ..
+    } = store.apply_session(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        capable(),
+        false,
+        start + Duration::from_secs(2),
+    );
+    assert_eq!(
+        judge_calls_used, 1,
+        "only the surviving pin's call is charged"
+    );
+}
+
+/// `min_dwell_turns` counts turns *served at this tier*, so a verdict that moves
+/// the tier has to restart the window exactly as `apply`'s own flip does.
+/// Carrying the inherited count over would let the very next turn move again.
+///
+/// The probe is an efficient estimate against a judge-set capable pin: with the
+/// count carried (3 turns, window of 2) it de-escalates, and with the count
+/// restarted it is held. Delete the `dwell_turns = 1` line in `set_tier` and
+/// this goes red.
+#[test]
+fn a_judge_verdict_that_moves_the_tier_restarts_dwell() {
+    let router = StageRouterConfig {
+        min_dwell_turns: 2,
+        ..router()
+    };
+    let store = StageRouterStore::new();
+    let start = Instant::now();
+
+    // Three turns at efficient, so the pin has more dwell than the window.
+    for turn in 0..3 {
+        let StageApplied { pin, .. } = store.apply_session(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            efficient(0.99),
+            false,
+            start + Duration::from_secs(turn),
+        );
+        let mut pin = pin.expect("a session-bearing turn earns a pin");
+        if turn == 2 {
+            // The judge disagrees with the estimate on the last of them.
+            pin.set_tier(StageTier::Capable);
+        }
+        store.commit(pin, start + Duration::from_secs(turn));
+    }
+
+    let held = store.apply_now(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        efficient(0.99),
+        true,
+        start + Duration::from_secs(3),
+    );
+    assert_eq!(
+        held.tier,
+        StageTier::Capable,
+        "the judge's tier is one turn old, so the window has not reopened"
+    );
+}
+
+/// The twin: a verdict that agrees with the estimate is not a move, so it must
+/// not reset a window the session had already earned. Without this, a `set_tier`
+/// that reset unconditionally would satisfy the test above.
+#[test]
+fn a_judge_verdict_that_agrees_keeps_the_dwell_count() {
+    let router = StageRouterConfig {
+        min_dwell_turns: 2,
+        ..router()
+    };
+    let store = StageRouterStore::new();
+    let start = Instant::now();
+
+    for turn in 0..3 {
+        let StageApplied { pin, .. } = store.apply_session(
+            "claude-auto",
+            Some(SESSION),
+            &router,
+            capable(),
+            false,
+            start + Duration::from_secs(turn),
+        );
+        let mut pin = pin.expect("a session-bearing turn earns a pin");
+        if turn == 2 {
+            pin.set_tier(StageTier::Capable);
+        }
+        store.commit(pin, start + Duration::from_secs(turn));
+    }
+
+    let released = store.apply_now(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        efficient(0.99),
+        true,
+        start + Duration::from_secs(3),
+    );
+    assert_eq!(
+        released.tier,
+        StageTier::Efficient,
+        "the window was earned over three turns and the verdict changed nothing"
     );
 }
 

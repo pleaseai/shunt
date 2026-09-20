@@ -23,6 +23,13 @@ fn router(picker: StageRouterPicker) -> StageRouterConfig {
         capable_hold_turns: 0,
         tool_semantics: Default::default(),
         handoff_notes: None,
+        classifier: None,
+        judge_timeout_ms: crate::config::DEFAULT_JUDGE_TIMEOUT_MS,
+        judge_max_response_bytes: crate::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+        gated_max_bytes: crate::config::DEFAULT_GATED_MAX_BYTES,
+        gated_idle_ms: crate::config::DEFAULT_GATED_IDLE_MS,
+        gated_max_duration_ms: crate::config::DEFAULT_GATED_MAX_DURATION_MS,
+        max_judge_calls: crate::config::DEFAULT_MAX_JUDGE_CALLS,
     }
 }
 
@@ -186,4 +193,132 @@ fn a_compacted_turn_with_tool_activity_still_escalates() {
         decision.source,
         StageSource::Scorer(DecisionSource::Override)
     );
+}
+
+/// The consultation tests. `select` is what decides *whether* a judge is
+/// consulted; `routing::judge` decides what the answer means. These pin the
+/// three clauses of that gate, and the transcripts they use are the ones the
+/// scorer actually classifies that way — `an_undecided_turn_is_a_fall_open`
+/// is the check that keeps them honest, because a transcript that stopped
+/// falling open would make every assertion below vacuous.
+mod consult {
+    use super::*;
+    use crate::routing::stage::{select, ConsultJudge, StageContext, StageRouterStore};
+
+    const SESSION: &str = "0199a0f2-2f4b-7c3e-9d61-4f1a2b3c4d5e";
+
+    /// One erroring tool result: a single saturated signal scores
+    /// `tanh(0.5) ≈ 0.46`, below the 0.5 gate, so the scorer sees the signals
+    /// and still cannot decide.
+    fn undecided() -> Value {
+        json!({"messages": [
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "a", "name": "Read"}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "a", "is_error": true}]},
+        ]})
+    }
+
+    fn decisive() -> Value {
+        json!({"messages": erroring()})
+    }
+
+    fn judged() -> StageRouterConfig {
+        StageRouterConfig {
+            classifier: Some(crate::config::StageClassifierConfig {
+                target: "judge-alias".to_string(),
+                base_threshold: 0.5,
+            }),
+            ..router(StageRouterPicker::EfficientFirst)
+        }
+    }
+
+    fn headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-claude-code-session-id", SESSION.parse().unwrap());
+        headers
+    }
+
+    fn consult_for(
+        router: &StageRouterConfig,
+        store: &StageRouterStore,
+        request: &Value,
+        read_only: bool,
+    ) -> (StageDecision, Option<ConsultJudge>) {
+        let context = StageContext {
+            store,
+            request,
+            headers: &headers(),
+            read_only,
+            now: Instant::now(),
+            pending: Cell::new(None),
+            decided: Cell::new(None),
+            consult: Cell::new(None),
+        };
+        let decision = select(router, "claude-auto", Some(&context));
+        if let Some(pin) = context.pending.take() {
+            store.commit(pin, context.now);
+        }
+        (decision, context.consult.take())
+    }
+
+    /// The premise the other tests rest on, asserted rather than assumed.
+    #[test]
+    fn an_undecided_turn_is_a_fall_open() {
+        let (decision, _) = consult_for(&judged(), &StageRouterStore::new(), &undecided(), false);
+        assert_eq!(
+            decision.source,
+            StageSource::Scorer(DecisionSource::FallOpen)
+        );
+    }
+
+    /// The gate itself: the same undecided turn consults with a classifier
+    /// configured and consults nothing without one. Drop the
+    /// `router.classifier.is_some()` clause and the pure lane starts calling a
+    /// judge it never named.
+    #[test]
+    fn an_undecided_turn_consults_only_with_a_classifier() {
+        let (_, consult) = consult_for(&judged(), &StageRouterStore::new(), &undecided(), false);
+        assert!(consult.is_some(), "a configured judge is consulted");
+
+        let (_, consult) = consult_for(
+            &router(StageRouterPicker::EfficientFirst),
+            &StageRouterStore::new(),
+            &undecided(),
+            false,
+        );
+        assert!(consult.is_none(), "the pure lane makes no model call");
+    }
+
+    /// A `count_tokens` probe must resolve without any model call at all
+    /// (ADR-0005 §3), so it never consults even on the turn that otherwise
+    /// would.
+    #[test]
+    fn a_read_only_probe_is_not_consulted() {
+        let (_, consult) = consult_for(&judged(), &StageRouterStore::new(), &undecided(), true);
+        assert!(consult.is_none(), "a probe makes zero judge calls");
+    }
+
+    /// A pinned session already has an answer. Its held turns report `Sticky`
+    /// rather than `FallOpen`, and consulting them would spend the whole
+    /// `max_judge_calls` budget re-deciding what the pin already decided.
+    #[test]
+    fn a_turn_held_by_its_pin_is_not_consulted() {
+        let router = judged();
+        let store = StageRouterStore::new();
+
+        // A decisive turn first, so the session carries a capable pin.
+        let (decided, _) = consult_for(&router, &store, &decisive(), false);
+        assert_eq!(decided.tier, StageTier::Capable);
+
+        let (held, consult) = consult_for(&router, &store, &undecided(), false);
+        assert_eq!(
+            held.source,
+            StageSource::Sticky,
+            "the pin, not the scorer, answered this turn"
+        );
+        assert!(
+            consult.is_none(),
+            "a session with an answer buys no second one"
+        );
+    }
 }

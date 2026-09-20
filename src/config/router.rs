@@ -18,13 +18,19 @@
 //! [`crate::config::ConfigError::RemovedStageRouterTable`], which names the
 //! replacement.
 
+mod bounds;
 mod random;
 mod stage;
 
+pub use bounds::{
+    CallBounds, DEFAULT_GATED_IDLE_MS, DEFAULT_GATED_MAX_BYTES, DEFAULT_GATED_MAX_DURATION_MS,
+    DEFAULT_JUDGE_MAX_RESPONSE_BYTES, DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_MAX_JUDGE_CALLS,
+};
 pub use random::{RandomAffinity, RandomRouterConfig};
 pub use stage::{
-    HandoffNotesConfig, StageRouterConfig, StageRouterPicker, ToolSemanticsConfig,
-    DEFAULT_CONFIDENCE_THRESHOLD, DEFAULT_DEESCALATE_THRESHOLD,
+    HandoffNotesConfig, StageClassifierConfig, StageRouterConfig, StageRouterPicker,
+    ToolSemanticsConfig, DEFAULT_BASE_THRESHOLD, DEFAULT_CONFIDENCE_THRESHOLD,
+    DEFAULT_DEESCALATE_THRESHOLD,
 };
 
 use serde::{Deserialize, Serialize};
@@ -78,6 +84,12 @@ impl RouterConfig {
 
     /// Every public model id this router can name, in declared order.
     ///
+    /// **Answer targets only** — the ids a client request can actually be
+    /// served by, which is what `/routes` reports as `targets` and what the
+    /// unresolvable-target warning words itself around. A judge is enumerated
+    /// by [`RouterConfig::named_judges`] instead, and validation ranges over
+    /// both chained together so neither escapes the one-hop rule.
+    ///
     /// The one-hop rule and the unresolvable-target warning both range over
     /// this, so a new algorithm that forgets to list a target here fails those
     /// checks silently — which is why every arm is spelled out rather than
@@ -104,6 +116,44 @@ impl RouterConfig {
             // A noop entry answers as itself and names no destination.
             Self::Noop {} => Vec::new(),
         }
+    }
+
+    /// Every id this router *consults* but never serves, paired with the key
+    /// that named it (ADR-0005 §7).
+    ///
+    /// Kept apart from [`RouterConfig::named_targets`] rather than folded into
+    /// it because the two are read for different reasons: a target is a place a
+    /// client turn can land, a judge is not. Validation chains them, `/routes`
+    /// reports them as separate lists, and the dependency envelope appends the
+    /// judges after the targets.
+    pub fn named_judges(&self) -> Vec<(&'static str, &str)> {
+        match self.stage_classifier() {
+            Some((_, classifier)) => vec![("classifier.target", classifier.target.as_str())],
+            None => Vec::new(),
+        }
+    }
+
+    /// The judge ids alone, in declared order.
+    pub fn judges(&self) -> Vec<&str> {
+        self.named_judges()
+            .into_iter()
+            .map(|(_, judge)| judge)
+            .collect()
+    }
+
+    /// The stage table and its classifier, for the two types that can carry
+    /// one. `None` for every entry that runs on the pure lane.
+    pub fn stage_classifier(&self) -> Option<(&StageRouterConfig, &StageClassifierConfig)> {
+        let stage = self.stage()?;
+        stage.classifier.as_ref().map(|c| (stage, c))
+    }
+
+    /// Whether this router makes model calls while routing — today, exactly
+    /// "it carries a classifier" (ADR-0005 §1). The gate the request path reads
+    /// before it computes a dependency envelope or constructs a driver at all,
+    /// so a pure-lane entry pays nothing for the driven lane's existence.
+    pub fn is_driven(&self) -> bool {
+        self.stage_classifier().is_some()
     }
 }
 

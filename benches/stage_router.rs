@@ -60,7 +60,7 @@ mod bench {
         bench_support::{self, StageStore, MAX_TRACKED_CHILD_PINS, MAX_TRACKED_SESSIONS},
         config::{
             Config, ModelConfig, RandomAffinity, RandomRouterConfig, RouteConfig, RouterConfig,
-            StageRouterConfig, StageRouterPicker,
+            StageClassifierConfig, StageRouterConfig, StageRouterPicker,
         },
     };
 
@@ -76,6 +76,8 @@ mod bench {
     /// property under test.
     const ROUTER_MODEL: &str = "claude-auto";
     const EFFICIENT_TARGET: &str = "claude-sonnet-4-6";
+    /// The judge the driven arm consults but never serves.
+    const JUDGE_TARGET: &str = "claude-haiku-4-5";
 
     fn router() -> StageRouterConfig {
         StageRouterConfig {
@@ -90,6 +92,13 @@ mod bench {
             capable_hold_turns: 0,
             tool_semantics: Default::default(),
             handoff_notes: None,
+            classifier: None,
+            judge_timeout_ms: shunt::config::DEFAULT_JUDGE_TIMEOUT_MS,
+            judge_max_response_bytes: shunt::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+            gated_max_bytes: shunt::config::DEFAULT_GATED_MAX_BYTES,
+            gated_idle_ms: shunt::config::DEFAULT_GATED_IDLE_MS,
+            gated_max_duration_ms: shunt::config::DEFAULT_GATED_MAX_DURATION_MS,
+            max_judge_calls: shunt::config::DEFAULT_MAX_JUDGE_CALLS,
         }
     }
 
@@ -376,6 +385,48 @@ mod bench {
                     .unwrap(),
             )
         });
+    }
+
+    /// The dependency envelope a driven entry is admitted against (ADR-0005
+    /// §3). Read against `resolve_chain_routed`: the routed arm resolves one
+    /// chain, this resolves the entry's own plus one per target and judge, and
+    /// the gap is what moving admission off the decided chain costs.
+    ///
+    /// Parameterized on turn count like its neighbours even though the envelope
+    /// never reads the body — a flat curve is the point: admission does not
+    /// grow with the transcript.
+    #[divan::bench(args = TURN_COUNTS)]
+    fn dependency_envelope_driven(bencher: divan::Bencher, turns: usize) {
+        let config = driven_config();
+        let _ = turns;
+        bencher.bench(|| {
+            divan::black_box(bench_support::dependency_envelope(
+                &config,
+                divan::black_box(ROUTER_MODEL),
+            ))
+        });
+    }
+
+    /// The `config(true)` stage router with a `[models.router.classifier]`
+    /// naming a third id, so the envelope has an answer pair *and* a judge.
+    fn driven_config() -> Config {
+        let mut config = config(true);
+        let stage = StageRouterConfig {
+            classifier: Some(StageClassifierConfig {
+                target: JUDGE_TARGET.to_string(),
+                base_threshold: 0.5,
+            }),
+            ..router()
+        };
+        config.models[0].router = Some(RouterConfig::StageRouter(stage));
+        config.routes.push(RouteConfig {
+            model: JUDGE_TARGET.to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        });
+        config
     }
 
     /// The routed arm again, as a `Task` child sends it: the same body, plus the

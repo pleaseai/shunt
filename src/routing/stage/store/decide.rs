@@ -223,6 +223,13 @@ pub(super) fn fingerprint(router: &StageRouterConfig) -> u64 {
         capable_hold_turns,
         tool_semantics,
         handoff_notes,
+        classifier,
+        judge_timeout_ms,
+        judge_max_response_bytes,
+        gated_max_bytes,
+        gated_idle_ms,
+        gated_max_duration_ms,
+        max_judge_calls,
     } = router;
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -237,5 +244,20 @@ pub(super) fn fingerprint(router: &StageRouterConfig) -> u64 {
     capable_hold_turns.hash(&mut hasher);
     tool_semantics.hash(&mut hasher);
     handoff_notes.hash(&mut hasher);
+    // The judge's own inputs. A pin carries a judge budget, so a table that
+    // adds, removes, or re-points a classifier — or moves a bound the judge
+    // runs under — must not inherit a count spent under the old one. `f64`
+    // again through `to_bits`, and the six bounds are plain integers.
+    classifier.as_ref().map(|c| &c.target).hash(&mut hasher);
+    classifier
+        .as_ref()
+        .map(|c| c.base_threshold.to_bits())
+        .hash(&mut hasher);
+    judge_timeout_ms.hash(&mut hasher);
+    judge_max_response_bytes.hash(&mut hasher);
+    gated_max_bytes.hash(&mut hasher);
+    gated_idle_ms.hash(&mut hasher);
+    gated_max_duration_ms.hash(&mut hasher);
+    max_judge_calls.hash(&mut hasher);
     hasher.finish()
 }

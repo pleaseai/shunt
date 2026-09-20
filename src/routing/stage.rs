@@ -8,9 +8,14 @@
 //! `tanh(0.5) ≈ 0.46` and so cannot decide alone, while two corroborating
 //! signals reach `tanh(1.0) ≈ 0.76`.
 //!
-//! Nothing here calls a model. libsy asks for an LLM judge when the signals are
-//! inconclusive; shunt declines and falls open to the picker's default instead,
-//! which keeps the hot path free of an extra request and an extra credential.
+//! Nothing here calls a model. What a configured judge changes is *who* calls
+//! one: when `[models.router.classifier]` names a judge, a turn the signals
+//! leave undecided parks a [`ConsultJudge`] on the request's
+//! [`StageContext`], and `proxy::failover` consults the judge through
+//! [`crate::routing::judge`] — after admission, never from here (ADR-0005 §3).
+//! Absent that table the scorer falls open to the picker's default exactly as
+//! before, which keeps the pure lane free of an extra request and an extra
+//! credential.
 
 pub(crate) mod signals;
 pub(crate) mod store;
@@ -75,15 +80,21 @@ impl StageSource {
     pub(crate) fn is_signal_evidence(self) -> bool {
         match self {
             Self::Scorer(DecisionSource::Override | DecisionSource::Dimensions) => true,
-            // `Ambiguous` is the scorer declining to decide, `FallOpen` is the
-            // picker's default standing in, and `LlmClassifier` cannot occur
-            // because shunt runs no judge. `CapableHold` *can* now occur —
-            // `StageRouterStore::resolve` stamps it while a `capable_hold_turns`
-            // window is open — and it is deliberately not evidence: it is an
-            // earlier escalation being held, which is what `Sticky` already
-            // means here, and a held turn must not be read as a fresh signal
-            // that could move the pin it is holding. None of the four is
-            // evidence.
+            // `Ambiguous` is the scorer declining to decide and `FallOpen` is
+            // the picker's default standing in. `LlmClassifier` *can* now occur
+            // — a configured `[models.router.classifier]` stamps it when a
+            // judge verdict decides the turn — and it is deliberately not
+            // evidence either: the verdict is not a signal, and it does not
+            // need to be evidence to take effect, because
+            // `StageRouterStore::resolve` writes an unpinned session's estimate
+            // regardless and the judge only ever runs on a turn that would
+            // otherwise have taken the picker default. `CapableHold` *can* also
+            // occur — `StageRouterStore::resolve` stamps it while a
+            // `capable_hold_turns` window is open — and it is deliberately not
+            // evidence: it is an earlier escalation being held, which is what
+            // `Sticky` already means here, and a held turn must not be read as
+            // a fresh signal that could move the pin it is holding. None of the
+            // four is evidence.
             Self::Scorer(
                 DecisionSource::Ambiguous
                 | DecisionSource::LlmClassifier
@@ -152,8 +163,10 @@ pub(crate) struct StageContext<'a> {
     /// is admitted. Routing runs before inbound auth and the managed-model
     /// policy — those need the resolved chain — so writing it here would let a
     /// request that is about to be rejected pin, evict, or steer a session it
-    /// never proved it owns. [`StageContext::commit`] writes it once the
-    /// request is known to be served.
+    /// never proved it owns. The caller takes it and hands it to
+    /// [`StageRouterStore::commit`] once the request is known to be served —
+    /// and, on a driven entry, once the judge has had its say, so the pin
+    /// records the tier the turn was actually dispatched at.
     pub pending: Cell<Option<store::PendingPin>>,
     /// What the router decided, parked for the observability surfaces to read
     /// once the request is admitted. Set only when the requested id actually
@@ -161,26 +174,25 @@ pub(crate) struct StageContext<'a> {
     /// [`crate::routing::resolve_chain`] — every algorithm stamps one, so the
     /// two headers and the new counter do not have to know which ran.
     pub decided: Cell<Option<RouterOutcome>>,
+    /// Set when this turn earns a judge consultation, parked for
+    /// `proxy::failover` to act on *after* admission (ADR-0005 §3).
+    ///
+    /// The same park-until-admitted protocol [`StageContext::pending`] uses,
+    /// and for a stronger reason: a pin is a write, a judge call is a model
+    /// call on a gateway-held credential and the judge target's pool quota. A
+    /// caller who is about to be rejected must spend neither.
+    pub consult: Cell<Option<ConsultJudge>>,
 }
 
-impl StageContext<'_> {
-    /// Write the pin this request earned. Called after inbound auth and the
-    /// managed-model policy have admitted it, and a no-op for every request
-    /// that earned none — a read-only `count_tokens` probe, a caller with no
-    /// session header, and any id the router never looked at.
-    ///
-    /// Admission, not a successful upstream response, is the boundary: the tier
-    /// chosen here is the tier the turn was dispatched at, and an upstream 500
-    /// afterwards is not evidence that the choice was wrong.
-    ///
-    /// Returns the `(from, to)` tier change the write made, for the flip
-    /// counter. `None` for every request that wrote nothing, and for a write
-    /// that landed on the tier already pinned.
-    pub(crate) fn commit(&self) -> Option<(StageTier, StageTier)> {
-        self.pending
-            .replace(None)
-            .and_then(|pin| self.store.commit(pin, self.now))
-    }
+/// A judge consultation this turn earned, with the budget it must fit inside.
+///
+/// Carries the count rather than the remaining allowance so the comparison
+/// stays with the caller that also holds the [`crate::config::CallBounds`]:
+/// this type is decided inside routing, and routing does not read bounds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ConsultJudge {
+    /// Judge calls this session had already made when the turn read its pin.
+    pub judge_calls_used: u32,
 }
 
 /// Resolve a router to the tier that serves this request.
@@ -217,6 +229,22 @@ pub(crate) fn select(
     // router whose target is itself a router, so one request reaches this line
     // at most once and no earlier pin can be dropped here.
     context.pending.set(pin);
+    // A judge is consulted only on a turn that would otherwise land on the
+    // picker's default. `Scorer(FallOpen)` is exactly that turn: the scorer saw
+    // the signals and could not decide. A pinned session whose pin holds the
+    // turn reports `Sticky` instead and is not consulted — the session already
+    // has an answer, and paying for a second one every turn is what
+    // `max_judge_calls` would otherwise be spent on. A read-only probe never
+    // consults at all: ADR-0005 §3 requires `count_tokens` to resolve to the
+    // pin or the no-model-call decision, so it makes zero judge calls.
+    if router.classifier.is_some()
+        && decision.source == StageSource::Scorer(DecisionSource::FallOpen)
+        && !context.read_only
+    {
+        context.consult.set(Some(ConsultJudge {
+            judge_calls_used: applied.judge_calls_used,
+        }));
+    }
     decision
 }
 
@@ -280,9 +308,13 @@ pub(crate) fn decide(
             source: StageSource::Scorer(source),
             confidence,
         },
-        // The signals were too weak to decide and shunt runs no judge, so the
-        // picker's default takes the turn. This is libsy's documented fall-open
-        // path, not an error.
+        // The signals were too weak to decide, so the picker's default takes
+        // the turn. This is libsy's documented fall-open path, not an error.
+        // It is also the one outcome a configured `[models.router.classifier]`
+        // reopens: [`select`] parks a [`ConsultJudge`] on exactly this source,
+        // and the judge's verdict — if it arrives inside its bounds — replaces
+        // the default in `proxy::failover`. With no classifier configured the
+        // default stands, as it always has.
         //
         // The sub-threshold score libsy returns here is deliberately dropped:
         // `confidence` is documented as the scorer's confidence *in this tier*,

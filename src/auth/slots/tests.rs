@@ -20,7 +20,7 @@ use crate::{
     discovery::upstream::upstream_headers,
     gateway::{approval::Identity, jwt, GatewayAuth},
     proxy::failover::{check_inbound_auth, headers_for_route},
-    routing::{AdapterKind, Route},
+    routing::{serve::judge_headers, AdapterKind, Route},
     server::AppState,
 };
 
@@ -292,8 +292,8 @@ fn accepted_by_any_gate(state: &AppState, headers: &HeaderMap) -> bool {
 
 // --- The forward-site registry ----------------------------------------------
 
-/// The three places a caller-supplied header can leave shunt for a third-party
-/// upstream. Adding a fourth means adding it here, or the tripwire below fails.
+/// The four places a caller-supplied header can leave shunt for a third-party
+/// upstream. Adding a fifth means adding it here, or the tripwire below fails.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ForwardSite {
     /// `proxy::failover` — `check_inbound_auth` then `headers_for_route` on the
@@ -303,12 +303,17 @@ enum ForwardSite {
     DiscoveryPassthrough,
     /// `adapters::responses::inbound::passthrough_request_headers`.
     CodexPassthrough,
+    /// `routing::serve::judge_headers` — the driven router's own call to a
+    /// judge model (ADR-0005 §3). The caller never addressed this upstream, so
+    /// every inbound credential shape has to be gone before the call leaves.
+    JudgeCall,
 }
 
-const FORWARD_SITES: [ForwardSite; 3] = [
+const FORWARD_SITES: [ForwardSite; 4] = [
     ForwardSite::InferenceFailover,
     ForwardSite::DiscoveryPassthrough,
     ForwardSite::CodexPassthrough,
+    ForwardSite::JudgeCall,
 ];
 
 impl ForwardSite {
@@ -317,6 +322,7 @@ impl ForwardSite {
             Self::InferenceFailover => "proxy::failover (inference passthrough)",
             Self::DiscoveryPassthrough => "discovery::upstream (models passthrough)",
             Self::CodexPassthrough => "adapters::responses::inbound (codex passthrough)",
+            Self::JudgeCall => "routing::serve (driven router judge call)",
         }
     }
 
@@ -352,6 +358,7 @@ impl ForwardSite {
                     .unwrap_or_default()
             }
             Self::CodexPassthrough => passthrough_request_headers(headers, credentials(state)),
+            Self::JudgeCall => judge_headers(state, headers),
         }
     }
 }
@@ -797,7 +804,7 @@ async fn stripping_the_cookie_header_leaves_the_callers_own_credential_alone() {
 /// would slip through. Files named `tests.rs` are skipped so fixtures need no
 /// entry; an in-file `#[cfg(test)] mod tests` helper is *not* skipped and is
 /// listed below as noise.
-const HEADER_PRODUCER_ALLOWLIST: [&str; 14] = [
+const HEADER_PRODUCER_ALLOWLIST: [&str; 15] = [
     // noise — `#[cfg(test)] mod tests` fixture builder.
     "src/accounts.rs",
     // registered forward site — consumes the map `headers_for_route` produced
@@ -838,6 +845,8 @@ const HEADER_PRODUCER_ALLOWLIST: [&str; 14] = [
     // reads `x-claude-code-*` hints off the inbound map (`RouterContext`); it
     // builds no outbound map.
     "src/routing/context.rs",
+    // registered forward site — site 4, the driven router's judge call.
+    "src/routing/serve.rs",
 ];
 
 #[test]

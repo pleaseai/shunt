@@ -71,6 +71,36 @@ pub(crate) struct PendingPin {
     /// it would write a dead latch onto whatever fresh entry replaced it, for
     /// another full TTL, and repeat for as long as turns keep overlapping.
     observed_compaction: bool,
+    /// Whether the turn holding this pin actually consulted the judge.
+    ///
+    /// Private, and set only through [`PendingPin::record_judge_call`], so the
+    /// budget can only be charged by the code that spends it. `commit` adds it
+    /// to whatever the live pin already held; a superseded commit adds nothing,
+    /// which is correct — the call was made, but the pin it was made against is
+    /// no longer the session's, and the surviving pin carries its own count.
+    judged: bool,
+}
+
+impl PendingPin {
+    /// Overwrite the tier this pin will record, after a judge verdict moved it.
+    ///
+    /// Resets `dwell_turns` to 1 when the tier actually changes from what
+    /// [`StageRouterStore::apply`] decided, for the same reason `apply` restarts
+    /// the window on a flip: `min_dwell_turns` counts turns *served at this
+    /// tier*, and carrying an inherited count onto a tier this turn is the
+    /// first to serve would let the next turn move again immediately. A verdict
+    /// that agrees with the estimate changes nothing and keeps the count.
+    pub(crate) fn set_tier(&mut self, tier: StageTier) {
+        if self.session.tier != tier {
+            self.session.tier = tier;
+            self.session.dwell_turns = 1;
+        }
+    }
+
+    /// Charge one judge call to this pin's session budget.
+    pub(crate) fn record_judge_call(&mut self) {
+        self.judged = true;
+    }
 }
 
 /// What one [`StageRouterStore::apply`] call decided, and what it displaced.
@@ -79,6 +109,11 @@ pub(crate) struct StageApplied {
     /// The pin this turn earned, parked until the request is admitted. `None`
     /// for a turn that records nothing: no session id, or a read-only probe.
     pub pin: Option<PendingPin>,
+    /// Judge calls the session had already made when this turn read its pin
+    /// (ADR-0005 §3). `0` for a stateless or unpinned turn, which is what gives
+    /// every sessionless caller a fresh budget — the budget is a property of a
+    /// pin, and a turn without one has nothing to exhaust.
+    pub judge_calls_used: u32,
 }
 
 impl StageApplied {
@@ -87,6 +122,7 @@ impl StageApplied {
         Self {
             decision,
             pin: None,
+            judge_calls_used: 0,
         }
     }
 }
@@ -217,9 +253,11 @@ impl StageRouterStore {
         };
         StageApplied {
             decision,
+            judge_calls_used: pinned.map_or(0, |session| session.judge_calls),
             pin: Some(PendingPin {
                 key,
                 observed_compaction: hints.context_compacted,
+                judged: false,
                 session: StageSession {
                     seq,
                     tier: decision.tier,
@@ -229,6 +267,10 @@ impl StageRouterStore {
                     ttl,
                     compacted,
                     capable_hold_remaining: resolved.capable_hold_remaining,
+                    // Overwritten by `commit`, which adds this turn's call to
+                    // whatever the *live* entry holds at write time rather than
+                    // to the snapshot this turn read.
+                    judge_calls: 0,
                 },
             }),
         }
@@ -308,6 +350,15 @@ impl StageRouterStore {
         // compacted one would clear a latch it never saw. The two documented
         // ways out — TTL expiry and a table reload — both make `live` `None`.
         session.compacted |= live.is_some_and(|live| live.compacted);
+        // The judge budget accumulates against the *live* entry, not the
+        // snapshot this turn read, for the same reason the flip is decided
+        // here: two concurrent turns of one session both read the same count,
+        // and adding each turn's own call to the entry that is actually there
+        // counts each call once. A superseded commit returns above without
+        // adding anything — that turn's pin is not the session's any more.
+        session.judge_calls = live
+            .map_or(0, |live| live.judge_calls)
+            .saturating_add(u32::from(pin.judged));
         let scope = PinScope::of(&pin.key);
         entries.insert(pin.key, session);
         evict(&mut entries, scope, now);

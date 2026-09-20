@@ -38,6 +38,14 @@ pub struct RouterEntry {
     /// efficient]` for a stage or auto entry, the configured list for a
     /// `random` one, and empty for `noop`, which answers as itself.
     pub targets: Vec<String>,
+    /// Every id this router *consults* and never serves — today the
+    /// `[models.router.classifier]` judge (ADR-0005 §7). Separate from
+    /// `targets` because a reader resolving "where can a request go" must not
+    /// find a judge there: no client turn is ever routed to one. Omitted
+    /// entirely when there is none, so an entry with no judge answers exactly
+    /// as it did before the key existed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub judges: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capable_target: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -123,6 +131,7 @@ pub(crate) fn snapshot(state: &AppState) -> RoutesResponse {
                 model: model.id.clone(),
                 algorithm: router.algorithm().to_string(),
                 targets: router.targets().into_iter().map(str::to_string).collect(),
+                judges: router.judges().into_iter().map(str::to_string).collect(),
                 capable_target: stage.map(|stage| stage.capable_target.clone()),
                 efficient_target: stage.map(|stage| stage.efficient_target.clone()),
                 default_tier: stage.map(|stage| match stage.picker {
@@ -213,6 +222,13 @@ mod tests {
                     capable_hold_turns: 0,
                     tool_semantics: Default::default(),
                     handoff_notes: None,
+                    classifier: None,
+                    judge_timeout_ms: crate::config::DEFAULT_JUDGE_TIMEOUT_MS,
+                    judge_max_response_bytes: crate::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+                    gated_max_bytes: crate::config::DEFAULT_GATED_MAX_BYTES,
+                    gated_idle_ms: crate::config::DEFAULT_GATED_IDLE_MS,
+                    gated_max_duration_ms: crate::config::DEFAULT_GATED_MAX_DURATION_MS,
+                    max_judge_calls: crate::config::DEFAULT_MAX_JUDGE_CALLS,
                 },
             )),
             stage_router: None,
@@ -259,6 +275,64 @@ mod tests {
                 }]
             }),
             "a `[[models]]` entry without a router must not appear in `routers`"
+        );
+    }
+
+    /// A driven router names its judge too. `/routes` answers "where can a
+    /// request for this id go", and a judge is a destination the gateway calls
+    /// on its own credential — listing only the answer tiers would leave that
+    /// call invisible. The test above is the other half: without a classifier
+    /// the key is absent, not `[]`.
+    #[tokio::test]
+    async fn a_driven_router_reports_its_judge_beside_its_targets() {
+        let mut model = stage_router_model(
+            "claude-auto",
+            crate::config::StageRouterPicker::EfficientFirst,
+        );
+        match model.router.as_mut().expect("the fixture carries a router") {
+            crate::config::RouterConfig::StageRouter(stage) => {
+                stage.classifier = Some(crate::config::StageClassifierConfig {
+                    target: "judge-alias".to_string(),
+                    base_threshold: 0.5,
+                });
+            }
+            other => panic!("the fixture is a stage router, got {other:?}"),
+        }
+        let config = crate::config::Config {
+            models: vec![
+                model,
+                // A judge may only resolve to a credential-injecting route, so
+                // the entry has to name one or `validate` rejects the config
+                // before `/routes` ever sees it.
+                ModelConfig {
+                    id: "judge-alias".to_string(),
+                    display_name: None,
+                    upstream_model: Some(std::collections::BTreeMap::from([(
+                        "codex".to_string(),
+                        "gpt-5.2".to_string(),
+                    )])),
+                    router: None,
+                    stage_router: None,
+                },
+            ],
+            ..crate::config::Config::default()
+        };
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        let body = serde_json::to_value(get(State(state)).await.0).unwrap();
+
+        assert_eq!(
+            body["routers"][0],
+            json!({
+                "model": "claude-auto",
+                "algorithm": "stage_router",
+                "targets": ["claude-opus-4-8", "claude-sonnet-4-6"],
+                "judges": ["judge-alias"],
+                "capable_target": "claude-opus-4-8",
+                "efficient_target": "claude-sonnet-4-6",
+                "default_tier": "efficient"
+            }),
+            "the judge is listed separately from the answer targets"
         );
     }
 

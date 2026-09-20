@@ -94,6 +94,25 @@ pub(crate) struct ForwardError {
     response: Box<axum::response::Response>,
 }
 
+impl ForwardError {
+    /// Build one from a message and an already-rendered response.
+    pub(crate) fn new(message: String, response: Box<axum::response::Response>) -> Self {
+        Self { message, response }
+    }
+
+    /// The status the client would have been answered with. Read by
+    /// `routing::serve`, which turns a failed internal call into a typed libsy
+    /// client error rather than relaying it.
+    pub(crate) fn status(&self) -> StatusCode {
+        self.response.status()
+    }
+
+    /// The gateway-side message, for the same conversion.
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 impl IntoResponse for ForwardError {
     fn into_response(self) -> axum::response::Response {
         *self.response
@@ -104,7 +123,7 @@ pub(crate) fn is_count_tokens(uri: &Uri) -> bool {
     uri.path().ends_with("/count_tokens")
 }
 
-fn normalize_request_body(body: &mut crate::request::RequestBody) {
+pub(crate) fn normalize_request_body(body: &mut crate::request::RequestBody) {
     // Refresh the raw passthrough bytes only when a block was actually dropped.
     // The common case keeps the client's exact bytes and the already-parsed tree.
     body.mutate(normalize_empty_text_blocks);

@@ -62,6 +62,13 @@ fn router() -> StageRouterConfig {
         capable_hold_turns: 0,
         tool_semantics: Default::default(),
         handoff_notes: None,
+        classifier: None,
+        judge_timeout_ms: crate::config::DEFAULT_JUDGE_TIMEOUT_MS,
+        judge_max_response_bytes: crate::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+        gated_max_bytes: crate::config::DEFAULT_GATED_MAX_BYTES,
+        gated_idle_ms: crate::config::DEFAULT_GATED_IDLE_MS,
+        gated_max_duration_ms: crate::config::DEFAULT_GATED_MAX_DURATION_MS,
+        max_judge_calls: crate::config::DEFAULT_MAX_JUDGE_CALLS,
     }
 }
 
