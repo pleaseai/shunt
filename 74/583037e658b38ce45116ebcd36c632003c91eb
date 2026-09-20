@@ -1,0 +1,173 @@
+docs/routing-algorithms.md
+  s_93907476423b71::t_dfca6b53d13730 94,155-344
+site/src/content/docs/reference/endpoints.md
+  s_93907476423b71::t_dfca6b53d13730 12
+src/routing/handoff.rs
+  s_93907476423b71::t_dfca6b53d13730 1-311
+site/src/content/docs/getting-started/comparison.mdx
+  s_93907476423b71::t_dfca6b53d13730 20
+site/src/content/docs/reference/configuration.md
+  s_93907476423b71::t_dfca6b53d13730 445,453,580,597,599-603,605-637,644-645,652,661-805,809-829,868
+tests/responses_chain_stream.rs
+  s_93907476423b71::t_dfca6b53d13730 15-16,115,188-193,206,581-641,644
+  s_93907476423b71::t_c394cfa2c08e55 642-643,645
+README.zh-CN.md
+  s_93907476423b71::t_dfca6b53d13730 224
+site/src/content/docs/ja/getting-started/comparison.mdx
+  s_93907476423b71::t_dfca6b53d13730 20
+site/src/content/docs/zh-cn/getting-started/comparison.mdx
+  s_93907476423b71::t_dfca6b53d13730 20
+src/proxy/failover.rs
+  s_93907476423b71::t_19617b57e1e781 65-68
+  s_93907476423b71::t_dfca6b53d13730 70,127-135,139-145,147-148,151-156,162-172,176-181,232,297,337,411,420-478,490-498,616-620,925-933,972-1001,1003-1006,1008,1021
+site/src/content/docs/guides/opentelemetry.mdx
+  s_93907476423b71::t_dfca6b53d13730 63
+.please/docs/decisions/0005-routing-algorithm-extensions.md
+  s_93907476423b71::t_dfca6b53d13730 205-208,455,478-485
+  s_93907476423b71::t_886f11662e65cf 486
+site/src/content/docs/ja/reference/configuration.md
+  s_93907476423b71::t_dfca6b53d13730 311,319,381,398,400-402,405-433,440-441,448,457-600,604-610,613-614,661
+src/routing/stage/store/tests.rs
+  s_93907476423b71::t_dfca6b53d13730 89-91,1125-1431
+src/routing/stage.rs
+  s_93907476423b71::t_dfca6b53d13730 1-2,17,29,79-86,160-163,251-253
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_93907476423b71::t_dfca6b53d13730 326,328-329
+tests/inbound_auth.rs
+  s_93907476423b71::t_dfca6b53d13730 97
+src/bench_support.rs
+  s_93907476423b71::t_dfca6b53d13730 33,70-77,187-189,206-209,301
+src/auth/antigravity/mod.rs
+  s_93907476423b71::t_dfca6b53d13730 702,839
+site/src/content/docs/ko/reference/configuration.md
+  s_93907476423b71::t_dfca6b53d13730 330,338,401,418,420-422,425-452,459-460,467,476-616,620-625,628-635,674
+src/gateway/tests.rs
+  s_93907476423b71::t_dfca6b53d13730 1485,1556
+site/src/content/docs/ko/reference/endpoints.md
+  s_93907476423b71::t_dfca6b53d13730 12
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_93907476423b71::t_dfca6b53d13730 63
+src/routing.rs
+  s_93907476423b71::t_dfca6b53d13730 5,9,21-26,138-139,150-186,189-192,197,262-278,325,447,668,738,772-774,792,816-818,830,842-843,936,939,944-1049
+  s_93907476423b71::t_0b9e57c3f3fc2f 1050
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_93907476423b71::t_dfca6b53d13730 63
+site/src/content/docs/guides/stage-router.mdx
+  s_93907476423b71::t_dfca6b53d13730 11-18,48-53,104-120,179,181-184,192-199,208-209,218,227-232,238-240
+src/proxy/failover/tests.rs
+  s_93907476423b71::t_dfca6b53d13730 790
+src/config/router/random.rs
+  s_93907476423b71::t_dfca6b53d13730 1-71
+src/server.rs
+  s_93907476423b71::t_dfca6b53d13730 52
+site/src/content/docs/guides/switchyard.mdx
+  s_93907476423b71::t_dfca6b53d13730 328,330-331
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_93907476423b71::t_dfca6b53d13730 10-15,44-48,94-110,162,164-167,174-179,188-189,198,208-209,216-218
+src/routing/stage/vocabulary.rs
+  s_93907476423b71::t_dfca6b53d13730 8-9,19-23,36-42,57,80-107,112-117
+tests/passthrough.rs
+  s_93907476423b71::t_dfca6b53d13730 641
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_93907476423b71::t_dfca6b53d13730 63
+src/adapters/mod.rs
+  s_93907476423b71::t_dfca6b53d13730 14
+README.ko.md
+  s_93907476423b71::t_dfca6b53d13730 227
+src/metrics.rs
+  s_93907476423b71::t_dfca6b53d13730 51,139-144,627-665,875
+src/routing/random/tests.rs
+  s_93907476423b71::t_dfca6b53d13730 1-215
+docs/running.md
+  s_93907476423b71::t_dfca6b53d13730 201
+src/discovery.rs
+  s_93907476423b71::t_dfca6b53d13730 319,326,418,425,490,536
+tests/failover.rs
+  s_93907476423b71::t_dfca6b53d13730 135,1088
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_93907476423b71::t_dfca6b53d13730 311,319,381,398,400-402,404-429,436-437,444,453-585,588-593,595-596,641
+src/config.rs
+  s_93907476423b71::t_dfca6b53d13730 17,28-32,2112-2113,2117-2131,2140-2255,2464-2474,2480,2482-2527,2530-2532,3199-3202,4177-4186,4190-4191,4197,4204,4210,4294,4303-4318,4320,4334,4336,4339,4343-4358,4378-4395,4400-4402,4404,4417,4419,4446,4453,4469,4471-4473,4482,4488,4502,4504-4507,4518,4524,4546,4548,4556,4814,5774,5794-5795,5806,5814,5816-5817,5829-5833,5854,7735,7744-8220,8224-8260,8306,8368,8378-8379,8398,8408,8428,8444,8470,8482,8510,8537,8539,8567,8576,8591,8599,8608,8620,8627,8639,8646,8660,8667,8690,8709,8753,8780,8806,8852,8966
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_93907476423b71::t_dfca6b53d13730 291-293
+tests/noop_router.rs
+  s_93907476423b71::t_dfca6b53d13730 1-220
+docs/comparison.md
+  s_93907476423b71::t_dfca6b53d13730 22-30,320-322,329-336
+src/routing/stage/store/scope_tests.rs
+  s_93907476423b71::t_dfca6b53d13730 62-64
+tests/stage_router.rs
+  s_93907476423b71::t_dfca6b53d13730 1,25-26,121,147,158-162,492
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_93907476423b71::t_dfca6b53d13730 10-14,42-45,87-100,146,148-150,156-160,169-170,179,187-189,195-196
+src/proxy/chain_stream.rs
+  s_93907476423b71::t_dfca6b53d13730 353-356,374,792-798
+.claude/settings.json
+  s_93907476423b71::t_dfca6b53d13730 2,11,14-27
+src/routing/stage/store/entries.rs
+  s_93907476423b71::t_dfca6b53d13730 129-137
+src/routing/stage/tests.rs
+  s_93907476423b71::t_dfca6b53d13730 23-25
+src/adapters/anthropic/thinking.rs
+  s_93907476423b71::t_dfca6b53d13730 10
+tests/opencode_zen.rs
+  s_93907476423b71::t_dfca6b53d13730 91
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_93907476423b71::t_dfca6b53d13730 12
+src/config/router.rs
+  s_93907476423b71::t_dfca6b53d13730 1-158
+docs/stage-router.md
+  s_93907476423b71::t_dfca6b53d13730 3-4,13-17,21-26,36-44,69-71,119-121,139,144-157,195,211-223,363-393,402,405-429,451-454,463-464,467,471,476,489-493,500-507,518-522,547-550,571,576-580,622,626-629
+src/routing/stage/store/decide.rs
+  s_93907476423b71::t_dfca6b53d13730 1-241
+src/routing/outcome.rs
+  s_93907476423b71::t_dfca6b53d13730 1-79
+src/adapters/noop.rs
+  s_93907476423b71::t_dfca6b53d13730 1-201
+tests/auto_mode_safeguards.rs
+  s_93907476423b71::t_85e05093fc9848 95
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_93907476423b71::t_dfca6b53d13730 311-313
+src/routing/random.rs
+  s_93907476423b71::t_dfca6b53d13730 1-255
+benches/stage_router.rs
+  s_93907476423b71::t_dfca6b53d13730 26,61-64,73,90-92,96,116-117,312,320-368
+  s_93907476423b71::t_7c2e08cdecc14d 369-371
+src/routing/stage/signals.rs
+  s_93907476423b71::t_dfca6b53d13730 13-14,63-72,190-192,203,223-226,245,307-382
+docs/upstreams-failover.md
+  s_93907476423b71::t_dfca6b53d13730 303
+site/src/content/docs/ko/getting-started/comparison.mdx
+  s_93907476423b71::t_dfca6b53d13730 20
+site/src/content/docs/ja/reference/endpoints.md
+  s_93907476423b71::t_dfca6b53d13730 12
+src/routes.rs
+  s_93907476423b71::t_dfca6b53d13730 9,18,20-22,26-30,35-44,50-51,120-121,124-128,131,203-218,237,254-255,265-324
+  s_93907476423b71::t_c9c22c22ff8fb7 325
+src/routing/stage/store.rs
+  s_93907476423b71::t_dfca6b53d13730 25,39-40,102-107,115-123,201-202,231
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_93907476423b71::t_dfca6b53d13730 11-16,46-50,99-115,172,174-177,185-191,200-201,210,221-222,231-232
+src/config/router/stage.rs
+  s_93907476423b71::t_dfca6b53d13730 1-256
+README.ja.md
+  s_93907476423b71::t_dfca6b53d13730 226
+README.md
+  s_93907476423b71::t_dfca6b53d13730 226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "74583037e658b38ce45116ebcd36c632003c91eb",
+  "prompts": {},
+  "sessions": {
+    "s_93907476423b71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "305befe4-92d9-4c98-a8de-ce432716040f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
