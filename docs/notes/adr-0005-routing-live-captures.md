@@ -451,8 +451,14 @@ driver (python, urllib)  ──http──▶  shunt run (127.0.0.1:31801)
   paths — the Antigravity adapter (`src/model/antigravity_request.rs`) and the
   OpenAI Responses path (`src/model/responses_request.rs`) — so what the tap
   logged is what the driver sent.
-* **Window**: 05:30–05:33 UTC, **30** `POST /v1/messages` requests, every
-  reply carrying an Anthropic `request-id` and `x-gateway-upstream: anthropic`.
+* **Window**: 05:30–05:33 UTC, **30** captured `POST /v1/messages` requests,
+  every reply carrying an Anthropic `request-id` and
+  `x-gateway-upstream: anthropic`. The schema runs described below are 6 on
+  `claude-haiku-4-5-20251001` (three per schema), 20 across the other ten ids
+  (two each, one per schema), and the 3 one-off probes under "What a rejection
+  of the field itself looks like". This note does not itemize the remainder,
+  and it times the bare four-token controls only as "minutes earlier" — not
+  precise enough to place them inside or outside this window.
 * Credentials, account names, and org/workspace ids are redacted; nothing else
   in the quoted blocks is altered.
 
