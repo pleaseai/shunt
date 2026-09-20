@@ -797,7 +797,7 @@ async fn stripping_the_cookie_header_leaves_the_callers_own_credential_alone() {
 /// would slip through. Files named `tests.rs` are skipped so fixtures need no
 /// entry; an in-file `#[cfg(test)] mod tests` helper is *not* skipped and is
 /// listed below as noise.
-const HEADER_PRODUCER_ALLOWLIST: [&str; 14] = [
+const HEADER_PRODUCER_ALLOWLIST: [&str; 15] = [
     // noise — `#[cfg(test)] mod tests` fixture builder.
     "src/accounts.rs",
     // registered forward site — consumes the map `headers_for_route` produced
@@ -838,6 +838,11 @@ const HEADER_PRODUCER_ALLOWLIST: [&str; 14] = [
     // reads `x-claude-code-*` hints off the inbound map (`RouterContext`); it
     // builds no outbound map.
     "src/routing/context.rs",
+    // noise — resolution-level test fixtures for the `[models.subagents]`
+    // overlay. They build inbound `HeaderMap`s so `resolve_chain` has router
+    // hints to read, exactly as `src/routing/context.rs` does, and forward
+    // nothing outbound.
+    "src/routing/subagents/resolve_tests.rs",
 ];
 
 #[test]
