@@ -1,0 +1,25 @@
+site/src/content/docs/guides/stage-router.mdx
+  s_e9c7bce466358a::t_0496dbd99c9732 259-260,262-267
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_e9c7bce466358a::t_13503fd7b3fcd1 249-256
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_e9c7bce466358a::t_7574fe85416747 235-242
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_e9c7bce466358a::t_d3338e7416660f 211-216
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3e3a2c605ee1b752cede71a89ce5c81316cb85a4",
+  "prompts": {},
+  "sessions": {
+    "s_e9c7bce466358a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52c4e84c-87ad-4bd6-aebe-df807ab7e91c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
