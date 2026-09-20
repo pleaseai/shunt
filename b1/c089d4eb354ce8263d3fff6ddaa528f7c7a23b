@@ -1,0 +1,117 @@
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_5ec64f29805cf1::t_4c1f5b1dce9ced 47-64
+docs/routing-algorithms.md
+  s_5ec64f29805cf1::t_96000be04cd4d7 339-340
+  s_5ec64f29805cf1::t_70242315a64b65 345-397,399-405,407-422,424-469,471-510
+  s_5ec64f29805cf1::t_047e348d56eb75 398,406,423,470
+src/routing/random/tests.rs
+  s_5ec64f29805cf1::t_567a183dd33659 52
+docs/stage-router.md
+  s_5ec64f29805cf1::t_f4168027b44eeb 427-432
+README.ja.md
+  s_5ec64f29805cf1::t_6a8f711e347415 194,227
+site/src/content/docs/guides/switchyard.mdx
+  s_5ec64f29805cf1::t_b4fdc6ed622cc2 49-69
+tests/prefill_router.rs
+  s_5ec64f29805cf1::t_6c14daa28ac79b 1-129,131-135,211-237
+  s_5ec64f29805cf1::t_5398b07829ec4a 130,136-210
+benches/stage_router.rs
+  s_5ec64f29805cf1::t_6909376195efab 381-399
+src/proxy/failover.rs
+  s_5ec64f29805cf1::t_567a183dd33659 75-77,91
+  s_5ec64f29805cf1::t_ac41514b39b3a2 78
+src/config/router.rs
+  s_5ec64f29805cf1::t_19b3575bd1fbc5 21,25,52-55,71,81,111
+  s_5ec64f29805cf1::t_1ba90d1b326b1f 112-115
+AGENTS.md
+  s_5ec64f29805cf1::t_524ab360cbe034 10-14,22-23
+  s_5ec64f29805cf1::t_29b7a22d30bb26 24-26
+README.ko.md
+  s_5ec64f29805cf1::t_6a8f711e347415 195,228
+src/routing/prefill/driven.rs
+  s_5ec64f29805cf1::t_ac41514b39b3a2 35-46
+  s_5ec64f29805cf1::t_fed298cd79f38f 139-154,156
+  s_5ec64f29805cf1::t_6a17fb3d45a01f 59-63,82-88
+  s_5ec64f29805cf1::t_3e1b176aa5a439 1-34,47-58,64-81,89-138,155,157-257
+site/src/content/docs/ja/reference/configuration.md
+  s_5ec64f29805cf1::t_cceca25881f876 614,622,660
+  s_5ec64f29805cf1::t_2db133b9b75116 647-648
+  s_5ec64f29805cf1::t_25b3791644c42f 422,424-428,603-613,615-621,623-646,649-659,661-689,695-699
+README.zh-CN.md
+  s_5ec64f29805cf1::t_6a8f711e347415 192,225
+src/config.rs
+  s_5ec64f29805cf1::t_8157b48a7d690b 4422,7835-7855,7857-7872,7877-7918,7923-7935,7940-7996
+  s_5ec64f29805cf1::t_5d49660078684f 7856
+  s_5ec64f29805cf1::t_6a17fb3d45a01f 7873-7876,7919-7922
+  s_5ec64f29805cf1::t_a548db02e521e8 7936-7939
+  s_5ec64f29805cf1::t_085852cb245d1b 29-31,2190-2235,2518-2527,4360-4370,4416-4421
+src/bench_support.rs
+  s_5ec64f29805cf1::t_6909376195efab 33-38
+  s_5ec64f29805cf1::t_567a183dd33659 157
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_5ec64f29805cf1::t_4c1f5b1dce9ced 50-69
+site/src/content/docs/ko/reference/configuration.md
+  s_5ec64f29805cf1::t_2db133b9b75116 663-664
+  s_5ec64f29805cf1::t_cceca25881f876 630,638,675
+  s_5ec64f29805cf1::t_b4ccbff774b225 441,443-447,619-629,631-637,639-662,665-674,676-703,709-712
+src/reload.rs
+  s_5ec64f29805cf1::t_9663cde9cbf563 39-50,66-70,76
+src/routing/prefill/tests.rs
+  s_5ec64f29805cf1::t_dbc6603cd0ca76 1-49,55-68,73-76,78-80,84-151,159-192,197-271
+  s_5ec64f29805cf1::t_6a17fb3d45a01f 50-54,69-72,77,81-83,152-158,193-196
+src/server.rs
+  s_5ec64f29805cf1::t_9663cde9cbf563 57-61,118
+Cargo.toml
+  s_5ec64f29805cf1::t_c6ec973bfad263 37-44
+  s_5ec64f29805cf1::t_5155e42ab34600 85-90
+  s_5ec64f29805cf1::t_c4b0ad614a0ad3 170-174
+  s_5ec64f29805cf1::t_b22f97fab76045 135-138
+.github/workflows/ci.yml
+  s_5ec64f29805cf1::t_52a8bb922e20aa 112-116,118
+src/config/router/prefill.rs
+  s_5ec64f29805cf1::t_023c5a3a8389eb 1-154
+src/routing/outcome.rs
+  s_5ec64f29805cf1::t_f11a2d68e1ec0e 33-39,44-50
+  s_5ec64f29805cf1::t_beca7a95d8b1b6 30-32,40-43,51-56,68-70,85-90,115-126
+  s_5ec64f29805cf1::t_4367ba7d8ebf8b 127-128
+src/routing/prefill.rs
+  s_5ec64f29805cf1::t_ac41514b39b3a2 79-97
+  s_5ec64f29805cf1::t_a8eecbeed1f163 1-78,98-126
+src/routing.rs
+  s_5ec64f29805cf1::t_c3db8ca34edfc5 835-847,1056-1110
+  s_5ec64f29805cf1::t_a93ac37a669c57 168-179,786,909,942,995,1039
+  s_5ec64f29805cf1::t_bff110d1fe48d1 1111
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_5ec64f29805cf1::t_cceca25881f876 597,604,639
+  s_5ec64f29805cf1::t_d9690c4ae0b6e5 419,421,423-424,588-596,598-603,605-628,631-638,640-664,669-672
+  s_5ec64f29805cf1::t_2db133b9b75116 629-630
+site/src/content/docs/reference/configuration.md
+  s_5ec64f29805cf1::t_e06c5573ec3c58 623,625-630,808-818,820-827,829-852,855-866,868-898,905-909
+  s_5ec64f29805cf1::t_cceca25881f876 819,828,867
+  s_5ec64f29805cf1::t_2db133b9b75116 853-854
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_5ec64f29805cf1::t_4c1f5b1dce9ced 45-60
+src/routing/stage.rs
+  s_5ec64f29805cf1::t_a93ac37a669c57 164-173
+README.md
+  s_5ec64f29805cf1::t_85db516ff1efbc 227
+  s_5ec64f29805cf1::t_0aa44729c9eb3f 195
+Cargo.lock
+  s_5ec64f29805cf1::t_23ce4f94584e70 94,105,522,737,1718,2205-2219,2297-2354,2409,2767,2826,3164,3187,3203,3255,3387-3392,3400,4140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b1c089d4eb354ce8263d3fff6ddaa528f7c7a23b",
+  "prompts": {},
+  "sessions": {
+    "s_5ec64f29805cf1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c7cfcf2e-acbc-4b76-8528-168065a241c5",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
