@@ -1,0 +1,41 @@
+src/adapters/anthropic/mod.rs
+  s_e9c7bce466358a::t_7495896a76e704 41,43,53,72,75,141,150,332-345,438-451,639-652,711,759,897-910,945,1071,1115-1123,1125-1130
+src/adapters/antigravity/mod.rs
+  s_e9c7bce466358a::t_c1baec16d2c7be 132-133
+src/adapters/cursor/mod.rs
+  s_e9c7bce466358a::t_4e44f429bcc6ad 60-63
+src/adapters/gemini/mod.rs
+  s_e9c7bce466358a::t_135c2616aba154 39,41,128,299-311,389-405
+src/adapters/mod.rs
+  s_e9c7bce466358a::t_17b562c3d50455 5,63-146,148-158,166
+src/adapters/noop.rs
+  s_e9c7bce466358a::t_704249f0923f45 40-41
+src/adapters/responses/mod.rs
+  s_e9c7bce466358a::t_bc684d538d4297 70-72
+src/proxy.rs
+  s_e9c7bce466358a::t_1185da33c850dc 114-127
+src/proxy/failover.rs
+  s_e9c7bce466358a::t_197cad929d2818 317-320,451-457,510,515,520,525,530,535,540
+src/proxy/failover/chain.rs
+  s_e9c7bce466358a::t_5be72f51d46a0c 53-56,86,131-139
+src/routing/serve.rs
+  s_e9c7bce466358a::t_78162a813674ff 190-194,199-202,204-218
+src/routing/serve/tests.rs
+  s_e9c7bce466358a::t_0d46d904a6051e 152-153,155-156,190-254,282-283,315-450
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "226db64bf41f860fecf59f5b2d729ad39b6598d2",
+  "prompts": {},
+  "sessions": {
+    "s_e9c7bce466358a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52c4e84c-87ad-4bd6-aebe-df807ab7e91c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
