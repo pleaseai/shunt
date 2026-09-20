@@ -60,6 +60,16 @@ pub(super) struct TurnOptions {
     /// Never forwarded upstream — the Responses API has no `stop` parameter —
     /// but emulated by the SSE translation.
     pub stop_sequences: Vec<String>,
+    /// Bound on a whole-body read of the upstream reply, or `None` for a client
+    /// turn (which is byte-for-byte what it was).
+    ///
+    /// Only the non-streaming path buffers a whole reply, so only it consults
+    /// this. It matters because an internal `[models.router]` call is forced
+    /// non-streaming, which makes that path the one every judge call through a
+    /// `kind = "responses"` target takes — and an unbounded read there would
+    /// let a judge allocate freely until the deadline instead of failing open
+    /// at `judge_max_response_bytes`.
+    pub response_byte_cap: Option<usize>,
 }
 
 impl TurnOptions {

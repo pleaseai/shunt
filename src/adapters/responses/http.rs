@@ -12,7 +12,10 @@ use axum::{
 };
 
 use crate::{
-    adapters::AdapterError, auth::Credential, model::responses::parse_sse_events, routing::Route,
+    adapters::{collect_upstream_body, too_large_error, AdapterError, UpstreamBodyError},
+    auth::Credential,
+    model::responses::parse_sse_events,
+    routing::Route,
     server::AppState,
 };
 
@@ -165,7 +168,13 @@ pub(super) async fn forward_http(
     // a backend error event surfaced via `backend_error` (issue #113), so
     // the proxy's access log (`upstream_status`) and `record_proxied_request`
     // metrics reflect the failure instead of a hardcoded `200`.
-    let response = json_response(upstream, turn.relay(route), input_tokens_estimate).await?;
+    let response = json_response(
+        upstream,
+        turn.relay(route),
+        input_tokens_estimate,
+        turn.response_byte_cap,
+    )
+    .await?;
     Ok((response.status(), response))
 }
 
@@ -209,11 +218,22 @@ pub(super) async fn json_response(
     upstream: reqwest::Response,
     relay: RelayOptions,
     input_tokens_estimate: u64,
+    response_byte_cap: Option<usize>,
 ) -> Result<axum::response::Response, AdapterError> {
-    let body = upstream
-        .text()
-        .await
-        .map_err(|error| own_error(format!("failed to read Responses body: {error}")))?;
+    // This is the one Responses path that buffers a whole upstream reply, so
+    // it is the one that has to honour `judge_max_response_bytes`. A judge call
+    // is forced non-streaming (`routing::serve` strips `stream`), which means
+    // every internal call through a `kind = "responses"` target lands here —
+    // and reading it with `text()` would let a judge allocate without bound
+    // until the deadline instead of failing open at the configured limit.
+    // `None` is the client path and stays byte-for-byte what it was.
+    let body = match collect_upstream_body(upstream, response_byte_cap).await {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(UpstreamBodyError::TooLarge(too_large)) => return Err(too_large_error(too_large)),
+        Err(UpstreamBodyError::Transport(error)) => {
+            return Err(own_error(format!("failed to read Responses body: {error}")))
+        }
+    };
     let mut machine = relay.machine().with_input_estimate(input_tokens_estimate);
     for event in parse_sse_events(&body) {
         let _ = machine.apply(event);
@@ -273,7 +293,7 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"Upstream failed\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let error = json_response(upstream, relay_opts(), 0)
+        let error = json_response(upstream, relay_opts(), 0, None)
             .await
             .expect_err("backend error event should stop failover");
 
@@ -298,7 +318,7 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let error = json_response(upstream, relay_opts(), 0)
+        let error = json_response(upstream, relay_opts(), 0, None)
             .await
             .expect_err("in-stream rate limit is an error");
 
@@ -326,7 +346,7 @@ mod tests {
             "data: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay_opts(), 0)
+        let response = json_response(upstream, relay_opts(), 0, None)
             .await
             .expect("json_response builds a response");
 
@@ -359,7 +379,7 @@ mod tests {
             ..relay_opts()
         };
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay, 11)
+        let response = json_response(upstream, relay, 11, None)
             .await
             .expect("json_response builds a response");
 
@@ -477,6 +497,7 @@ mod tests {
                 thinking_enabled: false,
                 tool_search_native: false,
                 stop_sequences: Vec::new(),
+                response_byte_cap: None,
             },
             codex_quota_account: None,
             estimate_input: None,
@@ -542,6 +563,7 @@ mod tests {
                 thinking_enabled: false,
                 tool_search_native: false,
                 stop_sequences: Vec::new(),
+                response_byte_cap: None,
             },
             codex_quota_account: None,
             estimate_input: None,
@@ -568,6 +590,82 @@ mod tests {
             latencies[0] >= 150.0,
             "the sample must start at the seeded instant: {}ms",
             latencies[0]
+        );
+    }
+
+    /// A big non-streaming reply is refused at the cap the caller passed to the
+    /// adapter, not merely at the one `routing::serve` applies afterwards.
+    ///
+    /// This drives `Adapter::forward` rather than `json_response` on purpose.
+    /// The cap was already correct inside the collector; the defect was that
+    /// the Responses adapter took `response_byte_cap` and dropped it on the
+    /// floor, so nothing downstream ever saw it. A test that called
+    /// `json_response` directly would have passed against the bug.
+    ///
+    /// Non-streaming because that is what an internal `[models.router]` call
+    /// is — `routing::serve` strips `stream` — so this is the shape every
+    /// judge call through a `kind = "responses"` target has.
+    #[tokio::test]
+    async fn the_adapters_byte_cap_reaches_the_buffered_responses_path() {
+        use crate::adapters::Adapter;
+
+        // Comfortably past the cap below, and a well-formed SSE turn so the
+        // refusal cannot be mistaken for a parse failure.
+        let filler = "x".repeat(64 * 1024);
+        let sse = format!(
+            concat!(
+                "event: response.created\n",
+                "data: {{\"response\":{{\"id\":\"resp_1\"}}}}\n\n",
+                "event: response.completed\n",
+                "data: {{\"response\":{{\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}},\"pad\":\"{filler}\"}}\n\n",
+            ),
+            filler = filler
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(sse))
+            .mount(&server)
+            .await;
+
+        let mut config = crate::config::Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = server.uri();
+        // `None`, not `ApiKey`: this test is about the byte cap, and `ApiKey`
+        // would make `AppState::new` demand a credential env var that has
+        // nothing to do with what is being asserted.
+        config.providers.get_mut("codex").unwrap().auth = crate::config::AuthMode::None;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
+        let headers = axum::http::HeaderMap::new();
+        let body = crate::request::RequestBody::parse(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5-codex",
+                "messages": [{"role": "user", "content": "hi"}],
+            }))
+            .unwrap(),
+        )
+        .expect("request body parses");
+
+        let error = super::super::ResponsesAdapter
+            .forward(state, codex_route(), &uri, &headers, body, Some(1024))
+            .await
+            .expect_err("a reply past the cap is refused");
+
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyTooLarge>()
+                .is_some(),
+            "refusal must carry the oversized marker `routing::serve` reads back, \
+             so the judge resolves as `oversized` rather than as a failed upstream; \
+             got: {}",
+            error.message
+        );
+        assert!(
+            error.failure.is_none(),
+            "an upstream that answered correctly and merely answered too much \
+             must not advance the failover chain"
         );
     }
 }
