@@ -109,6 +109,32 @@ pub(crate) async fn collect_upstream_body(
     let Some(max_bytes) = cap else {
         return upstream.bytes().await.map_err(UpstreamBodyError::Transport);
     };
+    // An upstream that *declares* more than the cap is refused before a byte is
+    // read. The running total below is still the enforcement point — this only
+    // decides how early the same refusal happens — but it turns two cases from
+    // slow into immediate: a body that would be drained to the cap and
+    // discarded, and one whose sender declares a large length and then stalls,
+    // which would otherwise sit until `judge_timeout_ms` and be reported as a
+    // timeout rather than as the oversized reply it announced itself to be.
+    //
+    // Only the declaration is trusted downward, never upward: a length under
+    // the cap proves nothing and the loop still counts every byte. A chunked
+    // reply has no `content-length` at all, so this is a fast path rather than
+    // a gate. Decoding only ever grows a body, so a declared length above the
+    // cap cannot decode to something below it.
+    //
+    // Deliberately no `Vec::with_capacity(content_length)`: the length is the
+    // sender's claim, so pre-allocating on it would let a peer that declares a
+    // large body and sends nothing take that allocation for free. The vector
+    // grows against bytes that actually arrived.
+    if upstream
+        .content_length()
+        .is_some_and(|declared| declared > max_bytes as u64)
+    {
+        return Err(UpstreamBodyError::TooLarge(UpstreamBodyTooLarge {
+            max_bytes,
+        }));
+    }
     use futures_util::StreamExt;
     let mut stream = upstream.bytes_stream();
     let mut collected: Vec<u8> = Vec::new();

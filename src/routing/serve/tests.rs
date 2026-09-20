@@ -475,4 +475,69 @@ mod oversized_reply {
             "the whole body was still being drained: the judge wrote {written} bytes"
         );
     }
+
+    /// A judge that announces a body far over the cap and then sends none of
+    /// it. The declaration alone is enough to refuse: nothing about this reply
+    /// can come in under `judge_max_response_bytes`, so waiting for bytes that
+    /// would only confirm it spends the deadline to learn what the headers
+    /// already said.
+    ///
+    /// The distinguishing case for the early check. Counting only bytes that
+    /// arrive, this stalls until `judge_timeout_ms` and is reported as
+    /// `timeout` — the wrong key for an operator, who would go looking for a
+    /// slow judge instead of an oversized one.
+    async fn declared_oversized_judge() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("the judge call connects");
+            let mut buffer = [0u8; 8192];
+            let _ = socket.read(&mut buffer).await;
+            // 10 MiB declared against a 64 KiB cap, and not one byte of body.
+            let head: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 10485760\r\n\r\n";
+            if socket.write_all(head).await.is_err() {
+                return;
+            }
+            // Hold the connection open so the only way out is the refusal.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_judge_declaring_an_oversized_body_is_refused_before_it_sends_one() {
+        let judge_url = declared_oversized_judge().await;
+        let stage = judge_fixture::stage();
+        let state = judge_fixture::state(ROUTER_ID, judge_url, &stage);
+        let classifier = stage
+            .classifier
+            .as_ref()
+            .expect("the fixture names a judge");
+
+        let inbound = InboundContext::internal();
+        let headers = HeaderMap::new();
+        let admitted = AdmittedContext::mint(&inbound, &headers, ROUTER_ID);
+        let request = json!({
+            "model": ROUTER_ID,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        });
+
+        let started_at = Instant::now();
+        let outcome = consult(&state, &admitted, &stage, classifier, &request).await;
+        let elapsed = started_at.elapsed();
+
+        assert_eq!(
+            outcome,
+            JudgeOutcome::FailOpen("oversized"),
+            "the reply announced more than `judge_max_response_bytes`, so it is \
+             oversized and not slow — `timeout` here means the declaration was \
+             ignored and the collector waited for bytes instead"
+        );
+        assert!(
+            elapsed < Duration::from_millis(1_000),
+            "the refusal comes from the headers, well inside the 2s deadline, \
+             but took {elapsed:?}"
+        );
+    }
 }
