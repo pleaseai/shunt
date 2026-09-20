@@ -29,6 +29,12 @@ pub(crate) enum RouteSource {
     RandomSession,
     /// A `noop` router answered without an upstream call.
     Noop,
+    /// A `[models.subagents]` overlay diverted delegated work to its `target`
+    /// fallback — the agent type named no `by_type` entry, or was not sent.
+    Subagent,
+    /// A `[models.subagents]` overlay diverted delegated work to the `by_type`
+    /// target matching its `x-claude-code-agent-type`.
+    SubagentType,
 }
 
 impl RouteSource {
@@ -39,6 +45,8 @@ impl RouteSource {
             Self::Random => "random",
             Self::RandomSession => "random_session",
             Self::Noop => "noop",
+            Self::Subagent => "subagent",
+            Self::SubagentType => "subagent_type",
         }
     }
 
@@ -52,7 +60,11 @@ impl RouteSource {
     pub(crate) fn stage_labels(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Stage(tier, source) => Some((tier.as_label(), source.as_label())),
-            Self::Random | Self::RandomSession | Self::Noop => None,
+            Self::Random
+            | Self::RandomSession
+            | Self::Noop
+            | Self::Subagent
+            | Self::SubagentType => None,
         }
     }
 }

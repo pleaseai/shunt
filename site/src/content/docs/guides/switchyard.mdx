@@ -297,6 +297,34 @@ editing one router drops only its own pins across a hot reload. That fingerprint
 destructures the config struct rather than dotting into it, so a key added later
 fails to compile instead of quietly letting stale pins outlive it.
 
+### Delegated work can take a different target
+
+Switchyard's `subagents` overlay carries over as `[models.subagents]`, on the
+entry rather than inside the router table — a fixed entry has no router table,
+and upstream's "passthrough with subagents" is exactly a fixed entry here. A
+`Task` child, a hook agent, or a workflow sub-agent requesting the id is
+diverted to the overlay's `target`, or to the `by_type` entry matching its
+`x-claude-code-agent-type`; the parent's own turns never see the table.
+
+```toml
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6" }
+```
+
+What shunt adds is the reading of "delegated". Upstream keys on its
+`claude_lineage` header alone; shunt reads `x-claude-code-request-class` first
+(`subagent` and `workflow` are delegated, `main` is not even when an agent id
+rides along, and `compaction` and `auxiliary` are harness maintenance that
+never takes the overlay) and falls back to the agent id only when the class is
+not sent — which, behind a default gateway deployment, it is not. `by_type`
+keys are the header's literal values, case included, and a project agent
+arrives as `custom` with its name withheld. The overlay is stateless: a
+diverted child is never scored, never pinned, and never advances its parent's
+dwell, and its turn reports `subagent_type` or `subagent` in
+`x-gateway-route-source`.
+
 ### No LLM judge on the hot path
 
 When the signals are inconclusive, libsy returns

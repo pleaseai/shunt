@@ -483,6 +483,12 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   added `[models.stage_router]`, so there is none: the table is renamed
   outright to `[models.router]`, a config still writing the old form fails to
   load with an error naming the new one, and no deprecation warning exists.
+- **2026-09-21 (PR 3) — the route-source set gains `subagent_type`.** §7
+  names `subagent` alone for the overlay. The passthrough form reports
+  `subagent_type` for a `by_type` hit and `subagent` for the `target`
+  fallback — the split `random`/`random_session` already makes — so a header
+  or metric reader can tell which key decided. The overlay's `algorithm`
+  label is `subagents`.
 
 ### 10. Verification before code
 

@@ -318,6 +318,7 @@ mod tests {
                     )])),
                     router: None,
                     stage_router: None,
+                    subagents: None,
                 },
                 ModelConfig {
                     id: "anthropic-sonnet-via-codex".to_string(),
@@ -325,6 +326,7 @@ mod tests {
                     upstream_model: None,
                     router: None,
                     stage_router: None,
+                    subagents: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -417,6 +419,7 @@ mod tests {
                     upstream_model: None,
                     router: None,
                     stage_router: None,
+                    subagents: None,
                 },
                 ModelConfig {
                     id: "claude-custom-model".to_string(),
@@ -424,6 +427,7 @@ mod tests {
                     upstream_model: None,
                     router: None,
                     stage_router: None,
+                    subagents: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -489,6 +493,7 @@ mod tests {
                 upstream_model: None,
                 router: None,
                 stage_router: None,
+                subagents: None,
             }],
             ..crate::config::Config::default()
         };
@@ -535,6 +540,7 @@ mod tests {
                 upstream_model: None,
                 router: None,
                 stage_router: None,
+                subagents: None,
             }],
             ..crate::config::Config::default()
         };

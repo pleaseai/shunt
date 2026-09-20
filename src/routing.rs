@@ -6,6 +6,7 @@ use crate::{
     error::ShuntError,
 };
 
+use context::RouterContext;
 use outcome::{RouteSource, RouterOutcome};
 use stage::StageContext;
 
@@ -147,6 +148,32 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
     let model = strip_context_window_hint(model);
     for configured_model in &config.models {
         if configured_model.id == model {
+            // The delegated-work overlay, ahead of the entry's own router or
+            // map (ADR-0005 §5): a `Task` child requesting this id is diverted
+            // to the overlay's target and never reaches the arms below, so a
+            // router-backed parent id is not scored, pinned, or dwelt against
+            // by its children. The hints are read only when the entry carries
+            // the table, and only for a live request — the body-less surfaces
+            // have no headers and report the parent's destination, which is
+            // what the entry advertises.
+            if let (Some(overlay), Some(stage)) = (configured_model.subagents.as_ref(), stage) {
+                let hints = RouterContext::from_headers(stage.headers);
+                if let Some((target, source)) = subagents::select(overlay, &hints) {
+                    stage.decided.set(Some(RouterOutcome {
+                        model: model.to_string(),
+                        target: target.to_string(),
+                        algorithm: overlay.algorithm(),
+                        source,
+                    }));
+                    // One hop, as for a router: validation rejects an overlay
+                    // target that carries a router or an overlay of its own.
+                    let mut routes = resolve_chain(config, target, None);
+                    for route in &mut routes {
+                        route.model = model.to_string();
+                    }
+                    return routes;
+                }
+            }
             // One `Option` check for every unrouted id — the whole cost
             // non-router traffic pays, and the property `resolve_chain_unrouted`
             // benchmarks against its routed twin.
@@ -324,6 +351,7 @@ mod tests {
             )])),
             router: None,
             stage_router: None,
+            subagents: None,
         }
     }
 
@@ -446,6 +474,7 @@ mod tests {
                 upstream_model: None,
                 router: None,
                 stage_router: None,
+                subagents: None,
             }],
             routes: vec![RouteConfig {
                 model: "claude-route".to_string(),
@@ -667,6 +696,7 @@ mod tests {
                 ])),
                 router: None,
                 stage_router: None,
+                subagents: None,
             }],
             ..Config::default()
         };
@@ -737,6 +767,7 @@ mod tests {
                 ])),
                 router: None,
                 stage_router: None,
+                subagents: None,
             }],
             ..Config::default()
         };
@@ -773,6 +804,7 @@ pub(crate) mod handoff;
 pub(crate) mod outcome;
 pub(crate) mod random;
 pub(crate) mod stage;
+pub(crate) mod subagents;
 
 /// Stage-router resolution tests.
 ///
@@ -829,6 +861,7 @@ mod stage_router_tests {
             )])),
             router: None,
             stage_router: None,
+            subagents: None,
         }
     }
 
@@ -841,6 +874,7 @@ mod stage_router_tests {
                     upstream_model: None,
                     router: Some(RouterConfig::StageRouter(router())),
                     stage_router: None,
+                    subagents: None,
                 },
                 mapped("capable-alias", "upstream-capable"),
                 mapped("efficient-alias", "upstream-efficient"),

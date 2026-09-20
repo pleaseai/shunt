@@ -295,6 +295,34 @@ hard ではなく critical として採点されます。
 そのフィンガープリントは設定構造体をドット参照ではなく分解束縛で読むため、あとから
 キーが増えたときは、古いピンが黙って生き延びる代わりにコンパイルが壊れます。
 
+### 委譲された作業は別のターゲットへ送れる
+
+Switchyard の `subagents` オーバーレイは `[models.subagents]` として引き継がれますが、
+置き場所はルーターテーブルの中ではなくエントリ側です — 固定エントリにはルーター
+テーブルが存在せず、アップストリームの「passthrough with subagents」はここではまさに
+固定エントリにあたるからです。その id を要求した `Task` の子、フックエージェント、
+ワークフローサブエージェントは、オーバーレイの `target`、あるいは自身の
+`x-claude-code-agent-type` に一致する `by_type` のエントリへ振り分けられます。親自身の
+ターンがこのテーブルを見ることはありません。
+
+```toml
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6" }
+```
+
+shunt が足しているのは「委譲された」の読み方です。アップストリームは自分の
+`claude_lineage` ヘッダーだけを見ますが、shunt はまず `x-claude-code-request-class` を
+読み（`subagent` と `workflow` は委譲、`main` はエージェント id が一緒に届いていても委譲
+ではなく、`compaction` と `auxiliary` はハーネスの保守作業なのでオーバーレイを使うことは
+ありません）、クラスが送られてこないときだけエージェント id にフォールバックします —
+そしてデフォルトのゲートウェイデプロイの背後では、クラスは送られてきません。`by_type`
+のキーはヘッダーのリテラル値そのもので、大文字小文字も含めて一致させます。プロジェクト
+エージェントは名前を伏せたまま `custom` として届きます。オーバーレイは状態を持ちません。
+振り分けられた子は採点されず、ピン留めもされず、親の dwell を進めることもありません。
+そのターンは `x-gateway-route-source` に `subagent_type` または `subagent` を報告します。
+
 ### ホットパスに LLM ジャッジを置かない
 
 シグナルが決め手を欠くとき、libsy は

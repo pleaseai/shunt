@@ -440,8 +440,9 @@ shunt가 보통 쓰는 `kind`나 `mode`가 아니라 `type`을 쓰는 것은 **s
 | `noop` | 고르지 않음 — 빈 메시지로 응답 | 읽지 않음 |
 
 판정에 LLM을 호출하는 알고리즘(`llm_classifier`, `composite`, `advisor`,
-`prefill_router`)과 `[models.subagents]` 오버레이는 **아직 사용할 수 없습니다**. 이들을
-지정하면 시작 오류가 나며, 이후 릴리스에서 추가됩니다.
+`prefill_router`)과 [`[models.subagents]`](#modelssubagents-선택) 오버레이의
+`llm_classifier` 형태는 **아직 사용할 수 없습니다**. 이들을 지정하면 시작 오류가 나며,
+이후 릴리스에서 추가됩니다.
 
 한 항목에 `[models.router]`와 `[models.upstream_model]`을 함께 선언할 수 없습니다.
 
@@ -633,6 +634,69 @@ id의 목적지는 라우터가 정하므로 조회되지 않습니다). id가 �
 `[[route_prefixes]]` 항목은 경고하지 **않습니다** — 그 접두사에 해당하는 다른 id는 여전히
 처리하기 때문입니다. 각 경고는 로드할 때마다 한 번씩 나오며, 핫 리로드도 로드이므로 설정을
 고치지 않으면 리로드할 때마다 다시 나옵니다.
+
+### `[models.subagents]` (선택)
+
+어떤 `[[models]]` 항목에도 붙일 수 있는 **위임된 작업** 전용 오버레이입니다 —
+`[models.upstream_model]` 맵을 가진 항목, `[models.router]` 테이블을 가진 항목, 맵이 없어
+`[[routes]]`로 해석되는 id 모두입니다. 그 id를 요청하는 `Task` 서브에이전트, 훅 에이전트,
+워크플로 서브에이전트는 오버레이의 타깃으로 우회됩니다. 부모 세션 자신의 턴은 이 테이블을
+전혀 보지 않으며, 오버레이가 없을 때와 똑같이 항목을 해석합니다. 이 테이블이 `router` 안이
+아니라 항목 위에 놓이는 것은 고정 항목에는 라우터 테이블이 없고, Switchyard의 "subagents를
+곁들인 passthrough"가 여기서는 바로 그 고정 항목이기 때문입니다.
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | 이 릴리스가 구현하는 유일한 형태인 `passthrough`. 판정자가 자식의 티어를 고르는 `llm_classifier` 형태는 이후 릴리스이며, 지정하면 시작 오류입니다 |
+| `target` | ✅ 필수 | `by_type`이 해당 에이전트 타입에 아무것도 지정하지 않았을 때 위임 턴이 가는 model id — 에이전트 타입 헤더가 전송되지 않으면 모든 위임 턴이 여기로 갑니다 |
+| `by_type` | `{}` | 에이전트 타입 → model id. `x-claude-code-agent-type`의 값 그대로를 키로 씁니다 |
+
+**무엇이 위임된 작업인가.** `x-claude-code-request-class`가 `subagent` 또는 `workflow`인
+요청, 그리고 그 헤더가 없을 때는 비어 있지 않은 `x-claude-code-agent-id`를 실은 요청입니다 —
+이 헤더는 힌트 게이트와 무관하게 Claude Code가 모든 위임 턴에 보냅니다. 클래스가 전송되면
+그것이 결정권을 갖습니다. 에이전트 id가 붙은 `main`은 메인 트래픽이고, `compaction`과
+`auxiliary`는 하네스 유지보수입니다 — 이 셋은 어느 것도 오버레이를 타지 않습니다. 따라서
+클래스와 타입 헤더가 게이트로 꺼져 있는 기본 배포에서는 모든 `Task` 자식이 `target`으로
+갑니다. `by_type`을 쓰려면 클라이언트가 `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`을 설정해야
+합니다.
+
+**`by_type` 키는** 대소문자까지 포함해 정확히 매칭됩니다. 내장 에이전트의 id는 그대로
+전달됩니다 — `Explore`, `Plan`, `general-purpose`, `claude`, 그리고 클라이언트가
+`CLAUDE_CODE_FORK_SUBAGENT=1`에서만 제공하는 `fork`입니다. `.claude/agents/`의 프로젝트
+에이전트는 `custom`으로 도착하며 자기 이름은 전송되지 않으므로, `custom`이 그 에이전트가
+매칭할 수 있는 유일한 키입니다. `teammate`는 Agent Teams 멤버를 가리키는 클라이언트의
+리터럴이며 아직 와이어에서 관측된 적은 없습니다. 비어 있거나 공백이 섞인 키는 시작
+오류입니다. 절대 매칭될 수 없기 때문입니다.
+
+**타깃은** 라우터 타깃과 동일한 한 홉 규칙을 따르는 평범한 공개 model id입니다. `target`과
+모든 `by_type` 값은 끝의 `[1m]`/`[1M]` 힌트를 제거한 뒤 자기 `[models.router]`나
+`[models.subagents]` 테이블을 가진 항목으로 해석되어서는 안 되며, 라우터 타깃도 이 오버레이를
+가진 항목으로 해석될 수 없습니다. 빈 타깃, `[1m]` 또는 `[1M]`으로 끝나는 오버레이 보유 id,
+어느 한쪽이 이 테이블을 가진 중복 `[[models]]` id는 시작 오류입니다. 명시적 라우트와
+매칭되지 않는 타깃은 라우터 타깃과 마찬가지로 로드 시점에 경고만 내고, 여전히
+`server.default_provider`로 해석됩니다.
+
+**상태 없음.** 타깃은 오직 설정과 요청 헤더만의 함수입니다 — 세션 핀도, 저장소도, 판정자
+호출도 없습니다. 라우터가 달린 id에서는 라우터가 돌기 전에 자식이 우회되므로, 자식의 턴은
+트랜스크립트를 상대로 채점되는 일이 없고 부모의 핀에도 닿지 않습니다. 우회된 턴은
+`x-gateway-routed-model`(타깃)과 `x-gateway-route-source`를 실어 보내며 — `by_type`이
+맞으면 `subagent_type`, `target` 폴백이면 `subagent` — `algorithm = "subagents"`로
+`shunt.router.decisions`에 집계됩니다. 요청이 없는 표면(`GET /routes`, `/v1/models`
+디스커버리, `shunt check`)은 부모의 목적지를 보고하며, 오버레이는 `routers` 배열에 실리지
+않습니다.
 
 ## `[sentry]` (선택)
 

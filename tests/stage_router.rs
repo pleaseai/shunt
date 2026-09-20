@@ -120,6 +120,7 @@ fn tier_alias(id: &str, upstream: &str, upstream_model: &str) -> ModelConfig {
         )])),
         router: None,
         stage_router: None,
+        subagents: None,
     }
 }
 
@@ -160,6 +161,7 @@ fn router_config_with(
                 handoff_notes: None,
             })),
             stage_router: None,
+            subagents: None,
         },
         tier_alias("capable-alias", "capable", CAPABLE_UPSTREAM_MODEL),
         tier_alias("efficient-alias", "efficient", EFFICIENT_UPSTREAM_MODEL),

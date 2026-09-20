@@ -622,7 +622,8 @@ id it asked for — the chosen target travels upstream only.
 | `noop` | Nothing — answers with an empty message | No |
 
 The driven algorithms (`llm_classifier`, `composite`, `advisor`,
-`prefill_router`) and the `[models.subagents]` overlay are **not available
+`prefill_router`) and the `llm_classifier` form of the
+[`[models.subagents]`](#modelssubagents-optional) overlay are **not available
 yet**; naming one is a startup error. They call an LLM judge and land in later
 releases.
 
@@ -827,6 +828,73 @@ destination). A `[[route_prefixes]]` entry the id merely starts with is **not**
 reported — it still serves every other id matching it. Each is emitted once per
 load — and a hot reload is a load, so a config left unfixed warns again on each
 one.
+
+### `[models.subagents]` (optional)
+
+An overlay for **delegated work** on any `[[models]]` entry: one with a
+`[models.upstream_model]` map, one with a `[models.router]` table, or a map-less
+id that resolves through `[[routes]]`. A `Task` sub-agent, a hook agent, or a
+workflow sub-agent requesting the id is diverted to the overlay's target. The
+parent session's own turns never see the table and resolve the entry exactly as
+they did without it. The table sits on the entry rather than inside `router`
+because a fixed entry has no router table, and Switchyard's "passthrough with
+subagents" is exactly a fixed entry here.
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `passthrough`, the only form this release implements. The `llm_classifier` form, where a judge picks the child's tier, is a later release; naming it is a startup error |
+| `target` | ✅ required | Model id a delegated turn goes to when `by_type` names nothing for its agent type — and where every delegated turn goes when the agent-type header is not sent |
+| `by_type` | `{}` | Agent type → model id, keyed on the literal `x-claude-code-agent-type` value |
+
+**What counts as delegated work.** A request whose `x-claude-code-request-class`
+is `subagent` or `workflow`; when that header is absent, a request carrying a
+non-blank `x-claude-code-agent-id`, which Claude Code sends on every delegated
+turn regardless of the hint gate. The class is authoritative when sent: `main`
+with an agent id is main traffic, and `compaction` and `auxiliary` are harness
+maintenance — none of the three ever takes the overlay. So on a default
+deployment, where the class and type headers are gated off, every `Task` child
+takes `target`; `by_type` needs the client to set
+`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`.
+
+**`by_type` keys** are matched exactly, case included. A built-in agent's id
+travels verbatim — `Explore`, `Plan`, `general-purpose`, `claude`, and `fork`
+(which the client only offers under `CLAUDE_CODE_FORK_SUBAGENT=1`). A project
+agent from `.claude/agents/` arrives as `custom`; its own name is never sent, so
+`custom` is the only key it can match. `teammate` is the client's literal for an
+Agent Teams member and has not been observed on the wire. A blank key, or one
+carrying whitespace, is a startup error: it could never match.
+
+**Targets** are ordinary public model ids under the same one-hop rule as router
+targets: `target` and every `by_type` value must not resolve, after the trailing
+`[1m]`/`[1M]` hint is stripped, to an entry carrying its own `[models.router]` or
+`[models.subagents]` table — and a router target may not resolve to an entry
+carrying this overlay. A blank target, an overlaid id ending in `[1m]` or `[1M]`,
+and a duplicate `[[models]]` id where either entry carries the table are startup
+errors. A target matching no explicit route warns at load, as a router target
+does, and still resolves through `server.default_provider`.
+
+**No state.** The target is a function of the config and the request's headers
+alone: no session pin, no store, no judge call. On a router-backed id the child
+is diverted before the router runs, so a child's turns are never scored against
+the transcript and never touch the parent's pin. A diverted turn carries
+`x-gateway-routed-model` (the target) and `x-gateway-route-source` —
+`subagent_type` for a `by_type` hit, `subagent` for the `target` fallback — and
+is counted in `shunt.router.decisions` with `algorithm = "subagents"`. Surfaces
+with no request — `GET /routes`, `/v1/models` discovery, `shunt check` — report
+the parent's destination; the overlay is not listed in the `routers` array.
 
 ## `[sentry]` (optional)
 

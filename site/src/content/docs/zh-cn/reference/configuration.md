@@ -417,8 +417,9 @@ codex = "gpt-5.2"
 | `random` | 按权重抽取,默认按会话固定 | 不读 |
 | `noop` | 不做选择 —— 直接返回空消息 | 不读 |
 
-需要调用 LLM 裁判的算法(`llm_classifier`、`composite`、`advisor`、`prefill_router`)以及
-`[models.subagents]` 覆盖层**尚不可用**:指定它们会导致启动错误,它们会在后续版本中加入。
+需要调用 LLM 裁判的算法(`llm_classifier`、`composite`、`advisor`、`prefill_router`),以及
+[`[models.subagents]`](#modelssubagents可选) 覆盖层的 `llm_classifier` 形式 **尚不可用**:
+指定它们会导致启动错误,它们会在后续版本中加入。
 
 同一条目不能同时声明 `[models.router]` 和 `[models.upstream_model]`。
 
@@ -600,6 +601,63 @@ id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同�
 决定，因此不会被查询）。仅仅是 id 以某个前缀开头的 `[[route_prefixes]]` 条目**不会**被
 报告 —— 匹配该前缀的其他 id 仍由它处理。每条警告在每次加载时各输出一次；热重载
 同样是一次加载，所以配置不改就会在每次重载时再次输出。
+
+### `[models.subagents]`(可选)
+
+面向 **被委派的工作** 的覆盖层,可以加在任意 `[[models]]` 条目上:带 `[models.upstream_model]`
+映射的条目、带 `[models.router]` 表的条目,或者没有映射、经由 `[[routes]]` 解析的 id。请求
+这个 id 的 `Task` 子 agent、hook agent 或 workflow 子 agent 会被分流到覆盖层的目标。父会话
+自己的回合从不读这张表,解析该条目的方式和没有这张表时完全一致。这张表放在条目上而不是放进
+`router` 里,是因为直接指定目的地的条目根本没有路由器表,而 Switchyard 的“带 subagents 的
+passthrough”在这里恰好就是这样一个条目。
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必填 | `passthrough`,本次发布唯一实现的形式。由裁判挑选子任务档位的 `llm_classifier` 形式要等后续版本;指定它会导致启动错误 |
+| `target` | ✅ 必填 | 当 `by_type` 没有为某一轮的 agent 类型指定模型时,这一轮被委派的请求去往的模型 id —— 没有发送 agent 类型头部时,所有被委派的回合也都去这里 |
+| `by_type` | `{}` | agent 类型 → 模型 id,按 `x-claude-code-agent-type` 的字面值作键 |
+
+**什么算被委派的工作**。`x-claude-code-request-class` 为 `subagent` 或 `workflow` 的请求;
+该头部缺失时,则是带有非空 `x-claude-code-agent-id` 的请求 —— 无论提示头部的开关如何,
+Claude Code 在每个被委派的回合上都会发送它。类别头部一旦发送就是权威的:带着 agent id 的
+`main` 仍是主会话流量,而 `compaction` 和 `auxiliary` 属于框架自身的维护 —— 这三者都不会
+走这张覆盖层。因此在类别头部和类型头部都被关闭的默认部署下,每个 `Task` 子 agent 都走
+`target`;要用上 `by_type`,需要客户端设置 `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`。
+
+**`by_type` 的键** 精确匹配,大小写也算在内。内置 agent 的 id 原样传输 —— `Explore`、
+`Plan`、`general-purpose`、`claude` 和 `fork`(客户端只在 `CLAUDE_CODE_FORK_SUBAGENT=1`
+下才提供它)。来自 `.claude/agents/` 的项目 agent 会以 `custom` 到达,它自己的名字从不
+发送,所以 `custom` 是它唯一能匹配上的键。`teammate` 是客户端对 Agent Teams 成员使用的
+字面取值,目前尚未在网络上观察到。空的键,或者带空白字符的键,会导致启动错误:它永远
+不可能匹配上。
+
+**目标** 都是普通的公开模型 id,并且受与路由器目标相同的一跳规则约束:`target` 和每个
+`by_type` 取值在去掉结尾的 `[1m]`/`[1M]` 提示之后,都不能解析到一个自带 `[models.router]`
+或 `[models.subagents]` 表的条目 —— 反过来,路由器的目标也不能解析到带这张覆盖层的条目。
+空目标、以 `[1m]` 或 `[1M]` 结尾的被覆盖 id,以及两个条目中任一带这张表的重复 `[[models]]`
+id,都会导致启动错误。未匹配到任何显式路由的目标只在加载时发出警告,与路由器目标一样,
+并仍经由 `server.default_provider` 解析。
+
+**不保存状态**。目标只由配置和请求的头部决定:没有会话固定、没有存储、不调用裁判。在带
+路由器的 id 上,子任务在路由器运行之前就被分流走,所以子任务的回合从不按转录内容评分,
+也从不触碰父级的固定项。被分流的一轮会带上 `x-gateway-routed-model`(目标)和
+`x-gateway-route-source` —— 命中 `by_type` 时是 `subagent_type`,回退到 `target` 时是
+`subagent` —— 并以 `algorithm = "subagents"` 计入 `shunt.router.decisions`。没有请求的
+接口 —— `GET /routes`、`/v1/models` 发现和 `shunt check` —— 报告父级的目的地;覆盖层不会
+出现在 `routers` 数组里。
 
 ## `[sentry]`(可选)
 

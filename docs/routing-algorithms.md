@@ -105,7 +105,7 @@ built once per request and stored nowhere:
 | `x-claude-code-session-id` | The session the pin is keyed on |
 | `x-claude-code-agent-id` | The delegated agent the pin is scoped to |
 | `x-claude-code-request-class` | `main`, `subagent`, `workflow`, `compaction`, or `auxiliary`; an unrecognised value reads as absent |
-| `x-claude-code-agent-type` | Carried for the `[models.subagents]` `by_type` map (ADR-0005 §8 PR 3); nothing routes on it yet |
+| `x-claude-code-agent-type` | The `by_type` key of the `[models.subagents]` overlay (§4); a `by_type` map keys on the literal value |
 | `x-claude-code-context-compacted` | Read by presence of a non-blank value (`manual`, `auto`, `reactive`) |
 
 Nothing is percent-decoded: the class is compared against ASCII literals an
@@ -143,11 +143,11 @@ and the latch; §4.2 covers the latch specifically.
 
 ### Not in this PR
 
-The `[models.subagents]` `by_type` map and the read-only carve-out ADR-0005 §11
-describes for the `compaction` and `auxiliary` classes are later steps in the §8
-sequence. `x-claude-code-agent-type` is carried but routed on by nothing, and
-`x-claude-code-compaction` and `x-claude-code-prev-tool-durations` are read by
-nothing and are therefore deliberately absent from `/protocol`'s consumed list.
+The `[models.subagents]` `by_type` map is PR 3 (§4). The read-only carve-out
+ADR-0005 §11 describes for the `compaction` and `auxiliary` classes is a later
+step in the §8 sequence. `x-claude-code-compaction` and
+`x-claude-code-prev-tool-durations` are read by nothing and are therefore
+deliberately absent from `/protocol`'s consumed list.
 
 A request carrying none of these hints — a bare `curl`, a Claude Code older than
 the headers, or the default gate-off deployment with no agent id — routes
@@ -337,8 +337,83 @@ The driven lane is untouched: `llm_classifier`, `composite`, `advisor`, and
 `stage_router.classifier` all make judge calls and are PR 4 onward, so a `type`
 naming one of them is a load error rather than a silent pass-through.
 `prefill_router` is PR 7, behind its own cargo feature. `[models.subagents]` is
-PR 3. The `shunt.router.judge_calls` metric and the `judges` list on `GET
+PR 3 (§4). The `shunt.router.judge_calls` metric and the `judges` list on `GET
 /routes` describe judge traffic and land with it (ADR-0005 §7).
 
 A request to an id whose `[[models]]` entry carries no `router` table routes
 exactly as it did before, and pays the same one `Option` check it paid before.
+
+## 4. The `[models.subagents]` passthrough overlay (PR 3)
+
+### What it is
+
+`[models.subagents]` diverts **delegated work** — a `Task` child, a hook
+agent, a workflow sub-agent — away from the destination the entry gives its
+parent. It sits on the `[[models]]` entry, beside `upstream_model` or
+`router`, not inside the router table: a fixed entry has no router table, and
+upstream's "passthrough with subagents" is exactly a fixed entry here. Only
+the `passthrough` form lands in this PR, on the pure lane:
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"          # every delegated turn `by_type` does not name
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+`src/config/subagents.rs` is the table; `src/routing/subagents.rs` is the one
+function that answers it, `select(overlay, hints) -> Option<(target, source)>`,
+and `resolve_chain` consults it before the entry's router or map. `None` — the
+turn is not delegated — falls through to the arms that existed before, so the
+parent's own turns are untouched by the table's presence.
+
+### Why the class wins, and why the fallback exists
+
+Delegation is `RouterContext::is_delegated` (§2): `subagent` or `workflow` when
+`x-claude-code-request-class` is sent, else a non-blank `x-claude-code-agent-id`.
+The class is authoritative when sent. `main` with an agent id is main traffic —
+never observed on the wire, but the header that *names* the class must beat the
+one that merely correlates with it. `compaction` and `auxiliary` are harness
+maintenance and never take the overlay, for the reason upstream's
+`SubagentOverride` abstains on `compact`: a title-generation call or the compact
+call itself is not the child's work, and diverting it would put the session's
+own maintenance on the child's tier.
+
+The fallback exists because the class is gated client-side and the agent id is
+not (§2). Behind a default shunt deployment every `Task` child therefore takes
+`target`, and `by_type` — which needs `x-claude-code-agent-type` — is inert
+until the operator sets `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` on the client.
+
+`by_type` keys are the header's **literal** values, matched exactly
+(`docs/notes/adr-0005-routing-live-captures.md`, fact (b)): built-in ids travel
+verbatim, case included (`Explore`, `Plan`, `general-purpose`, `claude`; `fork`
+only under `CLAUDE_CODE_FORK_SUBAGENT=1`), a project agent arrives as `custom`
+with its name withheld, and `teammate` is the binary's literal, not yet seen
+live. A key with whitespace is rejected at load rather than trimmed — it could
+never match, and the operator meant some type.
+
+### What changed
+
+| Change | Effect |
+| :-- | :-- |
+| `[models.subagents]` with `type = "passthrough"` | `target`, plus the optional `by_type` map. Rides a fixed entry, a router-backed one, or a map-less id |
+| The overlay runs before the router | A child requesting a `stage_router` id is diverted before `stage::select`: its transcript is never scored, no pin is parked, and its parent's dwell is never advanced by it. No store access on the path |
+| The one-hop rule covers the overlay | `target` and every `by_type` value must not resolve, after the `[1m]` strip, to an entry carrying a `router` **or** a `subagents` table; and a router target may not resolve to an entry carrying an overlay. Both directions are rejected at load |
+| Load-time rejections | A blank target (named by key: `target`, `by_type.Explore`), a blank or padded `by_type` key, an overlaid id ending in `[1m]`/`[1M]`, a duplicate `[[models]]` id where either entry carries the table, and the `llm_classifier` form (by the enum's unknown-variant error) |
+| The unresolvable-target warning | Ranges over overlay targets too, with the same "falls back to the default provider" message |
+| Two route sources | `subagent_type` for a `by_type` hit and `subagent` for the `target` fallback — the same split `random`/`random_session` makes, so the header and the metric say which key decided. `algorithm` is `subagents` |
+| `x-gateway-routed-model` / `x-gateway-route-source` | Stamped on a diverted turn like any router decision; absent on the parent's turns through the same id |
+| Body-less surfaces | `GET /routes`, discovery, and `shunt check` have no headers and report the parent's destination. The overlay is not listed in `/routes` `routers[]` |
+| One new benchmark arm | `resolve_chain_subagents_passthrough`: the child's turn from `resolve_chain_routed_delegated`, once the routed entry also carries an overlay. Read against that arm — the gap is the scoring and the store read the child stops paying — and flat across turn counts |
+
+### Not in this PR
+
+The `llm_classifier` form of the overlay is PR 5 with the rest of the driven
+lane. The read-only carve-out for `compaction` and `auxiliary` on the stage
+router — landing them on the session's tier without recording — is still a
+later step; absent the overlay they route as they do today, and with it they
+route as the parent does. `GET /routes` does not yet describe the overlay.

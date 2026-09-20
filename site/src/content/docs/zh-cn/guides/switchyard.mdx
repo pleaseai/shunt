@@ -263,6 +263,29 @@ Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 
 固定项会被丢弃。该指纹以解构方式读取配置结构体而不是点号取字段,因此日后新增键时
 会编译失败,而不是让过期的固定项悄悄存活下来。
 
+### 被委派的工作可以走另一个目标
+
+Switchyard 的 `subagents` 覆盖层在这里对应 `[models.subagents]`,它加在条目上而不是放进
+路由器表里 —— 直接指定目的地的条目根本没有路由器表,而上游的“带 subagents 的 passthrough”
+在这里恰好就是这样一个条目。请求该 id 的 `Task` 子任务、hook agent 或 workflow 子 agent
+会被分流到覆盖层的 `target`,或者分流到与它的 `x-claude-code-agent-type` 相匹配的 `by_type`
+条目;父级自己的回合从不会看到这张表。
+
+```toml
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6" }
+```
+
+shunt 额外补上的是对“被委派”的判读。上游只凭它自己的 `claude_lineage` 头部;shunt 先读
+`x-claude-code-request-class`(`subagent` 与 `workflow` 算被委派,`main` 即使随带一个 agent
+id 也不算,而 `compaction` 和 `auxiliary` 是框架自身的维护,永远不会走这张覆盖层),只有在
+该类别没有被发送时才回退到 agent id —— 而在默认的网关部署下,它确实不会被发送。`by_type`
+的键就是头部的字面值,大小写也算在内,项目 agent 会以 `custom` 到达,名字不会被发送。这张
+覆盖层不保存状态:被分流的子任务从不被评分、从不被固定,也从不推进父级的 dwell,它这一轮
+在 `x-gateway-route-source` 中报告 `subagent_type` 或 `subagent`。
+
 ### 不在热路径上放 LLM 裁判
 
 当信号不足以定论时,libsy 返回

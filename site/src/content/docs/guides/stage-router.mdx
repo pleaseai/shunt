@@ -181,7 +181,9 @@ Two response headers report the decision, so you do not have to infer it:
 Those six are the labels this router emits. The scorer defines two more —
 `ambiguous` and `llm-classifier` — and neither can reach a response: shunt
 reports an inconclusive turn as `fall_open` and runs no judge. The other router
-types have labels of their own (`random`, `random_session`, `noop`).
+types have labels of their own (`random`, `random_session`, `noop`), and so does
+the `[models.subagents]` overlay (`subagent_type` for a `by_type` hit,
+`subagent` for its `target` fallback).
 
 Both are absent for a model id that has no router, so "routed to the efficient
 tier" stays distinguishable from "not routed by a router at all". A

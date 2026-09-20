@@ -490,7 +490,9 @@ chosen tier routes to, and `x-gateway-route-source` is
 one: `random` reports `random` for a fresh draw and `random_session` for a
 hash-pinned arm, `noop` reports `noop`, and `auto` reports the stage router's
 own labels because it *is* the stage router under a preset. A held turn reports
-`capable_hold` (§4). Both are omitted for an id that carries no router —
+`capable_hold` (§4). A turn the `[models.subagents]` overlay diverted reports
+`subagent_type` for a `by_type` hit and `subagent` for the `target` fallback
+(`routing-algorithms.md` §4). Both are omitted for an id that carries no router —
 sent empty, a client could not tell "routed to the efficient tier" from "not
 router-routed". They sit beside the existing `x-gateway-upstream` /
 `x-gateway-model` / `x-gateway-upstream-model` trio; `x-gateway-routed-model`

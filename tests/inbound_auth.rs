@@ -96,6 +96,7 @@ fn with_discovery_model(mut config: Config) -> Config {
         upstream_model: None,
         router: None,
         stage_router: None,
+        subagents: None,
     });
     config
 }

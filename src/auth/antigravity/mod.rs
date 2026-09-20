@@ -701,6 +701,7 @@ mod tests {
                 ),
                 router: None,
                 stage_router: None,
+                subagents: None,
             }),
         }
         config
@@ -838,6 +839,7 @@ mod tests {
             ),
             router: None,
             stage_router: None,
+            subagents: None,
         });
         assert!(routes_to_antigravity(&config));
     }

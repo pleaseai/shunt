@@ -221,7 +221,7 @@ Claude Code 会把每一轮都发送到 Anthropic API。`shunt` 位于前面(通
 
 选择性由**每个请求上的 `model` id** 驱动,而 Claude Code 本来就允许你按上下文选择它:主会话的 `/model` 选择器、子 agent 定义的 `model:` frontmatter、面向所有子 agent 的 `CLAUDE_CODE_SUBAGENT_MODEL`,或用 `ANTHROPIC_CUSTOM_MODEL_OPTION` 向选择器添加一个自定义条目。因此“只分流这个 agent / 这个会话”是在 Claude Code 中决定的,而 shunt 只是遵从它收到的 model id —— 没有脆弱的按 agent 系统提示指纹识别。与全局模型替换代理不同,主会话可以留在 Claude 上,而只有你指名的模型才被分流。
 
-也可以让某一个 model id 自己做决定。[`[models.router]`](https://shunt.sh/zh-cn/guides/stage-router/) 条目用 `type` 键指定路由算法:`stage_router` 指定一个强力档位和一个高效档位,并根据对话最近的 **tool-result 元数据**(`tool_use.name` 与 `tool_result.is_error`,而非提示词文本)逐轮在两者之间选择;`auto` 是同一个路由器的上游预设;`random` 按权重把流量分到多个目标,并让同一个会话固定落在同一路;`noop` 返回一条空消息,用于冒烟测试。所有目标都是普通的公开 model id,各自保留自己的故障转移链、账号池和适配器(参见 [Switchyard 集成](https://shunt.sh/zh-cn/guides/switchyard/))。不配置路由器则行为不变。
+也可以让某一个 model id 自己做决定。[`[models.router]`](https://shunt.sh/zh-cn/guides/stage-router/) 条目用 `type` 键指定路由算法:`stage_router` 指定一个强力档位和一个高效档位,并根据对话最近的 **tool-result 元数据**(`tool_use.name` 与 `tool_result.is_error`,而非提示词文本)逐轮在两者之间选择;`auto` 是同一个路由器的上游预设;`random` 按权重把流量分到多个目标,并让同一个会话固定落在同一路;`noop` 返回一条空消息,用于冒烟测试。所有目标都是普通的公开 model id,各自保留自己的故障转移链、账号池和适配器(参见 [Switchyard 集成](https://shunt.sh/zh-cn/guides/switchyard/))。任何条目还可以带一张 [`[models.subagents]`](https://shunt.sh/zh-cn/reference/configuration/#modelssubagents可选) 覆盖层,把被委派的工作 —— `Task` 子 agent、hook agent、workflow 子 agent —— 送到另一个目标,还可以按 agent 类型细分(`by_type = { Explore = "claude-haiku-4-5" }`),而父会话仍去自己的目的地;`main`、压缩和辅助回合永远不会走它。不配置路由器则行为不变。
 
 ## Claude Code 集成(官方接口)
 

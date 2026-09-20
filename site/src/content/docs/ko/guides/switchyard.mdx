@@ -283,6 +283,32 @@ compacted로 채점되고 그 플래그가 저장되므로 — 헤더는 컴팩�
 구조 분해로 읽으므로, 나중에 키가 추가되면 낡은 핀이 조용히 살아남는 대신 컴파일이
 깨집니다.
 
+### 위임된 작업은 다른 타깃으로 갈 수 있다
+
+Switchyard의 `subagents` 오버레이는 `[models.subagents]`로 넘어오며, 라우터 테이블 안이
+아니라 항목 위에 놓입니다 — 고정 항목에는 라우터 테이블이 없고, 업스트림의 "subagents를
+곁들인 passthrough"가 여기서는 바로 그 고정 항목이기 때문입니다. 그 id를 요청하는 `Task`
+자식이나 훅 에이전트, 워크플로 서브에이전트는 오버레이의 `target`으로, 또는 자신의
+`x-claude-code-agent-type`과 맞는 `by_type` 항목으로 우회됩니다. 부모 자신의 턴은 이
+테이블을 전혀 보지 않습니다.
+
+```toml
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6" }
+```
+
+shunt가 더하는 것은 "위임"을 읽어내는 방식입니다. 업스트림은 자기 `claude_lineage` 헤더
+하나에만 기대지만, shunt는 `x-claude-code-request-class`를 먼저 읽고(`subagent`와
+`workflow`는 위임이고, `main`은 에이전트 id가 함께 실려 와도 위임이 아니며, `compaction`과
+`auxiliary`는 오버레이를 절대 타지 않는 하네스 유지보수입니다) 그 클래스가 전송되지 않을
+때만 에이전트 id로 폴백합니다 — 기본 게이트웨이 배포에서는 실제로 전송되지 않습니다.
+`by_type` 키는 헤더의 값 그대로이고 대소문자까지 그대로이며, 프로젝트 에이전트는 자기
+이름이 감춰진 채 `custom`으로 도착합니다. 이 오버레이는 상태를 갖지 않습니다. 우회된
+자식은 채점되지도, 고정되지도, 부모의 dwell을 진행시키지도 않으며, 그 턴은
+`x-gateway-route-source`에 `subagent_type` 또는 `subagent`를 보고합니다.
+
 ### 핫 패스에 LLM 판정자를 두지 않는다
 
 신호가 불확실하면 libsy는 `PickOutcome::ConsultClassifier { default_tier }`를

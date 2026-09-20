@@ -147,7 +147,9 @@ POST /v1/messages   {"model": "claude-auto", ...}
 
 这六个就是这个路由器会发出的标签。评分器还定义了另外两个 —— `ambiguous` 和
 `llm-classifier` —— 但都不能出现在响应里:shunt 把无法定夺的一轮报告为 `fall_open`,
-并且从不调用判定模型。其他路由器类型有自己的标签(`random`、`random_session`、`noop`)。
+并且从不调用判定模型。其他路由器类型有自己的标签(`random`、
+`random_session`、`noop`),`[models.subagents]` 覆盖层也有自己的标签(命中 `by_type` 时
+是 `subagent_type`,回退到 `target` 时是 `subagent`)。
 
 没有路由器的模型 id 不会带上这两个头,这样"被路由到高效档位"与"根本没走路由器"才能
 区分开。`count_tokens` 探测不加这两个头:在尚未固定的会话上,探测按自己落后一轮的

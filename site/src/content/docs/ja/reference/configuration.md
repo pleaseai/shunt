@@ -421,8 +421,9 @@ shunt が通常使う `kind` や `mode` ではなく `type` を使うのは、**
 | `noop` | 選ばない — 空のメッセージを返す | 読まない |
 
 判定に LLM を呼ぶアルゴリズム（`llm_classifier`、`composite`、`advisor`、
-`prefill_router`）と `[models.subagents]` オーバーレイは**まだ利用できません**。指定すると
-起動エラーになり、後続のリリースで追加されます。
+`prefill_router`）と、[`[models.subagents]`](#modelssubagentsオプション) オーバーレイの
+`llm_classifier` 形式は**まだ利用できません**。指定すると起動エラーになり、後続のリリース
+で追加されます。
 
 同じエントリに `[models.router]` と `[models.upstream_model]` を併記することはできません。
 
@@ -620,6 +621,73 @@ type = "noop"
 他の id は引き続き処理されるからです。
 各警告はロードごとに一度出力されます。ホットリロードもロードなので、設定を直さない限り
 リロードのたびに再び出力されます。
+
+### `[models.subagents]`（オプション）
+
+任意の `[[models]]` エントリに載せられる、**委譲された作業のためのオーバーレイです。**
+`[models.upstream_model]` マップを持つエントリ、`[models.router]` テーブルを持つエントリ、
+マップを持たず `[[routes]]` 経由で解決される id のいずれでも構いません。その id を要求した
+`Task` サブエージェント、フックエージェント、ワークフローサブエージェントは、オーバー
+レイのターゲットへ振り分けられます。親セッション自身のターンはこのテーブルを一切見ず、
+オーバーレイがなかったときとまったく同じようにエントリを解決します。テーブルを `router`
+の中ではなくエントリ側に置くのは、固定エントリにはルーターテーブルが存在せず、
+Switchyard の「passthrough with subagents」がここではまさに固定エントリにあたるからです。
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+| キー | 既定値 | 意味 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必須 | `passthrough`。このリリースが実装する唯一の形式です。ジャッジが子のティアを選ぶ `llm_classifier` 形式は後続のリリースで、指定すると起動エラーになります |
+| `target` | ✅ 必須 | 委譲されたターンのエージェントタイプについて `by_type` が何も指定していないときの宛先モデル id — エージェントタイプのヘッダーが送られてこない場合は、委譲されたすべてのターンがここへ行きます |
+| `by_type` | `{}` | エージェントタイプ → モデル id。`x-claude-code-agent-type` のリテラル値をキーにします |
+
+**委譲された作業とみなされるもの。** `x-claude-code-request-class` が `subagent` または
+`workflow` のリクエストです。そのヘッダーがない場合は、空でない
+`x-claude-code-agent-id` を持つリクエストが該当します。このヘッダーは Claude Code が
+ヒントのゲートに関係なくすべての委譲ターンで送ります。クラスが送られてきたときは
+そちらが正です。エージェント id を伴う `main` はメイントラフィックであり、`compaction`
+と `auxiliary` はハーネスの保守作業で、この 3 つがオーバーレイを使うことはありません。
+したがって、クラスとタイプのヘッダーがゲートで止まっているデフォルトのデプロイでは、
+`Task` の子はすべて `target` へ行きます。`by_type` を使うにはクライアント側で
+`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` を設定する必要があります。
+
+**`by_type` のキーは厳密に照合され、大文字小文字も区別します。** 組み込みエージェントの
+id はそのまま届きます — `Explore`、`Plan`、`general-purpose`、`claude`、そして `fork`
+（クライアントは `CLAUDE_CODE_FORK_SUBAGENT=1` のときだけ提示します）。`.claude/agents/`
+のプロジェクトエージェントは `custom` として届き、自身の名前は決して送られないため、
+一致しうるキーは `custom` だけです。`teammate` は Agent Teams のメンバーを指すクライアント
+側のリテラルで、ワイヤ上ではまだ観測されていません。空のキーや空白文字を含むキーは、
+どうやっても一致しないため起動エラーです。
+
+**ターゲット。** ルーターのターゲットと同じワンホップ規則に従う、通常の公開モデル id です。
+`target` と `by_type` のすべての値は、末尾の `[1m]`／`[1M]` ヒントを除去したあとで、自前の
+`[models.router]` テーブルや `[models.subagents]` テーブルを持つエントリに解決されては
+なりません — そしてルーターのターゲットが、このオーバーレイを持つエントリに解決されるこ
+とも許されません。空のターゲット、`[1m]` または `[1M]` で終わるオーバーレイ付きの id、
+いずれか一方がこのテーブルを持つ重複 `[[models]]` id は起動エラーです。明示的なルートに
+一致しないターゲットは、ルーターのターゲットと同様にロード時に警告を出し、その場合も
+`server.default_provider` で解決されます。
+
+**状態を持ちません。** ターゲットは設定とリクエストのヘッダーだけで決まります。セッション
+ピンもストアもジャッジ呼び出しもありません。ルーターを持つ id では、子はルーターが走る
+前に振り分けられるため、子のターンがトランスクリプトに対して採点されることはなく、親の
+ピンに触れることもありません。振り分けられたターンには `x-gateway-routed-model`
+（ターゲット）と `x-gateway-route-source`（`by_type` に一致したときは `subagent_type`、
+`target` へのフォールバックなら `subagent`）が付き、`shunt.router.decisions` に
+`algorithm = "subagents"` として計上されます。リクエストを伴わないサーフェス —
+`GET /routes`、`/v1/models` ディスカバリ、`shunt check` — は親の宛先を報告し、この
+オーバーレイが `routers` 配列に載ることはありません。
 
 ## `[sentry]`(任意)
 

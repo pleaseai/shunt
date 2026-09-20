@@ -216,6 +216,7 @@ mod tests {
                 },
             )),
             stage_router: None,
+            subagents: None,
         }
     }
 
@@ -236,6 +237,7 @@ mod tests {
                     upstream_model: None,
                     router: None,
                     stage_router: None,
+                    subagents: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -280,6 +282,7 @@ mod tests {
                     },
                 )),
                 stage_router: None,
+                subagents: None,
             }],
             ..crate::config::Config::default()
         };
@@ -310,6 +313,7 @@ mod tests {
                 upstream_model: None,
                 router: Some(crate::config::RouterConfig::Noop {}),
                 stage_router: None,
+                subagents: None,
             }],
             ..crate::config::Config::default()
         };

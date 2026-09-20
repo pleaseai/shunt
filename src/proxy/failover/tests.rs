@@ -789,6 +789,7 @@ fn single_route_config(provider: &str, model: &str, base_url: String) -> Config 
         ),
         router: None,
         stage_router: None,
+        subagents: None,
     }];
     config
 }
