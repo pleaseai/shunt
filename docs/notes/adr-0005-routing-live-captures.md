@@ -437,8 +437,10 @@ driver (python, urllib)  ──http──▶  shunt run (127.0.0.1:31801)
 * **shunt**: `0.45.1`, debug build of `d374cc16` (the tip of `main` at the
   time of this note), `shunt run --config …` with the `anthropic` provider's
   `base_url` pointed at the tap. shunt itself does not read or rewrite
-  `output_config` on the Anthropic path — the only `output_config` handling
-  in `src/` is the Antigravity adapter's `effort` mapping — so what the tap
+  `output_config` on the Anthropic path: nothing in `src/` reads it on the
+  Anthropic Messages path. The handlers that do read it map `effort` on other
+  paths — the Antigravity adapter (`src/model/antigravity_request.rs`) and the
+  OpenAI Responses path (`src/model/responses_request.rs`) — so what the tap
   logged is what the driver sent.
 * **Window**: 05:30–05:33 UTC, **30** `POST /v1/messages` requests, every
   reply carrying an Anthropic `request-id` and `x-gateway-upstream: anthropic`.
@@ -473,9 +475,14 @@ a **string** `system`; `max_tokens` = `DEFAULT_JUDGE_MAX_OUTPUT_TOKENS`
 (`4_096`, `crates/libsy/src/algorithms/util.rs:32`); no `temperature`, no
 `stream`, no `thinking`, no `tools`, no `tool_choice`. The client adds
 `anthropic-version` and nothing else — in particular **no `anthropic-beta`**
-header (`crates/libsy-llm-client/src/backend.rs:164-183`), so this capture
-also shows the field is accepted without a beta opt-in. What the tap logged
-for the escalation case, verbatim apart from the transcript body:
+header (`crates/libsy-llm-client/src/backend.rs:164-183`), and the tap logged
+none. That holds for the driver-to-tap hop only: the hosted shunt 0.44.0
+deployment beyond it resolves a `Credential::ClaudeOauth` and appends
+`anthropic-beta: oauth-2025-04-20` before the api.anthropic.com hop
+(`src/adapters/anthropic/mod.rs` at `v0.44.0`, the `ClaudeOauth` arm), so
+Anthropic did receive a beta header and this capture does **not** establish
+whether `output_config.format` is accepted without a beta opt-in. What the tap
+logged for the escalation case, verbatim apart from the transcript body:
 
 ```json
 {
@@ -501,7 +508,9 @@ for the escalation case, verbatim apart from the transcript body:
 ```
 
 The two user transcripts are the same condensed sessions as in the forced-tool
-capture above, so the two captures differ only in the response-format field.
+capture above. The rest is not a controlled comparison: this run swaps forced
+tool use for `output_config.format`, raises `max_tokens` from 1024 to 4096, and
+replaces Claude Code's header set with the driver script's.
 
 ### Results
 
@@ -582,8 +591,11 @@ auto-mode classifier module documents
 (`src/adapters/anthropic/auto_mode_classifier.rs`). A judge request has no
 first-party identity marker in its `system` by construction, so on an
 OAuth-pooled deployment it trips that gate on every non-haiku Claude id
-**before `output_config.format` is ever evaluated**. There is no reply to
-validate, and nothing in the exchange is a verdict on the field.
+**whether or not the well-formed `output_config.format` is present** — the
+bare request with no `output_config` above drew the same `429` from all ten.
+Whether the gate fires ahead of schema validation was not tested here: no
+malformed schema was ever sent to a gated id. There is no reply to validate,
+and nothing in the exchange is a verdict on the field.
 
 This also corrects the attribution in the 2026-09-18 section above, which
 read the same `429`s as "no pool headroom". They carried the same headerless
@@ -646,10 +658,11 @@ than this endpoint required on this day, and harmless — the packaged schemas'
   `claude-opus-4-5-20251101`, `claude-sonnet-4-5-20250929`: **untested**, not
   failing — none of them evaluated the field. §10's "the current Claude
   models" is still not a universal this note can back.
-* **No model rejected `output_config.format`.** The field is accepted without
-  a beta header on the one model that reached it; the only field-level
-  rejection observed is Anthropic refusing `minimum`/`maximum` on a `number`,
-  which the pinned codec already strips.
+* **No model rejected `output_config.format`.** The one model that reached it
+  accepted it — under the OAuth beta header the hosted deployment adds, so
+  acceptance without a beta opt-in is not something this capture shows; the
+  only field-level rejection observed is Anthropic refusing `minimum`/`maximum`
+  on a `number`, which the pinned codec already strips.
 * **The blocker for the other ten is the OAuth client-shape gate, not
   headroom and not the field.** For PR 4 (#594) this is the concrete first
   failure a `[models.router]` judge target hits on an OAuth-pooled deployment
