@@ -202,7 +202,10 @@ Three deliberate differences from upstream:
   `router.type = "stage_router"`, warned once per load as deprecated; both
   forms on one entry are rejected. Removing the alias is a public-key change
   and is not part of this ADR. `shunt add` and `shunt init` blueprints emit
-  the new form.
+  the new form. *Amended 2026-09-19 (PR 2): the alias was dropped before it
+  shipped — no release tag contains the table's commit — so
+  `[models.stage_router]` is rejected at load with an error naming the new
+  form, and there is no deprecation warning.*
 - **shunt's hysteresis keys stay** (`min_dwell_turns`, `deescalate_threshold`,
   `session_ttl_seconds`). Upstream's `capable_hold_turns` is accepted with a
   shunt default of `0` so existing pins behave as they do now; a
@@ -449,7 +452,7 @@ outcome}`. `GET /routes` `routers[]` gains `algorithm`, `targets`, and a
 |---|---|---|
 | 0 | libsy git pin at an immutable `rev` on upstream `main`, in the form the two `tungstenite` pins use (no `branch` key); fill the four new `ToolSignals` fields; handle `DecisionSource::CapableHold` | Behaviour-preserving; the `is_signal_evidence` match compiles with the new variant |
 | 1 | `RouterContext` with the §11 request hints (session, agent id, request class, agent type, compacted), agent-scoped pin key, child budget, compaction latch | Behaviour-preserving without the hints; child errors leave the parent pin untouched; child fan-out at capacity cannot evict an idle capable parent; a `context-compacted` turn escalates and the next turn of that session still reads `compacted = true` |
-| 2 | `[models.router]` discriminator, `stage_router` alias, `random`, `auto`, `noop`, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Old configs load unchanged with one deprecation warning; `resolve_chain_unrouted` bench flat; sessionless requests under `random` session affinity follow the configured weights rather than one shared arm |
+| 2 | `[models.router]` discriminator, `stage_router` alias, `random`, `auto`, `noop`, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Old configs load unchanged with one deprecation warning; `resolve_chain_unrouted` bench flat; sessionless requests under `random` session affinity follow the configured weights rather than one shared arm. *Amended 2026-09-19: no alias and no warning; a config writing `[models.stage_router]` fails to load with an error naming `[models.router]` (§9 Amendments)* |
 | 3 | `subagents` passthrough form with `by_type` | A `subagent`/`workflow` request routes to its `by_type` target, else `target`, with no store access; `main` with an agent id, `compaction`, and `auxiliary` never take the overlay |
 | 4 | Dependency envelope + admission before `drive`, internal `serve`, translation boundary, per-call bounds | Invalid credential and policy-denied model each produce zero judge calls (incl. passthrough answer + injecting judge, and a judge reached only by fall-through to `server.default_provider`); an unauthenticated `count_tokens` probe on a passthrough-answer + injecting-judge entry is answered with zero judge calls, including an unpinned probe with decisive signals; a judge call carries no inbound credential slot (reserved slots plus every `SHARED_SLOTS` name removed unconditionally, not a value match), and a judge target on a passthrough route is rejected at validation; a judge call appears as `caller = "router"` and consumes its target's pool quota; `200`-then-stall and endless-ping judges resolve as `fail_open` within the deadline |
 | 5 | Driven lane: `llm_classifier` capability + custom, `stage_router.classifier`, `composite`, `subagents` classifier form | Verdict parsed from a real Anthropic tool-use reply and from an OpenAI `json_schema` reply |
@@ -471,6 +474,15 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
 | libsy dependency | Git pin on upstream `main` at a reviewed revision; bumps are deliberate rev changes |
 | Discriminator key | `type`, as a documented exception to shunt's `kind`/`mode` convention (§2) |
 | `prefill_router` | Cargo feature `prefill-router`, off by default, absent from release binaries (§6) |
+
+#### Amendments
+
+- **2026-09-19 (PR 2) — the `[models.stage_router]` alias is dropped.** §2's
+  "stays valid as an alias" bullet and §8's PR 2 definition of done assumed a
+  deployed spelling to keep loading. No release tag contains the commit that
+  added `[models.stage_router]`, so there is none: the table is renamed
+  outright to `[models.router]`, a config still writing the old form fails to
+  load with an error naming the new one, and no deprecation warning exists.
 
 ### 10. Verification before code
 

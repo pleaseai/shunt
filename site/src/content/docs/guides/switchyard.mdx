@@ -325,9 +325,10 @@ restoration keep working.
 
 ### Inert unless you ask for it
 
-Absent a `[models.stage_router]` table the router arm is a single
+Absent a `[models.router]` table the router arm is a single
 `Option` check on a config field existing deployments do not have. Nothing
-about the routing path changes.
+about the routing path changes — and the check costs the same whichever `type`
+the routed entries declare.
 
 ## What the integration cost
 

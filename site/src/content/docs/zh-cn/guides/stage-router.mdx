@@ -7,7 +7,11 @@ description: 让一个模型 id 依据对话最近的 tool-result 历史(而非�
 档位 —— 并让对话决定由谁承担每一轮。错误、停滞的排查和探索性阅读会向上走;计划确定之后的
 常规产出留在下面。
 
-该功能需要显式启用,默认完全不生效。不配置 `[models.stage_router]` 表,shunt 的路由与以前
+阶段路由器是条目 `[models.router]` 表可以取的 `type` 之一。其余三个是 `auto`(同一个路由器
+套用上游预设)、`random`(按权重、默认按会话固定的分流)和 `noop`(返回空响应,用于冒烟
+测试),四个都记录在[配置参考](/zh-cn/reference/configuration/)中。
+
+该功能需要显式启用,默认完全不生效。不配置 `[models.router]` 表,shunt 的路由与以前
 完全一致:只看请求的 `model` id,别无其他。
 
 ## 它读取什么
@@ -34,6 +38,10 @@ shunt 知道 Claude Code 实际的工具名称,这正是它能胜过通用路由
 | 变更(Mutate) | `Edit`、`NotebookEdit`、`Write` |
 | 计划(Plan) | `TodoWrite`、`Task`、`EnterPlanMode`、`ExitPlanMode` |
 | 未分类 | 其余全部,包括 `Bash`、`Skill`、`KillShell` 和所有 `mcp__*` 工具 |
+
+未分类的那些名字可以用 `[models.router.tool_semantics]` 自己归类:四个列表(`observe`、
+`mutate`、`plan`、`new`)在上表*之后*生效。表里已经认识的名字改不动 —— 把 `Read` 放进
+`mutate` 不是覆盖,而是启动错误。改动这些列表会在下次加载时丢弃该路由器的会话固定。
 
 包括 `ExitPlanMode` 在内的所有 `Plan` 调用都计为计划活动,而计划活动被读作探索,因此是
 往**上**推,而不是往下。只有一个名称享有超出类别的待遇:失败的 `Task` 被记为致命而非仅仅
@@ -75,6 +83,20 @@ shunt 知道 Claude Code 实际的工具名称,这正是它能胜过通用路由
 | 强力 → 高效 | `min_dwell_turns` **且** `deescalate_threshold`(0.75)**且**评分器确实做出的判断。 |
 
 fall-open 或没有工具活动的一轮是 picker 的默认值,不是证据,因此在任何方向上都无法移动档位。
+
+`capable_hold_turns`(默认 `0`)在信号把档位推上去之后,再多保持强力档位若干轮 —— 当恢复过程
+本身安静得容易被读成已经收敛时,这很有用。被保持的轮次把路由来源报告为 `capable_hold`,它同样
+不算证据,无法移动固定。
+
+### 告诉接手的模型为什么
+
+`[models.router.handoff_notes]` 只在信号改变档位的那一轮,向转发出去的请求追加一个简短的
+system 块:向上时用 `escalation_note`,向下时用 `deescalation_note`,让到岗的模型知道自己
+是在接替而不是从头开始。Claude Code 的 attribution 块是第一个 system 块,不会被动;备注放在
+最后。
+
+**每切换一次就付一次提示缓存未命中**,因为 `system` 数组属于被缓存的前缀。这是在切换本身
+已经放弃的按模型前缀之上再加的代价,也正因如此,这张表不显式打开就是关着的。
 
 ## 会话固定
 
@@ -121,20 +143,21 @@ POST /v1/messages   {"model": "claude-auto", ...}
 | 头部 | 值 |
 | :-- | :-- |
 | `x-gateway-routed-model` | 路由器选中的目标(`claude-opus-4-8`) |
-| `x-gateway-route-source` | 原因(`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`) |
+| `x-gateway-route-source` | 原因(`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`、`capable_hold`) |
 
-这五个就是 shunt 今天会发出的标签。评分器还定义了另外三个 —— `ambiguous`、
-`llm-classifier` 和 `capable_hold` —— 但没有一个能出现在响应里:shunt 把无法定夺的
-一轮报告为 `fall_open`,从不调用判定模型,并且用自己的会话滞后机制取代评分器的那一套。
+这六个就是这个路由器会发出的标签。评分器还定义了另外两个 —— `ambiguous` 和
+`llm-classifier` —— 但都不能出现在响应里:shunt 把无法定夺的一轮报告为 `fall_open`,
+并且从不调用判定模型。其他路由器类型有自己的标签(`random`、`random_session`、`noop`)。
 
 没有路由器的模型 id 不会带上这两个头,这样"被路由到高效档位"与"根本没走路由器"才能
 区分开。`count_tokens` 探测不加这两个头:在尚未固定的会话上,探测按自己落后一轮的
 历史评分,因此它的档位不一定是被测量那一轮的档位。
 
-`GET /routes` 会在 `routers` 中列出每个已配置的路由器,附带两个目标,以及当没有信号做出决定时
-picker 回退到的档位。启用指标后会导出两个计数器 `shunt.stage_router.decisions` 和
-`shunt.stage_router.flips`;档位切换是昂贵事件,而决策计数器无法区分刚刚迁移过来的
-会话和本来就在那里的会话,所以 flip 单独计数。
+`GET /routes` 会在 `routers` 中列出每个已配置的路由器,附带它的 `algorithm` 与 `targets`;
+对这个类型还会给出两个档位的目标,以及当没有信号做出决定时 picker 回退到的档位。启用指标后
+会导出三个计数器:覆盖所有路由器类型的 `shunt.router.decisions`,以及
+`shunt.stage_router.decisions` 和 `shunt.stage_router.flips`。档位切换是昂贵事件,而决策
+计数器无法区分刚刚迁移过来的会话和本来就在那里的会话,所以 flip 单独计数。
 
 ## 如何配置
 
@@ -143,7 +166,8 @@ picker 回退到的档位。启用指标后会导出两个计数器 `shunt.stage
 id = "claude-auto"                     # 要出现在 /model 中必须以 claude/anthropic 开头
 display_name = "Auto (stage router)"
 
-[models.stage_router]
+[models.router]
+type = "stage_router"
 capable_target = "claude-opus-4-8"
 efficient_target = "claude-sonnet-4-6"
 # picker = "efficient_first"
@@ -152,6 +176,7 @@ efficient_target = "claude-sonnet-4-6"
 # min_dwell_turns = 3
 # deescalate_threshold = 0.75
 # session_ttl_seconds = 3600
+# capable_hold_turns = 0
 ```
 
 两个目标都是普通的公开模型 id,因此各自沿常规路由阶梯解析,并保留自己的故障转移链、账户池、
@@ -159,11 +184,14 @@ efficient_target = "claude-sonnet-4-6"
 一跳。
 
 所有键都记录在[配置参考](/zh-cn/reference/configuration/)中。包含刻意排除项在内的设计记录见
-[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md)。
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md);
+`[models.router]` 判别键和其余算法的记录见
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)。
 
 ## 限制
 
 - **没有轮次中途升档。** 响应头一旦提交,shunt 不会重放该轮,因此在一轮开始时选定的档位会
   承担整轮。
-- **没有 LLM 裁决。** 不足以定夺的信号 fall-open 到 picker 默认值。
+- **没有 LLM 裁决。** 不足以定夺的信号 fall-open 到 picker 默认值。需要裁决的类型 ——
+  `llm_classifier`、`composite`、`advisor` —— 尚不可用,指定它们会导致启动错误。
 - **`[server.codex_endpoint]` 不在范围内**,它使用自己的路由表。

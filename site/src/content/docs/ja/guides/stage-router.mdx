@@ -8,7 +8,12 @@ description: ひとつのモデル id に、プロンプトのテキストでは
 エラー、行き詰まった調査、探索的な読み取りは上へ。計画が固まった後の定型作業は下に
 留まります。
 
-これはオプトインで、既定では何もしません。`[models.stage_router]` テーブルを設定しなければ、
+ステージルーターは、エントリの `[models.router]` テーブルが取りうる `type` のひとつです。
+ほかは `auto`（同じルーターを上流のプリセットで動かすもの）、`random`（重み付きで
+セッション固定の分割）、`noop`（空の応答。スモークテスト用）で、4 つとも
+[設定リファレンス](/ja/reference/configuration/)に記載されています。
+
+これはオプトインで、既定では何もしません。`[models.router]` テーブルを設定しなければ、
 shunt はこれまでどおりリクエストの `model` id だけを見てルーティングします。
 
 ## 何を読むか
@@ -37,6 +42,11 @@ shunt は Claude Code の実際のツール名を知っています。プロバ�
 | 変更（Mutate） | `Edit`、`NotebookEdit`、`Write` |
 | 計画（Plan） | `TodoWrite`、`Task`、`EnterPlanMode`、`ExitPlanMode` |
 | 未分類 | `Bash`、`Skill`、`KillShell` とすべての `mcp__*` ツールを含むその他すべて |
+
+未分類のまま残った名前は `[models.router.tool_semantics]` で自分で分類できます。4 つの
+リスト（`observe`、`mutate`、`plan`、`new`）が上の表の*後に*適用されます。表がすでに知って
+いる名前は付け替えられず、`Read` を `mutate` に入れるのは上書きではなく起動エラーです。
+リストを編集すると、次のロードでそのルーターのセッションピンが破棄されます。
 
 `ExitPlanMode` を含むすべての `Plan` 呼び出しは計画活動として数えられ、これは探索として
 読まれるため、下ではなく**上**へ押します。分類以上の扱いを受ける名前は 1 つです。失敗した
@@ -85,6 +95,23 @@ shunt は Claude Code の実際のツール名を知っています。プロバ�
 
 fall-open やツール活動のないターンは picker の既定値であって証拠ではないため、どちらの方向
 にもティアを動かせません。
+
+`capable_hold_turns`（既定値 `0`）は、シグナルがティアを押し上げたあと強力なティアをさらに
+数ターン保持します。復旧そのものが静かで落ち着いたように読めてしまう場面で役に立ちます。
+保持されたターンはルートソース `capable_hold` として報告され、これも証拠ではないのでピンを
+動かせません。
+
+### 引き継ぐモデルに理由を伝える
+
+`[models.router.handoff_notes]` は、シグナルがティアを動かしたターンに限って、アップスト
+リームへ送るリクエストに短いシステムブロックを追加します。上げるときは `escalation_note`、
+下げるときは `deescalation_note` を付けるので、到着したモデルは一から始めるのではなく引き
+継いだのだと分かります。Claude Code の attribution ブロックは先頭のシステムブロックで、
+触れません。ノートは末尾に入ります。
+
+**切り替えのたびにプロンプトキャッシュミスを 1 回払います。** `system` 配列がキャッシュ
+されたプレフィックスの一部だからです。切り替え自体がすでに手放すモデル別プレフィックスに
+上乗せされるコストであり、だからこのテーブルは明示的に有効化するまでオフです。
 
 ## セッションのピン留め
 
@@ -142,13 +169,12 @@ POST /v1/messages     {"model": "claude-auto", ...}
 | ヘッダー | 値 |
 | :-- | :-- |
 | `x-gateway-routed-model` | ルーターが選んだターゲット（`claude-opus-4-8`） |
-| `x-gateway-route-source` | その理由（`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`） |
+| `x-gateway-route-source` | その理由（`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`、`capable_hold`） |
 
-この 5 つが今日 shunt が出力するラベルです。スコアラーはさらに `ambiguous`、
-`llm-classifier`、`capable_hold` の 3 つを定義していますが、どれもレスポンスには
-載りません。shunt は決着しなかったターンを `fall_open` として報告し、ジャッジを
-一切呼ばず、スコアラーのヒステリシスではなく自前のセッションヒステリシスを使う
-ためです。
+この 6 つがこのルーターの出力するラベルです。スコアラーはさらに `ambiguous` と
+`llm-classifier` の 2 つを定義していますが、どちらもレスポンスには載りません。shunt は
+決着しなかったターンを `fall_open` として報告し、ジャッジを一切呼ばないためです。ほかの
+ルーターの type は自分のラベル（`random`、`random_session`、`noop`）を使います。
 
 ルーターを持たないモデル id には両方とも付きません。そうすることで「効率ティアに
 ルーティングされた」と「そもそもルーター経由ではない」が区別できます。
@@ -156,12 +182,13 @@ POST /v1/messages     {"model": "claude-auto", ...}
 プローブは 1 ターン遅れた自身の履歴で採点されるため、そのティアが測定対象のターンの
 ティアであるとは限らないからです。
 
-`GET /routes` は設定済みのルーターを `routers` にすべて載せ、2 つのターゲットと、シグナルが何も
-決めなかったときに picker が戻るティアを示します。メトリクスを有効にすると
-`shunt.stage_router.decisions` と `shunt.stage_router.flips` の 2 つのカウンターが
-出力されます。ティア切り替えが高価な事象であり、決定カウンターだけでは移ってきた
-ばかりのセッションと元からそこにいたセッションを区別できないため、flip は別に
-数えます。
+`GET /routes` は設定済みのルーターを `routers` にすべて載せ、その `algorithm` と `targets`
+を、そしてこの type については 2 つのティアのターゲットと、シグナルが何も決めなかった
+ときに picker が戻るティアを示します。メトリクスを有効にすると 3 つのカウンターが出力
+されます。すべてのルーター type を対象とする `shunt.router.decisions` と、
+`shunt.stage_router.decisions`、`shunt.stage_router.flips` です。ティア切り替えが高価な
+事象であり、決定カウンターだけでは移ってきたばかりのセッションと元からそこにいた
+セッションを区別できないため、flip は別に数えます。
 
 ## 設定する
 
@@ -170,7 +197,8 @@ POST /v1/messages     {"model": "claude-auto", ...}
 id = "claude-auto"                     # /model に出すには claude/anthropic で始める必要があります
 display_name = "Auto (stage router)"
 
-[models.stage_router]
+[models.router]
+type = "stage_router"
 capable_target = "claude-opus-4-8"
 efficient_target = "claude-sonnet-4-6"
 # picker = "efficient_first"
@@ -179,6 +207,7 @@ efficient_target = "claude-sonnet-4-6"
 # min_dwell_turns = 3
 # deescalate_threshold = 0.75
 # session_ttl_seconds = 3600
+# capable_hold_turns = 0
 ```
 
 どちらのターゲットも通常の公開モデル id なので、それぞれが通常のルーティングラダーで解決
@@ -189,6 +218,8 @@ efficient_target = "claude-sonnet-4-6"
 すべてのキーは[設定リファレンス](/ja/reference/configuration/)に記載されています。意図的に
 除外したものを含む設計記録は
 [ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md)
+にあり、`[models.router]` の判別子と残りのアルゴリズムについての記録は
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)
 にあります。
 
 ## 制限
@@ -197,4 +228,6 @@ efficient_target = "claude-sonnet-4-6"
   shunt はターンを再実行しないため、ターン開始時に選ばれたティアがそのターン全体を担当
   します。
 - **LLM の判定はありません。** 決め手に欠けるシグナルは picker の既定値へ fall-open します。
+  ジャッジを使う type — `llm_classifier`、`composite`、`advisor` — はまだ利用できず、
+  指定すると起動エラーになります。
 - **`[server.codex_endpoint]` は対象外**です。独自のルーティングテーブルを使います。

@@ -7,7 +7,7 @@
 //! ([`crate::model::thinking_signature`]). Claude Code round-trips assistant
 //! blocks verbatim, so those signatures come back in `messages` on the next
 //! turn. When that next turn resolves to an Anthropic-kind upstream — a manual
-//! `/model` switch, a failover, or a `[models.stage_router]` tier flip — the
+//! `/model` switch, a failover, or a `[models.router]` tier flip — the
 //! body carries a signature `api.anthropic.com` never issued.
 //!
 //! The reverse direction is already handled and has been since the Responses

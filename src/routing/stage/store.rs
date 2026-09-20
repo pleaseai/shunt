@@ -22,10 +22,10 @@
 //! thing a pin holds that is read *before* the turn is scored rather than
 //! after.
 
+mod decide;
 mod entries;
 
 use std::{
-    hash::{Hash, Hasher},
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex,
@@ -36,6 +36,8 @@ use std::{
 use super::{StageDecision, StageSource, StageTier};
 use crate::config::StageRouterConfig;
 use crate::routing::context::RouterContext;
+use crate::routing::random::DrawState;
+use decide::{evict, fingerprint, is_live, resolve};
 use entries::{session_key, Entries, PinScope, SessionKey, StageSession};
 
 // Re-exported for the two builds that actually read the caps: `tests` below
@@ -97,11 +99,26 @@ pub(crate) struct StageRouterStore {
     /// Hands out the `seq` above. Monotonic for the process, so it orders
     /// decisions across every session and router without a per-key counter.
     next_seq: AtomicU64,
+    /// Per-router RNG streams for `type = "random"` draws.
+    ///
+    /// Here rather than on `AppState` directly because it has the same
+    /// lifetime and the same reason for it: it must survive a config reload,
+    /// and rebuilding it per reload would restart every seeded sequence.
+    draws: DrawState,
 }
 
 impl StageRouterStore {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// The next draw for one `type = "random"` entry.
+    ///
+    /// `fingerprint` covers the selection inputs, so a reload that changes
+    /// `targets`, `weights`, or `seed` reseeds rather than continuing a stream
+    /// drawn against a different distribution.
+    pub(crate) fn random_draw(&self, model: &str, fingerprint: u64, seed: Option<u64>) -> u64 {
+        self.draws.next(model, fingerprint, seed)
     }
 
     /// Apply hysteresis to one turn and return the tier that serves it.
@@ -181,7 +198,8 @@ impl StageRouterStore {
         // recorded. Read before scoring because libsy's compaction override is
         // an input to the estimate, not a filter on it.
         let compacted = hints.context_compacted || pinned.is_some_and(|session| session.compacted);
-        let (decision, changed) = resolve(router, pinned, estimate(compacted));
+        let resolved = resolve(router, pinned, estimate(compacted));
+        let (decision, changed) = (resolved.decision, resolved.changed);
 
         if read_only {
             // A probe changes nothing, so it displaced nothing: reporting a
@@ -210,6 +228,7 @@ impl StageRouterStore {
                     last_seen: now,
                     ttl,
                     compacted,
+                    capable_hold_remaining: resolved.capable_hold_remaining,
                 },
             }),
         }
@@ -348,144 +367,6 @@ impl StageRouterStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
-}
-
-/// Decide this turn's tier from the pin and the estimate. Returns the decision
-/// and whether it differs from what was pinned.
-fn resolve(
-    router: &StageRouterConfig,
-    pinned: Option<StageSession>,
-    estimate: StageDecision,
-) -> (StageDecision, bool) {
-    let Some(session) = pinned else {
-        return (estimate, true);
-    };
-    if session.tier == estimate.tier {
-        return (estimate, false);
-    }
-
-    let held = StageDecision {
-        tier: session.tier,
-        source: StageSource::Sticky,
-        confidence: estimate.confidence,
-    };
-
-    // Only a decision the signals actually made may move a pinned tier. A
-    // fall-open or a signal-less turn is the picker's default, not evidence.
-    if !estimate.source.is_signal_evidence() {
-        return (held, false);
-    }
-
-    match session.tier {
-        // Up is the cheap direction: a turn the efficient tier cannot serve
-        // costs more than the forfeited cache prefix. No dwell requirement.
-        StageTier::Efficient => (estimate, true),
-        // Down is the expensive direction, and must clear both gates.
-        StageTier::Capable => {
-            // Every source `is_signal_evidence` admits now reports a
-            // confidence, so the floor applies to all of them. libsy's one
-            // confidence-less de-escalation — the `tests_passed` shortcut,
-            // which used to need an exemption here — no longer exists: upstream
-            // dropped it, and a passing test now only clears libsy's own
-            // capable hold. The dwell window still applies on top; that gate
-            // prices the forfeited prompt cache, which costs the same however
-            // good the evidence is.
-            let convincing = estimate
-                .confidence
-                .is_some_and(|confidence| confidence >= router.deescalate_threshold());
-            if session.dwell_turns >= router.min_dwell_turns && convincing {
-                (estimate, true)
-            } else {
-                (held, false)
-            }
-        }
-    }
-}
-
-/// Drop expired entries, then the oldest of `scope`, until that scope is back
-/// under its cap. Amortised onto the insert path: no timer, no background task.
-///
-/// Every step is one `BTreeMap` pop, so this costs O(log n) per entry removed
-/// rather than a walk of the whole map. That is issue #552: the map is read
-/// under the store's single process-global mutex, so a full 4096-entry scan on
-/// every previously-unseen session id — the steady state for a client that
-/// rotates `x-claude-code-session-id` — serialized against every other
-/// router-backed request, not only its own.
-///
-/// Each entry is expired against **its own** TTL, not the caller's — see
-/// [`StageSession::ttl`].
-///
-/// Only the scope the insert grew is trimmed, and only against its own
-/// budget: a full child budget pops the oldest *child*, never a parent that is
-/// idle because it is waiting on those children (ADR-0005 §5). The expiry
-/// sweep is scope-blind, as expiry is.
-///
-/// Expiry and recency are indexed separately, so this drops the same entries the
-/// whole-map pass dropped: *every* expired one, and then the oldest survivor if
-/// the scope is still over. Sweeping the front of the recency order alone would
-/// not — with two routers configuring different `session_ttl_seconds` the oldest
-/// entry can be the live one, which would stop the sweep and then be evicted in
-/// place of the expired entry behind it.
-fn evict(entries: &mut Entries, scope: PinScope, now: Instant) {
-    let cap = scope.cap();
-    if entries.len_of(scope) <= cap {
-        return;
-    }
-    entries.drain_expired(now);
-    // `commit` inserts exactly one entry before calling this and returns early
-    // above while under the cap, so the scope is at most one over it here and
-    // a single removal is enough. The loop is still a loop so that a future
-    // caller inserting in bulk cannot silently leave the cap exceeded.
-    while entries.len_of(scope) > cap {
-        if entries.remove_oldest(scope).is_none() {
-            break;
-        }
-    }
-}
-
-/// Whether a stored entry still speaks for the session, for the one router
-/// table identified by `fingerprint`.
-///
-/// Read by `apply` before it treats an entry as a pin and by `commit` before it
-/// treats one as displaced, because those two must agree: a pin `apply` ignored
-/// as stale must not surface as the `from` side of a flip.
-fn is_live(session: &StageSession, fingerprint: u64, now: Instant) -> bool {
-    session.fingerprint == fingerprint
-        && now.saturating_duration_since(session.last_seen) <= session.ttl
-}
-
-/// Hash the router table a pinned decision was made under.
-///
-/// `f64` is hashed through `to_bits` because it is not `Hash`, and the
-/// *effective* de-escalation threshold is hashed rather than the `Option` so
-/// that omitting the key and writing its default are the same table. Comparisons
-/// only ever happen inside one process against one other fingerprint, so
-/// `DefaultHasher` not being stable across Rust versions does not matter — the
-/// store is never persisted.
-fn fingerprint(router: &StageRouterConfig) -> u64 {
-    // Destructured rather than dotted, so a key added to the table later fails
-    // to compile here instead of silently letting stale pins outlive it.
-    let StageRouterConfig {
-        capable_target,
-        efficient_target,
-        picker,
-        confidence_threshold,
-        recent_turn_window,
-        min_dwell_turns,
-        deescalate_threshold: _,
-        session_ttl_seconds,
-    } = router;
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    capable_target.hash(&mut hasher);
-    efficient_target.hash(&mut hasher);
-    picker.hash(&mut hasher);
-    confidence_threshold.to_bits().hash(&mut hasher);
-    router.deescalate_threshold().to_bits().hash(&mut hasher);
-    recent_turn_window.hash(&mut hasher);
-    min_dwell_turns.hash(&mut hasher);
-    session_ttl_seconds.hash(&mut hasher);
-    hasher.finish()
 }
 
 #[cfg(test)]

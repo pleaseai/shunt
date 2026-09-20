@@ -350,6 +350,10 @@ pub(super) struct ChainStreamRequest {
     pub(super) body: RequestBody,
     pub(super) requested_model: String,
     pub(super) started_at: Instant,
+    /// What a `[models.router]` entry decided, if the requested id carries one.
+    /// Known before any upstream is contacted, so it is stamped on this path
+    /// even though the upstream-naming headers cannot be.
+    pub(super) router_stamp: Option<super::failover::OwnedRouterStamp>,
 }
 
 /// Drive the failover chain for a streaming turn and return the committed SSE
@@ -367,6 +371,7 @@ pub(super) async fn forward_chain_stream(
         body,
         requested_model,
         started_at,
+        router_stamp,
     } = request;
     let first_route = routes
         .first()
@@ -776,6 +781,13 @@ pub(super) async fn forward_chain_stream(
     // this path — the winner is unknown at commit time, and stamping the
     // first route would contradict the header contract.
     super::failover::stamp_gateway_model_header(&mut response, &requested_model);
+    // The router pair is not winner-dependent: it reports what the router chose
+    // before any attempt was made, so omitting it here would have made the
+    // documented "stamped for every router type" false for exactly the
+    // streaming failover chains (#621 review).
+    if let Some(stamp) = router_stamp.as_ref() {
+        super::failover::stamp_router_headers(&mut response, stamp);
+    }
     Ok((StatusCode::OK, response))
 }
 
