@@ -30,7 +30,7 @@ use serde_json::Value;
 
 pub use switchyard_libsy::ToolSignals;
 
-use crate::config::{Config, StageRouterConfig};
+use crate::config::{Config, StageRouterConfig, ToolSemanticsConfig};
 use crate::error::ShuntError;
 use crate::routing::context::RouterContext;
 use crate::routing::stage::store::{
@@ -67,7 +67,14 @@ pub fn parse_request_body(raw: Vec<u8>) -> Result<Arc<Value>, serde_json::Error>
 /// a session's total extraction cost is quadratic in its turn count even though
 /// each individual call is linear.
 pub fn extract_signals(messages: &Value, recent_turn_window: usize) -> Option<ToolSignals> {
-    signals::extract(messages, recent_turn_window)
+    // The default (empty) semantics table, which is what an entry without
+    // `[models.router.tool_semantics]` passes: the benchmark measures the walk,
+    // not an operator's lookup list.
+    signals::extract(
+        messages,
+        recent_turn_window,
+        &ToolSemanticsConfig::default(),
+    )
 }
 
 /// Per-session tier pins, as they live on `AppState`.
@@ -177,6 +184,9 @@ mod tests {
             min_dwell_turns: 3,
             deescalate_threshold: None,
             session_ttl_seconds: 3600,
+            capable_hold_turns: 0,
+            tool_semantics: Default::default(),
+            handoff_notes: None,
         }
     }
 
@@ -193,7 +203,10 @@ mod tests {
                 id: "router-model".to_string(),
                 display_name: None,
                 upstream_model: None,
-                stage_router: with_router.then(router),
+                router: with_router
+                    .then(router)
+                    .map(crate::config::RouterConfig::StageRouter),
+                stage_router: None,
             }],
             routes: vec![
                 route("router-model"),
@@ -285,7 +298,7 @@ mod tests {
     }
 
     /// The unrouted half. Same id, same body, same store — only the
-    /// `[models.stage_router]` table is absent, and the id then resolves as
+    /// `[models.router]` table is absent, and the id then resolves as
     /// itself. Without this the benchmark's flat `resolve_chain_unrouted` row
     /// would prove nothing about the router.
     #[test]

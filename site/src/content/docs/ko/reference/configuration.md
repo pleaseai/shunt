@@ -327,7 +327,7 @@ codex-fallback = "gpt-5.2"
 
 ### 페일오버 동작
 
-여러 항목이 있는 모델 맵에서는 선언한 업스트림 순서에서 맵에 포함된 이름만 남겨 체인을 만듭니다. 업스트림 상태가 `429`, `401`, `403`, `404`, 임의의 `5xx`이거나 업스트림 응답 헤더를 받기 전에 실패하면 다음 항목으로 진행합니다. auth 설정 오류나 어댑터 자체의 검증·헤더 생성 오류처럼 업스트림 시도를 나타내지 않는 게이트웨이 로컬 오류는 즉시 반환하여 잘못된 설정이 페일오버에 가려지지 않게 합니다. `2xx` 헤더를 반환한 뒤에는 스트리밍 본문이 나중에 실패하더라도 페일오버하지 않습니다. Responses 어댑터의 스트리밍 경로는 업스트림 바이트를 받기 전에 응답을 커밋합니다. `Anthropic`/`Responses` 요소만 있고 WebSocket 트랜스포트가 없는 체인은 커밋된 스트림 안에서 페일오버를 수행하며(헤더 전 트랜스포트 실패와 전진 상태는 합성 시작이 나가기 전에 다음 업스트림을 시도), 전진할 수 없는 라우트(종단 비 2xx, Anthropic 종류 승자의 SSE가 아닌 성공 본문)는 실패를 하나의 터미널 SSE `error` 이벤트로 표시합니다. 승자의 터미널 프레임이 릴레이된 뒤의 스트리밍 본문 실패는 대신 스트림을 조용히 끝냅니다 — 턴이 이미 완료됐고, 덧붙는 error 이벤트가 완료된 응답을 손상시키기 때문입니다. TTFB 타임아웃은 절대 전진하지 않습니다. 설정된 타임아웃은 답이며 터미널 `504 timeout_error` 이벤트로 표시됩니다. 이 커밋된 경로의 응답에는 `content-type`과 `x-gateway-model`만 실립니다. 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략됩니다 — 헤더가 커밋과 함께 나갈 때 승자를 아직 모르기 때문입니다 — 그리고 업스트림 응답 헤더(요청 id, `anthropic-ratelimit-*` 할당량 메타데이터 포함)는 Anthropic 종류 승자라도 클라이언트에 도달하지 않습니다. `x-gateway-model`은 유지되며(클라이언트가 요청한 id를 가리킴), 요청 메트릭은 시도마다 분류된 상태로 기록되고 스트림 귀속은 스트림이 승자를 알게 되는 시점부터 승자를 따릅니다.
+여러 항목이 있는 모델 맵에서는 선언한 업스트림 순서에서 맵에 포함된 이름만 남겨 체인을 만듭니다. 업스트림 상태가 `429`, `401`, `403`, `404`, 임의의 `5xx`이거나 업스트림 응답 헤더를 받기 전에 실패하면 다음 항목으로 진행합니다. auth 설정 오류나 어댑터 자체의 검증·헤더 생성 오류처럼 업스트림 시도를 나타내지 않는 게이트웨이 로컬 오류는 즉시 반환하여 잘못된 설정이 페일오버에 가려지지 않게 합니다. `2xx` 헤더를 반환한 뒤에는 스트리밍 본문이 나중에 실패하더라도 페일오버하지 않습니다. Responses 어댑터의 스트리밍 경로는 업스트림 바이트를 받기 전에 응답을 커밋합니다. `Anthropic`/`Responses` 요소만 있고 WebSocket 트랜스포트가 없는 체인은 커밋된 스트림 안에서 페일오버를 수행하며(헤더 전 트랜스포트 실패와 전진 상태는 합성 시작이 나가기 전에 다음 업스트림을 시도), 전진할 수 없는 라우트(종단 비 2xx, Anthropic 종류 승자의 SSE가 아닌 성공 본문)는 실패를 하나의 터미널 SSE `error` 이벤트로 표시합니다. 승자의 터미널 프레임이 릴레이된 뒤의 스트리밍 본문 실패는 대신 스트림을 조용히 끝냅니다 — 턴이 이미 완료됐고, 덧붙는 error 이벤트가 완료된 응답을 손상시키기 때문입니다. TTFB 타임아웃은 절대 전진하지 않습니다. 설정된 타임아웃은 답이며 터미널 `504 timeout_error` 이벤트로 표시됩니다. 이 커밋된 경로의 응답에는 `content-type`과 `x-gateway-model`이 실리고, `[models.router]` 항목이 라우팅한 요청이라면 라우터 헤더 두 개(`x-gateway-routed-model`/`x-gateway-route-source`)도 함께 실립니다 — 첫 시도 전에 라우터가 정한 값이라 어느 업스트림이 이기는지에 의존하지 않습니다. 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략됩니다 — 헤더가 커밋과 함께 나갈 때 승자를 아직 모르기 때문입니다 — 그리고 업스트림 응답 헤더(요청 id, `anthropic-ratelimit-*` 할당량 메타데이터 포함)는 Anthropic 종류 승자라도 클라이언트에 도달하지 않습니다. `x-gateway-model`은 유지되며(클라이언트가 요청한 id를 가리킴), 요청 메트릭은 시도마다 분류된 상태로 기록되고 스트림 귀속은 스트림이 승자를 알게 되는 시점부터 승자를 따릅니다.
 
 체인을 모두 시도하면 `429` → `401`/`403` → `404` → 기타 `5xx` 우선순위로 가장 적합한 릴레이 실패를 반환합니다. 헤더 이전 실패는 최종 후보로 기억하지 않습니다. 기억한 릴레이 응답이 없으면 `all upstreams failed (N attempted)` 메시지의 `502 api_error`를 반환합니다.
 
@@ -335,7 +335,7 @@ codex-fallback = "gpt-5.2"
 
 origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 있는 값으로도 검사됩니다. `authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체가 발급한 JWT와 **모양이 같거나** — `aud` 클레임이 `"shunt"`이거나, `iss` 클레임이 이 게이트웨이의 아이덴티티이거나, `shunt_token_use` 클레임이 `"gateway-session"`(shunt만 발급하는 전용 마커)인 세 세그먼트 구조 — 설정된 `[server.auth]` 클라이언트 토큰과 일치할 때에만 제거됩니다. JWT 검사는 의도적으로 "지금 이 토큰이 인증되는가"가 아니라 "모양이 같은가"로 판단합니다: 만료된 토큰, 다른 `public_url`을 쓰는 형제 인스턴스가 발급한 토큰, `jwt_secret` 로테이션 이후 더 이상 검증되지 않는 토큰도 여전히 shunt 자신의 크리덴셜이므로 여전히 제거됩니다. 이 마커는 모양 검사에 추가된 분기일 뿐 필수 조건이 아닙니다: 마커가 존재하기 전에 발급된 토큰도 `aud`/`iss`로 여전히 일치하며, `verify` 자체도 마커를 요구하지 않으므로 이전 버전의 shunt가 발급한 토큰은 TTL 내에 있는 한 계속 인증됩니다. `apiKeyHelper`는 두 슬롯을 같은 값으로 채우므로 어느 크리덴셜이든 한쪽 또는 양쪽 슬롯에 들어올 수 있습니다. 다른 슬롯이 게이트웨이 JWT나 정적 클라이언트 토큰을 담고 있어도, 진짜 업스트림 크리덴셜을 담은 슬롯은 그대로 전달됩니다. 게이트 크리덴셜을 담은 슬롯만 제거됩니다. `[server.auth] header`에는 `authorization` 자신을 포함해 어떤 헤더 이름이든 지정할 수 있으며, 그렇게 설정하면 클라이언트는 접두사 없는 `Authorization: <token>` 형태로 인증합니다. 따라서 이 슬롯은 `Bearer` 페이로드뿐 아니라 값 전체로도 검사되며, 그런 토큰은 업스트림으로 전달되지 않습니다. 이 설정에는 한 가지 유의점이 있습니다: 추론 요청에서 shunt는 라우팅 전에 설정된 헤더를 조건 없이 제거하므로, 그 슬롯은 업스트림으로 아무것도 싣지 않습니다 — 게이트 토큰뿐 아니라 호출자 자신의 크리덴셜도 함께 사라집니다. `header`를 기본값인 전용 `x-shunt-token`으로 두면 이 충돌을 피할 수 있습니다.
 
-프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다 — 커밋된 스트리밍 체인 경로는 예외로, 응답에는 `content-type`과 `x-gateway-model`만 실리고 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략되며 업스트림 응답 헤더는 클라이언트에 도달하지 않습니다. [스테이지 라우터](/ko/guides/stage-router/)가 라우팅한 응답에는 `x-gateway-routed-model`(선택된 티어가 향하는 타깃)과 `x-gateway-route-source`(그 티어를 고른 이유)가 추가로 붙습니다. 라우터를 설정하지 않은 model id에는 둘 다 붙지 않습니다. `count_tokens`는 체인의 첫 항목만 사용하고 페일오버하지 않으며, 스테이지 라우터 헤더 두 개는 붙이지 않습니다. `[server.codex_endpoint]`는 `[[server.codex_endpoint.routes]]` 항목이 없는 모든 모델에 대해 설정된 업스트림 하나에 고정되며, 어느 쪽이든 이 체인에 참여하지 않습니다.
+프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다 — 커밋된 스트리밍 체인 경로는 예외로, 응답에는 `content-type`과 `x-gateway-model`, 그리고 라우터가 라우팅한 요청이라면 아래의 라우터 헤더 두 개가 실리고 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략되며 업스트림 응답 헤더는 클라이언트에 도달하지 않습니다. [`[models.router]`](#modelsrouter-선택) 항목이 라우팅한 응답에는 `x-gateway-routed-model`(라우터가 고른 타깃)과 `x-gateway-route-source`(그것을 고른 이유)가 추가로 붙습니다. [스테이지 라우터](/ko/guides/stage-router/)뿐 아니라 모든 라우터 `type`에 붙으며, 라우터를 설정하지 않은 model id에는 둘 다 붙지 않습니다. `count_tokens`는 체인의 첫 항목만 사용하고 페일오버하지 않으며, 이 헤더 두 개는 붙이지 않습니다. `[server.codex_endpoint]`는 `[[server.codex_endpoint.routes]]` 항목이 없는 모든 모델에 대해 설정된 업스트림 하나에 고정되며, 어느 쪽이든 이 체인에 참여하지 않습니다.
 
 ### 기존 설정 마이그레이션
 
@@ -398,7 +398,7 @@ origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 �
 
 발견된 모델은 shunt가 실제 업스트림 목록을 가져올 수 있으면 거기서 옵니다. `server.default_provider`가 Anthropic 종류일 때 해당 업스트림에 `GET /v1/models`를 호출하며, 그 인증 방식에 맞는 크리덴셜을 사용합니다. `auth = "passthrough"`에서는 호출자가 전달한 크리덴셜을 사용하므로 호출자마다 해당 크리덴셜로 사용할 수 있는 목록을 보게 됩니다. 단, 어떤 슬롯에 실제 업스트림 크리덴셜이 아니라 shunt 자체의 `[server.gateway]` JWT나 설정된 `[server.auth]` 클라이언트 토큰이 담겨 있다면 그 슬롯은 전달되지 않습니다. `authorization`과 `x-api-key`는 각각 독립적으로 필터링되므로 다른 슬롯에 담긴 진짜 크리덴셜은 그대로 전달되며, 두 슬롯 모두 전달할 크리덴셜이 남지 않았을 때만 디스커버리가 내장 스냅샷으로 폴백합니다. `api_key`에서는 설정된 키를 사용합니다. `claude_oauth`에서는 추론 경로와 동일한 유효 계정 집합에서 가장 먼저 해석되는 비활성화되지 않은 계정을 사용합니다. 이 집합에는 계정 저장소에서 검색된 계정이 포함되며 `account_scope` 순서를 따릅니다. 디스커버리는 풀 선택, 쿨다운, 할당량 기록을 수행하지 않습니다. 따라서 게이트웨이 소유 크리덴셜을 사용하는 이 두 방식에서는 모든 호출자가 해당 크리덴셜 범위의 카탈로그를 공유합니다. shunt는 캐시하지 않습니다. `server.default_provider`가 Anthropic 종류가 아니거나, 크리덴셜이 없거나, 호출이 실패·타임아웃(2초 상한)하면 내장 Claude 카탈로그 스냅샷으로 폴백합니다. 어느 쪽이든 이 id들은 전용 `[[routes]]` 항목이 필요하지 않습니다. 일반 라우팅 규칙으로 해석되며, `[[routes]]`나 `[[route_prefixes]]` 어느 것에도 매칭되지 않을 때 `server.default_provider`로 폴백합니다.
 
-선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 정확한 id를 라우팅할 때는 `[[routes]]` 대신 이 형식을 권장합니다. 순서가 있는 `[[upstreams]]`를 사용하면 맵에 하나 이상의 `upstream = "backend-id"` 쌍을 넣을 수 있으며, `[[upstreams]]` 선언 순서에 따라 페일오버 체인이 됩니다. 레거시 `[providers.*]`에는 선언된 순서가 없으므로 정확히 한 쌍만 허용됩니다. 해당 id에 대해서는 맵이 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 각 업스트림의 기본 `effort`가 해당 체인 항목에 적용됩니다. 빈 맵, 비어 있거나 공백으로만 이루어진 업스트림 이름 또는 백엔드 id, 알 수 없는 업스트림, 같은 id의 `[[routes]]` 항목, `[1m]` 또는 `[1M]`으로 끝나는 맵 보유 id, 한쪽이라도 맵을 보유한 중복 `[[models]]` id는 시작 오류입니다. 클라이언트가 매칭 전에 context-window hint를 제거하므로 맵 보유 id에 이 suffix를 포함하면 해당 항목에 도달할 수 없습니다. 맵이 없는 항목끼리의 중복은 기존 동작을 유지하지만, 그중 하나가 `[models.stage_router]` 테이블을 가진 경우는 예외입니다 — 아래를 참고하세요.
+선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 정확한 id를 라우팅할 때는 `[[routes]]` 대신 이 형식을 권장합니다. 순서가 있는 `[[upstreams]]`를 사용하면 맵에 하나 이상의 `upstream = "backend-id"` 쌍을 넣을 수 있으며, `[[upstreams]]` 선언 순서에 따라 페일오버 체인이 됩니다. 레거시 `[providers.*]`에는 선언된 순서가 없으므로 정확히 한 쌍만 허용됩니다. 해당 id에 대해서는 맵이 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 각 업스트림의 기본 `effort`가 해당 체인 항목에 적용됩니다. 빈 맵, 비어 있거나 공백으로만 이루어진 업스트림 이름 또는 백엔드 id, 알 수 없는 업스트림, 같은 id의 `[[routes]]` 항목, `[1m]` 또는 `[1M]`으로 끝나는 맵 보유 id, 한쪽이라도 맵을 보유한 중복 `[[models]]` id는 시작 오류입니다. 클라이언트가 매칭 전에 context-window hint를 제거하므로 맵 보유 id에 이 suffix를 포함하면 해당 항목에 도달할 수 없습니다. 맵이 없는 항목끼리의 중복은 기존 동작을 유지하지만, 그중 하나가 `[models.router]` 테이블을 가진 경우는 예외입니다 — 아래를 참고하세요.
 
 ```toml
 [[models]]
@@ -415,30 +415,56 @@ codex = "gpt-5.2"
 | `display_name` | — | `/model` 선택기에 표시되는 레이블 |
 | `upstream_model` | — | 설정된 업스트림 이름에서 백엔드 모델 id로 이어지는 맵. 순서 있는 `[[upstreams]]`는 여러 항목의 페일오버 체인을 허용하고, 레거시 provider는 한 항목만 허용 |
 
-### `[models.stage_router]` (선택)
+### `[models.router]` (선택)
 
-광고하는 id 하나에 대한 콘텐츠 인지 티어 선택입니다. 목적지를 하나만 지정하는 대신
-**둘**(강한 티어와 효율 티어)을 지정하고, 요청의 최근 tool-result 이력이 턴마다 둘 중
-하나를 고르게 합니다. 이 테이블이 없으면 `[[models]]` 항목은 이전과 똑같이 동작하며,
+광고하는 id 하나에 대한 요청 단위 라우팅입니다. 목적지를 하나만 지정하는 대신
+`[models.router]` 테이블을 두고, 그 `type` 키가 라우팅 알고리즘을 고르면 알고리즘이
+목적지를 고릅니다. 이 테이블이 없으면 `[[models]]` 항목은 이전과 똑같이 동작하며,
 어디에도 라우터를 설정하지 않으면 라우팅은 바뀌지 않습니다.
 
-두 타깃 모두 평범한 공개 model id이므로 각각 일반 사다리를 따라 해석되고 페일오버 체인,
-계정 풀, 어댑터, `effort`, `service_tier`를 그대로 유지합니다. 클라이언트에 보고되는 id는
-요청한 id 그대로이고, 선택된 티어는 업스트림으로만 전달됩니다. 신호와 히스테리시스가
-어떻게 동작하는지는 [스테이지 라우터 가이드](/ko/guides/stage-router/)를 참고하세요.
+shunt가 보통 쓰는 `kind`나 `mode`가 아니라 `type`을 쓰는 것은 **shunt 자체 명명 규칙에
+대한 의도적인 예외**이며, 레퍼런스에서 이 점을 밝히는 곳은 여기 한 곳뿐입니다. 라우팅
+알고리즘은 [NVIDIA-NeMo/Switchyard](https://github.com/NVIDIA-NeMo/Switchyard)에서
+가져왔고, 키 이름을 그대로 두면 업스트림 스키마 문서와 `type` 값을 다시 옮겨 적지 않고
+그대로 쓸 수 있습니다.
+
+어떤 라우터가 지정하는 타깃이든 모두 평범한 공개 model id이므로 각각 일반 사다리를 따라
+해석되고 페일오버 체인, 계정 풀, 어댑터, `effort`, `service_tier`를 그대로 유지합니다.
+클라이언트에 보고되는 id는 요청한 id 그대로이고, 선택된 타깃은 업스트림으로만 전달됩니다.
+
+| `type` | 선택 기준 | 요청 본문 읽기 |
+| :-- | :-- | :-- |
+| `stage_router` | 최근 tool-result 메타데이터로 턴마다 | 읽음 — `tool_use.name`과 `tool_result.is_error`만 |
+| `auto` | 같은 라우터를 업스트림 프리셋으로 | 위와 같음 |
+| `random` | 가중치 추첨, 기본은 세션 고정 | 읽지 않음 |
+| `noop` | 고르지 않음 — 빈 메시지로 응답 | 읽지 않음 |
+
+판정에 LLM을 호출하는 알고리즘(`llm_classifier`, `composite`, `advisor`,
+`prefill_router`)과 `[models.subagents]` 오버레이는 **아직 사용할 수 없습니다**. 이들을
+지정하면 시작 오류가 나며, 이후 릴리스에서 추가됩니다.
+
+한 항목에 `[models.router]`와 `[models.upstream_model]`을 함께 선언할 수 없습니다.
+
+#### `type = "stage_router"`
+
+콘텐츠 인지 티어 선택입니다. 항목이 **둘**(강한 티어와 효율 티어)을 지정하고, 요청의 최근
+tool-result 이력이 턴마다 둘 중 하나를 고르게 합니다. 신호와 히스테리시스가 어떻게
+동작하는지는 [스테이지 라우터 가이드](/ko/guides/stage-router/)를 참고하세요.
 
 ```toml
 [[models]]
 id = "claude-auto"
 display_name = "Auto (stage router)"
 
-[models.stage_router]
+[models.router]
+type = "stage_router"
 capable_target = "claude-opus-4-8"
 efficient_target = "claude-sonnet-4-6"
 ```
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
+| `type` | ✅ 필수 | `stage_router` |
 | `capable_target` | ✅ 필수 | 어려운 추론·조사·오류 복구를 맡는 모델 id |
 | `efficient_target` | ✅ 필수 | 계획이 정해진 뒤 정형 작업을 맡는 모델 id |
 | `picker` | `efficient_first` | 신호가 불확실할 때 사용할 티어. `efficient_first` 또는 `capable_first` |
@@ -447,23 +473,166 @@ efficient_target = "claude-sonnet-4-6"
 | `min_dwell_turns` | `3` | 하향 전환이 가능해지기까지 티어를 유지하는 턴 수. 티어를 고른 턴부터 세므로 `0`과 `1`은 모두 하한 없음을 뜻합니다 |
 | `deescalate_threshold` | `0.75` | 티어를 *내릴* 때 필요한 확신도. 기본값이 `confidence_threshold` 기본값보다 높아 내려가는 쪽이 더 어렵지만, 두 값은 각각 독립적으로 범위 검사되므로 `confidence_threshold`보다 낮은 값도 허용되며, 로드 시점에 경고가 남습니다 |
 | `session_ttl_seconds` | `3600` | 조용한 세션의 고정 티어가 유지되는 시간 |
+| `capable_hold_turns` | `0` | 신호로 상향 전환한 뒤 강한 티어를 유지하는 턴 수. 그 턴들은 라우트 소스 `capable_hold`로 보고되며, 유지는 증거가 아니어서 고정된 티어를 어느 방향으로도 옮기지 못합니다. 기본값 `0`은 고정 동작을 기존 그대로 두며, 업스트림 기본값은 `2`입니다 |
+
+#### `[models.router.tool_semantics]` (선택)
+
+라우터 하나에 대해 shunt 내장 Claude Code 툴 어휘를 넓히는 네 개의 목록입니다. 내장
+테이블을 대체하는 것이 아니라 그 **뒤에** 적용되므로, 내장 테이블이 분류하지 않고 남겨 둔
+이름 — `Bash`, `Skill`, `mcp__*` 서버 툴 — 에만 닿습니다. 내장 테이블이 이미 observe,
+mutate, plan으로 분류한 이름(`Read`, `Edit`, `TodoWrite` 등)을 지정하면 **시작 오류**입니다.
+공백이 섞인 이름(`" Read "`, `"some tool"`)도 마찬가지입니다. 이름은 정확히 일치해야 하므로
+앞뒤에 공백이 붙은 이름은 런타임에 아무것도 매칭하지 못합니다.
+
+```toml
+[models.router.tool_semantics]
+observe = ["mcp__jbcontext__code_search"]
+mutate = []
+plan = []
+new = []
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `observe` | `[]` | 아무것도 바꾸지 않고 읽기만 하는 툴 이름 |
+| `mutate` | `[]` | 상태를 바꾸는 툴 이름. 파일 전체 쓰기로 채점됩니다 |
+| `plan` | `[]` | 계획하거나 위임하는 툴 이름 |
+| `new` | `[]` | 스코어러가 새로 도입된 툴로 세는 이름 |
+
+넷 중 하나라도 고치면 다음 로드에서 그 라우터의 기존 세션 고정이 사라집니다. 문턱값을
+고칠 때와 같습니다.
+
+#### `[models.router.handoff_notes]` (선택)
+
+신호가 티어를 옮긴 턴에 한해, **업스트림으로 보내는** 요청에 시스템 블록 하나를 덧붙여
+새로 들어온 모델에게 왜 넘겨받았는지 알려 줍니다.
+
+```toml
+[models.router.handoff_notes]
+escalation_note = "the previous model was stalling; pick up the diagnosis"
+deescalation_note = "routine work resumes"
+only_on_wrong_signal_escalation = true
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `escalation_note` | — | 신호가 턴을 강한 티어로 올릴 때 덧붙입니다 |
+| `deescalation_note` | — | 스코어러가 작업을 효율 티어로 되돌릴 때 덧붙입니다 |
+| `only_on_wrong_signal_escalation` | `true` | `escalation_note`를 신호가 주도한 상향 전환(라우트 소스 `override`, `dimensions`)으로 한정합니다. `false`로 두면 스코어러가 내린 모든 상향 전환에 덧붙입니다 |
+
+노트는 `system` 배열의 **맨 뒤**에 새 블록으로 들어갑니다. Claude Code의 attribution
+블록은 첫 번째 원소이며 건드리지 않습니다. 고정 상태로 이어진 턴, 신호가 없는 턴,
+`count_tokens` 프로브에는 노트가 붙지 않습니다. 넘겨준 것이 없는 턴도 마찬가지입니다 —
+세션의 첫 턴, 그리고 이미 고정된 티어를 다시 확인하기만 한 턴이 여기 해당합니다.
+빈 노트는 시작 오류입니다.
+
+**전환할 때마다 프롬프트 캐시 미스를 한 번씩 치릅니다.** `system` 배열은 캐시된 프리픽스의
+일부여서, 노트를 붙이거나 떼면 프리픽스가 무효가 됩니다. 티어 전환 자체가 이미 포기하는
+모델별 프리픽스에 더해지는 비용입니다. 이 테이블이 옵트인인 이유이자,
+`only_on_wrong_signal_escalation`의 기본값이 더 좁은 쪽인 이유입니다.
+
+#### `type = "auto"`
+
+업스트림의 스테이지 라우터 프리셋입니다. `picker = "efficient_first"`와
+`confidence_threshold = 0.5`를 쓰고 나머지 스테이지 키는 모두 shunt 기본값입니다. `type`
+외에는 두 타깃만 받으므로, 다른 스테이지 키를 지정하려면 `type = "stage_router"`를 쓰세요.
+
+```toml
+[[models]]
+id = "claude-quick"
+
+[models.router]
+type = "auto"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `auto` |
+| `capable_target` | ✅ 필수 | `stage_router`와 같습니다 |
+| `efficient_target` | ✅ 필수 | `stage_router`와 같습니다 |
+
+#### `type = "random"`
+
+타깃 둘 이상에 가중치를 둬 트래픽을 나눕니다. 카나리 배포용입니다. 기본값에서는 Claude
+Code 세션 하나가 같은 갈래에 머무릅니다.
+
+```toml
+[[models]]
+id = "claude-canary"
+
+[models.router]
+type = "random"
+targets = ["claude-sonnet-4-6", "gpt-5.6-terra"]
+weights = [9, 1]
+# seed = 0
+# affinity = "session"
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `random` |
+| `targets` | ✅ 필수 | 트래픽을 나눌 model id 목록 |
+| `weights` | 균등 | 타깃마다 0 이상의 가중치 하나. `0`은 그 타깃을 비활성화합니다. 각 가중치는 유한해야 하며 합계도 유한해야 합니다 — 합이 무한대로 넘치는 목록은 로드 시 거부됩니다 |
+| `seed` | `0` | `session` 친화도에서는 해시 솔트, `request` 친화도에서는 추첨 시드 |
+| `affinity` | `session` | `session`은 한 세션을 한 갈래에 묶고, `request`는 요청마다 추첨합니다 |
+
+`affinity = "session"`에서 갈래는 `sha256(seed ‖ model ‖ 세션 id)`를 가중치 범위로
+환산한 값입니다. 저장하는 것이 없으므로 재시작해도 갈래가 유지되고, 같은 설정을 읽은
+레플리카끼리도 동일합니다. 대신 `seed`, `targets`, `weights`를 바꾸면 갈래가 움직일 수
+있습니다. `x-claude-code-session-id`를 보내지 않은 요청은 한 갈래를 공유하는 대신 그
+요청만의 가중치 추첨을 새로 합니다. 세션을 보내지 않는 클라이언트에서도 90/10 분배가
+90/10으로 유지됩니다. `affinity = "request"`에서는 요청마다 추첨하며, `seed`를 지정하면
+추첨 순서를 재현할 수 있습니다.
+
+세션 친화도는 **접근 제어가 아니라 고정(stickiness)입니다.** 세션 id는 클라이언트가
+정하므로, id를 바꿔 가며 재시도하는 호출자는 원하는 갈래로 스스로를 몰아갈 수 있습니다.
+그래도 막는 것은 없습니다 — 모든 타깃이 그 호출자가 이름으로 직접 요청할 수 있는 공개
+model id이기 때문입니다. 접근 제어는 managed model 정책의 몫입니다.
+
+요청 본문이 없는 표면 — `GET /routes`, `/v1/models` 디스커버리, `shunt check` — 은 가중치가
+양수인 첫 번째 타깃을 보고합니다.
+
+#### `type = "noop"`
+
+업스트림을 전혀 호출하지 않고 응답합니다. 호출자가 쓴 모드 그대로 비어 있는 종료
+어시스턴트 메시지를 만들어 줍니다. `stream: true`에는 올바른 SSE 시퀀스(`message_start`,
+`stop_reason: "end_turn"`을 담은 `message_delta`, `message_stop`)를, 그렇지 않으면 Message
+JSON 객체 하나를 보냅니다. `count_tokens`는 `input_tokens: 0`으로 답합니다. 이 라우트도
+다른 라우트와 똑같이 인증을 거치므로 인증 구멍이 아닙니다 — 토큰을 전혀 쓰지 않고 인바운드
+경로 전체를 확인하는 클라이언트 연결 점검용입니다.
+
+```toml
+[[models]]
+id = "claude-noop"
+
+[models.router]
+type = "noop"
+```
+
+받는 키는 `type` 하나뿐입니다.
+
+#### 검증
 
 타깃이 그 자체로 라우터인 경우, 빈 타깃, `(0.0, 1.0]`을 벗어난 문턱값,
 `recent_turn_window`가 `0`인 경우, 라우터 **id**가 `[1m]` 또는 `[1M]`으로 끝나는 경우, 어느 한쪽이
-라우터 테이블을 가진 중복 `[[models]]` id, 같은 항목이 `[models.upstream_model]`도
-선언한 경우는 시작 오류입니다. 맵이 없는 두 항목은 원래 같은 id를 공유할 수 있지만,
-라우터는 디스커버리 메타데이터가 아니라 라우팅 정책을 지정하므로 중복되면 하나의
-id에 두 정책이 남습니다. 타깃 id는
-라우팅이 매칭하는 방식과 동일하게 끝의 `[1m]` 또는 `[1M]` 힌트를 제거한 뒤 비교합니다. 다음
+라우터 테이블을 가진 중복 `[[models]]` id, 이 빌드가 구현하지 않은 `type`, 같은 항목이
+`[models.upstream_model]`도 선언한 경우는 시작 오류입니다. 맵이 없는 두 항목은 원래 같은
+id를 공유할 수 있지만, 라우터는 디스커버리 메타데이터가 아니라 라우팅 정책을 지정하므로
+중복되면 하나의 id에 두 정책이 남습니다. 타깃 id는 라우팅이 매칭하는 방식과 동일하게 끝의
+`[1m]` 또는 `[1M]` 힌트를 제거한 뒤 비교합니다. 그래서 자기 라우터를 가진 항목으로 해석되는
+타깃은 두 `type`이 무엇이든 거부되며, 이것이 해석을 한 홉으로 묶어 둡니다. 다음
 네 가지는 로드를 실패시키지 않고 경고만 냅니다. 각각 운영자가 의도했을 법한 설정이기
 때문입니다 — 명시적 라우트와 매칭되지 않는 타깃(매칭되지 않는 다른 id와 마찬가지로
-`server.default_provider`로 해석됩니다), 같은 id로 해석되는 `capable_target`과
-`efficient_target`(두 티어를 의도적으로 한 모델로 합친 경우), `confidence_threshold`보다 낮은
-`deescalate_threshold`(비용을 우선하는 배포가 원할 수 있는, 내려가는 쪽을 더 쉽게 만든
-설정), 그리고 라우터 자신의 id를 지정한 `[[routes]]` 항목(해당 id의 목적지는 라우터가
-정하므로 조회되지 않습니다). id가 그저 그 접두사로 시작할 뿐인 `[[route_prefixes]]` 항목은
-경고하지 **않습니다** — 그 접두사에 해당하는 다른 id는 여전히 처리하기 때문입니다. 각 경고는 로드할 때마다 한 번씩 나오며,
-핫 리로드도 로드이므로 설정을 고치지 않으면 리로드할 때마다 다시 나옵니다.
+`server.default_provider`로 해석되며, 이제 모든 라우터 `type`에 적용됩니다), 같은 id로
+해석되는 `capable_target`과 `efficient_target`(두 티어를 의도적으로 한 모델로 합친 경우),
+`confidence_threshold`보다 낮은 `deescalate_threshold`(비용을 우선하는 배포가 원할 수 있는,
+내려가는 쪽을 더 쉽게 만든 설정), 그리고 라우터 자신의 id를 지정한 `[[routes]]` 항목(해당
+id의 목적지는 라우터가 정하므로 조회되지 않습니다). id가 그저 그 접두사로 시작할 뿐인
+`[[route_prefixes]]` 항목은 경고하지 **않습니다** — 그 접두사에 해당하는 다른 id는 여전히
+처리하기 때문입니다. 각 경고는 로드할 때마다 한 번씩 나오며, 핫 리로드도 로드이므로 설정을
+고치지 않으면 리로드할 때마다 다시 나옵니다.
 
 ## `[sentry]` (선택)
 
@@ -502,7 +671,7 @@ id에 두 정책이 남습니다. 타깃 id는
 
 ## 라우팅 우선순위
 
-일치하는 `[models.stage_router]` 항목 → 일치하는 `[models.upstream_model]` 항목 → 정확한 `[[routes]]` 일치 → `[[route_prefixes]]` 프리픽스 일치 → `server.default_provider`.
+일치하는 `[models.router]` 항목 → 일치하는 `[models.upstream_model]` 항목 → 정확한 `[[routes]]` 일치 → `[[route_prefixes]]` 프리픽스 일치 → `server.default_provider`.
 
 라우터가 가장 앞에 오는 이유는 `[[models]]` 항목 자체에서 일치하기 때문입니다. 라우터가
 붙은 id로 온 요청은 라우터가 응답하며, 라우터는 티어를 고른 뒤 **그 타깃**을 나머지 사다리로

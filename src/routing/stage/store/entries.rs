@@ -126,6 +126,15 @@ pub(crate) struct StageSession {
     /// session reads it back into `ToolSignals::compacted`, and it clears with
     /// the pin: on TTL expiry, or when a reload invalidates the entry.
     pub(crate) compacted: bool,
+    /// Turns left on a `capable_hold_turns` window (ADR-0005 §6).
+    ///
+    /// Set by the turn that escalated on signal evidence and decremented by
+    /// each non-read-only turn that the hold covers; while it is non-zero the
+    /// pin stays on the capable tier whatever the estimate says. `0` — shunt's
+    /// default for the key — makes every read of this a no-op, which is what
+    /// keeps the shipped hysteresis (`min_dwell_turns` plus
+    /// `deescalate_threshold`) the only gate on a default deployment.
+    pub(crate) capable_hold_remaining: u32,
 }
 
 /// When an entry falls out of its own window, or `None` when the addition

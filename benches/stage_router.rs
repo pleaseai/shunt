@@ -23,7 +23,7 @@
 //! * `resolve_chain_*` — the whole router-backed request path, and the control
 //!   it has to be read against. Both arms send the *same body* naming the *same
 //!   model id* through configs that differ only in whether that id's
-//!   `[[models]]` entry carries a `[models.stage_router]` table. That pair is
+//!   `[[models]]` entry carries a `[models.router]` table. That pair is
 //!   the "non-router traffic pays only one `Option::is_none()`" claim, which is
 //!   the assertion most worth protecting from regression.
 //!   `resolve_chain_routed_delegated` is the routed arm with a `Task` child's
@@ -58,7 +58,10 @@ mod bench {
     use serde_json::{json, Value};
     use shunt::{
         bench_support::{self, StageStore, MAX_TRACKED_CHILD_PINS, MAX_TRACKED_SESSIONS},
-        config::{Config, ModelConfig, RouteConfig, StageRouterConfig, StageRouterPicker},
+        config::{
+            Config, ModelConfig, RandomAffinity, RandomRouterConfig, RouteConfig, RouterConfig,
+            StageRouterConfig, StageRouterPicker,
+        },
     };
 
     /// Assistant turn counts. The top of the range is a long Claude Code
@@ -67,7 +70,7 @@ mod bench {
     const TURN_COUNTS: [usize; 4] = [10, 50, 200, 800];
 
     /// The one id both `resolve_chain_*` arms request. They must differ only by
-    /// whether its `[[models]]` entry carries a `[models.stage_router]` table:
+    /// whether its `[[models]]` entry carries a `[models.router]` table:
     /// two different ids would also differ in string length, in position within
     /// `config.models`, and in which lookup arm matches — none of which is the
     /// property under test.
@@ -84,10 +87,13 @@ mod bench {
             min_dwell_turns: 3,
             deescalate_threshold: None,
             session_ttl_seconds: 3600,
+            capable_hold_turns: 0,
+            tool_semantics: Default::default(),
+            handoff_notes: None,
         }
     }
 
-    /// Two configs identical but for `stage_router`, so the `resolve_chain_*`
+    /// Two configs identical but for `router`, so the `resolve_chain_*`
     /// pair isolates the router and nothing else.
     ///
     /// `ROUTER_MODEL` carries a `[[routes]]` entry in both. The routed config
@@ -107,7 +113,8 @@ mod bench {
                 id: ROUTER_MODEL.to_string(),
                 display_name: Some("Auto (stage router)".to_string()),
                 upstream_model: None,
-                stage_router: with_router.then(router),
+                router: with_router.then(router).map(RouterConfig::StageRouter),
+                stage_router: None,
             }],
             routes: vec![
                 route(ROUTER_MODEL),
@@ -302,11 +309,63 @@ mod bench {
     }
 
     /// The control for the arm above: the *identical* body and model id, against
-    /// a config whose only difference is the absent `[models.stage_router]`
+    /// a config whose only difference is the absent `[models.router]`
     /// table. The gap between the two is what non-router traffic does not pay.
     #[divan::bench(args = TURN_COUNTS)]
     fn resolve_chain_unrouted(bencher: divan::Bencher, turns: usize) {
         let config = config(false);
+        let request = request(ROUTER_MODEL, turns);
+        let headers = session_headers();
+        let store = StageStore::new();
+        let now = Instant::now();
+        bencher.bench(|| {
+            divan::black_box(
+                bench_support::resolve_chain(&config, &store, &request, &headers, false, now)
+                    .unwrap(),
+            )
+        });
+    }
+
+    /// A `random` router's config: the same two tier ids, split 9:1 and pinned
+    /// per session. Read against `resolve_chain_routed` — both are routed, and
+    /// the gap is what the hash costs versus scoring the transcript.
+    fn random_config() -> Config {
+        let route = |model: &str| RouteConfig {
+            model: model.to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        };
+        Config {
+            models: vec![ModelConfig {
+                id: ROUTER_MODEL.to_string(),
+                display_name: Some("Canary (random)".to_string()),
+                upstream_model: None,
+                router: Some(RouterConfig::Random(RandomRouterConfig {
+                    targets: vec![EFFICIENT_TARGET.to_string(), "claude-opus-4-8".to_string()],
+                    weights: Some(vec![9.0, 1.0]),
+                    seed: None,
+                    affinity: RandomAffinity::Session,
+                })),
+                stage_router: None,
+            }],
+            routes: vec![
+                route(ROUTER_MODEL),
+                route(EFFICIENT_TARGET),
+                route("claude-opus-4-8"),
+            ],
+            ..Config::default()
+        }
+    }
+
+    /// The hash-pinned `random` path: no store read, no transcript scored, one
+    /// SHA-256 over three short inputs. Parameterized on turn count like its
+    /// neighbours so the flat curve is visible — the body is parsed either way,
+    /// but this router never walks it.
+    #[divan::bench(args = TURN_COUNTS)]
+    fn resolve_chain_random_session(bencher: divan::Bencher, turns: usize) {
+        let config = random_config();
         let request = request(ROUTER_MODEL, turns);
         let headers = session_headers();
         let store = StageStore::new();

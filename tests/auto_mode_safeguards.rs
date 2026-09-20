@@ -92,6 +92,7 @@ fn responses_config(base_url: String) -> Config {
                 .into_iter()
                 .collect(),
         ),
+        router: None,
         stage_router: None,
     }];
     config
