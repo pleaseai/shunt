@@ -18,6 +18,17 @@
   `--features bench`, which exposes `shunt::bench_support` — the facade that
   reaches the crate-private stage-router path. Without the feature that target
   builds and runs but registers no benchmarks, so pass it (CodSpeed does).
+- CodSpeed (`.github/workflows/codspeed.yml`) is a **required** check, and it
+  compares the PR against the stored baseline from main — not against the merge
+  base. A red CodSpeed on a diff that changes no Rust is therefore expected to
+  be environmental, not a regression you introduced. Before treating one as
+  real: confirm the build inputs actually differ
+  (`git diff <base-sha> HEAD --name-only | grep -E '\.rs$|Cargo|\.github/'`),
+  then compare the `Record the measurement environment` step between the PR run
+  and the baseline run on main. The runner image and Rust toolchain are pinned
+  there so both sides match; the CPU model is **not** pinnable on GitHub-hosted
+  runners, and CodSpeed lists it first among the causes of a false regression.
+  Bumping either pin re-seeds the baseline on the next main run.
 
 ## Project Structure
 
