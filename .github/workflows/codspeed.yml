@@ -26,10 +26,12 @@ env:
 jobs:
   benchmarks:
     name: Run benchmarks
-    # Pinned, not `ubuntu-latest`: CodSpeed compares this run against the stored
-    # main baseline, and a moving image label lets the two sides differ in OS
-    # image and system libraries. Bumping this re-seeds the baseline (see the
-    # toolchain note below).
+    # One OS version rather than the moving `ubuntu-latest` label, so a Ubuntu
+    # major bump cannot land on one side of a comparison only. This is not an
+    # immutable environment: GitHub still revises the image behind this label,
+    # and the CPU model is not pinnable on hosted runners at all — the step
+    # below logs both so a mismatch is visible instead of inferred. Pinning
+    # those needs a container or dedicated runner; that call is issue #629.
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout

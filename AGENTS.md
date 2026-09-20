@@ -23,14 +23,17 @@
   base. A red CodSpeed on a diff that changes no Rust is therefore expected to
   be environmental, not a regression you introduced. Before treating one as
   real: confirm the build inputs actually differ
-  (`git diff <base-sha> HEAD --name-only | grep -E '\.rs$|Cargo|\.github/'`),
+  (`git diff <base-sha> HEAD --name-only | grep -E '\.rs$|Cargo|rust-toolchain|\.github/'`),
   then compare the `Record the measurement environment` step between the PR run
-  and the baseline run on main. The runner image and Rust toolchain are pinned
-  there so both sides match; the CPU model is **not** pinnable on GitHub-hosted
-  runners, and CodSpeed names differing CPU models among its causes of a false
-  regression, recommending a consistent CPU type or its own Macro Runners
-  (<https://codspeed.io/docs/instruments/cpu/regression-causes>).
-  Bumping either pin re-seeds the baseline on the next main run.
+  and the baseline run on main. The Rust toolchain is pinned there, and
+  `runs-on` names one OS version rather than a moving `latest` — but GitHub
+  still revises that image, and the CPU model is **not** pinnable on hosted
+  runners at all. CodSpeed names both the runner image and differing CPU models
+  among its causes of a false regression, recommending an immutable environment
+  and a consistent CPU type
+  (<https://codspeed.io/docs/instruments/cpu/regression-causes>); the logged
+  image and CPU lines are what tell you which one moved. Bumping the toolchain
+  pin, or GitHub revising the image, re-seeds the baseline on the next main run.
 
 ## Project Structure
 
