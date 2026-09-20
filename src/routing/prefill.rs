@@ -122,5 +122,11 @@ pub(crate) async fn decide(
     }
 }
 
-#[cfg(feature = "prefill-router")]
+// Re-exported for the two consumers that reach it by name: this module's unit
+// tests and, through `bench_support`, `benches/stage_router.rs`. Gated on those
+// two builds rather than on the feature alone — the production lane calls
+// `driven::messages_from_body` inside `driven`, so a plain
+// `--features prefill-router` build has no consumer for the re-export and
+// `-D warnings` turns the resulting `unused import` into a build failure.
+#[cfg(all(feature = "prefill-router", any(test, feature = "bench")))]
 pub use driven::messages_from_body;
