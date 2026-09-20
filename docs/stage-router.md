@@ -25,9 +25,18 @@ Absent a `[models.router]` table, nothing changes: the router arm is one
 `Option::is_none()` on the path that already scans `config.models` — the same
 check whatever the configured `type` is.
 
-Out of scope, deliberately: the LLM classifier, mid-turn escalation, and
+Out of scope, deliberately: mid-turn escalation and
 `[server.codex_endpoint]` (which uses its own routing table and never reaches
 `resolve_request_chain_value`). ADR-0004 records why for each.
+
+The LLM classifier is no longer among these. ADR-0004 Decision 2 ("Signals
+only. No LLM classifier, no escalation") excluded it, and ADR-0005 explicitly
+supersedes that decision: the driven lane runs a classifier as an internal call
+through the same failover chain, under the admission and per-call bounds
+described in [`routing-algorithms.md` §4](./routing-algorithms.md). This
+document remains the record of the **pure** `stage_router` selector — the
+signal extraction, hysteresis, and resolution below are what runs when no
+classifier is configured, and they are unchanged by the driven lane.
 
 ## 2. Module layout
 
