@@ -256,11 +256,15 @@ instead — but only that turn. A session whose pin already holds the turn is
 never judged, a `count_tokens` probe is never judged, and no judge call is made
 before the request has been authenticated.
 
-The judge is an ordinary public model id and runs on **its own** credential,
-never the caller's: the reserved `x-shunt-*` slots and `cookie`,
+The judge is an ordinary public model id and runs on **its own route's**
+credential, never the caller's: the reserved `x-shunt-*` slots and `cookie`,
 `authorization`, `x-api-key`, and `anthropic-beta` are all stripped before the
-call goes out, and a judge target that resolves to a passthrough upstream is a
-startup error, because there is no gateway-injected credential to run it on.
+call goes out. That is why a judge target resolving to a **passthrough**
+upstream is a startup error — passthrough means *forward the caller's
+credential*, and the caller's credential is exactly what was just stripped, so
+there would be nothing left to send. A target with `auth = "none"` is fine:
+that mode means the endpoint needs no credential at all, so a local or
+self-hosted judge behind no auth is supported rather than an error.
 The call spends that target's own account-pool quota, so give the judge its own
 `[[models]]` entry.
 
