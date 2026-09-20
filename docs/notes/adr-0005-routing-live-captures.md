@@ -582,15 +582,21 @@ four-token text request with no `output_config` at all, minutes earlier
 through the same deployment. And `claude-haiku-4-5-20251001` returned `200`
 to the very same body during the same window, while an interactive Claude
 Code session on `claude-fable-5-1` was completing turns through the same
-deployment. That is the signature shunt already classifies: a headerless
-`rate_limit_error` on a subscription-OAuth credential is
-`client-shape-rejection` (`rate_limit_kind`,
-`src/adapters/anthropic/mod.rs:1101-1112`) — api.anthropic.com refusing a
-request that does not look like a first-party client, the same gate the
-auto-mode classifier module documents
-(`src/adapters/anthropic/auto_mode_classifier.rs`). A judge request has no
-first-party identity marker in its `system` by construction, so on an
-OAuth-pooled deployment it trips that gate on every non-haiku Claude id
+deployment. That is the signature shunt labels `client-shape-rejection`
+(`rate_limit_kind`, `src/adapters/anthropic/mod.rs:1101-1112`) — a local
+diagnostic label for the response shape, not an observation of Anthropic's
+reason for sending it. The causal reading behind that label comes from the
+auto-mode classifier module's comparison
+(`src/adapters/anthropic/auto_mode_classifier.rs`), which varied only the
+`system` field: relayed unmodified `429` 15/15, a neutral sentence prepended
+`429` 10/10, Claude Code's identity prepended `200` 1/1. The two `429` rows
+carry the weight; the single `200` shows the block is sufficient, not how
+reliably. That comparison also varied a *classifier* request, and this capture
+ran no identity-marker control of its own on a judge request, so the
+attribution carries over as the best-supported explanation rather than a
+verified one. A judge request has no first-party identity marker in its
+`system` by construction, and on an OAuth-pooled deployment it draws the `429`
+on every non-haiku Claude id tested
 **whether or not the well-formed `output_config.format` is present** — the
 bare request with no `output_config` above drew the same `429` from all ten.
 Whether the gate fires ahead of schema validation was not tested here: no
@@ -663,11 +669,13 @@ than this endpoint required on this day, and harmless — the packaged schemas'
   acceptance without a beta opt-in is not something this capture shows; the
   only field-level rejection observed is Anthropic refusing `minimum`/`maximum`
   on a `number`, which the pinned codec already strips.
-* **The blocker for the other ten is the OAuth client-shape gate, not
-  headroom and not the field.** For PR 4 (#594) this is the concrete first
-  failure a `[models.router]` judge target hits on an OAuth-pooled deployment
-  with any of those ids: a headerless `429 rate_limit_error` with an Anthropic
-  `request-id`, on the first call, before any structured-output behaviour.
+* **The blocker for the other ten matches the OAuth client-shape gate, and is
+  neither headroom nor the field.** The two negatives are directly evidenced;
+  the gate attribution is the inference above. For PR 4 (#594) this is the
+  concrete first failure a `[models.router]` judge target hits on an
+  OAuth-pooled deployment with any of those ids: a headerless
+  `429 rate_limit_error` with an Anthropic `request-id`, on the first call,
+  before any structured-output behaviour.
   Whether that surfaces as a classifier failure or as `classifier_fail_open`
   is the same open `serve` decision recorded above; it now has two inputs
   (the fable `400` and this `429`), not one.
