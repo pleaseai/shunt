@@ -691,38 +691,24 @@ fn merges_consecutive_user_and_system_turns() {
 }
 
 #[test]
-fn never_merges_consecutive_model_turns() {
-    // Merging model turns would shift part indices and break the
-    // thought-signature placement on the first functionCall of a turn.
+fn rejects_overlapping_consecutive_model_tool_batches() {
     let input = json!({
         "model": "gemini-3-flash-preview",
         "messages": [
             {"role": "user", "content": "go"},
             {"role": "assistant", "content": [{
-                "type": "tool_use", "id": "toolu_1", "name": "a", "input": {}
+                "type": "tool_use", "id": "call_gemini_v1_c2lnLTE", "name": "a", "input": {}
             }]},
             {"role": "assistant", "content": [{
-                "type": "tool_use", "id": "toolu_2", "name": "b", "input": {}
+                "type": "tool_use", "id": "call_gemini_v1_c2lnLTI", "name": "b", "input": {}
             }]}
         ]
     });
 
-    let contents = translate_request(&input).unwrap()["contents"].clone();
-    let roles: Vec<&str> = contents
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| c["role"].as_str().unwrap())
-        .collect();
-    assert_eq!(roles, ["user", "model", "model"]);
-    assert_eq!(
-        contents[1]["parts"][0]["thoughtSignature"],
-        GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER
-    );
-    assert_eq!(
-        contents[2]["parts"][0]["thoughtSignature"],
-        GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER
-    );
+    assert!(translate_request(&input)
+        .unwrap_err()
+        .message
+        .contains("must immediately follow"));
 }
 
 #[test]
@@ -767,6 +753,119 @@ fn wrap_envelope_creates_code_assist_shape() {
     assert_eq!(wrapped["model"], "gemini-3-flash-preview");
     assert_eq!(wrapped["project"], "test-proj-789");
     assert!(wrapped.get("request").is_some());
+}
+
+#[test]
+fn gemini_tool_signature_roundtrip_rejects_orphan_result_before_dispatch() {
+    let request = json!({
+        "model": "gemini-3.1-pro-preview",
+        "messages": [{"role": "user", "content": [{
+            "type": "tool_result",
+            "tool_use_id": "call_gemini_v1_c2ln",
+            "content": "result"
+        }]}]
+    });
+
+    let error = translate_request(&request).unwrap_err();
+    assert!(error.message.contains("unknown tool_use_id"));
+}
+
+#[test]
+fn gemini_tool_signature_roundtrip_keeps_legacy_calls_unsigned() {
+    let request = json!({
+        "model": "gemini-2.5-pro",
+        "messages": [{"role": "assistant", "content": [{
+            "type": "tool_use",
+            "id": "toolu_legacy",
+            "name": "read_file",
+            "input": {"path": "a.txt"}
+        }]}, {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": "toolu_legacy", "content": "ok"
+        }]}]
+    });
+
+    let translated = translate_request(&request).unwrap();
+    assert!(translated["contents"][0]["parts"][0]
+        .get("thoughtSignature")
+        .is_none());
+}
+
+#[test]
+fn rejects_tool_blocks_in_the_wrong_message_direction_and_unknown_roles() {
+    let invalid = [
+        json!({"messages": [{"role": "user", "content": [{
+            "type": "tool_use", "id": "toolu_wrong", "name": "read", "input": {}
+        }]}]}),
+        json!({"messages": [{"role": "assistant", "content": [{
+            "type": "tool_result", "tool_use_id": "toolu_wrong", "content": "x"
+        }]}]}),
+        json!({"messages": [{"role": "system", "content": [{
+            "type": "tool_result", "tool_use_id": "toolu_wrong", "content": "x"
+        }]}]}),
+        json!({"messages": [{"role": "operator", "content": "x"}]}),
+        json!({"messages": [{"content": "x"}]}),
+    ];
+
+    for request in invalid {
+        assert!(translate_request(&request).is_err(), "accepted {request}");
+    }
+}
+
+#[test]
+fn tool_result_batches_are_identity_addressed_and_consumed_once() {
+    let calls = json!({"role": "assistant", "content": [
+        {"type": "tool_use", "id": "toolu_a", "name": "same", "input": {}},
+        {"type": "tool_use", "id": "toolu_b", "name": "same", "input": {}}
+    ]});
+    let reversed = json!({"messages": [calls.clone(), {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_b", "content": "B"},
+        {"type": "tool_result", "tool_use_id": "toolu_a", "content": "A"}
+    ]}]});
+    let translated = translate_request(&reversed).unwrap();
+    let responses = translated["contents"][1]["parts"].as_array().unwrap();
+    assert_eq!(responses[0]["functionResponse"]["response"]["output"], "A");
+    assert_eq!(responses[1]["functionResponse"]["response"]["output"], "B");
+
+    let invalid = [
+        json!({"messages": [calls.clone()]}),
+        json!({"messages": [calls.clone(), {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_a", "content": "A"},
+            {"type": "tool_result", "tool_use_id": "toolu_a", "content": "again"}
+        ]}]}),
+        json!({"messages": [calls, {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_a", "content": "A"}
+        ]}]}),
+    ];
+
+    for request in invalid {
+        assert!(translate_request(&request).is_err(), "accepted {request}");
+    }
+}
+
+#[test]
+fn only_system_text_may_intervene_before_the_result_batch() {
+    let call = json!({"role": "assistant", "content": [{
+        "type": "tool_use", "id": "toolu_a", "name": "read", "input": {}
+    }]});
+    let result = json!({"role": "user", "content": [{
+        "type": "tool_result", "tool_use_id": "toolu_a", "content": "A"
+    }]});
+    let invalid_intervening = [
+        json!({"role": "user", "content": "later"}),
+        json!({"role": "user", "content": []}),
+        json!({"role": "assistant", "content": "later"}),
+    ];
+    for intervening in invalid_intervening {
+        let request = json!({"messages": [call.clone(), intervening, result.clone()]});
+        assert!(translate_request(&request).is_err(), "accepted {request}");
+    }
+
+    let compatible = json!({"messages": [
+        call,
+        {"role": "system", "content": "date rolled over"},
+        result
+    ]});
+    assert!(translate_request(&compatible).is_ok());
 }
 
 #[test]
