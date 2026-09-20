@@ -598,8 +598,10 @@ type = "noop"
 cargo build --release --features prefill-router          # 需要看板就再加 ,ui
 ```
 
-下面这段配置在任何构建里都能解析,校验也在任何构建里都一样。不同的是加载:没有该 feature 的
+下面这段配置在任何构建里都能解析。不同的是加载:没有该 feature 的
 二进制会加载失败,于是 `shunt check` 会报告出来,而不是让网关在缺少所配算法的情况下启动。
+该 feature 错误会先于针对这张表的其他所有报错给出,因此按键校验(空目标、空的
+`checkpoint`、不大于 0 的 `max_length` 或 `batch_size`)是开启该 feature 的构建才会报告的。
 
 ```text
 models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)

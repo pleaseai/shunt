@@ -399,9 +399,13 @@ only way to get it:
 cargo build --release --features prefill-router          # add ,ui for the dashboard
 ```
 
-With the feature **off** the config still parses — the schema and its
-validation are unconditional — but the load fails, so `shunt check` reports it
-rather than a process starting without the algorithm it was configured for:
+With the feature **off** the config still parses — the schema is
+unconditional — but the load fails, so `shunt check` reports it rather than a
+process starting without the algorithm it was configured for. The feature
+error is reported *ahead of* every other complaint about the table: an empty
+target or a blank checkpoint would send the operator to fix a key that still
+would not load, so those key-level rules are what a feature-on build reports.
+Without the feature the entry reports only this:
 
 ```text
 models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)

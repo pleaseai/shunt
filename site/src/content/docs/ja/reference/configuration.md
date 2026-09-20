@@ -615,9 +615,12 @@ type = "noop"
 cargo build --release --features prefill-router          # ダッシュボードが必要なら ,ui を足します
 ```
 
-以下の設定はどのビルドでもパースされ、検証もどのビルドでも同じです。違うのはロードです。
+以下の設定はどのビルドでもパースされます。違うのはロードです。
 フィーチャーのないバイナリではロードが失敗するので、設定したアルゴリズムを持たないまま
 ゲートウェイが起動してしまう代わりに `shunt check` がそれを報告します。
+このフィーチャーのエラーはテーブルに対する他のどの指摘よりも先に報告されるため、
+キー単位のルール（空のターゲット、空の `checkpoint`、0 以下の `max_length` や
+`batch_size`）はフィーチャーを有効にしたビルドが報告するものです。
 
 ```text
 models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)

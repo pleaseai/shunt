@@ -820,10 +820,12 @@ Homebrew install has it. Build from source:
 cargo build --release --features prefill-router          # add ,ui for the dashboard
 ```
 
-The config below parses in every build, and its validation is the same in
-every build. What differs is the load: on a binary without the feature the
-load fails, so `shunt check` reports it rather than the gateway starting
-without the algorithm it was configured for.
+The config below parses in every build. What differs is the load: on a binary
+without the feature the load fails, so `shunt check` reports it rather than the
+gateway starting without the algorithm it was configured for. That feature
+error comes ahead of every other complaint about the table, so the key-level
+rules (a blank target, an empty `checkpoint`, a non-positive `max_length` or
+`batch_size`) are what a build with the feature on reports.
 
 ```text
 models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)

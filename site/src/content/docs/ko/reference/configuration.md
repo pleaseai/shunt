@@ -631,9 +631,11 @@ type = "noop"
 cargo build --release --features prefill-router          # 대시보드가 필요하면 ,ui 를 붙입니다
 ```
 
-아래 설정은 어느 빌드에서나 파싱되고, 검증도 어느 빌드에서나 동일합니다. 다른 것은
+아래 설정은 어느 빌드에서나 파싱됩니다. 다른 것은
 로드입니다. 피처가 없는 바이너리에서는 로드가 실패하므로, 설정한 알고리즘 없이 게이트웨이가
-떠 버리는 대신 `shunt check`가 이를 보고합니다.
+떠 버리는 대신 `shunt check`가 이를 보고합니다. 이 피처 오류는 해당 테이블에 대한 다른 모든
+지적보다 먼저 보고되므로, 키 단위 규칙(빈 타깃, 비어 있는 `checkpoint`, 0 이하의
+`max_length`·`batch_size`)은 피처를 켠 빌드가 보고하는 것입니다.
 
 ```text
 models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)
