@@ -164,6 +164,50 @@ async fn the_session_header_reaches_the_algorithm_as_metadata() {
     assert!(metadata.is_subagent, "an agent id marks a delegated turn");
 }
 
+/// The class header outranks the agent id, exactly as it does for the stage
+/// router's pins. A `main` turn that carries an agent id is root traffic: key
+/// it as a child and its decision lands in a scope the parent's own
+/// continuation never reads, splitting one conversation across two affinity
+/// entries.
+///
+/// Non-vacuity: restore `is_subagent: agent_id.is_some()` in
+/// `metadata_from_headers` and both halves of this test go red.
+#[tokio::test]
+async fn the_request_class_outranks_the_agent_id() {
+    let (routers, seen) = routers(Ok(TARGETS[0]));
+    let body = json!({"model": ROUTER_ID, "messages": []});
+
+    let mut main_with_an_agent_id = headers(Some("session-a"), Some("agent-b"));
+    main_with_an_agent_id.insert("x-claude-code-request-class", "main".parse().unwrap());
+    decide(&routers, &body, &main_with_an_agent_id)
+        .await
+        .expect("a prefill entry is driven");
+
+    let request = seen.lock().unwrap().take().expect("the stub saw a request");
+    let metadata = request.metadata.expect("metadata is attached");
+    assert!(
+        !metadata.is_subagent,
+        "a `main` turn is root traffic even when it carries an agent id"
+    );
+    assert_eq!(
+        metadata.agent_id, None,
+        "a root turn is keyed on its session alone"
+    );
+
+    let mut delegated_without_an_id = headers(Some("session-a"), None);
+    delegated_without_an_id.insert("x-claude-code-request-class", "subagent".parse().unwrap());
+    decide(&routers, &body, &delegated_without_an_id)
+        .await
+        .expect("a prefill entry is driven");
+
+    let request = seen.lock().unwrap().take().expect("the stub saw a request");
+    let metadata = request.metadata.expect("metadata is attached");
+    assert!(
+        metadata.is_subagent,
+        "a `subagent` turn is delegated whether or not it sent an agent id"
+    );
+}
+
 #[tokio::test]
 async fn a_blank_session_header_is_absent_rather_than_a_shared_key() {
     let (routers, seen) = routers(Ok(TARGETS[0]));

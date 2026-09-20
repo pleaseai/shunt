@@ -179,6 +179,15 @@ fn fail_open(entry: &Entry) -> PrefillDecision {
 /// instead of replaying its parent's. A request carrying neither header falls
 /// back to upstream's own message-hash affinity — deliberately left as
 /// upstream's behaviour rather than overridden here.
+///
+/// Delegation is read through [`RouterContext::is_delegated`] and
+/// [`RouterContext::pin_agent_id`], the same predicates the stage router pins
+/// its turns with, rather than re-deriving it from the agent id here. The
+/// class header is authoritative when sent, so a `main` turn that carries an
+/// agent id is root traffic and must not be keyed as a child, and a
+/// `subagent`/`workflow` turn is delegated whether or not it sent an id; only
+/// when no class is sent — the default deployment, where the class is gated
+/// off and the agent id is not — does a non-blank agent id decide.
 fn metadata_from_headers(headers: &HeaderMap) -> Metadata {
     let hints = RouterContext::from_headers(headers);
     let text = |value: Option<&str>| {
@@ -187,11 +196,10 @@ fn metadata_from_headers(headers: &HeaderMap) -> Metadata {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     };
-    let agent_id = text(hints.agent_id);
     Metadata {
         session_id: text(hints.session_id),
-        is_subagent: agent_id.is_some(),
-        agent_id,
+        is_subagent: hints.is_delegated(),
+        agent_id: text(hints.pin_agent_id()),
         ..Default::default()
     }
 }
