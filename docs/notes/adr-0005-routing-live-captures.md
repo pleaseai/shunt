@@ -356,23 +356,32 @@ So which of the two a Fable `400` produces depends on how shunt writes its
 decision for PR 5, not a settled fact: the captured `400` is solid, the
 behaviour it triggers downstream is still ours to choose. And whether
 `tool_choice: {"type": "auto"}` yields a usable verdict there was not tested —
-the model had no pool headroom left by the time this question came up.
+the model was returning the same headerless `429`s by the time this question
+came up.
 
 ## What this capture does not establish
 
 Stated plainly so a later reader does not over-read the table above.
 
 * **Fact (c) reached two models, not "the current Claude models".** For the
-  whole capture window only `claude-haiku-4-5-20251001` had pool headroom, plus
+  whole capture window only `claude-haiku-4-5-20251001` answered, plus
   `claude-fable-5-1` for the first few minutes — long enough for it to refuse
-  forced tool choice twice before it too ran out. The other nine ids on the
-  gateway (`claude-opus-5`, `claude-sonnet-5`, `claude-fable-5`,
+  forced tool choice twice before it too started returning `429`s. The other
+  nine ids on the gateway (`claude-opus-5`, `claude-sonnet-5`,
+  `claude-fable-5`,
   `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`,
   `claude-opus-4-5-20251101`, `claude-sonnet-4-5-20250929`) answered `429`
   `rate_limit_error` with an Anthropic `request-id`, on a bare four-token text
   request as much as on the tool request, through repeated probes over ~30
   minutes. So the fact is **established for one model, contradicted for one
   other, and untested for nine** — untested is not passing.
+
+  **Attribution corrected 2026-09-19.** This bullet originally read those
+  `429`s as exhausted pool headroom. The re-capture below finds they carry no
+  `retry-after` and no `anthropic-ratelimit-*`, which is the OAuth
+  client-shape signature rather than a quota one. The counts above still
+  hold; the cause does not — see "Fact (c), re-captured against the pinned
+  `output_config.format` shape".
 * **The pinned `output_config.format` path was not exercised at all.** Fact (c)
   sent forced tool use, which is not what `ClassifierResponseFormat::JsonSchema`
   produces at `3ddea9d3` (above). §10's question about the production
@@ -605,8 +614,11 @@ and nothing in the exchange is a verdict on the field.
 
 This also corrects the attribution in the 2026-09-18 section above, which
 read the same `429`s as "no pool headroom". They carried the same headerless
-signature then; a quota limit would have arrived with `retry-after` or
-`anthropic-ratelimit-*`. Why `claude-haiku-4-5-20251001` is admitted is not
+signature then, and shunt's own triage treats a quota limit as one carrying
+`retry-after` or `anthropic-ratelimit-*` (`rate_limit_kind`) — a discriminator
+this capture applies, not one it proves. The independent reason to doubt
+exhaustion is concurrent success: `claude-haiku-4-5-20251001` answered `200`
+through the same pool in the same window. Why it is admitted is not
 something this capture explains — it is observed, not understood — and the
 one ordering clue is from the earlier capture: `claude-fable-5-1` answered a
 forced-`tool_choice` request with a `400 invalid_request_error` rather than
@@ -675,7 +687,9 @@ than this endpoint required on this day, and harmless — the packaged schemas'
   concrete first failure a `[models.router]` judge target hits on an
   OAuth-pooled deployment with any of those ids: a headerless
   `429 rate_limit_error` with an Anthropic `request-id`, on the first call,
-  before any structured-output behaviour.
+  with no structured-output reply to inspect. Whether that `429` precedes
+  schema validation is untested, as above — a schema-keyword `400` reaching
+  one of these ids first is not ruled out.
   Whether that surfaces as a classifier failure or as `classifier_fail_open`
   is the same open `serve` decision recorded above; it now has two inputs
   (the fable `400` and this `429`), not one.
