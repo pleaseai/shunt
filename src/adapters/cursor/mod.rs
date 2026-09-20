@@ -57,13 +57,16 @@ impl Adapter for CursorAdapter {
         _uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
-        // Relays its upstream as a stream; the one whole-body read it makes is
-        // of an upstream *error* body, inside the response stream it returns,
-        // where `routing::serve`'s collector is already the bound.
-        _response_byte_cap: Option<usize>,
+        // A successful turn is relayed as a stream and never materialised, so
+        // there the bound genuinely falls to `routing::serve`'s collector on
+        // the relayed body. The one whole-body read is of an upstream *error*
+        // body, and that one needs the cap: it is read with `text()` in a
+        // single shot, so by the time the collector sees it the allocation has
+        // already happened and bounding it afterwards bounds nothing.
+        response_byte_cap: Option<usize>,
     ) -> AdapterFuture<'a> {
         let _ = headers;
-        Box::pin(async move { forward(state, route, body).await })
+        Box::pin(async move { forward(state, route, body, response_byte_cap).await })
     }
 }
 
@@ -71,6 +74,7 @@ async fn forward(
     state: AppState,
     route: Route,
     body: RequestBody,
+    response_byte_cap: Option<usize>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request = body.json();
     let model = route.upstream_model.as_str();
@@ -133,7 +137,7 @@ async fn forward(
         .await
         .map_err(map_client_error)?;
     if !turn.status().is_success() {
-        return Err(map_upstream_error(turn.into_response()).await);
+        return Err(map_upstream_error(turn.into_response(), response_byte_cap).await);
     }
 
     if !want_stream {
@@ -435,7 +439,10 @@ fn streaming_response(
         .into_response()
 }
 
-async fn map_upstream_error(upstream: reqwest::Response) -> AdapterError {
+async fn map_upstream_error(
+    upstream: reqwest::Response,
+    response_byte_cap: Option<usize>,
+) -> AdapterError {
     let status = upstream.status();
     let retry_after = upstream.headers().get("retry-after").cloned();
     let grpc_message = upstream
@@ -446,7 +453,14 @@ async fn map_upstream_error(upstream: reqwest::Response) -> AdapterError {
     let mapped_status = crate::model::responses::client_facing_status(status);
     let kind = crate::model::responses::anthropic_error_type(status);
     let stream = futures_stream::once(async move {
-        let text = upstream.text().await.unwrap_or_default();
+        // Bounded on an internal call. An error body is still an
+        // upstream-controlled body, and reading it with `text()` would hand a
+        // judge's upstream an unbounded allocation on the one path where the
+        // reply is never relayed. `None` is the client path, unchanged.
+        let text = crate::adapters::collect_upstream_body(upstream, response_byte_cap)
+            .await
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default();
         let body: Option<Value> = serde_json::from_str(&text).ok();
         let parsed_message = body.as_ref().and_then(|value| {
             value
@@ -660,10 +674,59 @@ mod tests {
         serde_json::from_slice(&bytes).expect("response body should be JSON")
     }
 
+    /// An upstream error body is bounded on an internal call.
+    ///
+    /// `map_upstream_error` reads the body with a single `text()`, so the
+    /// allocation is complete before anything downstream can bound it — the
+    /// cap has to bite here or nowhere. Asserted on the *message* because the
+    /// whole point is that the oversized bytes are never held: with the cap
+    /// discarded, the 256 KiB payload is read in full and falls through to the
+    /// message as the upstream's own error text.
+    #[tokio::test]
+    async fn an_oversized_upstream_error_body_is_not_read_on_a_bounded_call() {
+        let huge = "Z".repeat(256 * 1024);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/e"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(huge.clone()))
+            .mount(&server)
+            .await;
+        let upstream = reqwest::Client::new()
+            .get(format!("{}/e", server.uri()))
+            .send()
+            .await
+            .expect("mock request should succeed");
+
+        let body = body_json(map_upstream_error(upstream, Some(1024)).await).await;
+        let rendered = body.to_string();
+
+        assert!(
+            !rendered.contains("ZZZZ"),
+            "an oversized error body must not be read into the reply; got {} bytes",
+            rendered.len()
+        );
+    }
+
+    /// The same call with no cap is the client path, and it is unchanged: the
+    /// upstream's text still reaches the message. Without this, the assertion
+    /// above would also pass if the body were dropped unconditionally.
+    #[tokio::test]
+    async fn an_unbounded_call_still_reads_the_upstream_error_body() {
+        let upstream = upstream_response(500, &[]).await;
+
+        let body = body_json(map_upstream_error(upstream, None).await).await;
+        let rendered = body.to_string();
+
+        assert!(
+            rendered.contains("boom"),
+            "the client path still surfaces the upstream text; got: {rendered}"
+        );
+    }
+
     #[tokio::test]
     async fn upstream_error_maps_403_to_permission_error() {
         let upstream = upstream_response(403, &[]).await;
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, None).await;
         assert_eq!(error.response.status(), StatusCode::FORBIDDEN);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "permission_error");
@@ -672,7 +735,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_maps_529_to_overloaded_error() {
         let upstream = upstream_response(529, &[]).await;
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, None).await;
         assert_eq!(error.response.status().as_u16(), 529);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "overloaded_error");
@@ -681,7 +744,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_preserves_503_instead_of_bad_gateway() {
         let upstream = upstream_response(503, &[]).await;
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, None).await;
         assert_eq!(error.response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "api_error");
@@ -690,7 +753,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_maps_413_to_request_too_large() {
         let upstream = upstream_response(413, &[]).await;
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, None).await;
         assert_eq!(error.response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "request_too_large");
@@ -699,7 +762,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_preserves_retry_after_on_429() {
         let upstream = upstream_response(429, &[("retry-after", "3")]).await;
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, None).await;
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.response.headers().get("retry-after").unwrap(), "3");
     }
@@ -722,7 +785,7 @@ mod tests {
             .send()
             .await
             .expect("mock request should succeed");
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, None).await;
         let body = body_json(error).await;
         assert_eq!(
             body["error"]["message"],
