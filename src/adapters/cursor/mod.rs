@@ -439,6 +439,13 @@ fn streaming_response(
         .into_response()
 }
 
+/// Whether an upstream error body was already read (bounded internal call) or
+/// is still to be read inside the response stream (client call).
+enum Prefetched {
+    Ready(String),
+    Lazy(reqwest::Response),
+}
+
 async fn map_upstream_error(
     upstream: reqwest::Response,
     response_byte_cap: Option<usize>,
@@ -452,15 +459,41 @@ async fn map_upstream_error(
         .map(ToOwned::to_owned);
     let mapped_status = crate::model::responses::client_facing_status(status);
     let kind = crate::model::responses::anthropic_error_type(status);
+    // An error body is still an upstream-controlled body, so on an internal
+    // call it is read here — eagerly, before the response stream is built —
+    // rather than lazily inside it. Two reasons, and the second is the one
+    // that matters:
+    //
+    //  * reading it with `text()` would hand a judge's upstream an unbounded
+    //    allocation on the one path where the reply is never relayed;
+    //  * a refusal has to be able to *return*. Inside the stream the only
+    //    thing a crossed cap could do is yield a shorter body, leaving this
+    //    function's `failure: Some(UpstreamStatus)` intact — so an oversized
+    //    `429`/`5xx` would advance the failover chain and spend the cap again
+    //    at the next provider, and the judge would be recorded as
+    //    `upstream_error` rather than `oversized`.
+    //
+    // `None` is the client path and keeps the original lazy `text()` read,
+    // byte for byte.
+    let prefetched = match response_byte_cap {
+        Some(cap) => match crate::adapters::collect_upstream_body(upstream, Some(cap)).await {
+            Ok(bytes) => Prefetched::Ready(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
+                return crate::adapters::too_large_error(too_large)
+            }
+            // A transport error ends the body; the status and headers already
+            // read above are what describe the failure.
+            Err(crate::adapters::UpstreamBodyError::Transport(_)) => {
+                Prefetched::Ready(String::new())
+            }
+        },
+        None => Prefetched::Lazy(upstream),
+    };
     let stream = futures_stream::once(async move {
-        // Bounded on an internal call. An error body is still an
-        // upstream-controlled body, and reading it with `text()` would hand a
-        // judge's upstream an unbounded allocation on the one path where the
-        // reply is never relayed. `None` is the client path, unchanged.
-        let text = crate::adapters::collect_upstream_body(upstream, response_byte_cap)
-            .await
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_default();
+        let text = match prefetched {
+            Prefetched::Ready(text) => text,
+            Prefetched::Lazy(upstream) => upstream.text().await.unwrap_or_default(),
+        };
         let body: Option<Value> = serde_json::from_str(&text).ok();
         let parsed_message = body.as_ref().and_then(|value| {
             value
@@ -697,9 +730,26 @@ mod tests {
             .await
             .expect("mock request should succeed");
 
-        let body = body_json(map_upstream_error(upstream, Some(1024)).await).await;
-        let rendered = body.to_string();
+        let error = map_upstream_error(upstream, Some(1024)).await;
 
+        assert!(
+            error.failure.is_none(),
+            "an oversized reply must terminate the chain, not advance it: a \
+             retryable status here would spend the cap again at the next \
+             provider; got {:?}",
+            error.failure
+        );
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyTooLarge>()
+                .is_some(),
+            "the refusal must carry the marker `routing::serve` reads back, so \
+             the judge is recorded as `oversized` rather than `upstream_error`"
+        );
+
+        let rendered = body_json(error).await.to_string();
         assert!(
             !rendered.contains("ZZZZ"),
             "an oversized error body must not be read into the reply; got {} bytes",
