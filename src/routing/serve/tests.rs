@@ -138,6 +138,34 @@ async fn a_ping_only_chunk_does_not_reset_the_idle_gap() {
     );
 }
 
+/// The same guard under CRLF framing. SSE terminates a line with CRLF as
+/// legitimately as with LF, and `\r\n\r\n` holds no literal `\n\n` — so a chunk
+/// split on `\n\n` alone never divides there and collapses into a single frame.
+/// That frame's `event: ping` line then makes the *whole* chunk read as a
+/// keep-alive even though a `content_block_delta` rides in it, leaving the idle
+/// bound armed against a stream that was delivering content the entire time.
+/// Drop the normalization and this reports `Idle` at 50ms instead.
+#[tokio::test(start_paused = true)]
+async fn a_crlf_chunk_carrying_content_is_not_ping_only() {
+    // One ping frame and one real frame in the same chunk, CRLF throughout.
+    let frame: &'static [u8] = b"event: ping\r\ndata: {\"type\":\"ping\"}\r\n\r\nevent: content_block_delta\r\ndata: {\"type\":\"content_block_delta\"}\r\n\r\n";
+    let stream = futures_util::stream::unfold((), move |()| async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        Some((Bytes::from_static(frame), ()))
+    });
+
+    let collected: Vec<_> = bound_stream(stream, gated(1024 * 1024, 50, 200))
+        .collect()
+        .await;
+
+    assert_eq!(
+        collected.last(),
+        Some(&Err(BoundExceeded::Duration)),
+        "a CRLF chunk carrying a content frame is progress, so the wall clock \
+         ends the stream rather than the idle gap"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_stream_past_its_wall_clock_bound_reports_duration() {
     let collected: Vec<_> = bound_stream(

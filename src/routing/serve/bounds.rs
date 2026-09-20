@@ -14,6 +14,7 @@
 //! `advisor` turns will use — nothing gated exists yet, so it is wired to
 //! nothing and unit-tested instead of dead-coded later.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -206,12 +207,26 @@ where
 /// happens to mention the word does not disarm the idle bound. A chunk with no
 /// complete frame in it is not a ping chunk either — it is a partial frame,
 /// which is progress.
+///
+/// Line endings are normalized first. SSE terminates a line with CRLF, LF, or a
+/// bare CR, so the blank line that ends a frame is not always a literal `\n\n` —
+/// under CRLF it is `\r\n\r\n`, which contains no `\n\n` at all. Splitting the
+/// raw text would then collapse the whole chunk into one frame, and a chunk
+/// carrying a ping *beside* real content would read as a keep-alive and leave
+/// the idle bound armed against a stream that was making progress. The
+/// allocation is taken only when the chunk actually holds a `\r`, so an LF-only
+/// stream — every one shunt talks to today — copies nothing.
 fn is_ping_only(chunk: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(chunk) else {
         return false;
     };
+    let normalized: Cow<'_, str> = if text.contains('\r') {
+        Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        Cow::Borrowed(text)
+    };
     let mut frames = 0usize;
-    for frame in text.split("\n\n") {
+    for frame in normalized.split("\n\n") {
         if frame.trim().is_empty() {
             continue;
         }
