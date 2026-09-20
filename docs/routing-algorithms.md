@@ -466,9 +466,9 @@ jobs.
 | `[models.router.classifier]` | `target` (required) and `base_threshold` (default `0.5`, in `(0.0, 1.0]`) — the lowest `p_solve` that keeps a supported task on the efficient tier. `stage_router` only |
 | Six per-call bounds on `[models.router]` | `judge_timeout_ms` `30000`, `judge_max_response_bytes` `65536`, `gated_max_bytes` `8388608`, `gated_idle_ms` `60000`, `gated_max_duration_ms` `600000`, `max_judge_calls` `8`. Each must be at least `1`; a `0` is a startup error naming the key. Crossing a bound cancels the upstream call |
 | `judge_timeout_ms` is end-to-end | Headers *and* body, on the non-streaming judge call. A `.send()`-only timeout stops at headers, and a `200` that then stalls would never reach `fail_open` |
-| `gated_idle_ms` and SSE pings | Measured between body chunks; a chunk carrying only `event: ping` frames does not reset it |
+| `gated_idle_ms` and SSE pings | Measured between body chunks; a chunk carrying only `event: ping` frames does not reset it. Frames are split after normalizing CRLF and bare-CR line endings, so a CRLF chunk carrying real content beside a keep-alive still counts as progress |
 | `judge_max_response_bytes` bounds the allocation | Enforced where the adapter reads the upstream body, not on what reaches the JSON parser. A judge route is an alias route by construction, so its reply takes the adapter's buffered branch; capping only afterwards would spend the memory the bound exists to deny. Client traffic is uncapped and unchanged |
-| `max_judge_calls` | Per session, counted under the pin. The slot is reserved under the same store-lock acquisition that reads the count, so concurrent turns of one session cannot each pass a budget that admits one call — and a pin that loses the supersession race cannot refund a call that was made |
+| `max_judge_calls` | Per session, counted under the pin |
 | Admission on the envelope | Inbound auth ranges over the requested id plus every answer and judge target's full chain; the managed-model policy stays on the requested id |
 | Judge credentials | Reserved slots plus `authorization` and `x-api-key` stripped unconditionally, `anthropic-beta` with them; a passthrough judge target is a startup error |
 | `shunt.requests` / `shunt.latency` | Gain a `caller` attribute, `client` or `router` |
@@ -490,14 +490,13 @@ bounds rejected at `0`, naming the key; `base_threshold` out of range; a blank,
 including one reached only as a later member of the judge's own chain and one
 reached only by fall-through to a passthrough `server.default_provider`; a
 `classifier` key on `type = "auto"`; the three envelope shapes; the judge
-budget accumulating across commits, a superseded commit refunding nothing, a
-first-turn reservation not reading back as a tier flip, and a verdict
-restarting dwell; `consult` set on `fall_open` alone and never on a read-only
-probe or a sticky turn; the four bounded-collector failures plus the
-ping-does-not-reset case; an endless judge reply resolving as `oversized`
-rather than draining to the deadline; the `caller` attribute and the judge
-counter through the metric sample stores; and `judges` present on `/routes`
-only with a classifier configured.
+budget accumulating across commits and a verdict restarting dwell; `consult`
+set on `fall_open` alone and never on a read-only probe or a sticky turn; the
+four bounded-collector failures plus the ping-does-not-reset case and its CRLF
+twin; an endless judge reply resolving as `oversized` rather than draining to
+the deadline; the `caller` attribute and the judge counter through the metric
+sample stores; and `judges` present on `/routes` only with a classifier
+configured.
 
 Integration, in `tests/router_judge.rs`, one focused test per clause: an
 undecided turn is judged once and answers under `llm-classifier`; a decisive
@@ -508,8 +507,7 @@ none; the judge's headers carry the judge provider's injected key and nothing
 of the caller's; the call lands on the judge's own provider and not on the
 tier mocks; a `200`-then-stall and an endless ping stream each resolve as
 `fall_open` within the deadline and close the upstream connection; and
-`max_judge_calls` stops a session at its budget, both across sequential turns
-and across eight concurrent ones.
+`max_judge_calls` stops a session at its budget.
 
 ### Not in this PR
 
