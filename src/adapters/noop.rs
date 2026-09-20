@@ -37,6 +37,8 @@ impl Adapter for NoopAdapter {
         _uri: &'a axum::http::Uri,
         _headers: &'a axum::http::HeaderMap,
         body: RequestBody,
+        // Answers locally and reads no upstream body, so there is nothing to cap.
+        _response_byte_cap: Option<usize>,
     ) -> AdapterFuture<'a> {
         let streaming = wants_stream(body.json());
         Box::pin(async move { Ok(respond(&route.model, streaming)) })

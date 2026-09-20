@@ -187,18 +187,35 @@ async fn dispatch(
             started_at: Instant::now(),
             router_stamp: None,
             caller: "router",
+            // The cap, at the point the adapter would otherwise buffer the
+            // whole reply to rewrite its `model`. `collect_bounded` below
+            // stays as defence in depth: it bounds the relayed stream, which
+            // is the path an adapter that buffers nothing takes.
+            response_byte_cap: Some(bounds.judge_max_response_bytes),
         })
         .await;
         let outcome = match outcome {
             Ok(outcome) => outcome,
+            // An upstream body the adapter refused *before* buffering it is
+            // the byte cap biting, not a failed upstream: it has to report the
+            // bound the operator wrote, exactly as the collector below does for
+            // a reply that reached this far.
             Err(error) => {
-                return Err((
-                    JudgeFailure::UpstreamStatus,
-                    LlmClientError::UpstreamHttp {
-                        status: error.status(),
-                        body: error.message().to_string(),
-                    },
-                ))
+                return Err(match error.body_too_large() {
+                    Some(too_large) => (
+                        JudgeFailure::Oversized,
+                        LlmClientError::InvalidResponse {
+                            source: Box::new(too_large),
+                        },
+                    ),
+                    None => (
+                        JudgeFailure::UpstreamStatus,
+                        LlmClientError::UpstreamHttp {
+                            status: error.status(),
+                            body: error.message().to_string(),
+                        },
+                    ),
+                })
             }
         };
         let status = outcome.status;

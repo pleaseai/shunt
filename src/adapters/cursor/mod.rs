@@ -57,6 +57,10 @@ impl Adapter for CursorAdapter {
         _uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
+        // Relays its upstream as a stream; the one whole-body read it makes is
+        // of an upstream *error* body, inside the response stream it returns,
+        // where `routing::serve`'s collector is already the bound.
+        _response_byte_cap: Option<usize>,
     ) -> AdapterFuture<'a> {
         let _ = headers;
         Box::pin(async move { forward(state, route, body).await })

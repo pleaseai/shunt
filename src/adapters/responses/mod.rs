@@ -67,6 +67,9 @@ impl Adapter for ResponsesAdapter {
         _uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
+        // Relays the upstream as a stream and never buffers a whole reply, so
+        // the bound falls to `routing::serve`'s collector on the relayed body.
+        _response_byte_cap: Option<usize>,
     ) -> AdapterFuture<'a> {
         // The session id keys the websocket connection pool (issue #32) so turns
         // of one Claude Code conversation reuse a live connection. Keep an owned

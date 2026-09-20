@@ -50,6 +50,10 @@ pub(crate) struct ChainRequest<'a> {
     /// `"client"` or `"router"` — the attribute that separates a caller's turn
     /// from an internal judge call in `shunt.requests` and `shunt.latency`.
     pub caller: &'static str,
+    /// Bound on a whole-body read of the upstream reply, for the internal calls
+    /// that have one. `None` on every client path — see
+    /// [`crate::adapters::Adapter::forward`].
+    pub response_byte_cap: Option<usize>,
 }
 
 /// A chain attempt that answered with a status the chain does not advance on.
@@ -79,6 +83,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
         started_at: _started_at,
         router_stamp,
         caller,
+        response_byte_cap,
     } = request;
     // Records the request's final outcome exactly once, at whichever terminal
     // return point below is taken — the intermediate per-attempt failover
@@ -123,7 +128,15 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
             body.take()
                 .expect("request body is present for final attempt")
         };
-        let result = dispatch(state.clone(), route, uri, &attempt_headers, attempt_body).await;
+        let result = dispatch(
+            state.clone(),
+            route,
+            uri,
+            &attempt_headers,
+            attempt_body,
+            response_byte_cap,
+        )
+        .await;
 
         if !super::is_count_tokens(uri)
             && !result.as_ref().is_ok_and(|(_, response)| {

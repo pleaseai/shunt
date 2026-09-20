@@ -129,6 +129,8 @@ impl Adapter for AntigravityAdapter {
         _uri: &'a Uri,
         _headers: &'a HeaderMap,
         body: RequestBody,
+        // Streams its upstream; nothing here reads a whole reply into memory.
+        _response_byte_cap: Option<usize>,
     ) -> AdapterFuture<'a> {
         Box::pin(async move {
             let request = body.json();

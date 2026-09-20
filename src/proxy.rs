@@ -111,6 +111,20 @@ impl ForwardError {
     pub(crate) fn message(&self) -> &str {
         &self.message
     }
+
+    /// The byte cap an adapter refused the upstream body against, when that is
+    /// why this call failed.
+    ///
+    /// Read by `routing::serve`, which must report `oversized` rather than
+    /// `upstream_error` for a reply its own cap stopped — the label set on
+    /// `shunt.router.judge_calls` is closed, and folding the two together would
+    /// name the wrong operator key.
+    pub(crate) fn body_too_large(&self) -> Option<crate::adapters::UpstreamBodyTooLarge> {
+        self.response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyTooLarge>()
+            .copied()
+    }
 }
 
 impl IntoResponse for ForwardError {

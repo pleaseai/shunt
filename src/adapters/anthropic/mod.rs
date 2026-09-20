@@ -38,8 +38,9 @@ impl Adapter for AnthropicAdapter {
         uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
+        response_byte_cap: Option<usize>,
     ) -> AdapterFuture<'a> {
-        Box::pin(async move { forward(state, route, uri, headers, body).await })
+        Box::pin(async move { forward(state, route, uri, headers, body, response_byte_cap).await })
     }
 }
 
@@ -49,6 +50,7 @@ async fn forward(
     uri: &Uri,
     headers: &HeaderMap,
     mut body: RequestBody,
+    response_byte_cap: Option<usize>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let provider = state
         .config
@@ -67,10 +69,10 @@ async fn forward(
     }
     let route = route;
     if provider.auth == AuthMode::ClaudeOauth {
-        return forward_claude_oauth(state, route, uri, headers, body).await;
+        return forward_claude_oauth(state, route, uri, headers, body, response_byte_cap).await;
     }
     if provider.auth == AuthMode::KimiOauth {
-        return forward_kimi_oauth(state, route, uri, headers, body).await;
+        return forward_kimi_oauth(state, route, uri, headers, body, response_byte_cap).await;
     }
 
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
@@ -136,7 +138,7 @@ async fn forward(
     // The non-pooled path builds its response exactly like the pooled path's
     // relay_response (header filtering, SSE keepalive, status passthrough), so
     // reuse it with no account attribution instead of duplicating that logic.
-    relay_response(&state, &route, upstream, None).await
+    relay_response(&state, &route, upstream, None, response_byte_cap).await
 }
 
 async fn forward_claude_oauth(
@@ -145,6 +147,7 @@ async fn forward_claude_oauth(
     uri: &Uri,
     headers: &HeaderMap,
     mut body: RequestBody,
+    response_byte_cap: Option<usize>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let provider = state
         .config
@@ -326,14 +329,20 @@ async fn forward_claude_oauth(
                     status.is_success(),
                     is_fable,
                 );
-                return relay_response(&state, &route, upstream, Some(&account.name))
-                    .await
-                    .map(|(status, response)| {
-                        (
-                            status,
-                            hold_admission_on_success(status, response, admission),
-                        )
-                    });
+                return relay_response(
+                    &state,
+                    &route,
+                    upstream,
+                    Some(&account.name),
+                    response_byte_cap,
+                )
+                .await
+                .map(|(status, response)| {
+                    (
+                        status,
+                        hold_admission_on_success(status, response, admission),
+                    )
+                });
             }
             FailoverAction::Rotate => {
                 if status == StatusCode::TOO_MANY_REQUESTS {
@@ -426,14 +435,20 @@ async fn forward_claude_oauth(
                         "Claude OAuth throttle retry did not succeed; cooling down account"
                     );
                 }
-                return relay_response(&state, &route, retry, Some(&account.name))
-                    .await
-                    .map(|(status, response)| {
-                        (
-                            status,
-                            hold_admission_on_success(status, response, admission),
-                        )
-                    });
+                return relay_response(
+                    &state,
+                    &route,
+                    retry,
+                    Some(&account.name),
+                    response_byte_cap,
+                )
+                .await
+                .map(|(status, response)| {
+                    (
+                        status,
+                        hold_admission_on_success(status, response, admission),
+                    )
+                });
             }
             FailoverAction::RefreshRetry => {
                 // account_is_static_store_token() reads the account file from
@@ -621,14 +636,20 @@ async fn forward_claude_oauth(
                             // alter routing.
                             state.accounts.clear_needs_relogin(&route.provider, account);
                         }
-                        return relay_response(&state, &route, retry, Some(&account.name))
-                            .await
-                            .map(|(status, response)| {
-                                (
-                                    status,
-                                    hold_admission_on_success(status, response, admission),
-                                )
-                            });
+                        return relay_response(
+                            &state,
+                            &route,
+                            retry,
+                            Some(&account.name),
+                            response_byte_cap,
+                        )
+                        .await
+                        .map(|(status, response)| {
+                            (
+                                status,
+                                hold_admission_on_success(status, response, admission),
+                            )
+                        });
                     }
                     // Exhaustive rather than `_` so a new FailoverAction variant
                     // forces a decision here. RefreshRetry cannot recur (a 401 is
@@ -687,7 +708,7 @@ async fn forward_claude_oauth(
 
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
-        return relay_response(&state, &route, response, None).await;
+        return relay_response(&state, &route, response, None, response_byte_cap).await;
     }
 
     Err(AdapterError {
@@ -735,6 +756,7 @@ async fn forward_kimi_oauth(
     uri: &Uri,
     headers: &HeaderMap,
     mut body: RequestBody,
+    response_byte_cap: Option<usize>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let provider = state
         .config
@@ -872,14 +894,20 @@ async fn forward_kimi_oauth(
                 state
                     .accounts
                     .mark_healthy(&route.provider, account, status.is_success());
-                return relay_response(&state, &route, upstream, Some(&account.name))
-                    .await
-                    .map(|(status, response)| {
-                        (
-                            status,
-                            hold_admission_on_success(status, response, admission),
-                        )
-                    });
+                return relay_response(
+                    &state,
+                    &route,
+                    upstream,
+                    Some(&account.name),
+                    response_byte_cap,
+                )
+                .await
+                .map(|(status, response)| {
+                    (
+                        status,
+                        hold_admission_on_success(status, response, admission),
+                    )
+                });
             }
             // Rotate, PauseSame, and RefreshRetry all collapse to the same
             // cooldown-and-rotate treatment — see the function doc comment for
@@ -914,7 +942,7 @@ async fn forward_kimi_oauth(
 
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
-        return relay_response(&state, &route, response, None).await;
+        return relay_response(&state, &route, response, None, response_byte_cap).await;
     }
 
     Err(AdapterError {
@@ -1040,6 +1068,7 @@ async fn relay_response(
     route: &Route,
     upstream: reqwest::Response,
     account_name: Option<&str>,
+    response_byte_cap: Option<usize>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let status = upstream.status();
     let response_headers = headers::filtered(upstream.headers());
@@ -1083,9 +1112,22 @@ async fn relay_response(
         // Non-streaming JSON: the client asked for a buffered response, so
         // reading it whole to rewrite the top-level `model` respects the
         // "don't buffer SSE unless non-streaming" rule.
-        match upstream.bytes().await {
+        //
+        // `response_byte_cap` is what keeps that read from being unbounded on
+        // an internal call. A judge target is an alias route by construction —
+        // `routing::resolve_target_chain` stamps the advertised router id onto
+        // `route.model` while `upstream_model` stays the judge's own — so this
+        // is the branch every judge reply takes, and reading it whole before
+        // any later cap is applied is spending the memory the cap exists to
+        // deny. `None` on the client path keeps `reqwest`'s own `bytes()`.
+        match crate::adapters::collect_upstream_body(upstream, response_byte_cap).await {
             Ok(bytes) => Body::from(model_rewrite::rewrite_response_model(bytes, &alias)),
-            Err(error) => return Err(post_header_error(error)),
+            Err(crate::adapters::UpstreamBodyError::Transport(error)) => {
+                return Err(post_header_error(error))
+            }
+            Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
+                return Err(crate::adapters::too_large_error(too_large))
+            }
         }
     } else {
         Body::from_stream(upstream.bytes_stream())

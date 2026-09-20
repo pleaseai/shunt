@@ -2,7 +2,7 @@ use std::{future::Future, pin::Pin};
 
 use axum::{
     http::{HeaderMap, StatusCode, Uri},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 
 use crate::{request::RequestBody, routing::Route, server::AppState};
@@ -60,7 +60,102 @@ pub struct AdapterError {
     pub failure: Option<AdapterFailure>,
 }
 
+/// The byte cap a bounded call's upstream reply crossed.
+///
+/// Carries no partial body — the point of the cap is that the bytes past it are
+/// never held — and travels as an extension on the refusal's response, which is
+/// how `routing::serve` tells an oversized reply apart from an upstream that
+/// merely failed. A `'static` marker rather than a status code because the
+/// status a client-facing refusal renders is `502` like several others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UpstreamBodyTooLarge {
+    pub(crate) max_bytes: usize,
+}
+
+impl std::fmt::Display for UpstreamBodyTooLarge {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "upstream response body exceeded {} bytes",
+            self.max_bytes
+        )
+    }
+}
+
+impl std::error::Error for UpstreamBodyTooLarge {}
+
+/// How a bounded whole-body read ended.
+pub(crate) enum UpstreamBodyError {
+    /// The transport failed after the response headers were committed.
+    Transport(reqwest::Error),
+    /// The body passed the cap and was abandoned unread.
+    TooLarge(UpstreamBodyTooLarge),
+}
+
+/// Read a whole upstream body, refusing it the moment it passes `cap`.
+///
+/// `None` is the client path and is `reqwest`'s own `bytes()`, byte for byte:
+/// a client turn's reply is bounded by the client's own request, and adding a
+/// cap there would be a new way for ordinary traffic to fail.
+///
+/// `Some` is an internal call, where the bound is the point. It stops *reading*
+/// on the crossing rather than buffering and checking afterwards — checking
+/// afterwards is checking after the memory has already been spent, which is
+/// exactly what a bound on a judge's reply exists to prevent.
+pub(crate) async fn collect_upstream_body(
+    upstream: reqwest::Response,
+    cap: Option<usize>,
+) -> Result<bytes::Bytes, UpstreamBodyError> {
+    let Some(max_bytes) = cap else {
+        return upstream.bytes().await.map_err(UpstreamBodyError::Transport);
+    };
+    use futures_util::StreamExt;
+    let mut stream = upstream.bytes_stream();
+    let mut collected: Vec<u8> = Vec::new();
+    let mut total = 0usize;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(UpstreamBodyError::Transport)?;
+        total = total.saturating_add(chunk.len());
+        if total > max_bytes {
+            return Err(UpstreamBodyError::TooLarge(UpstreamBodyTooLarge {
+                max_bytes,
+            }));
+        }
+        collected.extend_from_slice(&chunk);
+    }
+    Ok(bytes::Bytes::from(collected))
+}
+
+/// Render [`UpstreamBodyError::TooLarge`] as an adapter failure that carries the
+/// marker `routing::serve` reads back.
+///
+/// `failure: None` deliberately: an upstream that answered correctly and merely
+/// answered *too much* is not a reason to advance the failover chain onto
+/// another provider, and retrying it would spend the cap again.
+pub(crate) fn too_large_error(too_large: UpstreamBodyTooLarge) -> AdapterError {
+    let mut response =
+        crate::error::ShuntError::new(StatusCode::BAD_GATEWAY, "api_error", too_large.to_string())
+            .into_response();
+    response.extensions_mut().insert(too_large);
+    AdapterError {
+        message: too_large.to_string(),
+        response: Box::new(response),
+        failure: None,
+    }
+}
+
 pub(crate) trait Adapter {
+    /// Dispatch one request upstream.
+    ///
+    /// `response_byte_cap` bounds a **whole-body read** the adapter performs on
+    /// the upstream reply. It is `None` for every client turn — client
+    /// behaviour is byte-for-byte what it was — and `Some` only for the
+    /// internal calls `routing::serve` makes, where `judge_max_response_bytes`
+    /// has to bite before the body is materialised rather than after.
+    ///
+    /// Adapters that never buffer a whole upstream reply have nothing to cap
+    /// and ignore it; the bound then falls to `routing::serve`'s own collector,
+    /// which reads the relayed stream under the same cap.
     fn forward<'a>(
         &'a self,
         state: AppState,
@@ -68,6 +163,7 @@ pub(crate) trait Adapter {
         uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
+        response_byte_cap: Option<usize>,
     ) -> AdapterFuture<'a>;
 }
 

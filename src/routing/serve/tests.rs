@@ -149,34 +149,18 @@ async fn a_stream_past_its_wall_clock_bound_reports_duration() {
     assert_eq!(collected.last(), Some(&Err(BoundExceeded::Duration)));
 }
 
-/// The judge's upstream call is an ordinary proxied request, separated from the
-/// client turn it was made for by one attribute.
+/// The deployment the judge-call tests below run against: one provider that is
+/// the judge, three aliases mapped on it, and a driven entry pointed at them.
 ///
-/// In-crate rather than in `tests/router_judge.rs` because the sample store is
-/// `cfg(test)` and an integration binary links the library without it. Drop the
-/// `caller` argument at `run_chain`'s call site in [`super::dispatch`] and this
-/// goes red on a sample filed under `client`.
-mod caller_attribution {
+/// Shared so each test differs only in what its judge upstream does.
+mod judge_fixture {
     use std::collections::BTreeMap;
-
-    use axum::http::HeaderMap;
-    use serde_json::json;
-    use wiremock::{
-        matchers::{method, path},
-        Mock, MockServer, ResponseTemplate,
-    };
 
     use crate::config::{
         AuthMode, Config, ModelConfig, ProviderConfig, RouterConfig, StageClassifierConfig,
         StageRouterConfig, StageRouterPicker,
     };
-    use crate::proxy::failover::InboundContext;
-    use crate::routing::judge::{consult, JudgeOutcome};
-    use crate::routing::serve::AdmittedContext;
-    use crate::routing::stage::StageTier;
     use crate::server::AppState;
-
-    const ROUTER_ID: &str = "claude-auto-caller-metric";
 
     fn provider(base_url: String) -> ProviderConfig {
         let mut provider = Config::default()
@@ -202,6 +186,71 @@ mod caller_attribution {
             stage_router: None,
         }
     }
+
+    /// The driven entry, with a deadline short enough that a test which reaches
+    /// it finishes promptly — and long enough that reaching it is a finding
+    /// rather than a flake.
+    pub(super) fn stage() -> StageRouterConfig {
+        StageRouterConfig {
+            classifier: Some(StageClassifierConfig {
+                target: "judge-alias".to_string(),
+                base_threshold: 0.5,
+            }),
+            judge_timeout_ms: 2_000,
+            ..StageRouterConfig::preset(
+                "capable-alias".to_string(),
+                "efficient-alias".to_string(),
+                StageRouterPicker::EfficientFirst,
+                0.5,
+            )
+        }
+    }
+
+    pub(super) fn state(router_id: &str, judge_url: String, stage: &StageRouterConfig) -> AppState {
+        let mut config = Config {
+            models: vec![
+                ModelConfig {
+                    id: router_id.to_string(),
+                    display_name: None,
+                    upstream_model: None,
+                    router: Some(RouterConfig::StageRouter(stage.clone())),
+                    stage_router: None,
+                },
+                mapped("capable-alias", "upstream-capable"),
+                mapped("efficient-alias", "upstream-efficient"),
+                mapped("judge-alias", "upstream-judge"),
+            ],
+            ..Config::default()
+        };
+        config.providers = BTreeMap::from([("judge".to_string(), provider(judge_url))]);
+        config.server.default_provider = "judge".to_string();
+        AppState::new(config, reqwest::Client::new()).expect("the config is valid")
+    }
+}
+
+/// The judge's upstream call is an ordinary proxied request, separated from the
+/// client turn it was made for by one attribute.
+///
+/// In-crate rather than in `tests/router_judge.rs` because the sample store is
+/// `cfg(test)` and an integration binary links the library without it. Drop the
+/// `caller` argument at `run_chain`'s call site in [`super::dispatch`] and this
+/// goes red on a sample filed under `client`.
+mod caller_attribution {
+    use axum::http::HeaderMap;
+    use serde_json::json;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    use crate::proxy::failover::InboundContext;
+    use crate::routing::judge::{consult, JudgeOutcome};
+    use crate::routing::serve::AdmittedContext;
+    use crate::routing::stage::StageTier;
+
+    use super::judge_fixture;
+
+    const ROUTER_ID: &str = "claude-auto-caller-metric";
 
     #[tokio::test]
     async fn a_judge_call_is_recorded_under_the_router_caller() {
@@ -230,36 +279,8 @@ mod caller_attribution {
             .mount(&judge)
             .await;
 
-        let stage = StageRouterConfig {
-            classifier: Some(StageClassifierConfig {
-                target: "judge-alias".to_string(),
-                base_threshold: 0.5,
-            }),
-            ..StageRouterConfig::preset(
-                "capable-alias".to_string(),
-                "efficient-alias".to_string(),
-                StageRouterPicker::EfficientFirst,
-                0.5,
-            )
-        };
-        let mut config = Config {
-            models: vec![
-                ModelConfig {
-                    id: ROUTER_ID.to_string(),
-                    display_name: None,
-                    upstream_model: None,
-                    router: Some(RouterConfig::StageRouter(stage.clone())),
-                    stage_router: None,
-                },
-                mapped("capable-alias", "upstream-capable"),
-                mapped("efficient-alias", "upstream-efficient"),
-                mapped("judge-alias", "upstream-judge"),
-            ],
-            ..Config::default()
-        };
-        config.providers = BTreeMap::from([("judge".to_string(), provider(judge.uri()))]);
-        config.server.default_provider = "judge".to_string();
-        let state = AppState::new(config, reqwest::Client::new()).expect("the config is valid");
+        let stage = judge_fixture::stage();
+        let state = judge_fixture::state(ROUTER_ID, judge.uri(), &stage);
 
         let inbound = InboundContext::internal();
         let headers = HeaderMap::new();
@@ -289,5 +310,141 @@ mod caller_attribution {
         );
         assert_eq!(router, 1, "the judge's own call is the router's");
         assert_eq!(client, 0, "and is not attributed to the caller's turn");
+    }
+}
+
+/// `judge_max_response_bytes` has to bound what the call *allocates*, not just
+/// what reaches the JSON parser.
+///
+/// The gap this closes: `routing::resolve_target_chain` stamps the advertised
+/// router id onto `Route.model` while `Route.upstream_model` stays the judge's
+/// own, so every realistic judge reply takes the Anthropic adapter's alias
+/// branch — the one that reads the whole upstream body to rewrite its top-level
+/// `model`. That read used to be `reqwest`'s unbounded `bytes()`, and
+/// [`super::bounds::collect_bounded`] ran on its output, so the cap bounded the
+/// parser's input and nothing else.
+///
+/// The oracle is the outcome *label*, because a finite oversized body is
+/// refused by the collector too and so cannot tell the two caps apart. This
+/// judge answers `200` and then streams for as long as anyone reads. Capped at
+/// the read, the call reports `oversized` in milliseconds, having taken a
+/// little over the cap. Uncapped, the adapter drains whatever the upstream
+/// sends and the call ends on whatever that drain produces — the deadline, or
+/// the abandoned connection — which is some other operator's key for an
+/// upstream that is not slow and did not fail.
+///
+/// In-crate rather than in `tests/router_judge.rs` for the same reason
+/// [`caller_attribution`] is: it asserts on shunt's own view of the call rather
+/// than on what a client sees, and a fail-open looks identical from outside.
+mod oversized_reply {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::{Duration, Instant};
+
+    use axum::http::HeaderMap;
+    use serde_json::json;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    use crate::proxy::failover::InboundContext;
+    use crate::routing::judge::{consult, JudgeOutcome};
+    use crate::routing::serve::AdmittedContext;
+
+    use super::judge_fixture;
+
+    const ROUTER_ID: &str = "claude-auto-oversized-reply";
+    /// A ceiling on the mock's own output, so a regression cannot turn this
+    /// test into a runaway writer. Far above `judge_max_response_bytes`
+    /// (64 KiB) and far below what an uncapped read would drain in two seconds.
+    const MOCK_WRITE_CEILING: usize = 4 * 1024 * 1024;
+
+    /// A judge that commits `200 application/json` and then streams a chunked
+    /// body that never ends.
+    ///
+    /// A raw socket because no mock server can express "valid headers, then
+    /// more body than anyone asked for, forever" — and the endlessness is the
+    /// point: a finite oversized body is refused by the collector too, so it
+    /// could not tell the two caps apart.
+    ///
+    /// Returns the counter of bytes it managed to write, which is the second
+    /// half of the assertion: it is the memory the uncapped read would have
+    /// taken.
+    async fn endless_reply_judge() -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let written = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&written);
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("the judge call connects");
+            let mut buffer = [0u8; 8192];
+            // One read is enough to get past the request head.
+            let _ = socket.read(&mut buffer).await;
+            let head: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n";
+            if socket.write_all(head).await.is_err() {
+                return;
+            }
+            // 4 KiB of chunk payload at a time: enough that the 64 KiB cap is
+            // crossed within the first handful, small enough that the writer
+            // notices a closed peer promptly.
+            let mut chunk = Vec::with_capacity(4096 + 8);
+            chunk.extend_from_slice(b"1000\r\n");
+            chunk.extend_from_slice(&[b'a'; 4096]);
+            chunk.extend_from_slice(b"\r\n");
+            while counter.load(Ordering::Relaxed) < MOCK_WRITE_CEILING {
+                if socket.write_all(&chunk).await.is_err() {
+                    break;
+                }
+                counter.fetch_add(4096, Ordering::Relaxed);
+            }
+        });
+        (format!("http://{addr}"), written)
+    }
+
+    #[tokio::test]
+    async fn an_endless_judge_reply_is_refused_at_the_cap_not_at_the_deadline() {
+        let (judge_url, written) = endless_reply_judge().await;
+        let stage = judge_fixture::stage();
+        let state = judge_fixture::state(ROUTER_ID, judge_url, &stage);
+        let classifier = stage
+            .classifier
+            .as_ref()
+            .expect("the fixture names a judge");
+
+        let inbound = InboundContext::internal();
+        let headers = HeaderMap::new();
+        let admitted = AdmittedContext::mint(&inbound, &headers, ROUTER_ID);
+        let request = json!({
+            "model": ROUTER_ID,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        });
+
+        let started_at = Instant::now();
+        let outcome = consult(&state, &admitted, &stage, classifier, &request).await;
+        let elapsed = started_at.elapsed();
+
+        assert_eq!(
+            outcome,
+            JudgeOutcome::FailOpen("oversized"),
+            "the reply crossed `judge_max_response_bytes`, so that is the key \
+             the operator has to read — any other outcome here means the \
+             adapter kept draining the body past the cap"
+        );
+        assert!(
+            elapsed < Duration::from_millis(2_000),
+            "the refusal is the cap's, not the deadline's, but took {elapsed:?}"
+        );
+        // The upstream never got to hand over more than a small multiple of the
+        // cap: whatever the socket buffers absorbed before the abandoned read
+        // closed the connection.
+        let written = written.load(Ordering::Relaxed);
+        assert!(
+            written < MOCK_WRITE_CEILING,
+            "the whole body was still being drained: the judge wrote {written} bytes"
+        );
     }
 }
