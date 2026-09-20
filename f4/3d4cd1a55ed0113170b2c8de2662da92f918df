@@ -1,0 +1,25 @@
+tests/prefill_router.rs
+  s_e9c7bce466358a::t_493b35bb55b8bf 115
+  s_e9c7bce466358a::t_950a38ac799187 25-26
+  s_e9c7bce466358a::t_39b48c62f4b925 89-92
+  s_e9c7bce466358a::t_67674f5d39101a 127-131
+docs/routing-algorithms.md
+  s_e9c7bce466358a::t_00d31eb8eb991f 376-379,383-386
+  s_e9c7bce466358a::t_784fa59def94c2 387
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f43d4cd1a55ed0113170b2c8de2662da92f918df",
+  "prompts": {},
+  "sessions": {
+    "s_e9c7bce466358a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52c4e84c-87ad-4bd6-aebe-df807ab7e91c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
