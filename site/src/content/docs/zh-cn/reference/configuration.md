@@ -316,7 +316,7 @@ codex-fallback = "gpt-5.2"
 
 与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值与 shunt 自己签发的 JWT **形状相符**——三段式结构，且载荷的 `aud` 声明为 `"shunt"`、`iss` 声明与本网关的身份一致，或 `shunt_token_use` 声明为 `"gateway-session"`（仅由 shunt 签发的专用标记）——或匹配配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除。这项 JWT 检查刻意按“形状是否相符”而非“该令牌现在是否能通过认证”来判定：一个已过期的令牌、由使用不同 `public_url` 的兄弟实例签发的令牌，或在 `jwt_secret` 轮换后已不再能通过校验的令牌，仍然是 shunt 自己的凭据，因此仍会被清除。该标记只是形状检查新增的一个分支，而非必要条件：在该标记出现之前签发的令牌仍会按 `aud`/`iss` 匹配，`verify` 本身也不要求该标记，因此旧版本 shunt 签发的令牌只要仍在其 TTL 内就仍能通过认证 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或静态客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。`[server.auth] header` 可以是任意头名称，包括 `authorization` 本身；这样配置时客户端使用不带前缀的 `Authorization: <token>` 进行认证，因此该槽位除了按 `Bearer` 载荷检查外还会按整个值检查，此类令牌绝不会被转发到上游。该配置有一个注意事项：在推理请求上 shunt 会在路由前无条件移除配置的头部，因此该槽位不会向上游携带任何东西 —— 不只是门控令牌，调用方自己的凭据也会一并被丢弃。把 `header` 保持为默认的专用 `x-shunt-token` 可以避免这种冲突。
 
-每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）——已提交的流式链路路径除外：响应带 `content-type` 和 `x-gateway-model`，以及在由路由器路由时下文所述的两个路由器头，取决于胜者的 `x-gateway-upstream` 和 `x-gateway-upstream-model` 会被省略，上游响应头不会到达客户端。由 [`[models.router]`](#modelsrouter可选) 条目路由的响应还会带上 `x-gateway-routed-model`（路由器选中的目标）和 `x-gateway-route-source`（选中它的原因）；这对所有路由器 `type` 都成立，不限于[阶段路由器](/zh-cn/guides/stage-router/)，未配置路由器的模型 id 不会带这两个头。`count_tokens` 只使用链中第一个条目，不会故障转移，也不会带上这两个头。对于没有 `[[server.codex_endpoint.routes]]` 条目的模型，`[server.codex_endpoint]` 仍固定到所配置的单一上游；无论哪种情况都不参与此链。
+每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）——已提交的流式链路路径除外：响应带 `content-type` 和 `x-gateway-model`，以及在由路由器路由时下文所述的两个路由器头，取决于胜者的 `x-gateway-upstream` 和 `x-gateway-upstream-model` 会被省略，上游响应头不会到达客户端。由 [`[models.router]`](#modelsrouter可选) 条目路由的响应还会带上 `x-gateway-routed-model`（路由器选中的目标）和 `x-gateway-route-source`（选中它的原因）；这对所有路由器 `type` 都成立，不限于[阶段路由器](/zh-cn/guides/stage-router/)。由 [`[models.subagents]`](#modelssubagents可选) 覆盖层转向的委派回合同样会带这两个头，此时 `x-gateway-route-source` 为 `subagent_type` 或 `subagent`；只有当路由器与覆盖层都没有决定该回合时，这两个头才都不会出现。`count_tokens` 只使用链中第一个条目，不会故障转移，也不会带上这两个头。对于没有 `[[server.codex_endpoint.routes]]` 条目的模型，`[server.codex_endpoint]` 仍固定到所配置的单一上游；无论哪种情况都不参与此链。
 
 ### 迁移现有配置
 
@@ -398,8 +398,8 @@ codex = "gpt-5.2"
 ### `[models.router]`(可选)
 
 针对某一个对外 id 的按请求路由。该条目不再只指定一个目的地,而是带一张 `[models.router]`
-表,由表中的 `type` 键挑选路由算法,再由算法挑选目的地。没有这张表时,`[[models]]` 条目的
-行为与之前完全一致;任何地方都不配置路由器,路由就不变。
+表,由表中的 `type` 键挑选路由算法,再由算法挑选目的地。既没有这张表也没有 [`[models.subagents]`](#modelssubagents可选) 覆盖层时,`[[models]]`
+条目的行为与之前完全一致;任何地方都不配置这两者,路由就不变。
 
 这里用的是 `type` 而不是 shunt 惯用的 `kind` 或 `mode`,这是**对 shunt 自身命名约定的有意
 破例**,而参考文档只在这一处说明它。这些路由算法来自

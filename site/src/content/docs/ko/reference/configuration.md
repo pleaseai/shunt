@@ -335,7 +335,7 @@ codex-fallback = "gpt-5.2"
 
 origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 있는 값으로도 검사됩니다. `authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체가 발급한 JWT와 **모양이 같거나** — `aud` 클레임이 `"shunt"`이거나, `iss` 클레임이 이 게이트웨이의 아이덴티티이거나, `shunt_token_use` 클레임이 `"gateway-session"`(shunt만 발급하는 전용 마커)인 세 세그먼트 구조 — 설정된 `[server.auth]` 클라이언트 토큰과 일치할 때에만 제거됩니다. JWT 검사는 의도적으로 "지금 이 토큰이 인증되는가"가 아니라 "모양이 같은가"로 판단합니다: 만료된 토큰, 다른 `public_url`을 쓰는 형제 인스턴스가 발급한 토큰, `jwt_secret` 로테이션 이후 더 이상 검증되지 않는 토큰도 여전히 shunt 자신의 크리덴셜이므로 여전히 제거됩니다. 이 마커는 모양 검사에 추가된 분기일 뿐 필수 조건이 아닙니다: 마커가 존재하기 전에 발급된 토큰도 `aud`/`iss`로 여전히 일치하며, `verify` 자체도 마커를 요구하지 않으므로 이전 버전의 shunt가 발급한 토큰은 TTL 내에 있는 한 계속 인증됩니다. `apiKeyHelper`는 두 슬롯을 같은 값으로 채우므로 어느 크리덴셜이든 한쪽 또는 양쪽 슬롯에 들어올 수 있습니다. 다른 슬롯이 게이트웨이 JWT나 정적 클라이언트 토큰을 담고 있어도, 진짜 업스트림 크리덴셜을 담은 슬롯은 그대로 전달됩니다. 게이트 크리덴셜을 담은 슬롯만 제거됩니다. `[server.auth] header`에는 `authorization` 자신을 포함해 어떤 헤더 이름이든 지정할 수 있으며, 그렇게 설정하면 클라이언트는 접두사 없는 `Authorization: <token>` 형태로 인증합니다. 따라서 이 슬롯은 `Bearer` 페이로드뿐 아니라 값 전체로도 검사되며, 그런 토큰은 업스트림으로 전달되지 않습니다. 이 설정에는 한 가지 유의점이 있습니다: 추론 요청에서 shunt는 라우팅 전에 설정된 헤더를 조건 없이 제거하므로, 그 슬롯은 업스트림으로 아무것도 싣지 않습니다 — 게이트 토큰뿐 아니라 호출자 자신의 크리덴셜도 함께 사라집니다. `header`를 기본값인 전용 `x-shunt-token`으로 두면 이 충돌을 피할 수 있습니다.
 
-프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다 — 커밋된 스트리밍 체인 경로는 예외로, 응답에는 `content-type`과 `x-gateway-model`, 그리고 라우터가 라우팅한 요청이라면 아래의 라우터 헤더 두 개가 실리고 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략되며 업스트림 응답 헤더는 클라이언트에 도달하지 않습니다. [`[models.router]`](#modelsrouter-선택) 항목이 라우팅한 응답에는 `x-gateway-routed-model`(라우터가 고른 타깃)과 `x-gateway-route-source`(그것을 고른 이유)가 추가로 붙습니다. [스테이지 라우터](/ko/guides/stage-router/)뿐 아니라 모든 라우터 `type`에 붙으며, 라우터를 설정하지 않은 model id에는 둘 다 붙지 않습니다. `count_tokens`는 체인의 첫 항목만 사용하고 페일오버하지 않으며, 이 헤더 두 개는 붙이지 않습니다. `[server.codex_endpoint]`는 `[[server.codex_endpoint.routes]]` 항목이 없는 모든 모델에 대해 설정된 업스트림 하나에 고정되며, 어느 쪽이든 이 체인에 참여하지 않습니다.
+프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다 — 커밋된 스트리밍 체인 경로는 예외로, 응답에는 `content-type`과 `x-gateway-model`, 그리고 라우터가 라우팅한 요청이라면 아래의 라우터 헤더 두 개가 실리고 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략되며 업스트림 응답 헤더는 클라이언트에 도달하지 않습니다. [`[models.router]`](#modelsrouter-선택) 항목이 라우팅한 응답에는 `x-gateway-routed-model`(라우터가 고른 타깃)과 `x-gateway-route-source`(그것을 고른 이유)가 추가로 붙습니다. [스테이지 라우터](/ko/guides/stage-router/)뿐 아니라 모든 라우터 `type`에 붙습니다. [`[models.subagents]`](#modelssubagents-선택) 오버레이가 전환한 위임 턴에도 같은 헤더 두 개가 붙으며, 이때 `x-gateway-route-source`는 `subagent_type` 또는 `subagent`입니다. 둘 다 붙지 않는 경우는 라우터도 오버레이도 그 턴을 결정하지 않았을 때뿐입니다. `count_tokens`는 체인의 첫 항목만 사용하고 페일오버하지 않으며, 이 헤더 두 개는 붙이지 않습니다. `[server.codex_endpoint]`는 `[[server.codex_endpoint.routes]]` 항목이 없는 모든 모델에 대해 설정된 업스트림 하나에 고정되며, 어느 쪽이든 이 체인에 참여하지 않습니다.
 
 ### 기존 설정 마이그레이션
 
@@ -419,8 +419,9 @@ codex = "gpt-5.2"
 
 광고하는 id 하나에 대한 요청 단위 라우팅입니다. 목적지를 하나만 지정하는 대신
 `[models.router]` 테이블을 두고, 그 `type` 키가 라우팅 알고리즘을 고르면 알고리즘이
-목적지를 고릅니다. 이 테이블이 없으면 `[[models]]` 항목은 이전과 똑같이 동작하며,
-어디에도 라우터를 설정하지 않으면 라우팅은 바뀌지 않습니다.
+목적지를 고릅니다. 이 테이블과 [`[models.subagents]`](#modelssubagents-선택) 오버레이가 모두 없으면
+`[[models]]` 항목은 이전과 똑같이 동작하며, 어디에도 둘 다 설정하지 않으면
+라우팅은 바뀌지 않습니다.
 
 shunt가 보통 쓰는 `kind`나 `mode`가 아니라 `type`을 쓰는 것은 **shunt 자체 명명 규칙에
 대한 의도적인 예외**이며, 레퍼런스에서 이 점을 밝히는 곳은 여기 한 곳뿐입니다. 라우팅

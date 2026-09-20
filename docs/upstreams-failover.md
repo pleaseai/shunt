@@ -154,8 +154,10 @@ Response headers on every proxied response (success or final failure):
 `x-gateway-upstream-model` (mapped upstream id). A response whose model id
 configures a stage router (`docs/stage-router.md`) additionally carries
 `x-gateway-routed-model` (the target the chosen tier routes to) and
-`x-gateway-route-source` (why that tier was chosen); a model id with no router
-carries neither, and `count_tokens` carries neither either.
+`x-gateway-route-source` (why that tier was chosen). A turn a
+`[models.subagents]` overlay diverted carries the same pair; an id whose turn
+neither a router nor an overlay decided carries neither, and `count_tokens`
+carries neither either.
 
 Cross-cutting:
 
