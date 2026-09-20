@@ -620,11 +620,14 @@ id it asked for — the chosen target travels upstream only.
 | `auto` | The same router under upstream's preset | Yes, as above |
 | `random` | A weighted draw, session-sticky by default | No |
 | `noop` | Nothing — answers with an empty message | No |
+| `prefill_router` | A learned classifier over the latest user turn (needs the `prefill-router` build) | Yes — the text of user turns |
 
-The driven algorithms (`llm_classifier`, `composite`, `advisor`,
-`prefill_router`) and the `[models.subagents]` overlay are **not available
-yet**; naming one is a startup error. They call an LLM judge and land in later
-releases.
+The driven algorithms (`llm_classifier`, `composite`, `advisor`) and the
+`[models.subagents]` overlay are **not available yet**; naming one is a startup
+error. They call an LLM judge and land in later releases. `prefill_router` is
+implemented but **gated at compile time**: it is available only from a build
+that opts into the `prefill-router` cargo feature, which is off by default —
+see [below](#type--prefill_router).
 
 `[models.router]` and `[models.upstream_model]` on the same entry are mutually
 exclusive.
@@ -802,13 +805,108 @@ type = "noop"
 
 `type` is the only key it accepts.
 
+#### `type = "prefill_router"`
+
+A learned router. Upstream's own classifier scores the latest text user turn
+and picks one of the entry's targets, running its model in this process rather
+than calling a judge upstream.
+
+**This one needs a build that has it.** `prefill_router` is compiled in only
+behind the `prefill-router` cargo feature, which is **off by default** and
+which the release workflow never enables — so no release binary and no
+Homebrew install has it. Build from source:
+
+```sh
+cargo build --release --features prefill-router          # add ,ui for the dashboard
+```
+
+The config below parses in every build, and its validation is the same in
+every build. What differs is the load: on a binary without the feature the
+load fails, so `shunt check` reports it rather than the gateway starting
+without the algorithm it was configured for.
+
+```text
+models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)
+```
+
+```toml
+[[models]]
+id = "claude-learned"
+
+[models.router]
+type = "prefill_router"
+targets = ["claude-sonnet-4-6", "claude-opus-4-8"]
+checkpoint = "/models/router.pt"
+# device = "cpu"
+# cache_dir = "/var/cache/huggingface"
+# max_length = 2048
+# batch_size = 32
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `prefill_router` |
+| `targets` | ✅ required | Model ids to choose between, in the checkpoint's head order |
+| `checkpoint` | ✅ required | Path to the tensor-only router checkpoint; a relative path resolves against the process working directory |
+| `device` | auto-detected | Torch device the router runs on — `cpu`, `cuda`, `cuda:0` |
+| `cache_dir` | — | Hugging Face cache directory for the encoder and its tokenizer |
+| `max_length` | `2048` | Maximum tokenized encoder input length; longer input is truncated. Must be greater than `0`. Unset leaves upstream's own default |
+| `batch_size` | `32` | Maximum prompts per encoder forward pass. Must be greater than `0`. Unset leaves upstream's own default |
+
+**What the operator has to supply.** The feature embeds Python through PyO3,
+so the build links libpython and the running gateway needs `torch`,
+`transformers`, `numpy`, and `accelerate` importable in the interpreter it
+embedded — set `PYO3_PYTHON` at build time to that interpreter (3.7 or newer,
+with a shared libpython) rather than letting PyO3 take the first `python3` on
+`PATH`. It also needs a router checkpoint: Switchyard v0.3.0 ships no
+checkpoint, exporter, or encoder assets, so obtaining or training a compatible
+one is the operator's job. When either is missing the gateway refuses to
+start, and a hot reload that hits the same problem is refused with the running
+config left in place:
+
+```text
+models entry <id> router type = "prefill_router" failed to load: <upstream error>
+```
+
+A reload rebuilds the router, and the per-session affinity lives inside it, so
+a reload forgets which target each session was on.
+
+**How a turn is decided.** Only `user` and `assistant` roles and only `text`
+and `tool_result` blocks are handed to the algorithm; it scores the latest text
+user turn, and treats a message whose blocks are all `tool_result` as a tool
+continuation rather than a new human turn. Session identity comes from
+`x-claude-code-session-id`, plus `x-claude-code-agent-id` for a delegated
+child, so a continuation reuses the turn's decision instead of re-running
+inference; a caller that sends neither falls back to upstream's hash of the
+first user message. Inference runs on a blocking worker, one prediction at a
+time per entry. `count_tokens` probes are decided the same way, and on a
+continuation that is an affinity hit rather than an inference.
+
+`x-gateway-route-source` — and the `source` label on
+`shunt.router.decisions{algorithm="prefill_router"}` — reports which of the
+three happened:
+
+| Source | Meaning |
+| :-- | :-- |
+| `prefill` | The router decided the turn, by inference or by session affinity |
+| `prefill_fail_open` | The routing call errored, so the request went to the default target: upstream's rule is the first entry in `targets` |
+| `prefill_default` | A surface with no request body — `/v1/models` discovery, `GET /routes`, model resolution — has no turn to score, so it reports the first target |
+
+`GET /routes` lists the entry with `algorithm: "prefill_router"` and its
+targets. The `shunt.stage_router.*` metrics stay the signal-only router's and
+never gain prefill rows.
+
 #### Validation
 
 A target that is itself a router, a blank target, a threshold outside
 `(0.0, 1.0]`, a `recent_turn_window` of `0`, a router **id** ending in `[1m]` or
 `[1M]`, a duplicate `[[models]]` id where either entry carries a router table, a
 `type` this build does not implement, or the same entry also declaring
-`[models.upstream_model]` is a startup error. Two map-less entries may otherwise
+`[models.upstream_model]` is a startup error. On a `prefill_router` entry an
+empty `targets`, the same target listed twice, a blank `checkpoint`, and a
+`max_length` or `batch_size` of `0` are startup errors too — checked in every
+build, feature on or off, and repeated targets compared after the trailing
+`[1m]`/`[1M]` hint is stripped like every other target comparison. Two map-less entries may otherwise
 share an id, but a router names a routing policy rather than discovery metadata,
 so a duplicate would leave two policies for one id. Target ids are compared
 after the trailing `[1m]`/`[1M]` hint is stripped, the same way routing matches

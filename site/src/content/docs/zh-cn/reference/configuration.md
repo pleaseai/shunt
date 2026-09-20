@@ -416,9 +416,12 @@ codex = "gpt-5.2"
 | `auto` | 同一个路由器,套用上游预设 | 同上 |
 | `random` | 按权重抽取,默认按会话固定 | 不读 |
 | `noop` | 不做选择 —— 直接返回空消息 | 不读 |
+| `prefill_router` | 读取最近一轮用户消息的学习型分类器(需要 `prefill-router` 构建) | 读 —— 用户消息的文本 |
 
-需要调用 LLM 裁判的算法(`llm_classifier`、`composite`、`advisor`、`prefill_router`)以及
+需要调用 LLM 裁判的算法(`llm_classifier`、`composite`、`advisor`)以及
 `[models.subagents]` 覆盖层**尚不可用**:指定它们会导致启动错误,它们会在后续版本中加入。
+`prefill_router` 已经实现,但**在编译期设门**:只有开启默认关闭的 `prefill-router` cargo
+feature 构建出来的二进制才有它 —— 见[下文](#type--prefill_router)。
 
 同一条目不能同时声明 `[models.router]` 和 `[models.upstream_model]`。
 
@@ -582,11 +585,91 @@ type = "noop"
 
 它只接受 `type` 一个键。
 
+#### `type = "prefill_router"`
+
+学习型路由器。上游的分类器给最近一轮文本用户消息打分,再从条目的目标中挑一个;它在本进程内
+跑自己的模型,而不是向上游发一次裁判调用。
+
+**只有这一种要挑构建。** `prefill_router` 只有在开启 `prefill-router` cargo feature 时才会
+编译进来,而这个 feature **默认关闭**,发布流程也从不开启它 —— 所以发布二进制和 Homebrew
+安装都没有它。请从源码构建:
+
+```sh
+cargo build --release --features prefill-router          # 需要看板就再加 ,ui
+```
+
+下面这段配置在任何构建里都能解析,校验也在任何构建里都一样。不同的是加载:没有该 feature 的
+二进制会加载失败,于是 `shunt check` 会报告出来,而不是让网关在缺少所配算法的情况下启动。
+
+```text
+models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)
+```
+
+```toml
+[[models]]
+id = "claude-learned"
+
+[models.router]
+type = "prefill_router"
+targets = ["claude-sonnet-4-6", "claude-opus-4-8"]
+checkpoint = "/models/router.pt"
+# device = "cpu"
+# cache_dir = "/var/cache/huggingface"
+# max_length = 2048
+# batch_size = 32
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必填 | `prefill_router` |
+| `targets` | ✅ 必填 | 可供选择的模型 id,按检查点的 head 顺序排列 |
+| `checkpoint` | ✅ 必填 | 仅含张量的路由检查点路径;相对路径以进程的工作目录为基准解析 |
+| `device` | 自动探测 | 运行路由器的 torch 设备 —— `cpu`、`cuda`、`cuda:0` |
+| `cache_dir` | — | 编码器及其分词器使用的 Hugging Face 缓存目录 |
+| `max_length` | `2048` | 编码器输入的最大 token 长度,超出的部分会被截断;必须大于 `0`,不填则沿用上游自己的默认值 |
+| `batch_size` | `32` | 编码器每次 forward 最多处理的 prompt 数,必须大于 `0`,不填则沿用上游自己的默认值 |
+
+**运维人员需要自备的东西。** 这个 feature 通过 PyO3 内嵌 Python,所以构建会链接 libpython,
+运行中的网关需要在它内嵌的解释器里能 import `torch`、`transformers`、`numpy` 和
+`accelerate`。构建时请把 `PYO3_PYTHON` 指向那个解释器(3.7 及以上,带共享 libpython),否则
+PyO3 会用 `PATH` 上找到的第一个 `python3`。此外还需要一个路由检查点:Switchyard v0.3.0 不附带
+检查点、导出器或编码器资源,所以获取或训练一个兼容的检查点是运维人员自己的事。两者缺一,网关
+都会拒绝启动;热重载时遇到同样的问题则会拒绝这次重载,保持正在运行的配置不变:
+
+```text
+models entry <id> router type = "prefill_router" failed to load: <upstream error>
+```
+
+重载会重建路由器,而按会话的亲和关系就存在它里面,所以一次重载就会忘记每个会话原本落在哪个
+目标上。
+
+**一轮是怎么定下来的。** 交给算法的只有 `user` 和 `assistant` 两种角色,以及 `text` 和
+`tool_result` 两种块。算法给最近一轮文本用户消息打分,并把所有块都是 `tool_result` 的消息
+视为工具续跑而非新的人类发言。会话身份来自 `x-claude-code-session-id`,如果是被委派的子代理
+还会读 `x-claude-code-agent-id`,因此续跑请求会复用这一轮的判定,不必重跑推理;两者都不发送的
+调用方则回落到上游的规则 —— 对第一条用户消息取哈希。推理跑在阻塞工作线程上,每个条目同一时间
+只做一次预测。`count_tokens` 探测也按同样的方式判定,续跑时命中的是亲和关系而不是一次推理。
+
+`x-gateway-route-source`,以及 `shunt.router.decisions{algorithm="prefill_router"}` 上的
+`source` 标签,会说明发生的是三者中的哪一种:
+
+| 来源 | 含义 |
+| :-- | :-- |
+| `prefill` | 路由器决定了这一轮 —— 通过推理或会话亲和关系 |
+| `prefill_fail_open` | 路由调用出错,请求转到默认目标:按上游的规则就是 `targets` 里的第一个 |
+| `prefill_default` | 没有请求体的表面 —— `/v1/models` 发现、`GET /routes`、模型解析 —— 没有可打分的一轮,因此报告第一个目标 |
+
+`GET /routes` 会以 `algorithm: "prefill_router"` 和它的目标列出该条目。
+`shunt.stage_router.*` 指标仍然属于只看信号的路由器,不会新增 prefill 的行。
+
 #### 校验
 
 目标本身就是路由器、目标为空、阈值超出 `(0.0, 1.0]`、`recent_turn_window` 为 `0`、
 路由器 **id** 以 `[1m]` 或 `[1M]` 结尾、其中一项带有路由器表的重复 `[[models]]` id、本次构建
-尚未实现的 `type`，或同一条目同时声明了 `[models.upstream_model]`，都会导致启动错误。不带
+尚未实现的 `type`，或同一条目同时声明了 `[models.upstream_model]`，都会导致启动错误。在 `prefill_router`
+条目上，空的 `targets`、同一个目标写了两次、空的 `checkpoint`，以及为 `0` 的 `max_length`
+或 `batch_size`，同样都会导致启动错误 —— 无论 feature 开或关，每种构建都会检查；重复目标也
+与其他所有目标比较一样，先去掉结尾的 `[1m]`/`[1M]` 提示再比较。不带
 映射的两个条目本可共用同一个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id
 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致；因此
 只要目标解析到一个自带路由器的条目，无论两者的 `type` 是什么都会被拒绝，这正是把解析限制在

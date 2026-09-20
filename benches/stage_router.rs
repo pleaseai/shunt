@@ -378,6 +378,25 @@ mod bench {
         });
     }
 
+    /// What the driven `prefill_router` lane pays before it reaches libsy:
+    /// one walk of `messages`, allocating a neutral `Message` per turn.
+    ///
+    /// Parameterized on turn count like its neighbours, because that is the
+    /// axis the walk is linear in — the upstream algorithm then reads only the
+    /// latest text user turn out of it, which is the same asymmetry
+    /// `extract_signals` has.
+    ///
+    /// CodSpeed builds `--features bench` only, so this arm never runs there
+    /// and the number is a local one:
+    /// `cargo bench --features bench,prefill-router --bench stage_router`.
+    #[cfg(feature = "prefill-router")]
+    #[divan::bench(args = TURN_COUNTS)]
+    fn prefill_messages_from_body(bencher: divan::Bencher, turns: usize) {
+        let request = request(ROUTER_MODEL, turns);
+        let messages = &request["messages"];
+        bencher.bench(|| divan::black_box(shunt::bench_support::messages_from_body(messages)))
+    }
+
     /// The routed arm again, as a `Task` child sends it: the same body, plus the
     /// agent id, class, and type headers. Reads against `resolve_chain_routed`
     /// to price the hint parsing, the agent digest, and the latch read.

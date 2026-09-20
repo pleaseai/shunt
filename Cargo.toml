@@ -34,6 +34,14 @@ path = "src/main.rs"
 # `ui/README.md`.
 ui = ["dep:rust-embed", "dep:mime_guess"]
 
+# Learned prefill routing (`[models.router] type = "prefill_router"`, ADR-0005
+# §6). Upstream's `prefill-router` crate embeds Python through `pyo3` with
+# `auto-initialize`, so the build links libpython and the router needs
+# torch/transformers importable at run time. Off by default and never enabled
+# by release.yml; a from-source build opts in with
+# `cargo build --features prefill-router` (see docs/routing-algorithms.md §4).
+prefill-router = ["dep:prefill-router", "dep:switchyard-protocol"]
+
 # Expose `shunt::bench_support`, the facade `benches/stage_router.rs` needs to
 # reach the crate-private stage-router path (issue #554). Off by default so the
 # public API of a normal build is unchanged; `cargo bench --features bench`.
@@ -74,6 +82,12 @@ opentelemetry_sdk = "0.32"
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs", "http-proto", "reqwest-blocking-client", "reqwest-rustls-webpki-roots"] }
 opentelemetry-appender-tracing = "0.32"
 opentelemetry-semantic-conventions = "0.32"
+# `--features prefill-router` only: upstream's learned prefill router. Same git
+# source and exact rev as `switchyard-libsy` below, so the `Algorithm` trait it
+# implements is the one `switchyard_libsy::drive` consumes — two revs would be
+# two unrelated traits. It embeds Python via `pyo3` with `auto-initialize`, so
+# enabling the feature links libpython into the build.
+prefill-router = { git = "https://github.com/NVIDIA-NeMo/Switchyard", rev = "3ddea9d30174ad835cf505a93617ba251c8eb8dd", optional = true }
 prost = "0.13"
 rand = "0.9"
 regex-lite = "0.1"
@@ -118,6 +132,10 @@ sha2 = "0.10"
 # `switchyard-translation` is deliberately NOT a dependency — it would duplicate
 # src/model/responses_request.rs.
 switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard", rev = "3ddea9d30174ad835cf505a93617ba251c8eb8dd" }
+# `--features prefill-router` only: the neutral `Request`/`Metadata`/`Message`
+# types `switchyard_libsy::drive` takes. libsy re-exports none of them, and the
+# stage-router path needs none, so this stays gated with the router that does.
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard", rev = "3ddea9d30174ad835cf505a93617ba251c8eb8dd", optional = true }
 thiserror = "2"
 tiktoken-rs = "0.12.0"
 tokio = { version = "1", features = ["full"] }
@@ -149,6 +167,11 @@ zstd = { version = "0.13", default-features = false }
 libc = "0.2"
 
 [dev-dependencies]
+# `--features prefill-router` tests only: upstream's `Algorithm` trait is
+# declared with `#[async_trait]`, so a stub implementation has to be written
+# with the same macro. Unconditional here because a dev-dependency never
+# reaches a release binary.
+async-trait = "0.1"
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 hex = "0.4"
 libc = "0.2"

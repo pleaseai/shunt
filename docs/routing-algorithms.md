@@ -336,9 +336,175 @@ prefix a tier flip already forfeits (`stage-router.md` §4.1).
 The driven lane is untouched: `llm_classifier`, `composite`, `advisor`, and
 `stage_router.classifier` all make judge calls and are PR 4 onward, so a `type`
 naming one of them is a load error rather than a silent pass-through.
-`prefill_router` is PR 7, behind its own cargo feature. `[models.subagents]` is
-PR 3. The `shunt.router.judge_calls` metric and the `judges` list on `GET
+`prefill_router` landed later, behind its own cargo feature — §4.
+`[models.subagents]` is PR 3. The `shunt.router.judge_calls` metric and the `judges` list on `GET
 /routes` describe judge traffic and land with it (ADR-0005 §7).
 
 A request to an id whose `[[models]]` entry carries no `router` table routes
 exactly as it did before, and pays the same one `Option` check it paid before.
+
+## 4. `prefill_router` behind the `prefill-router` cargo feature (PR 7)
+
+### What it is
+
+Upstream's learned router: a classifier over the latest text user turn picks
+one of the entry's targets. The scoring model runs in-process — it is not a
+judge call to an upstream provider — and the entry is configured the same way
+in every build:
+
+```toml
+[[models]]
+id = "claude-learned"
+[models.router]
+type = "prefill_router"
+targets = ["claude-sonnet-4-6", "claude-opus-4-8"]   # public model ids, in the checkpoint's head order
+checkpoint = "/models/router.pt"                     # tensor-only router checkpoint; a relative path resolves against the process cwd
+device = "cpu"                                       # optional; auto-detected when omitted (cpu, cuda, cuda:0)
+cache_dir = "/var/cache/huggingface"                 # optional; Hugging Face cache for the encoder and tokenizer
+max_length = 2048                                    # optional; upstream's default is 2048
+batch_size = 32                                      # optional; upstream's default is 32
+```
+
+The key names are upstream's verbatim (`docs/reference/toml_schema.md`
+§`prefill_router` in the Switchyard repo), so its schema page transfers here
+unchanged — the same reason the `type` discriminator exists at all (§3).
+Targets are ordinary public model ids (ADR-0005 §2): each keeps its own
+failover chain, pool, and adapter, and both the one-hop rule and the
+unresolvable-target warning apply exactly as they do to every other type.
+`router` and `upstream_model` stay mutually exclusive.
+
+Validation is identical in **both** builds, feature on or off, because the
+config schema is: `targets` must be non-empty with no repeated target
+(compared after the trailing `[1m]` hint is stripped, as everywhere else),
+`checkpoint` must be non-empty, and `max_length` and `batch_size`, when
+present, must be greater than zero. A blank target and a target that is itself
+a router are rejected by the shared checks that already cover every type.
+
+### Why a cargo feature
+
+Upstream's `crates/prefill-router` embeds Python through `pyo3` with
+`auto-initialize`. Building it links libpython, and running it needs the
+router's Python packages — `torch`, `transformers`, `numpy`, `accelerate`
+(upstream's `crates/prefill-router/pyproject.toml`) — importable in the
+interpreter the binary embedded, plus a router checkpoint on disk. That is not
+a cost every shunt deployment can be made to pay, and upstream gates it the
+same way; there is no other shape (ADR-0005 fact 5).
+
+So `prefill-router` is a cargo feature, **off by default**. The release
+workflow builds `--features ui` and never enables it, so no release binary and
+no Homebrew install has the algorithm compiled in; a from-source build is the
+only way to get it:
+
+```sh
+cargo build --release --features prefill-router          # add ,ui for the dashboard
+```
+
+With the feature **off** the config still parses — the schema and its
+validation are unconditional — but the load fails, so `shunt check` reports it
+rather than a process starting without the algorithm it was configured for:
+
+```text
+models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)
+```
+
+### How it is hosted
+
+`prefill_router` is the first algorithm on ADR-0005 §1's **driven lane**:
+`proxy::failover` hands the request to `libsy::drive` before the ordinary
+ladder runs, and the outcome's selected target re-enters that ladder exactly
+as a stage tier does.
+
+- **Construction is per runtime state.** Each prefill entry builds upstream's
+  `PrefillRouterAlgo` when the runtime state is constructed — at startup and
+  on every hot reload. A failure there (a missing Python package, an
+  unreadable or incompatible checkpoint) is a startup error, and on a reload it
+  is a refused reload, so the running config stays up:
+
+  ```text
+  models entry <id> router type = "prefill_router" failed to load: <upstream error>
+  ```
+
+  `shunt check` only validates; it never loads a checkpoint.
+- **A reload forgets the sessions.** Upstream's per-session affinity map lives
+  inside the algorithm, so rebuilding it on reload drops which target each
+  session had.
+- **The request is translated down, not forwarded.** shunt turns the Anthropic
+  body into upstream's request shape carrying only `user` and `assistant`
+  roles and only `text` and `tool_result` blocks. That is all the algorithm
+  reads: it scores the latest text user turn, and its affinity tells a human
+  turn from a tool continuation by "every block in this message is a
+  `tool_result`".
+- **Session identity comes from the hint headers.**
+  `x-claude-code-session-id`, plus `x-claude-code-agent-id` for a delegated
+  child, so a tool continuation reuses the turn's decision instead of
+  re-running inference. A caller that sends no session id falls back to
+  upstream's own rule, a hash of the first user message.
+- **Inference is off the async path.** It runs on a blocking worker, one
+  prediction at a time per entry.
+- **`count_tokens` probes are driven too**, and on a continuation that is an
+  affinity hit rather than an inference.
+
+Three outcome labels appear on `x-gateway-route-source` and in
+`shunt.router.decisions{algorithm="prefill_router"}`:
+
+| Label | When |
+| :-- | :-- |
+| `prefill` | libsy drove the request — an inference or an affinity hit |
+| `prefill_fail_open` | The drive errored; the request went to the **default target**, which is upstream's rule: the first target |
+| `prefill_default` | A body-less resolution — `resolve_model`, discovery, `GET /routes` — has no turn to score, so it lands on the first target |
+
+`GET /routes` lists the entry with `algorithm: "prefill_router"` and its
+targets. The `shunt.stage_router.*` series never gain prefill rows: they are
+the signal-only router's, and this algorithm is not it.
+
+### Building it locally
+
+The feature needs an interpreter, its packages, and a checkpoint.
+
+**Point pyo3 at the right interpreter.** Its build script takes whatever
+`python3` it finds first on `PATH`. On macOS with a pyenv shim in front that
+was a Python 3.6 and the build failed outright. Set `PYO3_PYTHON` to the
+interpreter whose environment actually has the packages — 3.7 or newer, with a
+shared libpython:
+
+```sh
+uv venv && uv pip install torch transformers numpy accelerate
+PYO3_PYTHON=.venv/bin/python cargo build --features prefill-router
+```
+
+**Bring your own checkpoint.** Switchyard v0.3.0 ships no checkpoint, no
+exporter, and no encoder assets — upstream says so itself. The operator has to
+obtain or train a checkpoint compatible with the router, and `checkpoint` must
+name it; nothing in shunt produces one.
+
+The two error strings above are the two ways this shows up: the feature-off
+string means the binary was built without `--features prefill-router`, and the
+`failed to load` string means the feature is on but the Python environment or
+the checkpoint is not what the algorithm needs.
+
+### What CI proves
+
+`tests/prefill_router.rs` carries both halves.
+
+- The **feature-off load error** runs in the default build step, which is the
+  build every release binary is. That is the assertion that matters for
+  operators: a config naming `prefill_router` against a binary without the
+  feature fails to load with the message that names the feature.
+- The **live test skips itself** unless `SHUNT_PREFILL_ROUTER_CHECKPOINT`
+  names a checkpoint *and* `python3 -c "import torch, transformers"` succeeds.
+  CI installs no Python packages, so the feature is verified there as a
+  build-and-validate surface only — **CI does not exercise inference**, and a
+  green run is not evidence that a checkpoint loads.
+
+`benches/stage_router.rs` gains a `prefill_messages_from_body` arm behind the
+feature (`cargo bench --features bench,prefill-router`); CodSpeed does not run
+it.
+
+### Not in this PR
+
+Everything else on the driven lane. `llm_classifier` (all modes),
+`stage_router.classifier`, `composite`, `advisor`, and the `[models.subagents]`
+classifier form all make judge calls, and remain PR 3 through PR 6 of the
+ADR-0005 §8 sequence — naming one is still a load error. `prefill_router` is
+the exception only because its inference is local: it needs no internal model
+call, no dependency envelope, and no admission rework.

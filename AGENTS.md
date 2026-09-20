@@ -7,6 +7,11 @@
 - Run: `cargo run -- run` or `./target/release/shunt run`
 - Validate config: `cargo run -- check` or `./target/release/shunt check`
 - Token helper: `cargo run -- token`
+- Learned prefill router (off by default, absent from release binaries):
+  `cargo build --release --features prefill-router` (add `,ui` for the dashboard).
+  It embeds Python via pyo3, so set `PYO3_PYTHON` to an interpreter (>= 3.7, shared
+  libpython) whose environment has `torch`, `transformers`, `numpy`, and `accelerate`;
+  pyo3 otherwise takes the first `python3` on `PATH`.
 
 ## Testing
 
@@ -14,6 +19,11 @@
 - Format check: `cargo fmt --all --check`
 - Lints: `cargo clippy --all-targets --all-features -- -D warnings`
 - CI runs format, clippy, and tests with `RUSTFLAGS=-D warnings`.
+- `tests/prefill_router.rs` runs in the default-build CI step for the
+  feature-off load error; its feature-on live test skips itself unless
+  `SHUNT_PREFILL_ROUTER_CHECKPOINT` names a checkpoint and
+  `python3 -c "import torch, transformers"` succeeds, so CI never depends on
+  Python packages.
 - Benchmarks: `cargo bench`. `benches/stage_router.rs` additionally needs
   `--features bench`, which exposes `shunt::bench_support` — the facade that
   reaches the crate-private stage-router path. Without the feature that target

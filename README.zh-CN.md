@@ -189,6 +189,7 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 | :-- | :-- | :-- |
 | Anthropic 多账号池化 —— 粘性会话、配额感知轮换、预测性规避 | 拥有两个及以上账号的 `auth = "claude_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.sh/zh-cn/guides/anthropic-multi-account/) |
 | Codex 多账号池化 —— `x-codex-*` 窗口跟踪、慢启动爬坡、重新探测 | 拥有两个及以上账号的 `auth = "chatgpt_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.sh/zh-cn/guides/codex-multi-account/) |
+| 学习型 prefill 路由 (`type = "prefill_router"`) | 编译期选择启用 —— `cargo build --release --features prefill-router`(**默认关闭**;发布二进制和 Homebrew formula 都以 `--features ui` 构建,因此不包含它),此外还需要一个带 `type = "prefill_router"` 的 `[models.router]` 表、磁盘上的路由检查点,以及装有 `torch` 和 `transformers` 的 Python 环境 | [参考](https://shunt.sh/zh-cn/reference/configuration/#type--prefill_router) |
 | 入站 Codex 端点 —— 把 **Codex CLI** 指向 shunt 并纳入同一个池,还可按模型选择性路由 | `[server.codex_endpoint]` | [指南](https://shunt.sh/zh-cn/guides/inbound-codex-endpoint/) |
 | Claude 应用网关登录 —— OAuth 设备流、managed settings、按用户策略 | 具备 `public_url`、不少于 32 字节的 JWT 密钥,以及静态用户或 `[server.gateway.oidc]` 的 `[server.gateway]` | [指南](https://shunt.sh/zh-cn/guides/gateway-login/) |
 | 网关遥测接收 —— 原样转发受管客户端的 OTLP | 已配置的 `[server.gateway]`,以及 `forward_to` 非空的 `[server.gateway.telemetry]` | [参考](https://shunt.sh/zh-cn/reference/configuration/#servergatewaytelemetry可选) |
@@ -221,7 +222,7 @@ Claude Code 会把每一轮都发送到 Anthropic API。`shunt` 位于前面(通
 
 选择性由**每个请求上的 `model` id** 驱动,而 Claude Code 本来就允许你按上下文选择它:主会话的 `/model` 选择器、子 agent 定义的 `model:` frontmatter、面向所有子 agent 的 `CLAUDE_CODE_SUBAGENT_MODEL`,或用 `ANTHROPIC_CUSTOM_MODEL_OPTION` 向选择器添加一个自定义条目。因此“只分流这个 agent / 这个会话”是在 Claude Code 中决定的,而 shunt 只是遵从它收到的 model id —— 没有脆弱的按 agent 系统提示指纹识别。与全局模型替换代理不同,主会话可以留在 Claude 上,而只有你指名的模型才被分流。
 
-也可以让某一个 model id 自己做决定。[`[models.router]`](https://shunt.sh/zh-cn/guides/stage-router/) 条目用 `type` 键指定路由算法:`stage_router` 指定一个强力档位和一个高效档位,并根据对话最近的 **tool-result 元数据**(`tool_use.name` 与 `tool_result.is_error`,而非提示词文本)逐轮在两者之间选择;`auto` 是同一个路由器的上游预设;`random` 按权重把流量分到多个目标,并让同一个会话固定落在同一路;`noop` 返回一条空消息,用于冒烟测试。所有目标都是普通的公开 model id,各自保留自己的故障转移链、账号池和适配器(参见 [Switchyard 集成](https://shunt.sh/zh-cn/guides/switchyard/))。不配置路由器则行为不变。
+也可以让某一个 model id 自己做决定。[`[models.router]`](https://shunt.sh/zh-cn/guides/stage-router/) 条目用 `type` 键指定路由算法:`stage_router` 指定一个强力档位和一个高效档位,并根据对话最近的 **tool-result 元数据**(`tool_use.name` 与 `tool_result.is_error`,而非提示词文本)逐轮在两者之间选择;`auto` 是同一个路由器的上游预设;`random` 按权重把流量分到多个目标,并让同一个会话固定落在同一路;`noop` 返回一条空消息,用于冒烟测试;`prefill_router` 是一个读取最近一轮用户消息的学习型分类器,只有开启默认关闭的 `prefill-router` cargo feature 构建出的二进制才有它。所有目标都是普通的公开 model id,各自保留自己的故障转移链、账号池和适配器(参见 [Switchyard 集成](https://shunt.sh/zh-cn/guides/switchyard/))。不配置路由器则行为不变。
 
 ## Claude Code 集成(官方接口)
 

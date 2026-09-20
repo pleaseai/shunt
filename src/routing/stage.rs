@@ -161,6 +161,16 @@ pub(crate) struct StageContext<'a> {
     /// [`crate::routing::resolve_chain`] — every algorithm stamps one, so the
     /// two headers and the new counter do not have to know which ran.
     pub decided: Cell<Option<RouterOutcome>>,
+    /// What the driven `prefill_router` lane decided for this request, set by
+    /// `crate::proxy::failover` before resolution and only for an id whose
+    /// `[[models]]` entry is a `prefill_router`. `None` for every other
+    /// request — and for every request at all in a build without the
+    /// `prefill-router` feature.
+    ///
+    /// It is parked here rather than computed inside [`crate::routing::resolve_chain`]
+    /// because the drive is `async` (it runs inference on a blocking worker)
+    /// and resolution is not.
+    pub prefill: Option<crate::routing::outcome::PrefillDecision>,
 }
 
 impl StageContext<'_> {

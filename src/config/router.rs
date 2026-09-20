@@ -18,9 +18,11 @@
 //! [`crate::config::ConfigError::RemovedStageRouterTable`], which names the
 //! replacement.
 
+mod prefill;
 mod random;
 mod stage;
 
+pub use prefill::PrefillRouterConfig;
 pub use random::{RandomAffinity, RandomRouterConfig};
 pub use stage::{
     HandoffNotesConfig, StageRouterConfig, StageRouterPicker, ToolSemanticsConfig,
@@ -47,6 +49,10 @@ pub enum RouterConfig {
     Auto(AutoRouterConfig),
     /// A weighted split across public model ids.
     Random(RandomRouterConfig),
+    /// Upstream's learned prefill router: a checkpoint scores the latest text
+    /// user turn. Compiled in only under `--features prefill-router`; the table
+    /// parses either way (see [`PrefillRouterConfig`]).
+    PrefillRouter(PrefillRouterConfig),
     /// Makes no upstream call and synthesizes an empty terminal assistant
     /// message in the caller's mode.
     Noop {},
@@ -62,7 +68,7 @@ impl RouterConfig {
         match self {
             Self::StageRouter(stage) => Some(stage),
             Self::Auto(auto) => Some(auto.stage()),
-            Self::Random(_) | Self::Noop {} => None,
+            Self::Random(_) | Self::PrefillRouter(_) | Self::Noop {} => None,
         }
     }
 
@@ -72,6 +78,7 @@ impl RouterConfig {
             Self::StageRouter(_) => "stage_router",
             Self::Auto(_) => "auto",
             Self::Random(_) => "random",
+            Self::PrefillRouter(_) => "prefill_router",
             Self::Noop {} => "noop",
         }
     }
@@ -97,6 +104,11 @@ impl RouterConfig {
             Self::StageRouter(stage) => stage.named_targets(),
             Self::Auto(auto) => auto.stage().named_targets(),
             Self::Random(random) => random
+                .targets
+                .iter()
+                .map(|target| ("targets", target.as_str()))
+                .collect(),
+            Self::PrefillRouter(prefill) => prefill
                 .targets
                 .iter()
                 .map(|target| ("targets", target.as_str()))

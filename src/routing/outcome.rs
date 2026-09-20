@@ -27,6 +27,33 @@ pub(crate) enum RouteSource {
     /// A `random` router under `affinity = "session"` hashed the session id to
     /// this arm, so every turn of the session lands here.
     RandomSession,
+    /// libsy drove the upstream `prefill_router` algorithm for this request —
+    /// either its checkpoint scored the latest text user turn, or its own
+    /// user-turn affinity replayed the decision that turn earned.
+    #[cfg_attr(
+        not(feature = "prefill-router"),
+        allow(
+            dead_code,
+            reason = "constructed only by the driven lane, which the feature gates; the label and the `resolve_chain` arm stay in both builds so the two do not drift"
+        )
+    )]
+    Prefill,
+    /// The drive errored, so the request was routed to the default target
+    /// rather than refused. Learned routing is an optimization; a checkpoint
+    /// that fails to answer must not take the conversation down with it.
+    #[cfg_attr(
+        not(feature = "prefill-router"),
+        allow(
+            dead_code,
+            reason = "constructed only by the driven lane, which the feature gates; the label and the `resolve_chain` arm stay in both builds so the two do not drift"
+        )
+    )]
+    PrefillFailOpen,
+    /// No decision was driven for this resolution — a body-less
+    /// `resolve_model`, discovery, or `shunt check` — so the default target
+    /// answers, the same id upstream picks for a turn with no text user
+    /// message.
+    PrefillDefault,
     /// A `noop` router answered without an upstream call.
     Noop,
 }
@@ -38,6 +65,9 @@ impl RouteSource {
             Self::Stage(_, source) => source.as_label(),
             Self::Random => "random",
             Self::RandomSession => "random_session",
+            Self::Prefill => "prefill",
+            Self::PrefillFailOpen => "prefill_fail_open",
+            Self::PrefillDefault => "prefill_default",
             Self::Noop => "noop",
         }
     }
@@ -52,7 +82,12 @@ impl RouteSource {
     pub(crate) fn stage_labels(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Stage(tier, source) => Some((tier.as_label(), source.as_label())),
-            Self::Random | Self::RandomSession | Self::Noop => None,
+            Self::Random
+            | Self::RandomSession
+            | Self::Prefill
+            | Self::PrefillFailOpen
+            | Self::PrefillDefault
+            | Self::Noop => None,
         }
     }
 }
@@ -75,5 +110,19 @@ pub(crate) struct RouterOutcome {
     pub target: String,
     /// The `type` that decided, as a `/routes` and metric label.
     pub algorithm: &'static str,
+    pub source: RouteSource,
+}
+
+/// What [`crate::routing::prefill::decide`] produced for one request, parked on
+/// the [`crate::routing::stage::StageContext`] so the synchronous
+/// `resolve_chain` can read it.
+///
+/// Unconditional, in both builds: the field that carries it and the
+/// `resolve_chain` arm that reads it are the same code either way, so only the
+/// producer is feature-gated — without the feature nothing ever constructs one
+/// and the arm takes its `None` branch.
+#[derive(Debug, Clone)]
+pub(crate) struct PrefillDecision {
+    pub target: String,
     pub source: RouteSource,
 }

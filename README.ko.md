@@ -192,6 +192,7 @@ OpenAI의 Thibault Sottiaux는 다른 코딩 하네스를 통해 Codex를 실행
 | :-- | :-- | :-- |
 | Anthropic 멀티 계정 풀링 — 스티키 세션, 쿼터 인식 로테이션, 예측 회피 | 계정 2개 이상인 `auth = "claude_oauth"`; `[server.pool]`은 선택적 튜닝 | [가이드](https://shunt.sh/ko/guides/anthropic-multi-account/) |
 | Codex 멀티 계정 풀링 — `x-codex-*` 윈도우 추적, 슬로우 스타트 램프, 재프로브 | 계정 2개 이상인 `auth = "chatgpt_oauth"`; `[server.pool]`은 선택적 튜닝 | [가이드](https://shunt.sh/ko/guides/codex-multi-account/) |
+| 학습형 프리필 라우팅 (`type = "prefill_router"`) | 컴파일 타임 옵트인 — `cargo build --release --features prefill-router` (**기본 꺼짐** — 릴리스 바이너리와 Homebrew 포뮬러는 `--features ui`로 빌드되므로 들어 있지 않습니다). 여기에 `type = "prefill_router"`를 지정한 `[models.router]` 테이블, 디스크에 놓인 라우터 체크포인트, `torch`와 `transformers`가 설치된 Python 환경이 필요합니다 | [레퍼런스](https://shunt.sh/ko/reference/configuration/#type--prefill_router) |
 | 인바운드 Codex 엔드포인트 — **Codex CLI**를 shunt로 향하게 해 같은 풀에 태우고, 모델별 라우팅도 선택할 수 있음 | `[server.codex_endpoint]` | [가이드](https://shunt.sh/ko/guides/inbound-codex-endpoint/) |
 | Claude 앱 게이트웨이 로그인 — OAuth device flow, managed settings, 사용자별 정책 | `public_url`, 32바이트 이상 JWT 시크릿, 정적 사용자 또는 `[server.gateway.oidc]`를 갖춘 `[server.gateway]` | [가이드](https://shunt.sh/ko/guides/gateway-login/) |
 | 게이트웨이 텔레메트리 인제스트 — 관리 클라이언트의 OTLP를 그대로 릴레이 | 구성된 `[server.gateway]`와 `forward_to`가 비어 있지 않은 `[server.gateway.telemetry]` | [레퍼런스](https://shunt.sh/ko/reference/configuration/#servergatewaytelemetry-선택) |
@@ -224,7 +225,7 @@ Claude Code는 모든 턴을 Anthropic API로 보냅니다. `shunt`는 그 앞(`
 
 선택성은 **각 요청의 `model` id**로 결정되며, Claude Code는 이미 이를 컨텍스트별로 선택할 수 있게 해줍니다. 메인 세션은 `/model` 선택기, 서브에이전트 정의는 `model:` 프론트매터, 모든 서브에이전트는 `CLAUDE_CODE_SUBAGENT_MODEL`, 선택기에 커스텀 항목을 추가하려면 `ANTHROPIC_CUSTOM_MODEL_OPTION`을 사용합니다. 따라서 "이 에이전트만 / 이 세션만 우회"는 Claude Code에서 결정되고, shunt는 받은 model id만 그대로 존중합니다. 취약한 에이전트별 시스템 프롬프트 지문 인식은 없습니다. 전역 모델 교체 프록시와 달리, 메인 세션은 Claude에 그대로 두고 지정한 모델만 우회할 수 있습니다.
 
-model id 하나를 스스로 판단하게 만들 수도 있습니다. [`[models.router]`](https://shunt.sh/ko/guides/stage-router/) 항목은 `type` 키로 라우팅 알고리즘을 지정합니다. `stage_router`는 강한 티어와 효율 티어를 지정하고 대화의 최근 **tool-result 메타데이터**(`tool_use.name`과 `tool_result.is_error`, 프롬프트 텍스트가 아닙니다)로 턴마다 둘 중 하나를 고르며, `auto`는 같은 라우터를 업스트림 프리셋으로 돌리고, `random`은 가중치를 둔 타깃들로 트래픽을 나누되 한 세션은 같은 갈래에 머무르게 하고, `noop`은 빈 메시지로 답해 연결 점검에 씁니다. 타깃은 모두 평범한 공개 model id라서 각자의 페일오버 체인과 풀, 어댑터를 그대로 유지합니다([Switchyard 통합](https://shunt.sh/ko/guides/switchyard/)). 라우터를 설정하지 않으면 동작은 그대로입니다.
+model id 하나를 스스로 판단하게 만들 수도 있습니다. [`[models.router]`](https://shunt.sh/ko/guides/stage-router/) 항목은 `type` 키로 라우팅 알고리즘을 지정합니다. `stage_router`는 강한 티어와 효율 티어를 지정하고 대화의 최근 **tool-result 메타데이터**(`tool_use.name`과 `tool_result.is_error`, 프롬프트 텍스트가 아닙니다)로 턴마다 둘 중 하나를 고르며, `auto`는 같은 라우터를 업스트림 프리셋으로 돌리고, `random`은 가중치를 둔 타깃들로 트래픽을 나누되 한 세션은 같은 갈래에 머무르게 하고, `noop`은 빈 메시지로 답해 연결 점검에 쓰고, `prefill_router`는 가장 최근 사용자 턴을 읽는 학습형 분류기로 기본 꺼짐인 `prefill-router` 카고 피처를 켜고 빌드한 바이너리에서만 쓸 수 있습니다. 타깃은 모두 평범한 공개 model id라서 각자의 페일오버 체인과 풀, 어댑터를 그대로 유지합니다([Switchyard 통합](https://shunt.sh/ko/guides/switchyard/)). 라우터를 설정하지 않으면 동작은 그대로입니다.
 
 ## Claude Code 통합(공식 표면)
 
