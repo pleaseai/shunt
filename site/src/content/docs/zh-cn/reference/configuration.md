@@ -696,9 +696,14 @@ id,都会导致启动错误。未匹配到任何显式路由的目标只在加�
 
 ## 路由优先级
 
-匹配的 `[models.router]` 条目 → 匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
+在委派的回合中，匹配的 `[models.subagents]` 覆盖层 → 匹配的 `[models.router]` 条目 → 匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
 
-路由器排在最前，是因为它在 `[[models]]` 条目本身上完成匹配：指向带路由器 id 的请求由路由器
+覆盖层排在最前，且仅对委派的工作生效：指向带覆盖层 id 的 `Task` 子请求，会在该条目自身的
+路由器或映射被查询之前转向覆盖层的目标；而父会话自身的回合，以及 `compaction` 与
+`auxiliary` 回合，都会当这张表不存在来解析该条目。下面这条链，正是这些回合以及所有不带
+覆盖层的 id 所要解析的路径。
+
+路由器排在其次，是因为它在 `[[models]]` 条目本身上完成匹配：指向带路由器 id 的请求由路由器
 应答，路由器选定档位后再把**那个目标**交给其余的解析链。因此 `[[routes]]` 或
 条目应当写目标，而不是路由器 id。写了路由器 id 的精确条目永远不会被查询，并会在加载时
 发出警告。`[[route_prefixes]]` 条目不受影响：路由器只从该前缀中取走自己的 id。

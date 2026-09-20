@@ -933,9 +933,15 @@ Extra headers on every OTLP request (e.g. a hosted-collector token). Merged unde
 
 ## Routing precedence
 
-A matching `[models.router]` entry → a matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
+On a delegated turn, a matching `[models.subagents]` overlay → a matching `[models.router]` entry → a matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
 
-The router comes first because it is matched on the `[[models]]` entry itself: a
+The overlay comes first, and only for delegated work: a `Task` child's request
+for an overlaid id is diverted to the overlay's target before the entry's own
+router or map is consulted, while the parent's own turns — and `compaction` and
+`auxiliary` — resolve the entry as if the table were absent. Everything below is
+what they, and every id carrying no overlay, resolve through.
+
+The router comes next because it is matched on the `[[models]]` entry itself: a
 request for a router-backed id is answered by the router, which picks a tier and
 resolves **that target** through the rest of the ladder — so the target, not the
 router id, is what a `[[routes]]` entry should name. An exact entry naming the

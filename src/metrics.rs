@@ -635,7 +635,8 @@ pub fn record_stage_decision(model: &str, tier: &'static str, source: &'static s
 /// `model` is the `[[models]]` entry carrying the router, matched past
 /// `strip_context_window_hint` for the same reason
 /// [`record_stage_decision`] documents. `algorithm` and `source` are closed
-/// sets (`RouterConfig::algorithm`, `RouteSource::as_label`). `target` is a
+/// sets (`RouterConfig::algorithm`, `SubagentsConfig::algorithm`,
+/// `RouteSource::as_label`). `target` is a
 /// configured model id, so its cardinality is the operator's target list, not
 /// the client's traffic.
 ///

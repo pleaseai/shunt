@@ -735,9 +735,14 @@ by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate =
 
 ## 라우팅 우선순위
 
-일치하는 `[models.router]` 항목 → 일치하는 `[models.upstream_model]` 항목 → 정확한 `[[routes]]` 일치 → `[[route_prefixes]]` 프리픽스 일치 → `server.default_provider`.
+위임된 턴에서는 일치하는 `[models.subagents]` 오버레이 → 일치하는 `[models.router]` 항목 → 일치하는 `[models.upstream_model]` 항목 → 정확한 `[[routes]]` 일치 → `[[route_prefixes]]` 프리픽스 일치 → `server.default_provider`.
 
-라우터가 가장 앞에 오는 이유는 `[[models]]` 항목 자체에서 일치하기 때문입니다. 라우터가
+오버레이가 가장 앞에 오며, 위임된 작업에만 적용됩니다. 오버레이가 붙은 id로 온 `Task` 자식
+요청은 그 항목의 라우터나 맵을 참조하기 전에 오버레이의 타깃으로 전환되고, 부모 자신의 턴과
+`compaction`·`auxiliary` 턴은 그 테이블이 없는 것처럼 항목을 해석합니다. 아래 사다리는 그런
+턴과 오버레이가 없는 모든 id가 해석해 내려가는 경로입니다.
+
+라우터가 그다음에 오는 이유는 `[[models]]` 항목 자체에서 일치하기 때문입니다. 라우터가
 붙은 id로 온 요청은 라우터가 응답하며, 라우터는 티어를 고른 뒤 **그 타깃**을 나머지 사다리로
 해석합니다. 따라서 `[[routes]]` 항목이 지정해야 하는 것은 라우터 id가 아니라 타깃입니다.
 라우터 id를 지정한 정확 일치 항목은 조회되지 않으며 로드 시점에 경고가 남습니다.
