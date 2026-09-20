@@ -184,16 +184,17 @@ pub(crate) struct StageContext<'a> {
     pub consult: Cell<Option<ConsultJudge>>,
 }
 
-/// A judge consultation this turn earned, with the budget it must fit inside.
+/// A judge consultation this turn earned.
 ///
-/// Carries the count rather than the remaining allowance so the comparison
-/// stays with the caller that also holds the [`crate::config::CallBounds`]:
-/// this type is decided inside routing, and routing does not read bounds.
+/// Deliberately carries no budget snapshot. It used to hold the session's
+/// `judge_calls` as read here, and `proxy::failover` compared that number
+/// against `max_judge_calls` after the store lock had long been released —
+/// which is a check-then-act race across concurrent turns of one session. The
+/// budget is now reserved where it is read, by
+/// [`crate::routing::stage::StageRouterStore::try_reserve_judge_call`], so
+/// this type says only "this turn earned a consultation".
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ConsultJudge {
-    /// Judge calls this session had already made when the turn read its pin.
-    pub judge_calls_used: u32,
-}
+pub(crate) struct ConsultJudge;
 
 /// Resolve a router to the tier that serves this request.
 ///
@@ -241,9 +242,7 @@ pub(crate) fn select(
         && decision.source == StageSource::Scorer(DecisionSource::FallOpen)
         && !context.read_only
     {
-        context.consult.set(Some(ConsultJudge {
-            judge_calls_used: applied.judge_calls_used,
-        }));
+        context.consult.set(Some(ConsultJudge));
     }
     decision
 }

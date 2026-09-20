@@ -814,22 +814,17 @@ fn an_in_order_commit_still_replaces_the_pin() {
     );
 }
 
-/// The judge budget is a property of the pin, so it has to survive the
-/// decide/commit split: `apply` reports what the session had already spent and
-/// `commit` adds this turn's call to whatever the live entry holds. Stop
-/// charging in `commit` and the budget never rises, so `max_judge_calls` is
-/// unreachable and every turn of a session consults.
+/// The judge budget is a property of the session, so it has to survive the
+/// decide/commit split: a reservation charged on one turn is still spent on the
+/// next. Stop carrying `judge_calls` forward in `commit` and the budget resets
+/// every turn, so `max_judge_calls` is unreachable and every turn consults.
 #[test]
 fn judge_calls_accumulate_across_commits() {
     let store = StageRouterStore::new();
     let router = router();
     let start = Instant::now();
 
-    let StageApplied {
-        pin,
-        judge_calls_used,
-        ..
-    } = store.apply_session(
+    let StageApplied { pin, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -837,16 +832,14 @@ fn judge_calls_accumulate_across_commits() {
         false,
         start,
     );
-    assert_eq!(judge_calls_used, 0, "a first turn has spent nothing");
-    let mut pin = pin.expect("a session-bearing turn earns a pin");
-    pin.record_judge_call();
+    let pin = pin.expect("a session-bearing turn earns a pin");
+    assert!(
+        store.try_reserve_judge_call(&pin, 2, start),
+        "a first turn has spent nothing, so the first of two calls is free"
+    );
     store.commit(pin, start);
 
-    let StageApplied {
-        pin,
-        judge_calls_used,
-        ..
-    } = store.apply_session(
+    let StageApplied { pin, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -854,14 +847,14 @@ fn judge_calls_accumulate_across_commits() {
         false,
         start + Duration::from_secs(1),
     );
-    assert_eq!(judge_calls_used, 1, "the first turn's call is charged");
-    let mut pin = pin.expect("a session-bearing turn earns a pin");
-    pin.record_judge_call();
+    let pin = pin.expect("a session-bearing turn earns a pin");
+    assert!(
+        store.try_reserve_judge_call(&pin, 2, start + Duration::from_secs(1)),
+        "the second of two calls is still inside the budget"
+    );
     store.commit(pin, start + Duration::from_secs(1));
 
-    let StageApplied {
-        judge_calls_used, ..
-    } = store.apply_session(
+    let StageApplied { pin, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -869,15 +862,20 @@ fn judge_calls_accumulate_across_commits() {
         false,
         start + Duration::from_secs(2),
     );
-    assert_eq!(judge_calls_used, 2, "calls add up rather than replacing");
+    let pin = pin.expect("a session-bearing turn earns a pin");
+    assert!(
+        !store.try_reserve_judge_call(&pin, 2, start + Duration::from_secs(2)),
+        "calls add up rather than replacing, so a third is refused"
+    );
 }
 
-/// A turn whose pin lost the supersession race made its judge call, but the pin
-/// it was made against is no longer the session's — and the surviving pin
-/// carries its own count. Charging it anyway would let two concurrent turns
-/// spend a one-call budget twice over.
+/// A turn whose pin lost the supersession race still *made* its judge call, and
+/// the budget has to remember it. The charge therefore lands at reservation
+/// time and is carried by whichever pin survives — a count parked on the pin
+/// and added by `commit` is dropped whole when that pin is superseded, leaving
+/// the stored budget below the number of calls the gateway actually paid for.
 #[test]
-fn a_superseded_commit_does_not_charge_the_budget() {
+fn a_superseded_commit_does_not_refund_the_budget() {
     let store = StageRouterStore::new();
     let router = router();
     let start = Instant::now();
@@ -899,17 +897,17 @@ fn a_superseded_commit_does_not_charge_the_budget() {
         start + Duration::from_secs(1),
     );
 
-    let mut newer = newer.expect("the newer turn earns a pin");
-    newer.record_judge_call();
-    store.commit(newer, start);
+    // Both turns are in flight at once, and a budget of two admits both.
+    let older = older.expect("the older turn earns a pin");
+    let newer = newer.expect("the newer turn earns a pin");
+    assert!(store.try_reserve_judge_call(&older, 2, start));
+    assert!(store.try_reserve_judge_call(&newer, 2, start));
 
-    let mut older = older.expect("the older turn earns a pin");
-    older.record_judge_call();
+    // The newer pin commits first, so the older one is superseded and dropped.
+    store.commit(newer, start);
     store.commit(older, start);
 
-    let StageApplied {
-        judge_calls_used, ..
-    } = store.apply_session(
+    let StageApplied { pin, .. } = store.apply_session(
         "claude-auto",
         Some(SESSION),
         &router,
@@ -917,10 +915,90 @@ fn a_superseded_commit_does_not_charge_the_budget() {
         false,
         start + Duration::from_secs(2),
     );
-    assert_eq!(
-        judge_calls_used, 1,
-        "only the surviving pin's call is charged"
+    let pin = pin.expect("a session-bearing turn earns a pin");
+    assert!(
+        !store.try_reserve_judge_call(&pin, 2, start + Duration::from_secs(2)),
+        "both calls were made, so neither is refunded by the lost race"
     );
+}
+
+/// The reservation a session's *first* turn installs is its own bookkeeping,
+/// not a tier the session was served at. Read it back as the previous tier and
+/// a brand-new session reports a flip the moment its judge moves the tier —
+/// double-counting a session that moved once, from nothing.
+#[test]
+fn a_first_turn_reservation_is_not_reported_as_a_flip() {
+    let store = StageRouterStore::new();
+    let router = router();
+    let start = Instant::now();
+
+    let StageApplied { pin, .. } = store.apply_session(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        efficient(0.9),
+        false,
+        start,
+    );
+    let mut pin = pin.expect("a session-bearing turn earns a pin");
+    assert!(store.try_reserve_judge_call(&pin, 1, start));
+    // The verdict moves the tier the reservation was installed with.
+    pin.set_tier(StageTier::Capable);
+
+    assert_eq!(
+        store.commit(pin, start),
+        None,
+        "a session with no earlier turn has no tier to have moved from"
+    );
+}
+
+/// A reservation charged against a session that already has an entry leaves
+/// that entry's tier, dwell, and recency alone: it is one field no index
+/// orders. Install the pin instead of charging in place and the reserving turn
+/// would publish an undecided tier over the session's live one.
+#[test]
+fn a_reservation_on_a_live_pin_changes_nothing_else() {
+    let store = StageRouterStore::new();
+    let router = router();
+    let start = Instant::now();
+
+    let held = store.apply_now(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        capable(),
+        false,
+        start,
+    );
+    assert_eq!(held.tier, StageTier::Capable);
+
+    let StageApplied { pin, .. } = store.apply_session(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        efficient(0.9),
+        false,
+        start + Duration::from_secs(1),
+    );
+    let pin = pin.expect("a session-bearing turn earns a pin");
+    assert!(store.try_reserve_judge_call(&pin, 1, start + Duration::from_secs(1)));
+    assert_eq!(
+        store.len(),
+        1,
+        "the reservation charges the entry that is there rather than adding one"
+    );
+
+    // A third turn reading the pin still sees the committed tier, not the
+    // reserving turn's undecided estimate.
+    let StageApplied { decision, .. } = store.apply_session(
+        "claude-auto",
+        Some(SESSION),
+        &router,
+        efficient(0.9),
+        true,
+        start + Duration::from_secs(2),
+    );
+    assert_eq!(decision.tier, StageTier::Capable);
 }
 
 /// `min_dwell_turns` counts turns *served at this tier*, so a verdict that moves

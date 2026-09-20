@@ -216,6 +216,18 @@ impl Entries {
         }
     }
 
+    /// Charge one judge call to the entry under `key`, if one is there.
+    ///
+    /// Narrow for the same reason [`Entries::latch_compacted`] is: `judge_calls`
+    /// is ordered by no index, so raising it cannot desync the recency and
+    /// expiry orders. Every indexed field — `seq`, `last_seen`, `ttl` — is left
+    /// alone, which is what makes a reservation invisible to eviction ordering.
+    pub(crate) fn charge_judge_call(&mut self, key: &SessionKey) {
+        if let Some(session) = self.sessions.get_mut(key) {
+            session.judge_calls = session.judge_calls.saturating_add(1);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn contains_key(&self, key: &SessionKey) -> bool {
         self.sessions.contains_key(key)

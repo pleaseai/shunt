@@ -71,14 +71,6 @@ pub(crate) struct PendingPin {
     /// it would write a dead latch onto whatever fresh entry replaced it, for
     /// another full TTL, and repeat for as long as turns keep overlapping.
     observed_compaction: bool,
-    /// Whether the turn holding this pin actually consulted the judge.
-    ///
-    /// Private, and set only through [`PendingPin::record_judge_call`], so the
-    /// budget can only be charged by the code that spends it. `commit` adds it
-    /// to whatever the live pin already held; a superseded commit adds nothing,
-    /// which is correct — the call was made, but the pin it was made against is
-    /// no longer the session's, and the surviving pin carries its own count.
-    judged: bool,
 }
 
 impl PendingPin {
@@ -96,11 +88,6 @@ impl PendingPin {
             self.session.dwell_turns = 1;
         }
     }
-
-    /// Charge one judge call to this pin's session budget.
-    pub(crate) fn record_judge_call(&mut self) {
-        self.judged = true;
-    }
 }
 
 /// What one [`StageRouterStore::apply`] call decided, and what it displaced.
@@ -109,11 +96,6 @@ pub(crate) struct StageApplied {
     /// The pin this turn earned, parked until the request is admitted. `None`
     /// for a turn that records nothing: no session id, or a read-only probe.
     pub pin: Option<PendingPin>,
-    /// Judge calls the session had already made when this turn read its pin
-    /// (ADR-0005 §3). `0` for a stateless or unpinned turn, which is what gives
-    /// every sessionless caller a fresh budget — the budget is a property of a
-    /// pin, and a turn without one has nothing to exhaust.
-    pub judge_calls_used: u32,
 }
 
 impl StageApplied {
@@ -122,7 +104,6 @@ impl StageApplied {
         Self {
             decision,
             pin: None,
-            judge_calls_used: 0,
         }
     }
 }
@@ -253,11 +234,9 @@ impl StageRouterStore {
         };
         StageApplied {
             decision,
-            judge_calls_used: pinned.map_or(0, |session| session.judge_calls),
             pin: Some(PendingPin {
                 key,
                 observed_compaction: hints.context_compacted,
-                judged: false,
                 session: StageSession {
                     seq,
                     tier: decision.tier,
@@ -267,9 +246,10 @@ impl StageRouterStore {
                     ttl,
                     compacted,
                     capable_hold_remaining: resolved.capable_hold_remaining,
-                    // Overwritten by `commit`, which adds this turn's call to
-                    // whatever the *live* entry holds at write time rather than
-                    // to the snapshot this turn read.
+                    // Overwritten by `commit`, which carries forward whatever
+                    // the *live* entry holds at write time — including any
+                    // reservation [`StageRouterStore::try_reserve_judge_call`]
+                    // charged while this turn was in flight.
                     judge_calls: 0,
                 },
             }),
@@ -341,7 +321,14 @@ impl StageRouterStore {
             }
             return None;
         }
-        let previous = live.map(|current| current.tier);
+        // A reservation this very turn installed (see
+        // [`StageRouterStore::try_reserve_judge_call`]) carries this pin's own
+        // `seq`, and `seq` is unique per `apply`. It is this turn's own
+        // bookkeeping, not a tier the session was ever served at, so reading it
+        // back would report a flip away from a decision no request made.
+        let previous = live
+            .filter(|current| current.seq != pin.session.seq)
+            .map(|current| current.tier);
         let mut session = pin.session;
         // The latch only ever goes false -> true within one live pin. This turn
         // decided against a snapshot read before the lock was released, so a
@@ -350,21 +337,80 @@ impl StageRouterStore {
         // compacted one would clear a latch it never saw. The two documented
         // ways out — TTL expiry and a table reload — both make `live` `None`.
         session.compacted |= live.is_some_and(|live| live.compacted);
-        // The judge budget accumulates against the *live* entry, not the
-        // snapshot this turn read, for the same reason the flip is decided
-        // here: two concurrent turns of one session both read the same count,
-        // and adding each turn's own call to the entry that is actually there
-        // counts each call once. A superseded commit returns above without
-        // adding anything — that turn's pin is not the session's any more.
-        session.judge_calls = live
-            .map_or(0, |live| live.judge_calls)
-            .saturating_add(u32::from(pin.judged));
+        // Carried, never re-added: the budget is charged at reservation time
+        // by [`StageRouterStore::try_reserve_judge_call`], under the same lock
+        // acquisition that read it. Adding the turn's own call here instead is
+        // what let two concurrent turns of one session both pass a one-call
+        // budget, and let a superseded commit drop a call that was made.
+        session.judge_calls = live.map_or(0, |live| live.judge_calls);
         let scope = PinScope::of(&pin.key);
         entries.insert(pin.key, session);
         evict(&mut entries, scope, now);
         previous
             .filter(|previous| *previous != session.tier)
             .map(|previous| (previous, session.tier))
+    }
+
+    /// Reserve one judge call against this pin's session budget (ADR-0005 §3).
+    ///
+    /// Read-compare-increment under **one** acquisition of the store lock, and
+    /// that is the whole point. The budget used to be a snapshot
+    /// [`StageRouterStore::apply`] copied out and `proxy::failover` compared
+    /// against much later, with the judge's round trip in between: N concurrent
+    /// turns of one session all read the same count, all passed the gate, and
+    /// all called the judge — overshooting `max_judge_calls` by up to N-1. The
+    /// charge has to happen where the comparison does.
+    ///
+    /// The reservation is *persisted*, not parked on the pin, so it cannot be
+    /// refunded by commit ordering. A pin that loses the supersession race is
+    /// dropped whole, and a call charged to it would vanish with it — leaving a
+    /// stored count below the number of calls actually made.
+    ///
+    /// Two ways to persist it, and the branch is only about whether the session
+    /// already has an entry:
+    ///
+    /// * It has one — charge that entry in place. Nothing indexed moves, so the
+    ///   reservation is invisible to eviction order, and every later
+    ///   `commit` carries the raised count forward.
+    /// * It has none — the session's first turn. Install this pin now, carrying
+    ///   the reservation. Without it, N concurrent first turns would each find
+    ///   an empty store and each spend the whole budget. [`StageRouterStore::commit`]
+    ///   recognises the entry as its own by `seq` and does not read it back as a
+    ///   tier flip.
+    ///
+    /// Returns whether the call may be made. `false` is the refusal
+    /// `proxy::failover` reports as `budget_exhausted`.
+    pub(crate) fn try_reserve_judge_call(
+        &self,
+        pin: &PendingPin,
+        max_judge_calls: u32,
+        now: Instant,
+    ) -> bool {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The same liveness filter `apply` and `commit` read pins through: a
+        // pin from another config generation, or one past its TTL, is absent to
+        // the next request — and so is the budget it spent.
+        let live = entries
+            .get(&pin.key)
+            .copied()
+            .filter(|session| is_live(session, pin.session.fingerprint, now));
+        let used = live.map_or(0, |session| session.judge_calls);
+        if used >= max_judge_calls {
+            return false;
+        }
+        match live {
+            Some(_) => entries.charge_judge_call(&pin.key),
+            None => {
+                let mut session = pin.session;
+                session.judge_calls = used.saturating_add(1);
+                entries.insert(pin.key.clone(), session);
+                evict(&mut entries, PinScope::of(&pin.key), now);
+            }
+        }
+        true
     }
 
     /// [`StageRouterStore::apply`] with a session id in place of the full hint

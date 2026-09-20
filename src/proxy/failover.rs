@@ -160,18 +160,30 @@ pub(super) async fn forward(
     // The drive. Between admission and the pin commit, because both boundaries
     // matter: a refused caller must spend no judge call, and the pin must
     // record the tier the turn was actually dispatched at.
-    if let (Some((stage_cfg, classifier)), Some(consult), Some(outcome)) =
+    if let (Some((stage_cfg, classifier)), Some(_consult), Some(outcome)) =
         (driven, consult, router_outcome.as_mut())
     {
         let bounds = stage_cfg.bounds();
-        let verdict = if consult.judge_calls_used >= bounds.max_judge_calls {
-            // Checked before the call is charged, so the budget is a ceiling on
-            // calls made rather than on calls attempted.
+        // Reserved, not merely checked. The slot is taken under the same store
+        // lock acquisition that reads the count, so the budget is a ceiling on
+        // calls *made* even when several turns of one session are in flight at
+        // once — a snapshot compared here, with the judge's round trip between
+        // the read and the write, let every one of them pass a budget that
+        // admits one call.
+        let reserved = match pending.as_ref() {
+            Some(pin) => {
+                state
+                    .stage_router
+                    .try_reserve_judge_call(pin, bounds.max_judge_calls, started_at)
+            }
+            // A sessionless turn has no pin, so it has no budget to exhaust and
+            // nothing to charge: it makes one call, for itself, and the next
+            // request starts over. That is what the snapshot reported as `0`.
+            None => bounds.max_judge_calls > 0,
+        };
+        let verdict = if !reserved {
             routing::judge::JudgeOutcome::FailOpen("budget_exhausted")
         } else {
-            if let Some(pin) = pending.as_mut() {
-                pin.record_judge_call();
-            }
             // Cloned so the mint's borrow is of a local, leaving `outcome`
             // free to be rewritten by the verdict below.
             let router_id = outcome.model.clone();
