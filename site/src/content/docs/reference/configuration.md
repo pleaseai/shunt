@@ -739,10 +739,13 @@ base_threshold = 0.5
 | `base_threshold` | `0.5` | Lowest `p_solve` that keeps a supported task on the efficient tier, in `(0.0, 1.0]` |
 
 The judge target is an ordinary public model id held to the same one-hop rule
-as the tier targets, plus one more: it must resolve to credential-injecting
-routes. The call runs on the credential its own route injects, so a target
-resolving to a passthrough upstream has nothing to run on and is a startup
-error. None of the caller's credential slots travel with it — the reserved
+as the tier targets, plus one more: it must not resolve to a **passthrough**
+route. `auth = "passthrough"` means *forward the caller's credential*, and the
+caller's credential is exactly what a judge call strips — so such a target
+arrives with nothing and is a startup error. Every other auth mode is accepted,
+including `auth = "none"`: that mode means the endpoint needs no credential at
+all, so a local or self-hosted judge behind no auth is a supported
+configuration, not an error. None of the caller's credential slots travel with it — the reserved
 `x-shunt-*` slots and `cookie`, `authorization`, `x-api-key`, and
 `anthropic-beta` are all removed. The call consumes that target's own account
 pool quota, which is why a judge should map its own `[[models]]` entry.
@@ -879,9 +882,12 @@ rejected whatever the two types are, which is what keeps resolution one hop. A
 [`[models.router.classifier]`](#modelsrouterclassifier-optional) target is held
 to that same one-hop rule and to two more checks:
 `classifier.base_threshold` is range-checked exactly like
-`confidence_threshold`, and the judge must resolve to credential-injecting
-routes — a target whose effective chain contains a passthrough upstream is a
-startup error, because a judge has no credential to run on there. Any of the
+`confidence_threshold`, and the judge must not resolve to a passthrough route
+— a target whose effective chain contains a passthrough upstream is a startup
+error, because the caller's credential is stripped from a judge call and a
+passthrough route has nothing else to run on. `auth = "none"` is accepted: an
+endpoint that needs no credential is not the same as one whose credential went
+missing. Any of the
 six [per-call bounds](#per-call-bounds) set to `0` is a startup error naming
 the key.
 
