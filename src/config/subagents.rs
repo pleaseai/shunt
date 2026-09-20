@@ -355,6 +355,27 @@ mod validation_tests {
         );
     }
 
+    /// Interior whitespace, not just padding: no agent type on the wire carries
+    /// a space, so `"general purpose"` could never match and must be rejected
+    /// at load rather than sit in the map looking configured.
+    ///
+    /// Non-vacuity: narrow the predicate back to `trim() != key` and this goes
+    /// red while `a_padded_by_type_key_is_rejected` stays green.
+    #[test]
+    fn a_by_type_key_with_interior_whitespace_is_rejected() {
+        let mut host = mapped("claude-main");
+        host.subagents = Some(overlay(
+            "type = \"passthrough\"\ntarget = \"child\"\nby_type = { \"general purpose\" = \"child\" }",
+        ));
+
+        let error = validate(vec![host, mapped("child")]).unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::InvalidSubagentsType { key, .. } if key == "general purpose"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn a_blank_target_is_rejected_by_key() {
         let mut host = mapped("claude-main");

@@ -4395,9 +4395,11 @@ impl Config {
     /// and silently lose the policy it declares.
     ///
     /// `by_type` keys are matched byte-for-byte against the
-    /// `x-claude-code-agent-type` value, so a blank or padded key is rejected
-    /// rather than trimmed: the operator meant some type, and guessing which
-    /// is how the config and the wire drift apart.
+    /// `x-claude-code-agent-type` value, so a key that is blank or carries
+    /// whitespace *anywhere* is rejected rather than trimmed: no agent type on
+    /// the wire contains a space, so such a key could never match, and the
+    /// operator meant some type — guessing which is how the config and the
+    /// wire drift apart.
     fn validate_subagents(
         &self,
         model_id: &str,
@@ -4409,7 +4411,7 @@ impl Config {
             });
         }
         for agent_type in subagents.agent_types() {
-            if agent_type.trim() != agent_type || agent_type.is_empty() {
+            if agent_type.is_empty() || agent_type.chars().any(char::is_whitespace) {
                 return Err(ConfigError::InvalidSubagentsType {
                     model: model_id.to_string(),
                     key: agent_type.to_string(),
