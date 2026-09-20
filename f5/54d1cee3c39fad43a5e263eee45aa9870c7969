@@ -1,0 +1,47 @@
+docs/stage-router.md
+  s_ca7ca165950fb4::t_71889dddd316e9 495-497
+docs/upstreams-failover.md
+  s_ca7ca165950fb4::t_9d72738bbd3e9a 157-160
+site/src/content/docs/getting-started/why-shunt.md
+  s_e9c7bce466358a::t_96512f1e03c757 29
+site/src/content/docs/guides/stage-router.mdx
+  s_ca7ca165950fb4::t_c204f02b145663 188-190
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_e9c7bce466358a::t_2968969c20f0ff 29
+site/src/content/docs/ja/reference/configuration.md
+  s_ca7ca165950fb4::t_c38a9e3128c881 319
+site/src/content/docs/ko/getting-started/why-shunt.md
+  s_e9c7bce466358a::t_446f82b40d304d 29
+site/src/content/docs/ko/reference/configuration.md
+  s_ca7ca165950fb4::t_b2ee5ff8f0abfa 338,422-424
+site/src/content/docs/reference/configuration.md
+  s_ca7ca165950fb4::t_8c11f3bad39e10 453,602-604
+site/src/content/docs/zh-cn/getting-started/why-shunt.md
+  s_e9c7bce466358a::t_6bd4fc8b48aaaf 29
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_e9c7bce466358a::t_328f3f012d8720 319,401-402
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f554d1cee3c39fad43a5e263eee45aa9870c7969",
+  "prompts": {},
+  "sessions": {
+    "s_ca7ca165950fb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b21408a5-8401-4291-b8f1-fedffacab158",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e9c7bce466358a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52c4e84c-87ad-4bd6-aebe-df807ab7e91c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
