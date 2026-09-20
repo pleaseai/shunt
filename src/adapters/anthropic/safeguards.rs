@@ -54,13 +54,18 @@ pub(super) fn strip_safeguard_betas(headers: &mut HeaderMap, base_url: &str) {
     if is_first_party(base_url) {
         return;
     }
-    let Some(beta) = headers
-        .get("anthropic-beta")
-        .and_then(|value| value.to_str().ok())
-    else {
-        return;
-    };
-    if !beta.split(',').any(is_safeguard_beta) {
+    // The header is a comma list, and a client may legally send it as several
+    // field lines; `crate::headers::filtered` appends each one, so every field
+    // reaches here. Fold them together before filtering — the single
+    // remove-or-insert write-back below replaces the whole set, so it is only
+    // correct against the aggregate.
+    let beta = headers
+        .get_all("anthropic-beta")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(",");
+    if beta.is_empty() || !beta.split(',').any(is_safeguard_beta) {
         return;
     }
     let kept = beta
@@ -111,6 +116,16 @@ mod tests {
         headers
     }
 
+    /// Build the header from several field lines, as a client may legally send
+    /// a comma-list header and as `crate::headers::filtered` forwards it.
+    fn appended_headers(fields: &[&str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for field in fields {
+            headers.append("anthropic-beta", field.parse().unwrap());
+        }
+        headers
+    }
+
     #[test]
     fn a_third_party_host_loses_the_field_and_only_the_safeguard_beta() {
         let mut body = RequestBody::parse(RAW.as_bytes().to_vec()).unwrap();
@@ -136,6 +151,55 @@ mod tests {
         let mut headers = headers("dangerous-tool-use-2026-09-03");
         strip_safeguard_betas(&mut headers, THIRD_PARTY);
         assert!(headers.get("anthropic-beta").is_none());
+    }
+
+    #[test]
+    fn repeated_header_fields_keep_every_other_beta() {
+        let mut headers = appended_headers(&[
+            "claude-code-20250219,dangerous-tool-use-2026-09-03",
+            "interleaved-thinking-2025-05-14",
+        ]);
+        strip_safeguard_betas(&mut headers, THIRD_PARTY);
+        assert_eq!(
+            headers
+                .get_all("anthropic-beta")
+                .iter()
+                .map(|value| value.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["claude-code-20250219,interleaved-thinking-2025-05-14"]
+        );
+    }
+
+    #[test]
+    fn a_safeguard_beta_in_a_later_header_field_is_still_stripped() {
+        let mut headers = appended_headers(&[
+            "claude-code-20250219",
+            "dangerous-tool-use-2026-09-03,interleaved-thinking-2025-05-14",
+        ]);
+        strip_safeguard_betas(&mut headers, THIRD_PARTY);
+        assert_eq!(
+            headers
+                .get_all("anthropic-beta")
+                .iter()
+                .map(|value| value.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["claude-code-20250219,interleaved-thinking-2025-05-14"]
+        );
+    }
+
+    #[test]
+    fn a_header_field_of_only_the_safeguard_beta_does_not_drop_its_siblings() {
+        let mut headers =
+            appended_headers(&["dangerous-tool-use-2026-09-03", "claude-code-20250219"]);
+        strip_safeguard_betas(&mut headers, THIRD_PARTY);
+        assert_eq!(
+            headers
+                .get_all("anthropic-beta")
+                .iter()
+                .map(|value| value.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["claude-code-20250219"]
+        );
     }
 
     #[test]
