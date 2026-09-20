@@ -1,0 +1,27 @@
+docs/routing-algorithms.md
+  s_e9c7bce466358a::t_2c5fee96d12452 469,471,493-499,510
+src/proxy/failover.rs
+  s_e9c7bce466358a::t_c0836b95621ae3 163,167-169,172-174
+src/routing/stage.rs
+  s_e9c7bce466358a::t_ead4900a72bddf 187,189-191,193-196,244-246
+src/routing/stage/store.rs
+  s_e9c7bce466358a::t_687478e07a3eb1 74-81,99-103,112-116,125,256,260,270-272,344,353-361
+src/routing/stage/store/tests.rs
+  s_e9c7bce466358a::t_bcfffc85761690 817-821,828-832,840-842,845-849,857-859,862-864,872,875-878,880,902-903,905-907,910-912,921-922
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b65205600612784695c3184bf45cef48c00129ae",
+  "prompts": {},
+  "sessions": {
+    "s_e9c7bce466358a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52c4e84c-87ad-4bd6-aebe-df807ab7e91c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
