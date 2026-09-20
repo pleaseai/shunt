@@ -1,0 +1,80 @@
+site/src/content/docs/ja/reference/configuration.md
+  s_9cc94a42331484::t_1cceca2109da69 423-427,518-574,580-582,672-678
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_9cc94a42331484::t_ffa2c698adc858 174,176-180,191-192,194-195,231-273,279-281
+  s_9cc94a42331484::t_02f6897edae77e 68-72
+site/src/content/docs/reference/configuration.md
+  s_9cc94a42331484::t_4cf4b828378e35 624-629,722-779,785-787,878-886
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_9cc94a42331484::t_ce0e2ee43ade01 420,422-423,508-556,561-562,645-650
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_9cc94a42331484::t_42e3a15049b475 52-53,65
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_9cc94a42331484::t_42e3a15049b475 52-53,65
+site/src/content/docs/ja/reference/endpoints.md
+  s_9cc94a42331484::t_d69ace07f97036 12
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_9cc94a42331484::t_02f6897edae77e 60-62
+  s_9cc94a42331484::t_a0d3aa51ac1d17 147,149-152,160,162-163,195-229,234-235
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_9cc94a42331484::t_02f6897edae77e 65-68
+  s_9cc94a42331484::t_d84ab909097ad7 164,166-170,179-180,182-183,217-256,261-262
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_9cc94a42331484::t_206495ea57f48f 23-24
+  s_9cc94a42331484::t_0d3b8dc237934a 30,32,34-35,291-303,344-346
+  s_9cc94a42331484::t_42b2b9068bf6f9 347
+docs/routing-algorithms.md
+  s_9cc94a42331484::t_4a98ebc92fe726 94-95,337-344
+  s_9cc94a42331484::t_bacee831c5dcd2 348-520
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_9cc94a42331484::t_42e3a15049b475 52-53,65
+README.md
+  s_9cc94a42331484::t_e63d632eac68aa 226
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_9cc94a42331484::t_0d3b8dc237934a 31,33,35-36,303-306,309-316,360-362
+  s_9cc94a42331484::t_206495ea57f48f 23-25
+  s_9cc94a42331484::t_0961e15d9e9c83 363
+site/src/content/docs/reference/endpoints.md
+  s_9cc94a42331484::t_254fd7375db75d 12
+site/src/content/docs/ko/reference/endpoints.md
+  s_9cc94a42331484::t_d69ace07f97036 12
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_9cc94a42331484::t_d69ace07f97036 12
+README.zh-CN.md
+  s_9cc94a42331484::t_e63d632eac68aa 224
+site/src/content/docs/guides/opentelemetry.mdx
+  s_9cc94a42331484::t_254fd7375db75d 52-53,65
+README.ko.md
+  s_9cc94a42331484::t_e63d632eac68aa 227
+README.ja.md
+  s_9cc94a42331484::t_3b55fa35dbeebb 226
+site/src/content/docs/guides/switchyard.mdx
+  s_9cc94a42331484::t_206495ea57f48f 23-25
+  s_9cc94a42331484::t_3e9be3d0e81964 31,33,35-36,305-319,364-366
+  s_9cc94a42331484::t_565e4fd3566aac 367
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_9cc94a42331484::t_0d3b8dc237934a 27,29,31-32,270-280,320-322
+  s_9cc94a42331484::t_206495ea57f48f 20-21
+  s_9cc94a42331484::t_1d1d0524013af3 323
+site/src/content/docs/guides/stage-router.mdx
+  s_9cc94a42331484::t_bb6f5560f6cb9b 181,183-188,198-202,240-285,290-292
+  s_9cc94a42331484::t_02f6897edae77e 74-77
+site/src/content/docs/ko/reference/configuration.md
+  s_9cc94a42331484::t_34dfca9cf84c7b 442-446,536-588,594-595,682-688
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1e8ac578d713d0937d969ad601c1e51abf847346",
+  "prompts": {},
+  "sessions": {
+    "s_9cc94a42331484": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9a115796-af98-4563-955c-7b4260f09224",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
