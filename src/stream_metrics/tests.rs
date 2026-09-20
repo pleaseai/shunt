@@ -373,7 +373,7 @@ fn assert_terminal_with_usage(event: &str) {
             json!({"type": event, "response": {"usage": {
                 "input_tokens": 30,
                 "output_tokens": 12,
-                "input_tokens_details": {"cached_tokens": 7}
+                "input_tokens_details": {"cached_tokens": 7, "cache_write_tokens": 5}
             }}})
         )
         .as_bytes(),
@@ -382,7 +382,7 @@ fn assert_terminal_with_usage(event: &str) {
     assert_eq!(observer.tokens.input, Some(30));
     assert_eq!(observer.tokens.output, Some(12));
     assert_eq!(observer.tokens.cache_read, Some(7));
-    assert_eq!(observer.tokens.cache_creation, None);
+    assert_eq!(observer.tokens.cache_creation, Some(5));
     assert_eq!(observer.outcome(true), Outcome::Completed);
 }
 
