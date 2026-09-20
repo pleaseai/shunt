@@ -373,12 +373,17 @@ failover chain, pool, and adapter, and both the one-hop rule and the
 unresolvable-target warning apply exactly as they do to every other type.
 `router` and `upstream_model` stay mutually exclusive.
 
-Validation is identical in **both** builds, feature on or off, because the
-config schema is: `targets` must be non-empty with no repeated target
-(compared after the trailing `[1m]` hint is stripped, as everywhere else),
-`checkpoint` must be non-empty, and `max_length` and `batch_size`, when
+The **schema** is identical in both builds, feature on or off, and so are the
+rules a feature-on build enforces: `targets` must be non-empty with no repeated
+target (compared after the trailing `[1m]` hint is stripped, as everywhere
+else), `checkpoint` must be non-empty, and `max_length` and `batch_size`, when
 present, must be greater than zero. A blank target and a target that is itself
 a router are rejected by the shared checks that already cover every type.
+
+What differs is which of those a binary reports. Without the feature,
+`validate_router` refuses a `prefill_router` entry by naming the cargo feature
+*before* reaching any check above, so a release binary reports that one error
+and none of the key-level ones (see "With the feature **off**" below).
 
 ### Why a cargo feature
 

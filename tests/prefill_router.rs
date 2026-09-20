@@ -22,6 +22,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod common;
+
 /// A temp directory holding one `shunt.toml`, modelled on `tests/check_cli.rs`.
 struct TempDir(PathBuf);
 
@@ -84,6 +86,10 @@ codex = "gpt-5.2-codex"
 #[cfg(not(feature = "prefill-router"))]
 #[test]
 fn a_prefill_router_entry_is_refused_by_name_when_the_feature_is_off() {
+    // `TempDir::new` reads `TMPDIR` and `Config::load` reads the environment
+    // while resolving its own paths, so this test is an environment *reader*
+    // and takes the shared guard for its whole body (`tests/AGENTS.md`).
+    let _env = common::set_env_blocking(&[]);
     let dir = TempDir::new("off");
     let path = dir.config(&config_toml(Path::new("/models/router.pt")));
 
@@ -106,6 +112,7 @@ fn a_prefill_router_entry_is_refused_by_name_when_the_feature_is_off() {
 #[cfg(feature = "prefill-router")]
 #[test]
 fn a_prefill_router_entry_validates_when_the_feature_is_on() {
+    let _env = common::set_env_blocking(&[]);
     let dir = TempDir::new("on");
     let path = dir.config(&config_toml(Path::new("/models/router.pt")));
 
@@ -117,6 +124,11 @@ fn a_prefill_router_entry_validates_when_the_feature_is_on() {
 #[cfg(feature = "prefill-router")]
 #[tokio::test]
 async fn a_prefill_router_entry_loads_and_routes_through_libsy() {
+    // Taken before `live_checkpoint`, which reads `SHUNT_PREFILL_ROUTER_CHECKPOINT`
+    // and `PYO3_PYTHON`: the guard has to cover the reads that decide the skip,
+    // not just the ones after it. Async because `set_env_blocking` panics inside
+    // a runtime.
+    let _env = common::env_lock().await;
     let Some(checkpoint) = live_checkpoint() else {
         return;
     };
