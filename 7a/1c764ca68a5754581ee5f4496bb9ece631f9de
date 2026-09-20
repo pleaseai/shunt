@@ -1,0 +1,130 @@
+src/routing.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 354,477,699,770,864,877
+  s_917257fe9edae9::t_3a2cd672b3fbbf 807
+  s_917257fe9edae9::t_e5f421c1d64157 151-176
+  s_917257fe9edae9::t_817976a2c12b31 9
+src/proxy/failover/tests.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 792
+site/src/content/docs/ja/reference/configuration.md
+  s_917257fe9edae9::t_f882f709109faf 424-426
+  s_917257fe9edae9::t_1d778756a22d9a 625-691
+.please/docs/decisions/0005-routing-algorithm-extensions.md
+  s_917257fe9edae9::t_3354ed8e58179c 486-491
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_917257fe9edae9::t_bf3fabefe61b14 167-169
+benches/stage_router.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 118,353
+  s_917257fe9edae9::t_a63055b85fc373 400-413,415-425
+  s_917257fe9edae9::t_edd861c8e122a2 55,62-63,414
+tests/failover.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 137,1091
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_917257fe9edae9::t_bf3fabefe61b14 286-311
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_917257fe9edae9::t_051b9508972d27 177-179
+README.md
+  s_917257fe9edae9::t_98a97c9a529cde 226
+src/routing/context.rs
+  s_917257fe9edae9::t_ec99ae4b742d69 85-88
+site/src/content/docs/guides/stage-router.mdx
+  s_917257fe9edae9::t_6ab3c039ca287f 184-186
+tests/auto_mode_safeguards.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 97
+src/routing/subagents.rs
+  s_917257fe9edae9::t_9b694567f89326 1-50,54-169,171-216
+  s_917257fe9edae9::t_f81d0a416fab77 51-53
+  s_917257fe9edae9::t_9ec565298abd0d 170
+tests/subagents_passthrough.rs
+  s_917257fe9edae9::t_9f86cd4b3a039e 1-337
+src/routing/outcome.rs
+  s_917257fe9edae9::t_802a54e187a44a 63-66
+  s_917257fe9edae9::t_e75d65697553c5 32-37,48-49
+  s_917257fe9edae9::t_98c3e602a4bccd 67
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_917257fe9edae9::t_f7e9b8396850ff 150-152
+src/gateway/tests.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 1487,1559
+tests/noop_router.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 61
+docs/routing-algorithms.md
+  s_917257fe9edae9::t_41ac314526aa9e 340,345-419
+  s_917257fe9edae9::t_282c0efe4856af 146-150
+  s_917257fe9edae9::t_7785b0d74eaa89 108
+site/src/content/docs/ko/reference/configuration.md
+  s_917257fe9edae9::t_740778502166a1 443-445,638-699
+  s_917257fe9edae9::t_1f7f80de364232 700
+site/src/content/docs/guides/switchyard.mdx
+  s_917257fe9edae9::t_0a2062a92286d7 300-327
+README.ko.md
+  s_917257fe9edae9::t_012b299ce24f45 227
+site/src/content/docs/reference/client-environment.md
+  s_917257fe9edae9::t_4ef467e058e05b 51
+README.zh-CN.md
+  s_917257fe9edae9::t_a822a3345abfe8 224
+tests/passthrough.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 643
+src/discovery.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 321,329,422,430,496,543
+tests/responses_chain_stream.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 117,621
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_917257fe9edae9::t_1e5ab00d887379 298-325
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_917257fe9edae9::t_1d23413d46c247 420-422,605-660
+  s_917257fe9edae9::t_5d36f566741c4a 661
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_917257fe9edae9::t_f7e9b8396850ff 266-288
+src/config/subagents.rs
+  s_917257fe9edae9::t_964b858b9d93d0 1-76,78,80-214
+  s_917257fe9edae9::t_b48e1df02eda6d 215-401
+  s_917257fe9edae9::t_180ed8c1806b14 77,79
+src/config.rs
+  s_917257fe9edae9::t_012d01eca2fec5 2150-2159
+  s_917257fe9edae9::t_d629893664c0f8 2490,2492-2503
+  s_917257fe9edae9::t_c273922340b275 4225-4227,4232-4235
+  s_917257fe9edae9::t_92f223fb14011e 4388-4441
+  s_917257fe9edae9::t_564d5f05b4168b 4236,4240,4246
+  s_917257fe9edae9::t_1527d046528e19 21,37
+  s_917257fe9edae9::t_1c2e42dea415e9 2120-2127
+  s_917257fe9edae9::t_946dc6db3a0f53 4913,5954,7848,8026,8067,8093,8142,9072
+  s_917257fe9edae9::t_140987fb34d7fc 4370
+  s_917257fe9edae9::t_367f2cc979c65b 4509-4516,4518-4519
+  s_917257fe9edae9::t_a6387094c7e865 4517
+site/src/content/docs/reference/configuration.md
+  s_917257fe9edae9::t_88dbdda48d2727 625-626
+  s_917257fe9edae9::t_ecb79504eb94b4 832-898
+src/routing/subagents/resolve_tests.rs
+  s_917257fe9edae9::t_5cb0de64bd148c 1-243
+src/routes.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 219,240,285,316
+tests/opencode_zen.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 93
+tests/stage_router.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 123,164
+src/bench_support.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 210
+tests/inbound_auth.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 99
+docs/stage-router.md
+  s_917257fe9edae9::t_a534aad8738064 493-495
+README.ja.md
+  s_917257fe9edae9::t_35074aa0343be0 226
+src/auth/antigravity/mod.rs
+  s_917257fe9edae9::t_946dc6db3a0f53 704,842
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7a1c764ca68a5754581ee5f4496bb9ece631f9de",
+  "prompts": {},
+  "sessions": {
+    "s_917257fe9edae9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f9ca6f4d-3596-4c44-8521-8fd0bbace5ff",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
