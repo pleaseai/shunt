@@ -27,7 +27,9 @@
   then compare the `Record the measurement environment` step between the PR run
   and the baseline run on main. The runner image and Rust toolchain are pinned
   there so both sides match; the CPU model is **not** pinnable on GitHub-hosted
-  runners, and CodSpeed lists it first among the causes of a false regression.
+  runners, and CodSpeed names differing CPU models among its causes of a false
+  regression, recommending a consistent CPU type or its own Macro Runners
+  (<https://codspeed.io/docs/instruments/cpu/regression-causes>).
   Bumping either pin re-seeds the baseline on the next main run.
 
 ## Project Structure
