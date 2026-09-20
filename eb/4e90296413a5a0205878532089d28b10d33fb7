@@ -1,0 +1,35 @@
+README.ja.md
+  s_e9c7bce466358a::t_f7ce7da0f37568 226
+README.ko.md
+  s_e9c7bce466358a::t_a1754e5ec77a37 227
+README.md
+  s_e9c7bce466358a::t_b717d547f55b71 226
+README.zh-CN.md
+  s_e9c7bce466358a::t_fce2a03fe2b88b 224
+site/src/content/docs/ja/reference/configuration.md
+  s_e9c7bce466358a::t_d53879c7a7b055 729,731-737
+site/src/content/docs/ko/reference/configuration.md
+  s_e9c7bce466358a::t_d9dd73c3bc564d 738,740-745
+site/src/content/docs/reference/configuration.md
+  s_e9c7bce466358a::t_76461d2f6ee79c 936,938-944
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_e9c7bce466358a::t_be3dc64d496ea7 699,701-706
+src/metrics.rs
+  s_e9c7bce466358a::t_50593ff2d1fe10 638-639
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "eb4e90296413a5a0205878532089d28b10d33fb7",
+  "prompts": {},
+  "sessions": {
+    "s_e9c7bce466358a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52c4e84c-87ad-4bd6-aebe-df807ab7e91c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
