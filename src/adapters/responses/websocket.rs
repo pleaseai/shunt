@@ -700,6 +700,24 @@ mod tests {
     }
 
     #[test]
+    fn websocket_headers_omit_the_session_headers_for_an_empty_session_id() {
+        use super::{websocket_headers, Credential};
+
+        let headers = websocket_headers(
+            Credential::ChatGptOAuth {
+                access_token: "access-token".to_string(),
+                account_id: "account-id".to_string(),
+            },
+            Some(&hint()),
+            Some(""),
+        )
+        .expect("valid credential builds headers");
+        assert!(headers.get("session-id").is_none());
+        assert!(headers.get("thread-id").is_none());
+        assert_eq!(headers.get("originator").unwrap(), "codex_cli_rs");
+    }
+
+    #[test]
     fn websocket_headers_passthrough_sends_only_the_beta_protocol() {
         use super::codex_ws::WEBSOCKET_BETA_PROTOCOL;
         use super::{websocket_headers, Credential};

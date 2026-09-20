@@ -338,6 +338,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(translated["prompt_cache_key"], "meta_sess");
+
+        // A plain (non-JSON) user_id: the hash fallback feeds both sides, so
+        // the headers and the key still share one value.
+        let plain_body = serde_json::to_vec(&serde_json::json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "metadata": {"user_id": "plain-user"}
+        }))
+        .unwrap();
+        let derived = crate::model::responses_request::effective_session_id(
+            &serde_json::json!({"metadata": {"user_id": "plain-user"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(derived.len(), 16);
+        assert!(derived.chars().all(|c| c.is_ascii_hexdigit()));
+        let translated = crate::model::responses_request::translate_request(
+            &plain_body,
+            &route,
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(translated["prompt_cache_key"], derived);
+
+        // An escaped control character in the metadata session cannot be a
+        // header value; the hash fallback keeps header and key equal instead
+        // of failing the request.
+        let derived = crate::model::responses_request::effective_session_id(
+            &serde_json::json!({"metadata": {"user_id": "{\"session_id\":\"bad\\nid\"}"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(derived.len(), 16);
+        assert!(derived.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

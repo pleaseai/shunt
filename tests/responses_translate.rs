@@ -2083,6 +2083,27 @@ fn derives_prompt_cache_key_from_session_id() {
 }
 
 #[test]
+fn an_unheaderable_metadata_session_falls_back_to_the_hash() {
+    // A JSON-decoded session id can carry an escaped control character; it
+    // becomes the upstream affinity headers, so the derivation must fall back
+    // to the header-safe hash instead of failing the request.
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {"user_id": "{\"session_id\":\"bad\\nid\"}"}
+    }));
+    let key = out["prompt_cache_key"].as_str().unwrap();
+    assert_eq!(key.len(), 16);
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // Determinism: the hash is the plain-user_id fallback, same input shape.
+    let again = translate(json!({
+        "messages": [{"role": "user", "content": "other"}],
+        "metadata": {"user_id": "{\"session_id\":\"bad\\nid\"}"}
+    }));
+    assert_eq!(key, again["prompt_cache_key"].as_str().unwrap());
+}
+
+#[test]
 fn inbound_session_id_header_wins_the_prompt_cache_key() {
     // The inbound `x-claude-code-session-id` header is the conversation id
     // Claude Code sends on every turn; it must win over metadata so the body
