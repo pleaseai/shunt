@@ -205,6 +205,10 @@ async fn an_explore_child_lands_on_its_by_type_upstream() {
     if !can_bind_loopback() {
         return;
     }
+    // The config build below reads the environment, and `setenv` in a
+    // concurrent test can make an unrelated `getenv` look empty — so a
+    // reader takes the shared guard too (tests/AGENTS.md).
+    let _env = common::env_lock().await;
     let upstreams = Upstreams::start(0, 0, 1).await;
     let gateway = start_gateway(upstreams.config()).await;
 
@@ -245,6 +249,10 @@ async fn a_child_without_a_by_type_entry_lands_on_target() {
     if !can_bind_loopback() {
         return;
     }
+    // The config build below reads the environment, and `setenv` in a
+    // concurrent test can make an unrelated `getenv` look empty — so a
+    // reader takes the shared guard too (tests/AGENTS.md).
+    let _env = common::env_lock().await;
     let upstreams = Upstreams::start(0, 2, 0).await;
     let gateway = start_gateway(upstreams.config()).await;
 
@@ -280,6 +288,10 @@ async fn main_with_an_agent_id_stays_on_the_parent() {
     if !can_bind_loopback() {
         return;
     }
+    // The config build below reads the environment, and `setenv` in a
+    // concurrent test can make an unrelated `getenv` look empty — so a
+    // reader takes the shared guard too (tests/AGENTS.md).
+    let _env = common::env_lock().await;
     let upstreams = Upstreams::start(1, 0, 0).await;
     let gateway = start_gateway(upstreams.config()).await;
 
@@ -309,6 +321,10 @@ async fn compaction_and_auxiliary_stay_on_the_parent() {
     if !can_bind_loopback() {
         return;
     }
+    // The config build below reads the environment, and `setenv` in a
+    // concurrent test can make an unrelated `getenv` look empty — so a
+    // reader takes the shared guard too (tests/AGENTS.md).
+    let _env = common::env_lock().await;
     let upstreams = Upstreams::start(2, 0, 0).await;
     let gateway = start_gateway(upstreams.config()).await;
 
