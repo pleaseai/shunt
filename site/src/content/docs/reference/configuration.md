@@ -950,9 +950,16 @@ the gateway's managed-model policy have admitted the request. Inbound
 authentication ranges over every target the entry names rather than the one it
 will pick, so a caller must authenticate if any target injects a credential;
 the managed-model policy checks the requested id alone, so `availableModels`
-lists this id and never its private targets. An unauthenticated caller naming
-this id therefore triggers no inference and seeds no affinity for the session
-id it sent.
+lists this id and never its private targets. A caller either gate refuses
+therefore triggers no inference and seeds no affinity for the session id it
+sent.
+
+Read the first half of that as the condition it is. An entry whose targets are
+*all* passthrough injects no credential anywhere in its envelope, so inbound
+authentication has nothing to demand and admits every caller — including an
+anonymous one, which then drives the router. If the drive itself is what you
+mean to protect, give the entry a credential-injecting target or put it behind
+gateway login; `[server.auth]` alone does not gate an all-passthrough entry.
 
 **How a turn is decided.** Only `user` and `assistant` roles and only `text`
 and `tool_result` blocks are handed to the algorithm; it scores the latest text

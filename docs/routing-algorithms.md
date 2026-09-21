@@ -738,6 +738,12 @@ then replaces the provisional chain exactly as a judge verdict does.
   consultation, and a turn a `[models.subagents]` overlay diverts before the
   router runs is not driven at all. A refused caller therefore triggers no
   inference and seeds no affinity for a session id it never proved it owns.
+  Note what that does *not* say: an entry whose targets are all passthrough
+  injects no credential anywhere in its envelope, so `check_inbound_auth`
+  takes its `!injects_credential` path and refuses nobody — every caller,
+  anonymous included, reaches the drive. The ordering closes the window in
+  which a caller the gate *would* refuse got there first; it does not put a
+  gate where the configuration asked for none.
 - **`count_tokens` probes are driven too**, and on a continuation that is an
   affinity hit rather than an inference. Because the probe is a drive, it is
   admitted against the envelope like the turn it measures — not against its
