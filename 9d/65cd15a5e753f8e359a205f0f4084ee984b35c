@@ -1,0 +1,61 @@
+src/routing/subagents/resolve_tests.rs
+  s_ee22be117b2683::t_955b7726a35ff3 147
+src/proxy/failover/prefill_tests.rs
+  s_ee22be117b2683::t_9fcb8ed8d183b4 308-318,320,323
+  s_ee22be117b2683::t_d68b7d66c1cd35 1-35,42-83,85-89,91-98,101-102,113-140,143-179,184-307,319,321-322,324-331
+  s_ee22be117b2683::t_dd223bf92cec89 36-41,84,90,99-100,103-112,141-142
+  s_ee22be117b2683::t_73ce3cdefbedb6 180-183
+site/src/content/docs/ko/reference/configuration.md
+  s_ee22be117b2683::t_336f345c573ee8 752-755
+  s_ee22be117b2683::t_f7395dcd21c2aa 751
+src/routing/outcome.rs
+  s_ee22be117b2683::t_82be254453ec6e 126-128,130-132
+docs/routing-algorithms.md
+  s_ee22be117b2683::t_336f345c573ee8 511-518,697-701,730-740,742-744,809-811
+site/src/content/docs/ja/reference/configuration.md
+  s_ee22be117b2683::t_f7395dcd21c2aa 740-741
+  s_ee22be117b2683::t_336f345c573ee8 742-744
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_ee22be117b2683::t_336f345c573ee8 705-707
+  s_ee22be117b2683::t_f7395dcd21c2aa 704
+src/auth/slots/tests.rs
+  s_ee22be117b2683::t_d9c18814418d74 807
+  s_ee22be117b2683::t_9fcb8ed8d183b4 855-858
+src/routing.rs
+  s_ee22be117b2683::t_955b7726a35ff3 196-205,207-210,974,1008,1062,1107
+  s_ee22be117b2683::t_82be254453ec6e 1146-1150,1152,1158-1159,1164-1168,1172-1205,1210-1236,1240,1242
+  s_ee22be117b2683::t_2f384ee89a2874 1237-1239,1241,1243-1244
+.please/docs/decisions/0005-routing-algorithm-extensions.md
+  s_ee22be117b2683::t_336f345c573ee8 79,492-505
+src/routing/random/tests.rs
+  s_ee22be117b2683::t_955b7726a35ff3 53
+src/bench_support.rs
+  s_ee22be117b2683::t_955b7726a35ff3 158
+src/routing/prefill.rs
+  s_ee22be117b2683::t_d8708f1d7360d8 6-12,15-20,113-118,140-155
+  s_ee22be117b2683::t_916f5422c4b85a 156-157
+src/routing/stage.rs
+  s_ee22be117b2683::t_955b7726a35ff3 185-188,190-198
+site/src/content/docs/reference/configuration.md
+  s_ee22be117b2683::t_336f345c573ee8 948-953
+src/proxy/failover.rs
+  s_ee22be117b2683::t_73ce3cdefbedb6 95,121-122,124-127,144-150,152,238-255,953-955
+src/routing/stage/tests.rs
+  s_ee22be117b2683::t_955b7726a35ff3 256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9d65cd15a5e753f8e359a205f0f4084ee984b35c",
+  "prompts": {},
+  "sessions": {
+    "s_ee22be117b2683": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "048b0f77-ad5e-4ba2-a60f-571c2041d0f6",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
