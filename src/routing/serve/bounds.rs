@@ -40,6 +40,17 @@ impl std::fmt::Display for Oversized {
 
 impl std::error::Error for Oversized {}
 
+/// Why [`collect_bounded`] did not produce a whole body.
+#[derive(Debug)]
+pub(crate) enum CollectError {
+    /// The body passed `max_bytes`.
+    Oversized(Oversized),
+    /// The body stream failed part-way through. What had been read is a
+    /// truncated reply rather than the upstream's answer, so it is dropped
+    /// instead of returned.
+    Transport(axum::Error),
+}
+
 /// Read a whole body, refusing it the moment it passes `max_bytes`.
 ///
 /// Stops *reading* on the crossing rather than buffering the body and checking
@@ -48,18 +59,22 @@ impl std::error::Error for Oversized {}
 pub(crate) async fn collect_bounded(
     body: axum::body::Body,
     max_bytes: usize,
-) -> Result<Bytes, Oversized> {
+) -> Result<Bytes, CollectError> {
     let mut data = body.into_data_stream();
     let mut collected = Vec::new();
     let mut total = 0usize;
     while let Some(chunk) = data.next().await {
-        // A transport error ends the body; what was read so far is what there
-        // is, and the caller's JSON parse is what rejects a truncated reply.
-        // Treating it as oversized would name the wrong bound.
-        let Ok(chunk) = chunk else { break };
+        // A transport error truncates the body, and the truncation is not
+        // the caller's to diagnose from the bytes. Returning what was read
+        // hands back a partial reply whose JSON parse fails, so the call is
+        // recorded as `invalid_reply` — the judge answered with something
+        // malformed — when what actually happened is that the connection
+        // broke. Carried out as its own variant so the caller names the fault
+        // that occurred; treating it as oversized would name the wrong bound.
+        let chunk = chunk.map_err(CollectError::Transport)?;
         total = total.saturating_add(chunk.len());
         if total > max_bytes {
-            return Err(Oversized { max_bytes });
+            return Err(CollectError::Oversized(Oversized { max_bytes }));
         }
         collected.extend_from_slice(&chunk);
     }
@@ -246,11 +261,22 @@ fn take_complete_frames(buffer: &mut Vec<u8>) -> Vec<String> {
     // frame terminator the upstream never sent.
     let held_cr = buffer.last() == Some(&b'\r');
     let scan = &buffer[..buffer.len() - usize::from(held_cr)];
-    let Ok(text) = std::str::from_utf8(scan) else {
-        // A multi-byte character split across chunks. Nothing can be framed
-        // until its remaining bytes arrive, and the buffer keeps them.
-        return Vec::new();
+    let decoded: Cow<'_, str> = match std::str::from_utf8(scan) {
+        Ok(text) => Cow::Borrowed(text),
+        // The buffer ends inside a multi-byte character: the rest of it is
+        // still arriving, so nothing can be framed until it does, and the
+        // buffer keeps what it has.
+        Err(error) if error.error_len().is_none() => return Vec::new(),
+        // A malformed sequence, which no later chunk can complete. Holding
+        // the buffer for one would stall framing for the rest of the stream:
+        // every subsequent chunk re-scans the same bytes, fails the same way,
+        // and yields no frame — so the idle deadline stays armed against a
+        // stream that is still making progress, and the buffer grows until it
+        // hits `max_bytes`. Decoding lossily keeps it draining; a stream
+        // already carrying invalid UTF-8 has no exact reading to preserve.
+        Err(_) => Cow::Owned(String::from_utf8_lossy(scan).into_owned()),
     };
+    let text: &str = &decoded;
     let normalized: Cow<'_, str> = if text.contains('\r') {
         Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
     } else {

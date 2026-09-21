@@ -136,12 +136,18 @@ pub struct AntigravityAdapter;
 /// process: what this has to get right is arithmetic over the accumulated
 /// text, not anything about the pipe it arrives on.
 async fn drain_non_streaming<R: tokio::io::AsyncBufRead + Unpin>(
-    lines: &mut tokio::io::Lines<R>,
+    reader: &mut R,
     translator: &mut Translator,
     response_byte_cap: Option<usize>,
 ) -> Result<(), crate::adapters::UpstreamBodyTooLarge> {
-    while let Ok(Some(line)) = lines.next_line().await {
-        let _ = translator.on_line(&line);
+    let mut line = Vec::new();
+    while read_capped_line(reader, &mut line, response_byte_cap).await? {
+        // Invalid UTF-8 ends the drain, exactly as `Lines::next_line`'s
+        // `Err(InvalidData)` did before this read was bounded.
+        let Ok(text) = std::str::from_utf8(&line) else {
+            break;
+        };
+        let _ = translator.on_line(text);
         // Checked as the text grows rather than once the drain is over:
         // checking afterwards is checking after the memory has already been
         // spent, which is what the bound exists to prevent.
@@ -161,6 +167,74 @@ async fn drain_non_streaming<R: tokio::io::AsyncBufRead + Unpin>(
         }
     }
     Ok(())
+}
+
+/// Read one newline-terminated line into `line`, refusing it the moment it
+/// passes `max_bytes`.
+///
+/// [`tokio::io::Lines`] cannot express this: `next_line` grows its `String`
+/// through the newline before it returns, so a single oversized event — one
+/// large `text_delta`, or a terminal `response` — spends the memory the judge
+/// cap exists to deny before anything can check it, and the accumulated-text
+/// check above then reports a limit that was already exceeded. It is the same
+/// reason [`drain_stderr`] reads fixed-size chunks.
+///
+/// The per-line budget is the whole cap rather than what is left of it: an
+/// event's JSON carries field names, quotes, and escapes on top of the text it
+/// contributes, so charging it against the remaining *text* budget would
+/// refuse replies that sit comfortably within the limit. Peak use is therefore
+/// about twice the cap — the line being read, plus the text kept — which is a
+/// bound, where the point is that the old path had none.
+///
+/// Returns `false` at EOF, and on a read error, which ends the drain exactly
+/// as `next_line`'s `Err` did.
+async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    max_bytes: Option<usize>,
+) -> Result<bool, crate::adapters::UpstreamBodyTooLarge> {
+    line.clear();
+    loop {
+        // `fill_buf` borrows the reader, so the consume count leaves the block
+        // rather than being applied inside it.
+        let (consumed, complete) = {
+            let available = match reader.fill_buf().await {
+                Ok(available) => available,
+                Err(_) => return Ok(false),
+            };
+            if available.is_empty() {
+                // EOF. A trailing line the child never terminated is still a
+                // line, and its bytes were charged as they were buffered.
+                return Ok(!line.is_empty());
+            }
+            match available.iter().position(|byte| *byte == b'\n') {
+                Some(index) => {
+                    // Charged before the copy, so the cap bounds the
+                    // allocation instead of reporting it afterwards.
+                    if let Some(too_large) =
+                        crate::adapters::over_cap(line.len() + index, max_bytes)
+                    {
+                        return Err(too_large);
+                    }
+                    line.extend_from_slice(&available[..index]);
+                    (index + 1, true)
+                }
+                None => {
+                    if let Some(too_large) =
+                        crate::adapters::over_cap(line.len() + available.len(), max_bytes)
+                    {
+                        return Err(too_large);
+                    }
+                    line.extend_from_slice(available);
+                    (available.len(), false)
+                }
+            }
+        };
+        reader.consume(consumed);
+        if complete {
+            return Ok(true);
+        }
+    }
 }
 
 impl Adapter for AntigravityAdapter {
@@ -298,7 +372,7 @@ impl Adapter for AntigravityAdapter {
 
             let message_id = format!("msg_agy_{:016x}", rand::random::<u64>());
             let mut translator = Translator::new(&route.model, message_id);
-            let mut lines = BufReader::new(stdout).lines();
+            let mut reader = BufReader::new(stdout);
 
             if is_streaming {
                 // One deadline for the whole turn, not a fresh allowance per
@@ -316,7 +390,14 @@ impl Adapter for AntigravityAdapter {
                 // its `terminate` below is the one thing that would not run.
                 let child = std::sync::Arc::new(tokio::sync::Mutex::new(child));
                 let deadline_guard = AgyChild::arm_deadline(child.clone(), deadline);
-                let stream_state = (lines, translator, child, stderr_log, false, deadline_guard);
+                let stream_state = (
+                    reader.lines(),
+                    translator,
+                    child,
+                    stderr_log,
+                    false,
+                    deadline_guard,
+                );
                 let sse_stream = futures_util::stream::unfold(
                     stream_state,
                     move |(
@@ -478,7 +559,7 @@ impl Adapter for AntigravityAdapter {
 
             let drained = tokio::time::timeout(
                 HARD_TIMEOUT,
-                drain_non_streaming(&mut lines, &mut translator, response_byte_cap),
+                drain_non_streaming(&mut reader, &mut translator, response_byte_cap),
             )
             .await;
             if drained.is_err() {
@@ -1057,8 +1138,8 @@ mod tests {
         cap: Option<usize>,
     ) -> (Translator, Option<UpstreamBodyTooLarge>) {
         let mut translator = Translator::new("agy-test-model", "msg_test");
-        let mut lines = BufReader::new(transcript.as_bytes()).lines();
-        let outcome = drain_non_streaming(&mut lines, &mut translator, cap).await;
+        let mut reader = BufReader::new(transcript.as_bytes());
+        let outcome = drain_non_streaming(&mut reader, &mut translator, cap).await;
         (translator, outcome.err())
     }
 
@@ -1108,6 +1189,32 @@ mod tests {
             "the refusal must carry the marker `routing::serve` reads back"
         );
         assert!(error.failure.is_none(), "got {:?}", error.failure);
+    }
+
+    /// A single event larger than the cap is refused *while it is read*, not
+    /// after it has been buffered and handed to the translator.
+    ///
+    /// `oversized_transcript` above only crosses the cap in sum, so it passes
+    /// even when one line may allocate without bound — which is exactly the
+    /// hole this covers. Non-vacuity lives in the `text()` assertion, not in
+    /// the refusal: restore the `Lines::next_line` read and a refusal is still
+    /// returned (the accumulated-text check catches it one step later), but
+    /// the whole 4 KiB line has been copied and translated by then, so
+    /// `text()` comes back holding it and this goes red.
+    #[tokio::test]
+    async fn a_single_oversized_event_is_refused_before_it_is_translated() {
+        let mut transcript = delta_line(&"W".repeat(4096));
+        transcript.push('\n');
+
+        let (translator, refusal) = drain(&transcript, Some(1024)).await;
+
+        let too_large = refusal.expect("a single event past the cap is refused");
+        assert_eq!(too_large.max_bytes, 1024);
+        assert!(
+            translator.text().is_empty(),
+            "the event must be refused before `on_line` copies it; held {} bytes",
+            translator.text().len()
+        );
     }
 
     /// The same transcript with no cap is the client path, and it is

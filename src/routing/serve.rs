@@ -57,7 +57,9 @@ pub(crate) enum JudgeFailure {
     Timeout,
     /// The reply passed `judge_max_response_bytes`.
     Oversized,
-    /// The chain answered, or failed, with a non-success status.
+    /// The chain answered, or failed, with a non-success status — or its body
+    /// stream broke part-way through a reply it had already begun, which is a
+    /// failed upstream rather than a malformed answer.
     UpstreamStatus,
     /// The reply was not JSON, or was not a Messages response.
     InvalidReply,
@@ -224,13 +226,25 @@ async fn dispatch(
             bounds.judge_max_response_bytes,
         )
         .await
-        .map_err(|oversized| {
-            (
+        .map_err(|error| match error {
+            bounds::CollectError::Oversized(oversized) => (
                 JudgeFailure::Oversized,
                 LlmClientError::InvalidResponse {
                     source: Box::new(oversized),
                 },
-            )
+            ),
+            // The connection broke part-way through the reply. Recording it
+            // as `InvalidReply` — which is what the truncated bytes would
+            // have produced once their JSON parse failed — would name the
+            // judge's answer as malformed when the transport is what failed,
+            // and leave an operator reading `invalid_reply` in the metric for
+            // a network fault.
+            bounds::CollectError::Transport(source) => (
+                JudgeFailure::UpstreamStatus,
+                LlmClientError::Transport {
+                    source: Box::new(source),
+                },
+            ),
         })?;
         if !status.is_success() {
             // Collected first, and under the same cap: the error body is what

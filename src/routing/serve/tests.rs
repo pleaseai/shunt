@@ -19,7 +19,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_util::StreamExt;
 
-use super::bounds::{bound_stream, collect_bounded, BoundExceeded, GatedBounds};
+use super::bounds::{bound_stream, collect_bounded, BoundExceeded, CollectError, GatedBounds};
 
 fn gated(max_bytes: usize, idle_ms: u64, duration_ms: u64) -> GatedBounds {
     GatedBounds {
@@ -58,9 +58,37 @@ async fn an_oversized_body_is_refused() {
     let error = collect_bounded(body, 9)
         .await
         .expect_err("10 bytes does not fit in 9");
+    let CollectError::Oversized(oversized) = error else {
+        panic!("a body over the cap is refused as oversized, got {error:?}");
+    };
     assert_eq!(
-        error.max_bytes, 9,
+        oversized.max_bytes, 9,
         "the refusal names the cap that was crossed, not the body's size"
+    );
+}
+
+/// A body stream that breaks mid-reply is a failed transport, not a reply.
+///
+/// Returning the bytes read so far reports success for a truncated body, and
+/// the caller's JSON parse then records the call as `invalid_reply` — the
+/// judge answered with something malformed — for what is actually a network
+/// fault. Non-vacuity: return `Ok` on the stream error and the `expect_err`
+/// below goes red with `partial` in hand.
+#[tokio::test]
+async fn a_broken_body_stream_is_a_transport_failure_not_a_short_body() {
+    let stream = futures_util::stream::iter(vec![
+        Ok(Bytes::from_static(b"partial")),
+        Err(std::io::Error::other("connection reset by peer")),
+    ]);
+    let body = axum::body::Body::from_stream(stream);
+
+    let error = collect_bounded(body, 1024)
+        .await
+        .expect_err("a body that never finished arriving is not a whole body");
+
+    assert!(
+        matches!(error, CollectError::Transport(_)),
+        "a stream failure is its own fault, not the byte cap; got {error:?}"
     );
 }
 
@@ -195,6 +223,38 @@ async fn a_content_frame_split_across_chunks_still_counts_as_progress() {
         collected.last(),
         Some(&Err(BoundExceeded::Duration)),
         "a split content frame is still content once it completes"
+    );
+}
+
+/// A malformed byte is not an incomplete character, and must not stall
+/// framing for the rest of the stream.
+///
+/// `str::from_utf8` reports both failures the same way, so treating every one
+/// as "the character's remaining bytes are still arriving" holds the buffer
+/// for a sequence no later chunk can complete: each chunk re-scans it, fails
+/// identically, and yields no frame. The idle deadline then never refreshes,
+/// and a stream delivering content the whole time reports `Idle`. Reading
+/// `error_len()` separates the two, so the buffer drains and this reaches the
+/// wall clock instead. Non-vacuity: drop the `error_len()` arm and this goes
+/// red with `Idle` at 50ms.
+#[tokio::test(start_paused = true)]
+async fn a_malformed_sequence_does_not_stall_framing() {
+    // `0xff` is valid UTF-8 in no position, so `error_len()` is `Some(1)` —
+    // unlike a truncated multi-byte character, which reports `None`.
+    let chunk: &'static [u8] = b"event: content_block_delta\ndata: {\"t\":\"\xff\"}\n\n";
+    let stream = futures_util::stream::unfold(0usize, move |index| async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        Some((Bytes::from_static(chunk), index + 1))
+    });
+
+    let collected: Vec<_> = bound_stream(stream, gated(1024 * 1024, 50, 200))
+        .collect()
+        .await;
+
+    assert_eq!(
+        collected.last(),
+        Some(&Err(BoundExceeded::Duration)),
+        "a frame carrying an undecodable byte is still a delivered frame"
     );
 }
 
