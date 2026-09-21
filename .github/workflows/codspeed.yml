@@ -13,11 +13,17 @@ permissions:
 
 concurrency:
   group: codspeed-${{ github.ref }}
-  # Never cancel a run on main: main's run is what CodSpeed stores as the
-  # comparison baseline, so a cancelled one leaves that commit unmeasured and
-  # every later PR is compared against an older commit instead. 4 of the last
-  # 30 main runs were cancelled this way. PR runs stay cancellable — a
-  # superseded PR head has nothing to seed.
+  # Don't cancel an in-progress run on main: that run is what CodSpeed stores
+  # as the comparison baseline, so cancelling it leaves the commit unmeasured
+  # and later PRs compare against an older one. 4 of the last 30 main runs died
+  # that way. PR runs stay cancellable — a superseded PR head seeds nothing.
+  #
+  # This narrows the gap rather than closing it. A concurrency group holds one
+  # running and one pending execution, and a newly queued run replaces the
+  # pending one, so a burst of three or more pushes to main can still leave a
+  # middle commit unmeasured. Lifting that needs `queue: max`, which cannot be
+  # combined with the `cancel-in-progress: true` the PR side uses here — see
+  # issue #629.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
