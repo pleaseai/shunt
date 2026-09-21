@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.46.0](https://github.com/pleaseai/shunt/compare/v0.45.1...v0.46.0) (2026-09-21)
+
+
+### Features
+
+* **admin:** add routed dashboard shell and routes API ([#600](https://github.com/pleaseai/shunt/issues/600)) ([9c9002c](https://github.com/pleaseai/shunt/commit/9c9002c02bdda245dfa251013c37774386958dd2))
+* **admin:** coalesce the Codex CLI login with its managed pool account ([#625](https://github.com/pleaseai/shunt/issues/625)) ([fc43035](https://github.com/pleaseai/shunt/commit/fc4303569a13886da8d9811013d6ee74b1765f4b)), closes [#623](https://github.com/pleaseai/shunt/issues/623)
+* **anthropic:** pin the auto-mode classifier request to a configured model ([#608](https://github.com/pleaseai/shunt/issues/608)) ([bd2cf38](https://github.com/pleaseai/shunt/commit/bd2cf384f3a9094eb3ab500bb50bb43ff24a6b7b))
+* **antigravity:** isolate CLI accounts with a per-provider profile_dir ([#470](https://github.com/pleaseai/shunt/issues/470)) ([c106162](https://github.com/pleaseai/shunt/commit/c1061621bf4efd31291442c65dc28b1451df48af))
+* **cli:** import OpenCodex credentials into private snapshots ([#516](https://github.com/pleaseai/shunt/issues/516)) ([1fd1946](https://github.com/pleaseai/shunt/commit/1fd194641776b5a91840505d67c418b2b5d19d7d))
+* **config:** add opt-in [models.stage_router] schema and validation ([#544](https://github.com/pleaseai/shunt/issues/544)) ([1a7ee3a](https://github.com/pleaseai/shunt/commit/1a7ee3a84e250a1f12396b899121ea7785a81170))
+* **observability:** report what the stage router decided ([#572](https://github.com/pleaseai/shunt/issues/572)) ([e66d057](https://github.com/pleaseai/shunt/commit/e66d057308ec1c9d9079bda34e6da14bf1a54d15))
+* **plugins:** add a shunt Claude Mod answering /shunt:usage ([#573](https://github.com/pleaseai/shunt/issues/573)) ([9809428](https://github.com/pleaseai/shunt/commit/98094286d8cae75e3612d42a15a455afb0ed551e))
+* **proxy:** answer Claude Code's server-side auto-mode classifier on non-Anthropic routes ([#622](https://github.com/pleaseai/shunt/issues/622)) ([dc569a6](https://github.com/pleaseai/shunt/commit/dc569a66c34632cceeb484c11f60c36dd06a8ddc))
+* **routing:** [models.router] type discriminator and the pure lane (ADR-0005 PR 2) ([#621](https://github.com/pleaseai/shunt/issues/621)) ([b000df6](https://github.com/pleaseai/shunt/commit/b000df6eadc34b58b32d864c1fbb375b837424fa))
+* **routing:** extract stage signals from Claude Code tool results ([#545](https://github.com/pleaseai/shunt/issues/545)) ([78163bd](https://github.com/pleaseai/shunt/commit/78163bdc1e4ebee0064a6b7eaba67c9644fbc943))
+* **routing:** pin stage-router tiers per session with asymmetric hysteresis ([#546](https://github.com/pleaseai/shunt/issues/546)) ([cd87ae7](https://github.com/pleaseai/shunt/commit/cd87ae74ca3bbb2b3de5ff5eb174dee4aa9cad88))
+* **routing:** route a model id by its tool-result history, opt-in ([#547](https://github.com/pleaseai/shunt/issues/547)) ([21e18b5](https://github.com/pleaseai/shunt/commit/21e18b5722accfa090986e876434a89906d70bb0))
+* **routing:** RouterContext request hints, agent-scoped pin key, child budget, compaction latch (ADR-0005 PR 1) ([#603](https://github.com/pleaseai/shunt/issues/603)) ([7995f85](https://github.com/pleaseai/shunt/commit/7995f8580740193c72523b2105127173a0c3c1d1))
+* **site:** surface the changelog in the header nav strip ([#565](https://github.com/pleaseai/shunt/issues/565)) ([9d560ac](https://github.com/pleaseai/shunt/commit/9d560acc29d147889ce96e00ae56eccd926c5255))
+
+
+### Bug Fixes
+
+* **accounts:** treat a blank session header as no session ([#568](https://github.com/pleaseai/shunt/issues/568)) ([5154078](https://github.com/pleaseai/shunt/commit/5154078b65cd98fe8d03efd97ba2fb9a7c5c0916))
+* **anthropic:** do not forward thinking signatures shunt minted itself ([#586](https://github.com/pleaseai/shunt/issues/586)) ([7c12269](https://github.com/pleaseai/shunt/commit/7c12269a52bfd3face1dc5265c3285dd8e4f1adc))
+* **cursor:** require an authoritative terminal and prefer the wire tool call id ([cb1ea7b](https://github.com/pleaseai/shunt/commit/cb1ea7bd93841c08f7b16d787e40ab5e22590247))
+* **responses:** emulate stop_sequences on the Responses path ([#607](https://github.com/pleaseai/shunt/issues/607)) ([ce10e21](https://github.com/pleaseai/shunt/commit/ce10e2199c0c6ca27d1c85a82f0a592eafc3d95a))
+* **responses:** send codex session-id headers and a raw cache key ([#627](https://github.com/pleaseai/shunt/issues/627)) ([489a643](https://github.com/pleaseai/shunt/commit/489a6438fea085dfe42c5715a9fd282610ebc247))
+* **responses:** start streaming turns before the upstream first byte ([#549](https://github.com/pleaseai/shunt/issues/549)) ([d7c5f97](https://github.com/pleaseai/shunt/commit/d7c5f97e80a06330f6a9a203064770a0979b14f1))
+* **site:** close CJK bold spans that CommonMark refused to parse ([#567](https://github.com/pleaseai/shunt/issues/567)) ([0fd3113](https://github.com/pleaseai/shunt/commit/0fd3113bf28d40e8bb4610b0f927932e9b320568))
+
+
+### Performance Improvements
+
+* **routing:** benchmark the stage-router request path ([#578](https://github.com/pleaseai/shunt/issues/578)) ([6e7ccb1](https://github.com/pleaseai/shunt/commit/6e7ccb135a2f72296a349a1bc0be067b8cdcdc8f))
+* **routing:** evict stage-router sessions in O(log n) ([#580](https://github.com/pleaseai/shunt/issues/580)) ([02feba9](https://github.com/pleaseai/shunt/commit/02feba965a87a3f26e17f73a8df2cb98337acdcf))
+
 ## [0.45.1](https://github.com/pleaseai/shunt/compare/v0.45.0...v0.45.1) (2026-09-14)
 
 
