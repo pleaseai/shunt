@@ -57,12 +57,20 @@ impl Adapter for CursorAdapter {
         _uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
-        // A successful turn is relayed as a stream and never materialised, so
-        // there the bound genuinely falls to `routing::serve`'s collector on
-        // the relayed body. The one whole-body read is of an upstream *error*
-        // body, and that one needs the cap: it is read with `text()` in a
-        // single shot, so by the time the collector sees it the allocation has
-        // already happened and bounding it afterwards bounds nothing.
+        // Honoured on the two paths that materialise a whole upstream reply,
+        // and both of them are paths an internal call takes:
+        //
+        //  * an upstream *error* body, read with `text()` in a single shot, so
+        //    by the time `routing::serve`'s collector sees it the allocation
+        //    has already happened and bounding it afterwards bounds nothing;
+        //  * a successful *non-streaming* turn, which `aggregate_turn`
+        //    accumulates into one `String` before building the JSON body —
+        //    and that is the branch every judge call lands on, since
+        //    `routing::serve` strips `stream`.
+        //
+        // A client turn that asked for `stream` is relayed frame by frame and
+        // never materialised, so there the bound genuinely falls to that
+        // collector on the relayed body.
         response_byte_cap: Option<usize>,
     ) -> AdapterFuture<'a> {
         let _ = headers;
@@ -141,7 +149,7 @@ async fn forward(
     }
 
     if !want_stream {
-        return aggregate_turn(turn, &message_id, model).await;
+        return aggregate_turn(turn, &message_id, model, response_byte_cap).await;
     }
 
     let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
@@ -288,22 +296,49 @@ fn extract_cursor_tools(request: &Value) -> Vec<agent::AgentTool> {
 }
 
 /// Collect a full turn into a non-streaming Anthropic message JSON.
+///
+/// `response_byte_cap` bounds the reply this accumulates. This is the one
+/// success path that materialises a whole upstream reply — the streaming path
+/// relays frames and never holds them — and it is the path every internal
+/// `[models.router]` call takes, since `routing::serve` strips `stream`.
+/// Without the bound the only thing limiting the accumulated `String` is the
+/// judge's wall-clock deadline, so a chatty upstream could allocate freely
+/// until `judge_timeout_ms` instead of failing open at
+/// `judge_max_response_bytes`. `None` is the client path, byte for byte.
 async fn aggregate_turn(
     turn: CursorAgentTurn,
     message_id: &str,
     model: &str,
+    response_byte_cap: Option<usize>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let mut events = std::pin::pin!(turn.into_event_stream());
     let mut text = String::new();
     let mut tool_call: Option<(String, String, String)> = None;
+    // Counted across every accumulated piece rather than against `text.len()`
+    // alone, so a reply that is oversized in tool-call arguments is refused on
+    // the same bound as one that is oversized in prose.
+    let mut accumulated = 0usize;
     while let Some(event) = events.next().await {
         match event.map_err(map_cursor_stream_error)? {
-            CursorStreamEvent::TextDelta { text: delta } => text.push_str(&delta),
+            CursorStreamEvent::TextDelta { text: delta } => {
+                // Checked *before* the push: checking afterwards is checking
+                // after the memory has already been spent, which is what the
+                // bound exists to prevent.
+                accumulated = accumulated.saturating_add(delta.len());
+                if let Some(too_large) = crate::adapters::over_cap(accumulated, response_byte_cap) {
+                    return Err(crate::adapters::too_large_error(too_large));
+                }
+                text.push_str(&delta);
+            }
             CursorStreamEvent::ToolCall {
                 id,
                 name,
                 input_json,
             } => {
+                accumulated = accumulated.saturating_add(input_json.len());
+                if let Some(too_large) = crate::adapters::over_cap(accumulated, response_byte_cap) {
+                    return Err(crate::adapters::too_large_error(too_large));
+                }
                 tool_call = Some((id, name, input_json));
                 break;
             }
@@ -650,6 +685,20 @@ mod tests {
 
     fn text_turn_frames(text: &str) -> Vec<u8> {
         let mut frames = connect_frame(&field_ld(1, &field_ld(1, &field_str(1, text))));
+        frames.extend_from_slice(&connect::encode_connect_frame(b"{}", connect::FLAG_END));
+        frames
+    }
+
+    /// One turn carrying several text deltas, so a bound on the accumulated
+    /// reply can be exercised with every individual delta under it.
+    fn multi_delta_turn_frames(deltas: &[String]) -> Vec<u8> {
+        let mut frames = Vec::new();
+        for delta in deltas {
+            frames.extend(connect_frame(&field_ld(
+                1,
+                &field_ld(1, &field_str(1, delta)),
+            )));
+        }
         frames.extend_from_slice(&connect::encode_connect_frame(b"{}", connect::FLAG_END));
         frames
     }
@@ -1143,7 +1192,7 @@ mod tests {
     async fn aggregate_turn_builds_text_response() {
         let turn = turn_from_frames(text_turn_frames("hello")).await;
 
-        let (status, response) = aggregate_turn(turn, "msg_test", "cursor:test")
+        let (status, response) = aggregate_turn(turn, "msg_test", "cursor:test", None)
             .await
             .expect("turn should aggregate");
         let body = response_json(response).await;
@@ -1154,11 +1203,65 @@ mod tests {
         assert_eq!(body["content"][0]["text"], "hello");
     }
 
+    /// A successful non-streaming turn is bounded on an internal call.
+    ///
+    /// This is the branch every judge call takes — `routing::serve` strips
+    /// `stream`, and the Cursor adapter reads it defaulting to false — and
+    /// `aggregate_turn` materialises the whole reply into one `String`, so the
+    /// cap has to bite here or nowhere: by the time the relayed body reaches
+    /// `routing::serve`'s collector the allocation is already spent.
+    ///
+    /// The deltas are each *under* the cap and only cross it in sum, so a
+    /// per-delta check could not pass this for the wrong reason.
+    #[tokio::test]
+    async fn an_oversized_aggregated_turn_is_refused_on_a_bounded_call() {
+        let turn = turn_from_frames(multi_delta_turn_frames(&vec!["W".repeat(400); 8])).await;
+
+        let error = aggregate_turn(turn, "msg_test", "cursor:test", Some(1024))
+            .await
+            .expect_err("a reply past the cap is refused");
+
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyTooLarge>()
+                .is_some(),
+            "the refusal must carry the marker `routing::serve` reads back, so \
+             the judge resolves as `oversized` rather than `upstream_error`"
+        );
+        assert!(
+            error.failure.is_none(),
+            "an upstream that answered correctly and merely answered too much \
+             must not advance the failover chain; got {:?}",
+            error.failure
+        );
+    }
+
+    /// The same turn with no cap is the client path, and it is unchanged.
+    /// Without this, the assertion above would also pass if aggregation were
+    /// refused unconditionally.
+    #[tokio::test]
+    async fn an_unbounded_aggregated_turn_still_carries_the_whole_reply() {
+        let turn = turn_from_frames(multi_delta_turn_frames(&vec!["W".repeat(400); 8])).await;
+
+        let (_, response) = aggregate_turn(turn, "msg_test", "cursor:test", None)
+            .await
+            .expect("the client path aggregates the whole turn");
+        let body = response_json(response).await;
+
+        assert_eq!(
+            body["content"][0]["text"].as_str().map(str::len),
+            Some(3200),
+            "the client path is byte for byte what it was; got: {body}"
+        );
+    }
+
     #[tokio::test]
     async fn aggregate_turn_builds_tool_use_response() {
         let turn = turn_from_frames(tool_call_turn_frames("Read", "file_path", "/tmp/x")).await;
 
-        let (status, response) = aggregate_turn(turn, "msg_test", "cursor:test")
+        let (status, response) = aggregate_turn(turn, "msg_test", "cursor:test", None)
             .await
             .expect("turn should aggregate");
         let body = response_json(response).await;
@@ -1218,7 +1321,7 @@ mod tests {
     async fn aggregate_turn_ignores_reasoning_and_fills_empty_content() {
         let turn = turn_from_frames(reasoning_turn_frames("thinking")).await;
 
-        let (_, response) = aggregate_turn(turn, "msg_test", "cursor:test")
+        let (_, response) = aggregate_turn(turn, "msg_test", "cursor:test", None)
             .await
             .expect("turn should aggregate");
         let body = response_json(response).await;
@@ -1234,7 +1337,7 @@ mod tests {
     async fn aggregate_turn_maps_connect_error() {
         let turn = turn_from_frames(error_turn_frames("unauthenticated", "bad token")).await;
 
-        let error = aggregate_turn(turn, "msg_test", "cursor:test")
+        let error = aggregate_turn(turn, "msg_test", "cursor:test", None)
             .await
             .expect_err("Connect error should fail aggregation");
         let status = error.response.status();

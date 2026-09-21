@@ -170,6 +170,19 @@ pub(crate) fn too_large_error(too_large: UpstreamBodyTooLarge) -> AdapterError {
     }
 }
 
+/// Whether `accumulated` bytes have passed `cap`, as the marker
+/// `routing::serve` reads back to resolve a judge as `oversized`.
+///
+/// For the adapters that build a reply up piece by piece rather than reading
+/// one upstream body: [`collect_upstream_body`] cannot bound a reply that
+/// arrives as a translated event stream, but the accumulation still has to be
+/// bounded, and on the same marker so the two report identically. `None` is
+/// the client path and never refuses.
+pub(crate) fn over_cap(accumulated: usize, cap: Option<usize>) -> Option<UpstreamBodyTooLarge> {
+    let max_bytes = cap?;
+    (accumulated > max_bytes).then_some(UpstreamBodyTooLarge { max_bytes })
+}
+
 pub(crate) trait Adapter {
     /// Dispatch one request upstream.
     ///
@@ -179,9 +192,13 @@ pub(crate) trait Adapter {
     /// internal calls `routing::serve` makes, where `judge_max_response_bytes`
     /// has to bite before the body is materialised rather than after.
     ///
-    /// Adapters that never buffer a whole upstream reply have nothing to cap
-    /// and ignore it; the bound then falls to `routing::serve`'s own collector,
-    /// which reads the relayed stream under the same cap.
+    /// An adapter materialises a whole reply on two shapes, and both are
+    /// bounded here: a single whole-body read (see [`collect_upstream_body`])
+    /// and an accumulation built up from a translated event stream (see
+    /// [`over_cap`]). Only an adapter that does neither — one that relays every
+    /// byte onward without holding it — has nothing to cap and ignores it; the
+    /// bound then falls to `routing::serve`'s own collector, which reads the
+    /// relayed stream under the same cap.
     fn forward<'a>(
         &'a self,
         state: AppState,
