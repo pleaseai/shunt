@@ -105,6 +105,18 @@ impl AppState {
         boot_is_loopback: bool,
     ) -> Self {
         let current = shared.load();
+        // Keep the pool's strict-weekly bookkeeping gated on the live config:
+        // recording it costs hot-path work in `note_quota`/`note_codex_quota`,
+        // and nothing reads it unless a `[server.weekly_fallback]` policy can
+        // consume it. This runs on every snapshot, so a reload is picked up.
+        accounts.set_weekly_evidence_enabled(
+            current
+                .config
+                .server
+                .weekly_fallback
+                .as_ref()
+                .is_some_and(|policy| policy.enabled),
+        );
         Self {
             config: current.config.clone(),
             inbound_auth: current.inbound_auth.clone(),

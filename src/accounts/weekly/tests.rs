@@ -17,6 +17,15 @@ fn shared(utilization: &str, reset: u64) -> HeaderMap {
     ])
 }
 
+/// A pool with strict-weekly recording enabled, which `[server.weekly_fallback]`
+/// turns on through `AppState`. A bare `AccountPool::new()` leaves it off so the
+/// disabled policy pays no per-response header parsing.
+fn weekly_pool() -> AccountPool {
+    let pool = AccountPool::new();
+    pool.set_weekly_evidence_enabled(true);
+    pool
+}
+
 fn account(name: &str) -> AccountConfig {
     AccountConfig {
         name: name.to_string(),
@@ -176,7 +185,7 @@ fn strict_weekly_codex_uses_duration_and_percent_with_no_group_merge() {
 
 #[test]
 fn strict_weekly_requires_every_enabled_selected_identity() {
-    let pool = AccountPool::new();
+    let pool = weekly_pool();
     let a = account("a");
     let b = account("b");
     let accounts = [a.clone(), b.clone()];
@@ -211,7 +220,7 @@ fn strict_weekly_requires_every_enabled_selected_identity() {
 
 #[test]
 fn strict_weekly_retains_physical_store_and_inline_identity_boundaries() {
-    let pool = AccountPool::new();
+    let pool = weekly_pool();
     let a = AccountConfig {
         uuid: Some("uuid".into()),
         ..account("a")
@@ -243,7 +252,7 @@ fn strict_weekly_retains_physical_store_and_inline_identity_boundaries() {
 
 #[test]
 fn strict_weekly_ignores_other_limits_without_refresh_or_quota_import() {
-    let pool = AccountPool::new();
+    let pool = weekly_pool();
     let account = account("a");
     let key = account_key("claude", &account);
     pool.import_quotas([(
@@ -307,7 +316,7 @@ fn strict_weekly_ignores_other_limits_without_refresh_or_quota_import() {
 
 #[test]
 fn strict_weekly_usage_never_reuses_a_prior_reset_and_applies_clear_first() {
-    let pool = AccountPool::new();
+    let pool = weekly_pool();
     let account = account("a");
     let accounts = std::slice::from_ref(&account);
     let reset = unix_now() + 3600;
@@ -364,7 +373,7 @@ fn strict_weekly_usage_never_reuses_a_prior_reset_and_applies_clear_first() {
 
 #[test]
 fn strict_weekly_codex_replaces_invalid_and_resetless_evidence() {
-    let pool = AccountPool::new();
+    let pool = weekly_pool();
     let account = AccountConfig {
         store_family: Some(StoreFamily::Chatgpt),
         ..account("a")
@@ -412,7 +421,7 @@ fn strict_weekly_codex_replaces_invalid_and_resetless_evidence() {
 
 #[test]
 fn empty_usage_invalidation_does_not_create_or_observe_account_state() {
-    let pool = AccountPool::new();
+    let pool = weekly_pool();
     let account = account("empty");
     pool.invalidate_weekly_usage("claude", &account, &WeeklyUsageEvidence::Invalid);
     assert!(pool.entries.lock().unwrap().is_empty());

@@ -487,6 +487,16 @@ pub struct AccountPool {
     /// mark (every setter raises it first), while `true` may outlive the last
     /// mark and cost one extra scan. Never the reverse, so no clear is missed.
     any_needs_relogin: AtomicBool,
+    /// Whether the opt-in `[server.weekly_fallback]` policy is enabled in the
+    /// live config. The strict-weekly observation is recorded from one response
+    /// on the quota-update hot path ([`Self::note_quota`] and
+    /// [`Self::note_codex_quota`]) only while a policy can consume it: parsing
+    /// the weekly headers when the policy is absent cost about 20% on
+    /// `account_pool_quota_updates` for a signal nothing reads. Synced from the
+    /// current config on every [`crate::server::AppState::refreshed`], so a
+    /// reload that enables or disables the policy takes effect on the next
+    /// request.
+    weekly_evidence_enabled: AtomicBool,
     /// Needs-re-login verdicts recorded by store account rather than by
     /// [`AccountKey`]. The admin refresh probe knows an account by its store
     /// name and uuid, and an account the pool has never selected has no health
@@ -605,6 +615,21 @@ impl Drop for ReprobeReservation {
 impl AccountPool {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sync whether strict weekly evidence should be recorded from the live
+    /// config. Called from [`crate::server::AppState::from_shared`] on every
+    /// snapshot, so a reload is picked up without restarting.
+    pub(crate) fn set_weekly_evidence_enabled(&self, enabled: bool) {
+        self.weekly_evidence_enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether strict weekly evidence should be recorded. See
+    /// [`Self::weekly_evidence_enabled`].
+    fn weekly_evidence_enabled(&self) -> bool {
+        self.weekly_evidence_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Synchronize the upstream's current configured identities before an
@@ -992,10 +1017,12 @@ impl AccountPool {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let health = entries.entry(account_key(provider, account)).or_default();
             health.observed = true;
-            if let Some(observation) =
-                weekly::Observation::anthropic(headers, Instant::now(), unix_now())
-            {
-                health.strict_weekly = Some(observation);
+            if self.weekly_evidence_enabled() {
+                if let Some(observation) =
+                    weekly::Observation::anthropic(headers, Instant::now(), unix_now())
+                {
+                    health.strict_weekly = Some(observation);
+                }
             }
             let quota = &mut health.quota;
             let now = unix_now();
@@ -1097,10 +1124,12 @@ impl AccountPool {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let health = entries.entry(account_key(provider, account)).or_default();
             health.observed = true;
-            if let Some(observation) =
-                weekly::Observation::codex(headers, Instant::now(), unix_now())
-            {
-                health.strict_weekly = Some(observation);
+            if self.weekly_evidence_enabled() {
+                if let Some(observation) =
+                    weekly::Observation::codex(headers, Instant::now(), unix_now())
+                {
+                    health.strict_weekly = Some(observation);
+                }
             }
             let quota = &mut health.quota;
             let now = unix_now();
