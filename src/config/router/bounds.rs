@@ -83,32 +83,82 @@ impl CallBounds {
     }
 }
 
-impl StageRouterConfig {
-    /// The six bounds this table's internal calls run under.
-    pub fn bounds(&self) -> CallBounds {
-        CallBounds {
-            judge_timeout: Duration::from_millis(self.judge_timeout_ms),
-            judge_max_response_bytes: self.judge_max_response_bytes,
-            gated_max_bytes: self.gated_max_bytes,
-            gated_idle: Duration::from_millis(self.gated_idle_ms),
-            gated_max_duration: Duration::from_millis(self.gated_max_duration_ms),
-            max_judge_calls: self.max_judge_calls,
-        }
-    }
-
-    /// The same six, paired with the config keys that wrote them, for
-    /// [`CallBounds::validate`].
-    pub fn bound_keys(&self) -> [(&'static str, u64); 6] {
-        [
-            ("judge_timeout_ms", self.judge_timeout_ms),
-            (
-                "judge_max_response_bytes",
-                self.judge_max_response_bytes as u64,
-            ),
-            ("gated_max_bytes", self.gated_max_bytes as u64),
-            ("gated_idle_ms", self.gated_idle_ms),
-            ("gated_max_duration_ms", self.gated_max_duration_ms),
-            ("max_judge_calls", u64::from(self.max_judge_calls)),
-        ]
-    }
+/// The six `default = "…"` functions the driven tables share.
+///
+/// Exposed here rather than re-spelled per table so a default cannot drift
+/// between two tables that document the same key: every `[models.router]` type
+/// that makes internal calls carries the same six fields, and a `stage_router`
+/// whose `judge_timeout_ms` defaulted differently from an `llm_classifier`'s
+/// would be a difference no page describes.
+pub(crate) fn default_judge_timeout_ms() -> u64 {
+    DEFAULT_JUDGE_TIMEOUT_MS
 }
+
+pub(crate) fn default_judge_max_response_bytes() -> usize {
+    DEFAULT_JUDGE_MAX_RESPONSE_BYTES
+}
+
+pub(crate) fn default_gated_max_bytes() -> usize {
+    DEFAULT_GATED_MAX_BYTES
+}
+
+pub(crate) fn default_gated_idle_ms() -> u64 {
+    DEFAULT_GATED_IDLE_MS
+}
+
+pub(crate) fn default_gated_max_duration_ms() -> u64 {
+    DEFAULT_GATED_MAX_DURATION_MS
+}
+
+pub(crate) fn default_max_judge_calls() -> u32 {
+    DEFAULT_MAX_JUDGE_CALLS
+}
+
+/// Gives a table that carries the six bounds fields its `bounds`/`bound_keys`
+/// pair.
+///
+/// A macro rather than a trait because both halves are pure field reads: a
+/// trait would add a name every call site has to import to read a `Duration`
+/// out of a `u64`, and a blanket impl is impossible — the fields are not a
+/// type. What it buys is the one property the bounds depend on: the read side
+/// and the key names cannot disagree per table, because there is one copy of
+/// both.
+macro_rules! impl_call_bounds {
+    ($ty:ty) => {
+        impl $ty {
+            /// The six bounds this table's internal calls run under.
+            pub fn bounds(&self) -> $crate::config::CallBounds {
+                $crate::config::CallBounds {
+                    judge_timeout: std::time::Duration::from_millis(self.judge_timeout_ms),
+                    judge_max_response_bytes: self.judge_max_response_bytes,
+                    gated_max_bytes: self.gated_max_bytes,
+                    gated_idle: std::time::Duration::from_millis(self.gated_idle_ms),
+                    gated_max_duration: std::time::Duration::from_millis(
+                        self.gated_max_duration_ms,
+                    ),
+                    max_judge_calls: self.max_judge_calls,
+                }
+            }
+
+            /// The same six, paired with the config keys that wrote them, for
+            /// [`crate::config::CallBounds::validate`].
+            pub fn bound_keys(&self) -> [(&'static str, u64); 6] {
+                [
+                    ("judge_timeout_ms", self.judge_timeout_ms),
+                    (
+                        "judge_max_response_bytes",
+                        self.judge_max_response_bytes as u64,
+                    ),
+                    ("gated_max_bytes", self.gated_max_bytes as u64),
+                    ("gated_idle_ms", self.gated_idle_ms),
+                    ("gated_max_duration_ms", self.gated_max_duration_ms),
+                    ("max_judge_calls", u64::from(self.max_judge_calls)),
+                ]
+            }
+        }
+    };
+}
+
+pub(crate) use impl_call_bounds;
+
+impl_call_bounds!(StageRouterConfig);

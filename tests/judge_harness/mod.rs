@@ -4,6 +4,8 @@
 
 #![allow(dead_code)]
 
+pub(crate) mod driven;
+
 use std::{collections::BTreeMap, io::ErrorKind, net::SocketAddr, time::Duration};
 
 use serde_json::{json, Value};
@@ -184,6 +186,7 @@ pub(crate) fn driven_config_with(
                 classifier: Some(StageClassifierConfig {
                     target: "judge-alias".to_string(),
                     base_threshold: 0.5,
+                    classify_trigger: Default::default(),
                 }),
                 // Short enough that the stall tests finish inside their own
                 // assertion window.

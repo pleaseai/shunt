@@ -420,16 +420,15 @@ shunt が通常使う `kind` や `mode` ではなく `type` を使うのは、**
 | `random` | 重み付き抽選、既定ではセッション固定 | 読まない |
 | `noop` | 選ばない — 空のメッセージを返す | 読まない |
 | `prefill_router` | 直近のユーザーターンを読む学習済み分類器（`prefill-router` ビルドが必要） | 読む — ユーザーターンのテキスト |
+| `llm_classifier` | LLM ジャッジの判定。いつ尋ねるかは `classify_trigger` が決めます | 読む — パッケージのプロンプト、または自分で書いたプロンプトでトランスクリプトを読みます |
+| `composite` | LLM ジャッジがステージルーターの fall-open ティアを決めます | 読む — ジャッジはトランスクリプトを、シグナルは tool-result メタデータを |
 
-判定に LLM を呼ぶアルゴリズム（`llm_classifier`、`composite`、`advisor`）と、
-[`[models.subagents]`](#modelssubagentsオプション) オーバーレイの `llm_classifier` 形式は
-**まだ利用できません**。指定すると起動エラーになり、後続のリリースで追加されます。
-`prefill_router` は実装済みですが**コンパイル時にゲート**されており、既定で無効な
+**まだ利用できない**形はふたつで、指定すると起動エラーになります。`type = "advisor"` と、
+`llm_classifier` の `mode = "escalation"` です。どちらもルーティングを決めている最中に
+ターンを提供するため、バッファして再生するレーンが必要で、それは後続のリリースで追加され
+ます。`prefill_router` は実装済みですが**コンパイル時にゲート**されており、既定で無効な
 `prefill-router` カーゴフィーチャーを有効にしてビルドしたバイナリでのみ利用できます —
 [後述](#type--prefill_router)。
-判定モデルを呼ぶ形のうち現在提供されているのは、ステージルーター自身の
-[`[models.router.classifier]`](#modelsrouterclassifierオプション)
-フォールバックだけです。
 
 同じエントリに `[models.router]` と `[models.upstream_model]` を併記することはできません。
 
@@ -538,6 +537,7 @@ base_threshold = 0.5
 | :-- | :-- | :-- |
 | `target` | ✅ 必須 | ジャッジの公開モデル id。尋ねるだけで、クライアントに提供されることはありません |
 | `base_threshold` | `0.5` | サポート対象のタスクを効率ティアに留める `p_solve` の下限。`(0.0, 1.0]` |
+| `classify_trigger` | `every_request` | ジャッジを呼びうるタイミング。`every_request` は決着しなかったどのターンでも呼びます（ツールの継続ターンを含む）。`user_turn` は直近のメッセージが人間のユーザーターンのとき — `role: user` で、`tool_result` ではないブロックを少なくとも 1 つ持つとき — だけ呼びます。そのためツールの継続ターンは新たなジャッジ呼び出しを払わず、セッションのピンに乗ります。`new_session` はここでは `every_request` とまったく同じ挙動で、これは上流も同じことを述べています — このルーターは決定をすでに shunt 自身のセッションピンに保持しているからです |
 
 ジャッジのターゲットも通常の公開モデル id で、ティアのターゲットと同じ 1 ホップ規則に従い
 ます。さらに条件がひとつ加わります。**passthrough** ルートに解決されてはいけません。
@@ -566,9 +566,12 @@ base_threshold = 0.5
 
 #### 呼び出しごとの上限
 
-`[models.router]` の 6 つのキーが、そのエントリが行うすべての内部呼び出しに上限を課します。
-上限を超えるとアップストリーム呼び出しはキャンセルされます。各値は最低でも `1` で、`0` は
-そのキーを示す起動エラーです。
+6 つのキーが、エントリが行うすべての内部呼び出しに上限を課します。これらはその呼び出しを
+行うテーブルに置きます — `classifier` を持つ `stage_router`、`llm_classifier`、
+`composite` といった driven タイプの `[models.router]` と、classifier 形式の
+[`[models.subagents]`](#modelssubagentsオプション) オーバーレイ（自分の分を別に持ちます）
+です。上限を超えるとアップストリーム呼び出しはキャンセルされます。各値は最低でも `1` で、
+`0` はそのキーを示す起動エラーです。
 
 | キー | 既定値 | 意味 |
 | :-- | :-- | :-- |
@@ -583,6 +586,169 @@ base_threshold = 0.5
 **保持されるターンはまだ存在しません** — これらのキーが備えるバッファリングされた昇格
 ターンと advisor ターンは後続のリリースで追加されます。それまでこの 3 つがランタイムで
 課す上限はありません。
+
+#### `type = "llm_classifier"`
+
+シグナルが尽きたところだけを埋めるのではなく、LLM **ジャッジ**がターン全体を決めます。
+エントリにはジャッジと、ジャッジが選べる宛先と、判定の形を決める `mode` を書きます。
+
+`mode` は**必須**です。上流のスキーマは `capability` を既定値にしていますが、ここでは
+そうしません。3 つのモードはまったく別の原理でルーティングし、そのうち `escalation` は
+まだここにありません。`mode` を省いた設定が `capability` として読まれると、あとから
+`escalation` を追加したときに、その設定の意味が黙って変わってしまいます。
+`mode = "escalation"` は、実在する 2 つのモードを示す起動エラーです。
+
+**`mode = "capability"`** — パッケージのジャッジがタスクの解決確率を返します。その値が
+`base_threshold` 以上ならターンは `weak_target` へ、下回れば `strong_target` へ行きます。
+
+```toml
+[[models]]
+id = "claude-judged"
+
+[models.router]
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+base_threshold = 0.5
+# threshold_step = 0.0
+# classify_trigger = "every_request"
+# message_hash_fallback = false
+# recent_turn_window = 3
+# max_output_tokens = 4096
+# prompt = "…"
+```
+
+| キー | 既定値 | 意味 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必須 | `llm_classifier` |
+| `mode` | ✅ 必須 | `capability` |
+| `classifier_target` | ✅ 必須 | ジャッジの公開モデル id。尋ねるだけで提供はしません |
+| `strong_target` | ✅ 必須 | ジャッジが自信を持てなかったタスクが行くモデル id |
+| `weak_target` | ✅ 必須 | ジャッジが解けると見たタスクが行くモデル id |
+| `base_threshold` | ✅ 必須 | それでも `weak_target` に送る解決確率の下限。`(0.0, 1.0]` |
+| `threshold_step` | `0.0` | 有限かつ非負。不確実または一致しない判定には 1 回、サポート外の判定には 2 回加算されます。`base_threshold + 2 × threshold_step` は `1.0` 以下である必要があります |
+| `prompt` | パッケージのプロンプト | パッケージの capability プロンプトを置き換えます。スキーマは構造化出力の設定として別に送られるため、プロンプトに `{{RESPONSE_SCHEMA}}` を含めてはならず、空白だけでもいけません |
+
+**`mode = "custom"`** — プロンプトと JSON Schema を自分で与え、JSON Pointer が判定から
+**モデルグループ名**を取り出します。そのグループの最初のモデルがターンを処理します。
+`any` と `judge` は予約された必須のグループで、それ以外の名前はすべてあなたのものです。
+1 つのエントリが 3 つ以上のモデルから選べるのはこのためです。
+
+```toml
+[models.router]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+prompt = "このターンのターゲットをちょうど 1 つ選んでください。レスポンススキーマに一致する JSON だけを返してください。"
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+| キー | 既定値 | 意味 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必須 | `llm_classifier` |
+| `mode` | ✅ 必須 | `custom` |
+| `models.any` | ✅ 必須 | 選択されうるすべての宛先。他の回答グループのターゲットはすべてここにも現れる必要があり（`judge` は対象外）、欠けていると起動エラーです |
+| `models.judge` | ✅ 必須 | 順序付きのジャッジ候補を 1 つ以上。尋ねるだけで提供はしません |
+| `models.<名前>` | — | 自分で名付けたグループ。判定がその名前を挙げると、グループの最初のモデルが選ばれます |
+| `default_target` | ✅ 必須 | 使える判定が得られなかったときのグループ。`judge` を除く設定済みのグループで、空であってはいけません |
+| `prompt` | ✅ 必須 | ジャッジのシステムプロンプト。空白だけではいけず、`{{RESPONSE_SCHEMA}}` を含めてもいけません — スキーマは別に送られます |
+| `response_schema` | ✅ 必須 | 内側の JSON Schema を収めた TOML 文字列。JSON オブジェクトとしてパースできる必要があり、プロバイダー側のラッパーは shunt が付けます |
+| `policy` | ✅ 必須 | `{ type = "target_selector", selector = "…" }` の形。`selector` は `/target` のような、判定の内部を指す JSON Pointer です |
+
+両モードが共通して持つキーと、6 つの[呼び出しごとの上限](#呼び出しごとの上限)は次のとおり
+です。
+
+| キー | 既定値 | 意味 |
+| :-- | :-- | :-- |
+| `classify_trigger` | `every_request` | ジャッジを走らせるタイミング。`every_request` はツールの継続ターンも含めて毎ターン判定します。`user_turn` は新しい人間のユーザーターンごとに判定し、その間のツール呼び出しではそのターゲットを保持します。`new_session` は一度だけ判定し、セッション中はそのターゲットを使い続けます |
+| `message_hash_fallback` | `false` | セッション id を送らないクライアント向けに、最初のユーザーメッセージで保持のキーを取ります。`classify_trigger = "new_session"` が必要で、他のトリガーで設定すると起動エラーです |
+| `recent_turn_window` | 未設定 | 設定すると、ジャッジが追加で見る直近のターン数。最低でも `1` |
+| `max_output_tokens` | `4096` | ジャッジの判定に対する完了トークンの上限。最低でも `1` |
+
+**ジャッジが答えないとき。** ジャッジ呼び出しがどのように失敗しても — タイムアウト、サイズ
+超過、アップストリームエラー、`400`、解釈できない判定 — 判定なしとみなされ、ターンは
+アルゴリズム自身の既定値へ行きます。`capability` モードなら `strong_target`、`custom`
+モードなら `default_target` グループの最初のモデルです。判定するターン 1 回につき、ジャッジ
+呼び出しは**ちょうど 1 回**、最初のジャッジ候補に対してだけ行われます。したがって失敗しても
+`models.judge` をたどって再試行はしません。ターンはそのまま応答され、ルートソースは
+`classifier_fail_open` で、クライアントは変わらず `200` を受け取ります。
+
+**セッションはアルゴリズムの中にあります。** `classify_trigger` の保持は上流の状態で、
+ルーターのインスタンスの中にあり、shunt はそれを設定を読み込むたびに一度だけ構築します。
+ホットリロードは作り直すので、リロードすると各セッションが持っていたターゲットを忘れます —
+`prefill_router` と同じ性質です。`max_judge_calls` は shunt 自身のもので、(セッション,
+エージェント) ごとに数えます。だから委譲された子は親ではなく自分の予算を使います。
+セッション id を送らないリクエストは追跡されないので、その呼び出し元にはこの上限が
+リクエスト単位で効きます。予算を使い切ったターンはジャッジを飛ばして fail-open の
+ターゲットへ行き、ジャッジ呼び出しの結果は `budget_exhausted` として記録されます。
+
+**プローブはジャッジなしで解決します。** `count_tokens` リクエストがジャッジを呼ぶことは
+なく、fail-open のターゲットで応答されます。リクエストボディのない面 — `GET /routes`、
+`/v1/models` ディスカバリー、`shunt check` — も同じで、これらはルートソース
+`classifier_default` として報告します。
+
+ターゲットもジャッジも、ステージルーターと同じ 1 ホップ規則に従う通常の公開モデル id で、
+ジャッジは **passthrough** ルートに解決されてはいけません。理由は[上](#modelsrouterclassifierオプション)
+のとおりです — ジャッジ呼び出しは呼び出し元の資格情報をひとつも運ばないので、passthrough
+ルートには動かすものが残りません。
+
+#### `type = "composite"`
+
+ジャッジがステージルーターの fall-open ティアを決め、シグナルの採点には手を触れません。
+stage テーブルは **`picker` を受け付けません** — そのティアは classifier が供給するから
+です。したがってここに `picker` を書くと起動エラーです。
+
+```toml
+[[models]]
+id = "claude-composite"
+
+[models.router]
+type = "composite"
+
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[models.router.stage]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.5
+# recent_turn_window = 3
+# capable_hold_turns = 0
+```
+
+| キー | 既定値 | 意味 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必須 | `composite` |
+| `classifier.target` | ✅ 必須 | ティアジャッジの公開モデル id。尋ねるだけで提供はしません |
+| `classifier.base_threshold` | ✅ 必須 | それでも効率ティアに送る `p_solve` の下限。`(0.0, 1.0]` |
+| `classifier.classify_trigger` | ✅ 必須 | `user_turn` は人間が話すたびにティアを選び直し、`new_session` は一度選んで保持します。`every_request` はここでは**拒否**されます — ツールの 1 ステップごとにジャッジを呼ぶコストこそ、このタイプが避けようとしているものだからです |
+| `classifier.message_hash_fallback` | `false` | セッション id を送らないクライアント向けに、最初のユーザーメッセージをハッシュしてティアを保持します |
+| `stage.capable_target` | ✅ 必須 | 強力なティア |
+| `stage.efficient_target` | ✅ 必須 | 効率的なティア |
+| `stage.confidence_threshold` | ✅ 必須 | 決定的なシグナルに必要な裏付けの度合い。`(0.0, 1.0]` |
+| `stage.recent_turn_window` | `3` | シグナルを計算する対象となる直近の tool result 数。最低でも `1` |
+| `stage.capable_hold_turns` | `0` | シグナル起因の昇格後に強力なティアを保持するターン数。shunt の既定は `0`、上流は `2` です |
+| `stage.tool_semantics` | — | [`[models.router.tool_semantics]`](#modelsroutertool_semanticsオプション) と同じ 4 つのリストで、規則も同じです |
+
+6 つの[呼び出しごとの上限](#呼び出しごとの上限)は、どちらのサブテーブルでもなく
+`[models.router]` に置きます。classifier が届かなかったターンは
+`stage.efficient_target` に fall-open します。これは上流の規則であり、プローブやボディの
+ない面が報告する値でもあります。
+
+stage 側は libsy 自身の stage ルートなので、決着したターンは classifier の決定ではなく
+ステージルーターのルートソースをそのまま報告します — composite のシグナル起因のターンを、
+素の `stage_router` のターンと同じように読めるということです。
 
 #### `type = "auto"`
 
@@ -825,8 +991,8 @@ by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate =
 
 | キー | 既定値 | 意味 |
 | :-- | :-- | :-- |
-| `type` | ✅ 必須 | `passthrough`。このリリースが実装する唯一の形式です。ジャッジが子のティアを選ぶ `llm_classifier` 形式は後続のリリースで、指定すると起動エラーになります |
-| `target` | ✅ 必須 | 委譲されたターンのエージェントタイプについて `by_type` が何も指定していないときの宛先モデル id — エージェントタイプのヘッダーが送られてこない場合は、委譲されたすべてのターンがここへ行きます |
+| `type` | ✅ 必須 | 上記の固定形式である `passthrough`、またはジャッジが子のターゲットを選ぶ [`llm_classifier`](#subagents-type--llm_classifier) |
+| `target` | ✅ 必須（`passthrough`） | 委譲されたターンのエージェントタイプについて `by_type` が何も指定していないときの宛先モデル id — エージェントタイプのヘッダーが送られてこない場合は、委譲されたすべてのターンがここへ行きます |
 | `by_type` | `{}` | エージェントタイプ → モデル id。`x-claude-code-agent-type` のリテラル値をキーにします |
 
 **委譲された作業とみなされるもの。** `x-claude-code-request-class` が `subagent` または
@@ -868,6 +1034,60 @@ id はそのまま届きます — `Explore`、`Plan`、`general-purpose`、`cla
 ある場合にそれを示すだけです（`server.default_provider` に委ねられた id はどちらの
 配列にも現れません）。いずれのサーフェスも振り分け先のターゲットを解決せず、この
 オーバーレイが `routers` 配列に載ることもありません。
+
+#### subagents `type = "llm_classifier"`
+
+オーバーレイのもうひとつの形式です。固定のターゲットの代わりに、ジャッジが委譲された
+タスクを読み、それを処理するグループの名前を挙げます。ここにあるのは `mode = "custom"`
+だけで — `mode = "capability"` は起動エラーです — キーは[上](#type--llm_classifier)で
+説明した `custom` モードのものです。
+
+```toml
+[models.subagents]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+classify_trigger = "new_session"
+max_output_tokens = 64
+prompt = """
+委譲されたタスクに対するターゲットをちょうど 1 つ選んでください。
+
+- コードレビュー、批評、監査、正しさの分析には "capable" を選んでください。
+- 実装、調査、説明、その他の委譲作業には "efficient" を選んでください。
+
+レスポンススキーマに一致する JSON だけを返してください。
+"""
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+`[models.router]` の形式と異なる規則が 3 つあります。
+
+- **`classify_trigger` の既定値は `new_session`** で、`user_turn` は拒否されます。委譲
+  された子はひとつのタスクなので、ターゲットは一度選んで最後まで保持します。ユーザー
+  ターンごとに判定し直せば、変わりようのない決定にジャッジ呼び出しを払い続けることに
+  なります。
+- **`message_hash_fallback` は `false` でなければなりません。** 分類はすでに (セッション,
+  エージェント) でキーを取っているので、代わりに最初のメッセージをハッシュすると、ひとつ
+  のセッションの異なる子ふたつがひとつの判定に束ねられてしまいます。
+- **親が分類されることはありません。** 何が委譲された作業かは、上の `passthrough` 形式と
+  まったく同じです。したがって親のターン、エージェント id を伴う `main` のターン、
+  `compaction` と `auxiliary` のクラスはいずれも、このテーブルがないかのようにエントリを
+  解決し、ジャッジ呼び出しも行いません。
+
+6 つの[呼び出しごとの上限](#呼び出しごとの上限)は、呼び出しを行う当事者であるこの
+テーブルに置きます。ジャッジは他と同じ規則に従います — 1 ホップ、passthrough ルート禁止、
+そして呼び出し元の資格情報スロットはひとつも同行しません。委譲されたターンがジャッジを
+呼びうるため、そうしたターンのインバウンド認証はオーバーレイのターゲットとジャッジまで
+対象にします — 認証できない委譲ターンはジャッジ呼び出しを 1 回も行わずに拒否されます。
+`count_tokens` プローブも同様にジャッジ呼び出しなしで、`default_target` グループの最初の
+モデルで応答します。
 
 ## `[sentry]`(任意)
 

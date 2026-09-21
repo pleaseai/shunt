@@ -268,6 +268,8 @@ passthrough인 항목에 자격 증명을 주입하는 판정 모델을 더하�
 
 - **턴 중간 상향 전환은 없습니다.** 응답 헤더가 커밋된 뒤에는 shunt가 턴을 재구동하지
   않으므로, 턴 시작 시점에 고른 티어가 그 턴 전체를 맡습니다.
-- **판정 모델은 티어만 결정합니다.** 판정을 쓰는 다른 타입 — `llm_classifier`,
-  `composite`, `advisor` — 은 아직 쓸 수 없고, 지정하면 시작 오류입니다.
+- **이 판정 모델은 티어만 결정합니다.** 판정을 쓰는 다른 타입은 각자 자기 테이블을
+  가집니다. `llm_classifier`와 `composite`는 `[models.router]`에 직접 설정합니다 —
+  [구성 레퍼런스](/ko/reference/configuration/#type--llm_classifier)를 보세요.
+  `advisor`는 아직 쓸 수 없고, 지정하면 시작 오류입니다.
 - **`[server.codex_endpoint]`는 범위 밖**입니다. 자체 라우팅 테이블을 사용합니다.

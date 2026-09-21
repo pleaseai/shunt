@@ -91,8 +91,8 @@ it adds no benchmark arm: the one function it touches, `signals::extract`, is
 already an arm of `benches/stage_router.rs`. The lanes, the
 `[models.router]` discriminator, and the driven algorithms are PR 1 onward — see
 ADR-0005 §8 for the sequence and each step's definition of done. PR 1 is §2
-below, PR 2 is §3, PR 3 is §4, PR 4 is §5, and PR 7 is §6; the rest of the
-sequence is not implemented yet.
+below, PR 2 is §3, PR 3 is §4, PR 4 is §5, PR 7 is §6, and PR 5 is §7; the rest
+of the sequence is not implemented yet.
 
 ## 2. Request hints, the pin scope, and the compaction latch (PR 1)
 
@@ -339,8 +339,9 @@ and `stage_router.classifier` all make judge calls, so a `type` naming one of
 them is a load error rather than a silent pass-through. Of those,
 `stage_router.classifier` has since shipped — it is PR 4, §5 below, and with it
 the `shunt.router.judge_calls` metric and the `judges` list on `GET /routes`
-that describe judge traffic (ADR-0005 §7). `llm_classifier`, `composite`, and
-`advisor` are PR 5 and are still load errors. `prefill_router` is PR 7, behind
+that describe judge traffic (ADR-0005 §7). `llm_classifier` and `composite`
+have since shipped too — PR 5, §7 below — leaving `advisor` and
+`llm_classifier`'s `escalation` mode as the load errors. `prefill_router` is PR 7, behind
 its own cargo feature, §6 below. `[models.subagents]` is PR 3, §4 below.
 
 A request to an id whose `[[models]]` entry carries no `router` table routes
@@ -601,10 +602,13 @@ tier mocks; a `200`-then-stall and an endless ping stream each resolve as
 
 ### Not in this PR
 
-The rest of the driven lane: `llm_classifier`, `composite`, and `advisor` are
-PR 5, and naming one is still a load error. Buffer-and-replay — the escalation
-weak turn and the advisor executor turn the `gated_*` bounds are built for —
-is PR 6, and the streaming-semantics amendment `AGENTS.md` needs lands with it.
+The rest of the driven lane: `llm_classifier` (capability and custom),
+`composite`, and the `[models.subagents]` classifier form have since shipped as
+PR 5, §7 below, and with them the `classify_trigger` key this PR's classifier
+table gained. Only `advisor` and `llm_classifier`'s `escalation` mode remain a
+load error. Buffer-and-replay — the escalation weak turn and the advisor
+executor turn the `gated_*` bounds are built for — is PR 6, and the
+streaming-semantics amendment `AGENTS.md` needs lands with it.
 `[models.subagents]` is PR 3, shipped as §4 above, and `prefill_router` is
 PR 7 (§6), behind its own cargo feature.
 
@@ -779,9 +783,366 @@ it.
 
 ### Not in this PR
 
-Everything else on the driven lane. `llm_classifier` (all modes), `composite`,
-`advisor`, and the `[models.subagents]` classifier form all make judge calls,
-and remain PR 5 of the ADR-0005 §8 sequence — naming one is still a load error.
-`stage_router.classifier` has since shipped as PR 4 (§5). `prefill_router` is
+Everything else on the driven lane. `advisor` and `llm_classifier`'s
+`escalation` mode still make judge calls shunt does not host — naming either is
+a load error — and they are PR 6 of the ADR-0005 §8 sequence.
+`stage_router.classifier` has since shipped as PR 4 (§5), and `llm_classifier`
+(capability and custom), `composite`, and the `[models.subagents]` classifier
+form as PR 5 (§7). `prefill_router` is
 the exception only because its inference is local: it needs no internal model
 call, no dependency envelope, and no admission rework.
+
+## 7. The driven lane: `llm_classifier`, `composite`, the stage classifier trigger, and the subagents classifier form (PR 5)
+
+### What it is
+
+PR 4 (§5) built the host contract — the dependency envelope, admission ahead of
+`drive`, the internal `serve`, and the six per-call bounds — and spent it on one
+algorithm, the stage router's `[models.router.classifier]` fallback. PR 5 spends
+it on the rest of the judge-backed lane ADR-0005 §8 sequences here:
+`type = "llm_classifier"` in its `capability` and `custom` modes,
+`type = "composite"`, the `classify_trigger` key that decides *when* a judge is
+consulted at all, and the `[models.subagents]` classifier form that routes a
+delegated child.
+
+Everything these add sits behind libsy's `Algorithm` trait. shunt builds the
+algorithm at startup, hands it the request and the runtime model groups, serves
+each `CallModel` it asks for, and feeds `selected_model_ids.first()` back into
+the ordinary ladder — the same shape §5 already established. What is new is the
+number of decisions libsy now makes for shunt, and therefore the number of
+decisions shunt must *not* re-derive: the fallback, the retention, and the
+session affinity are all upstream's, and this section is mostly an account of
+where each of them lives.
+
+| Module | What it holds |
+| :-- | :-- |
+| `src/config/router/classifier.rs` | `LlmClassifierConfig` and its two payloads, the shunt `ClassifyTrigger` enum |
+| `src/config/router/composite.rs` | `CompositeRouterConfig` — the `classifier` and `stage` sub-tables |
+| `src/config/subagents/classifier.rs` | The overlay's `mode = "custom"` payload |
+| `src/config/router/validate.rs` | The load-time rules below, each with its own `ConfigError` variant |
+| `src/routing/driven.rs` (with `driven/build.rs`, `driven/budget.rs`, `driven/drive.rs`) | `DrivenRouters`, the per-entry `Arc<dyn Algorithm>`, the judge budget, and `drive` |
+
+### The three config forms
+
+**`type = "llm_classifier"`, `mode = "capability"`.** A judge reads the
+transcript and returns a solve probability; the entry routes to `weak_target`
+when that probability clears `base_threshold` and to `strong_target` when it
+does not.
+
+```toml
+[[models]]
+id = "claude-judged"
+[models.router]
+type = "llm_classifier"
+mode = "capability"                  # required here; upstream defaults it, shunt does not
+classifier_target = "claude-haiku-4-5"   # consulted, never served
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+base_threshold = 0.5                 # required, as upstream
+threshold_step = 0.0
+classify_trigger = "every_request"   # or "user_turn", "new_session"
+message_hash_fallback = false
+max_output_tokens = 4096
+# prompt = "…"                       # replaces the packaged capability prompt
+```
+
+**`type = "llm_classifier"`, `mode = "custom"`.** The judge returns JSON the
+operator's own `response_schema` describes; a JSON Pointer picks a **group
+name** out of it, and the first model of that group serves the turn. `any` and
+`judge` are reserved and required; every other group is the operator's, which is
+how one entry chooses between more than two models.
+
+```toml
+[models.router]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+prompt = "Select exactly one target for this turn. …"
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+**`type = "composite"`.** A judge sets the tier the stage router falls open to,
+and leaves its scoring alone. The stage table takes **no `picker`** — the
+classifier is the picker — so a stray `picker` key is an unknown-field error.
+
+```toml
+[models.router]
+type = "composite"
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+classify_trigger = "user_turn"       # required; "every_request" is rejected
+[models.router.stage]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.5
+recent_turn_window = 3
+capable_hold_turns = 0
+```
+
+**`[models.subagents]` with `type = "llm_classifier"`.** The overlay's second
+form, and the one upstream documents
+(`docs/routing_algorithms/subagent_routing.md` in the pinned checkout), written
+here with shunt's public model ids:
+
+```toml
+[models.subagents]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+classify_trigger = "new_session"     # the default here, and the only trigger accepted besides itself
+max_output_tokens = 64
+prompt = """
+Select exactly one target for the delegated task.
+
+- Select "capable" for code review, critique, auditing, or correctness analysis.
+- Select "efficient" for implementation, research, explanation, and other delegated work.
+
+Return only JSON matching the response schema.
+"""
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+Only `mode = "custom"` exists on the overlay, so `mode = "capability"` is an
+unknown-variant error rather than a silent capability classifier on a child.
+`classify_trigger` defaults to `new_session` (ADR-0005 §5) and `user_turn` is
+rejected at validation: a child's turns are one delegated task, and re-judging
+it mid-task would spend a judge call per tool step for a decision that cannot
+change. `message_hash_fallback` must be `false` — the overlay is already keyed
+on `(session, agent)`, and hashing the first message would key two different
+children of one session onto one verdict.
+
+**`mode` is required on both `llm_classifier` forms**, which is a deliberate
+deviation from the upstream schema's `mode` default of `capability`. The three
+modes route on entirely different principles, and the one that is not here yet —
+`escalation` — is the one that buffers a served turn. An omitted `mode` reading
+as `capability` would make adding `escalation` later a silent change of meaning
+for a config that never named it. `mode = "escalation"` is therefore an
+unknown-variant load error naming the two modes that do exist.
+
+**`classify_trigger` on the stage router.** `[models.router.classifier]` (§5)
+gains the same key, defaulting to `every_request`. `user_turn` consults the
+judge only when the latest message is a human user turn — `role: user` carrying
+at least one block that is not a `tool_result` — so a tool continuation rides
+the pin instead of paying a second judge call. `new_session` behaves exactly as
+`every_request` here; upstream says so of its own stage route ("`new_session`
+has no effect here"), because the stage router already holds its decision in
+shunt's own pin rather than in the algorithm. The key is decided in the
+synchronous `routing::stage::select` pass — the same place the consultation
+itself is set (§5) — and so before any judge is reached.
+
+**Bounds.** The six per-call keys §5 introduced live on `[models.router]` of
+every driven type and on a classifier-form `[models.subagents]` — every table
+that makes internal calls carries its own copy. A `0` in any of them is a
+startup error naming the key, as before.
+
+### Why the algorithm's own fallback is the policy
+
+libsy's judge folds **every** call failure into "no verdict": a `400`, a
+timeout, an unparseable reply, and an empty one all arrive at the same place.
+The policy then falls back to the configured default category — `strong_target`
+in capability mode (libsy's capability default is `Capable`), the first model of
+the `default_target` group in custom mode, `stage.efficient_target` on a
+composite — and stamps evidence `{"source": "fail_open"}` on the outcome.
+
+shunt does not second-guess that. A driven entry's failure path is *one* judge
+call and then the algorithm's own default: libsy issues exactly one `CallModel`
+carrying the whole judge list, and shunt's `serve` dispatches to
+`call.models.first()` only, so a `400` from the first judge candidate means
+**zero further judge calls** — not a walk down `models.judge`. The turn is
+answered, the route source is `classifier_fail_open`, and the client still gets
+a `200`.
+
+That is the concrete shape the live captures predicted. A judge target whose
+schema the Anthropic grammar refuses answers
+`400 {"type":"error","error":{"type":"invalid_request_error","message":"output_config.format.schema: For 'number' type, properties maximum, minimum are not supported"}}`
+(`docs/notes/adr-0005-routing-live-captures.md`, "Fact (c), re-captured") — the
+first call, no verdict, nothing to parse. It is also why the pinned codec's
+recursive strip of `minimum`, `maximum`, `minLength`, and `maxLength` from the
+schema is load-bearing rather than cosmetic.
+
+The successful shape from the same capture is what the integration tests are
+built on: `output_config.format = {"type": "json_schema", "schema": …}` —
+`schema`, not `json_schema` — a **string** `system`, `max_tokens: 4096`, and no
+`tools`, `tool_choice`, or `stream`. A real reply carried `stop_reason:
+end_turn` and a `content` array of exactly one `text` block holding the verdict
+JSON, e.g. `{"crux": "…", "primary_rule": "SUP-1", "capability_boundary":
+"supported", "p_solve": 0.82}`. Read the capture's scope narrowly: six replies
+on `claude-haiku-4-5-20251001` validated against the packaged schemas with no
+`json_object` fallback; the ten other Claude ids in that run never evaluated the
+field at all and are **untested, not failing**.
+
+ADR-0005 §3's `fail_open` — "a judge or review bound failure *after a complete
+retained turn* resolves as the algorithm's `fail_open` outcome" — is a different
+clause about a different lane. No turn is retained here, because retention is
+`escalation` and `advisor`, which are PR 6. What this PR has is the no-verdict
+default above.
+
+### Sessions live inside the algorithm
+
+Affinity — which target a session or a delegated child is holding — is
+upstream's state, and it lives in the algorithm instance
+(`AffinityRouter.assignments`). So the constructed `Arc<dyn Algorithm>` must
+outlive the request: `DrivenRouters` is built once per `RuntimeState`, keyed by
+model id, immediately after `PrefillRouters` and threaded onto `AppState` the
+same way. Two consequences follow from that and are worth stating rather than
+discovering:
+
+- **A reload forgets the sessions.** Rebuilding the runtime state rebuilds the
+  algorithms, so `user_turn` retention and `new_session` affinity start over.
+  This is the same property `prefill_router` has (§6) and for the same reason.
+- **A construction failure is a startup error.** Validation builds the
+  `LlmTaskClassifier`/`CompositeRouter` once and drops it, so a config libsy
+  refuses — a prompt containing `{{RESPONSE_SCHEMA}}`, a `message_hash_fallback`
+  without `new_session` — is reported by `shunt check` rather than at the first
+  request. shunt re-implements those rules as its own `ConfigError` variants so
+  the message names the shunt key, and the construction is the backstop.
+
+`max_judge_calls` is shunt's, not libsy's, and is counted in a `JudgeBudget`
+keyed on `sha256(session_id ‖ agent_id)` — so a `Task` child spends its own
+budget rather than its parent's, the same scoping the stage pin key took in
+PR 1 (§2). The map is capped at 4096 entries. A request carrying no session id
+is not tracked at all: there is no key to accumulate under, so the bound applies
+per request for those callers. A turn that finds its budget spent skips the
+drive entirely, answers from the algorithm's fail-open target, and records the
+judge-call outcome `budget_exhausted`.
+
+### Probes
+
+`count_tokens` is `read_only` and never enters `drive`, exactly as on the stage
+router (§5). A probe on a driven entry resolves to the entry's `fail_open`
+target — the same default a no-verdict turn takes — with **zero judge calls**,
+and is gated and dispatched against that target's first route only. The same
+holds for a delegated probe against a classifier-form overlay: the overlay
+answers from its `default_target` group's first model, and the child is not
+classified by a request that is not a turn.
+
+The body-less surfaces behave the same way for the same reason: `GET /routes`,
+`/v1/models` discovery, and `shunt check` have no transcript to judge, so a
+driven entry reports its fail-open target there, under route source
+`classifier_default`.
+
+### Responses judge targets
+
+A judge target can map an OpenAI Responses provider, and the Anthropic ⇄ neutral
+codec at the routing boundary emits `output_config.format` (above), which the
+Responses wire shape does not have. `src/model/responses_request.rs` — shunt's
+own translator, not the crate's (§5) — therefore maps it: a request carrying
+`output_config.format` with `type == "json_schema"` and a `schema` object
+becomes `text.format = {"type": "json_schema", "name": "verdict", "schema": …,
+"strict": false}`, merged into the existing `text` object. The Xai/Grok flavor
+is excluded, as it is for the other `text` keys that path already writes.
+
+Two translators, two jobs, still: the neutral ⇄ Anthropic direction is
+`switchyard-translation`'s `anthropic_messages` codec, and Anthropic → Responses
+stays shunt's.
+
+### Observability
+
+`x-gateway-route-source` and the `source` label on
+`shunt.router.decisions{algorithm}` gain four values, and the mapping from
+libsy's own evidence to them is a closed table read off the pinned revision
+rather than a pass-through of arbitrary strings:
+
+| Evidence `source` | Route source | Label |
+| :-- | :-- | :-- |
+| *(absent — a body-less or unconsulted resolution)* | `RouteSource::DrivenDefault` | `classifier_default` |
+| `fail_open` | `RouteSource::DrivenFailOpen` | `classifier_fail_open` |
+| `fall_open` on a classifier entry (`DefaultCategoryClassifier` closing the cascade) | `RouteSource::DrivenFailOpen` | `classifier_fail_open` |
+| `retained` | `RouteSource::DrivenRetained` | `classifier_retained` |
+| `affinity`, or anything that is not a `DecisionSource` string | `RouteSource::Driven` | `llm-classifier` |
+| a `DecisionSource` string (composite's stage route) | `RouteSource::Stage(tier, Scorer(source))` | the stage router's own labels |
+
+Upstream spells the two fallbacks one letter apart and they are not the same
+path: `fail_open` is the judge call itself failing (`util/llm_judge.rs`), while
+`fall_open` is `DefaultCategoryClassifier` closing the cascade
+(`llm_class.rs`) — *and* is libsy's stage picker default, which is why the
+reading depends on whether the entry is a composite one. On a classifier entry
+both mean "no verdict decided this turn"; on a composite entry `fall_open` is
+the scorer's own default and stays a stage row.
+
+`algorithm` is `llm_classifier`, `composite`, or — for the overlay —
+`subagents`, matching what `GET /routes` reports. The composite row is the
+reason the table is closed rather than a string copy: libsy's stage route inside
+a composite writes a `DecisionSource`, which shunt already spells as
+`StageSource::Scorer` (§1), and re-spelling it as an opaque classifier source
+would make a composite's signal-driven turns unreadable against a plain stage
+router's.
+
+`shunt.router.judge_calls{model, algorithm, outcome}` keeps the closed outcome
+set PR 4 defined — `decided`, `timeout`, `oversized`, `upstream_error`,
+`invalid_reply`, `translation_failed`, `budget_exhausted` — and the driven lane
+records `retained` for a turn answered from affinity with no call made.
+`GET /routes` lists a driven entry's `targets` (the answer destinations: both
+tiers for capability and composite; for custom, every non-`judge` group's
+models, groups in name order and each group's ids in the order it declares
+them) and its `judges` (`classifier_target`, `classifier.target`,
+or every member of `models.judge`) — consulted, never served. Verdict text is
+never logged: the `tracing` record on a drive carries labels only.
+
+### What is tested
+
+Unit, alongside the config: one validation module and one round-trip module per
+form (capability, custom, composite, the stage classifier's `classify_trigger`,
+the subagents classifier), with the round-trip TOML taken verbatim from ADR-0005
+§2 or upstream's own example where one exists;
+`the_one_hop_rule_covers_every_router_type` gains the two new types; and
+`/routes` reports `targets` and `judges` for a custom entry. In
+`src/routing/driven/tests.rs`: the evidence→source table above, an outcome
+naming a target outside the entry's `targets` falling open, and the budget's
+key scoping and bound.
+
+Integration, in `tests/driven_lane.rs` (with the overlay, probe, and budget
+clauses in `tests/driven_lane/overlay.rs`, split only for the file-length
+ceiling), one focused test per clause:
+
+1. a capability verdict in the **verbatim captured Anthropic reply shape** (one
+   `text` block, `stop_reason: end_turn`) routes the turn — `p_solve 0.82` to
+   the weak tier under `base_threshold = 0.5`, `0.10` to the strong one — and
+   the captured judge **request** is asserted field by field: `output_config
+   .format.type == "json_schema"`, no `tools`, no `tool_choice`, a string
+   `system`, `max_tokens == 4096`, no `stream` key, and no `minimum`/`maximum`
+   anywhere in the schema;
+2. a custom verdict from an **OpenAI `json_schema` reply** — a Responses SSE
+   stream — routes the turn, with the translated upstream request carrying
+   `text.format.type == "json_schema"`;
+3. a `400` from the judge is a classifier failure: the turn lands on
+   `default_target`'s first model under `classifier_fail_open`, the client still
+   gets `200`, and a second configured judge candidate is called **zero** times;
+4. a composite `user_turn` consults the judge once and the tool continuation
+   after it does not;
+5. a delegated turn is classified once per `(session, agent)`: the parent makes
+   no judge call, a second turn of the same child makes none, a different agent
+   id makes one more, and an unauthenticated delegated turn is refused with zero
+   — the envelope covers the overlay's judge;
+6. a stage classifier with `classify_trigger = "user_turn"` skips a
+   tool continuation, which resolves as `fall_open` with no judge call;
+7. a `count_tokens` probe on a classifier entry makes no judge call;
+8. `max_judge_calls = 1` under `every_request` judges the first turn and answers
+   the second from the budget-exhausted fail-open path.
+
+### Not in this PR
+
+`mode = "escalation"` and `type = "advisor"` — the two algorithms that serve the
+answer while routing — are PR 6, with the buffer-and-replay lane the three
+`gated_*` bounds were built for and the `AGENTS.md` streaming amendment
+ADR-0005 §4 asks for. Naming either is still a load error. Until then no gated
+turn exists and those three keys still bound nothing at runtime (§5).
+
+An entry carrying no `[models.router]`, or one whose `type` is on the pure lane,
+is untouched: no algorithm is constructed for it, no envelope is walked, and it
+pays the same one `Option` check it paid before.

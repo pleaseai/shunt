@@ -13,7 +13,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::bounds;
+use super::bounds::{
+    default_gated_idle_ms, default_gated_max_bytes, default_gated_max_duration_ms,
+    default_judge_max_response_bytes, default_judge_timeout_ms, default_max_judge_calls,
+};
+use super::ClassifyTrigger;
 
 /// Which tier serves a turn whose signals are too weak to decide.
 ///
@@ -142,6 +146,18 @@ pub struct StageClassifierConfig {
     /// like `confidence_threshold`.
     #[serde(default = "default_base_threshold")]
     pub base_threshold: f64,
+    /// When the judge is consulted at all, on top of "the signals left this
+    /// turn undecided".
+    ///
+    /// `every_request` — the default, and what this table did before the key
+    /// existed — consults on any undecided turn. `user_turn` narrows that to a
+    /// turn whose latest message is a *human* one, so the tool continuations
+    /// between two human turns ride the pin the first one earned instead of
+    /// paying for a verdict each. `new_session` behaves as `every_request`
+    /// here: upstream's own note is that it has no effect on this route, since
+    /// the session pin already does what it would.
+    #[serde(default, skip_serializing_if = "ClassifyTrigger::is_every_request")]
+    pub classify_trigger: ClassifyTrigger,
 }
 
 /// libsy's own capability-classifier calibration point, and the same number
@@ -150,30 +166,6 @@ pub const DEFAULT_BASE_THRESHOLD: f64 = 0.5;
 
 fn default_base_threshold() -> f64 {
     DEFAULT_BASE_THRESHOLD
-}
-
-fn default_judge_timeout_ms() -> u64 {
-    bounds::DEFAULT_JUDGE_TIMEOUT_MS
-}
-
-fn default_judge_max_response_bytes() -> usize {
-    bounds::DEFAULT_JUDGE_MAX_RESPONSE_BYTES
-}
-
-fn default_gated_max_bytes() -> usize {
-    bounds::DEFAULT_GATED_MAX_BYTES
-}
-
-fn default_gated_idle_ms() -> u64 {
-    bounds::DEFAULT_GATED_IDLE_MS
-}
-
-fn default_gated_max_duration_ms() -> u64 {
-    bounds::DEFAULT_GATED_MAX_DURATION_MS
-}
-
-fn default_max_judge_calls() -> u32 {
-    bounds::DEFAULT_MAX_JUDGE_CALLS
 }
 
 /// `[models.router.tool_semantics]` — exact tool names added to the built-in
@@ -300,10 +292,13 @@ impl StageRouterConfig {
     }
 
     /// The same pair, each with the key that named it.
-    pub fn named_targets(&self) -> Vec<(&'static str, &str)> {
+    pub fn named_targets(&self) -> Vec<(String, &str)> {
         vec![
-            ("capable_target", self.capable_target.as_str()),
-            ("efficient_target", self.efficient_target.as_str()),
+            ("capable_target".to_string(), self.capable_target.as_str()),
+            (
+                "efficient_target".to_string(),
+                self.efficient_target.as_str(),
+            ),
         ]
     }
 

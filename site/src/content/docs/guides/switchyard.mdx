@@ -348,24 +348,35 @@ diverted child is never scored, never pinned, and never advances its parent's
 dwell, and its turn reports `subagent_type` or `subagent` in
 `x-gateway-route-source`.
 
-### No LLM judge on the hot path
+### The LLM judge is opt-in, per entry
 
 When the signals are inconclusive, libsy returns
-`PickOutcome::ConsultClassifier { default_tier }`. By default shunt treats that
-as the answer and takes `default_tier`, so the hot path carries no judge: no
-second model call, no second credential, and no added latency on the turns where
-the router is least sure. Falling open is not fighting the API — it *is* the
-API's documented fall-open path.
+`PickOutcome::ConsultClassifier { default_tier }`. A `stage_router` with no
+classifier table treats that as the answer and takes `default_tier`, so its hot
+path carries no judge: no second model call, no second credential, and no added
+latency on the turns where the router is least sure. Falling open is not
+fighting the API — it *is* the API's documented fall-open path. That is the
+default, and it is what every entry on the pure lane still does.
 
-An entry can opt back in, one entry at a time, with
-[`[models.router.classifier]`](/guides/stage-router/#the-judge-fallback) on a
-`stage_router`. That recovers the accuracy a judge buys on exactly those turns —
-a real part of what the upstream classifier-assisted configurations measured —
-and pays for it in latency and in the judge target's own pool quota. The judge
-is consulted only on the undecided turns, only after the request has been
-admitted, and never on a `count_tokens` probe, so the cost lands on the turns
-that were least certain and nowhere else. Every judge failure resolves back to
-`default_tier`.
+An entry can opt back in, one entry at a time, in four shapes:
+
+| Shape | What the judge decides |
+| :-- | :-- |
+| [`[models.router.classifier]`](/reference/configuration/#modelsrouterclassifier-optional) on a `stage_router` | Only the turns the signals leave undecided; everything else stays signal-driven |
+| [`type = "llm_classifier"`](/reference/configuration/#type--llm_classifier) | The whole turn — a solve probability between two tiers in `mode = "capability"`, or a model group named by your own prompt and schema in `mode = "custom"` |
+| [`type = "composite"`](/reference/configuration/#type--composite) | The tier a stage router falls open to, leaving its scoring untouched |
+| [`[models.subagents]` with `type = "llm_classifier"`](/reference/configuration/#subagents-type--llm_classifier) | Where a delegated child goes, decided once per `(session, agent)` |
+
+All four recover the accuracy a judge buys — a real part of what the upstream
+classifier-assisted configurations measured — and pay for it in latency and in
+the judge target's own pool quota. A `classify_trigger` key decides how often
+that cost is paid: judge every turn, judge each new human user turn and hold the
+verdict across the tool calls between them, or judge once per session. The judge
+is consulted only after the request has been admitted, never on a `count_tokens`
+probe, and never more than `max_judge_calls` times for one `(session, agent)`.
+Every judge failure — a timeout, a `400`, an unparseable verdict — resolves to
+the algorithm's own default rather than failing the request, and exactly one
+judge call is made per consulted turn.
 
 ### The routed target is an ordinary model id
 

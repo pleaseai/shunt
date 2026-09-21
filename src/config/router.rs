@@ -19,15 +19,36 @@
 //! replacement.
 
 mod bounds;
+mod classifier;
+mod composite;
 mod prefill;
 mod random;
 mod stage;
+mod validate;
 
 pub use bounds::{
     CallBounds, DEFAULT_GATED_IDLE_MS, DEFAULT_GATED_MAX_BYTES, DEFAULT_GATED_MAX_DURATION_MS,
     DEFAULT_JUDGE_MAX_RESPONSE_BYTES, DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_MAX_JUDGE_CALLS,
 };
+pub use classifier::{
+    CapabilityClassifierConfig, ClassifierPolicy, ClassifyTrigger, CustomClassifierConfig,
+    LlmClassifierConfig, DEFAULT_MAX_OUTPUT_TOKENS,
+};
+pub use composite::{
+    CompositeClassifierConfig, CompositeRouterConfig, CompositeStageConfig, CompositeTrigger,
+};
 pub use prefill::PrefillRouterConfig;
+
+// Shared with `crate::config::subagents::classifier`, whose classifier form
+// carries the same six bounds keys, the same `policy`/`classify_trigger`
+// vocabulary, and the same two reserved group names. Re-exported here rather
+// than reached for through `router::bounds`, which is private to this module.
+pub(crate) use bounds::{
+    default_gated_idle_ms, default_gated_max_bytes, default_gated_max_duration_ms,
+    default_judge_max_response_bytes, default_judge_timeout_ms, default_max_judge_calls,
+    impl_call_bounds,
+};
+pub(crate) use classifier::{default_max_output_tokens, ANY_GROUP, JUDGE_GROUP};
 pub use random::{RandomAffinity, RandomRouterConfig};
 pub use stage::{
     HandoffNotesConfig, StageClassifierConfig, StageRouterConfig, StageRouterPicker,
@@ -59,6 +80,11 @@ pub enum RouterConfig {
     /// user turn. Compiled in only under `--features prefill-router`; the table
     /// parses either way (see [`PrefillRouterConfig`]).
     PrefillRouter(PrefillRouterConfig),
+    /// A judge's verdict decides the turn: the packaged capability rubric, or
+    /// an operator's prompt, schema, and named model groups.
+    LlmClassifier(LlmClassifierConfig),
+    /// A judge sets the fall-open tier of a stage router that serves the turns.
+    Composite(CompositeRouterConfig),
     /// Makes no upstream call and synthesizes an empty terminal assistant
     /// message in the caller's mode.
     Noop {},
@@ -74,7 +100,16 @@ impl RouterConfig {
         match self {
             Self::StageRouter(stage) => Some(stage),
             Self::Auto(auto) => Some(auto.stage()),
-            Self::Random(_) | Self::PrefillRouter(_) | Self::Noop {} => None,
+            // A composite entry has a stage *sub-table*, not this one: its
+            // keys are a narrower set and its tier retention lives inside
+            // libsy rather than in shunt's `StageRouterStore`. Returning it
+            // here would put a composite entry on the pure lane's pin, scorer,
+            // and dwell path, which never run for it.
+            Self::Random(_)
+            | Self::PrefillRouter(_)
+            | Self::LlmClassifier(_)
+            | Self::Composite(_)
+            | Self::Noop {} => None,
         }
     }
 
@@ -85,6 +120,8 @@ impl RouterConfig {
             Self::Auto(_) => "auto",
             Self::Random(_) => "random",
             Self::PrefillRouter(_) => "prefill_router",
+            Self::LlmClassifier(_) => "llm_classifier",
+            Self::Composite(_) => "composite",
             Self::Noop {} => "noop",
         }
     }
@@ -111,20 +148,26 @@ impl RouterConfig {
     /// The same targets, each paired with the config key that named it, so a
     /// rejection can quote the key the operator wrote rather than a generic
     /// "target".
-    pub fn named_targets(&self) -> Vec<(&'static str, &str)> {
+    ///
+    /// The key is an owned `String` rather than the `&'static str` it was
+    /// through PR 4: a custom classifier's groups are named by the operator,
+    /// so `models.<group>` cannot be a literal.
+    pub fn named_targets(&self) -> Vec<(String, &str)> {
         match self {
             Self::StageRouter(stage) => stage.named_targets(),
             Self::Auto(auto) => auto.stage().named_targets(),
             Self::Random(random) => random
                 .targets
                 .iter()
-                .map(|target| ("targets", target.as_str()))
+                .map(|target| ("targets".to_string(), target.as_str()))
                 .collect(),
             Self::PrefillRouter(prefill) => prefill
                 .targets
                 .iter()
-                .map(|target| ("targets", target.as_str()))
+                .map(|target| ("targets".to_string(), target.as_str()))
                 .collect(),
+            Self::LlmClassifier(classifier) => classifier.named_targets(),
+            Self::Composite(composite) => composite.named_targets(),
             // A noop entry answers as itself and names no destination.
             Self::Noop {} => Vec::new(),
         }
@@ -138,10 +181,16 @@ impl RouterConfig {
     /// client turn can land, a judge is not. Validation chains them, `/routes`
     /// reports them as separate lists, and the dependency envelope appends the
     /// judges after the targets.
-    pub fn named_judges(&self) -> Vec<(&'static str, &str)> {
-        match self.stage_classifier() {
-            Some((_, classifier)) => vec![("classifier.target", classifier.target.as_str())],
-            None => Vec::new(),
+    pub fn named_judges(&self) -> Vec<(String, &str)> {
+        match self {
+            Self::LlmClassifier(classifier) => classifier.named_judges(),
+            Self::Composite(composite) => composite.named_judges(),
+            _ => match self.stage_classifier() {
+                Some((_, classifier)) => {
+                    vec![("classifier.target".to_string(), classifier.target.as_str())]
+                }
+                None => Vec::new(),
+            },
         }
     }
 
@@ -165,7 +214,35 @@ impl RouterConfig {
     /// before it computes a dependency envelope or constructs a driver at all,
     /// so a pure-lane entry pays nothing for the driven lane's existence.
     pub fn is_driven(&self) -> bool {
-        self.stage_classifier().is_some()
+        matches!(self, Self::LlmClassifier(_) | Self::Composite(_))
+            || self.stage_classifier().is_some()
+    }
+
+    /// Where a driven router sends a turn it has not decided yet — the first
+    /// pass of [`crate::routing::resolve_chain`], a body-less surface, and the
+    /// answer when the judge produces no usable verdict.
+    ///
+    /// `None` for every pure-lane type: a stage router's undecided turn takes
+    /// the *picker's* default, which is a tier rather than a target, and the
+    /// rest decide synchronously.
+    pub fn fail_open_target(&self) -> Option<&str> {
+        match self {
+            Self::LlmClassifier(classifier) => Some(classifier.fail_open_target()),
+            Self::Composite(composite) => Some(composite.fail_open_target()),
+            _ => None,
+        }
+    }
+
+    /// The six per-call bounds, for the types that make internal calls under
+    /// them. `None` where the table carries no bounds of its own.
+    pub fn bounds(&self) -> Option<CallBounds> {
+        match self {
+            Self::StageRouter(stage) => Some(stage.bounds()),
+            Self::Auto(auto) => Some(auto.stage().bounds()),
+            Self::LlmClassifier(classifier) => Some(classifier.bounds()),
+            Self::Composite(composite) => Some(composite.bounds()),
+            Self::Random(_) | Self::PrefillRouter(_) | Self::Noop {} => None,
+        }
     }
 }
 

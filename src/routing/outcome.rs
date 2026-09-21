@@ -54,6 +54,29 @@ pub(crate) enum RouteSource {
     /// answers, the same id upstream picks for a turn with no text user
     /// message.
     PrefillDefault,
+    /// No judge verdict is in hand yet for a driven `llm_classifier` or
+    /// `composite` entry, so the algorithm's own fail-open target answers.
+    ///
+    /// That is the first pass of every driven turn — `resolve_chain` runs
+    /// before admission and therefore before any judge call — and the final
+    /// answer for a body-less surface and a `count_tokens` probe, which make
+    /// zero judge calls by design (ADR-0005 §3).
+    DrivenDefault,
+    /// A driven `llm_classifier` (or an `llm_classifier` overlay) decided the
+    /// turn: the judge answered inside its bounds and its verdict named the
+    /// target. Labelled `llm-classifier`, upstream's own hyphenated spelling,
+    /// so the same decision reads identically whether it came through this
+    /// lane or through the stage router's `[models.router.classifier]`.
+    Driven,
+    /// No verdict decided the turn, so the algorithm's own fallback answered —
+    /// a judge that could not be reached, answered unparseably, or answered
+    /// with nothing the selector could resolve, and on a `count_tokens`-free
+    /// path a budget that was already spent.
+    DrivenFailOpen,
+    /// The turn replayed an answer an earlier turn of the same session and
+    /// agent had already earned, so no judge was called. libsy's affinity, or
+    /// a composite entry's retained tier.
+    DrivenRetained,
     /// A `noop` router answered without an upstream call.
     Noop,
     /// A `[models.subagents]` overlay diverted delegated work to its `target`
@@ -74,6 +97,10 @@ impl RouteSource {
             Self::Prefill => "prefill",
             Self::PrefillFailOpen => "prefill_fail_open",
             Self::PrefillDefault => "prefill_default",
+            Self::DrivenDefault => "classifier_default",
+            Self::Driven => "llm-classifier",
+            Self::DrivenFailOpen => "classifier_fail_open",
+            Self::DrivenRetained => "classifier_retained",
             Self::Noop => "noop",
             Self::Subagent => "subagent",
             Self::SubagentType => "subagent_type",
@@ -95,6 +122,10 @@ impl RouteSource {
             | Self::Prefill
             | Self::PrefillFailOpen
             | Self::PrefillDefault
+            | Self::DrivenDefault
+            | Self::Driven
+            | Self::DrivenFailOpen
+            | Self::DrivenRetained
             | Self::Noop
             | Self::Subagent
             | Self::SubagentType => None,

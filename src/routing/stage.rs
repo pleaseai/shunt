@@ -29,7 +29,7 @@ use axum::http::HeaderMap;
 use serde_json::Value;
 use switchyard_libsy::{pick_tier, DecisionSource, PickOutcome, PickerMode, Tier, ToolSignals};
 
-use crate::config::{StageRouterConfig, StageRouterPicker};
+use crate::config::{ClassifyTrigger, StageRouterConfig, StageRouterPicker};
 use crate::routing::context::RouterContext;
 use crate::routing::outcome::RouterOutcome;
 
@@ -202,7 +202,33 @@ pub(crate) struct StageContext<'a> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ConsultJudge {
     /// Judge calls this session had already made when the turn read its pin.
+    ///
+    /// The pure lane's budget rides the pin, which is why it is read here. The
+    /// driven kinds leave it `0` and read their own budget off the
+    /// [`DrivenEntry`](crate::routing::driven::DrivenEntry) instead: libsy owns
+    /// their session state, so there is no pin to have counted against.
     pub judge_calls_used: u32,
+    /// Which consultation this is, and so which code path in
+    /// `proxy::failover` runs it and which envelope admission gates on.
+    pub kind: ConsultKind,
+}
+
+/// The three shapes a judge consultation takes (ADR-0005 §3, §5, §8 PR 5).
+///
+/// A discriminator rather than three separate `Cell`s on the context: at most
+/// one of them is ever set for a request — a delegated turn the overlay
+/// classifies never reaches the entry's own router — and one field is what
+/// makes that exclusivity a property of the type instead of an invariant three
+/// call sites have to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConsultKind {
+    /// A `[models.router.classifier]` on a `stage_router`/`auto` entry: the
+    /// signals left the turn undecided and a judge may move the tier.
+    StageClassifier,
+    /// A driven `[models.router]` — `llm_classifier` or `composite`.
+    Router,
+    /// A classifier-form `[models.subagents]` overlay on a delegated turn.
+    Overlay,
 }
 
 /// Resolve a router to the tier that serves this request.
@@ -247,15 +273,54 @@ pub(crate) fn select(
     // `max_judge_calls` would otherwise be spent on. A read-only probe never
     // consults at all: ADR-0005 §3 requires `count_tokens` to resolve to the
     // pin or the no-model-call decision, so it makes zero judge calls.
-    if router.classifier.is_some()
+    // `classify_trigger` narrows *when* a judge may be consulted, before the
+    // "the signals left this turn undecided" gate below. `new_session` is
+    // deliberately the same as `every_request` here: upstream's own note is
+    // that it has no effect on this route, and the session pin already does
+    // what it would — a pinned session reports `Sticky` and never reaches the
+    // fall-open turn a judge answers.
+    let trigger_allows = match router.classifier.as_ref().map(|c| c.classify_trigger) {
+        None => false,
+        Some(ClassifyTrigger::UserTurn) => latest_is_user_turn(messages),
+        Some(ClassifyTrigger::EveryRequest | ClassifyTrigger::NewSession) => true,
+    };
+    if trigger_allows
         && decision.source == StageSource::Scorer(DecisionSource::FallOpen)
         && !context.read_only
     {
         context.consult.set(Some(ConsultJudge {
             judge_calls_used: applied.judge_calls_used,
+            kind: ConsultKind::StageClassifier,
         }));
     }
     decision
+}
+
+/// Whether the latest message is a **human** user turn.
+///
+/// Anthropic carries a tool result as a `role: "user"` message, so the role
+/// alone cannot tell a human turn from a tool continuation — libsy's own
+/// `is_user_turn` draws the line the same way, and this is shunt's copy of it
+/// over the undecoded Anthropic body. A `content` that is a plain string is a
+/// human turn by construction: a tool result is always a block.
+///
+/// `messages` absent, empty, or not an array answers `false`: there is no
+/// human turn in a body that carries no conversation, and a body-less surface
+/// must not consult a judge at all.
+fn latest_is_user_turn(messages: Option<&Value>) -> bool {
+    let Some(latest) = messages.and_then(Value::as_array).and_then(|m| m.last()) else {
+        return false;
+    };
+    if latest.get("role").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    match latest.get("content") {
+        Some(Value::String(_)) => true,
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .any(|block| block.get("type").and_then(Value::as_str) != Some("tool_result")),
+        _ => false,
+    }
 }
 
 /// Pick a tier for a request from its conversation so far.

@@ -417,13 +417,14 @@ codex = "gpt-5.2"
 | `random` | 按权重抽取,默认按会话固定 | 不读 |
 | `noop` | 不做选择 —— 直接返回空消息 | 不读 |
 | `prefill_router` | 读取最近一轮用户消息的学习型分类器(需要 `prefill-router` 构建) | 读 —— 用户消息的文本 |
+| `llm_classifier` | LLM 裁判的判定,何时询问由 `classify_trigger` 决定 | 读 —— 通过内置提示词或你自己的提示词读取对话记录 |
+| `composite` | LLM 裁判决定阶段路由器回落到哪个档位 | 读 —— 裁判读对话记录,信号读 tool-result 元数据 |
 
-需要调用 LLM 裁判的算法(`llm_classifier`、`composite`、`advisor`),以及
-[`[models.subagents]`](#modelssubagents可选) 覆盖层的 `llm_classifier` 形式 **尚不可用**:
-指定它们会导致启动错误,它们会在后续版本中加入。`prefill_router` 已经实现,但**在编译期设门**:
-只有开启默认关闭的 `prefill-router` cargo feature 构建出来的二进制才有它 —— 见[下文](#type--prefill_router)。
-目前唯一可用的裁判形态,是阶段路由器自身的
-[`[models.router.classifier]`](#modelsrouterclassifier可选) 回退。
+**尚不可用**的形态有两种,指定它们会导致启动错误:`type = "advisor"`,以及
+`llm_classifier` 的 `mode = "escalation"`。两者都在还没决定怎么路由时就已经在提供回合,
+因此需要先缓冲再回放的那条车道,而它会在后续版本中加入。`prefill_router` 已经实现,但
+**在编译期设门**:只有开启默认关闭的 `prefill-router` cargo feature 构建出来的二进制才有
+它 —— 见[下文](#type--prefill_router)。
 
 同一条目不能同时声明 `[models.router]` 和 `[models.upstream_model]`。
 
@@ -525,6 +526,7 @@ base_threshold = 0.5
 | :-- | :-- | :-- |
 | `target` | ✅ 必填 | 裁判的公开 model id。只被询问,永远不会提供给客户端 |
 | `base_threshold` | `0.5` | 让受支持的任务留在高效档位的 `p_solve` 下限,取值范围 `(0.0, 1.0]` |
+| `classify_trigger` | `every_request` | 什么时候可以去问裁判。`every_request` 允许在任何未定夺的轮次询问,包括工具续轮。`user_turn` 只在最近一条消息是人类用户回合时询问 —— 即 `role: user` 且至少带有一个不是 `tool_result` 的块 —— 于是工具续轮沿用会话的 pin,而不再另付一次裁判调用。`new_session` 在这里的行为与 `every_request` 完全相同,上游对自己的阶段路由也是这么说的:这个路由器已经把决策保存在 shunt 自己的会话 pin 里了 |
 
 裁判目标同样是普通的公开 model id,和档位目标一样受一跳规则约束,并且多一条要求:不能解析到
 **passthrough** 路由。`auth = "passthrough"` 的含义是*转发调用方自己的凭证*,而裁判调用
@@ -545,7 +547,10 @@ base_threshold = 0.5
 
 #### 每次调用的上限
 
-`[models.router]` 上的六个键为该条目发起的每一次内部调用设定上限。越过上限会取消对应的
+六个键为一个条目发起的每一次内部调用设定上限。它们放在真正发起这些调用的那张表上 ——
+带 `classifier` 的 `stage_router`、`llm_classifier`、`composite` 等 driven 类型的
+`[models.router]`,以及 classifier 形态的
+[`[models.subagents]`](#modelssubagents可选) 覆盖层(它自带一份)。越过上限会取消对应的
 上游调用。每个值至少为 `1`,填 `0` 是会指明该键的启动错误。
 
 | 键 | 默认 | 含义 |
@@ -560,6 +565,158 @@ base_threshold = 0.5
 三个 `gated_*` 键会被接受、校验,并由保留轮次的收集器真正执行,但**目前还不存在被保留的
 轮次** —— 它们所准备的缓冲升档轮次和 advisor 轮次会在后续版本中加入。在那之前这三个键在
 运行时不约束任何东西。
+
+#### `type = "llm_classifier"`
+
+不再只是补上信号用尽的那块空白,而是由 LLM **裁判**决定整个回合。条目里写明裁判、它可以
+挑选的目的地,以及 `mode` —— 裁判产出哪一种判定形态。
+
+`mode` 是**必填**的,这是对上游 schema 的一处有意偏离:上游把它默认成 `capability`。三种
+模式的路由原理完全不同,而其中一种(`escalation`)这里还没有。如果省略 `mode` 会被读成
+`capability`,那么以后加入 `escalation` 时,一份从未写过 `mode` 的配置就会悄悄改变含义。
+因此 `mode = "escalation"` 是一个会列出现有两种模式的启动错误。
+
+**`mode = "capability"`** —— 内置裁判返回该任务的解决概率。达到或超过 `base_threshold`
+的回合留在 `weak_target`,低于它的回合去 `strong_target`。
+
+```toml
+[[models]]
+id = "claude-judged"
+
+[models.router]
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+base_threshold = 0.5
+# threshold_step = 0.0
+# classify_trigger = "every_request"
+# message_hash_fallback = false
+# recent_turn_window = 3
+# max_output_tokens = 4096
+# prompt = "…"
+```
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必填 | `llm_classifier` |
+| `mode` | ✅ 必填 | `capability` |
+| `classifier_target` | ✅ 必填 | 裁判的公开 model id。只被询问,不会被提供 |
+| `strong_target` | ✅ 必填 | 裁判没有把握的任务去往的 model id |
+| `weak_target` | ✅ 必填 | 裁判认为能解决的任务去往的 model id |
+| `base_threshold` | ✅ 必填 | 仍然路由到 `weak_target` 的解决概率下限,取值范围 `(0.0, 1.0]` |
+| `threshold_step` | `0.0` | 有限且非负。对不确定或未匹配的判定加一次,对不受支持的判定加两次。`base_threshold + 2 × threshold_step` 必须不超过 `1.0` |
+| `prompt` | 内置提示词 | 替换内置的 capability 提示词。schema 作为结构化输出配置单独发送,所以提示词里不能含 `{{RESPONSE_SCHEMA}}`,也不能只有空白 |
+
+**`mode = "custom"`** —— 提示词和 JSON Schema 由你提供,再用一个 JSON Pointer 从判定里
+取出**模型分组的名字**,该分组的第一个模型来处理这一回合。`any` 和 `judge` 是保留且必填
+的分组,其余名字都归你 —— 这正是一个条目能在两个以上模型之间做选择的原因。
+
+```toml
+[models.router]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+prompt = "为这一回合恰好挑选一个目标。只返回符合响应 schema 的 JSON。"
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必填 | `llm_classifier` |
+| `mode` | ✅ 必填 | `custom` |
+| `models.any` | ✅ 必填 | 所有可被选中的目的地。其他每个回答分组的目标也必须出现在这里（`judge` 除外）,缺一个就是启动错误 |
+| `models.judge` | ✅ 必填 | 一个或多个有序的裁判候选。只被询问,不会被提供 |
+| `models.<你起的名字>` | — | 你自己命名的分组;判定点到它时,选中该分组的第一个模型 |
+| `default_target` | ✅ 必填 | 拿不到可用判定时使用的分组。必须是 `judge` 之外已配置的分组,且不能为空 |
+| `prompt` | ✅ 必填 | 裁判的系统提示词。不能只有空白,也不能含 `{{RESPONSE_SCHEMA}}` —— schema 会单独发送 |
+| `response_schema` | ✅ 必填 | 以 TOML 字符串承载的内层 JSON Schema。必须能解析成 JSON 对象,提供方那层包装由 shunt 补上 |
+| `policy` | ✅ 必填 | 形如 `{ type = "target_selector", selector = "…" }`;`selector` 是指向判定内部的 JSON Pointer,例如 `/target` |
+
+两种模式共用下面这些键,以及六个[每次调用的上限](#每次调用的上限):
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `classify_trigger` | `every_request` | 裁判何时运行。`every_request` 每轮都判定,包括工具续轮。`user_turn` 在每一个新的人类用户回合判定一次,并在其间的工具调用中沿用该目标。`new_session` 只判定一次,整个会话都复用该目标 |
+| `message_hash_fallback` | `false` | 为不发送会话 id 的客户端改用第一条用户消息作为保留键。需要 `classify_trigger = "new_session"`;在其他触发器上开启会导致启动错误 |
+| `recent_turn_window` | 未设置 | 设置后,裁判额外能看到的尾部回合数。至少为 `1` |
+| `max_output_tokens` | `4096` | 裁判判定的完成 token 上限。至少为 `1` |
+
+**裁判没给出答案时。** 裁判调用以任何方式失败 —— 超时、响应过大、上游错误、`400`、无法
+解析的判定 —— 都算作没有判定,该回合改走算法自己的默认目标:`capability` 模式是
+`strong_target`,`custom` 模式是 `default_target` 分组的第一个模型。每个需要判定的回合
+**恰好**发出一次裁判调用,只打给第一个裁判候选,因此失败不会沿着 `models.judge` 逐个重试。
+该回合照常作答,路由来源为 `classifier_fail_open`,客户端依旧拿到 `200`。
+
+**会话状态存活在算法内部。** `classify_trigger` 的保留是上游的状态,存在路由器实例里,
+而 shunt 每加载一次配置就构建一次该实例。热重载会重新构建它,所以重载之后会忘记每个会话
+当时持有的目标 —— 这和 `prefill_router` 的性质相同。`max_judge_calls` 则是 shunt 自己的,
+按 (会话, agent) 计数,因此被委派的子任务花的是自己的预算而不是父会话的;不带会话 id 的
+请求根本不被跟踪,对这类调用方该上限就是按请求生效。预算用尽的回合会跳过裁判、直接取
+fail-open 目标,裁判调用结果记为 `budget_exhausted`。
+
+**探测无需裁判即可解析。** `count_tokens` 请求从不咨询裁判,直接由 fail-open 目标作答;
+没有请求体的那些面 —— `GET /routes`、`/v1/models` 发现、`shunt check` —— 同理,它们以路由
+来源 `classifier_default` 报告该目标。
+
+每一个目标和每一个裁判都是普通的公开 model id,受与阶段路由器相同的一跳规则约束;裁判也
+不能解析到 **passthrough** 路由,理由与[上文](#modelsrouterclassifier可选)相同 —— 裁判
+调用不携带调用方的任何凭证,passthrough 路由便无凭可用。
+
+#### `type = "composite"`
+
+由裁判决定阶段路由器回落到哪个档位,而信号评分本身不受影响。stage 表**不接受 `picker`**
+—— 那个档位由 classifier 提供 —— 所以在这里写 `picker` 会导致启动错误。
+
+```toml
+[[models]]
+id = "claude-composite"
+
+[models.router]
+type = "composite"
+
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[models.router.stage]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.5
+# recent_turn_window = 3
+# capable_hold_turns = 0
+```
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必填 | `composite` |
+| `classifier.target` | ✅ 必填 | 档位裁判的公开 model id。只被询问,不会被提供 |
+| `classifier.base_threshold` | ✅ 必填 | 仍然路由到高效档位的 `p_solve` 下限,取值范围 `(0.0, 1.0]` |
+| `classifier.classify_trigger` | ✅ 必填 | `user_turn` 在用户每次开口时重新挑一次档位,`new_session` 只挑一次并保持。`every_request` 在这里会被**拒绝** —— 每个工具步骤都调一次裁判的代价,正是这个类型要避免的 |
+| `classifier.message_hash_fallback` | `false` | 为不发送会话 id 的客户端改用第一条用户消息的哈希来保留档位 |
+| `stage.capable_target` | ✅ 必填 | 强力档位 |
+| `stage.efficient_target` | ✅ 必填 | 高效档位 |
+| `stage.confidence_threshold` | ✅ 必填 | 一个决定性信号需要的佐证程度,取值范围 `(0.0, 1.0]` |
+| `stage.recent_turn_window` | `3` | 计算信号时回看的 tool result 数量。至少为 `1` |
+| `stage.capable_hold_turns` | `0` | 信号驱动升档之后继续保持强力档位的轮数;shunt 的默认是 `0`,上游是 `2` |
+| `stage.tool_semantics` | — | 与 [`[models.router.tool_semantics]`](#modelsroutertool_semantics可选) 相同的四张列表,规则也相同 |
+
+六个[每次调用的上限](#每次调用的上限)放在 `[models.router]` 上,而不是放进两张子表里。
+裁判够不到的回合回落到 `stage.efficient_target`,这既是上游的规则,也是探测和没有请求体
+的那些面所报告的值。
+
+因为 stage 那一半就是 libsy 自己的 stage 路由,它定夺下来的回合仍然报告阶段路由器自己的
+路由来源,而不是报告成 classifier 的决策 —— 也就是说,composite 里由信号驱动的回合,读起来
+和一个普通 `stage_router` 的回合完全一样。
 
 #### `type = "auto"`
 
@@ -773,8 +930,8 @@ by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate =
 
 | 键 | 默认值 | 含义 |
 | :-- | :-- | :-- |
-| `type` | ✅ 必填 | `passthrough`,本次发布唯一实现的形式。由裁判挑选子任务档位的 `llm_classifier` 形式要等后续版本;指定它会导致启动错误 |
-| `target` | ✅ 必填 | 当 `by_type` 没有为某一轮的 agent 类型指定模型时,这一轮被委派的请求去往的模型 id —— 没有发送 agent 类型头部时,所有被委派的回合也都去这里 |
+| `type` | ✅ 必填 | 上面那种固定形态 `passthrough`,或由裁判挑选子任务目标的 [`llm_classifier`](#subagents-type--llm_classifier) |
+| `target` | ✅ 必填(`passthrough`) | 当 `by_type` 没有为某一轮的 agent 类型指定模型时,这一轮被委派的请求去往的模型 id —— 没有发送 agent 类型头部时,所有被委派的回合也都去这里 |
 | `by_type` | `{}` | agent 类型 → 模型 id,按 `x-claude-code-agent-type` 的字面值作键 |
 
 **什么算被委派的工作**。`x-claude-code-request-class` 为 `subagent` 或 `workflow` 的请求;
@@ -807,6 +964,54 @@ id,都会导致启动错误。未匹配到任何显式路由的目标只在加�
 `GET /routes` 也只在父级自身存在 `[[routes]]`/`[models.router]` 条目时才把它列出来(交给
 `server.default_provider` 解析的 id 在两个数组里都不会出现)。这三个接口都不会解析出
 覆盖层分流到的目标,覆盖层自身也从不出现在 `routers` 数组里。
+
+#### subagents `type = "llm_classifier"`
+
+覆盖层的第二种形态:不再指定一个固定目标,而是由裁判读过被委派的任务之后,点名由哪个分组
+来处理。这里只有 `mode = "custom"` —— `mode = "capability"` 会导致启动错误 —— 各个键就是
+[上文](#type--llm_classifier)详细说明的 `custom` 模式的键。
+
+```toml
+[models.subagents]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+classify_trigger = "new_session"
+max_output_tokens = 64
+prompt = """
+为这项被委派的任务恰好挑选一个目标。
+
+- 代码评审、批评、审计、正确性分析,选 "capable"。
+- 实现、调研、讲解以及其他被委派的工作,选 "efficient"。
+
+只返回符合响应 schema 的 JSON。
+"""
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+有三条规则与 `[models.router]` 形态不同:
+
+- **`classify_trigger` 默认是 `new_session`**,并且 `user_turn` 会被拒绝。被委派的子任务
+  就是一件事,所以目标只挑一次、之后一直沿用;按用户回合反复判定,只会为一个不可能改变的
+  决定持续消耗裁判调用。
+- **`message_hash_fallback` 必须是 `false`。** 这里的分类本就按 (会话, agent) 取键,改用
+  第一条消息的哈希,会把同一个会话下两个不同的子任务绑到同一份判定上。
+- **父会话从不被分类。** 什么算被委派的工作,与上面的 `passthrough` 形态完全一致。因此
+  父会话的回合、带 agent id 的 `main` 回合,以及 `compaction` 和 `auxiliary` 这两个类别,
+  都像这张表不存在一样解析该条目,也不会发出裁判调用。
+
+六个[每次调用的上限](#每次调用的上限)放在这张表上,因为发起调用的正是它。裁判受与别处
+相同的约束:一跳、不能是 passthrough 路由,并且调用方的凭证槽位一个都不会随行。由于被
+委派的回合可能去问裁判,这类回合的入站鉴权也会把覆盖层的目标和裁判一并纳入 —— 无法通过
+鉴权的被委派回合会被拒绝,且一次裁判调用都不会发出。`count_tokens` 探测同样不会发出裁判
+调用,直接由 `default_target` 分组的第一个模型作答。
 
 ## `[sentry]`(可选)
 

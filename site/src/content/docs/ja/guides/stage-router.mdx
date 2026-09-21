@@ -285,7 +285,9 @@ base_threshold = 0.5           # タスクを効率ティアに留める p_solve
 - **ターン途中のエスカレーションはありません。** レスポンスヘッダーがコミットされた後、
   shunt はターンを再実行しないため、ターン開始時に選ばれたティアがそのターン全体を担当
   します。
-- **ジャッジが決めるのはティアだけです。** ジャッジを使うほかの type —
-  `llm_classifier`、`composite`、`advisor` — はまだ利用できず、指定すると起動エラーに
-  なります。
+- **このジャッジが決めるのはティアだけです。** ジャッジを使うほかの type はそれぞれ自分の
+  テーブルを持ちます。`llm_classifier` と `composite` は `[models.router]` に直接設定
+  します —
+  [設定リファレンス](/ja/reference/configuration/#type--llm_classifier)を参照してください。
+  `advisor` はまだ利用できず、指定すると起動エラーになります。
 - **`[server.codex_endpoint]` は対象外**です。独自のルーティングテーブルを使います。

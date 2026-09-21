@@ -59,8 +59,9 @@ mod bench {
     use shunt::{
         bench_support::{self, StageStore, MAX_TRACKED_CHILD_PINS, MAX_TRACKED_SESSIONS},
         config::{
-            Config, ModelConfig, PassthroughSubagentsConfig, RandomAffinity, RandomRouterConfig,
-            RouteConfig, RouterConfig, StageClassifierConfig, StageRouterConfig, StageRouterPicker,
+            CapabilityClassifierConfig, Config, LlmClassifierConfig, ModelConfig,
+            PassthroughSubagentsConfig, RandomAffinity, RandomRouterConfig, RouteConfig,
+            RouterConfig, StageClassifierConfig, StageRouterConfig, StageRouterPicker,
             SubagentsConfig,
         },
     };
@@ -437,6 +438,7 @@ mod bench {
             classifier: Some(StageClassifierConfig {
                 target: JUDGE_TARGET.to_string(),
                 base_threshold: 0.5,
+                classify_trigger: Default::default(),
             }),
             ..router()
         };
@@ -493,5 +495,54 @@ mod bench {
                     .unwrap(),
             )
         });
+    }
+
+    /// A body-less resolution of an `llm_classifier` capability entry
+    /// (ADR-0005 §8 PR 5). `resolve_model_chain` is the path `/v1/models`
+    /// discovery, `GET /routes`, and `shunt check` take: there is no turn to
+    /// judge, so the driven entry answers from its fail-open target without
+    /// constructing an algorithm or reaching libsy at all.
+    ///
+    /// Read against `resolve_chain_unrouted`: both are one table lookup and one
+    /// chain resolution, and the gap is what naming a judge-backed type costs a
+    /// surface that never judges. Not parameterized on turn count, because
+    /// there is no body — which is the claim.
+    #[divan::bench]
+    fn resolve_model_chain_llm_classifier(bencher: divan::Bencher) {
+        let config = llm_classifier_config();
+        bencher.bench(|| {
+            divan::black_box(shunt::routing::resolve_model_chain(
+                &config,
+                divan::black_box(ROUTER_MODEL),
+            ))
+        });
+    }
+
+    /// `config(true)`'s entry with its stage router replaced by a capability
+    /// classifier over the same two tier ids, plus the judge `driven_config`
+    /// already routes.
+    fn llm_classifier_config() -> Config {
+        let mut config = driven_config();
+        config.models[0].router = Some(RouterConfig::LlmClassifier(
+            LlmClassifierConfig::Capability(CapabilityClassifierConfig {
+                classifier_target: JUDGE_TARGET.to_string(),
+                strong_target: "claude-opus-4-8".to_string(),
+                weak_target: EFFICIENT_TARGET.to_string(),
+                base_threshold: 0.5,
+                threshold_step: 0.0,
+                prompt: None,
+                classify_trigger: Default::default(),
+                message_hash_fallback: false,
+                recent_turn_window: None,
+                max_output_tokens: shunt::config::DEFAULT_MAX_OUTPUT_TOKENS,
+                judge_timeout_ms: shunt::config::DEFAULT_JUDGE_TIMEOUT_MS,
+                judge_max_response_bytes: shunt::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+                gated_max_bytes: shunt::config::DEFAULT_GATED_MAX_BYTES,
+                gated_idle_ms: shunt::config::DEFAULT_GATED_IDLE_MS,
+                gated_max_duration_ms: shunt::config::DEFAULT_GATED_MAX_DURATION_MS,
+                max_judge_calls: shunt::config::DEFAULT_MAX_JUDGE_CALLS,
+            }),
+        ));
+        config
     }
 }

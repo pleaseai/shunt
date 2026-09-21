@@ -440,15 +440,15 @@ shunt가 보통 쓰는 `kind`나 `mode`가 아니라 `type`을 쓰는 것은 **s
 | `random` | 가중치 추첨, 기본은 세션 고정 | 읽지 않음 |
 | `noop` | 고르지 않음 — 빈 메시지로 응답 | 읽지 않음 |
 | `prefill_router` | 가장 최근 사용자 턴을 읽는 학습형 분류기(`prefill-router` 빌드 필요) | 읽음 — 사용자 턴의 텍스트 |
+| `llm_classifier` | LLM 판정 모델의 판정. 언제 물을지는 `classify_trigger`가 정합니다 | 읽음 — 패키지 프롬프트나 직접 쓴 프롬프트로 트랜스크립트를 읽습니다 |
+| `composite` | LLM 판정 모델이 스테이지 라우터의 fall-open 티어를 정합니다 | 읽음 — 판정 모델은 트랜스크립트를, 신호는 tool-result 메타데이터를 |
 
-판정에 LLM을 호출하는 알고리즘(`llm_classifier`, `composite`, `advisor`)과
-[`[models.subagents]`](#modelssubagents-선택) 오버레이의 `llm_classifier` 형태는
-**아직 사용할 수 없습니다**. 이들을 지정하면 시작 오류가 나며, 이후 릴리스에서
-추가됩니다. `prefill_router`는 구현되어 있지만 **컴파일 타임에 게이트됩니다**.
-기본으로 꺼져 있는 `prefill-router` 카고 피처를 켜고 빌드한 바이너리에서만 쓸 수
-있습니다 — [아래](#type--prefill_router)를 보세요.
-판정 모델을 쓰는 형태 가운데 지금 제공되는 것은 스테이지 라우터 자신의
-[`[models.router.classifier]`](#modelsrouterclassifier-선택) 폴백 하나뿐입니다.
+**아직 사용할 수 없는** 형태는 둘입니다. 지정하면 시작 오류가 납니다.
+`type = "advisor"`와 `llm_classifier`의 `mode = "escalation"`입니다. 둘 다 라우팅을
+결정하는 도중에 턴을 제공하므로 버퍼 후 재생(buffer-and-replay) 레인이 필요하고, 그
+레인은 이후 릴리스에서 추가됩니다. `prefill_router`는 구현되어 있지만 **컴파일 타임에
+게이트됩니다**. 기본으로 꺼져 있는 `prefill-router` 카고 피처를 켜고 빌드한 바이너리에서만
+쓸 수 있습니다 — [아래](#type--prefill_router)를 보세요.
 
 한 항목에 `[models.router]`와 `[models.upstream_model]`을 함께 선언할 수 없습니다.
 
@@ -555,6 +555,7 @@ base_threshold = 0.5
 | :-- | :-- | :-- |
 | `target` | ✅ 필수 | 판정 모델의 공개 model id. 물어보기만 하고 클라이언트에게는 제공하지 않습니다 |
 | `base_threshold` | `0.5` | 지원되는 작업을 효율 티어에 두는 `p_solve` 하한. `(0.0, 1.0]` 범위 |
+| `classify_trigger` | `every_request` | 언제 판정 모델을 부를 수 있는지. `every_request`는 결론이 나지 않은 어떤 턴에서도 부를 수 있고 도구 연속 턴도 포함합니다. `user_turn`은 가장 최근 메시지가 사람의 사용자 턴일 때만 — `role: user`이면서 `tool_result`가 아닌 블록을 하나 이상 실은 경우 — 부릅니다. 그래서 도구 연속 턴은 판정 호출을 새로 치르는 대신 세션 핀을 타고 갑니다. `new_session`은 여기서 `every_request`와 똑같이 동작합니다. 업스트림도 그렇게 말합니다 — 이 라우터는 이미 shunt 자신의 세션 핀에 결정을 들고 있기 때문입니다 |
 
 판정 타깃도 평범한 공개 model id이며 티어 타깃과 똑같이 한 홉 규칙을 지킵니다. 여기에
 조건이 하나 더 붙습니다. **passthrough** 라우트로 해석되면 안 됩니다.
@@ -582,9 +583,12 @@ base_threshold = 0.5
 
 #### 호출당 한도
 
-`[models.router]`의 여섯 개 키가 이 항목이 만드는 모든 내부 호출에 한도를 겁니다. 한도를
-넘기면 업스트림 호출을 취소합니다. 각 값은 최소 `1`이어야 하며, `0`은 해당 키를 알려 주는
-시작 오류입니다.
+여섯 개 키가 한 항목이 만드는 모든 내부 호출에 한도를 겁니다. 이 키들은 그 호출을 만드는
+테이블에 놓입니다 — `classifier`를 단 `stage_router`, `llm_classifier`, `composite` 등
+driven 타입의 `[models.router]`, 그리고 classifier 형태의
+[`[models.subagents]`](#modelssubagents-선택) 오버레이(자기 몫을 따로 가집니다)입니다.
+한도를 넘기면 업스트림 호출을 취소합니다. 각 값은 최소 `1`이어야 하며, `0`은 해당 키를
+알려 주는 시작 오류입니다.
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
@@ -598,6 +602,165 @@ base_threshold = 0.5
 `gated_*` 세 키는 값을 받고 검증하며 보관 수집기가 실제로 적용하지만, **아직 보관되는 턴
 자체가 없습니다** — 이 키들이 대비하는 버퍼링된 상향 전환 턴과 advisor 턴은 이후
 릴리스에서 추가됩니다. 그때까지 런타임에서 이 세 키가 거는 한도는 없습니다.
+
+#### `type = "llm_classifier"`
+
+신호가 떨어진 자리만 메우는 대신, LLM **판정 모델**이 턴 전체를 결정합니다. 항목에는
+판정 모델과 그것이 고를 수 있는 목적지, 그리고 판정의 형태를 정하는 `mode`를 적습니다.
+
+`mode`는 **필수**입니다. 업스트림 스키마는 `capability`를 기본값으로 두지만 여기서는
+그렇지 않습니다. 세 모드는 서로 다른 원리로 라우팅하고, 그중 하나(`escalation`)는 아직
+여기에 없습니다. `mode`를 생략한 설정이 `capability`로 읽히면, 나중에 `escalation`이
+추가될 때 그 설정의 의미가 조용히 바뀝니다. `mode = "escalation"`은 존재하는 두 모드를
+알려 주는 시작 오류입니다.
+
+**`mode = "capability"`** — 패키지 판정 모델이 작업의 해결 확률을 돌려줍니다. 그 값이
+`base_threshold` 이상이면 턴은 `weak_target`에, 미만이면 `strong_target`에 갑니다.
+
+```toml
+[[models]]
+id = "claude-judged"
+
+[models.router]
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+base_threshold = 0.5
+# threshold_step = 0.0
+# classify_trigger = "every_request"
+# message_hash_fallback = false
+# recent_turn_window = 3
+# max_output_tokens = 4096
+# prompt = "…"
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `llm_classifier` |
+| `mode` | ✅ 필수 | `capability` |
+| `classifier_target` | ✅ 필수 | 판정 모델의 공개 model id. 물어보기만 하고 제공하지 않습니다 |
+| `strong_target` | ✅ 필수 | 판정 모델이 자신 없어 하는 작업이 갈 model id |
+| `weak_target` | ✅ 필수 | 판정 모델이 풀 수 있다고 본 작업이 갈 model id |
+| `base_threshold` | ✅ 필수 | 그래도 `weak_target`으로 보내는 해결 확률의 하한. `(0.0, 1.0]` 범위 |
+| `threshold_step` | `0.0` | 유한하고 0 이상. 불확실하거나 매칭되지 않은 판정에는 한 번, 지원되지 않는 판정에는 두 번 더해집니다. `base_threshold + 2 × threshold_step`이 `1.0` 이하여야 합니다 |
+| `prompt` | 패키지 프롬프트 | 패키지 capability 프롬프트를 대체합니다. 스키마는 구조화 출력 설정으로 따로 보내므로 프롬프트에 `{{RESPONSE_SCHEMA}}`가 들어가면 안 되고, 공백만으로 이루어져도 안 됩니다 |
+
+**`mode = "custom"`** — 프롬프트와 JSON 스키마를 직접 주고, JSON Pointer가 판정에서
+**모델 그룹 이름**을 집어냅니다. 그 그룹의 첫 모델이 턴을 처리합니다. `any`와 `judge`는
+예약된 필수 그룹이고, 나머지 이름은 전부 여러분의 것입니다. 한 항목이 둘보다 많은 모델
+가운데서 고를 수 있는 이유가 이것입니다.
+
+```toml
+[models.router]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+prompt = "이 턴의 타깃을 정확히 하나 고르세요. 응답 스키마에 맞는 JSON만 반환하세요."
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `llm_classifier` |
+| `mode` | ✅ 필수 | `custom` |
+| `models.any` | ✅ 필수 | 고를 수 있는 모든 목적지. 다른 답변 그룹의 타깃은 전부 여기에도 있어야 하며(`judge`는 예외), 빠진 것이 있으면 시작 오류입니다 |
+| `models.judge` | ✅ 필수 | 순서 있는 판정 후보 하나 이상. 물어보기만 하고 제공하지 않습니다 |
+| `models.<이름>` | — | 직접 이름 붙인 그룹. 판정이 그 이름을 대면 그룹의 첫 모델이 뽑힙니다 |
+| `default_target` | ✅ 필수 | 쓸 만한 판정이 나오지 않았을 때 쓰는 그룹. `judge`를 제외한 설정된 그룹이어야 하고 비어 있으면 안 됩니다 |
+| `prompt` | ✅ 필수 | 판정 모델의 시스템 프롬프트. 공백만으로 이루어지면 안 되고 `{{RESPONSE_SCHEMA}}`가 들어가도 안 됩니다 — 스키마는 따로 보냅니다 |
+| `response_schema` | ✅ 필수 | 안쪽 JSON 스키마를 담은 TOML 문자열. JSON 객체로 파싱되어야 하며, 제공자 래퍼는 shunt가 붙입니다 |
+| `policy` | ✅ 필수 | `{ type = "target_selector", selector = "…" }` 형태. `selector`는 `/target` 같은 판정 안쪽을 가리키는 JSON Pointer입니다 |
+
+두 모드가 함께 쓰는 키와, 여섯 개 [호출당 한도](#호출당-한도)는 다음과 같습니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `classify_trigger` | `every_request` | 판정 모델을 언제 부를지. `every_request`는 도구 연속 턴까지 포함해 모든 턴을 판정합니다. `user_turn`은 새 사람 턴마다 판정하고 그 사이의 도구 호출 동안 그 타깃을 유지합니다. `new_session`은 한 번만 판정하고 세션 내내 그 타깃을 다시 씁니다 |
+| `message_hash_fallback` | `false` | 세션 id를 보내지 않는 클라이언트를 위해 첫 사용자 메시지로 유지 키를 잡습니다. `classify_trigger = "new_session"`이 필요하며, 다른 트리거에서 켜면 시작 오류입니다 |
+| `recent_turn_window` | 설정 없음 | 설정하면 판정 모델이 추가로 보는 최근 턴 수. 최소 `1` |
+| `max_output_tokens` | `4096` | 판정 응답의 완성 토큰 상한. 최소 `1` |
+
+**판정이 오지 않으면.** 판정 호출이 어떤 식으로든 실패하면 — 타임아웃, 크기 초과, 업스트림
+오류, `400`, 해석 불가 — 판정이 없는 것으로 보고 턴은 알고리즘 자신의 기본값으로 갑니다.
+`capability` 모드는 `strong_target`, `custom` 모드는 `default_target` 그룹의 첫
+모델입니다. 판정하는 턴 하나에 판정 호출은 **정확히 한 번**, 첫 판정 후보에게만 갑니다.
+그래서 실패해도 `models.judge`를 따라 내려가며 재시도하지 않습니다. 턴은 그대로 응답되고,
+라우트 소스는 `classifier_fail_open`이며, 클라이언트는 여전히 `200`을 받습니다.
+
+**세션은 알고리즘 안에 있습니다.** `classify_trigger`의 유지 상태는 업스트림의 것이고
+라우터 인스턴스 안에 들어 있으며, shunt는 그 인스턴스를 설정을 읽을 때마다 한 번 만듭니다.
+핫 리로드는 그것을 다시 만들기 때문에, 리로드하면 각 세션이 들고 있던 타깃을 잊습니다 —
+`prefill_router`와 같은 성질입니다. `max_judge_calls`는 shunt 자신의 것이며 (세션,
+에이전트)마다 셉니다. 그래서 위임된 자식은 부모가 아니라 자기 예산을 씁니다. 세션 id가
+없는 요청은 아예 추적하지 않으므로, 그런 호출자에게는 이 한도가 요청 단위로 걸립니다.
+예산을 다 쓴 턴은 판정을 건너뛰고 fail-open 타깃으로 가며, 판정 호출 결과는
+`budget_exhausted`로 기록됩니다.
+
+**프로브는 판정 없이 해석됩니다.** `count_tokens` 요청은 판정 모델을 부르지 않고 fail-open
+타깃으로 응답합니다. 요청 본문이 없는 표면 — `GET /routes`, `/v1/models` 디스커버리,
+`shunt check` — 도 마찬가지이며, 이들은 라우트 소스 `classifier_default`로 보고합니다.
+
+타깃과 판정 모델은 모두 스테이지 라우터와 같은 한 홉 규칙을 지키는 평범한 공개 model
+id이고, 판정 모델은 **passthrough** 라우트로 해석되면 안 됩니다.
+[위](#modelsrouterclassifier-선택)에서 말한 이유 그대로입니다 — 판정 호출은 호출자의
+자격 증명을 하나도 싣지 않으므로 passthrough 라우트에는 돌릴 것이 남지 않습니다.
+
+#### `type = "composite"`
+
+판정 모델이 스테이지 라우터의 fall-open 티어를 정하고, 신호 채점에는 손대지 않습니다.
+stage 테이블은 **`picker`를 받지 않습니다** — 그 티어는 classifier가 공급하기 때문입니다.
+그래서 여기에 `picker`를 적으면 시작 오류입니다.
+
+```toml
+[[models]]
+id = "claude-composite"
+
+[models.router]
+type = "composite"
+
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[models.router.stage]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.5
+# recent_turn_window = 3
+# capable_hold_turns = 0
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `composite` |
+| `classifier.target` | ✅ 필수 | 티어 판정 모델의 공개 model id. 물어보기만 하고 제공하지 않습니다 |
+| `classifier.base_threshold` | ✅ 필수 | 그래도 효율 티어로 보내는 `p_solve` 하한. `(0.0, 1.0]` 범위 |
+| `classifier.classify_trigger` | ✅ 필수 | `user_turn`은 사람이 말할 때마다 티어를 다시 고르고, `new_session`은 한 번 골라 유지합니다. `every_request`는 여기서 **거부됩니다** — 도구 단계마다 판정을 부르는 비용이야말로 이 타입이 피하려는 것이기 때문입니다 |
+| `classifier.message_hash_fallback` | `false` | 세션 id를 보내지 않는 클라이언트를 위해 첫 사용자 메시지를 해시해 티어를 유지합니다 |
+| `stage.capable_target` | ✅ 필수 | 강한 티어 |
+| `stage.efficient_target` | ✅ 필수 | 효율 티어 |
+| `stage.confidence_threshold` | ✅ 필수 | 결정적인 신호에 필요한 보강 정도. `(0.0, 1.0]` 범위 |
+| `stage.recent_turn_window` | `3` | 신호를 계산할 때 보는 최근 tool result 수. 최소 `1` |
+| `stage.capable_hold_turns` | `0` | 신호에 따른 상향 전환 뒤 강한 티어를 붙잡아 두는 턴 수. shunt 기본값은 `0`, 업스트림은 `2`입니다 |
+| `stage.tool_semantics` | — | [`[models.router.tool_semantics]`](#modelsroutertool_semantics-선택)과 같은 네 목록이며 규칙도 같습니다 |
+
+여섯 개 [호출당 한도](#호출당-한도)는 두 하위 테이블이 아니라 `[models.router]`에
+놓습니다. classifier가 닿지 못한 턴은 `stage.efficient_target`으로 fall-open하며, 이는
+업스트림의 규칙이자 프로브와 본문 없는 표면이 보고하는 값이기도 합니다.
+
+stage 쪽은 libsy 자신의 stage 라우트이므로, 결정적인 턴은 classifier 결정이 아니라 스테이지
+라우터의 라우트 소스를 그대로 보고합니다 — composite의 신호 기반 턴을 평범한
+`stage_router`의 턴과 같은 방식으로 읽을 수 있다는 뜻입니다.
 
 #### `type = "auto"`
 
@@ -828,8 +991,8 @@ by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate =
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
-| `type` | ✅ 필수 | 이 릴리스가 구현하는 유일한 형태인 `passthrough`. 판정자가 자식의 티어를 고르는 `llm_classifier` 형태는 이후 릴리스이며, 지정하면 시작 오류입니다 |
-| `target` | ✅ 필수 | `by_type`이 해당 에이전트 타입에 아무것도 지정하지 않았을 때 위임 턴이 가는 model id — 에이전트 타입 헤더가 전송되지 않으면 모든 위임 턴이 여기로 갑니다 |
+| `type` | ✅ 필수 | 위의 고정 형태인 `passthrough`, 또는 판정 모델이 자식의 타깃을 고르는 [`llm_classifier`](#subagents-type--llm_classifier) |
+| `target` | ✅ 필수(`passthrough`) | `by_type`이 해당 에이전트 타입에 아무것도 지정하지 않았을 때 위임 턴이 가는 model id — 에이전트 타입 헤더가 전송되지 않으면 모든 위임 턴이 여기로 갑니다 |
 | `by_type` | `{}` | 에이전트 타입 → model id. `x-claude-code-agent-type`의 값 그대로를 키로 씁니다 |
 
 **무엇이 위임된 작업인가.** `x-claude-code-request-class`가 `subagent` 또는 `workflow`인
@@ -868,6 +1031,56 @@ by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate =
 줍니다(`server.default_provider`에 맡겨진 id는 어느 배열에도 나오지 않습니다). 셋 중
 무엇도 우회된 타깃을 해석하지 않으며, 오버레이 자체가 `routers` 배열에 실리는 일도
 없습니다.
+
+#### subagents `type = "llm_classifier"`
+
+오버레이의 두 번째 형태입니다. 고정된 타깃 대신, 판정 모델이 위임된 작업을 읽고 그 일을
+맡을 그룹의 이름을 댑니다. 여기에는 `mode = "custom"`만 있고 — `mode = "capability"`는
+시작 오류입니다 — 키는 [위](#type--llm_classifier)에서 설명한 `custom` 모드의 것입니다.
+
+```toml
+[models.subagents]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+classify_trigger = "new_session"
+max_output_tokens = 64
+prompt = """
+위임된 작업에 맞는 타깃을 정확히 하나 고르세요.
+
+- 코드 리뷰, 비평, 감사, 정확성 분석에는 "capable"을 고르세요.
+- 구현, 조사, 설명, 그 밖의 위임 작업에는 "efficient"를 고르세요.
+
+응답 스키마에 맞는 JSON만 반환하세요.
+"""
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+`[models.router]` 형태와 다른 규칙이 셋 있습니다.
+
+- **`classify_trigger`의 기본값이 `new_session`이고**, `user_turn`은 거부됩니다. 위임된
+  자식은 하나의 작업이므로 타깃을 한 번 골라 끝까지 유지합니다. 사용자 턴마다 다시
+  판정하면 바뀔 수 없는 결정에 판정 호출을 계속 쓰게 됩니다.
+- **`message_hash_fallback`은 `false`여야 합니다.** 분류는 이미 (세션, 에이전트)로
+  키를 잡고 있으므로, 대신 첫 메시지를 해시하면 한 세션의 서로 다른 자식 둘이 같은 판정에
+  묶입니다.
+- **부모는 분류되지 않습니다.** 무엇이 위임된 작업인지는 위의 `passthrough` 형태와 정확히
+  같습니다. 그래서 부모의 턴, 에이전트 id가 붙은 `main` 턴, `compaction`과 `auxiliary`
+  클래스는 모두 이 테이블이 없는 것처럼 항목을 해석하고 판정 호출도 하지 않습니다.
+
+여섯 개 [호출당 한도](#호출당-한도)는 호출을 만드는 주체인 이 테이블에 놓습니다. 판정
+모델은 다른 곳과 같은 규칙을 지킵니다 — 한 홉, passthrough 라우트 금지, 그리고 호출자의
+자격 증명 슬롯은 하나도 함께 가지 않습니다. 위임된 턴이 판정 모델을 부를 수 있으므로 그런
+턴의 인바운드 인증은 오버레이의 타깃과 판정 모델까지 대상으로 삼습니다 — 인증하지 못한
+위임 턴은 판정 호출을 한 번도 만들지 않고 거부됩니다. `count_tokens` 프로브도 마찬가지로
+판정 호출 없이 `default_target` 그룹의 첫 모델로 응답합니다.
 
 ## `[sentry]` (선택)
 

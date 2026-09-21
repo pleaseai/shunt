@@ -37,7 +37,12 @@ pub(crate) fn select<'a>(
     if !hints.is_delegated() {
         return None;
     }
-    let (target, by_type) = overlay.target_for(hints.agent_type);
+    // Passthrough only. The classifier form has no synchronous answer: its
+    // target comes from a judge call the request path makes after admission,
+    // so returning anything here would be a destination no verdict chose. The
+    // driven lane resolves it in PR 5 worker B.
+    let passthrough = overlay.passthrough()?;
+    let (target, by_type) = passthrough.target_for(hints.agent_type);
     Some((
         target,
         if by_type {

@@ -48,6 +48,40 @@ pub(crate) fn dependency_envelope(config: &Config, model: &str) -> Vec<Route> {
     envelope
 }
 
+/// Every route admission must consider for a turn the **overlay** decides
+/// (ADR-0005 §3, §5).
+///
+/// The requested id's own chain plus the overlay's targets and judges, not the
+/// router's: a delegated turn never reaches the entry's own router arm, so
+/// gating it on the router's envelope would demand a credential for a tier the
+/// turn cannot land on while leaving the overlay's judge — a call made on the
+/// gateway's credential — outside the gate.
+///
+/// The requested id's own chain is still a member. A delegated turn that the
+/// overlay does not divert (the passthrough form with no hint headers, or an
+/// unclassified first turn) resolves the entry exactly as a parent turn would,
+/// so the parent destination is reachable from this request.
+pub(crate) fn overlay_envelope(config: &Config, model: &str) -> Vec<Route> {
+    let model = strip_context_window_hint(model);
+    let mut envelope = resolve_model_chain(config, model);
+    let Some(overlay) = config
+        .models
+        .iter()
+        .find(|configured| configured.id == model)
+        .and_then(|configured| configured.subagents.as_ref())
+    else {
+        return envelope;
+    };
+    for (_, id) in overlay
+        .named_targets()
+        .into_iter()
+        .chain(overlay.named_judges())
+    {
+        envelope.extend(resolve_model_chain(config, id));
+    }
+    envelope
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -89,6 +123,7 @@ mod tests {
             classifier: classifier.map(|target| StageClassifierConfig {
                 target: target.to_string(),
                 base_threshold: 0.5,
+                classify_trigger: Default::default(),
             }),
             ..StageRouterConfig::preset(
                 "capable-alias".to_string(),
@@ -158,6 +193,52 @@ mod tests {
                 .iter()
                 .any(|route| route.provider == "keyed" && route.upstream_model == "no-such-entry"),
             "the judge must resolve through the default provider: {envelope:?}"
+        );
+    }
+
+    /// A classifier-form overlay's judge joins the envelope its *delegated*
+    /// turns are gated against, and the parent destination stays a member.
+    /// Drop the `named_judges()` chain from `overlay_envelope` and the first
+    /// assertion goes red; return only the overlay's ids and the second does.
+    #[test]
+    fn an_overlay_envelope_covers_the_overlays_judge_and_the_parent() {
+        let mut config = config(None, "open");
+        let host = config
+            .models
+            .iter_mut()
+            .find(|model| model.id == "claude-auto")
+            .expect("the fixture carries the routed entry");
+        host.router = None;
+        host.upstream_model = Some(BTreeMap::from([(
+            "open".to_string(),
+            "parent-upstream".to_string(),
+        )]));
+        host.subagents = Some(
+            toml::from_str(
+                r#"
+                type = "llm_classifier"
+                mode = "custom"
+                models = { judge = ["judge-alias"], efficient = ["efficient-alias"], any = ["efficient-alias"] }
+                default_target = "efficient"
+                prompt = "Select exactly one target."
+                response_schema = '{"type": "object"}'
+                policy = { type = "target_selector", selector = "/target" }
+                "#,
+            )
+            .expect("the overlay parses"),
+        );
+
+        let envelope = overlay_envelope(&config, "claude-auto");
+
+        assert!(
+            envelope.iter().any(|route| route.provider == "keyed"),
+            "the overlay's judge must be a member: {envelope:?}"
+        );
+        assert!(
+            envelope
+                .iter()
+                .any(|route| route.upstream_model == "parent-upstream"),
+            "the parent destination stays reachable: {envelope:?}"
         );
     }
 

@@ -297,8 +297,10 @@ it.
 
 - **No mid-turn escalation.** Once response headers are committed shunt does not
   replay a turn, so a tier chosen at the start of a turn serves all of it.
-- **The judge decides a tier, nothing more.** The other judge-backed types —
-  `llm_classifier`, `composite`, `advisor` — are not available yet; naming one
-  is a startup error.
+- **This judge decides a tier, nothing more.** The other judge-backed types have
+  their own tables: `llm_classifier` and `composite` are configured on
+  `[models.router]` directly — see the
+  [configuration reference](/reference/configuration/#type--llm_classifier).
+  `advisor` is not available yet; naming it is a startup error.
 - **Out of scope for `[server.codex_endpoint]`**, which uses its own routing
   table.

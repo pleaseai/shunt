@@ -303,20 +303,31 @@ id 也不算,而 `compaction` 和 `auxiliary` 是框架自身的维护,永远不
 覆盖层不保存状态:被分流的子任务从不被评分、从不被固定,也从不推进父级的 dwell,它这一轮
 在 `x-gateway-route-source` 中报告 `subagent_type` 或 `subagent`。
 
-### 不在热路径上放 LLM 裁判
+### LLM 裁判是按条目选择启用的
 
 当信号不足以定论时,libsy 返回
-`PickOutcome::ConsultClassifier { default_tier }`。默认情况下 shunt 把它当作答案,直接
-采用 `default_tier`,因此热路径上没有裁判:没有第二次模型调用、没有第二份凭据,并且在
-路由器最没把握的那些回合上不增加延迟。fall-open 并不是在跟 API 对抗 —— 这*本身就是*
-API 文档化的 fall-open 路径。
+`PickOutcome::ConsultClassifier { default_tier }`。没有配置 classifier 表的
+`stage_router` 把它当作答案,直接采用 `default_tier`,因此这条热路径上没有裁判:没有第二
+次模型调用、没有第二份凭据,并且在路由器最没把握的那些回合上不增加延迟。fall-open 并不是
+在跟 API 对抗 —— 这*本身就是* API 文档化的 fall-open 路径。这是默认行为,也是 pure 车道
+上每一个条目今天仍然的行为。
 
-可以按条目重新启用:在 `stage_router` 上配置
-[`[models.router.classifier]`](/zh-cn/guides/stage-router/#裁判回退)。这会把裁判在那些
-回合上本可以挽回的准确率赚回来 —— 那正是上游"分类器辅助"配置所测到的实质组成部分 ——
-代价是延迟,以及裁判目标自己的账号池配额。裁判只在无法定夺的轮次被咨询,而且只在请求通过
-鉴权之后,`count_tokens` 探测上从不咨询,所以代价只落在最没把握的那些回合上,别处不受
-影响。裁判的任何失败都会回到 `default_tier`。
+可以按条目重新启用,一共有四种形态:
+
+| 形态 | 裁判决定什么 |
+| :-- | :-- |
+| `stage_router` 上的 [`[models.router.classifier]`](/zh-cn/reference/configuration/#modelsrouterclassifier可选) | 只管信号无法定夺的轮次,其余仍由信号决定 |
+| [`type = "llm_classifier"`](/zh-cn/reference/configuration/#type--llm_classifier) | 整个回合。`mode = "capability"` 按解决概率在两个档位间选择,`mode = "custom"` 选择由你自己的提示词和 schema 指名的模型分组 |
+| [`type = "composite"`](/zh-cn/reference/configuration/#type--composite) | stage 路由器无法定夺时回落到哪个档位,评分本身不受影响 |
+| [带 `type = "llm_classifier"` 的 `[models.subagents]`](/zh-cn/reference/configuration/#subagents-type--llm_classifier) | 被委派的子任务去哪里,每对 (会话, agent) 只决定一次 |
+
+四者都能把裁判本可以挽回的准确率赚回来 —— 那正是上游“分类器辅助”配置所测到的实质组成
+部分 —— 代价是延迟,以及裁判目标自己的账号池配额。这笔代价付得多勤,由 `classify_trigger`
+键决定:每轮都判定,或每当用户开口时判定一次、并在其间的工具调用中沿用该结论,或整个会话
+只判定一次。裁判只在请求通过鉴权之后才会被咨询,`count_tokens` 探测上从不咨询,对同一对
+(会话, agent) 也不会超过 `max_judge_calls` 次。裁判的任何失败 —— 超时、`400`、无法解析
+的回复 —— 都不会让请求失败,而是回到算法自己的默认目标;每个需要判定的回合,裁判调用恰好
+只有一次。
 
 ### 路由目标就是普通的模型 id
 

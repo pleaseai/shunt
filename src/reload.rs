@@ -48,6 +48,19 @@ pub struct RuntimeState {
     /// flight is re-scored on its next turn instead of replaying a decision
     /// made against a checkpoint that is no longer configured.
     pub prefill_routers: Arc<crate::routing::prefill::PrefillRouters>,
+    /// The built driven algorithms — one per `[models.router]` of type
+    /// `llm_classifier`/`composite`, and one per classifier-form
+    /// `[models.subagents]` overlay.
+    ///
+    /// Re-built on every reload, for the same reason and with the same
+    /// consequence as `prefill_routers`: the prompt, the schema, the trigger,
+    /// and the model groups are all config, so a reload that changed any of
+    /// them must build the new algorithm — and libsy's affinity map and a
+    /// composite's retained tiers live *inside* that algorithm, so a reload
+    /// forgets them. A session in flight is classified again on its next turn
+    /// rather than replaying a verdict made against a table that is no longer
+    /// configured.
+    pub driven_routers: Arc<crate::routing::driven::DrivenRouters>,
 }
 
 /// Shared handle to the live [`RuntimeState`]. Cloning is cheap (an `Arc`); a
@@ -68,12 +81,18 @@ impl RuntimeState {
         // build is an ordinary `ConfigError`, so `reload` keeps the last good
         // config running rather than swapping in a router that cannot answer.
         let prefill_routers = Arc::new(crate::routing::prefill::PrefillRouters::build(&config)?);
+        // Same boundary as the checkpoints above: `validate` has already
+        // constructed and dropped each of these once, so a failure here keeps
+        // the last good config running rather than swapping in an entry that
+        // cannot answer.
+        let driven_routers = Arc::new(crate::routing::driven::DrivenRouters::build(&config)?);
         Ok(Self {
             config: Arc::new(config),
             inbound_auth,
             admin_auth,
             gateway_auth,
             prefill_routers,
+            driven_routers,
         })
     }
 }

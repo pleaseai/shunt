@@ -329,22 +329,32 @@ shunt가 더하는 것은 "위임"을 읽어내는 방식입니다. 업스트림
 자식은 채점되지도, 고정되지도, 부모의 dwell을 진행시키지도 않으며, 그 턴은
 `x-gateway-route-source`에 `subagent_type` 또는 `subagent`를 보고합니다.
 
-### 핫 패스에 LLM 판정자를 두지 않는다
+### LLM 판정자는 항목 단위 옵트인이다
 
 신호가 불확실하면 libsy는 `PickOutcome::ConsultClassifier { default_tier }`를
-반환합니다. 기본값에서 shunt는 그것을 답으로 취급하고 `default_tier`를 씁니다. 그래서
-핫 패스에는 판정자가 없습니다 — 두 번째 모델 호출도, 두 번째 자격 증명도, 라우터가 가장
-불확실한 바로 그 턴에서 늘어나는 지연도 없습니다. fall-open하는 것은 API와 싸우는 게
-아니라, API가 문서화한 fall-open 경로 *그 자체* 입니다.
+반환합니다. classifier 테이블이 없는 `stage_router`는 그것을 답으로 취급하고
+`default_tier`를 씁니다. 그래서 그 핫 패스에는 판정자가 없습니다 — 두 번째 모델 호출도,
+두 번째 자격 증명도, 라우터가 가장 불확실한 바로 그 턴에서 늘어나는 지연도 없습니다.
+fall-open하는 것은 API와 싸우는 게 아니라, API가 문서화한 fall-open 경로 *그 자체* 입니다.
+이것이 기본값이고, pure 레인에 있는 항목은 지금도 전부 이렇게 동작합니다.
 
-항목 단위로 다시 켤 수는 있습니다. `stage_router`에
-[`[models.router.classifier]`](/ko/guides/stage-router/#판정-모델-폴백)를 두면 됩니다.
-그러면 바로 그 턴들에서 판정자가 회복해주는 정확도를 되찾습니다 — 업스트림의 분류기
-보조 구성이 측정한 것의 실질적인 일부입니다 — 대신 지연 시간과 판정 타깃 자신의 풀
-쿼터를 치릅니다. 판정자는 결론이 나지 않은 턴에서만, 그리고 요청이 통과된 뒤에만
-호출되며 `count_tokens` 탐침에는 호출되지 않습니다. 비용이 가장 불확실했던 턴에만
-얹히고 다른 곳에는 얹히지 않는다는 뜻입니다. 판정 실패는 모두 `default_tier`로
-돌아옵니다.
+항목 단위로 다시 켤 수는 있습니다. 모양은 네 가지입니다.
+
+| 모양 | 판정자가 정하는 것 |
+| :-- | :-- |
+| `stage_router` 위의 [`[models.router.classifier]`](/ko/reference/configuration/#modelsrouterclassifier-선택) | 신호가 결론을 내지 못한 턴만. 나머지는 그대로 신호가 정합니다 |
+| [`type = "llm_classifier"`](/ko/reference/configuration/#type--llm_classifier) | 턴 전체. `mode = "capability"`는 해결 확률로 두 티어 중 하나를, `mode = "custom"`은 직접 쓴 프롬프트와 스키마가 지목한 모델 그룹을 고릅니다 |
+| [`type = "composite"`](/ko/reference/configuration/#type--composite) | stage 라우터가 결론을 못 냈을 때 떨어질 티어. 채점 자체는 건드리지 않습니다 |
+| [`type = "llm_classifier"`를 쓴 `[models.subagents]`](/ko/reference/configuration/#subagents-type--llm_classifier) | 위임된 자식이 갈 곳. (세션, 에이전트)마다 한 번 정합니다 |
+
+넷 다 판정자가 회복해주는 정확도를 되찾습니다 — 업스트림의 분류기 보조 구성이 측정한
+것의 실질적인 일부입니다 — 대신 지연 시간과 판정 타깃 자신의 풀 쿼터를 치릅니다. 그
+비용을 얼마나 자주 치를지는 `classify_trigger` 키가 정합니다. 매 턴 판정하거나, 사람이
+말한 턴마다 판정하고 그 사이의 도구 호출 동안 판정 결과를 유지하거나, 세션당 한 번만
+판정합니다. 판정자는 요청이 통과된 뒤에만 호출되고, `count_tokens` 탐침에는 호출되지
+않으며, 한 (세션, 에이전트) 쌍에 대해 `max_judge_calls`를 넘겨 호출되지 않습니다. 판정
+실패는 — 타임아웃이든 `400`이든 파싱되지 않는 답이든 — 요청을 실패시키지 않고 알고리즘
+자신의 기본값으로 돌아오며, 판정하는 턴 한 번에 판정 호출도 정확히 한 번입니다.
 
 ### 라우팅된 타깃은 평범한 모델 id
 

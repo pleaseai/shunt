@@ -8,7 +8,7 @@ use crate::{
 
 use context::RouterContext;
 use outcome::{RouteSource, RouterOutcome};
-use stage::StageContext;
+use stage::{ConsultJudge, ConsultKind, StageContext};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdapterKind {
@@ -158,13 +158,34 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
             // what the entry advertises.
             if let (Some(overlay), Some(stage)) = (configured_model.subagents.as_ref(), stage) {
                 let hints = RouterContext::from_headers(stage.headers);
-                if let Some((target, source)) = subagents::select(overlay, &hints) {
+                // The classifier form has no synchronous answer, so
+                // `subagents::select` declines it: the target comes from a
+                // judge call `proxy::failover` makes after admission. Until
+                // then the overlay's own fail-open group answers, which is
+                // also the final answer for a probe (ADR-0005 §3).
+                let diverted = subagents::select(overlay, &hints)
+                    .map(|(target, source)| (target, source, false))
+                    .or_else(|| {
+                        let classifier = overlay.classifier().filter(|_| hints.is_delegated())?;
+                        Some((
+                            classifier.fail_open_target(),
+                            RouteSource::DrivenDefault,
+                            true,
+                        ))
+                    });
+                if let Some((target, source, driven)) = diverted {
                     stage.decided.set(Some(RouterOutcome {
                         model: model.to_string(),
                         target: target.to_string(),
                         algorithm: overlay.algorithm(),
                         source,
                     }));
+                    if driven && !stage.read_only {
+                        stage.consult.set(Some(ConsultJudge {
+                            judge_calls_used: 0,
+                            kind: ConsultKind::Overlay,
+                        }));
+                    }
                     // One hop, as for a router: validation rejects an overlay
                     // target that carries a router or an overlay of its own.
                     let mut routes = resolve_chain(config, target, None);
@@ -203,6 +224,27 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                                 RouteSource::PrefillDefault,
                             ),
                         }
+                    }
+                    // The driven lane's first pass. The judge call happens
+                    // after admission (ADR-0005 §3), so nothing here has a
+                    // verdict yet: the algorithm's own fail-open target is the
+                    // provisional answer, and `proxy::failover` re-resolves the
+                    // chain if a verdict moves it.
+                    RouterConfig::LlmClassifier(_) | RouterConfig::Composite(_) => {
+                        // A probe never consults (ADR-0005 §3): `count_tokens`
+                        // answers from the default target and makes zero judge
+                        // calls, and a body-less resolution has no context at
+                        // all to park the consultation on.
+                        if let Some(stage) = stage.filter(|stage| !stage.read_only) {
+                            stage.consult.set(Some(ConsultJudge {
+                                judge_calls_used: 0,
+                                kind: ConsultKind::Router,
+                            }));
+                        }
+                        (
+                            router.fail_open_target().unwrap_or(model),
+                            RouteSource::DrivenDefault,
+                        )
                     }
                     // A noop entry names no destination: it answers as itself.
                     RouterConfig::Noop {} => (model, RouteSource::Noop),
@@ -827,6 +869,7 @@ mod tests {
 }
 
 pub(crate) mod context;
+pub(crate) mod driven;
 pub(crate) mod envelope;
 pub(crate) mod handoff;
 pub(crate) mod judge;

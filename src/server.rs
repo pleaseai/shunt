@@ -59,6 +59,11 @@ pub struct AppState {
     /// them from the new config, so this is read off `current` like
     /// [`AppState::config`] rather than threaded through [`AppState::from_shared`].
     pub(crate) prefill_routers: Arc<crate::routing::prefill::PrefillRouters>,
+    /// The built driven-lane algorithms for this request's config snapshot.
+    /// Runtime state, not a process-lifetime store, exactly like
+    /// [`AppState::prefill_routers`]: a reload rebuilds them, and with them
+    /// the session state libsy keeps inside each algorithm.
+    pub(crate) driven_routers: Arc<crate::routing::driven::DrivenRouters>,
     /// Whether the listener this process actually bound at startup is
     /// loopback. Fixed at boot like `server.bind` itself (see
     /// `reload::warn_on_restart_only_changes`): a reload can rewrite
@@ -116,6 +121,7 @@ impl AppState {
             admin_auth: current.admin_auth.clone(),
             gateway_auth: current.gateway_auth.clone(),
             prefill_routers: current.prefill_routers.clone(),
+            driven_routers: current.driven_routers.clone(),
             http_client,
             accounts,
             status,

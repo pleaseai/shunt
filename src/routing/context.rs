@@ -161,6 +161,49 @@ impl<'a> RouterContext<'a> {
     }
 }
 
+/// The correlation metadata libsy's algorithms key their session state on.
+///
+/// Shared by every driven lane — the learned `prefill_router`, the
+/// `llm_classifier`/`composite` routers, and the classifier-form
+/// `[models.subagents]` overlay — so all of them partition sessions the same
+/// way. libsy keys a root request on `session_id` and a child on
+/// `(session_id, agent_id)` when `is_subagent`, so a delegated turn keeps its
+/// own decision instead of replaying its parent's. A request carrying neither
+/// header falls back to upstream's own message-hash affinity — deliberately
+/// left as upstream's behaviour rather than overridden here.
+///
+/// Both delegation flags are set from [`RouterContext::is_delegated`].
+/// `is_subagent` is what the affinity key reads; `is_delegated_work` is what
+/// upstream's own sub-agent routing reads, and upstream computes it from raw
+/// harness signals shunt's clients do not send — so leaving it `false` on a
+/// turn shunt has already identified as a child would hand libsy a request
+/// that is a sub-agent by one field and not by the other.
+///
+/// Delegation is read through [`RouterContext::is_delegated`] and
+/// [`RouterContext::pin_agent_id`], the same predicates the stage router pins
+/// its turns with, rather than re-deriving it from the agent id here. The
+/// class header is authoritative when sent, so a `main` turn that carries an
+/// agent id is root traffic and must not be keyed as a child, and a
+/// `subagent`/`workflow` turn is delegated whether or not it sent an id; only
+/// when no class is sent — the default deployment, where the class is gated
+/// off and the agent id is not — does a non-blank agent id decide.
+pub(crate) fn libsy_metadata(headers: &HeaderMap) -> switchyard_protocol::Metadata {
+    let hints = RouterContext::from_headers(headers);
+    let text = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    switchyard_protocol::Metadata {
+        session_id: text(hints.session_id),
+        is_subagent: hints.is_delegated(),
+        is_delegated_work: hints.is_delegated(),
+        agent_id: text(hints.pin_agent_id()),
+        ..Default::default()
+    }
+}
+
 /// Predicate tests.
 ///
 /// Non-vacuity: make `is_delegated` return `self.agent_id.is_some()` and

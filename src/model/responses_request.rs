@@ -202,7 +202,42 @@ pub fn translate_request_value(
     // so a route can override an inherited provider-level tier -- this is the
     // one place it is stripped; the literal string must never reach the wire.
     if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
-        out.insert("text".to_string(), json!({"verbosity": "medium"}));
+        let mut text = json!({"verbosity": "medium"});
+        // A judge target on a Responses provider: libsy's codec asks for a
+        // structured verdict as Anthropic's `output_config.format`, and the
+        // Responses equivalent is `text.format`. Without the translation the
+        // judge answers in prose and every verdict is unparseable — a
+        // `classifier_fail_open` on every turn, with no error to read.
+        //
+        // `strict: false` and a fixed `name`, because neither survives the
+        // Anthropic hop either: that codec emits `{"type": "json_schema",
+        // "schema": …}` and drops the packaged name and `strict` (the live
+        // capture, "Fact (c), re-captured"). Sending `strict: true` here would
+        // hold the Responses judge to a contract the Anthropic one is not,
+        // and the schemas carry `additionalProperties: false` already.
+        // Withheld on xai/grok for the reason the whole `text` object is:
+        // that API rejects it.
+        if let (Some("json_schema"), Some(schema)) = (
+            request
+                .pointer("/output_config/format/type")
+                .and_then(Value::as_str),
+            request
+                .pointer("/output_config/format/schema")
+                .filter(|schema| schema.is_object()),
+        ) {
+            if let Some(object) = text.as_object_mut() {
+                object.insert(
+                    "format".to_string(),
+                    json!({
+                        "type": "json_schema",
+                        "name": "verdict",
+                        "schema": schema.clone(),
+                        "strict": false,
+                    }),
+                );
+            }
+        }
+        out.insert("text".to_string(), text);
         if let Some(service_tier) = &route.service_tier {
             if service_tier != "default" {
                 out.insert("service_tier".to_string(), json!(service_tier));
@@ -1018,7 +1053,7 @@ fn effort(request: &Value, route: &Route) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{effort, input_items, ToolSearchContext};
+    use super::{effort, input_items, translate_request_value, ResponsesFlavor, ToolSearchContext};
     use crate::routing::{AdapterKind, Route};
 
     fn codex_route() -> Route {
@@ -1052,6 +1087,83 @@ mod tests {
         ] {
             let request = json!({"output_config": {"effort": level}});
             assert_eq!(effort(&request, &codex_route()), expected, "level={level}");
+        }
+    }
+
+    /// A judge target on a Responses provider (ADR-0005 §8 PR 5). libsy asks
+    /// for the verdict as Anthropic's `output_config.format`; this is where
+    /// that becomes the Responses API's `text.format`.
+    ///
+    /// Non-vacuity: delete the `output_config.format` branch in
+    /// `translate_request_value` and the `format` assertions go red; send
+    /// `strict: true` and the last one does.
+    #[test]
+    fn maps_output_config_json_schema_to_text_format() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"target": {"type": "string"}},
+            "required": ["target"],
+            "additionalProperties": false,
+        });
+        let request = json!({
+            "messages": [],
+            "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        });
+
+        let out = translate_request_value(
+            &request,
+            &codex_route(),
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+        );
+
+        assert_eq!(out["text"]["format"]["type"], "json_schema");
+        assert_eq!(out["text"]["format"]["name"], "verdict");
+        assert_eq!(out["text"]["format"]["schema"], schema);
+        assert_eq!(out["text"]["format"]["strict"], json!(false));
+        assert_eq!(
+            out["text"]["verbosity"], "medium",
+            "the format merges into the existing text object rather than replacing it"
+        );
+    }
+
+    /// xAI rejects the whole `text` object, so the judge's schema is withheld
+    /// there exactly as `verbosity` is.
+    #[test]
+    fn withholds_the_judge_schema_on_the_xai_flavor() {
+        let request = json!({
+            "messages": [],
+            "output_config": {"format": {"type": "json_schema", "schema": {"type": "object"}}},
+        });
+
+        for flavor in [ResponsesFlavor::Xai, ResponsesFlavor::Grok] {
+            let out = translate_request_value(&request, &codex_route(), flavor, false, None);
+            assert!(out.get("text").is_none(), "flavor={flavor:?}");
+        }
+    }
+
+    /// A client body with no structured-output request is untouched: the
+    /// branch must not invent a `format` for ordinary traffic.
+    #[test]
+    fn leaves_text_format_alone_without_a_json_schema_request() {
+        for request in [
+            json!({"messages": []}),
+            json!({"output_config": {"effort": "high"}}),
+            json!({"output_config": {"format": {"type": "text"}}}),
+            json!({"output_config": {"format": {"type": "json_schema"}}}),
+        ] {
+            let out = translate_request_value(
+                &request,
+                &codex_route(),
+                ResponsesFlavor::Chatgpt,
+                false,
+                None,
+            );
+            assert!(
+                out["text"].get("format").is_none(),
+                "request={request}, out={out}"
+            );
         }
     }
 

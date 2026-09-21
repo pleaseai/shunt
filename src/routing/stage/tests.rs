@@ -227,6 +227,7 @@ mod consult {
             classifier: Some(crate::config::StageClassifierConfig {
                 target: "judge-alias".to_string(),
                 base_threshold: 0.5,
+                classify_trigger: Default::default(),
             }),
             ..router(StageRouterPicker::EfficientFirst)
         }
@@ -288,6 +289,43 @@ mod consult {
             false,
         );
         assert!(consult.is_none(), "the pure lane makes no model call");
+    }
+
+    /// `classify_trigger = "user_turn"` narrows the consultation to a turn
+    /// whose latest message is a *human* one. Anthropic carries a tool result
+    /// as `role: "user"`, so the role alone cannot tell the two apart — drop
+    /// the block check from `latest_is_user_turn` and the first half of this
+    /// goes red while the second stays green.
+    #[test]
+    fn a_user_turn_trigger_skips_a_tool_continuation() {
+        let mut router = judged();
+        router
+            .classifier
+            .as_mut()
+            .expect("the fixture carries a judge")
+            .classify_trigger = crate::config::ClassifyTrigger::UserTurn;
+
+        // `undecided()` ends on a tool result: a continuation, not a human turn.
+        let (decision, consult) =
+            consult_for(&router, &StageRouterStore::new(), &undecided(), false);
+        assert_eq!(
+            decision.source,
+            StageSource::Scorer(DecisionSource::FallOpen),
+            "the premise: the scorer still cannot decide this turn"
+        );
+        assert!(
+            consult.is_none(),
+            "a tool continuation must not spend a judge call"
+        );
+
+        // The same transcript with a human message appended consults.
+        let mut request = undecided();
+        request["messages"]
+            .as_array_mut()
+            .expect("the fixture is a message array")
+            .push(json!({"role": "user", "content": "and now fix it"}));
+        let (_, consult) = consult_for(&router, &StageRouterStore::new(), &request, false);
+        assert!(consult.is_some(), "a human turn is what the trigger names");
     }
 
     /// A `count_tokens` probe must resolve without any model call at all

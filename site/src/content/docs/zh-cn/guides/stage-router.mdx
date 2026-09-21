@@ -240,6 +240,7 @@ pin 住。超时、响应过大或无法解析、上游错误、预算耗尽 —
 
 - **没有轮次中途升档。** 响应头一旦提交,shunt 不会重放该轮,因此在一轮开始时选定的档位会
   承担整轮。
-- **裁判只决定档位。** 其他需要裁决的类型 —— `llm_classifier`、`composite`、`advisor`
-  —— 尚不可用,指定它们会导致启动错误。
+- **这个裁判只决定档位。** 其他需要裁决的类型各有自己的表:`llm_classifier` 和
+  `composite` 直接配置在 `[models.router]` 上 —— 见[配置参考](/zh-cn/reference/configuration/#type--llm_classifier)。
+  `advisor` 尚不可用,指定它会导致启动错误。
 - **`[server.codex_endpoint]` 不在范围内**,它使用自己的路由表。

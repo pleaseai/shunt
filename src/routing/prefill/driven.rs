@@ -11,11 +11,11 @@ use axum::http::HeaderMap;
 use serde_json::Value;
 use switchyard_libsy::{drive, Algorithm, LibsyError, RuntimeModels};
 use switchyard_protocol::{
-    Category, ContentBlock, LlmRequest, Message, Metadata, ModelId, Request, Role, ToolResult,
+    Category, ContentBlock, LlmRequest, Message, ModelId, Request, Role, ToolResult,
 };
 
 use crate::config::{Config, ConfigError, RouterConfig};
-use crate::routing::context::RouterContext;
+use crate::routing::context::libsy_metadata;
 use crate::routing::outcome::{PrefillDecision, RouteSource};
 use crate::routing::strip_context_window_hint;
 
@@ -115,7 +115,7 @@ pub(super) async fn decide(
             ..Default::default()
         },
         raw_request: None,
-        metadata: Some(metadata_from_headers(headers)),
+        metadata: Some(libsy_metadata(headers)),
     };
     let models = Arc::new(RuntimeModels::new(
         [(Category::Any, entry.targets.clone())].into(),
@@ -169,38 +169,6 @@ fn fail_open(entry: &Entry) -> PrefillDecision {
     PrefillDecision {
         target: entry.default_target.clone(),
         source: RouteSource::PrefillFailOpen,
-    }
-}
-
-/// The correlation metadata libsy's affinity keys on.
-///
-/// It keys a root request on `session_id` and a child on `(session_id,
-/// agent_id)` when `is_subagent`, so a delegated turn keeps its own decision
-/// instead of replaying its parent's. A request carrying neither header falls
-/// back to upstream's own message-hash affinity — deliberately left as
-/// upstream's behaviour rather than overridden here.
-///
-/// Delegation is read through [`RouterContext::is_delegated`] and
-/// [`RouterContext::pin_agent_id`], the same predicates the stage router pins
-/// its turns with, rather than re-deriving it from the agent id here. The
-/// class header is authoritative when sent, so a `main` turn that carries an
-/// agent id is root traffic and must not be keyed as a child, and a
-/// `subagent`/`workflow` turn is delegated whether or not it sent an id; only
-/// when no class is sent — the default deployment, where the class is gated
-/// off and the agent id is not — does a non-blank agent id decide.
-fn metadata_from_headers(headers: &HeaderMap) -> Metadata {
-    let hints = RouterContext::from_headers(headers);
-    let text = |value: Option<&str>| {
-        value
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    };
-    Metadata {
-        session_id: text(hints.session_id),
-        is_subagent: hints.is_delegated(),
-        agent_id: text(hints.pin_agent_id()),
-        ..Default::default()
     }
 }
 

@@ -384,6 +384,7 @@ mod judge_fixture {
             classifier: Some(StageClassifierConfig {
                 target: "judge-alias".to_string(),
                 base_threshold: 0.5,
+                classify_trigger: Default::default(),
             }),
             judge_timeout_ms: 2_000,
             ..StageRouterConfig::preset(

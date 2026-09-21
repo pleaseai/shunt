@@ -989,6 +989,7 @@ fn driven_state() -> AppState {
                 classifier: Some(StageClassifierConfig {
                     target: "judge-alias".to_string(),
                     base_threshold: 0.5,
+                    classify_trigger: Default::default(),
                 }),
                 ..StageRouterConfig::preset(
                     "capable-alias".to_string(),

@@ -622,17 +622,16 @@ id it asked for — the chosen target travels upstream only.
 | `random` | A weighted draw, session-sticky by default | No |
 | `noop` | Nothing — answers with an empty message | No |
 | `prefill_router` | A learned classifier over the latest user turn (needs the `prefill-router` build) | Yes — the text of user turns |
+| `llm_classifier` | An LLM judge's verdict, per `classify_trigger` | Yes — the transcript, via the packaged or a custom prompt |
+| `composite` | An LLM judge sets the tier a stage router falls open to | Yes — the transcript for the judge, tool-result metadata for the signals |
 
-The driven algorithms (`llm_classifier`, `composite`, `advisor`) and the
-`llm_classifier` form of the [`[models.subagents]`](#modelssubagents-optional)
-overlay are **not available yet**; naming one is a startup error. They call an
-LLM judge and land in later releases. `prefill_router` is implemented but
+Two shapes are **not available yet**; naming either is a startup error:
+`type = "advisor"`, and `llm_classifier`'s `mode = "escalation"`. Both serve a
+turn while still deciding how to route it, so they need the buffer-and-replay
+lane, which lands in a later release. `prefill_router` is implemented but
 **gated at compile time**: it is available only from a build that opts into the
 `prefill-router` cargo feature, which is off by default — see
-[below](#type--prefill_router). The one judge-backed shape that does ship is
-the stage router's own
-[`[models.router.classifier]`](#modelsrouterclassifier-optional) fallback,
-below.
+[below](#type--prefill_router).
 
 `[models.router]` and `[models.upstream_model]` on the same entry are mutually
 exclusive.
@@ -743,6 +742,7 @@ base_threshold = 0.5
 | :-- | :-- | :-- |
 | `target` | ✅ required | Public model id of the judge. Consulted, never served — it never answers the client |
 | `base_threshold` | `0.5` | Lowest `p_solve` that keeps a supported task on the efficient tier, in `(0.0, 1.0]` |
+| `classify_trigger` | `every_request` | When the judge may be consulted. `every_request` allows it on any undecided turn, tool continuations included. `user_turn` allows it only when the latest message is a human user turn — `role: user` carrying at least one block that is not a `tool_result` — so a tool continuation rides the session's pin instead of paying a judge call. `new_session` behaves exactly as `every_request` here, as it does upstream: this router already holds its decision in shunt's own session pin |
 
 The judge target is an ordinary public model id held to the same one-hop rule
 as the tier targets, plus one more: it must not resolve to a **passthrough**
@@ -772,9 +772,12 @@ router ran.
 
 #### Per-call bounds
 
-Six keys on `[models.router]` bound every internal call the entry makes.
-Crossing one cancels the upstream call. Each must be at least `1`; a `0` is a
-startup error naming the key.
+Six keys bound every internal call an entry makes. They live on the table that
+makes those calls: `[models.router]` of any driven type — a `stage_router`
+carrying a `classifier`, `llm_classifier`, or `composite` — and a
+classifier-form [`[models.subagents]`](#modelssubagents-optional) overlay, which
+carries its own copy. Crossing one cancels the upstream call. Each must be at
+least `1`; a `0` is a startup error naming the key.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
@@ -789,6 +792,175 @@ The three `gated_*` keys are accepted, validated, and enforced by the
 retained-turn collector, but **no gated turn exists yet** — the buffered
 escalation and advisor turns they are built for land in a later release. Until
 then they bound nothing at runtime.
+
+#### `type = "llm_classifier"`
+
+An LLM **judge** decides the whole turn, rather than stepping in only where
+signals ran out. The entry names the judge, the destinations it may pick, and
+`mode` — which of two verdict shapes the judge produces.
+
+`mode` is **required**, which is a deliberate departure from the upstream
+schema, where it defaults to `capability`: the modes route on different
+principles, and one of them (`escalation`) is not implemented here yet, so an
+omitted `mode` would silently change meaning for a config that never named one.
+`mode = "escalation"` is a startup error naming the two modes that exist.
+
+**`mode = "capability"`** — the packaged judge returns a solve probability for
+the task. A probability at or above `base_threshold` keeps the turn on
+`weak_target`; below it, the turn goes to `strong_target`.
+
+```toml
+[[models]]
+id = "claude-judged"
+
+[models.router]
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+base_threshold = 0.5
+# threshold_step = 0.0
+# classify_trigger = "every_request"
+# message_hash_fallback = false
+# recent_turn_window = 3
+# max_output_tokens = 4096
+# prompt = "…"
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `llm_classifier` |
+| `mode` | ✅ required | `capability` |
+| `classifier_target` | ✅ required | Public model id of the judge. Consulted, never served |
+| `strong_target` | ✅ required | Model id for a task the judge is not confident about |
+| `weak_target` | ✅ required | Model id for a task the judge expects to be solved |
+| `base_threshold` | ✅ required | Lowest solve probability that still routes to `weak_target`, in `(0.0, 1.0]` |
+| `threshold_step` | `0.0` | Finite and non-negative; added once for an uncertain or unmatched verdict and twice for an unsupported one. `base_threshold + 2 × threshold_step` must be at most `1.0` |
+| `prompt` | packaged prompt | Replaces the packaged capability prompt. The schema is sent separately as structured-output configuration, so the prompt must not contain `{{RESPONSE_SCHEMA}}`, and must not be blank |
+
+**`mode = "custom"`** — you supply the prompt and the JSON Schema, and a JSON
+Pointer picks a **model group name** out of the verdict. The first model of that
+group serves the turn. `any` and `judge` are reserved and required; every other
+group name is yours, which is how one entry chooses between more than two
+models.
+
+```toml
+[models.router]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+prompt = "Select exactly one target for this turn. Return only JSON matching the response schema."
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `llm_classifier` |
+| `mode` | ✅ required | `custom` |
+| `models.any` | ✅ required | Every selectable destination. Every other answer group's targets must also appear here (`judge` is exempt); one that does not is a startup error |
+| `models.judge` | ✅ required | One or more ordered judge candidates. Consulted, never served |
+| `models.<name>` | — | A group you name; a verdict naming it selects the group's first model |
+| `default_target` | ✅ required | Group used when the judge returns no usable verdict. Any configured group except `judge`, and it must be non-empty |
+| `prompt` | ✅ required | Judge system prompt. Must be non-blank and must not contain `{{RESPONSE_SCHEMA}}` — the schema is sent separately |
+| `response_schema` | ✅ required | The inner JSON Schema as a TOML string. Must parse as a JSON object; shunt adds the provider wrapper |
+| `policy` | ✅ required | `{ type = "target_selector", selector = "…" }`, where `selector` is a JSON Pointer into the verdict, such as `/target` |
+
+Both modes share these, and the six [per-call bounds](#per-call-bounds):
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every turn, tool continuations included. `user_turn` judges each new human user turn and retains that target across the tool calls between them. `new_session` judges once and reuses that target for the session |
+| `message_hash_fallback` | `false` | Keys retention on the first user message, for clients that send no session id. Requires `classify_trigger = "new_session"`; setting it on another trigger is a startup error |
+| `recent_turn_window` | unset | When set, trailing turns the judge additionally sees. Must be at least `1` |
+| `max_output_tokens` | `4096` | Completion-token ceiling on the judge verdict. Must be at least `1` |
+
+**When the judge does not answer.** A judge call that fails in any way — a
+timeout, an oversized reply, an upstream error, a `400`, an unparseable
+verdict — produces no verdict, and the turn goes to the algorithm's own
+default: `strong_target` in `capability` mode, `default_target`'s first model in
+`custom` mode. Exactly **one** judge call is made per consulted turn, against
+the first judge candidate, so a failure is not retried down `models.judge`: the
+turn is answered, the route source is `classifier_fail_open`, and the client
+still gets its `200`.
+
+**Sessions live in the algorithm.** `classify_trigger` retention is upstream's
+state and is held inside the router instance, which shunt builds once per
+loaded configuration. A hot reload rebuilds it, so a reload forgets which target
+each session was holding — the same property `prefill_router` has.
+`max_judge_calls` is shunt's own and is counted per `(session, agent)`, so a
+delegated child spends its own budget rather than its parent's; a request
+carrying no session id is not tracked, so the bound applies per request for it.
+A turn whose budget is spent skips the judge and takes the fail-open target,
+recorded as judge-call outcome `budget_exhausted`.
+
+**Probes resolve without a judge.** A `count_tokens` request never consults one
+and is answered from the fail-open target, as are the surfaces with no request
+body — `GET /routes`, `/v1/models` discovery, and `shunt check` — which report
+it under route source `classifier_default`.
+
+Every target and every judge is an ordinary public model id under the same
+one-hop rule as the stage router's, and a judge must not resolve to a
+**passthrough** route for the reason given
+[above](#modelsrouterclassifier-optional): a judge call carries none of the
+caller's credentials, so a passthrough route has nothing to run on.
+
+#### `type = "composite"`
+
+A judge sets the tier a stage router falls open to, and leaves the signal
+scoring alone. The stage table takes **no `picker`** — the classifier supplies
+that tier — so a `picker` key here is a startup error.
+
+```toml
+[[models]]
+id = "claude-composite"
+
+[models.router]
+type = "composite"
+
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[models.router.stage]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.5
+# recent_turn_window = 3
+# capable_hold_turns = 0
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `composite` |
+| `classifier.target` | ✅ required | Public model id of the tier judge. Consulted, never served |
+| `classifier.base_threshold` | ✅ required | Lowest `p_solve` that still routes to the efficient tier, in `(0.0, 1.0]` |
+| `classifier.classify_trigger` | ✅ required | `user_turn` re-picks the tier on each human user turn; `new_session` picks once and holds it. `every_request` is **rejected** here — a judge call per tool step is the cost this type exists to avoid |
+| `classifier.message_hash_fallback` | `false` | Retains the tier by hashing the first user message, for clients that send no session id |
+| `stage.capable_target` | ✅ required | Capable tier |
+| `stage.efficient_target` | ✅ required | Efficient tier |
+| `stage.confidence_threshold` | ✅ required | Corroboration a decisive signal needs, in `(0.0, 1.0]` |
+| `stage.recent_turn_window` | `3` | Trailing tool results the signals are computed over. Must be at least `1` |
+| `stage.capable_hold_turns` | `0` | Turns the capable tier is held after a signal-driven escalation; shunt's default is `0`, upstream's is `2` |
+| `stage.tool_semantics` | — | The same four lists as [`[models.router.tool_semantics]`](#modelsroutertool_semantics-optional), under the same rules |
+
+The six [per-call bounds](#per-call-bounds) go on `[models.router]`, not inside
+either sub-table. A turn the classifier cannot reach falls open to
+`stage.efficient_target`, which is upstream's rule and is also what a probe and
+a body-less surface report.
+
+Because the stage half is libsy's own stage route, its decisive turns keep the
+stage router's route sources rather than reporting as classifier decisions —
+so a composite's signal-driven turns read the same way a plain `stage_router`'s
+do.
 
 #### `type = "auto"`
 
@@ -1039,8 +1211,8 @@ by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate =
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `type` | ✅ required | `passthrough`, the only form this release implements. The `llm_classifier` form, where a judge picks the child's tier, is a later release; naming it is a startup error |
-| `target` | ✅ required | Model id a delegated turn goes to when `by_type` names nothing for its agent type — and where every delegated turn goes when the agent-type header is not sent |
+| `type` | ✅ required | `passthrough`, the fixed form above, or [`llm_classifier`](#subagents-type--llm_classifier), where a judge picks the child's target |
+| `target` | ✅ required (`passthrough`) | Model id a delegated turn goes to when `by_type` names nothing for its agent type — and where every delegated turn goes when the agent-type header is not sent |
 | `by_type` | `{}` | Agent type → model id, keyed on the literal `x-claude-code-agent-type` value |
 
 **What counts as delegated work.** A request whose `x-claude-code-request-class`
@@ -1083,6 +1255,60 @@ parent's own `[[routes]]`/`[models.router]` entry only when one exists — an id
 left to `server.default_provider` appears in neither array. None of the three
 resolves the overlay's diverted target, and the overlay itself is never listed
 in the `routers` array.
+
+#### subagents `type = "llm_classifier"`
+
+The overlay's second form: instead of a fixed target, a judge reads the
+delegated task and names the group that serves it. Only `mode = "custom"`
+exists here — `mode = "capability"` is a startup error — and the keys are the
+`custom` mode's, described in full [above](#type--llm_classifier).
+
+```toml
+[models.subagents]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+classify_trigger = "new_session"
+max_output_tokens = 64
+prompt = """
+Select exactly one target for the delegated task.
+
+- Select "capable" for code review, critique, auditing, or correctness analysis.
+- Select "efficient" for implementation, research, explanation, and other delegated work.
+
+Return only JSON matching the response schema.
+"""
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+Three rules differ from the `[models.router]` form:
+
+- **`classify_trigger` defaults to `new_session`,** and `user_turn` is
+  rejected. A delegated child is one task, so its target is picked once and held
+  for the rest of it; re-judging per user turn would spend a judge call on a
+  decision that cannot change.
+- **`message_hash_fallback` must be `false`.** The classification is already
+  keyed on `(session, agent)`, so hashing the first message instead would key
+  two different children of one session onto one verdict.
+- **The parent is never classified.** What counts as delegated work is exactly
+  what it is for the `passthrough` form above, so a parent turn, a `main` turn
+  carrying an agent id, and the `compaction` and `auxiliary` classes all resolve
+  the entry as if the table were absent — and make no judge call.
+
+The six [per-call bounds](#per-call-bounds) go on this table, since it is the
+one making the calls. The judge is held to the same rules as any other:
+one hop, no passthrough route, and none of the caller's credential slots travel
+with the call. Because a delegated turn may consult it, inbound auth on such a
+turn ranges over the overlay's targets and judge as well — so a delegated turn
+that cannot authenticate is refused with zero judge calls. A `count_tokens`
+probe makes none either, and answers from `default_target`'s first model.
 
 ## `[sentry]` (optional)
 
