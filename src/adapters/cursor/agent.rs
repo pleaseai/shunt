@@ -1493,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_content_beginning_with_tool_prefix_is_not_a_tool_call() {
+    fn long_content_beginning_with_tool_prefix_is_not_a_tool_call() {
         // The direct fields of a built-in call carry its arguments as well as
         // its id, and an argument can be file content that itself begins with
         // `tool_` -- a module whose first line is `tool_registry = {}`. The
@@ -1511,7 +1511,13 @@ mod tests {
             None,
             "long content beginning with tool_ must not be read as a call id"
         );
+    }
 
+    #[test]
+    fn short_content_beginning_with_tool_prefix_is_still_a_tool_call() {
+        // The same shape at id length is still read as a call: the cap is the
+        // only narrowing, so this is the residual case the doc on
+        // MAX_TOOL_CALL_ID_LEN names.
         let payload = field_ld(2, &field_ld(7, &field_str(1, "tool_registry = {}\n")));
         assert_eq!(
             extract_unbridged_builtin_tool_call(&payload),
