@@ -771,7 +771,7 @@ startup error naming the key.
 | `judge_timeout_ms` | `30000` | End-to-end deadline on the non-streaming judge call — headers *and* body, so a `200` that then stalls is cut here rather than left hanging |
 | `judge_max_response_bytes` | `65536` | Largest judge reply collected; a larger one resolves as `fall_open` |
 | `gated_max_bytes` | `8388608` | Largest retained turn |
-| `gated_idle_ms` | `60000` | Longest gap between body chunks of a retained turn. SSE ping frames do not reset it |
+| `gated_idle_ms` | `60000` | Longest gap between completed content frames of a retained turn. SSE ping frames do not reset it, and a frame split across chunks is reassembled before it is classified |
 | `gated_max_duration_ms` | `600000` | Wall-clock ceiling on a retained turn |
 | `max_judge_calls` | `8` | Judge calls one session may make |
 

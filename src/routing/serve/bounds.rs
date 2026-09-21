@@ -117,11 +117,21 @@ impl std::fmt::Display for BoundExceeded {
 /// fourth, untunable reason behind a name that promises three. The caller ends
 /// the stream on a transport error before it reaches this wrapper.
 ///
-/// The idle timer is **not reset by a chunk that carries only SSE ping
-/// frames**. A keep-alive is the upstream saying the socket is alive, not that
-/// the turn is progressing, so an endless ping stream is exactly what this
-/// bound is for; resetting on one would make the idle gap unreachable
-/// (ADR-0005 §3 names the endless-ping stall as a required test).
+/// The idle timer is **not reset by SSE ping frames**. A keep-alive is the
+/// upstream saying the socket is alive, not that the turn is progressing, so an
+/// endless ping stream is exactly what this bound is for; resetting on one
+/// would make the idle gap unreachable (ADR-0005 §3 names the endless-ping
+/// stall as a required test).
+///
+/// What refreshes the timer is a **completed content frame**, tracked across
+/// chunk boundaries: frames are reassembled from a carried remainder, so a
+/// stream that splits every `event: ping\n\n` mid-line is classified on the
+/// frames it actually sent rather than on whatever happened to land in one
+/// chunk. A chunk that completes no frame therefore refreshes nothing — a half
+/// arrived frame is not yet evidence of content, and treating it as such is
+/// precisely what lets a ping split in two disarm the bound. The consequence
+/// is that the idle gap measures the interval between *delivered* content
+/// frames, so a single frame must arrive in full inside it.
 ///
 /// Called by nothing yet; see [`GatedBounds`].
 #[allow(dead_code)]
@@ -139,8 +149,14 @@ where
         /// construction: the caller may build the wrapper before it is awaited,
         /// and the bound is on the turn, not on the value's lifetime.
         started_at: Option<Instant>,
-        /// When the idle gap runs out, refreshed only by a content chunk.
+        /// When the idle gap runs out, refreshed only by a completed content
+        /// frame.
         idle_deadline: Option<Instant>,
+        /// Bytes of a frame that arrived without its terminator, carried to the
+        /// next chunk. Without it a frame split mid-line is invisible to the
+        /// classifier on both halves. Bounded by `max_bytes` along with
+        /// everything else, since it can never hold more than the stream sent.
+        remainder: Vec<u8>,
         total: usize,
         finished: bool,
     }
@@ -151,6 +167,7 @@ where
             gated,
             started_at: None,
             idle_deadline: None,
+            remainder: Vec::new(),
             total: 0,
             finished: false,
         },
@@ -192,7 +209,12 @@ where
                 state.finished = true;
                 return Some((Err(BoundExceeded::MaxBytes), state));
             }
-            if !is_ping_only(&chunk) {
+            // Framing is decided on the stream, not on the chunk: the
+            // remainder carries a partial frame forward so the classifier sees
+            // whole frames however the upstream chose to split them.
+            state.remainder.extend_from_slice(&chunk);
+            let frames = take_complete_frames(&mut state.remainder);
+            if frames.iter().any(|frame| !is_ping_frame(frame)) {
                 state.idle_deadline = Some(Instant::now() + state.gated.idle);
             }
             Some((Ok(chunk), state))
@@ -200,44 +222,67 @@ where
     )
 }
 
-/// Whether a chunk carries nothing but SSE ping frames.
+/// Pull every **complete** SSE frame out of `buffer`, leaving a trailing
+/// partial frame behind for the next chunk to finish.
 ///
-/// Frame-level, not substring-level: a frame counts as a ping only when its own
-/// `event:` line names `ping`, so a real `content_block_delta` whose text
-/// happens to mention the word does not disarm the idle bound. A chunk with no
-/// complete frame in it is not a ping chunk either — it is a partial frame,
-/// which is progress.
+/// Stateful on purpose. A chunk boundary is the upstream's choice, not a
+/// framing event, so classifying a bare chunk decides the idle bound on where
+/// the network happened to split: `event: pin` + `g\n\n` and `event: ping\n` +
+/// `\n` are both a single ping frame, and neither half is one on its own.
+/// Carrying the remainder is what makes the two indistinguishable from the
+/// unsplit frame.
 ///
 /// Line endings are normalized first. SSE terminates a line with CRLF, LF, or a
 /// bare CR, so the blank line that ends a frame is not always a literal `\n\n` —
 /// under CRLF it is `\r\n\r\n`, which contains no `\n\n` at all. Splitting the
-/// raw text would then collapse the whole chunk into one frame, and a chunk
-/// carrying a ping *beside* real content would read as a keep-alive and leave
-/// the idle bound armed against a stream that was making progress. The
-/// allocation is taken only when the chunk actually holds a `\r`, so an LF-only
-/// stream — every one shunt talks to today — copies nothing.
-fn is_ping_only(chunk: &[u8]) -> bool {
-    let Ok(text) = std::str::from_utf8(chunk) else {
-        return false;
+/// raw text would then collapse everything into one frame, and a ping arriving
+/// *beside* real content would read as a keep-alive and leave the idle bound
+/// armed against a stream that was making progress. The allocation is taken
+/// only when the buffer actually holds a `\r`, so an LF-only stream — every one
+/// shunt talks to today — copies nothing.
+fn take_complete_frames(buffer: &mut Vec<u8>) -> Vec<String> {
+    // A trailing CR is held back unread: it may be the first half of a CRLF
+    // whose LF is in the next chunk, and normalizing it now would invent a
+    // frame terminator the upstream never sent.
+    let held_cr = buffer.last() == Some(&b'\r');
+    let scan = &buffer[..buffer.len() - usize::from(held_cr)];
+    let Ok(text) = std::str::from_utf8(scan) else {
+        // A multi-byte character split across chunks. Nothing can be framed
+        // until its remaining bytes arrive, and the buffer keeps them.
+        return Vec::new();
     };
     let normalized: Cow<'_, str> = if text.contains('\r') {
         Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
     } else {
         Cow::Borrowed(text)
     };
-    let mut frames = 0usize;
-    for frame in normalized.split("\n\n") {
-        if frame.trim().is_empty() {
-            continue;
-        }
-        frames += 1;
-        let is_ping = frame.lines().any(|line| {
-            line.strip_prefix("event:")
-                .is_some_and(|event| event.trim() == "ping")
-        });
-        if !is_ping {
-            return false;
-        }
+    // Only what precedes the last blank line is complete; the rest is a frame
+    // still arriving.
+    let Some(terminator) = normalized.rfind("\n\n") else {
+        return Vec::new();
+    };
+    let end = terminator + 2;
+    let frames: Vec<String> = normalized[..end]
+        .split("\n\n")
+        .filter(|frame| !frame.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    let mut leftover = normalized[end..].as_bytes().to_vec();
+    if held_cr {
+        leftover.push(b'\r');
     }
-    frames > 0
+    *buffer = leftover;
+    frames
+}
+
+/// Whether one complete SSE frame is a keep-alive.
+///
+/// Frame-level, not substring-level: a frame counts as a ping only when its own
+/// `event:` line names `ping`, so a real `content_block_delta` whose text
+/// happens to mention the word does not disarm the idle bound.
+fn is_ping_frame(frame: &str) -> bool {
+    frame.lines().any(|line| {
+        line.strip_prefix("event:")
+            .is_some_and(|event| event.trim() == "ping")
+    })
 }

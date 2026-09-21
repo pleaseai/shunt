@@ -5,10 +5,14 @@
 //! key they wrote. Non-vacuity: make [`collect_bounded`] buffer first and check
 //! afterwards and `an_oversized_body_is_refused` still passes — which is why it
 //! asserts the *cap* it reports rather than only that it failed; delete the
-//! ping check in `is_ping_only` and
+//! ping check in `is_ping_frame` and
 //! `a_ping_only_chunk_does_not_reset_the_idle_gap` goes red, because the
-//! keep-alive stream then runs forever; drop the `hard_deadline` comparison and
-//! `a_stream_past_its_wall_clock_bound_reports_duration` reports `Idle`.
+//! keep-alive stream then runs forever; drop the carried remainder in
+//! `take_complete_frames` and
+//! `a_ping_frame_split_across_chunks_does_not_reset_the_idle_gap` goes red,
+//! because each half is then classified on its own; drop the `hard_deadline`
+//! comparison and `a_stream_past_its_wall_clock_bound_reports_duration` reports
+//! `Idle`.
 
 use std::time::Duration;
 
@@ -135,6 +139,62 @@ async fn a_ping_only_chunk_does_not_reset_the_idle_gap() {
         content.last(),
         Some(&Err(BoundExceeded::Duration)),
         "a progressing stream is ended by the wall clock, not by the idle gap"
+    );
+}
+
+/// The endless-ping shape again, with each frame split *inside a line* so no
+/// chunk is a ping frame on its own.
+///
+/// A classifier that looks at one chunk at a time says "not a ping" to both
+/// halves — `event: pin` has no terminator and `g\n\n` has no `event:` line —
+/// and refreshes the idle deadline twice for zero delivered content, which
+/// leaves `gated_idle_ms` unreachable and the stream running to
+/// `gated_max_duration_ms`. The split is deliberately mid-line rather than at a
+/// frame boundary, so a fix that merely buffered whole *lines* could not pass
+/// this either.
+#[tokio::test(start_paused = true)]
+async fn a_ping_frame_split_across_chunks_does_not_reset_the_idle_gap() {
+    let halves: &[&'static [u8]] = &[b"event: pin", b"g\ndata: {\"type\":\"ping\"}\n\n"];
+    let stream = futures_util::stream::unfold(0usize, move |index| async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        Some((Bytes::from_static(halves[index % 2]), index + 1))
+    });
+
+    let collected: Vec<_> = bound_stream(stream, gated(1024 * 1024, 50, 600_000))
+        .collect()
+        .await;
+
+    assert_eq!(
+        collected.last(),
+        Some(&Err(BoundExceeded::Idle)),
+        "a keep-alive stream is a keep-alive however the upstream splits it, \
+         so the idle gap still runs out"
+    );
+}
+
+/// The control for the test above: the same mid-line splitting, carrying
+/// content. Reassembly must not turn every split frame into a stall — a
+/// content frame that completes is progress no matter which chunk finished it,
+/// so this stream reaches the wall clock rather than the idle gap.
+#[tokio::test(start_paused = true)]
+async fn a_content_frame_split_across_chunks_still_counts_as_progress() {
+    let halves: &[&'static [u8]] = &[
+        b"event: content_bl",
+        b"ock_delta\ndata: {\"type\":\"content_block_delta\"}\n\n",
+    ];
+    let stream = futures_util::stream::unfold(0usize, move |index| async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        Some((Bytes::from_static(halves[index % 2]), index + 1))
+    });
+
+    let collected: Vec<_> = bound_stream(stream, gated(1024 * 1024, 50, 200))
+        .collect()
+        .await;
+
+    assert_eq!(
+        collected.last(),
+        Some(&Err(BoundExceeded::Duration)),
+        "a split content frame is still content once it completes"
     );
 }
 
