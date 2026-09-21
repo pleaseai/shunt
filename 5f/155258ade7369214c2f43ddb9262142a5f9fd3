@@ -1,0 +1,31 @@
+src/routing/serve/tests.rs
+  s_d1dd6433b8fa7f::t_10620c1ddd000e 22,61-63,65,70-94,229-257
+  s_d1dd6433b8fa7f::t_00b7cc15ba5f44 258-260
+src/routing/serve/bounds.rs
+  s_d1dd6433b8fa7f::t_deda2fb4e717ec 74,269-277
+  s_d1dd6433b8fa7f::t_8e27f6a86ecdbd 43-53,62,67-73,77,264-268,279
+src/adapters/antigravity/mod.rs
+  s_d1dd6433b8fa7f::t_142d3e5b0e25d0 214-218,223-227
+  s_d1dd6433b8fa7f::t_b9397781258d79 393-400,1194-1217
+  s_d1dd6433b8fa7f::t_b4fd4427d7d9ed 139,143-150,172-213,219-222,228-239,375,562,1141-1142,1218
+  s_d1dd6433b8fa7f::t_8f202e10b7d602 1219
+src/routing/serve.rs
+  s_d1dd6433b8fa7f::t_52db5551a1c59d 60-62
+  s_d1dd6433b8fa7f::t_72554735e820b9 229-230,235-247
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5f155258ade7369214c2f43ddb9262142a5f9fd3",
+  "prompts": {},
+  "sessions": {
+    "s_d1dd6433b8fa7f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56a282fd-ead3-44d2-9507-651573da888e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
