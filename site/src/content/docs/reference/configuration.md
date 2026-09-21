@@ -760,11 +760,15 @@ A judged turn reports route source `llm-classifier` and pins the session like
 any other decision. A judge failure of any kind — a timeout, an oversized
 reply, an upstream error, an unparseable verdict, or an exhausted budget —
 resolves as `fall_open`, the picker default. The judge is never consulted on a
-`count_tokens` probe, and never before the request is admitted: inbound auth
-ranges over the requested id plus every target and judge the entry can name,
-each with its whole failover chain, so a passthrough answer target with a
-credential-injecting judge requires the client credential, and an
-unauthenticated or policy-denied request makes zero judge calls.
+`count_tokens` probe, and never before the request is admitted: on a turn that
+consults one, inbound auth ranges over the requested id plus every target and
+judge the entry can name, each with its whole failover chain, so a passthrough
+answer target with a credential-injecting judge requires the client credential,
+and an unauthenticated or policy-denied request makes zero judge calls. A turn
+that consults no judge is gated by the chain it actually resolved — one the
+signals decided on their own, and one a
+[`[models.subagents]`](#modelssubagents-optional) overlay diverted before the
+router ran.
 
 #### Per-call bounds
 

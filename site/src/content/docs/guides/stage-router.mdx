@@ -270,11 +270,15 @@ self-hosted judge behind no auth is supported rather than an error.
 The call spends that target's own account-pool quota, so give the judge its own
 `[[models]]` entry.
 
-Because admission ranges over the whole entry — the requested id plus both tier
-targets plus the judge, each with its full failover chain — adding an injecting
-judge to an entry whose answer targets are all passthrough makes that entry
-require a client credential. An unauthenticated or policy-denied request makes
-zero judge calls.
+On the turns that put the question to a judge, admission ranges over the whole
+entry — the requested id plus both tier targets plus the judge, each with its
+full failover chain — so adding an injecting judge to an entry whose answer
+targets are all passthrough makes those turns require a client credential. An
+unauthenticated or policy-denied request makes zero judge calls. A turn that
+reaches no judge is gated by the chain it actually resolved, exactly as it was
+before the table existed: one the signals decided on their own, and one a
+[`[models.subagents]`](/reference/configuration/#modelssubagents-optional)
+overlay diverted before the router ran.
 
 Six keys on `[models.router]` bound every internal call: `judge_timeout_ms`
 (default `30000`, an end-to-end deadline covering headers *and* body),

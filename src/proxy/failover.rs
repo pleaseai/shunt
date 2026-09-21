@@ -122,19 +122,31 @@ pub(super) async fn forward(
         // count_tokens request.
         routes.truncate(1);
     }
-    // A driven entry is gated against its whole dependency envelope rather than
-    // against the chain its router happened to pick: the judge has not run yet,
-    // and it must not run for a caller who is about to be refused. So a
-    // passthrough answer tier paired with a credential-injecting judge demands
-    // `[server.auth]` — it is not a passthrough entry. Every other request
-    // gates against the chain it already resolved and allocates nothing here.
+    // Taken here rather than with the other stage outputs below, because this
+    // is the fact that decides which chain the request is admitted against.
+    let consult = stage.consult.take();
+    // A turn that will consult a judge is gated against the entry's whole
+    // dependency envelope rather than against the chain its router happened to
+    // pick: the judge has not run yet, and it must not run for a caller who is
+    // about to be refused. So a passthrough answer tier paired with a
+    // credential-injecting judge demands `[server.auth]` — it is not a
+    // passthrough entry.
+    //
+    // The consultation, not the entry's static shape, is what selects it. An
+    // entry can be driven and still resolve this particular turn without a
+    // judge: a `[models.subagents]` overlay answers a delegated turn before the
+    // router runs at all (`routing::resolve_chain`), and a decisive turn is
+    // settled by the signals. Gating those against the envelope would demand a
+    // token for a credential the request cannot reach — which is a refusal the
+    // caller cannot act on, since the chain they were actually routed to
+    // injects nothing. Every other request gates against the chain it already
+    // resolved and allocates nothing here.
     let envelope;
-    let admission: &[routing::Route] = match driven {
-        Some(_) => {
-            envelope = routing::envelope::dependency_envelope(&state.config, model_key);
-            &envelope
-        }
-        None => &routes,
+    let admission: &[routing::Route] = if driven.is_some() && consult.is_some() {
+        envelope = routing::envelope::dependency_envelope(&state.config, model_key);
+        &envelope
+    } else {
+        &routes
     };
     let (base_headers, inbound) =
         check_inbound_auth(&state, admission, headers).map_err(|error| *error)?;
@@ -153,7 +165,6 @@ pub(super) async fn forward(
     // never served, so counting it would report traffic the gateway did not
     // carry. `None` for every request whose id carries no router.
     let mut router_outcome = stage.decided.take();
-    let consult = stage.consult.take();
     // `stage` borrows the parsed body, and the handoff note below mutates it.
     // Every output — the pin, the outcome, the consultation — has already been
     // taken, so the borrow has nothing left to serve; it also holds `Cell`s and

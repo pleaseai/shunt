@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use reqwest::StatusCode;
 use serde_json::{json, Value};
-use shunt::config::{AuthMode, RouterConfig, UpstreamAuth};
+use shunt::config::{
+    AuthMode, PassthroughSubagentsConfig, RouterConfig, SubagentsConfig, UpstreamAuth,
+};
 use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
@@ -123,6 +125,65 @@ async fn an_unauthenticated_turn_is_refused_before_the_judge_is_called() {
     }
 
     judge.verify().await;
+}
+
+/// Clause 3, third case: the overlay and the envelope on one entry.
+///
+/// `[models.subagents]` resolves a delegated turn ahead of the stage router
+/// (`routing::resolve_chain`), so that turn consults no judge and spends none
+/// of the gateway's judge credential. Selecting the envelope from the entry's
+/// *static* config ignored that: a delegated child whose overlay target is
+/// passthrough end to end was refused for an injecting judge its request could
+/// never reach. Non-vacuity: gate the envelope on `driven` alone, without the
+/// consultation, and this goes red with a `401`.
+#[tokio::test]
+async fn a_delegated_turn_is_gated_by_the_chain_the_overlay_resolved() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let capable = MockServer::start().await;
+    let efficient = MockServer::start().await;
+    let judge = MockServer::start().await;
+    // The judge must not be called at all: the overlay answered this turn.
+    judge_mock(0.1, 0).mount(&judge).await;
+    tier_mock(EFFICIENT_UPSTREAM_MODEL, 1)
+        .mount(&efficient)
+        .await;
+    let config = driven_config_with(&capable, &efficient, judge.uri(), |config| {
+        // `efficient-alias` is the passthrough upstream, so the overlay's
+        // chain injects nothing and needs no inbound token.
+        config.models[0].subagents =
+            Some(SubagentsConfig::Passthrough(PassthroughSubagentsConfig {
+                target: "efficient-alias".to_string(),
+                by_type: Default::default(),
+            }));
+    });
+    let gateway = start_gateway(config).await;
+
+    let response = client()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("x-claude-code-session-id", SESSION)
+        // A delegated turn: the class is authoritative (ADR-0005 §11).
+        .header("x-claude-code-request-class", "subagent")
+        .header("x-claude-code-agent-id", "a7a11c2e22e29e67a")
+        .body(
+            json!({"model": ROUTER_ID, "max_tokens": 16, "messages": undecided_messages()})
+                .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a turn the overlay diverted is gated by the chain it resolved, \
+         not by a judge it never reaches"
+    );
+    judge.verify().await;
+    efficient.verify().await;
 }
 
 /// Clause 3, second half: the same rule when the judge is reached only by

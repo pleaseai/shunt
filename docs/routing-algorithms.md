@@ -484,13 +484,24 @@ credential behaviour rather than an absent one.
 Admission then runs against that union, in this order:
 
 1. resolve the requested id's own chain, as before;
-2. compute the envelope (driven entries only — an unrouted id allocates nothing
-   new here);
+2. compute the envelope — only for a turn that will actually consult a judge,
+   so an unrouted id allocates nothing new here and neither does a driven entry
+   whose turn reached no judge;
 3. `check_inbound_auth` against the envelope: the caller must authenticate if
    **any** member injects a credential, so a passthrough answer target with a
    credential-injecting judge is not a passthrough route;
 4. enforce the managed-model policy on the **requested** public id;
-5. score the turn, and only then `drive`.
+5. `drive`.
+
+The consultation selects the envelope, not the entry's static shape. A driven
+entry resolves plenty of turns without a judge: the signals decide most of
+them, and a `[models.subagents]` overlay answers a delegated turn before the
+router runs at all (§4). Gating those against the envelope would demand a token
+for a credential the request cannot reach — the chain it was actually routed to
+injects nothing, so the refusal names a dependency that turn does not have.
+Ordering is unaffected: `stage::select` sets the consultation while the chain
+is resolved, which is already before admission, so the judge still cannot run
+for a caller who is about to be refused.
 
 `count_tokens` is unchanged: it keeps first-route-only admission, never enters
 `drive`, and makes zero judge calls. A passthrough answer target with an
