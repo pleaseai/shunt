@@ -9,12 +9,21 @@
 //! sees is the count of both.
 //!
 //! Non-vacuity: move `routing::prefill::decide` back ahead of
-//! `check_inbound_auth` in `forward` and both refusal tests go red on the
+//! `check_inbound_auth` in `forward` and all four refusal tests go red on the
 //! stub's call count; drop `drive_prefill` from the admission condition and
-//! `an_unauthenticated_turn_is_refused_before_the_drive` goes red on a `200`
-//! instead, because the provisional default-target chain alone is what would
-//! be gated. The admitted twin is what keeps either from being satisfied by a
-//! gate that refuses everything.
+//! `an_unauthenticated_turn_is_refused_before_the_drive` and
+//! `an_unauthenticated_probe_is_refused_before_the_drive` go red on a `200`
+//! instead, because the provisional default-target chain alone — whose
+//! default target is passthrough here — is what would be gated. The admitted
+//! twins are what keep any of these from being satisfied by a gate that
+//! refuses everything.
+//!
+//! The probe pair is the half that is easiest to lose, because the
+//! surrounding code truncates a `count_tokens` request to its first route and
+//! gates on that. This lane drives probes, so they are gated on the whole
+//! envelope instead — wider than what they dispatch, deliberately, since the
+//! question a driving probe asks is whether the caller may cause inference
+//! and an affinity write at all.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -204,6 +213,29 @@ async fn forward(
     super::forward(state, &uri, headers, body, std::time::Instant::now()).await
 }
 
+/// The same turn as a `count_tokens` probe.
+///
+/// This lane drives probes — the affinity is what holds a probe to the target
+/// of the turn it measures — so a probe carries exactly the inference and the
+/// affinity write the admission gate exists to withhold. The provider's
+/// default `count_tokens` mode is `Tiktoken`, so an admitted probe is answered
+/// locally and needs no upstream: what the dispatch reveals is *which target*
+/// the probe landed on, through `x-gateway-upstream`.
+async fn probe(
+    state: AppState,
+    headers: &HeaderMap,
+) -> Result<(StatusCode, axum::response::Response), super::ForwardError> {
+    let uri: axum::http::Uri = "/v1/messages/count_tokens".parse().unwrap();
+    let body = axum::body::Body::from(
+        json!({
+            "model": ROUTER_ID,
+            "messages": [{"role": "user", "content": "count me"}],
+        })
+        .to_string(),
+    );
+    super::forward(state, &uri, headers, body, std::time::Instant::now()).await
+}
+
 /// The defect: with `[server.auth]` configured, a caller with no credential
 /// naming the prefill id used to run inference and seed an affinity for the
 /// session id it chose. Now it is refused first, and the algorithm never
@@ -328,4 +360,61 @@ async fn an_admitted_turn_is_driven_once_and_routed_to_the_decision() {
         "the affinity is keyed on the session the admitted caller sent"
     );
     server.verify().await;
+}
+
+/// The probe half of the fix, and the half the gate is easiest to lose: a
+/// `count_tokens` request is cheap to send and is driven like any other turn,
+/// so an unauthenticated caller must not be able to reach the algorithm
+/// through it either. Gate a driving probe on its first route alone — the
+/// pre-truncated provisional chain, whose default target here is passthrough
+/// — and this goes red on a `200` with one drive recorded, because the
+/// caller would be admitted and the affinity seeded for a session id it never
+/// proved it owns.
+#[tokio::test]
+async fn an_unauthenticated_probe_is_refused_before_the_drive() {
+    let (state, stub) = state("http://127.0.0.1:9".to_string());
+
+    let refused = match probe(state, &headers(None)).await {
+        Ok((status, _)) => panic!("an unauthenticated prefill probe was served: {status}"),
+        Err(error) => error,
+    };
+
+    assert_eq!(refused.response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        stub.calls.load(Ordering::SeqCst),
+        0,
+        "a probe the gate refused triggers no inference and no affinity write"
+    );
+    assert!(stub.sessions.lock().unwrap().is_empty());
+}
+
+/// The admitted twin, which keeps the test above from being satisfied by a
+/// gate that simply refuses every probe: the same probe with the configured
+/// token is driven once and answered from the target the algorithm chose.
+///
+/// `x-gateway-upstream` is what distinguishes them — both targets advertise
+/// the same upstream model id, and only the provider differs — so this is the
+/// assertion that the probe followed the decision rather than staying on the
+/// provisional default target it resolved to before admission.
+#[tokio::test]
+async fn an_admitted_probe_is_driven_once_and_counted_on_the_decision() {
+    let (state, stub) = state("http://127.0.0.1:9".to_string());
+
+    let (status, response) = match probe(state, &headers(Some(CLIENT_TOKEN))).await {
+        Ok(result) => result,
+        Err(error) => panic!("an admitted prefill probe was refused: {}", error.message),
+    };
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        response.headers()["x-gateway-upstream"],
+        PROVIDER,
+        "the probe follows the drive onto the decided target's provider"
+    );
+    assert_eq!(stub.calls.load(Ordering::SeqCst), 1, "driven exactly once");
+    assert_eq!(
+        *stub.sessions.lock().unwrap(),
+        vec![Some(SESSION.to_string())],
+        "the probe's affinity is keyed on the session the caller sent"
+    );
 }

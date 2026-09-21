@@ -103,11 +103,14 @@ pub(super) async fn forward(
         )?;
     crate::observability::record_requested_model(&requested_model);
     let model_key = routing::strip_context_window_hint(&requested_model);
-    // A `count_tokens` probe never enters the driven lane (ADR-0005 §3): it is
+    // A `count_tokens` probe never consults a judge (ADR-0005 §3): it is
     // answered from the session's pin or the algorithm's no-model-call
     // decision, makes zero judge calls, and keeps today's first-route-only gate
     // and dispatch. `None` here is what excludes it, before an envelope is even
-    // computed.
+    // computed. The prefill lane is the one driven algorithm a probe *does*
+    // enter — it makes no model call, and its affinity is what holds a probe
+    // to the target of the turn it measures — so that exclusion is spelled
+    // against `drive_prefill` separately below rather than here.
     let driven = (!is_count_tokens(uri))
         .then(|| state.config.driven_stage(model_key))
         .flatten();
@@ -124,6 +127,18 @@ pub(super) async fn forward(
     // A `prefill_router` turn is driven on *every* request, probes included
     // — the affinity is what keeps a probe on the turn's target — so it is
     // always gated against the envelope, `count_tokens` included (#633).
+    //
+    // That deliberately overrides the first-route-only gate above for this one
+    // lane, because a probe here asks a second question. The truncation answers
+    // "may this caller receive this dispatch?", for which a member's
+    // credential-injecting fallback is irrelevant. A probe that drives also
+    // asks "may this caller cause inference and an affinity write?", and the
+    // answer to that has to cover every target the drive could pick — none of
+    // which it has picked yet. Gate a driving probe on its first route alone
+    // and a caller whose turn would be refused can still seed an affinity for
+    // a session id it never proved it owns, by sending the probe instead. The
+    // gate is therefore wider than the dispatch, which is fail-closed; the
+    // dispatch stays first-route-only after the drive.
     let drive_prefill = stage.drive_prefill.get();
     // A turn that will consult a judge is gated against the entry's whole
     // dependency envelope rather than against the chain its router happened to
@@ -490,8 +505,10 @@ async fn count_tokens_response(
         let headers = headers_for_route(&state, &route, base_headers, inbound, true, None);
         dispatch(
             state, route, uri, &headers, body,
-            // A `count_tokens` probe never enters the driven lane, so it is
-            // always a client path.
+            // A `count_tokens` probe never makes an internal model call — the
+            // judge lane excludes probes, and the prefill lane, which does
+            // drive them, decides from the transcript and its affinity alone
+            // — so it is always a client path.
             None,
         )
         .await
