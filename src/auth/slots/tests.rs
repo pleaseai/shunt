@@ -797,12 +797,16 @@ async fn stripping_the_cookie_header_leaves_the_callers_own_credential_alone() {
 /// would slip through. Files named `tests.rs` are skipped so fixtures need no
 /// entry; an in-file `#[cfg(test)] mod tests` helper is *not* skipped and is
 /// listed below as noise.
-const HEADER_PRODUCER_ALLOWLIST: [&str; 13] = [
+const HEADER_PRODUCER_ALLOWLIST: [&str; 14] = [
     // noise — `#[cfg(test)] mod tests` fixture builder.
     "src/accounts.rs",
     // registered forward site — consumes the map `headers_for_route` produced
     // (site 1) and adds only the resolved provider credential.
     "src/adapters/anthropic/mod.rs",
+    // noise — `#[cfg(test)] mod tests` fixture builder. The module itself only
+    // *removes* `dangerous-tool-use-*` tokens from a map its caller already
+    // built, so it forwards nothing and adds no credential slot.
+    "src/adapters/anthropic/safeguards.rs",
     // allowlist-built, not a forward site — the Codex identity and beta headers
     // are synthesized, never copied from the caller.
     "src/adapters/responses/codex_ws.rs",

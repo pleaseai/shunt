@@ -236,6 +236,7 @@ Claude Code는 `ANTHROPIC_BASE_URL` 뒤에 **1급 게이트웨이 계약**을 �
 
 - [커스텀 모델 옵션 추가](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION`은 내장 별칭을 대체하지 않으면서 게이트웨이로 라우팅되는 항목을 `/model` 선택기에 추가합니다. ID는 검증을 거치지 않으므로 게이트웨이가 받아들이는 문자열이면 무엇이든 됩니다. 위의 디스커버리 제약 때문에 **Claude 계열이 아닌 모델을 고르는 주된 방법**입니다(예: `gpt-5.6-sol`).
 - **도구 검색**(`ENABLE_TOOL_SEARCH`) — Claude Code는 MCP/LSP 도구 스키마를 지연시켰다가 필요할 때 드러내어 컨텍스트를 회수합니다. shunt는 Anthropic 1급 호스트가 아니므로 직접 옵트인하지 않는 한 이 기능은 **꺼진 상태**입니다. 옵트인 후 지연이 유지되는지는 설정이 아니라 업스트림이 결정합니다. `claude*`와 `anthropic/*` id는 프로토콜을 바이트 단위로 유지하고, 그 외 id는 해당 호스트가 거부하므로 `defer_loading` 표식이 제거되며, Responses 경로에는 자체적인 3-상태 `tool_search` 설정이 있습니다. [도구 검색](https://shunt.sh/ko/guides/codex/#도구-검색)을 참고하세요.
+- **auto mode의 서버측 분류기**(`dangerous-tool-use-*`) — auto mode는 각 도구 사용의 분류를 무과금으로 API에 맡깁니다. Anthropic 라우트에서는 shunt가 요청과 판정을 그대로 중계합니다. 업스트림이 답할 수 없는 경우 — 번역 라우트이거나, 이 필드를 받아들이는 것으로 확인된 곳이 없는 Anthropic 프로토콜 서드파티인 경우 — shunt는 아무것도 돌려주지 않는 대신 동작마다 "평가 불가"로 답합니다. 그러면 클라이언트는 그 동작 하나만 로컬에서 분류하고 다음 턴에 다시 서버에 요청하므로, 세션 내내 이 기능을 포기하지 않습니다. [문제 해결](https://shunt.sh/ko/reference/troubleshooting/)을 참고하세요.
 
 **설계 원칙:** 스펙을 준수하는 Anthropic-Messages 게이트웨이가 되고(`/v1/messages`, `/v1/models`, 올바른 헤더·어트리뷰션 패스스루), 요청의 `model` id로 라우팅하며, 매핑된 모델에 대해 Anthropic Messages ⇄ OpenAI Responses API를 번역합니다. Claude Code 프롬프트가 바뀔 때마다 깨지는 프롬프트 형태 휴리스틱은 쓰지 않습니다.
 

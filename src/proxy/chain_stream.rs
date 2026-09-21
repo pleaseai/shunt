@@ -373,6 +373,11 @@ pub(super) async fn forward_chain_stream(
         started_at,
         router_stamp,
     } = request;
+    // Read before the body moves into the chain: the committed stream's
+    // `message_delta` carries the auto-mode classifier's answer, which only a
+    // first-party relay produces (see `crate::proxy::safeguards`).
+    let requested_safeguards = crate::proxy::safeguards::requested_types(body.json());
+    let max_request_bytes = state.config.server.limits.max_request_bytes;
     let first_route = routes
         .first()
         .expect("route chains are non-empty after resolution");
@@ -769,6 +774,9 @@ pub(super) async fn forward_chain_stream(
         )))
         .expect("response builder uses valid status and headers")
         .into_response();
+    let response =
+        crate::proxy::safeguards::synthesize(response, &requested_safeguards, max_request_bytes)
+            .await;
     let mut response = stream_metrics::observe_response_with_slot(
         response,
         Protocol::Anthropic,

@@ -18,6 +18,33 @@
   `--features bench`, which exposes `shunt::bench_support` — the facade that
   reaches the crate-private stage-router path. Without the feature that target
   builds and runs but registers no benchmarks, so pass it (CodSpeed does).
+- CodSpeed (`.github/workflows/codspeed.yml`) is a **required** check, and it
+  compares the PR against the stored baseline from `main` — not against the
+  merge base. A red CodSpeed on a diff that changes no Rust is therefore
+  expected to be environmental, not a regression you introduced. Before
+  treating one as real: confirm the build inputs actually differ. The base to
+  diff against is the commit CodSpeed names as `BASE` in its report footer
+  ("Comparing … with `main` (b000df6)") — the stored `main` tip, **not**
+  `git merge-base`, which on a typical PR is an older commit and would answer a
+  different question:
+
+  ```bash
+  BASE_SHA=b000df6e   # replace with the BASE commit from the CodSpeed report
+  git diff "$BASE_SHA" HEAD --name-only | grep -E '\.rs$|Cargo|rust-toolchain|\.github/'
+  ```
+
+  No output means no build input changed, so the result is environmental. Then
+  compare the `Record the measurement environment` step between the PR run
+  and the baseline run on `main`. The Rust toolchain is pinned there, and
+  `runs-on` names one OS version rather than a moving `latest` — but GitHub
+  still revises that image, and the CPU model is **not** pinnable on hosted
+  runners at all. CodSpeed names both the runner image and differing CPU models
+  among its causes of a false regression, recommending an immutable environment
+  and a consistent CPU type
+  (<https://codspeed.io/docs/instruments/cpu/regression-causes>); the logged
+  image and CPU lines are what tell you which one moved. Bumping the toolchain
+  pin, or GitHub revising the image, re-seeds the baseline on the next `main`
+  run.
 
 ## Project Structure
 

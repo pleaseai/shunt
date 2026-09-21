@@ -19,7 +19,9 @@ use crate::{
     server::AppState,
 };
 
-use super::{count_tokens_unsupported, is_count_tokens, normalize_request_body, ForwardError};
+use super::{
+    count_tokens_unsupported, is_count_tokens, normalize_request_body, safeguards, ForwardError,
+};
 
 pub(super) async fn forward(
     state: AppState,
@@ -53,6 +55,18 @@ pub(super) async fn forward(
             response: Box::new(error.into_response()),
         })?;
     normalize_request_body(&mut body);
+    // Claude Code's auto mode asks the API to classify the session's own tool
+    // uses server-side (`safeguards` + the `dangerous-tool-use-…` beta). Only
+    // api.anthropic.com answers it, and a completed response carrying no
+    // `safeguard_results` at all makes the client retire the server classifier
+    // for the rest of the session — so the requested types travel to the
+    // response side, where the answer is synthesized if the upstream gave none.
+    // Empty for every request that did not ask, which wraps nothing.
+    //
+    // Read before `apply_handoff_note` below may rewrite the system prompt: the
+    // types are what the *client* asked to have classified, and a gateway-added
+    // block is not part of that request.
+    let requested_safeguards = safeguards::requested_types(body.json());
     // Context for a `[models.router]` entry, should the requested id turn
     // out to be one. Built unconditionally because construction is a handful of
     // field moves — the headers are borrowed, not read; the `x-claude-code-*`
@@ -285,8 +299,15 @@ pub(super) async fn forward(
                 if !is_advance_status(status) {
                     finish(&provider, status);
                     return Ok(observe_response(
-                        status, response, provider, model, started_at,
-                    ));
+                        status,
+                        response,
+                        provider,
+                        model,
+                        started_at,
+                        &requested_safeguards,
+                        max_request_bytes,
+                    )
+                    .await);
                 }
                 tracing::warn!(
                     provider = %provider,
@@ -367,7 +388,10 @@ pub(super) async fn forward(
                     failure.provider,
                     failure.model,
                     started_at,
-                ))
+                    &requested_safeguards,
+                    max_request_bytes,
+                )
+                .await)
             }
             FinalResponse::MappedError { message, response } => {
                 finish(&failure.provider, response.status());
@@ -597,13 +621,19 @@ async fn dispatch(
     }
 }
 
-fn observe_response(
+async fn observe_response(
     status: StatusCode,
     response: axum::response::Response,
     provider: String,
     model: String,
     started_at: Instant,
+    requested_safeguards: &[String],
+    max_body_bytes: usize,
 ) -> (StatusCode, axum::response::Response) {
+    // Ahead of the metrics observer so the observer sees what the client will:
+    // the synthesis only adds a field to `message_delta`, leaving the frames the
+    // observer samples (`stop_reason`, usage, error events) exactly as relayed.
+    let response = safeguards::synthesize(response, requested_safeguards, max_body_bytes).await;
     let response = crate::stream_metrics::observe_response(
         response,
         crate::stream_metrics::Protocol::Anthropic,
