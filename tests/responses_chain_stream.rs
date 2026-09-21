@@ -114,6 +114,7 @@ fn chain_config(primary: (ProviderKind, String), fallback: (ProviderKind, String
         ),
         router: None,
         stage_router: None,
+        subagents: None,
     }];
     config
 }
@@ -617,6 +618,7 @@ async fn a_routed_streaming_chain_stamps_the_router_headers() {
             affinity: RandomAffinity::Request,
         })),
         stage_router: None,
+        subagents: None,
     });
     let gateway = start_gateway(config).await;
     let response = stream_request_for(&gateway, "chain-router").await;

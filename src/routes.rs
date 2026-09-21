@@ -232,6 +232,7 @@ mod tests {
                 },
             )),
             stage_router: None,
+            subagents: None,
         }
     }
 
@@ -252,6 +253,7 @@ mod tests {
                     upstream_model: None,
                     router: None,
                     stage_router: None,
+                    subagents: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -305,6 +307,7 @@ mod tests {
                 // the entry has to name one or `validate` rejects the config
                 // before `/routes` ever sees it.
                 ModelConfig {
+                    subagents: None,
                     id: "judge-alias".to_string(),
                     display_name: None,
                     upstream_model: Some(std::collections::BTreeMap::from([(
@@ -354,6 +357,7 @@ mod tests {
                     },
                 )),
                 stage_router: None,
+                subagents: None,
             }],
             ..crate::config::Config::default()
         };
@@ -384,6 +388,7 @@ mod tests {
                 upstream_model: None,
                 router: Some(crate::config::RouterConfig::Noop {}),
                 stage_router: None,
+                subagents: None,
             }],
             ..crate::config::Config::default()
         };

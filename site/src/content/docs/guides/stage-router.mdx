@@ -185,10 +185,12 @@ that configures [the judge fallback](#the-judge-fallback) below, on a turn the
 judge decided; without one, an inconclusive turn still reports `fall_open` and
 runs no judge. The scorer defines one more label, `ambiguous`, which cannot
 reach a response. The other router types have labels of their own (`random`,
-`random_session`, `noop`).
+`random_session`, `noop`), and so does the `[models.subagents]` overlay
+(`subagent_type` for a `by_type` hit, `subagent` for its `target` fallback).
 
-Both are absent for a model id that has no router, so "routed to the efficient
-tier" stays distinguishable from "not routed by a router at all". A
+Both are absent only when neither a router nor a `[models.subagents]` overlay
+decided the turn, so "routed to the efficient tier" stays distinguishable from
+"not routed at all". A
 `count_tokens` probe is left unstamped: on a session that is not yet pinned it
 scores its own one-turn-behind history, so its tier is not necessarily the tier
 of the turn it is measuring.

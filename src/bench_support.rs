@@ -239,6 +239,7 @@ mod tests {
                     .then(router)
                     .map(crate::config::RouterConfig::StageRouter),
                 stage_router: None,
+                subagents: None,
             }],
             routes: vec![
                 route("router-model"),

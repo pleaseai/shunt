@@ -58,6 +58,7 @@ fn noop_config() -> Config {
             upstream_model: None,
             router: Some(RouterConfig::Noop {}),
             stage_router: None,
+            subagents: None,
         }],
         ..Config::default()
     };

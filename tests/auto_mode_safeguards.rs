@@ -94,6 +94,7 @@ fn responses_config(base_url: String) -> Config {
         ),
         router: None,
         stage_router: None,
+        subagents: None,
     }];
     config
 }

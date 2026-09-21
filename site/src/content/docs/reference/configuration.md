@@ -442,7 +442,7 @@ Do not combine `[[upstreams]]` with `[providers.*]` in the config file: startup 
 
 ### Failover behavior
 
-For a multi-entry model map, shunt filters the declared upstream sequence to the names in the map. It advances after an upstream status `429`, `401`, `403`, `404`, or any `5xx`, and after a failure before upstream response headers arrive. Gateway-local errors that do not represent an upstream attempt, such as auth misconfiguration or adapter-owned validation/header construction errors, return immediately so failover does not mask the configuration problem. There is no failover after `2xx` headers have been returned, including a later streaming-body failure. The Responses adapter's streaming paths commit the response before any upstream byte; a chain of `Anthropic`/`Responses` elements without the websocket transport then runs its failover inside the committed stream — pre-header transport failures and advance-status errors retry the next upstream before the synthetic start goes out — while a route that cannot advance (a terminal non-2xx, or a non-SSE success body from an Anthropic-kind winner) surfaces the failure as one terminal SSE `error` event on the committed stream. The winner's relay ends at the terminal frame (`message_stop`, or a relayed `error` frame): a streaming-body failure before it becomes one terminal `error` event, one after it surfaces nowhere, and the still-open upstream drains detached under a bounded budget, so the client's stream completes at the turn — an appended `error` event to a completed response would corrupt it. A TTFB timeout is never advanced: the configured timeout is an answer, surfacing as a terminal `504 timeout_error` event. On that committed path the response carries `content-type`, `x-gateway-model`, and — when a `[models.router]` entry routed the request — the router pair `x-gateway-routed-model`/`x-gateway-route-source`, decided before the first attempt and so independent of which upstream wins: the winner-dependent headers `x-gateway-upstream` and `x-gateway-upstream-model` are omitted — the winner is unknown when the headers go out with the commit — and upstream response headers (request ids, `anthropic-ratelimit-*` quota metadata included) never reach the client, even from an Anthropic-kind winner, while `x-gateway-model` stays (it names the client-requested id); request metrics record every attempt with its classified status, and stream attribution follows the winner once the stream knows it.
+For a multi-entry model map, shunt filters the declared upstream sequence to the names in the map. It advances after an upstream status `429`, `401`, `403`, `404`, or any `5xx`, and after a failure before upstream response headers arrive. Gateway-local errors that do not represent an upstream attempt, such as auth misconfiguration or adapter-owned validation/header construction errors, return immediately so failover does not mask the configuration problem. There is no failover after `2xx` headers have been returned, including a later streaming-body failure. The Responses adapter's streaming paths commit the response before any upstream byte; a chain of `Anthropic`/`Responses` elements without the websocket transport then runs its failover inside the committed stream — pre-header transport failures and advance-status errors retry the next upstream before the synthetic start goes out — while a route that cannot advance (a terminal non-2xx, or a non-SSE success body from an Anthropic-kind winner) surfaces the failure as one terminal SSE `error` event on the committed stream. The winner's relay ends at the terminal frame (`message_stop`, or a relayed `error` frame): a streaming-body failure before it becomes one terminal `error` event, one after it surfaces nowhere, and the still-open upstream drains detached under a bounded budget, so the client's stream completes at the turn — an appended `error` event to a completed response would corrupt it. A TTFB timeout is never advanced: the configured timeout is an answer, surfacing as a terminal `504 timeout_error` event. On that committed path the response carries `content-type`, `x-gateway-model`, and — when a `[models.router]` entry routed the request or a `[models.subagents]` overlay diverted it — the router pair `x-gateway-routed-model`/`x-gateway-route-source`, decided before the first attempt and so independent of which upstream wins: the winner-dependent headers `x-gateway-upstream` and `x-gateway-upstream-model` are omitted — the winner is unknown when the headers go out with the commit — and upstream response headers (request ids, `anthropic-ratelimit-*` quota metadata included) never reach the client, even from an Anthropic-kind winner, while `x-gateway-model` stays (it names the client-requested id); request metrics record every attempt with its classified status, and stream attribution follows the winner once the stream knows it.
 
 When the chain is exhausted, shunt returns the best relayed failure with preference `429` → `401`/`403` → `404` → other `5xx`. Pre-header failures are not remembered as best failures. If no relayed response was remembered, shunt returns a `502 api_error` with `all upstreams failed (N attempted)`.
 
@@ -450,7 +450,7 @@ For a `passthrough` upstream, the client's own `authorization` / `x-api-key` is 
 
 Independent of origin, each retained slot is also checked by the value it actually holds: `authorization` and `x-api-key` are each cleared only when that slot's own value is shaped like a JWT shunt itself issued — three segments whose payload's `aud` claims `"shunt"`, whose `iss` claims this gateway's identity, or whose `shunt_token_use` claim is `"gateway-session"`, a dedicated marker that only shunt mints — or matches a configured `[server.auth]` client token. The JWT check is deliberately by shape, not by whether the token currently authenticates: an expired token, one minted by a sibling instance under a different `public_url`, or one that no longer verifies after a `jwt_secret` rotation is still shunt's own credential and is still cleared. The marker is an additional arm on that shape check, not a requirement: a token minted before the marker existed still matches by `aud`/`iss`, and `verify` does not require the marker either, so a token minted by an older shunt version still authenticates for as long as it remains within its TTL. An `apiKeyHelper` fills both slots with the same value, so either credential can land in either or both. A slot holding a genuine upstream credential is forwarded even when the other slot holds the gateway JWT or a static client token; only the gate-credential-bearing slot is cleared. `[server.auth] header` accepts any header name, including `authorization` itself; when it is set that way a client authenticates with a bare, unprefixed `Authorization: <token>`, so that slot is checked as a whole value as well as by its `Bearer` payload and such a token is never forwarded upstream. One caveat for that configuration: on inference requests shunt removes the configured header before routing, unconditionally, so that slot then carries nothing upstream — a caller's own credential in it is dropped too, not just a gate token. Keeping `header` at its dedicated `x-shunt-token` default avoids that collision.
 
-Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id) — except on the committed streaming chain path, where the response carries `content-type`, `x-gateway-model`, and the router pair below when a router routed the request (the winner-dependent `x-gateway-upstream` and `x-gateway-upstream-model` are omitted and upstream response headers never reach the client). A response routed by a [`[models.router]`](#modelsrouter-optional) entry additionally carries `x-gateway-routed-model` (the target the router chose) and `x-gateway-route-source` (why it was chosen) — for every router type, not only the [stage router](/guides/stage-router/); both are omitted for a model id that configures no router. `count_tokens` uses only the first chain element, never fails over, and is left unstamped by that pair. `[server.codex_endpoint]` is pinned to its configured upstream for every model with no `[[server.codex_endpoint.routes]]` entry, and does not participate in this chain either way.
+Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id) — except on the committed streaming chain path, where the response carries `content-type`, `x-gateway-model`, and the router pair below when a router routed the request or an overlay diverted it (the winner-dependent `x-gateway-upstream` and `x-gateway-upstream-model` are omitted and upstream response headers never reach the client). A response routed by a [`[models.router]`](#modelsrouter-optional) entry additionally carries `x-gateway-routed-model` (the target the router chose) and `x-gateway-route-source` (why it was chosen) — for every router type, not only the [stage router](/guides/stage-router/). A delegated turn a [`[models.subagents]`](#modelssubagents-optional) overlay diverted carries the same pair, with `x-gateway-route-source` reading `subagent_type` or `subagent`; both are omitted only when neither a router nor an overlay decided the turn. `count_tokens` uses only the first chain element, never fails over, and is left unstamped by that pair. `[server.codex_endpoint]` is pinned to its configured upstream for every model with no `[[server.codex_endpoint.routes]]` entry, and does not participate in this chain either way.
 
 ### Migrating existing configurations
 
@@ -599,8 +599,9 @@ codex = "gpt-5.2"
 Per-request routing for one advertised id. Instead of naming a single
 destination, the entry carries a `[models.router]` table whose `type` key picks
 a routing algorithm, and the algorithm picks the destination. Absent this table
-a `[[models]]` entry behaves exactly as it did before; configure no router
-anywhere and routing is unchanged.
+and the [`[models.subagents]`](#modelssubagents-optional) overlay, a `[[models]]`
+entry behaves exactly as it did before; configure neither anywhere and routing
+is unchanged.
 
 `type` — rather than shunt's usual `kind` or `mode` — is a **deliberate
 exception to shunt's own naming convention**, and this is the one place the
@@ -623,12 +624,13 @@ id it asked for — the chosen target travels upstream only.
 | `prefill_router` | A learned classifier over the latest user turn (needs the `prefill-router` build) | Yes — the text of user turns |
 
 The driven algorithms (`llm_classifier`, `composite`, `advisor`) and the
-`[models.subagents]` overlay are **not available yet**; naming one is a startup
-error. They call an LLM judge and land in later releases. `prefill_router` is
-implemented but **gated at compile time**: it is available only from a build
-that opts into the `prefill-router` cargo feature, which is off by default —
-see [below](#type--prefill_router). The one judge-backed shape that does ship
-is the stage router's own
+`llm_classifier` form of the [`[models.subagents]`](#modelssubagents-optional)
+overlay are **not available yet**; naming one is a startup error. They call an
+LLM judge and land in later releases. `prefill_router` is implemented but
+**gated at compile time**: it is available only from a build that opts into the
+`prefill-router` cargo feature, which is off by default — see
+[below](#type--prefill_router). The one judge-backed shape that does ship is
+the stage router's own
 [`[models.router.classifier]`](#modelsrouterclassifier-optional) fallback,
 below.
 
@@ -1007,6 +1009,77 @@ reported — it still serves every other id matching it. Each is emitted once pe
 load — and a hot reload is a load, so a config left unfixed warns again on each
 one.
 
+### `[models.subagents]` (optional)
+
+An overlay for **delegated work** on any `[[models]]` entry: one with a
+`[models.upstream_model]` map, one with a `[models.router]` table, or a map-less
+id that resolves through `[[routes]]`. A `Task` sub-agent, a hook agent, or a
+workflow sub-agent requesting the id is diverted to the overlay's target. The
+parent session's own turns never see the table and resolve the entry exactly as
+they did without it. The table sits on the entry rather than inside `router`
+because a fixed entry has no router table, and Switchyard's "passthrough with
+subagents" is exactly a fixed entry here.
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `passthrough`, the only form this release implements. The `llm_classifier` form, where a judge picks the child's tier, is a later release; naming it is a startup error |
+| `target` | ✅ required | Model id a delegated turn goes to when `by_type` names nothing for its agent type — and where every delegated turn goes when the agent-type header is not sent |
+| `by_type` | `{}` | Agent type → model id, keyed on the literal `x-claude-code-agent-type` value |
+
+**What counts as delegated work.** A request whose `x-claude-code-request-class`
+is `subagent` or `workflow`; when that header is absent, a request carrying a
+non-blank `x-claude-code-agent-id`, which Claude Code sends on every delegated
+turn regardless of the hint gate. The class is authoritative when sent: `main`
+with an agent id is main traffic, and `compaction` and `auxiliary` are harness
+maintenance — none of the three ever takes the overlay. So on a default
+deployment, where the class and type headers are gated off, every `Task` child
+takes `target`; `by_type` needs the client to set
+`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`.
+
+**`by_type` keys** are matched exactly, case included. A built-in agent's id
+travels verbatim — `Explore`, `Plan`, `general-purpose`, `claude`, and `fork`
+(which the client only offers under `CLAUDE_CODE_FORK_SUBAGENT=1`). A project
+agent from `.claude/agents/` arrives as `custom`; its own name is never sent, so
+`custom` is the only key it can match. `teammate` is the client's literal for an
+Agent Teams member and has not been observed on the wire. A blank key, or one
+carrying whitespace, is a startup error: it could never match.
+
+**Targets** are ordinary public model ids under the same one-hop rule as router
+targets: `target` and every `by_type` value must not resolve, after the trailing
+`[1m]`/`[1M]` hint is stripped, to an entry carrying its own `[models.router]` or
+`[models.subagents]` table — and a router target may not resolve to an entry
+carrying this overlay. A blank target, an overlaid id ending in `[1m]` or `[1M]`,
+and a duplicate `[[models]]` id where either entry carries the table are startup
+errors. A target matching no explicit route warns at load, as a router target
+does, and still resolves through `server.default_provider`.
+
+**No state.** The target is a function of the config and the request's headers
+alone: no session pin, no store, no judge call. On a router-backed id the child
+is diverted before the router runs, so a child's turns are never scored against
+the transcript and never touch the parent's pin. A diverted turn carries
+`x-gateway-routed-model` (the target) and `x-gateway-route-source` —
+`subagent_type` for a `by_type` hit, `subagent` for the `target` fallback — and
+is counted in `shunt.router.decisions` with `algorithm = "subagents"`. Surfaces
+with no request resolve nothing: `/v1/models` discovery and `shunt check` carry
+no per-model destination information at all, and `GET /routes` shows the
+parent's own `[[routes]]`/`[models.router]` entry only when one exists — an id
+left to `server.default_provider` appears in neither array. None of the three
+resolves the overlay's diverted target, and the overlay itself is never listed
+in the `routers` array.
+
 ## `[sentry]` (optional)
 
 Opt-in error reporting to your own Sentry project. Off unless `dsn` is set; independent of `[otel]`. Reports gateway-owned diagnostics — fatal gateway startup/serve errors, panics, and `error`-level log events (`warn`/`info` as breadcrumbs, message only) — plus, unconditionally once `dsn` is set, an error/warning event whenever an upstream provider itself returns a failure: `error` for a 5xx response, `warning` for 429/529 (rate limit/overload), each tagged with `model`, `provider`, and `upstream_status` only. A streaming request that answers `200` and then fails mid-stream — an `event: error` frame, or the connection cut before a terminal event — also reports an event (`error`/`warning` respectively), tagged with `model`, `provider`, and `outcome`, and marks the request span `otel.status_code = error` (issue #287). A cut additionally carries a `cut_kind` tag saying which kind it was — `eof` (the body simply ended), `transport_error` (the body read failed), or `marker` (shunt had already detected the cut and synthesized a completion so the client stream stayed well-formed) — and every mid-stream event carries diagnostic context: how many SSE events and body bytes reached the client, the last event type seen, elapsed and time-to-first-token in milliseconds, and, for a `transport_error`, the upstream error's message (issue #310). These events are rate-limited in-process to a handful per minute, so one client retrying a cut stream cannot flood the project. Each combination of provider, model, and failure kind gets its own budget, and the three cut kinds count separately from each other and from an error-event failure — so a burst of `eof` cuts cannot hide a `transport_error` on the same model. A suppressed run is reported as a `suppressed_count` on the next event that gets through. The `shunt.stream_outcome` metric is never throttled. Request/response bodies, headers, and credentials are never sent. Metrics and tracing are each a further, separate opt-in.
@@ -1044,9 +1117,15 @@ Extra headers on every OTLP request (e.g. a hosted-collector token). Merged unde
 
 ## Routing precedence
 
-A matching `[models.router]` entry → a matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
+On a delegated turn, a matching `[models.subagents]` overlay → a matching `[models.router]` entry → a matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
 
-The router comes first because it is matched on the `[[models]]` entry itself: a
+The overlay comes first, and only for delegated work: a `Task` child's request
+for an overlaid id is diverted to the overlay's target before the entry's own
+router or map is consulted, while the parent's own turns — and `compaction` and
+`auxiliary` — resolve the entry as if the table were absent. Everything below is
+what they, and every id carrying no overlay, resolve through.
+
+The router comes next because it is matched on the `[[models]]` entry itself: a
 request for a router-backed id is answered by the router, which picks a tier and
 resolves **that target** through the rest of the ladder — so the target, not the
 router id, is what a `[[routes]]` entry should name. An exact entry naming the

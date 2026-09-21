@@ -327,7 +327,7 @@ codex-fallback = "gpt-5.2"
 
 ### 페일오버 동작
 
-여러 항목이 있는 모델 맵에서는 선언한 업스트림 순서에서 맵에 포함된 이름만 남겨 체인을 만듭니다. 업스트림 상태가 `429`, `401`, `403`, `404`, 임의의 `5xx`이거나 업스트림 응답 헤더를 받기 전에 실패하면 다음 항목으로 진행합니다. auth 설정 오류나 어댑터 자체의 검증·헤더 생성 오류처럼 업스트림 시도를 나타내지 않는 게이트웨이 로컬 오류는 즉시 반환하여 잘못된 설정이 페일오버에 가려지지 않게 합니다. `2xx` 헤더를 반환한 뒤에는 스트리밍 본문이 나중에 실패하더라도 페일오버하지 않습니다. Responses 어댑터의 스트리밍 경로는 업스트림 바이트를 받기 전에 응답을 커밋합니다. `Anthropic`/`Responses` 요소만 있고 WebSocket 트랜스포트가 없는 체인은 커밋된 스트림 안에서 페일오버를 수행하며(헤더 전 트랜스포트 실패와 전진 상태는 합성 시작이 나가기 전에 다음 업스트림을 시도), 전진할 수 없는 라우트(종단 비 2xx, Anthropic 종류 승자의 SSE가 아닌 성공 본문)는 실패를 하나의 터미널 SSE `error` 이벤트로 표시합니다. 승자의 터미널 프레임이 릴레이된 뒤의 스트리밍 본문 실패는 대신 스트림을 조용히 끝냅니다 — 턴이 이미 완료됐고, 덧붙는 error 이벤트가 완료된 응답을 손상시키기 때문입니다. TTFB 타임아웃은 절대 전진하지 않습니다. 설정된 타임아웃은 답이며 터미널 `504 timeout_error` 이벤트로 표시됩니다. 이 커밋된 경로의 응답에는 `content-type`과 `x-gateway-model`이 실리고, `[models.router]` 항목이 라우팅한 요청이라면 라우터 헤더 두 개(`x-gateway-routed-model`/`x-gateway-route-source`)도 함께 실립니다 — 첫 시도 전에 라우터가 정한 값이라 어느 업스트림이 이기는지에 의존하지 않습니다. 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략됩니다 — 헤더가 커밋과 함께 나갈 때 승자를 아직 모르기 때문입니다 — 그리고 업스트림 응답 헤더(요청 id, `anthropic-ratelimit-*` 할당량 메타데이터 포함)는 Anthropic 종류 승자라도 클라이언트에 도달하지 않습니다. `x-gateway-model`은 유지되며(클라이언트가 요청한 id를 가리킴), 요청 메트릭은 시도마다 분류된 상태로 기록되고 스트림 귀속은 스트림이 승자를 알게 되는 시점부터 승자를 따릅니다.
+여러 항목이 있는 모델 맵에서는 선언한 업스트림 순서에서 맵에 포함된 이름만 남겨 체인을 만듭니다. 업스트림 상태가 `429`, `401`, `403`, `404`, 임의의 `5xx`이거나 업스트림 응답 헤더를 받기 전에 실패하면 다음 항목으로 진행합니다. auth 설정 오류나 어댑터 자체의 검증·헤더 생성 오류처럼 업스트림 시도를 나타내지 않는 게이트웨이 로컬 오류는 즉시 반환하여 잘못된 설정이 페일오버에 가려지지 않게 합니다. `2xx` 헤더를 반환한 뒤에는 스트리밍 본문이 나중에 실패하더라도 페일오버하지 않습니다. Responses 어댑터의 스트리밍 경로는 업스트림 바이트를 받기 전에 응답을 커밋합니다. `Anthropic`/`Responses` 요소만 있고 WebSocket 트랜스포트가 없는 체인은 커밋된 스트림 안에서 페일오버를 수행하며(헤더 전 트랜스포트 실패와 전진 상태는 합성 시작이 나가기 전에 다음 업스트림을 시도), 전진할 수 없는 라우트(종단 비 2xx, Anthropic 종류 승자의 SSE가 아닌 성공 본문)는 실패를 하나의 터미널 SSE `error` 이벤트로 표시합니다. 승자의 터미널 프레임이 릴레이된 뒤의 스트리밍 본문 실패는 대신 스트림을 조용히 끝냅니다 — 턴이 이미 완료됐고, 덧붙는 error 이벤트가 완료된 응답을 손상시키기 때문입니다. TTFB 타임아웃은 절대 전진하지 않습니다. 설정된 타임아웃은 답이며 터미널 `504 timeout_error` 이벤트로 표시됩니다. 이 커밋된 경로의 응답에는 `content-type`과 `x-gateway-model`이 실리고, `[models.router]` 항목이 라우팅했거나 `[models.subagents]` 오버레이가 전환한 요청이라면 라우터 헤더 두 개(`x-gateway-routed-model`/`x-gateway-route-source`)도 함께 실립니다 — 첫 시도 전에 정해지는 값이라 어느 업스트림이 이기는지에 의존하지 않습니다. 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략됩니다 — 헤더가 커밋과 함께 나갈 때 승자를 아직 모르기 때문입니다 — 그리고 업스트림 응답 헤더(요청 id, `anthropic-ratelimit-*` 할당량 메타데이터 포함)는 Anthropic 종류 승자라도 클라이언트에 도달하지 않습니다. `x-gateway-model`은 유지되며(클라이언트가 요청한 id를 가리킴), 요청 메트릭은 시도마다 분류된 상태로 기록되고 스트림 귀속은 스트림이 승자를 알게 되는 시점부터 승자를 따릅니다.
 
 체인을 모두 시도하면 `429` → `401`/`403` → `404` → 기타 `5xx` 우선순위로 가장 적합한 릴레이 실패를 반환합니다. 헤더 이전 실패는 최종 후보로 기억하지 않습니다. 기억한 릴레이 응답이 없으면 `all upstreams failed (N attempted)` 메시지의 `502 api_error`를 반환합니다.
 
@@ -335,7 +335,7 @@ codex-fallback = "gpt-5.2"
 
 origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 있는 값으로도 검사됩니다. `authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체가 발급한 JWT와 **모양이 같거나** — `aud` 클레임이 `"shunt"`이거나, `iss` 클레임이 이 게이트웨이의 아이덴티티이거나, `shunt_token_use` 클레임이 `"gateway-session"`(shunt만 발급하는 전용 마커)인 세 세그먼트 구조 — 설정된 `[server.auth]` 클라이언트 토큰과 일치할 때에만 제거됩니다. JWT 검사는 의도적으로 "지금 이 토큰이 인증되는가"가 아니라 "모양이 같은가"로 판단합니다: 만료된 토큰, 다른 `public_url`을 쓰는 형제 인스턴스가 발급한 토큰, `jwt_secret` 로테이션 이후 더 이상 검증되지 않는 토큰도 여전히 shunt 자신의 크리덴셜이므로 여전히 제거됩니다. 이 마커는 모양 검사에 추가된 분기일 뿐 필수 조건이 아닙니다: 마커가 존재하기 전에 발급된 토큰도 `aud`/`iss`로 여전히 일치하며, `verify` 자체도 마커를 요구하지 않으므로 이전 버전의 shunt가 발급한 토큰은 TTL 내에 있는 한 계속 인증됩니다. `apiKeyHelper`는 두 슬롯을 같은 값으로 채우므로 어느 크리덴셜이든 한쪽 또는 양쪽 슬롯에 들어올 수 있습니다. 다른 슬롯이 게이트웨이 JWT나 정적 클라이언트 토큰을 담고 있어도, 진짜 업스트림 크리덴셜을 담은 슬롯은 그대로 전달됩니다. 게이트 크리덴셜을 담은 슬롯만 제거됩니다. `[server.auth] header`에는 `authorization` 자신을 포함해 어떤 헤더 이름이든 지정할 수 있으며, 그렇게 설정하면 클라이언트는 접두사 없는 `Authorization: <token>` 형태로 인증합니다. 따라서 이 슬롯은 `Bearer` 페이로드뿐 아니라 값 전체로도 검사되며, 그런 토큰은 업스트림으로 전달되지 않습니다. 이 설정에는 한 가지 유의점이 있습니다: 추론 요청에서 shunt는 라우팅 전에 설정된 헤더를 조건 없이 제거하므로, 그 슬롯은 업스트림으로 아무것도 싣지 않습니다 — 게이트 토큰뿐 아니라 호출자 자신의 크리덴셜도 함께 사라집니다. `header`를 기본값인 전용 `x-shunt-token`으로 두면 이 충돌을 피할 수 있습니다.
 
-프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다 — 커밋된 스트리밍 체인 경로는 예외로, 응답에는 `content-type`과 `x-gateway-model`, 그리고 라우터가 라우팅한 요청이라면 아래의 라우터 헤더 두 개가 실리고 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략되며 업스트림 응답 헤더는 클라이언트에 도달하지 않습니다. [`[models.router]`](#modelsrouter-선택) 항목이 라우팅한 응답에는 `x-gateway-routed-model`(라우터가 고른 타깃)과 `x-gateway-route-source`(그것을 고른 이유)가 추가로 붙습니다. [스테이지 라우터](/ko/guides/stage-router/)뿐 아니라 모든 라우터 `type`에 붙으며, 라우터를 설정하지 않은 model id에는 둘 다 붙지 않습니다. `count_tokens`는 체인의 첫 항목만 사용하고 페일오버하지 않으며, 이 헤더 두 개는 붙이지 않습니다. `[server.codex_endpoint]`는 `[[server.codex_endpoint.routes]]` 항목이 없는 모든 모델에 대해 설정된 업스트림 하나에 고정되며, 어느 쪽이든 이 체인에 참여하지 않습니다.
+프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다 — 커밋된 스트리밍 체인 경로는 예외로, 응답에는 `content-type`과 `x-gateway-model`, 그리고 라우터가 라우팅했거나 오버레이가 전환한 요청이라면 아래의 라우터 헤더 두 개가 실리고 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략되며 업스트림 응답 헤더는 클라이언트에 도달하지 않습니다. [`[models.router]`](#modelsrouter-선택) 항목이 라우팅한 응답에는 `x-gateway-routed-model`(라우터가 고른 타깃)과 `x-gateway-route-source`(그것을 고른 이유)가 추가로 붙습니다. [스테이지 라우터](/ko/guides/stage-router/)뿐 아니라 모든 라우터 `type`에 붙습니다. [`[models.subagents]`](#modelssubagents-선택) 오버레이가 전환한 위임 턴에도 같은 헤더 두 개가 붙으며, 이때 `x-gateway-route-source`는 `subagent_type` 또는 `subagent`입니다. 둘 다 붙지 않는 경우는 라우터도 오버레이도 그 턴을 결정하지 않았을 때뿐입니다. `count_tokens`는 체인의 첫 항목만 사용하고 페일오버하지 않으며, 이 헤더 두 개는 붙이지 않습니다. `[server.codex_endpoint]`는 `[[server.codex_endpoint.routes]]` 항목이 없는 모든 모델에 대해 설정된 업스트림 하나에 고정되며, 어느 쪽이든 이 체인에 참여하지 않습니다.
 
 ### 기존 설정 마이그레이션
 
@@ -419,8 +419,9 @@ codex = "gpt-5.2"
 
 광고하는 id 하나에 대한 요청 단위 라우팅입니다. 목적지를 하나만 지정하는 대신
 `[models.router]` 테이블을 두고, 그 `type` 키가 라우팅 알고리즘을 고르면 알고리즘이
-목적지를 고릅니다. 이 테이블이 없으면 `[[models]]` 항목은 이전과 똑같이 동작하며,
-어디에도 라우터를 설정하지 않으면 라우팅은 바뀌지 않습니다.
+목적지를 고릅니다. 이 테이블과 [`[models.subagents]`](#modelssubagents-선택) 오버레이가 모두 없으면
+`[[models]]` 항목은 이전과 똑같이 동작하며, 어디에도 둘 다 설정하지 않으면
+라우팅은 바뀌지 않습니다.
 
 shunt가 보통 쓰는 `kind`나 `mode`가 아니라 `type`을 쓰는 것은 **shunt 자체 명명 규칙에
 대한 의도적인 예외**이며, 레퍼런스에서 이 점을 밝히는 곳은 여기 한 곳뿐입니다. 라우팅
@@ -441,10 +442,11 @@ shunt가 보통 쓰는 `kind`나 `mode`가 아니라 `type`을 쓰는 것은 **s
 | `prefill_router` | 가장 최근 사용자 턴을 읽는 학습형 분류기(`prefill-router` 빌드 필요) | 읽음 — 사용자 턴의 텍스트 |
 
 판정에 LLM을 호출하는 알고리즘(`llm_classifier`, `composite`, `advisor`)과
-`[models.subagents]` 오버레이는 **아직 사용할 수 없습니다**. 이들을 지정하면 시작 오류가
-나며, 이후 릴리스에서 추가됩니다. `prefill_router`는 구현되어 있지만 **컴파일 타임에
-게이트됩니다**. 기본으로 꺼져 있는 `prefill-router` 카고 피처를 켜고 빌드한 바이너리에서만
-쓸 수 있습니다 — [아래](#type--prefill_router)를 보세요.
+[`[models.subagents]`](#modelssubagents-선택) 오버레이의 `llm_classifier` 형태는
+**아직 사용할 수 없습니다**. 이들을 지정하면 시작 오류가 나며, 이후 릴리스에서
+추가됩니다. `prefill_router`는 구현되어 있지만 **컴파일 타임에 게이트됩니다**.
+기본으로 꺼져 있는 `prefill-router` 카고 피처를 켜고 빌드한 바이너리에서만 쓸 수
+있습니다 — [아래](#type--prefill_router)를 보세요.
 판정 모델을 쓰는 형태 가운데 지금 제공되는 것은 스테이지 라우터 자신의
 [`[models.router.classifier]`](#modelsrouterclassifier-선택) 폴백 하나뿐입니다.
 
@@ -797,6 +799,72 @@ id의 목적지는 라우터가 정하므로 조회되지 않습니다). id가 �
 처리하기 때문입니다. 각 경고는 로드할 때마다 한 번씩 나오며, 핫 리로드도 로드이므로 설정을
 고치지 않으면 리로드할 때마다 다시 나옵니다.
 
+### `[models.subagents]` (선택)
+
+어떤 `[[models]]` 항목에도 붙일 수 있는 **위임된 작업** 전용 오버레이입니다 —
+`[models.upstream_model]` 맵을 가진 항목, `[models.router]` 테이블을 가진 항목, 맵이 없어
+`[[routes]]`로 해석되는 id 모두입니다. 그 id를 요청하는 `Task` 서브에이전트, 훅 에이전트,
+워크플로 서브에이전트는 오버레이의 타깃으로 우회됩니다. 부모 세션 자신의 턴은 이 테이블을
+전혀 보지 않으며, 오버레이가 없을 때와 똑같이 항목을 해석합니다. 이 테이블이 `router` 안이
+아니라 항목 위에 놓이는 것은 고정 항목에는 라우터 테이블이 없고, Switchyard의 "subagents를
+곁들인 passthrough"가 여기서는 바로 그 고정 항목이기 때문입니다.
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | 이 릴리스가 구현하는 유일한 형태인 `passthrough`. 판정자가 자식의 티어를 고르는 `llm_classifier` 형태는 이후 릴리스이며, 지정하면 시작 오류입니다 |
+| `target` | ✅ 필수 | `by_type`이 해당 에이전트 타입에 아무것도 지정하지 않았을 때 위임 턴이 가는 model id — 에이전트 타입 헤더가 전송되지 않으면 모든 위임 턴이 여기로 갑니다 |
+| `by_type` | `{}` | 에이전트 타입 → model id. `x-claude-code-agent-type`의 값 그대로를 키로 씁니다 |
+
+**무엇이 위임된 작업인가.** `x-claude-code-request-class`가 `subagent` 또는 `workflow`인
+요청, 그리고 그 헤더가 없을 때는 비어 있지 않은 `x-claude-code-agent-id`를 실은 요청입니다 —
+이 헤더는 힌트 게이트와 무관하게 Claude Code가 모든 위임 턴에 보냅니다. 클래스가 전송되면
+그것이 결정권을 갖습니다. 에이전트 id가 붙은 `main`은 메인 트래픽이고, `compaction`과
+`auxiliary`는 하네스 유지보수입니다 — 이 셋은 어느 것도 오버레이를 타지 않습니다. 따라서
+클래스와 타입 헤더가 게이트로 꺼져 있는 기본 배포에서는 모든 `Task` 자식이 `target`으로
+갑니다. `by_type`을 쓰려면 클라이언트가 `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`을 설정해야
+합니다.
+
+**`by_type` 키는** 대소문자까지 포함해 정확히 매칭됩니다. 내장 에이전트의 id는 그대로
+전달됩니다 — `Explore`, `Plan`, `general-purpose`, `claude`, 그리고 클라이언트가
+`CLAUDE_CODE_FORK_SUBAGENT=1`에서만 제공하는 `fork`입니다. `.claude/agents/`의 프로젝트
+에이전트는 `custom`으로 도착하며 자기 이름은 전송되지 않으므로, `custom`이 그 에이전트가
+매칭할 수 있는 유일한 키입니다. `teammate`는 Agent Teams 멤버를 가리키는 클라이언트의
+리터럴이며 아직 와이어에서 관측된 적은 없습니다. 비어 있거나 공백이 섞인 키는 시작
+오류입니다. 절대 매칭될 수 없기 때문입니다.
+
+**타깃은** 라우터 타깃과 동일한 한 홉 규칙을 따르는 평범한 공개 model id입니다. `target`과
+모든 `by_type` 값은 끝의 `[1m]`/`[1M]` 힌트를 제거한 뒤 자기 `[models.router]`나
+`[models.subagents]` 테이블을 가진 항목으로 해석되어서는 안 되며, 라우터 타깃도 이 오버레이를
+가진 항목으로 해석될 수 없습니다. 빈 타깃, `[1m]` 또는 `[1M]`으로 끝나는 오버레이 보유 id,
+어느 한쪽이 이 테이블을 가진 중복 `[[models]]` id는 시작 오류입니다. 명시적 라우트와
+매칭되지 않는 타깃은 라우터 타깃과 마찬가지로 로드 시점에 경고만 내고, 여전히
+`server.default_provider`로 해석됩니다.
+
+**상태 없음.** 타깃은 오직 설정과 요청 헤더만의 함수입니다 — 세션 핀도, 저장소도, 판정자
+호출도 없습니다. 라우터가 달린 id에서는 라우터가 돌기 전에 자식이 우회되므로, 자식의 턴은
+트랜스크립트를 상대로 채점되는 일이 없고 부모의 핀에도 닿지 않습니다. 우회된 턴은
+`x-gateway-routed-model`(타깃)과 `x-gateway-route-source`를 실어 보내며 — `by_type`이
+맞으면 `subagent_type`, `target` 폴백이면 `subagent` — `algorithm = "subagents"`로
+`shunt.router.decisions`에 집계됩니다. 요청이 없는 표면은 아무것도 해석하지 않습니다.
+`/v1/models` 디스커버리와 `shunt check`는 모델별 목적지 정보를 전혀 싣지 않고,
+`GET /routes`는 부모 자신의 `[[routes]]`/`[models.router]` 항목이 있을 때만 그것을 보여
+줍니다(`server.default_provider`에 맡겨진 id는 어느 배열에도 나오지 않습니다). 셋 중
+무엇도 우회된 타깃을 해석하지 않으며, 오버레이 자체가 `routers` 배열에 실리는 일도
+없습니다.
+
 ## `[sentry]` (선택)
 
 자체 Sentry 프로젝트로의 옵트인 오류 리포팅. `dsn`을 설정하지 않으면 꺼짐이며, `[otel]`과 독립적입니다. 게이트웨이 자체 진단을 보고합니다 — 치명적인 게이트웨이 시작/서빙 오류, 패닉, `error` 레벨 로그 이벤트(`warn`/`info`는 브레드크럼, 메시지만 포함) — 여기에 더해 `dsn`이 설정되어 있으면 업스트림 제공자가 실패 응답을 반환할 때마다 무조건 오류/경고 이벤트를 보냅니다: 5xx 응답은 `error`, 429/529(레이트 리밋/과부하)는 `warning`이며, 각각 `model`, `provider`, `upstream_status`만 태그로 붙습니다. 요청/응답 본문, 헤더, 자격증명은 절대 전송되지 않습니다. 메트릭과 트레이싱은 각각 별도의 추가 옵트인입니다.
@@ -834,9 +902,14 @@ id의 목적지는 라우터가 정하므로 조회되지 않습니다). id가 �
 
 ## 라우팅 우선순위
 
-일치하는 `[models.router]` 항목 → 일치하는 `[models.upstream_model]` 항목 → 정확한 `[[routes]]` 일치 → `[[route_prefixes]]` 프리픽스 일치 → `server.default_provider`.
+위임된 턴에서는 일치하는 `[models.subagents]` 오버레이 → 일치하는 `[models.router]` 항목 → 일치하는 `[models.upstream_model]` 항목 → 정확한 `[[routes]]` 일치 → `[[route_prefixes]]` 프리픽스 일치 → `server.default_provider`.
 
-라우터가 가장 앞에 오는 이유는 `[[models]]` 항목 자체에서 일치하기 때문입니다. 라우터가
+오버레이가 가장 앞에 오며, 위임된 작업에만 적용됩니다. 오버레이가 붙은 id로 온 `Task` 자식
+요청은 그 항목의 라우터나 맵을 참조하기 전에 오버레이의 타깃으로 전환되고, 부모 자신의 턴과
+`compaction`·`auxiliary` 턴은 그 테이블이 없는 것처럼 항목을 해석합니다. 아래 사다리는 그런
+턴과 오버레이가 없는 모든 id가 해석해 내려가는 경로입니다.
+
+라우터가 그다음에 오는 이유는 `[[models]]` 항목 자체에서 일치하기 때문입니다. 라우터가
 붙은 id로 온 요청은 라우터가 응답하며, 라우터는 티어를 고른 뒤 **그 타깃**을 나머지 사다리로
 해석합니다. 따라서 `[[routes]]` 항목이 지정해야 하는 것은 라우터 id가 아니라 타깃입니다.
 라우터 id를 지정한 정확 일치 항목은 조회되지 않으며 로드 시점에 경고가 남습니다.

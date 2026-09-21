@@ -7,7 +7,7 @@ name = "shunt-gateway"
 # unpublishable (issue #292). Remove this restriction with the pins once upstream
 # snapview/tungstenite-rs#426 ships in a crates.io release.
 publish = false
-version = "0.45.1"
+version = "0.46.0"
 edition = "2021"
 description = "Claude Code LLM gateway — an Anthropic Messages proxy that routes models to OpenAI/Codex and Anthropic-compatible backends"
 license = "MIT OR Apache-2.0"
@@ -42,6 +42,8 @@ ui = ["dep:rust-embed", "dep:mime_guess"]
 # `cargo build --features prefill-router` (see docs/routing-algorithms.md §5).
 # `switchyard-protocol` is not listed here: the routing boundary (ADR-0005 §3)
 # makes it non-optional, and `dep:` on a non-optional dependency is an error.
+# (main carries it as `optional = true`; this branch needs it in every build,
+# so the dependency stays non-optional and the feature drops the `dep:`.)
 prefill-router = ["dep:prefill-router"]
 
 # Expose `shunt::bench_support`, the facade `benches/stage_router.rs` needs to

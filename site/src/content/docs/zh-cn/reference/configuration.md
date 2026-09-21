@@ -308,7 +308,7 @@ codex-fallback = "gpt-5.2"
 
 ### 故障转移行为
 
-对于多条目的模型映射，shunt 从声明的上游序列中筛出映射内的名称来构建链。当上游状态为 `429`、`401`、`403`、`404`、任意 `5xx`，或者在收到上游响应头之前失败时，会前进到下一条目。auth 配置错误、适配器自身的校验或头部构建错误等不代表上游尝试的网关本地错误会立即返回，使错误配置不会被故障转移掩盖。返回 `2xx` 响应头之后不再故障转移，即使后续流式正文失败也是如此。Responses 适配器的流式路径会在收到上游字节之前提交响应。仅含 `Anthropic`/`Responses` 元素且不使用 WebSocket 传输的链路会在已提交的流内执行故障转移（头部前传输失败和推进状态会在合成开始发出之前重试下一条上游），而无法推进的路由（终止性非 2xx 或 Anthropic 类型胜者的非 SSE 成功正文）则会把失败显示为一条终端 SSE `error` 事件。胜者的终端帧已中继之后发生的流式正文失败则会静默结束流——该回合已经完成，追加的 error 事件会破坏已完成的响应。TTFB 超时永不推进：配置的超时是一个答案，会显示为终端的 `504 timeout_error` 事件。在这条已提交路径上，响应带 `content-type` 和 `x-gateway-model`，并且当请求由 `[models.router]` 条目路由时还带上路由器的两个头（`x-gateway-routed-model`/`x-gateway-route-source`）——它们由路由器在首次尝试之前决定，因此不依赖哪个上游胜出：取决于胜者的 `x-gateway-upstream` 和 `x-gateway-upstream-model` 会被省略——头部随提交一起发出时胜者尚不可知——而且即使胜者是 Anthropic 类型，上游响应头（请求 id、`anthropic-ratelimit-*` 配额元数据等）也不会到达客户端。`x-gateway-model` 会保留（它指向客户端请求的 id），请求指标按每次尝试记录其分类状态，流归属会在流得知胜者后跟随胜者。
+对于多条目的模型映射，shunt 从声明的上游序列中筛出映射内的名称来构建链。当上游状态为 `429`、`401`、`403`、`404`、任意 `5xx`，或者在收到上游响应头之前失败时，会前进到下一条目。auth 配置错误、适配器自身的校验或头部构建错误等不代表上游尝试的网关本地错误会立即返回，使错误配置不会被故障转移掩盖。返回 `2xx` 响应头之后不再故障转移，即使后续流式正文失败也是如此。Responses 适配器的流式路径会在收到上游字节之前提交响应。仅含 `Anthropic`/`Responses` 元素且不使用 WebSocket 传输的链路会在已提交的流内执行故障转移（头部前传输失败和推进状态会在合成开始发出之前重试下一条上游），而无法推进的路由（终止性非 2xx 或 Anthropic 类型胜者的非 SSE 成功正文）则会把失败显示为一条终端 SSE `error` 事件。胜者的终端帧已中继之后发生的流式正文失败则会静默结束流——该回合已经完成，追加的 error 事件会破坏已完成的响应。TTFB 超时永不推进：配置的超时是一个答案，会显示为终端的 `504 timeout_error` 事件。在这条已提交路径上，响应带 `content-type` 和 `x-gateway-model`，并且当请求由 `[models.router]` 条目路由，或由 `[models.subagents]` 覆盖层转向时，还带上路由器的两个头（`x-gateway-routed-model`/`x-gateway-route-source`）——它们在首次尝试之前就已决定，因此不依赖哪个上游胜出：取决于胜者的 `x-gateway-upstream` 和 `x-gateway-upstream-model` 会被省略——头部随提交一起发出时胜者尚不可知——而且即使胜者是 Anthropic 类型，上游响应头（请求 id、`anthropic-ratelimit-*` 配额元数据等）也不会到达客户端。`x-gateway-model` 会保留（它指向客户端请求的 id），请求指标按每次尝试记录其分类状态，流归属会在流得知胜者后跟随胜者。
 
 链耗尽时，shunt 按 `429` → `401`/`403` → `404` → 其他 `5xx` 的优先级返回最佳的已中继失败。响应头之前的失败不会被记为最佳失败。若没有记住任何已中继响应，则返回消息为 `all upstreams failed (N attempted)` 的 `502 api_error`。
 
@@ -316,7 +316,7 @@ codex-fallback = "gpt-5.2"
 
 与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值与 shunt 自己签发的 JWT **形状相符**——三段式结构，且载荷的 `aud` 声明为 `"shunt"`、`iss` 声明与本网关的身份一致，或 `shunt_token_use` 声明为 `"gateway-session"`（仅由 shunt 签发的专用标记）——或匹配配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除。这项 JWT 检查刻意按“形状是否相符”而非“该令牌现在是否能通过认证”来判定：一个已过期的令牌、由使用不同 `public_url` 的兄弟实例签发的令牌，或在 `jwt_secret` 轮换后已不再能通过校验的令牌，仍然是 shunt 自己的凭据，因此仍会被清除。该标记只是形状检查新增的一个分支，而非必要条件：在该标记出现之前签发的令牌仍会按 `aud`/`iss` 匹配，`verify` 本身也不要求该标记，因此旧版本 shunt 签发的令牌只要仍在其 TTL 内就仍能通过认证 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或静态客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。`[server.auth] header` 可以是任意头名称，包括 `authorization` 本身；这样配置时客户端使用不带前缀的 `Authorization: <token>` 进行认证，因此该槽位除了按 `Bearer` 载荷检查外还会按整个值检查，此类令牌绝不会被转发到上游。该配置有一个注意事项：在推理请求上 shunt 会在路由前无条件移除配置的头部，因此该槽位不会向上游携带任何东西 —— 不只是门控令牌，调用方自己的凭据也会一并被丢弃。把 `header` 保持为默认的专用 `x-shunt-token` 可以避免这种冲突。
 
-每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）——已提交的流式链路路径除外：响应带 `content-type` 和 `x-gateway-model`，以及在由路由器路由时下文所述的两个路由器头，取决于胜者的 `x-gateway-upstream` 和 `x-gateway-upstream-model` 会被省略，上游响应头不会到达客户端。由 [`[models.router]`](#modelsrouter可选) 条目路由的响应还会带上 `x-gateway-routed-model`（路由器选中的目标）和 `x-gateway-route-source`（选中它的原因）；这对所有路由器 `type` 都成立，不限于[阶段路由器](/zh-cn/guides/stage-router/)，未配置路由器的模型 id 不会带这两个头。`count_tokens` 只使用链中第一个条目，不会故障转移，也不会带上这两个头。对于没有 `[[server.codex_endpoint.routes]]` 条目的模型，`[server.codex_endpoint]` 仍固定到所配置的单一上游；无论哪种情况都不参与此链。
+每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）——已提交的流式链路路径除外：响应带 `content-type` 和 `x-gateway-model`，以及在由路由器路由或由覆盖层转向时下文所述的两个路由器头，取决于胜者的 `x-gateway-upstream` 和 `x-gateway-upstream-model` 会被省略，上游响应头不会到达客户端。由 [`[models.router]`](#modelsrouter可选) 条目路由的响应还会带上 `x-gateway-routed-model`（路由器选中的目标）和 `x-gateway-route-source`（选中它的原因）；这对所有路由器 `type` 都成立，不限于[阶段路由器](/zh-cn/guides/stage-router/)。由 [`[models.subagents]`](#modelssubagents可选) 覆盖层转向的委派回合同样会带这两个头，此时 `x-gateway-route-source` 为 `subagent_type` 或 `subagent`；只有当路由器与覆盖层都没有决定该回合时，这两个头才都不会出现。`count_tokens` 只使用链中第一个条目，不会故障转移，也不会带上这两个头。对于没有 `[[server.codex_endpoint.routes]]` 条目的模型，`[server.codex_endpoint]` 仍固定到所配置的单一上游；无论哪种情况都不参与此链。
 
 ### 迁移现有配置
 
@@ -398,8 +398,8 @@ codex = "gpt-5.2"
 ### `[models.router]`(可选)
 
 针对某一个对外 id 的按请求路由。该条目不再只指定一个目的地,而是带一张 `[models.router]`
-表,由表中的 `type` 键挑选路由算法,再由算法挑选目的地。没有这张表时,`[[models]]` 条目的
-行为与之前完全一致;任何地方都不配置路由器,路由就不变。
+表,由表中的 `type` 键挑选路由算法,再由算法挑选目的地。既没有这张表也没有 [`[models.subagents]`](#modelssubagents可选) 覆盖层时,`[[models]]`
+条目的行为与之前完全一致;任何地方都不配置这两者,路由就不变。
 
 这里用的是 `type` 而不是 shunt 惯用的 `kind` 或 `mode`,这是**对 shunt 自身命名约定的有意
 破例**,而参考文档只在这一处说明它。这些路由算法来自
@@ -418,10 +418,10 @@ codex = "gpt-5.2"
 | `noop` | 不做选择 —— 直接返回空消息 | 不读 |
 | `prefill_router` | 读取最近一轮用户消息的学习型分类器(需要 `prefill-router` 构建) | 读 —— 用户消息的文本 |
 
-需要调用 LLM 裁判的算法(`llm_classifier`、`composite`、`advisor`)以及
-`[models.subagents]` 覆盖层**尚不可用**:指定它们会导致启动错误,它们会在后续版本中加入。
-`prefill_router` 已经实现,但**在编译期设门**:只有开启默认关闭的 `prefill-router` cargo
-feature 构建出来的二进制才有它 —— 见[下文](#type--prefill_router)。
+需要调用 LLM 裁判的算法(`llm_classifier`、`composite`、`advisor`),以及
+[`[models.subagents]`](#modelssubagents可选) 覆盖层的 `llm_classifier` 形式 **尚不可用**:
+指定它们会导致启动错误,它们会在后续版本中加入。`prefill_router` 已经实现,但**在编译期设门**:
+只有开启默认关闭的 `prefill-router` cargo feature 构建出来的二进制才有它 —— 见[下文](#type--prefill_router)。
 目前唯一可用的裁判形态,是阶段路由器自身的
 [`[models.router.classifier]`](#modelsrouterclassifier可选) 回退。
 
@@ -747,6 +747,65 @@ id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同�
 报告 —— 匹配该前缀的其他 id 仍由它处理。每条警告在每次加载时各输出一次；热重载
 同样是一次加载，所以配置不改就会在每次重载时再次输出。
 
+### `[models.subagents]`(可选)
+
+面向 **被委派的工作** 的覆盖层,可以加在任意 `[[models]]` 条目上:带 `[models.upstream_model]`
+映射的条目、带 `[models.router]` 表的条目,或者没有映射、经由 `[[routes]]` 解析的 id。请求
+这个 id 的 `Task` 子 agent、hook agent 或 workflow 子 agent 会被分流到覆盖层的目标。父会话
+自己的回合从不读这张表,解析该条目的方式和没有这张表时完全一致。这张表放在条目上而不是放进
+`router` 里,是因为直接指定目的地的条目根本没有路由器表,而 Switchyard 的“带 subagents 的
+passthrough”在这里恰好就是这样一个条目。
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必填 | `passthrough`,本次发布唯一实现的形式。由裁判挑选子任务档位的 `llm_classifier` 形式要等后续版本;指定它会导致启动错误 |
+| `target` | ✅ 必填 | 当 `by_type` 没有为某一轮的 agent 类型指定模型时,这一轮被委派的请求去往的模型 id —— 没有发送 agent 类型头部时,所有被委派的回合也都去这里 |
+| `by_type` | `{}` | agent 类型 → 模型 id,按 `x-claude-code-agent-type` 的字面值作键 |
+
+**什么算被委派的工作**。`x-claude-code-request-class` 为 `subagent` 或 `workflow` 的请求;
+该头部缺失时,则是带有非空 `x-claude-code-agent-id` 的请求 —— 无论提示头部的开关如何,
+Claude Code 在每个被委派的回合上都会发送它。类别头部一旦发送就是权威的:带着 agent id 的
+`main` 仍是主会话流量,而 `compaction` 和 `auxiliary` 属于框架自身的维护 —— 这三者都不会
+走这张覆盖层。因此在类别头部和类型头部都被关闭的默认部署下,每个 `Task` 子 agent 都走
+`target`;要用上 `by_type`,需要客户端设置 `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`。
+
+**`by_type` 的键** 精确匹配,大小写也算在内。内置 agent 的 id 原样传输 —— `Explore`、
+`Plan`、`general-purpose`、`claude` 和 `fork`(客户端只在 `CLAUDE_CODE_FORK_SUBAGENT=1`
+下才提供它)。来自 `.claude/agents/` 的项目 agent 会以 `custom` 到达,它自己的名字从不
+发送,所以 `custom` 是它唯一能匹配上的键。`teammate` 是客户端对 Agent Teams 成员使用的
+字面取值,目前尚未在网络上观察到。空的键,或者带空白字符的键,会导致启动错误:它永远
+不可能匹配上。
+
+**目标** 都是普通的公开模型 id,并且受与路由器目标相同的一跳规则约束:`target` 和每个
+`by_type` 取值在去掉结尾的 `[1m]`/`[1M]` 提示之后,都不能解析到一个自带 `[models.router]`
+或 `[models.subagents]` 表的条目 —— 反过来,路由器的目标也不能解析到带这张覆盖层的条目。
+空目标、以 `[1m]` 或 `[1M]` 结尾的被覆盖 id,以及两个条目中任一带这张表的重复 `[[models]]`
+id,都会导致启动错误。未匹配到任何显式路由的目标只在加载时发出警告,与路由器目标一样,
+并仍经由 `server.default_provider` 解析。
+
+**不保存状态**。目标只由配置和请求的头部决定:没有会话固定、没有存储、不调用裁判。在带
+路由器的 id 上,子任务在路由器运行之前就被分流走,所以子任务的回合从不按转录内容评分,
+也从不触碰父级的固定项。被分流的一轮会带上 `x-gateway-routed-model`(目标)和
+`x-gateway-route-source` —— 命中 `by_type` 时是 `subagent_type`,回退到 `target` 时是
+`subagent` —— 并以 `algorithm = "subagents"` 计入 `shunt.router.decisions`。没有请求的
+接口什么都解析不出来:`/v1/models` 发现和 `shunt check` 根本不带任何按模型的目的地信息,
+`GET /routes` 也只在父级自身存在 `[[routes]]`/`[models.router]` 条目时才把它列出来(交给
+`server.default_provider` 解析的 id 在两个数组里都不会出现)。这三个接口都不会解析出
+覆盖层分流到的目标,覆盖层自身也从不出现在 `routers` 数组里。
+
 ## `[sentry]`(可选)
 
 可选启用的错误上报,发送到你自己的 Sentry 项目。未设置 `dsn` 时关闭;与 `[otel]` 相互独立。上报网关自身的诊断信息 — 致命的网关启动/服务错误、panic 和 `error` 级日志事件(`warn`/`info` 作为 breadcrumb,仅含消息)— 此外,只要设置了 `dsn`,每当上游提供方本身返回失败响应时都会无条件发送一个错误/警告事件:5xx 响应对应 `error`,429/529(限流/过载)对应 `warning`,并且仅附带 `model`、`provider`、`upstream_status` 三个标签。请求/响应正文、头部和凭证永远不会发送。指标和 tracing 各自是进一步的独立可选项。
@@ -784,9 +843,14 @@ id 的 `capable_target` 与 `efficient_target`（有意把两个档位压到同�
 
 ## 路由优先级
 
-匹配的 `[models.router]` 条目 → 匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
+在委派的回合中，匹配的 `[models.subagents]` 覆盖层 → 匹配的 `[models.router]` 条目 → 匹配的 `[models.upstream_model]` 条目 → 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
 
-路由器排在最前，是因为它在 `[[models]]` 条目本身上完成匹配：指向带路由器 id 的请求由路由器
+覆盖层排在最前，且仅对委派的工作生效：指向带覆盖层 id 的 `Task` 子请求，会在该条目自身的
+路由器或映射被查询之前转向覆盖层的目标；而父会话自身的回合，以及 `compaction` 与
+`auxiliary` 回合，都会当这张表不存在来解析该条目。下面这条链，正是这些回合以及所有不带
+覆盖层的 id 所要解析的路径。
+
+路由器排在其次，是因为它在 `[[models]]` 条目本身上完成匹配：指向带路由器 id 的请求由路由器
 应答，路由器选定档位后再把**那个目标**交给其余的解析链。因此 `[[routes]]` 或
 条目应当写目标，而不是路由器 id。写了路由器 id 的精确条目永远不会被查询，并会在加载时
 发出警告。`[[route_prefixes]]` 条目不受影响：路由器只从该前缀中取走自己的 id。

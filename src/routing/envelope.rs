@@ -72,6 +72,7 @@ mod tests {
 
     fn mapped(id: &str, upstream: &str) -> ModelConfig {
         ModelConfig {
+            subagents: None,
             id: id.to_string(),
             display_name: None,
             upstream_model: Some(BTreeMap::from([(
@@ -104,6 +105,7 @@ mod tests {
         let mut config = Config {
             models: vec![
                 ModelConfig {
+                    subagents: None,
                     id: "claude-auto".to_string(),
                     display_name: None,
                     upstream_model: None,

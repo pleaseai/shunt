@@ -56,6 +56,12 @@ pub(crate) enum RouteSource {
     PrefillDefault,
     /// A `noop` router answered without an upstream call.
     Noop,
+    /// A `[models.subagents]` overlay diverted delegated work to its `target`
+    /// fallback — the agent type named no `by_type` entry, or was not sent.
+    Subagent,
+    /// A `[models.subagents]` overlay diverted delegated work to the `by_type`
+    /// target matching its `x-claude-code-agent-type`.
+    SubagentType,
 }
 
 impl RouteSource {
@@ -69,6 +75,8 @@ impl RouteSource {
             Self::PrefillFailOpen => "prefill_fail_open",
             Self::PrefillDefault => "prefill_default",
             Self::Noop => "noop",
+            Self::Subagent => "subagent",
+            Self::SubagentType => "subagent_type",
         }
     }
 
@@ -87,7 +95,9 @@ impl RouteSource {
             | Self::Prefill
             | Self::PrefillFailOpen
             | Self::PrefillDefault
-            | Self::Noop => None,
+            | Self::Noop
+            | Self::Subagent
+            | Self::SubagentType => None,
         }
     }
 }

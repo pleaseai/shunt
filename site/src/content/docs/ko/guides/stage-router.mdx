@@ -167,7 +167,9 @@ POST /v1/messages   {"model": "claude-auto", ...}
 [판정 모델 폴백](#판정-모델-폴백)을 설정한 항목에서, 판정 모델이 결정한 턴에만
 나타납니다. 설정하지 않으면 결정을 못 내린 턴은 지금처럼 `fall_open`으로 보고되고 판정
 호출도 없습니다. 스코어러는 `ambiguous` 라벨을 하나 더 정의하지만 이것은 응답에 실릴 수
-없습니다. 다른 라우터 타입은 자기 라벨(`random`, `random_session`, `noop`)을 씁니다.
+없습니다. 다른 라우터 타입은 자기 라벨(`random`, `random_session`, `noop`)을 쓰며,
+`[models.subagents]` 오버레이도 자기 라벨을 씁니다 — `by_type`이 맞으면
+`subagent_type`, `target` 폴백이면 `subagent`입니다.
 
 라우터가 없는 model id에는 둘 다 붙지 않습니다. 그래야 "효율 티어로 라우팅됨"과
 "애초에 라우터를 거치지 않음"이 구분됩니다. `count_tokens` 탐침에는 붙이지

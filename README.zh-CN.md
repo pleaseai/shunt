@@ -1,5 +1,7 @@
 # shunt
 
+离线凭据导入：`shunt import opencodex --dry-run` 可预览兼容 API 密钥和 Cursor/Command Code 访问令牌。导出会创建新的私有快照，不修改现有设置，也不复制刷新令牌。参见[导入指南（英文）](docs/credential-import.md)。
+
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/pleaseai/shunt?utm_source=badge)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
@@ -222,7 +224,7 @@ Claude Code 会把每一轮都发送到 Anthropic API。`shunt` 位于前面(通
 
 选择性由**每个请求上的 `model` id** 驱动,而 Claude Code 本来就允许你按上下文选择它:主会话的 `/model` 选择器、子 agent 定义的 `model:` frontmatter、面向所有子 agent 的 `CLAUDE_CODE_SUBAGENT_MODEL`,或用 `ANTHROPIC_CUSTOM_MODEL_OPTION` 向选择器添加一个自定义条目。因此“只分流这个 agent / 这个会话”是在 Claude Code 中决定的,而 shunt 只是遵从它收到的 model id —— 没有脆弱的按 agent 系统提示指纹识别。与全局模型替换代理不同,主会话可以留在 Claude 上,而只有你指名的模型才被分流。
 
-也可以让某一个 model id 自己做决定。[`[models.router]`](https://shunt.sh/zh-cn/guides/stage-router/) 条目用 `type` 键指定路由算法:`stage_router` 指定一个强力档位和一个高效档位,并根据对话最近的 **tool-result 元数据**(`tool_use.name` 与 `tool_result.is_error`,而非提示词文本)逐轮在两者之间选择;`auto` 是同一个路由器的上游预设;`random` 按权重把流量分到多个目标,并让同一个会话固定落在同一路;`noop` 返回一条空消息,用于冒烟测试;`prefill_router` 是一个读取最近一轮用户消息的学习型分类器,只有开启默认关闭的 `prefill-router` cargo feature 构建出的二进制才有它。`stage_router` 还可以额外配置一个可选的 [`[models.router.classifier]`](https://shunt.sh/zh-cn/reference/configuration/#modelsrouterclassifier可选) 表来指定裁判模型:它只在信号无法判定的轮次被咨询,永远不会被提供给客户端;`judge_*`/`gated_*`/`max_judge_calls` 这六个键为每一次内部调用设定上限。所有目标都是普通的公开 model id,各自保留自己的故障转移链、账号池和适配器(参见 [Switchyard 集成](https://shunt.sh/zh-cn/guides/switchyard/))。不配置路由器则行为不变。
+也可以让某一个 model id 自己做决定。[`[models.router]`](https://shunt.sh/zh-cn/guides/stage-router/) 条目用 `type` 键指定路由算法:`stage_router` 指定一个强力档位和一个高效档位,并根据对话最近的 **tool-result 元数据**(`tool_use.name` 与 `tool_result.is_error`,而非提示词文本)逐轮在两者之间选择;`auto` 是同一个路由器的上游预设;`random` 按权重把流量分到多个目标,并让同一个会话固定落在同一路;`noop` 返回一条空消息,用于冒烟测试;`prefill_router` 是一个读取最近一轮用户消息的学习型分类器,只有开启默认关闭的 `prefill-router` cargo feature 构建出的二进制才有它。`stage_router` 还可以额外配置一个可选的 [`[models.router.classifier]`](https://shunt.sh/zh-cn/reference/configuration/#modelsrouterclassifier可选) 表来指定裁判模型:它只在信号无法判定的轮次被咨询,永远不会被提供给客户端;`judge_*`/`gated_*`/`max_judge_calls` 这六个键为每一次内部调用设定上限。所有目标都是普通的公开 model id,各自保留自己的故障转移链、账号池和适配器(参见 [Switchyard 集成](https://shunt.sh/zh-cn/guides/switchyard/))。任何条目还可以带一张 [`[models.subagents]`](https://shunt.sh/zh-cn/reference/configuration/#modelssubagents可选) 覆盖层,把被委派的工作 —— `Task` 子 agent、hook agent、workflow 子 agent —— 送到另一个目标,还可以按 agent 类型细分(`by_type = { Explore = "claude-haiku-4-5" }`),而父会话仍去自己的目的地;`main`、压缩和辅助回合永远不会走它。既不配置路由器也不配置 subagents 覆盖层,则行为不变。
 
 ## Claude Code 集成(官方接口)
 

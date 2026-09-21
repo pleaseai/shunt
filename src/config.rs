@@ -18,6 +18,7 @@ mod router;
 mod secrets;
 mod session;
 mod spend;
+mod subagents;
 mod upstreams;
 
 pub use admin_keys::{AdminAccess, AdminCredential, AdminKey, AdminKeyring};
@@ -36,6 +37,7 @@ pub use router::{
 pub use secrets::Secret;
 pub use session::GatewaySessionConfig;
 pub use spend::{GroupLimitMode, SpendConfig, SpendEnforcementConfig};
+pub use subagents::{PassthroughSubagentsConfig, SubagentsConfig};
 pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -2118,6 +2120,14 @@ pub struct ModelConfig {
     /// serialized as an explicit null would fail the table's own deserializer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub router: Option<RouterConfig>,
+    /// Opt-in overlay for delegated work (ADR-0005 §5): a `Task` child, hook
+    /// agent, or workflow sub-agent requesting this id is diverted to the
+    /// overlay's target, while the parent's own turns resolve the entry as if
+    /// the table were absent. Sits on the entry, not inside `router`, because
+    /// a fixed entry has no router table and is the common host for it; the
+    /// two may coexist. Same `skip_serializing_if` rationale as `router`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<SubagentsConfig>,
     /// The removed `[models.stage_router]` table, accepted only so the load can
     /// *reject* it by name.
     ///
@@ -2138,6 +2148,16 @@ pub struct ModelConfig {
 pub struct RoutePrefixConfig {
     pub prefix: String,
     pub provider: String,
+}
+
+/// Whether a `[[models]]` entry declares a routing policy of its own — a
+/// `[models.router]` table or a `[models.subagents]` overlay — as opposed to
+/// being a fixed destination. The one-hop rule (ADR-0005 §2) forbids any router
+/// or overlay target from resolving to such an entry: the resolver hops once
+/// and reads the target as a plain id, so the target's own policy would never
+/// run.
+fn names_a_policy(model: &ModelConfig) -> bool {
+    model.router.is_some() || model.subagents.is_some()
 }
 
 /// Fail-closed checks for `[models.router]` with `type = "random"`.
@@ -2516,8 +2536,20 @@ pub enum ConfigError {
     RouterWithUpstreamMap { model: String },
     #[error("models entry {model} router {key} must not be empty")]
     EmptyRouterTarget { model: String, key: &'static str },
-    #[error("models entry {model} router targets {target}, which is itself a [models.router] entry; a router target must be a concrete model")]
+    #[error("models entry {model} router targets {target}, which carries its own [models.router] or [models.subagents] table; a router target must be a concrete model")]
     RouterRecursion { model: String, target: String },
+    #[error("models entry {model} subagents {key} must not be empty")]
+    EmptySubagentsTarget { model: String, key: String },
+    #[error("models entry {model} subagents {key} targets {target}, which carries its own [models.router] or [models.subagents] table; an overlay target must be a concrete model")]
+    SubagentsRecursion {
+        model: String,
+        key: String,
+        target: String,
+    },
+    #[error("models entry {model} subagents by_type key {key:?} is blank, carries whitespace, or carries a byte outside visible ASCII; keys are matched exactly against the x-claude-code-agent-type header value, and no agent type on the wire is blank or carries whitespace, while a value carrying a byte outside visible ASCII is one the header parser drops entirely — either way the key could never match")]
+    InvalidSubagentsType { model: String, key: String },
+    #[error("models entry {model} has a subagents table but its id ends with a [1m] or [1M] context-window hint; clients strip that hint before model matching, so the entry is unreachable")]
+    SubagentsContextWindowHint { model: String },
     #[error("models entry {model} router type = \"prefill_router\" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)")]
     PrefillRouterFeatureDisabled { model: String },
     #[error("models entry {model} router {key} {reason}")]
@@ -4257,24 +4289,28 @@ impl Config {
             if let Some(router) = &model.router {
                 self.validate_router(&model.id, router)?;
             }
+            if let Some(subagents) = &model.subagents {
+                self.validate_subagents(&model.id, subagents)?;
+            }
             let Some(upstream_models) = &model.upstream_model else {
                 // Two map-less entries may share an id while both are pure
                 // discovery metadata: neither one changes how the id resolves,
                 // so `duplicate_map_less_model_ids_remain_valid` keeps that
-                // tolerated. A `router` entry is not metadata — it names
-                // a routing policy — so a duplicate on either side leaves two
-                // policies for one public id, settled by declaration order once
-                // the resolver reads the table.
+                // tolerated. A `router` or `subagents` entry is not metadata —
+                // it names a routing policy — so a duplicate on either side
+                // leaves two policies for one public id, settled by declaration
+                // order once the resolver reads the table.
+                let declares_policy = names_a_policy(model);
                 if duplicate_id
                     && (model_upstream_ids.contains(&model.id)
                         || model_router_ids.contains(&model.id)
-                        || model.router.is_some())
+                        || declares_policy)
                 {
                     return Err(ConfigError::DuplicateModelId {
                         model: model.id.clone(),
                     });
                 }
-                if model.router.is_some() {
+                if declares_policy {
                     model_router_ids.insert(&model.id);
                 }
                 continue;
@@ -4419,7 +4455,7 @@ impl Config {
             if self
                 .models
                 .iter()
-                .any(|other| other.id == resolved && other.router.is_some())
+                .any(|other| other.id == resolved && names_a_policy(other))
             {
                 return Err(ConfigError::RouterRecursion {
                     model: model_id.to_string(),
@@ -4441,6 +4477,67 @@ impl Config {
         // as far as.
         if let RouterConfig::PrefillRouter(prefill) = router {
             validate_prefill_router(model_id, prefill)?;
+        }
+        Ok(())
+    }
+
+    /// Fail-closed checks for one `[models.subagents]` table (ADR-0005 §5, §11).
+    ///
+    /// The same one-hop rule as [`Self::validate_router`], over every target the
+    /// overlay can name — `target` and each `by_type` value — with the same
+    /// `strip_context_window_hint` normalization, and for the same reason: the
+    /// resolver hops exactly once from the overlay to its target, so a target
+    /// that carries its own router or overlay would be resolved as a plain id
+    /// and silently lose the policy it declares.
+    ///
+    /// `by_type` keys are matched byte-for-byte against the
+    /// `x-claude-code-agent-type` value, so a key that is blank or carries
+    /// whitespace *anywhere* is rejected rather than trimmed: no agent type on
+    /// the wire contains a space, so such a key could never match, and the
+    /// operator meant some type — guessing which is how the config and the
+    /// wire drift apart.
+    fn validate_subagents(
+        &self,
+        model_id: &str,
+        subagents: &SubagentsConfig,
+    ) -> Result<(), ConfigError> {
+        if crate::routing::strip_context_window_hint(model_id) != model_id {
+            return Err(ConfigError::SubagentsContextWindowHint {
+                model: model_id.to_string(),
+            });
+        }
+        for agent_type in subagents.agent_types() {
+            if agent_type.is_empty()
+                || agent_type.chars().any(char::is_whitespace)
+                || agent_type
+                    .bytes()
+                    .any(|byte| !(0x20..=0x7e).contains(&byte))
+            {
+                return Err(ConfigError::InvalidSubagentsType {
+                    model: model_id.to_string(),
+                    key: agent_type.to_string(),
+                });
+            }
+        }
+        for (key, target) in subagents.named_targets() {
+            if target.trim().is_empty() {
+                return Err(ConfigError::EmptySubagentsTarget {
+                    model: model_id.to_string(),
+                    key,
+                });
+            }
+            let resolved = crate::routing::strip_context_window_hint(target);
+            if self
+                .models
+                .iter()
+                .any(|other| other.id == resolved && names_a_policy(other))
+            {
+                return Err(ConfigError::SubagentsRecursion {
+                    model: model_id.to_string(),
+                    key,
+                    target: target.to_string(),
+                });
+            }
         }
         Ok(())
     }
@@ -4610,10 +4707,21 @@ impl Config {
     /// line per reload rather than emit it once.
     fn warn_router_targets_unresolvable(&self) {
         for model in &self.models {
-            let Some(router) = &model.router else {
-                continue;
-            };
-            for target in router.targets().into_iter().chain(router.judges()) {
+            // Router targets, the judges a driven router consults, and
+            // overlay targets alike: an overlay target that lands on the
+            // default provider is the same misconfiguration, and so is a judge
+            // that does — it is a model call like any other.
+            let targets = model
+                .router
+                .iter()
+                .flat_map(|router| router.targets().into_iter().chain(router.judges()))
+                .chain(model.subagents.iter().flat_map(|subagents| {
+                    subagents
+                        .named_targets()
+                        .into_iter()
+                        .map(|(_, target)| target)
+                }));
+            for target in targets {
                 // Same normalization the validation and the resolver apply.
                 let resolved = crate::routing::strip_context_window_hint(target);
                 // A `[[models]]` entry routes its own id only when it carries
@@ -5007,6 +5115,7 @@ mod tests {
             upstream_model,
             router: None,
             stage_router: None,
+            subagents: None,
         }
     }
 
@@ -6047,6 +6156,7 @@ confidence_threshold = 0.6
             upstream_model: None,
             router: None,
             stage_router: None,
+            subagents: None,
         };
 
         let rendered = toml::to_string(&model).expect("a router-less model serializes to TOML");
@@ -7947,6 +8057,7 @@ id = "claude-sonnet-5"
                 max_judge_calls: crate::config::DEFAULT_MAX_JUDGE_CALLS,
             })),
             stage_router: None,
+            subagents: None,
         }
     }
 
@@ -7977,6 +8088,7 @@ id = "claude-sonnet-5"
                 },
             )),
             stage_router: None,
+            subagents: None,
         }
     }
 
@@ -8286,6 +8398,7 @@ efficient_target = "claude-sonnet-4-6"
                         affinity: super::RandomAffinity::Session,
                     })),
                     stage_router: None,
+                    subagents: None,
                 }],
                 ..Config::default()
             };
@@ -8326,6 +8439,7 @@ efficient_target = "claude-sonnet-4-6"
                     affinity: super::RandomAffinity::Session,
                 })),
                 stage_router: None,
+                subagents: None,
             }],
             ..Config::default()
         };
@@ -8351,6 +8465,7 @@ efficient_target = "claude-sonnet-4-6"
                 affinity: super::RandomAffinity::Session,
             })),
             stage_router: None,
+            subagents: None,
         }
     }
 
@@ -8399,6 +8514,7 @@ efficient_target = "claude-sonnet-4-6"
                         upstream_model: None,
                         router: Some(super::RouterConfig::Noop {}),
                         stage_router: None,
+                        subagents: None,
                     },
                 ],
             ),
@@ -9023,6 +9139,7 @@ target = "judge-alias"
         let mut config = Config {
             models: vec![
                 ModelConfig {
+                    subagents: None,
                     id: "judge-alias".to_string(),
                     display_name: None,
                     upstream_model: Some(BTreeMap::from([
@@ -9650,6 +9767,7 @@ target = "judge-alias"
                 upstream_model: None,
                 router: None,
                 stage_router: None,
+                subagents: None,
             }],
             ..Config::default()
         };

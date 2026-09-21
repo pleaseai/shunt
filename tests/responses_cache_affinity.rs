@@ -141,6 +141,7 @@ async fn a_metadata_only_client_reaches_the_upstream_with_matching_affinity_fiel
         ),
         router: None,
         stage_router: None,
+        subagents: None,
     }];
     let (base_url, task) = start_gateway(config).await;
 

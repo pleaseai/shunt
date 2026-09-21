@@ -134,6 +134,7 @@ fn chain_config(upstreams: Vec<UpstreamConfig>, mappings: &[(&str, &str)]) -> Co
         ),
         router: None,
         stage_router: None,
+        subagents: None,
     }];
     config
 }
@@ -1087,6 +1088,7 @@ async fn legacy_single_element_chain_adds_gateway_headers() {
         )])),
         router: None,
         stage_router: None,
+        subagents: None,
     }];
     let gateway = start_gateway(config).await;
 

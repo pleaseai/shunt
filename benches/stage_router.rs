@@ -52,15 +52,16 @@ fn main() {
 #[cfg(feature = "bench")]
 mod bench {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Instant;
+    use std::{collections::BTreeMap, time::Instant};
 
     use axum::http::HeaderMap;
     use serde_json::{json, Value};
     use shunt::{
         bench_support::{self, StageStore, MAX_TRACKED_CHILD_PINS, MAX_TRACKED_SESSIONS},
         config::{
-            Config, ModelConfig, RandomAffinity, RandomRouterConfig, RouteConfig, RouterConfig,
-            StageClassifierConfig, StageRouterConfig, StageRouterPicker,
+            Config, ModelConfig, PassthroughSubagentsConfig, RandomAffinity, RandomRouterConfig,
+            RouteConfig, RouterConfig, StageClassifierConfig, StageRouterConfig, StageRouterPicker,
+            SubagentsConfig,
         },
     };
 
@@ -124,6 +125,7 @@ mod bench {
                 upstream_model: None,
                 router: with_router.then(router).map(RouterConfig::StageRouter),
                 stage_router: None,
+                subagents: None,
             }],
             routes: vec![
                 route(ROUTER_MODEL),
@@ -358,6 +360,7 @@ mod bench {
                     affinity: RandomAffinity::Session,
                 })),
                 stage_router: None,
+                subagents: None,
             }],
             routes: vec![
                 route(ROUTER_MODEL),
@@ -454,6 +457,32 @@ mod bench {
     #[divan::bench(args = TURN_COUNTS)]
     fn resolve_chain_routed_delegated(bencher: divan::Bencher, turns: usize) {
         let config = config(true);
+        let request = request(ROUTER_MODEL, turns);
+        let headers = child_headers();
+        let store = StageStore::new();
+        let now = Instant::now();
+        bencher.bench(|| {
+            divan::black_box(
+                bench_support::resolve_chain(&config, &store, &request, &headers, false, now)
+                    .unwrap(),
+            )
+        });
+    }
+
+    /// The same child's turn once the routed entry also carries a
+    /// `[models.subagents]` overlay (ADR-0005 §8 PR 3): the overlay diverts it
+    /// before the stage router runs, so the transcript is never scored and the
+    /// store is never read. Reads against `resolve_chain_routed_delegated` —
+    /// the gap is what the child stops paying — and should stay flat across
+    /// `turns`, as `resolve_chain_random_session` does.
+    #[divan::bench(args = TURN_COUNTS)]
+    fn resolve_chain_subagents_passthrough(bencher: divan::Bencher, turns: usize) {
+        let mut config = config(true);
+        config.models[0].subagents =
+            Some(SubagentsConfig::Passthrough(PassthroughSubagentsConfig {
+                target: EFFICIENT_TARGET.to_string(),
+                by_type: BTreeMap::from([("Explore".to_string(), EFFICIENT_TARGET.to_string())]),
+            }));
         let request = request(ROUTER_MODEL, turns);
         let headers = child_headers();
         let store = StageStore::new();

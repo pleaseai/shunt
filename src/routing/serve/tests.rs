@@ -324,6 +324,7 @@ mod judge_fixture {
 
     fn mapped(id: &str, upstream_model: &str) -> ModelConfig {
         ModelConfig {
+            subagents: None,
             id: id.to_string(),
             display_name: None,
             upstream_model: Some(BTreeMap::from([(
@@ -358,6 +359,7 @@ mod judge_fixture {
         let mut config = Config {
             models: vec![
                 ModelConfig {
+                    subagents: None,
                     id: router_id.to_string(),
                     display_name: None,
                     upstream_model: None,

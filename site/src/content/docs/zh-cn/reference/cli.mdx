@@ -1,7 +1,23 @@
 ---
 title: CLI
-description: shunt 命令行 —— run、check、init、add、token、gateway login 和 provider login。
+description: shunt 命令行 —— run、check、init、add、import、token、gateway login 和 provider login。
 ---
+
+## `shunt import opencodex`
+
+离线读取兼容凭据并保存为新的私有快照，不覆盖现有设置、凭据文件或 OpenCodex 状态。请先预览；非交互式导出需要 `--yes`。
+
+```bash
+shunt import opencodex --dry-run
+shunt import opencodex --provider cursor
+shunt import opencodex --from /path/to/copied-opencodex --yes
+```
+
+导入 `anthropic`、`openai-chat` 和 `openai-responses` 传输的当前 API 密钥，以及 Cursor 或 Command Code 的当前订阅访问令牌（支持旧格式和多账户格式）。跳过过期、无效及不支持的记录。不复制刷新令牌或 Codex 账户池；其他订阅请单独登录。
+
+`--from` 指定源目录（默认依次为 `OPENCODEX_HOME`、`~/.opencodex`）。可重复使用 `--provider` 选择多个提供商；省略时选择所有兼容的当前凭据。`--output-dir` 指定快照父目录（默认 `~/.shunt/imports`）。每次创建唯一目录（0700）和 `credentials.env`（0600），保留以前的快照。导出仅支持 macOS/Linux。
+
+启动 Shunt 前，在 shell 中 source 输出的文件路径。Cursor 使用 `SHUNT_CURSOR_AUTH_TOKEN`。API 密钥及 Command Code 访问令牌变量为 `OPENAI_API_KEY`、`XAI_API_KEY`、`SHUNT_COMMANDCODE_API_KEY` 或 `SHUNT_IMPORTED_<PROVIDER>_API_KEY`（大写，连字符变为下划线）；请让现有配置的 `api_key_env` 与其匹配。不生成配置或路由。快照不会自动刷新，令牌过期后需重新导入。导入密钥不会启用 OpenCode Go 等尚未支持的提供商。
 
 ## `shunt run`
 

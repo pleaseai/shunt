@@ -149,7 +149,9 @@ POST /v1/messages   {"model": "claude-auto", ...}
 七个里有六个是信号标签。`llm-classifier` 只会出现在配置了下文
 [裁判回退](#裁判回退)的条目上,并且只出现在由裁判决定的那一轮;没有配置时,无法定夺的
 一轮仍然报告为 `fall_open`,也不会发出裁判调用。评分器还定义了 `ambiguous`,它不能出现
-在响应里。其他路由器类型有自己的标签(`random`、`random_session`、`noop`)。
+在响应里。其他路由器类型有自己的标签(`random`、
+`random_session`、`noop`),`[models.subagents]` 覆盖层也有自己的标签(命中 `by_type` 时
+是 `subagent_type`,回退到 `target` 时是 `subagent`)。
 
 没有路由器的模型 id 不会带上这两个头,这样"被路由到高效档位"与"根本没走路由器"才能
 区分开。`count_tokens` 探测不加这两个头:在尚未固定的会话上,探测按自己落后一轮的

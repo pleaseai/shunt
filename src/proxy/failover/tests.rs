@@ -789,6 +789,7 @@ fn single_route_config(provider: &str, model: &str, base_url: String) -> Config 
         ),
         router: None,
         stage_router: None,
+        subagents: None,
     }];
     config
 }
@@ -964,6 +965,7 @@ fn driven_state() -> AppState {
 
     fn mapped(id: &str, provider: &str) -> ModelConfig {
         ModelConfig {
+            subagents: None,
             id: id.to_string(),
             display_name: None,
             upstream_model: Some(BTreeMap::from([(
@@ -979,6 +981,7 @@ fn driven_state() -> AppState {
     config.providers.get_mut("anthropic").unwrap().auth = AuthMode::Passthrough;
     config.models = vec![
         ModelConfig {
+            subagents: None,
             id: "claude-auto".to_string(),
             display_name: None,
             upstream_model: None,

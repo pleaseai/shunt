@@ -26,7 +26,7 @@ Selectivity is decided in Claude Code itself, which already lets you choose a mo
 
 shunt just honors the model id it receives — no fragile per-agent system-prompt fingerprinting. That same selectivity reaches down to individual agents without shunt ever inspecting who the caller is.
 
-One model id can opt into deciding for itself: a [stage router](/guides/stage-router/) names a capable and an efficient target and picks between them per turn from the conversation's recent tool-result metadata — `tool_use.name` and `tool_result.is_error`, never prompt text. Configure no router and nothing changes.
+One model id can opt into deciding for itself: a [stage router](/guides/stage-router/) names a capable and an efficient target and picks between them per turn from the conversation's recent tool-result metadata — `tool_use.name` and `tool_result.is_error`, never prompt text. Any entry can also carry a [`[models.subagents]`](/reference/configuration/#modelssubagents-optional) overlay that sends delegated work to a different target while the parent session keeps its own. Configure neither and nothing changes.
 
 ## What shunt implements
 

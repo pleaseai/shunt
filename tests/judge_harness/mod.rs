@@ -116,6 +116,7 @@ pub(crate) fn api_key(name: &str, base_url: String, env: &str) -> UpstreamConfig
 
 pub(crate) fn alias(id: &str, upstream: &str, upstream_model: &str) -> ModelConfig {
     ModelConfig {
+        subagents: None,
         id: id.to_string(),
         display_name: None,
         upstream_model: Some(BTreeMap::from([(
@@ -164,6 +165,7 @@ pub(crate) fn driven_config_with(
     });
     config.models = vec![
         ModelConfig {
+            subagents: None,
             id: ROUTER_ID.to_string(),
             display_name: None,
             upstream_model: None,

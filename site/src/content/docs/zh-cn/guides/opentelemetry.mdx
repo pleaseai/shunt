@@ -60,7 +60,7 @@ authorization = "Bearer <token>"
 | `shunt.gateway_telemetry_ingest` | 计数器 | `signal`, `outcome` | 按接收结果统计入站网关 OTLP 载荷（`metrics`/`logs`/`traces`）：`relayed`；没有任何目标 opt-in 时为 `discarded`；在途中继上限饱和时为 `shed`；bearer 无效或 body 超限时为 `rejected`。 |
 | `shunt.upstream_retries` | 计数器 | `provider`, `reason` | 有次数限制的临时上游重试。 |
 | `shunt.failover` | 计数器 | `provider`, `state` | 有序上游故障转移状态：`attempted`、`advanced` 或 `exhausted`。 |
-| `shunt.router.decisions` | 计数器 | `model`, `algorithm`, `target`, `source` | 所有 [`[models.router]`](/zh-cn/reference/configuration/) `type` 的路由决策，按路由器的模型 id（匹配后的形式，`[1m]` 提示已剥离）、配置的 `type`、该决策解析到的模型 id 以及选中的原因计数。不含 `count_tokens` 探测。 |
+| `shunt.router.decisions` | 计数器 | `model`, `algorithm`, `target`, `source` | 所有 [`[models.router]`](/zh-cn/reference/configuration/) `type` 的路由决策，以及 [`[models.subagents]`](/zh-cn/reference/configuration/#modelssubagents可选) 覆盖层的决策（`algorithm = "subagents"`），按作出该决策的 `[[models]]` 条目 id（匹配后的形式，`[1m]` 提示已剥离）、配置的 `type`、该决策解析到的模型 id 以及选中的原因计数。不含 `count_tokens` 探测。 |
 | `shunt.stage_router.decisions` | 计数器 | `model`, `tier`, `source` | [阶段路由器](/zh-cn/guides/stage-router/)的档位决策，按路由器的模型 id（匹配后的形式，`[1m]` 提示已剥离）、选中的档位（`capable`/`efficient`）以及选中的原因计数。不含 `count_tokens` 探测。 |
 | `shunt.router.judge_calls` | 计数器 | `model`, `algorithm`, `outcome` | 配置了裁判的 [`[models.router]`](/zh-cn/reference/configuration/#modelsrouterclassifier可选) 条目发起的裁判调用，按路由器的模型 id、配置的 `type` 以及该次调用的结果计数：`decided`，或 `timeout`、`oversized`、`upstream_error`、`invalid_reply`、`translation_failed`、`budget_exhausted` 之一 —— 后几种都会把该轮路由到 picker 的默认值。 |
 | `shunt.stage_router.flips` | 计数器 | `model`, `from`, `to` | 把会话从已固定档位移开的决策。升档刻意比降档容易，因此两个方向分开计数。 |

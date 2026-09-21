@@ -82,13 +82,10 @@ pub(crate) struct RouterContext<'a> {
     pub agent_id: Option<&'a str>,
     /// `x-claude-code-request-class`, when sent and recognised.
     pub request_class: Option<RequestClass>,
-    /// `x-claude-code-agent-type`, as sent. Carried for the `[models.subagents]`
-    /// `by_type` map (ADR-0005 §11), which is a later PR in the §8 sequence;
-    /// nothing routes on it yet.
-    #[allow(
-        dead_code,
-        reason = "read by the `by_type` map in ADR-0005 §8 PR 3; carried now so the context is the §11 shape"
-    )]
+    /// `x-claude-code-agent-type`, as sent. The `[models.subagents]` `by_type`
+    /// key (ADR-0005 §11): matched against the map's keys byte-for-byte, so
+    /// `Explore` and `explore` are two types, and a project agent — sent as
+    /// `custom` with its name withheld — can match only `custom`.
     pub agent_type: Option<&'a str>,
     /// Whether this turn carries `x-claude-code-context-compacted`. The header
     /// is one-shot, so this is true on exactly one turn per compaction; the
