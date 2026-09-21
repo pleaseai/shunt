@@ -1,0 +1,19 @@
+docs/stage-router.md
+  s_1b5dd15adc2e9d::t_07d0aa9c65527e 432
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "51d6c5f571c2263740a6cbd3e1586e3301160235",
+  "prompts": {},
+  "sessions": {
+    "s_1b5dd15adc2e9d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "26148b48-ee8c-464c-9246-e7a6aa737b21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
