@@ -1,0 +1,40 @@
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_d1dd6433b8fa7f::t_c2bc69f9a3f391 221-227
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_d1dd6433b8fa7f::t_c2bc69f9a3f391 247-254
+site/src/content/docs/ja/reference/configuration.md
+  s_d1dd6433b8fa7f::t_a4155b7906c852 558-565
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_d1dd6433b8fa7f::t_a4155b7906c852 540-544
+docs/routing-algorithms.md
+  s_d1dd6433b8fa7f::t_0555104658ac84 487-489,494-504
+tests/router_judge.rs
+  s_d1dd6433b8fa7f::t_9f7322b20c1d2e 24-26,130-186
+  s_d1dd6433b8fa7f::t_56606eb01c6b12 187-188
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_d1dd6433b8fa7f::t_c2bc69f9a3f391 261-269
+site/src/content/docs/reference/configuration.md
+  s_d1dd6433b8fa7f::t_0555104658ac84 763-771
+site/src/content/docs/guides/stage-router.mdx
+  s_d1dd6433b8fa7f::t_0555104658ac84 273-281
+site/src/content/docs/ko/reference/configuration.md
+  s_d1dd6433b8fa7f::t_a4155b7906c852 574-581
+src/proxy/failover.rs
+  s_d1dd6433b8fa7f::t_df90b4ea4f6aab 125-143,145-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c810be72484910d9f1d10d2c70cfeee6ce0c5687",
+  "prompts": {},
+  "sessions": {
+    "s_d1dd6433b8fa7f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56a282fd-ead3-44d2-9507-651573da888e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
