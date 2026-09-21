@@ -858,7 +858,7 @@ checkpoint = "/models/router.pt"
 **What the operator has to supply.** The feature embeds Python through PyO3,
 so the build links libpython and the running gateway needs `torch`,
 `transformers`, `numpy`, and `accelerate` importable in the interpreter it
-embedded — set `PYO3_PYTHON` at build time to that interpreter (3.7 or newer,
+embedded — set `PYO3_PYTHON` at build time to that interpreter (3.10 or newer,
 with a shared libpython) rather than letting PyO3 take the first `python3` on
 `PATH`. It also needs a router checkpoint: Switchyard v0.3.0 ships no
 checkpoint, exporter, or encoder assets, so obtaining or training a compatible
@@ -906,9 +906,11 @@ A target that is itself a router, a blank target, a threshold outside
 `type` this build does not implement, or the same entry also declaring
 `[models.upstream_model]` is a startup error. On a `prefill_router` entry an
 empty `targets`, the same target listed twice, a blank `checkpoint`, and a
-`max_length` or `batch_size` of `0` are startup errors too — checked in every
-build, feature on or off, and repeated targets compared after the trailing
-`[1m]`/`[1M]` hint is stripped like every other target comparison. Two map-less entries may otherwise
+`max_length` or `batch_size` of `0` are startup errors too — those are what a
+build with the feature **on** reports, because a build without it refuses the
+entry by naming the missing cargo feature before any of them is reached; and
+repeated targets are compared after the trailing `[1m]`/`[1M]` hint is stripped
+like every other target comparison. Two map-less entries may otherwise
 share an id, but a router names a routing policy rather than discovery metadata,
 so a duplicate would leave two policies for one id. Target ids are compared
 after the trailing `[1m]`/`[1M]` hint is stripped, the same way routing matches

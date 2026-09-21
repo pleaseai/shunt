@@ -4413,10 +4413,11 @@ impl Config {
         if let RouterConfig::Random(random) = router {
             validate_random_router(model_id, random)?;
         }
-        // Checked in both builds, not just the one that can run it: a config
-        // authored against a release binary must get the same key-level
-        // verdict a from-source build gives, so a deployment does not discover
-        // its `targets` list is malformed only after it enables the feature.
+        // Compiled into both builds, but only reached by the one that can run
+        // the algorithm: the early return above refuses a `prefill_router`
+        // entry outright when the feature is off, so these key-level verdicts
+        // are what a from-source build reports and a release binary never gets
+        // as far as.
         if let RouterConfig::PrefillRouter(prefill) = router {
             validate_prefill_router(model_id, prefill)?;
         }

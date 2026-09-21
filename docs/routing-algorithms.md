@@ -473,7 +473,7 @@ The feature needs an interpreter, its packages, and a checkpoint.
 **Point pyo3 at the right interpreter.** Its build script takes whatever
 `python3` it finds first on `PATH`. On macOS with a pyenv shim in front that
 was a Python 3.6 and the build failed outright. Set `PYO3_PYTHON` to the
-interpreter whose environment actually has the packages — 3.7 or newer, with a
+interpreter whose environment actually has the packages — 3.10 or newer, with a
 shared libpython:
 
 ```sh

@@ -668,7 +668,7 @@ checkpoint = "/models/router.pt"
 **운영자가 직접 준비해야 하는 것.** 이 피처는 PyO3로 Python을 임베드하므로 빌드가
 libpython을 링크하고, 실행 중인 게이트웨이는 임베드한 인터프리터에서 `torch`,
 `transformers`, `numpy`, `accelerate`를 import할 수 있어야 합니다. 빌드할 때
-`PYO3_PYTHON`을 그 인터프리터(3.7 이상, 공유 libpython 포함)로 지정하세요. 지정하지 않으면
+`PYO3_PYTHON`을 그 인터프리터(3.10 이상, 공유 libpython 포함)로 지정하세요. 지정하지 않으면
 PyO3가 `PATH`에서 처음 찾은 `python3`를 씁니다. 라우터 체크포인트도 필요합니다. Switchyard
 v0.3.0은 체크포인트도, 익스포터도, 인코더 애셋도 제공하지 않으므로 호환되는 체크포인트를
 구하거나 학습시키는 일은 운영자의 몫입니다. 둘 중 하나라도 없으면 게이트웨이는 기동을
@@ -710,7 +710,8 @@ models entry <id> router type = "prefill_router" failed to load: <upstream error
 라우터 테이블을 가진 중복 `[[models]]` id, 이 빌드가 구현하지 않은 `type`, 같은 항목이
 `[models.upstream_model]`도 선언한 경우는 시작 오류입니다. `prefill_router` 항목에서는 빈 `targets`,
 같은 타깃을 두 번 적은 경우, 빈 `checkpoint`, `0`인 `max_length`나 `batch_size`도 시작
-오류입니다. 이 검사는 피처를 켜든 끄든 모든 빌드에서 이뤄지며, 중복 타깃은 다른 모든 타깃
+오류입니다. 이 검사들은 피처를 **켠** 빌드가 보고하는 것입니다. 피처가 없는 빌드는 그 검사에
+닿기 전에 빠진 cargo 피처를 알리며 항목을 거부하기 때문입니다. 중복 타깃은 다른 모든 타깃
 비교와 마찬가지로 끝의 `[1m]`/`[1M]` 힌트를 제거한 뒤 비교합니다. 맵이 없는 두 항목은 원래 같은
 id를 공유할 수 있지만, 라우터는 디스커버리 메타데이터가 아니라 라우팅 정책을 지정하므로
 중복되면 하나의 id에 두 정책이 남습니다. 타깃 id는 라우팅이 매칭하는 방식과 동일하게 끝의

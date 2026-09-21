@@ -9,7 +9,7 @@
 - Token helper: `cargo run -- token`
 - Learned prefill router (off by default, absent from release binaries):
   `cargo build --release --features prefill-router` (add `,ui` for the dashboard).
-  It embeds Python via pyo3, so set `PYO3_PYTHON` to an interpreter (>= 3.7, shared
+  It embeds Python via pyo3, so set `PYO3_PYTHON` to an interpreter (>= 3.10, shared
   libpython) whose environment has `torch`, `transformers`, `numpy`, and `accelerate`;
   pyo3 otherwise takes the first `python3` on `PATH`.
 

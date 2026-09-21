@@ -633,7 +633,7 @@ checkpoint = "/models/router.pt"
 
 **运维人员需要自备的东西。** 这个 feature 通过 PyO3 内嵌 Python,所以构建会链接 libpython,
 运行中的网关需要在它内嵌的解释器里能 import `torch`、`transformers`、`numpy` 和
-`accelerate`。构建时请把 `PYO3_PYTHON` 指向那个解释器(3.7 及以上,带共享 libpython),否则
+`accelerate`。构建时请把 `PYO3_PYTHON` 指向那个解释器(3.10 及以上,带共享 libpython),否则
 PyO3 会用 `PATH` 上找到的第一个 `python3`。此外还需要一个路由检查点:Switchyard v0.3.0 不附带
 检查点、导出器或编码器资源,所以获取或训练一个兼容的检查点是运维人员自己的事。两者缺一,网关
 都会拒绝启动;热重载时遇到同样的问题则会拒绝这次重载,保持正在运行的配置不变:
@@ -670,8 +670,9 @@ models entry <id> router type = "prefill_router" failed to load: <upstream error
 路由器 **id** 以 `[1m]` 或 `[1M]` 结尾、其中一项带有路由器表的重复 `[[models]]` id、本次构建
 尚未实现的 `type`，或同一条目同时声明了 `[models.upstream_model]`，都会导致启动错误。在 `prefill_router`
 条目上，空的 `targets`、同一个目标写了两次、空的 `checkpoint`，以及为 `0` 的 `max_length`
-或 `batch_size`，同样都会导致启动错误 —— 无论 feature 开或关，每种构建都会检查；重复目标也
-与其他所有目标比较一样，先去掉结尾的 `[1m]`/`[1M]` 提示再比较。不带
+或 `batch_size`，同样都会导致启动错误 —— 这些是开启该 feature 的构建才会报告的错误；没有
+该 feature 的构建会在触及其中任何一项之前，先以缺少的 cargo feature 为由拒绝该条目。重复
+目标也与其他所有目标比较一样，先去掉结尾的 `[1m]`/`[1M]` 提示再比较。不带
 映射的两个条目本可共用同一个 id，但路由器指定的是路由策略而非发现元数据，重复会让一个 id
 留下两份策略。目标 id 会先去掉结尾的 `[1m]` 或 `[1M]` 提示再比较，与路由的匹配方式一致；因此
 只要目标解析到一个自带路由器的条目，无论两者的 `type` 是什么都会被拒绝，这正是把解析限制在
