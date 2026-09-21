@@ -2543,7 +2543,7 @@ pub enum ConfigError {
         key: String,
         target: String,
     },
-    #[error("models entry {model} subagents by_type key {key:?} is blank or carries whitespace; keys are matched exactly against the x-claude-code-agent-type value, so it could never match")]
+    #[error("models entry {model} subagents by_type key {key:?} is blank, carries whitespace, or carries a byte outside visible ASCII; keys are matched exactly against the x-claude-code-agent-type header value, and no agent type on the wire is blank or carries whitespace, while a value carrying a byte outside visible ASCII is one the header parser drops entirely — either way the key could never match")]
     InvalidSubagentsType { model: String, key: String },
     #[error("models entry {model} has a subagents table but its id ends with a [1m] or [1M] context-window hint; clients strip that hint before model matching, so the entry is unreachable")]
     SubagentsContextWindowHint { model: String },
@@ -4486,7 +4486,12 @@ impl Config {
             });
         }
         for agent_type in subagents.agent_types() {
-            if agent_type.is_empty() || agent_type.chars().any(char::is_whitespace) {
+            if agent_type.is_empty()
+                || agent_type.chars().any(char::is_whitespace)
+                || agent_type
+                    .bytes()
+                    .any(|byte| !(0x20..=0x7e).contains(&byte))
+            {
                 return Err(ConfigError::InvalidSubagentsType {
                     model: model_id.to_string(),
                     key: agent_type.to_string(),

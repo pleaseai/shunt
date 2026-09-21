@@ -376,6 +376,30 @@ mod validation_tests {
         );
     }
 
+    /// A key outside visible ASCII can never match either, for a different
+    /// reason than whitespace: `HeaderValue::to_str` refuses the whole value,
+    /// so `RouterContext::from_headers` reads `agent_type` as absent and the
+    /// turn silently takes `target`. The operator meant some type, so reject it
+    /// at load like the blank and whitespace cases.
+    ///
+    /// Non-vacuity: drop the visible-ASCII byte check in `validate_subagents`
+    /// and this goes red while `a_by_type_key_with_interior_whitespace_is_rejected`
+    /// stays green.
+    #[test]
+    fn a_by_type_key_outside_visible_ascii_is_rejected() {
+        let mut host = mapped("claude-main");
+        host.subagents = Some(overlay(
+            "type = \"passthrough\"\ntarget = \"child\"\nby_type = { \"é\" = \"child\" }",
+        ));
+
+        let error = validate(vec![host, mapped("child")]).unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::InvalidSubagentsType { key, .. } if key == "é"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn a_blank_target_is_rejected_by_key() {
         let mut host = mapped("claude-main");
