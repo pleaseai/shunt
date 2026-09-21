@@ -1,0 +1,36 @@
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_d1dd6433b8fa7f::t_9701c1d414ffaf 551
+site/src/content/docs/ko/reference/configuration.md
+  s_d1dd6433b8fa7f::t_442cb079fbfb3d 585
+src/routing/serve/bounds.rs
+  s_d1dd6433b8fa7f::t_3b5453317bfabe 212-217
+  s_d1dd6433b8fa7f::t_b11de9144ccc5b 170
+  s_d1dd6433b8fa7f::t_b6a1bd7302eaa7 120-134,152-153,155-159
+  s_d1dd6433b8fa7f::t_1ec375383a249a 225-226,228-233,238-252,259-272,274-287
+site/src/content/docs/reference/configuration.md
+  s_d1dd6433b8fa7f::t_bfde23bf557ccd 774
+src/routing/serve/tests.rs
+  s_d1dd6433b8fa7f::t_e7d1becf521e93 8,10-15
+  s_d1dd6433b8fa7f::t_2bbbe36406e531 145-199
+  s_d1dd6433b8fa7f::t_090a2214681042 200
+site/src/content/docs/ja/reference/configuration.md
+  s_d1dd6433b8fa7f::t_aa7e6a2c77b270 570
+docs/routing-algorithms.md
+  s_d1dd6433b8fa7f::t_fe281e57c3f311 469
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "cc1021ccdc61494d14afed7d6b0ad5aaf131690e",
+  "prompts": {},
+  "sessions": {
+    "s_d1dd6433b8fa7f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56a282fd-ead3-44d2-9507-651573da888e",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
