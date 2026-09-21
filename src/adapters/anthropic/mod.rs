@@ -1103,7 +1103,19 @@ async fn relay_response(
     let body = if is_sse {
         // Keepalive pings apply only to SSE relays; the model rewrite scans just
         // the first frame and then passes through (a no-op when `alias` is None).
-        let stream = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias);
+        //
+        // The scan runs under the caller's cap when that is the smaller number.
+        // A judge target is not supposed to reach this branch at all —
+        // `routing::serve` strips `stream` — but a nonconforming upstream can
+        // answer `text/event-stream` anyway, and judge routes carry an alias,
+        // so without this a cap below 64 KiB would bound only the refusal in
+        // `collect_bounded` and not the buffering that precedes it.
+        let max_first_frame = model_rewrite::first_frame_ceiling(response_byte_cap);
+        let stream = model_rewrite::rewrite_first_model_stream(
+            upstream.bytes_stream(),
+            alias,
+            max_first_frame,
+        );
         Body::from_stream(keepalive::with_pings(
             stream,
             Duration::from_secs(state.config.server.sse_keepalive_seconds),
@@ -1557,23 +1569,28 @@ pub(crate) async fn chain_attempt(
         };
     }
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
-    let frames = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias)
-        .map(|chunk| {
-            chunk.map_err(|error| {
-                // A pre-terminal mid-relay body failure becomes the terminal
-                // SSE error event (the chain records the failure), never a
-                // silently truncated stream; once the terminal frame has
-                // relayed, the chain ends the relay silently.
-                serde_json::json!({
-                    "type": "error",
-                    "error": {
-                        "type": "api_error",
-                        "message": error.without_url().to_string()
-                    }
-                })
+    let frames = model_rewrite::rewrite_first_model_stream(
+        upstream.bytes_stream(),
+        alias,
+        // The client streaming chain carries no cap of its own.
+        model_rewrite::first_frame_ceiling(None),
+    )
+    .map(|chunk| {
+        chunk.map_err(|error| {
+            // A pre-terminal mid-relay body failure becomes the terminal
+            // SSE error event (the chain records the failure), never a
+            // silently truncated stream; once the terminal frame has
+            // relayed, the chain ends the relay silently.
+            serde_json::json!({
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": error.without_url().to_string()
+                }
             })
         })
-        .boxed();
+    })
+    .boxed();
     crate::proxy::chain_stream::Attempt::Winner {
         headers_at,
         relay: crate::proxy::chain_stream::RelayBuild::Ready {
