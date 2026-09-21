@@ -1,0 +1,36 @@
+docs/upstreams-failover.md
+  s_1b5dd15adc2e9d::t_2246882cc441df 305
+site/src/content/docs/ja/reference/configuration.md
+  s_1b5dd15adc2e9d::t_cf274f6caa2804 311
+  s_1b5dd15adc2e9d::t_f716b912e66924 319
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_1b5dd15adc2e9d::t_ed77bd851f861f 319
+  s_1b5dd15adc2e9d::t_cf274f6caa2804 311
+src/config.rs
+  s_1b5dd15adc2e9d::t_cf274f6caa2804 2546
+  s_1b5dd15adc2e9d::t_94e62400a47d1f 4491-4493
+  s_1b5dd15adc2e9d::t_9b60e1686b58b9 4489-4490,4494
+site/src/content/docs/ko/reference/configuration.md
+  s_1b5dd15adc2e9d::t_65651c5b4f7883 338
+  s_1b5dd15adc2e9d::t_cf274f6caa2804 330
+site/src/content/docs/reference/configuration.md
+  s_1b5dd15adc2e9d::t_fc27587e5f22fe 445,453
+src/config/subagents.rs
+  s_1b5dd15adc2e9d::t_42d9f6c70e906c 379-402
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e2f2f3840f040db77208b09d6489a3c79a6f8e03",
+  "prompts": {},
+  "sessions": {
+    "s_1b5dd15adc2e9d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "26148b48-ee8c-464c-9246-e7a6aa737b21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
