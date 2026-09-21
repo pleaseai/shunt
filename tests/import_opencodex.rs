@@ -247,14 +247,22 @@ fn empty_environment_source_falls_through_to_default_home() {
     fs::write(ocx.join("config.json"), key_config().to_string()).unwrap();
     fs::write(ocx.join("auth.json"), "{}").unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_shunt"))
-        .args(["import", "opencodex", "--yes", "--output-dir"])
-        .arg(&f.output)
-        .env("OPENCODEX_HOME", "")
-        .env("HOME", &isolated_home)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", transcript(&out));
-    let env = fs::read_to_string(&f.files()[0]).unwrap();
-    assert!(env.contains("SHUNT_IMPORTED_DEMO_API_KEY"));
+    // Empty and whitespace-only overrides are both "unset": neither may be
+    // taken as a working-directory-relative source path.
+    for blank in ["", " \t "] {
+        let out = Command::new(env!("CARGO_BIN_EXE_shunt"))
+            .args(["import", "opencodex", "--yes", "--output-dir"])
+            .arg(&f.output)
+            .env("OPENCODEX_HOME", blank)
+            .env("HOME", &isolated_home)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{blank:?}: {}", transcript(&out));
+    }
+    let files = f.files();
+    assert_eq!(files.len(), 2, "one snapshot per successful import");
+    for file in files {
+        let env = fs::read_to_string(file).unwrap();
+        assert!(env.contains("SHUNT_IMPORTED_DEMO_API_KEY"));
+    }
 }

@@ -37,11 +37,9 @@ pub(crate) struct Entry {
 pub fn run(options: Options) -> anyhow::Result<()> {
     let source = options
         .source
-        .or_else(|| {
-            std::env::var_os("OPENCODEX_HOME")
-                .filter(|p| !p.is_empty())
-                .map(PathBuf::from)
-        })
+        // Empty and whitespace-only values are unset, the same rule the
+        // accounts dir and gateway session store apply to their overrides.
+        .or_else(|| crate::auth::shared::env_path_override("OPENCODEX_HOME"))
         .or_else(|| crate::auth::shared::home_dir().map(|p| p.join(".opencodex")))
         .context("Cannot determine OpenCodex home; pass --from")?;
     let source = source
