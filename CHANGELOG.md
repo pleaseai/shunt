@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.47.0](https://github.com/pleaseai/shunt/compare/v0.46.0...v0.47.0) (2026-09-21)
+
+
+### Features
+
+* **routing:** [models.subagents] passthrough overlay with by_type (ADR-0005 PR 3) ([#630](https://github.com/pleaseai/shunt/issues/630)) ([3133854](https://github.com/pleaseai/shunt/commit/313385467bfd468587191536835d4bcb3643f142))
+* **routing:** dependency envelope, admission before drive, internal serve, per-call bounds (ADR-0005 PR 4) ([#632](https://github.com/pleaseai/shunt/issues/632)) ([e8df7c3](https://github.com/pleaseai/shunt/commit/e8df7c3cf41f6fc28136041927fb04c342bb1baf))
+
+
+### Bug Fixes
+
+* **claude:** send Claude Code's User-Agent on OAuth token requests ([#644](https://github.com/pleaseai/shunt/issues/644)) ([100c40e](https://github.com/pleaseai/shunt/commit/100c40e889aa7af9d11405c00d21ff7060a8813b))
+* **codex:** mark a terminal refresh rejection as needs_relogin ([#617](https://github.com/pleaseai/shunt/issues/617)) ([f2144dc](https://github.com/pleaseai/shunt/commit/f2144dc798b1833082976a3c73bfe6c9e723c348))
+* **cursor:** stop re-parsing user content as a tool-call id ([#583](https://github.com/pleaseai/shunt/issues/583)) ([122afc2](https://github.com/pleaseai/shunt/commit/122afc2cb8debbef23e041eb7109aa534ac08cd1))
+
 ## [0.46.0](https://github.com/pleaseai/shunt/compare/v0.45.1...v0.46.0) (2026-09-21)
 
 
