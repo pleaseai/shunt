@@ -946,10 +946,13 @@ A reload rebuilds the router, and the per-session affinity lives inside it, so
 a reload forgets which target each session was on.
 
 **Admission comes first.** The router is driven only after `[server.auth]` and
-the gateway's managed-model policy have admitted the request, and that check
-ranges over every target the entry names rather than the one it will pick — so
-an unauthenticated caller naming this id triggers no inference and seeds no
-affinity for the session id it sent.
+the gateway's managed-model policy have admitted the request. Inbound
+authentication ranges over every target the entry names rather than the one it
+will pick, so a caller must authenticate if any target injects a credential;
+the managed-model policy checks the requested id alone, so `availableModels`
+lists this id and never its private targets. An unauthenticated caller naming
+this id therefore triggers no inference and seeds no affinity for the session
+id it sent.
 
 **How a turn is decided.** Only `user` and `assistant` roles and only `text`
 and `tool_result` blocks are handed to the algorithm; it scores the latest text
