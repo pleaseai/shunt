@@ -1,0 +1,236 @@
+src/config.rs
+  s_0840f35f933bc3::t_0fff14eb1ef463 30-34,37,42-44
+  s_0840f35f933bc3::t_9dfbc868186732 2542,2579,2582,2586-2592,2595-2604,2606-2613,4514-4531,4573-4580,4600-4602,4639,4684-4689,4694,4758-4767,4774-4776,4805-4808,4812
+  s_0840f35f933bc3::t_614c94227d08cd 8563-8598,8634-8647
+  s_0840f35f933bc3::t_d35907c3ad9322 2594
+  s_0840f35f933bc3::t_8ad89b276b6234 9186,9217,9235,9419
+  s_0840f35f933bc3::t_f24ea6fc98ba5f 2593,2605,4768-4773
+src/config/router/validate.rs
+  s_0840f35f933bc3::t_3b52bc6de82ae5 1-74,76-111,113-157,159-247,252,254-266,271-312
+  s_0840f35f933bc3::t_a631b08f5698a0 75,112,158
+  s_0840f35f933bc3::t_f24ea6fc98ba5f 267-270
+  s_0840f35f933bc3::t_1eeacbb98016bc 248-251,253
+src/config/subagents/classifier.rs
+  s_0840f35f933bc3::t_ff9dd1973e5b17 1-75,83-153
+  s_0840f35f933bc3::t_ec849535d86dce 76-82
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_0840f35f933bc3::t_db406fcb005a64 348,351-376
+site/src/content/docs/ko/reference/configuration.md
+  s_0840f35f933bc3::t_2cc6d6cfa23cdf 606-674,676-764
+  s_0840f35f933bc3::t_3e1d51d1b7bd13 675
+  s_0840f35f933bc3::t_f414447d4869d4 994-995,1035-1083
+  s_0840f35f933bc3::t_05f8dbfd1a04a4 443-444,446-451,558,586-591
+  s_0840f35f933bc3::t_9356dc509351ad 1084
+src/config/router/composite.rs
+  s_0840f35f933bc3::t_fe5d3d58b7b6ad 1-46,53-172
+  s_0840f35f933bc3::t_ec849535d86dce 47-52
+src/routing/context.rs
+  s_0840f35f933bc3::t_3ebe5a4f21ada9 164-206
+src/model/responses_request.rs
+  s_0840f35f933bc3::t_5f052e200d90c4 1056
+  s_0840f35f933bc3::t_f400ebf53d5fef 205-240
+  s_0840f35f933bc3::t_007d0a0bb2298c 1093-1169
+site/src/content/docs/reference/configuration.md
+  s_0840f35f933bc3::t_7eb457e06234e4 625-626,628-631,634
+  s_0840f35f933bc3::t_3e1d51d1b7bd13 868
+  s_0840f35f933bc3::t_e0049baf79000d 796-867,869-964
+  s_0840f35f933bc3::t_8d22f040c1621f 1214-1215
+  s_0840f35f933bc3::t_7e62576be4a22c 1259-1312
+  s_0840f35f933bc3::t_8263910a7d954b 745
+  s_0840f35f933bc3::t_3494ac50d7d3b0 775-780
+tests/judge_harness/driven.rs
+  s_0840f35f933bc3::t_4f29b698dd6c5e 15
+  s_0840f35f933bc3::t_6d221eac6fff86 1-14,16-361
+src/config/subagents/tests.rs
+  s_0840f35f933bc3::t_e9b48e4fc32978 1-4,6-13,20-31,33-53,55-56,61-62,139,143,151,167-194,196,205-206,208-209,211
+  s_0840f35f933bc3::t_f24ea6fc98ba5f 57-60,141-142,197-204
+  s_0840f35f933bc3::t_f224973e91f7dc 5
+  s_0840f35f933bc3::t_0f598526d6e5d8 63-138,140,144-150,152-166
+  s_0840f35f933bc3::t_0d8213f8b6d32f 14-19,32,54,195,207,210
+src/server.rs
+  s_0840f35f933bc3::t_cb00b2c43aaed5 62-66,124
+src/routing.rs
+  s_0840f35f933bc3::t_f24ea6fc98ba5f 872
+  s_0840f35f933bc3::t_3e4bfba7e89146 11
+  s_0840f35f933bc3::t_22583b62ecb0e4 161-176,183-188
+  s_0840f35f933bc3::t_1ef899a75a49b1 228-232
+  s_0840f35f933bc3::t_eb7f702961552a 233-248
+src/config/subagents/validation_tests.rs
+  s_0840f35f933bc3::t_92ac0e93018710 273-285,287,374-378
+  s_0840f35f933bc3::t_65c2604cf558d5 12,228-272,286,288-373,379-417
+  s_0840f35f933bc3::t_f24ea6fc98ba5f 117
+  s_0840f35f933bc3::t_e9b48e4fc32978 1-11,13-116,118-227,418
+src/config/subagents.rs
+  s_0840f35f933bc3::t_1f6d6c944344e7 11-21,38-39,65-81,85-87,90-95,97,101-102,116,120-121,123-127,129-130,134-140,146-150,154-158,162-164,166,168-169,171-172
+  s_0840f35f933bc3::t_f24ea6fc98ba5f 82-84,141-143
+src/routing/outcome.rs
+  s_0840f35f933bc3::t_9c6816d7c18734 65-79,101-103,126-128
+  s_0840f35f933bc3::t_1ef899a75a49b1 57-64,100,125
+src/routing/stage.rs
+  s_0840f35f933bc3::t_6324e608f9e3ca 205-209,211-231,324
+  s_0840f35f933bc3::t_dc165a6799c6ea 286,299-323
+  s_0840f35f933bc3::t_4f31b3433f11fe 293
+  s_0840f35f933bc3::t_41ded88e4250ab 283-285
+  s_0840f35f933bc3::t_9769fa519a2d01 287
+  s_0840f35f933bc3::t_6db8c2ced8ad83 325
+  s_d54f80d6ab0dc1::t_88f8d4a64a6427 32,276-282
+src/routing/driven/build.rs
+  s_0840f35f933bc3::t_65e5ecc2fe80da 18-20,28,35
+  s_0840f35f933bc3::t_4f29b698dd6c5e 23-26,237-240,261
+  s_0840f35f933bc3::t_ed573dcd877fd3 230-236,241,300-302,304,321-331
+  s_0840f35f933bc3::t_d9e71fe34a69a9 1-17,21-22,27,29-34,36-42,44-51,53-193
+  s_0840f35f933bc3::t_b98ac62dd0055d 43,52
+  s_0840f35f933bc3::t_3d86cf35bb952c 194-229,242-260,262-299,303,305-320,332-353
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_0840f35f933bc3::t_32bc6bda21cb94 271-274
+README.ja.md
+  s_0840f35f933bc3::t_82a1f728e36ff0 198
+  s_0840f35f933bc3::t_61dbfa7a270e6a 230
+src/routing/serve/tests.rs
+  s_0840f35f933bc3::t_8ad89b276b6234 387
+src/routing/envelope.rs
+  s_0840f35f933bc3::t_de4f8b08fde5d7 51-84,243
+  s_0840f35f933bc3::t_4e98a611732f51 199-242
+  s_0840f35f933bc3::t_8ad89b276b6234 126
+  s_0840f35f933bc3::t_8189813446359c 244
+src/proxy/failover/tests.rs
+  s_0840f35f933bc3::t_8ad89b276b6234 992
+site/src/content/docs/guides/stage-router.mdx
+  s_0840f35f933bc3::t_32bc6bda21cb94 300-304
+src/routing/prefill/driven.rs
+  s_0840f35f933bc3::t_2c7f0469eb0811 14,18,118
+README.ko.md
+  s_0840f35f933bc3::t_5123dac8fdad20 199
+  s_0840f35f933bc3::t_e90c76945a2afe 231
+src/config/router.rs
+  s_0840f35f933bc3::t_8d12479e99502f 22-23,27,33-39,41-51,83-87,103-112,123-124,151-155,162,167,169-170,184-193,219-245
+  s_0840f35f933bc3::t_f24ea6fc98ba5f 217-218
+src/routing/subagents.rs
+  s_0840f35f933bc3::t_de4f8b08fde5d7 40-45
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_0840f35f933bc3::t_aab762eac34eaa 420-421,423-427,529,550-553
+  s_0840f35f933bc3::t_50630ea6ef8db7 569-635,637-720
+  s_0840f35f933bc3::t_69910ace04eae1 933-934,968-1014
+  s_0840f35f933bc3::t_3e1d51d1b7bd13 636
+  s_0840f35f933bc3::t_0f59c980d1bcf6 1015
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_0840f35f933bc3::t_32bc6bda21cb94 288-292
+src/routes.rs
+  s_0840f35f933bc3::t_8e19a9ce8b0e8b 166
+  s_0840f35f933bc3::t_90a5e196b42e11 133-134,147-159,162,164
+  s_0840f35f933bc3::t_af3f39cfdba131 165
+src/routing/driven.rs
+  s_0840f35f933bc3::t_b98ac62dd0055d 64
+  s_0840f35f933bc3::t_4f29b698dd6c5e 50
+  s_0840f35f933bc3::t_def6fe719b7a1f 1-49,51-63,65-162
+src/proxy/failover.rs
+  s_0840f35f933bc3::t_2d831ef44a8c44 144-148,150,154-161
+  s_0840f35f933bc3::t_4f29b698dd6c5e 151-153,251-253
+  s_0840f35f933bc3::t_8be8ccc6e14074 245-250,254-288
+  s_0840f35f933bc3::t_17bad7826b3881 191-195
+benches/stage_router.rs
+  s_0840f35f933bc3::t_8ad89b276b6234 441
+  s_0840f35f933bc3::t_3ceb2dd39a67e4 62-64,499-547
+src/routing/stage/tests.rs
+  s_0840f35f933bc3::t_8ad89b276b6234 230
+  s_0840f35f933bc3::t_d35907c3ad9322 294-330
+src/routing/driven/tests.rs
+  s_0840f35f933bc3::t_a88b39220f8b81 15-16
+  s_0840f35f933bc3::t_4f29b698dd6c5e 82,106-109,124-127,189-193,195-198,207-211
+  s_0840f35f933bc3::t_d0330f04f60cee 1-14,17-81,83-105,110-123,128-188,194,199-206,212-268
+src/config/router/bounds.rs
+  s_0840f35f933bc3::t_8d12479e99502f 93,97,101,105,109,113,162
+  s_0840f35f933bc3::t_965f6d39e72ad7 86-92,94-95,98-100,102-104,106-108,110,112,114-161,163-164
+site/src/content/docs/guides/switchyard.mdx
+  s_0840f35f933bc3::t_2283b4d5405300 351,354-379
+src/config/router/stage.rs
+  s_0840f35f933bc3::t_964d82af094011 16-20,149-160
+  s_0840f35f933bc3::t_d0b6c15e4f92c4 295,297-301
+src/config/router/classifier.rs
+  s_0840f35f933bc3::t_e44b83bca34224 1-70,72-176,190-311
+  s_0840f35f933bc3::t_8d12479e99502f 71
+  s_0840f35f933bc3::t_dfebbce2ac7ebf 177-189
+docs/routing-algorithms.md
+  s_0840f35f933bc3::t_f843de5725573f 944-946
+  s_0840f35f933bc3::t_6d921c34a2297c 342-344
+  s_0840f35f933bc3::t_33972818ff263e 605-611
+  s_0840f35f933bc3::t_898efb9b1d9708 823
+  s_0840f35f933bc3::t_dc398bd540cda4 786-791
+  s_0840f35f933bc3::t_f032fd972c5253 94-95
+  s_0840f35f933bc3::t_ac7dfb7274ab1d 794-822,824-943,947-1064,1066-1069,1078-1090,1094-1104,1108,1112-1148
+  s_0840f35f933bc3::t_9a1afc9abf22f0 1065,1070-1077,1105-1107,1109-1111
+  s_0840f35f933bc3::t_56c23a8d63cd40 1091-1093
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_0840f35f933bc3::t_db406fcb005a64 306,309-330
+src/config/router/composite/tests.rs
+  s_0840f35f933bc3::t_4bfcb0e3b7feb1 1-61,64-232
+  s_0840f35f933bc3::t_f24ea6fc98ba5f 62-63
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_0840f35f933bc3::t_eb4d0e87b27776 332,335-357
+src/routes/tests.rs
+  s_0840f35f933bc3::t_2723fe3b4b7d99 57
+  s_0840f35f933bc3::t_8e19a9ce8b0e8b 1-56,58-387
+src/routing/driven/budget.rs
+  s_0840f35f933bc3::t_394aee5c5d7d2c 1-109
+src/reload.rs
+  s_0840f35f933bc3::t_cb00b2c43aaed5 51-63,84-88,95
+site/src/content/docs/ja/reference/configuration.md
+  s_0840f35f933bc3::t_1ae2042a85d89a 423-424,426-429,540,569-574
+  s_0840f35f933bc3::t_d3019732119bb6 590-658,660-752
+  s_0840f35f933bc3::t_b6c5fd88bbe5ce 994-995,1038-1090
+  s_0840f35f933bc3::t_3e1d51d1b7bd13 659
+  s_0840f35f933bc3::t_002babac91127c 1091
+tests/judge_harness/mod.rs
+  s_0840f35f933bc3::t_8f45bec5b13cfd 7-8
+  s_0840f35f933bc3::t_8ad89b276b6234 189
+README.md
+  s_0840f35f933bc3::t_0a6916444e80e5 230
+  s_0840f35f933bc3::t_6967369c43eb7c 198
+README.zh-CN.md
+  s_0840f35f933bc3::t_9160e8b1f25383 196
+  s_0840f35f933bc3::t_e43275316336d8 228
+src/config/router/classifier/tests.rs
+  s_0840f35f933bc3::t_ec849535d86dce 58,66,222,235,249,259,269,281,288-291,299,310,323,338,354,371,390,409
+  s_0840f35f933bc3::t_f24ea6fc98ba5f 17-18,140
+  s_0840f35f933bc3::t_ff3279eecac50a 1-16,19-57,59-65,67-139,141-221,223-234,236-248,250-258,260-268,270-280,282-287,292-298,300-309,311-322,324-337,339-353,355-370,372-389,391-408,410-430
+tests/driven_lane.rs
+  s_0840f35f933bc3::t_fda7aefd21b6ff 31,33-34,54,59,78,82
+  s_0840f35f933bc3::t_4f29b698dd6c5e 162-165
+  s_0840f35f933bc3::t_7ba92b00bb79bf 1-30,35-44,47-53,55-58,60-77,79-81,83-161,166-395
+  s_0840f35f933bc3::t_a649634a794db8 32,45-46
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_0840f35f933bc3::t_32bc6bda21cb94 243-245
+src/routing/driven/drive.rs
+  s_0840f35f933bc3::t_6a386c4a1f8e5e 127
+  s_0840f35f933bc3::t_4f29b698dd6c5e 173-177
+  s_0840f35f933bc3::t_6e03842cd12903 13,52
+  s_0840f35f933bc3::t_81aa14703acaa7 1-12,14-21,23-51,53-126,128-135,137-172,178-235
+  s_0840f35f933bc3::t_b98ac62dd0055d 22
+  s_0840f35f933bc3::t_5c66d4de75be1a 136
+tests/driven_lane/overlay.rs
+  s_0840f35f933bc3::t_fda7aefd21b6ff 1-285
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3f8018fd755e81d7d65342cbc8f2cfc37f658242",
+  "prompts": {},
+  "sessions": {
+    "s_0840f35f933bc3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ac68b82c-5bb6-4222-8911-d96a53da74e2",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_d54f80d6ab0dc1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a5d57118e7ec419b0",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
