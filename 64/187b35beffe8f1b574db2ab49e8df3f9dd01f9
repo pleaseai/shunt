@@ -1,0 +1,19 @@
+src/adapters/cursor/agent.rs
+  s_ac3db44ed233ca::t_a4a264cdfb9562 1496,1514,1516-1520
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "64187b35beffe8f1b574db2ab49e8df3f9dd01f9",
+  "prompts": {},
+  "sessions": {
+    "s_ac3db44ed233ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "989a3680-62e2-403a-8407-cae400bfa87b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
