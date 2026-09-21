@@ -4755,25 +4755,6 @@ impl Config {
             .stage_classifier()
     }
 
-    /// The driven `[models.router]` table of a `[[models]]` entry, looked up by
-    /// its advertised id.
-    ///
-    /// The whole table rather than a payload, because the request path reads
-    /// three things off it — the algorithm label, the fail-open target, and the
-    /// bounds — and they must come from one lookup. `None` for every id that
-    /// names no entry, names one with no router, or names a router on the pure
-    /// lane. `id` is expected already stripped of a `[1m]` hint, the same
-    /// normalization `resolve_chain` matches on.
-    pub fn driven_router(&self, id: &str) -> Option<&RouterConfig> {
-        let router = self
-            .models
-            .iter()
-            .find(|model| model.id == id)?
-            .router
-            .as_ref()?;
-        router.is_driven().then_some(router)
-    }
-
     /// Warns once at load for every `[models.router]` target or judge — of any
     /// type — that matches no `[[models]]`, `[[routes]]`, or
     /// `[[route_prefixes]]` entry.

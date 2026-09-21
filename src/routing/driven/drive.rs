@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use axum::http::HeaderMap;
-use switchyard_libsy::{drive as libsy_drive, DecisionSource, RoutingOutcome};
+use switchyard_libsy::{drive as libsy_drive, DecisionSource, LibsyError, RoutingOutcome};
 use switchyard_protocol::Request;
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
@@ -50,9 +50,16 @@ pub(crate) async fn drive(
 ) -> DrivenDecision {
     let metadata = libsy_metadata(headers);
     let key = JudgeBudget::key(metadata.session_id.as_deref(), metadata.agent_id.as_deref());
-    // Checked before the call is charged, so the budget is a ceiling on calls
-    // made rather than on calls attempted — the same reading the stage lane's
-    // budget has.
+    // A fast path only: it keeps a turn whose budget is already spent from
+    // decoding a body and constructing a drive it cannot pay for, and it is
+    // what emits the `budget_exhausted` label. The reservation inside the call
+    // closure below is the authoritative one — this read and that write are
+    // separate critical sections, so this check alone could not bound anything.
+    //
+    // Known limitation, tracked separately: a drive that would have consulted
+    // no judge at all (the `new_session` and `user_turn` triggers replaying an
+    // affinity assignment) is rejected here too, so a session that has spent
+    // its budget loses the assignment it already paid for and falls open.
     if entry.budget.used(key.as_ref()) >= entry.bounds.max_judge_calls {
         return fail_open(entry, "budget_exhausted");
     }
@@ -80,6 +87,9 @@ pub(crate) async fn drive(
 
     let bounds = entry.bounds;
     let failure: Mutex<Option<JudgeFailure>> = Mutex::new(None);
+    // Borrowed once: the call closure below is an `async move`, so naming
+    // `failure` inside it would move the mutex the label reader still needs.
+    let failure = &failure;
     // The real deadline is inside `judge_call`, which is where the upstream
     // request can be cancelled. This outer one guards only against the
     // algorithm itself never terminating, so it is the inner budget plus a
@@ -91,10 +101,30 @@ pub(crate) async fn drive(
             neutral,
             entry.models.clone(),
             |call| {
-                // Charged per `CallModel`, not per drive: upstream makes one
-                // today, and a future rev that made two must spend two.
-                entry.budget.charge(key.as_ref());
-                judge_call(state.clone(), admitted, call, bounds, &failure)
+                // Reserved per `CallModel`, not per drive: upstream makes one
+                // today, a future rev that made two must spend two, and an
+                // algorithm that chains judges past the budget is refused the
+                // call rather than charged for it afterwards. The reservation
+                // is atomic, so two turns racing on this key cannot both take
+                // the last one.
+                let reserved = entry
+                    .budget
+                    .try_charge(key.as_ref(), bounds.max_judge_calls);
+                async move {
+                    if !reserved {
+                        // libsy folds a refused call into "no verdict" and
+                        // closes its own cascade. Which target that lands on is
+                        // the algorithm's to decide — the classifier forms
+                        // close on their `default_target`, a composite on its
+                        // picker — so this refusal reports no destination of
+                        // its own, exactly as a judge that answered nothing
+                        // usable does.
+                        return call.respond(Err(LibsyError::AlgorithmError {
+                            message: "max_judge_calls is spent for this session".to_string(),
+                        }));
+                    }
+                    judge_call(state.clone(), admitted, call, bounds, failure).await
+                }
             },
         ),
     )

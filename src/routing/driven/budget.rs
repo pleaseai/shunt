@@ -75,18 +75,38 @@ impl JudgeBudget {
         self.lock().get(key).copied().unwrap_or(0)
     }
 
-    /// Charge one call. A no-op for an untracked request.
-    pub(crate) fn charge(&self, key: Option<&BudgetKey>) {
+    /// Reserve one call against `max`, or refuse when this key has none left.
+    ///
+    /// **Check and increment happen under one lock.** A `used()` read followed
+    /// by a separate `charge()` write is two critical sections with the judge's
+    /// round trip between them, so two turns racing on the same key could both
+    /// see the last slot free and both spend it — overshooting the ceiling by
+    /// one per racing turn. That is the bound ADR-0005 §3 puts on a session, so
+    /// the reservation is the write that decides it.
+    ///
+    /// Reserving per `CallModel` rather than per drive is also what bounds an
+    /// algorithm that *chains* judges — the composite and subagents-classifier
+    /// forms — inside a single drive: the second call of a drive whose budget
+    /// is down to one is refused here rather than counted after the fact.
+    ///
+    /// An untracked request (no session id) is always admitted: it has no key
+    /// to accumulate against, and the per-request allowance described in the
+    /// module docs is what it gets instead.
+    pub(crate) fn try_charge(&self, key: Option<&BudgetKey>, max: u32) -> bool {
         let Some(key) = key else {
-            return;
+            return true;
         };
         let mut used = self.lock();
+        if used.get(key).copied().unwrap_or(0) >= max {
+            return false;
+        }
         if used.len() >= HARD_CAP && !used.contains_key(key) {
             // Documented above: the cap is the property, not the eviction
             // order. Cleared before the insert so the new key is the survivor.
             used.clear();
         }
         *used.entry(*key).or_insert(0) += 1;
+        true
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<BudgetKey, u32>> {
