@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-issue-fixer/MEMORY.md
+  s_d1dd6433b8fa7f::t_06fd30a14c7e04 6-7
+.please/docs/review/rejected-findings.jsonl
+  s_d1dd6433b8fa7f::t_ecb1d026a0a60b 90-91
+.claude/agent-memory/review-review-issue-fixer/sse-framing-must-be-stream-stateful.md
+  s_d1dd6433b8fa7f::t_47b49478c9ecb6 1-27
+.claude/agent-memory/review-review-issue-fixer/shunt-judge-byte-cap-class.md
+  s_d1dd6433b8fa7f::t_b85981e35dcaf7 1-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "08369b155c703fcaa74f5c47811c8cbd8326e11d",
+  "prompts": {},
+  "sessions": {
+    "s_d1dd6433b8fa7f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56a282fd-ead3-44d2-9507-651573da888e",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
