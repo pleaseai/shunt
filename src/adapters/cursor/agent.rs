@@ -913,12 +913,21 @@ fn extract_unbridged_builtin_tool_call(payload: &[u8]) -> Option<u64> {
 /// The prefix is matched on raw bytes. A length-delimited field is not required
 /// to decode as UTF-8 for its `tool_` prefix to count, which avoids running a
 /// full UTF-8 validation over every field of every frame on the streaming path.
+///
+/// A direct field can also carry user content rather than an id -- the path or
+/// body a built-in read or write operates on -- and that content may itself
+/// begin with `tool_`. Only fields no longer than [`MAX_TOOL_CALL_ID_LEN`]
+/// count, the same bound the bridged path puts on `McpArgs.tool_call_id`: a
+/// captured id is `tool_<uuid>`, 41 bytes, and file contents that start with
+/// `tool_` and still fit in 512 bytes remain the one shape this scan cannot
+/// tell from an id without the field-position knowledge the measurements
+/// above ruled out.
 fn contains_tool_call_id(buf: &[u8]) -> bool {
     for field in iter_fields(buf) {
         if field.wire != 2 {
             continue;
         }
-        if field.data.starts_with(b"tool_") {
+        if field.data.len() <= MAX_TOOL_CALL_ID_LEN && field.data.starts_with(b"tool_") {
             return true;
         }
     }
@@ -979,8 +988,12 @@ fn decode_mcp_args(buf: &[u8]) -> Option<(String, String, Option<String>)> {
 }
 
 /// Longest `McpArgs.tool_call_id` shunt will echo onto the Anthropic `tool_use`
-/// id. Observed ids are `tool_<uuid>`; the cap bounds what an upstream can push
-/// into a client-visible field. A longer id is treated as absent, not fatal.
+/// id, and the longest direct field the unbridged built-in scan
+/// ([`contains_tool_call_id`]) will read as a call id. Observed ids are
+/// `tool_<uuid>`; the cap bounds what an upstream can push into a
+/// client-visible field, and on the unbridged scan it excludes only content
+/// longer than the cap -- a shorter field that begins with `tool_` still
+/// counts. A longer id is treated as absent, not fatal.
 const MAX_TOOL_CALL_ID_LEN: usize = 512;
 
 /// Maximum `google.protobuf.Value` nesting shunt will decode. Bounds recursion
@@ -1476,6 +1489,34 @@ mod tests {
             extract_unbridged_builtin_tool_call(&payload),
             None,
             "file content must not be re-parsed as a tool call"
+        );
+    }
+
+    #[test]
+    fn direct_content_beginning_with_tool_prefix_is_not_a_tool_call() {
+        // The direct fields of a built-in call carry its arguments as well as
+        // its id, and an argument can be file content that itself begins with
+        // `tool_` -- a module whose first line is `tool_registry = {}`. The
+        // prefix alone cannot tell that apart from an id; the length can, since
+        // a captured id is `tool_<uuid>` and the scan shares the bridged path's
+        // MAX_TOOL_CALL_ID_LEN cap. Content past that cap is not an id, and the
+        // same shape at id length still is, so the cap narrows without leaking.
+        let mut content = String::from("tool_registry = {}\n");
+        while content.len() <= super::MAX_TOOL_CALL_ID_LEN {
+            content.push_str("# ...\n");
+        }
+        let payload = field_ld(2, &field_ld(7, &field_str(1, &content)));
+        assert_eq!(
+            extract_unbridged_builtin_tool_call(&payload),
+            None,
+            "long content beginning with tool_ must not be read as a call id"
+        );
+
+        let payload = field_ld(2, &field_ld(7, &field_str(1, "tool_registry = {}\n")));
+        assert_eq!(
+            extract_unbridged_builtin_tool_call(&payload),
+            Some(7),
+            "an id-length tool_ field is still detected: the cap is the only narrowing"
         );
     }
 
