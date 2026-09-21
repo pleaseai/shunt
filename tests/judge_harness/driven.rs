@@ -237,6 +237,47 @@ efficient_target = "efficient-alias"
 confidence_threshold = 0.5
 "#;
 
+/// The same composite, budgeted to a single call per `(session, agent)`.
+///
+/// The composite is one of the two forms that can put a judge ahead of another
+/// decision, so `max_judge_calls` has to bind here and not only on the plain
+/// classifier entry.
+pub(crate) const COMPOSITE_ROUTER_ONE_CALL: &str = r#"
+type = "composite"
+judge_timeout_ms = 500
+max_judge_calls = 1
+
+[classifier]
+target = "judge-a"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[stage]
+capable_target = "capable-alias"
+efficient_target = "efficient-alias"
+confidence_threshold = 0.5
+"#;
+
+/// The overlay, budgeted to a single call and asked to classify every turn.
+///
+/// `new_session` would cap the overlay at one judge call per `(session, agent)`
+/// on its own, which would make a `max_judge_calls` test vacuous — the trigger,
+/// not the budget, would be the thing refusing the second call. `every_request`
+/// is what leaves the budget as the only bound in play. It is an accepted
+/// trigger for this table; only `user_turn` is refused for a sub-agent overlay.
+pub(crate) const CLASSIFIER_OVERLAY_ONE_CALL: &str = r#"
+type = "llm_classifier"
+mode = "custom"
+default_target = "efficient"
+prompt = "Reply with the group that should serve this delegated turn."
+response_schema = '{"type":"object","properties":{"target":{"type":"string","enum":["capable","efficient"]}},"required":["target"],"additionalProperties":false}'
+classify_trigger = "every_request"
+policy = { type = "target_selector", selector = "/target" }
+models = { judge = ["judge-a"], capable = ["capable-alias"], efficient = ["efficient-alias"], any = ["capable-alias", "efficient-alias"] }
+judge_timeout_ms = 500
+max_judge_calls = 1
+"#;
+
 /// The classifier form of `[models.subagents]`: one classification per
 /// `(session, agent)`, which is what `classify_trigger = "new_session"` means
 /// for an overlay.

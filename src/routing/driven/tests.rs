@@ -9,8 +9,10 @@
 //! `a_classifier_close_and_a_composite_fall_open_read_differently` goes red;
 //! delete the `entry.targets` membership check in `decide` and
 //! `a_verdict_outside_the_target_set_falls_open` goes red on the target as
-//! well as the outcome label; drop the `used.clear()` in `JudgeBudget::charge`
-//! and `the_budget_map_is_bounded` goes red on the map's size.
+//! well as the outcome label; drop the `used.clear()` in
+//! `JudgeBudget::try_charge` and `the_budget_map_is_bounded` goes red on the
+//! map's size; drop that method's `>= max` early return and
+//! `the_budget_refuses_a_key_that_is_at_its_cap` goes red on its second call.
 
 use switchyard_libsy::{DecisionSource, OutcomeMetadata, RoutingOutcome};
 use switchyard_protocol::{ModelId, Request};
@@ -242,11 +244,70 @@ fn the_budget_keys_on_session_and_agent() {
 
     let budget = JudgeBudget::new();
     assert_eq!(budget.used(Some(&child)), 0);
-    budget.charge(Some(&child));
+    assert!(budget.try_charge(Some(&child), 8));
     assert_eq!(budget.used(Some(&child)), 1);
     assert_eq!(budget.used(Some(&sibling)), 0, "the charge is scoped");
-    budget.charge(None);
+    assert!(
+        budget.try_charge(None, 8),
+        "an untracked turn is always admitted"
+    );
     assert_eq!(budget.used(None), 0, "an untracked turn writes nothing");
+}
+
+/// The reservation refuses once the key is at its cap, which is the half of
+/// `max_judge_calls` a single drive can observe: an algorithm that chains a
+/// second judge inside one drive is told no rather than charged after the fact.
+///
+/// Non-vacuity: drop the `>= max` early return in `try_charge` and this goes
+/// red on the second call.
+///
+/// The concurrent arm below is a **guard, not a reproduction**. The race the
+/// atomic reservation closes spans the drive — the old code read `used()` in
+/// `drive()` and charged only once libsy invoked the call closure, with the
+/// decode and the algorithm's own setup in between — so it is not observable
+/// from two adjacent calls to this method. A non-atomic `try_charge` was
+/// measured to keep this arm green, so it is here to pin the invariant against
+/// a future rewrite that widens the window, and it is deliberately not claimed
+/// as the test that would have caught the original defect.
+#[test]
+fn the_budget_refuses_a_key_that_is_at_its_cap() {
+    const THREADS: usize = 16;
+    const MAX: u32 = 4;
+
+    let budget = JudgeBudget::new();
+    let key = JudgeBudget::key(Some("session-a"), Some("agent-1")).expect("a keyed child");
+
+    assert!(budget.try_charge(Some(&key), 1), "the first call fits");
+    assert!(
+        !budget.try_charge(Some(&key), 1),
+        "the second call is past the cap and must be refused"
+    );
+    assert_eq!(
+        budget.used(Some(&key)),
+        1,
+        "a refused reservation writes nothing"
+    );
+
+    let racing = JudgeBudget::new();
+    let barrier = std::sync::Barrier::new(THREADS);
+    let admitted = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..THREADS {
+            scope.spawn(|| {
+                barrier.wait();
+                if racing.try_charge(Some(&key), MAX) {
+                    admitted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+        }
+    });
+
+    assert_eq!(
+        admitted.load(std::sync::atomic::Ordering::Relaxed),
+        MAX as usize,
+        "{THREADS} racing turns must not spend more than the cap"
+    );
+    assert_eq!(racing.used(Some(&key)), MAX, "and the count agrees");
 }
 
 /// The cap is the property: an unbounded map keyed by caller-supplied ids is a
@@ -258,7 +319,7 @@ fn the_budget_map_is_bounded() {
     let budget = JudgeBudget::new();
     for index in 0..JudgeBudget::hard_cap() + 16 {
         let key = JudgeBudget::key(Some(&format!("session-{index}")), None).expect("keyed");
-        budget.charge(Some(&key));
+        assert!(budget.try_charge(Some(&key), 1), "each key is fresh");
         assert!(
             budget.len() <= JudgeBudget::hard_cap(),
             "the map grew past the cap at {index}"

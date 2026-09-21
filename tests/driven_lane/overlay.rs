@@ -12,7 +12,8 @@ use wiremock::{
 
 use super::judge_harness::driven::{
     captured_capability_reply, captured_custom_reply, judge_reply_mock, lane_config, Entry, Judge,
-    CAPABILITY_ROUTER, CAPABILITY_ROUTER_ONE_CALL, CLASSIFIER_OVERLAY, PARENT_UPSTREAM_MODEL,
+    CAPABILITY_ROUTER, CAPABILITY_ROUTER_ONE_CALL, CLASSIFIER_OVERLAY, CLASSIFIER_OVERLAY_ONE_CALL,
+    COMPOSITE_ROUTER_ONE_CALL, PARENT_UPSTREAM_MODEL,
 };
 use super::judge_harness::{
     self, can_bind_loopback, client, env, start_gateway, tier_mock, undecided_messages,
@@ -278,6 +279,131 @@ async fn the_budget_is_honoured_for_a_classifier_entry() {
         "the budget was spent, so no verdict decided this turn"
     );
     assert_eq!(second.headers()["x-gateway-routed-model"], "capable-alias");
+
+    capable.verify().await;
+    efficient.verify().await;
+    judge.verify().await;
+}
+
+/// The same bound on the **composite** form, which is one of the two that can
+/// put a judge call ahead of a second decision. The plain classifier entry
+/// above does not prove this one: the composite builds its own `DrivenEntry`,
+/// and a budget wired per sub-router rather than per entry would leave the
+/// scorer stage spending a fresh allowance.
+///
+/// Non-vacuity: the judge mock is pinned at exactly one call, so dropping the
+/// budget check turns the second turn back into a judged one and fails
+/// `judge.verify()` as well as both assertions below.
+#[tokio::test]
+async fn the_budget_is_honoured_for_a_composite_entry() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let capable = MockServer::start().await;
+    let efficient = MockServer::start().await;
+    let judge = MockServer::start().await;
+    // p_solve under the threshold sends the judged turn to capable, while the
+    // composite falls open to its `stage.efficient_target` — so the two turns
+    // differ by destination as well as by header.
+    tier_mock(CAPABLE_UPSTREAM_MODEL, 1).mount(&capable).await;
+    tier_mock(EFFICIENT_UPSTREAM_MODEL, 1)
+        .mount(&efficient)
+        .await;
+    judge_reply_mock(captured_capability_reply("upstream-judge-a", 0.1), 1)
+        .mount(&judge)
+        .await;
+    let gateway = start_gateway(lane_config(
+        &capable,
+        &efficient,
+        &[Judge::anthropic("judge-a", &judge)],
+        Entry::Router(COMPOSITE_ROUTER_ONE_CALL),
+    ))
+    .await;
+
+    let first = post(&gateway, user_turn()).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(first.headers()["x-gateway-routed-model"], "capable-alias");
+
+    // A second human turn: the `user_turn` trigger would fire, but the budget
+    // is spent, so the drive never starts.
+    let second = post(&gateway, user_turn()).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(
+        source(&second),
+        "classifier_fail_open",
+        "the budget was spent, so no verdict decided this turn"
+    );
+    assert_eq!(
+        second.headers()["x-gateway-routed-model"],
+        "efficient-alias",
+        "a composite falls open to its stage efficient_target"
+    );
+
+    capable.verify().await;
+    efficient.verify().await;
+    judge.verify().await;
+}
+
+/// And on the **subagents classifier form**, the other chaining shape. The
+/// budget is keyed on `(session, agent)`, so this drives one child twice rather
+/// than two children once — two children would be two keys and two allowances,
+/// which would pass without the bound doing anything.
+#[tokio::test]
+async fn the_budget_is_honoured_for_a_classifier_overlay() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let capable = MockServer::start().await;
+    let efficient = MockServer::start().await;
+    let judge = MockServer::start().await;
+    tier_mock(CAPABLE_UPSTREAM_MODEL, 1).mount(&capable).await;
+    tier_mock(EFFICIENT_UPSTREAM_MODEL, 1)
+        .mount(&efficient)
+        .await;
+    judge_reply_mock(captured_custom_reply("upstream-judge-a", "capable"), 1)
+        .mount(&judge)
+        .await;
+    let gateway = start_gateway(lane_config(
+        &capable,
+        &efficient,
+        &[Judge::anthropic("judge-a", &judge)],
+        Entry::Overlay(CLASSIFIER_OVERLAY_ONE_CALL),
+    ))
+    .await;
+
+    async fn child(gateway: &TestGateway, agent: &str) -> reqwest::Response {
+        post_with(
+            gateway,
+            user_turn(),
+            &[
+                ("x-claude-code-session-id", SESSION),
+                ("x-claude-code-agent-id", agent),
+            ],
+        )
+        .await
+    }
+
+    let first = child(&gateway, "a7a11c2e22e29e67a").await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(source(&first), "llm-classifier");
+    assert_eq!(first.headers()["x-gateway-routed-model"], "capable-alias");
+
+    // The same child again. `every_request` would classify this turn too, so
+    // the budget is the only thing that can refuse it.
+    let again = child(&gateway, "a7a11c2e22e29e67a").await;
+    assert_eq!(again.status(), StatusCode::OK);
+    assert_eq!(
+        source(&again),
+        "classifier_fail_open",
+        "the budget was spent, so no verdict decided this turn"
+    );
+    assert_eq!(
+        again.headers()["x-gateway-routed-model"],
+        "efficient-alias",
+        "the overlay falls open to the first id of its default_target group"
+    );
 
     capable.verify().await;
     efficient.verify().await;

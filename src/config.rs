@@ -9109,10 +9109,71 @@ target = "judge-alias"
             super::DEFAULT_GATED_MAX_DURATION_MS
         );
         assert_eq!(stage.max_judge_calls, super::DEFAULT_MAX_JUDGE_CALLS);
+        assert_eq!(
+            classifier.classify_trigger,
+            super::ClassifyTrigger::EveryRequest,
+            "an omitted trigger judges every turn that reaches the classifier"
+        );
         assert!(
             router.is_driven(),
             "a classifier table is what moves an entry to the driven lane"
         );
+    }
+
+    /// `classify_trigger` on `[router.classifier]` is only ever set
+    /// programmatically elsewhere in the suite, which leaves the serde name
+    /// itself unproven: rename the field and every other test stays green while
+    /// every operator's TOML stops loading. This is the test that writes the
+    /// key the way an operator does.
+    #[test]
+    fn the_classifier_table_reads_its_trigger_from_toml() {
+        let router = parsed_router(
+            r#"
+id = "claude-auto"
+[router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+[router.classifier]
+target = "judge-alias"
+classify_trigger = "user_turn"
+"#,
+        );
+
+        let stage = router.stage().expect("a stage table");
+        let classifier = stage.classifier.as_ref().expect("a classifier table");
+        assert_eq!(
+            classifier.classify_trigger,
+            super::ClassifyTrigger::UserTurn,
+            "the operator's spelling is the one serde reads"
+        );
+    }
+
+    /// The other half of that key's contract: `skip_serializing_if` means an
+    /// omitted trigger has to round-trip as omitted rather than reappear as an
+    /// explicit `every_request` in an emitted config.
+    #[test]
+    fn an_omitted_classifier_trigger_round_trips_as_omitted() {
+        let router = parsed_router(
+            r#"
+id = "claude-auto"
+[router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+[router.classifier]
+target = "judge-alias"
+"#,
+        );
+
+        let emitted = toml::to_string(&router).expect("the router table serializes");
+        assert!(
+            !emitted.contains("classify_trigger"),
+            "an omitted trigger must round-trip as omitted: {emitted}"
+        );
+        let reparsed: super::RouterConfig =
+            toml::from_str(&emitted).expect("the emitted table parses back");
+        assert_eq!(reparsed, router, "the table survives a round trip");
     }
 
     /// Zero is the one value that turns a bound into no bound at all — a
