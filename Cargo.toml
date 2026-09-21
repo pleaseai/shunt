@@ -39,7 +39,7 @@ ui = ["dep:rust-embed", "dep:mime_guess"]
 # `auto-initialize`, so the build links libpython and the router needs
 # torch/transformers importable at run time. Off by default and never enabled
 # by release.yml; a from-source build opts in with
-# `cargo build --features prefill-router` (see docs/routing-algorithms.md §4).
+# `cargo build --features prefill-router` (see docs/routing-algorithms.md §5).
 prefill-router = ["dep:prefill-router", "dep:switchyard-protocol"]
 
 # Expose `shunt::bench_support`, the facade `benches/stage_router.rs` needs to
