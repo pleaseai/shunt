@@ -429,7 +429,7 @@ fall-through to the stage router. `prefill_router` is a **known** type whose
 availability is decided at compile time: it parses in every build, and on a
 build without the `prefill-router` cargo feature — which is every release
 binary — the load error names that feature, ahead of any key-level complaint
-about the table ([`routing-algorithms.md`](routing-algorithms.md) §4).
+about the table ([`routing-algorithms.md`](routing-algorithms.md) §5).
 
 The router-targeting-a-router check compares the target **after**
 `strip_context_window_hint`, because that is what `resolve_chain` matches on. It
