@@ -7,6 +7,11 @@
 - Run: `cargo run -- run` or `./target/release/shunt run`
 - Validate config: `cargo run -- check` or `./target/release/shunt check`
 - Token helper: `cargo run -- token`
+- Learned prefill router (off by default, absent from release binaries):
+  `cargo build --release --features prefill-router` (add `,ui` for the dashboard).
+  It embeds Python via pyo3, so set `PYO3_PYTHON` to an interpreter (>= 3.10, shared
+  libpython) whose environment has `torch`, `transformers`, `numpy`, and `accelerate`;
+  pyo3 otherwise takes the first `python3` on `PATH`.
 
 ## Testing
 
@@ -14,10 +19,42 @@
 - Format check: `cargo fmt --all --check`
 - Lints: `cargo clippy --all-targets --all-features -- -D warnings`
 - CI runs format, clippy, and tests with `RUSTFLAGS=-D warnings`.
+- `tests/prefill_router.rs` runs in the default-build CI step for the
+  feature-off load error; its feature-on live test skips itself unless
+  `SHUNT_PREFILL_ROUTER_CHECKPOINT` names a checkpoint and
+  `python3 -c "import torch, transformers"` succeeds, so CI never depends on
+  Python packages.
 - Benchmarks: `cargo bench`. `benches/stage_router.rs` additionally needs
   `--features bench`, which exposes `shunt::bench_support` — the facade that
   reaches the crate-private stage-router path. Without the feature that target
   builds and runs but registers no benchmarks, so pass it (CodSpeed does).
+- CodSpeed (`.github/workflows/codspeed.yml`) is a **required** check, and it
+  compares the PR against the stored baseline from `main` — not against the
+  merge base. A red CodSpeed on a diff that changes no Rust is therefore
+  expected to be environmental, not a regression you introduced. Before
+  treating one as real: confirm the build inputs actually differ. The base to
+  diff against is the commit CodSpeed names as `BASE` in its report footer
+  ("Comparing … with `main` (b000df6)") — the stored `main` tip, **not**
+  `git merge-base`, which on a typical PR is an older commit and would answer a
+  different question:
+
+  ```bash
+  BASE_SHA=b000df6e   # replace with the BASE commit from the CodSpeed report
+  git diff "$BASE_SHA" HEAD --name-only | grep -E '\.rs$|Cargo|rust-toolchain|\.github/'
+  ```
+
+  No output means no build input changed, so the result is environmental. Then
+  compare the `Record the measurement environment` step between the PR run
+  and the baseline run on `main`. The Rust toolchain is pinned there, and
+  `runs-on` names one OS version rather than a moving `latest` — but GitHub
+  still revises that image, and the CPU model is **not** pinnable on hosted
+  runners at all. CodSpeed names both the runner image and differing CPU models
+  among its causes of a false regression, recommending an immutable environment
+  and a consistent CPU type
+  (<https://codspeed.io/docs/instruments/cpu/regression-causes>); the logged
+  image and CPU lines are what tell you which one moved. Bumping the toolchain
+  pin, or GitHub revising the image, re-seeds the baseline on the next `main`
+  run.
 
 ## Project Structure
 

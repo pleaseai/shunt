@@ -438,12 +438,15 @@ shunt가 보통 쓰는 `kind`나 `mode`가 아니라 `type`을 쓰는 것은 **s
 | `auto` | 같은 라우터를 업스트림 프리셋으로 | 위와 같음 |
 | `random` | 가중치 추첨, 기본은 세션 고정 | 읽지 않음 |
 | `noop` | 고르지 않음 — 빈 메시지로 응답 | 읽지 않음 |
+| `prefill_router` | 가장 최근 사용자 턴을 읽는 학습형 분류기(`prefill-router` 빌드 필요) | 읽음 — 사용자 턴의 텍스트 |
 
-`llm_classifier`, `composite`, `advisor`, `prefill_router` `type`과
-`[models.subagents]` 오버레이는 **아직 사용할 수 없습니다**. 지정하면 시작 오류가 나며,
-이후 릴리스에서 추가됩니다. 판정 모델을 쓰는 형태 가운데 지금 제공되는 것은 스테이지
-라우터 자신의 [`[models.router.classifier]`](#modelsrouterclassifier-선택) 폴백
-하나뿐입니다.
+판정에 LLM을 호출하는 알고리즘(`llm_classifier`, `composite`, `advisor`)과
+`[models.subagents]` 오버레이는 **아직 사용할 수 없습니다**. 이들을 지정하면 시작 오류가
+나며, 이후 릴리스에서 추가됩니다. `prefill_router`는 구현되어 있지만 **컴파일 타임에
+게이트됩니다**. 기본으로 꺼져 있는 `prefill-router` 카고 피처를 켜고 빌드한 바이너리에서만
+쓸 수 있습니다 — [아래](#type--prefill_router)를 보세요.
+판정 모델을 쓰는 형태 가운데 지금 제공되는 것은 스테이지 라우터 자신의
+[`[models.router.classifier]`](#modelsrouterclassifier-선택) 폴백 하나뿐입니다.
 
 한 항목에 `[models.router]`와 `[models.upstream_model]`을 함께 선언할 수 없습니다.
 
@@ -674,12 +677,103 @@ type = "noop"
 
 받는 키는 `type` 하나뿐입니다.
 
+#### `type = "prefill_router"`
+
+학습형 라우터입니다. 업스트림의 분류기가 가장 최근의 텍스트 사용자 턴을 채점해 항목의
+타깃 중 하나를 고르며, 업스트림 판정 모델을 호출하는 대신 이 프로세스 안에서 모델을
+돌립니다.
+
+**이 타입만은 빌드를 가립니다.** `prefill_router`는 `prefill-router` 카고 피처를 켰을
+때만 컴파일에 들어가고, 이 피처는 **기본으로 꺼져 있으며** 릴리스 워크플로가 켜는 일도
+없습니다. 그래서 릴리스 바이너리에도 Homebrew 설치본에도 들어 있지 않습니다. 소스에서
+빌드하세요.
+
+```sh
+cargo build --release --features prefill-router          # 대시보드가 필요하면 ,ui 를 붙입니다
+```
+
+아래 설정은 어느 빌드에서나 파싱됩니다. 다른 것은
+로드입니다. 피처가 없는 바이너리에서는 로드가 실패하므로, 설정한 알고리즘 없이 게이트웨이가
+떠 버리는 대신 `shunt check`가 이를 보고합니다. 이 피처 오류는 해당 테이블에 대한 다른 모든
+지적보다 먼저 보고되므로, 키 단위 규칙(빈 타깃, 비어 있는 `checkpoint`, 0 이하의
+`max_length`·`batch_size`)은 피처를 켠 빌드가 보고하는 것입니다.
+
+```text
+models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)
+```
+
+```toml
+[[models]]
+id = "claude-learned"
+
+[models.router]
+type = "prefill_router"
+targets = ["claude-sonnet-4-6", "claude-opus-4-8"]
+checkpoint = "/models/router.pt"
+# device = "cpu"
+# cache_dir = "/var/cache/huggingface"
+# max_length = 2048
+# batch_size = 32
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `prefill_router` |
+| `targets` | ✅ 필수 | 고를 대상 model id 목록. 체크포인트의 헤드 순서대로 적습니다 |
+| `checkpoint` | ✅ 필수 | 텐서만 담긴 라우터 체크포인트 경로. 상대 경로는 프로세스의 작업 디렉터리를 기준으로 해석됩니다 |
+| `device` | 자동 감지 | 라우터를 돌릴 torch 디바이스 — `cpu`, `cuda`, `cuda:0` |
+| `cache_dir` | — | 인코더와 토크나이저를 위한 Hugging Face 캐시 디렉터리 |
+| `max_length` | `2048` | 인코더 입력의 최대 토큰 길이. 그보다 긴 입력은 잘립니다. `0`보다 커야 하며, 지정하지 않으면 업스트림 기본값을 그대로 씁니다 |
+| `batch_size` | `32` | 인코더 forward 한 번에 넣는 프롬프트 최대 개수. `0`보다 커야 하며, 지정하지 않으면 업스트림 기본값을 그대로 씁니다 |
+
+**운영자가 직접 준비해야 하는 것.** 이 피처는 PyO3로 Python을 임베드하므로 빌드가
+libpython을 링크하고, 실행 중인 게이트웨이는 임베드한 인터프리터에서 `torch`,
+`transformers`, `numpy`, `accelerate`를 import할 수 있어야 합니다. 빌드할 때
+`PYO3_PYTHON`을 그 인터프리터(3.10 이상, 공유 libpython 포함)로 지정하세요. 지정하지 않으면
+PyO3가 `PATH`에서 처음 찾은 `python3`를 씁니다. 라우터 체크포인트도 필요합니다. Switchyard
+v0.3.0은 체크포인트도, 익스포터도, 인코더 애셋도 제공하지 않으므로 호환되는 체크포인트를
+구하거나 학습시키는 일은 운영자의 몫입니다. 둘 중 하나라도 없으면 게이트웨이는 기동을
+거부하고, 핫 리로드에서 같은 문제를 만나면 리로드를 거부해 돌아가던 설정을 그대로 둡니다.
+
+```text
+models entry <id> router type = "prefill_router" failed to load: <upstream error>
+```
+
+리로드는 라우터를 다시 만들고 세션별 친화도는 라우터 안에 있으므로, 리로드하면 각 세션이
+어느 타깃에 있었는지 잊습니다.
+
+**턴을 어떻게 결정하는가.** 알고리즘에 넘기는 것은 `user`와 `assistant` 역할, 그리고
+`text`와 `tool_result` 블록뿐입니다. 알고리즘은 가장 최근의 텍스트 사용자 턴을 채점하고,
+블록이 전부 `tool_result`인 메시지는 새 사람의 턴이 아니라 툴 연속으로 봅니다. 세션 식별은
+`x-claude-code-session-id`에서, 위임된 자식이면 `x-claude-code-agent-id`도 함께 읽습니다.
+그래서 연속 요청은 추론을 다시 돌리지 않고 그 턴의 결정을 재사용합니다. 둘 다 보내지 않는
+호출자는 업스트림 규칙대로 첫 사용자 메시지의 해시로 돌아갑니다. 추론은 블로킹 워커에서
+항목당 한 번에 하나씩 실행됩니다. `count_tokens` 프로브도 같은 방식으로 결정되며, 연속
+요청일 때는 추론이 아니라 친화도 적중입니다.
+
+`x-gateway-route-source`와 `shunt.router.decisions{algorithm="prefill_router"}`의 `source`
+라벨은 셋 중 무엇이 일어났는지 알려 줍니다.
+
+| 소스 | 의미 |
+| :-- | :-- |
+| `prefill` | 라우터가 턴을 결정함 — 추론이거나 세션 친화도 적중 |
+| `prefill_fail_open` | 라우팅 호출이 실패해 기본 타깃으로 보냄. 업스트림 규칙대로 `targets`의 첫 항목입니다 |
+| `prefill_default` | 요청 본문이 없는 표면 — `/v1/models` 디스커버리, `GET /routes`, 모델 해석 — 은 채점할 턴이 없으므로 첫 번째 타깃을 보고합니다 |
+
+`GET /routes`는 해당 항목을 `algorithm: "prefill_router"`와 타깃 목록으로 보여 줍니다.
+`shunt.stage_router.*` 메트릭은 시그널 전용 라우터의 것으로 남고 prefill 행은 생기지
+않습니다.
+
 #### 검증
 
 타깃이 그 자체로 라우터인 경우, 빈 타깃, `(0.0, 1.0]`을 벗어난 문턱값,
 `recent_turn_window`가 `0`인 경우, 라우터 **id**가 `[1m]` 또는 `[1M]`으로 끝나는 경우, 어느 한쪽이
 라우터 테이블을 가진 중복 `[[models]]` id, 이 빌드가 구현하지 않은 `type`, 같은 항목이
-`[models.upstream_model]`도 선언한 경우는 시작 오류입니다. 맵이 없는 두 항목은 원래 같은
+`[models.upstream_model]`도 선언한 경우는 시작 오류입니다. `prefill_router` 항목에서는 빈 `targets`,
+같은 타깃을 두 번 적은 경우, 빈 `checkpoint`, `0`인 `max_length`나 `batch_size`도 시작
+오류입니다. 이 검사들은 피처를 **켠** 빌드가 보고하는 것입니다. 피처가 없는 빌드는 그 검사에
+닿기 전에 빠진 cargo 피처를 알리며 항목을 거부하기 때문입니다. 중복 타깃은 다른 모든 타깃
+비교와 마찬가지로 끝의 `[1m]`/`[1M]` 힌트를 제거한 뒤 비교합니다. 맵이 없는 두 항목은 원래 같은
 id를 공유할 수 있지만, 라우터는 디스커버리 메타데이터가 아니라 라우팅 정책을 지정하므로
 중복되면 하나의 id에 두 정책이 남습니다. 타깃 id는 라우팅이 매칭하는 방식과 동일하게 끝의
 `[1m]` 또는 `[1M]` 힌트를 제거한 뒤 비교합니다. 그래서 자기 라우터를 가진 항목으로 해석되는

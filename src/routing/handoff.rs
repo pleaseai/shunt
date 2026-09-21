@@ -298,6 +298,7 @@ mod tests {
             &route,
             crate::config::ResponsesFlavor::OpenAi,
             false,
+            None,
         );
         let instructions = translated["instructions"]
             .as_str()

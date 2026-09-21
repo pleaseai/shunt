@@ -30,6 +30,12 @@ use serde_json::Value;
 
 pub use switchyard_libsy::ToolSignals;
 
+/// The `messages` walk the driven `prefill_router` lane pays per request, for
+/// `benches/stage_router.rs`. Gated with the router it belongs to: without the
+/// feature there is no lane to measure and no `Message` type to name.
+#[cfg(feature = "prefill-router")]
+pub use crate::routing::prefill::messages_from_body;
+
 use crate::config::{Config, StageRouterConfig, ToolSemanticsConfig};
 use crate::error::ShuntError;
 use crate::routing::context::RouterContext;
@@ -149,6 +155,7 @@ pub fn resolve_chain(
         pending: Cell::new(None),
         decided: Cell::new(None),
         consult: Cell::new(None),
+        prefill: None,
     };
     let (routes, _model) = routing::resolve_request_chain_value(config, request, Some(&stage))?;
     // The commit `proxy::failover` performs once the request is admitted: take

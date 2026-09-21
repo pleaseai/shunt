@@ -165,6 +165,18 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                         )
                     }
                     RouterConfig::Random(random) => random::select(random, model, stage),
+                    RouterConfig::PrefillRouter(prefill) => {
+                        match stage.and_then(|stage| stage.prefill.as_ref()) {
+                            Some(decision) => (decision.target.as_str(), decision.source),
+                            // Upstream routes a turn with no text user message
+                            // to its first target; a body-less resolution has
+                            // no turn at all and lands there too.
+                            None => (
+                                prefill.default_target().unwrap_or(model),
+                                RouteSource::PrefillDefault,
+                            ),
+                        }
+                    }
                     // A noop entry names no destination: it answers as itself.
                     RouterConfig::Noop {} => (model, RouteSource::Noop),
                 };
@@ -788,6 +800,7 @@ pub(crate) mod envelope;
 pub(crate) mod handoff;
 pub(crate) mod judge;
 pub(crate) mod outcome;
+pub(crate) mod prefill;
 pub(crate) mod random;
 pub(crate) mod serve;
 pub(crate) mod stage;
@@ -841,6 +854,19 @@ mod stage_router_tests {
             gated_idle_ms: crate::config::DEFAULT_GATED_IDLE_MS,
             gated_max_duration_ms: crate::config::DEFAULT_GATED_MAX_DURATION_MS,
             max_judge_calls: crate::config::DEFAULT_MAX_JUDGE_CALLS,
+        }
+    }
+
+    /// The two aliases the shared `config()` already declares, in the order the
+    /// checkpoint's heads would carry them.
+    fn prefill_router() -> crate::config::PrefillRouterConfig {
+        crate::config::PrefillRouterConfig {
+            targets: vec!["efficient-alias".to_string(), "capable-alias".to_string()],
+            checkpoint: std::path::PathBuf::from("router.pt"),
+            device: None,
+            cache_dir: None,
+            max_length: None,
+            batch_size: None,
         }
     }
 
@@ -906,6 +932,7 @@ mod stage_router_tests {
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
+            prefill: None,
         };
 
         let (routes, requested) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -939,6 +966,7 @@ mod stage_router_tests {
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
+            prefill: None,
         };
 
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -992,6 +1020,7 @@ mod stage_router_tests {
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
+            prefill: None,
         };
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
             .expect("an auto-backed id resolves");
@@ -1036,6 +1065,7 @@ mod stage_router_tests {
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
+            prefill: None,
         };
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
             .expect("a random-backed id resolves");
@@ -1050,6 +1080,63 @@ mod stage_router_tests {
             context.pending.take().is_none(),
             "a random router keeps no tier pin"
         );
+    }
+
+    /// A `prefill_router` entry with nothing driven — a body-less
+    /// `resolve_model_chain`, discovery, `shunt check` — answers from its first
+    /// target, the same id upstream picks for a turn with no text user message.
+    ///
+    /// Built as a `Config` struct rather than loaded: `validate` refuses this
+    /// table outright in a build without the feature, and the property under
+    /// test is resolution, which is identical in both builds.
+    #[test]
+    fn a_body_less_prefill_resolution_takes_the_first_target() {
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::PrefillRouter(prefill_router()));
+
+        let routes = super::resolve_model_chain(&config, ROUTER_ID);
+
+        assert_eq!(routes[0].upstream_model, "upstream-efficient");
+        assert_eq!(
+            routes[0].model, ROUTER_ID,
+            "the client must be told the id it asked for"
+        );
+        assert_eq!(routes[0].provider, "codex");
+    }
+
+    /// A decision parked by the driven lane wins, and the outcome the
+    /// observability surfaces read names the algorithm and the source label.
+    #[test]
+    fn a_driven_prefill_decision_picks_the_target_it_names() {
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::PrefillRouter(prefill_router()));
+
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let context = StageContext {
+            store: &store,
+            request: &request,
+            headers: &session_headers(),
+            read_only: false,
+            now: Instant::now(),
+            pending: std::cell::Cell::new(None),
+            decided: std::cell::Cell::new(None),
+            consult: std::cell::Cell::new(None),
+            prefill: Some(crate::routing::outcome::PrefillDecision {
+                target: "capable-alias".to_string(),
+                source: crate::routing::outcome::RouteSource::Prefill,
+            }),
+        };
+
+        let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("a prefill-backed id resolves");
+
+        assert_eq!(routes[0].upstream_model, "upstream-capable");
+        assert_eq!(routes[0].model, ROUTER_ID);
+        let outcome = context.decided.take().expect("an outcome is stamped");
+        assert_eq!(outcome.algorithm, "prefill_router");
+        assert_eq!(outcome.target, "capable-alias");
+        assert_eq!(outcome.source.as_label(), "prefill");
     }
 
     /// A `noop` entry answers as itself: no provider lookup, no target, and the

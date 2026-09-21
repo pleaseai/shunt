@@ -109,9 +109,13 @@ jobs:
       # marginal cost is this crate compiled once with default features, not
       # every test binary rebuilt. A `#[cfg(not(feature = "ui"))]` arm added to
       # any *other* test file is not covered by this and needs its binary named
-      # here too.
+      # here too. `prefill_router` is named for the same reason against a
+      # different feature: its `#[cfg(not(feature = "prefill-router"))]` arm is
+      # the one that proves a release binary refuses a `type = "prefill_router"`
+      # entry by naming the cargo feature, and `--all-features` compiles that
+      # arm away.
       - name: Test default build (no ui feature)
-        run: cargo test --test router_surface
+        run: cargo test --test router_surface --test prefill_router
 
       - name: sccache stats
         if: always()

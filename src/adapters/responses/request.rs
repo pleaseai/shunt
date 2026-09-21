@@ -182,14 +182,23 @@ pub(super) fn request_builder(
                 request = request.header("x-codex-routing-hint", hint);
             }
             // Session/identity headers the real Codex CLI sends alongside the
-            // client identity above (raine/claude-code-proxy build_codex_headers,
-            // cross-checked against codex-rs/login/src/auth/default_client.rs).
+            // client identity above (`codex-rs`
+            // `codex-api/src/requests/headers.rs` `build_session_headers`):
+            // `session-id` and `thread-id` carry the conversation id, and the
+            // ChatGPT backend derives prompt-cache affinity from the
+            // `session-id` header (`codex-rs` `core/src/client.rs`
+            // `responses_session_id`) — so its value must equal the body's
+            // `prompt_cache_key`, which prefers the same inbound
+            // `x-claude-code-session-id` header this parameter carries.
+            // `x-client-request-id` and `x-codex-window-id` complete the set
+            // (`codex-rs` `endpoint/responses.rs`, raine/claude-code-proxy).
             // Only sent when a session id is available; xAI/OpenAI-compatible
             // upstreams never reach this branch.
             if let Some(session_id) = session_id.filter(|s| !s.is_empty()) {
                 request = request
                     .header("accept", "text/event-stream")
-                    .header("session_id", session_id)
+                    .header("session-id", session_id)
+                    .header("thread-id", session_id)
                     .header("x-client-request-id", session_id)
                     .header("x-codex-window-id", format!("{session_id}:0"));
             }
@@ -256,7 +265,7 @@ fn build_test_request(
 mod tests {
     use crate::{
         auth::Credential,
-        config::Config,
+        config::{Config, ResponsesFlavor},
         routing::{AdapterKind, Route},
         server::AppState,
     };
@@ -272,6 +281,98 @@ mod tests {
             effort: None,
             service_tier: None,
         }
+    }
+
+    /// The upstream `session-id`/`thread-id` headers and the body
+    /// `prompt_cache_key` must carry one conversation id: the backend derives
+    /// cache affinity from the header, and a header/key mismatch caches
+    /// nothing (measured 2026-09-20, openai/codex#44716). Pinned across the
+    /// two modules so a divergence of their id sources reds here.
+    #[test]
+    fn the_session_headers_and_the_body_prompt_cache_key_share_one_id() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+        let route = codex_route();
+        let request = build_test_request(
+            &state,
+            &route,
+            Credential::ChatGptOAuth {
+                access_token: "access-token".to_string(),
+                account_id: "account-id".to_string(),
+            },
+            Some("session-123"),
+        );
+        assert_eq!(request.headers().get("session-id").unwrap(), "session-123");
+        assert_eq!(request.headers().get("thread-id").unwrap(), "session-123");
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "metadata": {"user_id": "{\"session_id\":\"meta_sess\"}"}
+        }))
+        .unwrap();
+
+        // Header-carrying client: header and body key derive from one id.
+        let translated = crate::model::responses_request::translate_request(
+            &body,
+            &route,
+            ResponsesFlavor::Chatgpt,
+            false,
+            Some("session-123"),
+        )
+        .unwrap();
+        assert_eq!(translated["prompt_cache_key"], "session-123");
+
+        // Metadata-only client: the derived id the adapter emits as the header
+        // must equal the key the translator derives from metadata alone.
+        let derived = crate::model::responses_request::effective_session_id(
+            &serde_json::json!({"metadata": {"user_id": "{\"session_id\":\"meta_sess\"}"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(derived, "meta_sess");
+        let translated = crate::model::responses_request::translate_request(
+            &body,
+            &route,
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(translated["prompt_cache_key"], "meta_sess");
+
+        // A plain (non-JSON) user_id: the hash fallback feeds both sides, so
+        // the headers and the key still share one value.
+        let plain_body = serde_json::to_vec(&serde_json::json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "metadata": {"user_id": "plain-user"}
+        }))
+        .unwrap();
+        let derived = crate::model::responses_request::effective_session_id(
+            &serde_json::json!({"metadata": {"user_id": "plain-user"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(derived.len(), 16);
+        assert!(derived.chars().all(|c| c.is_ascii_hexdigit()));
+        let translated = crate::model::responses_request::translate_request(
+            &plain_body,
+            &route,
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(translated["prompt_cache_key"], derived);
+
+        // An escaped control character in the metadata session cannot be a
+        // header value; the hash fallback keeps header and key equal instead
+        // of failing the request.
+        let derived = crate::model::responses_request::effective_session_id(
+            &serde_json::json!({"metadata": {"user_id": "{\"session_id\":\"bad\\nid\"}"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(derived.len(), 16);
+        assert!(derived.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -532,7 +633,8 @@ mod tests {
             request.headers().get("accept").unwrap(),
             "text/event-stream"
         );
-        assert_eq!(request.headers().get("session_id").unwrap(), "session-123");
+        assert_eq!(request.headers().get("session-id").unwrap(), "session-123");
+        assert_eq!(request.headers().get("thread-id").unwrap(), "session-123");
         assert_eq!(
             request.headers().get("x-client-request-id").unwrap(),
             "session-123"
@@ -541,6 +643,8 @@ mod tests {
             request.headers().get("x-codex-window-id").unwrap(),
             "session-123:0"
         );
+        // The old underscore spelling is not part of the Codex CLI header set.
+        assert!(request.headers().get("session_id").is_none());
     }
 
     #[test]
@@ -558,7 +662,8 @@ mod tests {
         );
 
         assert!(request.headers().get("accept").is_none());
-        assert!(request.headers().get("session_id").is_none());
+        assert!(request.headers().get("session-id").is_none());
+        assert!(request.headers().get("thread-id").is_none());
         assert!(request.headers().get("x-client-request-id").is_none());
         assert!(request.headers().get("x-codex-window-id").is_none());
     }
@@ -639,7 +744,8 @@ mod tests {
         assert!(request.headers().get("user-agent").is_none());
         assert!(request.headers().get("version").is_none());
         assert!(request.headers().get("OpenAI-Beta").is_none());
-        assert!(request.headers().get("session_id").is_none());
+        assert!(request.headers().get("session-id").is_none());
+        assert!(request.headers().get("thread-id").is_none());
         assert!(request.headers().get("x-client-request-id").is_none());
         assert!(request.headers().get("x-codex-window-id").is_none());
     }

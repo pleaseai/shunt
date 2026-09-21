@@ -112,6 +112,17 @@ async fn forward(
     response_byte_cap: Option<usize>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request_json = body.json();
+    // The effective conversation id: the inbound session header when present,
+    // else the `metadata.user_id` session — the id the upstream session-id
+    // headers AND the body prompt_cache_key must carry. A metadata-only client
+    // still gets the affinity headers, without which the backend caches
+    // nothing (measured 2026-09-20). The connection-pool key stays
+    // header-derived (see `ResponsesAdapter::forward`); the account-pool
+    // sticky key follows the effective id, so sessionless turns now pin per
+    // conversation instead of rotating (the inbound endpoint's sticky-key
+    // rationale).
+    let session_id = session_id
+        .or_else(|| crate::model::responses_request::effective_session_id(request_json, None));
     let client_wants_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -199,6 +210,7 @@ async fn forward(
         &route,
         flavor,
         tool_search_native,
+        session_id.as_deref(),
     ));
     tracing::debug!(
         provider = %route.provider,
@@ -354,6 +366,7 @@ async fn forward(
             &state,
             &route,
             pool_key.as_deref(),
+            session_id.as_deref(),
             websocket_options,
             websocket_credential.clone(),
         )
@@ -423,6 +436,10 @@ pub(crate) async fn chain_attempt(
         .filter(|session_id| !session_id.is_empty())
         .map(str::to_string);
     let request_json = body.json();
+    // The effective conversation id (see `forward`): metadata-only clients
+    // still get the upstream affinity headers and the matching body key.
+    let session_id = session_id
+        .or_else(|| crate::model::responses_request::effective_session_id(request_json, None));
     let thinking_enabled = request_json
         .pointer("/thinking/type")
         .and_then(Value::as_str)
@@ -460,6 +477,7 @@ pub(crate) async fn chain_attempt(
         route,
         flavor,
         tool_search_native,
+        session_id.as_deref(),
     ));
     let auth = state
         .config

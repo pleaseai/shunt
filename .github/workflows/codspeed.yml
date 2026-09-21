@@ -13,7 +13,18 @@ permissions:
 
 concurrency:
   group: codspeed-${{ github.ref }}
-  cancel-in-progress: true
+  # Don't cancel an in-progress run on main: that run is what CodSpeed stores
+  # as the comparison baseline, so cancelling it leaves the commit unmeasured
+  # and later PRs compare against an older one. 4 of the last 30 main runs died
+  # that way. PR runs stay cancellable — a superseded PR head seeds nothing.
+  #
+  # This narrows the gap rather than closing it. A concurrency group holds one
+  # running and one pending execution, and a newly queued run replaces the
+  # pending one, so a burst of three or more pushes to main can still leave a
+  # middle commit unmeasured. Lifting that needs `queue: max`, which cannot be
+  # combined with the `cancel-in-progress: true` the PR side uses here — see
+  # issue #629.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,15 +32,36 @@ env:
 jobs:
   benchmarks:
     name: Run benchmarks
-    runs-on: ubuntu-latest
+    # One OS version rather than the moving `ubuntu-latest` label, so a Ubuntu
+    # major bump cannot land on one side of a comparison only. This is not an
+    # immutable environment: GitHub still revises the image behind this label,
+    # and the CPU model is not pinnable on hosted runners at all — the step
+    # below logs both so a mismatch is visible instead of inferred. Pinning
+    # those needs a container or dedicated runner; that call is issue #629.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
+      # CodSpeed's simulation mode estimates cycles from instruction and cache
+      # behaviour, so a comparison is only meaningful when both sides were
+      # measured in the same environment. When a report says "Different runtime
+      # environments detected", diff these two lines between the PR run and the
+      # baseline run on main before reading the percentage as a code change.
+      - name: Record the measurement environment
+        run: |
+          echo "image: ${ImageOS:-unknown} / ${ImageVersion:-unknown}"
+          echo "cpu: $(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+
       - name: Setup Rust toolchain, cache and cargo-codspeed binary
         uses: moonrepo/setup-rust@cafffba5d5c8bc38a5120e6e60f3561d541a47cd # v0
         with:
-          channel: stable
+          # Pinned rather than `stable`: a new rustc changes codegen, so every
+          # six-week release would shift the measurement under the stored
+          # baseline and show up as a repo-wide "regression" on unrelated PRs.
+          # Bump deliberately — the first main run afterwards re-seeds the
+          # baseline, and PRs opened before it compare across the boundary.
+          channel: "1.98.1"
           cache-target: release
           bins: cargo-codspeed
 

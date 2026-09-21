@@ -48,6 +48,27 @@ the advisor gate, composite routing, sub-agent routing, tool semantics, handoff
 notes — exist only there. When checking the API, read the checkout cargo
 resolved, not the registry source and not GitHub's default branch, which moves.
 
+### The learned prefill router
+
+One more upstream piece is vendored, on its own terms: `prefill_router`, a
+learned classifier that scores the latest user turn and picks a target. It is
+available only from a build that opts into the **`prefill-router` cargo
+feature**, which is off by default.
+
+The reason is what the crate is. Upstream's `crates/prefill-router` embeds
+Python through PyO3, so building it links libpython and running it needs
+`torch`, `transformers`, `numpy`, and `accelerate` importable at run time,
+plus a router checkpoint on disk. Upstream gates it behind a cargo feature for
+the same reason. shunt's release workflow never enables the feature, so
+**prebuilt release binaries and the Homebrew formula do not have it** — a
+from-source `cargo build --release --features prefill-router` is the only way
+to get it, and a binary without it fails to load a config naming the type,
+with an error that says so.
+
+See [`type = "prefill_router"`](/reference/configuration/#type--prefill_router)
+in the configuration reference for the keys, the prerequisites, and the route
+sources.
+
 ## Benchmark results
 
 These are **upstream Switchyard's** numbers, not shunt's. shunt has not run

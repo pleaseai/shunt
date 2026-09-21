@@ -43,6 +43,22 @@ gate、composite 路由、子代理路由、tool semantics、handoff note ——
 核对 API 时请读 cargo 解析出的那份 checkout,既不是 registry 源码,也不是会移动的
 GitHub 默认分支。
 
+### 学习型 prefill 路由器
+
+从上游还引入了一块,但条件不同:给最近一轮用户消息打分再挑目标的学习型分类器
+`prefill_router`。只有开启默认关闭的 **`prefill-router` cargo feature** 构建出来的二进制
+才有它。
+
+原因在于这个 crate 本身。上游的 `crates/prefill-router` 通过 PyO3 内嵌 Python,所以构建会
+链接 libpython,运行时需要能 import `torch`、`transformers`、`numpy`、`accelerate` 的环境,
+以及磁盘上的一个路由检查点。上游也是出于同样的理由把它放在一个 cargo feature 后面。shunt 的
+发布流程从不开启这个 feature,因此**预编译的发布二进制和 Homebrew formula 里都没有它。**
+从源码 `cargo build --release --features prefill-router` 是拿到它的唯一办法;没有该 feature
+的二进制无法加载写了这个 type 的配置,并会给出说明原因的错误。
+
+键、前置条件和路由来源见配置参考中的
+[`type = "prefill_router"`](/zh-cn/reference/configuration/#type--prefill_router)。
+
 ## 基准结果
 
 以下是**上游 Switchyard 的**数字,不是 shunt 的。shunt 没有跑过 Terminal-Bench,

@@ -182,6 +182,16 @@ pub(crate) struct StageContext<'a> {
     /// call on a gateway-held credential and the judge target's pool quota. A
     /// caller who is about to be rejected must spend neither.
     pub consult: Cell<Option<ConsultJudge>>,
+    /// What the driven `prefill_router` lane decided for this request, set by
+    /// `crate::proxy::failover` before resolution and only for an id whose
+    /// `[[models]]` entry is a `prefill_router`. `None` for every other
+    /// request — and for every request at all in a build without the
+    /// `prefill-router` feature.
+    ///
+    /// It is parked here rather than computed inside [`crate::routing::resolve_chain`]
+    /// because the drive is `async` (it runs inference on a blocking worker)
+    /// and resolution is not.
+    pub prefill: Option<crate::routing::outcome::PrefillDecision>,
 }
 
 /// A judge consultation this turn earned, with the budget it must fit inside.

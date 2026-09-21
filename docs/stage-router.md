@@ -433,8 +433,12 @@ Two tables added by ADR-0005 PR 2 bring their own rejections:
   is not the place to discover that an empty string was meant as "off".
 
 A `type` naming an algorithm the driven lane owns — `llm_classifier`,
-`composite`, `advisor`, `prefill_router` — is a load error (an unknown
-`type`), not a silent fall-through to the stage router.
+`composite`, `advisor` — is a load error (an unknown `type`), not a silent
+fall-through to the stage router. `prefill_router` is a **known** type whose
+availability is decided at compile time: it parses in every build, and on a
+build without the `prefill-router` cargo feature — which is every release
+binary — the load error names that feature, ahead of any key-level complaint
+about the table ([`routing-algorithms.md`](routing-algorithms.md) §5).
 
 The router-targeting-a-router check compares the target **after**
 `strip_context_window_hint`, because that is what `resolve_chain` matches on. It
