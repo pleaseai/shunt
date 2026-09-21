@@ -61,7 +61,11 @@ pub(crate) async fn collect_bounded(
     max_bytes: usize,
 ) -> Result<Bytes, CollectError> {
     let mut data = body.into_data_stream();
-    let mut collected = Vec::new();
+    // Sized against the cap, but not *to* it: a judge reply is a few hundred
+    // bytes and `max_bytes` is the ceiling for the pathological one, so
+    // allocating the whole cap up front would spend 64 KiB on every call to
+    // save a dozen amortized grows on none of them.
+    let mut collected = Vec::with_capacity(max_bytes.min(4096));
     let mut total = 0usize;
     while let Some(chunk) = data.next().await {
         // A transport error truncates the body, and the truncation is not
@@ -255,50 +259,71 @@ where
 /// armed against a stream that was making progress. The allocation is taken
 /// only when the buffer actually holds a `\r`, so an LF-only stream — every one
 /// shunt talks to today — copies nothing.
+///
+/// All of that runs on **bytes**, and the buffer is only ever decoded from the
+/// last blank line backwards. A chunk boundary falls wherever the network put
+/// it, so the remainder routinely ends mid-character; decoding the buffer to
+/// frame it would have to answer for that partial character, and both answers
+/// are wrong. Refusing to frame until it completes stalls every frame already
+/// in the buffer behind it, and decoding lossily writes a replacement
+/// character over the partial one — which is then carried forward, so the
+/// continuation bytes in the next chunk land after a character that can never
+/// be completed. Neither question arises here: `\r` and `\n` are ASCII, and no
+/// byte of a multi-byte UTF-8 character is, so scanning bytes cannot split
+/// one.
 fn take_complete_frames(buffer: &mut Vec<u8>) -> Vec<String> {
     // A trailing CR is held back unread: it may be the first half of a CRLF
     // whose LF is in the next chunk, and normalizing it now would invent a
     // frame terminator the upstream never sent.
     let held_cr = buffer.last() == Some(&b'\r');
     let scan = &buffer[..buffer.len() - usize::from(held_cr)];
-    let decoded: Cow<'_, str> = match std::str::from_utf8(scan) {
-        Ok(text) => Cow::Borrowed(text),
-        // The buffer ends inside a multi-byte character: the rest of it is
-        // still arriving, so nothing can be framed until it does, and the
-        // buffer keeps what it has.
-        Err(error) if error.error_len().is_none() => return Vec::new(),
-        // A malformed sequence, which no later chunk can complete. Holding
-        // the buffer for one would stall framing for the rest of the stream:
-        // every subsequent chunk re-scans the same bytes, fails the same way,
-        // and yields no frame — so the idle deadline stays armed against a
-        // stream that is still making progress, and the buffer grows until it
-        // hits `max_bytes`. Decoding lossily keeps it draining; a stream
-        // already carrying invalid UTF-8 has no exact reading to preserve.
-        Err(_) => Cow::Owned(String::from_utf8_lossy(scan).into_owned()),
-    };
-    let text: &str = &decoded;
-    let normalized: Cow<'_, str> = if text.contains('\r') {
-        Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    let normalized: Cow<'_, [u8]> = if scan.contains(&b'\r') {
+        Cow::Owned(normalize_line_endings(scan))
     } else {
-        Cow::Borrowed(text)
+        Cow::Borrowed(scan)
     };
     // Only what precedes the last blank line is complete; the rest is a frame
     // still arriving.
-    let Some(terminator) = normalized.rfind("\n\n") else {
+    let Some(terminator) = normalized.windows(2).rposition(|pair| pair == b"\n\n") else {
         return Vec::new();
     };
     let end = terminator + 2;
-    let frames: Vec<String> = normalized[..end]
+    // The decode reaches the complete frames and stops there. A malformed
+    // sequence inside one has no exact reading to preserve, and replacing it
+    // costs nothing that survives the call: these frames are classified and
+    // dropped, never written back to the buffer.
+    let frames: Vec<String> = String::from_utf8_lossy(&normalized[..end])
         .split("\n\n")
         .filter(|frame| !frame.trim().is_empty())
         .map(ToOwned::to_owned)
         .collect();
-    let mut leftover = normalized[end..].as_bytes().to_vec();
+    let mut leftover = normalized[end..].to_vec();
     if held_cr {
         leftover.push(b'\r');
     }
     *buffer = leftover;
     frames
+}
+
+/// CRLF and bare CR to LF, on bytes.
+///
+/// Byte-level for the reason [`take_complete_frames`] is: a partial multi-byte
+/// character at the end of the buffer is the normal case, not an error, and
+/// neither line ending can be part of one.
+fn normalize_line_endings(scan: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(scan.len());
+    let mut index = 0;
+    while index < scan.len() {
+        if scan[index] == b'\r' {
+            out.push(b'\n');
+            // Consume the LF of a CRLF pair; a bare CR consumes only itself.
+            index += usize::from(scan.get(index + 1) == Some(&b'\n'));
+        } else {
+            out.push(scan[index]);
+        }
+        index += 1;
+    }
+    out
 }
 
 /// Whether one complete SSE frame is a keep-alive.

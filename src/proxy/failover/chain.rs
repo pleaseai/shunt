@@ -84,7 +84,6 @@ pub(crate) struct ChainRequest<'a> {
     pub body: RequestBody,
     /// The advertised id, for the response stamp and the metric label.
     pub requested_model: &'a str,
-    pub started_at: Instant,
     pub router_stamp: Option<RouterStamp<'a>>,
     /// `"client"` or `"router"` — the attribute that separates a caller's turn
     /// from an internal judge call in `shunt.requests` and `shunt.latency`.
@@ -119,7 +118,6 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
         inbound,
         body,
         requested_model,
-        started_at: _started_at,
         router_stamp,
         caller,
         response_byte_cap,

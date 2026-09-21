@@ -226,21 +226,20 @@ async fn a_content_frame_split_across_chunks_still_counts_as_progress() {
     );
 }
 
-/// A malformed byte is not an incomplete character, and must not stall
-/// framing for the rest of the stream.
+/// A malformed byte must not stall framing for the rest of the stream.
 ///
-/// `str::from_utf8` reports both failures the same way, so treating every one
-/// as "the character's remaining bytes are still arriving" holds the buffer
-/// for a sequence no later chunk can complete: each chunk re-scans it, fails
-/// identically, and yields no frame. The idle deadline then never refreshes,
-/// and a stream delivering content the whole time reports `Idle`. Reading
-/// `error_len()` separates the two, so the buffer drains and this reaches the
-/// wall clock instead. Non-vacuity: drop the `error_len()` arm and this goes
+/// A frame carrying one is still a delivered frame: the bytes around it are
+/// a `content_block_delta` whatever the payload decodes to. Framing it would
+/// hold the buffer for a sequence no later chunk can complete — each chunk
+/// re-scans it, fails identically, and yields no frame — so the idle deadline
+/// never refreshes and a stream delivering content the whole time reports
+/// `Idle`. Non-vacuity: gate framing on a successful decode of the buffer
+/// (`std::str::from_utf8(scan)`, returning no frame on `Err`) and this goes
 /// red with `Idle` at 50ms.
 #[tokio::test(start_paused = true)]
 async fn a_malformed_sequence_does_not_stall_framing() {
-    // `0xff` is valid UTF-8 in no position, so `error_len()` is `Some(1)` —
-    // unlike a truncated multi-byte character, which reports `None`.
+    // `0xff` is valid UTF-8 in no position — the case a decode-first framer
+    // cannot tell apart from a character whose rest is still arriving.
     let chunk: &'static [u8] = b"event: content_block_delta\ndata: {\"t\":\"\xff\"}\n\n";
     let stream = futures_util::stream::unfold(0usize, move |index| async move {
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -255,6 +254,47 @@ async fn a_malformed_sequence_does_not_stall_framing() {
         collected.last(),
         Some(&Err(BoundExceeded::Duration)),
         "a frame carrying an undecodable byte is still a delivered frame"
+    );
+}
+
+/// A buffer ending mid-character must still deliver the frames that finished
+/// before it.
+///
+/// Where a chunk ends is the network's choice, so a remainder that stops
+/// inside a multi-byte character is the ordinary case. Framing the buffer by
+/// decoding it first has to answer for that partial character, and both
+/// answers are wrong: refusing to frame until it completes strands every
+/// finished frame behind it, and decoding lossily writes `U+FFFD` over it and
+/// carries *that* forward, so the continuation bytes in the next chunk land
+/// after a character nothing can complete. Scanning bytes asks neither
+/// question — `\n` is ASCII and no byte of a multi-byte character is.
+///
+/// The stream here is built so the buffer never once ends on a whole
+/// character, which is what makes the stall total rather than intermittent.
+/// Non-vacuity: gate framing on `std::str::from_utf8(scan)` succeeding and
+/// this goes red with `Idle` at 50ms.
+#[tokio::test(start_paused = true)]
+async fn a_chunk_ending_mid_character_still_delivers_its_finished_frames() {
+    // Each chunk closes the previous chunk's dangling `é` and opens a new one,
+    // so every buffer state holds a complete frame *and* a trailing partial
+    // character. `0xc3` is the lead byte of a two-byte character; `0xa9` is
+    // its continuation.
+    let head: &'static [u8] = b"event: content_block_delta\ndata: {}\n\n\xc3";
+    let tail: &'static [u8] = b"\xa9\n\nevent: content_block_delta\ndata: {}\n\n\xc3";
+    let stream = futures_util::stream::unfold(0usize, move |index| async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let chunk = if index == 0 { head } else { tail };
+        Some((Bytes::from_static(chunk), index + 1))
+    });
+
+    let collected: Vec<_> = bound_stream(stream, gated(1024 * 1024, 50, 200))
+        .collect()
+        .await;
+
+    assert_eq!(
+        collected.last(),
+        Some(&Err(BoundExceeded::Duration)),
+        "the finished frames are delivered, so the idle bound keeps refreshing"
     );
 }
 

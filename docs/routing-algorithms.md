@@ -513,10 +513,14 @@ caller's headers with every credential slot removed:
 `strip_consumed_slots`, which deliberately keeps a caller's genuine upstream
 credential and would keep it here too — and `anthropic-beta` goes with them.
 
-The call runs on the credential its target's route injects, which is why a
-judge target that resolves to a passthrough route has nothing to run on and is
-rejected at validation. It also means judge calls consume that target's pool
-quota: a judge should map its own `[[models]]` entry.
+The call runs on whatever credential its target's route injects, which is why
+a judge target that resolves to a **passthrough** route has nothing to run on
+and is rejected at validation. `auth = "none"` is not that case and is
+accepted: `route_is_passthrough` tests `AuthMode::Passthrough` alone, and an
+endpoint that needs no credential is not one whose credential went missing — a
+local or self-hosted judge behind no auth is a supported configuration. The
+injecting case also means judge calls consume that target's pool quota: a judge
+should map its own `[[models]]` entry.
 
 ### The wire shape of the judge request
 

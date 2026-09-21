@@ -316,7 +316,6 @@ pub(super) async fn forward(
         inbound: &inbound,
         body,
         requested_model: &requested_model,
-        started_at,
         router_stamp,
         caller: "client",
         // A client turn is never capped: the reply is bounded by the request

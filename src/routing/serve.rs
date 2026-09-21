@@ -28,7 +28,6 @@
 pub(crate) mod bounds;
 
 use std::sync::Mutex;
-use std::time::Instant;
 
 use axum::http::{HeaderMap, Uri};
 use switchyard_libsy::{CallModel, LibsyError};
@@ -186,7 +185,6 @@ async fn dispatch(
             inbound: &inbound,
             body,
             requested_model: admitted.router_id,
-            started_at: Instant::now(),
             router_stamp: None,
             caller: "router",
             // The cap, at the point the adapter would otherwise buffer the
