@@ -1,0 +1,190 @@
+site/src/content/docs/ja/reference/configuration.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 311,319,424-429,799-868,906-912,914
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 63
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 63
+src/auth/slots/tests.rs
+  s_d1dd6433b8fa7f::t_b0533e9246f6ed 807
+  s_d1dd6433b8fa7f::t_2b990407134e40 850-854
+src/main.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 54-58,135-140,206-208
+src/protocol.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 133
+src/routes.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 235,256,360,391
+  s_d1dd6433b8fa7f::t_cd4733ff26a9a1 310
+tests/failover.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 137,1091
+site/src/content/docs/ko/getting-started/why-shunt.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 29
+src/metrics.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 695-696
+tests/stage_router.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 123,171
+src/proxy/failover/tests.rs
+  s_d1dd6433b8fa7f::t_cd4733ff26a9a1 968,984
+  s_d1dd6433b8fa7f::t_2b990407134e40 792
+src/routing/envelope.rs
+  s_d1dd6433b8fa7f::t_cd4733ff26a9a1 75,108
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 311,319,401-402,421-424,750-808,846-851,853
+docs/running.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 201
+README.zh-CN.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 3-4
+  s_d1dd6433b8fa7f::t_98497b5bafd8cb 227
+src/routing/context.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 85-88
+tests/passthrough.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 643
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 29
+src/routing/serve/tests.rs
+  s_d1dd6433b8fa7f::t_cd4733ff26a9a1 327,362
+src/routing.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 9,151-176,381,504,726,797,838,915,928
+site/src/content/docs/ja/reference/cli.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 3,6-20
+  s_d1dd6433b8fa7f::t_12cf1f6ef3d561 21
+README.ko.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 3-4
+  s_d1dd6433b8fa7f::t_98497b5bafd8cb 230
+site/src/content/docs/reference/client-environment.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 51
+CHANGELOG.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 3-40
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 306-331
+src/bench_support.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 242
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 3,6-20
+  s_d1dd6433b8fa7f::t_4dbc04e4cd4221 21
+docs/routing-algorithms.md
+  s_d1dd6433b8fa7f::t_e93a7cc3ae2a80 94-95,340,344,349-424,593-594,599,674,769-770
+  s_d1dd6433b8fa7f::t_2b990407134e40 109,147-151
+src/routing/subagents.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 1-216
+tests/auto_mode_safeguards.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 97
+benches/stage_router.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 55,62,128,363,471-485
+  s_d1dd6433b8fa7f::t_cd4733ff26a9a1 63-64
+  s_d1dd6433b8fa7f::t_9c368cc09c698b 486-496
+site/src/content/docs/getting-started/why-shunt.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 29
+Cargo.toml
+  s_d1dd6433b8fa7f::t_2b990407134e40 10
+  s_d1dd6433b8fa7f::t_e3475bedfc8b68 45-46
+tests/judge_harness/mod.rs
+  s_d1dd6433b8fa7f::t_cd4733ff26a9a1 119,168
+site/src/content/docs/guides/opentelemetry.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 63
+site/src/content/docs/zh-cn/getting-started/why-shunt.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 29
+src/config/subagents.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 1-446
+README.ja.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 3-4
+  s_d1dd6433b8fa7f::t_98497b5bafd8cb 229
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_d1dd6433b8fa7f::t_941f609907c206 152
+  s_d1dd6433b8fa7f::t_2b990407134e40 153-154
+site/src/content/docs/ko/reference/cli.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 3,6-20
+  s_d1dd6433b8fa7f::t_db97c5cafb396a 21
+src/lib.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 25
+docs/stage-router.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 506-510
+README.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 3-4
+  s_d1dd6433b8fa7f::t_98497b5bafd8cb 229
+docs/upstreams-failover.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 157-160,305
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 181-183
+src/gateway/tests.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 1487,1559
+site/src/content/docs/ko/reference/configuration.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 330,338,422-424,445-449,802-867,905-910,912
+src/import.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 1-119
+src/routing/outcome.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 59-64,78-79,98-100
+tests/subagents_passthrough.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 1-353
+site/src/content/docs/guides/stage-router.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 191-193
+  s_d1dd6433b8fa7f::t_3633ea66cc594e 188-189
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 320-347
+src/import/decode.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 1-154
+tests/inbound_auth.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 99
+src/auth/antigravity/mod.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 704,842
+src/config.rs
+  s_d1dd6433b8fa7f::t_5231a0ff532bd1 4710-4718,4723
+  s_d1dd6433b8fa7f::t_2b990407134e40 21,40,2123-2130,2153-2162,2539,2541-2552,4292-4294,4299-4303,4307,4313,4458,4484-4541,4719-4722,4724,5118,6159,8060,8091,8401,8442,8468,8517,9770
+  s_d1dd6433b8fa7f::t_cd4733ff26a9a1 9142
+  s_d1dd6433b8fa7f::t_0e90c120a608db 4542-4544
+src/import/storage.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 1-103
+tests/import_opencodex.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 1-268
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 171-172
+  s_d1dd6433b8fa7f::t_941f609907c206 170
+tests/noop_router.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 61
+tests/opencode_zen.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 93
+.release-please-manifest.json
+  s_d1dd6433b8fa7f::t_2b990407134e40 2
+site/src/content/docs/reference/cli.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 3,6-20
+  s_d1dd6433b8fa7f::t_3276b84443152e 21
+.please/docs/decisions/0005-routing-algorithm-extensions.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 486-491
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 63
+site/src/content/docs/guides/switchyard.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 323-350
+site/src/content/docs/reference/configuration.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 445,453,602-604,627-631,1012-1082,1120-1126,1128
+  s_d1dd6433b8fa7f::t_3633ea66cc594e 632-633
+src/routing/subagents/resolve_tests.rs
+  s_d1dd6433b8fa7f::t_bb9c997952040b 42-50,146
+  s_d1dd6433b8fa7f::t_2b990407134e40 1-41,51-145,147-254
+tests/responses_chain_stream.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 117,621
+docs/credential-import.md
+  s_d1dd6433b8fa7f::t_2b990407134e40 1-85
+src/discovery.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 321,329,422,430,496,543
+tests/responses_cache_affinity.rs
+  s_d1dd6433b8fa7f::t_2b990407134e40 144
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_d1dd6433b8fa7f::t_2b990407134e40 283-305
+Cargo.lock
+  s_d1dd6433b8fa7f::t_6e677639b0bbf7 3182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0165464ac9b12d10f5a13ed07c7066f0f3748e7b",
+  "prompts": {},
+  "sessions": {
+    "s_d1dd6433b8fa7f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56a282fd-ead3-44d2-9507-651573da888e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
