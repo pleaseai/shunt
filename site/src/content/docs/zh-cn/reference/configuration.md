@@ -656,8 +656,10 @@ id,都会导致启动错误。未匹配到任何显式路由的目标只在加�
 也从不触碰父级的固定项。被分流的一轮会带上 `x-gateway-routed-model`(目标)和
 `x-gateway-route-source` —— 命中 `by_type` 时是 `subagent_type`,回退到 `target` 时是
 `subagent` —— 并以 `algorithm = "subagents"` 计入 `shunt.router.decisions`。没有请求的
-接口 —— `GET /routes`、`/v1/models` 发现和 `shunt check` —— 报告父级的目的地;覆盖层不会
-出现在 `routers` 数组里。
+接口什么都解析不出来:`/v1/models` 发现和 `shunt check` 根本不带任何按模型的目的地信息,
+`GET /routes` 也只在父级自身存在 `[[routes]]`/`[models.router]` 条目时才把它列出来(交给
+`server.default_provider` 解析的 id 在两个数组里都不会出现)。这三个接口都不会解析出
+覆盖层分流到的目标,覆盖层自身也从不出现在 `routers` 数组里。
 
 ## `[sentry]`(可选)
 

@@ -695,9 +695,12 @@ by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate =
 트랜스크립트를 상대로 채점되는 일이 없고 부모의 핀에도 닿지 않습니다. 우회된 턴은
 `x-gateway-routed-model`(타깃)과 `x-gateway-route-source`를 실어 보내며 — `by_type`이
 맞으면 `subagent_type`, `target` 폴백이면 `subagent` — `algorithm = "subagents"`로
-`shunt.router.decisions`에 집계됩니다. 요청이 없는 표면(`GET /routes`, `/v1/models`
-디스커버리, `shunt check`)은 부모의 목적지를 보고하며, 오버레이는 `routers` 배열에 실리지
-않습니다.
+`shunt.router.decisions`에 집계됩니다. 요청이 없는 표면은 아무것도 해석하지 않습니다.
+`/v1/models` 디스커버리와 `shunt check`는 모델별 목적지 정보를 전혀 싣지 않고,
+`GET /routes`는 부모 자신의 `[[routes]]`/`[models.router]` 항목이 있을 때만 그것을 보여
+줍니다(`server.default_provider`에 맡겨진 id는 어느 배열에도 나오지 않습니다). 셋 중
+무엇도 우회된 타깃을 해석하지 않으며, 오버레이 자체가 `routers` 배열에 실리는 일도
+없습니다.
 
 ## `[sentry]` (선택)
 

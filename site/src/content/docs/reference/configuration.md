@@ -894,8 +894,12 @@ the transcript and never touch the parent's pin. A diverted turn carries
 `x-gateway-routed-model` (the target) and `x-gateway-route-source` —
 `subagent_type` for a `by_type` hit, `subagent` for the `target` fallback — and
 is counted in `shunt.router.decisions` with `algorithm = "subagents"`. Surfaces
-with no request — `GET /routes`, `/v1/models` discovery, `shunt check` — report
-the parent's destination; the overlay is not listed in the `routers` array.
+with no request resolve nothing: `/v1/models` discovery and `shunt check` carry
+no per-model destination information at all, and `GET /routes` shows the
+parent's own `[[routes]]`/`[models.router]` entry only when one exists — an id
+left to `server.default_provider` appears in neither array. None of the three
+resolves the overlay's diverted target, and the overlay itself is never listed
+in the `routers` array.
 
 ## `[sentry]` (optional)
 

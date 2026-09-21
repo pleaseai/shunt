@@ -407,7 +407,7 @@ never match, and the operator meant some type.
 | The unresolvable-target warning | Ranges over overlay targets too, with the same "falls back to the default provider" message |
 | Two route sources | `subagent_type` for a `by_type` hit and `subagent` for the `target` fallback — the same split `random`/`random_session` makes, so the header and the metric say which key decided. `algorithm` is `subagents` |
 | `x-gateway-routed-model` / `x-gateway-route-source` | Stamped on a diverted turn like any router decision; absent on the parent's turns through the same id |
-| Body-less surfaces | `GET /routes`, discovery, and `shunt check` have no headers and report the parent's destination. The overlay is not listed in `/routes` `routers[]` |
+| Body-less surfaces | No headers, and none of them resolve the diverted target: `/v1/models` discovery and `shunt check` carry no per-model destination at all, and `GET /routes` shows the parent's own `[[routes]]`/`[models.router]` entry only when one exists — nothing for an id left to `server.default_provider`. The overlay is not listed in `/routes` `routers[]` |
 | One new benchmark arm | `resolve_chain_subagents_passthrough`: the child's turn from `resolve_chain_routed_delegated`, once the routed entry also carries an overlay. Read against that arm — the gap is the scoring and the store read the child stops paying — and flat across turn counts |
 
 ### Not in this PR

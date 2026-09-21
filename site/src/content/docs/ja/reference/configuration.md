@@ -685,9 +685,12 @@ id はそのまま届きます — `Explore`、`Plan`、`general-purpose`、`cla
 ピンに触れることもありません。振り分けられたターンには `x-gateway-routed-model`
 （ターゲット）と `x-gateway-route-source`（`by_type` に一致したときは `subagent_type`、
 `target` へのフォールバックなら `subagent`）が付き、`shunt.router.decisions` に
-`algorithm = "subagents"` として計上されます。リクエストを伴わないサーフェス —
-`GET /routes`、`/v1/models` ディスカバリ、`shunt check` — は親の宛先を報告し、この
-オーバーレイが `routers` 配列に載ることはありません。
+`algorithm = "subagents"` として計上されます。リクエストを伴わないサーフェスは何も
+解決しません。`/v1/models` ディスカバリと `shunt check` はモデルごとの宛先情報を
+まったく持たず、`GET /routes` は親自身の `[[routes]]`／`[models.router]` エントリが
+ある場合にそれを示すだけです（`server.default_provider` に委ねられた id はどちらの
+配列にも現れません）。いずれのサーフェスも振り分け先のターゲットを解決せず、この
+オーバーレイが `routers` 配列に載ることもありません。
 
 ## `[sentry]`(任意)
 
