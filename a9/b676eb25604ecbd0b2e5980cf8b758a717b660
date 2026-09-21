@@ -1,0 +1,35 @@
+site/src/content/docs/ja/reference/configuration.md
+  s_92e6ec9acb590f::t_4ba7f66f4fd1ec 700-703
+  s_92e6ec9acb590f::t_a14cfb5548b5df 656
+docs/routing-algorithms.md
+  s_92e6ec9acb590f::t_a14cfb5548b5df 476
+src/config.rs
+  s_92e6ec9acb590f::t_10fa432c744dbe 4416-4420
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_92e6ec9acb590f::t_2f17e4693c61b6 673-675
+  s_92e6ec9acb590f::t_a14cfb5548b5df 636
+site/src/content/docs/reference/configuration.md
+  s_92e6ec9acb590f::t_aa9d5e3ee0b94a 909-913
+  s_92e6ec9acb590f::t_a14cfb5548b5df 861
+AGENTS.md
+  s_92e6ec9acb590f::t_a14cfb5548b5df 12
+site/src/content/docs/ko/reference/configuration.md
+  s_92e6ec9acb590f::t_b97a3b642aba96 713-714
+  s_92e6ec9acb590f::t_a14cfb5548b5df 671
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a9b676eb25604ecbd0b2e5980cf8b758a717b660",
+  "prompts": {},
+  "sessions": {
+    "s_92e6ec9acb590f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "043ddad7-b9d5-414a-9f4a-63c953531e83",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
