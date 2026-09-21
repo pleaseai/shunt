@@ -36,6 +36,18 @@ pub struct RuntimeState {
     /// Gateway-login JWT signer/verifier and approval users. Re-resolved on each
     /// reload while the route tree remains fixed at boot.
     pub gateway_auth: Option<Arc<GatewayAuth>>,
+    /// The built `prefill_router` algorithms, one per `[[models]]` entry that
+    /// configures one. Empty — and free — in a build without the
+    /// `prefill-router` feature, and for every config that declares none.
+    ///
+    /// Re-built on every reload rather than carried across like the
+    /// process-lifetime stores: the checkpoint path, the device, and the target
+    /// list are all config, so a reload that changed any of them must load the
+    /// new checkpoint. The consequence is that upstream's affinity map, which
+    /// lives inside the algorithm, is forgotten by a reload — a session in
+    /// flight is re-scored on its next turn instead of replaying a decision
+    /// made against a checkpoint that is no longer configured.
+    pub prefill_routers: Arc<crate::routing::prefill::PrefillRouters>,
 }
 
 /// Shared handle to the live [`RuntimeState`]. Cloning is cheap (an `Arc`); a
@@ -51,11 +63,17 @@ impl RuntimeState {
         let inbound_auth = config.resolve_inbound_auth()?;
         let admin_auth = config.resolve_admin_auth()?;
         let gateway_auth = config.resolve_gateway_auth()?;
+        // After `validate`, so a config the feature cannot serve is refused by
+        // name before anything tries to load a checkpoint for it. A failed
+        // build is an ordinary `ConfigError`, so `reload` keeps the last good
+        // config running rather than swapping in a router that cannot answer.
+        let prefill_routers = Arc::new(crate::routing::prefill::PrefillRouters::build(&config)?);
         Ok(Self {
             config: Arc::new(config),
             inbound_auth,
             admin_auth,
             gateway_auth,
+            prefill_routers,
         })
     }
 }

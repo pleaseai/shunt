@@ -72,6 +72,10 @@ pub(super) async fn forward(
     // field moves — the headers are borrowed, not read; the `x-claude-code-*`
     // hints are parsed inside `stage::select`, which only a `[[models]]` entry
     // that configures a router ever reaches.
+    // Async because the driven lane runs inference; `None` for every id that
+    // is not a `prefill_router` entry, which costs one `HashMap` miss — and a
+    // constant `None` in a build without the feature.
+    let prefill = routing::prefill::decide(&state.prefill_routers, body.json(), headers).await;
     let stage = routing::stage::StageContext {
         store: &state.stage_router,
         request: body.json(),
@@ -84,6 +88,7 @@ pub(super) async fn forward(
         now: started_at,
         pending: std::cell::Cell::new(None),
         decided: std::cell::Cell::new(None),
+        prefill,
     };
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json(), Some(&stage)).map_err(

@@ -47,6 +47,26 @@ handoff note — は `main` にしかありません。API を確認するとき
 でも動き続ける GitHub のデフォルトブランチでもなく、cargo が解決したチェックアウトを
 読んでください。
 
+### 学習済みプリフィルルーター
+
+アップストリームからもうひとつ、条件つきで取り込んでいるものがあります。直近のユーザー
+ターンを採点してターゲットを選ぶ学習済み分類器 `prefill_router` です。これは既定で無効な
+**`prefill-router` カーゴフィーチャー**を有効にしてビルドしたバイナリでのみ使えます。
+
+理由はそのクレートの中身です。アップストリームの `crates/prefill-router` は PyO3 で
+Python を埋め込むため、ビルドは libpython をリンクし、実行には `torch`、`transformers`、
+`numpy`、`accelerate` を import できる環境と、ディスク上のルーターチェックポイントが必要
+です。アップストリームも同じ理由でカーゴフィーチャーの後ろに置いています。shunt の
+リリースワークフローはこのフィーチャーを有効にしないので、**ビルド済みのリリース
+バイナリにも Homebrew formula にも入っていません。** ソースから
+`cargo build --release --features prefill-router` でビルドするのが唯一の方法で、
+フィーチャーのないバイナリはこの type を指定した設定をロードできず、そのことを伝える
+エラーを出します。
+
+キー、前提条件、ルートソースは設定リファレンスの
+[`type = "prefill_router"`](/ja/reference/configuration/#type--prefill_router) を
+参照してください。
+
 ## ベンチマーク結果
 
 以下は**アップストリーム Switchyard の**数値であり、shunt のものではありません。

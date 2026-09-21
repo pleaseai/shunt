@@ -397,12 +397,14 @@ Grok read their CLI credential stores; Cursor opens Cursor.app's `state.vscdb`
 with `SQLITE_OPEN_READ_ONLY`. The endpoint masks account identity, labels
 ownership as `observed`, and never invokes a refresh/writeback store. Provider
 requests have a 15-second timeout. Claude reads `/api/oauth/usage`, with the
-token-free snapshot cached process-wide for 60 seconds. The Claude row is the
-one exception to the identity masking above: it carries the account `uuid` so
-the table can tell an observation and a managed pool account holding the same
-subscription apart from two genuinely different accounts. The value is already
-returned unmasked by `GET /admin/accounts` to the same authenticated caller, so
-this adds no disclosure the admin surface did not already make. Gemini returns every
+token-free snapshot cached process-wide for 60 seconds. The Claude and Codex
+rows are the exception to the identity masking above: each carries its account
+`uuid` — the Claude account uuid, or the ChatGPT account id — so the table can
+tell an observation and a managed pool account holding the same subscription
+apart from two genuinely different accounts. Both values are already returned
+unmasked by `GET /admin/api/accounts` and `GET /admin/api/accounts/codex` to the
+same authenticated caller, so this adds no disclosure the admin surface did not
+already make. Gemini returns every
 Code Assist model bucket, Kimi returns weekly and 5-hour windows, Grok returns
 credit/product usage, and Cursor returns billing-cycle, Auto + Composer, and
 named-model usage. Codex remains `response-derived`: both translated Messages
@@ -416,7 +418,12 @@ observations rather than stranding them in the advanced section. An observation
 and a managed account are coalesced into one row when their account `uuid`
 matches — one subscription is one row, labelled with the managed account name,
 with the observation's windows preferred because the pool only learns a window
-from a response header it has actually received.
+from a response header it has actually received. Each identity table is matched
+only against accounts of its own store's auth kind: Claude store uuids against
+`claude_oauth` accounts, Codex store account ids against `chatgpt_oauth`
+accounts. The Codex case is the common one on a developer machine, where
+`~/.codex/auth.json` and a `shunt login codex` copy are the same ChatGPT
+account and previously rendered as two rows with an identical weekly bar.
 
 Coalescing is deliberately conservative: identity resolves to `None` whenever
 `CLAUDE_CONFIG_DIR` or `CLAUDE_CREDENTIALS` is set, and an unidentified

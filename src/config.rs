@@ -27,9 +27,9 @@ pub use http_tuning::{
 };
 pub use presets::{provider_presets, ProviderPresetView};
 pub use router::{
-    AutoRouterConfig, HandoffNotesConfig, RandomAffinity, RandomRouterConfig, RouterConfig,
-    StageRouterConfig, StageRouterPicker, ToolSemanticsConfig, DEFAULT_CONFIDENCE_THRESHOLD,
-    DEFAULT_DEESCALATE_THRESHOLD,
+    AutoRouterConfig, HandoffNotesConfig, PrefillRouterConfig, RandomAffinity, RandomRouterConfig,
+    RouterConfig, StageRouterConfig, StageRouterPicker, ToolSemanticsConfig,
+    DEFAULT_CONFIDENCE_THRESHOLD, DEFAULT_DEESCALATE_THRESHOLD,
 };
 pub use secrets::Secret;
 pub use session::GatewaySessionConfig;
@@ -2207,6 +2207,52 @@ fn validate_random_router(model_id: &str, random: &RandomRouterConfig) -> Result
     Ok(())
 }
 
+/// Fail-closed checks for `[models.router] type = "prefill_router"`.
+///
+/// Compiled in both builds for the reason `validate_router`'s call site gives.
+/// Nothing here touches the checkpoint: `shunt check` must stay a pure config
+/// verdict that needs neither Python nor the file present, so the checkpoint is
+/// only opened when `RuntimeState::from_config` builds the algorithm.
+fn validate_prefill_router(
+    model_id: &str,
+    prefill: &PrefillRouterConfig,
+) -> Result<(), ConfigError> {
+    let invalid = |key, reason| ConfigError::InvalidPrefillRouter {
+        model: model_id.to_string(),
+        key,
+        reason,
+    };
+    if prefill.targets.is_empty() {
+        return Err(invalid("targets", "must list at least one target"));
+    }
+    // Upstream's `PrefillRouter::new` rejects a repeated target too, but only
+    // once the checkpoint is loaded — which needs Python, a file on disk, and a
+    // build that has the feature. Compared after `strip_context_window_hint`,
+    // like the recursion check above: `"x[1m]"` and `"x"` resolve to one id, so
+    // a list carrying both binds two checkpoint heads to the same destination.
+    for (index, target) in prefill.targets.iter().enumerate() {
+        let resolved = crate::routing::strip_context_window_hint(target);
+        if prefill.targets[..index]
+            .iter()
+            .any(|earlier| crate::routing::strip_context_window_hint(earlier) == resolved)
+        {
+            return Err(invalid("targets", "must not repeat a target"));
+        }
+    }
+    if prefill.checkpoint.as_os_str().is_empty() {
+        return Err(invalid("checkpoint", "must not be empty"));
+    }
+    for (key, value) in [
+        ("max_length", prefill.max_length),
+        ("batch_size", prefill.batch_size),
+    ] {
+        if value == Some(0) {
+            return Err(invalid(key, "must be greater than 0"));
+        }
+    }
+    Ok(())
+}
+
 /// Fail-closed checks for `[models.router.tool_semantics]`.
 ///
 /// The categories are additive, so a name the *built-in* vocabulary already
@@ -2501,6 +2547,16 @@ pub enum ConfigError {
     InvalidSubagentsType { model: String, key: String },
     #[error("models entry {model} has a subagents table but its id ends with a [1m] or [1M] context-window hint; clients strip that hint before model matching, so the entry is unreachable")]
     SubagentsContextWindowHint { model: String },
+    #[error("models entry {model} router type = \"prefill_router\" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)")]
+    PrefillRouterFeatureDisabled { model: String },
+    #[error("models entry {model} router {key} {reason}")]
+    InvalidPrefillRouter {
+        model: String,
+        key: &'static str,
+        reason: &'static str,
+    },
+    #[error("models entry {model} router type = \"prefill_router\" failed to load: {message}")]
+    PrefillRouterLoad { model: String, message: String },
     #[error(
         "models entry {model} router {key} is {value}; it must be greater than 0.0 and at most 1.0"
     )]
@@ -4337,6 +4393,17 @@ impl Config {
     /// differently would enforce the rule on the written string while routing
     /// resolved a different one.
     fn validate_router(&self, model_id: &str, router: &RouterConfig) -> Result<(), ConfigError> {
+        // First, before every other complaint about this table. A release
+        // binary cannot route a `prefill_router` entry at all, so "the feature
+        // is off" is the only actionable thing to say about it — reporting an
+        // empty `targets` list or a `[1m]` id first would send the operator to
+        // fix a key that still would not load.
+        #[cfg(not(feature = "prefill-router"))]
+        if matches!(router, RouterConfig::PrefillRouter(_)) {
+            return Err(ConfigError::PrefillRouterFeatureDisabled {
+                model: model_id.to_string(),
+            });
+        }
         // Suffix, not substring: `strip_context_window_hint` only strips a
         // trailing hint, so an id merely containing `[1m]` mid-string is an
         // ordinary id that routes by its literal name. Same predicate the
@@ -4381,6 +4448,14 @@ impl Config {
         }
         if let RouterConfig::Random(random) = router {
             validate_random_router(model_id, random)?;
+        }
+        // Compiled into both builds, but only reached by the one that can run
+        // the algorithm: the early return above refuses a `prefill_router`
+        // entry outright when the feature is off, so these key-level verdicts
+        // are what a from-source build reports and a release binary never gets
+        // as far as.
+        if let RouterConfig::PrefillRouter(prefill) = router {
+            validate_prefill_router(model_id, prefill)?;
         }
         Ok(())
     }
@@ -7858,6 +7933,169 @@ id = "claude-sonnet-5"
             super::RouterConfig::StageRouter(stage) => stage,
             other => panic!("the fixture is a stage router, got {other:?}"),
         }
+    }
+
+    /// A `prefill_router` entry naming `targets`, with a checkpoint path that
+    /// is never opened — `validate` must not touch the filesystem.
+    fn prefill_model(id: &str, targets: &[&str]) -> ModelConfig {
+        ModelConfig {
+            id: id.to_string(),
+            display_name: None,
+            upstream_model: None,
+            router: Some(super::RouterConfig::PrefillRouter(
+                super::PrefillRouterConfig {
+                    targets: targets.iter().map(|target| target.to_string()).collect(),
+                    checkpoint: std::path::PathBuf::from("/models/router.pt"),
+                    device: None,
+                    cache_dir: None,
+                    max_length: None,
+                    batch_size: None,
+                },
+            )),
+            stage_router: None,
+            subagents: None,
+        }
+    }
+
+    #[cfg(feature = "prefill-router")]
+    fn prefill_mut(model: &mut ModelConfig) -> &mut super::PrefillRouterConfig {
+        match model.router.as_mut().expect("the fixture carries a router") {
+            super::RouterConfig::PrefillRouter(prefill) => prefill,
+            other => panic!("the fixture is a prefill router, got {other:?}"),
+        }
+    }
+
+    /// A release binary parses the table and then refuses it by the name of
+    /// the thing the operator has to change. A parse error naming an unknown
+    /// variant would leave them with no remedy to act on.
+    #[cfg(not(feature = "prefill-router"))]
+    #[test]
+    fn a_prefill_router_entry_is_refused_by_feature_name_when_the_feature_is_off() {
+        let config = Config {
+            models: vec![
+                prefill_model("claude-prefill", &["claude-sonnet-4-6"]),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("codex", "gpt-5.2")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        let error = config.validate().unwrap_err();
+
+        assert!(matches!(
+            error,
+            ConfigError::PrefillRouterFeatureDisabled { ref model } if model == "claude-prefill"
+        ));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("prefill-router"),
+            "the message must name the cargo feature, got: {rendered}"
+        );
+    }
+
+    /// Ordering: the feature error wins over every other complaint about the
+    /// same table. Telling an operator to fix `targets` on a binary that could
+    /// not run the router either way sends them to the wrong fix.
+    #[cfg(not(feature = "prefill-router"))]
+    #[test]
+    fn the_feature_error_wins_over_a_malformed_prefill_table() {
+        let config = Config {
+            models: vec![prefill_model("claude-prefill", &[])],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::PrefillRouterFeatureDisabled { .. }
+        ));
+    }
+
+    /// The positive twin of the refusal above: with the feature on the same
+    /// entry loads. `validate` still opens nothing — no Python, no checkpoint.
+    #[cfg(feature = "prefill-router")]
+    #[test]
+    fn a_prefill_router_entry_validates_when_the_feature_is_on() {
+        let config = Config {
+            models: vec![
+                prefill_model("claude-prefill", &["claude-sonnet-4-6"]),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("codex", "gpt-5.2")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    /// Each key-level rule, with the key it must report. Run under the feature
+    /// only: without it the entry is refused earlier by design, which the
+    /// ordering test above is what pins.
+    #[cfg(feature = "prefill-router")]
+    #[test]
+    fn prefill_router_rejects_each_malformed_key() {
+        /// One rule: the key the rejection must name, and the edit that breaks it.
+        type PrefillCase = (&'static str, fn(&mut ModelConfig));
+
+        let cases: Vec<PrefillCase> = vec![
+            ("targets", |model| prefill_mut(model).targets.clear()),
+            ("targets", |model| {
+                // Compared after `strip_context_window_hint`, like the
+                // recursion check: these two ids resolve to one destination,
+                // so the list binds two checkpoint heads to the same target.
+                prefill_mut(model).targets = vec!["x".to_string(), "x[1m]".to_string()];
+            }),
+            ("checkpoint", |model| {
+                prefill_mut(model).checkpoint = std::path::PathBuf::new();
+            }),
+            ("max_length", |model| {
+                prefill_mut(model).max_length = Some(0);
+            }),
+            ("batch_size", |model| {
+                prefill_mut(model).batch_size = Some(0);
+            }),
+        ];
+
+        for (expected_key, mutate) in cases {
+            let mut model = prefill_model("claude-prefill", &["claude-sonnet-4-6"]);
+            mutate(&mut model);
+            let config = Config {
+                models: vec![model],
+                ..Config::default()
+            };
+
+            let error = config.validate().unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    ConfigError::InvalidPrefillRouter { key, .. } if key == expected_key
+                ),
+                "expected an InvalidPrefillRouter on {expected_key}, got: {error}"
+            );
+        }
+    }
+
+    /// The one-hop rule ranges over `named_targets`, so it covers the new type
+    /// without a second implementation.
+    #[cfg(feature = "prefill-router")]
+    #[test]
+    fn a_prefill_target_may_not_be_another_router() {
+        let config = Config {
+            models: vec![
+                prefill_model("claude-prefill", &["claude-auto"]),
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+            ],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::RouterRecursion { ref model, ref target }
+                if model == "claude-prefill" && target == "claude-auto"
+        ));
     }
 
     /// One `[[models]]` entry parsed from TOML, for the shape tests.

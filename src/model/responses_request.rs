@@ -3,6 +3,9 @@ use std::collections::{HashMap, HashSet};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
+
+use axum::http::HeaderValue;
 
 use crate::config::ResponsesFlavor;
 use crate::model::responses_schema;
@@ -111,6 +114,7 @@ pub fn translate_request(
     route: &Route,
     flavor: ResponsesFlavor,
     tool_search_native: bool,
+    session_id: Option<&str>,
 ) -> Result<Value, serde_json::Error> {
     let request: Value = serde_json::from_slice(body)?;
     Ok(translate_request_value(
@@ -118,6 +122,7 @@ pub fn translate_request(
         route,
         flavor,
         tool_search_native,
+        session_id,
     ))
 }
 
@@ -126,6 +131,7 @@ pub fn translate_request_value(
     route: &Route,
     flavor: ResponsesFlavor,
     tool_search_native: bool,
+    session_id: Option<&str>,
 ) -> Value {
     let tool_search = ToolSearchContext::from_request(request, tool_search_native);
     let mut out = Map::new();
@@ -213,7 +219,7 @@ pub fn translate_request_value(
             json!(["reasoning.encrypted_content"]),
         );
     }
-    if let Some(cache_key) = prompt_cache_key(request) {
+    if let Some(cache_key) = prompt_cache_key(request, session_id) {
         out.insert("prompt_cache_key".to_string(), json!(cache_key));
     }
     // Anthropic `max_tokens` caps output; the Responses equivalent is
@@ -231,12 +237,18 @@ pub fn translate_request_value(
     Value::Object(out)
 }
 
-/// A stable per-conversation key so the Responses backend routes every turn of a
-/// session to the same prompt cache (codex uses its thread_id here). Claude Code
-/// packs `{device_id, account_uuid, session_id}` as a JSON string in
-/// `metadata.user_id`; `session_id` is the per-conversation id. Falls back to a
-/// hash of the raw user_id, or nothing when the client sends no metadata.
-fn prompt_cache_key(request: &Value) -> Option<String> {
+/// The conversation id the upstream `session-id`/`thread-id` headers and the
+/// body `prompt_cache_key` share: the inbound `x-claude-code-session-id` header
+/// when the client sent one, else the `metadata.user_id` JSON `session_id`.
+/// Shared with the adapter so a metadata-only client still gets the affinity
+/// headers (the backend derives cache affinity from the header alone — a body
+/// key without the matching header caches nothing, measured 2026-09-20).
+pub(crate) fn effective_session_id(request: &Value, session_id: Option<&str>) -> Option<String> {
+    // The inbound header is always header-safe: hyper rejects invalid header
+    // values at parse time, so whatever reached the handler is valid.
+    if let Some(session_id) = session_id.filter(|session_id| !session_id.is_empty()) {
+        return Some(session_id.to_string());
+    }
     let user_id = request
         .pointer("/metadata/user_id")
         .and_then(Value::as_str)
@@ -246,13 +258,38 @@ fn prompt_cache_key(request: &Value) -> Option<String> {
             .get("session_id")
             .and_then(Value::as_str)
             .filter(|session| !session.is_empty())
+            // A JSON-decoded value can carry an escaped control character;
+            // it becomes the upstream affinity headers, and an invalid header
+            // value would fail the whole request. The hash fallback below is
+            // hex, always header-safe, and keeps header and key equal.
+            .filter(|session| HeaderValue::from_str(session).is_ok())
         {
-            return Some(format!("shunt-{session}"));
+            return Some(session.to_string());
         }
     }
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(user_id, &mut hasher);
-    Some(format!("shunt-{:016x}", std::hash::Hasher::finish(&hasher)))
+    Some(hashed_user_id(user_id))
+}
+
+/// A stable per-conversation key so the Responses backend routes every turn of a
+/// session to the same prompt cache. The real Codex CLI sends its raw session id
+/// here (`codex-rs` `core/src/client.rs`), and the backend derives cache affinity
+/// from the `session-id` request header — so the key must equal that header's
+/// value, and both come from the one derivation in [`effective_session_id`].
+fn prompt_cache_key(request: &Value, session_id: Option<&str>) -> Option<String> {
+    effective_session_id(request, session_id)
+}
+
+/// The stable fallback id for a `metadata.user_id` that is not a JSON blob
+/// carrying a header-safe `session_id`. A stable hash: `DefaultHasher`'s
+/// algorithm is not pinned across rustc releases, and a rotated fallback key
+/// silently forfeits one turn's cache. sha2 is already a dependency; 8 bytes
+/// suffice for a cache-namespace id.
+fn hashed_user_id(user_id: &str) -> String {
+    let digest = Sha256::digest(user_id.as_bytes());
+    format!(
+        "{:016x}",
+        u64::from_be_bytes(digest[..8].try_into().expect("sha256 digest is 32 bytes"))
+    )
 }
 
 /// Whether the client requested extended thinking. Gates reasoning round-tripping:

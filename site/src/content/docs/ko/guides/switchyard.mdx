@@ -44,6 +44,24 @@ libsy의 `ToolSignals` 구조체를 직접 채우고 `pick_tier`를 호출합니
 tool semantics, handoff note — 은 `main`에만 있습니다. API를 확인할 때는 레지스트리
 소스도, 움직이는 GitHub 기본 브랜치도 아니라 cargo가 해석한 체크아웃을 읽으세요.
 
+### 학습형 프리필 라우터
+
+업스트림에서 가져온 조각이 하나 더 있는데, 조건이 다릅니다. 가장 최근 사용자 턴을 채점해
+타깃을 고르는 학습형 분류기 `prefill_router`입니다. 이것은 기본으로 꺼져 있는
+**`prefill-router` 카고 피처**를 켜고 빌드한 바이너리에서만 쓸 수 있습니다.
+
+이유는 그 크레이트의 정체입니다. 업스트림의 `crates/prefill-router`는 PyO3로 Python을
+임베드하므로, 빌드는 libpython을 링크하고 실행에는 `torch`, `transformers`, `numpy`,
+`accelerate`를 import할 수 있는 환경과 디스크에 놓인 라우터 체크포인트가 필요합니다.
+업스트림도 같은 이유로 카고 피처 뒤에 둡니다. shunt의 릴리스 워크플로는 이 피처를 켜지
+않으므로 **미리 빌드된 릴리스 바이너리와 Homebrew 포뮬러에는 들어 있지 않습니다.**
+소스에서 `cargo build --release --features prefill-router`로 빌드하는 것이 유일한 방법이고,
+피처가 없는 바이너리는 이 타입을 지정한 설정을 로드하지 못하며 그 사실을 알려 주는 오류를
+냅니다.
+
+키와 사전 조건, 라우트 소스는 설정 레퍼런스의
+[`type = "prefill_router"`](/ko/reference/configuration/#type--prefill_router)를 보세요.
+
 ## 벤치마크 결과
 
 아래는 **업스트림 Switchyard의** 수치이며 shunt의 것이 아닙니다. shunt는

@@ -419,11 +419,14 @@ shunt が通常使う `kind` や `mode` ではなく `type` を使うのは、**
 | `auto` | 同じルーターを上流のプリセットで | 同上 |
 | `random` | 重み付き抽選、既定ではセッション固定 | 読まない |
 | `noop` | 選ばない — 空のメッセージを返す | 読まない |
+| `prefill_router` | 直近のユーザーターンを読む学習済み分類器（`prefill-router` ビルドが必要） | 読む — ユーザーターンのテキスト |
 
-判定に LLM を呼ぶアルゴリズム（`llm_classifier`、`composite`、`advisor`、
-`prefill_router`）と、[`[models.subagents]`](#modelssubagentsオプション) オーバーレイの
-`llm_classifier` 形式は**まだ利用できません**。指定すると起動エラーになり、後続のリリース
-で追加されます。
+判定に LLM を呼ぶアルゴリズム（`llm_classifier`、`composite`、`advisor`）と、
+[`[models.subagents]`](#modelssubagentsオプション) オーバーレイの `llm_classifier` 形式は
+**まだ利用できません**。指定すると起動エラーになり、後続のリリースで追加されます。
+`prefill_router` は実装済みですが**コンパイル時にゲート**されており、既定で無効な
+`prefill-router` カーゴフィーチャーを有効にしてビルドしたバイナリでのみ利用できます —
+[後述](#type--prefill_router)。
 
 同じエントリに `[models.router]` と `[models.upstream_model]` を併記することはできません。
 
@@ -598,12 +601,108 @@ type = "noop"
 
 受け付けるキーは `type` だけです。
 
+#### `type = "prefill_router"`
+
+学習済みルーターです。上流の分類器が直近のテキストユーザーターンを採点してエントリの
+ターゲットのひとつを選びます。判定のためにアップストリームを呼ぶのではなく、モデルを
+このプロセス内で動かします。
+
+**これだけはビルドを選びます。** `prefill_router` は `prefill-router` カーゴフィーチャーを
+有効にしたときにのみコンパイルされます。このフィーチャーは**既定で無効**で、リリース
+ワークフローが有効にすることもありません。したがってリリースバイナリにも Homebrew の
+インストールにも入っていません。ソースからビルドしてください。
+
+```sh
+cargo build --release --features prefill-router          # ダッシュボードが必要なら ,ui を足します
+```
+
+以下の設定はどのビルドでもパースされます。違うのはロードです。
+フィーチャーのないバイナリではロードが失敗するので、設定したアルゴリズムを持たないまま
+ゲートウェイが起動してしまう代わりに `shunt check` がそれを報告します。
+このフィーチャーのエラーはテーブルに対する他のどの指摘よりも先に報告されるため、
+キー単位のルール（空のターゲット、空の `checkpoint`、0 以下の `max_length` や
+`batch_size`）はフィーチャーを有効にしたビルドが報告するものです。
+
+```text
+models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)
+```
+
+```toml
+[[models]]
+id = "claude-learned"
+
+[models.router]
+type = "prefill_router"
+targets = ["claude-sonnet-4-6", "claude-opus-4-8"]
+checkpoint = "/models/router.pt"
+# device = "cpu"
+# cache_dir = "/var/cache/huggingface"
+# max_length = 2048
+# batch_size = 32
+```
+
+| キー | 既定値 | 意味 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必須 | `prefill_router` |
+| `targets` | ✅ 必須 | 選択肢となるモデル id。チェックポイントのヘッド順に並べます |
+| `checkpoint` | ✅ 必須 | テンソルのみのルーターチェックポイントへのパス。相対パスはプロセスの作業ディレクトリ基準で解決されます |
+| `device` | 自動検出 | ルーターを動かす torch デバイス — `cpu`、`cuda`、`cuda:0` |
+| `cache_dir` | — | エンコーダーとそのトークナイザー用の Hugging Face キャッシュディレクトリ |
+| `max_length` | `2048` | エンコーダー入力の最大トークン長。これを超える入力は切り詰められます。`0` より大きい必要があり、未設定なら上流の既定値がそのまま使われます |
+| `batch_size` | `32` | エンコーダーの 1 回の forward に渡すプロンプトの最大数。`0` より大きい必要があり、未設定なら上流の既定値がそのまま使われます |
+
+**運用者が用意するもの。** このフィーチャーは PyO3 で Python を埋め込むため、ビルドは
+libpython をリンクし、稼働中のゲートウェイは埋め込んだインタープリターで `torch`、
+`transformers`、`numpy`、`accelerate` を import できる必要があります。ビルド時に
+`PYO3_PYTHON` をそのインタープリター（3.10 以上、共有 libpython つき）に設定してください。
+設定しないと PyO3 は `PATH` で最初に見つけた `python3` を使います。さらにルーター
+チェックポイントも必要です。Switchyard v0.3.0 はチェックポイントもエクスポーターも
+エンコーダーのアセットも同梱していないので、互換のあるものを入手するか学習させるのは
+運用者の仕事です。どちらかが欠けていればゲートウェイは起動を拒否し、ホットリロードで同じ
+問題に当たればリロードを拒否して稼働中の設定をそのまま残します。
+
+```text
+models entry <id> router type = "prefill_router" failed to load: <upstream error>
+```
+
+リロードはルーターを作り直し、セッションごとのアフィニティはその中にあるので、リロードは
+どのセッションがどのターゲットにいたかを忘れます。
+
+**ターンの決め方。** アルゴリズムに渡されるのは `user` と `assistant` のロール、そして
+`text` と `tool_result` のブロックだけです。アルゴリズムは直近のテキストユーザーターンを
+採点し、ブロックがすべて `tool_result` のメッセージは新しい人間のターンではなくツールの
+継続として扱います。セッションの識別は `x-claude-code-session-id` から、委譲された子で
+あれば `x-claude-code-agent-id` も併せて読みます。そのため継続のリクエストは推論を
+やり直さずそのターンの判断を再利用します。どちらも送らない呼び出し元は、上流の規則どおり
+最初のユーザーメッセージのハッシュにフォールバックします。推論はブロッキングワーカー上で、
+エントリごとに 1 件ずつ実行されます。`count_tokens` のプローブも同じ方法で決まり、継続の
+場合は推論ではなくアフィニティのヒットになります。
+
+`x-gateway-route-source` と `shunt.router.decisions{algorithm="prefill_router"}` の
+`source` ラベルは、3 つのどれが起きたかを示します。
+
+| ソース | 意味 |
+| :-- | :-- |
+| `prefill` | ルーターがターンを決めた — 推論、またはセッションアフィニティのヒット |
+| `prefill_fail_open` | ルーティング呼び出しが失敗し、既定のターゲットへ回しました。上流の規則どおり `targets` の先頭です |
+| `prefill_default` | リクエストボディのない面 — `/v1/models` ディスカバリ、`GET /routes`、モデル解決 — は採点するターンがないので先頭のターゲットを報告します |
+
+`GET /routes` はそのエントリを `algorithm: "prefill_router"` とターゲット一覧で示します。
+`shunt.stage_router.*` のメトリクスはシグナルのみのルーターのもののままで、prefill の行が
+増えることはありません。
+
 #### 検証
 
 ターゲット自身がルーターである場合、空のターゲット、`(0.0, 1.0]` を外れたしきい値、
 `recent_turn_window` が `0`、ルーターの **id** が `[1m]` または `[1M]` で終わる場合、いずれか一方が
 ルーターテーブルを持つ重複 `[[models]]` id、このビルドが実装していない `type`、同じ
-エントリが `[models.upstream_model]` も宣言している場合は起動エラーです。マップなしの
+エントリが `[models.upstream_model]` も宣言している場合は起動エラーです。`prefill_router` の
+エントリでは、空の `targets`、同じターゲットの重複、空の `checkpoint`、`0` の
+`max_length` や `batch_size` も起動エラーです。これらはフィーチャーを**オンにした**
+ビルドが報告するものです。フィーチャーのないビルドは、これらのいずれにも達する前に
+足りない cargo フィーチャーを挙げてそのエントリを拒否するからです。重複ターゲットは
+他のターゲット比較と同じく末尾の `[1m]`/`[1M]`
+ヒントを除去してから比較されます。マップなしの
 エントリ同士は本来同じ id を共有できますが、ルーターはディスカバリのメタデータではなく
 ルーティングポリシーを指定するため、重複すると 1 つの id に 2 つのポリシーが残ります。
 ターゲット id はルーティングが照合するのと同じく、末尾の `[1m]` または `[1M]` ヒントを除去

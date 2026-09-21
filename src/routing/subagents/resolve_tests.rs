@@ -134,6 +134,7 @@ fn context<'a>(
         now: Instant::now(),
         pending: std::cell::Cell::new(None),
         decided: std::cell::Cell::new(None),
+        prefill: None,
     }
 }
 

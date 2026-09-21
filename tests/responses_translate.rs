@@ -23,6 +23,10 @@ fn route(model: &str) -> Route {
 }
 
 fn translate(input: Value) -> Value {
+    translate_with_session(input, None)
+}
+
+fn translate_with_session(input: Value, session_id: Option<&str>) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
     // provider "openai" is the stock Responses API (not the ChatGPT backend).
     translate_request(
@@ -30,6 +34,7 @@ fn translate(input: Value) -> Value {
         &route("gpt-5.2-codex"),
         ResponsesFlavor::OpenAi,
         false,
+        session_id,
     )
     .unwrap()
 }
@@ -52,8 +57,8 @@ fn parsed_value_entry_point_matches_byte_wrapper_across_flavors() {
 
     for flavor in [ResponsesFlavor::OpenAi, ResponsesFlavor::Chatgpt] {
         assert_eq!(
-            translate_request_value(&request, &route, flavor, false),
-            translate_request(&body, &route, flavor, false).unwrap(),
+            translate_request_value(&request, &route, flavor, false, None),
+            translate_request(&body, &route, flavor, false, None).unwrap(),
             "parsed and byte entry points diverged for {flavor:?}"
         );
     }
@@ -137,6 +142,7 @@ fn omits_max_output_tokens_for_chatgpt_backend() {
         &route("gpt-5.2-codex"),
         ResponsesFlavor::Chatgpt,
         false,
+        None,
     )
     .unwrap();
 
@@ -563,7 +569,7 @@ fn translates_tools_and_tool_choice_variants() {
 
 fn translate_with_flavor(input: Value, flavor: ResponsesFlavor) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
-    translate_request(&body, &route("gpt-5.2-codex"), flavor, false).unwrap()
+    translate_request(&body, &route("gpt-5.2-codex"), flavor, false, None).unwrap()
 }
 
 #[test]
@@ -886,7 +892,8 @@ fn maps_thinking_and_route_override_to_effort() {
     let mut route = route("gpt-5.2-codex-low");
     route.effort = Some("xhigh".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.2-codex-low", "messages": []})).unwrap();
-    let override_effort = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
+    let override_effort =
+        translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None).unwrap();
     assert_eq!(override_effort["reasoning"]["effort"], "xhigh");
 }
 
@@ -908,7 +915,7 @@ fn emits_configured_service_tier_on_the_wire() {
     let mut route = route("gpt-5.6-sol");
     route.service_tier = Some("priority".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None).unwrap();
     assert_eq!(out["service_tier"], json!("priority"));
 }
 
@@ -919,7 +926,7 @@ fn emits_configured_service_tier_on_chatgpt_flavor() {
     let mut route = route("gpt-5.6-sol");
     route.service_tier = Some("flex".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::Chatgpt, false).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::Chatgpt, false, None).unwrap();
     assert_eq!(out["service_tier"], json!("flex"));
 }
 
@@ -932,7 +939,7 @@ fn emits_both_effort_and_service_tier_when_both_are_configured() {
     route.effort = Some("xhigh".to_string());
     route.service_tier = Some("priority".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None).unwrap();
     assert_eq!(out["reasoning"]["effort"], json!("xhigh"));
     assert_eq!(out["service_tier"], json!("priority"));
 }
@@ -949,7 +956,7 @@ fn route_service_tier_default_sentinel_never_reaches_the_wire() {
     let mut route = route("gpt-5.6-sol");
     route.service_tier = Some("default".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None).unwrap();
     assert!(out.get("service_tier").is_none());
 }
 
@@ -976,8 +983,14 @@ fn xai_omits_reasoning_and_text_without_configured_effort() {
     }))
     .unwrap();
 
-    let actual =
-        translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(
+        &body,
+        &xai_route("grok-4.3"),
+        ResponsesFlavor::Xai,
+        false,
+        None,
+    )
+    .unwrap();
 
     assert!(
         actual.get("reasoning").is_none(),
@@ -1006,7 +1019,7 @@ fn xai_never_emits_service_tier_even_when_configured() {
     }))
     .unwrap();
 
-    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false, None).unwrap();
 
     assert!(actual.get("service_tier").is_none());
 }
@@ -1025,7 +1038,7 @@ fn grok_never_emits_service_tier_even_when_configured() {
     }))
     .unwrap();
 
-    let actual = translate_request(&body, &route, ResponsesFlavor::Grok, false).unwrap();
+    let actual = translate_request(&body, &route, ResponsesFlavor::Grok, false, None).unwrap();
 
     assert!(actual.get("service_tier").is_none());
 }
@@ -1041,8 +1054,14 @@ fn xai_honors_explicit_client_effort_without_route_config() {
     }))
     .unwrap();
 
-    let actual =
-        translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(
+        &body,
+        &xai_route("grok-4.3"),
+        ResponsesFlavor::Xai,
+        false,
+        None,
+    )
+    .unwrap();
 
     assert_eq!(actual["reasoning"], json!({"effort": "high"}));
 
@@ -1054,8 +1073,14 @@ fn xai_honors_explicit_client_effort_without_route_config() {
         "thinking": {"type": "enabled", "budget_tokens": 1024}
     }))
     .unwrap();
-    let actual =
-        translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(
+        &body,
+        &xai_route("grok-4.3"),
+        ResponsesFlavor::Xai,
+        false,
+        None,
+    )
+    .unwrap();
     assert!(actual.get("reasoning").is_none());
 }
 
@@ -1067,7 +1092,7 @@ fn xai_sends_reasoning_without_summary_when_effort_configured() {
     route.effort = Some("high".to_string());
     let body = serde_json::to_vec(&json!({"model": "grok-4.5", "messages": []})).unwrap();
 
-    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false, None).unwrap();
 
     assert_eq!(actual["reasoning"], json!({"effort": "high"}));
 }
@@ -1080,8 +1105,14 @@ fn xai_includes_encrypted_reasoning_when_thinking_enabled() {
     }))
     .unwrap();
 
-    let actual =
-        translate_request(&body, &xai_route("grok-4.5"), ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(
+        &body,
+        &xai_route("grok-4.5"),
+        ResponsesFlavor::Xai,
+        false,
+        None,
+    )
+    .unwrap();
 
     assert_eq!(actual["include"], json!(["reasoning.encrypted_content"]));
 }
@@ -2022,11 +2053,14 @@ fn ignores_reasoning_when_thinking_disabled() {
 fn derives_prompt_cache_key_from_session_id() {
     // Claude Code packs a JSON blob into metadata.user_id; session_id is the
     // stable per-conversation key the Responses cache should be routed by.
+    // Sent raw, matching the real Codex CLI (which sends its session id
+    // verbatim): the backend derives cache affinity from the `session-id`
+    // header, and the body key must equal that header's value.
     let out = translate(json!({
         "messages": [{"role": "user", "content": "hi"}],
         "metadata": {"user_id": "{\"device_id\":\"d1\",\"session_id\":\"sess_abc\"}"}
     }));
-    assert_eq!(out["prompt_cache_key"], "shunt-sess_abc");
+    assert_eq!(out["prompt_cache_key"], "sess_abc");
 
     // No metadata -> no key sent.
     let bare = translate(json!({"messages": [{"role": "user", "content": "hi"}]}));
@@ -2038,13 +2072,60 @@ fn derives_prompt_cache_key_from_session_id() {
         "metadata": {"user_id": "plain-user"}
     }));
     let key = hashed["prompt_cache_key"].as_str().unwrap();
-    assert!(key.starts_with("shunt-"));
+    assert_eq!(key.len(), 16);
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
     // Determinism: same input -> same key.
     let again = translate(json!({
         "messages": [{"role": "user", "content": "different"}],
         "metadata": {"user_id": "plain-user"}
     }));
     assert_eq!(hashed["prompt_cache_key"], again["prompt_cache_key"]);
+}
+
+#[test]
+fn an_unheaderable_metadata_session_falls_back_to_the_hash() {
+    // A JSON-decoded session id can carry an escaped control character; it
+    // becomes the upstream affinity headers, so the derivation must fall back
+    // to the header-safe hash instead of failing the request.
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {"user_id": "{\"session_id\":\"bad\\nid\"}"}
+    }));
+    let key = out["prompt_cache_key"].as_str().unwrap();
+    assert_eq!(key.len(), 16);
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // Determinism: the hash is the plain-user_id fallback, same input shape.
+    let again = translate(json!({
+        "messages": [{"role": "user", "content": "other"}],
+        "metadata": {"user_id": "{\"session_id\":\"bad\\nid\"}"}
+    }));
+    assert_eq!(key, again["prompt_cache_key"].as_str().unwrap());
+}
+
+#[test]
+fn inbound_session_id_header_wins_the_prompt_cache_key() {
+    // The inbound `x-claude-code-session-id` header is the conversation id
+    // Claude Code sends on every turn; it must win over metadata so the body
+    // key always equals the `session-id` header forwarded upstream.
+    let out = translate_with_session(
+        json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "metadata": {"user_id": "{\"device_id\":\"d1\",\"session_id\":\"meta_sess\"}"}
+        }),
+        Some("hdr-sess-123"),
+    );
+    assert_eq!(out["prompt_cache_key"], "hdr-sess-123");
+
+    // An empty header is not a session id: the metadata fallback applies.
+    let fallback = translate_with_session(
+        json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "metadata": {"user_id": "{\"session_id\":\"meta_sess\"}"}
+        }),
+        Some(""),
+    );
+    assert_eq!(fallback["prompt_cache_key"], "meta_sess");
 }
 
 #[test]
@@ -2213,7 +2294,14 @@ fn reasoning_id_falls_back_to_done_event_when_added_missing() {
 /// off).
 fn native_translate(input: Value) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
-    translate_request(&body, &route("gpt-5.6-sol"), ResponsesFlavor::Chatgpt, true).unwrap()
+    translate_request(
+        &body,
+        &route("gpt-5.6-sol"),
+        ResponsesFlavor::Chatgpt,
+        true,
+        None,
+    )
+    .unwrap()
 }
 
 /// Production eligibility: the native wire is selected by
@@ -2229,6 +2317,7 @@ fn translate_with_production_gate(model: &str, input: Value) -> Value {
         &route(model),
         ResponsesFlavor::Chatgpt,
         production_native_for(model),
+        None,
     )
     .unwrap()
 }

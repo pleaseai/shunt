@@ -34,6 +34,7 @@ pub(super) async fn forward_websocket(
     state: &AppState,
     route: &Route,
     pool_key: Option<&str>,
+    session_id: Option<&str>,
     forward: ForwardOptions,
     credential: Credential,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
@@ -51,6 +52,7 @@ pub(super) async fn forward_websocket(
     let ctx = WsTurnContext {
         ws_url,
         pool_key,
+        session_id: session_id.filter(|id| !id.is_empty()),
         provider: &route.provider,
         accounts: std::sync::Arc::clone(&state.accounts),
         codex_quota_account: codex_quota_account.as_ref(),
@@ -113,6 +115,11 @@ pub(super) async fn forward_websocket(
 struct WsTurnContext<'a> {
     ws_url: String,
     pool_key: Option<&'a str>,
+    /// The inbound `x-claude-code-session-id` header, the conversation id that
+    /// becomes the `session-id`/`thread-id` handshake headers (the backend
+    /// derives prompt-cache affinity from it) and the body's
+    /// `prompt_cache_key`.
+    session_id: Option<&'a str>,
     provider: &'a str,
     /// Shared, not borrowed: the `codex.rate_limits` tap outlives this context
     /// (the connection reader owns it for the turn's duration).
@@ -244,7 +251,11 @@ async fn start_ws_turn(
     ctx: &WsTurnContext<'_>,
     allow_continuation: bool,
 ) -> Result<(CodexWsEvents, bool), AdapterError> {
-    let headers = websocket_headers(ctx.credential.clone(), ctx.routing_hint.as_ref())?;
+    let headers = websocket_headers(
+        ctx.credential.clone(),
+        ctx.routing_hint.as_ref(),
+        ctx.session_id,
+    )?;
     let turn = codex_ws::begin(&ctx.ws_url, headers, ctx.pool_key, ctx.provider)
         .await
         .map_err(|error| ws_connect_error(error, ctx.auth))?;
@@ -340,6 +351,7 @@ async fn start_ws_turn(
 fn websocket_headers(
     credential: Credential,
     routing_hint: Option<&HeaderValue>,
+    session_id: Option<&str>,
 ) -> Result<HeaderMap, AdapterError> {
     let mut headers = HeaderMap::new();
     // Set only on the ChatGPT OAuth arm; inserted after the match (see there).
@@ -368,6 +380,13 @@ fn websocket_headers(
             set("originator", "codex_cli_rs".to_string())?;
             set("user-agent", CODEX_USER_AGENT.to_string())?;
             set("version", CODEX_CLIENT_VERSION.to_string())?;
+            // Same session identity the HTTP transport sends: the backend
+            // derives prompt-cache affinity from `session-id`, and its value
+            // must equal the body's `prompt_cache_key` (see `request.rs`).
+            if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
+                set("session-id", session_id.to_string())?;
+                set("thread-id", session_id.to_string())?;
+            }
             // Deliberately not through `set`: every other header must fail the
             // turn on a malformed value, but the routing hint is built from the
             // client-controlled model and was already validated (or omitted) by
@@ -583,7 +602,7 @@ mod tests {
             },
         ];
         for credential in cases {
-            let headers = websocket_headers(credential, Some(&hint()))
+            let headers = websocket_headers(credential, Some(&hint()), Some("sess-1"))
                 .expect("valid credential builds headers");
             assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
             assert!(headers
@@ -594,6 +613,8 @@ mod tests {
                 .starts_with("Bearer "));
             assert!(headers.get("chatgpt-account-id").is_none());
             assert!(headers.get("originator").is_none());
+            assert!(headers.get("session-id").is_none());
+            assert!(headers.get("thread-id").is_none());
             // Upstream suppresses the routing hint for api-key/bearer providers.
             assert!(headers.get("x-codex-routing-hint").is_none());
         }
@@ -613,12 +634,15 @@ mod tests {
             Some(&axum::http::HeaderValue::from_static(
                 "model=gpt-5.6-sol;tier=priority",
             )),
+            Some("session-123"),
         )
         .expect("valid credential builds headers");
         assert_eq!(
             headers.get("x-codex-routing-hint").unwrap(),
             "model=gpt-5.6-sol;tier=priority"
         );
+        assert_eq!(headers.get("session-id").unwrap(), "session-123");
+        assert_eq!(headers.get("thread-id").unwrap(), "session-123");
     }
 
     #[test]
@@ -663,6 +687,7 @@ mod tests {
                     account_id: "account-id".to_string(),
                 },
                 routing_hint(&route).as_ref(),
+                None,
             )
             .expect("an unusable model must not fail the handshake build");
             assert!(
@@ -675,13 +700,31 @@ mod tests {
     }
 
     #[test]
+    fn websocket_headers_omit_the_session_headers_for_an_empty_session_id() {
+        use super::{websocket_headers, Credential};
+
+        let headers = websocket_headers(
+            Credential::ChatGptOAuth {
+                access_token: "access-token".to_string(),
+                account_id: "account-id".to_string(),
+            },
+            Some(&hint()),
+            Some(""),
+        )
+        .expect("valid credential builds headers");
+        assert!(headers.get("session-id").is_none());
+        assert!(headers.get("thread-id").is_none());
+        assert_eq!(headers.get("originator").unwrap(), "codex_cli_rs");
+    }
+
+    #[test]
     fn websocket_headers_passthrough_sends_only_the_beta_protocol() {
         use super::codex_ws::WEBSOCKET_BETA_PROTOCOL;
         use super::{websocket_headers, Credential};
 
         // Passthrough is a misconfiguration on this transport: no credential is
         // attached, leaving the upstream to reject it.
-        let headers = websocket_headers(Credential::Passthrough, Some(&hint())).unwrap();
+        let headers = websocket_headers(Credential::Passthrough, Some(&hint()), None).unwrap();
         assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
         assert!(headers.get("authorization").is_none());
         assert!(headers.get("x-codex-routing-hint").is_none());
@@ -702,6 +745,7 @@ mod tests {
                 project_id: "proj-1".to_string(),
             },
             Some(&hint()),
+            None,
         )
         .unwrap();
         assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
@@ -722,6 +766,7 @@ mod tests {
                 account_id: "bad\nid".to_string(),
             },
             Some(&hint()),
+            None,
         )
         .expect_err("a malformed header value is rejected");
         assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);

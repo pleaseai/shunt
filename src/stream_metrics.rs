@@ -776,6 +776,14 @@ fn update_tokens(tokens: &mut TokenUsage, usage: &Value, anthropic: bool) {
             &mut tokens.cache_read,
             usage.pointer("/input_tokens_details/cached_tokens"),
         );
+        // The Responses `cache_write_tokens` is the write-side twin of
+        // `cached_tokens` (openai/codex codex-rs/codex-api/src/sse/responses.rs);
+        // without it every Responses turn records cache_creation as absent,
+        // which skews any hit-rate aggregate built from the token counters.
+        set_u64(
+            &mut tokens.cache_creation,
+            usage.pointer("/input_tokens_details/cache_write_tokens"),
+        );
     }
 }
 

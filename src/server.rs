@@ -54,6 +54,11 @@ pub struct AppState {
     /// invalidated by a change to *that router's* table, not by any config edit
     /// (see [`StageRouterStore::apply`]).
     pub(crate) stage_router: Arc<StageRouterStore>,
+    /// The built `prefill_router` algorithms for this request's config
+    /// snapshot. Runtime state, not a process-lifetime store: a reload rebuilds
+    /// them from the new config, so this is read off `current` like
+    /// [`AppState::config`] rather than threaded through [`AppState::from_shared`].
+    pub(crate) prefill_routers: Arc<crate::routing::prefill::PrefillRouters>,
     /// Whether the listener this process actually bound at startup is
     /// loopback. Fixed at boot like `server.bind` itself (see
     /// `reload::warn_on_restart_only_changes`): a reload can rewrite
@@ -110,6 +115,7 @@ impl AppState {
             inbound_auth: current.inbound_auth.clone(),
             admin_auth: current.admin_auth.clone(),
             gateway_auth: current.gateway_auth.clone(),
+            prefill_routers: current.prefill_routers.clone(),
             http_client,
             accounts,
             status,

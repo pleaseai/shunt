@@ -946,6 +946,7 @@ pub(super) async fn forward_chatgpt_oauth(
                 &state,
                 &route,
                 account_pool_key.as_deref(),
+                session_id.as_deref(),
                 ForwardOptions {
                     upstream_body: upstream_body.clone(),
                     auth,
