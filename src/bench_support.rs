@@ -155,7 +155,7 @@ pub fn resolve_chain(
         pending: Cell::new(None),
         decided: Cell::new(None),
         consult: Cell::new(None),
-        prefill: None,
+        drive_prefill: Cell::new(false),
     };
     let (routes, _model) = routing::resolve_request_chain_value(config, request, Some(&stage))?;
     // The commit `proxy::failover` performs once the request is admitted: take

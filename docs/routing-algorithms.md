@@ -508,6 +508,14 @@ for a caller who is about to be refused.
 injecting judge therefore still answers an unauthenticated probe exactly as it
 does today.
 
+The `prefill_router` lane (§6) takes the same path, with local inference in
+place of the judge call (issue #633). A turn whose id is a prefill entry is
+resolved to the entry's default target provisionally and admitted against the
+envelope — every request, `count_tokens` included, because that lane drives
+probes too — and `decide` runs only after both gates. The rule the two lanes
+share is that a turn which *will* drive is gated against the envelope; the
+judge lane exempts probes only because it never drives them.
+
 `serve` receives a non-forgeable `AdmittedContext`, minted only on that gate's
 success path. A judge call without one is a bug, not a request.
 
@@ -686,10 +694,11 @@ models entry <id> router type = "prefill_router" is not compiled into this binar
 
 ### How it is hosted
 
-`prefill_router` is an algorithm on ADR-0005 §1's **driven lane**:
-`proxy::failover` hands the request to `libsy::drive` before the ordinary
-ladder runs, and the outcome's selected target re-enters that ladder exactly
-as a stage tier does.
+`prefill_router` is an algorithm on ADR-0005 §1's **driven lane**: the
+ordinary ladder lands the turn on the entry's default target provisionally,
+`proxy::failover` admits the request against the entry's dependency envelope
+(§5), and only then hands it to `libsy::drive`; the outcome's selected target
+then replaces the provisional chain exactly as a judge verdict does.
 
 - **Construction is per runtime state.** Each prefill entry builds upstream's
   `PrefillRouterAlgo` when the runtime state is constructed — at startup and
@@ -718,8 +727,21 @@ as a stage tier does.
   upstream's own rule, a hash of the first user message.
 - **Inference is off the async path.** It runs on a blocking worker, one
   prediction at a time per entry.
+- **Admission comes first (issue #633).** The drive is inference over the
+  caller's transcript and an affinity write keyed on the caller's session id,
+  so it runs only after `[server.auth]` and the managed-model policy have
+  admitted the request. Admission cannot wait for the decided chain — the
+  chain is what the drive produces — so it ranges over the entry's
+  dependency envelope instead: the caller must authenticate if *any* target
+  injects a credential. `resolve_chain` parks the drive on
+  `StageContext::drive_prefill` the way the stage router parks its judge
+  consultation, and a turn a `[models.subagents]` overlay diverts before the
+  router runs is not driven at all. A refused caller therefore triggers no
+  inference and seeds no affinity for a session id it never proved it owns.
 - **`count_tokens` probes are driven too**, and on a continuation that is an
-  affinity hit rather than an inference.
+  affinity hit rather than an inference. Because the probe is a drive, it is
+  admitted against the envelope like the turn it measures — not against its
+  first route alone — and keeps first-route-only dispatch after the decision.
 
 Three outcome labels appear on `x-gateway-route-source` and in
 `shunt.router.decisions{algorithm="prefill_router"}`:
@@ -784,4 +806,6 @@ Everything else on the driven lane. `llm_classifier` (all modes), `composite`,
 and remain PR 5 of the ADR-0005 §8 sequence — naming one is still a load error.
 `stage_router.classifier` has since shipped as PR 4 (§5). `prefill_router` is
 the exception only because its inference is local: it needs no internal model
-call, no dependency envelope, and no admission rework.
+call. It does share PR 4's admission ordering — the envelope gate, then the
+drive — since issue #633 closed the window in which it ran ahead of inbound
+auth.

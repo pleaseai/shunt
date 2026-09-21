@@ -701,6 +701,10 @@ models entry <id> router type = "prefill_router" failed to load: <upstream error
 重载会重建路由器,而按会话的亲和关系就存在它里面,所以一次重载就会忘记每个会话原本落在哪个
 目标上。
 
+**准入在先。** 只有在 `[server.auth]` 与 gateway policy 的 `availableModels` 放行请求之后,路由器才会被驱动,而这一
+判定针对该条目命名的每一个目标,而不是它最终会选中的那一个。因此未认证的调用方即便指定了这个 id,
+也不会触发推理,也不会为它发来的会话 id 写入亲和关系。
+
 **一轮是怎么定下来的。** 交给算法的只有 `user` 和 `assistant` 两种角色,以及 `text` 和
 `tool_result` 两种块。算法给最近一轮文本用户消息打分,并把所有块都是 `tool_result` 的消息
 视为工具续跑而非新的人类发言。会话身份来自 `x-claude-code-session-id`,如果是被委派的子代理

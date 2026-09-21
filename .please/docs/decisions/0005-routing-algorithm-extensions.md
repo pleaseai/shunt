@@ -76,7 +76,7 @@ cargo feature; there is no other shape.
 | Lane | Algorithms | Where it runs | Cost on the unrouted path |
 |---|---|---|---|
 | **Pure** | fixed, `stage_router` (signal-only), `random`, `auto`, `noop`, `subagents` passthrough form, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Inside `resolve_chain`, as today | One `Option` check; `resolve_chain_unrouted` stays flat |
-| **Driven** | `llm_classifier` (all modes), `stage_router.classifier`, `composite`, `advisor`, `subagents` classifier form, `prefill_router` | `libsy::drive` before dispatch, in `proxy::failover` | Zero: an entry without a driven router never constructs a driver |
+| **Driven** | `llm_classifier` (all modes), `stage_router.classifier`, `composite`, `advisor`, `subagents` classifier form, `prefill_router` | `libsy::drive` in `proxy::failover`, after admission against the entry's dependency envelope (§3) and before dispatch — *amended 2026-09-22, §9* | Zero: an entry without a driven router never constructs a driver |
 
 The pure lane keeps ADR-0004's code and benchmarks untouched. The driven lane
 is one call: `drive(algorithm, request, models, serve)` where `serve` is a
@@ -489,6 +489,20 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   fallback — the split `random`/`random_session` already makes — so a header
   or metric reader can tell which key decided. The overlay's `algorithm`
   label is `subagents`.
+- **2026-09-22 (issue #633) — the driven lane runs after admission,
+  `prefill_router` included.** §1 placed `libsy::drive` "before dispatch"
+  without fixing its position relative to inbound auth, and PR 7 shipped
+  `prefill_router` with its drive ahead of `check_inbound_auth` — so with
+  `[server.auth]` configured an unauthenticated caller naming the id could run
+  local inference and seed an affinity for a session id it chose. Every driven
+  algorithm now admits first, against the entry's dependency envelope (§3),
+  and drives second; a live prefill turn resolves to the entry's default target
+  provisionally, parks the drive on the stage context the way a judge
+  consultation is parked, and is re-routed onto the decision once admitted.
+  For `prefill_router` the envelope gate covers `count_tokens` too, since that
+  lane drives probes; the judge lane's probe exemption stands because it never
+  drives them. The stage router's commit-after-admission pin is the precedent
+  (PR 4's "Notes for reviewers" named this reuse).
 
 ### 10. Verification before code
 

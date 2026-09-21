@@ -945,6 +945,12 @@ models entry <id> router type = "prefill_router" failed to load: <upstream error
 A reload rebuilds the router, and the per-session affinity lives inside it, so
 a reload forgets which target each session was on.
 
+**Admission comes first.** The router is driven only after `[server.auth]` and
+the gateway's managed-model policy have admitted the request, and that check
+ranges over every target the entry names rather than the one it will pick — so
+an unauthenticated caller naming this id triggers no inference and seeds no
+affinity for the session id it sent.
+
 **How a turn is decided.** Only `user` and `assistant` roles and only `text`
 and `tool_result` blocks are handed to the algorithm; it scores the latest text
 user turn, and treats a message whose blocks are all `tool_result` as a tool

@@ -182,16 +182,20 @@ pub(crate) struct StageContext<'a> {
     /// call on a gateway-held credential and the judge target's pool quota. A
     /// caller who is about to be rejected must spend neither.
     pub consult: Cell<Option<ConsultJudge>>,
-    /// What the driven `prefill_router` lane decided for this request, set by
-    /// `crate::proxy::failover` before resolution and only for an id whose
-    /// `[[models]]` entry is a `prefill_router`. `None` for every other
-    /// request — and for every request at all in a build without the
-    /// `prefill-router` feature.
+    /// Set when the requested id is a `prefill_router` entry this turn
+    /// actually reached — not one a `[models.subagents]` overlay diverted
+    /// before the router ran — parked for `proxy::failover` to drive *after*
+    /// admission (issue #633).
     ///
-    /// It is parked here rather than computed inside [`crate::routing::resolve_chain`]
-    /// because the drive is `async` (it runs inference on a blocking worker)
-    /// and resolution is not.
-    pub prefill: Option<crate::routing::outcome::PrefillDecision>,
+    /// The same park-until-admitted protocol [`StageContext::consult`] uses,
+    /// and for the same two reasons in local form: the drive runs encoder
+    /// inference on a blocking worker, and upstream's algorithm writes its
+    /// session affinity as a side effect of deciding. A caller who is about
+    /// to be refused must spend neither — and must not be able to seed an
+    /// affinity for a session id it does not own. Resolution therefore lands
+    /// the turn on the entry's default target provisionally, and the admitted
+    /// drive re-routes it onto what the algorithm actually chose.
+    pub drive_prefill: Cell<bool>,
 }
 
 /// A judge consultation this turn earned, with the budget it must fit inside.

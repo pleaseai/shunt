@@ -50,7 +50,7 @@ fn pick<'a>(
         pending: Cell::new(None),
         decided: Cell::new(None),
         consult: Cell::new(None),
-        prefill: None,
+        drive_prefill: Cell::new(false),
     };
     select(router, "claude-canary", Some(&context))
 }
