@@ -1,0 +1,144 @@
+site/src/content/docs/reference/configuration.md
+  s_1b5dd15adc2e9d::t_71c8ee4238ea25 627-632
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 624,626,810-902,909-915
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 47-64
+src/routing.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 195-206,817,867-879,943,976,1029,1073,1090-1144
+  s_1b5dd15adc2e9d::t_e1a938410d566c 1145
+ui/src/useDashboard.ts
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 69,72,81
+src/adapters/responses/websocket.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 37,55,118-122,254-258,354,383-389,605,616-617,637,644-645,690,702-719,727,748,769
+docs/routing-algorithms.md
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 420,423-590,592-594
+  s_1b5dd15adc2e9d::t_8df7492b3f97a0 339-340,421-422,591
+README.ja.md
+  s_1b5dd15adc2e9d::t_1c7bc31d01d65f 227
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 194
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 50-69
+site/src/content/docs/guides/switchyard.mdx
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 49-69
+src/server.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 57-61,118
+src/stream_metrics.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 779-786
+src/proxy/failover.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 75-78,91
+tests/responses_cache_affinity.rs
+  s_1b5dd15adc2e9d::t_b367d541e2f139 144
+  s_1b5dd15adc2e9d::t_8128178d5ba10e 1-143,145-174
+site/src/content/docs/ja/reference/configuration.md
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 422,604-693,699-705
+  s_1b5dd15adc2e9d::t_370cffe129c11e 424-429
+.github/workflows/ci.yml
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 112-116,118
+docs/notes/chatgpt-prompt-cache.md
+  s_1b5dd15adc2e9d::t_8128178d5ba10e 1-17
+src/admin/mod.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 936-940,2228-2255
+  s_1b5dd15adc2e9d::t_79660d3138fd5e 2256-2257
+src/bench_support.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 33-38,157
+src/routing/outcome.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 30-56,74-76,95-97,125-136
+  s_1b5dd15adc2e9d::t_4ac38a98b19f65 137-138
+src/routing/subagents/resolve_tests.rs
+  s_1b5dd15adc2e9d::t_b367d541e2f139 137
+README.md
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 195
+  s_1b5dd15adc2e9d::t_71c8ee4238ea25 227
+tests/prefill_router.rs
+  s_1b5dd15adc2e9d::t_8128178d5ba10e 1-249
+src/routing/prefill/driven.rs
+  s_1b5dd15adc2e9d::t_8128178d5ba10e 1-265
+ui/src/__tests__/coalescing.test.tsx
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 87-134
+  s_1b5dd15adc2e9d::t_4e9b98dc788c51 86
+docs/stage-router.md
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 427-432
+src/adapters/responses/request.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 185-194,200-201,268,286-377,636-637,646-647,665-666,747-748
+.github/workflows/codspeed.yml
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 16-27,35-41,46-55,59-64
+benches/perf_issues.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 220,236,254-261,282,309
+src/adapters/responses/pool.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 949
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 419,588-666,671-675
+  s_1b5dd15adc2e9d::t_e8b928bfccbcfb 421,423-424
+src/model/responses_request.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 6-8,117,125,134,222,240-251,261-265,267,270-292
+src/routing/stage.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 164-173
+src/routing/prefill.rs
+  s_1b5dd15adc2e9d::t_8128178d5ba10e 1-132
+README.zh-CN.md
+  s_1b5dd15adc2e9d::t_3ecd6e65bac978 225
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 192
+src/config/router/prefill.rs
+  s_1b5dd15adc2e9d::t_8128178d5ba10e 1-154
+README.ko.md
+  s_1b5dd15adc2e9d::t_8f13e0eff88ea4 228
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 195
+AGENTS.md
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 10-14,22-26,31-57
+benches/stage_router.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 383-401
+src/reload.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 39-50,66-70,76
+site/src/content/docs/ko/reference/configuration.md
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 442,444,621-707,713-717
+  s_1b5dd15adc2e9d::t_8eba4a3faf2966 445-449
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 45-60
+src/config/router.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 21,25,52-55,71,81,111
+  s_1b5dd15adc2e9d::t_4517e909c690bf 112-115
+site/src/content/docs/reference/endpoints.md
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 31
+tests/responses_translate.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 26-29,37,60-61,145,572,895-896,918,929,942,959,986-993,1022,1041,1057-1064,1076-1083,1095,1108-1115,2056-2058,2063,2075-2076,2085-2130,2297-2304,2320
+src/adapters/responses/mod.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 101-111,198,354,424-427,462
+src/routing/handoff.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 301
+src/routing/prefill/tests.rs
+  s_1b5dd15adc2e9d::t_8128178d5ba10e 1-315
+src/routing/random/tests.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 52
+docs/m9-admin-surface.md
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 400-407,421-426
+src/config.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 30-32,2210-2255,2550-2559,4396-4406,4452-4459,7938-7955,7957-8099
+  s_1b5dd15adc2e9d::t_b367d541e2f139 7956
+  s_1b5dd15adc2e9d::t_e1c022e35db05c 8100
+ui/src/accounts.ts
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 5,167-181,200,203,220-232
+benches/gateway.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 337
+Cargo.toml
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 37-44,85-90,135-138,170-174
+src/stream_metrics/tests.rs
+  s_1b5dd15adc2e9d::t_da5be94e798f6c 376,385
+Cargo.lock
+  s_1b5dd15adc2e9d::t_075d79fc4aa5e4 94,105,522,737,1718,2205-2219,2297-2354,2409,2767,2826,3164,3187,3203,3255,3387-3392,3400,4140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "955a89380dc26ba5f34f2b2ee2582836e11cbdbb",
+  "prompts": {},
+  "sessions": {
+    "s_1b5dd15adc2e9d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "26148b48-ee8c-464c-9246-e7a6aa737b21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
