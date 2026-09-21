@@ -33,7 +33,7 @@ The LLM classifier is no longer among these. ADR-0004 Decision 2 ("Signals
 only. No LLM classifier, no escalation") excluded it, and ADR-0005 explicitly
 supersedes that decision: the driven lane runs a classifier as an internal call
 through the same failover chain, under the admission and per-call bounds
-described in [`routing-algorithms.md` §4](./routing-algorithms.md). This
+described in [`routing-algorithms.md` §5](./routing-algorithms.md). This
 document remains the record of the **pure** `stage_router` selector — the
 signal extraction, hysteresis, and resolution below are what runs when no
 classifier is configured, and they are unchanged by the driven lane.
@@ -438,7 +438,7 @@ fall-through to the stage router. `prefill_router` is a **known** type whose
 availability is decided at compile time: it parses in every build, and on a
 build without the `prefill-router` cargo feature — which is every release
 binary — the load error names that feature, ahead of any key-level complaint
-about the table ([`routing-algorithms.md`](routing-algorithms.md) §5).
+about the table ([`routing-algorithms.md`](routing-algorithms.md) §6).
 
 The router-targeting-a-router check compares the target **after**
 `strip_context_window_hint`, because that is what `resolve_chain` matches on. It
