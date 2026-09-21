@@ -315,8 +315,8 @@ async fn aggregate_turn(
     let mut text = String::new();
     let mut tool_call: Option<(String, String, String)> = None;
     // Counted across every accumulated piece rather than against `text.len()`
-    // alone, so a reply that is oversized in tool-call arguments is refused on
-    // the same bound as one that is oversized in prose.
+    // alone, so a reply that is oversized in any retained tool-call field is
+    // refused on the same bound as one that is oversized in prose.
     let mut accumulated = 0usize;
     while let Some(event) = events.next().await {
         match event.map_err(map_cursor_stream_error)? {
@@ -335,7 +335,15 @@ async fn aggregate_turn(
                 name,
                 input_json,
             } => {
-                accumulated = accumulated.saturating_add(input_json.len());
+                // Every field this retains is upstream-controlled and lands in
+                // the JSON body below, so all three are charged. Billing
+                // `input_json` alone would leave `id` and `name` unbounded, and
+                // a tiny input beside a huge name would allocate the whole
+                // oversized reply before the collector could refuse it.
+                accumulated = accumulated
+                    .saturating_add(id.len())
+                    .saturating_add(name.len())
+                    .saturating_add(input_json.len());
                 if let Some(too_large) = crate::adapters::over_cap(accumulated, response_byte_cap) {
                     return Err(crate::adapters::too_large_error(too_large));
                 }
@@ -1235,6 +1243,51 @@ mod tests {
             "an upstream that answered correctly and merely answered too much \
              must not advance the failover chain; got {:?}",
             error.failure
+        );
+    }
+
+    /// A tool call whose `name` alone is oversized while its arguments are
+    /// tiny. Charging `input_json` by itself left `id` and `name` unbounded,
+    /// so this turn aggregated freely: the cap must see every field the JSON
+    /// body below retains, not just the arguments.
+    #[tokio::test]
+    async fn an_oversized_tool_call_name_is_charged_against_the_cap() {
+        let turn = turn_from_frames(tool_call_turn_frames(&"N".repeat(2048), "k", "v")).await;
+
+        let error = aggregate_turn(turn, "msg_test", "cursor:test", Some(1024))
+            .await
+            .expect_err("an oversized tool-call name is refused like oversized prose");
+
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyTooLarge>()
+                .is_some(),
+            "the refusal must carry the marker `routing::serve` reads back"
+        );
+        assert!(
+            error.failure.is_none(),
+            "an oversized reply must not advance the failover chain; got {:?}",
+            error.failure
+        );
+    }
+
+    /// The same tool call under a cap it fits in still aggregates, so the
+    /// assertion above cannot pass by refusing every tool call.
+    #[tokio::test]
+    async fn a_tool_call_within_the_cap_still_aggregates() {
+        let turn = turn_from_frames(tool_call_turn_frames(&"N".repeat(2048), "k", "v")).await;
+
+        let (_, response) = aggregate_turn(turn, "msg_test", "cursor:test", Some(65536))
+            .await
+            .expect("a tool call inside the cap is aggregated");
+        let body = response_json(response).await;
+
+        assert_eq!(
+            body["content"][0]["type"].as_str(),
+            Some("tool_use"),
+            "the turn must still carry its tool call: {body}"
         );
     }
 
