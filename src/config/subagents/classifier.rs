@@ -15,6 +15,7 @@
 //! be `false` — hashing the first user message of a delegated turn would key
 //! two different agents' identical opening prompts onto one assignment.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ use crate::config::router::{
     default_gated_idle_ms, default_gated_max_bytes, default_gated_max_duration_ms,
     default_judge_max_response_bytes, default_judge_timeout_ms, default_max_judge_calls,
     default_max_output_tokens, impl_call_bounds, ClassifierPolicy, ClassifyTrigger, ANY_GROUP,
-    JUDGE_GROUP,
+    JUDGE_GROUP, JUDGE_GROUP_KEY,
 };
 
 /// The `mode` discriminator on a classifier-form `[models.subagents]`.
@@ -98,7 +99,7 @@ impl SubagentsClassifierConfig {
     }
 
     /// Every id a delegated turn can land on, keyed `models.<group>`.
-    pub fn named_targets(&self) -> Vec<(String, &str)> {
+    pub fn named_targets(&self) -> Vec<(Cow<'static, str>, &str)> {
         let custom = self.custom();
         custom
             .models
@@ -106,19 +107,19 @@ impl SubagentsClassifierConfig {
             .filter(|(group, _)| group.as_str() != JUDGE_GROUP)
             .flat_map(|(group, ids)| {
                 ids.iter()
-                    .map(move |id| (format!("models.{group}"), id.as_str()))
+                    .map(move |id| (Cow::Owned(format!("models.{group}")), id.as_str()))
             })
             .collect()
     }
 
     /// Every id the overlay consults and never serves.
-    pub fn named_judges(&self) -> Vec<(String, &str)> {
+    pub fn named_judges(&self) -> Vec<(Cow<'static, str>, &str)> {
         self.custom()
             .models
             .get(JUDGE_GROUP)
             .into_iter()
             .flatten()
-            .map(|id| (format!("models.{JUDGE_GROUP}"), id.as_str()))
+            .map(|id| (Cow::Borrowed(JUDGE_GROUP_KEY), id.as_str()))
             .collect()
     }
 

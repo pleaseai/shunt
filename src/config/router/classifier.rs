@@ -14,6 +14,7 @@
 //! model ids and no credential can land here, so a derived `Debug` cannot leak
 //! one.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -211,6 +212,14 @@ impl_call_bounds!(CustomClassifierConfig);
 
 /// The group whose members a custom classifier consults rather than serves.
 pub(crate) const JUDGE_GROUP: &str = "judge";
+/// The config key that names that group, spelled out so the two `named_judges`
+/// accessors can borrow it instead of formatting one per call. The assertion
+/// below keeps it tied to [`JUDGE_GROUP`] if that group is ever renamed.
+pub(crate) const JUDGE_GROUP_KEY: &str = "models.judge";
+const _: () = assert!(
+    JUDGE_GROUP_KEY.len() == "models.".len() + JUDGE_GROUP.len(),
+    "JUDGE_GROUP_KEY must stay `models.<JUDGE_GROUP>`"
+);
 /// The group every other group's members must belong to (upstream's rule: the
 /// runtime model list is `any`).
 pub(crate) const ANY_GROUP: &str = "any";
@@ -220,16 +229,20 @@ impl LlmClassifierConfig {
     /// that named it.
     ///
     /// Custom groups key as `models.<group>`, which is why
-    /// [`super::RouterConfig::named_targets`] returns an owned `String` rather
-    /// than the `&'static str` it used to: a group name is the operator's.
-    pub fn named_targets(&self) -> Vec<(String, &str)> {
+    /// [`super::RouterConfig::named_targets`] returns a `Cow` rather than the
+    /// `&'static str` it used to: a group name is the operator's, so only that
+    /// arm owns its key.
+    pub fn named_targets(&self) -> Vec<(Cow<'static, str>, &str)> {
         match self {
             Self::Capability(capability) => vec![
                 (
-                    "strong_target".to_string(),
+                    Cow::Borrowed("strong_target"),
                     capability.strong_target.as_str(),
                 ),
-                ("weak_target".to_string(), capability.weak_target.as_str()),
+                (
+                    Cow::Borrowed("weak_target"),
+                    capability.weak_target.as_str(),
+                ),
             ],
             Self::Custom(custom) => custom
                 .models
@@ -237,17 +250,17 @@ impl LlmClassifierConfig {
                 .filter(|(group, _)| group.as_str() != JUDGE_GROUP)
                 .flat_map(|(group, ids)| {
                     ids.iter()
-                        .map(move |id| (format!("models.{group}"), id.as_str()))
+                        .map(move |id| (Cow::Owned(format!("models.{group}")), id.as_str()))
                 })
                 .collect(),
         }
     }
 
     /// Every id this router consults and never serves.
-    pub fn named_judges(&self) -> Vec<(String, &str)> {
+    pub fn named_judges(&self) -> Vec<(Cow<'static, str>, &str)> {
         match self {
             Self::Capability(capability) => vec![(
-                "classifier_target".to_string(),
+                Cow::Borrowed("classifier_target"),
                 capability.classifier_target.as_str(),
             )],
             Self::Custom(custom) => custom
@@ -255,7 +268,7 @@ impl LlmClassifierConfig {
                 .get(JUDGE_GROUP)
                 .into_iter()
                 .flatten()
-                .map(|id| (format!("models.{JUDGE_GROUP}"), id.as_str()))
+                .map(|id| (Cow::Borrowed(JUDGE_GROUP_KEY), id.as_str()))
                 .collect(),
         }
     }

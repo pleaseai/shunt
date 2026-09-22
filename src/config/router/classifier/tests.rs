@@ -125,13 +125,13 @@ fn the_capability_example_round_trips() {
     assert_eq!(
         classifier.named_targets(),
         vec![
-            ("strong_target".to_string(), "claude-opus-4-8"),
-            ("weak_target".to_string(), "claude-sonnet-4-6"),
+            (Cow::Borrowed("strong_target"), "claude-opus-4-8"),
+            (Cow::Borrowed("weak_target"), "claude-sonnet-4-6"),
         ]
     );
     assert_eq!(
         classifier.named_judges(),
-        vec![("classifier_target".to_string(), "claude-haiku-4-5")]
+        vec![(Cow::Borrowed("classifier_target"), "claude-haiku-4-5")]
     );
     // libsy's capability route closes on `Category::Capable`, so the strong
     // tier is where a turn with no usable verdict lands.
@@ -152,15 +152,15 @@ fn the_custom_example_round_trips() {
     assert_eq!(
         classifier.named_targets(),
         vec![
-            ("models.any".to_string(), "claude-sonnet-4-6"),
-            ("models.any".to_string(), "claude-opus-4-8"),
-            ("models.capable".to_string(), "claude-opus-4-8"),
-            ("models.efficient".to_string(), "claude-sonnet-4-6"),
+            (Cow::Borrowed("models.any"), "claude-sonnet-4-6"),
+            (Cow::Borrowed("models.any"), "claude-opus-4-8"),
+            (Cow::Borrowed("models.capable"), "claude-opus-4-8"),
+            (Cow::Borrowed("models.efficient"), "claude-sonnet-4-6"),
         ]
     );
     assert_eq!(
         classifier.named_judges(),
-        vec![("models.judge".to_string(), "claude-haiku-4-5")]
+        vec![(Cow::Borrowed("models.judge"), "claude-haiku-4-5")]
     );
     assert_eq!(classifier.fail_open_target(), "claude-sonnet-4-6");
 }

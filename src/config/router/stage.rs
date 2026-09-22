@@ -11,6 +11,8 @@
 //! Policy only: the table holds no credentials, so a derived `Debug` cannot leak
 //! one. Absent this table a `[[models]]` entry behaves exactly as before.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 use super::bounds::{
@@ -292,11 +294,14 @@ impl StageRouterConfig {
     }
 
     /// The same pair, each with the key that named it.
-    pub fn named_targets(&self) -> Vec<(String, &str)> {
+    pub fn named_targets(&self) -> Vec<(Cow<'static, str>, &str)> {
         vec![
-            ("capable_target".to_string(), self.capable_target.as_str()),
             (
-                "efficient_target".to_string(),
+                Cow::Borrowed("capable_target"),
+                self.capable_target.as_str(),
+            ),
+            (
+                Cow::Borrowed("efficient_target"),
                 self.efficient_target.as_str(),
             ),
         ]

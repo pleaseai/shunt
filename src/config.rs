@@ -4476,7 +4476,7 @@ impl Config {
             if target.trim().is_empty() {
                 return Err(ConfigError::EmptyRouterTarget {
                     model: model_id.to_string(),
-                    key,
+                    key: key.into_owned(),
                 });
             }
             // `resolve_model_chain` strips the context-window hint before it
@@ -4581,7 +4581,7 @@ impl Config {
             if target.trim().is_empty() {
                 return Err(ConfigError::EmptySubagentsTarget {
                     model: model_id.to_string(),
-                    key,
+                    key: key.into_owned(),
                 });
             }
             let resolved = crate::routing::strip_context_window_hint(target);
@@ -4592,7 +4592,7 @@ impl Config {
             {
                 return Err(ConfigError::SubagentsRecursion {
                     model: model_id.to_string(),
-                    key,
+                    key: key.into_owned(),
                     target: target.to_string(),
                 });
             }

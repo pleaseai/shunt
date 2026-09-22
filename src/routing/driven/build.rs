@@ -15,6 +15,7 @@
 //! long-lived and owned by `RuntimeState`; a validation-time instance that
 //! escaped here would be a second, short-lived session map.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -288,7 +289,7 @@ pub(super) fn overlay_entry(classifier: &SubagentsClassifierConfig) -> Result<Dr
 
 /// The ids a verdict may name, with the config keys that named them dropped:
 /// the request path asks only "is the selected id one of these?".
-fn target_ids(named: Vec<(String, &str)>) -> Vec<String> {
+fn target_ids(named: Vec<(Cow<'static, str>, &str)>) -> Vec<String> {
     named
         .into_iter()
         .map(|(_, target)| target.to_string())

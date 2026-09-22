@@ -48,13 +48,15 @@ pub(crate) use bounds::{
     default_judge_max_response_bytes, default_judge_timeout_ms, default_max_judge_calls,
     impl_call_bounds,
 };
-pub(crate) use classifier::{default_max_output_tokens, ANY_GROUP, JUDGE_GROUP};
+pub(crate) use classifier::{default_max_output_tokens, ANY_GROUP, JUDGE_GROUP, JUDGE_GROUP_KEY};
 pub use random::{RandomAffinity, RandomRouterConfig};
 pub use stage::{
     HandoffNotesConfig, StageClassifierConfig, StageRouterConfig, StageRouterPicker,
     ToolSemanticsConfig, DEFAULT_BASE_THRESHOLD, DEFAULT_CONFIDENCE_THRESHOLD,
     DEFAULT_DEESCALATE_THRESHOLD,
 };
+
+use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
 
@@ -149,22 +151,25 @@ impl RouterConfig {
     /// rejection can quote the key the operator wrote rather than a generic
     /// "target".
     ///
-    /// The key is an owned `String` rather than the `&'static str` it was
-    /// through PR 4: a custom classifier's groups are named by the operator,
-    /// so `models.<group>` cannot be a literal.
-    pub fn named_targets(&self) -> Vec<(String, &str)> {
+    /// The key is a [`Cow<'static, str>`] rather than the `&'static str` it was
+    /// through PR 4: a custom classifier's groups are named by the operator, so
+    /// `models.<group>` cannot be a literal. Every fixed key stays borrowed and
+    /// only an operator-named group is owned, so the accessors that discard the
+    /// label — [`RouterConfig::targets`] and [`RouterConfig::judges`] — allocate
+    /// nothing.
+    pub fn named_targets(&self) -> Vec<(Cow<'static, str>, &str)> {
         match self {
             Self::StageRouter(stage) => stage.named_targets(),
             Self::Auto(auto) => auto.stage().named_targets(),
             Self::Random(random) => random
                 .targets
                 .iter()
-                .map(|target| ("targets".to_string(), target.as_str()))
+                .map(|target| (Cow::Borrowed("targets"), target.as_str()))
                 .collect(),
             Self::PrefillRouter(prefill) => prefill
                 .targets
                 .iter()
-                .map(|target| ("targets".to_string(), target.as_str()))
+                .map(|target| (Cow::Borrowed("targets"), target.as_str()))
                 .collect(),
             Self::LlmClassifier(classifier) => classifier.named_targets(),
             Self::Composite(composite) => composite.named_targets(),
@@ -181,13 +186,16 @@ impl RouterConfig {
     /// client turn can land, a judge is not. Validation chains them, `/routes`
     /// reports them as separate lists, and the dependency envelope appends the
     /// judges after the targets.
-    pub fn named_judges(&self) -> Vec<(String, &str)> {
+    pub fn named_judges(&self) -> Vec<(Cow<'static, str>, &str)> {
         match self {
             Self::LlmClassifier(classifier) => classifier.named_judges(),
             Self::Composite(composite) => composite.named_judges(),
             _ => match self.stage_classifier() {
                 Some((_, classifier)) => {
-                    vec![("classifier.target".to_string(), classifier.target.as_str())]
+                    vec![(
+                        Cow::Borrowed("classifier.target"),
+                        classifier.target.as_str(),
+                    )]
                 }
                 None => Vec::new(),
             },

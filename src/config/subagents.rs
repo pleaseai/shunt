@@ -20,6 +20,7 @@ mod classifier;
 
 pub use classifier::{SubagentsClassifierConfig, SubagentsCustomConfig};
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -103,13 +104,13 @@ impl SubagentsConfig {
     ///
     /// The one-hop rule and the unresolvable-target warning both range over
     /// this, exactly as they range over [`crate::config::RouterConfig::named_targets`].
-    pub fn named_targets(&self) -> Vec<(String, &str)> {
+    pub fn named_targets(&self) -> Vec<(Cow<'static, str>, &str)> {
         match self {
             Self::Passthrough(passthrough) => {
                 let mut targets = Vec::with_capacity(1 + passthrough.by_type.len());
-                targets.push(("target".to_string(), passthrough.target.as_str()));
+                targets.push((Cow::Borrowed("target"), passthrough.target.as_str()));
                 targets.extend(passthrough.by_type.iter().map(|(agent_type, target)| {
-                    (format!("by_type.{agent_type}"), target.as_str())
+                    (Cow::Owned(format!("by_type.{agent_type}")), target.as_str())
                 }));
                 targets
             }
@@ -124,7 +125,7 @@ impl SubagentsConfig {
     /// [`crate::config::RouterConfig::named_judges`] is separate: admission
     /// must cover a judge the overlay calls on the gateway's credential, and
     /// `/routes` must not report one as a place a client turn can land.
-    pub fn named_judges(&self) -> Vec<(String, &str)> {
+    pub fn named_judges(&self) -> Vec<(Cow<'static, str>, &str)> {
         match self {
             Self::Passthrough(_) => Vec::new(),
             Self::LlmClassifier(classifier) => classifier.named_judges(),

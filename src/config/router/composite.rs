@@ -15,6 +15,8 @@
 //! outright. Both are unknown-key/unknown-variant load errors rather than
 //! runtime surprises.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 use super::bounds::{
@@ -139,23 +141,23 @@ impl_call_bounds!(CompositeRouterConfig);
 
 impl CompositeRouterConfig {
     /// Both answer tiers, each with the key that named it.
-    pub fn named_targets(&self) -> Vec<(String, &str)> {
+    pub fn named_targets(&self) -> Vec<(Cow<'static, str>, &str)> {
         vec![
             (
-                "stage.capable_target".to_string(),
+                Cow::Borrowed("stage.capable_target"),
                 self.stage.capable_target.as_str(),
             ),
             (
-                "stage.efficient_target".to_string(),
+                Cow::Borrowed("stage.efficient_target"),
                 self.stage.efficient_target.as_str(),
             ),
         ]
     }
 
     /// The judge, with the key that named it.
-    pub fn named_judges(&self) -> Vec<(String, &str)> {
+    pub fn named_judges(&self) -> Vec<(Cow<'static, str>, &str)> {
         vec![(
-            "classifier.target".to_string(),
+            Cow::Borrowed("classifier.target"),
             self.classifier.target.as_str(),
         )]
     }

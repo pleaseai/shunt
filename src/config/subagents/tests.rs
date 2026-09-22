@@ -36,10 +36,10 @@ fn the_adr_example_parses() {
     assert_eq!(
         overlay.named_targets(),
         vec![
-            ("target".to_string(), "claude-haiku-4-5"),
-            ("by_type.Explore".to_string(), "claude-haiku-4-5"),
-            ("by_type.fork".to_string(), "claude-sonnet-4-6"),
-            ("by_type.teammate".to_string(), "claude-sonnet-4-6"),
+            (Cow::Borrowed("target"), "claude-haiku-4-5"),
+            (Cow::Borrowed("by_type.Explore"), "claude-haiku-4-5"),
+            (Cow::Borrowed("by_type.fork"), "claude-sonnet-4-6"),
+            (Cow::Borrowed("by_type.teammate"), "claude-sonnet-4-6"),
         ]
     );
 }
@@ -112,15 +112,15 @@ fn the_upstream_classifier_example_round_trips() {
     assert_eq!(
         overlay.named_targets(),
         vec![
-            ("models.any".to_string(), "claude-sonnet-4-6"),
-            ("models.any".to_string(), "claude-opus-4-8"),
-            ("models.capable".to_string(), "claude-opus-4-8"),
-            ("models.efficient".to_string(), "claude-sonnet-4-6"),
+            (Cow::Borrowed("models.any"), "claude-sonnet-4-6"),
+            (Cow::Borrowed("models.any"), "claude-opus-4-8"),
+            (Cow::Borrowed("models.capable"), "claude-opus-4-8"),
+            (Cow::Borrowed("models.efficient"), "claude-sonnet-4-6"),
         ]
     );
     assert_eq!(
         overlay.named_judges(),
-        vec![("models.judge".to_string(), "claude-haiku-4-5")]
+        vec![(Cow::Borrowed("models.judge"), "claude-haiku-4-5")]
     );
     assert_eq!(classifier.fail_open_target(), "claude-sonnet-4-6");
     assert_eq!(classifier.custom().max_output_tokens, 64);

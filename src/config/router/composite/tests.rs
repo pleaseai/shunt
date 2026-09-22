@@ -82,13 +82,13 @@ fn the_adr_example_round_trips() {
     assert_eq!(
         parsed.named_targets(),
         vec![
-            ("stage.capable_target".to_string(), "claude-opus-4-8"),
-            ("stage.efficient_target".to_string(), "claude-sonnet-4-6"),
+            (Cow::Borrowed("stage.capable_target"), "claude-opus-4-8"),
+            (Cow::Borrowed("stage.efficient_target"), "claude-sonnet-4-6"),
         ]
     );
     assert_eq!(
         parsed.named_judges(),
-        vec![("classifier.target".to_string(), "claude-sonnet-4-6")]
+        vec![(Cow::Borrowed("classifier.target"), "claude-sonnet-4-6")]
     );
     assert_eq!(parsed.fail_open_target(), Some("claude-sonnet-4-6"));
 }
