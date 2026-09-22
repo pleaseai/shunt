@@ -10,7 +10,8 @@ use wiremock::{
 
 use super::harness::{
     anthropic_sse, anthropic_sse_truncated, bodies, gated_config, header, judge_text,
-    messages_mock, post, sse_events, sse_reply, streamed_text, Tiers, ADVISOR_ROUTER,
+    messages_mock, post, post_in_session, sse_events, sse_reply, streamed_text, Tiers,
+    ADVISOR_ROUTER,
 };
 use super::judge_harness::{
     can_bind_loopback, env, stall_mock, start_gateway, Stall, EFFICIENT_UPSTREAM_MODEL,
@@ -201,4 +202,70 @@ async fn a_nonterminal_executor_turn_is_a_gateway_error() {
         !error.to_string().contains("EXECUTOR-PARTIAL"),
         "the cut turn leaked: {error}"
     );
+}
+
+/// The review sources two advisor turns report, one after the other, with the
+/// session header set to each `session` in turn (or left off).
+async fn two_advisor_turns(sessions: [Option<&str>; 2], reviews: u64) -> [String; 2] {
+    let (strong, executor, responses, advisor) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(sse_reply(anthropic_sse(
+            EFFICIENT_UPSTREAM_MODEL,
+            "EXECUTOR-ANSWER",
+        )))
+        .mount(&executor)
+        .await;
+    messages_mock(judge_text("APPROVE"), reviews)
+        .mount(&advisor)
+        .await;
+    let tiers = Tiers::of(&strong, &executor, &responses, advisor.uri());
+    let gateway = start_gateway(gated_config(&tiers, ADVISOR_ROUTER)).await;
+
+    let mut sources = Vec::new();
+    for session in sessions {
+        let response = post_in_session(&gateway, true, session).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        sources.push(header(&response, "x-gateway-route-source").to_string());
+        let body = response.text().await.unwrap();
+        assert_eq!(streamed_text(&sse_events(&body)), "EXECUTOR-ANSWER");
+    }
+    sources.try_into().expect("two turns")
+}
+
+/// `max_reviews` is per session, and a caller that sends no session is not
+/// one shared session: two unrelated sessionless turns are each reviewed.
+/// The pinned `AdvisorGate` would otherwise fold both into its instance-wide
+/// scope, and the first caller's single review would turn review off for
+/// every later sessionless caller until the config reloads.
+///
+/// Non-vacuity: drop `scope_sessionless_advisor` and the second turn comes
+/// back `advisor_exhausted` with the advisor called once. The budget does
+/// bite — see `one_session_spends_its_review_budget` — so this is not green
+/// merely because a review is never refused.
+#[tokio::test]
+async fn sessionless_advisor_turns_do_not_share_one_review_budget() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let sources = two_advisor_turns([None, None], 2).await;
+    assert_eq!(sources, ["advisor_approve", "advisor_approve"]);
+}
+
+/// The positive twin: within one session the default `max_reviews = 1` is
+/// spent by the first turn, and the second answers live without a review.
+#[tokio::test]
+async fn one_session_spends_its_review_budget() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let sources = two_advisor_turns([Some("session-a"), Some("session-a")], 1).await;
+    assert_eq!(sources, ["advisor_approve", "advisor_exhausted"]);
 }

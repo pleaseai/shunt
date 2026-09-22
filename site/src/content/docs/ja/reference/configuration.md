@@ -843,7 +843,7 @@ max_reviews = 1
 | `advisor_target` | ✅ 必須 | 留め置いたターンをレビューします。提供はしません |
 | `gate_trigger` | `no_tool_call` | レビューを起こす条件。`no_tool_call`（実行モデルがツール呼び出しなしで終えた最初のターン）または `pattern` |
 | `gate_trigger_pattern` | 未設定 | `pattern` トリガーの正規表現。アンカーなしで検索します。`pattern` では空でない値が必須で、`no_tool_call` で設定すると起動エラーです |
-| `max_reviews` | `1` | セッションごとに許されるレビュー数。最低でも `1` |
+| `max_reviews` | `1` | セッションごとに許されるレビュー数。最低でも `1`。`x-claude-code-session-id` のないリクエストはそれ自体を 1 つのセッションとして数えるため、セッションのない呼び出し元どうしで予算を共有することはありません |
 | `gate_stall_turns` | `0` | 会話にこの数のアシスタントターンがたまると、作業途中のチェックポイントとして 1 ターンをレビューします。`0` で無効 |
 | `gate_min_tool_results` | `0` | `no_tool_call` のターンをレビュー対象にする前に会話に必要な tool result 数 |
 | `advisor_max_tokens` | `2048` | レビュー 1 回あたりの出力トークン上限。最低でも `1` |

@@ -124,11 +124,23 @@ judge_timeout_ms = 300
 
 /// One gated request, in the mode the test names.
 pub(crate) async fn post(gateway: &TestGateway, stream: bool) -> reqwest::Response {
-    client()
+    post_in_session(gateway, stream, Some(SESSION)).await
+}
+
+/// [`post`], with the session header set to `session` or left off entirely.
+pub(crate) async fn post_in_session(
+    gateway: &TestGateway,
+    stream: bool,
+    session: Option<&str>,
+) -> reqwest::Response {
+    let mut request = client()
         .post(format!("{}/v1/messages", gateway.base_url))
         .header("content-type", "application/json")
-        .header("x-shunt-token", CLIENT_TOKEN)
-        .header("x-claude-code-session-id", SESSION)
+        .header("x-shunt-token", CLIENT_TOKEN);
+    if let Some(session) = session {
+        request = request.header("x-claude-code-session-id", session);
+    }
+    request
         .body(
             json!({
                 "model": ROUTER_ID,

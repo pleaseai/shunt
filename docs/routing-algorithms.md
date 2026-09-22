@@ -1256,6 +1256,16 @@ that target's chain and carries the caller's credential exactly as a live turn
 does (ADR-0005 §3). A `count_tokens` probe never enters `drive`: it makes zero
 judge calls and zero gated calls, and answers from the weak or executor target.
 
+The advisor's `max_reviews` budget and its failure cap are per session. The
+pinned `AdvisorGate` folds every request that carries no session id into one
+instance-wide scope that lasts until the config reloads, so one anonymous
+caller would spend review for every other. shunt instead gives a sessionless
+advisor turn a request-unique session id marked final, which libsy drops when
+the drive returns: each sessionless request is reviewed as a session of its
+own (`sessionless_advisor_turns_do_not_share_one_review_budget`). The judge
+budget's key is read before that id is set, so `max_judge_calls` keeps its
+per-request allowance for sessionless callers.
+
 ### Which turns are gated
 
 | Entry | Gated (buffered) | Live (streamed as before) |

@@ -1057,7 +1057,7 @@ max_reviews = 1
 | `advisor_target` | ✅ required | Reviews gated turns. Never served |
 | `gate_trigger` | `no_tool_call` | What fires a review: `no_tool_call`, the executor's first turn that ends without a tool call, or `pattern` |
 | `gate_trigger_pattern` | unset | Regex for the `pattern` trigger, searched rather than anchored. Required and non-empty under `pattern`; setting it under `no_tool_call` is a startup error |
-| `max_reviews` | `1` | Reviews allowed per session. Must be at least `1` |
+| `max_reviews` | `1` | Reviews allowed per session. Must be at least `1`. A request without `x-claude-code-session-id` counts as a session of its own, so sessionless callers never share one budget |
 | `gate_stall_turns` | `0` | Reviews one turn as a mid-task checkpoint once the conversation carries this many assistant turns. `0` turns it off |
 | `gate_min_tool_results` | `0` | Tool results a conversation needs before a `no_tool_call` turn is reviewable |
 | `advisor_max_tokens` | `2048` | Output-token ceiling on each review. Must be at least `1` |

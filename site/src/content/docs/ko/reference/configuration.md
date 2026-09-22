@@ -853,7 +853,7 @@ max_reviews = 1
 | `advisor_target` | ✅ 필수 | 보류된 턴을 리뷰합니다. 제공하지 않습니다 |
 | `gate_trigger` | `no_tool_call` | 리뷰를 일으키는 조건. `no_tool_call`(실행 모델이 도구 호출 없이 끝낸 첫 턴) 또는 `pattern` |
 | `gate_trigger_pattern` | 미설정 | `pattern` 트리거의 정규식. 앵커 없이 검색합니다. `pattern`에서는 비어 있지 않은 값이 필수이고, `no_tool_call`에서 설정하면 시작 오류입니다 |
-| `max_reviews` | `1` | 세션당 허용되는 리뷰 수. 최소 `1` |
+| `max_reviews` | `1` | 세션당 허용되는 리뷰 수. 최소 `1`. `x-claude-code-session-id`가 없는 요청은 그 자체로 하나의 세션으로 세므로, 세션이 없는 호출자끼리 예산을 공유하지 않습니다 |
 | `gate_stall_turns` | `0` | 대화에 이만큼의 어시스턴트 턴이 쌓이면 작업 중간 점검으로 한 턴을 리뷰합니다. `0`은 끔 |
 | `gate_min_tool_results` | `0` | `no_tool_call` 턴을 리뷰할 수 있기 전에 대화에 있어야 하는 tool result 수 |
 | `advisor_max_tokens` | `2048` | 리뷰 한 번의 출력 토큰 상한. 최소 `1` |

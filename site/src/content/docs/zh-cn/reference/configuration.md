@@ -803,7 +803,7 @@ max_reviews = 1
 | `advisor_target` | ✅ 必填 | 审阅被扣住的回合。从不提供给客户端 |
 | `gate_trigger` | `no_tool_call` | 触发审阅的条件:`no_tool_call`(执行模型第一次不带工具调用结束的回合)或 `pattern` |
 | `gate_trigger_pattern` | 未设置 | `pattern` 触发器的正则表达式,按搜索而非锚定匹配。在 `pattern` 下必填且不能为空;在 `no_tool_call` 下设置它是启动错误 |
-| `max_reviews` | `1` | 每个会话允许的审阅次数。至少为 `1` |
+| `max_reviews` | `1` | 每个会话允许的审阅次数。至少为 `1`。没有 `x-claude-code-session-id` 的请求单独算作一个会话,因此没有会话的调用方之间不会共用同一份预算 |
 | `gate_stall_turns` | `0` | 对话中的 assistant 回合数达到这个值时,审阅一轮作为任务中途的检查点。`0` 表示关闭 |
 | `gate_min_tool_results` | `0` | `no_tool_call` 回合可被审阅之前,对话中至少需要的 tool result 数 |
 | `advisor_max_tokens` | `2048` | 每次审阅的输出 token 上限。至少为 `1` |

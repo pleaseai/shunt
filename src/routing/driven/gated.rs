@@ -105,8 +105,11 @@ pub(crate) async fn drive_gated(
     let kind = entry
         .gated
         .expect("drive_gated runs only for a gated entry");
-    let metadata = libsy_metadata(headers);
+    let mut metadata = libsy_metadata(headers);
     let key = JudgeBudget::key(metadata.session_id.as_deref(), metadata.agent_id.as_deref());
+    if kind == GatedKind::Advisor {
+        scope_sessionless_advisor(&mut metadata);
+    }
     // No pre-drive `budget.used() >= max` fast path here, unlike
     // `super::drive`, and deliberately scoped to gated entries. Short-circuiting
     // a spent session to the fail-open target would override the algorithm's
@@ -197,6 +200,28 @@ pub(crate) async fn drive_gated(
             refuse(entry, captured)
         }
         Err(_) => refuse(entry, captured),
+    }
+}
+
+/// Give a sessionless advisor turn a review scope of its own.
+///
+/// The pinned `AdvisorGate` keys its `max_reviews` budget and its failure cap
+/// on the session id, and folds every request without one into a single
+/// instance-wide scope that lives as long as the algorithm instance — which
+/// here is until the config reloads. One anonymous caller spending that scope
+/// would switch review off for every other sessionless caller, the shared
+/// anonymous bucket [`JudgeBudget`] refuses for the same reason. So a
+/// sessionless turn gets a request-unique id, marked final so libsy drops its
+/// scope when the drive returns rather than tracking one entry per request
+/// against its scope cap (and evicting real sessions' ledgers to make room).
+///
+/// Called after the [`JudgeBudget`] key is read: judge calls keep their own
+/// per-request allowance for sessionless callers, and a surrogate id there
+/// would track one entry per request in that store too.
+fn scope_sessionless_advisor(metadata: &mut switchyard_protocol::Metadata) {
+    if metadata.session_id.is_none() {
+        metadata.session_id = Some(format!("shunt-sessionless-{}", uuid::Uuid::new_v4()));
+        metadata.session_final = Some(true);
     }
 }
 
