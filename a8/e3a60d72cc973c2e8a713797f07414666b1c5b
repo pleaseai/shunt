@@ -1,0 +1,26 @@
+src/routing/serve/gated.rs
+  s_e9c7bce466358a::t_f83596f286ed01 312-328
+  s_e9c7bce466358a::t_51daae42bef085 337
+docs/routing-algorithms.md
+  s_e9c7bce466358a::t_4eab067f9d8190 1325-1335
+src/proxy/chain_stream.rs
+  s_e9c7bce466358a::t_0552353e035a4d 370-402,415-426,488-489,500-501,532,623-629,633,636,652,669-674,796-800,842-847,893
+tests/buffer_replay.rs
+  s_e9c7bce466358a::t_b7a2744e723c21 314,333-458,476,481
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a8e3a60d72cc973c2e8a713797f07414666b1c5b",
+  "prompts": {},
+  "sessions": {
+    "s_e9c7bce466358a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52c4e84c-87ad-4bd6-aebe-df807ab7e91c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
