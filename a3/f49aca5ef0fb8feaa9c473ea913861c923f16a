@@ -1,0 +1,30 @@
+src/routing/driven/tests.rs
+  s_94445e26660099::t_54cc0494dbee67 325-332,335-339,349-352
+  s_94445e26660099::t_d3e0e3e5fbc08a 314-324,333-334,340-348,353-355
+  s_94445e26660099::t_0faab1afbb22dd 21
+src/routing/driven/drive.rs
+  s_94445e26660099::t_c595e81b18658e 171-192
+  s_94445e26660099::t_cb484763dac880 123-128
+  s_94445e26660099::t_758c3aef28a86b 13
+  s_94445e26660099::t_4e66cb681d82ce 96-100
+  s_94445e26660099::t_9842acfc132fa8 62
+src/routing/driven/budget.rs
+  s_94445e26660099::t_bb44da24517cb8 95-98
+  s_94445e26660099::t_e7a18631930c79 30-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a3f49aca5ef0fb8feaa9c473ea913861c923f16a",
+  "prompts": {},
+  "sessions": {
+    "s_94445e26660099": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "39f64eac-26fd-40dc-93a6-866c40c7e07f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
