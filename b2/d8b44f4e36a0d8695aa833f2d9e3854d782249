@@ -1,0 +1,42 @@
+src/routing/driven/drive.rs
+  s_ee62cfa930554e::t_4d15fe8c4d89b6 139
+  s_ee62cfa930554e::t_db4d3b3a193748 55-59
+  s_ee62cfa930554e::t_dd4da3ff673e14 91,93-94
+  s_ee62cfa930554e::t_1ae62f2850fd2b 123-127,132
+  s_ee62cfa930554e::t_9bf7db8319ceef 13
+  s_ee62cfa930554e::t_2b200eea104b6e 157-205
+.claude/agent-memory/review-review-issue-fixer/mirrored-validation-over-validates.md
+  s_ee62cfa930554e::t_78f8c979d21059 1-24
+src/config/router/composite/tests.rs
+  s_ee62cfa930554e::t_8dd21db011b389 175-177,179,181-184
+.claude/agent-memory/review-review-issue-fixer/MEMORY.md
+  s_ee62cfa930554e::t_a2cd118ff27ef9 8-9
+.claude/agent-memory/review-review-issue-fixer/folded-refusal-loses-its-label.md
+  s_ee62cfa930554e::t_a2cd118ff27ef9 1-22
+src/config/router/composite.rs
+  s_ee62cfa930554e::t_9f50a8934d45cc 68-71
+docs/routing-algorithms.md
+  s_ee62cfa930554e::t_fd75a40226f1c5 1026-1031
+  s_ee62cfa930554e::t_907310766c4202 1012-1017
+  s_ee62cfa930554e::t_22e8850b37e5ce 1010-1011
+src/config/router/validate.rs
+  s_ee62cfa930554e::t_e8f7f39fe94658 100-107
+src/routing/driven/tests.rs
+  s_ee62cfa930554e::t_686fec0535a118 21,25,331-379
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b2d8b44f4e36a0d8695aa833f2d9e3854d782249",
+  "prompts": {},
+  "sessions": {
+    "s_ee62cfa930554e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8496dc6-485d-4733-b3f8-cd794b601265",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
