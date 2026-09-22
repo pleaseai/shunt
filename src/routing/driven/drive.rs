@@ -19,6 +19,7 @@ use switchyard_libsy::{drive as libsy_drive, DecisionSource, LibsyError, Routing
 use switchyard_protocol::Request;
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
+use crate::config::CallBounds;
 use crate::routing::context::libsy_metadata;
 use crate::routing::driven::{budget::JudgeBudget, DrivenEntry};
 use crate::routing::outcome::RouteSource;
@@ -94,10 +95,15 @@ pub(crate) async fn drive(
     let notes = &notes;
     // The real deadline is inside `judge_call`, which is where the upstream
     // request can be cancelled. This outer one guards only against the
-    // algorithm itself never terminating, so it is the inner budget plus a
-    // second of slack rather than a second deadline competing with it.
+    // algorithm itself never terminating, so it is sized to what a drive can
+    // legitimately spend — every call it may reserve at its full per-call
+    // deadline, since a chaining algorithm (composite, subagents classifier)
+    // makes them one after another — plus a second of slack, rather than a
+    // second deadline competing with the per-call one (ADR-0005 §3: bounds are
+    // per call). One deadline for the whole drive would cut a healthy second
+    // call short whenever the first used most of its own allowance.
     let outcome = tokio::time::timeout(
-        bounds.judge_timeout + Duration::from_secs(1),
+        drive_deadline(bounds),
         libsy_drive(
             entry.algorithm.clone(),
             neutral,
@@ -152,6 +158,18 @@ pub(crate) async fn drive(
         }
         Err(_) => fail_open(entry, "timeout"),
     }
+}
+
+/// The outer guard on one whole drive: every call the budget may admit at its
+/// full per-call deadline, plus a second of slack for the algorithm's own work.
+///
+/// Saturating, so an operator who writes both bounds at their ceiling gets
+/// "effectively unbounded" rather than a panic at the first judged turn.
+pub(super) fn drive_deadline(bounds: CallBounds) -> Duration {
+    bounds
+        .judge_timeout
+        .saturating_mul(bounds.max_judge_calls)
+        .saturating_add(Duration::from_secs(1))
 }
 
 /// What one drive learned about *why* it has no verdict, read back as the

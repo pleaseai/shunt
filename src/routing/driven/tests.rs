@@ -18,9 +18,9 @@ use switchyard_libsy::{DecisionSource, OutcomeMetadata, RoutingOutcome};
 use switchyard_protocol::{ModelId, Request};
 
 use super::budget::JudgeBudget;
-use super::drive::{decide, source_for, DriveNotes};
+use super::drive::{decide, drive_deadline, source_for, DriveNotes};
 use super::{build, DrivenEntry};
-use crate::config::{RouterConfig, SubagentsConfig};
+use crate::config::{CallBounds, RouterConfig, SubagentsConfig};
 use crate::routing::outcome::RouteSource;
 use crate::routing::serve::JudgeFailure;
 use crate::routing::stage::{StageSource, StageTier};
@@ -309,6 +309,43 @@ fn the_budget_refuses_a_key_that_is_at_its_cap() {
         "{THREADS} racing turns must not spend more than the cap"
     );
     assert_eq!(racing.used(Some(&key)), MAX, "and the count agrees");
+}
+
+/// The outer guard on a drive is sized to the calls the budget can admit, each
+/// at its own deadline, so a chaining algorithm's second call is not cut short
+/// because the first spent most of one per-call allowance (ADR-0005 §3: the
+/// bounds are per call). Replace the multiplication with the bare per-call
+/// timeout and the first assertion goes red; drop the slack and the second does.
+#[test]
+fn the_drive_deadline_covers_every_admissible_call() {
+    let bounds = CallBounds {
+        judge_timeout: std::time::Duration::from_secs(30),
+        judge_max_response_bytes: 1,
+        gated_max_bytes: 1,
+        gated_idle: std::time::Duration::from_secs(1),
+        gated_max_duration: std::time::Duration::from_secs(1),
+        max_judge_calls: 3,
+    };
+    let deadline = drive_deadline(bounds);
+    assert!(
+        deadline >= std::time::Duration::from_secs(90),
+        "three calls at 30s each must fit inside the drive: {deadline:?}"
+    );
+    assert_eq!(
+        deadline,
+        std::time::Duration::from_secs(91),
+        "and only a second of slack sits on top"
+    );
+    let ceiling = CallBounds {
+        judge_timeout: std::time::Duration::MAX,
+        max_judge_calls: u32::MAX,
+        ..bounds
+    };
+    assert_eq!(
+        drive_deadline(ceiling),
+        std::time::Duration::MAX,
+        "bounds at their ceiling saturate rather than overflow"
+    );
 }
 
 /// The cap is the property: an unbounded map keyed by caller-supplied ids is a
