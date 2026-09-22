@@ -1,0 +1,20 @@
+src/auth/antigravity/store.rs
+  s_ac3db44ed233ca::t_5675ffc4815b22 325-328
+  s_ac3db44ed233ca::t_c6b3a1876358ae 122-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5df03cb91b5a6ddc74adf81082090eeed3da4441",
+  "prompts": {},
+  "sessions": {
+    "s_ac3db44ed233ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "989a3680-62e2-403a-8407-cae400bfa87b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
