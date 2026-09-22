@@ -1,0 +1,64 @@
+src/bench_support.rs
+  s_ee62cfa930554e::t_36ecaf99d48695 158
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_ee62cfa930554e::t_36ecaf99d48695 861-871
+src/routing/prefill.rs
+  s_ee62cfa930554e::t_36ecaf99d48695 6-12,15-20,113-118,140-155
+  s_ee62cfa930554e::t_6a3c67c63e6069 156-157
+CHANGELOG.md
+  s_ee62cfa930554e::t_36ecaf99d48695 3-17
+src/routing/random/tests.rs
+  s_ee62cfa930554e::t_36ecaf99d48695 53
+src/routing/stage/tests.rs
+  s_ee62cfa930554e::t_36ecaf99d48695 257
+src/routing/stage.rs
+  s_ee62cfa930554e::t_36ecaf99d48695 185-188,190-198
+src/routing/outcome.rs
+  s_ee62cfa930554e::t_36ecaf99d48695 157-159,161-163
+docs/routing-algorithms.md
+  s_ee62cfa930554e::t_36ecaf99d48695 512-519,701-705,734-750,752-754
+  s_ee62cfa930554e::t_4428bb475bc61c 821-823
+.release-please-manifest.json
+  s_ee62cfa930554e::t_36ecaf99d48695 2
+src/auth/slots/tests.rs
+  s_ee62cfa930554e::t_36ecaf99d48695 807,855-858
+src/proxy/failover/prefill_tests.rs
+  s_ee62cfa930554e::t_36ecaf99d48695 1-420
+src/proxy/failover.rs
+  s_ee62cfa930554e::t_4428bb475bc61c 164-170,183-184
+  s_ee62cfa930554e::t_36ecaf99d48695 95,106,110-113,124-125,127-142,315-332,570-573,1032-1034
+  s_ee62cfa930554e::t_bfa113e6fa728a 185-186
+site/src/content/docs/reference/configuration.md
+  s_ee62cfa930554e::t_36ecaf99d48695 1120-1135
+src/routing/subagents/resolve_tests.rs
+  s_ee62cfa930554e::t_36ecaf99d48695 147
+.please/docs/decisions/0005-routing-algorithm-extensions.md
+  s_ee62cfa930554e::t_36ecaf99d48695 79,492-505
+site/src/content/docs/ja/reference/configuration.md
+  s_ee62cfa930554e::t_36ecaf99d48695 906-919
+src/routing.rs
+  s_ee62cfa930554e::t_36ecaf99d48695 217-226,228-231,1017,1051,1105,1150,1189-1193,1195,1201-1202,1207-1211,1215-1248,1253-1286
+  s_ee62cfa930554e::t_df2dd95f6a4424 1287
+site/src/content/docs/ko/reference/configuration.md
+  s_ee62cfa930554e::t_36ecaf99d48695 914-926
+Cargo.toml
+  s_ee62cfa930554e::t_36ecaf99d48695 10
+Cargo.lock
+  s_ee62cfa930554e::t_5220cc897f522c 3182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b30cdfc0b9f386380e4a59f6313e638e623adee0",
+  "prompts": {},
+  "sessions": {
+    "s_ee62cfa930554e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8496dc6-485d-4733-b3f8-cd794b601265",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
