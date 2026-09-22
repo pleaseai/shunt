@@ -91,6 +91,10 @@ pub(crate) struct RetainedTurn {
     /// The upstream that answered, for the stream observer on replay.
     pub provider: String,
     pub model: String,
+    /// Captured through the committed streaming chain, whose safeguard
+    /// synthesis already ran over these bytes, so the replay must not run it
+    /// again. The stream observer still runs on the replay.
+    pub synthesized: bool,
 }
 
 /// Why a gated turn was discarded. Each is a turn the caller must not see.
@@ -189,23 +193,37 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
         .unwrap_or(false);
     let routes = routing::resolve_target_chain(&request.state.config, target, request.router_id);
     let captured = tokio::time::timeout(bounds.gated_max_duration, async {
-        let outcome = run_chain(ChainRequest {
-            state: request.state.clone(),
-            routes,
-            uri: request.uri,
-            base_headers: request.base_headers,
-            inbound: request.inbound,
-            body: request.body.clone(),
-            requested_model: request.requested_model,
-            router_stamp: None,
-            caller: "client",
-            // Bites only where an adapter reads a whole reply itself — the
-            // non-streaming paths. Every streaming path relays without holding
-            // the body (the Anthropic first-frame rewrite is bounded by its own
-            // 64 KiB ceiling), so the cap there falls to `bound_stream` below.
-            response_byte_cap: Some(bounds.gated_max_bytes),
-        })
-        .await;
+        // A streaming turn the live path would send through the committed
+        // chain stream takes it here too, so a first route that fails before
+        // its headers advances the chain rather than cutting the turn.
+        let committed = if streaming {
+            crate::proxy::failover::gated::committed_stream(request, &routes).await
+        } else {
+            None
+        };
+        let synthesized = committed.is_some();
+        let outcome = match committed {
+            Some(outcome) => outcome,
+            None => {
+                run_chain(ChainRequest {
+                    state: request.state.clone(),
+                    routes,
+                    uri: request.uri,
+                    base_headers: request.base_headers,
+                    inbound: request.inbound,
+                    body: request.body.clone(),
+                    requested_model: request.requested_model,
+                    router_stamp: None,
+                    caller: "client",
+                    // Bites only where an adapter reads a whole reply itself — the
+                    // non-streaming paths. Every streaming path relays without holding
+                    // the body (the Anthropic first-frame rewrite is bounded by its own
+                    // 64 KiB ceiling), so the cap there falls to `bound_stream` below.
+                    response_byte_cap: Some(bounds.gated_max_bytes),
+                })
+                .await
+            }
+        };
         let success = match outcome {
             Ok(success) => success,
             Err(error) => return chain_failure(error),
@@ -219,7 +237,7 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
             max_duration: bounds.gated_max_duration,
         };
         if streaming {
-            retain_stream(success, gated).await
+            retain_stream(success, gated, synthesized).await
         } else {
             retain_message(success, gated).await
         }
@@ -259,7 +277,11 @@ async fn relay_refusal(success: ChainSuccess, max_bytes: usize) -> GatedCapture 
 }
 
 /// Retain a streaming turn's rendered frames under [`bound_stream`].
-async fn retain_stream(success: ChainSuccess, gated: GatedBounds) -> GatedCapture {
+async fn retain_stream(
+    success: ChainSuccess,
+    gated: GatedBounds,
+    synthesized: bool,
+) -> GatedCapture {
     let (parts, body) = success.response.into_parts();
     // `bound_stream` takes unwrapped chunks on purpose (its closed bound set
     // has no transport member), so a transport error ends the source here and
@@ -293,13 +315,20 @@ async fn retain_stream(success: ChainSuccess, gated: GatedBounds) -> GatedCaptur
     if !scan.is_terminal() {
         return GatedCapture::Cut(CutReason::Nonterminal);
     }
+    // A committed chain stream names its winner only as the body is read; the
+    // ordered loop knew it when it returned.
+    let (provider, model) = parts
+        .extensions
+        .get::<crate::proxy::chain_stream::ChainStreamWinner>()
+        .map_or((success.provider, success.model), |winner| winner.get());
     GatedCapture::Retained(RetainedTurn {
         status: success.status,
         headers: parts.headers,
         body: Bytes::from(retained),
         streaming: true,
-        provider: success.provider,
-        model: success.model,
+        provider,
+        model,
+        synthesized,
     })
 }
 
@@ -333,6 +362,7 @@ async fn retain_message(success: ChainSuccess, gated: GatedBounds) -> GatedCaptu
         streaming: false,
         provider: success.provider,
         model: success.model,
+        synthesized: false,
     })
 }
 

@@ -24,7 +24,7 @@ use super::{
 };
 
 pub(crate) mod chain;
-mod gated;
+pub(crate) mod gated;
 
 // Re-exported at the old path: the adapters and the committed streaming chain
 // classify statuses with these, and the split that moved the loop into `chain`
@@ -438,6 +438,7 @@ pub(super) async fn forward(
                 requested_model,
                 started_at,
                 router_stamp: owned_router_stamp,
+                observe_stream: true,
             },
         )
         .await;

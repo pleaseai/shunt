@@ -169,6 +169,22 @@ pub(super) async fn finish(
             // of the same turn would contradict them.
             response.headers_mut().remove(CONTENT_LENGTH);
             stamp_router_headers(&mut response, &stamp);
+            if turn.synthesized {
+                // Captured through the committed streaming chain, which ran
+                // the safeguard synthesis inside its own stream, so the
+                // retained bytes already carry it; a second pass would add it
+                // twice. The stream observer did not run there — the caller
+                // might never have received the turn — so it runs here, on
+                // the replay, like every other one.
+                let response = crate::stream_metrics::observe_response(
+                    response,
+                    crate::stream_metrics::Protocol::Anthropic,
+                    turn.provider,
+                    turn.model,
+                    started_at,
+                );
+                return Ok((turn.status, response));
+            }
             // The same observers a live turn passes through: safeguard
             // synthesis and the stream metrics see the replay exactly as they
             // would have seen the frames live.
@@ -197,6 +213,59 @@ pub(super) async fn finish(
             }
         }
     }
+}
+
+/// The committed streaming chain for a gated capture, when the live path
+/// would take it: a streaming turn on a multi-route chain with an HTTP
+/// Responses route (`super::super::chain_stream::chain_stream_applies`).
+///
+/// The Responses adapter commits a synthetic `200` before it sends, so under
+/// the ordered loop of `chain::run_chain` a first route that fails before its
+/// headers surfaces only as an in-stream `error` frame, the chain never
+/// advances, and the capture reads a cut turn. Live, `forward` sends that
+/// shape through `forward_chain_stream`, which runs the failover inside the
+/// committed stream; the gated turn is the same answer dispatch (ADR-0005
+/// §3), so it takes the same path. `None` means the ordered loop applies.
+///
+/// The turn this returns has passed through the chain stream's own safeguard
+/// synthesis but not its stream observer, which runs on the replay instead
+/// (see [`finish`]). The winning upstream is known only once the body has
+/// been read, from the [`crate::proxy::chain_stream::ChainStreamWinner`]
+/// extension on the response.
+pub(crate) async fn committed_stream(
+    request: &GatedRequest<'_>,
+    routes: &[Route],
+) -> Option<Result<super::chain::ChainSuccess, ForwardError>> {
+    if !crate::proxy::chain_stream::chain_stream_applies(request.state, routes, request.body) {
+        return None;
+    }
+    let first = routes.first()?;
+    let (provider, model) = (first.provider.clone(), first.model.clone());
+    let outcome = crate::proxy::chain_stream::forward_chain_stream(
+        crate::proxy::chain_stream::ChainStreamRequest {
+            state: request.state.clone(),
+            primary_origin: super::chain::primary_origin(request.state, routes),
+            routes: routes.to_vec(),
+            uri: request.uri.clone(),
+            base_headers: request.base_headers.clone(),
+            inbound: request.inbound.clone(),
+            body: request.body.clone(),
+            requested_model: request.requested_model.to_string(),
+            started_at: Instant::now(),
+            // Stamped when the verdict is known, as on every gated turn.
+            router_stamp: None,
+            observe_stream: false,
+        },
+    )
+    .await;
+    Some(
+        outcome.map(|(status, response)| super::chain::ChainSuccess {
+            status,
+            response,
+            provider,
+            model,
+        }),
+    )
 }
 
 /// Append `messages` to the request's `messages` array. `false` — nothing

@@ -52,6 +52,14 @@ impl Tiers {
 
 /// The gated entry under `ROUTER_ID`, with `router` as its `[models.router]`.
 pub(crate) fn gated_config(tiers: &Tiers, router: &str) -> Config {
+    unvalidated_gated_config(tiers, router)
+        .validate()
+        .expect("the gated config is well formed")
+}
+
+/// [`gated_config`] before `validate`, for a test that adds upstreams:
+/// validation is what turns `[[upstreams]]` into providers.
+pub(crate) fn unvalidated_gated_config(tiers: &Tiers, router: &str) -> Config {
     let mut config = Config::default();
     config.providers.clear();
     let mut responses = api_key("responses", tiers.responses.clone(), JUDGE_KEY_ENV);
@@ -85,7 +93,7 @@ pub(crate) fn gated_config(tiers: &Tiers, router: &str) -> Config {
         alias("responses-alias", "responses", RESPONSES_UPSTREAM_MODEL),
         alias("judge-alias", "judge", JUDGE_UPSTREAM_MODEL),
     ];
-    config.validate().expect("the gated config is well formed")
+    config
 }
 
 fn judge_upstream(url: String) -> UpstreamConfig {

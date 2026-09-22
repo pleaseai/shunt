@@ -12,9 +12,9 @@
 //! `x-gateway-route-source`.
 //!
 //! Non-vacuity, per test, is on the test itself. Across the file: delete the
-//! gated hook in `proxy::failover::forward` and all seven go red (observed),
-//! each on its status or route-source assertion: the PR 5 drive has no
-//! retained turn to serve.
+//! gated hook in `proxy::failover::forward` and the seven definition-of-done
+//! tests go red (observed), each on its status or route-source assertion: the
+//! PR 5 drive has no retained turn to serve.
 
 mod common;
 mod judge_harness;
@@ -38,7 +38,7 @@ use harness::{
 };
 use judge_harness::{
     can_bind_loopback, env, stall_mock, start_gateway, Stall, CAPABLE_UPSTREAM_MODEL,
-    EFFICIENT_UPSTREAM_MODEL, ROUTER_ID,
+    EFFICIENT_UPSTREAM_MODEL, JUDGE_KEY_ENV, ROUTER_ID,
 };
 
 const DECLINE: &str = r#"{"escalate": false, "reason": "progressing"}"#;
@@ -292,4 +292,86 @@ async fn a_weak_turn_cut_before_message_stop_falls_back_to_the_strong_tier() {
         "the cut turn leaked: {body}"
     );
     assert_eq!(streamed_text(&sse_events(&body)), "STRONG");
+}
+
+/// A streaming gated turn keeps the live path's ordered failover. The weak
+/// alias maps two upstreams — an HTTP Responses route that answers `503`,
+/// then the Anthropic one — the shape the live path sends through the
+/// committed chain stream. The Responses adapter commits a synthetic `200`
+/// before it sends, so under the ordered loop the `503` would surface only as
+/// an in-stream `error` frame, the chain would never reach the second route,
+/// and escalation would read a cut turn and jump to the strong tier.
+///
+/// Non-vacuity: make `committed_stream` return `None` and the header comes
+/// back `escalation_fallback`, the strong mock's `expect(0)` goes red, and the
+/// Anthropic route is never called.
+#[tokio::test]
+async fn a_streaming_gated_turn_fails_over_along_the_weak_chain() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let (strong, efficient, responses, judge, down) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    messages_mock(
+        sse_reply(anthropic_sse(CAPABLE_UPSTREAM_MODEL, "STRONG")),
+        0,
+    )
+    .mount(&strong)
+    .await;
+    Mock::given(method("POST"))
+        .respond_with(wiremock::ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&down)
+        .await;
+    messages_mock(
+        sse_reply(anthropic_sse(EFFICIENT_UPSTREAM_MODEL, "WEAK-ANSWER")),
+        1,
+    )
+    .mount(&efficient)
+    .await;
+    messages_mock(judge_text(DECLINE), 1).mount(&judge).await;
+    let tiers = Tiers::of(&strong, &efficient, &responses, judge.uri());
+    let mut config = harness::unvalidated_gated_config(&tiers, &escalation_router("chained-alias"));
+    let mut weak_responses = judge_harness::api_key("down", down.uri(), JUDGE_KEY_ENV);
+    weak_responses.kind = Some(shunt::config::ProviderKind::Responses);
+    // Ahead of `efficient`: the chain follows `[[upstreams]]` order.
+    let at = config
+        .upstreams
+        .iter()
+        .position(|upstream| upstream.name == "efficient")
+        .expect("the harness has an efficient upstream");
+    config.upstreams.insert(at, weak_responses);
+    let mut chained = judge_harness::alias("chained-alias", "efficient", EFFICIENT_UPSTREAM_MODEL);
+    chained
+        .upstream_model
+        .as_mut()
+        .expect("an alias maps its upstream")
+        .insert("down".to_string(), "upstream-down".to_string());
+    config.models.push(chained);
+    let gateway = start_gateway(
+        config
+            .validate()
+            .expect("the chained config is well formed"),
+    )
+    .await;
+
+    let response = post(&gateway, true).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        header(&response, "x-gateway-route-source"),
+        "escalation_weak"
+    );
+    let body = response.text().await.unwrap();
+    assert_eq!(streamed_text(&sse_events(&body)), "WEAK-ANSWER", "{body}");
+    assert_eq!(
+        body.matches("event: message_start").count(),
+        1,
+        "one start, the winner's: {body}"
+    );
 }

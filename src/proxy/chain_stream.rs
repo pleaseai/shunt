@@ -354,6 +354,31 @@ pub(super) struct ChainStreamRequest {
     /// Known before any upstream is contacted, so it is stamped on this path
     /// even though the upstream-naming headers cannot be.
     pub(super) router_stamp: Option<super::failover::OwnedRouterStamp>,
+    /// Wrap the committed stream in the client stream observer. `false` for a
+    /// gated capture, which the caller may never receive: the observer runs
+    /// when that turn is replayed, and the winner it needs travels on the
+    /// response as a [`ChainStreamWinner`] extension instead.
+    pub(super) observe_stream: bool,
+}
+
+/// Which upstream won an unobserved committed stream, filled in as the stream
+/// is consumed: read it after the body has been drained.
+#[derive(Clone)]
+pub(crate) struct ChainStreamWinner {
+    provider: std::sync::Arc<std::sync::Mutex<String>>,
+    model: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl ChainStreamWinner {
+    /// The winning `(provider, model)` as of now.
+    pub(crate) fn get(&self) -> (String, String) {
+        let read = |slot: &std::sync::Mutex<String>| {
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        };
+        (read(&self.provider), read(&self.model))
+    }
 }
 
 /// Drive the failover chain for a streaming turn and return the committed SSE
@@ -372,6 +397,7 @@ pub(super) async fn forward_chain_stream(
         requested_model,
         started_at,
         router_stamp,
+        observe_stream,
     } = request;
     // Read before the body moves into the chain: the committed stream's
     // `message_delta` carries the auto-mode classifier's answer, which only a
@@ -777,13 +803,22 @@ pub(super) async fn forward_chain_stream(
     let response =
         crate::proxy::safeguards::synthesize(response, &requested_safeguards, max_request_bytes)
             .await;
-    let mut response = stream_metrics::observe_response_with_slot(
-        response,
-        Protocol::Anthropic,
-        winner_slot,
-        winner_model_slot,
-        started_at,
-    );
+    let mut response = if observe_stream {
+        stream_metrics::observe_response_with_slot(
+            response,
+            Protocol::Anthropic,
+            winner_slot,
+            winner_model_slot,
+            started_at,
+        )
+    } else {
+        let mut response = response;
+        response.extensions_mut().insert(ChainStreamWinner {
+            provider: winner_slot,
+            model: winner_model_slot,
+        });
+        response
+    };
     // `x-gateway-model` names the client-requested id and is correct
     // regardless of the winner; the upstream-naming headers are omitted on
     // this path — the winner is unknown at commit time, and stamping the

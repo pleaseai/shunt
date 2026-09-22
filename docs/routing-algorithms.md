@@ -1316,8 +1316,13 @@ served, whatever the upstream status was. A truncated `200` is never replayed.
 
 **Gated turns take the ordered failover chain.** A pre-header failure on the
 gated call advances down the target's chain like any other dispatch. A
-non-2xx answer that ends the chain is relayed to the client unchanged, as a
-live turn's would be.
+streaming turn on a multi-route chain with an HTTP Responses route takes the
+committed chain stream the live path uses for that shape: the Responses
+adapter commits a synthetic `200` before it sends, so the ordered loop would
+see its failure only as an in-stream `error` frame and read a cut turn
+(`a_streaming_gated_turn_fails_over_along_the_weak_chain`). A non-2xx answer
+that ends the chain is relayed to the client unchanged, as a live turn's would
+be.
 
 ### Why the gated call is the first `CallModel`
 
