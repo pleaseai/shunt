@@ -1322,7 +1322,17 @@ adapter commits a synthetic `200` before it sends, so the ordered loop would
 see its failure only as an in-stream `error` frame and read a cut turn
 (`a_streaming_gated_turn_fails_over_along_the_weak_chain`). A non-2xx answer
 that ends the chain is relayed to the client unchanged, as a live turn's would
-be.
+be. On the committed chain stream, a chain that produced no turn is a `200`
+carrying one `error` frame. That covers a chain that ran out and an attempt
+that failed terminally before its headers. A gated turn reads either as the
+chain's refusal, not as a cut. It relays the error body as JSON (`gated_error`)
+with the status the ordered loop's client would have seen: a Responses route's
+upstream status outside that adapter's passthrough set becomes `502`.
+Escalation therefore does not call the strong tier for a refused weak chain
+(`an_exhausted_streaming_weak_chain_relays_its_refusal`,
+`a_refused_streaming_weak_chain_relays_the_client_facing_status`). The committed
+stream does not carry the upstream's response headers, so this relay has no
+`retry-after`. A route that fails after it has started streaming is still a cut.
 
 ### Why the gated call is the first `CallModel`
 

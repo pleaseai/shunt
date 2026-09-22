@@ -311,8 +311,7 @@ async fn a_streaming_gated_turn_fails_over_along_the_weak_chain() {
         return;
     }
     let _env = env().await;
-    let (strong, efficient, responses, judge, down) = (
-        MockServer::start().await,
+    let (strong, efficient, judge, down) = (
         MockServer::start().await,
         MockServer::start().await,
         MockServer::start().await,
@@ -324,11 +323,6 @@ async fn a_streaming_gated_turn_fails_over_along_the_weak_chain() {
     )
     .mount(&strong)
     .await;
-    Mock::given(method("POST"))
-        .respond_with(wiremock::ResponseTemplate::new(503))
-        .expect(1)
-        .mount(&down)
-        .await;
     messages_mock(
         sse_reply(anthropic_sse(EFFICIENT_UPSTREAM_MODEL, "WEAK-ANSWER")),
         1,
@@ -336,7 +330,132 @@ async fn a_streaming_gated_turn_fails_over_along_the_weak_chain() {
     .mount(&efficient)
     .await;
     messages_mock(judge_text(DECLINE), 1).mount(&judge).await;
-    let tiers = Tiers::of(&strong, &efficient, &responses, judge.uri());
+    let gateway = chained_gateway(&strong, &efficient, &judge, &down, 503).await;
+
+    let response = post(&gateway, true).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        header(&response, "x-gateway-route-source"),
+        "escalation_weak"
+    );
+    let body = response.text().await.unwrap();
+    assert_eq!(streamed_text(&sse_events(&body)), "WEAK-ANSWER", "{body}");
+    assert_eq!(
+        body.matches("event: message_start").count(),
+        1,
+        "one start, the winner's: {body}"
+    );
+}
+
+/// A streaming gated turn whose whole weak chain refuses is relayed as that
+/// refusal, as the ordered loop relays it. The committed chain stream answers
+/// an exhausted chain with a `200` and one `error` frame; read as a cut turn,
+/// that would bill the strong tier and hide the upstream's `429`.
+///
+/// Non-vacuity: stop `retain_stream` from reading the chain's exhaustion and
+/// the header comes back `escalation_fallback` with a `200`, and the strong
+/// mock's `expect(0)` goes red.
+#[tokio::test]
+async fn an_exhausted_streaming_weak_chain_relays_its_refusal() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let (strong, efficient, judge, down) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    messages_mock(
+        sse_reply(anthropic_sse(CAPABLE_UPSTREAM_MODEL, "STRONG")),
+        0,
+    )
+    .mount(&strong)
+    .await;
+    messages_mock(
+        wiremock::ResponseTemplate::new(429).set_body_json(json!({
+            "type": "error",
+            "error": {"type": "rate_limit_error", "message": "weak tier is saturated"},
+        })),
+        1,
+    )
+    .mount(&efficient)
+    .await;
+    messages_mock(judge_text(DECLINE), 0).mount(&judge).await;
+    let gateway = chained_gateway(&strong, &efficient, &judge, &down, 503).await;
+
+    let response = post(&gateway, true).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(header(&response, "x-gateway-route-source"), "gated_error");
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "rate_limit_error", "{body}");
+}
+
+/// A weak chain that refuses on its Responses route is relayed with the status
+/// that route's adapter gives its own client, whichever arm ends the committed
+/// stream: an attempt that fails terminally (a `418`, which does not advance)
+/// or a chain that runs out with that route's `505` as its remembered failure.
+/// Neither status is in the Responses passthrough set, so both reach the
+/// caller as `502`, as they do on the ordered loop.
+///
+/// Non-vacuity: drop the terminal arm's `record_refusal` and the `418` case
+/// comes back `escalation_fallback` with a `200`; relay the raw status instead
+/// of `client_status` and the cases come back `418` and `505`.
+#[tokio::test]
+async fn a_refused_streaming_weak_chain_relays_the_client_facing_status() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    // (the Responses route's status, whether the Anthropic route is reached)
+    for (down_status, reaches_efficient) in [(418, false), (505, true)] {
+        let (strong, efficient, judge, down) = (
+            MockServer::start().await,
+            MockServer::start().await,
+            MockServer::start().await,
+            MockServer::start().await,
+        );
+        messages_mock(
+            sse_reply(anthropic_sse(CAPABLE_UPSTREAM_MODEL, "STRONG")),
+            0,
+        )
+        .mount(&strong)
+        .await;
+        messages_mock(
+            wiremock::ResponseTemplate::new(500),
+            u64::from(reaches_efficient),
+        )
+        .mount(&efficient)
+        .await;
+        messages_mock(judge_text(DECLINE), 0).mount(&judge).await;
+        let gateway = chained_gateway(&strong, &efficient, &judge, &down, down_status).await;
+
+        let response = post(&gateway, true).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "{down_status}");
+        assert_eq!(header(&response, "x-gateway-route-source"), "gated_error");
+    }
+}
+
+/// An escalation gateway whose weak alias `chained-alias` maps two upstreams:
+/// an HTTP Responses route on `down` that answers `down_status`, then the
+/// Anthropic route on `efficient`. That is the shape the live path sends
+/// through the committed chain stream.
+async fn chained_gateway(
+    strong: &MockServer,
+    efficient: &MockServer,
+    judge: &MockServer,
+    down: &MockServer,
+    down_status: u16,
+) -> judge_harness::TestGateway {
+    Mock::given(method("POST"))
+        .respond_with(wiremock::ResponseTemplate::new(down_status))
+        .expect(1)
+        .mount(down)
+        .await;
+    // Never called: the chain holds no Responses tier of the harness's own.
+    let responses = MockServer::start().await;
+    let tiers = Tiers::of(strong, efficient, &responses, judge.uri());
     let mut config = harness::unvalidated_gated_config(&tiers, &escalation_router("chained-alias"));
     let mut weak_responses = judge_harness::api_key("down", down.uri(), JUDGE_KEY_ENV);
     weak_responses.kind = Some(shunt::config::ProviderKind::Responses);
@@ -354,24 +473,10 @@ async fn a_streaming_gated_turn_fails_over_along_the_weak_chain() {
         .expect("an alias maps its upstream")
         .insert("down".to_string(), "upstream-down".to_string());
     config.models.push(chained);
-    let gateway = start_gateway(
+    start_gateway(
         config
             .validate()
             .expect("the chained config is well formed"),
     )
-    .await;
-
-    let response = post(&gateway, true).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        header(&response, "x-gateway-route-source"),
-        "escalation_weak"
-    );
-    let body = response.text().await.unwrap();
-    assert_eq!(streamed_text(&sse_events(&body)), "WEAK-ANSWER", "{body}");
-    assert_eq!(
-        body.matches("event: message_start").count(),
-        1,
-        "one start, the winner's: {body}"
-    );
+    .await
 }

@@ -309,6 +309,23 @@ async fn retain_stream(
             Err(exceeded) => return GatedCapture::Cut(CutReason::Bound(exceeded)),
         }
     }
+    let winner = parts
+        .extensions
+        .get::<crate::proxy::chain_stream::ChainStreamWinner>();
+    // A committed chain stream answers a chain that produced no turn — it ran
+    // out, or an attempt failed terminally before its headers — with a `200`
+    // and one `error` frame. That is the refusal the ordered loop would have
+    // returned, not a cut: relay it as one, so escalation does not bill the
+    // strong tier for it and the caller keeps the refusal's status. The
+    // upstream's response headers (`retry-after`) are not carried through the
+    // committed stream, so the relay has none.
+    if let Some((status, envelope)) = winner.and_then(|winner| winner.refusal()) {
+        return GatedCapture::UpstreamError(UpstreamFailure::Answered {
+            status,
+            body: envelope.to_string(),
+            response: axum::response::IntoResponse::into_response((status, axum::Json(envelope))),
+        });
+    }
     if broke.load(Ordering::Relaxed) {
         return GatedCapture::Cut(CutReason::Transport);
     }
@@ -317,10 +334,7 @@ async fn retain_stream(
     }
     // A committed chain stream names its winner only as the body is read; the
     // ordered loop knew it when it returned.
-    let (provider, model) = parts
-        .extensions
-        .get::<crate::proxy::chain_stream::ChainStreamWinner>()
-        .map_or((success.provider, success.model), |winner| winner.get());
+    let (provider, model) = winner.map_or((success.provider, success.model), |winner| winner.get());
     GatedCapture::Retained(RetainedTurn {
         status: success.status,
         headers: parts.headers,
