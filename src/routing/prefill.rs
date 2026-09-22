@@ -3,10 +3,20 @@
 //! Upstream's learned router is not a scorer shunt can call synchronously the
 //! way `stage` calls `pick_tier`: it is a whole libsy [`Algorithm`] that runs
 //! encoder inference on a blocking worker and keeps its own user-turn affinity.
-//! So the decision is made *before* resolution, in `proxy::failover`, and
-//! parked on the [`StageContext`](crate::routing::stage::StageContext) for the
-//! synchronous `resolve_chain` to read. That split is why
+//! So the decision is made *after* resolution and *after* admission, in
+//! `proxy::failover`: `resolve_chain` lands a live prefill turn on the entry's
+//! default target and sets
+//! [`StageContext::drive_prefill`](crate::routing::stage::StageContext::drive_prefill),
+//! the request is admitted against the entry's dependency envelope, and only
+//! then does [`decide`] run and [`reroute`] move the chain onto its answer
+//! (ADR-0005 §1 as amended for issue #633). That split is why
 //! [`crate::routing::outcome::PrefillDecision`] exists at all.
+//!
+//! The ordering is the fix for #633: the drive is inference over
+//! client-controlled `messages` and an affinity write keyed on a
+//! client-supplied session id, and the stage router's judge sets the
+//! precedent that neither happens for a caller `check_inbound_auth` or the
+//! managed-model policy is about to refuse.
 //!
 //! The surface below is identical in both builds, so no call site carries a
 //! `cfg`. Without the `prefill-router` feature [`PrefillRouters`] holds
@@ -100,7 +110,12 @@ impl PrefillRouters {
 /// Drive the request through libsy when its `model` names a prefill entry;
 /// `None` otherwise — and always `None` without the feature.
 ///
-/// Every request is driven, `count_tokens` probes included and with no
+/// Called by `proxy::failover` only once the request is admitted: the drive
+/// is what an unauthenticated caller must not be able to trigger (#633), so
+/// the call site is after `check_inbound_auth` and the managed-model policy,
+/// which for a prefill entry gate against its dependency envelope.
+///
+/// Every admitted request is driven, `count_tokens` probes included and with no
 /// `read_only` special case. Upstream's affinity is what makes that cheap: a
 /// tool continuation replays the decision the turn's user message already
 /// earned instead of re-running inference, and a probe sent for a turn is part
@@ -120,6 +135,24 @@ pub(crate) async fn decide(
         let _ = (routers, body, headers);
         None
     }
+}
+
+/// Move an admitted turn onto what the drive decided.
+///
+/// The prefill twin of the judge's `Decided` arm in `proxy::failover`: the
+/// chain resolved before admission named the entry's default target, and this
+/// replaces it with the decided target's chain, re-stamped to the advertised
+/// id, and rewrites the parked outcome so the headers and counters report the
+/// decision rather than the provisional default.
+pub(crate) fn reroute(
+    config: &Config,
+    decision: PrefillDecision,
+    outcome: &mut crate::routing::outcome::RouterOutcome,
+) -> Vec<crate::routing::Route> {
+    let routes = crate::routing::resolve_target_chain(config, &decision.target, &outcome.model);
+    outcome.target = decision.target;
+    outcome.source = decision.source;
+    routes
 }
 
 // Re-exported for the two consumers that reach it by name: this module's unit

@@ -79,10 +79,6 @@ pub(super) async fn forward(
     // field moves — the headers are borrowed, not read; the `x-claude-code-*`
     // hints are parsed inside `stage::select`, which only a `[[models]]` entry
     // that configures a router ever reaches.
-    // Async because the driven lane runs inference; `None` for every id that
-    // is not a `prefill_router` entry, which costs one `HashMap` miss — and a
-    // constant `None` in a build without the feature.
-    let prefill = routing::prefill::decide(&state.prefill_routers, body.json(), headers).await;
     let stage = routing::stage::StageContext {
         store: &state.stage_router,
         request: body.json(),
@@ -96,7 +92,7 @@ pub(super) async fn forward(
         pending: std::cell::Cell::new(None),
         decided: std::cell::Cell::new(None),
         consult: std::cell::Cell::new(None),
-        prefill,
+        drive_prefill: std::cell::Cell::new(false),
     };
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json(), Some(&stage)).map_err(
@@ -107,11 +103,14 @@ pub(super) async fn forward(
         )?;
     crate::observability::record_requested_model(&requested_model);
     let model_key = routing::strip_context_window_hint(&requested_model);
-    // A `count_tokens` probe never enters the driven lane (ADR-0005 §3): it is
+    // A `count_tokens` probe never consults a judge (ADR-0005 §3): it is
     // answered from the session's pin or the algorithm's no-model-call
     // decision, makes zero judge calls, and keeps today's first-route-only gate
     // and dispatch. `None` here is what excludes it, before an envelope is even
-    // computed.
+    // computed. The prefill lane is the one driven algorithm a probe *does*
+    // enter — it makes no model call, and its affinity is what holds a probe
+    // to the target of the turn it measures — so that exclusion is spelled
+    // against `drive_prefill` separately below rather than here.
     let driven = (!is_count_tokens(uri))
         .then(|| state.config.driven_stage(model_key))
         .flatten();
@@ -122,9 +121,25 @@ pub(super) async fn forward(
         // count_tokens request.
         routes.truncate(1);
     }
-    // Taken here rather than with the other stage outputs below, because this
-    // is the fact that decides which chain the request is admitted against.
+    // Taken here rather than with the other stage outputs below, because these
+    // are the facts that decide which chain the request is admitted against.
     let consult = stage.consult.take();
+    // A `prefill_router` turn is driven on *every* request, probes included
+    // — the affinity is what keeps a probe on the turn's target — so it is
+    // always gated against the envelope, `count_tokens` included (#633).
+    //
+    // That deliberately overrides the first-route-only gate above for this one
+    // lane, because a probe here asks a second question. The truncation answers
+    // "may this caller receive this dispatch?", for which a member's
+    // credential-injecting fallback is irrelevant. A probe that drives also
+    // asks "may this caller cause inference and an affinity write?", and the
+    // answer to that has to cover every target the drive could pick — none of
+    // which it has picked yet. Gate a driving probe on its first route alone
+    // and a caller whose turn would be refused can still seed an affinity for
+    // a session id it never proved it owns, by sending the probe instead. The
+    // gate is therefore wider than the dispatch, which is fail-closed; the
+    // dispatch stays first-route-only after the drive.
+    let drive_prefill = stage.drive_prefill.get();
     // A turn that will consult a judge is gated against the entry's whole
     // dependency envelope rather than against the chain its router happened to
     // pick: the judge has not run yet, and it must not run for a caller who is
@@ -146,6 +161,13 @@ pub(super) async fn forward(
     // the targets and judge a `Router`/`StageClassifier` turn can reach, while
     // an `Overlay` turn is decided before the router is consulted at all and
     // must be gated on the overlay's list instead (`routing::envelope`).
+    //
+    // The prefill lane is the second case, with local inference in place of
+    // the judge call: the chain resolved above names only the entry's default
+    // target, and the drive that picks the real one has not run yet — it
+    // must not, for a caller who is about to be refused, since upstream's
+    // algorithm writes a session affinity as it decides. So the request is
+    // admitted against every target the entry can name (#633).
     let envelope;
     let admission: &[routing::Route] = match consult.map(|consult| consult.kind) {
         Some(
@@ -156,6 +178,10 @@ pub(super) async fn forward(
         }
         Some(routing::stage::ConsultKind::Overlay) => {
             envelope = routing::envelope::overlay_envelope(&state.config, model_key);
+            &envelope
+        }
+        None if drive_prefill => {
+            envelope = routing::envelope::dependency_envelope(&state.config, model_key);
             &envelope
         }
         None => &routes,
@@ -284,6 +310,24 @@ pub(super) async fn forward(
                 source = decision.source.as_label(),
                 "drove the router's judge"
             );
+        }
+    }
+    // The prefill drive, on the same side of admission as the judge and for
+    // the same reason (#633): inference over the caller's transcript and an
+    // affinity write keyed on the caller's session id, neither of which a
+    // refused caller may cause. `None` only when the entry was not built,
+    // which the runtime state rules out — both are made from one config — so
+    // the provisional default-target chain stands in that case. A probe keeps
+    // its first-route-only dispatch: the truncation above ran on the
+    // provisional chain, and this is the chain that is actually dispatched.
+    if let (true, Some(outcome)) = (drive_prefill, router_outcome.as_mut()) {
+        if let Some(decision) =
+            routing::prefill::decide(&state.prefill_routers, body.json(), headers).await
+        {
+            routes = routing::prefill::reroute(&state.config, decision, outcome);
+            if read_only {
+                routes.truncate(1);
+            }
         }
     }
     // The write reports the tier change it actually made, which is what the
@@ -523,8 +567,10 @@ async fn count_tokens_response(
         let headers = headers_for_route(&state, &route, base_headers, inbound, true, None);
         dispatch(
             state, route, uri, &headers, body,
-            // A `count_tokens` probe never enters the driven lane, so it is
-            // always a client path.
+            // A `count_tokens` probe never makes an internal model call — the
+            // judge lane excludes probes, and the prefill lane, which does
+            // drive them, decides from the transcript and its affinity alone
+            // — so it is always a client path.
             None,
         )
         .await
@@ -983,3 +1029,6 @@ fn stamp_gateway_headers(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "prefill-router"))]
+mod prefill_tests;

@@ -154,14 +154,13 @@ pub(crate) struct RouterOutcome {
     pub source: RouteSource,
 }
 
-/// What [`crate::routing::prefill::decide`] produced for one request, parked on
-/// the [`crate::routing::stage::StageContext`] so the synchronous
-/// `resolve_chain` can read it.
+/// What [`crate::routing::prefill::decide`] produced for one admitted request,
+/// handed to [`crate::routing::prefill::reroute`] to move the chain off the
+/// provisional default target `resolve_chain` landed it on.
 ///
-/// Unconditional, in both builds: the field that carries it and the
-/// `resolve_chain` arm that reads it are the same code either way, so only the
-/// producer is feature-gated — without the feature nothing ever constructs one
-/// and the arm takes its `None` branch.
+/// Unconditional, in both builds: the type and the `reroute` step are the same
+/// code either way, so only the producer is feature-gated — without the
+/// feature nothing ever constructs one and the drive is skipped.
 #[derive(Debug, Clone)]
 pub(crate) struct PrefillDecision {
     pub target: String,

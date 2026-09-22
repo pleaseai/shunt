@@ -214,16 +214,21 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                     }
                     RouterConfig::Random(random) => random::select(random, model, stage),
                     RouterConfig::PrefillRouter(prefill) => {
-                        match stage.and_then(|stage| stage.prefill.as_ref()) {
-                            Some(decision) => (decision.target.as_str(), decision.source),
-                            // Upstream routes a turn with no text user message
-                            // to its first target; a body-less resolution has
-                            // no turn at all and lands there too.
-                            None => (
-                                prefill.default_target().unwrap_or(model),
-                                RouteSource::PrefillDefault,
-                            ),
+                        // Parked, not driven: the drive is inference plus an
+                        // affinity write, and neither may happen for a caller
+                        // who is about to be refused (issue #633). A live
+                        // request lands on the default target provisionally
+                        // and `proxy::failover` re-routes it once admitted.
+                        // A body-less resolution has no turn to score and
+                        // stays here — the same first target upstream picks
+                        // for a turn with no text user message.
+                        if let Some(stage) = stage {
+                            stage.drive_prefill.set(true);
                         }
+                        (
+                            prefill.default_target().unwrap_or(model),
+                            RouteSource::PrefillDefault,
+                        )
                     }
                     // The driven lane's first pass. The judge call happens
                     // after admission (ADR-0005 §3), so nothing here has a
@@ -1009,7 +1014,7 @@ mod stage_router_tests {
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
-            prefill: None,
+            drive_prefill: std::cell::Cell::new(false),
         };
 
         let (routes, requested) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -1043,7 +1048,7 @@ mod stage_router_tests {
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
-            prefill: None,
+            drive_prefill: std::cell::Cell::new(false),
         };
 
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -1097,7 +1102,7 @@ mod stage_router_tests {
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
-            prefill: None,
+            drive_prefill: std::cell::Cell::new(false),
         };
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
             .expect("an auto-backed id resolves");
@@ -1142,7 +1147,7 @@ mod stage_router_tests {
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
-            prefill: None,
+            drive_prefill: std::cell::Cell::new(false),
         };
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
             .expect("a random-backed id resolves");
@@ -1181,39 +1186,103 @@ mod stage_router_tests {
         assert_eq!(routes[0].provider, "codex");
     }
 
-    /// A decision parked by the driven lane wins, and the outcome the
-    /// observability surfaces read names the algorithm and the source label.
+    /// A live request to a prefill entry is not driven during resolution: it
+    /// lands on the default target provisionally and parks the drive for
+    /// `proxy::failover` to run once the request is admitted (#633). Move the
+    /// drive back into this arm and the flag assertion below has nothing to
+    /// observe — the flag is what the admission gate keys on.
     #[test]
-    fn a_driven_prefill_decision_picks_the_target_it_names() {
+    fn a_live_prefill_resolution_parks_the_drive_on_the_default_target() {
         let mut config = config();
         config.models[0].router = Some(RouterConfig::PrefillRouter(prefill_router()));
 
         let store = StageRouterStore::new();
         let request = erroring_request();
-        let context = StageContext {
-            store: &store,
-            request: &request,
-            headers: &session_headers(),
+        let headers = session_headers();
+        let context = live_context(&store, &request, &headers);
+
+        let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("a prefill-backed id resolves");
+
+        assert!(
+            context.drive_prefill.get(),
+            "a live prefill turn must park its drive for the admitted path"
+        );
+        assert_eq!(routes[0].upstream_model, "upstream-efficient");
+        assert_eq!(routes[0].model, ROUTER_ID);
+        let outcome = context.decided.take().expect("an outcome is stamped");
+        assert_eq!(outcome.algorithm, "prefill_router");
+        assert_eq!(outcome.source.as_label(), "prefill_default");
+    }
+
+    /// The admitted drive's answer wins: `reroute` moves the chain onto the
+    /// decided target and the outcome the observability surfaces read names
+    /// the algorithm and the source label.
+    #[test]
+    fn a_driven_prefill_decision_reroutes_to_the_target_it_names() {
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::PrefillRouter(prefill_router()));
+
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let headers = session_headers();
+        let context = live_context(&store, &request, &headers);
+        resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("a prefill-backed id resolves");
+        let mut outcome = context.decided.take().expect("an outcome is stamped");
+
+        let routes = super::prefill::reroute(
+            &config,
+            crate::routing::outcome::PrefillDecision {
+                target: "capable-alias".to_string(),
+                source: crate::routing::outcome::RouteSource::Prefill,
+            },
+            &mut outcome,
+        );
+
+        assert_eq!(routes[0].upstream_model, "upstream-capable");
+        assert_eq!(
+            routes[0].model, ROUTER_ID,
+            "the client must be told the id it asked for"
+        );
+        assert_eq!(outcome.algorithm, "prefill_router");
+        assert_eq!(outcome.target, "capable-alias");
+        assert_eq!(outcome.source.as_label(), "prefill");
+    }
+
+    /// An unrouted id and a stage entry never park a prefill drive: the flag
+    /// is set by the prefill arm alone, so the admission gate cannot widen to
+    /// the envelope for a turn that has no inference to guard.
+    #[test]
+    fn a_non_prefill_resolution_parks_no_drive() {
+        let config = config();
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let headers = session_headers();
+        let context = live_context(&store, &request, &headers);
+
+        resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("the stage-backed id resolves");
+
+        assert!(!context.drive_prefill.get());
+    }
+
+    fn live_context<'a>(
+        store: &'a StageRouterStore,
+        request: &'a serde_json::Value,
+        headers: &'a axum::http::HeaderMap,
+    ) -> StageContext<'a> {
+        StageContext {
+            store,
+            request,
+            headers,
             read_only: false,
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
-            prefill: Some(crate::routing::outcome::PrefillDecision {
-                target: "capable-alias".to_string(),
-                source: crate::routing::outcome::RouteSource::Prefill,
-            }),
-        };
-
-        let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
-            .expect("a prefill-backed id resolves");
-
-        assert_eq!(routes[0].upstream_model, "upstream-capable");
-        assert_eq!(routes[0].model, ROUTER_ID);
-        let outcome = context.decided.take().expect("an outcome is stamped");
-        assert_eq!(outcome.algorithm, "prefill_router");
-        assert_eq!(outcome.target, "capable-alias");
-        assert_eq!(outcome.source.as_label(), "prefill");
+            drive_prefill: std::cell::Cell::new(false),
+        }
     }
 
     /// A `noop` entry answers as itself: no provider lookup, no target, and the

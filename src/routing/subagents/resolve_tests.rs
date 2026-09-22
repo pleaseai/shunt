@@ -144,7 +144,7 @@ fn context<'a>(
         pending: std::cell::Cell::new(None),
         decided: std::cell::Cell::new(None),
         consult: std::cell::Cell::new(None),
-        prefill: None,
+        drive_prefill: std::cell::Cell::new(false),
     }
 }
 

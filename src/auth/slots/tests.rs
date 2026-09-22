@@ -804,7 +804,7 @@ async fn stripping_the_cookie_header_leaves_the_callers_own_credential_alone() {
 /// would slip through. Files named `tests.rs` are skipped so fixtures need no
 /// entry; an in-file `#[cfg(test)] mod tests` helper is *not* skipped and is
 /// listed below as noise.
-const HEADER_PRODUCER_ALLOWLIST: [&str; 16] = [
+const HEADER_PRODUCER_ALLOWLIST: [&str; 17] = [
     // noise — `#[cfg(test)] mod tests` fixture builder.
     "src/accounts.rs",
     // registered forward site — consumes the map `headers_for_route` produced
@@ -852,6 +852,10 @@ const HEADER_PRODUCER_ALLOWLIST: [&str; 16] = [
     // hints to read, exactly as `src/routing/context.rs` does, and forward
     // nothing outbound.
     "src/routing/subagents/resolve_tests.rs",
+    // Test scaffolding for the prefill lane's admission ordering (#633): the
+    // inbound `HeaderMap`s carry the session hint and the client token that
+    // `forward` gates on, and nothing is forwarded outbound from here.
+    "src/proxy/failover/prefill_tests.rs",
 ];
 
 #[test]

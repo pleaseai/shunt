@@ -858,6 +858,17 @@ models entry <id> router type = "prefill_router" failed to load: <upstream error
 重载会重建路由器,而按会话的亲和关系就存在它里面,所以一次重载就会忘记每个会话原本落在哪个
 目标上。
 
+**准入在先。** 只有在 `[server.auth]` 与 gateway policy 的 `availableModels` 放行请求之后,路由器才会被驱动。
+入站认证针对该条目命名的每一个目标,而不是它最终会选中的那一个,所以只要有任何一个目标会注入凭据,
+调用方就必须认证;而 managed-model 策略只检查请求的 id,因此 `availableModels` 里写的是这个 id,
+而不是它背后的目标。所以被其中任一道关卡拒绝的调用方都无法触发推理,也不会为它发来的会话 id
+写入亲和关系。
+
+前半句要当作条件来读。若某个条目的目标*全部*是直通的,它的 envelope 中任何一处都不注入凭据,
+入站认证便无从要求,连匿名调用方也会被放行,并由它驱动路由器。若你要保护的正是这次驱动,
+就给该条目配一个会注入凭据的目标;对全部直通的条目而言,`[server.auth]` 和 gateway 登录
+都不能提供保护。
+
 **一轮是怎么定下来的。** 交给算法的只有 `user` 和 `assistant` 两种角色,以及 `text` 和
 `tool_result` 两种块。算法给最近一轮文本用户消息打分,并把所有块都是 `tool_result` 的消息
 视为工具续跑而非新的人类发言。会话身份来自 `x-claude-code-session-id`,如果是被委派的子代理
