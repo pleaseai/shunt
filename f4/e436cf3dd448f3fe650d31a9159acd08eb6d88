@@ -1,0 +1,21 @@
+src/adapters/gemini/mod.rs
+  s_ac3db44ed233ca::t_bdffbdb3b16b0f 257
+src/auth/antigravity/auth.rs
+  s_ac3db44ed233ca::t_52c32c00e2b52b 679-683
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f4e436cf3dd448f3fe650d31a9159acd08eb6d88",
+  "prompts": {},
+  "sessions": {
+    "s_ac3db44ed233ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "989a3680-62e2-403a-8407-cae400bfa87b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
