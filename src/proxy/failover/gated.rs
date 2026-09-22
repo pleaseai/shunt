@@ -200,8 +200,11 @@ pub(super) async fn finish(
 }
 
 /// Append `messages` to the request's `messages` array. `false` — nothing
-/// changed — when the request has no such array, which a body that reached a
-/// drive always has.
+/// changed — when the request has no such array. The drive's decoder does not
+/// require one (a body without `messages` decodes to an empty conversation),
+/// but a REDO follows only an executor turn the upstream answered `2xx`, and a
+/// Messages upstream refuses a body without `messages`, so the case is left to
+/// that refusal rather than handled here.
 fn append_messages(request: &mut Value, messages: Vec<Value>) -> bool {
     let Some(existing) = request.get_mut("messages").and_then(Value::as_array_mut) else {
         return false;
