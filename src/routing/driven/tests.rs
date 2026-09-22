@@ -18,7 +18,7 @@ use switchyard_libsy::{DecisionSource, OutcomeMetadata, RoutingOutcome};
 use switchyard_protocol::{ModelId, Request};
 
 use super::budget::JudgeBudget;
-use super::drive::{decide, drive_deadline, source_for, DriveNotes};
+use super::drive::{decide, drive_deadline, reserve, source_for, DriveNotes};
 use super::{build, DrivenEntry};
 use crate::config::{CallBounds, RouterConfig, SubagentsConfig};
 use crate::routing::outcome::RouteSource;
@@ -309,6 +309,48 @@ fn the_budget_refuses_a_key_that_is_at_its_cap() {
         "{THREADS} racing turns must not spend more than the cap"
     );
     assert_eq!(racing.used(Some(&key)), MAX, "and the count agrees");
+}
+
+/// A keyless drive is bounded by `max_judge_calls` per request, not admitted
+/// without limit: the session budget never sees it, so the drive-local counter
+/// is what refuses a chaining algorithm's call past the ceiling. Replace the
+/// `None` arm of `reserve` with `true` and the third assertion goes red; the
+/// keyed arm still writes to the shared budget and nothing else does.
+#[test]
+fn a_keyless_drive_is_bounded_per_request() {
+    let budget = JudgeBudget::new();
+    let request_used = std::sync::atomic::AtomicU32::new(0);
+
+    assert!(
+        reserve(&budget, None, &request_used, 2),
+        "the first call fits"
+    );
+    assert!(
+        reserve(&budget, None, &request_used, 2),
+        "so does the second"
+    );
+    assert!(
+        !reserve(&budget, None, &request_used, 2),
+        "the third is past the per-request ceiling and must be refused"
+    );
+    assert_eq!(
+        budget.len(),
+        0,
+        "a keyless drive writes nothing to the session budget"
+    );
+
+    let next_request = std::sync::atomic::AtomicU32::new(0);
+    assert!(
+        reserve(&budget, None, &next_request, 2),
+        "the allowance is per request: a fresh drive starts at zero"
+    );
+
+    let key = JudgeBudget::key(Some("session-a"), None).expect("keyed");
+    assert!(
+        reserve(&budget, Some(&key), &request_used, 1),
+        "a keyed call charges the budget"
+    );
+    assert_eq!(budget.used(Some(&key)), 1, "and the shared budget saw it");
 }
 
 /// The outer guard on a drive is sized to the calls the budget can admit, each

@@ -10,7 +10,7 @@
 //! is to read that evidence rather than to invent a policy beside it. The
 //! reading is the table in [the module docs](super).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -59,7 +59,7 @@ pub(crate) async fn drive(
     // could not bound anything, and the `budget_exhausted` label is recorded
     // from both (see [`DriveNotes`]).
     //
-    // Known limitation, tracked separately: a drive that would have consulted
+    // Known limitation, tracked as #648: a drive that would have consulted
     // no judge at all (the `new_session` and `user_turn` triggers replaying an
     // affinity assignment) is rejected here too, so a session that has spent
     // its budget loses the assignment it already paid for and falls open.
@@ -93,6 +93,11 @@ pub(crate) async fn drive(
     // Borrowed once: the call closure below is an `async move`, so naming
     // `notes` inside it would move the record the label reader still needs.
     let notes = &notes;
+    // The per-request allowance for a keyless drive (see `reserve`): a count
+    // that lives exactly as long as this drive, so a chaining algorithm on a
+    // sessionless request is bounded by `max_judge_calls` like any other.
+    let request_used = AtomicU32::new(0);
+    let request_used = &request_used;
     // The real deadline is inside `judge_call`, which is where the upstream
     // request can be cancelled. This outer one guards only against the
     // algorithm itself never terminating, so it is sized to what a drive can
@@ -115,9 +120,12 @@ pub(crate) async fn drive(
                 // call rather than charged for it afterwards. The reservation
                 // is atomic, so two turns racing on this key cannot both take
                 // the last one.
-                let reserved = entry
-                    .budget
-                    .try_charge(key.as_ref(), bounds.max_judge_calls);
+                let reserved = reserve(
+                    &entry.budget,
+                    key.as_ref(),
+                    request_used,
+                    bounds.max_judge_calls,
+                );
                 async move {
                     if !reserved {
                         // libsy folds a refused call into "no verdict" and
@@ -157,6 +165,28 @@ pub(crate) async fn drive(
             fail_open(entry, label("invalid_reply"))
         }
         Err(_) => fail_open(entry, "timeout"),
+    }
+}
+
+/// Reserve one judge call for this drive, against the session budget when the
+/// request carries a key and against `request_used` when it does not.
+///
+/// A keyless request has nothing to accumulate under across turns, so the
+/// module docs on [`JudgeBudget`] give it a per-request allowance instead —
+/// and "per request" has to be enforced somewhere, or a composite or
+/// subagents-classifier drive on a sessionless request would chain past
+/// `max_judge_calls` while the keyed form is refused at it. `request_used` is
+/// that somewhere: a counter scoped to one drive, so the ceiling reads the
+/// same to both forms and only its lifetime differs.
+pub(super) fn reserve(
+    budget: &JudgeBudget,
+    key: Option<&crate::routing::driven::budget::BudgetKey>,
+    request_used: &AtomicU32,
+    max: u32,
+) -> bool {
+    match key {
+        Some(key) => budget.try_charge(Some(key), max),
+        None => request_used.fetch_add(1, Ordering::Relaxed) < max,
     }
 }
 

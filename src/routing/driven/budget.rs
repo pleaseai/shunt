@@ -27,7 +27,10 @@
 //! `x-claude-code-session-id` cannot be told from the next one, so counting it
 //! would either charge every anonymous caller to one shared bucket or key on
 //! nothing at all. It gets the per-request allowance instead: the budget is
-//! checked and found empty, the drive runs, and nothing is written.
+//! checked and found empty, the drive runs, and nothing is written here. The
+//! allowance itself is still `max_judge_calls` — `drive::reserve` counts a
+//! keyless drive's calls in a counter that lives as long as that one drive,
+//! so a chaining algorithm cannot spend past the ceiling by having no key.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -89,9 +92,10 @@ impl JudgeBudget {
     /// forms — inside a single drive: the second call of a drive whose budget
     /// is down to one is refused here rather than counted after the fact.
     ///
-    /// An untracked request (no session id) is always admitted: it has no key
-    /// to accumulate against, and the per-request allowance described in the
-    /// module docs is what it gets instead.
+    /// An untracked request (no session id) is always admitted *here*: it has
+    /// no key to accumulate against. The per-request allowance described in
+    /// the module docs is enforced by `drive::reserve`, which counts such a
+    /// drive's calls locally instead of calling this.
     pub(crate) fn try_charge(&self, key: Option<&BudgetKey>, max: u32) -> bool {
         let Some(key) = key else {
             return true;
