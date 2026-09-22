@@ -10,6 +10,7 @@
 //! is to read that evidence rather than to invent a policy beside it. The
 //! reading is the table in [the module docs](super).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -51,10 +52,11 @@ pub(crate) async fn drive(
     let metadata = libsy_metadata(headers);
     let key = JudgeBudget::key(metadata.session_id.as_deref(), metadata.agent_id.as_deref());
     // A fast path only: it keeps a turn whose budget is already spent from
-    // decoding a body and constructing a drive it cannot pay for, and it is
-    // what emits the `budget_exhausted` label. The reservation inside the call
-    // closure below is the authoritative one — this read and that write are
-    // separate critical sections, so this check alone could not bound anything.
+    // decoding a body and constructing a drive it cannot pay for. The
+    // reservation inside the call closure below is the authoritative one — this
+    // read and that write are separate critical sections, so this check alone
+    // could not bound anything, and the `budget_exhausted` label is recorded
+    // from both (see [`DriveNotes`]).
     //
     // Known limitation, tracked separately: a drive that would have consulted
     // no judge at all (the `new_session` and `user_turn` triggers replaying an
@@ -86,10 +88,10 @@ pub(crate) async fn drive(
     };
 
     let bounds = entry.bounds;
-    let failure: Mutex<Option<JudgeFailure>> = Mutex::new(None);
+    let notes = DriveNotes::default();
     // Borrowed once: the call closure below is an `async move`, so naming
-    // `failure` inside it would move the mutex the label reader still needs.
-    let failure = &failure;
+    // `notes` inside it would move the record the label reader still needs.
+    let notes = &notes;
     // The real deadline is inside `judge_call`, which is where the upstream
     // request can be cancelled. This outer one guards only against the
     // algorithm itself never terminating, so it is the inner budget plus a
@@ -118,24 +120,23 @@ pub(crate) async fn drive(
                         // close on their `default_target`, a composite on its
                         // picker — so this refusal reports no destination of
                         // its own, exactly as a judge that answered nothing
-                        // usable does.
+                        // usable does. The note is what keeps the *label* from
+                        // being folded in too: without it the refusal would be
+                        // counted as `invalid_reply`, blaming the judge for a
+                        // call it was never asked to make.
+                        notes.refuse_budget();
                         return call.respond(Err(LibsyError::AlgorithmError {
                             message: "max_judge_calls is spent for this session".to_string(),
                         }));
                     }
-                    judge_call(state.clone(), admitted, call, bounds, failure).await
+                    judge_call(state.clone(), admitted, call, bounds, notes.failure()).await
                 }
             },
         ),
     )
     .await;
 
-    let label = |fallback: &'static str| {
-        failure
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .map_or(fallback, JudgeFailure::as_label)
-    };
+    let label = |fallback: &'static str| notes.label(fallback);
     match outcome {
         Ok(Ok(outcome)) => decide(entry, &outcome, &label),
         // libsy folds a failed call into "no verdict" and answers from its own
@@ -150,6 +151,55 @@ pub(crate) async fn drive(
             fail_open(entry, label("invalid_reply"))
         }
         Err(_) => fail_open(entry, "timeout"),
+    }
+}
+
+/// What one drive learned about *why* it has no verdict, read back as the
+/// `outcome` label once libsy has closed its cascade.
+///
+/// Two facts rather than one, because they answer different questions and only
+/// one of them is the judge's fault. `failure` means a call was made and came
+/// back unusable; `budget_refused` means the atomic reservation in the call
+/// closure turned a call down and none was ever made. libsy folds both into the
+/// same "no verdict", so without the second the deterministic refusal — a
+/// chaining algorithm's second `CallModel` on a budget down to one, or two
+/// turns of a session racing for the last one — would be reported as
+/// `invalid_reply` and never as `budget_exhausted`.
+#[derive(Debug, Default)]
+pub(super) struct DriveNotes {
+    failure: Mutex<Option<JudgeFailure>>,
+    budget_refused: AtomicBool,
+}
+
+impl DriveNotes {
+    /// The slot [`judge_call`] records a failed call in.
+    pub(super) fn failure(&self) -> &Mutex<Option<JudgeFailure>> {
+        &self.failure
+    }
+
+    /// Note that `max_judge_calls` refused a call this drive asked for.
+    pub(super) fn refuse_budget(&self) {
+        self.budget_refused.store(true, Ordering::Relaxed);
+    }
+
+    /// `fallback`, unless this drive recorded something more specific: a failed
+    /// call's own label first — it is the more specific fact, since a call that
+    /// was made and failed is what the operator is being told about — then the
+    /// budget refusal.
+    pub(super) fn label(&self, fallback: &'static str) -> &'static str {
+        self.failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .map_or_else(
+                || {
+                    if self.budget_refused.load(Ordering::Relaxed) {
+                        "budget_exhausted"
+                    } else {
+                        fallback
+                    }
+                },
+                JudgeFailure::as_label,
+            )
     }
 }
 

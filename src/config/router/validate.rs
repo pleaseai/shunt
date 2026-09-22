@@ -97,14 +97,14 @@ impl Config {
                 model: model_id.to_string(),
             });
         }
-        if composite.classifier.message_hash_fallback
-            && composite.classifier.classify_trigger.as_classify_trigger()
-                != ClassifyTrigger::NewSession
-        {
-            return Err(ConfigError::MessageHashFallbackTrigger {
-                model: model_id.to_string(),
-            });
-        }
+        // No `message_hash_fallback` rule here, deliberately: the standalone
+        // classifier pairs the fallback with `new_session` because its own
+        // affinity map is what keys on the hash, but a composite implements the
+        // retention itself and accepts the hash key under either trigger — the
+        // only trigger it refuses, `every_request`, the `CompositeTrigger` type
+        // cannot even spell. Raising the standalone rule here would refuse the
+        // one way a client that sends no session id keeps its tier across tool
+        // continuations.
         crate::config::validate_tool_semantics(model_id, &composite.stage.tool_semantics)?;
         for (key, judge) in composite.named_judges() {
             self.validate_judge_is_injecting(model_id, &key, judge)?;

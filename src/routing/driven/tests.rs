@@ -18,10 +18,11 @@ use switchyard_libsy::{DecisionSource, OutcomeMetadata, RoutingOutcome};
 use switchyard_protocol::{ModelId, Request};
 
 use super::budget::JudgeBudget;
-use super::drive::{decide, source_for};
+use super::drive::{decide, source_for, DriveNotes};
 use super::{build, DrivenEntry};
 use crate::config::{RouterConfig, SubagentsConfig};
 use crate::routing::outcome::RouteSource;
+use crate::routing::serve::JudgeFailure;
 use crate::routing::stage::{StageSource, StageTier};
 
 /// The ADR's capability example, reduced to the keys the readings below need.
@@ -326,4 +327,53 @@ fn the_budget_map_is_bounded() {
         );
     }
     assert!(budget.len() < JudgeBudget::hard_cap() + 16);
+}
+
+/// A refused reservation is not the judge's fault. libsy folds a refused
+/// `CallModel` into the same "no verdict" a malformed reply produces, so
+/// without the drive's own note the deterministic refusal — a chaining
+/// algorithm's second call on a budget down to one, or two turns of a session
+/// racing for the last one — would be counted as `invalid_reply` and
+/// `budget_exhausted` would be reachable only from the pre-drive fast path.
+///
+/// Non-vacuity: drop the store in `DriveNotes::refuse_budget` and the second
+/// assertion goes red; read the flag ahead of the recorded failure instead of
+/// behind it and the third does.
+#[test]
+fn a_refused_reservation_labels_the_drive_budget_exhausted() {
+    let notes = DriveNotes::default();
+    assert_eq!(
+        notes.label("invalid_reply"),
+        "invalid_reply",
+        "a drive that refused nothing keeps the caller's fallback"
+    );
+
+    notes.refuse_budget();
+    assert_eq!(notes.label("invalid_reply"), "budget_exhausted");
+
+    // A call that *was* made and failed keeps its own label: that is the more
+    // specific fact, and it is the one an operator can act on.
+    *notes
+        .failure()
+        .lock()
+        .expect("the drive-notes failure slot is uncontended") = Some(JudgeFailure::Timeout);
+    assert_eq!(notes.label("invalid_reply"), "timeout");
+}
+
+/// And the label reaches the decision: every terminal branch of a drive reads
+/// its outcome through the same closure, so a refusal inside `decide` reports
+/// the budget rather than the judge.
+#[test]
+fn a_refused_reservation_reaches_the_decision_outcome() {
+    let entry = capability_entry();
+    let notes = DriveNotes::default();
+    notes.refuse_budget();
+    let decision = decide(
+        &entry,
+        &outcome("some-other-model", Some("llm-classifier")),
+        &|fallback| notes.label(fallback),
+    );
+
+    assert_eq!(decision.source, RouteSource::DrivenFailOpen);
+    assert_eq!(decision.judge_outcome, "budget_exhausted");
 }

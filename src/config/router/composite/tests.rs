@@ -172,16 +172,16 @@ fn a_zero_call_bound_is_rejected_naming_its_key() {
     ));
 }
 
-/// `user_turn` plus the hash fallback is upstream's refused pair, raised at
-/// load with shunt's key names.
+/// The standalone classifier's `new_session` pairing rule is *not* raised on a
+/// composite: upstream refuses only `every_request` there and retains the tier
+/// by hashed first user message under either trigger this table can spell.
 #[test]
-fn message_hash_fallback_requires_new_session() {
+fn message_hash_fallback_is_accepted_on_either_trigger() {
     let mut router = fixture();
-    payload(&mut router).classifier.message_hash_fallback = true;
-    assert!(matches!(
-        validate(router).unwrap_err(),
-        ConfigError::MessageHashFallbackTrigger { .. }
-    ));
+    let composite = payload(&mut router);
+    composite.classifier.message_hash_fallback = true;
+    composite.classifier.classify_trigger = CompositeTrigger::UserTurn;
+    validate(router).expect("user_turn accepts the fallback");
 
     let mut router = fixture();
     let composite = payload(&mut router);

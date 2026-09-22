@@ -65,8 +65,10 @@ pub struct CompositeClassifierConfig {
     /// of this type is that the judge runs *less* often than the scorer, and
     /// upstream refuses `every_request` on it.
     pub classify_trigger: CompositeTrigger,
-    /// Key an unkeyed request on a hash of its first user message. Requires
-    /// `classify_trigger = "new_session"`.
+    /// Key an unkeyed request on a hash of its first user message: the tier is
+    /// retained per hashed first user message under either accepted trigger,
+    /// because this router owns the retention rather than delegating it to the
+    /// standalone classifier's affinity map.
     #[serde(default, skip_serializing_if = "is_false")]
     pub message_hash_fallback: bool,
 }

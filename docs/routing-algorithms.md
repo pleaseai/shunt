@@ -1007,10 +1007,14 @@ discovering:
   This is the same property `prefill_router` has (§6) and for the same reason.
 - **A construction failure is a startup error.** Validation builds the
   `LlmTaskClassifier`/`CompositeRouter` once and drops it, so a config libsy
-  refuses — a prompt containing `{{RESPONSE_SCHEMA}}`, a `message_hash_fallback`
-  without `new_session` — is reported by `shunt check` rather than at the first
-  request. shunt re-implements those rules as its own `ConfigError` variants so
-  the message names the shunt key, and the construction is the backstop.
+  refuses — a prompt containing `{{RESPONSE_SCHEMA}}`, or a standalone
+  classifier's `message_hash_fallback` without `new_session` — is reported by
+  `shunt check` rather than at the first request. shunt re-implements those
+  rules as its own `ConfigError` variants so the message names the shunt key,
+  and the construction is the backstop. The pairing rule above is the
+  standalone form's alone: a composite owns the tier retention itself, refuses
+  only `every_request`, and accepts the hash key under either of the triggers
+  its table can spell.
 
 `max_judge_calls` is shunt's, not libsy's, and is counted in a `JudgeBudget`
 keyed on `sha256(session_id ‖ agent_id)` — so a `Task` child spends its own
@@ -1019,7 +1023,12 @@ PR 1 (§2). The map is capped at 4096 entries. A request carrying no session id
 is not tracked at all: there is no key to accumulate under, so the bound applies
 per request for those callers. A turn that finds its budget spent skips the
 drive entirely, answers from the algorithm's fail-open target, and records the
-judge-call outcome `budget_exhausted`.
+judge-call outcome `budget_exhausted`. The reservation is taken per `CallModel`
+rather than per drive, so the same label also covers a call refused *inside* a
+drive — two turns of one session racing for the last one, or a chaining
+algorithm (composite, subagents classifier) asking for a second call on a
+budget down to one. Those turns answer from the algorithm's own close, not from
+a skipped drive, but the outcome they record is still `budget_exhausted`.
 
 ### Probes
 

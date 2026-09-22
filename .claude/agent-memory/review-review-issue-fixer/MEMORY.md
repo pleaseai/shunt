@@ -5,3 +5,5 @@
 - [HeaderMap get vs append](headermap-get-vs-append.md) — outbound headers are appended; get()+insert() rewrites drop/miss repeated field lines.
 - [Judge byte-cap defect class](shunt-judge-byte-cap-class.md) — "it streams" is the false rationale; judge calls always take the buffered branch; refuse via too_large_error.
 - [SSE framing must be stream-stateful](sse-framing-must-be-stream-stateful.md) — classifying one chunk decides framing on where the network split; carry a remainder.
+- [Mirrored validation over-validates](mirrored-validation-over-validates.md) — config/router/validate.rs restates libsy's rules; a rule copied between forms refuses configs upstream accepts.
+- [Folded refusal loses its label](folded-refusal-loses-its-label.md) — libsy folds a refused CallModel into fall-open; the label needs its own request-local note or it reads `invalid_reply`.
