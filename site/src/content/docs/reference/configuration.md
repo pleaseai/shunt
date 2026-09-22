@@ -1072,8 +1072,9 @@ The six [per-call bounds](#per-call-bounds) go on `[models.router]`.
 **Which turns are held.** Whether a turn trips `gate_trigger` is known only once
 the turn is complete, so while the session still has review budget **every**
 executor turn is held, and the ones that do not trip the gate are served
-without a review. Once `max_reviews` is spent, the executor streams live with
-no buffering for the rest of the session.
+without a review. Once `max_reviews` is spent, or the advisor has failed three
+consults in the session (a failed consult refunds its review), the executor
+streams live with no buffering for the rest of the session.
 
 **REDO.** The held turn is discarded before any response header reaches the
 client. The discarded turn and the advisor's plan are appended to the
@@ -1119,7 +1120,7 @@ replayed. Gated turns take the target's ordered failover chain.
 | `advisor_pass` | advisor | The executor turn was served without a review: it did not trip the gate — it ends in a tool call, for example — or no review could be reserved | Replayed |
 | `advisor_fail_open` | advisor | The review failed after a complete executor turn, so the turn was served | Replayed |
 | `advisor_redo` | advisor | The reviewer said REDO. The discarded turn was never sent; this is the executor's re-run | Live |
-| `advisor_exhausted` | advisor | The session's `max_reviews` is spent, so the executor streams with no buffering | Live |
+| `advisor_exhausted` | advisor | The session's `max_reviews` is spent, or its advisor has failed three consults (a failed consult refunds `max_reviews`), so the executor streams with no buffering | Live |
 | `gated_error` | either | The gated turn could not be served — see below | Error |
 
 **When something fails:**

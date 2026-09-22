@@ -1271,13 +1271,13 @@ per-request allowance for sessionless callers.
 | Entry | Gated (buffered) | Live (streamed as before) |
 | :-- | :-- | :-- |
 | `escalation` | The weak turn, on a session that has not latched | Every turn after the latch, served by `strong_target`; the strong call that replaces a discarded weak turn |
-| `advisor` | Every executor turn while the session still has review budget | Every turn once `max_reviews` is spent; the executor's re-run after a REDO |
+| `advisor` | Every executor turn while the session still has review budget and fewer than three failed advisor consults | Every turn once `max_reviews` is spent or the advisor has failed three consults (a failed consult refunds its review); the executor's re-run after a REDO |
 
-The advisor gates every executor turn in a session that has budget left, not
-only the turns that end up reviewed. The algorithm cannot know whether a turn
-trips `gate_trigger` until the turn is complete — `no_tool_call` is a property
-of how the turn ends — so it holds each one and releases the ones that do not
-trip it without a review. Once the budget is spent, libsy routes to the
+The advisor gates every executor turn in a session that has budget left and
+has not hit the failed-consult cap, not only the turns that end up reviewed.
+The algorithm cannot know whether a turn trips `gate_trigger` until the turn is
+complete — `no_tool_call` is a property of how the turn ends — so it holds each
+one and releases the ones that do not trip it without a review. Once the budget is spent, libsy routes to the
 executor with no gate at all, and shunt streams that turn live.
 
 ### Capture, terminality, and replay
@@ -1370,7 +1370,7 @@ from a live one.
 | `advisor_pass` | advisor | The executor turn was served without a review: it did not trip the gate (for example, it ends in a tool call), or no review could be reserved | Replayed |
 | `advisor_fail_open` | advisor | The review failed after a complete executor turn, so the turn was served | Replayed |
 | `advisor_redo` | advisor | The reviewer said REDO. The discarded turn was never sent; this is the executor's re-run | Live |
-| `advisor_exhausted` | advisor | The session's `max_reviews` is spent, so the executor streams with no buffering | Live |
+| `advisor_exhausted` | advisor | The session's `max_reviews` is spent, or its advisor has failed three consults (a failed consult refunds `max_reviews`), so the executor streams with no buffering | Live |
 | `gated_error` | either | The gated turn could not be served (see the failure matrix below) | Error |
 
 Unlike the classifier labels in §7, these are shunt's names for libsy's
