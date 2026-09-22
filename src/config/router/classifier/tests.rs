@@ -1,8 +1,9 @@
 //! Table shape, round-trip, and load-time rules for
 //! `type = "llm_classifier"`.
 //!
-//! Non-vacuity: drop the `mode` tag and `a_missing_mode_is_rejected` plus
-//! `an_escalation_mode_is_rejected_by_name` go red; drop
+//! Non-vacuity: drop the `mode` tag and `a_missing_mode_is_rejected` goes
+//! red; drop the `Escalation` variant and `the_escalation_example_round_trips`
+//! goes red at the parse; drop
 //! `skip_serializing_if` from `classify_trigger` and both round-trips stay
 //! green while the *emitted* TOML gains a key the operator did not write,
 //! which is why `an_omitted_trigger_emits_no_key` asserts on the text rather
@@ -184,8 +185,8 @@ fn an_omitted_trigger_emits_no_key() {
     );
 }
 
-/// `mode` carries no default, so the escalation keys of PR 6 cannot load as
-/// some other algorithm.
+/// `mode` carries no default, so one mode's keys cannot load as some other
+/// algorithm — upstream would read an escalation table without `mode`.
 #[test]
 fn a_missing_mode_is_rejected() {
     let error = parse(
@@ -195,15 +196,109 @@ fn a_missing_mode_is_rejected() {
     assert!(error.to_string().contains("mode"), "{error}");
 }
 
+/// The escalation example: the three ids, a replacement prompt, and the
+/// `[escalation]` sub-table the streak is tuned by.
+const ESCALATION: &str = r#"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+prompt = "Judge whether the trajectory is stuck."
+gated_idle_ms = 30000
+
+[escalation]
+confirmations = 1
+recent_turn_window = 12
+window_message_chars = 400
+"#;
+
+/// The positive twin of PR 5's placeholder refusal: `mode = "escalation"`
+/// loads, names its targets and judge under their own keys, fails open to the
+/// *weak* tier (the turn a failed judge leaves standing), and is gated.
+///
+/// Deleting the `Escalation` variant turns this red at the parse; routing its
+/// `fail_open_target` to the strong tier turns it red at that assertion.
 #[test]
-fn an_escalation_mode_is_rejected_by_name() {
-    let error = parse("type = \"llm_classifier\"\nmode = \"escalation\"").unwrap_err();
-    let rendered = error.to_string();
+fn the_escalation_example_round_trips() {
+    let (parsed, _) = round_trip(ESCALATION);
+    let RouterConfig::LlmClassifier(classifier) = &parsed else {
+        panic!("the fixture is an llm_classifier, got {parsed:?}");
+    };
+    let LlmClassifierConfig::Escalation(escalation) = classifier else {
+        panic!("the fixture is escalation mode, got {classifier:?}");
+    };
+    assert!(parsed.is_driven());
+    assert!(classifier.is_gated(), "escalation retains the weak turn");
+    assert_eq!(
+        classifier.named_targets(),
+        vec![
+            (Cow::Borrowed("strong_target"), "claude-opus-4-8"),
+            (Cow::Borrowed("weak_target"), "claude-sonnet-4-6"),
+        ]
+    );
+    assert_eq!(
+        classifier.named_judges(),
+        vec![(Cow::Borrowed("classifier_target"), "claude-haiku-4-5")]
+    );
+    assert_eq!(classifier.fail_open_target(), "claude-sonnet-4-6");
+    assert_eq!(escalation.escalation.confirmations, 1);
+    assert_eq!(escalation.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS);
+    assert_eq!(
+        classifier.bounds().gated_idle,
+        std::time::Duration::from_millis(30_000)
+    );
+    validate(parsed).expect("the escalation example validates");
+}
+
+/// An omitted `[escalation]` table is upstream's defaults, and round-trips as
+/// omitted rather than as a table the operator never wrote.
+#[test]
+fn an_omitted_escalation_table_takes_upstreams_defaults_and_emits_nothing() {
+    let (parsed, emitted) = round_trip(
+        "type = \"llm_classifier\"\nmode = \"escalation\"\nclassifier_target = \"j\"\nstrong_target = \"s\"\nweak_target = \"w\"\n",
+    );
+    let RouterConfig::LlmClassifier(LlmClassifierConfig::Escalation(escalation)) = &parsed else {
+        panic!("escalation mode, got {parsed:?}");
+    };
+    assert_eq!(
+        (
+            escalation.escalation.confirmations,
+            escalation.escalation.recent_turn_window,
+            escalation.escalation.window_message_chars
+        ),
+        (2, 28, 500)
+    );
+    assert!(!emitted.contains("[escalation]"), "{emitted}");
+}
+
+/// A stray key is refused on the mode's table and on its sub-table alike.
+#[test]
+fn a_stray_escalation_key_is_rejected() {
+    // Another mode's key on this one's table: `base_threshold` is capability's.
+    let top_level = ESCALATION.replace("[escalation]", "base_threshold = 0.5\n\n[escalation]");
+    let error = parse(&top_level).unwrap_err();
+    assert!(error.to_string().contains("base_threshold"), "{error}");
+    // Appended after the header, so it lands inside `[escalation]`.
+    let error = parse(&format!("{ESCALATION}streak = 3\n")).unwrap_err();
+    assert!(error.to_string().contains("streak"), "{error}");
+}
+
+/// upstream's constructor rule, reached through the build check: zero
+/// confirmations would escalate on no verdict at all.
+#[test]
+fn zero_confirmations_is_rejected_as_a_build_failure() {
+    let mut router = fixture(ESCALATION);
+    let RouterConfig::LlmClassifier(LlmClassifierConfig::Escalation(escalation)) = &mut router
+    else {
+        panic!("escalation mode");
+    };
+    escalation.escalation.confirmations = 0;
+    let error = validate(router).unwrap_err();
     assert!(
-        rendered.contains("escalation")
-            && rendered.contains("capability")
-            && rendered.contains("custom"),
-        "the error names the rejected mode and the two that exist: {rendered}"
+        matches!(&error, ConfigError::DrivenRouterBuild { .. })
+            && error.to_string().contains("confirmations"),
+        "{error}"
     );
 }
 

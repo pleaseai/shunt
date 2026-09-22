@@ -1,5 +1,5 @@
 //! Load-time rules for the driven `[models.router]` and `[models.subagents]`
-//! types (ADR-0005 §8 PR 5).
+//! types (ADR-0005 §8 PR 5, PR 6).
 //!
 //! These live beside the tables they check rather than in `config.rs` for one
 //! reason: every rule here exists because *libsy* would otherwise raise it on
@@ -20,8 +20,8 @@ use std::collections::BTreeMap;
 use crate::config::{Config, ConfigError};
 
 use super::{
-    CallBounds, ClassifierPolicy, ClassifyTrigger, CompositeRouterConfig, CustomClassifierConfig,
-    LlmClassifierConfig, ANY_GROUP, JUDGE_GROUP,
+    AdvisorRouterConfig, CallBounds, ClassifierPolicy, ClassifyTrigger, CompositeRouterConfig,
+    CustomClassifierConfig, LlmClassifierConfig, ANY_GROUP, JUDGE_GROUP,
 };
 use crate::config::SubagentsClassifierConfig;
 
@@ -68,6 +68,17 @@ impl Config {
                 )?;
                 validate_custom_groups(model_id, &groups_of(custom))?;
             }
+            // The escalation table's own rules (`confirmations`, the window,
+            // the character cap) are upstream's constructor's, reached through
+            // the build check `validate_router` runs last. Only the key every
+            // judge-backed mode shares is spelled here.
+            LlmClassifierConfig::Escalation(escalation) => {
+                if escalation.max_output_tokens == 0 {
+                    return Err(ConfigError::ZeroMaxOutputTokens {
+                        model: model_id.to_string(),
+                    });
+                }
+            }
         }
         for (key, judge) in classifier.named_judges() {
             self.validate_judge_is_injecting(model_id, &key, judge)?;
@@ -110,6 +121,28 @@ impl Config {
             self.validate_judge_is_injecting(model_id, &key, judge)?;
         }
         Ok(())
+    }
+
+    /// `type = "advisor"`.
+    ///
+    /// The advisor is a judge — it reads the caller's transcript on the
+    /// gateway's credential and serves nothing — so it is held to the judge
+    /// rule. The executor is not: its gated turn is the answer dispatch and
+    /// carries the caller's credential exactly as a live turn does, so a
+    /// passthrough executor is a legitimate shape.
+    pub(crate) fn validate_advisor(
+        &self,
+        model_id: &str,
+        advisor: &AdvisorRouterConfig,
+    ) -> Result<(), ConfigError> {
+        CallBounds::validate(model_id, advisor.bound_keys())?;
+        if let Some(reason) = advisor.trigger_pattern_problem() {
+            return Err(ConfigError::InvalidAdvisorGatePattern {
+                model: model_id.to_string(),
+                reason,
+            });
+        }
+        self.validate_judge_is_injecting(model_id, "advisor_target", &advisor.advisor_target)
     }
 
     /// `[models.subagents] type = "llm_classifier"`.

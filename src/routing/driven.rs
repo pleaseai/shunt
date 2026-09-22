@@ -1,5 +1,6 @@
 //! The driven lane: `[models.router] type = "llm_classifier"` / `"composite"`
-//! and the classifier form of `[models.subagents]` (ADR-0005 §8 PR 5).
+//! / `"advisor"` and the classifier form of `[models.subagents]` (ADR-0005 §8
+//! PR 5, PR 6).
 //!
 //! Unlike the stage router's judge ([`crate::routing::judge`]), which shunt
 //! drives a *bare* classifier for because the session state is shunt's, this
@@ -45,10 +46,22 @@
 //! `shunt.stage_router.*` series must keep counting as one. That split is the
 //! whole reason the map is read against the entry's shape rather than the
 //! string alone.
+//!
+//! # Gated entries
+//!
+//! `mode = "escalation"` and `type = "advisor"` are the two algorithms that
+//! need a *completed* answer before they can decide, so their first
+//! `CallModel` is not a judge call at all: it is the turn the caller will be
+//! served, made in the caller's own mode and retained ([`GatedKind`],
+//! [`drive_gated`]). Their evidence is read by a separate, closed map in
+//! [`gated`] — the strings overlap with the table above (`fail_open`) but the
+//! outcomes do not, because on a gated entry the question is also *whether a
+//! retained turn is served*, not only which target.
 
 pub(crate) mod budget;
 mod build;
 mod drive;
+pub(crate) mod gated;
 
 #[cfg(test)]
 mod tests;
@@ -62,6 +75,7 @@ use crate::config::{CallBounds, Config, ConfigError};
 
 pub(crate) use build::{check_buildable, check_subagents_buildable};
 pub(crate) use drive::drive;
+pub(crate) use gated::{drive_gated, GatedDecision};
 
 use budget::JudgeBudget;
 
@@ -90,12 +104,36 @@ pub(crate) struct DrivenEntry {
     /// for every other form. Both the tier a selected id maps to and the
     /// evidence reading above key off this.
     tiers: Option<(String, String)>,
+    /// Which retained-turn algorithm this entry runs, or `None` for every
+    /// entry that decides before any answer is made — which is every PR 5
+    /// form, and the reason those take [`drive`] unchanged.
+    gated: Option<GatedKind>,
+}
+
+/// The two algorithms whose first model call is the caller's own turn,
+/// retained and served after the verdict (ADR-0005 §4).
+///
+/// Named here rather than inferred from evidence at request time: the request
+/// path has to choose the drive *before* libsy has said anything, and the
+/// choice decides whether a turn is buffered at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatedKind {
+    /// `[models.router] type = "llm_classifier"`, `mode = "escalation"`.
+    Escalation,
+    /// `[models.router] type = "advisor"`.
+    Advisor,
 }
 
 impl DrivenEntry {
     /// The metric label for this entry's judge calls.
     pub(crate) fn algorithm_label(&self) -> &'static str {
         self.algorithm_label
+    }
+
+    /// Whether a turn on this entry is gated — driven by [`drive_gated`]
+    /// rather than [`drive`].
+    pub(crate) fn is_gated(&self) -> bool {
+        self.gated.is_some()
     }
 }
 

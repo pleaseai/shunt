@@ -24,6 +24,7 @@ use super::{
 };
 
 pub(crate) mod chain;
+mod gated;
 
 // Re-exported at the old path: the adapters and the committed streaming chain
 // classify statuses with these, and the split that moved the loop into `chain`
@@ -274,6 +275,12 @@ pub(super) async fn forward(
     // the verdict and the fallback (`routing::driven`). It writes no pin:
     // libsy keeps this entry's session state inside the algorithm instance,
     // which is why that instance is long-lived.
+    //
+    // A gated entry (`escalation`, `advisor`) is driven by `gated::consult`
+    // instead: its first model call is the caller's own turn, retained, so the
+    // drive may end with the answer already in hand (`gated_exit`, served after
+    // the decision is counted below) rather than with a target to dispatch.
+    let mut gated_exit = None;
     if let (Some(kind), Some(outcome)) =
         (consult.map(|consult| consult.kind), router_outcome.as_mut())
     {
@@ -282,7 +289,18 @@ pub(super) async fn forward(
             routing::stage::ConsultKind::Overlay => state.driven_routers.overlay(model_key),
             routing::stage::ConsultKind::StageClassifier => None,
         };
-        if let Some(entry) = entry {
+        if let Some(entry) = entry.filter(|entry| entry.is_gated()) {
+            let turn = gated::GatedTurn {
+                state: &state,
+                entry,
+                uri,
+                headers,
+                base_headers: &base_headers,
+                inbound: &inbound,
+                requested_model: &requested_model,
+            };
+            gated_exit = gated::consult(turn, &mut body, &mut routes, outcome).await;
+        } else if let Some(entry) = entry {
             // Cloned so the mint's borrow is of a local, leaving `outcome`
             // free to be rewritten by the decision below.
             let router_id = outcome.model.clone();
@@ -361,6 +379,9 @@ pub(super) async fn forward(
         if let Some((from, to)) = stage_flip {
             crate::metrics::record_stage_flip(&outcome.model, from.as_label(), to.as_label());
         }
+    }
+    if let Some(exit) = gated_exit {
+        return gated::finish(exit, started_at, &requested_safeguards, max_request_bytes).await;
     }
     // The handoff note rides the admitted request, so it is applied on the same
     // boundary the counters are: a rejected turn never reaches an upstream and

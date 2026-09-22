@@ -27,14 +27,15 @@ pub use http_tuning::{
 };
 pub use presets::{provider_presets, ProviderPresetView};
 pub use router::{
-    AutoRouterConfig, CallBounds, CapabilityClassifierConfig, ClassifierPolicy, ClassifyTrigger,
-    CompositeClassifierConfig, CompositeRouterConfig, CompositeStageConfig, CompositeTrigger,
-    CustomClassifierConfig, HandoffNotesConfig, LlmClassifierConfig, PrefillRouterConfig,
-    RandomAffinity, RandomRouterConfig, RouterConfig, StageClassifierConfig, StageRouterConfig,
-    StageRouterPicker, ToolSemanticsConfig, DEFAULT_BASE_THRESHOLD, DEFAULT_CONFIDENCE_THRESHOLD,
-    DEFAULT_DEESCALATE_THRESHOLD, DEFAULT_GATED_IDLE_MS, DEFAULT_GATED_MAX_BYTES,
-    DEFAULT_GATED_MAX_DURATION_MS, DEFAULT_JUDGE_MAX_RESPONSE_BYTES, DEFAULT_JUDGE_TIMEOUT_MS,
-    DEFAULT_MAX_JUDGE_CALLS, DEFAULT_MAX_OUTPUT_TOKENS,
+    AdvisorGateTrigger, AdvisorRouterConfig, AutoRouterConfig, CallBounds,
+    CapabilityClassifierConfig, ClassifierPolicy, ClassifyTrigger, CompositeClassifierConfig,
+    CompositeRouterConfig, CompositeStageConfig, CompositeTrigger, CustomClassifierConfig,
+    EscalationClassifierConfig, EscalationJudgeTable, HandoffNotesConfig, LlmClassifierConfig,
+    PrefillRouterConfig, RandomAffinity, RandomRouterConfig, RouterConfig, StageClassifierConfig,
+    StageRouterConfig, StageRouterPicker, ToolSemanticsConfig, DEFAULT_BASE_THRESHOLD,
+    DEFAULT_CONFIDENCE_THRESHOLD, DEFAULT_DEESCALATE_THRESHOLD, DEFAULT_GATED_IDLE_MS,
+    DEFAULT_GATED_MAX_BYTES, DEFAULT_GATED_MAX_DURATION_MS, DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+    DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_MAX_JUDGE_CALLS, DEFAULT_MAX_OUTPUT_TOKENS,
 };
 pub use secrets::Secret;
 pub use session::GatewaySessionConfig;
@@ -2613,6 +2614,8 @@ pub enum ConfigError {
     SubagentsMessageHashFallback { model: String },
     #[error("models entry {model} driven router could not be constructed: {message}")]
     DrivenRouterBuild { model: String, message: String },
+    #[error("models entry {model} advisor router: {reason}")]
+    InvalidAdvisorGatePattern { model: String, reason: &'static str },
     #[error("models entry {model} random router targets must not be empty")]
     EmptyRandomTargets { model: String },
     #[error("models entry {model} random router has {weights} weights but {targets} targets; weights follow target order, one per target")]
@@ -4596,6 +4599,7 @@ impl Config {
                 self.validate_llm_classifier(model_id, classifier)?
             }
             RouterConfig::Composite(composite) => self.validate_composite(model_id, composite)?,
+            RouterConfig::Advisor(advisor) => self.validate_advisor(model_id, advisor)?,
             _ => {}
         }
         // Last, and only after every key-level verdict: upstream's own

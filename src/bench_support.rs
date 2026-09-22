@@ -179,6 +179,22 @@ pub fn dependency_envelope(config: &Config, model: &str) -> Vec<Route> {
     routing::envelope::dependency_envelope(config, model)
 }
 
+/// Feed a streamed gated turn through the terminal-marker scan, chunk by chunk
+/// as it arrives off the upstream, and report whether it may be served
+/// (ADR-0005 §3).
+///
+/// The per-chunk work every streamed escalation or advisor turn pays while it
+/// is retained, and the only part of retention that reads the bytes rather
+/// than moving them. `TerminalScan` stays crate-private; this is its whole
+/// production use — `feed` per chunk, `is_terminal` once at the end.
+pub fn scan_is_terminal<'a>(chunks: impl IntoIterator<Item = &'a [u8]>) -> bool {
+    let mut scan = routing::serve::gated::TerminalScan::default();
+    for chunk in chunks {
+        scan.feed(chunk);
+    }
+    scan.is_terminal()
+}
+
 /// Facade tests.
 ///
 /// These pin the facade to the production path it claims to expose, which is
@@ -192,7 +208,9 @@ pub fn dependency_envelope(config: &Config, model: &str) -> Vec<Route> {
 /// `None` unconditionally and `signals_are_extracted_from_a_completed_call`
 /// goes red. Drop the `stage_router` check in [`resolve_chain`]'s config and
 /// `an_unrouted_id_resolves_without_the_router` and its routed twin report the
-/// same `upstream_model`, collapsing the benchmark's control arm.
+/// same `upstream_model`, collapsing the benchmark's control arm. Skip the
+/// scan in [`scan_is_terminal`] and
+/// `the_scan_reports_a_turn_only_when_it_reached_message_stop` goes red.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +392,16 @@ mod tests {
         store.turn("router-model", "session", None, &router(), now);
         store.turn("router-model", "session", Some("child-1"), &router(), now);
         assert_eq!(store.0.len(), 2, "parent and child hold one pin each");
+    }
+
+    /// The facade reads the marker, not the length: the same turn without its
+    /// last frame is not servable.
+    #[test]
+    fn the_scan_reports_a_turn_only_when_it_reached_message_stop() {
+        let turn = "event: message_start\ndata: {}\n\nevent: message_stop\ndata: {}\n\n";
+        let (head, tail) = turn.split_at(30);
+        assert!(scan_is_terminal([head.as_bytes(), tail.as_bytes()]));
+        assert!(!scan_is_terminal([head.as_bytes()]));
     }
 
     #[test]

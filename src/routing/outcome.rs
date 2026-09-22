@@ -77,6 +77,38 @@ pub(crate) enum RouteSource {
     /// agent had already earned, so no judge was called. libsy's affinity, or
     /// a composite entry's retained tier.
     DrivenRetained,
+    /// An `escalation` classifier served the weak turn it retained: the judge
+    /// declined to escalate, or its escalate verdict is still short of
+    /// `confirmations`. The turn is replayed, not streamed live.
+    EscalationWeak,
+    /// An `escalation` classifier served the strong tier because the session
+    /// is latched — this turn's verdict confirmed the streak, or an earlier
+    /// one already had and no call was made.
+    EscalationLatch,
+    /// An `escalation` classifier served the strong tier because the weak turn
+    /// could not be retained whole — a gated bound crossed, the transport
+    /// broke, or it ended before `message_stop` — so the judge was never
+    /// asked.
+    EscalationFallback,
+    /// An `advisor` reviewed the retained executor turn and approved it.
+    AdvisorApprove,
+    /// An `advisor` review failed and `fail_open` let the retained turn
+    /// through unreviewed.
+    AdvisorFailOpen,
+    /// The retained executor turn was not a review trigger (it called tools,
+    /// or the review budget could not be reserved), so it was served as
+    /// generated.
+    AdvisorPass,
+    /// An `advisor` discarded the retained turn and sent the executor back to
+    /// work; the turn the caller receives is that second, live dispatch.
+    AdvisorRedo,
+    /// The `advisor`'s review budget for this scope is spent, so the executor
+    /// answered live with nothing retained.
+    AdvisorExhausted,
+    /// A gated turn could not be served: a nonterminal advisor executor turn,
+    /// an upstream error the gated call relayed, or an advisor failure under
+    /// `fail_open = false`.
+    GatedError,
     /// A `noop` router answered without an upstream call.
     Noop,
     /// A `[models.subagents]` overlay diverted delegated work to its `target`
@@ -101,6 +133,15 @@ impl RouteSource {
             Self::Driven => "llm-classifier",
             Self::DrivenFailOpen => "classifier_fail_open",
             Self::DrivenRetained => "classifier_retained",
+            Self::EscalationWeak => "escalation_weak",
+            Self::EscalationLatch => "escalation_latch",
+            Self::EscalationFallback => "escalation_fallback",
+            Self::AdvisorApprove => "advisor_approve",
+            Self::AdvisorFailOpen => "advisor_fail_open",
+            Self::AdvisorPass => "advisor_pass",
+            Self::AdvisorRedo => "advisor_redo",
+            Self::AdvisorExhausted => "advisor_exhausted",
+            Self::GatedError => "gated_error",
             Self::Noop => "noop",
             Self::Subagent => "subagent",
             Self::SubagentType => "subagent_type",
@@ -126,6 +167,15 @@ impl RouteSource {
             | Self::Driven
             | Self::DrivenFailOpen
             | Self::DrivenRetained
+            | Self::EscalationWeak
+            | Self::EscalationLatch
+            | Self::EscalationFallback
+            | Self::AdvisorApprove
+            | Self::AdvisorFailOpen
+            | Self::AdvisorPass
+            | Self::AdvisorRedo
+            | Self::AdvisorExhausted
+            | Self::GatedError
             | Self::Noop
             | Self::Subagent
             | Self::SubagentType => None,
