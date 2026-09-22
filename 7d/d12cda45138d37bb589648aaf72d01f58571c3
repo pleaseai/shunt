@@ -1,0 +1,47 @@
+src/config/router/composite.rs
+  s_94445e26660099::t_7151e8be7e4748 18-19,144,147,151,158,160
+src/config.rs
+  s_94445e26660099::t_e9d54e282e0a20 4479,4584,4595
+src/config/router/classifier.rs
+  s_94445e26660099::t_9dd2b46e2f2152 215-222,271
+  s_94445e26660099::t_7151e8be7e4748 17,232-235,239,242-245,253,260,263
+src/config/router/stage.rs
+  s_94445e26660099::t_a8439331b9f07f 300-302
+  s_94445e26660099::t_7151e8be7e4748 14-15,297,304
+  s_94445e26660099::t_c78adc217f0ede 303
+src/config/subagents/classifier.rs
+  s_94445e26660099::t_9dd2b46e2f2152 18,27,102,110,116,122
+src/config/subagents.rs
+  s_94445e26660099::t_0d8ac2315807e6 23
+  s_94445e26660099::t_9dd2b46e2f2152 107,111,113,128
+src/routing/driven/build.rs
+  s_94445e26660099::t_9dd2b46e2f2152 18,292
+src/config/router.rs
+  s_94445e26660099::t_a8439331b9f07f 195-198
+  s_94445e26660099::t_c92a7c303600d2 189
+  s_94445e26660099::t_9dd2b46e2f2152 51
+  s_94445e26660099::t_6f42923b91b3e3 154-160,167,172
+  s_94445e26660099::t_0da67e824981b8 59-60
+src/config/router/classifier/tests.rs
+  s_94445e26660099::t_b1347e5421ceb9 128-129,134,155-158,163
+src/config/router/composite/tests.rs
+  s_94445e26660099::t_740c06f71d4650 85-86,91
+src/config/subagents/tests.rs
+  s_94445e26660099::t_ae5884872b1c53 39-42,115-118,123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7dd12cda45138d37bb589648aaf72d01f58571c3",
+  "prompts": {},
+  "sessions": {
+    "s_94445e26660099": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "39f64eac-26fd-40dc-93a6-866c40c7e07f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
