@@ -709,8 +709,8 @@ models entry <id> router type = "prefill_router" failed to load: <upstream error
 
 前半句要当作条件来读。若某个条目的目标*全部*是直通的,它的 envelope 中任何一处都不注入凭据,
 入站认证便无从要求,连匿名调用方也会被放行,并由它驱动路由器。若你要保护的正是这次驱动,
-就给该条目配一个会注入凭据的目标,或把它放在 gateway 登录之后;对全部直通的条目而言,
-仅有 `[server.auth]` 并不能提供保护。
+就给该条目配一个会注入凭据的目标;对全部直通的条目而言,`[server.auth]` 和 gateway 登录
+都不能提供保护。
 
 **一轮是怎么定下来的。** 交给算法的只有 `user` 和 `assistant` 两种角色,以及 `text` 和
 `tool_result` 两种块。算法给最近一轮文本用户消息打分,并把所有块都是 `tool_result` 的消息

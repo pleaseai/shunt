@@ -758,7 +758,7 @@ models entry <id> router type = "prefill_router" failed to load: <upstream error
 앞 문장의 조건을 그대로 읽어야 합니다. 타깃이 *전부* 패스스루인 엔트리는 envelope 어디에도
 크리덴셜을 주입하지 않으므로, 인바운드 인증은 요구할 것이 없어 익명 호출자까지 그대로
 통과시키고, 그 호출자가 라우터를 구동합니다. 구동 자체를 보호하려면 크리덴셜을 주입하는
-타깃을 두거나 gateway 로그인 뒤에 두십시오. 전부 패스스루인 엔트리는 `[server.auth]`만으로는
+타깃을 두십시오. 전부 패스스루인 엔트리는 `[server.auth]`로도 gateway 로그인으로도
 보호되지 않습니다.
 
 **턴을 어떻게 결정하는가.** 알고리즘에 넘기는 것은 `user`와 `assistant` 역할, 그리고

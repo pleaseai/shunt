@@ -958,8 +958,8 @@ Read the first half of that as the condition it is. An entry whose targets are
 *all* passthrough injects no credential anywhere in its envelope, so inbound
 authentication has nothing to demand and admits every caller — including an
 anonymous one, which then drives the router. If the drive itself is what you
-mean to protect, give the entry a credential-injecting target or put it behind
-gateway login; `[server.auth]` alone does not gate an all-passthrough entry.
+mean to protect, give the entry a credential-injecting target; neither
+`[server.auth]` nor gateway login gates an all-passthrough entry.
 
 **How a turn is decided.** Only `user` and `assistant` roles and only `text`
 and `tool_result` blocks are handed to the algorithm; it scores the latest text
