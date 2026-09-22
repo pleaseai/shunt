@@ -17,7 +17,7 @@
 3. The route's `AdapterKind` selects an adapter, which injects the provider credential, translates the request/response protocol if needed, and forwards upstream.
 4. The upstream response streams back to the client **unbuffered** (unless it asked for non-streaming), with gateway-owned errors reshaped into the Anthropic error envelope.
 
-**Key constraints**: Preserve streaming (never buffer upstream SSE unless non-streaming was requested). Keep gateway-owned errors in Anthropic error shape. Add providers/models by config, not code. Unmapped traffic must pass through to Anthropic unchanged.
+**Key constraints**: Preserve streaming (never buffer upstream SSE unless non-streaming was requested or the entry's `escalation`/`advisor` router needs the completed turn before serving it). Keep gateway-owned errors in Anthropic error shape. Add providers/models by config, not code. Unmapped traffic must pass through to Anthropic unchanged.
 
 ## Dependency Layers
 

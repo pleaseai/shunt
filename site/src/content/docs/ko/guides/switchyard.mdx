@@ -20,8 +20,8 @@ shunt의 [스테이지 라우터](/ko/guides/stage-router/)는 자체 스코어�
 
 Switchyard는 게이트웨이 한 벌을 제공합니다. 프록시 서버, 프로바이더 중립 프로토콜,
 요청/응답 번역, LLM 판정자 분류기, 에스컬레이션, 서브에이전트 라우팅까지. shunt는
-이미 게이트웨이이므로 스코어러와, 옵트인 테이블 뒤의 판정자 분류기, 그 경계에서만 쓰는
-번역 코덱을 가져오고 나머지는 두고 옵니다.
+이미 게이트웨이이므로 스코어러와, 옵트인 테이블 뒤의 판정자 기반 알고리즘들, 그
+경계에서만 쓰는 번역 코덱을 가져오고 서버는 두고 옵니다.
 
 | Switchyard 구성 요소 | shunt에서 |
 | :-- | :-- |
@@ -29,10 +29,11 @@ Switchyard는 게이트웨이 한 벌을 제공합니다. 프록시 서버, 프�
 | `switchyard-protocol` | libsy의 의존성으로 딸려옴. shunt는 `Request`를 만들지 않음 |
 | `switchyard-translation` | **라우팅 경계에서만 사용** — 판정 요청과 그 응답의 중립 ⇄ Anthropic 변환. Anthropic → Responses 와이어 변환은 계속 shunt 자신의 `src/model/responses_request.rs`가 맡음 |
 | `switchyard-server` | **미사용** — shunt가 곧 서버 |
-| LLM 분류기 / 판정자 | **항목별 옵트인** — `stage_router`의 [`[models.router.classifier]`](/ko/guides/stage-router/#판정-모델-폴백). 신호가 결론을 내지 못한 턴에서만 호출됨. [아래](#핫-패스에-llm-판정자를-두지-않는다) 참고 |
-| 에스컬레이션 라우팅(턴 중간) | **미사용** — shunt의 post-2xx 무재생 규칙과 충돌 |
+| LLM 분류기 / 판정자 | **항목별 옵트인** — `stage_router`의 [`[models.router.classifier]`](/ko/guides/stage-router/#판정-모델-폴백). 신호가 결론을 내지 못한 턴에서만 호출됨. [아래](#llm-판정자는-항목-단위-옵트인이다) 참고 |
+| 에스컬레이션 라우팅 | **항목별 옵트인** — [`mode = "escalation"`](/ko/reference/configuration/#mode--escalation). 판정자가 판단할 때까지 약한 턴을 붙잡아 두므로, 강한 타깃으로의 전환은 헤더를 보내기 전에 일어남. [아래](#완성된-턴을-읽는-두-판정자) 참고 |
 | 핸드오프 노트 | **사용** — [`[models.router.handoff_notes]`](/ko/reference/configuration/#modelsrouterhandoff_notes-선택) |
-| 어드바이저 게이트, 서브에이전트 라우팅 | **미사용** |
+| 어드바이저 게이트 | **항목별 옵트인** — [`type = "advisor"`](/ko/reference/configuration/#type--advisor). 리뷰가 끝날 때까지 실행 모델의 턴을 붙잡아 둠 |
+| 서브에이전트 라우팅 | **사용** — [`[models.subagents]`](/ko/reference/configuration/#modelssubagents-선택) |
 
 결합점은 함수 호출 하나가 전부입니다. shunt는 파싱된 Anthropic Messages 본문에서
 libsy의 `ToolSignals` 구조체를 직접 채우고 `pick_tier`를 호출합니다. 그 구조체의
@@ -355,6 +356,28 @@ fall-open하는 것은 API와 싸우는 게 아니라, API가 문서화한 fall-
 않으며, 한 (세션, 에이전트) 쌍에 대해 `max_judge_calls`를 넘겨 호출되지 않습니다. 판정
 실패는 — 타임아웃이든 `400`이든 파싱되지 않는 답이든 — 요청을 실패시키지 않고 알고리즘
 자신의 기본값으로 돌아오며, 판정하는 턴 한 번에 판정 호출도 정확히 한 번입니다.
+
+### 완성된 턴을 읽는 두 판정자
+
+위의 형태는 모두 턴이 실행되기 전에 그 턴이 갈 곳을 정합니다. 실행된 뒤에 정하는 형태도
+둘 있습니다. [`mode = "escalation"`](/ko/reference/configuration/#mode--escalation)은 약한
+타깃의 턴을 제공하면서 판정자가 완성된 작업을 판정하게 하고, 상향 전환 판정이
+`confirmations`번 연속되면 세션을 강한 타깃에 고정합니다.
+[`type = "advisor"`](/ko/reference/configuration/#type--advisor)는 더 강한 리뷰어가 실행
+모델의 마무리 턴을 승인하거나 작업을 다시 하도록 돌려보내게 합니다.
+
+둘 다 이미 존재하는 턴을 판정하므로 shunt는 그 턴을 붙잡아 둡니다. 업스트림 응답을
+버퍼링하고 판정한 다음에야 클라이언트에 재생합니다 — 바이트 그대로, 클라이언트가 요청한
+id로, 클라이언트가 요청한 스트리밍 또는 비스트리밍 모드로. 스트림을 버퍼링하지 않는다는
+shunt 규칙의 유일한 예외이며, 이 두 항목이 게이트하는 턴에만 적용됩니다. 다른 라우트는
+바뀌지 않습니다.
+
+턴을 붙잡아 두기 때문에 업스트림의 설계가 shunt의 post-2xx 무재생 규칙 안에 머뭅니다.
+재생이 시작될 때까지 응답 헤더를 확정하지 않으므로, 버려진 턴 — 강한 타깃으로 대체된
+턴이든 REDO로 돌려보낸 턴이든 — 은 클라이언트가 본 적이 없습니다. 대가는 지연 시간입니다.
+붙잡아 둔 턴에서는 턴 전체가 끝나야 첫 바이트가 도착하고, 에스컬레이션은 고정되기 전까지
+턴마다 판정 호출을 하나씩 더합니다. 라우트 소스와 붙잡아 둔 턴이 실패했을 때의 동작은
+[구성 레퍼런스](/ko/reference/configuration/#보류된-턴-escalation과-advisor)에 정리되어 있습니다.
 
 ### 라우팅된 타깃은 평범한 모델 id
 

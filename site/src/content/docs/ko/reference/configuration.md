@@ -440,13 +440,15 @@ shunt가 보통 쓰는 `kind`나 `mode`가 아니라 `type`을 쓰는 것은 **s
 | `random` | 가중치 추첨, 기본은 세션 고정 | 읽지 않음 |
 | `noop` | 고르지 않음 — 빈 메시지로 응답 | 읽지 않음 |
 | `prefill_router` | 가장 최근 사용자 턴을 읽는 학습형 분류기(`prefill-router` 빌드 필요) | 읽음 — 사용자 턴의 텍스트 |
-| `llm_classifier` | LLM 판정 모델의 판정. 언제 물을지는 `classify_trigger`가 정합니다 | 읽음 — 패키지 프롬프트나 직접 쓴 프롬프트로 트랜스크립트를 읽습니다 |
+| `llm_classifier` | LLM 판정 모델의 판정. 언제 물을지는 `classify_trigger`가 정합니다. `mode = "escalation"`에서는 완성된 약한 턴에 대한 판정 모델의 판단 | 읽음 — 패키지 프롬프트나 직접 쓴 프롬프트로 트랜스크립트를 읽습니다 |
 | `composite` | LLM 판정 모델이 스테이지 라우터의 fall-open 티어를 정합니다 | 읽음 — 판정 모델은 트랜스크립트를, 신호는 tool-result 메타데이터를 |
+| `advisor` | 실행 모델 하나가 모든 턴을 제공하고, 더 강한 리뷰어가 그 마무리 턴을 승인하거나 돌려보냅니다 | 읽음 — 리뷰어를 위해 트랜스크립트를 |
 
-**아직 사용할 수 없는** 형태는 둘입니다. 지정하면 시작 오류가 납니다.
-`type = "advisor"`와 `llm_classifier`의 `mode = "escalation"`입니다. 둘 다 라우팅을
-결정하는 도중에 턴을 제공하므로 버퍼 후 재생(buffer-and-replay) 레인이 필요하고, 그
-레인은 이후 릴리스에서 추가됩니다. `prefill_router`는 구현되어 있지만 **컴파일 타임에
+라우팅을 결정하는 도중에 턴을 제공하는 형태는 둘입니다. `llm_classifier`의
+[`mode = "escalation"`](#mode--escalation)과 [`type = "advisor"`](#type--advisor)입니다.
+둘 다 판정이 나올 때까지 턴을 붙잡아 두었다가 제공하므로, 클라이언트가 스트리밍을 요청한
+응답을 shunt가 버퍼링하는 유일한 라우트입니다 — [보류된 턴](#보류된-턴-escalation과-advisor)을 보세요.
+`prefill_router`는 구현되어 있지만 **컴파일 타임에
 게이트됩니다**. 기본으로 꺼져 있는 `prefill-router` 카고 피처를 켜고 빌드한 바이너리에서만
 쓸 수 있습니다 — [아래](#type--prefill_router)를 보세요.
 
@@ -584,8 +586,8 @@ base_threshold = 0.5
 #### 호출당 한도
 
 여섯 개 키가 한 항목이 만드는 모든 내부 호출에 한도를 겁니다. 이 키들은 그 호출을 만드는
-테이블에 놓입니다 — `classifier`를 단 `stage_router`, `llm_classifier`, `composite` 등
-driven 타입의 `[models.router]`, 그리고 classifier 형태의
+테이블에 놓입니다 — `classifier`를 단 `stage_router`, `llm_classifier`, `composite`,
+`advisor` 등 driven 타입의 `[models.router]`, 그리고 classifier 형태의
 [`[models.subagents]`](#modelssubagents-선택) 오버레이(자기 몫을 따로 가집니다)입니다.
 한도를 넘기면 업스트림 호출을 취소합니다. 각 값은 최소 `1`이어야 하며, `0`은 해당 키를
 알려 주는 시작 오류입니다.
@@ -594,25 +596,25 @@ driven 타입의 `[models.router]`, 그리고 classifier 형태의
 | :-- | :-- | :-- |
 | `judge_timeout_ms` | `30000` | 스트리밍하지 않는 판정 호출의 종단 간 기한. 헤더*와* 본문을 모두 덮으므로 `200`을 보낸 뒤 멈춰 버린 응답도 여기서 끊깁니다 |
 | `judge_max_response_bytes` | `65536` | 수집하는 판정 응답의 최대 크기. 이를 넘기면 `fall_open`으로 해결됩니다 |
-| `gated_max_bytes` | `8388608` | 보관하는 턴의 최대 크기 |
+| `gated_max_bytes` | `8388608` | 보관하는 턴의 최대 크기. SSE 프레임 바이트 또는 JSON 본문 |
 | `gated_idle_ms` | `60000` | 보관하는 턴에서 완성된 콘텐츠 프레임 사이의 최대 간격. SSE ping 프레임은 이 타이머를 되돌리지 않으며, 청크 경계에서 나뉜 프레임은 분류 전에 다시 합쳐집니다 |
-| `gated_max_duration_ms` | `600000` | 보관하는 턴의 벽시계 상한 |
-| `max_judge_calls` | `8` | 한 세션이 만들 수 있는 판정 호출 수 |
+| `gated_max_duration_ms` | `600000` | 보관하는 턴의 벽시계 상한. 헤더와 본문을 모두 덮습니다 |
+| `max_judge_calls` | `8` | 한 세션이 만들 수 있는 판정 호출 수. 보류된 턴 자체는 판정 호출이 아니므로 세지 않습니다 |
 
-`gated_*` 세 키는 값을 받고 검증하며 보관 수집기가 실제로 적용하지만, **아직 보관되는 턴
-자체가 없습니다** — 이 키들이 대비하는 버퍼링된 상향 전환 턴과 advisor 턴은 이후
-릴리스에서 추가됩니다. 그때까지 런타임에서 이 세 키가 거는 한도는 없습니다.
+`gated_*` 세 키는 [`escalation`](#mode--escalation)이나 [`advisor`](#type--advisor)
+항목의 **보류된** 턴, 즉 판정이 나올 때까지 shunt가 붙잡아 두는 턴에 한도를 겁니다. 다른
+항목에는 보류된 턴이 없으므로 이 키들이 거는 한도도 없습니다.
 
 #### `type = "llm_classifier"`
 
 신호가 떨어진 자리만 메우는 대신, LLM **판정 모델**이 턴 전체를 결정합니다. 항목에는
-판정 모델과 그것이 고를 수 있는 목적지, 그리고 판정의 형태를 정하는 `mode`를 적습니다.
+판정 모델과 그것이 고를 수 있는 목적지, 그리고 세 가지 판정 형태 중 하나를 정하는
+`mode`를 적습니다. 여기서는 `capability`와 `custom`을 설명합니다. `escalation`은 완성된
+턴을 판정하므로 [별도 절](#mode--escalation)에서 다룹니다.
 
 `mode`는 **필수**입니다. 업스트림 스키마는 `capability`를 기본값으로 두지만 여기서는
-그렇지 않습니다. 세 모드는 서로 다른 원리로 라우팅하고, 그중 하나(`escalation`)는 아직
-여기에 없습니다. `mode`를 생략한 설정이 `capability`로 읽히면, 나중에 `escalation`이
-추가될 때 그 설정의 의미가 조용히 바뀝니다. `mode = "escalation"`은 존재하는 두 모드를
-알려 주는 시작 오류입니다.
+그렇지 않습니다. 세 모드는 서로 다른 원리로 라우팅하고, 그중 하나(`escalation`)는 제공할
+턴을 버퍼링하므로, `mode`를 생략한 설정이 조용히 어느 한 모드로 읽혀서는 안 됩니다.
 
 **`mode = "capability"`** — 패키지 판정 모델이 작업의 해결 확률을 돌려줍니다. 그 값이
 `base_threshold` 이상이면 턴은 `weak_target`에, 미만이면 `strong_target`에 갑니다.
@@ -714,6 +716,63 @@ id이고, 판정 모델은 **passthrough** 라우트로 해석되면 안 됩니�
 [위](#modelsrouterclassifier-선택)에서 말한 이유 그대로입니다 — 판정 호출은 호출자의
 자격 증명을 하나도 싣지 않으므로 passthrough 라우트에는 돌릴 것이 남지 않습니다.
 
+#### `mode = "escalation"`
+
+`llm_classifier`의 세 번째 모드는 각 세션을 약한 타깃에서 시작하고, 판정 모델이 작업이
+어떻게 흘러가는지 읽게 합니다. 아직 고정(latch)되지 않은 세션의 턴은 `weak_target`에서
+만들어 붙잡아 둡니다. 그다음 판정 모델이 **완성된** 턴을 판정합니다 — 예측이 아니라 약한
+모델이 실제로 한 작업을 봅니다. 거절 판정은 상향 전환 연속 횟수를 0으로 되돌리고, 상향
+전환 판정은 그 횟수를 늘립니다. 연속 횟수가 `confirmations`보다 작은 동안에는 붙잡아 둔
+약한 턴을 제공합니다. `confirmations`에 닿으면 세션이 고정됩니다. 그 턴의 약한 답은
+버리고 `strong_target`이 턴을 제공하며, 이후 그 세션의 모든 턴은 판정 호출도 버퍼링도
+없이 곧바로 `strong_target`으로 갑니다.
+
+```toml
+[[models]]
+id = "claude-escalate"
+
+[models.router]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+# prompt = "…"
+# max_output_tokens = 4096
+
+[models.router.escalation]
+confirmations = 2
+# recent_turn_window = 28
+# window_message_chars = 500
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `llm_classifier` |
+| `mode` | ✅ 필수 | `escalation` |
+| `classifier_target` | ✅ 필수 | 궤적 판정 모델의 공개 model id. 물어보기만 하고 제공하지 않습니다 |
+| `strong_target` | ✅ 필수 | 세션이 고정된 뒤 제공하는 model id |
+| `weak_target` | ✅ 필수 | 고정 전에 제공하는 model id. `classifier_target`과 같은 id여도 됩니다 |
+| `prompt` | 패키지 프롬프트 | 패키지 궤적 판정 프롬프트를 대체합니다 |
+| `max_output_tokens` | `4096` | 판정 응답의 완성 토큰 상한. 최소 `1` |
+| `escalation.confirmations` | `2` | 고정에 필요한 연속 상향 전환 판정 수. 최소 `1`. `1`보다 크면 세션 id가 필요합니다. 없으면 매 턴이 0에서 시작해 세션이 끝내 고정되지 않습니다 |
+| `escalation.recent_turn_window` | `28` | 판정 모델에게 보여 주는 최근 메시지 수. 최소 `1` |
+| `escalation.window_message_chars` | `500` | 그 창 안의 메시지당 문자 수 상한. 최소 `50` |
+
+`[models.router.escalation]` 테이블은 선택입니다. 생략하면 세 기본값을 쓰며, 이는
+업스트림이 벤치마크한 설정입니다. 여섯 개 [호출당 한도](#호출당-한도)는
+`[models.router]`에 놓습니다. classifier 형태의
+[`[models.subagents]`](#modelssubagents-선택) 오버레이는 여전히 `mode = "custom"`만
+받습니다.
+
+`classifier_target`과 달리 `weak_target`은 **passthrough** 라우트여도 됩니다. 약한 턴은
+클라이언트 자신의 답이므로, 실시간 턴과 똑같이 호출자의 자격 증명을 싣습니다.
+`count_tokens` 프로브는 판정 호출도 보류된 호출도 만들지 않고 `weak_target`으로
+응답합니다. 판정 호출은 `shunt.router.judge_calls{algorithm="llm_classifier"}`로 셉니다.
+
+보류된 턴을 어떻게 제공하는지, 결과마다 클라이언트가 무엇을 보는지, 비용이 얼마인지는
+[보류된 턴](#보류된-턴-escalation과-advisor)을 보세요.
+
 #### `type = "composite"`
 
 판정 모델이 스테이지 라우터의 fall-open 티어를 정하고, 신호 채점에는 손대지 않습니다.
@@ -761,6 +820,118 @@ confidence_threshold = 0.5
 stage 쪽은 libsy 자신의 stage 라우트이므로, 결정적인 턴은 classifier 결정이 아니라 스테이지
 라우터의 라우트 소스를 그대로 보고합니다 — composite의 신호 기반 턴을 평범한
 `stage_router`의 턴과 같은 방식으로 읽을 수 있다는 뜻입니다.
+
+#### `type = "advisor"`
+
+**실행 모델**(executor) 하나가 클라이언트가 보는 모든 턴을 제공합니다. 더 강한
+**어드바이저**(advisor)가 실행 모델의 마무리 턴 — 작업 전에 내놓는 계획, 또는 작업을
+끝냈다는 주장 — 을 클라이언트가 보기 전에 리뷰합니다. APPROVE는 붙잡아 둔 턴을 내보내고,
+REDO는 그 턴을 버린 뒤 어드바이저의 계획과 함께 실행 모델을 다시 작업으로 돌려보냅니다.
+어드바이저는 턴을 제공하지 않으므로 클라이언트는 실행 모델의 출력만 봅니다.
+
+```toml
+[[models]]
+id = "claude-reviewed"
+
+[models.router]
+type = "advisor"
+executor_target = "claude-sonnet-4-6"
+advisor_target = "claude-opus-4-8"
+gate_trigger = "no_tool_call"
+max_reviews = 1
+# gate_stall_turns = 0
+# gate_min_tool_results = 0
+# advisor_max_tokens = 2048
+# transcript_max_chars = 200000
+# fail_open = true
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `advisor` |
+| `executor_target` | ✅ 필수 | 클라이언트가 보는 모든 턴을 제공합니다 |
+| `advisor_target` | ✅ 필수 | 보류된 턴을 리뷰합니다. 제공하지 않습니다 |
+| `gate_trigger` | `no_tool_call` | 리뷰를 일으키는 조건. `no_tool_call`(실행 모델이 도구 호출 없이 끝낸 첫 턴) 또는 `pattern` |
+| `gate_trigger_pattern` | 미설정 | `pattern` 트리거의 정규식. 앵커 없이 검색합니다. `pattern`에서는 비어 있지 않은 값이 필수이고, `no_tool_call`에서 설정하면 시작 오류입니다 |
+| `max_reviews` | `1` | 세션당 허용되는 리뷰 수. 최소 `1` |
+| `gate_stall_turns` | `0` | 대화에 이만큼의 어시스턴트 턴이 쌓이면 작업 중간 점검으로 한 턴을 리뷰합니다. `0`은 끔 |
+| `gate_min_tool_results` | `0` | `no_tool_call` 턴을 리뷰할 수 있기 전에 대화에 있어야 하는 tool result 수 |
+| `advisor_max_tokens` | `2048` | 리뷰 한 번의 출력 토큰 상한. 최소 `1` |
+| `advisor_temperature` | 미설정 | 리뷰의 샘플링 온도. 설정하지 않으면 리뷰 요청에서 뺍니다 |
+| `transcript_max_chars` | `200000` | 어드바이저에게 보내는 트랜스크립트의 상한. 더 길면 가운데를 잘라 냅니다. 최소 `256` |
+| `fail_open` | `true` | 리뷰가 실패하면 붙잡아 둔 턴을 제공합니다. `false`면 대신 요청을 `502`로 실패시킵니다 |
+| `reviewer_system_prompt` | 패키지 프롬프트 | APPROVE/REDO 리뷰어 프롬프트를 대체합니다 |
+| `redo_feedback_prefix` | 패키지 프롬프트 | 실행 모델에게 돌려보내는 REDO 계획 앞에 붙는 문구를 대체합니다 |
+
+여섯 개 [호출당 한도](#호출당-한도)는 `[models.router]`에 놓습니다.
+
+**어떤 턴을 붙잡아 두는가.** 턴이 `gate_trigger`에 걸리는지는 턴이 완성된 뒤에야 알 수
+있습니다. 그래서 세션에 리뷰 예산이 남아 있는 동안에는 실행 모델의 **모든** 턴을 붙잡아
+두고, 게이트에 걸리지 않은 턴은 리뷰 없이 제공합니다. `max_reviews`를 다 쓰면 그 세션의
+나머지 턴은 버퍼링 없이 실시간으로 스트리밍됩니다.
+
+**REDO.** 붙잡아 둔 턴은 응답 헤더가 하나도 클라이언트에 닿기 전에 버립니다. 버린 턴과
+어드바이저의 계획을 대화에 덧붙이고 실행 모델을 다시 돌리며, 이 재실행은 실시간으로
+스트리밍됩니다.
+
+`advisor_target`과 달리 `executor_target`은 **passthrough** 라우트여도 됩니다. 이유는
+escalation의 약한 타깃과 같습니다. `count_tokens` 프로브는 리뷰도 보류된 호출도 만들지
+않고 `executor_target`으로 응답합니다. 리뷰는
+`shunt.router.judge_calls{algorithm="advisor"}`로 세고, `GET /routes`는
+`advisor_target`을 `judges` 아래에 나열합니다.
+
+#### 보류된 턴: escalation과 advisor
+
+**보류된**(gated) 턴 — 고정 전 escalation의 약한 턴, 또는 리뷰 예산이 남은 세션의
+advisor 실행 모델 턴 — 은 먼저 만들어 붙잡아 두었다가 판정이 나온 뒤에만 제공합니다. 이
+항목의 다른 턴과, 다른 모든 라우트의 모든 턴은 이전과 똑같이 스트리밍됩니다.
+
+**호출자의 모드를 유지합니다.** `stream: true` 호출자의 보류된 호출은 스트리밍합니다.
+SSE 프레임은 도착하는 대로 보관하고, 턴을 제공하게 되면 바이트 그대로 재생합니다.
+`stream: false` 호출자의 보류된 호출은 스트리밍하지 않으며, 호출자는 JSON 메시지 하나를
+받습니다. 게이트가 바꾸는 것은 답을 *언제* 보내느냐뿐이고, 답의 모양은 바꾸지 않습니다.
+재생되는 `message_start.model`은 실행 모델의 id가 아니라 라우터 자신의 id이며, 이는
+Anthropic 실행 모델이든 OpenAI Responses 실행 모델이든 같습니다. 그래서 Claude Code의
+`/model` 표시와 `--resume`은 요청한 id를 봅니다. 응답 헤더는 재생이 시작될 때에야
+확정됩니다.
+
+**완성된 턴만 제공합니다.** 붙잡아 둔 턴은 종료 표시가 있어야 제공할 수 있습니다. 스트리밍
+호출에서는 `message_stop`, 스트리밍하지 않는 호출에서는 메시지 하나로 파싱되는 완전한
+본문입니다. 잘린 `200`은 절대 재생하지 않습니다. 보류된 턴은 타깃의 순서 있는 페일오버
+체인을 탑니다.
+
+`x-gateway-route-source` — 그리고 `shunt.router.decisions`의 `source` 레이블 — 가 무슨
+일이 있었는지 알려 줍니다.
+
+| 소스 | 항목 | 의미 | 전달 |
+| :-- | :-- | :-- | :-- |
+| `escalation_weak` | escalation | 판정 모델이 약한 턴을 통과시켰습니다. 거절했거나, 상향 전환 연속 횟수가 아직 `confirmations`보다 작습니다 | 재생 |
+| `escalation_latch` | escalation | 세션이 이 턴이나 그 이전에 고정되어 강한 타깃이 턴을 제공했습니다 | 실시간 |
+| `escalation_fallback` | escalation | 약한 턴이 실패했거나 종료 표시 전에 끊겨 강한 타깃이 턴을 제공했습니다. 판정 모델은 부르지 않았습니다 | 실시간 |
+| `classifier_fail_open` | escalation | 완성된 약한 턴 뒤에 판정이 실패해 약한 턴을 제공했습니다 | 재생 |
+| `advisor_approve` | advisor | 실행 모델 턴을 리뷰해 승인했습니다 | 재생 |
+| `advisor_pass` | advisor | 실행 모델 턴을 리뷰 없이 제공했습니다. 게이트에 걸리지 않았거나(예: 도구 호출로 끝나는 턴), 리뷰를 예약할 수 없었습니다 | 재생 |
+| `advisor_fail_open` | advisor | 완성된 실행 모델 턴 뒤에 리뷰가 실패해 그 턴을 제공했습니다 | 재생 |
+| `advisor_redo` | advisor | 리뷰어가 REDO라고 했습니다. 버린 턴은 보내지 않았고, 이것은 실행 모델의 재실행입니다 | 실시간 |
+| `advisor_exhausted` | advisor | 세션의 `max_reviews`를 다 써서 실행 모델이 버퍼링 없이 스트리밍합니다 | 실시간 |
+| `gated_error` | 둘 다 | 보류된 턴을 제공할 수 없었습니다 — 아래를 보세요 | 오류 |
+
+**무언가 실패하면:**
+
+| 실패한 것 | `escalation` | `advisor` |
+| :-- | :-- | :-- |
+| 보류된 턴이 `gated_*` 한도를 넘거나 종료 표시 전에 끝남 | 헤더를 보내기 전에 버리고, 강한 타깃이 턴을 실시간으로 제공합니다(`escalation_fallback`) | 헤더를 보내기 전에 버리고, 요청은 Anthropic 오류 형태의 게이트웨이 소유 `502`로 실패합니다(`gated_error`). REDO도 페일오버 시도도 아닙니다 — 업스트림은 이미 `2xx`로 답했습니다 |
+| 보류된 호출의 업스트림이 오류 상태로 답함 | 실시간 턴과 마찬가지로 클라이언트에 그대로 전달합니다(`gated_error`) | 그대로 전달합니다(`gated_error`) |
+| 완성된 턴 뒤에 판정이나 리뷰가 실패함 — 타임아웃, 너무 크거나 파싱할 수 없는 응답, 업스트림 오류, `max_judge_calls` 소진 | 약한 턴을 제공합니다(`classifier_fail_open`) | `fail_open = true`면 실행 모델 턴을 제공하고(`advisor_fail_open`), `fail_open = false`면 요청이 게이트웨이 소유 `502`로 실패합니다(`gated_error`) |
+
+**비용.** 다음은 항목별로 선택해 치르는 비용입니다.
+
+- 보류된 턴에서는 턴 전체가 완성되고 판정될 때까지 클라이언트가 아무것도 받지 못하므로,
+  첫 토큰까지의 시간이 마지막 토큰까지의 시간이 됩니다.
+- escalation은 고정 전 모든 턴에서 판정 호출을 한 번씩 합니다. 고정되는 턴은 버리는 약한
+  호출의 비용도 치릅니다.
+- 버린 약한 턴이나 실행 모델 턴도 업스트림 쿼터는 이미 썼습니다. 클라이언트 자신의 답
+  디스패치이므로 `shunt.requests`에서 `caller="client"`로 셉니다.
 
 #### `type = "auto"`
 

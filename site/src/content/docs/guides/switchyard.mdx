@@ -20,9 +20,9 @@ how the algorithm decides a turn. If you only want to turn the feature on, the
 
 Switchyard ships a whole gateway: a proxy server, a provider-neutral protocol,
 request/response translation, an LLM-judge classifier, escalation, sub-agent
-routing. shunt already is a gateway, so it takes the scorer, the judge
-classifier behind an opt-in table, and the translation codec at that one
-boundary — and leaves the rest.
+routing. shunt already is a gateway, so it takes the scorer, the judge-backed
+algorithms behind opt-in tables, and the translation codec at that one
+boundary — and leaves the server.
 
 | Switchyard component | In shunt |
 | :-- | :-- |
@@ -30,10 +30,11 @@ boundary — and leaves the rest.
 | `switchyard-protocol` | Pulled in as libsy's own dependency; shunt builds no `Request` |
 | `switchyard-translation` | **At the routing boundary only** — neutral ⇄ Anthropic on the judge request and its reply. The Anthropic → Responses wire translation stays shunt's own `src/model/responses_request.rs` |
 | `switchyard-server` | **No** — shunt is the server |
-| LLM classifier / judge | **Opt-in per entry** — [`[models.router.classifier]`](/guides/stage-router/#the-judge-fallback) on a `stage_router`, consulted only on the turns the signals leave undecided; see [below](#no-llm-judge-on-the-hot-path) |
-| Escalation routing (mid-turn) | **No** — collides with shunt's post-2xx no-replay rule |
+| LLM classifier / judge | **Opt-in per entry** — [`[models.router.classifier]`](/guides/stage-router/#the-judge-fallback) on a `stage_router`, consulted only on the turns the signals leave undecided; see [below](#the-llm-judge-is-opt-in-per-entry) |
+| Escalation routing | **Opt-in per entry** — [`mode = "escalation"`](/reference/configuration/#mode--escalation). The weak turn is held until the judge rules, so the switch to the strong target happens before any header is sent; see [below](#two-judges-read-the-finished-turn) |
 | Handoff notes | **Yes** — [`[models.router.handoff_notes]`](/reference/configuration/#modelsrouterhandoff_notes-optional) |
-| Advisor gate, sub-agent routing | **No** |
+| Advisor gate | **Opt-in per entry** — [`type = "advisor"`](/reference/configuration/#type--advisor), with the executor turn held until the review |
+| Sub-agent routing | **Yes** — [`[models.subagents]`](/reference/configuration/#modelssubagents-optional) |
 
 The whole coupling is one function call. shunt fills libsy's `ToolSignals`
 struct straight from the parsed Anthropic Messages body and calls `pick_tier`;
@@ -377,6 +378,33 @@ probe, and never more than `max_judge_calls` times for one `(session, agent)`.
 Every judge failure — a timeout, a `400`, an unparseable verdict — resolves to
 the algorithm's own default rather than failing the request, and exactly one
 judge call is made per consulted turn.
+
+### Two judges read the finished turn
+
+Every shape above decides where a turn goes before the turn runs. Two more
+decide afterwards.
+[`mode = "escalation"`](/reference/configuration/#mode--escalation) serves a
+weak target's turn and has a judge rule on the completed work; after
+`confirmations` consecutive escalate verdicts it latches the session onto a
+strong target. [`type = "advisor"`](/reference/configuration/#type--advisor) has
+a stronger reviewer approve an executor's terminal turn or send it back to redo
+the work.
+
+Both judge a turn that already exists, so shunt holds it. The upstream response
+is buffered, judged, and only then replayed to the client — byte for byte,
+under the id the client asked for, in the streaming or non-streaming mode it
+asked for. That is the one exception to shunt's rule against buffering a
+stream, and it covers only the turns these two entries gate. No other route
+changes.
+
+Holding the turn is what keeps upstream's design inside shunt's post-2xx
+no-replay rule. No response header is committed until the replay starts, so a
+discarded turn — replaced by the strong target, or sent back for REDO — was
+never seen by the client. The cost is latency: on a held turn the first byte
+arrives when the whole turn is done, and escalation adds a judge call per turn
+until it latches. The
+[configuration reference](/reference/configuration/#buffered-turns-escalation-and-advisor)
+lists the route sources and what happens when a held turn fails.
 
 ### The routed target is an ordinary model id
 

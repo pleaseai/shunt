@@ -271,8 +271,8 @@ base_threshold = 0.5           # タスクを効率ティアに留める p_solve
 `[models.router]` の 6 つのキーがすべての内部呼び出しに上限を課します —
 `judge_timeout_ms`（既定 `30000`、ヘッダー*と*ボディを覆うエンドツーエンド期限）、
 `judge_max_response_bytes`（`65536`）、セッションごとの `max_judge_calls`（`8`）、
-そして後続のリリースのバッファリングされたターンのために予約された 3 つの `gated_*`
-です。上限を超えるとアップストリーム呼び出しはキャンセルされます。
+そして 3 つの `gated_*` です。`gated_*` は `escalation` や `advisor` のエントリが
+留め置くターンにだけ上限を課すので、ステージルーターでは何も制限しません。上限を超えるとアップストリーム呼び出しはキャンセルされます。
 
 ジャッジが決めたターンは `x-gateway-route-source: llm-classifier` として報告され、他の
 決定と同じようにセッションをピン留めします。タイムアウト、サイズ超過や解釈できない応答、
@@ -286,8 +286,9 @@ base_threshold = 0.5           # タスクを効率ティアに留める p_solve
   shunt はターンを再実行しないため、ターン開始時に選ばれたティアがそのターン全体を担当
   します。
 - **このジャッジが決めるのはティアだけです。** ジャッジを使うほかの type はそれぞれ自分の
-  テーブルを持ちます。`llm_classifier` と `composite` は `[models.router]` に直接設定
-  します —
+  テーブルを持ちます。`llm_classifier`、`composite`、`advisor` は `[models.router]` に
+  直接設定します —
   [設定リファレンス](/ja/reference/configuration/#type--llm_classifier)を参照してください。
-  `advisor` はまだ利用できず、指定すると起動エラーになります。
+  判定が出るまでターンを留め置くのは `llm_classifier` の `mode = "escalation"` と
+  `advisor` だけで、このジャッジはそうしません。
 - **`[server.codex_endpoint]` は対象外**です。独自のルーティングテーブルを使います。
