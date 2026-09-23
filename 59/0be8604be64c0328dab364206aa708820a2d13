@@ -1,0 +1,23 @@
+src/routing/serve/gated.rs
+  s_f451dcf4e9d0ac::t_c4a80b64f3ba5b 242-244,268-272,274,278-281,283-302,304,406-409
+  s_f451dcf4e9d0ac::t_5927bb60491a1c 57,397-398
+src/routing/serve/gated/tests.rs
+  s_f451dcf4e9d0ac::t_5927bb60491a1c 31-32,209-233
+  s_f451dcf4e9d0ac::t_9c986be27653ad 234-236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "590be8604be64c0328dab364206aa708820a2d13",
+  "prompts": {},
+  "sessions": {
+    "s_f451dcf4e9d0ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "36d62852-966f-470c-8cd0-9d5e673ce846",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
