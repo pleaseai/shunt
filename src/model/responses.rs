@@ -1147,7 +1147,11 @@ pub fn backend_error_status(value: &Value) -> StatusCode {
     match error_code(value) {
         "rate_limit_exceeded" | "slow_down" => StatusCode::TOO_MANY_REQUESTS,
         "server_is_overloaded" => {
-            StatusCode::from_u16(529).expect("529 is a valid HTTP status code")
+            const OVERLOADED: StatusCode = match StatusCode::from_u16(529) {
+                Ok(status) => status,
+                Err(_) => panic!("529 is a valid HTTP status code"),
+            };
+            OVERLOADED
         }
         "invalid_prompt" | "bio_policy" | "cyber_policy" => StatusCode::BAD_REQUEST,
         _ => StatusCode::BAD_GATEWAY,
