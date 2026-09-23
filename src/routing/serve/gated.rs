@@ -26,8 +26,9 @@
 //!   conversion exists or is needed.
 //! * **Terminal or nothing.** A turn is [`GatedCapture::Retained`] only after
 //!   an authoritative terminal marker: a complete `message_stop` frame and no
-//!   `error` frame or upstream-truncation marker before it on a stream, one parseable `message` object on a
-//!   JSON body. Anything short of that — a bound crossed, a transport broken
+//!   `error` frame or upstream-truncation marker before it on a stream, one
+//!   parseable `message` object not marked [`UpstreamTruncated`] on a JSON
+//!   body. Anything short of that — a bound crossed, a transport broken
 //!   before the marker, a `200` that simply stopped — is
 //!   [`GatedCapture::Cut`], and a cut turn is never replayed. A stream's turn
 //!   ends at its `message_stop` frame, as the live relay's does: the capture
@@ -65,7 +66,7 @@ use crate::proxy::ForwardError;
 use crate::request::RequestBody;
 use crate::routing;
 use crate::server::AppState;
-use crate::stream_metrics::UPSTREAM_TRUNCATED_MARKER;
+use crate::stream_metrics::{UpstreamTruncated, UPSTREAM_TRUNCATED_MARKER};
 
 /// Everything the gated call needs from the admitted client request.
 ///
@@ -377,6 +378,11 @@ async fn retain_stream(
 /// JSON body has no keep-alive frames to discount, so every byte is progress.
 async fn retain_message(success: ChainSuccess, gated: GatedBounds) -> GatedCapture {
     let (parts, body) = success.response.into_parts();
+    // A Responses target synthesizes a whole-looking message from an upstream
+    // that ended before `response.completed`; only this mark tells it apart.
+    if parts.extensions.get::<UpstreamTruncated>().is_some() {
+        return GatedCapture::Cut(CutReason::Nonterminal);
+    }
     let mut data = body.into_data_stream();
     let mut retained = Vec::new();
     loop {

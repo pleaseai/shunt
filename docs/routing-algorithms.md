@@ -1312,11 +1312,14 @@ the client never saw the turn that was dropped.
 **A retained turn is servable only after an authoritative terminal marker.**
 On a streaming call that marker is `message_stop`. On a non-streaming call it is
 a complete body that parses as one message. A turn without its marker is never
-served, whatever the upstream status was. A truncated `200` is never replayed,
-including one the Responses adapter closes with a synthesized `message_stop`
-after its upstream ended before `response.completed`: the upstream-truncation
-marker ahead of that stop makes it a cut
-(`a_truncated_responses_weak_turn_falls_back_to_the_strong_tier`).
+served, whatever the upstream status was. A truncated `200` is never replayed.
+That includes a Responses turn whose upstream ended before
+`response.completed`, which the adapter still closes: with a synthesized
+`message_stop` behind the upstream-truncation marker on a stream, or with a
+whole-looking message marked `UpstreamTruncated` on a non-streaming call. Either
+mark makes the turn a cut
+(`a_truncated_responses_weak_turn_falls_back_to_the_strong_tier`,
+`a_truncated_non_streaming_responses_weak_turn_falls_back_to_the_strong_tier`).
 The turn ends at its `message_stop` frame, as the live relay ends it: the
 capture stops reading there and keeps exactly the bytes through that frame,
 which are also the bytes `gated_max_bytes` is charged on. A keep-alive after it

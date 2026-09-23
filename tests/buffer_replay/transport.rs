@@ -11,8 +11,8 @@ use wiremock::matchers::method;
 use wiremock::{Mock, MockServer};
 
 use super::harness::{
-    anthropic_sse, escalation_router, gated_config, header, judge_text, messages_mock, post,
-    sse_events, sse_reply, streamed_text, Tiers,
+    anthropic_json, anthropic_sse, escalation_router, gated_config, header, judge_text,
+    messages_mock, post, sse_events, sse_reply, streamed_text, Tiers,
 };
 use super::judge_harness::{
     can_bind_loopback, env, start_gateway, CAPABLE_UPSTREAM_MODEL, EFFICIENT_UPSTREAM_MODEL,
@@ -158,6 +158,14 @@ async fn replays_the_weak_turn_through_message_stop(
     responder.await.unwrap();
 }
 
+/// A Responses turn whose upstream ended before `response.completed`.
+const TRUNCATED_RESPONSES: &str = concat!(
+    "event: response.created\n",
+    "data: {\"response\":{\"id\":\"resp_cut\",\"usage\":{\"output_tokens\":0}}}\n\n",
+    "event: response.output_text.delta\n",
+    "data: {\"delta\":\"WEAK-PARTIAL\"}\n\n",
+);
+
 /// A Responses weak turn whose upstream ended before `response.completed`:
 /// the adapter still closes the client's stream with a synthesized
 /// `message_stop`, behind the upstream-truncation marker. The turn is cut, so
@@ -186,14 +194,8 @@ async fn a_truncated_responses_weak_turn_falls_back_to_the_strong_tier() {
     )
     .mount(&strong)
     .await;
-    let truncated = concat!(
-        "event: response.created\n",
-        "data: {\"response\":{\"id\":\"resp_cut\",\"usage\":{\"output_tokens\":0}}}\n\n",
-        "event: response.output_text.delta\n",
-        "data: {\"delta\":\"WEAK-PARTIAL\"}\n\n",
-    );
     Mock::given(method("POST"))
-        .respond_with(sse_reply(truncated.to_string()))
+        .respond_with(sse_reply(TRUNCATED_RESPONSES.to_string()))
         .expect(1)
         .mount(&responses)
         .await;
@@ -218,4 +220,51 @@ async fn a_truncated_responses_weak_turn_falls_back_to_the_strong_tier() {
         "the cut turn leaked: {body}"
     );
     assert_eq!(streamed_text(&sse_events(&body)), "STRONG");
+}
+
+/// The non-streaming twin: a Responses target asks its upstream for SSE even
+/// for a `stream: false` caller, and synthesizes one message from whatever
+/// arrived. That message parses like a finished one, so the adapter marks it,
+/// and the gated capture cuts it rather than judging and replaying it.
+///
+/// Non-vacuity: drop the `UpstreamTruncated` check in `retain_message` and the
+/// judge is asked and declines, so the header comes back `escalation_weak`
+/// and the mocks' `expect` counts go red.
+#[tokio::test]
+async fn a_truncated_non_streaming_responses_weak_turn_falls_back_to_the_strong_tier() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let (strong, efficient, responses, judge) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    messages_mock(anthropic_json(CAPABLE_UPSTREAM_MODEL, "STRONG"), 1)
+        .mount(&strong)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(sse_reply(TRUNCATED_RESPONSES.to_string()))
+        .expect(1)
+        .mount(&responses)
+        .await;
+    messages_mock(judge_text(DECLINE), 0).mount(&judge).await;
+    let tiers = Tiers {
+        strong: strong.uri(),
+        weak: efficient.uri(),
+        responses: responses.uri(),
+        judge: judge.uri(),
+    };
+    let gateway = start_gateway(gated_config(&tiers, &escalation_router("responses-alias"))).await;
+
+    let response = post(&gateway, false).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        header(&response, "x-gateway-route-source"),
+        "escalation_fallback"
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["content"][0]["text"], "STRONG", "got: {body}");
 }

@@ -241,7 +241,17 @@ pub(super) async fn json_response(
     if let Some((status, error)) = machine.take_backend_error() {
         return Err(backend_error(status, error));
     }
-    Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
+    // Read before `final_json`, which finishes an unstopped machine: a turn
+    // that reached no terminal event is still returned, as it always was, but
+    // marked, the way the streaming path marks its synthesized completion.
+    let truncated = !machine.is_stopped();
+    let mut response = (StatusCode::OK, axum::Json(machine.final_json())).into_response();
+    if truncated {
+        response
+            .extensions_mut()
+            .insert(crate::stream_metrics::UpstreamTruncated);
+    }
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -351,9 +361,43 @@ mod tests {
             .expect("json_response builds a response");
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .extensions()
+                .get::<crate::stream_metrics::UpstreamTruncated>()
+                .is_none(),
+            "a completed turn must not be marked truncated"
+        );
         let body = response_body_json(response).await;
         assert_eq!(body["type"], "message");
         assert_eq!(body["content"][0]["text"], "hello");
+    }
+
+    /// An upstream that ends before `response.completed` still gets its
+    /// synthesized message, as before, but marked — the JSON counterpart of
+    /// the streaming path's truncation marker, which the gated capture reads.
+    #[tokio::test]
+    async fn json_response_marks_a_message_synthesized_from_a_truncated_upstream() {
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"item\":{\"type\":\"message\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"delta\":\"partial\"}\n\n",
+        );
+        let upstream = upstream_response(200, sse).await;
+        let response = json_response(upstream, relay_opts(), 0, None)
+            .await
+            .expect("json_response builds a response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .extensions()
+            .get::<crate::stream_metrics::UpstreamTruncated>()
+            .is_some());
+        let body = response_body_json(response).await;
+        assert_eq!(body["content"][0]["text"], "partial");
     }
 
     /// A non-streaming turn cut short by an emulated stop sequence reports the
