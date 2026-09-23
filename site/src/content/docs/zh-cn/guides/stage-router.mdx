@@ -228,8 +228,8 @@ base_threshold = 0.5           # 让任务留在高效档位的 p_solve 下限
 
 `[models.router]` 上的六个键为每一次内部调用设定上限:`judge_timeout_ms`(默认 `30000`,
 同时覆盖响应头*和*响应体的端到端期限)、`judge_max_response_bytes`(`65536`)、每个会话的
-`max_judge_calls`(`8`),以及为后续版本的缓冲轮次预留的三个 `gated_*` 键。越过上限会取消
-对应的上游调用。
+`max_judge_calls`(`8`),以及三个 `gated_*` 键 —— 它们只约束 `escalation` 或 `advisor` 条目
+扣住的回合,所以在阶段路由器上不约束任何东西。越过上限会取消对应的上游调用。
 
 由裁判判定的轮次报告 `x-gateway-route-source: llm-classifier`,并和其他决策一样把会话
 pin 住。超时、响应过大或无法解析、上游错误、预算耗尽 —— 所有失败都按 `fall_open` 处理,
@@ -240,7 +240,8 @@ pin 住。超时、响应过大或无法解析、上游错误、预算耗尽 —
 
 - **没有轮次中途升档。** 响应头一旦提交,shunt 不会重放该轮,因此在一轮开始时选定的档位会
   承担整轮。
-- **这个裁判只决定档位。** 其他需要裁决的类型各有自己的表:`llm_classifier` 和
-  `composite` 直接配置在 `[models.router]` 上 —— 见[配置参考](/zh-cn/reference/configuration/#type--llm_classifier)。
-  `advisor` 尚不可用,指定它会导致启动错误。
+- **这个裁判只决定档位。** 其他需要裁决的类型各有自己的表:`llm_classifier`、
+  `composite` 和 `advisor` 直接配置在 `[models.router]` 上 —— 见[配置参考](/zh-cn/reference/configuration/#type--llm_classifier)。
+  只有 `llm_classifier` 的 `mode = "escalation"` 和 `advisor` 会把回合扣住等待裁决,这个裁判
+  不会。
 - **`[server.codex_endpoint]` 不在范围内**,它使用自己的路由表。

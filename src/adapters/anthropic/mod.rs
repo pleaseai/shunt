@@ -1134,8 +1134,15 @@ async fn relay_response(
         // deny. `None` on the client path keeps `reqwest`'s own `bytes()`.
         match crate::adapters::collect_upstream_body(upstream, response_byte_cap).await {
             Ok(bytes) => Body::from(model_rewrite::rewrite_response_model(bytes, &alias)),
+            // A successful reply cut mid-body is a turn that ended before its
+            // terminal marker; a relayed refusal cut mid-body stays a refusal.
             Err(crate::adapters::UpstreamBodyError::Transport(error)) => {
-                return Err(post_header_error(error))
+                let error = post_header_error(error);
+                return Err(if status.is_success() {
+                    crate::adapters::mark_body_broke(error)
+                } else {
+                    error
+                });
             }
             Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
                 return Err(crate::adapters::too_large_error(too_large))
@@ -2413,5 +2420,44 @@ mod tests {
             "the envelope maps the 400, got {resolved:?}"
         );
         std::env::remove_var("SHUNT_CHAIN_STALLED_400_KEY");
+    }
+
+    /// An alias route's non-streaming `200` whose body breaks after its headers
+    /// is a turn cut before `message_stop`, and carries the marker
+    /// `routing::serve` reads back; a relayed refusal cut the same way does not.
+    #[tokio::test]
+    async fn a_broken_alias_body_is_marked_only_on_a_success() {
+        let state =
+            super::AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
+        let route = super::Route {
+            model: "alias".to_string(),
+            ..claude_route()
+        };
+        for (status, marked) in [(200, true), (500, false)] {
+            let chunks = futures_util::stream::iter([
+                Ok(bytes::Bytes::from_static(b"{\"id\":\"msg_1\"")),
+                Err(std::io::Error::other("connection reset")),
+            ]);
+            let upstream = reqwest::Response::from(
+                axum::http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(reqwest::Body::wrap_stream(chunks))
+                    .unwrap(),
+            );
+            let error = super::relay_response(&state, &route, upstream, None, Some(1 << 20))
+                .await
+                .expect_err("a broken body is an error");
+            assert!(error.failure.is_none());
+            assert_eq!(
+                error
+                    .response
+                    .extensions()
+                    .get::<crate::adapters::UpstreamBodyBroke>()
+                    .is_some(),
+                marked,
+                "status {status}"
+            );
+        }
     }
 }

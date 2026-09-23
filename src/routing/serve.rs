@@ -26,6 +26,7 @@
 //! `caller = "router"`.
 
 pub(crate) mod bounds;
+pub(crate) mod gated;
 
 use std::sync::Mutex;
 

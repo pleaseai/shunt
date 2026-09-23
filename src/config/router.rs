@@ -18,6 +18,7 @@
 //! [`crate::config::ConfigError::RemovedStageRouterTable`], which names the
 //! replacement.
 
+mod advisor;
 mod bounds;
 mod classifier;
 mod composite;
@@ -26,13 +27,15 @@ mod random;
 mod stage;
 mod validate;
 
+pub use advisor::{AdvisorGateTrigger, AdvisorRouterConfig};
 pub use bounds::{
     CallBounds, DEFAULT_GATED_IDLE_MS, DEFAULT_GATED_MAX_BYTES, DEFAULT_GATED_MAX_DURATION_MS,
     DEFAULT_JUDGE_MAX_RESPONSE_BYTES, DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_MAX_JUDGE_CALLS,
 };
 pub use classifier::{
     CapabilityClassifierConfig, ClassifierPolicy, ClassifyTrigger, CustomClassifierConfig,
-    LlmClassifierConfig, DEFAULT_MAX_OUTPUT_TOKENS,
+    EscalationClassifierConfig, EscalationJudgeTable, LlmClassifierConfig,
+    DEFAULT_MAX_OUTPUT_TOKENS,
 };
 pub use composite::{
     CompositeClassifierConfig, CompositeRouterConfig, CompositeStageConfig, CompositeTrigger,
@@ -87,6 +90,9 @@ pub enum RouterConfig {
     LlmClassifier(LlmClassifierConfig),
     /// A judge sets the fall-open tier of a stage router that serves the turns.
     Composite(CompositeRouterConfig),
+    /// The executor answers every turn and a stronger advisor reviews the
+    /// first terminal one before the caller sees it (ADR-0005 §4).
+    Advisor(AdvisorRouterConfig),
     /// Makes no upstream call and synthesizes an empty terminal assistant
     /// message in the caller's mode.
     Noop {},
@@ -111,6 +117,7 @@ impl RouterConfig {
             | Self::PrefillRouter(_)
             | Self::LlmClassifier(_)
             | Self::Composite(_)
+            | Self::Advisor(_)
             | Self::Noop {} => None,
         }
     }
@@ -124,6 +131,7 @@ impl RouterConfig {
             Self::PrefillRouter(_) => "prefill_router",
             Self::LlmClassifier(_) => "llm_classifier",
             Self::Composite(_) => "composite",
+            Self::Advisor(_) => "advisor",
             Self::Noop {} => "noop",
         }
     }
@@ -173,6 +181,10 @@ impl RouterConfig {
                 .collect(),
             Self::LlmClassifier(classifier) => classifier.named_targets(),
             Self::Composite(composite) => composite.named_targets(),
+            Self::Advisor(advisor) => vec![(
+                Cow::Borrowed("executor_target"),
+                advisor.executor_target.as_str(),
+            )],
             // A noop entry answers as itself and names no destination.
             Self::Noop {} => Vec::new(),
         }
@@ -190,6 +202,13 @@ impl RouterConfig {
         match self {
             Self::LlmClassifier(classifier) => classifier.named_judges(),
             Self::Composite(composite) => composite.named_judges(),
+            // The reviewer is consulted over the caller's transcript and never
+            // serves a turn, so it is a judge in every sense the envelope and
+            // the passthrough rule care about.
+            Self::Advisor(advisor) => vec![(
+                Cow::Borrowed("advisor_target"),
+                advisor.advisor_target.as_str(),
+            )],
             _ => match self.stage_classifier() {
                 Some((_, classifier)) => {
                     vec![(
@@ -222,8 +241,10 @@ impl RouterConfig {
     /// before it computes a dependency envelope or constructs a driver at all,
     /// so a pure-lane entry pays nothing for the driven lane's existence.
     pub fn is_driven(&self) -> bool {
-        matches!(self, Self::LlmClassifier(_) | Self::Composite(_))
-            || self.stage_classifier().is_some()
+        matches!(
+            self,
+            Self::LlmClassifier(_) | Self::Composite(_) | Self::Advisor(_)
+        ) || self.stage_classifier().is_some()
     }
 
     /// Where a driven router sends a turn it has not decided yet — the first
@@ -237,6 +258,9 @@ impl RouterConfig {
         match self {
             Self::LlmClassifier(classifier) => Some(classifier.fail_open_target()),
             Self::Composite(composite) => Some(composite.fail_open_target()),
+            // The executor answers every turn the advisor does not redirect,
+            // including one it could not review.
+            Self::Advisor(advisor) => Some(advisor.executor_target.as_str()),
             _ => None,
         }
     }
@@ -249,6 +273,7 @@ impl RouterConfig {
             Self::Auto(auto) => Some(auto.stage().bounds()),
             Self::LlmClassifier(classifier) => Some(classifier.bounds()),
             Self::Composite(composite) => Some(composite.bounds()),
+            Self::Advisor(advisor) => Some(advisor.bounds()),
             Self::Random(_) | Self::PrefillRouter(_) | Self::Noop {} => None,
         }
     }

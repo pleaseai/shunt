@@ -503,6 +503,31 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   lane drives probes; the judge lane's probe exemption stands because it never
   drives them. The stage router's commit-after-admission pin is the precedent
   (PR 4's "Notes for reviewers" named this reuse).
+- **2026-09-23 (PR 6, issue #596) — the replay-lane route sources, and how
+  the gated call is told apart.** §4 and §7 name three verdicts
+  (`escalation_latch`, `advisor_approve`, `advisor_redo`) as the labels "on a
+  replayed turn", but the pinned libsy algorithms produce more outcomes than
+  that, and two of the three are not replays at all: a latched escalation
+  serves the strong target live, and a REDO re-runs the executor live after
+  discarding the buffered turn. The closed set is therefore:
+  `escalation_weak` (the weak turn replayed after the judge let it through),
+  `escalation_latch` (the strong target, live, because the session latched),
+  `escalation_fallback` (the strong target, live, because the weak turn failed
+  or was cut before `message_stop`), `classifier_fail_open` on an escalation
+  entry (the judge failed after a complete weak turn, which is replayed),
+  `advisor_approve` (replayed after APPROVE), `advisor_pass` (replayed without
+  a review), `advisor_fail_open` (the review failed after a complete turn,
+  which is replayed), `advisor_redo` (the executor's live re-run after REDO),
+  `advisor_exhausted` (review budget spent; live, no buffering), and
+  `gated_error` (the gated turn could not be served: a nonterminal advisor
+  turn's `502`, `fail_open = false`, or a relayed upstream error). Every
+  replayed turn carries one of the replay labels, so a client can still tell
+  a replayed turn from a live one. The gated weak or executor call is
+  identified as the **first** `CallModel` of a drive — both pinned algorithms
+  make it before any judge or review call — rather than by target id, so
+  `weak_target` may equal `classifier_target` without upstream's
+  prompted-target restriction, and the gated call is not charged to
+  `max_judge_calls`, which bounds judge calls only.
 
 ### 10. Verification before code
 

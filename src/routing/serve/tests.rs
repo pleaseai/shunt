@@ -170,6 +170,20 @@ async fn a_ping_only_chunk_does_not_reset_the_idle_gap() {
     );
 }
 
+/// The same endless keep-alive in the SSE spec's own form, a comment frame:
+/// it carries no event, so it must not read as content either.
+#[tokio::test(start_paused = true)]
+async fn a_comment_keep_alive_does_not_reset_the_idle_gap() {
+    let comments = futures_util::stream::unfold((), |()| async {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        Some((Bytes::from_static(b": keep-alive\n\n"), ()))
+    });
+    let collected: Vec<_> = bound_stream(comments, gated(1024 * 1024, 50, 600_000))
+        .collect()
+        .await;
+    assert_eq!(collected.last(), Some(&Err(BoundExceeded::Idle)));
+}
+
 /// The endless-ping shape again, with each frame split *inside a line* so no
 /// chunk is a ping frame on its own.
 ///

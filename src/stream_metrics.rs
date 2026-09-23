@@ -43,6 +43,15 @@ const MAX_ERROR_SOURCES: usize = 4;
 /// `message_stop` that follows it.
 pub(crate) const UPSTREAM_TRUNCATED_MARKER: &[u8] = b":shunt-upstream-truncated";
 
+/// The buffered counterpart of [`UPSTREAM_TRUNCATED_MARKER`]: a response
+/// extension `adapters::responses::http::json_response` sets when the single
+/// message it returns was synthesized from an upstream that ended before a
+/// real terminal/error event. A JSON body has no comment frame to carry the
+/// fact, and the synthesized message parses like a finished one, so a caller
+/// that must tell the two apart (the gated capture) reads it here.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UpstreamTruncated;
+
 /// Client-facing SSE protocol used to interpret terminal and usage events.
 #[derive(Clone, Copy, Debug)]
 pub enum Protocol {

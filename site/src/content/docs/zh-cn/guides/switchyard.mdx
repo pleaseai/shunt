@@ -18,7 +18,7 @@ shunt 的[阶段路由器](/zh-cn/guides/stage-router/)并没有自造评分逻�
 
 Switchyard 提供的是整套网关:代理服务器、provider 中立的协议、请求/响应翻译、
 LLM 裁判分类器、升级路由、子代理路由。shunt 本身就是网关,所以只取评分器、可选表背后
-的裁判分类器,以及仅在该边界使用的翻译编解码器,其余留下。
+的各种裁判类算法,以及仅在该边界使用的翻译编解码器,服务器本身留下。
 
 | Switchyard 组件 | 在 shunt 中 |
 | :-- | :-- |
@@ -26,10 +26,11 @@ LLM 裁判分类器、升级路由、子代理路由。shunt 本身就是网关,
 | `switchyard-protocol` | 作为 libsy 自身的依赖引入;shunt 不构造 `Request` |
 | `switchyard-translation` | **仅用于路由边界** —— 裁判请求及其回复上的中立 ⇄ Anthropic 转换。Anthropic → Responses 的线上转换仍由 shunt 自己的 `src/model/responses_request.rs` 负责 |
 | `switchyard-server` | **不使用** —— shunt 自己就是服务器 |
-| LLM 分类器 / 裁判 | **按条目可选启用** —— `stage_router` 上的 [`[models.router.classifier]`](/zh-cn/guides/stage-router/#裁判回退),只在信号无法定夺的轮次被咨询;见[下文](#不在热路径上放-llm-裁判) |
-| 升级路由(回合中途) | **不使用** —— 与 shunt 的 post-2xx 不重放规则冲突 |
+| LLM 分类器 / 裁判 | **按条目可选启用** —— `stage_router` 上的 [`[models.router.classifier]`](/zh-cn/guides/stage-router/#裁判回退),只在信号无法定夺的轮次被咨询;见[下文](#llm-裁判是按条目选择启用的) |
+| 升级路由 | **按条目可选启用** —— [`mode = "escalation"`](/zh-cn/reference/configuration/#mode--escalation)。弱目标的回合会被扣住直到裁判作出裁决,所以切换到强目标发生在发送任何响应头之前;见[下文](#读取已完成回合的两种裁判) |
 | 交接备注 | **使用** —— [`[models.router.handoff_notes]`](/zh-cn/reference/configuration/#modelsrouterhandoff_notes可选) |
-| 顾问门、子代理路由 | **不使用** |
+| 顾问门 | **按条目可选启用** —— [`type = "advisor"`](/zh-cn/reference/configuration/#type--advisor),执行模型的回合会被扣住直到审阅结束 |
+| 子代理路由 | **使用** —— [`[models.subagents]`](/zh-cn/reference/configuration/#modelssubagents可选) |
 
 整个耦合就是一次函数调用。shunt 从解析后的 Anthropic Messages 报文直接填充 libsy 的
 `ToolSignals` 结构体并调用 `pick_tier`;该结构体的每个字段都是 `pub`,中间不需要
@@ -328,6 +329,23 @@ id 也不算,而 `compaction` 和 `auxiliary` 是框架自身的维护,永远不
 (会话, agent) 也不会超过 `max_judge_calls` 次。裁判的任何失败 —— 超时、`400`、无法解析
 的回复 —— 都不会让请求失败,而是回到算法自己的默认目标;每个需要判定的回合,裁判调用恰好
 只有一次。
+
+### 读取已完成回合的两种裁判
+
+上面这些形态都是在回合运行之前决定它去哪里。另有两种是在运行之后才决定。
+[`mode = "escalation"`](/zh-cn/reference/configuration/#mode--escalation) 先提供弱目标的回合,
+让裁判对已完成的工作作出裁决;连续 `confirmations` 次判定升档后,就把会话锁定到强目标。
+[`type = "advisor"`](/zh-cn/reference/configuration/#type--advisor) 让更强的审阅模型批准执行
+模型的收尾回合,或把它打回重做。
+
+两者裁决的都是已经存在的回合,所以 shunt 会把它扣住:上游响应先被缓冲、裁决,然后才回放给
+客户端 —— 逐字节,使用客户端请求的 id,按客户端请求的流式或非流式模式。这是 shunt“不缓冲
+流”这条规则唯一的例外,而且只覆盖这两种条目门控的回合,其他路由不受影响。
+
+正是因为把回合扣住,上游的设计才能留在 shunt 的 post-2xx 不重放规则之内。回放开始之前不会
+提交任何响应头,所以被丢弃的回合 —— 无论是被强目标取代,还是被 REDO 打回 —— 客户端从未见过。
+代价是延迟:被扣住的回合要等整轮结束才到达第一个字节,而 escalation 在锁定之前每一轮都要多
+一次裁判调用。路由来源以及被扣住的回合失败时会怎样,见[配置参考](/zh-cn/reference/configuration/#被扣住的回合escalation-与-advisor)。
 
 ### 路由目标就是普通的模型 id
 

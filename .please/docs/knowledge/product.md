@@ -57,7 +57,8 @@ A single Rust binary that:
 ## Design Constraints
 
 - **Transparency**: unmapped traffic must pass through to Anthropic unchanged
-- **Streaming-first**: never buffer upstream SSE unless the client asked for non-streaming
+- **Streaming-first**: never buffer upstream SSE unless the client asked for non-streaming, or
+  the entry's `escalation`/`advisor` router needs the completed turn before serving it
 - **Table-driven**: new providers/models arrive via config, not new branches in code
 - **Anthropic-shaped errors**: gateway errors always match the Anthropic error contract
 - **OSS, English-only**: public repo (`pleaseai/shunt`); docs and code are English-only

@@ -622,13 +622,16 @@ id it asked for — the chosen target travels upstream only.
 | `random` | A weighted draw, session-sticky by default | No |
 | `noop` | Nothing — answers with an empty message | No |
 | `prefill_router` | A learned classifier over the latest user turn (needs the `prefill-router` build) | Yes — the text of user turns |
-| `llm_classifier` | An LLM judge's verdict, per `classify_trigger` | Yes — the transcript, via the packaged or a custom prompt |
+| `llm_classifier` | An LLM judge's verdict, per `classify_trigger`; in `mode = "escalation"`, a judge's ruling on the completed weak turn | Yes — the transcript, via the packaged or a custom prompt |
 | `composite` | An LLM judge sets the tier a stage router falls open to | Yes — the transcript for the judge, tool-result metadata for the signals |
+| `advisor` | One executor serves every turn; a stronger reviewer approves or sends back its terminal turns | Yes — the transcript, for the reviewer |
 
-Two shapes are **not available yet**; naming either is a startup error:
-`type = "advisor"`, and `llm_classifier`'s `mode = "escalation"`. Both serve a
-turn while still deciding how to route it, so they need the buffer-and-replay
-lane, which lands in a later release. `prefill_router` is implemented but
+Two shapes serve a turn while still deciding how to route it:
+`llm_classifier`'s [`mode = "escalation"`](#mode--escalation) and
+[`type = "advisor"`](#type--advisor). They hold the turn until the verdict is in
+and then serve it, so they are the only routes on which shunt buffers a
+response the client asked to stream — see
+[buffered turns](#buffered-turns-escalation-and-advisor). `prefill_router` is implemented but
 **gated at compile time**: it is available only from a build that opts into the
 `prefill-router` cargo feature, which is off by default — see
 [below](#type--prefill_router).
@@ -774,7 +777,7 @@ router ran.
 
 Six keys bound every internal call an entry makes. They live on the table that
 makes those calls: `[models.router]` of any driven type — a `stage_router`
-carrying a `classifier`, `llm_classifier`, or `composite` — and a
+carrying a `classifier`, `llm_classifier`, `composite`, or `advisor` — and a
 classifier-form [`[models.subagents]`](#modelssubagents-optional) overlay, which
 carries its own copy. Crossing one cancels the upstream call. Each must be at
 least `1`; a `0` is a startup error naming the key.
@@ -783,27 +786,28 @@ least `1`; a `0` is a startup error naming the key.
 | :-- | :-- | :-- |
 | `judge_timeout_ms` | `30000` | End-to-end deadline on the non-streaming judge call — headers *and* body, so a `200` that then stalls is cut here rather than left hanging |
 | `judge_max_response_bytes` | `65536` | Largest judge reply collected; a larger one resolves as `fall_open` |
-| `gated_max_bytes` | `8388608` | Largest retained turn |
-| `gated_idle_ms` | `60000` | Longest gap between completed content frames of a retained turn. SSE ping frames do not reset it, and a frame split across chunks is reassembled before it is classified |
-| `gated_max_duration_ms` | `600000` | Wall-clock ceiling on a retained turn |
-| `max_judge_calls` | `8` | Judge calls one session may make |
+| `gated_max_bytes` | `8388608` | Largest retained turn: its SSE frame bytes, or its JSON body |
+| `gated_idle_ms` | `60000` | Longest gap between completed content frames of a retained turn. SSE keep-alives (`event: ping` frames and `:` comment frames) do not reset it, and a frame split across chunks is reassembled before it is classified |
+| `gated_max_duration_ms` | `600000` | Wall-clock ceiling on a retained turn, headers and body |
+| `max_judge_calls` | `8` | Judge calls one session may make. The gated turn itself is not a judge call and is not counted |
 
-The three `gated_*` keys are accepted, validated, and enforced by the
-retained-turn collector, but **no gated turn exists yet** — the buffered
-escalation and advisor turns they are built for land in a later release. Until
-then they bound nothing at runtime.
+The three `gated_*` keys bound the **gated** turns of an
+[`escalation`](#mode--escalation) or [`advisor`](#type--advisor) entry — the
+turns shunt holds until a verdict is in. On every other entry there is no gated
+turn, and they bound nothing.
 
 #### `type = "llm_classifier"`
 
 An LLM **judge** decides the whole turn, rather than stepping in only where
 signals ran out. The entry names the judge, the destinations it may pick, and
-`mode` — which of two verdict shapes the judge produces.
+`mode` — which of three verdict shapes the judge produces. `capability` and
+`custom` are described here; `escalation` judges a completed turn instead and
+has [its own section](#mode--escalation).
 
 `mode` is **required**, which is a deliberate departure from the upstream
-schema, where it defaults to `capability`: the modes route on different
-principles, and one of them (`escalation`) is not implemented here yet, so an
-omitted `mode` would silently change meaning for a config that never named one.
-`mode = "escalation"` is a startup error naming the two modes that exist.
+schema, where it defaults to `capability`: the three modes route on different
+principles, and one of them (`escalation`) buffers the turn it serves, so an
+omitted `mode` must not silently pick one.
 
 **`mode = "capability"`** — the packaged judge returns a solve probability for
 the task. A probability at or above `base_threshold` keeps the turn on
@@ -912,6 +916,65 @@ one-hop rule as the stage router's, and a judge must not resolve to a
 [above](#modelsrouterclassifier-optional): a judge call carries none of the
 caller's credentials, so a passthrough route has nothing to run on.
 
+#### `mode = "escalation"`
+
+The third `llm_classifier` mode starts each session on a weak target and has a
+judge read how the work is going. Each turn on a session that has not latched
+is made on `weak_target` and held. The judge then rules on the **completed**
+turn — the work the weak model actually did, not a prediction. A decline resets
+the escalate streak. An escalate verdict extends it. While the streak is below
+`confirmations`, the held weak turn is served. When it reaches `confirmations`,
+the session latches: that turn's weak answer is discarded and `strong_target`
+serves it, and every later turn of the session goes straight to
+`strong_target` with no judge call and no buffering.
+
+```toml
+[[models]]
+id = "claude-escalate"
+
+[models.router]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+# prompt = "…"
+# max_output_tokens = 4096
+
+[models.router.escalation]
+confirmations = 2
+# recent_turn_window = 28
+# window_message_chars = 500
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `llm_classifier` |
+| `mode` | ✅ required | `escalation` |
+| `classifier_target` | ✅ required | Public model id of the trajectory judge. Consulted, never served |
+| `strong_target` | ✅ required | Model id served once the session latches |
+| `weak_target` | ✅ required | Model id served before the latch. It may be the same id as `classifier_target` |
+| `prompt` | packaged prompt | Replaces the packaged trajectory-judge prompt |
+| `max_output_tokens` | `4096` | Completion-token ceiling on the judge verdict. Must be at least `1` |
+| `escalation.confirmations` | `2` | Consecutive escalate verdicts required to latch. Must be at least `1`. Above `1` needs a session id: without one every turn starts from zero and the session never latches |
+| `escalation.recent_turn_window` | `28` | Trailing messages shown to the judge. Must be at least `1` |
+| `escalation.window_message_chars` | `500` | Per-message character cap inside that window. Must be at least `50` |
+
+The `[models.router.escalation]` table is optional; leaving it out keeps the
+three defaults, which are upstream's benchmarked configuration. The six
+[per-call bounds](#per-call-bounds) go on `[models.router]`. A classifier-form
+[`[models.subagents]`](#modelssubagents-optional) overlay stays
+`mode = "custom"` only.
+
+`weak_target` may be a **passthrough** route, although `classifier_target` may
+not: the weak turn is the client's own answer, so it carries the caller's
+credential exactly as a live turn does. A `count_tokens` probe makes no judge
+call and no gated call, and answers from `weak_target`. Judge calls are counted
+by `shunt.router.judge_calls{algorithm="llm_classifier"}`.
+
+See [buffered turns](#buffered-turns-escalation-and-advisor) for how the held
+turn is served, what the client sees on each outcome, and what it costs.
+
 #### `type = "composite"`
 
 A judge sets the tier a stage router falls open to, and leaves the signal
@@ -961,6 +1024,124 @@ Because the stage half is libsy's own stage route, its decisive turns keep the
 stage router's route sources rather than reporting as classifier decisions —
 so a composite's signal-driven turns read the same way a plain `stage_router`'s
 do.
+
+#### `type = "advisor"`
+
+One **executor** serves every client-visible turn. A stronger **advisor**
+reviews the executor's terminal turns — a plan before the work, or a claim that
+the task is done — before the client sees them. APPROVE releases the held turn.
+REDO discards it and sends the executor back to work with the advisor's plan.
+The advisor never serves a turn, so the client only ever sees executor output.
+
+```toml
+[[models]]
+id = "claude-reviewed"
+
+[models.router]
+type = "advisor"
+executor_target = "claude-sonnet-4-6"
+advisor_target = "claude-opus-4-8"
+gate_trigger = "no_tool_call"
+max_reviews = 1
+# gate_stall_turns = 0
+# gate_min_tool_results = 0
+# advisor_max_tokens = 2048
+# transcript_max_chars = 200000
+# fail_open = true
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `advisor` |
+| `executor_target` | ✅ required | Serves every client-visible turn |
+| `advisor_target` | ✅ required | Reviews gated turns. Never served |
+| `gate_trigger` | `no_tool_call` | What fires a review: `no_tool_call`, the executor's first turn that ends without a tool call, or `pattern` |
+| `gate_trigger_pattern` | unset | Regex for the `pattern` trigger, searched rather than anchored. Required and non-empty under `pattern`; setting it under `no_tool_call` is a startup error |
+| `max_reviews` | `1` | Reviews allowed per session. Must be at least `1`. A request without `x-claude-code-session-id` counts as a session of its own, so sessionless callers never share one budget |
+| `gate_stall_turns` | `0` | Reviews one turn as a mid-task checkpoint once the conversation carries this many assistant turns. `0` turns it off |
+| `gate_min_tool_results` | `0` | Tool results a conversation needs before a `no_tool_call` turn is reviewable |
+| `advisor_max_tokens` | `2048` | Output-token ceiling on each review. Must be at least `1` |
+| `advisor_temperature` | unset | Sampling temperature for reviews. Omitted from the review request when unset |
+| `transcript_max_chars` | `200000` | Cap on the transcript sent to the advisor; a longer one is trimmed from the middle. Must be at least `256` |
+| `fail_open` | `true` | When a review fails, serve the held turn. `false` fails the request with a `502` instead |
+| `reviewer_system_prompt` | packaged prompt | Replaces the APPROVE/REDO reviewer prompt |
+| `redo_feedback_prefix` | packaged prompt | Replaces the text placed in front of a REDO plan fed back to the executor |
+
+The six [per-call bounds](#per-call-bounds) go on `[models.router]`.
+
+**Which turns are held.** Whether a turn trips `gate_trigger` is known only once
+the turn is complete, so while the session still has review budget **every**
+executor turn is held, and the ones that do not trip the gate are served
+without a review. Once `max_reviews` is spent, or the advisor has failed three
+consults in the session (a failed consult refunds its review), the executor
+streams live with no buffering for the rest of the session.
+
+**REDO.** The held turn is discarded before any response header reaches the
+client. The discarded turn and the advisor's plan are appended to the
+conversation, and the executor is re-run. That re-run streams live.
+
+`executor_target` may be a **passthrough** route, although `advisor_target` may
+not, for the same reason as escalation's weak target. A `count_tokens` probe
+makes no review and no gated call, and answers from `executor_target`. Reviews
+are counted by `shunt.router.judge_calls{algorithm="advisor"}`, and `GET
+/routes` lists `advisor_target` under `judges`.
+
+#### Buffered turns: escalation and advisor
+
+A **gated** turn — escalation's weak turn before the latch, or an advisor
+executor turn while the session has review budget — is made first, held, and
+served only once the verdict is in. Every other turn on these entries, and every
+turn on every other route, streams exactly as before.
+
+**The caller's mode is kept.** A `stream: true` caller's gated call streams.
+Its SSE frames are retained as they arrive and, if the turn is served, replayed
+byte for byte. A `stream: false` caller's gated call is non-streaming, and the
+caller gets the single JSON message. The gate changes *when* the answer is
+sent, never its shape. The replayed `message_start.model` is the router's own
+id, not the executor's, on an Anthropic and an OpenAI Responses executor alike,
+so Claude Code's `/model` display and `--resume` see the id they asked for.
+Response headers are committed only when the replay starts.
+
+**Only a complete turn is served.** A held turn is servable only after its
+terminal marker: `message_stop` on a streaming call, or a complete body that
+parses as one message on a non-streaming call. A truncated `200` is never
+replayed. A turn ends at its `message_stop` frame, as the live stream does:
+nothing after it is replayed, and a connection that breaks or stays open after
+it does not cut the turn. Gated turns take the target's ordered failover chain.
+
+`x-gateway-route-source` — and the `source` label on
+`shunt.router.decisions` — says what happened:
+
+| Source | Entry | Meaning | Delivery |
+| :-- | :-- | :-- | :-- |
+| `escalation_weak` | escalation | The judge let the weak turn through: it declined, or the escalate streak is still below `confirmations` | Replayed |
+| `escalation_latch` | escalation | The session latched, on this turn or earlier, so the strong target served the turn | Live |
+| `escalation_fallback` | escalation | The weak turn failed or was cut before its terminal marker, so the strong target served the turn. The judge was not called | Live |
+| `classifier_fail_open` | escalation | The judge failed after a complete weak turn, so the weak turn was served | Replayed |
+| `advisor_approve` | advisor | The executor turn was reviewed and approved | Replayed |
+| `advisor_pass` | advisor | The executor turn was served without a review: it did not trip the gate — it ends in a tool call, for example — or no review could be reserved | Replayed |
+| `advisor_fail_open` | advisor | The review failed after a complete executor turn, so the turn was served | Replayed |
+| `advisor_redo` | advisor | The reviewer said REDO. The discarded turn was never sent; this is the executor's re-run | Live |
+| `advisor_exhausted` | advisor | The session's `max_reviews` is spent, or its advisor has failed three consults (a failed consult refunds `max_reviews`), so the executor streams with no buffering | Live |
+| `gated_error` | either | The gated turn could not be served — see below | Error |
+
+**When something fails:**
+
+| What fails | `escalation` | `advisor` |
+| :-- | :-- | :-- |
+| The gated turn crosses a `gated_*` bound, or ends before its terminal marker | Discarded before any header is sent; the strong target serves the turn live (`escalation_fallback`) | Discarded before any header is sent; the request fails with a gateway-owned `502` in the Anthropic error shape (`gated_error`). It is not a REDO and not a failover attempt: the upstream already answered `2xx` |
+| The gated call's upstream answers with an error status | Relayed to the client unchanged, as a live turn's would be (`gated_error`) | Relayed unchanged (`gated_error`) |
+| The judge or review fails after a complete turn — a timeout, an oversized or unparseable reply, an upstream error, or `max_judge_calls` spent | The weak turn is served (`classifier_fail_open`) | With `fail_open = true`, the executor turn is served (`advisor_fail_open`); with `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`) |
+
+**What it costs.** You opt into these per entry:
+
+- On a gated turn the client receives nothing until the whole turn is complete
+  and judged, so time to first token becomes time to last token.
+- Escalation makes a judge call on every turn before the latch. A turn that
+  latches also pays for the weak call it discards.
+- A discarded weak or executor turn still consumed its upstream's quota. It is
+  the client's own answer dispatch, so it counts as `caller="client"` in
+  `shunt.requests`.
 
 #### `type = "auto"`
 

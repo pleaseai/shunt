@@ -283,7 +283,8 @@ overlay diverted before the router ran.
 Six keys on `[models.router]` bound every internal call: `judge_timeout_ms`
 (default `30000`, an end-to-end deadline covering headers *and* body),
 `judge_max_response_bytes` (`65536`), `max_judge_calls` per session (`8`), and
-the three `gated_*` keys reserved for the buffered turns of a later release.
+the three `gated_*` keys, which bound only the held turns of an `escalation` or
+`advisor` entry and so bound nothing on a stage router.
 Crossing a bound cancels the upstream call.
 
 A judged turn reports `x-gateway-route-source: llm-classifier` and pins the
@@ -298,9 +299,10 @@ it.
 - **No mid-turn escalation.** Once response headers are committed shunt does not
   replay a turn, so a tier chosen at the start of a turn serves all of it.
 - **This judge decides a tier, nothing more.** The other judge-backed types have
-  their own tables: `llm_classifier` and `composite` are configured on
-  `[models.router]` directly — see the
+  their own tables: `llm_classifier`, `composite`, and `advisor` are configured
+  on `[models.router]` directly — see the
   [configuration reference](/reference/configuration/#type--llm_classifier).
-  `advisor` is not available yet; naming it is a startup error.
+  Only `llm_classifier`'s `mode = "escalation"` and `advisor` hold a turn back
+  until a verdict is in; this judge never does.
 - **Out of scope for `[server.codex_endpoint]`**, which uses its own routing
   table.

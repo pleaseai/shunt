@@ -84,6 +84,25 @@ impl std::fmt::Display for UpstreamBodyTooLarge {
 
 impl std::error::Error for UpstreamBodyTooLarge {}
 
+/// The upstream's body failed after the response headers were committed, while
+/// an adapter read a whole successful reply.
+///
+/// Travels as an extension on the adapter error's response, which is how
+/// `routing::serve` tells a weak turn cut mid-body — a turn that ended before
+/// its terminal marker — apart from an upstream that answered with a failure.
+/// A marker rather than a status code for the same reason as
+/// [`UpstreamBodyTooLarge`]: the client-facing refusal is a `502` like several
+/// others, and it stays byte-for-byte what it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UpstreamBodyBroke;
+
+/// Mark `error` as [`UpstreamBodyBroke`], leaving its status, body, message,
+/// and `failure` exactly as they were.
+pub(crate) fn mark_body_broke(mut error: AdapterError) -> AdapterError {
+    error.response.extensions_mut().insert(UpstreamBodyBroke);
+    error
+}
+
 /// How a bounded whole-body read ended.
 pub(crate) enum UpstreamBodyError {
     /// The transport failed after the response headers were committed.

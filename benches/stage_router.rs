@@ -38,6 +38,10 @@
 //!   visitor skips the duplicate-key rejection, and not the parse alone, which
 //!   would drop the linear copy the buffered request pays on the way in. Both
 //!   omissions shrink the denominator, and this arm exists only to be one.
+//! * `gated_terminal_scan` — ADR-0005 §3. The per-chunk read every streamed
+//!   escalation or advisor turn pays while it is retained: a ~100-frame
+//!   capture ending in `message_stop`, fed in network-sized chunks so the
+//!   carried partial frame is exercised.
 
 fn main() {
     #[cfg(feature = "bench")]
@@ -514,6 +518,67 @@ mod bench {
             divan::black_box(shunt::routing::resolve_model_chain(
                 &config,
                 divan::black_box(ROUTER_MODEL),
+            ))
+        });
+    }
+
+    /// A realistic streamed turn: `message_start`, a text block of ~95
+    /// `content_block_delta` frames, a `ping`, and the closing
+    /// `message_delta`/`message_stop` — the shape the scan exists to accept.
+    fn gated_capture() -> Vec<u8> {
+        let mut frames = vec![
+            (
+                "message_start",
+                json!({"type": "message_start", "message": {"id": "msg_1", "type": "message",
+                    "role": "assistant", "model": ROUTER_MODEL, "content": [],
+                    "stop_reason": null, "usage": {"input_tokens": 1200, "output_tokens": 1}}}),
+            ),
+            (
+                "content_block_start",
+                json!({"type": "content_block_start", "index": 0,
+                    "content_block": {"type": "text", "text": ""}}),
+            ),
+            ("ping", json!({"type": "ping"})),
+        ];
+        for word in 0..95 {
+            frames.push((
+                "content_block_delta",
+                json!({"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "text_delta", "text": format!("token {word} of the turn ")}}),
+            ));
+        }
+        frames.extend([
+            (
+                "content_block_stop",
+                json!({"type": "content_block_stop", "index": 0}),
+            ),
+            (
+                "message_delta",
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 380}}),
+            ),
+            ("message_stop", json!({"type": "message_stop"})),
+        ]);
+        frames
+            .into_iter()
+            .map(|(event, data)| format!("event: {event}\ndata: {data}\n\n"))
+            .collect::<String>()
+            .into_bytes()
+    }
+
+    /// The terminal-marker scan over one retained turn (ADR-0005 §3), fed in
+    /// 1 KiB chunks — roughly what a TLS record delivers — so frames straddle
+    /// chunk boundaries the way they do off the wire.
+    #[divan::bench]
+    fn gated_terminal_scan(bencher: divan::Bencher) {
+        let capture = gated_capture();
+        assert!(
+            bench_support::scan_is_terminal(capture.chunks(1024)),
+            "the capture must be a servable turn, or the arm measures the reject path"
+        );
+        bencher.bench(|| {
+            divan::black_box(bench_support::scan_is_terminal(
+                divan::black_box(&capture).chunks(1024),
             ))
         });
     }

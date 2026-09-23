@@ -12,9 +12,11 @@ use axum::{
 };
 
 use crate::{
-    adapters::{collect_upstream_body, too_large_error, AdapterError, UpstreamBodyError},
+    adapters::{
+        collect_upstream_body, mark_body_broke, too_large_error, AdapterError, UpstreamBodyError,
+    },
     auth::Credential,
-    model::responses::parse_sse_events,
+    model::responses::{parse_sse_events, AnthropicSseMachine},
     routing::Route,
     server::AppState,
 };
@@ -230,8 +232,12 @@ pub(super) async fn json_response(
     let body = match collect_upstream_body(upstream, response_byte_cap).await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(UpstreamBodyError::TooLarge(too_large)) => return Err(too_large_error(too_large)),
+        // Only ever a successful reply here: a turn cut before its terminal
+        // event, which `routing::serve` reads back through the marker.
         Err(UpstreamBodyError::Transport(error)) => {
-            return Err(own_error(format!("failed to read Responses body: {error}")))
+            return Err(mark_body_broke(own_error(format!(
+                "failed to read Responses body: {error}"
+            ))))
         }
     };
     let mut machine = relay.machine().with_input_estimate(input_tokens_estimate);
@@ -241,7 +247,26 @@ pub(super) async fn json_response(
     if let Some((status, error)) = machine.take_backend_error() {
         return Err(backend_error(status, error));
     }
-    Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
+    Ok(message_response(&mut machine))
+}
+
+/// The `200` a non-streaming collector answers with: the machine's single
+/// message, marked [`crate::stream_metrics::UpstreamTruncated`] when the
+/// machine reached no terminal event. Shared with the websocket collector
+/// (`ws_stream::json_events_response`) so both transports mark alike.
+///
+/// Read before `final_json`, which finishes an unstopped machine: a turn that
+/// reached no terminal event is still returned, as it always was, but marked,
+/// the way the streaming path marks its synthesized completion.
+pub(super) fn message_response(machine: &mut AnthropicSseMachine) -> axum::response::Response {
+    let truncated = !machine.is_stopped();
+    let mut response = (StatusCode::OK, axum::Json(machine.final_json())).into_response();
+    if truncated {
+        response
+            .extensions_mut()
+            .insert(crate::stream_metrics::UpstreamTruncated);
+    }
+    response
 }
 
 #[cfg(test)]
@@ -329,6 +354,36 @@ mod tests {
         assert_eq!(body["error"]["message"], "Rate limit reached");
     }
 
+    /// A `200` whose body breaks after its first chunk is a turn cut before its
+    /// terminal event: the error carries the marker `routing::serve` reads back
+    /// to fall a gated turn back, and is otherwise the error it always was.
+    #[tokio::test]
+    async fn json_response_marks_a_body_broken_after_the_headers() {
+        let chunks = futures_util::stream::iter([
+            Ok(bytes::Bytes::from_static(
+                b"event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            )),
+            Err(std::io::Error::other("connection reset")),
+        ]);
+        let upstream = reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(200)
+                .body(reqwest::Body::wrap_stream(chunks))
+                .unwrap(),
+        );
+        let error = json_response(upstream, relay_opts(), 0, None)
+            .await
+            .expect_err("a broken body is an error");
+
+        assert!(error.failure.is_none());
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        assert!(error
+            .response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyBroke>()
+            .is_some());
+    }
+
     /// A clean turn still returns the collected Anthropic message as `200 OK` —
     /// the backend-error gate must not regress the success path.
     #[tokio::test]
@@ -351,9 +406,43 @@ mod tests {
             .expect("json_response builds a response");
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .extensions()
+                .get::<crate::stream_metrics::UpstreamTruncated>()
+                .is_none(),
+            "a completed turn must not be marked truncated"
+        );
         let body = response_body_json(response).await;
         assert_eq!(body["type"], "message");
         assert_eq!(body["content"][0]["text"], "hello");
+    }
+
+    /// An upstream that ends before `response.completed` still gets its
+    /// synthesized message, as before, but marked — the JSON counterpart of
+    /// the streaming path's truncation marker, which the gated capture reads.
+    #[tokio::test]
+    async fn json_response_marks_a_message_synthesized_from_a_truncated_upstream() {
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"item\":{\"type\":\"message\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"delta\":\"partial\"}\n\n",
+        );
+        let upstream = upstream_response(200, sse).await;
+        let response = json_response(upstream, relay_opts(), 0, None)
+            .await
+            .expect("json_response builds a response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .extensions()
+            .get::<crate::stream_metrics::UpstreamTruncated>()
+            .is_some());
+        let body = response_body_json(response).await;
+        assert_eq!(body["content"][0]["text"], "partial");
     }
 
     /// A non-streaming turn cut short by an emulated stop sequence reports the

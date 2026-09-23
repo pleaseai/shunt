@@ -125,6 +125,18 @@ impl ForwardError {
             .get::<crate::adapters::UpstreamBodyTooLarge>()
             .copied()
     }
+
+    /// Whether an adapter's whole-body read of a successful reply broke after
+    /// the headers were committed.
+    ///
+    /// Read by `routing::serve`, where such a turn ended before its terminal
+    /// marker and is cut rather than reported as the upstream's own failure.
+    pub(crate) fn body_broke(&self) -> bool {
+        self.response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyBroke>()
+            .is_some()
+    }
 }
 
 impl IntoResponse for ForwardError {

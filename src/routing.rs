@@ -235,7 +235,13 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                     // verdict yet: the algorithm's own fail-open target is the
                     // provisional answer, and `proxy::failover` re-resolves the
                     // chain if a verdict moves it.
-                    RouterConfig::LlmClassifier(_) | RouterConfig::Composite(_) => {
+                    //
+                    // `advisor` is the same shape: the executor it names is the
+                    // provisional answer, and the gated drive that may review
+                    // it runs only after admission.
+                    RouterConfig::LlmClassifier(_)
+                    | RouterConfig::Composite(_)
+                    | RouterConfig::Advisor(_) => {
                         // A probe never consults (ADR-0005 §3): `count_tokens`
                         // answers from the default target and makes zero judge
                         // calls, and a body-less resolution has no context at

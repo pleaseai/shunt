@@ -1,14 +1,16 @@
 //! `[models.router] type = "llm_classifier"` — a judge's verdict decides the
-//! turn (ADR-0005 §8 PR 5).
+//! turn (ADR-0005 §8 PR 5, PR 6).
 //!
-//! Two modes today, and the mode is **required**: upstream defaults an omitted
-//! `mode` to `capability`, shunt does not. The reason is the third mode.
-//! `escalation` judges a *completed* efficient turn and re-runs it on the
-//! strong tier, which needs the retained-turn machinery of PR 6; until that
-//! lands, an operator who wrote the escalation keys and left `mode` out would
-//! get a config that loads and silently runs a different algorithm on their
-//! turns. An internally tagged enum with no default makes that a load error
-//! naming the two modes that exist.
+//! Three modes, and the mode is **required**: upstream defaults an omitted
+//! `mode` to `capability` (and still accepts an `escalation` table that omits
+//! it), shunt does not. The modes are not interchangeable readings of one key
+//! set. `escalation` judges a *completed* weak turn before the caller sees it
+//! — the retained-turn lane of PR 6, which buffers the turn it gates — while
+//! `capability` decides before any answer is made. An operator who wrote one
+//! mode's keys and left `mode` out would otherwise get a config that loads
+//! and runs a different algorithm, with a different buffering contract, on
+//! their turns; an internally tagged enum with no default makes that a load
+//! error naming the three modes that exist.
 //!
 //! Policy only, like every other `[models.router]` table: targets are public
 //! model ids and no credential can land here, so a derived `Debug` cannot leak
@@ -85,6 +87,10 @@ pub enum LlmClassifierConfig {
     /// An operator-supplied prompt, JSON schema, and selector over named model
     /// groups.
     Custom(CustomClassifierConfig),
+    /// The weak tier answers first and a trajectory judge reads the completed
+    /// turn; a confirmed streak latches the session to the strong tier. The
+    /// weak turn is retained and replayed, never streamed live (ADR-0005 §4).
+    Escalation(EscalationClassifierConfig),
 }
 
 /// `mode = "capability"`: two answer tiers and the packaged rubric.
@@ -190,6 +196,90 @@ pub struct CustomClassifierConfig {
     pub models: BTreeMap<String, Vec<String>>,
 }
 
+/// `mode = "escalation"`: the weak tier answers, the judge reads the completed
+/// turn, and a confirmed streak moves the session to the strong tier.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EscalationClassifierConfig {
+    /// Public model id of the trajectory judge. Consulted, never served.
+    pub classifier_target: String,
+    /// Served once the session latches, and whenever the weak turn cannot be
+    /// retained whole.
+    pub strong_target: String,
+    /// Answers every turn before the latch. Its turn is the gated one: made in
+    /// the caller's own `stream` mode, retained, and replayed after the verdict.
+    pub weak_target: String,
+    /// Replaces the packaged trajectory prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: u64,
+    #[serde(default = "default_judge_timeout_ms")]
+    pub judge_timeout_ms: u64,
+    #[serde(default = "default_judge_max_response_bytes")]
+    pub judge_max_response_bytes: usize,
+    #[serde(default = "default_gated_max_bytes")]
+    pub gated_max_bytes: usize,
+    #[serde(default = "default_gated_idle_ms")]
+    pub gated_idle_ms: u64,
+    #[serde(default = "default_gated_max_duration_ms")]
+    pub gated_max_duration_ms: u64,
+    #[serde(default = "default_max_judge_calls")]
+    pub max_judge_calls: u32,
+    // Table-valued, so last — see `CustomClassifierConfig::policy`.
+    /// `[models.router.escalation]` — the streak and the transcript window.
+    /// Omitted when it holds only upstream's defaults, so a table the operator
+    /// never wrote does not appear in the round-tripped file.
+    #[serde(default, skip_serializing_if = "EscalationJudgeTable::is_default")]
+    pub escalation: EscalationJudgeTable,
+}
+
+/// `[models.router.escalation]`.
+///
+/// shunt's own struct rather than libsy's `EscalationJudgeConfig`, for the
+/// reason [`ClassifyTrigger`] is shunt's: the defaults are part of the config
+/// surface an operator reads back from `shunt check`, so they must not move
+/// when the dependency does. The values mirror upstream's benchmarked ones and
+/// [`EscalationJudgeTable::to_libsy`] is where the two meet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EscalationJudgeTable {
+    /// Consecutive escalate verdicts that latch the session. Above `1` needs a
+    /// session id, since the streak is kept per session.
+    pub confirmations: u32,
+    /// Trailing messages the judge sees on top of the task anchors.
+    pub recent_turn_window: usize,
+    /// Per-message character cap inside that window.
+    pub window_message_chars: usize,
+}
+
+impl Default for EscalationJudgeTable {
+    fn default() -> Self {
+        Self {
+            confirmations: 2,
+            recent_turn_window: 28,
+            window_message_chars: 500,
+        }
+    }
+}
+
+impl EscalationJudgeTable {
+    /// libsy's own settings. Its constructor is what validates them (`0`
+    /// confirmations, an empty window, a sub-50 character cap), so a bad value
+    /// fails `shunt check` quoting upstream's message.
+    pub fn to_libsy(self) -> switchyard_libsy::EscalationJudgeConfig {
+        switchyard_libsy::EscalationJudgeConfig {
+            confirmations: self.confirmations,
+            recent_turn_window: self.recent_turn_window,
+            window_message_chars: self.window_message_chars,
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -209,6 +299,7 @@ pub enum ClassifierPolicy {
 
 impl_call_bounds!(CapabilityClassifierConfig);
 impl_call_bounds!(CustomClassifierConfig);
+impl_call_bounds!(EscalationClassifierConfig);
 
 /// The group whose members a custom classifier consults rather than serves.
 pub(crate) const JUDGE_GROUP: &str = "judge";
@@ -253,6 +344,16 @@ impl LlmClassifierConfig {
                         .map(move |id| (Cow::Owned(format!("models.{group}")), id.as_str()))
                 })
                 .collect(),
+            Self::Escalation(escalation) => vec![
+                (
+                    Cow::Borrowed("strong_target"),
+                    escalation.strong_target.as_str(),
+                ),
+                (
+                    Cow::Borrowed("weak_target"),
+                    escalation.weak_target.as_str(),
+                ),
+            ],
         }
     }
 
@@ -270,6 +371,10 @@ impl LlmClassifierConfig {
                 .flatten()
                 .map(|id| (Cow::Borrowed(JUDGE_GROUP_KEY), id.as_str()))
                 .collect(),
+            Self::Escalation(escalation) => vec![(
+                Cow::Borrowed("classifier_target"),
+                escalation.classifier_target.as_str(),
+            )],
         }
     }
 
@@ -292,6 +397,12 @@ impl LlmClassifierConfig {
                 .get(&custom.default_target)
                 .and_then(|ids| ids.first())
                 .map_or(custom.default_target.as_str(), String::as_str),
+            // The weak tier, unlike capability mode: an escalation judge that
+            // cannot answer leaves the weak turn standing (libsy serves it with
+            // `fail_open` evidence), and a turn that has made no call yet has
+            // nothing to judge. The strong tier is reached only by a verdict,
+            // a latch, or a weak turn that could not be retained.
+            Self::Escalation(escalation) => escalation.weak_target.as_str(),
         }
     }
 
@@ -300,6 +411,7 @@ impl LlmClassifierConfig {
         match self {
             Self::Capability(capability) => capability.bounds(),
             Self::Custom(custom) => custom.bounds(),
+            Self::Escalation(escalation) => escalation.bounds(),
         }
     }
 
@@ -308,15 +420,25 @@ impl LlmClassifierConfig {
         match self {
             Self::Capability(capability) => capability.bound_keys(),
             Self::Custom(custom) => custom.bound_keys(),
+            Self::Escalation(escalation) => escalation.bound_keys(),
         }
     }
 
-    /// The trigger, whichever mode carries it.
+    /// The trigger, whichever mode carries it. Escalation has no key: it
+    /// judges every turn that is not latched, which is `every_request`.
     pub fn classify_trigger(&self) -> ClassifyTrigger {
         match self {
             Self::Capability(capability) => capability.classify_trigger,
             Self::Custom(custom) => custom.classify_trigger,
+            Self::Escalation(_) => ClassifyTrigger::EveryRequest,
         }
+    }
+
+    /// Whether this mode retains the turn it gates (ADR-0005 §4) — the one
+    /// property that sends a turn down the buffer-and-replay lane instead of
+    /// the decide-then-stream one.
+    pub fn is_gated(&self) -> bool {
+        matches!(self, Self::Escalation(_))
     }
 }
 

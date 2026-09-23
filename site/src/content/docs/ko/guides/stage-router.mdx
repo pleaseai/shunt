@@ -255,8 +255,9 @@ passthrough인 항목에 자격 증명을 주입하는 판정 모델을 더하�
 
 `[models.router]`의 여섯 개 키가 모든 내부 호출에 한도를 겁니다 — `judge_timeout_ms`
 (기본 `30000`, 헤더*와* 본문을 모두 덮는 종단 간 기한), `judge_max_response_bytes`
-(`65536`), 세션당 `max_judge_calls`(`8`), 그리고 이후 릴리스의 버퍼링된 턴을 위해
-예약된 `gated_*` 세 개입니다. 한도를 넘기면 업스트림 호출을 취소합니다.
+(`65536`), 세션당 `max_judge_calls`(`8`), 그리고 `gated_*` 세 개입니다. `gated_*`는
+`escalation`이나 `advisor` 항목이 붙잡아 두는 턴에만 한도를 걸기 때문에 스테이지
+라우터에서는 아무것도 제한하지 않습니다. 한도를 넘기면 업스트림 호출을 취소합니다.
 
 판정이 내려진 턴은 `x-gateway-route-source: llm-classifier`로 보고되고 다른 결정과
 똑같이 세션을 고정합니다. 타임아웃, 크기 초과나 해석 불가 응답, 업스트림 오류, 예산 소진
@@ -269,7 +270,8 @@ passthrough인 항목에 자격 증명을 주입하는 판정 모델을 더하�
 - **턴 중간 상향 전환은 없습니다.** 응답 헤더가 커밋된 뒤에는 shunt가 턴을 재구동하지
   않으므로, 턴 시작 시점에 고른 티어가 그 턴 전체를 맡습니다.
 - **이 판정 모델은 티어만 결정합니다.** 판정을 쓰는 다른 타입은 각자 자기 테이블을
-  가집니다. `llm_classifier`와 `composite`는 `[models.router]`에 직접 설정합니다 —
-  [구성 레퍼런스](/ko/reference/configuration/#type--llm_classifier)를 보세요.
-  `advisor`는 아직 쓸 수 없고, 지정하면 시작 오류입니다.
+  가집니다. `llm_classifier`, `composite`, `advisor`는 `[models.router]`에 직접
+  설정합니다 — [구성 레퍼런스](/ko/reference/configuration/#type--llm_classifier)를
+  보세요. 판정이 나올 때까지 턴을 붙잡아 두는 것은 `llm_classifier`의
+  `mode = "escalation"`과 `advisor`뿐이며, 이 판정 모델은 그러지 않습니다.
 - **`[server.codex_endpoint]`는 범위 밖**입니다. 자체 라우팅 테이블을 사용합니다.

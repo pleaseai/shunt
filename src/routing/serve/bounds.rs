@@ -10,9 +10,9 @@
 //!
 //! [`collect_bounded`] is the judge side: one non-streaming reply, refused the
 //! moment it passes its cap rather than after it is buffered.
-//! [`bound_stream`] is the retained-turn side PR 6's gated `escalation` and
-//! `advisor` turns will use — nothing gated exists yet, so it is wired to
-//! nothing and unit-tested instead of dead-coded later.
+//! [`bound_stream`] is the retained-turn side: the streaming body of a gated
+//! `escalation` weak turn or `advisor` executor turn
+//! ([`super::gated`]), which is held whole before any of it is served.
 
 use std::borrow::Cow;
 use std::time::Duration;
@@ -85,12 +85,8 @@ pub(crate) async fn collect_bounded(
     Ok(Bytes::from(collected))
 }
 
-/// The three bounds a retained (gated) turn runs under (ADR-0005 §3).
-///
-/// Constructed by nothing yet: the gated lane is PR 6 (`escalation`,
-/// `advisor`). It ships here, with the rest of the bound set it belongs to and
-/// with its own tests, rather than arriving later as an untested prerequisite.
-#[allow(dead_code)]
+/// The three bounds a retained (gated) turn runs under (ADR-0005 §3), read
+/// from the entry's `gated_*` keys by [`super::gated`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GatedBounds {
     /// Bytes retained before the turn is discarded.
@@ -104,9 +100,6 @@ pub(crate) struct GatedBounds {
 /// Which bound a gated turn crossed. A closed set: each variant is a distinct
 /// operational failure an operator tunes with a distinct key, and collapsing
 /// them into one "bound exceeded" would leave the log naming no key.
-///
-/// Unused until PR 6 wires the gated lane; see [`GatedBounds`].
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoundExceeded {
     /// `gated_max_bytes`.
@@ -151,9 +144,6 @@ impl std::fmt::Display for BoundExceeded {
 /// precisely what lets a ping split in two disarm the bound. The consequence
 /// is that the idle gap measures the interval between *delivered* content
 /// frames, so a single frame must arrive in full inside it.
-///
-/// Called by nothing yet; see [`GatedBounds`].
-#[allow(dead_code)]
 pub(crate) fn bound_stream<S>(
     stream: S,
     gated: GatedBounds,
@@ -271,7 +261,10 @@ where
 /// be completed. Neither question arises here: `\r` and `\n` are ASCII, and no
 /// byte of a multi-byte UTF-8 character is, so scanning bytes cannot split
 /// one.
-fn take_complete_frames(buffer: &mut Vec<u8>) -> Vec<String> {
+///
+/// Shared with [`super::gated`]'s terminal-marker scan, so the frame a bound
+/// classifies and the frame the replay gate reads are cut by one rule.
+pub(super) fn take_complete_frames(buffer: &mut Vec<u8>) -> Vec<String> {
     // A trailing CR is held back unread: it may be the first half of a CRLF
     // whose LF is in the next chunk, and normalizing it now would invent a
     // frame terminator the upstream never sent.
@@ -305,12 +298,42 @@ fn take_complete_frames(buffer: &mut Vec<u8>) -> Vec<String> {
     frames
 }
 
+/// How many leading bytes of `bytes` are its first complete frame: everything
+/// up to and including the first blank line, under [`take_complete_frames`]'
+/// own rule — LF, CRLF, and bare CR each end a line, and a trailing CR is held
+/// back — but measured on the raw bytes, so the frame can be cut from them
+/// unchanged. `None` while no frame has completed.
+pub(super) fn first_frame_len(bytes: &[u8]) -> Option<usize> {
+    let scan = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+    let (mut index, mut at_line_start) = (0, false);
+    while index < scan.len() {
+        let ending = match scan[index] {
+            b'\r' => 1 + usize::from(scan.get(index + 1) == Some(&b'\n')),
+            b'\n' => 1,
+            _ => 0,
+        };
+        if ending == 0 {
+            at_line_start = false;
+            index += 1;
+            continue;
+        }
+        index += ending;
+        // A line ending that opens its own line closes a blank one: the frame
+        // terminator.
+        if at_line_start {
+            return Some(index);
+        }
+        at_line_start = true;
+    }
+    None
+}
+
 /// CRLF and bare CR to LF, on bytes.
 ///
 /// Byte-level for the reason [`take_complete_frames`] is: a partial multi-byte
 /// character at the end of the buffer is the normal case, not an error, and
 /// neither line ending can be part of one.
-fn normalize_line_endings(scan: &[u8]) -> Vec<u8> {
+pub(super) fn normalize_line_endings(scan: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(scan.len());
     let mut index = 0;
     while index < scan.len() {
@@ -326,14 +349,28 @@ fn normalize_line_endings(scan: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Whether one complete SSE frame is a keep-alive.
+/// Whether one complete SSE frame is a keep-alive: an `event: ping` frame, or
+/// a frame of comment lines only (`: keep-alive`), the SSE spec's own
+/// keep-alive, which carries no event at all.
 ///
 /// Frame-level, not substring-level: a frame counts as a ping only when its own
 /// `event:` line names `ping`, so a real `content_block_delta` whose text
 /// happens to mention the word does not disarm the idle bound.
 fn is_ping_frame(frame: &str) -> bool {
-    frame.lines().any(|line| {
-        line.strip_prefix("event:")
-            .is_some_and(|event| event.trim() == "ping")
-    })
+    frame_event(frame) == Some("ping")
+        || frame
+            .lines()
+            .filter(|line| !line.is_empty())
+            .all(|line| line.starts_with(':'))
+}
+
+/// The name one complete SSE frame's own `event:` line declares, if any.
+///
+/// Read off the line, never searched for in the frame: a `data:` payload that
+/// merely mentions an event name is content, not that event.
+pub(super) fn frame_event(frame: &str) -> Option<&str> {
+    frame
+        .lines()
+        .find_map(|line| line.strip_prefix("event:"))
+        .map(str::trim)
 }

@@ -122,7 +122,18 @@ pub(super) async fn json_events_response(
     mut events: CodexWsEvents,
     relay: RelayOptions,
     input_tokens_estimate: u64,
+    response_byte_cap: Option<usize>,
 ) -> Result<axum::response::Response, AdapterError> {
+    // The websocket twin of `http::json_response`'s capped body read: this
+    // collector builds a whole reply from a translated event stream, so the
+    // `Adapter::forward` contract bounds it with `over_cap` rather than
+    // `collect_upstream_body`. Each event is charged its name and its payload
+    // as compact JSON *before* the machine retains it — a measure of what this
+    // collector holds, not of wire bytes: a frame is already received and
+    // parsed (under the socket's 64 MiB message limit) before any count can
+    // run, so counting its raw length would move the refusal, not lower the
+    // peak. `None` is the client path and never refuses.
+    let mut accumulated = 0usize;
     // Seeded like every other path: an emulated stop sequence makes the
     // upstream's `response.completed` usage a no-op, and `final_json` falls back
     // to this estimate when no usage was observed, so without it a stopped turn
@@ -136,6 +147,16 @@ pub(super) async fn json_events_response(
         };
         match item {
             Some(Ok(event)) => {
+                if response_byte_cap.is_some() {
+                    accumulated = accumulated
+                        .saturating_add(event.event.as_deref().map_or(0, str::len))
+                        .saturating_add(serialized_len(&event.data));
+                    if let Some(too_large) =
+                        crate::adapters::over_cap(accumulated, response_byte_cap)
+                    {
+                        return Err(crate::adapters::too_large_error(too_large));
+                    }
+                }
                 let _ = machine.apply(event);
                 // A backend error event is terminal: the machine records the
                 // mapped envelope and ignores everything after. Return the moment
@@ -159,16 +180,36 @@ pub(super) async fn json_events_response(
                 } else {
                     error.body
                 };
-                return Err(AdapterError {
+                // The turn's socket broke mid-turn: cut before its terminal
+                // event, like a broken HTTP body (`http::json_response`).
+                return Err(crate::adapters::mark_body_broke(AdapterError {
                     message: "responses websocket stream error".into(),
                     response: Box::new(ShuntError::bad_gateway(message).into_response()),
                     failure: None,
-                });
+                }));
             }
             None => break,
         }
     }
-    Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
+    Ok(super::http::message_response(&mut machine))
+}
+
+/// The length of `value` as compact JSON, counted without building the string.
+fn serialized_len(value: &serde_json::Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    // Writing a `Value` to a sink that never fails cannot fail.
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
 }
 
 /// Render a websocket transport error as an Anthropic `error` SSE event.
@@ -250,7 +291,7 @@ mod tests {
             .unwrap();
         drop(tx);
 
-        let error = json_events_response(None, rx, relay_opts(), 0)
+        let error = json_events_response(None, rx, relay_opts(), 0, None)
             .await
             .expect_err("mid-stream transport error should stop failover");
         assert!(error.failure.is_none());
@@ -260,6 +301,25 @@ mod tests {
             .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert!(body.to_string().contains("upstream blew up"));
+    }
+
+    /// A channel that closes before `response.completed` still yields the
+    /// synthesized message, but marked, as the HTTP collector marks it, so the
+    /// gated capture cuts it rather than replaying a partial turn.
+    #[tokio::test]
+    async fn json_events_response_marks_a_turn_closed_before_its_terminal_event() {
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Ok(created_event())).unwrap();
+        drop(tx);
+
+        let response = json_events_response(None, rx, relay_opts(), 0, None)
+            .await
+            .expect("a closed channel still builds a response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .extensions()
+            .get::<crate::stream_metrics::UpstreamTruncated>()
+            .is_some());
     }
 
     #[tokio::test]
@@ -274,9 +334,59 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let response = json_events_response(None, rx, relay_opts(), 0)
+        let response = json_events_response(None, rx, relay_opts(), 0, None)
             .await
             .expect("clean events should build a response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .extensions()
+            .get::<crate::stream_metrics::UpstreamTruncated>()
+            .is_none());
+    }
+
+    /// The websocket collector honours `response_byte_cap` like the HTTP body
+    /// read does: a reply that outgrows it is refused with the
+    /// `UpstreamBodyTooLarge` marker `routing::serve` reads back — before the
+    /// channel closes, so an upstream still sending cannot grow it further —
+    /// and a cap the reply fits under changes nothing.
+    ///
+    /// Non-vacuity: drop the check in `json_events_response` and the first
+    /// call returns a `200`.
+    #[tokio::test]
+    async fn json_events_response_refuses_a_reply_over_the_byte_cap() {
+        let delta = "x".repeat(4096);
+        let turn = |tx: &mpsc::Sender<_>| {
+            tx.try_send(Ok(created_event())).unwrap();
+            tx.try_send(Ok(text_delta_event(&delta))).unwrap();
+        };
+
+        let (tx, rx) = mpsc::channel(16);
+        turn(&tx);
+        // `tx` stays alive: the refusal must not wait for a channel close.
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            json_events_response(None, rx, relay_opts(), 0, Some(1024)),
+        )
+        .await
+        .expect("the cap refuses without waiting for channel close")
+        .expect_err("a reply over the cap is refused");
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyTooLarge>()
+                .is_some_and(|too_large| too_large.max_bytes == 1024),
+            "the refusal carries the oversize marker"
+        );
+        drop(tx);
+
+        let (tx, rx) = mpsc::channel(16);
+        turn(&tx);
+        drop(tx);
+        let response = json_events_response(None, rx, relay_opts(), 0, Some(1 << 20))
+            .await
+            .expect("a reply under the cap is served");
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -303,7 +413,7 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let error = json_events_response(None, rx, relay_opts(), 0)
+        let error = json_events_response(None, rx, relay_opts(), 0, None)
             .await
             .expect_err("backend error event should stop failover");
 
@@ -334,7 +444,7 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let error = json_events_response(None, rx, relay_opts(), 0)
+        let error = json_events_response(None, rx, relay_opts(), 0, None)
             .await
             .expect_err("in-stream rate limit is an error");
 
@@ -369,7 +479,7 @@ mod tests {
 
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            json_events_response(None, rx, relay_opts(), 0),
+            json_events_response(None, rx, relay_opts(), 0, None),
         )
         .await
         .expect("collector returns without waiting for channel close")
@@ -455,13 +565,19 @@ mod tests {
 
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            json_events_response(None, rx, relay_opts_with_stops(&["</block>"]), 0),
+            json_events_response(None, rx, relay_opts_with_stops(&["</block>"]), 0, None),
         )
         .await
         .expect("collector returns without waiting for channel close")
         .expect("a stop sequence is a successful turn");
 
         assert_eq!(response.status(), StatusCode::OK);
+        // The stop is the turn's own terminal, not a truncation: the gated
+        // capture must not cut it.
+        assert!(response
+            .extensions()
+            .get::<crate::stream_metrics::UpstreamTruncated>()
+            .is_none());
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["content"][0]["text"], "answer");
@@ -484,7 +600,7 @@ mod tests {
 
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            json_events_response(None, rx, relay_opts_with_stops(&["</block>"]), 19),
+            json_events_response(None, rx, relay_opts_with_stops(&["</block>"]), 19, None),
         )
         .await
         .expect("collector returns without waiting for channel close")

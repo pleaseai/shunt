@@ -417,12 +417,14 @@ codex = "gpt-5.2"
 | `random` | 按权重抽取,默认按会话固定 | 不读 |
 | `noop` | 不做选择 —— 直接返回空消息 | 不读 |
 | `prefill_router` | 读取最近一轮用户消息的学习型分类器(需要 `prefill-router` 构建) | 读 —— 用户消息的文本 |
-| `llm_classifier` | LLM 裁判的判定,何时询问由 `classify_trigger` 决定 | 读 —— 通过内置提示词或你自己的提示词读取对话记录 |
+| `llm_classifier` | LLM 裁判的判定,何时询问由 `classify_trigger` 决定;在 `mode = "escalation"` 下,则是裁判对已完成的弱目标回合的裁决 | 读 —— 通过内置提示词或你自己的提示词读取对话记录 |
 | `composite` | LLM 裁判决定阶段路由器回落到哪个档位 | 读 —— 裁判读对话记录,信号读 tool-result 元数据 |
+| `advisor` | 由一个执行模型提供每一轮,更强的审阅模型批准或打回它的收尾回合 | 读 —— 为审阅模型读取对话记录 |
 
-**尚不可用**的形态有两种,指定它们会导致启动错误:`type = "advisor"`,以及
-`llm_classifier` 的 `mode = "escalation"`。两者都在还没决定怎么路由时就已经在提供回合,
-因此需要先缓冲再回放的那条车道,而它会在后续版本中加入。`prefill_router` 已经实现,但
+有两种形态在还没决定怎么路由时就已经在提供回合:`llm_classifier` 的
+[`mode = "escalation"`](#mode--escalation) 和 [`type = "advisor"`](#type--advisor)。两者都会
+把回合扣住,等裁决出来再提供,所以它们是 shunt 唯一会缓冲客户端要求流式返回的响应的路由 ——
+见[被扣住的回合](#被扣住的回合escalation-与-advisor)。`prefill_router` 已经实现,但
 **在编译期设门**:只有开启默认关闭的 `prefill-router` cargo feature 构建出来的二进制才有
 它 —— 见[下文](#type--prefill_router)。
 
@@ -548,8 +550,8 @@ base_threshold = 0.5
 #### 每次调用的上限
 
 六个键为一个条目发起的每一次内部调用设定上限。它们放在真正发起这些调用的那张表上 ——
-带 `classifier` 的 `stage_router`、`llm_classifier`、`composite` 等 driven 类型的
-`[models.router]`,以及 classifier 形态的
+带 `classifier` 的 `stage_router`、`llm_classifier`、`composite`、`advisor` 等 driven
+类型的 `[models.router]`,以及 classifier 形态的
 [`[models.subagents]`](#modelssubagents可选) 覆盖层(它自带一份)。越过上限会取消对应的
 上游调用。每个值至少为 `1`,填 `0` 是会指明该键的启动错误。
 
@@ -557,24 +559,24 @@ base_threshold = 0.5
 | :-- | :-- | :-- |
 | `judge_timeout_ms` | `30000` | 非流式裁判调用的端到端期限,同时覆盖响应头*和*响应体,所以先返回 `200` 再卡住的响应也会在这里被切断 |
 | `judge_max_response_bytes` | `65536` | 收集裁判响应的最大字节数;超过则按 `fall_open` 处理 |
-| `gated_max_bytes` | `8388608` | 被保留轮次的最大字节数 |
-| `gated_idle_ms` | `60000` | 被保留轮次中两个完整内容帧之间允许的最长间隔。SSE 的 ping 帧不会重置它；跨分块拆分的帧会先重组再分类 |
-| `gated_max_duration_ms` | `600000` | 被保留轮次的墙钟时间上限 |
-| `max_judge_calls` | `8` | 单个会话可以发起的裁判调用次数 |
+| `gated_max_bytes` | `8388608` | 被保留轮次的最大字节数:SSE 帧字节或 JSON 响应体 |
+| `gated_idle_ms` | `60000` | 被保留轮次中两个完整内容帧之间允许的最长间隔。SSE 保活帧(`event: ping` 帧和 `:` 注释帧)不会重置它；跨分块拆分的帧会先重组再分类 |
+| `gated_max_duration_ms` | `600000` | 被保留轮次的墙钟时间上限,同时覆盖响应头和响应体 |
+| `max_judge_calls` | `8` | 单个会话可以发起的裁判调用次数。被扣住的回合本身不是裁判调用,不计入 |
 
-三个 `gated_*` 键会被接受、校验,并由保留轮次的收集器真正执行,但**目前还不存在被保留的
-轮次** —— 它们所准备的缓冲升档轮次和 advisor 轮次会在后续版本中加入。在那之前这三个键在
-运行时不约束任何东西。
+三个 `gated_*` 键约束的是 [`escalation`](#mode--escalation) 或 [`advisor`](#type--advisor)
+条目上**被扣住**的回合,也就是 shunt 在裁决出来之前扣住的回合。其他条目没有被扣住的回合,
+这三个键也就不约束任何东西。
 
 #### `type = "llm_classifier"`
 
 不再只是补上信号用尽的那块空白,而是由 LLM **裁判**决定整个回合。条目里写明裁判、它可以
-挑选的目的地,以及 `mode` —— 裁判产出哪一种判定形态。
+挑选的目的地,以及 `mode` —— 裁判产出三种判定形态中的哪一种。这里介绍 `capability` 和
+`custom`;`escalation` 裁决的是已完成的回合,放在[单独一节](#mode--escalation)。
 
 `mode` 是**必填**的,这是对上游 schema 的一处有意偏离:上游把它默认成 `capability`。三种
-模式的路由原理完全不同,而其中一种(`escalation`)这里还没有。如果省略 `mode` 会被读成
-`capability`,那么以后加入 `escalation` 时,一份从未写过 `mode` 的配置就会悄悄改变含义。
-因此 `mode = "escalation"` 是一个会列出现有两种模式的启动错误。
+模式的路由原理完全不同,而其中一种(`escalation`)会缓冲它要提供的回合,所以省略 `mode`
+的配置不能被悄悄读成其中任何一种。
 
 **`mode = "capability"`** —— 内置裁判返回该任务的解决概率。达到或超过 `base_threshold`
 的回合留在 `weak_target`,低于它的回合去 `strong_target`。
@@ -671,6 +673,58 @@ fail-open 目标,裁判调用结果记为 `budget_exhausted`。
 不能解析到 **passthrough** 路由,理由与[上文](#modelsrouterclassifier可选)相同 —— 裁判
 调用不携带调用方的任何凭证,passthrough 路由便无凭可用。
 
+#### `mode = "escalation"`
+
+`llm_classifier` 的第三种模式让每个会话先从弱目标开始,并让裁判读一读工作进展如何。尚未
+锁定(latch)的会话里,每一轮都先在 `weak_target` 上生成并扣住;然后裁判对这一轮**已完成**
+的结果作出裁决 —— 看的是弱模型实际做了什么,而不是预测。拒绝升档会把连续升档计数清零,
+升档判定则让计数加一。计数低于 `confirmations` 时,提供被扣住的弱目标回合;计数达到
+`confirmations` 时,会话被锁定:这一轮的弱目标回答被丢弃,改由 `strong_target` 提供,
+此后该会话的每一轮都直接去 `strong_target`,既不调用裁判也不缓冲。
+
+```toml
+[[models]]
+id = "claude-escalate"
+
+[models.router]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+# prompt = "…"
+# max_output_tokens = 4096
+
+[models.router.escalation]
+confirmations = 2
+# recent_turn_window = 28
+# window_message_chars = 500
+```
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必填 | `llm_classifier` |
+| `mode` | ✅ 必填 | `escalation` |
+| `classifier_target` | ✅ 必填 | 轨迹裁判的公开 model id。只被咨询,从不提供给客户端 |
+| `strong_target` | ✅ 必填 | 会话锁定后提供的 model id |
+| `weak_target` | ✅ 必填 | 锁定前提供的 model id。可以与 `classifier_target` 是同一个 id |
+| `prompt` | 内置提示词 | 替换内置的轨迹裁判提示词 |
+| `max_output_tokens` | `4096` | 裁判判定的补全 token 上限。至少为 `1` |
+| `escalation.confirmations` | `2` | 锁定所需的连续升档判定次数。至少为 `1`。大于 `1` 时需要会话 id:没有的话每一轮都从零开始,会话永远不会锁定 |
+| `escalation.recent_turn_window` | `28` | 给裁判看的最近消息条数。至少为 `1` |
+| `escalation.window_message_chars` | `500` | 该窗口内每条消息的字符上限。至少为 `50` |
+
+`[models.router.escalation]` 表是可选的;省略时使用三个默认值,也就是上游跑过基准的那套
+配置。六个[每次调用的上限](#每次调用的上限)放在 `[models.router]` 上。classifier 形态的
+[`[models.subagents]`](#modelssubagents可选) 覆盖层仍然只接受 `mode = "custom"`。
+
+与 `classifier_target` 不同,`weak_target` 可以是 **passthrough** 路由:弱目标回合就是客户端
+自己的回答,所以它和实时回合一样携带调用方的凭证。`count_tokens` 探测既不调用裁判也不发起
+被扣住的调用,直接由 `weak_target` 作答。裁判调用计入
+`shunt.router.judge_calls{algorithm="llm_classifier"}`。
+
+被扣住的回合如何提供、每种结果下客户端看到什么、要付出什么代价,见[被扣住的回合](#被扣住的回合escalation-与-advisor)。
+
 #### `type = "composite"`
 
 由裁判决定阶段路由器回落到哪个档位,而信号评分本身不受影响。stage 表**不接受 `picker`**
@@ -717,6 +771,112 @@ confidence_threshold = 0.5
 因为 stage 那一半就是 libsy 自己的 stage 路由,它定夺下来的回合仍然报告阶段路由器自己的
 路由来源,而不是报告成 classifier 的决策 —— 也就是说,composite 里由信号驱动的回合,读起来
 和一个普通 `stage_router` 的回合完全一样。
+
+#### `type = "advisor"`
+
+由一个**执行模型**(executor)提供客户端看到的每一轮。更强的**审阅模型**(advisor)在客户端
+看到之前审阅执行模型的收尾回合 —— 动手之前给出的计划,或者声称任务已完成的回合。APPROVE
+放行被扣住的回合;REDO 丢弃它,并带着审阅模型的计划把执行模型打回去重做。审阅模型从不提供
+回合,所以客户端只会看到执行模型的输出。
+
+```toml
+[[models]]
+id = "claude-reviewed"
+
+[models.router]
+type = "advisor"
+executor_target = "claude-sonnet-4-6"
+advisor_target = "claude-opus-4-8"
+gate_trigger = "no_tool_call"
+max_reviews = 1
+# gate_stall_turns = 0
+# gate_min_tool_results = 0
+# advisor_max_tokens = 2048
+# transcript_max_chars = 200000
+# fail_open = true
+```
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必填 | `advisor` |
+| `executor_target` | ✅ 必填 | 提供客户端看到的每一轮 |
+| `advisor_target` | ✅ 必填 | 审阅被扣住的回合。从不提供给客户端 |
+| `gate_trigger` | `no_tool_call` | 触发审阅的条件:`no_tool_call`(执行模型第一次不带工具调用结束的回合)或 `pattern` |
+| `gate_trigger_pattern` | 未设置 | `pattern` 触发器的正则表达式,按搜索而非锚定匹配。在 `pattern` 下必填且不能为空;在 `no_tool_call` 下设置它是启动错误 |
+| `max_reviews` | `1` | 每个会话允许的审阅次数。至少为 `1`。没有 `x-claude-code-session-id` 的请求单独算作一个会话,因此没有会话的调用方之间不会共用同一份预算 |
+| `gate_stall_turns` | `0` | 对话中的 assistant 回合数达到这个值时,审阅一轮作为任务中途的检查点。`0` 表示关闭 |
+| `gate_min_tool_results` | `0` | `no_tool_call` 回合可被审阅之前,对话中至少需要的 tool result 数 |
+| `advisor_max_tokens` | `2048` | 每次审阅的输出 token 上限。至少为 `1` |
+| `advisor_temperature` | 未设置 | 审阅的采样温度。未设置时不写进审阅请求 |
+| `transcript_max_chars` | `200000` | 发给审阅模型的对话记录上限;更长的会从中间截掉。至少为 `256` |
+| `fail_open` | `true` | 审阅失败时提供被扣住的回合。设为 `false` 则改为以 `502` 让请求失败 |
+| `reviewer_system_prompt` | 内置提示词 | 替换 APPROVE/REDO 审阅提示词 |
+| `redo_feedback_prefix` | 内置提示词 | 替换回传给执行模型的 REDO 计划前面的那段文字 |
+
+六个[每次调用的上限](#每次调用的上限)放在 `[models.router]` 上。
+
+**哪些回合会被扣住。** 一轮是否触发 `gate_trigger`,要等这一轮完成才知道。所以只要会话还有
+审阅预算,执行模型的**每一轮**都会被扣住,没有触发门控的那些回合不经审阅直接提供。
+`max_reviews` 用完之后,或者该会话中审阅模型的调用已失败三次之后(失败的调用会退还这次审阅),
+该会话剩下的回合不再缓冲,实时流式返回。
+
+**REDO。** 被扣住的回合在任何响应头到达客户端之前就被丢弃。被丢弃的回合和审阅模型的计划会
+追加进对话,然后重新运行执行模型;这次重跑是实时流式返回的。
+
+与 `advisor_target` 不同,`executor_target` 可以是 **passthrough** 路由,理由与 escalation 的
+弱目标相同。`count_tokens` 探测既不发起审阅也不发起被扣住的调用,直接由 `executor_target`
+作答。审阅计入 `shunt.router.judge_calls{algorithm="advisor"}`,`GET /routes` 把
+`advisor_target` 列在 `judges` 下。
+
+#### 被扣住的回合:escalation 与 advisor
+
+**被扣住**(gated)的回合 —— 锁定前 escalation 的弱目标回合,或者会话仍有审阅预算时 advisor
+的执行模型回合 —— 会先生成、扣住,等裁决出来之后才提供。这些条目上的其他回合,以及其他所有
+路由上的所有回合,都和以前完全一样地流式返回。
+
+**保持调用方的模式。** `stream: true` 调用方的被扣住调用是流式的:SSE 帧一到就保留下来,
+如果这一轮要提供,就逐字节回放。`stream: false` 调用方的被扣住调用是非流式的,调用方收到的是
+一条 JSON 消息。门控改变的只是回答*何时*发出,从不改变它的形态。回放出来的
+`message_start.model` 是路由器自己的 id,而不是执行模型的 id,Anthropic 执行模型和 OpenAI
+Responses 执行模型都是如此,所以 Claude Code 的 `/model` 显示和 `--resume` 看到的都是它请求
+的那个 id。响应头要到回放开始时才提交。
+
+**只提供完整的回合。** 被扣住的回合只有在出现终止标记之后才可以提供:流式调用上是
+`message_stop`,非流式调用上是一个能解析成单条消息的完整响应体。被截断的 `200` 永远不会被
+回放。和实时流一样,回合在 `message_stop` 帧处结束:之后到达的内容不会回放,之后连接断开或一直保持打开也不会截断这个回合。被扣住的回合走目标的有序故障转移链。
+
+`x-gateway-route-source` —— 以及 `shunt.router.decisions` 的 `source` 标签 —— 说明发生了
+什么:
+
+| 来源 | 条目 | 含义 | 送达方式 |
+| :-- | :-- | :-- | :-- |
+| `escalation_weak` | escalation | 裁判放行了弱目标回合:它拒绝升档,或者连续升档计数仍低于 `confirmations` | 回放 |
+| `escalation_latch` | escalation | 会话在这一轮或更早已被锁定,由强目标提供这一轮 | 实时 |
+| `escalation_fallback` | escalation | 弱目标回合失败,或在终止标记之前被切断,于是由强目标提供这一轮。没有调用裁判 | 实时 |
+| `classifier_fail_open` | escalation | 在完整的弱目标回合之后裁判失败,于是提供了弱目标回合 | 回放 |
+| `advisor_approve` | advisor | 执行模型回合经过审阅并被批准 | 回放 |
+| `advisor_pass` | advisor | 执行模型回合未经审阅就被提供:它没有触发门控(例如以工具调用结束),或者没能预留到审阅 | 回放 |
+| `advisor_fail_open` | advisor | 在完整的执行模型回合之后审阅失败,于是提供了这一轮 | 回放 |
+| `advisor_redo` | advisor | 审阅模型给出 REDO。被丢弃的回合从未发出;这是执行模型的重跑 | 实时 |
+| `advisor_exhausted` | advisor | 会话的 `max_reviews` 已用完,或者审阅模型的调用已失败三次(失败的调用会退还 `max_reviews`),执行模型不经缓冲直接流式返回 | 实时 |
+| `gated_error` | 两者 | 被扣住的回合无法提供 —— 见下文 | 错误 |
+
+**出错时:**
+
+| 出错的环节 | `escalation` | `advisor` |
+| :-- | :-- | :-- |
+| 被扣住的回合越过某个 `gated_*` 上限,或在终止标记之前结束 | 在发送任何响应头之前丢弃,由强目标实时提供这一轮(`escalation_fallback`) | 在发送任何响应头之前丢弃,请求以网关自有、Anthropic 错误形态的 `502` 失败(`gated_error`)。这既不是 REDO,也不是一次故障转移尝试 —— 上游已经以 `2xx` 作答 |
+| 被扣住调用的上游返回错误状态 | 与实时回合一样原样转发给客户端(`gated_error`) | 原样转发(`gated_error`) |
+| 在完整回合之后裁判或审阅失败 —— 超时、响应过大或无法解析、上游错误,或 `max_judge_calls` 用完 | 提供弱目标回合(`classifier_fail_open`) | `fail_open = true` 时提供执行模型回合(`advisor_fail_open`);`fail_open = false` 时请求以网关自有的 `502` 失败(`gated_error`) |
+
+**代价。** 这些代价是你按条目选择承担的:
+
+- 在被扣住的回合上,整轮完成并得到裁决之前客户端什么也收不到,所以首个 token 的时间变成了
+  最后一个 token 的时间。
+- escalation 在锁定前的每一轮都要调用一次裁判;发生锁定的那一轮还要为被丢弃的弱目标调用
+  付费。
+- 被丢弃的弱目标回合或执行模型回合同样已经消耗了上游配额。它是客户端自己的回答请求,所以在
+  `shunt.requests` 中计为 `caller="client"`。
 
 #### `type = "auto"`
 

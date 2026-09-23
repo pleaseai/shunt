@@ -565,7 +565,7 @@ jobs.
 | `[models.router.classifier]` | `target` (required) and `base_threshold` (default `0.5`, in `(0.0, 1.0]`) — the lowest `p_solve` that keeps a supported task on the efficient tier. `stage_router` only |
 | Six per-call bounds on `[models.router]` | `judge_timeout_ms` `30000`, `judge_max_response_bytes` `65536`, `gated_max_bytes` `8388608`, `gated_idle_ms` `60000`, `gated_max_duration_ms` `600000`, `max_judge_calls` `8`. Each must be at least `1`; a `0` is a startup error naming the key. Crossing a bound cancels the upstream call |
 | `judge_timeout_ms` is end-to-end | Headers *and* body, on the non-streaming judge call. A `.send()`-only timeout stops at headers, and a `200` that then stalls would never reach `fail_open` |
-| `gated_idle_ms` and SSE pings | Measured between *completed content frames*, not between chunks: a frame split across chunk boundaries is reassembled from a carried remainder before it is classified, so an endless keep-alive stream cannot disarm the bound by splitting `event: ping` mid-line. A chunk that completes no frame resets nothing. Frames are split after normalizing CRLF and bare-CR line endings, so a CRLF chunk carrying real content beside a keep-alive still counts as progress |
+| `gated_idle_ms` and SSE pings | Measured between *completed content frames*, not between chunks: a frame split across chunk boundaries is reassembled from a carried remainder before it is classified, so an endless keep-alive stream cannot disarm the bound by splitting `event: ping` mid-line. A comment-only frame (`: keep-alive`), the SSE spec's own keep-alive, counts as a ping too. A chunk that completes no frame resets nothing. Frames are split after normalizing CRLF and bare-CR line endings, so a CRLF chunk carrying real content beside a keep-alive still counts as progress |
 | `judge_max_response_bytes` bounds the allocation | Enforced where the adapter reads the upstream body, not on what reaches the JSON parser. A judge route is an alias route by construction, so its reply takes the adapter's buffered branch; capping only afterwards would spend the memory the bound exists to deny. Client traffic is uncapped and unchanged |
 | `max_judge_calls` | Per session, counted under the pin |
 | Admission on the envelope | Inbound auth ranges over the requested id plus every answer and judge target's full chain; the managed-model policy stays on the requested id |
@@ -579,7 +579,8 @@ jobs.
 The `gated_*` keys are accepted, validated, and enforced by the retained-turn
 collector, but **no gated turn exists yet**: the escalation weak turn and the
 advisor executor turn are PR 6. Until then the three keys bound nothing at
-runtime, and the collector is exercised by its own unit tests only.
+runtime, and the collector is exercised by its own unit tests only. PR 6 (§8)
+now enforces them on every gated turn.
 
 ### What is tested
 
@@ -613,10 +614,9 @@ tier mocks; a `200`-then-stall and an endless ping stream each resolve as
 The rest of the driven lane: `llm_classifier` (capability and custom),
 `composite`, and the `[models.subagents]` classifier form have since shipped as
 PR 5, §7 below, and with them the `classify_trigger` key this PR's classifier
-table gained. Only `advisor` and `llm_classifier`'s `escalation` mode remain a
-load error. Buffer-and-replay — the escalation weak turn and the advisor
-executor turn the `gated_*` bounds are built for — is PR 6, and the
-streaming-semantics amendment `AGENTS.md` needs lands with it.
+table gained. Buffer-and-replay — the escalation weak turn and the advisor
+executor turn the `gated_*` bounds are built for — has since shipped as PR 6,
+§8 below, with the streaming-semantics amendment `AGENTS.md` needed.
 `[models.subagents]` is PR 3, shipped as §4 above, and `prefill_router` is
 PR 7 (§6), behind its own cargo feature.
 
@@ -1177,11 +1177,320 @@ ceiling), one focused test per clause:
 ### Not in this PR
 
 `mode = "escalation"` and `type = "advisor"` — the two algorithms that serve the
-answer while routing — are PR 6, with the buffer-and-replay lane the three
-`gated_*` bounds were built for and the `AGENTS.md` streaming amendment
-ADR-0005 §4 asks for. Naming either is still a load error. Until then no gated
-turn exists and those three keys still bound nothing at runtime (§5).
+answer while routing — have since shipped as PR 6, §8 below, with the
+buffer-and-replay lane the three `gated_*` bounds were built for and the
+`AGENTS.md` streaming amendment ADR-0005 §4 asks for. `mode` stays required, so
+`escalation` arrived as a new value rather than as a change of meaning for a
+config that omitted the key.
 
 An entry carrying no `[models.router]`, or one whose `type` is on the pure lane,
 is untouched: no algorithm is constructed for it, no envelope is walked, and it
 pays the same one `Option` check it paid before.
+
+## 8. The buffer-and-replay lane: `escalation` and `advisor` (PR 6)
+
+### What it is
+
+The two algorithms that **serve the answer while routing**: `type =
+"llm_classifier"` with `mode = "escalation"`, and `type = "advisor"`. Both make
+the client's turn first, hold it, have a judge or a reviewer rule on the
+*completed* turn, and only then decide whether that turn is what the client
+gets. That makes them the one place shunt buffers an upstream response the
+client asked to stream, which is the `AGENTS.md` amendment ADR-0005 §4 asks for
+and this PR makes:
+
+> Preserve streaming semantics; do not buffer upstream SSE responses unless the
+> client requested non-streaming output or the entry's router (`escalation`,
+> `advisor`) requires the completed turn before serving it.
+
+The scope is the point of the wording. Only a **gated** turn is buffered, and
+only on an entry that selects one of these two algorithms. Every other route,
+and every turn on these routes that is not gated, streams exactly as before.
+
+```toml
+[[models]]
+id = "claude-escalate"
+[models.router]
+type = "llm_classifier"
+mode = "escalation"                    # the third mode; `mode` is still required
+classifier_target = "claude-haiku-4-5" # the judge — consulted, never served
+strong_target = "claude-opus-4-8"      # served once the session latches
+weak_target = "claude-sonnet-4-6"      # served before the latch
+# prompt = "…"                         # replaces the packaged trajectory-judge prompt
+# max_output_tokens = 4096
+[models.router.escalation]             # optional; shown at its defaults
+confirmations = 2                      # consecutive escalate verdicts to latch; above 1 needs a session id
+recent_turn_window = 28
+window_message_chars = 500             # at least 50
+
+[[models]]
+id = "claude-reviewed"
+[models.router]
+type = "advisor"
+executor_target = "claude-sonnet-4-6"  # serves every client-visible turn
+advisor_target = "claude-opus-4-8"     # reviews gated turns — never served
+gate_trigger = "no_tool_call"          # or "pattern", with gate_trigger_pattern
+max_reviews = 1
+# gate_stall_turns = 0                 # 0 = off
+# gate_min_tool_results = 0
+# advisor_max_tokens = 2048
+# advisor_temperature unset = omitted from the review request
+# transcript_max_chars = 200000
+# fail_open = true
+```
+
+Key names, defaults, and ranges are upstream's
+(`docs/reference/toml_schema.md` in the pinned checkout), as ADR-0005 §2 fixes
+for every type. Both entries also carry the six per-call bounds (§5). The
+`[models.subagents]` classifier overlay stays `mode = "custom"` only; neither
+new form is accepted there.
+
+Both are driven-lane entries in every respect §5 and §7 established. Each is
+admitted against its dependency envelope before any call. A judge or advisor
+target that resolves to a passthrough route is a startup error, for the §5
+reason: an internal call strips every caller credential slot, so a passthrough
+route has nothing to run on. The **weak and executor targets may be
+passthrough**, because the gated turn is not an internal call. It is the answer
+dispatch of the selected target, so it establishes its own primary origin from
+that target's chain and carries the caller's credential exactly as a live turn
+does (ADR-0005 §3). A `count_tokens` probe never enters `drive`: it makes zero
+judge calls and zero gated calls, and answers from the weak or executor target.
+
+The advisor's `max_reviews` budget and its failure cap are per session. The
+pinned `AdvisorGate` folds every request that carries no session id into one
+instance-wide scope that lasts until the config reloads, so one anonymous
+caller would spend review for every other. shunt instead gives a sessionless
+advisor turn a request-unique session id marked final, which libsy drops when
+the drive returns: each sessionless request is reviewed as a session of its
+own (`sessionless_advisor_turns_do_not_share_one_review_budget`). The judge
+budget's key is read before that id is set, so `max_judge_calls` keeps its
+per-request allowance for sessionless callers.
+
+### Which turns are gated
+
+| Entry | Gated (buffered) | Live (streamed as before) |
+| :-- | :-- | :-- |
+| `escalation` | The weak turn, on a session that has not latched | Every turn after the latch, served by `strong_target`; the strong call that replaces a discarded weak turn |
+| `advisor` | Every executor turn while the session still has review budget and fewer than three failed advisor consults | Every turn once `max_reviews` is spent or the advisor has failed three consults (a failed consult refunds its review); the executor's re-run after a REDO |
+
+The advisor gates every executor turn in a session that has budget left and
+has not hit the failed-consult cap, not only the turns that end up reviewed.
+The algorithm cannot know whether a turn trips `gate_trigger` until the turn is
+complete — `no_tool_call` is a property of how the turn ends — so it holds each
+one and releases the ones that do not trip it without a review. Once the budget is spent, libsy routes to the
+executor with no gate at all, and shunt streams that turn live.
+
+### Capture, terminality, and replay
+
+A gated turn is made **in the caller's own mode**:
+
+- **`stream: true`.** The call streams, and the SSE frames the adapter renders
+  are retained as they arrive. The judge's neutral `Response` is assembled from
+  them. If the turn is served, the retained frames are replayed byte for byte.
+  They are retained, not re-encoded.
+- **`stream: false`.** The call is non-streaming. The single JSON message is
+  retained, the judge's `Response` derives from it, and the client gets that
+  message.
+
+No SSE-to-JSON conversion exists or is added: the gate changes *when* the answer
+is sent, never its shape.
+
+**Replayed under the advertised id.** The internal dispatch carries the
+router's own id as the alias to render, so `message_start.model` — or the
+`model` of the JSON message — is written as the id the client asked for
+*before* anything is captured. A frame captured under the executor's id and
+replayed verbatim would hand Claude Code the wrong model to restore on
+`--resume` (issue #172). "Byte-faithful" therefore means faithful to what the
+client would have received live, and it holds for an Anthropic executor and an
+OpenAI Responses executor alike.
+
+**Headers are committed only when the replay starts.** Until then the client
+has received nothing, so a discarded turn — a REDO, a latch, a cut weak turn —
+crosses no post-2xx boundary. ADR-0002's post-2xx no-replay rule is not bent:
+the client never saw the turn that was dropped.
+
+**A retained turn is servable only after an authoritative terminal marker.**
+On a streaming call that marker is `message_stop`. On a non-streaming call it is
+a complete body that parses as one message. A turn without its marker is never
+served, whatever the upstream status was. A truncated `200` is never replayed.
+That includes a Responses turn whose upstream ended before
+`response.completed`, which the adapter still closes: with a synthesized
+`message_stop` behind the upstream-truncation marker on a stream, or with a
+whole-looking message marked `UpstreamTruncated` on a non-streaming call over
+either transport (HTTP or websocket). Either
+mark makes the turn a cut
+(`a_truncated_responses_weak_turn_falls_back_to_the_strong_tier`,
+`a_truncated_non_streaming_responses_weak_turn_falls_back_to_the_strong_tier`).
+The turn ends at its `message_stop` frame, as the live relay ends it: the
+capture stops reading there and keeps exactly the bytes through that frame,
+which are also the bytes `gated_max_bytes` is charged on. A keep-alive after it
+is not replayed, and a connection that breaks or stays open
+after it neither cuts the turn nor holds it until a gated bound does
+(`a_transport_break_after_message_stop_still_replays_the_weak_turn`,
+`a_connection_held_open_after_message_stop_still_replays_the_weak_turn`). An
+`error` frame ends the capture the same way, as it ends the relay: the turn is
+cut at once rather than held open until a bound expires.
+
+**Gated turns take the ordered failover chain.** A pre-header failure on the
+gated call advances down the target's chain like any other dispatch. A
+streaming turn on a multi-route chain with an HTTP Responses route takes the
+committed chain stream the live path uses for that shape: the Responses
+adapter commits a synthetic `200` before it sends, so the ordered loop would
+see its failure only as an in-stream `error` frame and read a cut turn
+(`a_streaming_gated_turn_fails_over_along_the_weak_chain`). A non-2xx answer
+that ends the chain is relayed to the client unchanged, as a live turn's would
+be. On the committed chain stream, a chain that produced no turn is a `200`
+carrying one `error` frame. That covers a chain that ran out and an attempt
+that failed terminally before its headers. A gated turn reads either as the
+chain's refusal, not as a cut. It relays the error body as JSON (`gated_error`)
+with the status the ordered loop's client would have seen: a Responses route's
+upstream status outside that adapter's passthrough set becomes `502`.
+Escalation therefore does not call the strong tier for a refused weak chain
+(`an_exhausted_streaming_weak_chain_relays_its_refusal`,
+`a_refused_streaming_weak_chain_relays_the_client_facing_status`). The committed
+stream does not carry the upstream's response headers, so this relay has no
+`retry-after`. A route that fails after it has started streaming is still a cut.
+
+### Why the gated call is the first `CallModel`
+
+Both pinned algorithms make the gated call before any judge or review call:
+escalation calls the weak target and buffers it before it builds the judge
+request, and the advisor calls the executor and buffers it before the gate
+decides whether to consult. So shunt identifies the gated call as the **first
+`CallModel` of a drive**, not by comparing the call's target to a configured id.
+Two consequences follow:
+
+- **The gated call is not charged to `max_judge_calls`.** That bound counts
+  judge and review calls only (§7). A turn costs one gated call plus at most the
+  judge or review calls the budget allows.
+- **`weak_target` may equal `classifier_target`.** A target-id comparison could
+  not tell a weak turn from a judge call to the same model. Position can, so
+  shunt does not need upstream's prompted-target restriction.
+
+Every later `CallModel` of the same drive is an internal call and goes through
+§5's `serve` with the caller's credentials stripped.
+
+### Bounds
+
+The three `gated_*` keys, validated since PR 4 but inert until now, bound every
+gated turn:
+
+| Key | Default | Bounds |
+| :-- | :-- | :-- |
+| `gated_max_bytes` | `8388608` | Retained SSE frame bytes, or the retained JSON body |
+| `gated_idle_ms` | `60000` | The gap between body chunks. On a streaming call only a completed content frame counts as progress (§5), so SSE `ping` frames do not reset it and an endless keep-alive stream cannot hold a gated turn open |
+| `gated_max_duration_ms` | `600000` | Wall clock across headers and body |
+
+Crossing a bound cancels the upstream call and refunds nothing: the upstream
+already spent the tokens. The `judge_*` keys and `max_judge_calls` keep their
+§5 meaning for the judge and the review.
+
+### Route sources
+
+`x-gateway-route-source` and the `source` label on
+`shunt.router.decisions{algorithm}` gain a closed set of values. Every replayed
+turn carries a label that names it as one, so a client can tell a replayed turn
+from a live one.
+
+| Label | Entry | What happened | Delivery |
+| :-- | :-- | :-- | :-- |
+| `escalation_weak` | escalation | The judge let the weak turn through: it declined, or the escalate streak is still below `confirmations` | Replayed |
+| `escalation_latch` | escalation | The session latched, on this turn or an earlier one, so the strong target served the turn | Live |
+| `escalation_fallback` | escalation | The weak turn failed or was cut before its terminal marker, so the strong target served the turn. The judge was not called | Live |
+| `classifier_fail_open` | escalation | The judge failed after a complete weak turn, so the weak turn was served | Replayed |
+| `advisor_approve` | advisor | The executor turn was reviewed and APPROVEd | Replayed |
+| `advisor_pass` | advisor | The executor turn was served without a review: it did not trip the gate (for example, it ends in a tool call), or no review could be reserved | Replayed |
+| `advisor_fail_open` | advisor | The review failed after a complete executor turn, so the turn was served | Replayed |
+| `advisor_redo` | advisor | The reviewer said REDO. The discarded turn was never sent; this is the executor's re-run | Live |
+| `advisor_exhausted` | advisor | The session's `max_reviews` is spent, or its advisor has failed three consults (a failed consult refunds `max_reviews`), so the executor streams with no buffering | Live |
+| `gated_error` | either | The gated turn could not be served (see the failure matrix below) | Error |
+
+Unlike the classifier labels in §7, these are shunt's names for libsy's
+evidence, not copies of it. The mapping reads the `source` and `verdict` keys
+libsy sets on the outcome at the pinned revision (`algorithms/escalation.rs`,
+`algorithms/advisor_gate.rs`), plus whether the outcome carries a retained
+response:
+
+| libsy evidence | Outcome carries | Label |
+| :-- | :-- | :-- |
+| `{"source": "escalation", "verdict": "latched"}` | no response | `escalation_latch` |
+| `{"source": "escalation", "verdict": "escalate"}` (streak confirmed on this turn) | no response | `escalation_latch` |
+| `{"source": "escalation", "verdict": "continue"}` (the judge declined) | the weak turn | `escalation_weak` |
+| `{"source": "escalation", "verdict": "pending"}` (escalate, streak below `confirmations`) | the weak turn | `escalation_weak` |
+| `{"source": "fail_open", "reason_code": …}` from the judge (no verdict) | the weak turn | `classifier_fail_open` |
+| `{"source": "fallback", "reason_code": …}`, or a weak turn shunt cut before its marker | no response | `escalation_fallback` |
+| `{"source": "advisor", "verdict": "approve"}` | the executor turn | `advisor_approve` |
+| `{"source": "advisor", "verdict": "fail_open"}` | the executor turn | `advisor_fail_open` |
+| `{"source": "advisor", "verdict": "redo"}` | no response; a rewritten request | `advisor_redo` |
+| no evidence | the executor turn | `advisor_pass` |
+| no evidence, and no gated call was made | no response | `advisor_exhausted` |
+
+`gated_error` has no evidence row: it is shunt's own outcome, set where the
+host fails the request.
+
+`shunt.router.judge_calls{algorithm}` is `llm_classifier` for an escalation
+entry and `advisor` for an advisor entry, with §5's closed outcome set.
+`shunt.router.decisions{algorithm}` uses the same two values. `GET /routes`
+lists `classifier_target` or `advisor_target` under `judges`: consulted, never
+served.
+
+### Failure matrix
+
+| What fails | `escalation` | `advisor` |
+| :-- | :-- | :-- |
+| The gated turn crosses a `gated_*` bound | Discarded before any header is committed; the strong target serves the turn live (`escalation_fallback`) | Discarded before any header is committed; the request fails with a gateway-owned `502` in the Anthropic error shape (`gated_error`) |
+| The gated turn ends before its terminal marker | As above | As above. Not a REDO and not a failover attempt: the upstream answered `2xx` and the client never saw it |
+| The gated call's upstream answers non-2xx | Relayed to the client unchanged, as a live turn would be (`gated_error`) | Relayed unchanged (`gated_error`) |
+| The judge or review fails after a complete turn — timeout, oversized, unparseable, upstream error, or `max_judge_calls` spent | The algorithm's `fail_open` outcome: the weak turn is replayed (`classifier_fail_open`) | With `fail_open = true` (the default), the executor turn is replayed (`advisor_fail_open`). With `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`) |
+
+The escalation column and the advisor column differ on a cut turn by design.
+Escalation has a second answer on hand, the strong target, and taking it costs
+nothing the client can see. The advisor has only the executor. Re-running the
+executor on a turn that upstream already answered `2xx` would be a failover
+retry after a successful response, and ADR-0002 rules that out.
+
+### What it costs
+
+Operators opt into these costs per entry, so the reference page states them:
+
+- **Time to first token becomes time to last token on gated turns.** The client
+  receives nothing until the turn is complete and judged.
+- **Escalation spends a judge call on every un-latched turn.** A turn that
+  latches also pays for a weak call it discards.
+- **A discarded weak or executor turn still consumed its upstream quota.** It
+  is counted as `caller = "client"` in `shunt.requests`, because it was the
+  client's answer dispatch, not an internal call.
+
+### What is tested
+
+The ADR-0005 §8 definition of done for PR 6, one focused integration test per
+clause, in `tests/buffer_replay.rs` and `tests/buffer_replay/advisor.rs`:
+
+1. a replayed turn's `message_start.model` equals the router id on an
+   Anthropic executor and on a Responses executor —
+   `a_declined_streaming_escalation_turn_is_replayed_on_both_adapters`;
+2. a `stream: false` caller receives one JSON message on a gated turn, on both
+   adapters — `a_non_streaming_caller_gets_a_single_json_message_on_both_adapters`
+   (the Responses upstream is always called streaming, so only the Anthropic
+   run also asserts a non-streaming upstream request);
+3. a REDO commits no headers before the re-run —
+   `an_advisor_redo_serves_only_the_second_executor_turn`;
+4. a judge or review failure after a complete retained turn resolves as
+   `fail_open` — `a_stalled_escalation_judge_replays_the_weak_turn_it_retained`
+   and `a_stalled_advisor_review_replays_the_executor_turn`;
+5. a weak turn cut before `message_stop` is never replayed, and the strong call
+   is made instead — `a_weak_turn_cut_before_message_stop_falls_back_to_the_strong_tier`;
+6. a nonterminal advisor executor turn fails with a gateway-owned `502` before
+   any header is committed — `a_nonterminal_executor_turn_is_a_gateway_error`.
+
+Unit, alongside the code: both config tables' round-trip, defaults, stray-key,
+and upstream-constructor rejections (`src/config/router/advisor/tests.rs`,
+`src/config/router/classifier/tests.rs`); the evidence → source table above
+(`src/routing/driven/gated/tests.rs`); and the terminal-marker scan, the
+turn's end at its `message_stop` frame, and the single-message check
+(`src/routing/serve/gated/tests.rs`).
+
+### Not in this PR
+
+`prefill_router` is PR 7, shipped as §6 above. With this PR every algorithm in
+ADR-0005's list is hosted.
