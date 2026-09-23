@@ -1,0 +1,66 @@
+src/adapters/gemini/mod.rs
+  s_7e5aff892dcd4d::t_5df555aee0cf3e 633-635,731-733
+  s_7e5aff892dcd4d::t_e06750d502ea7d 40,631-632,729-730
+  s_7e5aff892dcd4d::t_53038c7b840508 39,41,43,626,724
+src/proxy/failover.rs
+  s_7e5aff892dcd4d::t_79a5853a501fb2 591-595
+  s_7e5aff892dcd4d::t_b65cacf44fbc6f 456-457,459,655,660,665,670,675,680,685
+  s_7e5aff892dcd4d::t_1a0a447886e985 600
+src/proxy.rs
+  s_7e5aff892dcd4d::t_b65cacf44fbc6f 129-140
+src/adapters/responses/http.rs
+  s_7e5aff892dcd4d::t_5df555aee0cf3e 16-17,238
+  s_7e5aff892dcd4d::t_53038c7b840508 233
+  s_7e5aff892dcd4d::t_e06750d502ea7d 236-237
+  s_7e5aff892dcd4d::t_103719d5583677 743-753
+src/adapters/antigravity/mod.rs
+  s_7e5aff892dcd4d::t_53038c7b840508 248-249,256,258
+  s_7e5aff892dcd4d::t_e06750d502ea7d 254-255
+src/adapters/mod.rs
+  s_7e5aff892dcd4d::t_1ce600b4bf07f5 1,106-133,136-144,151-152,155-156,158-160,162-169,173,175,177,210-219
+  s_7e5aff892dcd4d::t_e06750d502ea7d 134-135,301-307
+  s_7e5aff892dcd4d::t_bc29f44fc9a35f 196-204
+  s_7e5aff892dcd4d::t_d9b16d77f8a72a 222-223,248-266,283-285,287-297,299-300,315
+src/routing/serve.rs
+  s_7e5aff892dcd4d::t_b65cacf44fbc6f 194-199
+src/proxy/failover/chain.rs
+  s_7e5aff892dcd4d::t_b65cacf44fbc6f 91-92,94,123,174
+src/adapters/responses/mod.rs
+  s_7e5aff892dcd4d::t_e06750d502ea7d 74
+  s_7e5aff892dcd4d::t_53038c7b840508 70-73,75,77
+tests/buffer_replay/transport.rs
+  s_7e5aff892dcd4d::t_85f95c0e1da9ca 322-408
+src/adapters/noop.rs
+  s_7e5aff892dcd4d::t_53038c7b840508 40-41
+src/adapters/anthropic/mod.rs
+  s_7e5aff892dcd4d::t_79a5853a501fb2 332-339,432-439,627-634,879-886,2445-2446
+  s_7e5aff892dcd4d::t_103719d5583677 41,43,53,72,75,141,150,693,741,921,1047,1089,1104-1105,1107-1117,1132-1136,2435-2444
+src/routing/serve/gated/tests.rs
+  s_7e5aff892dcd4d::t_5b1c017ddc7252 25-27,266-277
+  s_7e5aff892dcd4d::t_51cf325dbef2d4 278-280
+src/adapters/cursor/mod.rs
+  s_7e5aff892dcd4d::t_79a5853a501fb2 523-538,540
+  s_7e5aff892dcd4d::t_5df555aee0cf3e 61
+  s_7e5aff892dcd4d::t_53038c7b840508 60,75,78
+  s_7e5aff892dcd4d::t_e06750d502ea7d 73-74
+src/routing/serve/gated.rs
+  s_7e5aff892dcd4d::t_b65cacf44fbc6f 224,227-237,239,266-270,275-276
+  s_7e5aff892dcd4d::t_65e4a349d6e46d 238
+  s_7e5aff892dcd4d::t_4e6bd93b744ac5 277
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1fa7095219fe4f747dd63ea3410ecf8cd0cc7b6b",
+  "prompts": {},
+  "sessions": {
+    "s_7e5aff892dcd4d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "96bf1e92-af58-40d0-8a53-bc293662fd0f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
