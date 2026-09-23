@@ -1,0 +1,43 @@
+tests/buffer_replay/transport.rs
+  s_e478a462820053::t_27773f45daf901 59
+  s_e478a462820053::t_9c7f994948919d 1-58,60-118
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_e478a462820053::t_eb178c3f4bb70e 846
+src/routing/serve/gated.rs
+  s_e478a462820053::t_0f7aa83b0c0774 52-53
+  s_e478a462820053::t_d96497a961ea6e 30-33
+  s_e478a462820053::t_95db0f4a9db1bf 331-337
+site/src/content/docs/ja/reference/configuration.md
+  s_e478a462820053::t_eb178c3f4bb70e 894-895
+src/routing/serve/bounds.rs
+  s_e478a462820053::t_2705de144fdc6d 301-329
+site/src/content/docs/ko/reference/configuration.md
+  s_e478a462820053::t_eb178c3f4bb70e 901-902
+src/routing/serve/gated/tests.rs
+  s_e478a462820053::t_27773f45daf901 91-94
+  s_e478a462820053::t_c0f9fc32ac54cb 16,18,84-90,95-101
+  s_e478a462820053::t_1b266cf4162eeb 13-15
+  s_e478a462820053::t_967af36102577a 102-103
+site/src/content/docs/reference/configuration.md
+  s_e478a462820053::t_eb178c3f4bb70e 1108-1109
+docs/routing-algorithms.md
+  s_e478a462820053::t_eb178c3f4bb70e 1316-1318,1475-1477
+tests/buffer_replay.rs
+  s_e478a462820053::t_3fb79e2ae8e85e 30-32,47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c2db00537564f05eb6a3f3b46f1f14e5d874945e",
+  "prompts": {},
+  "sessions": {
+    "s_e478a462820053": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5773a516-d286-40d2-94db-3261484bc38d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
