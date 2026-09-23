@@ -28,8 +28,8 @@ use axum::http::StatusCode;
 use futures_util::StreamExt;
 
 use super::{
-    first_frame_len, is_single_message, retain_stream, BoundExceeded, ChainSuccess, CutReason,
-    GatedBounds, GatedCapture, TerminalScan,
+    first_frame_len, is_single_message, relay_refusal, retain_stream, BoundExceeded, ChainSuccess,
+    CutReason, GatedBounds, GatedCapture, TerminalScan,
 };
 
 const START: &str = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n";
@@ -203,6 +203,34 @@ async fn the_byte_cap_counts_the_turn_not_the_bytes_after_it() {
     assert!(matches!(
         capture(turn.len() - 1).await,
         GatedCapture::Cut(CutReason::Bound(BoundExceeded::MaxBytes))
+    ));
+}
+
+/// A refusal that sends its non-`2xx` headers and then stalls is cut at the
+/// idle gap, not held until the wall-clock bound.
+#[tokio::test]
+async fn a_stalled_refusal_body_is_cut_at_the_idle_gap() {
+    let body = futures_util::stream::iter([Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+        b"{\"type\":\"error\"",
+    ))])
+    .chain(futures_util::stream::pending());
+    let success = ChainSuccess {
+        status: StatusCode::TOO_MANY_REQUESTS,
+        response: axum::response::Response::new(axum::body::Body::from_stream(body)),
+        provider: "efficient".to_string(),
+        model: "weak".to_string(),
+    };
+    let gated = GatedBounds {
+        max_bytes: 1 << 20,
+        idle: Duration::from_millis(100),
+        max_duration: Duration::from_secs(30),
+    };
+    let capture = tokio::time::timeout(Duration::from_secs(5), relay_refusal(success, gated))
+        .await
+        .expect("the refusal is cut at the idle gap, not at the wall clock");
+    assert!(matches!(
+        capture,
+        GatedCapture::Cut(CutReason::Bound(BoundExceeded::Idle))
     ));
 }
 

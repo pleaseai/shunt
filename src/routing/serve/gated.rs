@@ -54,8 +54,7 @@ use switchyard_protocol::{LlmClientError, LlmResponse, ModelId, Response};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 use super::bounds::{
-    bound_stream, collect_bounded, first_frame_len, frame_event, normalize_line_endings,
-    BoundExceeded, CollectError, GatedBounds,
+    bound_stream, first_frame_len, frame_event, normalize_line_endings, BoundExceeded, GatedBounds,
 };
 use crate::config::CallBounds;
 use crate::proxy::failover::{
@@ -235,14 +234,14 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
             Ok(success) => success,
             Err(error) => return chain_failure(error),
         };
-        if !success.status.is_success() {
-            return relay_refusal(success, bounds.gated_max_bytes).await;
-        }
         let gated = GatedBounds {
             max_bytes: bounds.gated_max_bytes,
             idle: bounds.gated_idle,
             max_duration: bounds.gated_max_duration,
         };
+        if !success.status.is_success() {
+            return relay_refusal(success, gated).await;
+        }
         if streaming {
             retain_stream(success, gated, synthesized).await
         } else {
@@ -266,20 +265,43 @@ fn chain_failure(error: ForwardError) -> GatedCapture {
     })
 }
 
-/// A non-`2xx` answer, collected under the cap so libsy's error carries the
-/// body and the caller can still be handed the same bytes.
-async fn relay_refusal(success: ChainSuccess, max_bytes: usize) -> GatedCapture {
+/// A non-`2xx` answer, collected under the gated cap and idle gap so libsy's
+/// error carries the body and the caller can still be handed the same bytes.
+/// A refusal that sends its headers and then stalls is cut at the idle gap,
+/// not held until the wall-clock bound.
+async fn relay_refusal(success: ChainSuccess, gated: GatedBounds) -> GatedCapture {
     let (parts, body) = success.response.into_parts();
-    match collect_bounded(body, max_bytes).await {
+    match collect_gated(body, gated).await {
         Ok(bytes) => GatedCapture::UpstreamError(UpstreamFailure::Answered {
             status: success.status,
             body: String::from_utf8_lossy(&bytes).into_owned(),
-            response: axum::response::Response::from_parts(parts, axum::body::Body::from(bytes)),
+            response: axum::response::Response::from_parts(
+                parts,
+                axum::body::Body::from(Bytes::from(bytes)),
+            ),
         }),
-        Err(CollectError::Oversized(_)) => {
-            GatedCapture::Cut(CutReason::Bound(BoundExceeded::MaxBytes))
+        Err(reason) => GatedCapture::Cut(reason),
+    }
+}
+
+/// Collect a whole buffered body under the gated cap and idle gap.
+///
+/// The idle gap is measured between body chunks, and any chunk refreshes it: a
+/// JSON body has no keep-alive frames to discount, so every byte is progress.
+async fn collect_gated(body: axum::body::Body, gated: GatedBounds) -> Result<Vec<u8>, CutReason> {
+    let mut data = body.into_data_stream();
+    let mut collected = Vec::new();
+    loop {
+        let chunk = match tokio::time::timeout(gated.idle, data.next()).await {
+            Err(_) => return Err(CutReason::Bound(BoundExceeded::Idle)),
+            Ok(None) => return Ok(collected),
+            Ok(Some(Err(_))) => return Err(CutReason::Transport),
+            Ok(Some(Ok(chunk))) => chunk,
+        };
+        if collected.len().saturating_add(chunk.len()) > gated.max_bytes {
+            return Err(CutReason::Bound(BoundExceeded::MaxBytes));
         }
-        Err(CollectError::Transport(_)) => GatedCapture::Cut(CutReason::Transport),
+        collected.extend_from_slice(&chunk);
     }
 }
 
@@ -372,10 +394,8 @@ async fn retain_stream(
     })
 }
 
-/// Retain a non-streaming turn's single JSON message.
-///
-/// The idle gap is measured between body chunks, and any chunk refreshes it: a
-/// JSON body has no keep-alive frames to discount, so every byte is progress.
+/// Retain a non-streaming turn's single JSON message, collected by
+/// [`collect_gated`].
 async fn retain_message(success: ChainSuccess, gated: GatedBounds) -> GatedCapture {
     let (parts, body) = success.response.into_parts();
     // A Responses target synthesizes a whole-looking message from an upstream
@@ -383,20 +403,10 @@ async fn retain_message(success: ChainSuccess, gated: GatedBounds) -> GatedCaptu
     if parts.extensions.get::<UpstreamTruncated>().is_some() {
         return GatedCapture::Cut(CutReason::Nonterminal);
     }
-    let mut data = body.into_data_stream();
-    let mut retained = Vec::new();
-    loop {
-        let chunk = match tokio::time::timeout(gated.idle, data.next()).await {
-            Err(_) => return GatedCapture::Cut(CutReason::Bound(BoundExceeded::Idle)),
-            Ok(None) => break,
-            Ok(Some(Err(_))) => return GatedCapture::Cut(CutReason::Transport),
-            Ok(Some(Ok(chunk))) => chunk,
-        };
-        if retained.len().saturating_add(chunk.len()) > gated.max_bytes {
-            return GatedCapture::Cut(CutReason::Bound(BoundExceeded::MaxBytes));
-        }
-        retained.extend_from_slice(&chunk);
-    }
+    let retained = match collect_gated(body, gated).await {
+        Ok(retained) => retained,
+        Err(reason) => return GatedCapture::Cut(reason),
+    };
     if !is_single_message(&retained) {
         return GatedCapture::Cut(CutReason::Nonterminal);
     }
