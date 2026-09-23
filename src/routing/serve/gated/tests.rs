@@ -9,16 +9,27 @@
 //! `a_message_stop_mentioned_in_content_is_not_the_marker` goes red; drop the
 //! carried remainder and `a_message_stop_split_across_chunks_is_still_seen`
 //! goes red; drop the `errored` check and
-//! `an_error_frame_before_the_marker_is_never_terminal` goes red; keep reading
+//! `an_error_frame_before_the_marker_is_never_terminal` goes red; drop the
+//! `truncated` check and
+//! `a_stop_after_the_upstream_truncation_marker_is_not_terminal` goes red; keep reading
 //! after `message_stop`, or record where the chunk ended rather than where the
 //! frame did, and `nothing_after_message_stop_is_part_of_the_turn` goes red;
 //! accept any JSON object in [`is_single_message`] and
 //! `a_json_error_body_is_not_a_message` goes red; let any line ending, not
 //! only one that closes a blank line, end a frame in [`first_frame_len`], or
 //! stop holding back its trailing CR, and
-//! `a_frame_ends_only_at_a_blank_line` goes red.
+//! `a_frame_ends_only_at_a_blank_line` goes red; charge the byte cap on the
+//! whole chunk that completes the marker and
+//! `the_byte_cap_counts_the_turn_not_the_bytes_after_it` goes red.
 
-use super::{first_frame_len, is_single_message, TerminalScan};
+use std::time::Duration;
+
+use axum::http::StatusCode;
+
+use super::{
+    first_frame_len, is_single_message, retain_stream, BoundExceeded, ChainSuccess, CutReason,
+    GatedBounds, GatedCapture, TerminalScan,
+};
 
 const START: &str = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n";
 const DELTA: &str =
@@ -76,6 +87,19 @@ fn an_error_frame_before_the_marker_is_never_terminal() {
     assert!(!scan(&[START, ERROR, STOP]).is_terminal());
 }
 
+/// The `message_stop` the Responses adapter synthesizes after an upstream that
+/// ended before `response.completed` closes a cut turn: the marker frame ahead
+/// of it is what says so.
+#[test]
+fn a_stop_after_the_upstream_truncation_marker_is_not_terminal() {
+    let marker = std::str::from_utf8(crate::stream_metrics::UPSTREAM_TRUNCATED_MARKER).unwrap();
+    let marked = format!("{marker}\n\n");
+    assert!(!scan(&[START, DELTA, &marked, STOP]).is_terminal());
+    assert!(!scan(&[&format!("{START}{marked}{STOP}").replace('\n', "\r\n")]).is_terminal());
+    // A comment frame that is not the marker is not a cut.
+    assert!(scan(&[START, ": keep-alive\n\n", STOP]).is_terminal());
+}
+
 /// The live relay ends the client's stream at `message_stop`, so a frame after
 /// it — a keep-alive, even an `error` — is not part of the turn, and the turn
 /// is exactly the bytes through the marker, however the chunks fell.
@@ -109,6 +133,39 @@ fn a_message_stop_mentioned_in_content_is_not_the_marker() {
     let mention =
         "event: content_block_delta\ndata: {\"delta\":{\"text\":\"event: message_stop\"}}\n\n";
     assert!(!scan(&[START, mention]).is_terminal());
+}
+
+/// The byte cap is charged on the turn, not on the chunk that finished it: a
+/// turn that fits is retained even when its `message_stop` shares one body
+/// chunk with a tail that would push the chunk past the cap, and a turn one
+/// byte over is still cut.
+#[tokio::test]
+async fn the_byte_cap_counts_the_turn_not_the_bytes_after_it() {
+    let turn = format!("{START}{DELTA}{STOP}");
+    let tail = "event: ping\ndata: {\"type\":\"ping\"}\n\n".repeat(64);
+    let capture = |max_bytes: usize| {
+        let body = axum::body::Body::from(format!("{turn}{tail}"));
+        let success = ChainSuccess {
+            status: StatusCode::OK,
+            response: axum::response::Response::new(body),
+            provider: "efficient".to_string(),
+            model: "weak".to_string(),
+        };
+        let gated = GatedBounds {
+            max_bytes,
+            idle: Duration::from_secs(5),
+            max_duration: Duration::from_secs(5),
+        };
+        retain_stream(success, gated, false)
+    };
+    match capture(turn.len()).await {
+        GatedCapture::Retained(retained) => assert_eq!(retained.body, turn.as_bytes()),
+        _ => panic!("a turn inside the cap must be retained"),
+    }
+    assert!(matches!(
+        capture(turn.len() - 1).await,
+        GatedCapture::Cut(CutReason::Bound(BoundExceeded::MaxBytes))
+    ));
 }
 
 /// A frame ends at its blank line — under any line ending, and without

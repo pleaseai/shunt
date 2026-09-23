@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use reqwest::StatusCode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use wiremock::MockServer;
+use wiremock::matchers::method;
+use wiremock::{Mock, MockServer};
 
 use super::harness::{
     anthropic_sse, escalation_router, gated_config, header, judge_text, messages_mock, post,
@@ -155,4 +156,66 @@ async fn replays_the_weak_turn_through_message_stop(
     );
     assert_eq!(streamed_text(&events), "WEAK-ANSWER");
     responder.await.unwrap();
+}
+
+/// A Responses weak turn whose upstream ended before `response.completed`:
+/// the adapter still closes the client's stream with a synthesized
+/// `message_stop`, behind the upstream-truncation marker. The turn is cut, so
+/// escalation falls back to the strong tier and the partial text never
+/// reaches the caller.
+///
+/// Non-vacuity: accept the synthesized `message_stop` (drop the `truncated`
+/// check in `TerminalScan::is_terminal`) and the judge is asked and declines,
+/// so the header comes back `escalation_weak` and the mocks' `expect` counts
+/// go red.
+#[tokio::test]
+async fn a_truncated_responses_weak_turn_falls_back_to_the_strong_tier() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let (strong, efficient, responses, judge) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    messages_mock(
+        sse_reply(anthropic_sse(CAPABLE_UPSTREAM_MODEL, "STRONG")),
+        1,
+    )
+    .mount(&strong)
+    .await;
+    let truncated = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_cut\",\"usage\":{\"output_tokens\":0}}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"WEAK-PARTIAL\"}\n\n",
+    );
+    Mock::given(method("POST"))
+        .respond_with(sse_reply(truncated.to_string()))
+        .expect(1)
+        .mount(&responses)
+        .await;
+    messages_mock(judge_text(DECLINE), 0).mount(&judge).await;
+    let tiers = Tiers {
+        strong: strong.uri(),
+        weak: efficient.uri(),
+        responses: responses.uri(),
+        judge: judge.uri(),
+    };
+    let gateway = start_gateway(gated_config(&tiers, &escalation_router("responses-alias"))).await;
+
+    let response = post(&gateway, true).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        header(&response, "x-gateway-route-source"),
+        "escalation_fallback"
+    );
+    let body = response.text().await.unwrap();
+    assert!(
+        !body.contains("WEAK-PARTIAL"),
+        "the cut turn leaked: {body}"
+    );
+    assert_eq!(streamed_text(&sse_events(&body)), "STRONG");
 }

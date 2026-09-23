@@ -26,7 +26,7 @@
 //!   conversion exists or is needed.
 //! * **Terminal or nothing.** A turn is [`GatedCapture::Retained`] only after
 //!   an authoritative terminal marker: a complete `message_stop` frame and no
-//!   `error` frame before it on a stream, one parseable `message` object on a
+//!   `error` frame or upstream-truncation marker before it on a stream, one parseable `message` object on a
 //!   JSON body. Anything short of that — a bound crossed, a transport broken
 //!   before the marker, a `200` that simply stopped — is
 //!   [`GatedCapture::Cut`], and a cut turn is never replayed. A stream's turn
@@ -65,6 +65,7 @@ use crate::proxy::ForwardError;
 use crate::request::RequestBody;
 use crate::routing;
 use crate::server::AppState;
+use crate::stream_metrics::UPSTREAM_TRUNCATED_MARKER;
 
 /// Everything the gated call needs from the admitted client request.
 ///
@@ -302,19 +303,30 @@ async fn retain_stream(
             }
         })
     });
-    let mut bounded = std::pin::pin!(bound_stream(source, gated));
+    // The byte cap is charged here, on the turn's own bytes, rather than in
+    // `bound_stream`, which counts whole chunks: the chunk that completes
+    // `message_stop` can carry bytes past it that are not part of the turn.
+    let uncapped = GatedBounds {
+        max_bytes: usize::MAX,
+        ..gated
+    };
+    let mut bounded = std::pin::pin!(bound_stream(source, uncapped));
     let mut retained = Vec::new();
     let mut scan = TerminalScan::default();
     while let Some(item) = bounded.next().await {
         match item {
             Ok(chunk) => {
                 scan.feed(&chunk);
-                retained.extend_from_slice(&chunk);
                 // The turn ends at its `message_stop` frame, as the live relay
                 // ends it: nothing after it is replayed, and nothing after it
                 // is waited for.
-                if let Some(end) = scan.terminal_len() {
-                    retained.truncate(end);
+                let end = scan.terminal_len();
+                let turn = end.map_or(chunk.len(), |end| end - retained.len());
+                if retained.len().saturating_add(turn) > gated.max_bytes {
+                    return GatedCapture::Cut(CutReason::Bound(BoundExceeded::MaxBytes));
+                }
+                retained.extend_from_slice(&chunk[..turn]);
+                if end.is_some() {
                     break;
                 }
             }
@@ -405,7 +417,11 @@ pub(crate) fn is_single_message(body: &[u8]) -> bool {
 /// The streaming terminal marker, read frame by frame as the stream arrives.
 ///
 /// A turn is terminal when a **complete** frame names `message_stop` and no
-/// frame before it names `error`. Frame-level, under the framing rule
+/// frame before it names `error` or is the Responses adapter's
+/// [`UPSTREAM_TRUNCATED_MARKER`] — the comment frame it writes ahead of the
+/// `message_stop` it synthesizes when the upstream ended before
+/// `response.completed`, so that marker's stop closes a cut turn, not a
+/// finished one. Frame-level, under the framing rule
 /// `bound_stream` uses, so a CRLF stream and a `message_stop` split across
 /// chunks read the same as the unsplit LF form, and a `content_block_delta`
 /// whose text happens to say `message_stop` is content rather than the marker.
@@ -423,6 +439,7 @@ pub(crate) struct TerminalScan {
     /// Stream offset just past the `message_stop` frame, once one completed.
     end: Option<usize>,
     errored: bool,
+    truncated: bool,
 }
 
 impl TerminalScan {
@@ -444,6 +461,10 @@ impl TerminalScan {
             } else {
                 Cow::Borrowed(frame)
             };
+            if normalized.trim_ascii() == UPSTREAM_TRUNCATED_MARKER {
+                self.truncated = true;
+                continue;
+            }
             match frame_event(&String::from_utf8_lossy(&normalized)) {
                 Some("message_stop") => {
                     self.end = Some(self.offset + consumed);
@@ -460,7 +481,7 @@ impl TerminalScan {
 
     /// Whether what has been fed so far is a servable, finished turn.
     pub(crate) fn is_terminal(&self) -> bool {
-        self.end.is_some() && !self.errored
+        self.end.is_some() && !self.errored && !self.truncated
     }
 
     /// How many bytes of the stream the turn is — everything through its
