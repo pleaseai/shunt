@@ -1,0 +1,46 @@
+src/adapters/responses/mod.rs
+  s_980b0d6ef2724b::t_4cd839061ee3bc 70-76,102,115,209,475-476
+src/adapters/responses/context.rs
+  s_980b0d6ef2724b::t_4cd839061ee3bc 63-65,69-76
+src/adapters/cursor/mod.rs
+  s_980b0d6ef2724b::t_da53d4213bf5a4 899-902
+  s_980b0d6ef2724b::t_9e3d64457646d4 73-78,82,90,153,157,499,524-546,805-812
+  s_980b0d6ef2724b::t_afac97dcb162d8 839-891
+  s_980b0d6ef2724b::t_afcb6d15d523fd 914,923,932,941,950,973
+src/adapters/responses/websocket.rs
+  s_980b0d6ef2724b::t_4cd839061ee3bc 112
+src/adapters/mod.rs
+  s_980b0d6ef2724b::t_da53d4213bf5a4 135-136,300-308
+tests/buffer_replay/transport.rs
+  s_980b0d6ef2724b::t_fd1fd624d23ebb 14-15,323,340,358,365-455,470-472,474-476,479-480,482-484,486,491,493-497
+  s_980b0d6ef2724b::t_3dd14861cf966f 460,481,485
+src/adapters/responses/http.rs
+  s_980b0d6ef2724b::t_4cd839061ee3bc 17,178,224,232-237,327,352,380,410,441,477,595,661
+src/routing/serve/gated.rs
+  s_980b0d6ef2724b::t_da53d4213bf5a4 230-236
+src/adapters/gemini/mod.rs
+  s_980b0d6ef2724b::t_abdd283453dc65 39-42,45,132,140,148,233,289,438,623,625-626,628-630,635-637,727-729,731-733
+src/adapters/responses/pool.rs
+  s_980b0d6ef2724b::t_4cd839061ee3bc 1066,1146,1191,1202,1625
+tests/buffer_replay/harness.rs
+  s_980b0d6ef2724b::t_79b6b512ae9882 100-115
+  s_980b0d6ef2724b::t_880a6e18d81ca8 28
+src/adapters/responses/early_stream_tests.rs
+  s_980b0d6ef2724b::t_4cd839061ee3bc 1021
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "304b4000d546c62173e096745fc6101de6d6f7f0",
+  "prompts": {},
+  "sessions": {
+    "s_980b0d6ef2724b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e1eac5f-1dc8-4817-9d81-ccd1d8c02406",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
