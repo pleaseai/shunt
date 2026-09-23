@@ -126,6 +126,18 @@ impl ForwardError {
             .copied()
     }
 
+    /// Whether an adapter's whole-body read went silent past the call's idle
+    /// gap.
+    ///
+    /// Read by `routing::serve`, which cuts a gated turn at its idle bound
+    /// whether the stall happened inside the adapter or in its own collector.
+    pub(crate) fn body_idle(&self) -> bool {
+        self.response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyIdle>()
+            .is_some()
+    }
+
     /// Whether an adapter's whole-body read of a successful reply broke after
     /// the headers were committed.
     ///

@@ -38,9 +38,9 @@ impl Adapter for AnthropicAdapter {
         uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
-        response_byte_cap: Option<usize>,
+        bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
-        Box::pin(async move { forward(state, route, uri, headers, body, response_byte_cap).await })
+        Box::pin(async move { forward(state, route, uri, headers, body, bounds).await })
     }
 }
 
@@ -50,7 +50,7 @@ async fn forward(
     uri: &Uri,
     headers: &HeaderMap,
     mut body: RequestBody,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let provider = state
         .config
@@ -69,10 +69,10 @@ async fn forward(
     }
     let route = route;
     if provider.auth == AuthMode::ClaudeOauth {
-        return forward_claude_oauth(state, route, uri, headers, body, response_byte_cap).await;
+        return forward_claude_oauth(state, route, uri, headers, body, bounds).await;
     }
     if provider.auth == AuthMode::KimiOauth {
-        return forward_kimi_oauth(state, route, uri, headers, body, response_byte_cap).await;
+        return forward_kimi_oauth(state, route, uri, headers, body, bounds).await;
     }
 
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
@@ -138,7 +138,7 @@ async fn forward(
     // The non-pooled path builds its response exactly like the pooled path's
     // relay_response (header filtering, SSE keepalive, status passthrough), so
     // reuse it with no account attribution instead of duplicating that logic.
-    relay_response(&state, &route, upstream, None, response_byte_cap).await
+    relay_response(&state, &route, upstream, None, bounds).await
 }
 
 async fn forward_claude_oauth(
@@ -147,7 +147,7 @@ async fn forward_claude_oauth(
     uri: &Uri,
     headers: &HeaderMap,
     mut body: RequestBody,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let provider = state
         .config
@@ -329,20 +329,14 @@ async fn forward_claude_oauth(
                     status.is_success(),
                     is_fable,
                 );
-                return relay_response(
-                    &state,
-                    &route,
-                    upstream,
-                    Some(&account.name),
-                    response_byte_cap,
-                )
-                .await
-                .map(|(status, response)| {
-                    (
-                        status,
-                        hold_admission_on_success(status, response, admission),
-                    )
-                });
+                return relay_response(&state, &route, upstream, Some(&account.name), bounds)
+                    .await
+                    .map(|(status, response)| {
+                        (
+                            status,
+                            hold_admission_on_success(status, response, admission),
+                        )
+                    });
             }
             FailoverAction::Rotate => {
                 if status == StatusCode::TOO_MANY_REQUESTS {
@@ -435,20 +429,14 @@ async fn forward_claude_oauth(
                         "Claude OAuth throttle retry did not succeed; cooling down account"
                     );
                 }
-                return relay_response(
-                    &state,
-                    &route,
-                    retry,
-                    Some(&account.name),
-                    response_byte_cap,
-                )
-                .await
-                .map(|(status, response)| {
-                    (
-                        status,
-                        hold_admission_on_success(status, response, admission),
-                    )
-                });
+                return relay_response(&state, &route, retry, Some(&account.name), bounds)
+                    .await
+                    .map(|(status, response)| {
+                        (
+                            status,
+                            hold_admission_on_success(status, response, admission),
+                        )
+                    });
             }
             FailoverAction::RefreshRetry => {
                 // account_is_static_store_token() reads the account file from
@@ -636,20 +624,14 @@ async fn forward_claude_oauth(
                             // alter routing.
                             state.accounts.clear_needs_relogin(&route.provider, account);
                         }
-                        return relay_response(
-                            &state,
-                            &route,
-                            retry,
-                            Some(&account.name),
-                            response_byte_cap,
-                        )
-                        .await
-                        .map(|(status, response)| {
-                            (
-                                status,
-                                hold_admission_on_success(status, response, admission),
-                            )
-                        });
+                        return relay_response(&state, &route, retry, Some(&account.name), bounds)
+                            .await
+                            .map(|(status, response)| {
+                                (
+                                    status,
+                                    hold_admission_on_success(status, response, admission),
+                                )
+                            });
                     }
                     // Exhaustive rather than `_` so a new FailoverAction variant
                     // forces a decision here. RefreshRetry cannot recur (a 401 is
@@ -708,7 +690,7 @@ async fn forward_claude_oauth(
 
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
-        return relay_response(&state, &route, response, None, response_byte_cap).await;
+        return relay_response(&state, &route, response, None, bounds).await;
     }
 
     Err(AdapterError {
@@ -756,7 +738,7 @@ async fn forward_kimi_oauth(
     uri: &Uri,
     headers: &HeaderMap,
     mut body: RequestBody,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let provider = state
         .config
@@ -894,20 +876,14 @@ async fn forward_kimi_oauth(
                 state
                     .accounts
                     .mark_healthy(&route.provider, account, status.is_success());
-                return relay_response(
-                    &state,
-                    &route,
-                    upstream,
-                    Some(&account.name),
-                    response_byte_cap,
-                )
-                .await
-                .map(|(status, response)| {
-                    (
-                        status,
-                        hold_admission_on_success(status, response, admission),
-                    )
-                });
+                return relay_response(&state, &route, upstream, Some(&account.name), bounds)
+                    .await
+                    .map(|(status, response)| {
+                        (
+                            status,
+                            hold_admission_on_success(status, response, admission),
+                        )
+                    });
             }
             // Rotate, PauseSame, and RefreshRetry all collapse to the same
             // cooldown-and-rotate treatment — see the function doc comment for
@@ -942,7 +918,7 @@ async fn forward_kimi_oauth(
 
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
-        return relay_response(&state, &route, response, None, response_byte_cap).await;
+        return relay_response(&state, &route, response, None, bounds).await;
     }
 
     Err(AdapterError {
@@ -1068,7 +1044,7 @@ async fn relay_response(
     route: &Route,
     upstream: reqwest::Response,
     account_name: Option<&str>,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let status = upstream.status();
     let response_headers = headers::filtered(upstream.headers());
@@ -1110,7 +1086,7 @@ async fn relay_response(
         // answer `text/event-stream` anyway, and judge routes carry an alias,
         // so without this a cap below 64 KiB would bound only the refusal in
         // `collect_bounded` and not the buffering that precedes it.
-        let max_first_frame = model_rewrite::first_frame_ceiling(response_byte_cap);
+        let max_first_frame = model_rewrite::first_frame_ceiling(bounds.max_bytes);
         let stream = model_rewrite::rewrite_first_model_stream(
             upstream.bytes_stream(),
             alias,
@@ -1125,14 +1101,20 @@ async fn relay_response(
         // reading it whole to rewrite the top-level `model` respects the
         // "don't buffer SSE unless non-streaming" rule.
         //
-        // `response_byte_cap` is what keeps that read from being unbounded on
-        // an internal call. A judge target is an alias route by construction —
+        // `bounds` is what keeps that read from being unbounded on an internal
+        // call. A judge or gated target is an alias route by construction —
         // `routing::resolve_target_chain` stamps the advertised router id onto
-        // `route.model` while `upstream_model` stays the judge's own — so this
-        // is the branch every judge reply takes, and reading it whole before
-        // any later cap is applied is spending the memory the cap exists to
-        // deny. `None` on the client path keeps `reqwest`'s own `bytes()`.
-        match crate::adapters::collect_upstream_body(upstream, response_byte_cap).await {
+        // `route.model` while `upstream_model` stays the target's own — so this
+        // is the branch every non-streaming internal reply takes, and reading
+        // it whole before any later cap is applied is spending the memory the
+        // cap exists to deny. The idle gap bites here for the same reason: this
+        // read finishes before `run_chain` returns, so a gated turn whose
+        // upstream commits its headers and stalls would otherwise wait out
+        // `gated_max_duration_ms` before `routing::serve`'s collector — and its
+        // idle timer — ever saw the body. The default on the client path keeps
+        // `reqwest`'s own `bytes()`.
+        match crate::adapters::collect_upstream_body(upstream, bounds.max_bytes, bounds.idle).await
+        {
             Ok(bytes) => Body::from(model_rewrite::rewrite_response_model(bytes, &alias)),
             // A successful reply cut mid-body is a turn that ended before its
             // terminal marker; a relayed refusal cut mid-body stays a refusal.
@@ -1146,6 +1128,11 @@ async fn relay_response(
             }
             Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
                 return Err(crate::adapters::too_large_error(too_large))
+            }
+            // A refusal that stalls is cut exactly like a success that does:
+            // the gated collector would have cut either at the same gap.
+            Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
+                return Err(crate::adapters::idle_error(idle))
             }
         }
     } else {
@@ -2445,9 +2432,18 @@ mod tests {
                     .body(reqwest::Body::wrap_stream(chunks))
                     .unwrap(),
             );
-            let error = super::relay_response(&state, &route, upstream, None, Some(1 << 20))
-                .await
-                .expect_err("a broken body is an error");
+            let error = super::relay_response(
+                &state,
+                &route,
+                upstream,
+                None,
+                crate::adapters::ResponseBounds {
+                    max_bytes: Some(1 << 20),
+                    idle: None,
+                },
+            )
+            .await
+            .expect_err("a broken body is an error");
             assert!(error.failure.is_none());
             assert_eq!(
                 error

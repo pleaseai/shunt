@@ -245,15 +245,17 @@ impl Adapter for AntigravityAdapter {
         _uri: &'a Uri,
         _headers: &'a HeaderMap,
         body: RequestBody,
-        // Honoured on the non-streaming path, which is the one that
-        // accumulates a whole reply: the drain loop below feeds every `agy`
+        // `max_bytes` is honoured on the non-streaming path, which is the one
+        // that accumulates a whole reply: the drain loop below feeds every `agy`
         // line through the translator, whose text grows without bound until
         // the terminal event. That is the branch every internal call takes,
         // since `routing::serve` strips `stream`. A streaming turn relays its
         // SSE frames onward and holds nothing, so its bound falls to that
-        // collector on the relayed body.
-        response_byte_cap: Option<usize>,
+        // collector on the relayed body. `idle` is not applied here yet
+        // (#667).
+        bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
+        let response_byte_cap = bounds.max_bytes;
         Box::pin(async move {
             let request = body.json();
             reject_caller_tools(request)?;

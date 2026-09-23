@@ -67,12 +67,14 @@ impl Adapter for ResponsesAdapter {
         _uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
-        // Honoured only on the non-streaming path, which is the one that
-        // buffers a whole upstream reply — and the one every internal call
-        // takes, since `routing::serve` forces `stream` off. A streaming turn
-        // relays instead of buffering, so its bound falls to that collector.
-        response_byte_cap: Option<usize>,
+        // `max_bytes` is honoured only on the non-streaming path, which is the
+        // one that buffers a whole upstream reply — and the one every internal
+        // call takes, since `routing::serve` forces `stream` off. A streaming
+        // turn relays instead of buffering, so its bound falls to that
+        // collector. `idle` is not applied here yet (#666, #667).
+        bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
+        let response_byte_cap = bounds.max_bytes;
         // The session id keys the websocket connection pool (issue #32) so turns
         // of one Claude Code conversation reuse a live connection. Keep an owned
         // value because the adapter future may outlive the borrowed header map.

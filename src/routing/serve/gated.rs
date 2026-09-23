@@ -221,11 +221,22 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
                     requested_model: request.requested_model,
                     router_stamp: None,
                     caller: "client",
-                    // Bites only where an adapter reads a whole reply itself — the
+                    // Both bite only where an adapter reads a whole reply itself — the
                     // non-streaming paths. Every streaming path relays without holding
                     // the body (the Anthropic first-frame rewrite is bounded by its own
-                    // 64 KiB ceiling), so the cap there falls to `bound_stream` below.
-                    response_byte_cap: Some(bounds.gated_max_bytes),
+                    // 64 KiB ceiling), so the bounds there fall to `bound_stream` below.
+                    //
+                    // The idle gap matters because such a read finishes before
+                    // `run_chain` returns: on a non-streaming Anthropic alias route
+                    // the adapter reads the whole body to rewrite its `model`, and an
+                    // upstream that commits its headers and then stalls would hold
+                    // that read — and this call — until `gated_max_duration`, with
+                    // `collect_gated`'s idle timer not yet started. Adapters that do
+                    // not yet honour it leave the stall to the duration bound.
+                    response_bounds: crate::adapters::ResponseBounds {
+                        max_bytes: Some(bounds.gated_max_bytes),
+                        idle: Some(bounds.gated_idle),
+                    },
                 })
                 .await
             }
@@ -252,14 +263,17 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
     captured.unwrap_or(GatedCapture::Cut(CutReason::Bound(BoundExceeded::Duration)))
 }
 
-/// A chain error: the byte cap biting inside an adapter is a gated bound, a
-/// successful reply whose body broke after its headers is a turn cut before its
-/// terminal marker — the same transport cut `retain_stream` and `collect_gated`
-/// make of a broken body — and everything else is the upstream's failure to
-/// relay.
+/// A chain error: the byte cap or idle gap biting inside an adapter is a gated
+/// bound, a successful reply whose body broke after its headers is a turn cut
+/// before its terminal marker — the same transport cut `retain_stream` and
+/// `collect_gated` make of a broken body — and everything else is the
+/// upstream's failure to relay.
 fn chain_failure(error: ForwardError) -> GatedCapture {
     if error.body_too_large().is_some() {
         return GatedCapture::Cut(CutReason::Bound(BoundExceeded::MaxBytes));
+    }
+    if error.body_idle() {
+        return GatedCapture::Cut(CutReason::Bound(BoundExceeded::Idle));
     }
     if error.body_broke() {
         return GatedCapture::Cut(CutReason::Transport);

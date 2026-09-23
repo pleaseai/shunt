@@ -191,8 +191,12 @@ async fn dispatch(
             // The cap, at the point the adapter would otherwise buffer the
             // whole reply to rewrite its `model`. `collect_bounded` below
             // stays as defence in depth: it bounds the relayed stream, which
-            // is the path an adapter that buffers nothing takes.
-            response_byte_cap: Some(bounds.judge_max_response_bytes),
+            // is the path an adapter that buffers nothing takes. No idle gap:
+            // the whole judge call is already under `judge_timeout_ms`.
+            response_bounds: crate::adapters::ResponseBounds {
+                max_bytes: Some(bounds.judge_max_response_bytes),
+                idle: None,
+            },
         })
         .await;
         let outcome = match outcome {

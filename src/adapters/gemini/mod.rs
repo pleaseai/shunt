@@ -36,8 +36,11 @@ impl Adapter for GeminiAdapter {
         uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
-        response_byte_cap: Option<usize>,
+        // `max_bytes` bounds the non-streaming whole-body reads below; `idle`
+        // is not applied here yet (#666).
+        bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
+        let response_byte_cap = bounds.max_bytes;
         Box::pin(async move { forward(state, route, uri, headers, body, response_byte_cap).await })
     }
 }
@@ -620,10 +623,15 @@ async fn forward_single(
         // trusted than a good one, and on a bounded internal call it is read
         // into the same memory.
         let body_text =
-            match crate::adapters::collect_upstream_body(response, response_byte_cap).await {
+            match crate::adapters::collect_upstream_body(response, response_byte_cap, None).await {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
                     return Err(crate::adapters::too_large_error(too_large))
+                }
+                // Unreachable while this read passes no idle gap (#666); kept a
+                // typed refusal rather than a panic.
+                Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
+                    return Err(crate::adapters::idle_error(idle))
                 }
                 Err(crate::adapters::UpstreamBodyError::Transport(_)) => {
                     "failed to read error response".to_string()
@@ -713,10 +721,15 @@ async fn forward_single(
         // client turn: this is the non-streaming branch, so the whole reply is
         // materialised before it can be translated.
         let full_text =
-            match crate::adapters::collect_upstream_body(response, response_byte_cap).await {
+            match crate::adapters::collect_upstream_body(response, response_byte_cap, None).await {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
                     return Err(crate::adapters::too_large_error(too_large))
+                }
+                // Unreachable while this read passes no idle gap (#666); kept a
+                // typed refusal rather than a panic.
+                Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
+                    return Err(crate::adapters::idle_error(idle))
                 }
                 Err(crate::adapters::UpstreamBodyError::Transport(error)) => {
                     return Err(crate::adapters::mark_body_broke(AdapterError {

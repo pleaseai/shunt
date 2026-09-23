@@ -319,3 +319,90 @@ async fn a_non_streaming_weak_body_broken_after_its_headers_falls_back_to_the_st
     assert_eq!(body["content"][0]["text"], "STRONG", "got: {body}");
     responder.await.unwrap();
 }
+
+/// The idle gap and the wall-clock bound the two stalled-body tests below run
+/// under: far enough apart that a turn cut at the idle gap is plainly told from
+/// one cut at the duration bound, which also falls back to the strong tier.
+const STALL_ROUTER_EXTRA: &str = "gated_idle_ms = 300\ngated_max_duration_ms = 8000\n";
+
+/// A non-streaming weak turn whose upstream sent its `200` headers and part of
+/// its JSON body, then held the connection open: the Anthropic adapter reads an
+/// alias route's reply whole before `run_chain` returns, so the stall is inside
+/// that read. It is cut at `gated_idle_ms`, and escalation falls back to the
+/// strong tier — well before `gated_max_duration_ms`.
+///
+/// Non-vacuity: pass no idle gap in `capture`'s `ResponseBounds` and the stall
+/// is cut only at the duration bound — the turn still falls back, but the
+/// elapsed-time assertion goes red.
+#[tokio::test]
+async fn a_non_streaming_weak_body_stalled_after_its_headers_is_cut_at_the_idle_gap() {
+    stalled_non_streaming_weak_turn_falls_back(
+        b"HTTP/1.1 200 OK\r\n",
+        b"{\"id\":\"msg_stall\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"WEAK-PARTIAL",
+    )
+    .await;
+}
+
+/// The refusal twin: a non-streaming weak `400` whose error body stalls after
+/// its headers. The alias rewrite reads a refusal whole too, and `400` is a
+/// status the chain relays rather than advances on, so the stall is again
+/// inside the adapter's read — and is cut at the idle gap like a success.
+///
+/// Non-vacuity: pass no idle gap in `capture`'s `ResponseBounds` and the
+/// refusal is cut only at the duration bound, so the elapsed-time assertion
+/// goes red.
+#[tokio::test]
+async fn a_non_streaming_weak_refusal_stalled_after_its_headers_is_cut_at_the_idle_gap() {
+    stalled_non_streaming_weak_turn_falls_back(
+        b"HTTP/1.1 400 Bad Request\r\n",
+        b"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"WEAK-",
+    )
+    .await;
+}
+
+async fn stalled_non_streaming_weak_turn_falls_back(status_line: &[u8], partial: &[u8]) {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let (strong, responses, judge) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    messages_mock(anthropic_json(CAPABLE_UPSTREAM_MODEL, "STRONG"), 1)
+        .mount(&strong)
+        .await;
+    messages_mock(judge_text(DECLINE), 0).mount(&judge).await;
+    let mut reply = status_line.to_vec();
+    reply.extend_from_slice(b"content-type: application/json\r\ncontent-length: 4096\r\n\r\n");
+    reply.extend_from_slice(partial);
+    let (weak, responder) = raw_upstream(reply, true).await;
+    let tiers = Tiers {
+        strong: strong.uri(),
+        weak,
+        responses: responses.uri(),
+        judge: judge.uri(),
+    };
+    let router = format!(
+        "{}{STALL_ROUTER_EXTRA}",
+        escalation_router("efficient-alias")
+    );
+    let gateway = start_gateway(gated_config(&tiers, &router)).await;
+
+    let started = std::time::Instant::now();
+    let response = post(&gateway, false).await;
+    let elapsed = started.elapsed();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        header(&response, "x-gateway-route-source"),
+        "escalation_fallback"
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["content"][0]["text"], "STRONG", "got: {body}");
+    assert!(
+        elapsed < Duration::from_millis(4000),
+        "cut after {elapsed:?}: the stall ran on toward the 8000 ms duration bound"
+    );
+    responder.await.unwrap();
+}

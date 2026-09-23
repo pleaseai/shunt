@@ -88,10 +88,10 @@ pub(crate) struct ChainRequest<'a> {
     /// `"client"` or `"router"` — the attribute that separates a caller's turn
     /// from an internal judge call in `shunt.requests` and `shunt.latency`.
     pub caller: &'static str,
-    /// Bound on a whole-body read of the upstream reply, for the internal calls
-    /// that have one. `None` on every client path — see
+    /// Bounds on a whole-body read of the upstream reply, for the internal
+    /// calls that have them. The default on every client path — see
     /// [`crate::adapters::Adapter::forward`].
-    pub response_byte_cap: Option<usize>,
+    pub response_bounds: crate::adapters::ResponseBounds,
 }
 
 /// A chain attempt that answered with a status the chain does not advance on.
@@ -120,7 +120,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
         requested_model,
         router_stamp,
         caller,
-        response_byte_cap,
+        response_bounds,
     } = request;
     // Records the request's final outcome exactly once, at whichever terminal
     // return point below is taken — the intermediate per-attempt failover
@@ -171,7 +171,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
             uri,
             &attempt_headers,
             attempt_body,
-            response_byte_cap,
+            response_bounds,
         )
         .await;
 

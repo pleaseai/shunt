@@ -453,10 +453,10 @@ pub(super) async fn forward(
         requested_model: &requested_model,
         router_stamp,
         caller: "client",
-        // A client turn is never capped: the reply is bounded by the request
-        // the caller made, and a cap here would be a new way for ordinary
+        // A client turn is never bounded: the reply is bounded by the request
+        // the caller made, and a bound here would be a new way for ordinary
         // traffic to fail. Only `routing::serve`'s internal calls set one.
-        response_byte_cap: None,
+        response_bounds: crate::adapters::ResponseBounds::default(),
     };
     let success = chain::run_chain(chain).await?;
     Ok(observe_response(
@@ -588,12 +588,16 @@ async fn count_tokens_response(
         // parsing.
         let headers = headers_for_route(&state, &route, base_headers, inbound, true, None);
         dispatch(
-            state, route, uri, &headers, body,
+            state,
+            route,
+            uri,
+            &headers,
+            body,
             // A `count_tokens` probe never makes an internal model call — the
             // judge lane excludes probes, and the prefill lane, which does
             // drive them, decides from the transcript and its affinity alone
             // — so it is always a client path.
-            None,
+            crate::adapters::ResponseBounds::default(),
         )
         .await
     };
@@ -648,37 +652,37 @@ async fn dispatch(
     uri: &Uri,
     headers: &HeaderMap,
     body: crate::request::RequestBody,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     match route.adapter {
         AdapterKind::Anthropic => {
             AnthropicAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::Responses => {
             ResponsesAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::Cursor => {
             CursorAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::Gemini => {
             crate::adapters::gemini::GeminiAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::AntigravityCli => {
             crate::adapters::antigravity::AntigravityAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::Noop => {
             crate::adapters::noop::NoopAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
     }

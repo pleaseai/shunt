@@ -22,7 +22,9 @@
 //! whole chunk that completes the marker and
 //! `the_byte_cap_counts_the_turn_not_the_bytes_after_it` goes red; drop the
 //! `body_broke` check in [`chain_failure`] and
-//! `a_body_broken_after_the_headers_is_a_transport_cut` goes red.
+//! `a_body_broken_after_the_headers_is_a_transport_cut` goes red; drop the
+//! `body_idle` check and `a_body_stalled_inside_the_adapter_is_an_idle_cut`
+//! goes red.
 
 use std::time::Duration;
 
@@ -258,6 +260,21 @@ fn a_body_broken_after_the_headers_is_a_transport_cut() {
     assert!(matches!(
         chain_failure(forward(error())),
         GatedCapture::UpstreamError(UpstreamFailure::Failed { .. })
+    ));
+}
+
+/// A body that went silent inside the adapter's whole-body read is the idle
+/// bound biting there rather than in `collect_gated`, so it is cut exactly as
+/// that collector would have cut it — not relayed as the upstream's failure.
+#[test]
+fn a_body_stalled_inside_the_adapter_is_an_idle_cut() {
+    let error = crate::adapters::idle_error(crate::adapters::UpstreamBodyIdle {
+        idle: Duration::from_millis(300),
+    });
+    let forward = crate::proxy::ForwardError::new(error.message, error.response);
+    assert!(matches!(
+        chain_failure(forward),
+        GatedCapture::Cut(CutReason::Bound(BoundExceeded::Idle))
     ));
 }
 

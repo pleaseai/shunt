@@ -57,8 +57,8 @@ impl Adapter for CursorAdapter {
         _uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
-        // Honoured on the two paths that materialise a whole upstream reply,
-        // and both of them are paths an internal call takes:
+        // `max_bytes` is honoured on the two paths that materialise a whole
+        // upstream reply, and both of them are paths an internal call takes:
         //
         //  * an upstream *error* body, read with `text()` in a single shot, so
         //    by the time `routing::serve`'s collector sees it the allocation
@@ -70,11 +70,12 @@ impl Adapter for CursorAdapter {
         //
         // A client turn that asked for `stream` is relayed frame by frame and
         // never materialised, so there the bound genuinely falls to that
-        // collector on the relayed body.
-        response_byte_cap: Option<usize>,
+        // collector on the relayed body. `idle` is not applied here yet
+        // (#666).
+        bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
         let _ = headers;
-        Box::pin(async move { forward(state, route, body, response_byte_cap).await })
+        Box::pin(async move { forward(state, route, body, bounds.max_bytes).await })
     }
 }
 
@@ -519,17 +520,24 @@ async fn map_upstream_error(
     // `None` is the client path and keeps the original lazy `text()` read,
     // byte for byte.
     let prefetched = match response_byte_cap {
-        Some(cap) => match crate::adapters::collect_upstream_body(upstream, Some(cap)).await {
-            Ok(bytes) => Prefetched::Ready(String::from_utf8_lossy(&bytes).into_owned()),
-            Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
-                return crate::adapters::too_large_error(too_large)
+        Some(cap) => {
+            match crate::adapters::collect_upstream_body(upstream, Some(cap), None).await {
+                Ok(bytes) => Prefetched::Ready(String::from_utf8_lossy(&bytes).into_owned()),
+                Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
+                    return crate::adapters::too_large_error(too_large)
+                }
+                // Unreachable while this read passes no idle gap (#666); kept a
+                // typed refusal rather than a panic.
+                Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
+                    return crate::adapters::idle_error(idle)
+                }
+                // A transport error ends the body; the status and headers already
+                // read above are what describe the failure.
+                Err(crate::adapters::UpstreamBodyError::Transport(_)) => {
+                    Prefetched::Ready(String::new())
+                }
             }
-            // A transport error ends the body; the status and headers already
-            // read above are what describe the failure.
-            Err(crate::adapters::UpstreamBodyError::Transport(_)) => {
-                Prefetched::Ready(String::new())
-            }
-        },
+        }
         None => Prefetched::Lazy(upstream),
     };
     let stream = futures_stream::once(async move {

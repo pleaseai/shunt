@@ -13,7 +13,8 @@ use axum::{
 
 use crate::{
     adapters::{
-        collect_upstream_body, mark_body_broke, too_large_error, AdapterError, UpstreamBodyError,
+        collect_upstream_body, idle_error, mark_body_broke, too_large_error, AdapterError,
+        UpstreamBodyError,
     },
     auth::Credential,
     model::responses::{parse_sse_events, AnthropicSseMachine},
@@ -229,9 +230,12 @@ pub(super) async fn json_response(
     // and reading it with `text()` would let a judge allocate without bound
     // until the deadline instead of failing open at the configured limit.
     // `None` is the client path and stays byte-for-byte what it was.
-    let body = match collect_upstream_body(upstream, response_byte_cap).await {
+    let body = match collect_upstream_body(upstream, response_byte_cap, None).await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(UpstreamBodyError::TooLarge(too_large)) => return Err(too_large_error(too_large)),
+        // Unreachable while this read passes no idle gap (#666); kept a typed
+        // refusal rather than a panic.
+        Err(UpstreamBodyError::Idle(idle)) => return Err(idle_error(idle)),
         // Only ever a successful reply here: a turn cut before its terminal
         // event, which `routing::serve` reads back through the marker.
         Err(UpstreamBodyError::Transport(error)) => {
@@ -736,7 +740,17 @@ mod tests {
         .expect("request body parses");
 
         let error = super::super::ResponsesAdapter
-            .forward(state, codex_route(), &uri, &headers, body, Some(1024))
+            .forward(
+                state,
+                codex_route(),
+                &uri,
+                &headers,
+                body,
+                crate::adapters::ResponseBounds {
+                    max_bytes: Some(1024),
+                    idle: None,
+                },
+            )
             .await
             .expect_err("a reply past the cap is refused");
 
