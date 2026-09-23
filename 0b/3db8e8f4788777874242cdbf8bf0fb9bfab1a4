@@ -1,0 +1,62 @@
+site/src/content/docs/ja/guides/connect-codex-cli.mdx
+  s_f0cad803ae4301::t_0d164c2be1ca52 243-244
+src/model/responses_request.rs
+  s_f0cad803ae4301::t_0c5faa7b314e5d 1183-1184
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_f0cad803ae4301::t_0d164c2be1ca52 155,272
+docs/codex-configuration.md
+  s_f0cad803ae4301::t_9a906840787d8b 273-274
+  s_f0cad803ae4301::t_2b9564f5f58c9c 183-184,190,827
+  s_f0cad803ae4301::t_2d929760202f3a 272,279-280,407-408
+  s_f0cad803ae4301::t_d994e24e840a4f 271
+site/src/content/docs/zh-cn/guides/connect-codex-cli.mdx
+  s_f0cad803ae4301::t_0d164c2be1ca52 238-239
+src/adapters/responses/request.rs
+  s_f0cad803ae4301::t_4d5d92caefed9b 10-13
+  s_f0cad803ae4301::t_372881b94ee1d8 8,23-24
+site/src/content/docs/guides/codex.mdx
+  s_f0cad803ae4301::t_c360a2e1248da4 139-140,152-153,156,216,444
+site/src/content/docs/guides/connect-codex-cli.mdx
+  s_f0cad803ae4301::t_c360a2e1248da4 254-255
+docs/m11-inbound-codex-endpoint.md
+  s_f0cad803ae4301::t_2b9564f5f58c9c 212
+site/src/content/docs/ja/guides/codex.mdx
+  s_f0cad803ae4301::t_0d164c2be1ca52 115,126,175,362
+docs/running.md
+  s_f0cad803ae4301::t_2d929760202f3a 815,946-947
+  s_f0cad803ae4301::t_2b9564f5f58c9c 814,945
+  s_f0cad803ae4301::t_9a906840787d8b 811-812,817-818,821-828
+  s_f0cad803ae4301::t_b9495c07c0ede5 816
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_f0cad803ae4301::t_0d164c2be1ca52 134,147,150,210,399
+site/src/content/docs/ko/guides/providers.mdx
+  s_f0cad803ae4301::t_0d164c2be1ca52 167,277
+site/src/content/docs/guides/providers.mdx
+  s_f0cad803ae4301::t_c360a2e1248da4 278,394
+site/src/content/docs/ko/guides/codex.mdx
+  s_f0cad803ae4301::t_0d164c2be1ca52 112,122,168,345
+site/src/content/docs/ko/guides/connect-codex-cli.mdx
+  s_f0cad803ae4301::t_0d164c2be1ca52 254-255
+shunt.toml.example
+  s_f0cad803ae4301::t_2b9564f5f58c9c 182,293-295
+src/config.rs
+  s_f0cad803ae4301::t_4d5d92caefed9b 1986-1988,10887-10889,10895-10896,10911,10913
+site/src/content/docs/ja/guides/providers.mdx
+  s_f0cad803ae4301::t_0d164c2be1ca52 172,279
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0b3db8e8f4788777874242cdbf8bf0fb9bfab1a4",
+  "prompts": {},
+  "sessions": {
+    "s_f0cad803ae4301": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ae63dac-bb7b-4faa-91a5-c89f8f2c7338",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
