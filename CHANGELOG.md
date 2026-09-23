@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.48.0](https://github.com/pleaseai/shunt/compare/v0.47.0...v0.48.0) (2026-09-23)
+
+
+### Features
+
+* **antigravity:** named-account pooling with quota failover ([#604](https://github.com/pleaseai/shunt/issues/604)) ([50a9769](https://github.com/pleaseai/shunt/commit/50a9769fe73aedadb570917775d539cae9befd84))
+* **routing:** driven lane — llm_classifier, composite, subagents classifier form (ADR-0005 PR 5) ([#646](https://github.com/pleaseai/shunt/issues/646)) ([554d51b](https://github.com/pleaseai/shunt/commit/554d51b1f96262ccc369444ae3f466a4355c5f82))
+* support GPT-6 Sol/Luna and Claude Opus 5.5 ([#658](https://github.com/pleaseai/shunt/issues/658)) ([a6a8614](https://github.com/pleaseai/shunt/commit/a6a861492935121ebd40199f1158e1aea9a801a6))
+
+
+### Bug Fixes
+
+* **routing:** admit a prefill_router turn before it is driven ([#633](https://github.com/pleaseai/shunt/issues/633)) ([#645](https://github.com/pleaseai/shunt/issues/645)) ([131e52d](https://github.com/pleaseai/shunt/commit/131e52dc24b49c29760ba3d69e029cb6e36f6a41))
+
 ## [0.47.0](https://github.com/pleaseai/shunt/compare/v0.46.0...v0.47.0) (2026-09-21)
 
 
