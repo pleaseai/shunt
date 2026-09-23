@@ -189,7 +189,7 @@ pub(super) async fn json_events_response(
             None => break,
         }
     }
-    Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
+    Ok(super::http::message_response(&mut machine))
 }
 
 /// The length of `value` as compact JSON, counted without building the string.
@@ -301,6 +301,25 @@ mod tests {
         assert!(body.to_string().contains("upstream blew up"));
     }
 
+    /// A channel that closes before `response.completed` still yields the
+    /// synthesized message, but marked, as the HTTP collector marks it, so the
+    /// gated capture cuts it rather than replaying a partial turn.
+    #[tokio::test]
+    async fn json_events_response_marks_a_turn_closed_before_its_terminal_event() {
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Ok(created_event())).unwrap();
+        drop(tx);
+
+        let response = json_events_response(None, rx, relay_opts(), 0, None)
+            .await
+            .expect("a closed channel still builds a response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .extensions()
+            .get::<crate::stream_metrics::UpstreamTruncated>()
+            .is_some());
+    }
+
     #[tokio::test]
     async fn json_events_response_collects_ok_events_then_finishes() {
         // The `Ok` and channel-closed (`None`) arms produce a 200 message.
@@ -317,6 +336,10 @@ mod tests {
             .await
             .expect("clean events should build a response");
         assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .extensions()
+            .get::<crate::stream_metrics::UpstreamTruncated>()
+            .is_none());
     }
 
     /// The websocket collector honours `response_byte_cap` like the HTTP body

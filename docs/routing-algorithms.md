@@ -565,7 +565,7 @@ jobs.
 | `[models.router.classifier]` | `target` (required) and `base_threshold` (default `0.5`, in `(0.0, 1.0]`) — the lowest `p_solve` that keeps a supported task on the efficient tier. `stage_router` only |
 | Six per-call bounds on `[models.router]` | `judge_timeout_ms` `30000`, `judge_max_response_bytes` `65536`, `gated_max_bytes` `8388608`, `gated_idle_ms` `60000`, `gated_max_duration_ms` `600000`, `max_judge_calls` `8`. Each must be at least `1`; a `0` is a startup error naming the key. Crossing a bound cancels the upstream call |
 | `judge_timeout_ms` is end-to-end | Headers *and* body, on the non-streaming judge call. A `.send()`-only timeout stops at headers, and a `200` that then stalls would never reach `fail_open` |
-| `gated_idle_ms` and SSE pings | Measured between *completed content frames*, not between chunks: a frame split across chunk boundaries is reassembled from a carried remainder before it is classified, so an endless keep-alive stream cannot disarm the bound by splitting `event: ping` mid-line. A chunk that completes no frame resets nothing. Frames are split after normalizing CRLF and bare-CR line endings, so a CRLF chunk carrying real content beside a keep-alive still counts as progress |
+| `gated_idle_ms` and SSE pings | Measured between *completed content frames*, not between chunks: a frame split across chunk boundaries is reassembled from a carried remainder before it is classified, so an endless keep-alive stream cannot disarm the bound by splitting `event: ping` mid-line. A comment-only frame (`: keep-alive`), the SSE spec's own keep-alive, counts as a ping too. A chunk that completes no frame resets nothing. Frames are split after normalizing CRLF and bare-CR line endings, so a CRLF chunk carrying real content beside a keep-alive still counts as progress |
 | `judge_max_response_bytes` bounds the allocation | Enforced where the adapter reads the upstream body, not on what reaches the JSON parser. A judge route is an alias route by construction, so its reply takes the adapter's buffered branch; capping only afterwards would spend the memory the bound exists to deny. Client traffic is uncapped and unchanged |
 | `max_judge_calls` | Per session, counted under the pin |
 | Admission on the envelope | Inbound auth ranges over the requested id plus every answer and judge target's full chain; the managed-model policy stays on the requested id |
@@ -1316,7 +1316,8 @@ served, whatever the upstream status was. A truncated `200` is never replayed.
 That includes a Responses turn whose upstream ended before
 `response.completed`, which the adapter still closes: with a synthesized
 `message_stop` behind the upstream-truncation marker on a stream, or with a
-whole-looking message marked `UpstreamTruncated` on a non-streaming call. Either
+whole-looking message marked `UpstreamTruncated` on a non-streaming call over
+either transport (HTTP or websocket). Either
 mark makes the turn a cut
 (`a_truncated_responses_weak_turn_falls_back_to_the_strong_tier`,
 `a_truncated_non_streaming_responses_weak_turn_falls_back_to_the_strong_tier`).

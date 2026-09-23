@@ -349,13 +349,19 @@ pub(super) fn normalize_line_endings(scan: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Whether one complete SSE frame is a keep-alive.
+/// Whether one complete SSE frame is a keep-alive: an `event: ping` frame, or
+/// a frame of comment lines only (`: keep-alive`), the SSE spec's own
+/// keep-alive, which carries no event at all.
 ///
 /// Frame-level, not substring-level: a frame counts as a ping only when its own
 /// `event:` line names `ping`, so a real `content_block_delta` whose text
 /// happens to mention the word does not disarm the idle bound.
 fn is_ping_frame(frame: &str) -> bool {
     frame_event(frame) == Some("ping")
+        || frame
+            .lines()
+            .filter(|line| !line.is_empty())
+            .all(|line| line.starts_with(':'))
 }
 
 /// The name one complete SSE frame's own `event:` line declares, if any.

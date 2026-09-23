@@ -14,7 +14,7 @@ use axum::{
 use crate::{
     adapters::{collect_upstream_body, too_large_error, AdapterError, UpstreamBodyError},
     auth::Credential,
-    model::responses::parse_sse_events,
+    model::responses::{parse_sse_events, AnthropicSseMachine},
     routing::Route,
     server::AppState,
 };
@@ -241,9 +241,18 @@ pub(super) async fn json_response(
     if let Some((status, error)) = machine.take_backend_error() {
         return Err(backend_error(status, error));
     }
-    // Read before `final_json`, which finishes an unstopped machine: a turn
-    // that reached no terminal event is still returned, as it always was, but
-    // marked, the way the streaming path marks its synthesized completion.
+    Ok(message_response(&mut machine))
+}
+
+/// The `200` a non-streaming collector answers with: the machine's single
+/// message, marked [`crate::stream_metrics::UpstreamTruncated`] when the
+/// machine reached no terminal event. Shared with the websocket collector
+/// (`ws_stream::json_events_response`) so both transports mark alike.
+///
+/// Read before `final_json`, which finishes an unstopped machine: a turn that
+/// reached no terminal event is still returned, as it always was, but marked,
+/// the way the streaming path marks its synthesized completion.
+pub(super) fn message_response(machine: &mut AnthropicSseMachine) -> axum::response::Response {
     let truncated = !machine.is_stopped();
     let mut response = (StatusCode::OK, axum::Json(machine.final_json())).into_response();
     if truncated {
@@ -251,7 +260,7 @@ pub(super) async fn json_response(
             .extensions_mut()
             .insert(crate::stream_metrics::UpstreamTruncated);
     }
-    Ok(response)
+    response
 }
 
 #[cfg(test)]
