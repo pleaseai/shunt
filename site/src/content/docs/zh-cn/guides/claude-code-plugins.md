@@ -106,7 +106,7 @@ shunt: pool — degraded   http://127.0.0.1:3001
 
 | 插件 | 模型 | 设置 |
 | ------ | ------ | ----- |
-| `shunt-codex` | GPT-5.6 Sol · Terra · Luna | [ChatGPT / Codex](/zh-cn/guides/codex/) |
+| `shunt-codex` | GPT-6 Sol · Luna、GPT-5.6 Sol · Terra · Luna | [ChatGPT / Codex](/zh-cn/guides/codex/) |
 | `shunt-xai` | Grok 4.6 · 4.5 · Build | [xAI / Grok](/zh-cn/guides/xai/) |
 | `shunt-kimi` | Kimi K2.7 Code · K3 | [Kimi](/zh-cn/providers/kimi/) |
 | `shunt-deepseek` | DeepSeek V4 Pro · Flash | [DeepSeek](/zh-cn/providers/deepseek/) |
