@@ -1327,7 +1327,9 @@ which are also the bytes `gated_max_bytes` is charged on. A keep-alive after it
 is not replayed, and a connection that breaks or stays open
 after it neither cuts the turn nor holds it until a gated bound does
 (`a_transport_break_after_message_stop_still_replays_the_weak_turn`,
-`a_connection_held_open_after_message_stop_still_replays_the_weak_turn`).
+`a_connection_held_open_after_message_stop_still_replays_the_weak_turn`). An
+`error` frame ends the capture the same way, as it ends the relay: the turn is
+cut at once rather than held open until a bound expires.
 
 **Gated turns take the ordered failover chain.** A pre-header failure on the
 gated call advances down the target's chain like any other dispatch. A

@@ -186,8 +186,8 @@ pub fn dependency_envelope(config: &Config, model: &str) -> Vec<Route> {
 /// The per-chunk work every streamed escalation or advisor turn pays while it
 /// is retained, and the only part of retention that reads the bytes rather
 /// than moving them. `TerminalScan` stays crate-private; this is its whole
-/// production use — `feed` per chunk until the `message_stop` frame has
-/// completed, `is_terminal` once at the end.
+/// production use — `feed` per chunk until the terminal frame has completed,
+/// `is_terminal` once at the end.
 pub fn scan_is_terminal<'a>(chunks: impl IntoIterator<Item = &'a [u8]>) -> bool {
     let mut scan = routing::serve::gated::TerminalScan::default();
     for chunk in chunks {

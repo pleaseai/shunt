@@ -318,9 +318,9 @@ async fn retain_stream(
         match item {
             Ok(chunk) => {
                 scan.feed(&chunk);
-                // The turn ends at its `message_stop` frame, as the live relay
-                // ends it: nothing after it is replayed, and nothing after it
-                // is waited for.
+                // The turn ends at its terminal frame, as the live relay ends
+                // it: nothing after it is replayed, and nothing after it is
+                // waited for.
                 let end = scan.terminal_len();
                 let turn = end.map_or(chunk.len(), |end| end - retained.len());
                 if retained.len().saturating_add(turn) > gated.max_bytes {
@@ -434,15 +434,17 @@ pub(crate) fn is_single_message(body: &[u8]) -> bool {
 /// Only the partial trailing frame is carried between chunks, so the scan
 /// holds a frame's worth of bytes, not the turn.
 ///
-/// The scan ends at the `message_stop` frame, and records where in the stream
+/// The scan ends at the first terminal frame — `message_stop`, or an `error`
+/// frame, which leaves the turn unservable — and records where in the stream
 /// that frame ended: the live relay (`proxy::chain_stream`) ends the client's
-/// stream at the same frame, so nothing after it is part of the turn.
+/// stream at the same frame, so nothing after it is part of the turn, and a
+/// turn that already failed is not held open for a bound to cut it.
 #[derive(Debug, Default)]
 pub(crate) struct TerminalScan {
     remainder: Vec<u8>,
     /// Stream offset of the remainder's first byte.
     offset: usize,
-    /// Stream offset just past the `message_stop` frame, once one completed.
+    /// Stream offset just past the terminal frame, once one completed.
     end: Option<usize>,
     errored: bool,
     truncated: bool,
@@ -450,7 +452,7 @@ pub(crate) struct TerminalScan {
 
 impl TerminalScan {
     /// Feed the next chunk of the retained stream. Nothing after a completed
-    /// `message_stop` frame is read.
+    /// terminal frame is read.
     pub(crate) fn feed(&mut self, chunk: &[u8]) {
         if self.end.is_some() {
             return;
@@ -471,14 +473,16 @@ impl TerminalScan {
                 self.truncated = true;
                 continue;
             }
-            match frame_event(&String::from_utf8_lossy(&normalized)) {
-                Some("message_stop") => {
-                    self.end = Some(self.offset + consumed);
-                    self.remainder = Vec::new();
-                    return;
-                }
-                Some("error") => self.errored = true,
-                _ => {}
+            let (stop, error) = match frame_event(&String::from_utf8_lossy(&normalized)) {
+                Some("message_stop") => (true, false),
+                Some("error") => (false, true),
+                _ => (false, false),
+            };
+            if stop || error {
+                self.errored = error;
+                self.end = Some(self.offset + consumed);
+                self.remainder = Vec::new();
+                return;
             }
         }
         self.remainder.drain(..consumed);
@@ -491,7 +495,7 @@ impl TerminalScan {
     }
 
     /// How many bytes of the stream the turn is — everything through its
-    /// `message_stop` frame — once that frame has completed.
+    /// terminal frame — once that frame has completed.
     pub(crate) fn terminal_len(&self) -> Option<usize> {
         self.end
     }

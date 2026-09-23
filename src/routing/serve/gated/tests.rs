@@ -25,6 +25,7 @@
 use std::time::Duration;
 
 use axum::http::StatusCode;
+use futures_util::StreamExt;
 
 use super::{
     first_frame_len, is_single_message, retain_stream, BoundExceeded, ChainSuccess, CutReason,
@@ -85,6 +86,43 @@ const ERROR: &str =
 #[test]
 fn an_error_frame_before_the_marker_is_never_terminal() {
     assert!(!scan(&[START, ERROR, STOP]).is_terminal());
+}
+
+/// An `error` frame ends the turn the way the relay ends it: the scan stops
+/// there, so a failed turn is not held open for a bound to cut it.
+#[test]
+fn the_scan_ends_at_an_error_frame() {
+    let ping = "event: ping\ndata: {\"type\":\"ping\"}\n\n";
+    let failed = scan(&[START, &format!("{ERROR}{ping}")]);
+    assert!(!failed.is_terminal());
+    assert_eq!(failed.terminal_len(), Some(START.len() + ERROR.len()));
+}
+
+/// End to end through `retain_stream`: an upstream that sends an `error`
+/// frame and then holds the connection open is cut at once, not after the
+/// idle bound.
+#[tokio::test]
+async fn a_held_open_stream_is_cut_at_its_error_frame() {
+    let frames = futures_util::stream::iter([Ok::<_, std::io::Error>(bytes::Bytes::from(
+        format!("{START}{ERROR}"),
+    ))])
+    .chain(futures_util::stream::pending());
+    let success = ChainSuccess {
+        status: StatusCode::OK,
+        response: axum::response::Response::new(axum::body::Body::from_stream(frames)),
+        provider: "efficient".to_string(),
+        model: "weak".to_string(),
+    };
+    let gated = GatedBounds {
+        max_bytes: 1 << 20,
+        idle: Duration::from_secs(30),
+        max_duration: Duration::from_secs(30),
+    };
+    let capture =
+        tokio::time::timeout(Duration::from_secs(5), retain_stream(success, gated, false))
+            .await
+            .expect("the capture ends at the error frame, not at a bound");
+    assert!(matches!(capture, GatedCapture::Cut(CutReason::Nonterminal)));
 }
 
 /// The `message_stop` the Responses adapter synthesizes after an upstream that
