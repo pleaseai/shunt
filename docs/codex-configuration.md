@@ -270,7 +270,7 @@ to**, and **rejects the `gpt-*-codex` slugs** (e.g. `gpt-5.2-codex`) with a `400
   [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
 - Current listed slugs: **`gpt-6-astra`**, **`gpt-6-sol`**, **`gpt-6-luna`** (latest),
   **`gpt-5.6-sol`**, **`gpt-5.6-terra`**, **`gpt-5.6-luna`** (frontier), and **`gpt-5.5`** /
-  **`gpt-5.4`** / **`gpt-5.4-mini`** / **`gpt-5.2`**. Older accounts may only be entitled to the
+  **`gpt-5.4`**. Older accounts may only be entitled to the
   earlier ones; a **free** account has resolved to `gpt-5.5` in testing.
 - To see what your account can use, look at what the `codex` CLI itself sends, or the live
   `/models` fetch it performs at startup.
@@ -545,6 +545,11 @@ verbatim, distinguishing it from a route that never configured `service_tier`.
 other signal; it is sent only when explicitly configured. shunt does not gate `service_tier` on
 model capability: it forwards whatever value is configured, and the upstream rejects any value the
 target model doesn't support.
+
+**Codex CLI's per-model default differs:** the Codex CLI defaults `gpt-6-sol` and `gpt-6-luna` to
+Fast (`priority`), because their `models.json` entry sets `default_service_tier`. That default is
+applied client-side by the Codex CLI, not by the backend, so through shunt these models run at the
+standard tier unless you set `service_tier = "fast"`.
 
 **xAI/Grok exception:** the field is withheld for the `xai` and `grok` provider flavors even when
 configured — xAI's Responses API 400s on `service_tier`, and the Grok CLI flavor inherits xAI's

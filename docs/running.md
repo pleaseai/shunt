@@ -813,7 +813,7 @@ an accurate window, one model at a time. (Subagents are a separate path — see 
 > [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
 > The current listed slugs are **`gpt-6-astra`**, **`gpt-6-sol`**, **`gpt-6-luna`** (latest),
 > **`gpt-5.6-sol`**, **`gpt-5.6-terra`**, **`gpt-5.6-luna`** (frontier), and **`gpt-5.5`** /
-> **`gpt-5.4`** / **`gpt-5.4-mini`** / **`gpt-5.2`**; older accounts may only be entitled to the
+> **`gpt-5.4`**; older accounts may only be entitled to the
 > earlier ones. Use `upstream_model` in a route, or pass an entitled slug via
 > `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
 

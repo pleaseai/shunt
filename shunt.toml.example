@@ -292,7 +292,7 @@ provider = "openai"
 #   https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json
 # The latest are gpt-6-astra / gpt-6-sol / gpt-6-luna, then gpt-5.6-sol /
 # gpt-5.6-terra / gpt-5.6-luna; older accounts may only be entitled to gpt-5.5 /
-# gpt-5.4 / gpt-5.2. See docs/m2-chatgpt-oauth.md §0.
+# gpt-5.4. See docs/m2-chatgpt-oauth.md §0.
 # [[routes]]
 # model = "gpt-5.6-sol"
 # provider = "codex"
