@@ -252,11 +252,17 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
     captured.unwrap_or(GatedCapture::Cut(CutReason::Bound(BoundExceeded::Duration)))
 }
 
-/// A chain error: the byte cap biting inside an adapter is a gated bound, and
-/// everything else is the upstream's failure to relay.
+/// A chain error: the byte cap biting inside an adapter is a gated bound, a
+/// successful reply whose body broke after its headers is a turn cut before its
+/// terminal marker — the same transport cut `retain_stream` and `collect_gated`
+/// make of a broken body — and everything else is the upstream's failure to
+/// relay.
 fn chain_failure(error: ForwardError) -> GatedCapture {
     if error.body_too_large().is_some() {
         return GatedCapture::Cut(CutReason::Bound(BoundExceeded::MaxBytes));
+    }
+    if error.body_broke() {
+        return GatedCapture::Cut(CutReason::Transport);
     }
     let message = error.message().to_string();
     GatedCapture::UpstreamError(UpstreamFailure::Failed {

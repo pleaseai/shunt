@@ -719,11 +719,11 @@ async fn forward_single(
                     return Err(crate::adapters::too_large_error(too_large))
                 }
                 Err(crate::adapters::UpstreamBodyError::Transport(error)) => {
-                    return Err(AdapterError {
+                    return Err(crate::adapters::mark_body_broke(AdapterError {
                         message: format!("failed to read response body: {error}"),
                         response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
                         failure: None,
-                    })
+                    }))
                 }
             };
 

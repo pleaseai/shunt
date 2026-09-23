@@ -180,11 +180,13 @@ pub(super) async fn json_events_response(
                 } else {
                     error.body
                 };
-                return Err(AdapterError {
+                // The turn's socket broke mid-turn: cut before its terminal
+                // event, like a broken HTTP body (`http::json_response`).
+                return Err(crate::adapters::mark_body_broke(AdapterError {
                     message: "responses websocket stream error".into(),
                     response: Box::new(ShuntError::bad_gateway(message).into_response()),
                     failure: None,
-                });
+                }));
             }
             None => break,
         }

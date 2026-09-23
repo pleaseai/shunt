@@ -12,7 +12,9 @@ use axum::{
 };
 
 use crate::{
-    adapters::{collect_upstream_body, too_large_error, AdapterError, UpstreamBodyError},
+    adapters::{
+        collect_upstream_body, mark_body_broke, too_large_error, AdapterError, UpstreamBodyError,
+    },
     auth::Credential,
     model::responses::{parse_sse_events, AnthropicSseMachine},
     routing::Route,
@@ -230,8 +232,12 @@ pub(super) async fn json_response(
     let body = match collect_upstream_body(upstream, response_byte_cap).await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(UpstreamBodyError::TooLarge(too_large)) => return Err(too_large_error(too_large)),
+        // Only ever a successful reply here: a turn cut before its terminal
+        // event, which `routing::serve` reads back through the marker.
         Err(UpstreamBodyError::Transport(error)) => {
-            return Err(own_error(format!("failed to read Responses body: {error}")))
+            return Err(mark_body_broke(own_error(format!(
+                "failed to read Responses body: {error}"
+            ))))
         }
     };
     let mut machine = relay.machine().with_input_estimate(input_tokens_estimate);
@@ -346,6 +352,36 @@ mod tests {
         let body = response_body_json(*error.response).await;
         assert_eq!(body["error"]["type"], "rate_limit_error");
         assert_eq!(body["error"]["message"], "Rate limit reached");
+    }
+
+    /// A `200` whose body breaks after its first chunk is a turn cut before its
+    /// terminal event: the error carries the marker `routing::serve` reads back
+    /// to fall a gated turn back, and is otherwise the error it always was.
+    #[tokio::test]
+    async fn json_response_marks_a_body_broken_after_the_headers() {
+        let chunks = futures_util::stream::iter([
+            Ok(bytes::Bytes::from_static(
+                b"event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            )),
+            Err(std::io::Error::other("connection reset")),
+        ]);
+        let upstream = reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(200)
+                .body(reqwest::Body::wrap_stream(chunks))
+                .unwrap(),
+        );
+        let error = json_response(upstream, relay_opts(), 0, None)
+            .await
+            .expect_err("a broken body is an error");
+
+        assert!(error.failure.is_none());
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        assert!(error
+            .response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyBroke>()
+            .is_some());
     }
 
     /// A clean turn still returns the collected Anthropic message as `200 OK` —

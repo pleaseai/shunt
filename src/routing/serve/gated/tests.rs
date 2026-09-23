@@ -20,7 +20,9 @@
 //! stop holding back its trailing CR, and
 //! `a_frame_ends_only_at_a_blank_line` goes red; charge the byte cap on the
 //! whole chunk that completes the marker and
-//! `the_byte_cap_counts_the_turn_not_the_bytes_after_it` goes red.
+//! `the_byte_cap_counts_the_turn_not_the_bytes_after_it` goes red; drop the
+//! `body_broke` check in [`chain_failure`] and
+//! `a_body_broken_after_the_headers_is_a_transport_cut` goes red.
 
 use std::time::Duration;
 
@@ -28,8 +30,8 @@ use axum::http::StatusCode;
 use futures_util::StreamExt;
 
 use super::{
-    first_frame_len, is_single_message, relay_refusal, retain_stream, BoundExceeded, ChainSuccess,
-    CutReason, GatedBounds, GatedCapture, TerminalScan,
+    chain_failure, first_frame_len, is_single_message, relay_refusal, retain_stream, BoundExceeded,
+    ChainSuccess, CutReason, GatedBounds, GatedCapture, TerminalScan, UpstreamFailure,
 };
 
 const START: &str = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n";
@@ -231,6 +233,31 @@ async fn a_stalled_refusal_body_is_cut_at_the_idle_gap() {
     assert!(matches!(
         capture,
         GatedCapture::Cut(CutReason::Bound(BoundExceeded::Idle))
+    ));
+}
+
+/// A successful reply whose body broke after its headers ended before its
+/// terminal marker, so it is cut and falls back; the same error without the
+/// marker is still the upstream's own failure.
+#[test]
+fn a_body_broken_after_the_headers_is_a_transport_cut() {
+    let error = || crate::adapters::AdapterError {
+        message: "failed to read body".to_string(),
+        response: Box::new(axum::response::IntoResponse::into_response(
+            StatusCode::BAD_GATEWAY,
+        )),
+        failure: None,
+    };
+    let forward = |error: crate::adapters::AdapterError| {
+        crate::proxy::ForwardError::new(error.message, error.response)
+    };
+    assert!(matches!(
+        chain_failure(forward(crate::adapters::mark_body_broke(error()))),
+        GatedCapture::Cut(CutReason::Transport)
+    ));
+    assert!(matches!(
+        chain_failure(forward(error())),
+        GatedCapture::UpstreamError(UpstreamFailure::Failed { .. })
     ));
 }
 

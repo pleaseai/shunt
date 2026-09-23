@@ -28,6 +28,17 @@ async fn after_the_turn_upstream(
     tail: &'static [u8],
     hold_open: bool,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    let mut reply =
+        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 4096\r\n\r\n"
+            .to_vec();
+    reply.extend_from_slice(anthropic_sse(EFFICIENT_UPSTREAM_MODEL, "WEAK-ANSWER").as_bytes());
+    reply.extend_from_slice(tail);
+    raw_upstream(reply, hold_open).await
+}
+
+/// A one-shot upstream that reads the request, writes `reply` verbatim, then
+/// closes — or, with `hold_open`, waits for the gateway to drop the connection.
+async fn raw_upstream(reply: Vec<u8>, hold_open: bool) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let responder = tokio::spawn(async move {
@@ -56,15 +67,7 @@ async fn after_the_turn_upstream(
                 }
             }
         }
-        let turn = anthropic_sse(EFFICIENT_UPSTREAM_MODEL, "WEAK-ANSWER");
-        socket
-            .write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 4096\r\n\r\n",
-            )
-            .await
-            .unwrap();
-        socket.write_all(turn.as_bytes()).await.unwrap();
-        socket.write_all(tail).await.unwrap();
+        socket.write_all(&reply).await.unwrap();
         if hold_open {
             // Bounded, so a gateway that never lets go fails the test on its
             // assertions rather than hanging it here.
@@ -267,4 +270,52 @@ async fn a_truncated_non_streaming_responses_weak_turn_falls_back_to_the_strong_
     );
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["content"][0]["text"], "STRONG", "got: {body}");
+}
+
+/// A non-streaming weak turn whose upstream sent its `200` headers and then
+/// broke its body mid-read: the Anthropic adapter reads an alias route's JSON
+/// reply whole, so the break surfaces as an adapter error rather than as a
+/// short body. That turn ended before it was complete — it is cut, and
+/// escalation falls back to the strong tier instead of refusing the request.
+///
+/// Non-vacuity: drop the `body_broke` check in `chain_failure` and the chain
+/// error is reported as the upstream's own failure, so the request is refused
+/// with a `502` and the strong mock's `expect(1)` goes red.
+#[tokio::test]
+async fn a_non_streaming_weak_body_broken_after_its_headers_falls_back_to_the_strong_tier() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let (strong, responses, judge) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    messages_mock(anthropic_json(CAPABLE_UPSTREAM_MODEL, "STRONG"), 1)
+        .mount(&strong)
+        .await;
+    messages_mock(judge_text(DECLINE), 0).mount(&judge).await;
+    let mut reply =
+        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 4096\r\n\r\n"
+            .to_vec();
+    reply.extend_from_slice(b"{\"id\":\"msg_cut\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"WEAK-PARTIAL");
+    let (weak, responder) = raw_upstream(reply, false).await;
+    let tiers = Tiers {
+        strong: strong.uri(),
+        weak,
+        responses: responses.uri(),
+        judge: judge.uri(),
+    };
+    let gateway = start_gateway(gated_config(&tiers, &escalation_router("efficient-alias"))).await;
+
+    let response = post(&gateway, false).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        header(&response, "x-gateway-route-source"),
+        "escalation_fallback"
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["content"][0]["text"], "STRONG", "got: {body}");
+    responder.await.unwrap();
 }
