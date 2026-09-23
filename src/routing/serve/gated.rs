@@ -27,9 +27,10 @@
 //! * **Terminal or nothing.** A turn is [`GatedCapture::Retained`] only after
 //!   an authoritative terminal marker: a complete `message_stop` frame and no
 //!   `error` frame on a stream, one parseable `message` object on a JSON body.
-//!   Anything short of that — a bound crossed, a broken transport, a `200`
-//!   that simply stopped — is [`GatedCapture::Cut`], and a cut turn is never
-//!   replayed.
+//!   Anything short of that — a bound crossed, a transport broken before the
+//!   marker, a `200` that simply stopped — is [`GatedCapture::Cut`], and a cut
+//!   turn is never replayed. A transport that breaks after the marker has
+//!   already delivered the turn, which is retained up to its last whole frame.
 //!
 //! The capture is recorded in a slot the drive reads back, and the bytes
 //! replayed are always those recorded ones. libsy's own buffered copy is used
@@ -48,8 +49,8 @@ use switchyard_protocol::{LlmClientError, LlmResponse, ModelId, Response};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 use super::bounds::{
-    bound_stream, collect_bounded, frame_event, take_complete_frames, BoundExceeded, CollectError,
-    GatedBounds,
+    bound_stream, collect_bounded, complete_frames_len, frame_event, take_complete_frames,
+    BoundExceeded, CollectError, GatedBounds,
 };
 use crate::config::CallBounds;
 use crate::proxy::failover::{
@@ -327,7 +328,13 @@ async fn retain_stream(
         });
     }
     if broke.load(Ordering::Relaxed) {
-        return GatedCapture::Cut(CutReason::Transport);
+        // A break after the terminal marker ends a finished turn, not a cut
+        // one — the live relay ends at that frame too. Only the complete
+        // frames are kept: a partial one after the marker would not decode.
+        if !scan.is_terminal() {
+            return GatedCapture::Cut(CutReason::Transport);
+        }
+        retained.truncate(complete_frames_len(&retained));
     }
     if !scan.is_terminal() {
         return GatedCapture::Cut(CutReason::Nonterminal);

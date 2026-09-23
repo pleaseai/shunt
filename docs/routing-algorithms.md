@@ -1313,6 +1313,9 @@ the client never saw the turn that was dropped.
 On a streaming call that marker is `message_stop`. On a non-streaming call it is
 a complete body that parses as one message. A turn without its marker is never
 served, whatever the upstream status was. A truncated `200` is never replayed.
+A connection that breaks *after* `message_stop` has already delivered the
+turn, so the turn is retained up to its last complete frame, as the live relay
+would end it (`a_transport_break_after_message_stop_still_replays_the_weak_turn`).
 
 **Gated turns take the ordered failover chain.** A pre-header failure on the
 gated call advances down the target's chain like any other dispatch. A
@@ -1469,8 +1472,9 @@ clause, in `tests/buffer_replay.rs` and `tests/buffer_replay/advisor.rs`:
 Unit, alongside the code: both config tables' round-trip, defaults, stray-key,
 and upstream-constructor rejections (`src/config/router/advisor/tests.rs`,
 `src/config/router/classifier/tests.rs`); the evidence → source table above
-(`src/routing/driven/gated/tests.rs`); and the terminal-marker scan and the
-single-message check (`src/routing/serve/gated/tests.rs`).
+(`src/routing/driven/gated/tests.rs`); and the terminal-marker scan, the
+complete-frame prefix kept after a post-marker break, and the single-message
+check (`src/routing/serve/gated/tests.rs`).
 
 ### Not in this PR
 

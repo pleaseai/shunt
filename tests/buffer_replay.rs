@@ -27,6 +27,9 @@ mod harness;
 #[path = "buffer_replay/advisor.rs"]
 mod advisor;
 
+#[path = "buffer_replay/transport.rs"]
+mod transport;
+
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use wiremock::{matchers::method, Mock, MockServer};
@@ -41,7 +44,7 @@ use judge_harness::{
     EFFICIENT_UPSTREAM_MODEL, JUDGE_KEY_ENV, ROUTER_ID,
 };
 
-const DECLINE: &str = r#"{"escalate": false, "reason": "progressing"}"#;
+pub(crate) const DECLINE: &str = r#"{"escalate": false, "reason": "progressing"}"#;
 
 /// The weak tier the test runs on: the passthrough Anthropic adapter or the
 /// injecting Responses one.

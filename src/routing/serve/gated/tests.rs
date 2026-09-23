@@ -10,9 +10,12 @@
 //! carried remainder and `a_message_stop_split_across_chunks_is_still_seen`
 //! goes red; drop the `errored` check and `an_error_frame_is_never_terminal`
 //! goes red; accept any JSON object in [`is_single_message`] and
-//! `a_json_error_body_is_not_a_message` goes red.
+//! `a_json_error_body_is_not_a_message` goes red; let any line ending, not
+//! only one that closes a blank line, end the kept prefix in
+//! [`complete_frames_len`], or stop holding back its trailing CR, and
+//! `a_partial_frame_after_the_marker_is_cut_from_the_kept_bytes` goes red.
 
-use super::{is_single_message, TerminalScan};
+use super::{complete_frames_len, is_single_message, TerminalScan};
 
 const START: &str = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n";
 const DELTA: &str =
@@ -76,6 +79,26 @@ fn a_message_stop_mentioned_in_content_is_not_the_marker() {
     let mention =
         "event: content_block_delta\ndata: {\"delta\":{\"text\":\"event: message_stop\"}}\n\n";
     assert!(!scan(&[START, mention]).is_terminal());
+}
+
+/// What a transport break after `message_stop` keeps: every whole frame, and
+/// not the partial one that was arriving when it broke — under either line
+/// ending, and without inventing a terminator from a CR held at the end.
+#[test]
+fn a_partial_frame_after_the_marker_is_cut_from_the_kept_bytes() {
+    let whole = format!("{START}{DELTA}{STOP}");
+    let partial = "event: ping\ndata: {\"ty";
+    assert_eq!(
+        complete_frames_len(format!("{whole}{partial}").as_bytes()),
+        whole.len()
+    );
+    assert_eq!(complete_frames_len(whole.as_bytes()), whole.len());
+    let crlf = whole.replace('\n', "\r\n");
+    assert_eq!(
+        complete_frames_len(format!("{crlf}event: ping\r\n\r").as_bytes()),
+        crlf.len()
+    );
+    assert_eq!(complete_frames_len(b"event: ping\n"), 0);
 }
 
 #[test]

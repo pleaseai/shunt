@@ -298,6 +298,35 @@ pub(super) fn take_complete_frames(buffer: &mut Vec<u8>) -> Vec<String> {
     frames
 }
 
+/// How many leading bytes of `bytes` are complete frames: everything up to and
+/// including the last blank line, under [`take_complete_frames`]' own rule —
+/// LF, CRLF, and bare CR each end a line, and a trailing CR is held back — but
+/// measured on the raw bytes, so the prefix can be cut from them unchanged.
+pub(super) fn complete_frames_len(bytes: &[u8]) -> usize {
+    let scan = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+    let (mut end, mut index, mut at_line_start) = (0, 0, false);
+    while index < scan.len() {
+        let ending = match scan[index] {
+            b'\r' => 1 + usize::from(scan.get(index + 1) == Some(&b'\n')),
+            b'\n' => 1,
+            _ => 0,
+        };
+        if ending == 0 {
+            at_line_start = false;
+            index += 1;
+            continue;
+        }
+        index += ending;
+        // A line ending that opens its own line closes a blank one: the frame
+        // terminator.
+        if at_line_start {
+            end = index;
+        }
+        at_line_start = true;
+    }
+    end
+}
+
 /// CRLF and bare CR to LF, on bytes.
 ///
 /// Byte-level for the reason [`take_complete_frames`] is: a partial multi-byte
