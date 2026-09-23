@@ -298,13 +298,14 @@ pub(super) fn take_complete_frames(buffer: &mut Vec<u8>) -> Vec<String> {
     frames
 }
 
-/// How many leading bytes of `bytes` are complete frames: everything up to and
-/// including the last blank line, under [`take_complete_frames`]' own rule —
-/// LF, CRLF, and bare CR each end a line, and a trailing CR is held back — but
-/// measured on the raw bytes, so the prefix can be cut from them unchanged.
-pub(super) fn complete_frames_len(bytes: &[u8]) -> usize {
+/// How many leading bytes of `bytes` are its first complete frame: everything
+/// up to and including the first blank line, under [`take_complete_frames`]'
+/// own rule — LF, CRLF, and bare CR each end a line, and a trailing CR is held
+/// back — but measured on the raw bytes, so the frame can be cut from them
+/// unchanged. `None` while no frame has completed.
+pub(super) fn first_frame_len(bytes: &[u8]) -> Option<usize> {
     let scan = bytes.strip_suffix(b"\r").unwrap_or(bytes);
-    let (mut end, mut index, mut at_line_start) = (0, 0, false);
+    let (mut index, mut at_line_start) = (0, false);
     while index < scan.len() {
         let ending = match scan[index] {
             b'\r' => 1 + usize::from(scan.get(index + 1) == Some(&b'\n')),
@@ -320,11 +321,11 @@ pub(super) fn complete_frames_len(bytes: &[u8]) -> usize {
         // A line ending that opens its own line closes a blank one: the frame
         // terminator.
         if at_line_start {
-            end = index;
+            return Some(index);
         }
         at_line_start = true;
     }
-    end
+    None
 }
 
 /// CRLF and bare CR to LF, on bytes.
@@ -332,7 +333,7 @@ pub(super) fn complete_frames_len(bytes: &[u8]) -> usize {
 /// Byte-level for the reason [`take_complete_frames`] is: a partial multi-byte
 /// character at the end of the buffer is the normal case, not an error, and
 /// neither line ending can be part of one.
-fn normalize_line_endings(scan: &[u8]) -> Vec<u8> {
+pub(super) fn normalize_line_endings(scan: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(scan.len());
     let mut index = 0;
     while index < scan.len() {

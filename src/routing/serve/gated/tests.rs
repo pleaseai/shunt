@@ -8,14 +8,17 @@
 //! the chunk rather than on a frame's `event:` line and
 //! `a_message_stop_mentioned_in_content_is_not_the_marker` goes red; drop the
 //! carried remainder and `a_message_stop_split_across_chunks_is_still_seen`
-//! goes red; drop the `errored` check and `an_error_frame_is_never_terminal`
-//! goes red; accept any JSON object in [`is_single_message`] and
+//! goes red; drop the `errored` check and
+//! `an_error_frame_before_the_marker_is_never_terminal` goes red; keep reading
+//! after `message_stop`, or record where the chunk ended rather than where the
+//! frame did, and `nothing_after_message_stop_is_part_of_the_turn` goes red;
+//! accept any JSON object in [`is_single_message`] and
 //! `a_json_error_body_is_not_a_message` goes red; let any line ending, not
-//! only one that closes a blank line, end the kept prefix in
-//! [`complete_frames_len`], or stop holding back its trailing CR, and
-//! `a_partial_frame_after_the_marker_is_cut_from_the_kept_bytes` goes red.
+//! only one that closes a blank line, end a frame in [`first_frame_len`], or
+//! stop holding back its trailing CR, and
+//! `a_frame_ends_only_at_a_blank_line` goes red.
 
-use super::{complete_frames_len, is_single_message, TerminalScan};
+use super::{first_frame_len, is_single_message, TerminalScan};
 
 const START: &str = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n";
 const DELTA: &str =
@@ -65,12 +68,39 @@ fn an_unterminated_message_stop_is_not_terminal() {
     assert!(!scan(&[START, DELTA, unterminated]).is_terminal());
 }
 
+const ERROR: &str =
+    "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n";
+
 #[test]
-fn an_error_frame_is_never_terminal() {
-    let error =
-        "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n";
-    assert!(!scan(&[START, error, STOP]).is_terminal());
-    assert!(!scan(&[START, STOP, error]).is_terminal());
+fn an_error_frame_before_the_marker_is_never_terminal() {
+    assert!(!scan(&[START, ERROR, STOP]).is_terminal());
+}
+
+/// The live relay ends the client's stream at `message_stop`, so a frame after
+/// it — a keep-alive, even an `error` — is not part of the turn, and the turn
+/// is exactly the bytes through the marker, however the chunks fell.
+#[test]
+fn nothing_after_message_stop_is_part_of_the_turn() {
+    let turn = format!("{START}{DELTA}{STOP}");
+    let ping = "event: ping\ndata: {\"type\":\"ping\"}\n\n";
+    for tail in [ping, ERROR, "event: ping\ndata: {\"ty"] {
+        let joined = scan(&[&format!("{turn}{tail}")]);
+        assert!(joined.is_terminal(), "tail: {tail}");
+        assert_eq!(joined.terminal_len(), Some(turn.len()), "tail: {tail}");
+        let separate = scan(&[START, DELTA, STOP, tail]);
+        assert!(separate.is_terminal(), "tail: {tail}");
+        assert_eq!(separate.terminal_len(), Some(turn.len()), "tail: {tail}");
+    }
+    // A marker split across chunks ends where its frame did, not where the
+    // chunk that completed it did.
+    let (head, rest) = STOP.split_at(9);
+    let split = scan(&[START, DELTA, head, &format!("{rest}{ping}")]);
+    assert_eq!(split.terminal_len(), Some(turn.len()));
+    // Measured on the raw bytes, so a CRLF turn is cut at its own length.
+    let crlf = turn.replace('\n', "\r\n");
+    let crlf_scan = scan(&[&crlf, &ping.replace('\n', "\r\n")]);
+    assert_eq!(crlf_scan.terminal_len(), Some(crlf.len()));
+    assert_eq!(scan(&[START, DELTA]).terminal_len(), None);
 }
 
 /// Frame-level, not substring-level.
@@ -81,24 +111,26 @@ fn a_message_stop_mentioned_in_content_is_not_the_marker() {
     assert!(!scan(&[START, mention]).is_terminal());
 }
 
-/// What a transport break after `message_stop` keeps: every whole frame, and
-/// not the partial one that was arriving when it broke — under either line
-/// ending, and without inventing a terminator from a CR held at the end.
+/// A frame ends at its blank line — under any line ending, and without
+/// inventing a terminator from a CR held at the end.
 #[test]
-fn a_partial_frame_after_the_marker_is_cut_from_the_kept_bytes() {
-    let whole = format!("{START}{DELTA}{STOP}");
-    let partial = "event: ping\ndata: {\"ty";
+fn a_frame_ends_only_at_a_blank_line() {
     assert_eq!(
-        complete_frames_len(format!("{whole}{partial}").as_bytes()),
-        whole.len()
+        first_frame_len(format!("{START}{DELTA}").as_bytes()),
+        Some(START.len())
     );
-    assert_eq!(complete_frames_len(whole.as_bytes()), whole.len());
-    let crlf = whole.replace('\n', "\r\n");
+    let crlf = START.replace('\n', "\r\n");
     assert_eq!(
-        complete_frames_len(format!("{crlf}event: ping\r\n\r").as_bytes()),
-        crlf.len()
+        first_frame_len(format!("{crlf}event: ping").as_bytes()),
+        Some(crlf.len())
     );
-    assert_eq!(complete_frames_len(b"event: ping\n"), 0);
+    let bare_cr = START.replace('\n', "\r");
+    assert_eq!(
+        first_frame_len(format!("{bare_cr}event: ping").as_bytes()),
+        Some(bare_cr.len())
+    );
+    assert_eq!(first_frame_len(b"event: ping\r\n\r"), None);
+    assert_eq!(first_frame_len(b"event: ping\n"), None);
 }
 
 #[test]

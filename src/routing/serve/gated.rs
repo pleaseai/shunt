@@ -26,17 +26,21 @@
 //!   conversion exists or is needed.
 //! * **Terminal or nothing.** A turn is [`GatedCapture::Retained`] only after
 //!   an authoritative terminal marker: a complete `message_stop` frame and no
-//!   `error` frame on a stream, one parseable `message` object on a JSON body.
-//!   Anything short of that — a bound crossed, a transport broken before the
-//!   marker, a `200` that simply stopped — is [`GatedCapture::Cut`], and a cut
-//!   turn is never replayed. A transport that breaks after the marker has
-//!   already delivered the turn, which is retained up to its last whole frame.
+//!   `error` frame before it on a stream, one parseable `message` object on a
+//!   JSON body. Anything short of that — a bound crossed, a transport broken
+//!   before the marker, a `200` that simply stopped — is
+//!   [`GatedCapture::Cut`], and a cut turn is never replayed. A stream's turn
+//!   ends at its `message_stop` frame, as the live relay's does: the capture
+//!   stops reading there and keeps exactly the bytes through it, so whatever
+//!   follows — a keep-alive, a connection held open, a break — neither joins
+//!   the replay nor holds the capture open until a bound cuts it.
 //!
 //! The capture is recorded in a slot the drive reads back, and the bytes
 //! replayed are always those recorded ones. libsy's own buffered copy is used
 //! only as the "serve the retained turn" signal: re-encoding it would be a
 //! translation of the answer, not the answer.
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -49,7 +53,7 @@ use switchyard_protocol::{LlmClientError, LlmResponse, ModelId, Response};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 use super::bounds::{
-    bound_stream, collect_bounded, complete_frames_len, frame_event, take_complete_frames,
+    bound_stream, collect_bounded, first_frame_len, frame_event, normalize_line_endings,
     BoundExceeded, CollectError, GatedBounds,
 };
 use crate::config::CallBounds;
@@ -306,6 +310,13 @@ async fn retain_stream(
             Ok(chunk) => {
                 scan.feed(&chunk);
                 retained.extend_from_slice(&chunk);
+                // The turn ends at its `message_stop` frame, as the live relay
+                // ends it: nothing after it is replayed, and nothing after it
+                // is waited for.
+                if let Some(end) = scan.terminal_len() {
+                    retained.truncate(end);
+                    break;
+                }
             }
             Err(exceeded) => return GatedCapture::Cut(CutReason::Bound(exceeded)),
         }
@@ -327,17 +338,12 @@ async fn retain_stream(
             response: axum::response::IntoResponse::into_response((status, axum::Json(envelope))),
         });
     }
-    if broke.load(Ordering::Relaxed) {
-        // A break after the terminal marker ends a finished turn, not a cut
-        // one — the live relay ends at that frame too. Only the complete
-        // frames are kept: a partial one after the marker would not decode.
-        if !scan.is_terminal() {
-            return GatedCapture::Cut(CutReason::Transport);
-        }
-        retained.truncate(complete_frames_len(&retained));
-    }
     if !scan.is_terminal() {
-        return GatedCapture::Cut(CutReason::Nonterminal);
+        return GatedCapture::Cut(if broke.load(Ordering::Relaxed) {
+            CutReason::Transport
+        } else {
+            CutReason::Nonterminal
+        });
     }
     // A committed chain stream names its winner only as the body is read; the
     // ordered loop knew it when it returned.
@@ -399,35 +405,68 @@ pub(crate) fn is_single_message(body: &[u8]) -> bool {
 /// The streaming terminal marker, read frame by frame as the stream arrives.
 ///
 /// A turn is terminal when a **complete** frame names `message_stop` and no
-/// frame names `error`. Frame-level, through the same splitter `bound_stream`
-/// uses, so a CRLF stream and a `message_stop` split across chunks read the
-/// same as the unsplit LF form, and a `content_block_delta` whose text happens
-/// to say `message_stop` is content rather than the marker. Only the partial
-/// trailing frame is carried between chunks, so the scan holds a frame's
-/// worth of bytes, not the turn.
+/// frame before it names `error`. Frame-level, under the framing rule
+/// `bound_stream` uses, so a CRLF stream and a `message_stop` split across
+/// chunks read the same as the unsplit LF form, and a `content_block_delta`
+/// whose text happens to say `message_stop` is content rather than the marker.
+/// Only the partial trailing frame is carried between chunks, so the scan
+/// holds a frame's worth of bytes, not the turn.
+///
+/// The scan ends at the `message_stop` frame, and records where in the stream
+/// that frame ended: the live relay (`proxy::chain_stream`) ends the client's
+/// stream at the same frame, so nothing after it is part of the turn.
 #[derive(Debug, Default)]
 pub(crate) struct TerminalScan {
     remainder: Vec<u8>,
-    stopped: bool,
+    /// Stream offset of the remainder's first byte.
+    offset: usize,
+    /// Stream offset just past the `message_stop` frame, once one completed.
+    end: Option<usize>,
     errored: bool,
 }
 
 impl TerminalScan {
-    /// Feed the next chunk of the retained stream.
+    /// Feed the next chunk of the retained stream. Nothing after a completed
+    /// `message_stop` frame is read.
     pub(crate) fn feed(&mut self, chunk: &[u8]) {
+        if self.end.is_some() {
+            return;
+        }
         self.remainder.extend_from_slice(chunk);
-        for frame in take_complete_frames(&mut self.remainder) {
-            match frame_event(&frame) {
-                Some("message_stop") => self.stopped = true,
+        let mut consumed = 0;
+        while let Some(len) = first_frame_len(&self.remainder[consumed..]) {
+            let frame = &self.remainder[consumed..consumed + len];
+            consumed += len;
+            // An LF-only frame — every stream shunt talks to today — is read
+            // in place, as `take_complete_frames` reads it.
+            let normalized: Cow<'_, [u8]> = if frame.contains(&b'\r') {
+                Cow::Owned(normalize_line_endings(frame))
+            } else {
+                Cow::Borrowed(frame)
+            };
+            match frame_event(&String::from_utf8_lossy(&normalized)) {
+                Some("message_stop") => {
+                    self.end = Some(self.offset + consumed);
+                    self.remainder = Vec::new();
+                    return;
+                }
                 Some("error") => self.errored = true,
                 _ => {}
             }
         }
+        self.remainder.drain(..consumed);
+        self.offset += consumed;
     }
 
     /// Whether what has been fed so far is a servable, finished turn.
     pub(crate) fn is_terminal(&self) -> bool {
-        self.stopped && !self.errored
+        self.end.is_some() && !self.errored
+    }
+
+    /// How many bytes of the stream the turn is — everything through its
+    /// `message_stop` frame — once that frame has completed.
+    pub(crate) fn terminal_len(&self) -> Option<usize> {
+        self.end
     }
 }
 

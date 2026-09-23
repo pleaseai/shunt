@@ -1105,8 +1105,9 @@ Response headers are committed only when the replay starts.
 **Only a complete turn is served.** A held turn is servable only after its
 terminal marker: `message_stop` on a streaming call, or a complete body that
 parses as one message on a non-streaming call. A truncated `200` is never
-replayed. A connection that breaks after `message_stop` does not undo the
-turn: it is served up to its last complete frame. Gated turns take the target's ordered failover chain.
+replayed. A turn ends at its `message_stop` frame, as the live stream does:
+nothing after it is replayed, and a connection that breaks or stays open after
+it does not cut the turn. Gated turns take the target's ordered failover chain.
 
 `x-gateway-route-source` — and the `source` label on
 `shunt.router.decisions` — says what happened:

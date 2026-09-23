@@ -1,6 +1,9 @@
-//! A transport that breaks after the gated turn's terminal marker: the turn is
-//! finished, so it is retained — the positive twin of the cut in
+//! What follows the gated turn's terminal marker — a break, a keep-alive, a
+//! connection held open — is not part of the turn: it is retained and replayed
+//! exactly through `message_stop`, the positive twin of the cut in
 //! `a_weak_turn_cut_before_message_stop_falls_back_to_the_strong_tier`.
+
+use std::time::Duration;
 
 use reqwest::StatusCode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -16,10 +19,14 @@ use super::judge_harness::{
 use super::DECLINE;
 
 /// A one-shot weak upstream that reads the request, writes the complete turn
-/// and half of a following frame, then closes short of its declared
-/// content-length — so the body read fails after `message_stop`. wiremock
-/// cannot express this: its server refuses a length its body disagrees with.
-async fn breaking_upstream() -> (String, tokio::task::JoinHandle<()>) {
+/// followed by `tail`, then either closes short of its declared content-length
+/// — so the body read fails after `message_stop` — or, with `hold_open`, keeps
+/// the connection open until the gateway drops it. wiremock cannot express
+/// either: its server refuses a length its body disagrees with.
+async fn after_the_turn_upstream(
+    tail: &'static [u8],
+    hold_open: bool,
+) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let responder = tokio::spawn(async move {
@@ -56,7 +63,12 @@ async fn breaking_upstream() -> (String, tokio::task::JoinHandle<()>) {
             .await
             .unwrap();
         socket.write_all(turn.as_bytes()).await.unwrap();
-        socket.write_all(b"event: ping\ndata: {\"ty").await.unwrap();
+        socket.write_all(tail).await.unwrap();
+        if hold_open {
+            // Bounded, so a gateway that never lets go fails the test on its
+            // assertions rather than hanging it here.
+            let _ = tokio::time::timeout(Duration::from_secs(10), socket.read(&mut chunk)).await;
+        }
     });
     (url, responder)
 }
@@ -65,12 +77,39 @@ async fn breaking_upstream() -> (String, tokio::task::JoinHandle<()>) {
 /// is asked, declines, and the retained turn is replayed whole — no strong
 /// call, no `error` event, and none of the partial frame that followed.
 ///
-/// Non-vacuity: check the broken transport before the terminal marker in
-/// `retain_stream` and the turn is cut — the header comes back
-/// `escalation_fallback` and the strong mock's `expect(0)` goes red; keep the
-/// partial frame and libsy's decode fails the turn, so the status goes red.
+/// Non-vacuity: read on past the marker in `retain_stream` and cut on the
+/// break it reaches, and the header comes back `escalation_fallback` and the
+/// strong mock's `expect(0)` goes red.
 #[tokio::test]
 async fn a_transport_break_after_message_stop_still_replays_the_weak_turn() {
+    replays_the_weak_turn_through_message_stop(b"event: ping\ndata: {\"ty", false, "").await;
+}
+
+/// The weak turn reached `message_stop` and the upstream then sent a
+/// keep-alive and held the connection open: the turn is finished at the
+/// marker, so it is replayed at once — not held until the idle bound cuts it
+/// and escalation bills the strong tier — and without the ping that followed.
+///
+/// Non-vacuity: drain to end of stream in `retain_stream` and the idle bound
+/// cuts the turn — the header comes back `escalation_fallback` and the strong
+/// mock's `expect(0)` goes red; cut the retained bytes anywhere but at the
+/// marker's frame and the replay ends on the ping, so the last-event
+/// assertion goes red.
+#[tokio::test]
+async fn a_connection_held_open_after_message_stop_still_replays_the_weak_turn() {
+    replays_the_weak_turn_through_message_stop(
+        b"event: ping\ndata: {\"type\":\"ping\"}\n\n",
+        true,
+        "gated_idle_ms = 500\n",
+    )
+    .await;
+}
+
+async fn replays_the_weak_turn_through_message_stop(
+    tail: &'static [u8],
+    hold_open: bool,
+    router_extra: &str,
+) {
     if !can_bind_loopback() {
         return;
     }
@@ -87,14 +126,15 @@ async fn a_transport_break_after_message_stop_still_replays_the_weak_turn() {
     .mount(&strong)
     .await;
     messages_mock(judge_text(DECLINE), 1).mount(&judge).await;
-    let (weak, responder) = breaking_upstream().await;
+    let (weak, responder) = after_the_turn_upstream(tail, hold_open).await;
     let tiers = Tiers {
         strong: strong.uri(),
         weak,
         responses: responses.uri(),
         judge: judge.uri(),
     };
-    let gateway = start_gateway(gated_config(&tiers, &escalation_router("efficient-alias"))).await;
+    let router = format!("{}{router_extra}", escalation_router("efficient-alias"));
+    let gateway = start_gateway(gated_config(&tiers, &router)).await;
 
     let response = post(&gateway, true).await;
     assert_eq!(response.status(), StatusCode::OK);
