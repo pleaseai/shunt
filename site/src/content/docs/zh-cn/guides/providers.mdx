@@ -152,7 +152,7 @@ codex login
 
 <Aside type="caution" title="模型 slug">
 
-ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受该账户实时授权的 slug。权威目录是 openai/codex 的 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)。当前的 slug 有 `gpt-6-astra`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`(前沿)以及 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`;较老的账户可能只被授权使用较早的那些。在路由中使用 `upstream_model` 可将任意别名映射到一个已授权的 slug。
+ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受该账户实时授权的 slug。权威目录是 openai/codex 的 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)。当前的 slug 有 `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`(最新)、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`(前沿)以及 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`;较老的账户可能只被授权使用较早的那些。在路由中使用 `upstream_model` 可将任意别名映射到一个已授权的 slug。
 
 </Aside>
 
@@ -269,7 +269,7 @@ provider = "kimi"
 
 | 插件 | 模型(每个一个 agent) | 提供方 |
 | :-- | :-- | :-- |
-| `shunt-codex` | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `codex`(ChatGPT 订阅) |
+| `shunt-codex` | `gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `codex`(ChatGPT 订阅) |
 | `shunt-xai` | `grok-4.6`、`grok-4.5`、`grok-build-0.1` | `xai`(API 密钥)或 `grok`(订阅) |
 | `shunt-kimi` | `kimi-k3[1m]`、`kimi-k2.7-code` | `kimi` |
 | `shunt-deepseek` | `deepseek-v4-pro`、`deepseek-v4-flash` | `deepseek` |

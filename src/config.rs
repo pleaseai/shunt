@@ -1983,8 +1983,9 @@ fn model_supports_tool_search(model: &str) -> bool {
     if gpt5 {
         return true;
     }
-    // Codex catalog slug `gpt-6-astra` (`supports_search_tool: true`).
-    model == "gpt-6-astra"
+    // Codex catalog gpt-6 slugs (`supports_search_tool: true`), matched
+    // exactly: the catalog lists no gpt-6 family, only these slugs.
+    matches!(model, "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna")
 }
 
 /// Whether `host` belongs to xAI (`x.ai` or any subdomain). Used both to gate
@@ -10883,11 +10884,16 @@ target = "judge-alias"
         // Codex catalog slug `gpt-6-astra` (`supports_search_tool: true`).
         assert!(config.native_tool_search("codex", "gpt-6-astra"));
         assert!(config.native_tool_search("openai", "gpt-6-astra"));
+        // Codex catalog slugs `gpt-6-sol` and `gpt-6-luna` (same flag).
+        assert!(config.native_tool_search("codex", "gpt-6-sol"));
+        assert!(config.native_tool_search("codex", "gpt-6-luna"));
         for model in [
             "openai/gpt-6-astra",
             "gpt-6-astra-preview",
             "gpt-6-astra[1m]",
             "not-gpt-6-astra",
+            "gpt-6-sol-preview",
+            "gpt-6-luna[1m]",
         ] {
             assert!(!config.native_tool_search("codex", model), "{model}");
         }
@@ -10902,8 +10908,9 @@ target = "judge-alias"
 
         // Unsupported model keeps the #43 shim (gpt-5.2 and below).
         assert!(!config.native_tool_search("codex", "gpt-5.2-codex"));
-        // Other gpt-6 slugs and close names must not borrow Astra's flag.
+        // Other gpt-6 slugs and close names must not borrow the listed flags.
         assert!(!config.native_tool_search("codex", "gpt-6-pro"));
+        assert!(!config.native_tool_search("codex", "gpt-6-terra"));
         assert!(!config.native_tool_search("codex", "gpt-6"));
         assert!(!config.native_tool_search("codex", "gpt-6-astral"));
         // Unsupported flavor keeps the shim (xAI), even though `tool_search`

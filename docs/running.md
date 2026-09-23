@@ -808,22 +808,24 @@ the conservative 200k denominator), or a **non-`claude-` id via `ANTHROPIC_CUSTO
 an accurate window, one model at a time. (Subagents are a separate path — see below.)
 
 > **Model slugs:** the ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs (e.g.
-> `gpt-5.2-codex`) — it only accepts the account's live-entitled slugs. The authoritative catalog
-> of Codex slugs (and the reasoning levels each accepts) is openai/codex's
+> `gpt-5.2-codex`) — it only accepts the account's live-entitled slugs. The authoritative catalog of
+> Codex slugs (and the reasoning levels each accepts) is openai/codex's
 > [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-> The current listed slugs are **`gpt-6-astra`** (latest), **`gpt-5.6-sol`**, **`gpt-5.6-terra`**,
-> **`gpt-5.6-luna`** (frontier), and **`gpt-5.5`** / **`gpt-5.4`** / **`gpt-5.4-mini`** /
-> **`gpt-5.2`**; older accounts may only be entitled to the earlier ones. Use `upstream_model` in
-> a route, or pass an entitled slug via `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
+> The current listed slugs are **`gpt-6-astra`**, **`gpt-6-sol`**, **`gpt-6-luna`** (latest),
+> **`gpt-5.6-sol`**, **`gpt-5.6-terra`**, **`gpt-5.6-luna`** (frontier), and **`gpt-5.5`** /
+> **`gpt-5.4`** / **`gpt-5.4-mini`** / **`gpt-5.2`**; older accounts may only be entitled to the
+> earlier ones. Use `upstream_model` in a route, or pass an entitled slug via
+> `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
 
 > **Client-version gating:** some slugs additionally carry a `minimal_client_version` (e.g.
-> `gpt-6-astra` requires ≥ 0.153.0) and the backend answers **`Model not found <slug>`** — not
-> an entitlement error — when the request's client identity is missing or too old. The gate keys
-> on the `originator` + `version` headers ([openai/codex#31967](https://github.com/openai/codex/issues/31967)).
-> shunt therefore sends the Codex CLI identity headers (`originator: codex_cli_rs`,
-> `version`, and a matching `user-agent`) on ChatGPT OAuth requests, **pinned to
-> openai/codex rust-v0.153.3**. If a future slug demands a newer client, bump the pinned
-> version in `src/adapters/responses/request.rs` (`CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION`).
+> `gpt-6-astra` requires ≥ 0.153.0, `gpt-6-sol` and `gpt-6-luna` ≥ 0.155.0) and the backend answers
+> **`Model not found <slug>`** — not an entitlement error — when the request's client identity is
+> missing or too old. The gate keys on the `originator` + `version` headers
+> ([openai/codex#31967](https://github.com/openai/codex/issues/31967)). shunt therefore sends the
+> Codex CLI identity headers (`originator: codex_cli_rs`, `version`, and a matching `user-agent`) on
+> ChatGPT OAuth requests, **pinned to openai/codex rust-v0.156.0**. If a future slug demands a newer
+> client, bump the pinned version in `src/adapters/responses/request.rs` (`CODEX_USER_AGENT` /
+> `CODEX_CLIENT_VERSION`).
 
 Per-context selection also works via Claude Code's own knobs — divert one agent to a mapped model
 while the main session stays on Claude:
@@ -940,9 +942,9 @@ it to the Responses `reasoning.effort` for mapped models:
 
 Which reasoning levels a Codex slug accepts is listed per-model in openai/codex's
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)
-(`supported_reasoning_levels`): `gpt-5.6-sol`/`-terra`/`-luna` and the gpt-6 slugs (e.g.
-`gpt-6-astra`) accept up to `max` — `sol`/`terra`/`astra` even `ultra`, which Claude Code never
-sends and `gpt-5.6-luna` does not list — while `gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds
+(`supported_reasoning_levels`): `gpt-5.6-sol`/`-terra`/`-luna` and the gpt-6 slugs
+(`gpt-6-astra`/`-sol`/`-luna`) accept up to `max`, and every one except the two Luna slugs also
+lists `ultra`, which Claude Code never sends. `gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds
 `max → xhigh` only for slugs that don't support it.
 
 **A custom gateway id like `gpt-5.6-sol` carries effort on its own.** Verified on the wire against Claude Code v2.1.224: the request already

@@ -179,7 +179,7 @@ kind = "responses"
 base_url = "https://chatgpt.com/backend-api"
 auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # request_compression = true  # default; false sends uncompressed request bodies (issue #285)
-# effort = "high"              # low|medium|high|xhigh; gpt-5.6 slugs also accept "max"
+# effort = "high"              # low|medium|high|xhigh; gpt-5.6 and gpt-6 slugs also accept "max"
 # service_tier = "fast"        # optional: opt in to Codex's "Fast" mode (docs/codex-configuration.md §9)
 # count_tokens = "tiktoken"    # default: local o200k_base count for count_tokens.
                                # "estimate" opts out (404 -> client estimates).
@@ -290,8 +290,9 @@ provider = "openai"
 # account's live-entitled slugs. The catalog of valid Codex slugs (and the
 # reasoning levels each accepts) is openai/codex's models.json:
 #   https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json
-# The latest are gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna; older accounts may
-# only be entitled to gpt-5.5 / gpt-5.4 / gpt-5.2. See docs/m2-chatgpt-oauth.md §0.
+# The latest are gpt-6-astra / gpt-6-sol / gpt-6-luna, then gpt-5.6-sol /
+# gpt-5.6-terra / gpt-5.6-luna; older accounts may only be entitled to gpt-5.5 /
+# gpt-5.4 / gpt-5.2. See docs/m2-chatgpt-oauth.md §0.
 # [[routes]]
 # model = "gpt-5.6-sol"
 # provider = "codex"

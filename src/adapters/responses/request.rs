@@ -5,12 +5,12 @@ use axum::http::HeaderValue;
 
 use crate::{auth::Credential, routing::Route, server::AppState};
 
-/// Codex CLI client identity, mirrored from openai/codex rust-v0.153.3.
+/// Codex CLI client identity, mirrored from openai/codex rust-v0.156.0.
 ///
-/// The ChatGPT backend routes newer model slugs (e.g. gpt-6-astra, which has
-/// `minimal_client_version: 0.153.0`) by client identity and answers
-/// "Model not found" — not an entitlement error — when the identity is
-/// missing or too old. Per openai/codex#31967 the gate keys on the
+/// The ChatGPT backend routes newer model slugs (e.g. gpt-6-sol and gpt-6-luna,
+/// which have `minimal_client_version: 0.155.0`) by client identity and
+/// answers "Model not found" — not an entitlement error — when the identity
+/// is missing or too old. Per openai/codex#31967 the gate keys on the
 /// `originator` + `version` header combination; the `user-agent` is sent for
 /// fidelity with Codex, which builds it as
 /// `{originator}/{version} ({os} {os_version}; {arch}) {terminal}`
@@ -20,8 +20,8 @@ use crate::{auth::Credential, routing::Route, server::AppState};
 /// `pub(crate)`: also reused by `crate::auth::codex::usage` (the wham/usage
 /// poller) so its CLI identity headers cannot drift from the Responses
 /// adapter's own.
-pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.153.3";
-pub(crate) const CODEX_CLIENT_VERSION: &str = "0.153.3";
+pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.156.0";
+pub(crate) const CODEX_CLIENT_VERSION: &str = "0.156.0";
 
 /// Grok CLI identity, mirrored from the official Grok CLI (via
 /// raine/claude-code-proxy `src/providers/grok/client.rs`). The subscription

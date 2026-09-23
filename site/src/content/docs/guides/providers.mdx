@@ -275,7 +275,7 @@ xAI may gate OAuth access by subscription tier — if `grok` returns 403, use th
 
 <Aside type="caution" title="Model slugs">
 
-The ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs — it only accepts the account's live-entitled slugs. The authoritative catalog is openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json). Current slugs are `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (frontier) and `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`; older accounts may only be entitled to the earlier ones. Use `upstream_model` in a route to map any alias onto an entitled slug.
+The ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs — it only accepts the account's live-entitled slugs. The authoritative catalog is openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json). Current slugs are `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna` (latest), `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (frontier) and `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`; older accounts may only be entitled to the earlier ones. Use `upstream_model` in a route to map any alias onto an entitled slug.
 
 </Aside>
 
@@ -391,7 +391,7 @@ The [`pleaseai/shunt` marketplace](https://github.com/pleaseai/shunt/tree/main/p
 
 | Plugin | Models (one agent each) | Provider |
 | :-- | :-- | :-- |
-| `shunt-codex` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | `codex` (ChatGPT subscription) |
+| `shunt-codex` | `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | `codex` (ChatGPT subscription) |
 | `shunt-xai` | `grok-4.6`, `grok-4.5`, `grok-build-0.1` | `xai` (API key) or `grok` (subscription) |
 | `shunt-kimi` | `kimi-k3[1m]`, `kimi-k2.7-code` | `kimi` |
 | `shunt-deepseek` | `deepseek-v4-pro`, `deepseek-v4-flash` | `deepseek` |
