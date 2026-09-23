@@ -1,0 +1,39 @@
+site/src/content/docs/guides/codex-multi-account.mdx
+  s_424eb594afb601::t_25ab3feb68e685 149
+src/model/responses.rs
+  s_424eb594afb601::t_7fdb47f49af52d 89-91
+  s_424eb594afb601::t_48d7831a2bda4c 1124-1143,1145-1151
+tests/responses_translate.rs
+  s_424eb594afb601::t_3bb9e4ae34a90b 1742-1744,1749
+  s_424eb594afb601::t_d997431cf7bf9e 1765-1775,1777-1781,1783-1786,1788-1791,1793-1864
+  s_424eb594afb601::t_7d89b80ff4aeb2 6-7
+  s_424eb594afb601::t_c3f7edb502073f 1776,1782,1787,1792
+site/src/content/docs/ja/guides/codex-multi-account.mdx
+  s_424eb594afb601::t_25ab3feb68e685 149
+site/src/content/docs/ko/guides/codex-multi-account.mdx
+  s_424eb594afb601::t_25ab3feb68e685 149
+docs/m7-codex-websocket.md
+  s_424eb594afb601::t_25ab3feb68e685 288-292
+src/adapters/responses/error.rs
+  s_424eb594afb601::t_a4592da1b6995d 125-128
+site/src/content/docs/zh-cn/guides/codex-multi-account.mdx
+  s_424eb594afb601::t_25ab3feb68e685 149
+docs/m1-responses-translation.md
+  s_424eb594afb601::t_25ab3feb68e685 163-166,215-231
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "567816a9eff3f48306e8d7bd916dba96a30af29b",
+  "prompts": {},
+  "sessions": {
+    "s_424eb594afb601": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5f7f75c6-8ebb-4ed5-9972-acc121a76dba",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
