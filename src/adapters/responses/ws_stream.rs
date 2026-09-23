@@ -570,6 +570,12 @@ mod tests {
         .expect("a stop sequence is a successful turn");
 
         assert_eq!(response.status(), StatusCode::OK);
+        // The stop is the turn's own terminal, not a truncation: the gated
+        // capture must not cut it.
+        assert!(response
+            .extensions()
+            .get::<crate::stream_metrics::UpstreamTruncated>()
+            .is_none());
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["content"][0]["text"], "answer");
