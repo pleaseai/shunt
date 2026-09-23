@@ -285,9 +285,11 @@ The issue frames this as "prewarm". Two separable things:
   gateway error instead of a `200 OK` carrying the partial content collected
   before it — so a non-streaming client cannot mistake a backend failure for a
   truncated-but-successful result. The status follows the error `code`
-  (`m1-responses-translation.md` §8): an in-stream `rate_limit_exceeded` is `429`
-  `rate_limit_error`, every other code `502`; both are terminal and never replay
-  the turn on the next upstream. Symmetric with the transport-error handling
+  (`m1-responses-translation.md` §8): an in-stream `rate_limit_exceeded` or
+  `slow_down` is `429` `rate_limit_error`, `server_is_overloaded` is `529`
+  `overloaded_error`, `invalid_prompt` / `bio_policy` / `cyber_policy` are `400`
+  `invalid_request_error`, and every other code is `502`; all are terminal and
+  never replay the turn on the next upstream. Symmetric with the transport-error handling
   above and shared by both the WebSocket and HTTP JSON paths.
 - **HTTP fallback.** Any websocket failure *before the first event reaches the
   client* — connect timeout, refused/failed handshake, a failed frame send, or a

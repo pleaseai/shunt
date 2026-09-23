@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use shunt::{
     config::{Config, ResponsesFlavor},
     model::responses::{
-        anthropic_error_type, client_facing_status, map_error_value, parse_sse_events,
-        translate_request, translate_request_value, AnthropicSseMachine,
+        anthropic_error_type, backend_error_status, client_facing_status, map_error_value,
+        parse_sse_events, translate_request, translate_request_value, AnthropicSseMachine,
     },
     routing::{AdapterKind, Route},
 };
@@ -1739,12 +1739,14 @@ fn classifies_rate_limit_from_every_error_payload_shape() {
 
 #[test]
 fn backend_error_event_without_rate_limit_code_stays_gateway_error() {
-    // Only `rate_limit_exceeded` is a throttle; every other in-stream failure
-    // (content policy, server-side) keeps the 502 `api_error` gateway shape.
+    // Codes outside the throttle / overload / terminal-policy classes (the
+    // misalignment policy, server-side failures, quota exhaustion, unknown codes)
+    // keep the 502 `api_error` gateway shape.
     for code in [
         "server_error",
         "misalignment_policy_violation",
         "unknown_error",
+        "insufficient_quota",
     ] {
         let fixture = format!(
             "event: response.failed\ndata: {}\n\n",
@@ -1757,6 +1759,106 @@ fn backend_error_event_without_rate_limit_code_stays_gateway_error() {
         let (status, backend_error) = machine.take_backend_error().expect("recorded");
         assert_eq!(status, StatusCode::BAD_GATEWAY, "{code}");
         assert_eq!(backend_error["error"]["type"], "api_error", "{code}");
+    }
+}
+
+#[test]
+fn classifies_slow_down_overload_and_policy_codes() {
+    // Mirrors openai/codex rust-v0.156.0's SSE error classification: `slow_down`
+    // is a throttle (429), `server_is_overloaded` the overload (529),
+    // and `invalid_prompt` / `bio_policy` / `cyber_policy` terminal refusals
+    // (400). The streaming path must emit the same `error.type` inline.
+    let overloaded = StatusCode::from_u16(529).unwrap();
+    let cases = [
+        (
+            "slow_down",
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+        ),
+        ("server_is_overloaded", overloaded, "overloaded_error"),
+        (
+            "invalid_prompt",
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+        ),
+        (
+            "bio_policy",
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+        ),
+        (
+            "cyber_policy",
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+        ),
+    ];
+    for (code, expected_status, expected_type) in cases {
+        let fixture = format!(
+            "event: response.failed\ndata: {}\n\n",
+            json!({"type": "response.failed", "response": {"error": {"code": code, "message": "nope"}}})
+        );
+        let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+        let emitted = parse_sse_events(&fixture)
+            .into_iter()
+            .flat_map(|event| machine.apply(event))
+            .collect::<String>();
+        let (status, backend_error) = machine.take_backend_error().expect("recorded");
+        assert_eq!(status, expected_status, "{code}");
+        assert_eq!(backend_error["error"]["type"], expected_type, "{code}");
+        assert_eq!(backend_error["error"]["message"], "nope", "{code}");
+        assert!(emitted.contains("event: error"), "{code}");
+        assert!(
+            emitted.contains(&format!("\"type\":\"{expected_type}\"")),
+            "{code}: {emitted}"
+        );
+    }
+
+    // `slow_down` classifies from the plain `error` event and a bare top-level
+    // `code` as well, not only the nested `response.failed` shape.
+    for data in [
+        json!({"type": "error", "error": {"code": "slow_down", "message": "nope"}}),
+        json!({"code": "slow_down", "message": "nope"}),
+    ] {
+        assert_eq!(
+            backend_error_status(&data),
+            StatusCode::TOO_MANY_REQUESTS,
+            "{data}"
+        );
+    }
+}
+
+#[test]
+fn in_stream_message_rewrites_survive_status_classification() {
+    // The steer and context-overflow rewrites key on the error code, not the
+    // status: both codes stay on the 502 row and keep their rewritten messages.
+    let cases = [
+        (
+            json!({"code": "misalignment_policy_violation", "message": "blocked",
+                "misalignment": {"steer": {"message": "Stop here."}}}),
+            "blocked\n\nStop here.",
+        ),
+        (
+            json!({"code": "context_length_exceeded",
+                "message": "Your input exceeds the context window of this model."}),
+            "prompt is too long",
+        ),
+    ];
+    for (error, expected_message) in cases {
+        let fixture = format!(
+            "event: response.failed\ndata: {}\n\n",
+            json!({"type": "response.failed", "response": {"error": error}})
+        );
+        let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+        for event in parse_sse_events(&fixture) {
+            let _ = machine.apply(event);
+        }
+        let (status, backend_error) = machine.take_backend_error().expect("recorded");
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{error}");
+        assert_eq!(backend_error["error"]["type"], "api_error", "{error}");
+        assert_eq!(
+            backend_error["error"]["message"], expected_message,
+            "{error}"
+        );
     }
 }
 

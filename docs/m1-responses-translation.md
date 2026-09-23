@@ -160,8 +160,10 @@ Non-streaming client: run the same machine but collect blocks instead of emittin
 `transformCodexToAnthropic`-equivalent JSON: `{id,type:"message",role:"assistant",model:<original>,content,stop_reason,stop_sequence:null,usage}`.
 Exception: if the machine recorded a backend error (the `error` / `response.failed` row above),
 return the mapped Anthropic error envelope as a gateway error instead of the collected message
-JSON (issue #113; see `m7-codex-websocket.md` §8) — `429` for an in-stream
-`rate_limit_exceeded`, else `502`; either way terminal, never replayed on the next upstream.
+JSON (issue #113; see `m7-codex-websocket.md` §8) — the status follows the error `code` per
+§8 (`429` for `rate_limit_exceeded` / `slow_down`, `529` for `server_is_overloaded`, `400` for
+`invalid_prompt` / `bio_policy` / `cyber_policy`, else `502`); either way terminal, never
+replayed on the next upstream.
 
 ## 7. Residual model-map concern
 
@@ -210,14 +212,25 @@ when it carries none.
 
 **In-stream backend errors.** A backend-sent `error` / `response.failed` event (§6) arrives on
 a `200 OK` stream, so there is no upstream status to preserve. `backend_error_status` picks the
-row from the error `code` instead: `rate_limit_exceeded` — the Codex backend's throttle code,
-which openai/codex (rust-v0.153+) classifies as its own `RateLimitExceeded` error — maps to the
-`429`/`rate_limit_error` row so Claude Code's own rate-limit handling sees the right type and
-status. Every other code maps to `api_error`/`502`. Both are terminal (`failure: None`): the
-event follows a 2xx acceptance, and a post-acceptance failure never re-enters the ordered
-failover chain (`upstreams-failover.md` §3 — the turn is not idempotent). Pool-account cooldown
-is likewise driven by HTTP status only (`pool.rs` `classify_first`); an in-stream throttle does
-not cool the account down.
+row from the error `code` instead, mirroring openai/codex rust-v0.156.0's SSE error
+classification (`codex-api/src/sse/responses.rs`):
+
+| Error `code` | Status | `error.type` | Upstream class |
+|---|---|---|---|
+| `rate_limit_exceeded`, `slow_down` | `429` | `rate_limit_error` | `RateLimitExceeded` (rust-v0.156.0 moved `slow_down` here from `ServerOverloaded`) |
+| `server_is_overloaded` | `529` | `overloaded_error` | `ServerOverloaded` (terminal upstream; see below) |
+| `invalid_prompt`, `bio_policy`, `cyber_policy` | `400` | `invalid_request_error` | `InvalidRequest` / `BioPolicy` / `CyberPolicy` (terminal, non-retryable) |
+| anything else (e.g. `misalignment_policy_violation`, `server_error`, `insufficient_quota`) | `502` | `api_error` | — |
+
+The throttle row lets Claude Code's own rate-limit handling see the right type and status; the
+overload row maps by meaning to Anthropic's `529` (the Codex CLI does not auto-retry
+`ServerOverloaded`, but Claude Code backs off and retries a `529` exactly as it already did the
+`502` this code used to get); and the policy refusals land on a
+`4xx` so Claude Code does not retry them as it would a `5xx`. Every row is terminal
+(`failure: None`): the event follows a 2xx acceptance, and a post-acceptance failure never
+re-enters the ordered failover chain (`upstreams-failover.md` §3 — the turn is not
+idempotent). Pool-account cooldown is likewise driven by HTTP status only (`pool.rs`
+`classify_first`); an in-stream throttle or overload does not cool the account down.
 
 **Exception — misalignment steer.** A `misalignment_policy_violation` may carry
 `error.misalignment.steer.message` (openai/codex rust-v0.153+): a public, customer-facing

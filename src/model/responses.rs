@@ -86,8 +86,9 @@ pub struct AnthropicSseMachine {
     /// [`Self::take_backend_error`]) so they can return a gateway error instead
     /// of a `200 OK` carrying the partial/empty content accumulated so far.
     /// Paired with the client-facing status the envelope was mapped against
-    /// ([`backend_error_status`]): `429` for an in-stream `rate_limit_exceeded`,
-    /// else `502`.
+    /// ([`backend_error_status`]): `429` for an in-stream `rate_limit_exceeded`
+    /// or `slow_down`, `529` for `server_is_overloaded`, `400` for the
+    /// `invalid_prompt` / `bio_policy` / `cyber_policy` refusals, else `502`.
     backend_error: Option<(StatusCode, Value)>,
     /// The client's Anthropic `stop_sequences`, emulated gateway-side because the
     /// Responses API has no `stop` parameter (issue #605). Empty — the common
@@ -1120,17 +1121,36 @@ fn error_code(value: &Value) -> &str {
 /// Client-facing status for a backend-sent `error` / `response.failed` event.
 ///
 /// These events ride a `200 OK` stream, so there is no upstream HTTP status to
-/// preserve; the default is the `502` gateway error. The one code the Codex
-/// backend uses for throttling, `rate_limit_exceeded` (openai/codex classifies
-/// it as its own `RateLimitExceeded` error since rust-v0.153), maps to `429` so
-/// the client sees `rate_limit_error` — the same envelope an HTTP 429 produces.
-/// Status only: the event follows a 2xx acceptance, so it never re-enters
-/// failover (`docs/upstreams-failover.md` §3).
+/// preserve; the status is picked from the error `code`, mirroring openai/codex
+/// rust-v0.156.0's SSE error classification (`codex-api/src/sse/responses.rs`):
+///
+/// - `rate_limit_exceeded` / `slow_down` → `429` `rate_limit_error`, the same
+///   envelope an HTTP 429 produces. Upstream classifies both as
+///   `RateLimitExceeded` (rust-v0.156.0 moved `slow_down` there from its
+///   `ServerOverloaded` class).
+/// - `server_is_overloaded` → `529` `overloaded_error`: upstream's
+///   `ServerOverloaded` class, which is Anthropic's overload signal. The mapping
+///   is by meaning, not retry policy — the Codex CLI surfaces this class to the
+///   user without an automatic retry, whereas Claude Code backs off and retries
+///   a 529 (as it already would the `502` this code used to map to).
+/// - `invalid_prompt` / `bio_policy` / `cyber_policy` → `400`
+///   `invalid_request_error`: upstream treats these as terminal, non-retryable
+///   refusals (`InvalidRequest` / `BioPolicy` / `CyberPolicy`), so a 4xx stops
+///   Claude Code from retrying them as it would a 5xx.
+/// - Anything else (including `misalignment_policy_violation`, `server_error`,
+///   and quota codes such as `insufficient_quota`) → the `502` gateway error.
+///
+/// Status only, and always terminal: the event follows a 2xx acceptance, so it
+/// never re-enters failover (`docs/upstreams-failover.md` §3) and never cools a
+/// pool account down — pool cooldown keys on the upstream HTTP status alone.
 pub fn backend_error_status(value: &Value) -> StatusCode {
-    if error_code(value) == "rate_limit_exceeded" {
-        StatusCode::TOO_MANY_REQUESTS
-    } else {
-        StatusCode::BAD_GATEWAY
+    match error_code(value) {
+        "rate_limit_exceeded" | "slow_down" => StatusCode::TOO_MANY_REQUESTS,
+        "server_is_overloaded" => {
+            StatusCode::from_u16(529).expect("529 is a valid HTTP status code")
+        }
+        "invalid_prompt" | "bio_policy" | "cyber_policy" => StatusCode::BAD_REQUEST,
+        _ => StatusCode::BAD_GATEWAY,
     }
 }
 
