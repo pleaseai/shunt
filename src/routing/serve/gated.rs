@@ -227,12 +227,13 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
                     // 64 KiB ceiling), so the bounds there fall to `bound_stream` below.
                     //
                     // The idle gap matters because such a read finishes before
-                    // `run_chain` returns: on a non-streaming Anthropic alias route
-                    // the adapter reads the whole body to rewrite its `model`, and an
-                    // upstream that commits its headers and then stalls would hold
-                    // that read — and this call — until `gated_max_duration`, with
-                    // `collect_gated`'s idle timer not yet started. Adapters that do
-                    // not yet honour it leave the stall to the duration bound.
+                    // `run_chain` returns: an adapter's whole-body read (e.g. the
+                    // Anthropic alias rewrite, Gemini/Responses non-streaming bodies,
+                    // error-body prefetches) holds the reply, and an upstream that
+                    // commits its headers and then stalls would hold that read — and
+                    // this call — until `gated_max_duration`, with `collect_gated`'s
+                    // idle timer not yet started. The accumulations that do not yet
+                    // honour it (#667) leave the stall to the duration bound.
                     response_bounds: crate::adapters::ResponseBounds {
                         max_bytes: Some(bounds.gated_max_bytes),
                         idle: Some(bounds.gated_idle),

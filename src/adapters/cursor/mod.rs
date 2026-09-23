@@ -70,12 +70,16 @@ impl Adapter for CursorAdapter {
         //
         // A client turn that asked for `stream` is relayed frame by frame and
         // never materialised, so there the bound genuinely falls to that
-        // collector on the relayed body. `idle` is not applied here yet
-        // (#666).
+        // collector on the relayed body.
+        //
+        // `idle` bounds the error-body prefetch, which is a single whole-body
+        // read finished before `run_chain` returns. `aggregate_turn` does not
+        // take it: it reads the agent stream, which already runs under its
+        // own first-byte and idle timeouts.
         bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
         let _ = headers;
-        Box::pin(async move { forward(state, route, body, bounds.max_bytes).await })
+        Box::pin(async move { forward(state, route, body, bounds).await })
     }
 }
 
@@ -83,7 +87,7 @@ async fn forward(
     state: AppState,
     route: Route,
     body: RequestBody,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request = body.json();
     let model = route.upstream_model.as_str();
@@ -146,11 +150,11 @@ async fn forward(
         .await
         .map_err(map_client_error)?;
     if !turn.status().is_success() {
-        return Err(map_upstream_error(turn.into_response(), response_byte_cap).await);
+        return Err(map_upstream_error(turn.into_response(), bounds).await);
     }
 
     if !want_stream {
-        return aggregate_turn(turn, &message_id, model, response_byte_cap).await;
+        return aggregate_turn(turn, &message_id, model, bounds.max_bytes).await;
     }
 
     let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
@@ -492,7 +496,7 @@ enum Prefetched {
 
 async fn map_upstream_error(
     upstream: reqwest::Response,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> AdapterError {
     let status = upstream.status();
     let retry_after = upstream.headers().get("retry-after").cloned();
@@ -517,28 +521,31 @@ async fn map_upstream_error(
     //    at the next provider, and the judge would be recorded as
     //    `upstream_error` rather than `oversized`.
     //
-    // `None` is the client path and keeps the original lazy `text()` read,
-    // byte for byte.
-    let prefetched = match response_byte_cap {
-        Some(cap) => {
-            match crate::adapters::collect_upstream_body(upstream, Some(cap), None).await {
-                Ok(bytes) => Prefetched::Ready(String::from_utf8_lossy(&bytes).into_owned()),
-                Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
-                    return crate::adapters::too_large_error(too_large)
-                }
-                // Unreachable while this read passes no idle gap (#666); kept a
-                // typed refusal rather than a panic.
-                Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
-                    return crate::adapters::idle_error(idle)
-                }
-                // A transport error ends the body; the status and headers already
-                // read above are what describe the failure.
-                Err(crate::adapters::UpstreamBodyError::Transport(_)) => {
-                    Prefetched::Ready(String::new())
-                }
+    // The idle gap is the same argument for time: a body that stalls inside
+    // the stream would hold a gated call until its wall-clock bound, and a
+    // stall there could not return the refusal that cuts the turn.
+    //
+    // [`ResponseBounds::default`](crate::adapters::ResponseBounds::default) is
+    // the client path and keeps the original lazy `text()` read, byte for
+    // byte.
+    let prefetched = if bounds == crate::adapters::ResponseBounds::default() {
+        Prefetched::Lazy(upstream)
+    } else {
+        match crate::adapters::collect_upstream_body(upstream, bounds.max_bytes, bounds.idle).await
+        {
+            Ok(bytes) => Prefetched::Ready(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
+                return crate::adapters::too_large_error(too_large)
+            }
+            Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
+                return crate::adapters::idle_error(idle)
+            }
+            // A transport error ends the body; the status and headers already
+            // read above are what describe the failure.
+            Err(crate::adapters::UpstreamBodyError::Transport(_)) => {
+                Prefetched::Ready(String::new())
             }
         }
-        None => Prefetched::Lazy(upstream),
     };
     let stream = futures_stream::once(async move {
         let text = match prefetched {
@@ -795,7 +802,14 @@ mod tests {
             .await
             .expect("mock request should succeed");
 
-        let error = map_upstream_error(upstream, Some(1024)).await;
+        let error = map_upstream_error(
+            upstream,
+            crate::adapters::ResponseBounds {
+                max_bytes: Some(1024),
+                idle: None,
+            },
+        )
+        .await;
 
         assert!(
             error.failure.is_none(),
@@ -822,6 +836,59 @@ mod tests {
         );
     }
 
+    /// An upstream error body that stalls after its headers is cut at the idle
+    /// gap on a gated call.
+    ///
+    /// The prefetch finishes before `run_chain` returns, so without the gap a
+    /// refusal that sends part of its body and then goes silent would hold the
+    /// call until its wall-clock bound. The refusal it returns instead ends the
+    /// chain and carries the marker `routing::serve` maps to an idle cut.
+    ///
+    /// Non-vacuity: pass `None` for the idle gap to `collect_upstream_body` in
+    /// `map_upstream_error` and the read waits on the pending body, so the
+    /// outer timeout below fails the test.
+    #[tokio::test]
+    async fn a_stalled_upstream_error_body_is_cut_at_the_idle_gap() {
+        let chunks = futures_stream::iter([Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+            b"{\"error\":{\"message\":\"par",
+        ))])
+        .chain(futures_stream::pending());
+        let upstream = reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(500)
+                .body(reqwest::Body::wrap_stream(chunks))
+                .unwrap(),
+        );
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            map_upstream_error(
+                upstream,
+                crate::adapters::ResponseBounds {
+                    max_bytes: Some(1 << 20),
+                    idle: Some(std::time::Duration::from_millis(50)),
+                },
+            ),
+        )
+        .await
+        .expect("the stalled body is cut at the idle gap, not waited on");
+
+        assert!(
+            error.failure.is_none(),
+            "a stalled reply must terminate the chain, not advance it; got {:?}",
+            error.failure
+        );
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>()
+                .is_some(),
+            "the refusal must carry the marker `routing::serve` reads back as an \
+             idle cut"
+        );
+    }
+
     /// The same call with no cap is the client path, and it is unchanged: the
     /// upstream's text still reaches the message. Without this, the assertion
     /// above would also pass if the body were dropped unconditionally.
@@ -829,7 +896,10 @@ mod tests {
     async fn an_unbounded_call_still_reads_the_upstream_error_body() {
         let upstream = upstream_response(500, &[]).await;
 
-        let body = body_json(map_upstream_error(upstream, None).await).await;
+        let body = body_json(
+            map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await,
+        )
+        .await;
         let rendered = body.to_string();
 
         assert!(
@@ -841,7 +911,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_maps_403_to_permission_error() {
         let upstream = upstream_response(403, &[]).await;
-        let error = map_upstream_error(upstream, None).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         assert_eq!(error.response.status(), StatusCode::FORBIDDEN);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "permission_error");
@@ -850,7 +920,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_maps_529_to_overloaded_error() {
         let upstream = upstream_response(529, &[]).await;
-        let error = map_upstream_error(upstream, None).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         assert_eq!(error.response.status().as_u16(), 529);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "overloaded_error");
@@ -859,7 +929,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_preserves_503_instead_of_bad_gateway() {
         let upstream = upstream_response(503, &[]).await;
-        let error = map_upstream_error(upstream, None).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         assert_eq!(error.response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "api_error");
@@ -868,7 +938,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_maps_413_to_request_too_large() {
         let upstream = upstream_response(413, &[]).await;
-        let error = map_upstream_error(upstream, None).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         assert_eq!(error.response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "request_too_large");
@@ -877,7 +947,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_preserves_retry_after_on_429() {
         let upstream = upstream_response(429, &[("retry-after", "3")]).await;
-        let error = map_upstream_error(upstream, None).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.response.headers().get("retry-after").unwrap(), "3");
     }
@@ -900,7 +970,7 @@ mod tests {
             .send()
             .await
             .expect("mock request should succeed");
-        let error = map_upstream_error(upstream, None).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         let body = body_json(error).await;
         assert_eq!(
             body["error"]["message"],

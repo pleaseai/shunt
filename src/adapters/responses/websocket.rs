@@ -109,7 +109,7 @@ pub(super) async fn forward_websocket(
             events,
             turn.relay(route),
             input_tokens_estimate,
-            turn.response_byte_cap,
+            turn.response_bounds.max_bytes,
         )
         .await?;
         Ok((response.status(), response))

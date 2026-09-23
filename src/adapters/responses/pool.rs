@@ -1063,7 +1063,7 @@ pub(super) async fn forward_chatgpt_oauth(
                         turn.client_wants_stream,
                         turn.relay(&route),
                         input_tokens_estimate,
-                        turn.response_byte_cap,
+                        turn.response_bounds,
                     )
                     .await?;
                     let response = crate::adapters::with_admission(
@@ -1143,7 +1143,7 @@ pub(super) async fn forward_chatgpt_oauth(
                                 turn.client_wants_stream,
                                 turn.relay(&route),
                                 input_tokens_estimate,
-                                turn.response_byte_cap,
+                                turn.response_bounds,
                             )
                             .await?;
                             let response = crate::adapters::with_admission(
@@ -1188,7 +1188,7 @@ async fn relay_success(
     client_wants_stream: bool,
     relay: RelayOptions,
     input_tokens_estimate: u64,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<axum::response::Response, AdapterError> {
     if client_wants_stream {
         let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
@@ -1199,7 +1199,7 @@ async fn relay_success(
             keepalive,
         ))
     } else {
-        json_response(upstream, relay, input_tokens_estimate, response_byte_cap).await
+        json_response(upstream, relay, input_tokens_estimate, bounds).await
     }
 }
 
@@ -1622,7 +1622,7 @@ mod tests {
                 thinking_enabled: false,
                 tool_search_native: false,
                 stop_sequences: Vec::new(),
-                response_byte_cap: None,
+                response_bounds: crate::adapters::ResponseBounds::default(),
             },
             estimate_input: None,
         }

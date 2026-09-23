@@ -1018,7 +1018,7 @@ async fn forward_http_commits_before_resolving_the_credential() {
             thinking_enabled: false,
             tool_search_native: false,
             stop_sequences: Vec::new(),
-            response_byte_cap: None,
+            response_bounds: crate::adapters::ResponseBounds::default(),
         },
         codex_quota_account: None,
         estimate_input: None,

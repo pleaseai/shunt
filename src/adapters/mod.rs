@@ -132,7 +132,8 @@ impl std::error::Error for UpstreamBodyIdle {}
 /// [`ResponseBounds::default`] — both `None` — is every client turn, which is
 /// read exactly as it always was. Only `routing::serve`'s internal calls set
 /// either field; see [`Adapter::forward`] for which reads honour which — `idle`
-/// is honoured only by the Anthropic adapter so far (#666, #667).
+/// is honoured by every single whole-body read, not yet by the accumulations
+/// built from a translated event stream (#667).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ResponseBounds {
     /// Refuse the body the moment it passes this many bytes.
@@ -296,15 +297,15 @@ pub(crate) trait Adapter {
     /// `routing::serve`'s own collector, which reads the relayed stream under
     /// the same cap.
     ///
-    /// `idle` (`gated_idle_ms`, set only on gated calls) is honoured today only
-    /// by the Anthropic adapter's whole-body read for the alias `model`
-    /// rewrite. The other adapters do not yet apply it — neither the other
-    /// [`collect_upstream_body`] callers (Gemini, the Responses HTTP
-    /// `json_response`, Cursor's `map_upstream_error`; #666) nor the
-    /// accumulations (the Responses WebSocket `json_events_response`,
-    /// Antigravity's `drain_non_streaming`; #667) — so a stall there is bounded
-    /// by the call's wall-clock bound (`gated_max_duration_ms`) rather than by
-    /// the idle gap.
+    /// `idle` (`gated_idle_ms`, set only on gated calls) is honoured by every
+    /// single whole-body read, each of which goes through
+    /// [`collect_upstream_body`]: the Anthropic adapter's read for the alias
+    /// `model` rewrite, Gemini's error and non-streaming success bodies, the
+    /// Responses HTTP `json_response`, and Cursor's error-body prefetch in
+    /// `map_upstream_error`. The accumulations do not apply it yet (the
+    /// Responses WebSocket `json_events_response`, Antigravity's
+    /// `drain_non_streaming`; #667), so a stall there is bounded by the call's
+    /// wall-clock bound (`gated_max_duration_ms`) rather than by the idle gap.
     fn forward<'a>(
         &'a self,
         state: AppState,

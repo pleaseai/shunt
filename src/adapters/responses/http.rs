@@ -14,7 +14,7 @@ use axum::{
 use crate::{
     adapters::{
         collect_upstream_body, idle_error, mark_body_broke, too_large_error, AdapterError,
-        UpstreamBodyError,
+        ResponseBounds, UpstreamBodyError,
     },
     auth::Credential,
     model::responses::{parse_sse_events, AnthropicSseMachine},
@@ -175,7 +175,7 @@ pub(super) async fn forward_http(
         upstream,
         turn.relay(route),
         input_tokens_estimate,
-        turn.response_byte_cap,
+        turn.response_bounds,
     )
     .await?;
     Ok((response.status(), response))
@@ -221,7 +221,7 @@ pub(super) async fn json_response(
     upstream: reqwest::Response,
     relay: RelayOptions,
     input_tokens_estimate: u64,
-    response_byte_cap: Option<usize>,
+    bounds: ResponseBounds,
 ) -> Result<axum::response::Response, AdapterError> {
     // This is the one Responses path that buffers a whole upstream reply, so
     // it is the one that has to honour `judge_max_response_bytes`. A judge call
@@ -229,12 +229,14 @@ pub(super) async fn json_response(
     // every internal call through a `kind = "responses"` target lands here —
     // and reading it with `text()` would let a judge allocate without bound
     // until the deadline instead of failing open at the configured limit.
-    // `None` is the client path and stays byte-for-byte what it was.
-    let body = match collect_upstream_body(upstream, response_byte_cap, None).await {
+    // The idle gap bites here for the same reason on a gated call: this read
+    // finishes before `run_chain` returns, so an upstream that commits its
+    // headers and stalls would otherwise hold the turn until
+    // `gated_max_duration_ms`. The default is the client path and stays
+    // byte-for-byte what it was.
+    let body = match collect_upstream_body(upstream, bounds.max_bytes, bounds.idle).await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(UpstreamBodyError::TooLarge(too_large)) => return Err(too_large_error(too_large)),
-        // Unreachable while this read passes no idle gap (#666); kept a typed
-        // refusal rather than a panic.
         Err(UpstreamBodyError::Idle(idle)) => return Err(idle_error(idle)),
         // Only ever a successful reply here: a turn cut before its terminal
         // event, which `routing::serve` reads back through the marker.
@@ -322,7 +324,7 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"Upstream failed\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let error = json_response(upstream, relay_opts(), 0, None)
+        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect_err("backend error event should stop failover");
 
@@ -347,7 +349,7 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let error = json_response(upstream, relay_opts(), 0, None)
+        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect_err("in-stream rate limit is an error");
 
@@ -375,7 +377,7 @@ mod tests {
                 .body(reqwest::Body::wrap_stream(chunks))
                 .unwrap(),
         );
-        let error = json_response(upstream, relay_opts(), 0, None)
+        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect_err("a broken body is an error");
 
@@ -405,7 +407,7 @@ mod tests {
             "data: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay_opts(), 0, None)
+        let response = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect("json_response builds a response");
 
@@ -436,7 +438,7 @@ mod tests {
             "data: {\"delta\":\"partial\"}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay_opts(), 0, None)
+        let response = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect("json_response builds a response");
 
@@ -472,7 +474,7 @@ mod tests {
             ..relay_opts()
         };
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay, 11, None)
+        let response = json_response(upstream, relay, 11, ResponseBounds::default())
             .await
             .expect("json_response builds a response");
 
@@ -590,7 +592,7 @@ mod tests {
                 thinking_enabled: false,
                 tool_search_native: false,
                 stop_sequences: Vec::new(),
-                response_byte_cap: None,
+                response_bounds: ResponseBounds::default(),
             },
             codex_quota_account: None,
             estimate_input: None,
@@ -656,7 +658,7 @@ mod tests {
                 thinking_enabled: false,
                 tool_search_native: false,
                 stop_sequences: Vec::new(),
-                response_byte_cap: None,
+                response_bounds: ResponseBounds::default(),
             },
             codex_quota_account: None,
             estimate_input: None,

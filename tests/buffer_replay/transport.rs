@@ -11,8 +11,8 @@ use wiremock::matchers::method;
 use wiremock::{Mock, MockServer};
 
 use super::harness::{
-    anthropic_json, anthropic_sse, escalation_router, gated_config, header, judge_text,
-    messages_mock, post, sse_events, sse_reply, streamed_text, Tiers,
+    anthropic_json, anthropic_sse, escalation_router, gated_config, gated_config_with_gemini,
+    header, judge_text, messages_mock, post, sse_events, sse_reply, streamed_text, Tiers,
 };
 use super::judge_harness::{
     can_bind_loopback, env, start_gateway, CAPABLE_UPSTREAM_MODEL, EFFICIENT_UPSTREAM_MODEL,
@@ -320,7 +320,7 @@ async fn a_non_streaming_weak_body_broken_after_its_headers_falls_back_to_the_st
     responder.await.unwrap();
 }
 
-/// The idle gap and the wall-clock bound the two stalled-body tests below run
+/// The idle gap and the wall-clock bound the stalled-body tests below run
 /// under: far enough apart that a turn cut at the idle gap is plainly told from
 /// one cut at the duration bound, which also falls back to the strong tier.
 const STALL_ROUTER_EXTRA: &str = "gated_idle_ms = 300\ngated_max_duration_ms = 8000\n";
@@ -337,6 +337,7 @@ const STALL_ROUTER_EXTRA: &str = "gated_idle_ms = 300\ngated_max_duration_ms = 8
 #[tokio::test]
 async fn a_non_streaming_weak_body_stalled_after_its_headers_is_cut_at_the_idle_gap() {
     stalled_non_streaming_weak_turn_falls_back(
+        StalledTier::Anthropic,
         b"HTTP/1.1 200 OK\r\n",
         b"{\"id\":\"msg_stall\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"WEAK-PARTIAL",
     )
@@ -354,18 +355,109 @@ async fn a_non_streaming_weak_body_stalled_after_its_headers_is_cut_at_the_idle_
 #[tokio::test]
 async fn a_non_streaming_weak_refusal_stalled_after_its_headers_is_cut_at_the_idle_gap() {
     stalled_non_streaming_weak_turn_falls_back(
+        StalledTier::Anthropic,
         b"HTTP/1.1 400 Bad Request\r\n",
         b"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"WEAK-",
     )
     .await;
 }
 
-async fn stalled_non_streaming_weak_turn_falls_back(status_line: &[u8], partial: &[u8]) {
+/// A non-streaming Responses weak turn whose upstream sent its `200` SSE
+/// headers and the start of the turn, then held the connection open. The
+/// Responses adapter asks for SSE even for a `stream: false` caller and reads
+/// that body whole in `json_response` before `run_chain` returns, so the stall
+/// is inside the adapter's read — and is cut at the idle gap.
+///
+/// Non-vacuity: pass `None` for the idle gap to `collect_upstream_body` in
+/// `json_response` and the stall is cut only at the duration bound, so the
+/// elapsed-time assertion goes red.
+#[tokio::test]
+async fn a_non_streaming_responses_weak_body_stalled_after_its_headers_is_cut_at_the_idle_gap() {
+    stalled_non_streaming_weak_turn_falls_back(
+        StalledTier::Responses,
+        b"HTTP/1.1 200 OK\r\n",
+        concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_stall\",\"usage\":{\"output_tokens\":0}}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"delta\":\"WEAK-PAR",
+        )
+        .as_bytes(),
+    )
+    .await;
+}
+
+/// A non-streaming Gemini weak turn whose upstream sent its `200` headers and
+/// part of its `generateContent` JSON, then held the connection open: the
+/// Gemini adapter reads a non-streaming reply whole to translate it, so the
+/// stall is inside that read — and is cut at the idle gap.
+///
+/// Non-vacuity: pass `None` for the idle gap to the success-body
+/// `collect_upstream_body` in `gemini::forward_single` and the stall is cut
+/// only at the duration bound, so the elapsed-time assertion goes red.
+#[tokio::test]
+async fn a_non_streaming_gemini_weak_body_stalled_after_its_headers_is_cut_at_the_idle_gap() {
+    stalled_non_streaming_weak_turn_falls_back(
+        StalledTier::Gemini,
+        b"HTTP/1.1 200 OK\r\n",
+        b"{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"WEAK-PAR",
+    )
+    .await;
+}
+
+/// The Gemini refusal twin: a `400` whose error body stalls after its headers.
+/// The adapter reads an error body whole before `map_gemini_error` renders it,
+/// and a `400` is not retried, so the stall is inside that read — and is cut
+/// at the idle gap like a success.
+///
+/// Non-vacuity: pass `None` for the idle gap to the error-body
+/// `collect_upstream_body` in `gemini::forward_single` and the refusal is cut
+/// only at the duration bound, so the elapsed-time assertion goes red.
+#[tokio::test]
+async fn a_non_streaming_gemini_weak_refusal_stalled_after_its_headers_is_cut_at_the_idle_gap() {
+    stalled_non_streaming_weak_turn_falls_back(
+        StalledTier::Gemini,
+        b"HTTP/1.1 400 Bad Request\r\n",
+        b"{\"error\":{\"code\":400,\"status\":\"INVALID_ARGUMENT\",\"message\":\"WEAK-",
+    )
+    .await;
+}
+
+/// Which weak tier the stalled raw socket stands behind.
+#[derive(Clone, Copy)]
+enum StalledTier {
+    Anthropic,
+    Responses,
+    Gemini,
+}
+
+impl StalledTier {
+    fn weak_target(self) -> &'static str {
+        match self {
+            Self::Anthropic => "efficient-alias",
+            Self::Responses => "responses-alias",
+            Self::Gemini => "gemini-alias",
+        }
+    }
+
+    fn content_type(self) -> &'static [u8] {
+        match self {
+            Self::Responses => b"text/event-stream",
+            Self::Anthropic | Self::Gemini => b"application/json",
+        }
+    }
+}
+
+async fn stalled_non_streaming_weak_turn_falls_back(
+    tier: StalledTier,
+    status_line: &[u8],
+    partial: &[u8],
+) {
     if !can_bind_loopback() {
         return;
     }
     let _env = env().await;
-    let (strong, responses, judge) = (
+    let (strong, unused_tier, judge) = (
         MockServer::start().await,
         MockServer::start().await,
         MockServer::start().await,
@@ -375,20 +467,34 @@ async fn stalled_non_streaming_weak_turn_falls_back(status_line: &[u8], partial:
         .await;
     messages_mock(judge_text(DECLINE), 0).mount(&judge).await;
     let mut reply = status_line.to_vec();
-    reply.extend_from_slice(b"content-type: application/json\r\ncontent-length: 4096\r\n\r\n");
+    reply.extend_from_slice(b"content-type: ");
+    reply.extend_from_slice(tier.content_type());
+    reply.extend_from_slice(b"\r\ncontent-length: 4096\r\n\r\n");
     reply.extend_from_slice(partial);
-    let (weak, responder) = raw_upstream(reply, true).await;
+    let (stalled, responder) = raw_upstream(reply, true).await;
+    // The tiers the stalled socket does not stand behind get a mock that is
+    // never called.
     let tiers = Tiers {
         strong: strong.uri(),
-        weak,
-        responses: responses.uri(),
+        weak: match tier {
+            StalledTier::Anthropic => stalled.clone(),
+            _ => unused_tier.uri(),
+        },
+        responses: match tier {
+            StalledTier::Responses => stalled.clone(),
+            _ => unused_tier.uri(),
+        },
         judge: judge.uri(),
     };
     let router = format!(
         "{}{STALL_ROUTER_EXTRA}",
-        escalation_router("efficient-alias")
+        escalation_router(tier.weak_target())
     );
-    let gateway = start_gateway(gated_config(&tiers, &router)).await;
+    let config = match tier {
+        StalledTier::Gemini => gated_config_with_gemini(&tiers, &router, stalled),
+        _ => gated_config(&tiers, &router),
+    };
+    let gateway = start_gateway(config).await;
 
     let started = std::time::Instant::now();
     let response = post(&gateway, false).await;

@@ -25,6 +25,7 @@ use crate::judge_harness::{
 };
 
 pub(crate) const RESPONSES_UPSTREAM_MODEL: &str = "upstream-responses";
+pub(crate) const GEMINI_UPSTREAM_MODEL: &str = "upstream-gemini";
 
 /// Where each tier lives.
 pub(crate) struct Tiers {
@@ -94,6 +95,22 @@ pub(crate) fn unvalidated_gated_config(tiers: &Tiers, router: &str) -> Config {
         alias("judge-alias", "judge", JUDGE_UPSTREAM_MODEL),
     ];
     config
+}
+
+/// [`gated_config`] plus an api-key Gemini tier at `url`, aliased
+/// `gemini-alias`, for the stall tests that put a raw socket behind the Gemini
+/// adapter.
+pub(crate) fn gated_config_with_gemini(tiers: &Tiers, router: &str, url: String) -> Config {
+    let mut config = unvalidated_gated_config(tiers, router);
+    let mut gemini = api_key("gemini", url, JUDGE_KEY_ENV);
+    gemini.kind = Some(ProviderKind::Gemini);
+    config.upstreams.push(gemini);
+    config
+        .models
+        .push(alias("gemini-alias", "gemini", GEMINI_UPSTREAM_MODEL));
+    config
+        .validate()
+        .expect("the gated config with a Gemini tier is well formed")
 }
 
 fn judge_upstream(url: String) -> UpstreamConfig {

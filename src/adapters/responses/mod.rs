@@ -67,14 +67,15 @@ impl Adapter for ResponsesAdapter {
         _uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
-        // `max_bytes` is honoured only on the non-streaming path, which is the
-        // one that buffers a whole upstream reply — and the one every internal
-        // call takes, since `routing::serve` forces `stream` off. A streaming
-        // turn relays instead of buffering, so its bound falls to that
-        // collector. `idle` is not applied here yet (#666, #667).
+        // Honoured only on the non-streaming path, which is the one that
+        // buffers a whole upstream reply — and the one every internal call
+        // takes, since `routing::serve` forces `stream` off. A streaming turn
+        // relays instead of buffering, so its bounds fall to that collector.
+        // On the non-streaming path both bounds apply to the HTTP body read;
+        // the websocket accumulation honours `max_bytes` but not yet `idle`
+        // (#667).
         bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
-        let response_byte_cap = bounds.max_bytes;
         // The session id keys the websocket connection pool (issue #32) so turns
         // of one Claude Code conversation reuse a live connection. Keep an owned
         // value because the adapter future may outlive the borrowed header map.
@@ -98,7 +99,7 @@ impl Adapter for ResponsesAdapter {
                 pool_key,
                 session_id.map(str::to_string),
                 body,
-                response_byte_cap,
+                bounds,
             )
             .await
         })
@@ -111,7 +112,7 @@ async fn forward(
     pool_key: Option<String>,
     session_id: Option<String>,
     body: RequestBody,
-    response_byte_cap: Option<usize>,
+    response_bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request_json = body.json();
     // The effective conversation id: the inbound session header when present,
@@ -205,7 +206,7 @@ async fn forward(
         thinking_enabled,
         tool_search_native,
         stop_sequences,
-        response_byte_cap,
+        response_bounds,
     };
     let upstream_body = Arc::new(translate_request_value(
         request_json,
@@ -471,8 +472,8 @@ pub(crate) async fn chain_attempt(
         tool_search_native,
         stop_sequences,
         // This path is streaming by construction, so nothing here buffers a
-        // whole reply for the cap to bound.
-        response_byte_cap: None,
+        // whole reply for the bounds to bound.
+        response_bounds: crate::adapters::ResponseBounds::default(),
     };
     let upstream_body = Arc::new(translate_request_value(
         request_json,

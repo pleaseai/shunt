@@ -36,12 +36,13 @@ impl Adapter for GeminiAdapter {
         uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
-        // `max_bytes` bounds the non-streaming whole-body reads below; `idle`
-        // is not applied here yet (#666).
+        // Both bounds apply to the whole-body reads in `forward_single`: the
+        // error body read before `map_gemini_error` and the non-streaming
+        // success body. A streaming turn is relayed as it arrives, so its
+        // bounds fall to `routing::serve`'s collector on the relayed body.
         bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
-        let response_byte_cap = bounds.max_bytes;
-        Box::pin(async move { forward(state, route, uri, headers, body, response_byte_cap).await })
+        Box::pin(async move { forward(state, route, uri, headers, body, bounds).await })
     }
 }
 
@@ -128,7 +129,7 @@ async fn forward(
     _uri: &Uri,
     _headers: &HeaderMap,
     body: RequestBody,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, Response<Body>), AdapterError> {
     let provider = state
         .config
@@ -136,7 +137,7 @@ async fn forward(
         .ok_or_else(|| map_gemini_error(StatusCode::INTERNAL_SERVER_ERROR, "unknown provider"))?;
     if provider.auth != AuthMode::AntigravityOauth {
         let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
-        return forward_single(&state, &route, body, credential, None, response_byte_cap).await;
+        return forward_single(&state, &route, body, credential, None, bounds).await;
     }
     let accounts = provider
         .resolve_pool_accounts()
@@ -144,7 +145,7 @@ async fn forward(
         .map_err(|error| map_gemini_error(StatusCode::SERVICE_UNAVAILABLE, &error))?;
     if accounts.is_empty() {
         let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
-        return forward_single(&state, &route, body, credential, None, response_byte_cap).await;
+        return forward_single(&state, &route, body, credential, None, bounds).await;
     }
     if accounts.iter().all(|account| account.disabled) {
         return Err(map_gemini_error(
@@ -229,7 +230,7 @@ async fn forward(
             body.clone(),
             credential,
             Some(account),
-            response_byte_cap,
+            bounds,
         )
         .await
         {
@@ -285,7 +286,7 @@ async fn forward(
                                     body.clone(),
                                     refreshed_credential,
                                     Some(account),
-                                    response_byte_cap,
+                                    bounds,
                                 )
                                 .await
                                 {
@@ -434,7 +435,7 @@ async fn forward_single(
     body: RequestBody,
     credential: Credential,
     account: Option<&crate::config::AccountConfig>,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, Response<Body>), AdapterError> {
     let provider = state
         .config
@@ -619,17 +620,21 @@ async fn forward_single(
         // builds a fresh outbound response and carries no headers, so this is
         // the only point past which the real upstream headers exist at all.
         let response_headers = response.headers().clone();
-        // Under the same cap as a success body: an error body is no more
+        // Under the same bounds as a success body: an error body is no more
         // trusted than a good one, and on a bounded internal call it is read
-        // into the same memory.
+        // into the same memory — and read before `run_chain` returns, so a
+        // stall here is one `routing::serve`'s collector never sees.
         let body_text =
-            match crate::adapters::collect_upstream_body(response, response_byte_cap, None).await {
+            match crate::adapters::collect_upstream_body(response, bounds.max_bytes, bounds.idle)
+                .await
+            {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
                     return Err(crate::adapters::too_large_error(too_large))
                 }
-                // Unreachable while this read passes no idle gap (#666); kept a
-                // typed refusal rather than a panic.
+                // A refusal that stalls is cut exactly like a success that
+                // does: the gated collector would have cut either at the same
+                // gap.
                 Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
                     return Err(crate::adapters::idle_error(idle))
                 }
@@ -719,15 +724,17 @@ async fn forward_single(
     } else {
         // Bounded for an internal call, `reqwest`'s own whole-body read for a
         // client turn: this is the non-streaming branch, so the whole reply is
-        // materialised before it can be translated.
+        // materialised before it can be translated — and before `run_chain`
+        // returns, which is why the idle gap has to bite here rather than in
+        // `routing::serve`'s collector.
         let full_text =
-            match crate::adapters::collect_upstream_body(response, response_byte_cap, None).await {
+            match crate::adapters::collect_upstream_body(response, bounds.max_bytes, bounds.idle)
+                .await
+            {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
                     return Err(crate::adapters::too_large_error(too_large))
                 }
-                // Unreachable while this read passes no idle gap (#666); kept a
-                // typed refusal rather than a panic.
                 Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
                     return Err(crate::adapters::idle_error(idle))
                 }
