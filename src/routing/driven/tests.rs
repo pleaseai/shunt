@@ -391,8 +391,9 @@ fn the_drive_deadline_covers_every_admissible_call() {
 }
 
 /// The cap is the property: an unbounded map keyed by caller-supplied ids is a
-/// memory-growth surface the client controls. The eviction *policy* is not
-/// asserted here — it is documented as arbitrary — only that the map never
+/// memory-growth surface the client controls. The eviction *policy* — least
+/// recent first, per class — is asserted in `budget_tests.rs`; this test pins
+/// only that the map never
 /// grows past the cap.
 #[test]
 fn the_budget_map_is_bounded() {
