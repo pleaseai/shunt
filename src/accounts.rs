@@ -391,7 +391,8 @@ struct AccountHealth {
     /// the requested model into [`governing_cooldown`], so other models on
     /// the account are unaffected. Expired entries are pruned on insert
     /// ([`AccountPool::cooldown_model`]) because the key can be
-    /// client-supplied on the inbound passthrough. Memory-only, like
+    /// client-supplied on the inbound passthrough; live entries are not
+    /// capped. Memory-only, like
     /// `cooldown_until`.
     model_cooldowns: HashMap<String, Instant>,
 }
@@ -1385,8 +1386,10 @@ impl AccountPool {
         let health = entries.entry(account_key(provider, account)).or_default();
         health.observed = true;
         health.enabled = !account.disabled;
-        // Prune on insert so a client-supplied model string cannot grow the
-        // map without bound: only live refusals survive.
+        // Prune on insert so expired refusals do not accumulate. This bounds
+        // the map only by the live refusals: on the inbound passthrough the
+        // key is client-supplied, so distinct refused models each hold an
+        // entry until their cooldown expires.
         health.model_cooldowns.retain(|_, until| *until > now);
         health
             .model_cooldowns
@@ -3212,8 +3215,7 @@ pub const CODEX_MODEL_UNSUPPORTED_COOLDOWN: Duration = Duration::from_secs(60 * 
 /// Whether a Codex/ChatGPT upstream response is the per-account model
 /// entitlement refusal: HTTP 400 whose message says the model "is not
 /// supported", e.g. `{"detail":"The 'gpt-6-luna' model is not supported when
-/// using Codex with a ChatGPT account."}` (the websocket-wrapped variant
-/// carries it as `error.message`).
+/// using Codex with a ChatGPT account."}`.
 ///
 /// The backend gates a model per ChatGPT account during a rollout, and the
 /// gate flaps over hours, so another pool account may well be entitled to the
@@ -3225,6 +3227,10 @@ pub const CODEX_MODEL_UNSUPPORTED_COOLDOWN: Duration = Duration::from_secs(60 * 
 /// supported" — checked only in the JSON string fields `detail`,
 /// `error.message`, and top-level `message`, never the raw body, so the text
 /// echoed anywhere else (a prompt, an unrelated field) cannot trigger it.
+///
+/// Only HTTP responses are classified. On the websocket transport the refusal
+/// arrives as an in-stream `error` event after the turn has committed, so it
+/// is relayed without rotating, like any other in-stream error.
 pub fn is_codex_model_unsupported(status: StatusCode, body: &[u8]) -> bool {
     if status != StatusCode::BAD_REQUEST {
         return false;
