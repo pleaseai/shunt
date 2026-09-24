@@ -17,6 +17,7 @@ header = "x-shunt-admin-token"
 tokens_env = "SHUNT_ADMIN_TOKENS"
 session_ttl_secs = 3600
 pending_ttl_secs = 600
+# hide_observed = false                 # (기본값) 호스트 CLI/앱 로그인 스캔
 ```
 
 ```bash
@@ -32,6 +33,8 @@ shunt run
 :::note
 `/admin`이 제공하는 대시보드는 `--features ui`로 빌드한 바이너리만 임베드하는 번들에서 나옵니다. 사전 빌드 릴리스 바이너리와 Homebrew 포뮬러에는 포함되어 있지만, 그냥 `cargo build`나 `cargo install`로 빌드하면 포함되지 않고 해당 경로는 그 피처를 안내하는 본문과 함께 `404`를 반환합니다. 소스 빌드 방법은 [설치](/ko/getting-started/installation/)를 참고하세요. 이 페이지의 나머지 — JSON API와 설정 — 는 어느 쪽이든 동일합니다.
 :::
+
+대시보드를 공유하거나 원격으로 접속해서 게이트웨이 호스트의 프로바이더 로그인을 드러내지 않아야 할 — 아예 읽지도 않아야 할 — 때는 `hide_observed = true`로 설정하세요. 그러면 shunt는 호스트 CLI/앱 자격 증명 탐색을 완전히 건너뜁니다: `GET /admin/api/observed`는 여전히 관리자 자격 증명을 요구하지만 빈 목록을 반환하고, 대시보드는 이 엔드포인트를 요청하지 않습니다. **Accounts and usage** 표는 관리형 풀 계정의 사용량이 표시되는 곳이기도 하므로 페이지에 그대로 남으며, 관리형 풀 계정만 나열합니다. 이 변경은 설정 핫 리로드 시 적용됩니다. 이미 열려 있는 대시보드는 페이지를 불러올 때 이 플래그를 읽으므로, 페이지를 새로고침하면 새 값을 따릅니다. `[server.admin]` 테이블 자체를 추가하거나 제거하려면 여전히 재시작이 필요합니다.
 
 ## 브라우저에서 Claude 계정 프로비저닝
 

@@ -17,6 +17,7 @@ header = "x-shunt-admin-token"
 tokens_env = "SHUNT_ADMIN_TOKENS"
 session_ttl_secs = 3600
 pending_ttl_secs = 600
+# hide_observed = false                 # (默认)扫描主机 CLI/应用登录
 ```
 
 ```bash
@@ -32,6 +33,8 @@ shunt run
 :::note
 `/admin` 提供的仪表盘来自只有 `--features ui` 构建才会内嵌的前端包。预构建的发布二进制和 Homebrew formula 已包含它;普通的 `cargo build` 或 `cargo install` 则没有,该路径会返回 `404`,响应体会点明该特性。从源码构建的步骤见[安装](/zh-cn/getting-started/installation/)。本页其余内容(JSON API 和配置)两者完全相同。
 :::
+
+当仪表盘被共享或通过远程访问,不应显示 —— 甚至不应读取 —— 网关主机上的提供方登录时,请设置 `hide_observed = true`。此后 shunt 会完全跳过主机 CLI/应用凭据的发现:`GET /admin/api/observed` 仍需管理员凭据,但返回空列表,仪表盘也不会请求它。**Accounts and usage** 表仍保留在页面上,只列出托管的池账户,因为这些账户的用量也显示在该表中。此变更在配置热重载时生效;已打开的仪表盘在页面加载时读取该标志,因此刷新页面后才会跟随新值。添加或移除 `[server.admin]` 本身仍需重启。
 
 ## 在浏览器中预配 Claude 账户
 

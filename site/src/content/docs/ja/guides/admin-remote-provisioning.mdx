@@ -17,6 +17,7 @@ header = "x-shunt-admin-token"
 tokens_env = "SHUNT_ADMIN_TOKENS"
 session_ttl_secs = 3600
 pending_ttl_secs = 600
+# hide_observed = false                 # (default) scan host CLI/app logins
 ```
 
 ```bash
@@ -32,6 +33,8 @@ shunt run
 :::note
 `/admin` が返すダッシュボードは、`--features ui` でビルドしたバイナリだけが埋め込むバンドルから配信されます。ビルド済みリリースバイナリと Homebrew formula には含まれますが、素の `cargo build` や `cargo install` には含まれず、そのパスはこの機能名を含む本文とともに `404` を返します。ソースからのビルドは [インストール](/ja/getting-started/installation/) を参照してください。このページのそれ以外 — JSON API と設定 — はどちらでも同じです。
 :::
+
+ダッシュボードを共有したりリモートから利用したりしていて、ゲートウェイホスト上のプロバイダーのログインを表示すべきでない — それどころか読み取るべきでもない — 場合は、`hide_observed = true` を設定します。すると shunt はホストの CLI/アプリの認証情報の検出を完全に省きます: `GET /admin/api/observed` は引き続き管理認証情報を必要としますが空のリストを返し、ダッシュボードはこれを要求しません。**Accounts and usage** 表は管理対象のプールアカウントの使用量が表示される場所でもあるためページに残り、管理対象のプールアカウントのみを一覧表示します。この変更は設定のホットリロードで適用されます。すでに開いているダッシュボードはページの読み込み時にこのフラグを読むため、ページを再読み込みすると新しい値に従います。`[server.admin]` 自体の追加・削除には引き続き再起動が必要です。
 
 ## ブラウザーで Claude アカウントをプロビジョニングする
 

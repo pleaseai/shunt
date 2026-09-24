@@ -59,6 +59,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | `tokens_file` | _(설정 안 함)_ | `name:token` 쌍을 담는 파일 경로(한 줄에 하나, 또는 쉼표로 구분). `tokens_env`가 설정되지 않았거나 비어 있을 때 사용합니다. 이것도 **쓰기(write)** 티어입니다 |
 | `session_ttl_secs` | `3600` | 로그인 후 브라우저 세션 수명(초) |
 | `pending_ttl_secs` | `600` | 시작된 프로비저닝 플로우를 끝낼 수 있는 시간(초) |
+| `hide_observed` | `false` | `true`이면 shunt는 호스트의 CLI/앱 로그인을 전혀 읽지 않습니다. `GET /admin/api/observed`는 여전히 관리자 인증이 필요하지만 빈 목록을 반환하고, 대시보드의 **Accounts and usage** 표에는 관리형 풀 계정만 표시됩니다. 설정 핫 리로드 시 적용되며, 이미 열려 있는 대시보드는 페이지를 새로고침한 뒤에 새 값을 따릅니다 |
 
 관리자 토큰은 환경 변수나 파일에서 가져올 수 있습니다. 지정된 환경 변수에는 하나 이상의 자격 증명이 있어야 합니다. 예: `SHUNT_ADMIN_TOKENS="ops:<token>"`. 또는 `tokens_file`에 경로(`~`는 확장됩니다)를 지정하고 그 파일에 쌍을 넣어도 됩니다 — `shunt dashboard setup`이 `~/.shunt/admin-token`에 쓰는 것이 바로 이 파일이므로, 실행 환경에 비밀 값을 두지 않아도 됩니다. 둘 다 설정되면 비어 있지 않은 `tokens_env`가 우선합니다. 테이블이 있는데 세 자격 증명 소스(`tokens_env`/`tokens_file`, `write_keys`, `read_keys`)가 **모두** 비어 있거나 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다. `tokens_env`를 설정하지 않고 key 배열만 쓰는 구성은 정상적으로 부팅됩니다.
 

@@ -59,6 +59,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | `tokens_file` | _(未设置)_ | 保存 `name:token` 对的文件路径(每行一个,或逗号分隔),在 `tokens_env` 未设置或为空时使用。它同样属于 **write** 层级 |
 | `session_ttl_secs` | `3600` | 登录后浏览器会话的生命周期,单位秒 |
 | `pending_ttl_secs` | `600` | 允许完成一个已开始的预配流程的时间,单位秒 |
+| `hide_observed` | `false` | 为 `true` 时,shunt 完全不读取主机上的 CLI/应用登录。`GET /admin/api/observed` 仍需管理员认证,但返回空列表,仪表盘的 **Accounts and usage** 表只列出托管的池账户。配置热重载时生效;已打开的仪表盘在刷新页面后跟随新值 |
 
 管理员 token 既可以来自环境变量,也可以来自文件。指定的环境变量必须包含至少一个凭据,例如 `SHUNT_ADMIN_TOKENS="ops:<token>"`。或者把 `tokens_file` 设为一个路径(`~` 会被展开)并把这些对放进该文件 —— 这正是 `shunt dashboard setup` 写入 `~/.shunt/admin-token` 的文件,这样启动环境里就不必存放任何密钥。两者都设置时,非空的 `tokens_env` 优先。若此表存在但三个凭据来源(`tokens_env`/`tokens_file`、`write_keys`、`read_keys`)**全部**未设置、为空或格式错误,启动会安全失败(fail closed)。仅使用 key 数组、不设置 `tokens_env` 的部署可以正常启动。
 

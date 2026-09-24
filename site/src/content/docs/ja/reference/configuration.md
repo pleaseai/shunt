@@ -59,6 +59,7 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | `tokens_file` | _(未設定)_ | `name:token` ペアを保持するファイルのパス（1 行に 1 つ、またはカンマ区切り）。`tokens_env` が未設定または空のときに使われます。これも **write** ティアです |
 | `session_ttl_secs` | `3600` | ログイン後のブラウザーセッションの寿命（秒） |
 | `pending_ttl_secs` | `600` | 開始したプロビジョニングフローを完了できる時間（秒） |
+| `hide_observed` | `false` | `true` の場合、shunt はホストの CLI/アプリのログインを一切読み取りません。`GET /admin/api/observed` は引き続き管理認証を必要としますが空のリストを返し、ダッシュボードの **Accounts and usage** 表には管理対象のプールアカウントのみが表示されます。設定のホットリロードで適用され、すでに開いているダッシュボードはページを再読み込みすると新しい値に従います |
 
 管理トークンは環境変数からもファイルからも与えられます。指定された環境変数には 1 つ以上の認証情報が必要です。例: `SHUNT_ADMIN_TOKENS="ops:<token>"`。あるいは `tokens_file` にパス（`~` は展開されます）を設定し、そのファイルにペアを置くこともできます — これは `shunt dashboard setup` が `~/.shunt/admin-token` に書き込むファイルそのもので、起動環境に秘密を置かずに済みます。両方が設定されている場合は、空でない `tokens_env` が優先されます。テーブルが存在するのに 3 つの認証情報ソース（`tokens_env`/`tokens_file`、`write_keys`、`read_keys`）が**すべて**未設定・空・不正な場合、起動はフェイルクローズします。`tokens_env` を設定せずキー配列だけを使う構成は正常に起動します。
 

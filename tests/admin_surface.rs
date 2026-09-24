@@ -166,6 +166,20 @@ fn unique_dir() -> PathBuf {
     dir
 }
 
+/// Sets `path`'s access time well into the past, so a later read -- even under
+/// Linux `relatime`, which moves atime only when it trails mtime/ctime -- is
+/// visible as a changed atime. Returns the access time now on record.
+fn backdate_access(path: &std::path::Path) -> SystemTime {
+    let past = SystemTime::now() - std::time::Duration::from_secs(3 * 86_400);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_accessed(past))
+        .unwrap();
+    std::fs::metadata(path).unwrap().accessed().unwrap()
+}
+
 /// A `credentials` path string that can never exist on disk -- unlike
 /// [`unique_dir`], this never calls `create_dir_all`, so not even the parent
 /// directory is real. Use it for a fixture account that only needs to be
@@ -642,6 +656,17 @@ async fn hide_observed_returns_empty_accounts_and_tells_the_dashboard() {
         .unwrap();
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
 
+    // An empty list alone would also follow from reading the login and then
+    // discarding it, so the file's access time is what proves it was never
+    // opened. That is only evidence where a read moves it (a `noatime` mount
+    // does not), so probe with a read of our own first.
+    let atime_moves_on_read = {
+        let before = backdate_access(&credentials);
+        std::fs::read(&credentials).unwrap();
+        std::fs::metadata(&credentials).unwrap().accessed().unwrap() != before
+    };
+    let untouched = backdate_access(&credentials);
+
     // A discoverable Claude login exists, and the list is empty anyway.
     let observed = client
         .get(format!("{}/admin/api/observed", gateway.base_url))
@@ -652,6 +677,15 @@ async fn hide_observed_returns_empty_accounts_and_tells_the_dashboard() {
     assert_eq!(observed.status(), StatusCode::OK);
     let body: serde_json::Value = observed.json().await.unwrap();
     assert_eq!(body["accounts"], serde_json::json!([]));
+    if atime_moves_on_read {
+        assert_eq!(
+            std::fs::metadata(&credentials).unwrap().accessed().unwrap(),
+            untouched,
+            "hide_observed must leave the host credential file unread"
+        );
+    } else {
+        eprintln!("skipping the unread check: a read does not move atime on this filesystem");
+    }
 
     // The dashboard is a static bundle the server cannot edit per config, so
     // the session bootstrap is where it learns to drop the observation copy.
