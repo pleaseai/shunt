@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.49.0](https://github.com/pleaseai/shunt/compare/v0.48.0...v0.49.0) (2026-09-24)
+
+
+### Features
+
+* **routing:** buffer-and-replay lane — escalation and advisor (ADR-0005 PR 6) ([#652](https://github.com/pleaseai/shunt/issues/652)) ([2d29392](https://github.com/pleaseai/shunt/commit/2d29392a620d690501d46b5a89d1d93d1afc4fa6))
+
+
+### Bug Fixes
+
+* **adapters:** apply gated_idle_ms to Gemini, Responses HTTP, and Cursor whole-body reads ([#670](https://github.com/pleaseai/shunt/issues/670)) ([8a394f2](https://github.com/pleaseai/shunt/commit/8a394f2a6fd4271af34d9f32545118fab9ccd432))
+* **responses:** classify in-stream slow_down, overload, and policy error codes ([#661](https://github.com/pleaseai/shunt/issues/661)) ([4737bcf](https://github.com/pleaseai/shunt/commit/4737bcf51ff108463639ff586831a4b16c9ae778))
+* **routing:** enforce gated_idle_ms during the Anthropic adapter's non-streaming model rewrite ([#668](https://github.com/pleaseai/shunt/issues/668)) ([cb8b1a5](https://github.com/pleaseai/shunt/commit/cb8b1a56048764cfbef605449f206c715c7db35a)), closes [#663](https://github.com/pleaseai/shunt/issues/663)
+
 ## [0.48.0](https://github.com/pleaseai/shunt/compare/v0.47.0...v0.48.0) (2026-09-23)
 
 
