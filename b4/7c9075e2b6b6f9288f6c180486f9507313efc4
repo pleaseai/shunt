@@ -1,0 +1,56 @@
+src/routing/stage/store.rs
+  s_93932d8a9e3829::t_a3f3fab4bdcbd3 415
+  s_93932d8a9e3829::t_054a0d1ca53321 39,75-79,97-111,113-115,125-129,138,157-162,273-279,282,286,335-340,389-413
+  s_93932d8a9e3829::t_50466ca5b2289d 414,460-465,475-476
+src/routing/driven/gated.rs
+  s_93932d8a9e3829::t_103a0167a17cc7 55,109-111,115-123,171-176
+src/routing/stage/store/budget_tests.rs
+  s_93932d8a9e3829::t_50466ca5b2289d 256
+  s_93932d8a9e3829::t_620a6ec9441f03 96-100,123-126,236-239,269-272
+  s_93932d8a9e3829::t_bf79397af8026b 1-10,17-95,101-122,127-235,240-255,257-268,273-274
+  s_93932d8a9e3829::t_db1cffcc3e05da 11-16
+src/routing/driven/tests.rs
+  s_93932d8a9e3829::t_df556406b47979 459-532,537-540
+  s_93932d8a9e3829::t_0df09bc3a8347c 533-536
+tests/driven_lane/overlay.rs
+  s_93932d8a9e3829::t_d40b4debbb8c6a 306-312,330-331,341-342
+src/routing/driven/budget.rs
+  s_93932d8a9e3829::t_e6e2f50e259e34 1-2,4-22,30-40,56-57,61,65-67,70-75,83-140,143,147,153-157,161-167,172-188,190-194,204,226-236,240,242-246,251-258,260-266,270-283,289-297,310-324
+  s_93932d8a9e3829::t_0df09bc3a8347c 158,199
+  s_93932d8a9e3829::t_620a6ec9441f03 168-171
+src/routing.rs
+  s_93932d8a9e3829::t_46f01b81e0bcad 185,251
+tests/driven_lane.rs
+  s_93932d8a9e3829::t_8b37e857af87f3 32-33
+src/routing/stage/store/tests.rs
+  s_93932d8a9e3829::t_dc5efdad7dad2e 70,79,110,114
+src/proxy/failover.rs
+  s_93932d8a9e3829::t_479f8c928e9b93 224-235
+src/routing/driven/drive.rs
+  s_93932d8a9e3829::t_e3fee04f473777 129-131,134-135,143-148
+  s_93932d8a9e3829::t_2d30b2be009532 273
+  s_93932d8a9e3829::t_a3fca0a76b8e36 23,38-42,59-68,161,174-185,192-195,238-243,248,262-272
+  s_93932d8a9e3829::t_35751f1ccff090 132-133,136
+tests/driven_lane/budget.rs
+  s_93932d8a9e3829::t_8b37e857af87f3 1-191
+tests/router_judge.rs
+  s_93932d8a9e3829::t_8b37e857af87f3 490-538
+src/routing/stage.rs
+  s_93932d8a9e3829::t_46f01b81e0bcad 24,203-207,210-215,297
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b47c9075e2b6b6f9288f6c180486f9507313efc4",
+  "prompts": {},
+  "sessions": {
+    "s_93932d8a9e3829": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d73c8ef2-bb9f-40d5-bd8b-fa1968b41ba8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
