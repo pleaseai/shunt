@@ -1,0 +1,599 @@
+.claude-plugin/marketplace.json
+  s_917b5e323bf1e5::t_5d695155397533 21-22
+.claude/agent-memory/review-review-issue-fixer/MEMORY.md
+  s_917b5e323bf1e5::t_3cc0df1e39ca57 5-10
+.claude/agent-memory/review-review-issue-fixer/folded-refusal-loses-its-label.md
+  s_917b5e323bf1e5::t_c1624cea60b7fd 1-22
+.claude/agent-memory/review-review-issue-fixer/headermap-get-vs-append.md
+  s_917b5e323bf1e5::t_ec699da90dc2ed 1-22
+.claude/agent-memory/review-review-issue-fixer/mirrored-validation-over-validates.md
+  s_917b5e323bf1e5::t_0b8b93dd5ed92f 1-24
+.claude/agent-memory/review-review-issue-fixer/pool-loop-idle-marker.md
+  s_917b5e323bf1e5::t_c7362cff608170 1-15
+.claude/agent-memory/review-review-issue-fixer/shunt-judge-byte-cap-class.md
+  s_917b5e323bf1e5::t_b08b8d19046034 1-35
+.claude/agent-memory/review-review-issue-fixer/sse-framing-must-be-stream-stateful.md
+  s_917b5e323bf1e5::t_d0782569cb6ddf 1-27
+.claude/agents/gpt-6-luna.md
+  s_917b5e323bf1e5::t_85535c6cd530cd 1-14
+.claude/agents/gpt-6-sol.md
+  s_917b5e323bf1e5::t_509b19da3a6eec 1-14
+.claude/settings.json
+  s_917b5e323bf1e5::t_aaa092df0617db 2,11,14-27
+.claude/skills/run-shunt/SKILL.md
+  s_917b5e323bf1e5::t_90cc4b94ee1e53 8-10,23,26,31-32,35-36,39,53-56,60-64,71-73,86-88,91,95,98,112,131,135-141,145-148
+.claude/skills/run-shunt/smoke.sh
+  s_917b5e323bf1e5::t_85414c042d5b29 7,9-20,35-41,46-53,59-115,118-183,215-220,223,227-245,247-254,256,261-267,270,272-278,281-327
+.claude/skills/run-shunt/test_smoke.sh
+  s_917b5e323bf1e5::t_0b395a8dfdb1cd 1-305
+.github/workflows/ci.yml
+  s_917b5e323bf1e5::t_a20a77cab3fca0 112-116,118
+.github/workflows/codspeed.yml
+  s_917b5e323bf1e5::t_026a9abb927565 16-27,35-41,46-55,59-64
+.please/docs/decisions/0005-routing-algorithm-extensions.md
+  s_917b5e323bf1e5::t_e01e61826b7da4 79,205-208,455,478-531
+.please/docs/knowledge/product-guidelines.md
+  s_917b5e323bf1e5::t_cbe57c53c05b59 21-22
+.please/docs/knowledge/product.md
+  s_917b5e323bf1e5::t_e860cd2204cf1e 60-61
+.please/docs/review/rejected-findings.jsonl
+  s_917b5e323bf1e5::t_77330eb85ba605 89-91
+.release-please-manifest.json
+  s_917b5e323bf1e5::t_5796264ad2361d 2
+AGENTS.md
+  s_917b5e323bf1e5::t_464f46f9798338 10-14,22-26,31-57,82
+ARCHITECTURE.md
+  s_917b5e323bf1e5::t_5396172020d0d0 20
+CHANGELOG.md
+  s_917b5e323bf1e5::t_c34ab2db322d67 3-90
+Cargo.lock
+  s_917b5e323bf1e5::t_2b33c45114da50 142-163,2227-2241,2319-2376,3182,3186,3209,3225-3226,3368-3382,3425-3430
+Cargo.toml
+  s_917b5e323bf1e5::t_67e6ac11deffa5 10,37-48,57-59,92-97,138-151,153-154,186-190
+README.ja.md
+  s_917b5e323bf1e5::t_995e5c184677ac 3-4,96,135,196,198-199,231,243
+README.ko.md
+  s_917b5e323bf1e5::t_f4dc5bca8d8f9a 3-4,97,136,197,199-200,232,244
+README.md
+  s_917b5e323bf1e5::t_c103d29214be88 3-4,96,135,197-199,231,243
+README.zh-CN.md
+  s_917b5e323bf1e5::t_0c2b16c027815f 3-4,94,133,194,196-197,229,241
+benches/gateway.rs
+  s_917b5e323bf1e5::t_587faba2fdc635 337
+benches/perf_issues.rs
+  s_917b5e323bf1e5::t_d18626628ab48f 220,236,254-261,282,309
+benches/stage_router.rs
+  s_917b5e323bf1e5::t_4c2d5c203dc384 26,41-44,59,65-70,79,85-86,98-107,111,131-133,328,345-459,477-612
+docs/admin-ui-delivery.md
+  s_917b5e323bf1e5::t_f165226730e54c 180-182,187-193,554-567
+docs/codex-configuration.md
+  s_917b5e323bf1e5::t_0873a4717526eb 183-184,190,271-274,279-280,407-408,827
+docs/comparison.md
+  s_917b5e323bf1e5::t_4f1b7387bec2ae 22-30,320-322,329-336
+docs/credential-import.md
+  s_917b5e323bf1e5::t_c23b20577b3ac5 1-85
+docs/dashboard-metrics.md
+  s_917b5e323bf1e5::t_56f62a784b7faa 1-306
+docs/m1-responses-translation.md
+  s_917b5e323bf1e5::t_7ff19b955fdd40 163-167,216-235,244-303
+docs/m11-inbound-codex-endpoint.md
+  s_917b5e323bf1e5::t_f46f4e447acc63 212
+docs/m3-discovery.md
+  s_917b5e323bf1e5::t_926023819a0153 106-110
+docs/m7-codex-websocket.md
+  s_917b5e323bf1e5::t_dcfef7d158979f 268-276,296-301
+docs/m9-admin-surface.md
+  s_917b5e323bf1e5::t_f18c9d46708175 407-414,428-433,554-563
+docs/notes/adr-0005-routing-live-captures.md
+  s_917b5e323bf1e5::t_290f0700eb5a92 359-360,367,369-371,378-384,390-391,418-717
+docs/notes/auto-mode-server-classifier.md
+  s_917b5e323bf1e5::t_53f36579f29ddd 1-144
+docs/notes/chatgpt-prompt-cache.md
+  s_917b5e323bf1e5::t_dc19eececc8158 1-17
+docs/research/smoke-driver-hardening.md
+  s_917b5e323bf1e5::t_dc97c37c613393 3,9-11,13-14,18,20-21,23
+docs/routing-algorithms.md
+  s_917b5e323bf1e5::t_d045946c17b1a0 94-95,109,147-151,156-1496
+docs/running.md
+  s_917b5e323bf1e5::t_38b4a8a3de2fac 201,355-357,359,811-812,814-818,821-828,945-947
+docs/stage-router.md
+  s_917b5e323bf1e5::t_ddf368ff8a890c 3-4,13-17,21-26,28,32-40,45-53,78-80,128-130,148,153-166,204,220-232,372-402,411,414-442,464-467,476-477,480,484,489,502-510,515-522,533-537,562-565,586,591-595,637,641-644
+docs/storage.md
+  s_917b5e323bf1e5::t_6b51e01faee325 34-38
+docs/upstreams-failover.md
+  s_917b5e323bf1e5::t_502bae36dc32f4 157-160,305
+plugins/shunt-codex/.claude-plugin/plugin.json
+  s_917b5e323bf1e5::t_33e01f3d96e6d8 5-6,15
+plugins/shunt-codex/README.md
+  s_917b5e323bf1e5::t_5b6105ae95a619 3-5,16-17,23-27,30-33,37,61-68,88-92,96,108,112
+plugins/shunt-codex/agents/gpt-6-luna.md
+  s_917b5e323bf1e5::t_54acf76250bd40 1-30
+plugins/shunt-codex/agents/gpt-6-sol.md
+  s_917b5e323bf1e5::t_9721d9acbebbd2 1-30
+shunt.toml.example
+  s_917b5e323bf1e5::t_1c050f0027cef8 185,296-298
+site/src/content/docs/getting-started/comparison.mdx
+  s_917b5e323bf1e5::t_24362720e027cf 20
+site/src/content/docs/getting-started/why-shunt.md
+  s_917b5e323bf1e5::t_64cb06768b416a 29
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_917b5e323bf1e5::t_1781263b6b3570 10,98-114,130,140,142,144,172
+site/src/content/docs/guides/claude-code-plugins.md
+  s_917b5e323bf1e5::t_60ebd0e6dfce7f 109
+site/src/content/docs/guides/codex-multi-account.mdx
+  s_917b5e323bf1e5::t_2f13eeb2f016dc 149
+site/src/content/docs/guides/codex.mdx
+  s_917b5e323bf1e5::t_c9595c5b73903a 139-140,152-153,156,216,444
+site/src/content/docs/guides/connect-claude-desktop.mdx
+  s_917b5e323bf1e5::t_cea7823615f643 74,81,89
+site/src/content/docs/guides/connect-codex-cli.mdx
+  s_917b5e323bf1e5::t_2ed6f0e6de0d48 254-255
+site/src/content/docs/guides/opentelemetry.mdx
+  s_917b5e323bf1e5::t_653a2d4e828c2f 52-53,63,65
+site/src/content/docs/guides/providers.mdx
+  s_917b5e323bf1e5::t_19fde5b8be84a9 278,394
+site/src/content/docs/guides/stage-router.mdx
+  s_917b5e323bf1e5::t_7d70b9fbfc5703 11-18,48-53,74-77,106-122,181-193,198-207,216-217,226,235-295,301-306
+site/src/content/docs/guides/switchyard.mdx
+  s_917b5e323bf1e5::t_240e12f977ca6e 23-25,31,33-37,52-72,324-352,355-360,362-407,425,427-428,452-455
+site/src/content/docs/ja/getting-started/comparison.mdx
+  s_917b5e323bf1e5::t_bd605db5b1823f 20
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_917b5e323bf1e5::t_3be3548a98c777 29
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_917b5e323bf1e5::t_e1eeae1fa8a3ee 6,64-73,76,88,112
+site/src/content/docs/ja/guides/claude-code-plugins.md
+  s_917b5e323bf1e5::t_de22d6c02684e4 109
+site/src/content/docs/ja/guides/codex-multi-account.mdx
+  s_917b5e323bf1e5::t_b27f9f207c4b34 149
+site/src/content/docs/ja/guides/codex.mdx
+  s_917b5e323bf1e5::t_60266339ec9f48 115,126,175,362
+site/src/content/docs/ja/guides/connect-claude-desktop.mdx
+  s_917b5e323bf1e5::t_7fe1df9889c726 74,81,89
+site/src/content/docs/ja/guides/connect-codex-cli.mdx
+  s_917b5e323bf1e5::t_71a2e9a3bf4cd4 243-244
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_917b5e323bf1e5::t_7b6d002fbfa3ef 52-53,63,65
+site/src/content/docs/ja/guides/providers.mdx
+  s_917b5e323bf1e5::t_83797a4294bb80 172,279
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_917b5e323bf1e5::t_ceab6148fc4802 11-16,46-50,68-72,101-117,174,176-183,191-199,208-209,218,229-230,233-282,288-293
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_917b5e323bf1e5::t_5c8711ec3eeb9a 23-25,31,33-37,53-72,321-349,352-357,359-401,419,421-422,445-448
+site/src/content/docs/ja/providers/anthropic.mdx
+  s_917b5e323bf1e5::t_ac7ba46ab7c6cc 159-163
+site/src/content/docs/ja/providers/antigravity.mdx
+  s_917b5e323bf1e5::t_ecd41a5670ce54 49-58,100-105,231-240,258-259,298-300
+site/src/content/docs/ja/providers/openai.mdx
+  s_917b5e323bf1e5::t_88118f734018de 109-133
+site/src/content/docs/ja/reference/cli.mdx
+  s_917b5e323bf1e5::t_c655293aed9c87 3,6-21,48
+site/src/content/docs/ja/reference/configuration.md
+  s_917b5e323bf1e5::t_2bbf9163874535 311,319,339,346,381,398,400-402,405-441,448-449,456,465-1121,1125-1146,1149-1150,1160-1283,1321-1327,1329
+site/src/content/docs/ja/reference/endpoints.md
+  s_917b5e323bf1e5::t_1eeb163ce1e2ab 12,29-30,39-42
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_917b5e323bf1e5::t_6752439d91c56e 28
+site/src/content/docs/ko/getting-started/comparison.mdx
+  s_917b5e323bf1e5::t_0007d182a3852c 20
+site/src/content/docs/ko/getting-started/why-shunt.md
+  s_917b5e323bf1e5::t_35eabd83624a54 29
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_917b5e323bf1e5::t_c8e646561d1620 6,64-73,76,88,112
+site/src/content/docs/ko/guides/claude-code-plugins.md
+  s_917b5e323bf1e5::t_6b461ee5b3f7ec 109
+site/src/content/docs/ko/guides/codex-multi-account.mdx
+  s_917b5e323bf1e5::t_e3009976ac0beb 149
+site/src/content/docs/ko/guides/codex.mdx
+  s_917b5e323bf1e5::t_dfb4a516d07380 112,122,168,345
+site/src/content/docs/ko/guides/connect-claude-desktop.mdx
+  s_917b5e323bf1e5::t_f3af5a884e7516 74,81,89
+site/src/content/docs/ko/guides/connect-codex-cli.mdx
+  s_917b5e323bf1e5::t_eaa978c1db743e 254-255
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_917b5e323bf1e5::t_a0458a14b0fa1c 52-53,63,65
+site/src/content/docs/ko/guides/providers.mdx
+  s_917b5e323bf1e5::t_305148ac19dcc1 167,277
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_917b5e323bf1e5::t_b3bf6471705518 10-15,44-48,65-68,96-112,164,166-172,179-186,195-196,205,215-216,219-267,272-276
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_917b5e323bf1e5::t_5410ae9c664c24 23-24,30,32-36,50-67,307-333,336-340,342-380,396-398,421-424
+site/src/content/docs/ko/providers/anthropic.mdx
+  s_917b5e323bf1e5::t_13b392a7db8102 151-155
+site/src/content/docs/ko/providers/antigravity.mdx
+  s_917b5e323bf1e5::t_5cf0f0f0fabf75 47-56,97-102,226-234,252-253,291-293
+site/src/content/docs/ko/providers/openai.mdx
+  s_917b5e323bf1e5::t_611d5f0c7ec286 105-127
+site/src/content/docs/ko/reference/cli.mdx
+  s_917b5e323bf1e5::t_5cee533d1a53d7 3,6-21,48
+site/src/content/docs/ko/reference/configuration.md
+  s_917b5e323bf1e5::t_77085992540e02 330,338,358,366,401,418,420-424,426-461,468-469,476,485-1123,1127-1144,1147-1270,1309-1314,1316
+site/src/content/docs/ko/reference/endpoints.md
+  s_917b5e323bf1e5::t_78daf224c1ff96 12,29-30,39-42
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_917b5e323bf1e5::t_279739d5961932 28
+site/src/content/docs/providers/anthropic.mdx
+  s_917b5e323bf1e5::t_9e9e086f2752ef 155-160
+site/src/content/docs/providers/antigravity.mdx
+  s_917b5e323bf1e5::t_ad3d729d508baa 47-58,99-104,236-244,262-263,301-303
+site/src/content/docs/providers/openai.mdx
+  s_917b5e323bf1e5::t_a9453f9a702eb3 107-129
+site/src/content/docs/reference/cli.mdx
+  s_917b5e323bf1e5::t_d8aca3cb2956eb 3,6-21,48,239,242-249,327
+site/src/content/docs/reference/client-environment.md
+  s_917b5e323bf1e5::t_6104425e1f106b 51
+site/src/content/docs/reference/configuration.md
+  s_917b5e323bf1e5::t_9a646a88d8abd6 440,446,454,474,483,581,598,600-605,607-648,655-656,663,672-1343,1347-1509,1548-1554,1556
+site/src/content/docs/reference/endpoints.md
+  s_917b5e323bf1e5::t_736fa1ac110dca 12,31-33,43-46
+site/src/content/docs/reference/troubleshooting.md
+  s_917b5e323bf1e5::t_2c63fafe9092e5 32
+site/src/content/docs/zh-cn/getting-started/comparison.mdx
+  s_917b5e323bf1e5::t_942d8c7a186837 20
+site/src/content/docs/zh-cn/getting-started/why-shunt.md
+  s_917b5e323bf1e5::t_b63f6106067062 29
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_917b5e323bf1e5::t_e420997010a889 6,64-73,76,88,112
+site/src/content/docs/zh-cn/guides/claude-code-plugins.md
+  s_917b5e323bf1e5::t_99483995b1240b 109
+site/src/content/docs/zh-cn/guides/codex-multi-account.mdx
+  s_917b5e323bf1e5::t_5b3f266bb71e03 149
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_917b5e323bf1e5::t_0127d7e2abb997 134,147,150,210,399
+site/src/content/docs/zh-cn/guides/connect-claude-desktop.mdx
+  s_917b5e323bf1e5::t_8dc17e51648e54 74,81,89
+site/src/content/docs/zh-cn/guides/connect-codex-cli.mdx
+  s_917b5e323bf1e5::t_86e0511eb2fed8 238-239
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_917b5e323bf1e5::t_c8902a6db4bf8d 52-53,63,65
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_917b5e323bf1e5::t_52d515e6fc16d8 155,272
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_917b5e323bf1e5::t_af9c3512b77095 10-14,42-45,60-62,88-101,147,149-154,160-166,175-176,185,193-237,243-246
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_917b5e323bf1e5::t_bb8fd83d34bc0d 20-21,27,29-33,47-62,284-307,310-314,316-348,364-366,388-391
+site/src/content/docs/zh-cn/providers/anthropic.mdx
+  s_917b5e323bf1e5::t_4ee1ae19f9e4ea 149-152
+site/src/content/docs/zh-cn/providers/antigravity.mdx
+  s_917b5e323bf1e5::t_433c15cb0cf5cc 43-51,91-95,204-210,228,262-263
+site/src/content/docs/zh-cn/providers/openai.mdx
+  s_917b5e323bf1e5::t_cfb3bf591293f6 107-125
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_917b5e323bf1e5::t_ed61ed091874f4 3,6-21,48
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_917b5e323bf1e5::t_bcebf5b19d5edd 311,319,339,346,381,398,400-402,404-437,444-445,452,461-1051,1054-1069,1071-1072,1080-1186,1224-1229,1231
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_917b5e323bf1e5::t_ab4ed0dc362a5e 12,29-30,39-42
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_917b5e323bf1e5::t_271e7041adddec 28
+src/accounts.rs
+  s_917b5e323bf1e5::t_2fcfef0dc1bd48 25,3155-3166
+src/adapters/anthropic/mod.rs
+  s_917b5e323bf1e5::t_efdda0eaef7d3b 28,41,43,53,72,75,79-80,94,141,150,203,276-277,332,432,558-559,627,693,741,793,842-843,879,921,1047,1082-1094,1103-1117,1119-1136,1461-1462,1469,1566-1583,1586-1587,2411-2458
+src/adapters/anthropic/model_rewrite.rs
+  s_917b5e323bf1e5::t_328f72ab7772f2 21-25,28-42,73-86,90,125-126,203-204,214-221,223-226,348-409
+src/adapters/anthropic/safeguards.rs
+  s_917b5e323bf1e5::t_13e499c33e7dce 1-231
+src/adapters/anthropic/thinking.rs
+  s_917b5e323bf1e5::t_45127b21b7db85 10
+src/adapters/antigravity/mod.rs
+  s_917b5e323bf1e5::t_357cadb282fd4f 124-239,248-256,258,377,395-402,562-565,576-584,1130-1236
+src/adapters/cursor/agent.rs
+  s_917b5e323bf1e5::t_a05e12fa444a3a 871-881,893,901-911,914-925,930,991-996,1475-1528
+src/adapters/cursor/mod.rs
+  s_917b5e323bf1e5::t_fbc71ea9e28cfe 60-79,82,90,153,157,304-312,317,322-325,328-337,343-354,490-500,510-549,551-554,715-728,782-910,914,923,932,941,950,973,1281,1292-1390,1395,1455,1471
+src/adapters/gemini/mod.rs
+  s_917b5e323bf1e5::t_8e7ff8999858bd 39-43,45,132-461,582-586,625-632,642-670,748-771
+src/adapters/mod.rs
+  s_917b5e323bf1e5::t_f9f613112a9047 1,5,14,63-341,343-371,379
+src/adapters/noop.rs
+  s_917b5e323bf1e5::t_a7864cf3fd4ef9 1-203
+src/adapters/responses/context.rs
+  s_917b5e323bf1e5::t_34480aa72b2928 31-33,43,51,59-76,87
+src/adapters/responses/early_stream.rs
+  s_917b5e323bf1e5::t_620017cc2c0c96 518
+src/adapters/responses/early_stream_tests.rs
+  s_917b5e323bf1e5::t_e5549ac7bfa6b3 1020-1021
+src/adapters/responses/error.rs
+  s_917b5e323bf1e5::t_c526c6a8975aa2 125-129
+src/adapters/responses/http.rs
+  s_917b5e323bf1e5::t_2a52a720344f76 15-21,28-29,137-143,163-169,174-180,213-219,223-224,226-251,258-277,329,354,365-503,521,526-532,538-599,705-706,771-772,801-886
+src/adapters/responses/mod.rs
+  s_917b5e323bf1e5::t_1bf25928643217 70-77,96-104,115,118-128,155-170,177-178,184-191,208-209,216,363,372,442-445,454-468,473-476,483
+src/adapters/responses/pool.rs
+  s_917b5e323bf1e5::t_41e09550eaaa10 949,953,1066,1146,1191,1202,1211-1215,1296-1300,1315-1321,1325-1326,1362-1369,1419-1429,1433-1434,1520-1526,1624-1625
+src/adapters/responses/request.rs
+  s_917b5e323bf1e5::t_651a1298fce478 8,10-13,23-24,185-194,200-201,268,286-377,636-637,646-647,665-666,747-748
+src/adapters/responses/sse_parse.rs
+  s_917b5e323bf1e5::t_f0d6611eb99c7c 429-447,461-465,469-473,626
+src/adapters/responses/websocket.rs
+  s_917b5e323bf1e5::t_7907a80f07f259 22,37,55,77-90,107-114,123-127,183,185,202-203,207,210-213,221-269,313-317,413,442-448,598,608-609,625,632-633,640-734,760,771-772,792,799-800,845,857-874,882,903,924
+src/adapters/responses/ws_stream.rs
+  s_917b5e323bf1e5::t_88135b44894004 39-43,53-56,62-69,72,124-125,127-141,150-159,168-174,183-185,189,194-212,239,241-245,250,294,306-324,337,341-390,416,447,482,546-647
+src/admin/antigravity.rs
+  s_917b5e323bf1e5::t_cbb0033a86df16 1-532
+src/admin/mod.rs
+  s_917b5e323bf1e5::t_700dbe94f5f7f7 26,50,294-309,971-975,1162-1165,1203-1213,1471-1473,1562-1564,1642-1644,2175,2211,2286-2315
+src/admin/session.rs
+  s_917b5e323bf1e5::t_c1607fa15c1fc6 181
+src/auth/antigravity/auth.rs
+  s_917b5e323bf1e5::t_c4953ff22611b6 58-68,156,184,192-221,325,422-455,464-546,552-556,642-645,674-684,688,691-696,699-710,1357-1378,1431-1469,1970,2001,2011-2254,2785-2903
+src/auth/antigravity/login.rs
+  s_917b5e323bf1e5::t_b493ae1595a7d7 42,60,117-147,230-231,244-245,247-250,261-262,264-265,291,334,371
+src/auth/antigravity/mod.rs
+  s_917b5e323bf1e5::t_d8c32c61717580 11,135-136,158-186,373-417,777,779,915,917
+src/auth/antigravity/store.rs
+  s_917b5e323bf1e5::t_ef6a6fc8864611 1-369
+src/auth/claude/auth.rs
+  s_917b5e323bf1e5::t_982fac92c225db 33-39,392
+src/auth/claude/auth/tests.rs
+  s_917b5e323bf1e5::t_2eb83aa3fb45c1 195-238
+src/auth/claude/login.rs
+  s_917b5e323bf1e5::t_24b472b5044d0e 298,686-725
+src/auth/codex/auth.rs
+  s_917b5e323bf1e5::t_93fe921513b177 19-22,29-114,195,199,212,225,231,242,248,259-265,278-286,289-298,300-315,325-326,333,462,472-478,482-507,509-525,569,574,580,584,1282-1497
+src/auth/mod.rs
+  s_917b5e323bf1e5::t_0abda546fa9aa8 91,154-212,384,389,394,702
+src/auth/shared.rs
+  s_917b5e323bf1e5::t_27ef55e3a15958 611,615-618,770-794
+src/auth/slots/tests.rs
+  s_917b5e323bf1e5::t_33bbbfd31d7d89 23,295-296,306-309,312,316,325,361,807,813-816,848-858
+src/bench_support.rs
+  s_917b5e323bf1e5::t_feab8a3245431f 33-39,76-83,157-158,161-167,171-201,215-217,234-243,260-264,356,401-410
+src/config.rs
+  s_917b5e323bf1e5::t_2aad7ff0b6cea8 17,21,29-39,43-44,1522-1529,1992-1994,2128-2129,2133-2155,2164-2335,2451,2481-2482,2546-2578,2584,2586-2670,2673-2675,2844-2896,3395-3398,4032,4035-4038,4180-4192,4195,4198,4201,4204-4205,4212-4224,4398-4407,4411-4415,4421-4425,4429,4435,4519,4528-4564,4566,4568,4580,4582,4585-4686,4690-4702,4706-4713,4724-4730,4736-4788,4793-4850,4852,4865,4867-4886,4910,4917,4933,4935-4937,4946,4952,4966,4968-4971,4982,4988,5010,5012,5020,5278,5280,5936-5987,6131-6155,6326,6346-6347,6358,6366,6368-6369,6381-6385,6406,6408,8289,8298-8310,8314-9043,9085,9147,9157-9158,9177,9187,9207,9223,9249,9256-9643,9649,9677,9704,9706,9734,9743,9758,9766,9775,9787,9794,9806,9813,9827,9834,9857,9876,9920,9947,9973,10019,10133,10135,10907-10909,10915-10916,10931,10933
+src/config/router.rs
+  s_917b5e323bf1e5::t_209c64e5788dd2 1-330
+src/config/router/advisor.rs
+  s_917b5e323bf1e5::t_ff2ceaf34a2229 1-171
+src/config/router/advisor/tests.rs
+  s_917b5e323bf1e5::t_81bac7c903c3b6 1-237
+src/config/router/bounds.rs
+  s_917b5e323bf1e5::t_da2bee5c04eb85 1-164
+src/config/router/classifier.rs
+  s_917b5e323bf1e5::t_115494e0e2afcc 1-446
+src/config/router/classifier/tests.rs
+  s_917b5e323bf1e5::t_cc6f7360bd7fbd 1-525
+src/config/router/composite.rs
+  s_917b5e323bf1e5::t_60801f4a8324c3 1-176
+src/config/router/composite/tests.rs
+  s_917b5e323bf1e5::t_1d85cc07071f31 1-232
+src/config/router/prefill.rs
+  s_917b5e323bf1e5::t_1341b50d9ffa1d 1-154
+src/config/router/random.rs
+  s_917b5e323bf1e5::t_c258024be328df 1-71
+src/config/router/stage.rs
+  s_917b5e323bf1e5::t_d280cdddf2c796 1-2,14-15,18-23,39,51,54,88-255,295-345
+src/config/router/validate.rs
+  s_917b5e323bf1e5::t_fcacec038564d0 1-345
+src/config/subagents.rs
+  s_917b5e323bf1e5::t_d6aca867b8cc20 1-173
+src/config/subagents/classifier.rs
+  s_917b5e323bf1e5::t_64fdb73fe96449 1-154
+src/config/subagents/tests.rs
+  s_917b5e323bf1e5::t_c8519176111496 1-211
+src/config/subagents/validation_tests.rs
+  s_917b5e323bf1e5::t_e297fd43b3c97e 1-418
+src/config/upstreams.rs
+  s_917b5e323bf1e5::t_aa880067db9048 105-110,151-159,279-424
+src/discovery.rs
+  s_917b5e323bf1e5::t_565b7c9b35e112 19-20,22-27,40,56-57,322,324,330,332,396-397,411,425,427,433,435,454-455,501,503,548,550
+src/gateway/tests.rs
+  s_917b5e323bf1e5::t_7da272f2f8a46a 1485,1487,1557,1559
+src/import.rs
+  s_917b5e323bf1e5::t_815f76be34ac17 1-119
+src/import/decode.rs
+  s_917b5e323bf1e5::t_90b3d65fa15ce3 1-154
+src/import/storage.rs
+  s_917b5e323bf1e5::t_063f7e254a87da 1-103
+src/lib.rs
+  s_917b5e323bf1e5::t_6576731a37520a 25
+src/main.rs
+  s_917b5e323bf1e5::t_adcdb3016c416f 54-58,104,135-140,206-208,434-461,1411-1451
+src/metrics.rs
+  s_917b5e323bf1e5::t_21910644095dc6 51-52,140-151,437-439,441-457,461,468,475,488,505,523-526,530-553,684-789,913,915-917,931-977,1047
+src/model/mod.rs
+  s_917b5e323bf1e5::t_63e671f55dcb40 8
+src/model/responses.rs
+  s_917b5e323bf1e5::t_039db2695f816a 10,89-93,95-98,145,158-184,225-230,238-239,267-275,282-283,616-651,657,664,817-835,837-843,845,891,894-895,912-914,920,1126-1156,1158-1170,1174-1188,1702-2031
+src/model/responses_request.rs
+  s_917b5e323bf1e5::t_47704e3d7645bb 6-8,117,125,134,205-240,257,275-286,296-300,302,305-327,1056,1093-1169,1183-1184
+src/model/stop_sequences.rs
+  s_917b5e323bf1e5::t_16fb0565f148ea 1-211
+src/protocol.rs
+  s_917b5e323bf1e5::t_bf3d9a32a469e0 133
+src/proxy.rs
+  s_917b5e323bf1e5::t_d1dfaad8d2aabe 16,97-153,164
+src/proxy/chain_stream.rs
+  s_917b5e323bf1e5::t_1e9d320d68a200 353-426,444-445,447-451,488-489,500-501,532,623-629,633,636,652,669-674,796-800,842-847,877-896,902-908
+src/proxy/failover.rs
+  s_917b5e323bf1e5::t_2afc0df22ce770 12,15,22-32,66-78,95-96,106-117,125-189,191,194-350,355-356,360-366,368-369,372-377,383-396,400-405,412,423-428,431-432,437,440-441,446-472,474-507,509-530,544-552,590-602,655,660,665,670,675,680-685,691,697-698,700-703,753-773,945,947-952,954,987,989-1021,1023,1027-1028,1036,1058-1060
+src/proxy/failover/chain.rs
+  s_917b5e323bf1e5::t_4047796785b707 1-495
+src/proxy/failover/gated.rs
+  s_917b5e323bf1e5::t_f39814051fbc1f 1-283
+src/proxy/failover/prefill_tests.rs
+  s_917b5e323bf1e5::t_39cbf8d5715ae7 1-420
+src/proxy/failover/tests.rs
+  s_917b5e323bf1e5::t_fc164fee48358e 790,792,914-1012
+src/proxy/safeguards.rs
+  s_917b5e323bf1e5::t_b2522552f0aedd 1-443
+src/proxy/safeguards/tests.rs
+  s_917b5e323bf1e5::t_8a8e11dd964bc3 1-274
+src/reload.rs
+  s_917b5e323bf1e5::t_71b8a0794314e9 39-63,79-88,94-95
+src/routes.rs
+  s_917b5e323bf1e5::t_2ad53e9136ebaf 9,18,20-22,26-30,35-52,58-59,128-129,132-137,140,147-159,162,164-166
+src/routes/tests.rs
+  s_917b5e323bf1e5::t_7e037965d4ba4e 1-387
+src/routing.rs
+  s_917b5e323bf1e5::t_ec9cdc93386af7 5,9-11,22-27,139-140,151-278,281-285,345-385,432,434,555,557,777,779,848,850,883-890,892,909,933-955,967,969,980-982,1022-1023,1056-1057,1079,1082,1087-1318
+src/routing/context.rs
+  s_917b5e323bf1e5::t_5fdcde073b367c 85-88,164-206
+src/routing/driven.rs
+  s_917b5e323bf1e5::t_cbf4176e486cd4 1-200
+src/routing/driven/budget.rs
+  s_917b5e323bf1e5::t_8aa43763a08d05 1-133
+src/routing/driven/build.rs
+  s_917b5e323bf1e5::t_4e52a6b4a0ff0b 1-427
+src/routing/driven/drive.rs
+  s_917b5e323bf1e5::t_682dee1f9a580a 1-363
+src/routing/driven/gated.rs
+  s_917b5e323bf1e5::t_08cdc82688f3be 1-463
+src/routing/driven/gated/tests.rs
+  s_917b5e323bf1e5::t_4fb3a954b7d7dc 1-218
+src/routing/driven/tests.rs
+  s_917b5e323bf1e5::t_024243cb90c0f2 1-458
+src/routing/envelope.rs
+  s_917b5e323bf1e5::t_6af052b795cbcc 1-255
+src/routing/handoff.rs
+  s_917b5e323bf1e5::t_396a63d22f45b5 1-312
+src/routing/judge.rs
+  s_917b5e323bf1e5::t_11358312d7c706 1-227
+src/routing/outcome.rs
+  s_917b5e323bf1e5::t_2ce6ef44d6355e 1-218
+src/routing/prefill.rs
+  s_917b5e323bf1e5::t_850aa8233c9ee3 1-165
+src/routing/prefill/driven.rs
+  s_917b5e323bf1e5::t_56d9fbe11a2fb5 1-233
+src/routing/prefill/tests.rs
+  s_917b5e323bf1e5::t_908796becc24c0 1-315
+src/routing/random.rs
+  s_917b5e323bf1e5::t_61a5110aecd506 1-255
+src/routing/random/tests.rs
+  s_917b5e323bf1e5::t_a57406b79b6eed 1-217
+src/routing/serve.rs
+  s_917b5e323bf1e5::t_ebd2c2a0b89f70 1-393
+src/routing/serve/bounds.rs
+  s_917b5e323bf1e5::t_a0785e35ff2fec 1-455
+src/routing/serve/gated.rs
+  s_917b5e323bf1e5::t_a3e165e10a6cd3 1-598
+src/routing/serve/gated/tests.rs
+  s_917b5e323bf1e5::t_3f8b2087c1dd18 1-324
+src/routing/serve/tests.rs
+  s_917b5e323bf1e5::t_c75589933fbd77 1-796
+src/routing/stage.rs
+  s_917b5e323bf1e5::t_7c77a7627b59dd 1-2,11-18,22,32,34,83-97,166-169,173-198,201-208,210-235,272-299,303-329,358-360,390-396
+src/routing/stage/signals.rs
+  s_917b5e323bf1e5::t_98657a36f61bfe 13-14,63-72,190-192,203,223-226,245,307-382
+src/routing/stage/store.rs
+  s_917b5e323bf1e5::t_82e291e7dcc7fd 25,39-40,74-103,112-116,125,138-143,151-159,237-238,256,260,269-273,353-361
+src/routing/stage/store/decide.rs
+  s_917b5e323bf1e5::t_b5fa0a2c3aa088 1-263
+src/routing/stage/store/entries.rs
+  s_917b5e323bf1e5::t_32e562f38948f1 129-146
+src/routing/stage/store/scope_tests.rs
+  s_917b5e323bf1e5::t_38af02c7eee199 62-71
+src/routing/stage/store/tests.rs
+  s_917b5e323bf1e5::t_530dcf1dfc3e04 89-98,817-1018,1334-1640
+src/routing/stage/tests.rs
+  s_917b5e323bf1e5::t_a45bde1585ae88 23-32,197-363
+src/routing/stage/vocabulary.rs
+  s_917b5e323bf1e5::t_22e59d9c54e08c 8-9,19-23,36-42,57,80-107,112-117
+src/routing/subagents.rs
+  s_917b5e323bf1e5::t_d6c36255830de8 1-221
+src/routing/subagents/resolve_tests.rs
+  s_917b5e323bf1e5::t_dcf2609351e53d 1-254
+src/server.rs
+  s_917b5e323bf1e5::t_6c9e37d7db5cbf 52,57-66,123-124
+src/stream_metrics.rs
+  s_917b5e323bf1e5::t_7b4e92c844707d 46-54,788-795
+src/stream_metrics/tests.rs
+  s_917b5e323bf1e5::t_b21713d1b8e20b 376,385
+src/usage_poll.rs
+  s_917b5e323bf1e5::t_bbaeffeac86a1b 288
+tests/admin_surface.rs
+  s_917b5e323bf1e5::t_45a0e0e5fbf200 3264-3426
+tests/antigravity_multi_account.rs
+  s_917b5e323bf1e5::t_66dfb1e55b61e9 1-491
+tests/auto_mode_safeguards.rs
+  s_917b5e323bf1e5::t_9852ef31deb215 1-177
+tests/buffer_replay.rs
+  s_917b5e323bf1e5::t_c5ff93905d3713 1-488
+tests/buffer_replay/advisor.rs
+  s_917b5e323bf1e5::t_5e7c73a9fa66f4 1-271
+tests/buffer_replay/harness.rs
+  s_917b5e323bf1e5::t_87855a5133b7e6 1-338
+tests/buffer_replay/pool.rs
+  s_917b5e323bf1e5::t_19e22e50621463 1-171
+tests/buffer_replay/transport.rs
+  s_917b5e323bf1e5::t_c252b1e24f61f0 1-514
+tests/codex_multi_account.rs
+  s_917b5e323bf1e5::t_83047f15ea92e0 93-95,272,2114-2238
+tests/codex_websocket_fallback.rs
+  s_917b5e323bf1e5::t_e853700ca79a5f 394-396,402,405-409,486,520-526,563,565-575,658-696
+tests/driven_lane.rs
+  s_917b5e323bf1e5::t_97db89960f6091 1-395
+tests/driven_lane/overlay.rs
+  s_917b5e323bf1e5::t_9216fa8d383e76 1-411
+tests/failover.rs
+  s_917b5e323bf1e5::t_4ff8827a7290f4 135,137,1089,1091
+tests/import_opencodex.rs
+  s_917b5e323bf1e5::t_d85818537dc7fa 1-268
+tests/inbound_auth.rs
+  s_917b5e323bf1e5::t_d5ebed8662d9bc 97,99
+tests/judge_harness/driven.rs
+  s_917b5e323bf1e5::t_3561b52954e912 1-402
+tests/judge_harness/mod.rs
+  s_917b5e323bf1e5::t_3a7365af4f899b 1-401
+tests/noop_router.rs
+  s_917b5e323bf1e5::t_4460682ec52c2b 1-221
+tests/opencode_zen.rs
+  s_917b5e323bf1e5::t_5fb9a6de81d525 91,93
+tests/passthrough.rs
+  s_917b5e323bf1e5::t_1fe8a3c10e3fc7 641,643
+tests/prefill_router.rs
+  s_917b5e323bf1e5::t_c9748b6d4225c7 1-249
+tests/responses_cache_affinity.rs
+  s_917b5e323bf1e5::t_63bc6a49cfae3a 1-174
+tests/responses_chain_stream.rs
+  s_917b5e323bf1e5::t_d46a5d819edbe5 15-16,115,117,189-194,207,582-647
+tests/responses_stop_sequences.rs
+  s_917b5e323bf1e5::t_f5eb485acb3b5c 1-390
+tests/responses_translate.rs
+  s_917b5e323bf1e5::t_de27cff1db913c 6-7,26-29,37,60-61,145,572,895-896,918,929,942,959,986-993,1022,1041,1057-1064,1076-1083,1095,1108-1115,1742-1744,1749,1765-1913,2207-2209,2214,2226-2227,2236-2281,2448-2455,2471
+tests/router_judge.rs
+  s_917b5e323bf1e5::t_71ce9a015e7c03 1-548
+tests/router_surface.rs
+  s_917b5e323bf1e5::t_dcf9e8447cf3c2 88,112-115,688,694-695
+tests/stage_router.rs
+  s_917b5e323bf1e5::t_e221dc231c9ee9 1,25-26,121,123,148,159-171,501
+tests/subagents_passthrough.rs
+  s_917b5e323bf1e5::t_14b5c9edeea4e6 1-353
+ui/src/Dashboard.tsx
+  s_917b5e323bf1e5::t_2023fcd32b47a9 6-7,21,23-29,47-52,80,101-106
+ui/src/__tests__/antigravity-accounts.test.tsx
+  s_917b5e323bf1e5::t_d15ebe370d2533 1-131
+ui/src/__tests__/coalescing.test.tsx
+  s_917b5e323bf1e5::t_ec9c88b88e8bc2 86-134
+ui/src/accounts.ts
+  s_917b5e323bf1e5::t_870f178ff5b211 5,167-181,200,203,220-232
+ui/src/components/AddAntigravityAccount.tsx
+  s_917b5e323bf1e5::t_641b479eb79924 1-122
+ui/src/components/AntigravityAccounts.tsx
+  s_917b5e323bf1e5::t_f68e5ec64e1cbc 1-158
+ui/src/providers.tsx
+  s_917b5e323bf1e5::t_a3b5118635d32e 16
+ui/src/test/harness.tsx
+  s_917b5e323bf1e5::t_0f0f0e99c0a24a 7,60,82-83
+ui/src/types.ts
+  s_917b5e323bf1e5::t_3e41177d71c88b 91-97
+ui/src/useDashboard.ts
+  s_917b5e323bf1e5::t_3e693d60a4f9ad 8,49,56,82,85,94,119-130,141,153,160,166,172
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "00b3ad5186e40a9475d45379ba49a163ab86220b",
+  "prompts": {},
+  "sessions": {
+    "s_917b5e323bf1e5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9a3245c1-d179-474e-91c1-931e5a5a03a6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
