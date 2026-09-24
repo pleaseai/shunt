@@ -12,12 +12,12 @@ shunt は、上流の Claude、Codex/ChatGPT、Antigravity のアカウントを
 オプションのテーブルを追加し、設定した環境変数から管理者の認証情報を 1 つ以上提供します。
 
 ```toml
-[server.admin]                        # all keys optional; defaults shown
+[server.admin]                        # すべてのキーは省略可能。値はデフォルト
 header = "x-shunt-admin-token"
 tokens_env = "SHUNT_ADMIN_TOKENS"
 session_ttl_secs = 3600
 pending_ttl_secs = 600
-# hide_observed = false                 # (default) scan host CLI/app logins
+# hide_observed = false                 # (デフォルト) ホストの CLI/アプリのログインをスキャン
 ```
 
 ```bash
