@@ -563,7 +563,7 @@ base_threshold = 0.5
 | `gated_max_bytes` | `8388608` | 被保留轮次的最大字节数:SSE 帧字节或 JSON 响应体 |
 | `gated_idle_ms` | `60000` | 被保留轮次中两个完整内容帧之间允许的最长间隔。SSE 保活帧(`event: ping` 帧和 `:` 注释帧)不会重置它；跨分块拆分的帧会先重组再分类 |
 | `gated_max_duration_ms` | `600000` | 被保留轮次的墙钟时间上限,同时覆盖响应头和响应体 |
-| `max_judge_calls` | `8` | 单个会话可以发起的裁判调用次数。被扣住的回合本身不是裁判调用,不计入 |
+| `max_judge_calls` | `8` | 单个会话可以发起的裁判调用次数。在调用发出时计数,且不退还。每个被委派的 agent id 有自己的预算,不带 agent id 的委派回合按会话共用另一份预算。不发起裁判调用的回合永远不会被拒绝。被扣住的回合本身不是裁判调用,不计入 |
 
 三个 `gated_*` 键约束的是 [`escalation`](#mode--escalation) 或 [`advisor`](#type--advisor)
 条目上**被扣住**的回合,也就是 shunt 在裁决出来之前扣住的回合。其他条目没有被扣住的回合,
@@ -663,8 +663,11 @@ policy = { type = "target_selector", selector = "/target" }
 而 shunt 每加载一次配置就构建一次该实例。热重载会重新构建它,所以重载之后会忘记每个会话
 当时持有的目标 —— 这和 `prefill_router` 的性质相同。`max_judge_calls` 则是 shunt 自己的,
 按 (会话, agent) 计数,因此被委派的子任务花的是自己的预算而不是父会话的;不带会话 id 的
-请求根本不被跟踪,对这类调用方该上限就是按请求生效。预算用尽的回合会跳过裁判、直接取
-fail-open 目标,裁判调用结果记为 `budget_exhausted`。
+请求根本不被跟踪,对这类调用方该上限就是按请求生效。预算在裁判调用发出时扣减,所以不需要
+裁判的回合 —— 重放已保留分配的 `new_session` 或 `user_turn` 回合 —— 在预算用完之后仍按该
+分配处理。裁判调用被拒绝的回合按裁判失败的方式收尾:取上面的默认目标,route source 为
+`classifier_fail_open`,裁判调用结果记为 `budget_exhausted`。classifier 形式的
+`[models.subagents]` 覆盖层行为相同。
 
 **探测无需裁判即可解析。** `count_tokens` 请求从不咨询裁判,直接由 fail-open 目标作答;
 没有请求体的那些面 —— `GET /routes`、`/v1/models` 发现、`shunt check` —— 同理,它们以路由
@@ -767,7 +770,9 @@ confidence_threshold = 0.5
 
 六个[每次调用的上限](#每次调用的上限)放在 `[models.router]` 上,而不是放进两张子表里。
 裁判够不到的回合回落到 `stage.efficient_target`,这既是上游的规则,也是探测和没有请求体
-的那些面所报告的值。
+的那些面所报告的值。裁判调用被 `max_judge_calls` 拒绝的回合,如果会话有上一次保留的档位就
+保持该档位,否则取 picker 的默认档位,因此档位不会在用户回合与其后的工具续接
+回合之间变动。不需要裁判调用的回合不会被拒绝。
 
 因为 stage 那一半就是 libsy 自己的 stage 路由,它定夺下来的回合仍然报告阶段路由器自己的
 路由来源,而不是报告成 classifier 的决策 —— 也就是说,composite 里由信号驱动的回合,读起来

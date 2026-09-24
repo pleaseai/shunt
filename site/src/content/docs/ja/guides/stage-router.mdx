@@ -270,7 +270,8 @@ base_threshold = 0.5           # タスクを効率ティアに留める p_solve
 
 `[models.router]` の 6 つのキーがすべての内部呼び出しに上限を課します —
 `judge_timeout_ms`（既定 `30000`、ヘッダー*と*ボディを覆うエンドツーエンド期限）、
-`judge_max_response_bytes`（`65536`）、セッションごとの `max_judge_calls`（`8`）、
+`judge_max_response_bytes`（`65536`）、セッションごとの `max_judge_calls`（`8`。
+ジャッジ呼び出しを送るときに差し引くので、同時に走るターンでも超えられません）、
 そして 3 つの `gated_*` です。`gated_*` は `escalation` や `advisor` のエントリが
 留め置くターンにだけ上限を課すので、ステージルーターでは何も制限しません。上限を超えるとアップストリーム呼び出しはキャンセルされます。
 

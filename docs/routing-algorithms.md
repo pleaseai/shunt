@@ -567,7 +567,7 @@ jobs.
 | `judge_timeout_ms` is end-to-end | Headers *and* body, on the non-streaming judge call. A `.send()`-only timeout stops at headers, and a `200` that then stalls would never reach `fail_open` |
 | `gated_idle_ms` and SSE pings | Measured between *completed content frames*, not between chunks: a frame split across chunk boundaries is reassembled from a carried remainder before it is classified, so an endless keep-alive stream cannot disarm the bound by splitting `event: ping` mid-line. A comment-only frame (`: keep-alive`), the SSE spec's own keep-alive, counts as a ping too. A chunk that completes no frame resets nothing. Frames are split after normalizing CRLF and bare-CR line endings, so a CRLF chunk carrying real content beside a keep-alive still counts as progress |
 | `judge_max_response_bytes` bounds the allocation | Enforced where the adapter reads the upstream body, not on what reaches the JSON parser. A judge route is an alias route by construction, so its reply takes the adapter's buffered branch; capping only afterwards would spend the memory the bound exists to deny. Client traffic is uncapped and unchanged |
-| `max_judge_calls` | Per session, counted under the pin |
+| `max_judge_calls` | Per session, charged when a judge call is dispatched and counted off the pin (issue #634; see below) |
 | Admission on the envelope | Inbound auth ranges over the requested id plus every answer and judge target's full chain; the managed-model policy stays on the requested id |
 | Judge credentials | Reserved slots plus `authorization` and `x-api-key` stripped unconditionally, `anthropic-beta` with them; a passthrough judge target is a startup error |
 | `shunt.requests` / `shunt.latency` | Gain a `caller` attribute, `client` or `router` |
@@ -581,6 +581,27 @@ collector, but **no gated turn exists yet**: the escalation weak turn and the
 advisor executor turn are PR 6. Until then the three keys bound nothing at
 runtime, and the collector is exercised by its own unit tests only. PR 6 (§8)
 now enforces them on every gated turn.
+
+`max_judge_calls` shipped counted under the pin, charged at `commit` after the
+judge's round trip. Concurrent turns of one session each read the same count,
+so a budget of one admitted a call per turn, and a pin that lost the
+supersession race dropped its charge (issue #634). The count now lives in a
+side table of its own, keyed by a digest of (router model id, router table,
+session, agent scope), and the charge is taken at the moment the judge call is
+about to be sent, under one lock acquisition with no `.await` between the check
+and the reservation. A call that was made is never refunded, including one made
+by a turn whose pin later lost the race. The count is never published as a
+tier: it is not on the pin, so tier resolution, dwell, stickiness, and
+`stage_flip` accounting cannot see it. It keeps the lifetime the pin gave it,
+now independently of the pin: it expires after `session_ttl_seconds` without a
+served turn of that session (every served turn refreshes it) and resets when a
+reload changes the router table. The table holds at most 4096 keys; at the cap
+it drops expired keys first and then clears itself, which costs at worst one
+extra judge call for a session in flight. The parent thread and each delegated
+agent id have their own budget; delegated turns with no non-blank agent id
+share one bucket per session (§7). A sessionless request still gets its one
+judge call. A turn whose judge call is refused takes the picker's default
+(`fall_open`), and the judge counter records `budget_exhausted`.
 
 ### What is tested
 
@@ -607,7 +628,8 @@ none; the judge's headers carry the judge provider's injected key and nothing
 of the caller's; the call lands on the judge's own provider and not on the
 tier mocks; a `200`-then-stall and an endless ping stream each resolve as
 `fall_open` within the deadline and close the upstream connection; and
-`max_judge_calls` stops a session at its budget.
+`max_judge_calls` stops a session at its budget, and — since issue #634 — so
+do concurrent turns of one session.
 
 ### Not in this PR
 
@@ -1049,16 +1071,37 @@ discovering:
 `max_judge_calls` is shunt's, not libsy's, and is counted in a `JudgeBudget`
 keyed on `sha256(session_id ‖ agent_id)` — so a `Task` child spends its own
 budget rather than its parent's, the same scoping the stage pin key took in
-PR 1 (§2). The map is capped at 4096 entries. A request carrying no session id
-is not tracked at all: there is no key to accumulate under, so the bound applies
-per request for those callers. A turn that finds its budget spent skips the
-drive entirely, answers from the algorithm's fail-open target, and records the
-judge-call outcome `budget_exhausted`. The reservation is taken per `CallModel`
-rather than per drive, so the same label also covers a call refused *inside* a
-drive — two turns of one session racing for the last one, or a chaining
-algorithm (composite, subagents classifier) asking for a second call on a
-budget down to one. Those turns answer from the algorithm's own close, not from
-a skipped drive, but the outcome they record is still `budget_exhausted`.
+PR 1 (§2). A delegated turn (`x-claude-code-request-class: subagent` or
+`workflow`) that carries no non-blank `x-claude-code-agent-id` keys onto one
+separate bucket per session, bounded by `max_judge_calls` like any other,
+rather than onto the parent's (issue #649): libsy retains no affinity for such
+a turn, so a fan-out of them could otherwise spend the parent's whole budget.
+The map lives with the entry, so a reload rebuilds it, and is capped at 4096
+keys, cleared whole at the cap. A request carrying no session id is not
+tracked at all: there is no key to accumulate under, so the bound applies per
+request for those callers.
+
+The reservation is taken per `CallModel`, at the moment a judge call is about
+to be sent, not per drive, and a call that was made is never refunded. A turn
+that makes no judge call is never refused. Before issue #648 a turn that found
+its budget spent skipped the drive entirely, so a spent session lost its
+`new_session` or `user_turn` affinity replays (`classifier_retained`) and fell
+open for the rest of its life; now the drive runs, a replay records `retained`
+and costs nothing, and only a turn that actually asks for a judge call is
+refused. libsy's own cascade closes that turn, as it closes any failed judge
+call. `llm_classifier` and the classifier-form overlay land where they did
+before — capability on `strong_target`, custom on `default_target`'s first
+model — reported as `classifier_fail_open`, and under `new_session` libsy
+records whatever its cascade decided as the `(session, agent)`'s assignment. A
+`composite` lands on the session's last retained tier when it has one, else
+on the picker's default tier, reported as `classifier_fail_open`. It used to
+answer from `stage.efficient_target`; serving that now, while libsy keeps the
+retained tier for the tool continuations that make no call, would move the
+tier mid-turn. The refusal is recorded beside the reservation, inside the call closure, so a
+drive refused before it made any call records `budget_exhausted` whatever its
+cascade reported — including a race lost for a session's last call — and a
+chaining algorithm (composite, subagents classifier) refused a second call
+records it wherever that drive fails open.
 
 ### Probes
 
@@ -1172,7 +1215,8 @@ ceiling), one focused test per clause:
    tool continuation, which resolves as `fall_open` with no judge call;
 7. a `count_tokens` probe on a classifier entry makes no judge call;
 8. `max_judge_calls = 1` under `every_request` judges the first turn and answers
-   the second from the budget-exhausted fail-open path.
+   the second from the budget-exhausted fail-open path; under `new_session`, a
+   spent budget still replays the assignment (issue #648).
 
 ### Not in this PR
 

@@ -528,6 +528,26 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   `weak_target` may equal `classifier_target` without upstream's
   prompted-target restriction, and the gated call is not charged to
   `max_judge_calls`, which bounds judge calls only.
+- **2026-09-25 (issues #634, #648, #649) — `max_judge_calls` is charged per
+  dispatched call, off the pin.** §3 says only that a per-session
+  `max_judge_calls` bounds count. The shipped lanes counted it three ways: the
+  stage router on the tier pin, read as a snapshot and written at `commit`,
+  so concurrent turns overspent it and a superseded pin refunded its call; the
+  driven lane in a side table, but behind a pre-drive check that refused
+  *turns*, including affinity replays that make no call; and every driven
+  entry keyed an agent-id-less delegated turn onto its parent's budget. One
+  rule now holds on every lane, gated ones included: a call is charged at the
+  moment it is dispatched, the read and the reservation under one lock with no
+  `.await` between them; a call made is never refunded; the count is never
+  published as a tier; and a turn that makes no judge call is never refused by
+  it. The stage router's count moves into a side table beside its pins, keyed
+  by (model, router table, session, agent scope), and keeps the pin's lifetime
+  without riding on it: `session_ttl_seconds` refreshed by every served turn,
+  and a reset when a reload changes the table. A delegated turn with no agent
+  id draws on one bounded budget per session instead of its parent's. A refused
+  driven call is closed by libsy's own cascade, which for a `composite` keeps
+  the session's retained tier rather than `stage.efficient_target`; the
+  `budget_exhausted` outcome still names every refusal.
 
 ### 10. Verification before code
 
