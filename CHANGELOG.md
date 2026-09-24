@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.49.1](https://github.com/pleaseai/shunt/compare/v0.49.0...v0.49.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **responses:** honor status on wrapped Codex websocket error frames ([#675](https://github.com/pleaseai/shunt/issues/675)) ([135e1a6](https://github.com/pleaseai/shunt/commit/135e1a6b8fb225ff4490e17b305075dc82797717))
+
 ## [0.49.0](https://github.com/pleaseai/shunt/compare/v0.48.0...v0.49.0) (2026-09-24)
 
 
