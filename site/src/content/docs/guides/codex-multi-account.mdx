@@ -125,6 +125,7 @@ Deleting a store-managed account through the admin web surface clears that ident
 | 429 upstream response | numeric `retry-after`, clamped to 1–3600s, default 60s |
 | 401 from a `token_env` account | 5 minutes |
 | 401 from a `credentials`/store account, refresh fails or the retry is still 401 | 5 minutes |
+| 400 model refusal (see below) | 1 hour, for that model on that account only |
 
 ## Usage poller
 
@@ -144,7 +145,8 @@ Eligibility mirrors the Claude side: only an imported login (a store-managed acc
 | 401 with `token_env` | Cannot refresh: cooldown 5 minutes and rotate. |
 | 5xx or transport failure | Cooldown 30 seconds and rotate. |
 | Credential-resolution failure | Cooldown 5 minutes and rotate. |
-| Other status (e.g. `400`) | Relay without failover; mark the account healthy. |
+| 400 whose `detail`, `error.message`, or `message` contains `model is not supported` (case-insensitive) | The backend has not enabled that model for this ChatGPT account (a per-account rollout gate that can change within hours), so another account may serve it. Rotate, and cool down **only that model on that account** for 1 hour: the account keeps serving other models, is not marked healthy, and shows no cooldown on the dashboard. If every account refuses, the refusal `400` is relayed with its message intact. |
+| Other status (e.g. any other `400`) | Relay without failover; mark the account healthy. |
 
 Classification happens before the response body streams, so a mid-stream failure is never replayed. That includes a backend `error` / `response.failed` event with code `rate_limit_exceeded` or `slow_down` arriving on a `200 OK` stream: a non-streaming client receives HTTP `429` with a `rate_limit_error` envelope, while a streaming client keeps its `200` and receives the same envelope inline as an SSE `error` event. In both cases the turn is not replayed and the account is **not** cooled down or rotated — the 429 row above applies only when the upstream HTTP response status itself is 429. If the pool exhausts its attempts after receiving at least one upstream response, shunt relays a **translated** Anthropic-style error envelope built from that last response — the status (e.g. `429`) is preserved, but the body is re-shaped, not relayed verbatim. This is the opposite of the Anthropic pool, which relays the last upstream response byte-for-byte. If every account fails before any upstream response exists, the normal Anthropic Messages route (`/v1/messages`) returns a gateway-owned `502 api_error` with `all upstreams failed (N attempted)`. The separate `[server.codex_endpoint]` inbound path is unaffected and retains `all Codex OAuth accounts failed before receiving an upstream response`.
 

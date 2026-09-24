@@ -385,6 +385,15 @@ struct AccountHealth {
     /// state_path` persists quota alone, so a restart clears this and the
     /// account's next terminal failure re-establishes it.
     needs_relogin: Option<ReloginCause>,
+    /// Per-model cooldowns, keyed by the ASCII-lowercased upstream model: the
+    /// account is healthy, but the upstream refused this one model for it
+    /// (see [`is_codex_model_unsupported`]). Selection folds the entry for
+    /// the requested model into [`governing_cooldown`], so other models on
+    /// the account are unaffected. Expired entries are pruned on insert
+    /// ([`AccountPool::cooldown_model`]) because the key can be
+    /// client-supplied on the inbound passthrough. Memory-only, like
+    /// `cooldown_until`.
+    model_cooldowns: HashMap<String, Instant>,
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
@@ -755,6 +764,7 @@ impl AccountPool {
             .unwrap_or_default()
             .as_secs();
         let is_fable = is_fable_model(model);
+        let model_key = model.map(str::to_ascii_lowercase);
         let reprobe = allow_reprobe.then(|| reprobe_interval(pool)).flatten();
         let (snapshots, pending_reprobe, quota_expired) = {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
@@ -768,7 +778,7 @@ impl AccountPool {
                 // each account's QuotaState just to assess it after release.
                 let assessment = assess_quota(&health.quota, account, is_fable, pool, unix_now);
                 let weekly_reset = governing_weekly_reset(&health.quota, is_fable);
-                let cooldown_until = governing_cooldown(health, is_fable);
+                let cooldown_until = governing_cooldown(health, is_fable, model_key.as_deref());
                 snapshots.push((cooldown_until, assessment, weekly_reset));
             }
             // Opportunistic re-probe (Change B): among the final rotation
@@ -1352,6 +1362,35 @@ impl AccountPool {
         // account comes back it re-enters slow start instead of inheriting the
         // allowance it had grown before failing.
         health.ramp_allowance = 0;
+        drop(entries);
+        crate::metrics::record_pool_rotation(provider, reason);
+    }
+
+    /// Cool down one `(account, model)` pair: selection for `model` treats the
+    /// account as cooling down until `duration` passes, while every other model
+    /// on the account is unaffected. Unlike [`Self::cooldown_scoped`] this
+    /// leaves the account-wide cooldowns and the storm-control ramp alone — the
+    /// credential is healthy; the upstream only refused this one model for it
+    /// (see [`is_codex_model_unsupported`]).
+    pub fn cooldown_model(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        model: &str,
+        duration: Duration,
+        reason: &'static str,
+    ) {
+        let now = Instant::now();
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        let health = entries.entry(account_key(provider, account)).or_default();
+        health.observed = true;
+        health.enabled = !account.disabled;
+        // Prune on insert so a client-supplied model string cannot grow the
+        // map without bound: only live refusals survive.
+        health.model_cooldowns.retain(|_, until| *until > now);
+        health
+            .model_cooldowns
+            .insert(model.to_ascii_lowercase(), now + duration);
         drop(entries);
         crate::metrics::record_pool_rotation(provider, reason);
     }
@@ -2602,16 +2641,22 @@ pub fn is_fable_model(model: Option<&str>) -> bool {
     model.is_some_and(|model| model.to_ascii_lowercase().contains("fable"))
 }
 
-fn governing_cooldown(health: &AccountHealth, is_fable: bool) -> Option<Instant> {
-    // Fable traffic must wait for both applicable cooldowns, so the later expiry governs.
-    if is_fable {
-        match (health.cooldown_until, health.cooldown_until_fable) {
-            (Some(account), Some(fable)) => Some(account.max(fable)),
-            (account, fable) => account.or(fable),
-        }
-    } else {
-        health.cooldown_until
-    }
+/// The cooldown that governs selecting this account for a request: the
+/// account-wide cooldown, plus the Fable-only one for Fable traffic, plus the
+/// per-model one for `model_key` (the ASCII-lowercased upstream model). A
+/// request must wait for every applicable cooldown, so the latest expiry
+/// governs.
+fn governing_cooldown(
+    health: &AccountHealth,
+    is_fable: bool,
+    model_key: Option<&str>,
+) -> Option<Instant> {
+    let fable = is_fable.then_some(health.cooldown_until_fable).flatten();
+    let model = model_key.and_then(|model| health.model_cooldowns.get(model).copied());
+    [health.cooldown_until, fable, model]
+        .into_iter()
+        .flatten()
+        .max()
 }
 
 fn governing_weekly_reset(quota: &QuotaState, is_fable: bool) -> Option<u64> {
@@ -3136,6 +3181,10 @@ pub fn classify_kimi(status: StatusCode, headers: &HeaderMap) -> FailoverAction 
 /// Takes the same `(status, headers)` shape as [`classify`] so both adapters
 /// share one call site. Codex quota/rejection headers are display-only: every
 /// 429 still rotates rather than pausing the same account.
+///
+/// Every other 4xx relays here, including a 400. The Responses pool reads the
+/// body of a 400 separately and rotates on the one per-account 400 it knows,
+/// the model entitlement refusal — see [`is_codex_model_unsupported`].
 pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverAction {
     if status.is_success() {
         return FailoverAction::Relay;
@@ -3150,6 +3199,47 @@ pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverActio
         return FailoverAction::Rotate;
     }
     FailoverAction::Relay
+}
+
+/// How long a Codex pool account stays skipped for one model after the
+/// upstream refused that model for it ([`is_codex_model_unsupported`]). The
+/// refusal is a rollout/entitlement gate that flaps: on 2026-09-24 it lifted
+/// within hours. A refusal is a fast 400, so re-probing the account for the
+/// model hourly is cheap, and a shorter cooldown picks the model back up
+/// sooner than CLIProxyAPI's 12h once the gate lifts.
+pub const CODEX_MODEL_UNSUPPORTED_COOLDOWN: Duration = Duration::from_secs(60 * 60);
+
+/// Whether a Codex/ChatGPT upstream response is the per-account model
+/// entitlement refusal: HTTP 400 whose message says the model "is not
+/// supported", e.g. `{"detail":"The 'gpt-6-luna' model is not supported when
+/// using Codex with a ChatGPT account."}` (the websocket-wrapped variant
+/// carries it as `error.message`).
+///
+/// The backend gates a model per ChatGPT account during a rollout, and the
+/// gate flaps over hours, so another pool account may well be entitled to the
+/// same model. The pool therefore rotates on this 400 and cools only the
+/// `(account, model)` pair ([`AccountPool::cooldown_model`]) instead of
+/// relaying it the way [`classify_codex`] relays every other 400. The match
+/// mirrors CLIProxyAPI's `isModelSupportErrorMessage` (its
+/// `model_not_supported` cooldown): a case-insensitive "model is not
+/// supported" — checked only in the JSON string fields `detail`,
+/// `error.message`, and top-level `message`, never the raw body, so the text
+/// echoed anywhere else (a prompt, an unrelated field) cannot trigger it.
+pub fn is_codex_model_unsupported(status: StatusCode, body: &[u8]) -> bool {
+    if status != StatusCode::BAD_REQUEST {
+        return false;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    ["/detail", "/error/message", "/message"]
+        .into_iter()
+        .filter_map(|pointer| value.pointer(pointer)?.as_str())
+        .any(|message| {
+            message
+                .to_ascii_lowercase()
+                .contains("model is not supported")
+        })
 }
 
 /// Classify an Antigravity (Code Assist) upstream response for account-pool
@@ -5829,6 +5919,114 @@ mod tests {
             Some(&sticky),
             "the Fable request must put the cooled account in the tail"
         );
+    }
+
+    #[test]
+    fn model_cooldown_defers_only_that_model_on_that_account() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b")];
+        let session = "model-cooldown";
+        let sticky = pool.select_order("codex", &accounts, Some(session), Some("gpt-x"), None)[0];
+        let other = 1 - sticky;
+        let key = account_key("codex", &accounts[sticky]);
+        pool.entries
+            .lock()
+            .unwrap()
+            .get_mut(&key)
+            .unwrap()
+            .ramp_allowance = 4;
+
+        // Stored case-insensitively: a refusal for `GPT-X` governs `gpt-x`.
+        pool.cooldown_model(
+            "codex",
+            &accounts[sticky],
+            "GPT-X",
+            Duration::from_secs(120),
+            "model_not_supported",
+        );
+
+        assert_eq!(
+            pool.select_order("codex", &accounts, Some(session), Some("gpt-x"), None),
+            vec![other, sticky],
+            "the refused model must skip the cooled account for the uncooled one"
+        );
+        assert_eq!(
+            pool.select_order("codex", &accounts, Some(session), Some("gpt-y"), None)[0],
+            sticky,
+            "another model on the same account must be unaffected"
+        );
+        {
+            let entries = pool.entries.lock().unwrap();
+            let health = &entries[&key];
+            assert!(health.observed);
+            assert_eq!(health.cooldown_until, None, "no account-wide cooldown");
+            assert_eq!(health.ramp_allowance, 4, "the storm-control ramp is kept");
+        }
+
+        // Every account cooled for the model: the soonest expiry still leads.
+        pool.cooldown_model(
+            "codex",
+            &accounts[other],
+            "gpt-x",
+            Duration::from_secs(60),
+            "model_not_supported",
+        );
+        assert_eq!(
+            pool.select_order("codex", &accounts, Some(session), Some("gpt-x"), None),
+            vec![other, sticky]
+        );
+
+        // Expired entries are pruned when the next one lands.
+        pool.cooldown_model(
+            "codex",
+            &accounts[sticky],
+            "gpt-x",
+            Duration::ZERO,
+            "model_not_supported",
+        );
+        pool.cooldown_model(
+            "codex",
+            &accounts[sticky],
+            "gpt-z",
+            Duration::from_secs(60),
+            "model_not_supported",
+        );
+        let entries = pool.entries.lock().unwrap();
+        let cooled = entries[&key].model_cooldowns.keys().collect::<Vec<_>>();
+        assert_eq!(cooled, vec!["gpt-z"]);
+    }
+
+    #[test]
+    fn detects_the_codex_model_entitlement_refusal() {
+        let refusal =
+            "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.";
+        for body in [
+            serde_json::json!({ "detail": refusal }),
+            serde_json::json!({ "error": { "message": refusal } }),
+            serde_json::json!({ "message": refusal }),
+            serde_json::json!({ "detail": "The model IS NOT SUPPORTED here" }),
+        ] {
+            assert!(
+                is_codex_model_unsupported(StatusCode::BAD_REQUEST, body.to_string().as_bytes()),
+                "must match: {body}"
+            );
+        }
+        let refusal_body = serde_json::json!({ "detail": refusal }).to_string();
+        assert!(!is_codex_model_unsupported(
+            StatusCode::FORBIDDEN,
+            refusal_body.as_bytes()
+        ));
+        for body in [
+            serde_json::json!({ "detail": "Invalid value for 'input'." }).to_string(),
+            refusal.to_string(),
+            serde_json::json!({ "input": refusal }).to_string(),
+            serde_json::json!({ "error": { "code": refusal } }).to_string(),
+        ] {
+            assert!(
+                !is_codex_model_unsupported(StatusCode::BAD_REQUEST, body.as_bytes()),
+                "must not match: {body}"
+            );
+        }
     }
 
     #[test]

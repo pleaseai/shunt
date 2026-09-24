@@ -604,7 +604,29 @@ pub(super) fn pool_events_stream(
                                 account,
                                 upstream.headers(),
                             );
-                            match classify_first(&state, &route, account, upstream) {
+                            // No idle bound: a gated (`routing::serve`)
+                            // call never takes this streaming arm.
+                            let outcome =
+                                match classify_first(&state, &route, account, upstream, None).await
+                                {
+                                    Ok(outcome) => outcome,
+                                    Err(error) => {
+                                        let envelope = adapter_error_envelope(error).await;
+                                        record(StatusCode::BAD_GATEWAY);
+                                        return Some((
+                                            Err(envelope),
+                                            (
+                                                Phase::Done,
+                                                order_iter,
+                                                http_body,
+                                                last_response,
+                                                reprobe,
+                                                attempt_started,
+                                            ),
+                                        ));
+                                    }
+                                };
+                            match outcome {
                                 FirstOutcome::Relay(upstream) => {
                                     let status = upstream.status();
                                     state.accounts.mark_healthy(
@@ -731,7 +753,28 @@ pub(super) fn pool_events_stream(
                                         account,
                                         retry.headers(),
                                     );
-                                    match classify_retry(&state, &route, account, retry) {
+                                    let outcome =
+                                        match classify_retry(&state, &route, account, retry, None)
+                                            .await
+                                        {
+                                            Ok(outcome) => outcome,
+                                            Err(error) => {
+                                                let envelope = adapter_error_envelope(error).await;
+                                                record(StatusCode::BAD_GATEWAY);
+                                                return Some((
+                                                    Err(envelope),
+                                                    (
+                                                        Phase::Done,
+                                                        order_iter,
+                                                        http_body,
+                                                        last_response,
+                                                        reprobe,
+                                                        attempt_started,
+                                                    ),
+                                                ));
+                                            }
+                                        };
+                                    match outcome {
                                         RetryOutcome::Relay(retry) => {
                                             let retry_status = retry.status();
                                             if retry_status.is_success() {
@@ -1045,7 +1088,7 @@ pub(super) async fn forward_chatgpt_oauth(
         state
             .accounts
             .note_codex_quota(&route.provider, account, upstream.headers());
-        match classify_first(&state, &route, account, upstream) {
+        match classify_first(&state, &route, account, upstream, turn.response_bounds.idle).await? {
             FirstOutcome::Relay(upstream) => {
                 // A non-401/429/5xx response means the account itself is fine,
                 // whether or not this particular request succeeded (mirrors the
@@ -1131,7 +1174,9 @@ pub(super) async fn forward_chatgpt_oauth(
                 state
                     .accounts
                     .note_codex_quota(&route.provider, account, retry.headers());
-                match classify_retry(&state, &route, account, retry) {
+                match classify_retry(&state, &route, account, retry, turn.response_bounds.idle)
+                    .await?
+                {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
                         if retry_status.is_success() {
@@ -1439,6 +1484,91 @@ pub(super) async fn force_refresh_or_cooldown(
     }
 }
 
+/// The pool-rotation metric reason [`rotate_on_model_refusal`] records.
+const MODEL_NOT_SUPPORTED: &str = "model_not_supported";
+
+/// Buffer an upstream error body under the same bounds the Responses adapter's
+/// error envelope reads it with ([`crate::error::ERROR_ENVELOPE_BUDGET`] and
+/// [`crate::error::ERROR_ENVELOPE_BYTES`]), plus the gated idle gap when the
+/// caller has one (`ResponseBounds::idle`, as `json_response` honours it), and
+/// return a rebuilt response carrying the same status, headers, and bytes,
+/// alongside those bytes. A read that trips the budget, the cap, or the
+/// transport falls back to the text the envelope read falls back to
+/// (`upstream returned {status}`), so the relayed error is what it would have
+/// been had the envelope read failed itself. Only an idle cut is an error: it
+/// is the caller's bound, carried back to `routing::serve` as its marker.
+async fn buffer_error_body(
+    upstream: reqwest::Response,
+    idle: Option<Duration>,
+) -> Result<(reqwest::Response, bytes::Bytes), AdapterError> {
+    let status = upstream.status();
+    let version = upstream.version();
+    let mut headers = upstream.headers().clone();
+    let read = tokio::time::timeout(
+        crate::error::ERROR_ENVELOPE_BUDGET,
+        crate::adapters::collect_upstream_body(
+            upstream,
+            Some(crate::error::ERROR_ENVELOPE_BYTES),
+            idle,
+        ),
+    )
+    .await;
+    let body = match read {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(crate::adapters::UpstreamBodyError::Idle(idle))) => {
+            return Err(crate::adapters::idle_error(idle));
+        }
+        _ => {
+            headers.remove(reqwest::header::CONTENT_LENGTH);
+            bytes::Bytes::from(format!("upstream returned {status}"))
+        }
+    };
+    let mut rebuilt = axum::http::Response::new(body.clone());
+    *rebuilt.status_mut() = status;
+    *rebuilt.version_mut() = version;
+    *rebuilt.headers_mut() = headers;
+    Ok((reqwest::Response::from(rebuilt), body))
+}
+
+/// Check a relay-classified response for the per-account model refusal
+/// ([`accounts::is_codex_model_unsupported`]). Only a 400 has its body read —
+/// every other status passes through untouched, unread. On a match the
+/// `(account, model)` pair is cooled for
+/// [`accounts::CODEX_MODEL_UNSUPPORTED_COOLDOWN`] and `true` is returned: the
+/// caller rotates, and never marks the account healthy nor cools it
+/// account-wide — the credential is fine, and other models on the account keep
+/// being served. Either way the returned response carries the body intact, so a
+/// pool that exhausts on refusals relays the upstream's own 400.
+async fn rotate_on_model_refusal(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    upstream: reqwest::Response,
+    idle: Option<Duration>,
+) -> Result<(reqwest::Response, bool), AdapterError> {
+    if upstream.status() != StatusCode::BAD_REQUEST {
+        return Ok((upstream, false));
+    }
+    let (upstream, body) = buffer_error_body(upstream, idle).await?;
+    if !accounts::is_codex_model_unsupported(upstream.status(), &body) {
+        return Ok((upstream, false));
+    }
+    state.accounts.cooldown_model(
+        &route.provider,
+        account,
+        &route.upstream_model,
+        accounts::CODEX_MODEL_UNSUPPORTED_COOLDOWN,
+        MODEL_NOT_SUPPORTED,
+    );
+    tracing::warn!(
+        provider = %route.provider,
+        account = %account.name,
+        model = %route.upstream_model,
+        "codex pool account refused the model; cooling the account for this model and rotating to the next account"
+    );
+    Ok((upstream, true))
+}
+
 /// The classification of a **first-attempt** upstream response on the Codex pool.
 /// The account-specific relay rendering (translate vs verbatim, and the
 /// `mark_healthy`) stays with the caller; the shared cooldown/rotate bookkeeping
@@ -1447,8 +1577,9 @@ pub(super) enum FirstOutcome {
     /// The account is fine — the caller marks it healthy and relays this response
     /// its own way.
     Relay(reqwest::Response),
-    /// The account failed over (already cooled down); the caller stashes this
-    /// response as the pool's last-seen and rotates.
+    /// The account failed over (already cooled down — account-wide, or for this
+    /// model alone on a model refusal); the caller stashes this response as the
+    /// pool's last-seen and rotates.
     Rotate(reqwest::Response),
     /// A 401 — the caller should force-refresh and retry this account.
     NeedRefresh(reqwest::Response),
@@ -1457,16 +1588,27 @@ pub(super) enum FirstOutcome {
 /// Classify a first-attempt upstream response, applying the shared rotate cooldown.
 /// A `Relay` account is left for the caller to mark healthy so it can render the
 /// response its own way (a translating path splits success vs a non-failover 4xx;
-/// the passthrough relays verbatim).
-pub(super) fn classify_first(
+/// the passthrough relays verbatim). A 400 model refusal rotates instead
+/// ([`rotate_on_model_refusal`]); `idle` bounds that body read and its trip is
+/// the only `Err`.
+pub(super) async fn classify_first(
     state: &AppState,
     route: &Route,
     account: &AccountConfig,
     upstream: reqwest::Response,
-) -> FirstOutcome {
+    idle: Option<Duration>,
+) -> Result<FirstOutcome, AdapterError> {
     let status = upstream.status();
     match accounts::classify_codex(status, upstream.headers()) {
-        FailoverAction::Relay => FirstOutcome::Relay(upstream),
+        FailoverAction::Relay => {
+            let (upstream, rotate) =
+                rotate_on_model_refusal(state, route, account, upstream, idle).await?;
+            Ok(if rotate {
+                FirstOutcome::Rotate(upstream)
+            } else {
+                FirstOutcome::Relay(upstream)
+            })
+        }
         FailoverAction::Rotate => {
             let cooldown = rotate_cooldown(status, upstream.headers());
             state.accounts.cooldown(
@@ -1481,9 +1623,9 @@ pub(super) fn classify_first(
                 status = %status,
                 "codex pool account failed over; cooling down and rotating to the next account"
             );
-            FirstOutcome::Rotate(upstream)
+            Ok(FirstOutcome::Rotate(upstream))
         }
-        FailoverAction::RefreshRetry => FirstOutcome::NeedRefresh(upstream),
+        FailoverAction::RefreshRetry => Ok(FirstOutcome::NeedRefresh(upstream)),
         FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
     }
 }
@@ -1500,15 +1642,18 @@ pub(super) enum RetryOutcome {
 /// Classify a refreshed-retry upstream response. A retry still rejected with 401
 /// (the refresh succeeded but the credential is still bad) or otherwise
 /// non-relayable cools the account down and rotates; only a relayable status is
-/// handed back for the caller to render. `classify_codex` returns `RefreshRetry`
-/// only for 401 (handled above) and never `PauseSame`, so only `Relay` and
-/// `Rotate` are live — the others ride `Rotate`'s arm as a defensive no-op.
-pub(super) fn classify_retry(
+/// handed back for the caller to render. A 400 model refusal rotates too, cooling
+/// only that model ([`rotate_on_model_refusal`]). `classify_codex` returns
+/// `RefreshRetry` only for 401 (handled above) and never `PauseSame`, so only
+/// `Relay` and `Rotate` are live — the others ride `Rotate`'s arm as a defensive
+/// no-op.
+pub(super) async fn classify_retry(
     state: &AppState,
     route: &Route,
     account: &AccountConfig,
     retry: reqwest::Response,
-) -> RetryOutcome {
+    idle: Option<Duration>,
+) -> Result<RetryOutcome, AdapterError> {
     let retry_status = retry.status();
     if retry_status == StatusCode::UNAUTHORIZED {
         state.accounts.cooldown(
@@ -1529,10 +1674,18 @@ pub(super) fn classify_retry(
             account = %account.name,
             "codex pool account refreshed but upstream still rejected the new credential; cooling down and rotating"
         );
-        return RetryOutcome::Rotate(retry);
+        return Ok(RetryOutcome::Rotate(retry));
     }
     match accounts::classify_codex(retry_status, retry.headers()) {
-        FailoverAction::Relay => RetryOutcome::Relay(retry),
+        FailoverAction::Relay => {
+            let (retry, rotate) =
+                rotate_on_model_refusal(state, route, account, retry, idle).await?;
+            Ok(if rotate {
+                RetryOutcome::Rotate(retry)
+            } else {
+                RetryOutcome::Relay(retry)
+            })
+        }
         FailoverAction::Rotate | FailoverAction::RefreshRetry => {
             let cooldown = rotate_cooldown(retry_status, retry.headers());
             state.accounts.cooldown(
@@ -1547,7 +1700,7 @@ pub(super) fn classify_retry(
                 status = %retry_status,
                 "codex pool refresh retry did not succeed; rotating to the next account"
             );
-            RetryOutcome::Rotate(retry)
+            Ok(RetryOutcome::Rotate(retry))
         }
         FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
     }
@@ -1776,6 +1929,223 @@ mod tests {
             .await
             .expect_err("non-streaming 429 stays an error response");
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    const MODEL_REFUSAL: &str =
+        "The 'gpt-5.2-codex' model is not supported when using Codex with a ChatGPT account.";
+
+    const COMPLETED_TURN: &str = "event: response.created\ndata: {\"response\":{\"id\":\"resp_2\"}}\n\n\
+         event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n\
+         event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
+
+    /// Mount a response for one pool account, told apart by the
+    /// `chatgpt-account-id` its probe token resolves to.
+    async fn mount_for_account(server: &MockServer, account_id: &str, response: ResponseTemplate) {
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::header("chatgpt-account-id", account_id))
+            .respond_with(response)
+            .mount(server)
+            .await;
+    }
+
+    /// A 400 model refusal rotates to the next account (which serves the
+    /// turn), cooling only the refusing account for that model: it is not
+    /// cooled account-wide, and another model still selects it first.
+    #[tokio::test]
+    async fn pool_rotates_off_a_model_refusal_and_cools_only_that_model() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+        let server = MockServer::start().await;
+        mount_for_account(
+            &server,
+            "acc-a",
+            ResponseTemplate::new(400).set_body_json(json!({ "detail": MODEL_REFUSAL })),
+        )
+        .await;
+        mount_for_account(
+            &server,
+            "acc-b",
+            ResponseTemplate::new(200).set_body_string(COMPLETED_TURN),
+        )
+        .await;
+        let accounts = vec![
+            pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let state = pool_state(server.uri());
+        let (status, response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            pool_turn(accounts.clone(), false),
+        )
+        .await
+        .expect("the second account serves the turn");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response.headers()["x-shunt-account"], "pool-probe-b");
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock records")
+                .len(),
+            2,
+            "one refusal then one success"
+        );
+
+        let snapshot = state.accounts.snapshot("codex", &accounts[..1], None, None);
+        assert_eq!(
+            snapshot[0].cooldown_secs_remaining, None,
+            "the refusing account is not cooled account-wide"
+        );
+        let order = |session: &str, model: &str| {
+            state
+                .accounts
+                .select_order("codex", &accounts, Some(session), Some(model), None)
+        };
+        // A session that sticks to account a, so deferring it is observable.
+        let session = (0..64)
+            .map(|n| format!("model-refusal-{n}"))
+            .find(|session| order(session, "gpt-other")[0] == 0)
+            .expect("some session sticks to account a");
+        assert_eq!(
+            order(&session, "gpt-other"),
+            vec![0, 1],
+            "another model keeps account a first"
+        );
+        assert_eq!(
+            order(&session, "gpt-5.2-codex"),
+            vec![1, 0],
+            "the refused model defers account a"
+        );
+    }
+
+    /// The same rotation on the committed streaming arm.
+    #[tokio::test]
+    async fn pool_streaming_arm_rotates_off_a_model_refusal() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+        let server = MockServer::start().await;
+        mount_for_account(
+            &server,
+            "acc-a",
+            ResponseTemplate::new(400)
+                .set_body_json(json!({ "error": { "message": MODEL_REFUSAL } })),
+        )
+        .await;
+        mount_for_account(
+            &server,
+            "acc-b",
+            ResponseTemplate::new(200).set_body_string(COMPLETED_TURN),
+        )
+        .await;
+        let accounts = vec![
+            pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let state = pool_state(server.uri());
+        let (_, response) = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("\"text\":\"hi\""), "got: {text}");
+        assert!(!text.contains("event: error"), "got: {text}");
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock records")
+                .len(),
+            2
+        );
+    }
+
+    /// Every account refusing the model exhausts the pool on the upstream's
+    /// own 400, its refusal message intact.
+    #[tokio::test]
+    async fn pool_exhausted_by_model_refusals_relays_the_refusal() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_json(json!({ "detail": MODEL_REFUSAL })),
+            )
+            .mount(&server)
+            .await;
+        let accounts = vec![
+            pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let state = pool_state(server.uri());
+        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
+            .await
+            .expect_err("an exhausted pool relays the refusal");
+        assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock records")
+                .len(),
+            2,
+            "both accounts were tried"
+        );
+        let bytes = axum::body::to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains(MODEL_REFUSAL), "got: {text}");
+    }
+
+    /// Positive twin: any other 400 is still the client's error, relayed from
+    /// the first account without rotating.
+    #[tokio::test]
+    async fn pool_relays_other_bad_requests_without_rotating() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+        let server = MockServer::start().await;
+        let invalid = "Invalid value for 'input'.";
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "detail": invalid })))
+            .mount(&server)
+            .await;
+        let accounts = vec![
+            pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let state = pool_state(server.uri());
+        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
+            .await
+            .expect_err("a client 400 is relayed");
+        assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock records")
+                .len(),
+            1,
+            "no rotation on an ordinary 400"
+        );
+        let bytes = axum::body::to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        assert!(String::from_utf8_lossy(&bytes).contains(invalid));
     }
 
     #[test]

@@ -217,6 +217,23 @@ The pool survives as the **intra-upstream** mechanism; the chain is the
 - Pool exhaustion already surfaces as a relayed advance-class status
   (`401`/`429`/`5xx`) or a translated `502` — all are advance classes in §3,
   so exhaustion flows into the chain without a special case.
+- **Codex pool model refusal**: a `chatgpt_oauth` pool account answered with
+  HTTP `400` whose `detail`, `error.message`, or top-level `message` contains
+  `model is not supported` (case-insensitive — e.g. `The 'gpt-6-luna' model is
+  not supported when using Codex with a ChatGPT account.`) rotates to the next
+  account instead of relaying. The backend gates a model per ChatGPT account
+  during a rollout, and the gate flaps over hours, so another account may be
+  entitled. Only the *(account, model)* pair is cooled, for a fixed 1 hour
+  (memory-only, not persisted in `state_path`); the account keeps serving other
+  models, its account-wide cooldown and storm-control ramp are untouched, and
+  the admin dashboard's cooldown fields do not show it. Selection skips the
+  pair like any cooled account, including the all-cooled soonest-expiry
+  fallback. When every account refuses, the pool exhausts on the upstream's own
+  `400` with its refusal message intact; `400` is not an advance class in §3,
+  so it is returned to the client. Every other `400` still relays from the
+  first account without rotating. The rule applies to the HTTP responses of the
+  translating pool (`/v1/messages`) and the `[server.codex_endpoint]`
+  passthrough, first attempt and post-refresh retry alike.
 - **Physical-account state sharing**: per-account state (quota windows,
   health, cooldowns, in-flight admission counts, refresh locks) is re-keyed
   from provider name to *(store family, stable account identity)*. Identity
