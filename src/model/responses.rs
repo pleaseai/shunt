@@ -88,8 +88,9 @@ pub struct AnthropicSseMachine {
     /// Paired with the client-facing status the envelope was mapped against
     /// ([`backend_error_status`]): `429` for an in-stream `rate_limit_exceeded`
     /// or `slow_down`, `529` for `server_is_overloaded`, `400` for the
-    /// `invalid_prompt` / `bio_policy` / `cyber_policy` refusals, the frame's
-    /// own `status` for a Codex websocket wrapped error, else `502`.
+    /// `invalid_prompt` / `bio_policy` / `cyber_policy` refusals, the event's
+    /// own non-2xx top-level `status` (a Codex websocket wrapped error frame,
+    /// or any other backend's error event carrying one), else `502`.
     backend_error: Option<(StatusCode, Value)>,
     /// The client's Anthropic `stop_sequences`, emulated gateway-side because the
     /// Responses API has no `stop` parameter (issue #605). Empty — the common
@@ -1143,6 +1144,10 @@ fn error_code(value: &Value) -> &str {
 ///   wrapped HTTP-class error frame, mirroring rust-v0.156.0's
 ///   `parse_wrapped_websocket_error_event` — → that status through
 ///   [`client_facing_status`], exactly as the same HTTP status would map.
+///   This machine is shared by the HTTP SSE and websocket paths, so the arm is
+///   not transport-gated: any Responses backend's in-stream error event with a
+///   top-level status maps the same way (a `401` / `403` passes through as the
+///   auth envelope, as that out-of-band HTTP status already does).
 /// - Anything else (including `misalignment_policy_violation`, `server_error`,
 ///   and quota codes such as `insufficient_quota`) → the `502` gateway error.
 ///

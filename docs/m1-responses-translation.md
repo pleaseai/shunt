@@ -221,7 +221,7 @@ classification (`codex-api/src/sse/responses.rs`):
 | `rate_limit_exceeded`, `slow_down` | `429` | `rate_limit_error` | `RateLimitExceeded` (rust-v0.156.0 moved `slow_down` here from `ServerOverloaded`) |
 | `server_is_overloaded` | `529` | `overloaded_error` | `ServerOverloaded` (terminal upstream; see below) |
 | `invalid_prompt`, `bio_policy`, `cyber_policy` | `400` | `invalid_request_error` | `InvalidRequest` / `BioPolicy` / `CyberPolicy` (terminal, non-retryable) |
-| any other code, on an event carrying a top-level non-2xx `status` / `status_code` (the Codex WebSocket's wrapped HTTP-class error frame) | that status, per the table above | per the table above | treated as an HTTP error with that status (`parse_wrapped_websocket_error_event`) |
+| any other code, on an event carrying a top-level non-2xx `status` / `status_code` (the Codex WebSocket's wrapped HTTP-class error frame; not transport-gated, so an HTTP SSE error event from any Responses backend carrying one maps the same way) | that status, per the table above | per the table above | treated as an HTTP error with that status (`parse_wrapped_websocket_error_event`) |
 | anything else (e.g. `misalignment_policy_violation`, `server_error`, `insufficient_quota`) | `502` | `api_error` | — |
 
 The throttle row lets Claude Code's own rate-limit handling see the right type and status; the
