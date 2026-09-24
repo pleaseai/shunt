@@ -1,0 +1,21 @@
+docs/m1-responses-translation.md
+  s_781d868e40ec87::t_d3af5264011333 224
+src/model/responses.rs
+  s_781d868e40ec87::t_d3af5264011333 91-93,1147-1150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0166012c597ceb4fc5b83590db47a137cad8fb42",
+  "prompts": {},
+  "sessions": {
+    "s_781d868e40ec87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b10d36ed-3607-47db-918d-5b80994b38d9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
