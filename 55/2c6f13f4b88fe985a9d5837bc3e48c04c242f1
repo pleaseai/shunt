@@ -1,0 +1,19 @@
+src/adapters/responses/websocket.rs
+  s_781d868e40ec87::t_9217da78ff968f 701
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "552c6f13f4b88fe985a9d5837bc3e48c04c242f1",
+  "prompts": {},
+  "sessions": {
+    "s_781d868e40ec87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b10d36ed-3607-47db-918d-5b80994b38d9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
