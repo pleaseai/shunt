@@ -30,6 +30,9 @@ mod advisor;
 #[path = "buffer_replay/transport.rs"]
 mod transport;
 
+#[path = "buffer_replay/pool.rs"]
+mod pool;
+
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use wiremock::{matchers::method, Mock, MockServer};

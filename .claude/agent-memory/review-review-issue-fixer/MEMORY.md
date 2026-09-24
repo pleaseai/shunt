@@ -7,3 +7,4 @@
 - [SSE framing must be stream-stateful](sse-framing-must-be-stream-stateful.md) — classifying one chunk decides framing on where the network split; carry a remainder.
 - [Mirrored validation over-validates](mirrored-validation-over-validates.md) — config/router/validate.rs restates libsy's rules; a rule copied between forms refuses configs upstream accepts.
 - [Folded refusal loses its label](folded-refusal-loses-its-label.md) — libsy folds a refused CallModel into fall-open; the label needs its own request-local note or it reads `invalid_reply`.
+- [Pool loop idle marker](pool-loop-idle-marker.md) — adapter pool loops rotate on idle 502; body_idle() is on ForwardError; antigravity test needs kind=Antigravity.

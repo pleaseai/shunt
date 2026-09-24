@@ -245,6 +245,18 @@ async fn forward(
                 return Ok((status, crate::adapters::with_admission(response, admission)));
             }
             Err(error) => {
+                // The idle gap that cut this read is the caller's bound, not
+                // this account's fault: rotating would re-spend it against the
+                // next account and could replace the marker `routing::serve`
+                // reads with that account's error.
+                if error
+                    .response
+                    .extensions()
+                    .get::<crate::adapters::UpstreamBodyIdle>()
+                    .is_some()
+                {
+                    return Err(error);
+                }
                 let status = error.response.status();
                 // The empty `HeaderMap` here only feeds the Relay-vs-not
                 // decision, never the cooldown: `classify_antigravity`'s
@@ -308,6 +320,17 @@ async fn forward(
                                         ));
                                     }
                                     Err(retry_error) => {
+                                        // Same as above: the idle bound is
+                                        // the caller's, so it ends the pool
+                                        // walk rather than rotating.
+                                        if retry_error
+                                            .response
+                                            .extensions()
+                                            .get::<crate::adapters::UpstreamBodyIdle>()
+                                            .is_some()
+                                        {
+                                            return Err(retry_error);
+                                        }
                                         let retry_status = retry_error.response.status();
                                         if retry_status == StatusCode::UNAUTHORIZED {
                                             // The refresh grant succeeded — the
