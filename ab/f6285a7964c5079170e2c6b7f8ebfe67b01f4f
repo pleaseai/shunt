@@ -1,0 +1,60 @@
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_93932d8a9e3829::t_e3fee04f473777 65
+site/src/content/docs/ko/reference/configuration.md
+  s_93932d8a9e3829::t_f9f16180fce690 603,708-712,822-823,825
+  s_93932d8a9e3829::t_da317231938c65 824
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_93932d8a9e3829::t_e3fee04f473777 231
+docs/routing-algorithms.md
+  s_93932d8a9e3829::t_d8be7d12e4046d 570,585-605,631-632,1074-1095,1218-1219
+  s_93932d8a9e3829::t_da317231938c65 1096-1104
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_93932d8a9e3829::t_e3fee04f473777 273-274
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_93932d8a9e3829::t_e3fee04f473777 258-259
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_93932d8a9e3829::t_f9f16180fce690 566,666-670,773,775
+  s_93932d8a9e3829::t_da317231938c65 774
+site/src/content/docs/guides/switchyard.mdx
+  s_93932d8a9e3829::t_923519ddf3f580 377-378
+site/src/content/docs/guides/opentelemetry.mdx
+  s_93932d8a9e3829::t_fb57dfb8a82ac8 65
+site/src/content/docs/guides/stage-router.mdx
+  s_93932d8a9e3829::t_923519ddf3f580 285-286
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_93932d8a9e3829::t_f1e23803a9d081 65
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_93932d8a9e3829::t_e3fee04f473777 329-330
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_93932d8a9e3829::t_e3fee04f473777 65
+.please/docs/decisions/0005-routing-algorithm-extensions.md
+  s_93932d8a9e3829::t_56f03ee2454670 531-550
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_93932d8a9e3829::t_e3fee04f473777 356-357
+site/src/content/docs/reference/configuration.md
+  s_93932d8a9e3829::t_da317231938c65 1029
+  s_93932d8a9e3829::t_923519ddf3f580 793,906-912,1027-1028,1030-1031
+site/src/content/docs/ja/reference/configuration.md
+  s_93932d8a9e3829::t_da317231938c65 814
+  s_93932d8a9e3829::t_f9f16180fce690 586,694-699,812-813,815
+src/routing/stage/store/budget_tests.rs
+  s_93932d8a9e3829::t_db1cffcc3e05da 11-16
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_93932d8a9e3829::t_e3fee04f473777 374-375
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "abf6285a7964c5079170e2c6b7f8ebfe67b01f4f",
+  "prompts": {},
+  "sessions": {
+    "s_93932d8a9e3829": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d73c8ef2-bb9f-40d5-bd8b-fa1968b41ba8",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
