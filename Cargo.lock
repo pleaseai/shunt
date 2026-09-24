@@ -3437,6 +3437,7 @@ dependencies = [
  "switchyard-translation",
  "thiserror 2.0.18",
  "tiktoken-rs",
+ "time",
  "tokio",
  "tokio-tungstenite 0.28.0",
  "toml",

@@ -236,8 +236,9 @@ warning exists to emit. ADR-0005 §2 carries the dated amendment.
 | `type = "auto"` | Upstream's preset: `stage_router` with `picker = "efficient_first"` and `confidence_threshold = 0.5`, the rest at shunt's defaults. Only `capable_target` and `efficient_target` are accepted beside it; its route sources are the stage router's |
 | `type = "random"` | A weighted split across `targets`, session-sticky by hash under the default `affinity = "session"` (below) |
 | `type = "noop"` | No upstream call at all: an empty terminal assistant message in the caller's mode (below) |
+| `type = "conditional"` | An ordered rule walk over composable time/header/model/weekday conditions; the first match wins, else `default_target`. Pure lane, no model calls, no request body (below) |
 | The one-hop rule generalises | Any target of any router type that resolves, after a trailing `[1m]`/`[1M]` is stripped, to a `[[models]]` entry must resolve to one that carries no `router`. A target naming no entry still falls through `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`, and warns once at load — the existing unresolvable-target warning, now emitted for every router type |
-| Targets stay public model ids | A chosen target re-enters the ordinary ladder and inherits failover, pools, adapters, `effort`, and `service_tier` (ADR-0005 §2). Nothing about that is new; it now holds for four algorithms instead of one |
+| Targets stay public model ids | A chosen target re-enters the ordinary ladder and inherits failover, pools, adapters, `effort`, and `service_tier` (ADR-0005 §2). Nothing about that is new; it now holds for every router algorithm |
 | `tool_semantics` | Four operator lists over the built-in Claude Code vocabulary (below) |
 | `handoff_notes` | A system block appended on a signal-driven tier change (below) |
 | `capable_hold_turns` | After a signal-driven escalation the capable tier is held for N further turns, reported as route source `capable_hold`. A hold is **not** evidence and cannot move a pin, so the shunt default of `0` leaves pins behaving exactly as they did. `count_tokens` probes neither set nor consume a hold. libsy's early clear on a passing test never fires: shunt leaves `tests_passed` unextracted (`stage-router.md` §3) |
@@ -273,6 +274,35 @@ to hash and report the **first positive-weight target**, the same way they
 report the picker default for a stage router. Route sources are `random` for a
 fresh draw and `random_session` for a hash-pinned one, so the two are readable
 apart in the header and in the metric.
+
+### `conditional`: a rule walk over request metadata and the clock
+
+`conditional` is the cost-routing entry point: it evaluates an ordered list of
+rules, each with a `target` and a `when` table, and the first rule whose
+conditions all hold picks the target. Absent a match, `default_target` answers.
+It is on the pure lane — no model call, no drive — and reads only request
+headers and the clock, never the body.
+
+The config surface is `Config` (wire types, `HH:MM` parsing, and the pure
+`TimeBetween::contains` / `HeaderMatch::matches` predicates); the request-aware
+walk is `routing::conditional::select`, which gathers one `ConditionalContext`
+per request so the rule loop never re-reads the clock or re-scans headers. The
+`config` module keeps zero dependencies on `routing`, per the layer table in
+`ARCHITECTURE.md`.
+
+Rules are sorted into `priority` order once at load (`Config::validate`), stable
+so equal priorities keep declared order; the request path walks the list
+directly. Conditions compose with AND. A header-gated rule never matches a surface that
+resolves without a request (`GET /routes`, discovery, `shunt check`), so it falls
+through to `default_target` there; a live `count_tokens` probe does carry headers
+and can match one. A time-gated rule is evaluated on every surface, since the
+clock is always available.
+
+Validation at load rejects a catch-all rule (an empty `when`, which would shadow
+every later rule), an out-of-range `utc_offset_hours`, a blank header name or
+value, a blank model prefix, an empty `days` list, and an empty rule list. The
+route source is `conditional` for a matched rule and `conditional_default`
+otherwise.
 
 ### `noop`: a well-formed empty turn
 

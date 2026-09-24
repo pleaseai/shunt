@@ -136,6 +136,13 @@ sentry = { version = "0.48.4", default-features = false, features = ["anyhow", "
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+# Conditional-router time windows: parse "HH:MM" specs and compare them
+# against OffsetDateTime in a configured UTC offset. Already in the tree
+# as a transitive dependency; promoted here for the routing module. No
+# feature is enabled: the module uses only `OffsetDateTime`/`UtcOffset`
+# accessors, not the `macros` builders, and `default` already brings the
+# formatting/parsing surface the rest of the tree uses.
+time = "0.3"
 sha2 = "0.10"
 # Optional pluggable store (ADR-0006). `default-features = false` keeps sqlx's
 # `any` driver out. `sqlite-bundled` links the same `libsqlite3-sys` that
