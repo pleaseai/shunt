@@ -1,0 +1,43 @@
+tests/admin_surface.rs
+  s_917b5e323bf1e5::t_d008945e65d477 680-688
+  s_917b5e323bf1e5::t_da9aca1e3f7f31 169-182
+  s_917b5e323bf1e5::t_5b755c28677fb0 659-669
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_917b5e323bf1e5::t_564118f9b606e7 61
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_917b5e323bf1e5::t_13d911d79f8653 20,37-38
+site/src/content/docs/ja/reference/configuration.md
+  s_917b5e323bf1e5::t_37cb09e1ef9eca 62
+site/src/content/docs/ja/reference/endpoints.md
+  s_917b5e323bf1e5::t_2095c242bb0d29 26,30,55
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_917b5e323bf1e5::t_e0bf46949f26b7 20,37-38
+site/src/content/docs/ko/reference/configuration.md
+  s_917b5e323bf1e5::t_5187b3b29b609f 62
+site/src/content/docs/ko/reference/endpoints.md
+  s_917b5e323bf1e5::t_d30d67bfa0d3f0 26,30,55
+site/src/content/docs/reference/configuration.md
+  s_917b5e323bf1e5::t_ed0f27fa42d248 98
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_917b5e323bf1e5::t_a5c804255151ee 20,37-38
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_917b5e323bf1e5::t_4c1ca7af0430e2 62
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_917b5e323bf1e5::t_d3395fb9f5b122 26,30,55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f583466c620cc5d08dcb80b97d79397dec988d3e",
+  "prompts": {},
+  "sessions": {
+    "s_917b5e323bf1e5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9a3245c1-d179-474e-91c1-931e5a5a03a6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
