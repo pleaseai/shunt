@@ -1,8 +1,8 @@
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, time::Duration};
 
 use axum::{
     http::{HeaderMap, StatusCode, Uri},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 
 use crate::{request::RequestBody, routing::Route, server::AppState};
@@ -11,6 +11,7 @@ pub mod anthropic;
 pub mod antigravity;
 pub mod cursor;
 pub mod gemini;
+pub mod noop;
 pub mod responses;
 
 /// Tie a storm-control [`AdmissionGuard`](crate::accounts::AdmissionGuard) to a
@@ -59,7 +60,315 @@ pub struct AdapterError {
     pub failure: Option<AdapterFailure>,
 }
 
+/// The byte cap a bounded call's upstream reply crossed.
+///
+/// Carries no partial body — the point of the cap is that the bytes past it are
+/// never held — and travels as an extension on the refusal's response, which is
+/// how `routing::serve` tells an oversized reply apart from an upstream that
+/// merely failed. A `'static` marker rather than a status code because the
+/// status a client-facing refusal renders is `502` like several others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UpstreamBodyTooLarge {
+    pub(crate) max_bytes: usize,
+}
+
+impl std::fmt::Display for UpstreamBodyTooLarge {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "upstream response body exceeded {} bytes",
+            self.max_bytes
+        )
+    }
+}
+
+impl std::error::Error for UpstreamBodyTooLarge {}
+
+/// The upstream's body failed after the response headers were committed, while
+/// an adapter read a whole successful reply.
+///
+/// Travels as an extension on the adapter error's response, which is how
+/// `routing::serve` tells a weak turn cut mid-body — a turn that ended before
+/// its terminal marker — apart from an upstream that answered with a failure.
+/// A marker rather than a status code for the same reason as
+/// [`UpstreamBodyTooLarge`]: the client-facing refusal is a `502` like several
+/// others, and it stays byte-for-byte what it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UpstreamBodyBroke;
+
+/// Mark `error` as [`UpstreamBodyBroke`], leaving its status, body, message,
+/// and `failure` exactly as they were.
+pub(crate) fn mark_body_broke(mut error: AdapterError) -> AdapterError {
+    error.response.extensions_mut().insert(UpstreamBodyBroke);
+    error
+}
+
+/// The idle gap a bounded call's upstream body went silent past.
+///
+/// Travels as an extension on the adapter error's response, like
+/// [`UpstreamBodyTooLarge`]: `routing::serve` reads it back to cut a gated turn
+/// at its idle bound when the stall happened inside an adapter's whole-body
+/// read — before the reply ever reached its own collector, whose idle timer
+/// has not started yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UpstreamBodyIdle {
+    pub(crate) idle: Duration,
+}
+
+impl std::fmt::Display for UpstreamBodyIdle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "upstream response body sent nothing for {} ms",
+            self.idle.as_millis()
+        )
+    }
+}
+
+impl std::error::Error for UpstreamBodyIdle {}
+
+/// Bounds on an adapter's whole-body read of the upstream reply.
+///
+/// [`ResponseBounds::default`] — both `None` — is every client turn, which is
+/// read exactly as it always was. Only `routing::serve`'s internal calls set
+/// either field; see [`Adapter::forward`] for which reads honour which — `idle`
+/// is honoured by every single whole-body read, not yet by the accumulations
+/// built from a translated event stream (#667).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ResponseBounds {
+    /// Refuse the body the moment it passes this many bytes.
+    pub(crate) max_bytes: Option<usize>,
+    /// Refuse the body once this long passes with no progress, the first wait
+    /// after the headers included. Progress is any chunk for a plain body
+    /// ([`collect_upstream_body`]) and a completed non-ping SSE frame for an
+    /// event-stream body ([`collect_upstream_sse_body`]), so keep-alives alone
+    /// do not hold a stalled reply open.
+    pub(crate) idle: Option<Duration>,
+}
+
+/// How a bounded whole-body read ended.
+pub(crate) enum UpstreamBodyError {
+    /// The transport failed after the response headers were committed.
+    Transport(reqwest::Error),
+    /// The body passed the cap and was abandoned unread.
+    TooLarge(UpstreamBodyTooLarge),
+    /// The body sent nothing for the idle gap and was abandoned.
+    Idle(UpstreamBodyIdle),
+}
+
+/// Read a whole upstream body, refusing it the moment it passes `cap` or goes
+/// silent for `idle`.
+///
+/// `(None, None)` is the client path and is `reqwest`'s own `bytes()`, byte for
+/// byte: a client turn's reply is bounded by the client's own request, and
+/// adding a bound there would be a new way for ordinary traffic to fail.
+///
+/// `Some` is an internal call, where the bound is the point. The cap stops
+/// *reading* on the crossing rather than buffering and checking afterwards —
+/// checking afterwards is checking after the memory has already been spent,
+/// which is exactly what a bound on a judge's reply exists to prevent. The idle
+/// gap times every wait for the next chunk, the first one after the headers
+/// included, the way `routing::serve`'s gated collector does: this read runs
+/// before the reply reaches that collector, so without it an upstream that
+/// commits its headers and stalls would sit until the call's wall-clock bound.
+///
+/// Any chunk is progress here, which is right for a plain body (JSON). An SSE
+/// body is read with [`collect_upstream_sse_body`] instead.
+pub(crate) async fn collect_upstream_body(
+    upstream: reqwest::Response,
+    cap: Option<usize>,
+    idle: Option<Duration>,
+) -> Result<bytes::Bytes, UpstreamBodyError> {
+    collect_bounded_body(upstream, cap, idle, IdleProgress::Chunk).await
+}
+
+/// [`collect_upstream_body`] for a body that is an SSE stream, read whole — the
+/// Responses HTTP reply, which is SSE even for a non-streaming caller.
+///
+/// The idle gap is measured between completed *content* frames, as
+/// `routing::serve`'s gated collector measures it: a chunk refreshes it only
+/// when it completes at least one SSE frame that is not a keep-alive
+/// (`event: ping` or comment-only). An upstream that sends nothing but
+/// keep-alives faster than the gap is therefore still cut at the gap rather
+/// than at the call's wall-clock bound. Framing decides only that, and it
+/// scans the collected body in place — each byte once, with no second copy of
+/// a frame still arriving — so it adds neither memory against the cap nor a
+/// rescan per chunk. The body returned is every byte received, keep-alives
+/// included, and the cap counts every one of them.
+pub(crate) async fn collect_upstream_sse_body(
+    upstream: reqwest::Response,
+    cap: Option<usize>,
+    idle: Option<Duration>,
+) -> Result<bytes::Bytes, UpstreamBodyError> {
+    collect_bounded_body(upstream, cap, idle, IdleProgress::SseFrame).await
+}
+
+/// What refreshes a bounded read's idle deadline.
+#[derive(Clone, Copy)]
+enum IdleProgress {
+    /// Any chunk.
+    Chunk,
+    /// A chunk that completes at least one non-ping SSE frame.
+    SseFrame,
+}
+
+/// The one read loop behind both collectors; `progress` is the only difference.
+async fn collect_bounded_body(
+    upstream: reqwest::Response,
+    cap: Option<usize>,
+    idle: Option<Duration>,
+    progress: IdleProgress,
+) -> Result<bytes::Bytes, UpstreamBodyError> {
+    if cap.is_none() && idle.is_none() {
+        return upstream.bytes().await.map_err(UpstreamBodyError::Transport);
+    }
+    // An upstream that *declares* more than the cap is refused before a byte is
+    // read. The running total below is still the enforcement point — this only
+    // decides how early the same refusal happens — but it turns two cases from
+    // slow into immediate: a body that would be drained to the cap and
+    // discarded, and one whose sender declares a large length and then stalls,
+    // which would otherwise sit until `judge_timeout_ms` and be reported as a
+    // timeout rather than as the oversized reply it announced itself to be.
+    //
+    // Only the declaration is trusted downward, never upward: a length under
+    // the cap proves nothing and the loop still counts every byte. A chunked
+    // reply has no `content-length` at all, so this is a fast path rather than
+    // a gate. Decoding only ever grows a body, so a declared length above the
+    // cap cannot decode to something below it.
+    //
+    // Deliberately no `Vec::with_capacity(content_length)`: the length is the
+    // sender's claim, so pre-allocating on it would let a peer that declares a
+    // large body and sends nothing take that allocation for free. The vector
+    // grows against bytes that actually arrived.
+    if let Some(max_bytes) = cap {
+        if upstream
+            .content_length()
+            .is_some_and(|declared| declared > max_bytes as u64)
+        {
+            return Err(UpstreamBodyError::TooLarge(UpstreamBodyTooLarge {
+                max_bytes,
+            }));
+        }
+    }
+    use futures_util::StreamExt;
+    let mut stream = upstream.bytes_stream();
+    let mut collected: Vec<u8> = Vec::new();
+    let mut total = 0usize;
+    // An absolute deadline, not a per-poll timeout: a chunk that is not
+    // progress must leave it where it was, which re-arming a timeout on every
+    // poll could not do.
+    let mut deadline = idle.map(|idle| tokio::time::Instant::now() + idle);
+    // Frame boundaries over `collected` itself: indices only, no second copy.
+    let mut frames = crate::routing::serve::bounds::IncrementalFrameScanner::default();
+    loop {
+        let next = match idle.zip(deadline) {
+            Some((idle, deadline)) => tokio::time::timeout_at(deadline, stream.next())
+                .await
+                .map_err(|_| UpstreamBodyError::Idle(UpstreamBodyIdle { idle }))?,
+            None => stream.next().await,
+        };
+        let Some(chunk) = next else {
+            break;
+        };
+        let chunk = chunk.map_err(UpstreamBodyError::Transport)?;
+        total = total.saturating_add(chunk.len());
+        if let Some(too_large) = over_cap(total, cap) {
+            return Err(UpstreamBodyError::TooLarge(too_large));
+        }
+        collected.extend_from_slice(&chunk);
+        if let Some(idle) = idle {
+            let progressed = match progress {
+                IdleProgress::Chunk => true,
+                IdleProgress::SseFrame => frames.feed(&collected),
+            };
+            if progressed {
+                deadline = Some(tokio::time::Instant::now() + idle);
+            }
+        }
+    }
+    Ok(bytes::Bytes::from(collected))
+}
+
+/// Render [`UpstreamBodyError::TooLarge`] as an adapter failure that carries the
+/// marker `routing::serve` reads back.
+///
+/// `failure: None` deliberately: an upstream that answered correctly and merely
+/// answered *too much* is not a reason to advance the failover chain onto
+/// another provider, and retrying it would spend the cap again.
+pub(crate) fn too_large_error(too_large: UpstreamBodyTooLarge) -> AdapterError {
+    let mut response =
+        crate::error::ShuntError::new(StatusCode::BAD_GATEWAY, "api_error", too_large.to_string())
+            .into_response();
+    response.extensions_mut().insert(too_large);
+    AdapterError {
+        message: too_large.to_string(),
+        response: Box::new(response),
+        failure: None,
+    }
+}
+
+/// Render [`UpstreamBodyError::Idle`] as an adapter failure that carries the
+/// marker `routing::serve` reads back.
+///
+/// `failure: None` for the same reason as [`too_large_error`]: the upstream
+/// answered and then stalled, and the bound that stopped it is the caller's —
+/// advancing the failover chain would start another route against a call
+/// whose bound has already been spent.
+pub(crate) fn idle_error(idle: UpstreamBodyIdle) -> AdapterError {
+    let mut response =
+        crate::error::ShuntError::new(StatusCode::BAD_GATEWAY, "api_error", idle.to_string())
+            .into_response();
+    response.extensions_mut().insert(idle);
+    AdapterError {
+        message: idle.to_string(),
+        response: Box::new(response),
+        failure: None,
+    }
+}
+
+/// Whether `accumulated` bytes have passed `cap`, as the marker
+/// `routing::serve` reads back to resolve a judge as `oversized`.
+///
+/// For the adapters that build a reply up piece by piece rather than reading
+/// one upstream body: [`collect_upstream_body`] cannot bound a reply that
+/// arrives as a translated event stream, but the accumulation still has to be
+/// bounded, and on the same marker so the two report identically. `None` is
+/// the client path and never refuses.
+pub(crate) fn over_cap(accumulated: usize, cap: Option<usize>) -> Option<UpstreamBodyTooLarge> {
+    let max_bytes = cap?;
+    (accumulated > max_bytes).then_some(UpstreamBodyTooLarge { max_bytes })
+}
+
 pub(crate) trait Adapter {
+    /// Dispatch one request upstream.
+    ///
+    /// `bounds` bounds a **whole-body read** the adapter performs on the
+    /// upstream reply. It is [`ResponseBounds::default`] for every client turn
+    /// — client behaviour is byte-for-byte what it was — and set only for the
+    /// internal calls `routing::serve` makes, where `judge_max_response_bytes`
+    /// and `gated_max_bytes` have to bite before the body is materialised
+    /// rather than after.
+    ///
+    /// `max_bytes`: an adapter materialises a whole reply on two shapes, and
+    /// both are bounded here: a single whole-body read (see
+    /// [`collect_upstream_body`]) and an accumulation built up from a
+    /// translated event stream (see [`over_cap`]). Only an adapter that does
+    /// neither — one that relays every byte onward without holding it — has
+    /// nothing to cap and ignores it; the bound then falls to
+    /// `routing::serve`'s own collector, which reads the relayed stream under
+    /// the same cap.
+    ///
+    /// `idle` (`gated_idle_ms`, set only on gated calls) is honoured by every
+    /// single whole-body read: through [`collect_upstream_body`] — any chunk
+    /// is progress — for the Anthropic adapter's read for the alias `model`
+    /// rewrite, Gemini's error and non-streaming success bodies, and Cursor's
+    /// error-body prefetch in `map_upstream_error`; and through
+    /// [`collect_upstream_sse_body`] — only a completed non-ping SSE frame is
+    /// progress, so keep-alives alone do not hold it open — for the Responses
+    /// HTTP `json_response`. The accumulations do not apply it yet (the
+    /// Responses WebSocket `json_events_response`, Antigravity's
+    /// `drain_non_streaming`; #667), so a stall there is bounded by the call's
+    /// wall-clock bound (`gated_max_duration_ms`) rather than by the idle gap.
     fn forward<'a>(
         &'a self,
         state: AppState,
@@ -67,6 +376,7 @@ pub(crate) trait Adapter {
         uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
+        bounds: ResponseBounds,
     ) -> AdapterFuture<'a>;
 }
 

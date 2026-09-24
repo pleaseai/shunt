@@ -44,7 +44,16 @@ shunt login antigravity
 ```
 
 이는 Antigravity 자체의 OAuth 클라이언트를 사용하는 Google authorization-code 플로우를 실행하고
-`~/.shunt/antigravity-auth.json`을 기록하며, shunt는 이 파일을 읽고 자동 갱신합니다. 이 플로우는 다섯 개의
+`~/.shunt/antigravity-auth.json`을 기록하며, shunt는 이 파일을 읽고 자동 갱신합니다. Google 계정이 여러 개라면 이름으로 각각 로그인하세요:
+
+```bash
+shunt login antigravity --name <account-name>
+```
+
+이름 지정 로그인은 동일한 플로우를 실행하되 싱글톤 파일 대신
+`~/.shunt/accounts/antigravity/<account-name>.json`에 자격 증명을 저장합니다(0600, 0700 디렉터리
+내; 저장소는 `SHUNT_ANTIGRAVITY_ACCOUNTS_DIR`로 오버라이드). 서로를 덮어쓰지 않습니다.
+여기서 `--long-lived`와 `--mode`는 거부됩니다. 이 플로우는 다섯 개의
 스코프를 요청합니다:
 
 ```text
@@ -84,6 +93,12 @@ auth = "antigravity_oauth"
 
 순서가 있는 `[[upstreams]]`는 shunt의 내장 프로바이더를 대체하므로, 명시적 구성은 여전히 폴백 대상인
 `anthropic` 기본값도 함께 선언해야 합니다(`server.default_provider`의 기본값은 `anthropic`입니다).
+
+`antigravity_oauth`는 `claude_oauth`, `chatgpt_oauth`, `kimi_oauth`처럼 풀을 지원합니다:
+`auth = { mode = "antigravity_oauth", accounts = ["personal", "work"] }`로 계정을 선택하세요(단일
+`account = "..."`도 가능하며 둘은 동시에 쓸 수 없습니다). 둘 다 생략하면 shunt가 관리하는 Antigravity
+계정 저장소 전체를 스캔합니다. 구성된 계정이 없고 저장소가 비어 있으면 1단계의 싱글톤 자격 증명으로
+폴백합니다.
 
 레거시 `[providers.antigravity]` 테이블 형식도 계속 지원됩니다 — 다만 한 파일에서 `[[upstreams]]`와
 `[providers.*]`를 섞지 마세요.
@@ -208,6 +223,15 @@ Antigravity는 Claude 모델도 제공하지만, shunt는 아직 그 모델들�
 - **도구 결과는 리치 미디어를 담을 수 없습니다.** 내용에 `image`나 `document` 블록이 포함된
   `tool_result`는 거부됩니다.
 
+## 계정 풀과 페일오버
+
+풀의 각 시도는 해당 계정 전용 자격 증명 — 액세스 토큰과 캐시된 프로젝트 id — 을 해석하고 해당 계정에
+맞게 요청을 다시 구성하므로(카탈로그 조회 포함), 로테이션 과정에서 한 계정의 프로젝트가 다른 계정의
+요청에 섞이지 않습니다. `429 RESOURCE_EXHAUSTED`는 해당 계정을 쿨다운하고 다음 계정으로 시도합니다.
+클라이언트 오류(401/429 외의 4xx)는 로테이션 없이 그대로 전달됩니다. 응답에는 요청을 처리한 계정 이름이
+`x-shunt-account` 헤더로 담깁니다. 모든 계정이 실패하면 마지막 업스트림 오류를 전달하므로 원인이
+가려지지 않습니다.
+
 ## 검증
 
 ```bash
@@ -225,6 +249,8 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 <Aside type="note" title="오버라이드">
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE`은 자격 증명 경로를 오버라이드합니다(빈 값이면 기본값으로 폴백합니다).
+`SHUNT_ANTIGRAVITY_ACCOUNTS_DIR`은 이름 지정 계정 저장소(`~/.shunt/accounts/antigravity`)를
+오버라이드합니다.
 `antigravity_oauth` 업스트림은 두 호스트에 고정됩니다: 받아들이는 비루프백 `base_url`은
 `daily-cloudcode-pa.googleapis.com`(기본값) 또는 예전 문서를 보고 작성한 구성이 계속 로드되도록
 검증 단계에서는 여전히 받아들여지는 `cloudcode-pa.googleapis.com`에 대한 HTTPS뿐입니다 — `daily-cloudcode-pa.sandbox.googleapis.com`을
@@ -262,8 +288,9 @@ token off-origin`입니다.
 
 ```text
 provider `antigravity` is routed but has no credential. It is now the native HTTP upstream, not the
-local `agy` CLI. Run `shunt login antigravity` to authenticate it, or route to `antigravity-cli` to
-stay on the deprecated subprocess transport.
+local `agy` CLI. Run `shunt login antigravity` (or `shunt login antigravity --name <name>` for an
+account pool) to authenticate it, or route to `antigravity-cli` to stay on the deprecated
+subprocess transport.
 ```
 
 [`shunt check`](/ko/reference/cli/#shunt-check)도 동일한 가드를 오프라인으로 실행하므로, CI가 롤아웃 전에

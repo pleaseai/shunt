@@ -9,17 +9,27 @@ use axum::{
 use crate::{
     adapters::{
         anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
-        AdapterError, AdapterFailure,
+        AdapterError,
     },
     auth::{inbound::ConsumedBy, slots::ShuntCredentials},
-    config::{AuthMode, CountTokens, ProviderKind},
+    config::CountTokens,
     count_tokens,
     error::ShuntError,
     routing::{self, AdapterKind},
     server::AppState,
 };
 
-use super::{count_tokens_unsupported, is_count_tokens, normalize_request_body, ForwardError};
+use super::{
+    count_tokens_unsupported, is_count_tokens, normalize_request_body, safeguards, ForwardError,
+};
+
+pub(crate) mod chain;
+pub(crate) mod gated;
+
+// Re-exported at the old path: the adapters and the committed streaming chain
+// classify statuses with these, and the split that moved the loop into `chain`
+// is not a change to where that rule is spelled.
+pub(crate) use chain::{failure_priority, is_advance_status};
 
 pub(super) async fn forward(
     state: AppState,
@@ -53,7 +63,19 @@ pub(super) async fn forward(
             response: Box::new(error.into_response()),
         })?;
     normalize_request_body(&mut body);
-    // Context for a `[models.stage_router]` entry, should the requested id turn
+    // Claude Code's auto mode asks the API to classify the session's own tool
+    // uses server-side (`safeguards` + the `dangerous-tool-use-…` beta). Only
+    // api.anthropic.com answers it, and a completed response carrying no
+    // `safeguard_results` at all makes the client retire the server classifier
+    // for the rest of the session — so the requested types travel to the
+    // response side, where the answer is synthesized if the upstream gave none.
+    // Empty for every request that did not ask, which wraps nothing.
+    //
+    // Read before `apply_handoff_note` below may rewrite the system prompt: the
+    // types are what the *client* asked to have classified, and a gateway-added
+    // block is not part of that request.
+    let requested_safeguards = safeguards::requested_types(body.json());
+    // Context for a `[models.router]` entry, should the requested id turn
     // out to be one. Built unconditionally because construction is a handful of
     // field moves — the headers are borrowed, not read; the `x-claude-code-*`
     // hints are parsed inside `stage::select`, which only a `[[models]]` entry
@@ -70,6 +92,8 @@ pub(super) async fn forward(
         now: started_at,
         pending: std::cell::Cell::new(None),
         decided: std::cell::Cell::new(None),
+        consult: std::cell::Cell::new(None),
+        drive_prefill: std::cell::Cell::new(false),
     };
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json(), Some(&stage)).map_err(
@@ -79,15 +103,18 @@ pub(super) async fn forward(
             },
         )?;
     crate::observability::record_requested_model(&requested_model);
-    // Records the request's final outcome exactly once, at whichever terminal
-    // return point below is taken — the intermediate per-attempt failover
-    // advances already have their own `tracing::warn!` + metrics and are not
-    // re-recorded here (#281 asks only for the request's ultimate outcome, to
-    // keep the span/event signal one-per-request rather than one-per-attempt).
-    let finish = |provider: &str, status: StatusCode| {
-        crate::observability::record_span_outcome(provider, status);
-        crate::observability::capture_upstream_outcome(provider, &requested_model, status);
-    };
+    let model_key = routing::strip_context_window_hint(&requested_model);
+    // A `count_tokens` probe never consults a judge (ADR-0005 §3): it is
+    // answered from the session's pin or the algorithm's no-model-call
+    // decision, makes zero judge calls, and keeps today's first-route-only gate
+    // and dispatch. `None` here is what excludes it, before an envelope is even
+    // computed. The prefill lane is the one driven algorithm a probe *does*
+    // enter — it makes no model call, and its affinity is what holds a probe
+    // to the target of the turn it measures — so that exclusion is spelled
+    // against `drive_prefill` separately below rather than here.
+    let driven = (!is_count_tokens(uri))
+        .then(|| state.config.driven_stage(model_key))
+        .flatten();
     if is_count_tokens(uri) {
         // count_tokens answers from the first chain element only, so gate and
         // dispatch against just that element: a later credential-injecting
@@ -95,42 +122,285 @@ pub(super) async fn forward(
         // count_tokens request.
         routes.truncate(1);
     }
+    // Taken here rather than with the other stage outputs below, because these
+    // are the facts that decide which chain the request is admitted against.
+    let consult = stage.consult.take();
+    // A `prefill_router` turn is driven on *every* request, probes included
+    // — the affinity is what keeps a probe on the turn's target — so it is
+    // always gated against the envelope, `count_tokens` included (#633).
+    //
+    // That deliberately overrides the first-route-only gate above for this one
+    // lane, because a probe here asks a second question. The truncation answers
+    // "may this caller receive this dispatch?", for which a member's
+    // credential-injecting fallback is irrelevant. A probe that drives also
+    // asks "may this caller cause inference and an affinity write?", and the
+    // answer to that has to cover every target the drive could pick — none of
+    // which it has picked yet. Gate a driving probe on its first route alone
+    // and a caller whose turn would be refused can still seed an affinity for
+    // a session id it never proved it owns, by sending the probe instead. The
+    // gate is therefore wider than the dispatch, which is fail-closed; the
+    // dispatch stays first-route-only after the drive.
+    let drive_prefill = stage.drive_prefill.get();
+    // A turn that will consult a judge is gated against the entry's whole
+    // dependency envelope rather than against the chain its router happened to
+    // pick: the judge has not run yet, and it must not run for a caller who is
+    // about to be refused. So a passthrough answer tier paired with a
+    // credential-injecting judge demands `[server.auth]` — it is not a
+    // passthrough entry.
+    //
+    // The consultation, not the entry's static shape, is what selects it. An
+    // entry can be driven and still resolve this particular turn without a
+    // judge: a `[models.subagents]` overlay answers a delegated turn before the
+    // router runs at all (`routing::resolve_chain`), and a decisive turn is
+    // settled by the signals. Gating those against the envelope would demand a
+    // token for a credential the request cannot reach — which is a refusal the
+    // caller cannot act on, since the chain they were actually routed to
+    // injects nothing. Every other request gates against the chain it already
+    // resolved and allocates nothing here.
+    //
+    // Which envelope depends on *what* decides: the entry's own router names
+    // the targets and judge a `Router`/`StageClassifier` turn can reach, while
+    // an `Overlay` turn is decided before the router is consulted at all and
+    // must be gated on the overlay's list instead (`routing::envelope`).
+    //
+    // The prefill lane is the second case, with local inference in place of
+    // the judge call: the chain resolved above names only the entry's default
+    // target, and the drive that picks the real one has not run yet — it
+    // must not, for a caller who is about to be refused, since upstream's
+    // algorithm writes a session affinity as it decides. So the request is
+    // admitted against every target the entry can name (#633).
+    let envelope;
+    let admission: &[routing::Route] = match consult.map(|consult| consult.kind) {
+        Some(
+            routing::stage::ConsultKind::StageClassifier | routing::stage::ConsultKind::Router,
+        ) => {
+            envelope = routing::envelope::dependency_envelope(&state.config, model_key);
+            &envelope
+        }
+        Some(routing::stage::ConsultKind::Overlay) => {
+            envelope = routing::envelope::overlay_envelope(&state.config, model_key);
+            &envelope
+        }
+        None if drive_prefill => {
+            envelope = routing::envelope::dependency_envelope(&state.config, model_key);
+            &envelope
+        }
+        None => &routes,
+    };
     let (base_headers, inbound) =
-        check_inbound_auth(&state, &routes, headers).map_err(|error| *error)?;
+        check_inbound_auth(&state, admission, headers).map_err(|error| *error)?;
     enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)
         .map_err(|error| *error)?;
-    // The request is admitted, so the tier it was routed at may be recorded.
-    // Both gates above rejected before this line, and neither had run when the
-    // chain was resolved — `check_inbound_auth` needs that chain to decide.
+    // The request is admitted, so the tier it was routed at may be recorded —
+    // and, for a driven entry, a judge may now be consulted. Both gates above
+    // rejected before this line, and neither had run when the chain was
+    // resolved: `check_inbound_auth` needs a chain to decide against, which for
+    // a driven entry is the dependency envelope built above.
+    // Taken, not committed: a driven entry may still move the tier below, and a
+    // pin written before the verdict would record the tier the request was
+    // *not* dispatched at. The commit happens once, after the drive.
+    let mut pending = stage.pending.take();
+    // The same boundary governs the counters: a rejected request is routed but
+    // never served, so counting it would report traffic the gateway did not
+    // carry. `None` for every request whose id carries no router.
+    let mut router_outcome = stage.decided.take();
+    // `stage` borrows the parsed body, and the handoff note below mutates it.
+    // Every output — the pin, the outcome, the consultation — has already been
+    // taken, so the borrow has nothing left to serve; it also holds `Cell`s and
+    // must not live across the judge's `.await`. `read_only` is copied out
+    // rather than re-derived from the URI so the note's exclusion stays tied to
+    // the same flag the store decided against.
+    let read_only = stage.read_only;
+    drop(stage);
+    // The drive. Between admission and the pin commit, because both boundaries
+    // matter: a refused caller must spend no judge call, and the pin must
+    // record the tier the turn was actually dispatched at.
+    if let (Some((stage_cfg, classifier)), Some(consult), Some(outcome)) = (
+        driven,
+        consult.filter(|consult| consult.kind == routing::stage::ConsultKind::StageClassifier),
+        router_outcome.as_mut(),
+    ) {
+        let bounds = stage_cfg.bounds();
+        let verdict = if consult.judge_calls_used >= bounds.max_judge_calls {
+            // Checked before the call is charged, so the budget is a ceiling on
+            // calls made rather than on calls attempted.
+            routing::judge::JudgeOutcome::FailOpen("budget_exhausted")
+        } else {
+            if let Some(pin) = pending.as_mut() {
+                pin.record_judge_call();
+            }
+            // Cloned so the mint's borrow is of a local, leaving `outcome`
+            // free to be rewritten by the verdict below.
+            let router_id = outcome.model.clone();
+            let admitted =
+                crate::routing::serve::AdmittedContext::mint(&inbound, headers, &router_id);
+            routing::judge::consult(&state, &admitted, stage_cfg, classifier, body.json()).await
+        };
+        // The outcome label only — never the verdict text, the `crux`, or any
+        // message content: this line rides into every log sink the operator
+        // configured, and the judge is reading the caller's transcript.
+        tracing::info!(
+            router = %outcome.model,
+            judge = %classifier.target,
+            outcome = verdict.label(),
+            "consulted the stage-router judge"
+        );
+        // Recorded on every outcome, including the budget-exhausted one that
+        // made no call at all — so the series totals to "turns that wanted a
+        // judge", which is the number an operator tunes `max_judge_calls`
+        // against.
+        crate::metrics::record_judge_call(
+            &outcome.model,
+            routing::judge::ALGORITHM,
+            verdict.label(),
+        );
+        if let routing::judge::JudgeOutcome::Decided(tier) = verdict {
+            let target = tier.target(stage_cfg);
+            routes = routing::resolve_target_chain(&state.config, target, &outcome.model);
+            outcome.target = target.to_string();
+            outcome.source = crate::routing::outcome::RouteSource::Stage(
+                tier,
+                crate::routing::stage::StageSource::Scorer(
+                    switchyard_libsy::DecisionSource::LlmClassifier,
+                ),
+            );
+            if let Some(pin) = pending.as_mut() {
+                pin.set_tier(tier);
+            }
+        }
+    }
+    // The driven lane's own drive, on the same two boundaries: after
+    // admission, before the answer. Unlike the stage judge above it produces a
+    // target rather than a tier, because the algorithm — not shunt — owns both
+    // the verdict and the fallback (`routing::driven`). It writes no pin:
+    // libsy keeps this entry's session state inside the algorithm instance,
+    // which is why that instance is long-lived.
+    //
+    // A gated entry (`escalation`, `advisor`) is driven by `gated::consult`
+    // instead: its first model call is the caller's own turn, retained, so the
+    // drive may end with the answer already in hand (`gated_exit`, served after
+    // the decision is counted below) rather than with a target to dispatch.
+    let mut gated_exit = None;
+    if let (Some(kind), Some(outcome)) =
+        (consult.map(|consult| consult.kind), router_outcome.as_mut())
+    {
+        let entry = match kind {
+            routing::stage::ConsultKind::Router => state.driven_routers.router(model_key),
+            routing::stage::ConsultKind::Overlay => state.driven_routers.overlay(model_key),
+            routing::stage::ConsultKind::StageClassifier => None,
+        };
+        if let Some(entry) = entry.filter(|entry| entry.is_gated()) {
+            let turn = gated::GatedTurn {
+                state: &state,
+                entry,
+                uri,
+                headers,
+                base_headers: &base_headers,
+                inbound: &inbound,
+                requested_model: &requested_model,
+            };
+            gated_exit = gated::consult(turn, &mut body, &mut routes, outcome).await;
+        } else if let Some(entry) = entry {
+            // Cloned so the mint's borrow is of a local, leaving `outcome`
+            // free to be rewritten by the decision below.
+            let router_id = outcome.model.clone();
+            let admitted =
+                crate::routing::serve::AdmittedContext::mint(&inbound, headers, &router_id);
+            let decision =
+                routing::driven::drive(&state, &admitted, entry, body.json(), headers).await;
+            routes = routing::resolve_target_chain(&state.config, &decision.target, &router_id);
+            outcome.target = decision.target;
+            outcome.source = decision.source;
+            // Recorded on every outcome, the budget-exhausted one included, so
+            // the series totals to "turns that wanted a judge".
+            crate::metrics::record_judge_call(
+                &router_id,
+                entry.algorithm_label(),
+                decision.judge_outcome,
+            );
+            // Labels only — never the verdict text or any message content:
+            // this line rides into every log sink the operator configured, and
+            // the judge is reading the caller's transcript.
+            tracing::info!(
+                router = %router_id,
+                algorithm = entry.algorithm_label(),
+                outcome = decision.judge_outcome,
+                source = decision.source.as_label(),
+                "drove the router's judge"
+            );
+        }
+    }
+    // The prefill drive, on the same side of admission as the judge and for
+    // the same reason (#633): inference over the caller's transcript and an
+    // affinity write keyed on the caller's session id, neither of which a
+    // refused caller may cause. `None` only when the entry was not built,
+    // which the runtime state rules out — both are made from one config — so
+    // the provisional default-target chain stands in that case. A probe keeps
+    // its first-route-only dispatch: the truncation above ran on the
+    // provisional chain, and this is the chain that is actually dispatched.
+    if let (true, Some(outcome)) = (drive_prefill, router_outcome.as_mut()) {
+        if let Some(decision) =
+            routing::prefill::decide(&state.prefill_routers, body.json(), headers).await
+        {
+            routes = routing::prefill::reroute(&state.config, decision, outcome);
+            if read_only {
+                routes.truncate(1);
+            }
+        }
+    }
     // The write reports the tier change it actually made, which is what the
     // flip counter must count: two concurrent turns of one session decide
     // against the same snapshot, so a flip derived from that snapshot would be
     // counted twice for a session that moved once.
-    let stage_flip = stage.commit();
-    // The same boundary governs the counters: a rejected request is routed but
-    // never served, so counting it would report traffic the gateway did not
-    // carry. `None` for every request whose id carries no router.
-    let stage_outcome = stage.decided.take();
-    if let Some(outcome) = &stage_outcome {
+    let stage_flip = pending.and_then(|pin| state.stage_router.commit(pin, started_at));
+    if let Some(outcome) = &router_outcome {
         // `outcome.model`, not `requested_model`: the router was matched on the
         // id with any `[1m]` hint stripped, and the session was keyed on it too,
         // so labelling by the raw id would split one router across two series.
-        // `stage.read_only` rather than `is_count_tokens(uri)` again: it is the
-        // same value, and reading the field ties this exclusion to the flag the
-        // store already decided against instead of re-deriving it here.
-        if !stage.read_only {
-            crate::metrics::record_stage_decision(
+        // `read_only` rather than `is_count_tokens(uri)` again: it is the same
+        // value, and reading the flag ties this exclusion to the one the store
+        // already decided against instead of re-deriving it here.
+        if !read_only {
+            // Every algorithm, including stage: one series a reader can total
+            // across router types (ADR-0005 §7).
+            crate::metrics::record_router_decision(
                 &outcome.model,
-                outcome.tier.as_label(),
+                outcome.algorithm,
+                &outcome.target,
                 outcome.source.as_label(),
             );
+            // The shipped stage counter, unchanged: `None` for every algorithm
+            // that has no tier, so `random` and `noop` traffic never appears in
+            // a series a dashboard reads as stage-router decisions.
+            if let Some((tier, source)) = outcome.source.stage_labels() {
+                crate::metrics::record_stage_decision(&outcome.model, tier, source);
+            }
         }
         if let Some((from, to)) = stage_flip {
             crate::metrics::record_stage_flip(&outcome.model, from.as_label(), to.as_label());
         }
     }
-    let stage_stamp = stage_outcome.as_ref().map(|outcome| StageStamp {
+    if let Some(exit) = gated_exit {
+        return gated::finish(exit, started_at, &requested_safeguards, max_request_bytes).await;
+    }
+    // The handoff note rides the admitted request, so it is applied on the same
+    // boundary the counters are: a rejected turn never reaches an upstream and
+    // must not have its prompt rewritten on the way to being refused.
+    apply_handoff_note(
+        &state,
+        &mut body,
+        router_outcome.as_ref(),
+        stage_flip,
+        read_only,
+    );
+    let router_stamp = router_outcome.as_ref().map(|outcome| RouterStamp {
         routed_model: outcome.target.as_str(),
+        source: outcome.source.as_label(),
+    });
+    // The same decision, owned, for the committed streaming chain below: it
+    // consumes its request and awaits, so it cannot carry the borrow above.
+    let owned_router_stamp = router_outcome.as_ref().map(|outcome| OwnedRouterStamp {
+        routed_model: outcome.target.clone(),
         source: outcome.source.as_label(),
     });
 
@@ -139,7 +409,7 @@ pub(super) async fn forward(
         .expect("route chains are non-empty after resolution");
     if is_count_tokens(uri) {
         return count_tokens_response(
-            state,
+            state.clone(),
             first_route.clone(),
             uri,
             &base_headers,
@@ -150,214 +420,114 @@ pub(super) async fn forward(
         .await;
     }
 
-    let attempted_total = routes.len();
-    let mut body = Some(body);
-    let last_route = routes
-        .last()
-        .expect("route chains are non-empty after resolution")
-        .clone();
-    // The caller's credential is retained across a passthrough failover only
-    // when the *primary* route is itself passthrough: then the credential is the
-    // caller's own upstream credential, presented for the primary's origin, so a
-    // same-origin passthrough fallback may reuse it. When the primary instead
-    // injects its own credential, the caller credential is a gateway/client
-    // secret that must never be replayed upstream — no origin is retained and
-    // every passthrough fallback strips it. Only failover attempts consult this,
-    // so a single-upstream chain parses no URL here at all.
-    let primary_origin = (attempted_total > 1 && is_passthrough_route(&state, first_route))
-        .then(|| provider_origin(&state, &first_route.provider))
-        .flatten();
-    if super::chain_stream::chain_stream_applies(
-        &state,
-        &routes,
-        body.as_ref().expect("request body is present"),
-    ) {
+    // Kept in `forward` rather than moved into `chain`: the committed streaming
+    // chain races its attempts and returns its own response, so it is a
+    // different dispatch shape, not a mode of the ordered loop. An internal
+    // judge call never takes it — its body is non-streaming, which is what
+    // `chain_stream_applies` gates on — so `run_chain` has no need of it.
+    if super::chain_stream::chain_stream_applies(&state, &routes, &body) {
         return super::chain_stream::forward_chain_stream(
             super::chain_stream::ChainStreamRequest {
-                state,
+                state: state.clone(),
+                primary_origin: chain::primary_origin(&state, &routes),
                 routes,
                 uri: uri.clone(),
                 base_headers,
                 inbound,
-                primary_origin,
-                body: body.take().expect("request body is present"),
+                body,
                 requested_model,
                 started_at,
+                router_stamp: owned_router_stamp,
+                observe_stream: true,
             },
         )
         .await;
     }
-    let mut remembered: Option<RememberedFailure> = None;
-    for (index, route) in routes.into_iter().enumerate() {
-        crate::metrics::record_failover(&route.provider, "attempted");
-        let attempt_headers = headers_for_route(
-            &state,
-            &route,
-            &base_headers,
-            &inbound,
-            index == 0,
-            primary_origin.as_deref(),
-        );
-        let provider = route.provider.clone();
-        let model = route.model.clone();
-        let upstream_model = route.upstream_model.clone();
-        let attempt_started_at = Instant::now();
-        // Move the buffered body into the final attempt instead of cloning it. Within
-        // this failover loop, the common single-upstream chain transfers the body
-        // without copying its (up to 64 MB) raw buffer, and a multi-upstream chain
-        // only clones that buffer for attempts preceding the last. Those clones
-        // still share the parsed tree; an adapter may clone the body again downstream.
-        // The `Option` permits the final move while keeping the body available earlier.
-        let attempt_body = if index + 1 < attempted_total {
-            body.as_ref().expect("request body is present").clone()
-        } else {
-            body.take()
-                .expect("request body is present for final attempt")
-        };
-        let result = dispatch(state.clone(), route, uri, &attempt_headers, attempt_body).await;
+    let chain = chain::ChainRequest {
+        state: state.clone(),
+        routes,
+        uri,
+        base_headers: &base_headers,
+        inbound: &inbound,
+        body,
+        requested_model: &requested_model,
+        router_stamp,
+        caller: "client",
+        // A client turn is never bounded: the reply is bounded by the request
+        // the caller made, and a bound here would be a new way for ordinary
+        // traffic to fail. Only `routing::serve`'s internal calls set one.
+        response_bounds: crate::adapters::ResponseBounds::default(),
+    };
+    let success = chain::run_chain(chain).await?;
+    Ok(observe_response(
+        success.status,
+        success.response,
+        success.provider,
+        success.model,
+        started_at,
+        &requested_safeguards,
+        max_request_bytes,
+    )
+    .await)
+}
 
-        if !is_count_tokens(uri)
-            && !result.as_ref().is_ok_and(|(_, response)| {
-                // The early-commit streaming responses sample their metrics
-                // in-stream at classification: the dispatch-time return
-                // precedes the upstream send, so recording here would count a
-                // fake 200 with a near-zero latency.
-                response
-                    .extensions()
-                    .get::<crate::adapters::responses::InStreamMetrics>()
-                    .is_some()
-            })
-        {
-            let status = match &result {
-                Ok((status, _)) => status.as_u16(),
-                Err(error) => error.response.status().as_u16(),
-            };
-            crate::metrics::record_proxied_request(
-                &provider,
-                &model,
-                status,
-                attempt_started_at.elapsed().as_secs_f64() * 1000.0,
-            );
-        }
-
-        match result {
-            Ok((status, mut response)) => {
-                stamp_gateway_headers(
-                    &mut response,
-                    &provider,
-                    &requested_model,
-                    &upstream_model,
-                    stage_stamp,
-                );
-                if !is_advance_status(status) {
-                    finish(&provider, status);
-                    return Ok(observe_response(
-                        status, response, provider, model, started_at,
-                    ));
-                }
-                tracing::warn!(
-                    provider = %provider,
-                    model = %model,
-                    status = status.as_u16(),
-                    "upstream response triggered failover advance"
-                );
-                remember_failure(
-                    &mut remembered,
-                    status,
-                    FinalResponse::Relayed(response),
-                    provider.clone(),
-                    model,
-                );
-            }
-            Err(error) => {
-                let AdapterError {
-                    message,
-                    mut response,
-                    failure,
-                } = error;
-                stamp_gateway_headers(
-                    &mut response,
-                    &provider,
-                    &requested_model,
-                    &upstream_model,
-                    stage_stamp,
-                );
-                match failure {
-                    Some(AdapterFailure::UpstreamStatus(raw_status))
-                        if is_advance_status(raw_status) =>
-                    {
-                        tracing::warn!(
-                            provider = %provider,
-                            model = %model,
-                            status = raw_status.as_u16(),
-                            message = %message,
-                            "upstream error triggered failover advance"
-                        );
-                        remember_failure(
-                            &mut remembered,
-                            raw_status,
-                            FinalResponse::MappedError { message, response },
-                            provider.clone(),
-                            model,
-                        );
-                    }
-                    Some(AdapterFailure::BeforeHeaders) => {
-                        tracing::warn!(
-                            provider = %provider,
-                            model = %model,
-                            message = %message,
-                            "upstream failed before response headers; advancing failover"
-                        );
-                    }
-                    _ => {
-                        finish(&provider, response.status());
-                        return Err(ForwardError { message, response });
-                    }
-                }
-            }
-        }
-
-        if index + 1 < attempted_total {
-            crate::metrics::record_failover(&provider, "advanced");
-        }
+/// Append the entry's `handoff_notes` text to the forwarded system prompt, on
+/// the turns a signal moved the tier.
+///
+/// `flip` is [`StageContext::commit`]'s return — the transition the write
+/// *actually made* — and not a flag the decision computed against the pin it
+/// read. Those differ under concurrency, which is the same reason the flip
+/// counter above is stamped from it: two admitted turns of one session can both
+/// read an efficient pin, both choose capable, and both believe they moved the
+/// tier, but only the first commit does. Gating on the commit keeps the second
+/// from telling its model it is taking over a conversation that had already
+/// changed hands. It also subsumes the sequential cases — a first turn, and a
+/// signal that merely re-confirms the pinned tier, both commit no transition.
+///
+/// Runs after admission, so a rejected turn's prompt is never rewritten, and
+/// never for a `count_tokens` probe: a probe measures the turn the client is
+/// about to send, and adding a block the real turn may not carry would make the
+/// count describe a different request.
+///
+/// The config is re-read here rather than carried on the outcome because the
+/// outcome is deliberately observability-only (ADR-0004 §5) — it holds labels,
+/// not policy — and `outcome.model` is already the id validation guarantees
+/// uniquely names one `[[models]]` entry.
+fn apply_handoff_note(
+    state: &AppState,
+    body: &mut crate::request::RequestBody,
+    outcome: Option<&crate::routing::outcome::RouterOutcome>,
+    flip: Option<(
+        crate::routing::stage::StageTier,
+        crate::routing::stage::StageTier,
+    )>,
+    read_only: bool,
+) {
+    if read_only {
+        return;
     }
-
-    crate::metrics::record_failover(&last_route.provider, "exhausted");
-    if let Some(failure) = remembered {
-        return match failure.response {
-            FinalResponse::Relayed(response) => {
-                let status = response.status();
-                finish(&failure.provider, status);
-                Ok(observe_response(
-                    status,
-                    response,
-                    failure.provider,
-                    failure.model,
-                    started_at,
-                ))
-            }
-            FinalResponse::MappedError { message, response } => {
-                finish(&failure.provider, response.status());
-                Err(ForwardError { message, response })
-            }
-        };
-    }
-
-    let message = format!("all upstreams failed ({attempted_total} attempted)");
-    let mut response =
-        ShuntError::new(StatusCode::BAD_GATEWAY, "api_error", message.clone()).into_response();
-    stamp_gateway_headers(
-        &mut response,
-        &last_route.provider,
-        &requested_model,
-        &last_route.upstream_model,
-        stage_stamp,
-    );
-    finish(&last_route.provider, StatusCode::BAD_GATEWAY);
-    Err(ForwardError {
-        message,
-        response: Box::new(response),
-    })
+    let Some(outcome) = outcome else {
+        return;
+    };
+    let crate::routing::outcome::RouteSource::Stage(tier, source) = outcome.source else {
+        return;
+    };
+    let Some(notes) = state
+        .config
+        .models
+        .iter()
+        .find(|model| model.id == outcome.model)
+        .and_then(|model| model.router.as_ref())
+        .and_then(crate::config::RouterConfig::stage)
+        .and_then(|stage| stage.handoff_notes.as_ref())
+    else {
+        return;
+    };
+    let Some(note) = crate::routing::handoff::note_for(notes, tier, source, flip.is_some()) else {
+        return;
+    };
+    let note = note.to_string();
+    body.mutate(|request| crate::routing::handoff::append_system_block(request, &note));
 }
 
 async fn count_tokens_response(
@@ -371,7 +541,15 @@ async fn count_tokens_response(
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     let provider = route.provider.clone();
     let upstream_model = route.upstream_model.clone();
-    let result = if matches!(
+    let result = if route.adapter == AdapterKind::Noop {
+        // A noop entry never calls an upstream, so there is no provider whose
+        // `count_tokens` mode could apply and nothing to count: the turn it is
+        // probing will carry no content either.
+        Ok((
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "input_tokens": 0 })).into_response(),
+        ))
+    } else if matches!(
         route.adapter,
         AdapterKind::Responses
             | AdapterKind::Cursor
@@ -409,7 +587,19 @@ async fn count_tokens_response(
         // the primary route — the caller's credential is kept without any origin
         // parsing.
         let headers = headers_for_route(&state, &route, base_headers, inbound, true, None);
-        dispatch(state, route, uri, &headers, body).await
+        dispatch(
+            state,
+            route,
+            uri,
+            &headers,
+            body,
+            // A `count_tokens` probe never makes an internal model call — the
+            // judge lane excludes probes, and the prefill lane, which does
+            // drive them, decides from the transcript and its affinity alone
+            // — so it is always a client path.
+            crate::adapters::ResponseBounds::default(),
+        )
+        .await
     };
     match result {
         Ok((status, mut response)) => {
@@ -462,43 +652,55 @@ async fn dispatch(
     uri: &Uri,
     headers: &HeaderMap,
     body: crate::request::RequestBody,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     match route.adapter {
         AdapterKind::Anthropic => {
             AnthropicAdapter
-                .forward(state, route, uri, headers, body)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::Responses => {
             ResponsesAdapter
-                .forward(state, route, uri, headers, body)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::Cursor => {
             CursorAdapter
-                .forward(state, route, uri, headers, body)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::Gemini => {
             crate::adapters::gemini::GeminiAdapter
-                .forward(state, route, uri, headers, body)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::AntigravityCli => {
             crate::adapters::antigravity::AntigravityAdapter
-                .forward(state, route, uri, headers, body)
+                .forward(state, route, uri, headers, body, bounds)
+                .await
+        }
+        AdapterKind::Noop => {
+            crate::adapters::noop::NoopAdapter
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
     }
 }
 
-fn observe_response(
+async fn observe_response(
     status: StatusCode,
     response: axum::response::Response,
     provider: String,
     model: String,
     started_at: Instant,
+    requested_safeguards: &[String],
+    max_body_bytes: usize,
 ) -> (StatusCode, axum::response::Response) {
+    // Ahead of the metrics observer so the observer sees what the client will:
+    // the synthesis only adds a field to `message_delta`, leaving the frames the
+    // observer samples (`stop_reason`, usage, error events) exactly as relayed.
+    let response = safeguards::synthesize(response, requested_safeguards, max_body_bytes).await;
     let response = crate::stream_metrics::observe_response(
         response,
         crate::stream_metrics::Protocol::Anthropic,
@@ -507,62 +709,6 @@ fn observe_response(
         started_at,
     );
     (status, response)
-}
-
-pub(crate) fn is_advance_status(status: StatusCode) -> bool {
-    matches!(
-        status,
-        StatusCode::TOO_MANY_REQUESTS
-            | StatusCode::UNAUTHORIZED
-            | StatusCode::FORBIDDEN
-            | StatusCode::NOT_FOUND
-    ) || status.is_server_error()
-}
-
-pub(crate) fn failure_priority(status: StatusCode) -> u8 {
-    match status {
-        StatusCode::TOO_MANY_REQUESTS => 4,
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => 3,
-        StatusCode::NOT_FOUND => 2,
-        _ if status.is_server_error() => 1,
-        _ => 0,
-    }
-}
-
-enum FinalResponse {
-    Relayed(axum::response::Response),
-    MappedError {
-        message: String,
-        response: Box<axum::response::Response>,
-    },
-}
-
-struct RememberedFailure {
-    raw_status: StatusCode,
-    response: FinalResponse,
-    provider: String,
-    model: String,
-}
-
-fn remember_failure(
-    remembered: &mut Option<RememberedFailure>,
-    raw_status: StatusCode,
-    response: FinalResponse,
-    provider: String,
-    model: String,
-) {
-    if remembered
-        .as_ref()
-        .is_some_and(|current| failure_priority(current.raw_status) >= failure_priority(raw_status))
-    {
-        return;
-    }
-    *remembered = Some(RememberedFailure {
-        raw_status,
-        response,
-        provider,
-        model,
-    });
 }
 
 fn enforce_managed_model_policy(
@@ -602,6 +748,27 @@ pub(crate) struct InboundContext {
     gateway_claims: Option<crate::gateway::jwt::Claims>,
     client: Option<String>,
     static_client: bool,
+}
+
+impl InboundContext {
+    /// The context a gateway-internal call rides on: no gateway claims, no
+    /// client, not a static client.
+    ///
+    /// The judge's own admission is the caller's — it was decided by
+    /// [`check_inbound_auth`] against the dependency envelope before the drive
+    /// was entered — and the headers this rides carry no caller credential at
+    /// all (`routing::serve::judge_headers`). So there is nothing here to
+    /// inherit: an inherited `static_client` would stamp
+    /// `x-shunt-inbound-client` with the caller's identity on a call the caller
+    /// did not make, and inherited claims would re-run a policy that has
+    /// already been enforced on the advertised id.
+    pub(crate) fn internal() -> Self {
+        Self {
+            gateway_claims: None,
+            client: None,
+            static_client: false,
+        }
+    }
 }
 
 /// Authenticate once against the whole route chain. Client credential stripping
@@ -775,24 +942,16 @@ pub(crate) fn headers_for_route(
 }
 
 /// Whether a route's provider forwards the caller's own upstream credential
-/// (`AuthMode::Passthrough`) rather than injecting a gateway-held one. An
-/// unknown provider is treated as credential-injecting (fail closed).
+/// rather than injecting a gateway-held one.
 ///
-/// Antigravity is never passthrough, whatever its `auth` says. The exemption
-/// exists because a passthrough route lends the caller nothing — their own
-/// credential goes upstream, so gating it behind `[server.auth]` would protect
-/// nothing. That reasoning does not survive contact with this kind: the adapter
-/// ignores the caller's credential entirely and runs the operator's local `agy`
-/// with `--dangerously-skip-permissions`. Since `AuthMode::Passthrough` is also
-/// the default when `auth` is omitted, honouring it here would let anyone
-/// reach a protected gateway and execute code as the user running shunt.
+/// One line, because the rule itself lives on
+/// [`crate::config::Config::route_is_passthrough`]: config validation needs the
+/// same predicate to reject a passthrough judge target (ADR-0005 §3) and has no
+/// `AppState` to ask. Two copies would be two definitions of "passthrough", and
+/// the failure mode of that drift is a config that validates and then cannot be
+/// served.
 fn is_passthrough_route(state: &AppState, route: &routing::Route) -> bool {
-    state
-        .config
-        .provider(&route.provider)
-        .is_some_and(|provider| {
-            provider.auth == AuthMode::Passthrough && provider.kind != ProviderKind::AntigravityCli
-        })
+    state.config.route_is_passthrough(route)
 }
 
 /// The origin (scheme + host + port) of a provider's `base_url`, used to decide
@@ -825,19 +984,48 @@ pub(crate) fn stamp_gateway_model_header(response: &mut axum::response::Response
     }
 }
 
-/// What a stage router decided, for the two headers that report it.
+/// [`RouterStamp`] with the model id owned.
 ///
-/// Absent for every request whose model id carries no `[models.stage_router]`
-/// table, which is why both headers are omitted rather than sent empty: a
-/// client cannot otherwise tell "routed to the efficient tier" from "not
-/// routed by a router at all".
+/// The committed streaming chain (`chain_stream`) takes its inputs by value and
+/// awaits, so it cannot hold the borrow the synchronous paths use.
+pub(super) struct OwnedRouterStamp {
+    pub(super) routed_model: String,
+    pub(super) source: &'static str,
+}
+
+/// Stamp only the router pair, for the committed streaming chain.
+///
+/// Both values come from the router decision, which is made before any upstream
+/// is contacted — so unlike `x-gateway-upstream` and `x-gateway-upstream-model`,
+/// they do not depend on which attempt wins the race and are correct on this
+/// path too.
+pub(super) fn stamp_router_headers(
+    response: &mut axum::response::Response,
+    stamp: &OwnedRouterStamp,
+) {
+    for (name, value) in [
+        ("x-gateway-routed-model", stamp.routed_model.as_str()),
+        ("x-gateway-route-source", stamp.source),
+    ] {
+        if let Ok(value) = HeaderValue::from_str(value) {
+            response.headers_mut().insert(name, value);
+        }
+    }
+}
+
+/// What a router decided, for the two headers that report it.
+///
+/// Absent for every request whose model id carries no `[models.router]` table,
+/// which is why both headers are omitted rather than sent empty: a client
+/// cannot otherwise tell "routed to the efficient tier" from "not routed by a
+/// router at all".
 #[derive(Clone, Copy)]
-struct StageStamp<'a> {
+pub(crate) struct RouterStamp<'a> {
     /// The configured model id the chosen tier routes to. Distinct from
     /// `x-gateway-upstream-model`, which is the name sent upstream — for a
     /// router these differ whenever the target maps its own `upstream_model`.
-    routed_model: &'a str,
-    source: &'static str,
+    pub(crate) routed_model: &'a str,
+    pub(crate) source: &'static str,
 }
 
 fn stamp_gateway_headers(
@@ -845,7 +1033,7 @@ fn stamp_gateway_headers(
     upstream: &str,
     model: &str,
     upstream_model: &str,
-    stage: Option<StageStamp<'_>>,
+    stage: Option<RouterStamp<'_>>,
 ) {
     for (name, value) in [
         ("x-gateway-upstream", upstream),
@@ -867,3 +1055,6 @@ fn stamp_gateway_headers(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "prefill-router"))]
+mod prefill_tests;

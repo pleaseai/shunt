@@ -20,17 +20,20 @@ shunt의 [스테이지 라우터](/ko/guides/stage-router/)는 자체 스코어�
 
 Switchyard는 게이트웨이 한 벌을 제공합니다. 프록시 서버, 프로바이더 중립 프로토콜,
 요청/응답 번역, LLM 판정자 분류기, 에스컬레이션, 서브에이전트 라우팅까지. shunt는
-이미 게이트웨이이므로 스코어러 하나만 가져오고 나머지는 두고 옵니다.
+이미 게이트웨이이므로 스코어러와, 옵트인 테이블 뒤의 판정자 기반 알고리즘들, 그
+경계에서만 쓰는 번역 코덱을 가져오고 서버는 두고 옵니다.
 
 | Switchyard 구성 요소 | shunt에서 |
 | :-- | :-- |
 | `switchyard-libsy` 스테이지 스코어러 | **사용** — 업스트림 `main`의 검토된 리비전에 고정 |
 | `switchyard-protocol` | libsy의 의존성으로 딸려옴. shunt는 `Request`를 만들지 않음 |
-| `switchyard-translation` | **미사용** — shunt의 `src/model/responses_request.rs`와 정면으로 중복 |
+| `switchyard-translation` | **라우팅 경계에서만 사용** — 판정 요청과 그 응답의 중립 ⇄ Anthropic 변환. Anthropic → Responses 와이어 변환은 계속 shunt 자신의 `src/model/responses_request.rs`가 맡음 |
 | `switchyard-server` | **미사용** — shunt가 곧 서버 |
-| LLM 분류기 / 판정자 | **미사용** — [아래](#핫-패스에-llm-판정자를-두지-않는다) 참고 |
-| 에스컬레이션 라우팅(턴 중간) | **미사용** — shunt의 post-2xx 무재생 규칙과 충돌 |
-| 핸드오프 노트, 어드바이저 게이트, 서브에이전트 라우팅 | **미사용** |
+| LLM 분류기 / 판정자 | **항목별 옵트인** — `stage_router`의 [`[models.router.classifier]`](/ko/guides/stage-router/#판정-모델-폴백). 신호가 결론을 내지 못한 턴에서만 호출됨. [아래](#llm-판정자는-항목-단위-옵트인이다) 참고 |
+| 에스컬레이션 라우팅 | **항목별 옵트인** — [`mode = "escalation"`](/ko/reference/configuration/#mode--escalation). 판정자가 판단할 때까지 약한 턴을 붙잡아 두므로, 강한 타깃으로의 전환은 헤더를 보내기 전에 일어남. [아래](#완성된-턴을-읽는-두-판정자) 참고 |
+| 핸드오프 노트 | **사용** — [`[models.router.handoff_notes]`](/ko/reference/configuration/#modelsrouterhandoff_notes-선택) |
+| 어드바이저 게이트 | **항목별 옵트인** — [`type = "advisor"`](/ko/reference/configuration/#type--advisor). 리뷰가 끝날 때까지 실행 모델의 턴을 붙잡아 둠 |
+| 서브에이전트 라우팅 | **사용** — [`[models.subagents]`](/ko/reference/configuration/#modelssubagents-선택) |
 
 결합점은 함수 호출 하나가 전부입니다. shunt는 파싱된 Anthropic Messages 본문에서
 libsy의 `ToolSignals` 구조체를 직접 채우고 `pick_tier`를 호출합니다. 그 구조체의
@@ -43,6 +46,24 @@ libsy의 `ToolSignals` 구조체를 직접 채우고 `pick_tier`를 호출합니
 스코어링 너머의 알고리즘 — advisor gate, composite 라우팅, 서브에이전트 라우팅,
 tool semantics, handoff note — 은 `main`에만 있습니다. API를 확인할 때는 레지스트리
 소스도, 움직이는 GitHub 기본 브랜치도 아니라 cargo가 해석한 체크아웃을 읽으세요.
+
+### 학습형 프리필 라우터
+
+업스트림에서 가져온 조각이 하나 더 있는데, 조건이 다릅니다. 가장 최근 사용자 턴을 채점해
+타깃을 고르는 학습형 분류기 `prefill_router`입니다. 이것은 기본으로 꺼져 있는
+**`prefill-router` 카고 피처**를 켜고 빌드한 바이너리에서만 쓸 수 있습니다.
+
+이유는 그 크레이트의 정체입니다. 업스트림의 `crates/prefill-router`는 PyO3로 Python을
+임베드하므로, 빌드는 libpython을 링크하고 실행에는 `torch`, `transformers`, `numpy`,
+`accelerate`를 import할 수 있는 환경과 디스크에 놓인 라우터 체크포인트가 필요합니다.
+업스트림도 같은 이유로 카고 피처 뒤에 둡니다. shunt의 릴리스 워크플로는 이 피처를 켜지
+않으므로 **미리 빌드된 릴리스 바이너리와 Homebrew 포뮬러에는 들어 있지 않습니다.**
+소스에서 `cargo build --release --features prefill-router`로 빌드하는 것이 유일한 방법이고,
+피처가 없는 바이너리는 이 타입을 지정한 설정을 로드하지 못하며 그 사실을 알려 주는 오류를
+냅니다.
+
+키와 사전 조건, 라우트 소스는 설정 레퍼런스의
+[`type = "prefill_router"`](/ko/reference/configuration/#type--prefill_router)를 보세요.
 
 ## 벤치마크 결과
 
@@ -283,16 +304,80 @@ compacted로 채점되고 그 플래그가 저장되므로 — 헤더는 컴팩�
 구조 분해로 읽으므로, 나중에 키가 추가되면 낡은 핀이 조용히 살아남는 대신 컴파일이
 깨집니다.
 
-### 핫 패스에 LLM 판정자를 두지 않는다
+### 위임된 작업은 다른 타깃으로 갈 수 있다
+
+Switchyard의 `subagents` 오버레이는 `[models.subagents]`로 넘어오며, 라우터 테이블 안이
+아니라 항목 위에 놓입니다 — 고정 항목에는 라우터 테이블이 없고, 업스트림의 "subagents를
+곁들인 passthrough"가 여기서는 바로 그 고정 항목이기 때문입니다. 그 id를 요청하는 `Task`
+자식이나 훅 에이전트, 워크플로 서브에이전트는 오버레이의 `target`으로, 또는 자신의
+`x-claude-code-agent-type`과 맞는 `by_type` 항목으로 우회됩니다. 부모 자신의 턴은 이
+테이블을 전혀 보지 않습니다.
+
+```toml
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6" }
+```
+
+shunt가 더하는 것은 "위임"을 읽어내는 방식입니다. 업스트림은 자기 `claude_lineage` 헤더
+하나에만 기대지만, shunt는 `x-claude-code-request-class`를 먼저 읽고(`subagent`와
+`workflow`는 위임이고, `main`은 에이전트 id가 함께 실려 와도 위임이 아니며, `compaction`과
+`auxiliary`는 오버레이를 절대 타지 않는 하네스 유지보수입니다) 그 클래스가 전송되지 않을
+때만 에이전트 id로 폴백합니다 — 기본 게이트웨이 배포에서는 실제로 전송되지 않습니다.
+`by_type` 키는 헤더의 값 그대로이고 대소문자까지 그대로이며, 프로젝트 에이전트는 자기
+이름이 감춰진 채 `custom`으로 도착합니다. 이 오버레이는 상태를 갖지 않습니다. 우회된
+자식은 채점되지도, 고정되지도, 부모의 dwell을 진행시키지도 않으며, 그 턴은
+`x-gateway-route-source`에 `subagent_type` 또는 `subagent`를 보고합니다.
+
+### LLM 판정자는 항목 단위 옵트인이다
 
 신호가 불확실하면 libsy는 `PickOutcome::ConsultClassifier { default_tier }`를
-반환합니다. shunt는 그것을 답으로 취급하고 `default_tier`를 씁니다. 판정자를 거절하는
-것은 API와 싸우는 게 아니라, API가 문서화한 fall-open 경로 *그 자체* 입니다.
+반환합니다. classifier 테이블이 없는 `stage_router`는 그것을 답으로 취급하고
+`default_tier`를 씁니다. 그래서 그 핫 패스에는 판정자가 없습니다 — 두 번째 모델 호출도,
+두 번째 자격 증명도, 라우터가 가장 불확실한 바로 그 턴에서 늘어나는 지연도 없습니다.
+fall-open하는 것은 API와 싸우는 게 아니라, API가 문서화한 fall-open 경로 *그 자체* 입니다.
+이것이 기본값이고, pure 레인에 있는 항목은 지금도 전부 이렇게 동작합니다.
 
-얻는 것은 두 번째 모델 호출 없음, 두 번째 자격 증명 없음, 그리고 라우터가 가장
-불확실한 바로 그 턴에서 지연이 늘지 않음입니다. 치르는 것은 그런 턴에서 판정자가
-회복해줬을 정확도이며, 이는 업스트림의 분류기 보조 구성이 측정한 것의 실질적인
-일부입니다.
+항목 단위로 다시 켤 수는 있습니다. 모양은 네 가지입니다.
+
+| 모양 | 판정자가 정하는 것 |
+| :-- | :-- |
+| `stage_router` 위의 [`[models.router.classifier]`](/ko/reference/configuration/#modelsrouterclassifier-선택) | 신호가 결론을 내지 못한 턴만. 나머지는 그대로 신호가 정합니다 |
+| [`type = "llm_classifier"`](/ko/reference/configuration/#type--llm_classifier) | 턴 전체. `mode = "capability"`는 해결 확률로 두 티어 중 하나를, `mode = "custom"`은 직접 쓴 프롬프트와 스키마가 지목한 모델 그룹을 고릅니다 |
+| [`type = "composite"`](/ko/reference/configuration/#type--composite) | stage 라우터가 결론을 못 냈을 때 떨어질 티어. 채점 자체는 건드리지 않습니다 |
+| [`type = "llm_classifier"`를 쓴 `[models.subagents]`](/ko/reference/configuration/#subagents-type--llm_classifier) | 위임된 자식이 갈 곳. (세션, 에이전트)마다 한 번 정합니다 |
+
+넷 다 판정자가 회복해주는 정확도를 되찾습니다 — 업스트림의 분류기 보조 구성이 측정한
+것의 실질적인 일부입니다 — 대신 지연 시간과 판정 타깃 자신의 풀 쿼터를 치릅니다. 그
+비용을 얼마나 자주 치를지는 `classify_trigger` 키가 정합니다. 매 턴 판정하거나, 사람이
+말한 턴마다 판정하고 그 사이의 도구 호출 동안 판정 결과를 유지하거나, 세션당 한 번만
+판정합니다. 판정자는 요청이 통과된 뒤에만 호출되고, `count_tokens` 탐침에는 호출되지
+않으며, 한 (세션, 에이전트) 쌍에 대해 `max_judge_calls`를 넘겨 호출되지 않습니다. 판정
+실패는 — 타임아웃이든 `400`이든 파싱되지 않는 답이든 — 요청을 실패시키지 않고 알고리즘
+자신의 기본값으로 돌아오며, 판정하는 턴 한 번에 판정 호출도 정확히 한 번입니다.
+
+### 완성된 턴을 읽는 두 판정자
+
+위의 형태는 모두 턴이 실행되기 전에 그 턴이 갈 곳을 정합니다. 실행된 뒤에 정하는 형태도
+둘 있습니다. [`mode = "escalation"`](/ko/reference/configuration/#mode--escalation)은 약한
+타깃의 턴을 제공하면서 판정자가 완성된 작업을 판정하게 하고, 상향 전환 판정이
+`confirmations`번 연속되면 세션을 강한 타깃에 고정합니다.
+[`type = "advisor"`](/ko/reference/configuration/#type--advisor)는 더 강한 리뷰어가 실행
+모델의 마무리 턴을 승인하거나 작업을 다시 하도록 돌려보내게 합니다.
+
+둘 다 이미 존재하는 턴을 판정하므로 shunt는 그 턴을 붙잡아 둡니다. 업스트림 응답을
+버퍼링하고 판정한 다음에야 클라이언트에 재생합니다 — 바이트 그대로, 클라이언트가 요청한
+id로, 클라이언트가 요청한 스트리밍 또는 비스트리밍 모드로. 스트림을 버퍼링하지 않는다는
+shunt 규칙의 유일한 예외이며, 이 두 항목이 게이트하는 턴에만 적용됩니다. 다른 라우트는
+바뀌지 않습니다.
+
+턴을 붙잡아 두기 때문에 업스트림의 설계가 shunt의 post-2xx 무재생 규칙 안에 머뭅니다.
+재생이 시작될 때까지 응답 헤더를 확정하지 않으므로, 버려진 턴 — 강한 타깃으로 대체된
+턴이든 REDO로 돌려보낸 턴이든 — 은 클라이언트가 본 적이 없습니다. 대가는 지연 시간입니다.
+붙잡아 둔 턴에서는 턴 전체가 끝나야 첫 바이트가 도착하고, 에스컬레이션은 고정되기 전까지
+턴마다 판정 호출을 하나씩 더합니다. 라우트 소스와 붙잡아 둔 턴이 실패했을 때의 동작은
+[구성 레퍼런스](/ko/reference/configuration/#보류된-턴-escalation과-advisor)에 정리되어 있습니다.
 
 ### 라우팅된 타깃은 평범한 모델 id
 
@@ -308,8 +393,9 @@ Claude Code의 `/model` 표시와 `--resume` 모델 복원이 그대로 동작�
 
 ### 요청하지 않으면 비활성
 
-`[models.stage_router]` 테이블이 없으면 라우터 분기는 기존 배포에 존재하지 않는 설정
-필드에 대한 `Option` 검사 하나입니다. 라우팅 경로에서 달라지는 것은 없습니다.
+`[models.router]` 테이블이 없으면 라우터 분기는 기존 배포에 존재하지 않는 설정
+필드에 대한 `Option` 검사 하나입니다. 라우팅 경로에서 달라지는 것은 없으며, 라우터를 쓴
+항목들이 어떤 `type`을 선언했든 이 검사 비용은 같습니다.
 
 ## 통합 비용
 
@@ -331,6 +417,10 @@ Claude Code의 `/model` 표시와 `--resume` 모델 복원이 그대로 동작�
 그대로입니다. 거기서 libsy가 새로 직접 의존하는 `http`, `regex`, `uuid`가 이미 shunt
 트리에 있었기 때문입니다. 링크 여부 결과도 새 핀에서 그대로입니다. 릴리스 바이너리에
 `jsonschema` 문자열 0건, `num-bigint` 심볼 0건입니다.
+
+판정 경계를 위해 `switchyard-translation`을 가져오면서 락 항목이 셋 늘었습니다. 크레이트
+자체와 `async-stream`, `async-stream-impl`입니다. `switchyard-protocol`은 libsy의 의존성
+으로 이미 트리에 있었습니다.
 
 ## 저작자 표시
 

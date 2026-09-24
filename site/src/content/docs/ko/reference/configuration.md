@@ -327,7 +327,7 @@ codex-fallback = "gpt-5.2"
 
 ### 페일오버 동작
 
-여러 항목이 있는 모델 맵에서는 선언한 업스트림 순서에서 맵에 포함된 이름만 남겨 체인을 만듭니다. 업스트림 상태가 `429`, `401`, `403`, `404`, 임의의 `5xx`이거나 업스트림 응답 헤더를 받기 전에 실패하면 다음 항목으로 진행합니다. auth 설정 오류나 어댑터 자체의 검증·헤더 생성 오류처럼 업스트림 시도를 나타내지 않는 게이트웨이 로컬 오류는 즉시 반환하여 잘못된 설정이 페일오버에 가려지지 않게 합니다. `2xx` 헤더를 반환한 뒤에는 스트리밍 본문이 나중에 실패하더라도 페일오버하지 않습니다. Responses 어댑터의 스트리밍 경로는 업스트림 바이트를 받기 전에 응답을 커밋합니다. `Anthropic`/`Responses` 요소만 있고 WebSocket 트랜스포트가 없는 체인은 커밋된 스트림 안에서 페일오버를 수행하며(헤더 전 트랜스포트 실패와 전진 상태는 합성 시작이 나가기 전에 다음 업스트림을 시도), 전진할 수 없는 라우트(종단 비 2xx, Anthropic 종류 승자의 SSE가 아닌 성공 본문)는 실패를 하나의 터미널 SSE `error` 이벤트로 표시합니다. 승자의 터미널 프레임이 릴레이된 뒤의 스트리밍 본문 실패는 대신 스트림을 조용히 끝냅니다 — 턴이 이미 완료됐고, 덧붙는 error 이벤트가 완료된 응답을 손상시키기 때문입니다. TTFB 타임아웃은 절대 전진하지 않습니다. 설정된 타임아웃은 답이며 터미널 `504 timeout_error` 이벤트로 표시됩니다. 이 커밋된 경로의 응답에는 `content-type`과 `x-gateway-model`만 실립니다. 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략됩니다 — 헤더가 커밋과 함께 나갈 때 승자를 아직 모르기 때문입니다 — 그리고 업스트림 응답 헤더(요청 id, `anthropic-ratelimit-*` 할당량 메타데이터 포함)는 Anthropic 종류 승자라도 클라이언트에 도달하지 않습니다. `x-gateway-model`은 유지되며(클라이언트가 요청한 id를 가리킴), 요청 메트릭은 시도마다 분류된 상태로 기록되고 스트림 귀속은 스트림이 승자를 알게 되는 시점부터 승자를 따릅니다.
+여러 항목이 있는 모델 맵에서는 선언한 업스트림 순서에서 맵에 포함된 이름만 남겨 체인을 만듭니다. 업스트림 상태가 `429`, `401`, `403`, `404`, 임의의 `5xx`이거나 업스트림 응답 헤더를 받기 전에 실패하면 다음 항목으로 진행합니다. auth 설정 오류나 어댑터 자체의 검증·헤더 생성 오류처럼 업스트림 시도를 나타내지 않는 게이트웨이 로컬 오류는 즉시 반환하여 잘못된 설정이 페일오버에 가려지지 않게 합니다. `2xx` 헤더를 반환한 뒤에는 스트리밍 본문이 나중에 실패하더라도 페일오버하지 않습니다. Responses 어댑터의 스트리밍 경로는 업스트림 바이트를 받기 전에 응답을 커밋합니다. `Anthropic`/`Responses` 요소만 있고 WebSocket 트랜스포트가 없는 체인은 커밋된 스트림 안에서 페일오버를 수행하며(헤더 전 트랜스포트 실패와 전진 상태는 합성 시작이 나가기 전에 다음 업스트림을 시도), 전진할 수 없는 라우트(종단 비 2xx, Anthropic 종류 승자의 SSE가 아닌 성공 본문)는 실패를 하나의 터미널 SSE `error` 이벤트로 표시합니다. 승자의 터미널 프레임이 릴레이된 뒤의 스트리밍 본문 실패는 대신 스트림을 조용히 끝냅니다 — 턴이 이미 완료됐고, 덧붙는 error 이벤트가 완료된 응답을 손상시키기 때문입니다. TTFB 타임아웃은 절대 전진하지 않습니다. 설정된 타임아웃은 답이며 터미널 `504 timeout_error` 이벤트로 표시됩니다. 이 커밋된 경로의 응답에는 `content-type`과 `x-gateway-model`이 실리고, `[models.router]` 항목이 라우팅했거나 `[models.subagents]` 오버레이가 전환한 요청이라면 라우터 헤더 두 개(`x-gateway-routed-model`/`x-gateway-route-source`)도 함께 실립니다 — 첫 시도 전에 정해지는 값이라 어느 업스트림이 이기는지에 의존하지 않습니다. 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략됩니다 — 헤더가 커밋과 함께 나갈 때 승자를 아직 모르기 때문입니다 — 그리고 업스트림 응답 헤더(요청 id, `anthropic-ratelimit-*` 할당량 메타데이터 포함)는 Anthropic 종류 승자라도 클라이언트에 도달하지 않습니다. `x-gateway-model`은 유지되며(클라이언트가 요청한 id를 가리킴), 요청 메트릭은 시도마다 분류된 상태로 기록되고 스트림 귀속은 스트림이 승자를 알게 되는 시점부터 승자를 따릅니다.
 
 체인을 모두 시도하면 `429` → `401`/`403` → `404` → 기타 `5xx` 우선순위로 가장 적합한 릴레이 실패를 반환합니다. 헤더 이전 실패는 최종 후보로 기억하지 않습니다. 기억한 릴레이 응답이 없으면 `all upstreams failed (N attempted)` 메시지의 `502 api_error`를 반환합니다.
 
@@ -335,7 +335,7 @@ codex-fallback = "gpt-5.2"
 
 origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 있는 값으로도 검사됩니다. `authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체가 발급한 JWT와 **모양이 같거나** — `aud` 클레임이 `"shunt"`이거나, `iss` 클레임이 이 게이트웨이의 아이덴티티이거나, `shunt_token_use` 클레임이 `"gateway-session"`(shunt만 발급하는 전용 마커)인 세 세그먼트 구조 — 설정된 `[server.auth]` 클라이언트 토큰과 일치할 때에만 제거됩니다. JWT 검사는 의도적으로 "지금 이 토큰이 인증되는가"가 아니라 "모양이 같은가"로 판단합니다: 만료된 토큰, 다른 `public_url`을 쓰는 형제 인스턴스가 발급한 토큰, `jwt_secret` 로테이션 이후 더 이상 검증되지 않는 토큰도 여전히 shunt 자신의 크리덴셜이므로 여전히 제거됩니다. 이 마커는 모양 검사에 추가된 분기일 뿐 필수 조건이 아닙니다: 마커가 존재하기 전에 발급된 토큰도 `aud`/`iss`로 여전히 일치하며, `verify` 자체도 마커를 요구하지 않으므로 이전 버전의 shunt가 발급한 토큰은 TTL 내에 있는 한 계속 인증됩니다. `apiKeyHelper`는 두 슬롯을 같은 값으로 채우므로 어느 크리덴셜이든 한쪽 또는 양쪽 슬롯에 들어올 수 있습니다. 다른 슬롯이 게이트웨이 JWT나 정적 클라이언트 토큰을 담고 있어도, 진짜 업스트림 크리덴셜을 담은 슬롯은 그대로 전달됩니다. 게이트 크리덴셜을 담은 슬롯만 제거됩니다. `[server.auth] header`에는 `authorization` 자신을 포함해 어떤 헤더 이름이든 지정할 수 있으며, 그렇게 설정하면 클라이언트는 접두사 없는 `Authorization: <token>` 형태로 인증합니다. 따라서 이 슬롯은 `Bearer` 페이로드뿐 아니라 값 전체로도 검사되며, 그런 토큰은 업스트림으로 전달되지 않습니다. 이 설정에는 한 가지 유의점이 있습니다: 추론 요청에서 shunt는 라우팅 전에 설정된 헤더를 조건 없이 제거하므로, 그 슬롯은 업스트림으로 아무것도 싣지 않습니다 — 게이트 토큰뿐 아니라 호출자 자신의 크리덴셜도 함께 사라집니다. `header`를 기본값인 전용 `x-shunt-token`으로 두면 이 충돌을 피할 수 있습니다.
 
-프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다 — 커밋된 스트리밍 체인 경로는 예외로, 응답에는 `content-type`과 `x-gateway-model`만 실리고 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략되며 업스트림 응답 헤더는 클라이언트에 도달하지 않습니다. [스테이지 라우터](/ko/guides/stage-router/)가 라우팅한 응답에는 `x-gateway-routed-model`(선택된 티어가 향하는 타깃)과 `x-gateway-route-source`(그 티어를 고른 이유)가 추가로 붙습니다. 라우터를 설정하지 않은 model id에는 둘 다 붙지 않습니다. `count_tokens`는 체인의 첫 항목만 사용하고 페일오버하지 않으며, 스테이지 라우터 헤더 두 개는 붙이지 않습니다. `[server.codex_endpoint]`는 `[[server.codex_endpoint.routes]]` 항목이 없는 모든 모델에 대해 설정된 업스트림 하나에 고정되며, 어느 쪽이든 이 체인에 참여하지 않습니다.
+프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다 — 커밋된 스트리밍 체인 경로는 예외로, 응답에는 `content-type`과 `x-gateway-model`, 그리고 라우터가 라우팅했거나 오버레이가 전환한 요청이라면 아래의 라우터 헤더 두 개가 실리고 승자에 따라 달라지는 `x-gateway-upstream`과 `x-gateway-upstream-model`은 생략되며 업스트림 응답 헤더는 클라이언트에 도달하지 않습니다. [`[models.router]`](#modelsrouter-선택) 항목이 라우팅한 응답에는 `x-gateway-routed-model`(라우터가 고른 타깃)과 `x-gateway-route-source`(그것을 고른 이유)가 추가로 붙습니다. [스테이지 라우터](/ko/guides/stage-router/)뿐 아니라 모든 라우터 `type`에 붙습니다. [`[models.subagents]`](#modelssubagents-선택) 오버레이가 전환한 위임 턴에도 같은 헤더 두 개가 붙으며, 이때 `x-gateway-route-source`는 `subagent_type` 또는 `subagent`입니다. 둘 다 붙지 않는 경우는 라우터도 오버레이도 그 턴을 결정하지 않았을 때뿐입니다. `count_tokens`는 체인의 첫 항목만 사용하고 페일오버하지 않으며, 이 헤더 두 개는 붙이지 않습니다. `[server.codex_endpoint]`는 `[[server.codex_endpoint.routes]]` 항목이 없는 모든 모델에 대해 설정된 업스트림 하나에 고정되며, 어느 쪽이든 이 체인에 참여하지 않습니다.
 
 ### 기존 설정 마이그레이션
 
@@ -355,7 +355,7 @@ origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 �
 
 | 키 | 값 | 의미 |
 | :-- | :-- | :-- |
-| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` \| `antigravity_cli` | 업스트림 프로토콜 / 어댑터. `anthropic` = Messages API(패스스루, 선택적으로 키 재설정); `responses` = Anthropic Messages를 OpenAI Responses API로 변환; `cursor` = 네이티브 Cursor ConnectRPC/protobuf AgentService 어댑터; `gemini` = Anthropic Messages를 Google Code Assist 백엔드의 Gemini `generateContent`/`streamGenerateContent`로 변환; `antigravity` = Google Antigravity 백엔드에 HTTP로 접속하며, `gemini`와 동일한 Code Assist 프로토콜을 사용하되 Antigravity 구독 토큰으로 인증하고 프로젝트 디스커버리에서 `ideType: ANTIGRAVITY`로 자신을 식별; `antigravity_cli` = **더 이상 사용되지 않음** — 업스트림 없이 로컬 Antigravity CLI 바이너리(`agy`)를 서브프로세스로 실행. `agy`가 자체 도구 호출을 처리하며 `tool_use` 블록을 반환할 수 없기 때문에, 실제로 도구 호출을 요구하는 요청 — 비어 있지 않은 `tools` 배열 또는 `any`나 `tool` 값의 `tool_choice` — 은 텍스트로 조용히 응답하지 않고 `400 invalid_request_error`로 거부됩니다. `tool_choice: none`(`tools`와 함께 있어도), 도구가 없는 `tool_choice: auto`, 빈 `tools: []`는 도구 호출을 요구하지 않으므로 모두 허용됩니다. |
+| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` \| `antigravity_cli` | 업스트림 프로토콜 / 어댑터. `anthropic` = Messages API(패스스루, 선택적으로 키 재설정); `responses` = Anthropic Messages를 OpenAI Responses API로 변환(Responses API에는 `stop` 파라미터가 없으므로 `stop_sequences`는 조용히 버려지지 않고 변환 과정에서 게이트웨이 측으로 흉내 냅니다); `cursor` = 네이티브 Cursor ConnectRPC/protobuf AgentService 어댑터; `gemini` = Anthropic Messages를 Google Code Assist 백엔드의 Gemini `generateContent`/`streamGenerateContent`로 변환; `antigravity` = Google Antigravity 백엔드에 HTTP로 접속하며, `gemini`와 동일한 Code Assist 프로토콜을 사용하되 Antigravity 구독 토큰으로 인증하고 프로젝트 디스커버리에서 `ideType: ANTIGRAVITY`로 자신을 식별; `antigravity_cli` = **더 이상 사용되지 않음** — 업스트림 없이 로컬 Antigravity CLI 바이너리(`agy`)를 서브프로세스로 실행. `agy`가 자체 도구 호출을 처리하며 `tool_use` 블록을 반환할 수 없기 때문에, 실제로 도구 호출을 요구하는 요청 — 비어 있지 않은 `tools` 배열 또는 `any`나 `tool` 값의 `tool_choice` — 은 텍스트로 조용히 응답하지 않고 `400 invalid_request_error`로 거부됩니다. `tool_choice: none`(`tools`와 함께 있어도), 도구가 없는 `tool_choice: auto`, 빈 `tools: []`는 도구 호출을 요구하지 않으므로 모두 허용됩니다. |
 | `base_url` | URL | 업스트림 base; shunt가 엔드포인트 경로를 붙입니다. `kind = "cursor"`에서는 로그인/토큰 갱신 엔드포인트에만 사용되며 에이전트/추론 호스트를 선택하지 않습니다. |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough`는 클라이언트 본인의 credential을 전달; `api_key`는 `api_key_env`의 키를 주입; `chatgpt_oauth`는 `~/.codex/auth.json`을 재사용; `claude_oauth`는 명시적 Anthropic 계정에서 선택; `xai_oauth`는 `shunt login xai`의 `~/.shunt/xai-auth.json`을 재사용(HTTPS를 통한 x.ai/grok.com 호스트에만 전송); `cursor_oauth`는 `~/.shunt/cursor-auth.json`을 재사용(`shunt login cursor`); `google_oauth`는 gemini CLI 로그인의 `~/.gemini/oauth_creds.json`을 재사용하며 `kind = "gemini"`에서만 유효; `antigravity_oauth`는 `shunt login antigravity`의 `~/.shunt/antigravity-auth.json`을 재사용하며 `kind = "antigravity"`에서만 유효하고, `google_oauth`와 **호환되지 않습니다** — Antigravity는 Gemini CLI 토큰에 없는 두 스코프(`cclog`, `experimentsandconfigs`)를 요청합니다; `none`은 인증할 업스트림이 없는 어댑터(`kind = "antigravity_cli"`)를 위해 크리덴셜을 전혀 보내지 않습니다. |
 | `api_key_env` | env 변수 이름 | `auth = "api_key"`일 때 키를 읽어오는 곳. 이 값 자신도 `${VAR}` / `${file:...}`로 쓸 수 있음([Secret 참조](#secret-참조) 참고). |
@@ -363,7 +363,7 @@ origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 �
 | `accounts` | 계정 테이블 배열 | Anthropic OAuth 계정 풀. `kind = "anthropic"`이고 `auth = "claude_oauth"`일 때만 유효; 아래 참고. |
 | `effort` | `low` … `max` | 선택적 기본 추론 노력(`responses` 프로바이더). `kind = "antigravity"`에도 적용되며, 접미사가 없는 `gemini-*` `upstream_model`에 카탈로그의 effort 접미사로 붙습니다. |
 | `count_tokens` | `tiktoken`(기본) \| `estimate` | `responses` 및 `cursor` provider: 로컬 tiktoken 카운트 대 `501 not_supported` fallback([상세](/ko/guides/effort-and-context/#토큰-카운팅-count_tokens)). |
-| `classifier_model` | 모델 id | `anthropic` provider 전용. Claude Code 자동 모드 권한 분류기 요청이 사용할 업스트림 모델이며, 대상은 요청 모양만으로 식별합니다 — 나머지 요청은 모두 클라이언트가 요청한 모델을 그대로 씁니다. **이 provider 안에서의** 리맵이지 다른 provider로 가는 라우트가 아닙니다: 분류기 요청에는 `stop_sequences`가 실려 있고 Responses 변환은 이 필드를 떨어뜨리기 때문입니다. 기본값은 설정 안 함. [Anthropic → 자동 모드 분류기](/ko/providers/anthropic/#자동-모드-분류기) 참고. |
+| `classifier_model` | 모델 id | `anthropic` provider 전용. Claude Code 자동 모드 권한 분류기 요청이 사용할 업스트림 모델이며, 대상은 요청 모양만으로 식별합니다 — 나머지 요청은 모두 클라이언트가 요청한 모델을 그대로 씁니다. **이 provider 안에서의** 리맵이지 다른 provider로 가는 라우트가 아닙니다 — 이 키는 `anthropic` 업스트림에서만 받습니다. 기본값은 설정 안 함. [Anthropic → 자동 모드 분류기](/ko/providers/anthropic/#자동-모드-분류기) 참고. |
 | `tool_search` | 미설정("auto", 기본) \| `true` \| `false` | gpt-5.4+ 모델이면서 계열이 xAI/Grok이 아닐 때 Claude Code의 도구 검색에 네이티브 클라이언트 실행 `tool_search` 프로토콜을 사용합니다. 미설정 시에는 이미 검증된 호스트 — ChatGPT/Codex 백엔드와 `api.openai.com` — 에서만 기본으로 네이티브를 사용하고, LiteLLM·vLLM·OpenRouter·자체 호스팅 프록시 등 그 외 모든 OpenAI 호환 엔드포인트는 텍스트 shim을 유지합니다. 검증된 커스텀 엔드포인트를 네이티브에 옵트인하려면 `true`로, shim을 항상 강제하려면 `false`로 설정하세요. [Codex → 도구 검색](/ko/guides/codex/#네이티브-프로토콜)을 참고하세요. |
 
 이름만 있는 항목은 `shunt login claude --name <name> --mode <mode>`(`<mode>`는 `oauth`, `import`, `setup-token` 중 하나)로 만든 `~/.shunt/accounts/claude/<name>.json`을 읽습니다. 대화형 CLI는 이 세 mode를 묻고 갱신 가능한 OAuth를 권장합니다. `--long-lived`는 `--mode setup-token`의 deprecated alias입니다. `SHUNT_CLAUDE_ACCOUNTS_DIR`로 스토어 디렉터리를 재정의할 수 있습니다. `[[providers.<name>.accounts]]`에 명시적으로 나열된 계정 목록이 비어 있으면 스토어 디렉터리의 유효한 계정 파일을 모두 스캔합니다. 갱신 가능한 OAuth/import 파일은 provider가 refresh token을 회전할 때 제자리에서 갱신되므로 파일마다 활성 owner가 하나만 있어야 합니다. 실행 중인 여러 shunt 프로세스에서 파일을 공유하거나 독립적으로 복사하지 마세요. 프로세스마다 별도로 프로비저닝하거나, 적절한 경우 정적 setup token을 사용하세요.
@@ -398,7 +398,7 @@ origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 �
 
 발견된 모델은 shunt가 실제 업스트림 목록을 가져올 수 있으면 거기서 옵니다. `server.default_provider`가 Anthropic 종류일 때 해당 업스트림에 `GET /v1/models`를 호출하며, 그 인증 방식에 맞는 크리덴셜을 사용합니다. `auth = "passthrough"`에서는 호출자가 전달한 크리덴셜을 사용하므로 호출자마다 해당 크리덴셜로 사용할 수 있는 목록을 보게 됩니다. 단, 어떤 슬롯에 실제 업스트림 크리덴셜이 아니라 shunt 자체의 `[server.gateway]` JWT나 설정된 `[server.auth]` 클라이언트 토큰이 담겨 있다면 그 슬롯은 전달되지 않습니다. `authorization`과 `x-api-key`는 각각 독립적으로 필터링되므로 다른 슬롯에 담긴 진짜 크리덴셜은 그대로 전달되며, 두 슬롯 모두 전달할 크리덴셜이 남지 않았을 때만 디스커버리가 내장 스냅샷으로 폴백합니다. `api_key`에서는 설정된 키를 사용합니다. `claude_oauth`에서는 추론 경로와 동일한 유효 계정 집합에서 가장 먼저 해석되는 비활성화되지 않은 계정을 사용합니다. 이 집합에는 계정 저장소에서 검색된 계정이 포함되며 `account_scope` 순서를 따릅니다. 디스커버리는 풀 선택, 쿨다운, 할당량 기록을 수행하지 않습니다. 따라서 게이트웨이 소유 크리덴셜을 사용하는 이 두 방식에서는 모든 호출자가 해당 크리덴셜 범위의 카탈로그를 공유합니다. shunt는 캐시하지 않습니다. `server.default_provider`가 Anthropic 종류가 아니거나, 크리덴셜이 없거나, 호출이 실패·타임아웃(2초 상한)하면 내장 Claude 카탈로그 스냅샷으로 폴백합니다. 어느 쪽이든 이 id들은 전용 `[[routes]]` 항목이 필요하지 않습니다. 일반 라우팅 규칙으로 해석되며, `[[routes]]`나 `[[route_prefixes]]` 어느 것에도 매칭되지 않을 때 `server.default_provider`로 폴백합니다.
 
-선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 정확한 id를 라우팅할 때는 `[[routes]]` 대신 이 형식을 권장합니다. 순서가 있는 `[[upstreams]]`를 사용하면 맵에 하나 이상의 `upstream = "backend-id"` 쌍을 넣을 수 있으며, `[[upstreams]]` 선언 순서에 따라 페일오버 체인이 됩니다. 레거시 `[providers.*]`에는 선언된 순서가 없으므로 정확히 한 쌍만 허용됩니다. 해당 id에 대해서는 맵이 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 각 업스트림의 기본 `effort`가 해당 체인 항목에 적용됩니다. 빈 맵, 비어 있거나 공백으로만 이루어진 업스트림 이름 또는 백엔드 id, 알 수 없는 업스트림, 같은 id의 `[[routes]]` 항목, `[1m]` 또는 `[1M]`으로 끝나는 맵 보유 id, 한쪽이라도 맵을 보유한 중복 `[[models]]` id는 시작 오류입니다. 클라이언트가 매칭 전에 context-window hint를 제거하므로 맵 보유 id에 이 suffix를 포함하면 해당 항목에 도달할 수 없습니다. 맵이 없는 항목끼리의 중복은 기존 동작을 유지하지만, 그중 하나가 `[models.stage_router]` 테이블을 가진 경우는 예외입니다 — 아래를 참고하세요.
+선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 정확한 id를 라우팅할 때는 `[[routes]]` 대신 이 형식을 권장합니다. 순서가 있는 `[[upstreams]]`를 사용하면 맵에 하나 이상의 `upstream = "backend-id"` 쌍을 넣을 수 있으며, `[[upstreams]]` 선언 순서에 따라 페일오버 체인이 됩니다. 레거시 `[providers.*]`에는 선언된 순서가 없으므로 정확히 한 쌍만 허용됩니다. 해당 id에 대해서는 맵이 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 각 업스트림의 기본 `effort`가 해당 체인 항목에 적용됩니다. 빈 맵, 비어 있거나 공백으로만 이루어진 업스트림 이름 또는 백엔드 id, 알 수 없는 업스트림, 같은 id의 `[[routes]]` 항목, `[1m]` 또는 `[1M]`으로 끝나는 맵 보유 id, 한쪽이라도 맵을 보유한 중복 `[[models]]` id는 시작 오류입니다. 클라이언트가 매칭 전에 context-window hint를 제거하므로 맵 보유 id에 이 suffix를 포함하면 해당 항목에 도달할 수 없습니다. 맵이 없는 항목끼리의 중복은 기존 동작을 유지하지만, 그중 하나가 `[models.router]` 테이블을 가진 경우는 예외입니다 — 아래를 참고하세요.
 
 ```toml
 [[models]]
@@ -415,30 +415,65 @@ codex = "gpt-5.2"
 | `display_name` | — | `/model` 선택기에 표시되는 레이블 |
 | `upstream_model` | — | 설정된 업스트림 이름에서 백엔드 모델 id로 이어지는 맵. 순서 있는 `[[upstreams]]`는 여러 항목의 페일오버 체인을 허용하고, 레거시 provider는 한 항목만 허용 |
 
-### `[models.stage_router]` (선택)
+### `[models.router]` (선택)
 
-광고하는 id 하나에 대한 콘텐츠 인지 티어 선택입니다. 목적지를 하나만 지정하는 대신
-**둘**(강한 티어와 효율 티어)을 지정하고, 요청의 최근 tool-result 이력이 턴마다 둘 중
-하나를 고르게 합니다. 이 테이블이 없으면 `[[models]]` 항목은 이전과 똑같이 동작하며,
-어디에도 라우터를 설정하지 않으면 라우팅은 바뀌지 않습니다.
+광고하는 id 하나에 대한 요청 단위 라우팅입니다. 목적지를 하나만 지정하는 대신
+`[models.router]` 테이블을 두고, 그 `type` 키가 라우팅 알고리즘을 고르면 알고리즘이
+목적지를 고릅니다. 이 테이블과 [`[models.subagents]`](#modelssubagents-선택) 오버레이가 모두 없으면
+`[[models]]` 항목은 이전과 똑같이 동작하며, 어디에도 둘 다 설정하지 않으면
+라우팅은 바뀌지 않습니다.
 
-두 타깃 모두 평범한 공개 model id이므로 각각 일반 사다리를 따라 해석되고 페일오버 체인,
-계정 풀, 어댑터, `effort`, `service_tier`를 그대로 유지합니다. 클라이언트에 보고되는 id는
-요청한 id 그대로이고, 선택된 티어는 업스트림으로만 전달됩니다. 신호와 히스테리시스가
-어떻게 동작하는지는 [스테이지 라우터 가이드](/ko/guides/stage-router/)를 참고하세요.
+shunt가 보통 쓰는 `kind`나 `mode`가 아니라 `type`을 쓰는 것은 **shunt 자체 명명 규칙에
+대한 의도적인 예외**이며, 레퍼런스에서 이 점을 밝히는 곳은 여기 한 곳뿐입니다. 라우팅
+알고리즘은 [NVIDIA-NeMo/Switchyard](https://github.com/NVIDIA-NeMo/Switchyard)에서
+가져왔고, 키 이름을 그대로 두면 업스트림 스키마 문서와 `type` 값을 다시 옮겨 적지 않고
+그대로 쓸 수 있습니다.
+
+어떤 라우터가 지정하는 타깃이든 모두 평범한 공개 model id이므로 각각 일반 사다리를 따라
+해석되고 페일오버 체인, 계정 풀, 어댑터, `effort`, `service_tier`를 그대로 유지합니다.
+클라이언트에 보고되는 id는 요청한 id 그대로이고, 선택된 타깃은 업스트림으로만 전달됩니다.
+
+| `type` | 선택 기준 | 요청 본문 읽기 |
+| :-- | :-- | :-- |
+| `stage_router` | 최근 tool-result 메타데이터로 턴마다 | 읽음 — `tool_use.name`과 `tool_result.is_error`만 |
+| `auto` | 같은 라우터를 업스트림 프리셋으로 | 위와 같음 |
+| `random` | 가중치 추첨, 기본은 세션 고정 | 읽지 않음 |
+| `noop` | 고르지 않음 — 빈 메시지로 응답 | 읽지 않음 |
+| `prefill_router` | 가장 최근 사용자 턴을 읽는 학습형 분류기(`prefill-router` 빌드 필요) | 읽음 — 사용자 턴의 텍스트 |
+| `llm_classifier` | LLM 판정 모델의 판정. 언제 물을지는 `classify_trigger`가 정합니다. `mode = "escalation"`에서는 완성된 약한 턴에 대한 판정 모델의 판단 | 읽음 — 패키지 프롬프트나 직접 쓴 프롬프트로 트랜스크립트를 읽습니다 |
+| `composite` | LLM 판정 모델이 스테이지 라우터의 fall-open 티어를 정합니다 | 읽음 — 판정 모델은 트랜스크립트를, 신호는 tool-result 메타데이터를 |
+| `advisor` | 실행 모델 하나가 모든 턴을 제공하고, 더 강한 리뷰어가 그 마무리 턴을 승인하거나 돌려보냅니다 | 읽음 — 리뷰어를 위해 트랜스크립트를 |
+
+라우팅을 결정하는 도중에 턴을 제공하는 형태는 둘입니다. `llm_classifier`의
+[`mode = "escalation"`](#mode--escalation)과 [`type = "advisor"`](#type--advisor)입니다.
+둘 다 판정이 나올 때까지 턴을 붙잡아 두었다가 제공하므로, 클라이언트가 스트리밍을 요청한
+응답을 shunt가 버퍼링하는 유일한 라우트입니다 — [보류된 턴](#보류된-턴-escalation과-advisor)을 보세요.
+`prefill_router`는 구현되어 있지만 **컴파일 타임에
+게이트됩니다**. 기본으로 꺼져 있는 `prefill-router` 카고 피처를 켜고 빌드한 바이너리에서만
+쓸 수 있습니다 — [아래](#type--prefill_router)를 보세요.
+
+한 항목에 `[models.router]`와 `[models.upstream_model]`을 함께 선언할 수 없습니다.
+
+#### `type = "stage_router"`
+
+콘텐츠 인지 티어 선택입니다. 항목이 **둘**(강한 티어와 효율 티어)을 지정하고, 요청의 최근
+tool-result 이력이 턴마다 둘 중 하나를 고르게 합니다. 신호와 히스테리시스가 어떻게
+동작하는지는 [스테이지 라우터 가이드](/ko/guides/stage-router/)를 참고하세요.
 
 ```toml
 [[models]]
 id = "claude-auto"
 display_name = "Auto (stage router)"
 
-[models.stage_router]
+[models.router]
+type = "stage_router"
 capable_target = "claude-opus-4-8"
 efficient_target = "claude-sonnet-4-6"
 ```
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
+| `type` | ✅ 필수 | `stage_router` |
 | `capable_target` | ✅ 필수 | 어려운 추론·조사·오류 복구를 맡는 모델 id |
 | `efficient_target` | ✅ 필수 | 계획이 정해진 뒤 정형 작업을 맡는 모델 id |
 | `picker` | `efficient_first` | 신호가 불확실할 때 사용할 티어. `efficient_first` 또는 `capable_first` |
@@ -447,23 +482,792 @@ efficient_target = "claude-sonnet-4-6"
 | `min_dwell_turns` | `3` | 하향 전환이 가능해지기까지 티어를 유지하는 턴 수. 티어를 고른 턴부터 세므로 `0`과 `1`은 모두 하한 없음을 뜻합니다 |
 | `deescalate_threshold` | `0.75` | 티어를 *내릴* 때 필요한 확신도. 기본값이 `confidence_threshold` 기본값보다 높아 내려가는 쪽이 더 어렵지만, 두 값은 각각 독립적으로 범위 검사되므로 `confidence_threshold`보다 낮은 값도 허용되며, 로드 시점에 경고가 남습니다 |
 | `session_ttl_seconds` | `3600` | 조용한 세션의 고정 티어가 유지되는 시간 |
+| `capable_hold_turns` | `0` | 신호로 상향 전환한 뒤 강한 티어를 유지하는 턴 수. 그 턴들은 라우트 소스 `capable_hold`로 보고되며, 유지는 증거가 아니어서 고정된 티어를 어느 방향으로도 옮기지 못합니다. 기본값 `0`은 고정 동작을 기존 그대로 두며, 업스트림 기본값은 `2`입니다 |
+
+#### `[models.router.tool_semantics]` (선택)
+
+라우터 하나에 대해 shunt 내장 Claude Code 툴 어휘를 넓히는 네 개의 목록입니다. 내장
+테이블을 대체하는 것이 아니라 그 **뒤에** 적용되므로, 내장 테이블이 분류하지 않고 남겨 둔
+이름 — `Bash`, `Skill`, `mcp__*` 서버 툴 — 에만 닿습니다. 내장 테이블이 이미 observe,
+mutate, plan으로 분류한 이름(`Read`, `Edit`, `TodoWrite` 등)을 지정하면 **시작 오류**입니다.
+공백이 섞인 이름(`" Read "`, `"some tool"`)도 마찬가지입니다. 이름은 정확히 일치해야 하므로
+앞뒤에 공백이 붙은 이름은 런타임에 아무것도 매칭하지 못합니다.
+
+```toml
+[models.router.tool_semantics]
+observe = ["mcp__jbcontext__code_search"]
+mutate = []
+plan = []
+new = []
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `observe` | `[]` | 아무것도 바꾸지 않고 읽기만 하는 툴 이름 |
+| `mutate` | `[]` | 상태를 바꾸는 툴 이름. 파일 전체 쓰기로 채점됩니다 |
+| `plan` | `[]` | 계획하거나 위임하는 툴 이름 |
+| `new` | `[]` | 스코어러가 새로 도입된 툴로 세는 이름 |
+
+넷 중 하나라도 고치면 다음 로드에서 그 라우터의 기존 세션 고정이 사라집니다. 문턱값을
+고칠 때와 같습니다.
+
+#### `[models.router.handoff_notes]` (선택)
+
+신호가 티어를 옮긴 턴에 한해, **업스트림으로 보내는** 요청에 시스템 블록 하나를 덧붙여
+새로 들어온 모델에게 왜 넘겨받았는지 알려 줍니다.
+
+```toml
+[models.router.handoff_notes]
+escalation_note = "the previous model was stalling; pick up the diagnosis"
+deescalation_note = "routine work resumes"
+only_on_wrong_signal_escalation = true
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `escalation_note` | — | 신호가 턴을 강한 티어로 올릴 때 덧붙입니다 |
+| `deescalation_note` | — | 스코어러가 작업을 효율 티어로 되돌릴 때 덧붙입니다 |
+| `only_on_wrong_signal_escalation` | `true` | `escalation_note`를 신호가 주도한 상향 전환(라우트 소스 `override`, `dimensions`)으로 한정합니다. `false`로 두면 스코어러가 내린 모든 상향 전환에 덧붙입니다 |
+
+노트는 `system` 배열의 **맨 뒤**에 새 블록으로 들어갑니다. Claude Code의 attribution
+블록은 첫 번째 원소이며 건드리지 않습니다. 고정 상태로 이어진 턴, 신호가 없는 턴,
+`count_tokens` 프로브에는 노트가 붙지 않습니다. 넘겨준 것이 없는 턴도 마찬가지입니다 —
+세션의 첫 턴, 그리고 이미 고정된 티어를 다시 확인하기만 한 턴이 여기 해당합니다.
+빈 노트는 시작 오류입니다.
+
+**전환할 때마다 프롬프트 캐시 미스를 한 번씩 치릅니다.** `system` 배열은 캐시된 프리픽스의
+일부여서, 노트를 붙이거나 떼면 프리픽스가 무효가 됩니다. 티어 전환 자체가 이미 포기하는
+모델별 프리픽스에 더해지는 비용입니다. 이 테이블이 옵트인인 이유이자,
+`only_on_wrong_signal_escalation`의 기본값이 더 좁은 쪽인 이유입니다.
+
+#### `[models.router.classifier]` (선택)
+
+신호만으로 판정할 수 없는 턴을 위한 LLM **판정 모델**입니다. 이 테이블을 두면 해당 항목은
+판정 호출을 하는 레인으로 옮겨 갑니다. 스코어러가 결론을 내지 못한 턴 — 원래라면 라우트
+소스 `fall_open`으로 보고될 턴 — 가운데 고정(pin)이 잡고 있지 않은 세션의 턴에서 shunt는
+판정 모델에게 묻고 그 판정으로 라우팅합니다. `type = "stage_router"`에서만 받습니다.
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `target` | ✅ 필수 | 판정 모델의 공개 model id. 물어보기만 하고 클라이언트에게는 제공하지 않습니다 |
+| `base_threshold` | `0.5` | 지원되는 작업을 효율 티어에 두는 `p_solve` 하한. `(0.0, 1.0]` 범위 |
+| `classify_trigger` | `every_request` | 언제 판정 모델을 부를 수 있는지. `every_request`는 결론이 나지 않은 어떤 턴에서도 부를 수 있고 도구 연속 턴도 포함합니다. `user_turn`은 가장 최근 메시지가 사람의 사용자 턴일 때만 — `role: user`이면서 `tool_result`가 아닌 블록을 하나 이상 실은 경우 — 부릅니다. 그래서 도구 연속 턴은 판정 호출을 새로 치르는 대신 세션 핀을 타고 갑니다. `new_session`은 여기서 `every_request`와 똑같이 동작합니다. 업스트림도 그렇게 말합니다 — 이 라우터는 이미 shunt 자신의 세션 핀에 결정을 들고 있기 때문입니다 |
+
+판정 타깃도 평범한 공개 model id이며 티어 타깃과 똑같이 한 홉 규칙을 지킵니다. 여기에
+조건이 하나 더 붙습니다. **passthrough** 라우트로 해석되면 안 됩니다.
+`auth = "passthrough"`는 *호출자의 자격 증명을 그대로 전달한다*는 뜻인데, 판정 호출이
+제거하는 것이 바로 그 호출자의 자격 증명입니다. 그래서 그런 타깃은 아무것도 없이 도착하고
+시작 오류가 됩니다. 나머지 auth 모드는 모두 허용되며 `auth = "none"`도 포함됩니다.
+이 모드는 해당 엔드포인트가 자격 증명을 전혀 요구하지 않는다는 뜻이므로, 인증 없이 도는
+로컬·자체 호스팅 판정 모델은 오류가 아니라 지원되는 구성입니다.
+호출자의 자격 증명 슬롯은 하나도 함께 가지 않습니다 — 예약된 `x-shunt-*` 슬롯과 `cookie`,
+`authorization`, `x-api-key`, `anthropic-beta`가 모두 제거됩니다. 호출은 그 타깃 자신의
+계정 풀 쿼터를 씁니다. 판정 모델에 자기 `[[models]]` 항목을 따로 두라고 하는 이유입니다.
+
+판정이 내려진 턴은 라우트 소스 `llm-classifier`로 보고되고 다른 결정과 똑같이 세션을
+고정합니다. 판정 실패는 종류를 가리지 않고 — 타임아웃, 응답 크기 초과, 업스트림 오류,
+해석할 수 없는 판정, 예산 소진 — picker 기본값인 `fall_open`으로 해결됩니다.
+`count_tokens` 프로브에는 판정 모델을 부르지 않으며, 요청이 인증과 정책 검사를 통과하기
+전에도 부르지 않습니다. 판정 모델을 부르는 턴에서는 인바운드 인증이 요청된 id에 더해 이
+항목이 지정할 수 있는 모든 타깃과 판정 모델을, 각각의 페일오버 체인 전체까지 포함해
+대상으로 삼습니다. 그래서 passthrough 응답 타깃에 자격 증명을 주입하는 판정 모델이 붙으면
+클라이언트 자격 증명이 필요해지고, 인증에 실패했거나 정책이 거부한 요청은 판정 호출을 한
+번도 만들지 않습니다. 판정 모델을 부르지 않는 턴은 실제로 해석된 체인으로만 인증합니다 —
+신호가 스스로 결정한 턴과,
+[`[models.subagents]`](#modelssubagents-선택) 오버레이가 라우터보다 먼저 돌려보낸
+턴입니다.
+
+#### 호출당 한도
+
+여섯 개 키가 한 항목이 만드는 모든 내부 호출에 한도를 겁니다. 이 키들은 그 호출을 만드는
+테이블에 놓입니다 — `classifier`를 단 `stage_router`, `llm_classifier`, `composite`,
+`advisor` 등 driven 타입의 `[models.router]`, 그리고 classifier 형태의
+[`[models.subagents]`](#modelssubagents-선택) 오버레이(자기 몫을 따로 가집니다)입니다.
+한도를 넘기면 업스트림 호출을 취소합니다. 각 값은 최소 `1`이어야 하며, `0`은 해당 키를
+알려 주는 시작 오류입니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `judge_timeout_ms` | `30000` | 스트리밍하지 않는 판정 호출의 종단 간 기한. 헤더*와* 본문을 모두 덮으므로 `200`을 보낸 뒤 멈춰 버린 응답도 여기서 끊깁니다 |
+| `judge_max_response_bytes` | `65536` | 수집하는 판정 응답의 최대 크기. 이를 넘기면 `fall_open`으로 해결됩니다 |
+| `gated_max_bytes` | `8388608` | 보관하는 턴의 최대 크기. SSE 프레임 바이트 또는 JSON 본문 |
+| `gated_idle_ms` | `60000` | 보관하는 턴에서 완성된 콘텐츠 프레임 사이의 최대 간격. SSE 킵얼라이브(`event: ping` 프레임과 `:` 주석 프레임)는 이 타이머를 되돌리지 않으며, 청크 경계에서 나뉜 프레임은 분류 전에 다시 합쳐집니다 |
+| `gated_max_duration_ms` | `600000` | 보관하는 턴의 벽시계 상한. 헤더와 본문을 모두 덮습니다 |
+| `max_judge_calls` | `8` | 한 세션이 만들 수 있는 판정 호출 수. 보류된 턴 자체는 판정 호출이 아니므로 세지 않습니다 |
+
+`gated_*` 세 키는 [`escalation`](#mode--escalation)이나 [`advisor`](#type--advisor)
+항목의 **보류된** 턴, 즉 판정이 나올 때까지 shunt가 붙잡아 두는 턴에 한도를 겁니다. 다른
+항목에는 보류된 턴이 없으므로 이 키들이 거는 한도도 없습니다.
+
+#### `type = "llm_classifier"`
+
+신호가 떨어진 자리만 메우는 대신, LLM **판정 모델**이 턴 전체를 결정합니다. 항목에는
+판정 모델과 그것이 고를 수 있는 목적지, 그리고 세 가지 판정 형태 중 하나를 정하는
+`mode`를 적습니다. 여기서는 `capability`와 `custom`을 설명합니다. `escalation`은 완성된
+턴을 판정하므로 [별도 절](#mode--escalation)에서 다룹니다.
+
+`mode`는 **필수**입니다. 업스트림 스키마는 `capability`를 기본값으로 두지만 여기서는
+그렇지 않습니다. 세 모드는 서로 다른 원리로 라우팅하고, 그중 하나(`escalation`)는 제공할
+턴을 버퍼링하므로, `mode`를 생략한 설정이 조용히 어느 한 모드로 읽혀서는 안 됩니다.
+
+**`mode = "capability"`** — 패키지 판정 모델이 작업의 해결 확률을 돌려줍니다. 그 값이
+`base_threshold` 이상이면 턴은 `weak_target`에, 미만이면 `strong_target`에 갑니다.
+
+```toml
+[[models]]
+id = "claude-judged"
+
+[models.router]
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+base_threshold = 0.5
+# threshold_step = 0.0
+# classify_trigger = "every_request"
+# message_hash_fallback = false
+# recent_turn_window = 3
+# max_output_tokens = 4096
+# prompt = "…"
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `llm_classifier` |
+| `mode` | ✅ 필수 | `capability` |
+| `classifier_target` | ✅ 필수 | 판정 모델의 공개 model id. 물어보기만 하고 제공하지 않습니다 |
+| `strong_target` | ✅ 필수 | 판정 모델이 자신 없어 하는 작업이 갈 model id |
+| `weak_target` | ✅ 필수 | 판정 모델이 풀 수 있다고 본 작업이 갈 model id |
+| `base_threshold` | ✅ 필수 | 그래도 `weak_target`으로 보내는 해결 확률의 하한. `(0.0, 1.0]` 범위 |
+| `threshold_step` | `0.0` | 유한하고 0 이상. 불확실하거나 매칭되지 않은 판정에는 한 번, 지원되지 않는 판정에는 두 번 더해집니다. `base_threshold + 2 × threshold_step`이 `1.0` 이하여야 합니다 |
+| `prompt` | 패키지 프롬프트 | 패키지 capability 프롬프트를 대체합니다. 스키마는 구조화 출력 설정으로 따로 보내므로 프롬프트에 `{{RESPONSE_SCHEMA}}`가 들어가면 안 되고, 공백만으로 이루어져도 안 됩니다 |
+
+**`mode = "custom"`** — 프롬프트와 JSON 스키마를 직접 주고, JSON Pointer가 판정에서
+**모델 그룹 이름**을 집어냅니다. 그 그룹의 첫 모델이 턴을 처리합니다. `any`와 `judge`는
+예약된 필수 그룹이고, 나머지 이름은 전부 여러분의 것입니다. 한 항목이 둘보다 많은 모델
+가운데서 고를 수 있는 이유가 이것입니다.
+
+```toml
+[models.router]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+prompt = "이 턴의 타깃을 정확히 하나 고르세요. 응답 스키마에 맞는 JSON만 반환하세요."
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `llm_classifier` |
+| `mode` | ✅ 필수 | `custom` |
+| `models.any` | ✅ 필수 | 고를 수 있는 모든 목적지. 다른 답변 그룹의 타깃은 전부 여기에도 있어야 하며(`judge`는 예외), 빠진 것이 있으면 시작 오류입니다 |
+| `models.judge` | ✅ 필수 | 순서 있는 판정 후보 하나 이상. 물어보기만 하고 제공하지 않습니다 |
+| `models.<이름>` | — | 직접 이름 붙인 그룹. 판정이 그 이름을 대면 그룹의 첫 모델이 뽑힙니다 |
+| `default_target` | ✅ 필수 | 쓸 만한 판정이 나오지 않았을 때 쓰는 그룹. `judge`를 제외한 설정된 그룹이어야 하고 비어 있으면 안 됩니다 |
+| `prompt` | ✅ 필수 | 판정 모델의 시스템 프롬프트. 공백만으로 이루어지면 안 되고 `{{RESPONSE_SCHEMA}}`가 들어가도 안 됩니다 — 스키마는 따로 보냅니다 |
+| `response_schema` | ✅ 필수 | 안쪽 JSON 스키마를 담은 TOML 문자열. JSON 객체로 파싱되어야 하며, 제공자 래퍼는 shunt가 붙입니다 |
+| `policy` | ✅ 필수 | `{ type = "target_selector", selector = "…" }` 형태. `selector`는 `/target` 같은 판정 안쪽을 가리키는 JSON Pointer입니다 |
+
+두 모드가 함께 쓰는 키와, 여섯 개 [호출당 한도](#호출당-한도)는 다음과 같습니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `classify_trigger` | `every_request` | 판정 모델을 언제 부를지. `every_request`는 도구 연속 턴까지 포함해 모든 턴을 판정합니다. `user_turn`은 새 사람 턴마다 판정하고 그 사이의 도구 호출 동안 그 타깃을 유지합니다. `new_session`은 한 번만 판정하고 세션 내내 그 타깃을 다시 씁니다 |
+| `message_hash_fallback` | `false` | 세션 id를 보내지 않는 클라이언트를 위해 첫 사용자 메시지로 유지 키를 잡습니다. `classify_trigger = "new_session"`이 필요하며, 다른 트리거에서 켜면 시작 오류입니다 |
+| `recent_turn_window` | 설정 없음 | 설정하면 판정 모델이 추가로 보는 최근 턴 수. 최소 `1` |
+| `max_output_tokens` | `4096` | 판정 응답의 완성 토큰 상한. 최소 `1` |
+
+**판정이 오지 않으면.** 판정 호출이 어떤 식으로든 실패하면 — 타임아웃, 크기 초과, 업스트림
+오류, `400`, 해석 불가 — 판정이 없는 것으로 보고 턴은 알고리즘 자신의 기본값으로 갑니다.
+`capability` 모드는 `strong_target`, `custom` 모드는 `default_target` 그룹의 첫
+모델입니다. 판정하는 턴 하나에 판정 호출은 **정확히 한 번**, 첫 판정 후보에게만 갑니다.
+그래서 실패해도 `models.judge`를 따라 내려가며 재시도하지 않습니다. 턴은 그대로 응답되고,
+라우트 소스는 `classifier_fail_open`이며, 클라이언트는 여전히 `200`을 받습니다.
+
+**세션은 알고리즘 안에 있습니다.** `classify_trigger`의 유지 상태는 업스트림의 것이고
+라우터 인스턴스 안에 들어 있으며, shunt는 그 인스턴스를 설정을 읽을 때마다 한 번 만듭니다.
+핫 리로드는 그것을 다시 만들기 때문에, 리로드하면 각 세션이 들고 있던 타깃을 잊습니다 —
+`prefill_router`와 같은 성질입니다. `max_judge_calls`는 shunt 자신의 것이며 (세션,
+에이전트)마다 셉니다. 그래서 위임된 자식은 부모가 아니라 자기 예산을 씁니다. 세션 id가
+없는 요청은 아예 추적하지 않으므로, 그런 호출자에게는 이 한도가 요청 단위로 걸립니다.
+예산을 다 쓴 턴은 판정을 건너뛰고 fail-open 타깃으로 가며, 판정 호출 결과는
+`budget_exhausted`로 기록됩니다.
+
+**프로브는 판정 없이 해석됩니다.** `count_tokens` 요청은 판정 모델을 부르지 않고 fail-open
+타깃으로 응답합니다. 요청 본문이 없는 표면 — `GET /routes`, `/v1/models` 디스커버리,
+`shunt check` — 도 마찬가지이며, 이들은 라우트 소스 `classifier_default`로 보고합니다.
+
+타깃과 판정 모델은 모두 스테이지 라우터와 같은 한 홉 규칙을 지키는 평범한 공개 model
+id이고, 판정 모델은 **passthrough** 라우트로 해석되면 안 됩니다.
+[위](#modelsrouterclassifier-선택)에서 말한 이유 그대로입니다 — 판정 호출은 호출자의
+자격 증명을 하나도 싣지 않으므로 passthrough 라우트에는 돌릴 것이 남지 않습니다.
+
+#### `mode = "escalation"`
+
+`llm_classifier`의 세 번째 모드는 각 세션을 약한 타깃에서 시작하고, 판정 모델이 작업이
+어떻게 흘러가는지 읽게 합니다. 아직 고정(latch)되지 않은 세션의 턴은 `weak_target`에서
+만들어 붙잡아 둡니다. 그다음 판정 모델이 **완성된** 턴을 판정합니다 — 예측이 아니라 약한
+모델이 실제로 한 작업을 봅니다. 거절 판정은 상향 전환 연속 횟수를 0으로 되돌리고, 상향
+전환 판정은 그 횟수를 늘립니다. 연속 횟수가 `confirmations`보다 작은 동안에는 붙잡아 둔
+약한 턴을 제공합니다. `confirmations`에 닿으면 세션이 고정됩니다. 그 턴의 약한 답은
+버리고 `strong_target`이 턴을 제공하며, 이후 그 세션의 모든 턴은 판정 호출도 버퍼링도
+없이 곧바로 `strong_target`으로 갑니다.
+
+```toml
+[[models]]
+id = "claude-escalate"
+
+[models.router]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+# prompt = "…"
+# max_output_tokens = 4096
+
+[models.router.escalation]
+confirmations = 2
+# recent_turn_window = 28
+# window_message_chars = 500
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `llm_classifier` |
+| `mode` | ✅ 필수 | `escalation` |
+| `classifier_target` | ✅ 필수 | 궤적 판정 모델의 공개 model id. 물어보기만 하고 제공하지 않습니다 |
+| `strong_target` | ✅ 필수 | 세션이 고정된 뒤 제공하는 model id |
+| `weak_target` | ✅ 필수 | 고정 전에 제공하는 model id. `classifier_target`과 같은 id여도 됩니다 |
+| `prompt` | 패키지 프롬프트 | 패키지 궤적 판정 프롬프트를 대체합니다 |
+| `max_output_tokens` | `4096` | 판정 응답의 완성 토큰 상한. 최소 `1` |
+| `escalation.confirmations` | `2` | 고정에 필요한 연속 상향 전환 판정 수. 최소 `1`. `1`보다 크면 세션 id가 필요합니다. 없으면 매 턴이 0에서 시작해 세션이 끝내 고정되지 않습니다 |
+| `escalation.recent_turn_window` | `28` | 판정 모델에게 보여 주는 최근 메시지 수. 최소 `1` |
+| `escalation.window_message_chars` | `500` | 그 창 안의 메시지당 문자 수 상한. 최소 `50` |
+
+`[models.router.escalation]` 테이블은 선택입니다. 생략하면 세 기본값을 쓰며, 이는
+업스트림이 벤치마크한 설정입니다. 여섯 개 [호출당 한도](#호출당-한도)는
+`[models.router]`에 놓습니다. classifier 형태의
+[`[models.subagents]`](#modelssubagents-선택) 오버레이는 여전히 `mode = "custom"`만
+받습니다.
+
+`classifier_target`과 달리 `weak_target`은 **passthrough** 라우트여도 됩니다. 약한 턴은
+클라이언트 자신의 답이므로, 실시간 턴과 똑같이 호출자의 자격 증명을 싣습니다.
+`count_tokens` 프로브는 판정 호출도 보류된 호출도 만들지 않고 `weak_target`으로
+응답합니다. 판정 호출은 `shunt.router.judge_calls{algorithm="llm_classifier"}`로 셉니다.
+
+보류된 턴을 어떻게 제공하는지, 결과마다 클라이언트가 무엇을 보는지, 비용이 얼마인지는
+[보류된 턴](#보류된-턴-escalation과-advisor)을 보세요.
+
+#### `type = "composite"`
+
+판정 모델이 스테이지 라우터의 fall-open 티어를 정하고, 신호 채점에는 손대지 않습니다.
+stage 테이블은 **`picker`를 받지 않습니다** — 그 티어는 classifier가 공급하기 때문입니다.
+그래서 여기에 `picker`를 적으면 시작 오류입니다.
+
+```toml
+[[models]]
+id = "claude-composite"
+
+[models.router]
+type = "composite"
+
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[models.router.stage]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.5
+# recent_turn_window = 3
+# capable_hold_turns = 0
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `composite` |
+| `classifier.target` | ✅ 필수 | 티어 판정 모델의 공개 model id. 물어보기만 하고 제공하지 않습니다 |
+| `classifier.base_threshold` | ✅ 필수 | 그래도 효율 티어로 보내는 `p_solve` 하한. `(0.0, 1.0]` 범위 |
+| `classifier.classify_trigger` | ✅ 필수 | `user_turn`은 사람이 말할 때마다 티어를 다시 고르고, `new_session`은 한 번 골라 유지합니다. `every_request`는 여기서 **거부됩니다** — 도구 단계마다 판정을 부르는 비용이야말로 이 타입이 피하려는 것이기 때문입니다 |
+| `classifier.message_hash_fallback` | `false` | 세션 id를 보내지 않는 클라이언트를 위해 첫 사용자 메시지를 해시해 티어를 유지합니다 |
+| `stage.capable_target` | ✅ 필수 | 강한 티어 |
+| `stage.efficient_target` | ✅ 필수 | 효율 티어 |
+| `stage.confidence_threshold` | ✅ 필수 | 결정적인 신호에 필요한 보강 정도. `(0.0, 1.0]` 범위 |
+| `stage.recent_turn_window` | `3` | 신호를 계산할 때 보는 최근 tool result 수. 최소 `1` |
+| `stage.capable_hold_turns` | `0` | 신호에 따른 상향 전환 뒤 강한 티어를 붙잡아 두는 턴 수. shunt 기본값은 `0`, 업스트림은 `2`입니다 |
+| `stage.tool_semantics` | — | [`[models.router.tool_semantics]`](#modelsroutertool_semantics-선택)과 같은 네 목록이며 규칙도 같습니다 |
+
+여섯 개 [호출당 한도](#호출당-한도)는 두 하위 테이블이 아니라 `[models.router]`에
+놓습니다. classifier가 닿지 못한 턴은 `stage.efficient_target`으로 fall-open하며, 이는
+업스트림의 규칙이자 프로브와 본문 없는 표면이 보고하는 값이기도 합니다.
+
+stage 쪽은 libsy 자신의 stage 라우트이므로, 결정적인 턴은 classifier 결정이 아니라 스테이지
+라우터의 라우트 소스를 그대로 보고합니다 — composite의 신호 기반 턴을 평범한
+`stage_router`의 턴과 같은 방식으로 읽을 수 있다는 뜻입니다.
+
+#### `type = "advisor"`
+
+**실행 모델**(executor) 하나가 클라이언트가 보는 모든 턴을 제공합니다. 더 강한
+**어드바이저**(advisor)가 실행 모델의 마무리 턴 — 작업 전에 내놓는 계획, 또는 작업을
+끝냈다는 주장 — 을 클라이언트가 보기 전에 리뷰합니다. APPROVE는 붙잡아 둔 턴을 내보내고,
+REDO는 그 턴을 버린 뒤 어드바이저의 계획과 함께 실행 모델을 다시 작업으로 돌려보냅니다.
+어드바이저는 턴을 제공하지 않으므로 클라이언트는 실행 모델의 출력만 봅니다.
+
+```toml
+[[models]]
+id = "claude-reviewed"
+
+[models.router]
+type = "advisor"
+executor_target = "claude-sonnet-4-6"
+advisor_target = "claude-opus-4-8"
+gate_trigger = "no_tool_call"
+max_reviews = 1
+# gate_stall_turns = 0
+# gate_min_tool_results = 0
+# advisor_max_tokens = 2048
+# transcript_max_chars = 200000
+# fail_open = true
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `advisor` |
+| `executor_target` | ✅ 필수 | 클라이언트가 보는 모든 턴을 제공합니다 |
+| `advisor_target` | ✅ 필수 | 보류된 턴을 리뷰합니다. 제공하지 않습니다 |
+| `gate_trigger` | `no_tool_call` | 리뷰를 일으키는 조건. `no_tool_call`(실행 모델이 도구 호출 없이 끝낸 첫 턴) 또는 `pattern` |
+| `gate_trigger_pattern` | 미설정 | `pattern` 트리거의 정규식. 앵커 없이 검색합니다. `pattern`에서는 비어 있지 않은 값이 필수이고, `no_tool_call`에서 설정하면 시작 오류입니다 |
+| `max_reviews` | `1` | 세션당 허용되는 리뷰 수. 최소 `1`. `x-claude-code-session-id`가 없는 요청은 그 자체로 하나의 세션으로 세므로, 세션이 없는 호출자끼리 예산을 공유하지 않습니다 |
+| `gate_stall_turns` | `0` | 대화에 이만큼의 어시스턴트 턴이 쌓이면 작업 중간 점검으로 한 턴을 리뷰합니다. `0`은 끔 |
+| `gate_min_tool_results` | `0` | `no_tool_call` 턴을 리뷰할 수 있기 전에 대화에 있어야 하는 tool result 수 |
+| `advisor_max_tokens` | `2048` | 리뷰 한 번의 출력 토큰 상한. 최소 `1` |
+| `advisor_temperature` | 미설정 | 리뷰의 샘플링 온도. 설정하지 않으면 리뷰 요청에서 뺍니다 |
+| `transcript_max_chars` | `200000` | 어드바이저에게 보내는 트랜스크립트의 상한. 더 길면 가운데를 잘라 냅니다. 최소 `256` |
+| `fail_open` | `true` | 리뷰가 실패하면 붙잡아 둔 턴을 제공합니다. `false`면 대신 요청을 `502`로 실패시킵니다 |
+| `reviewer_system_prompt` | 패키지 프롬프트 | APPROVE/REDO 리뷰어 프롬프트를 대체합니다 |
+| `redo_feedback_prefix` | 패키지 프롬프트 | 실행 모델에게 돌려보내는 REDO 계획 앞에 붙는 문구를 대체합니다 |
+
+여섯 개 [호출당 한도](#호출당-한도)는 `[models.router]`에 놓습니다.
+
+**어떤 턴을 붙잡아 두는가.** 턴이 `gate_trigger`에 걸리는지는 턴이 완성된 뒤에야 알 수
+있습니다. 그래서 세션에 리뷰 예산이 남아 있는 동안에는 실행 모델의 **모든** 턴을 붙잡아
+두고, 게이트에 걸리지 않은 턴은 리뷰 없이 제공합니다. `max_reviews`를 다 쓰거나
+그 세션에서 리뷰 모델 호출이 세 번 실패하면(실패한 호출은 리뷰를 돌려받습니다) 그 세션의
+나머지 턴은 버퍼링 없이 실시간으로 스트리밍됩니다.
+
+**REDO.** 붙잡아 둔 턴은 응답 헤더가 하나도 클라이언트에 닿기 전에 버립니다. 버린 턴과
+어드바이저의 계획을 대화에 덧붙이고 실행 모델을 다시 돌리며, 이 재실행은 실시간으로
+스트리밍됩니다.
+
+`advisor_target`과 달리 `executor_target`은 **passthrough** 라우트여도 됩니다. 이유는
+escalation의 약한 타깃과 같습니다. `count_tokens` 프로브는 리뷰도 보류된 호출도 만들지
+않고 `executor_target`으로 응답합니다. 리뷰는
+`shunt.router.judge_calls{algorithm="advisor"}`로 세고, `GET /routes`는
+`advisor_target`을 `judges` 아래에 나열합니다.
+
+#### 보류된 턴: escalation과 advisor
+
+**보류된**(gated) 턴 — 고정 전 escalation의 약한 턴, 또는 리뷰 예산이 남은 세션의
+advisor 실행 모델 턴 — 은 먼저 만들어 붙잡아 두었다가 판정이 나온 뒤에만 제공합니다. 이
+항목의 다른 턴과, 다른 모든 라우트의 모든 턴은 이전과 똑같이 스트리밍됩니다.
+
+**호출자의 모드를 유지합니다.** `stream: true` 호출자의 보류된 호출은 스트리밍합니다.
+SSE 프레임은 도착하는 대로 보관하고, 턴을 제공하게 되면 바이트 그대로 재생합니다.
+`stream: false` 호출자의 보류된 호출은 스트리밍하지 않으며, 호출자는 JSON 메시지 하나를
+받습니다. 게이트가 바꾸는 것은 답을 *언제* 보내느냐뿐이고, 답의 모양은 바꾸지 않습니다.
+재생되는 `message_start.model`은 실행 모델의 id가 아니라 라우터 자신의 id이며, 이는
+Anthropic 실행 모델이든 OpenAI Responses 실행 모델이든 같습니다. 그래서 Claude Code의
+`/model` 표시와 `--resume`은 요청한 id를 봅니다. 응답 헤더는 재생이 시작될 때에야
+확정됩니다.
+
+**완성된 턴만 제공합니다.** 붙잡아 둔 턴은 종료 표시가 있어야 제공할 수 있습니다. 스트리밍
+호출에서는 `message_stop`, 스트리밍하지 않는 호출에서는 메시지 하나로 파싱되는 완전한
+본문입니다. 잘린 `200`은 절대 재생하지 않습니다. 턴은 라이브 스트림과 마찬가지로
+`message_stop` 프레임에서 끝납니다. 그 뒤에 온 것은 재생하지 않고, 그 뒤에 연결이 끊기거나
+열린 채로 있어도 턴이 잘리지 않습니다. 보류된 턴은 타깃의 순서 있는 페일오버
+체인을 탑니다.
+
+`x-gateway-route-source` — 그리고 `shunt.router.decisions`의 `source` 레이블 — 가 무슨
+일이 있었는지 알려 줍니다.
+
+| 소스 | 항목 | 의미 | 전달 |
+| :-- | :-- | :-- | :-- |
+| `escalation_weak` | escalation | 판정 모델이 약한 턴을 통과시켰습니다. 거절했거나, 상향 전환 연속 횟수가 아직 `confirmations`보다 작습니다 | 재생 |
+| `escalation_latch` | escalation | 세션이 이 턴이나 그 이전에 고정되어 강한 타깃이 턴을 제공했습니다 | 실시간 |
+| `escalation_fallback` | escalation | 약한 턴이 실패했거나 종료 표시 전에 끊겨 강한 타깃이 턴을 제공했습니다. 판정 모델은 부르지 않았습니다 | 실시간 |
+| `classifier_fail_open` | escalation | 완성된 약한 턴 뒤에 판정이 실패해 약한 턴을 제공했습니다 | 재생 |
+| `advisor_approve` | advisor | 실행 모델 턴을 리뷰해 승인했습니다 | 재생 |
+| `advisor_pass` | advisor | 실행 모델 턴을 리뷰 없이 제공했습니다. 게이트에 걸리지 않았거나(예: 도구 호출로 끝나는 턴), 리뷰를 예약할 수 없었습니다 | 재생 |
+| `advisor_fail_open` | advisor | 완성된 실행 모델 턴 뒤에 리뷰가 실패해 그 턴을 제공했습니다 | 재생 |
+| `advisor_redo` | advisor | 리뷰어가 REDO라고 했습니다. 버린 턴은 보내지 않았고, 이것은 실행 모델의 재실행입니다 | 실시간 |
+| `advisor_exhausted` | advisor | 세션의 `max_reviews`를 다 썼거나 리뷰 모델 호출이 세 번 실패해서(실패한 호출은 `max_reviews`를 돌려받습니다) 실행 모델이 버퍼링 없이 스트리밍합니다 | 실시간 |
+| `gated_error` | 둘 다 | 보류된 턴을 제공할 수 없었습니다 — 아래를 보세요 | 오류 |
+
+**무언가 실패하면:**
+
+| 실패한 것 | `escalation` | `advisor` |
+| :-- | :-- | :-- |
+| 보류된 턴이 `gated_*` 한도를 넘거나 종료 표시 전에 끝남 | 헤더를 보내기 전에 버리고, 강한 타깃이 턴을 실시간으로 제공합니다(`escalation_fallback`) | 헤더를 보내기 전에 버리고, 요청은 Anthropic 오류 형태의 게이트웨이 소유 `502`로 실패합니다(`gated_error`). REDO도 페일오버 시도도 아닙니다 — 업스트림은 이미 `2xx`로 답했습니다 |
+| 보류된 호출의 업스트림이 오류 상태로 답함 | 실시간 턴과 마찬가지로 클라이언트에 그대로 전달합니다(`gated_error`) | 그대로 전달합니다(`gated_error`) |
+| 완성된 턴 뒤에 판정이나 리뷰가 실패함 — 타임아웃, 너무 크거나 파싱할 수 없는 응답, 업스트림 오류, `max_judge_calls` 소진 | 약한 턴을 제공합니다(`classifier_fail_open`) | `fail_open = true`면 실행 모델 턴을 제공하고(`advisor_fail_open`), `fail_open = false`면 요청이 게이트웨이 소유 `502`로 실패합니다(`gated_error`) |
+
+**비용.** 다음은 항목별로 선택해 치르는 비용입니다.
+
+- 보류된 턴에서는 턴 전체가 완성되고 판정될 때까지 클라이언트가 아무것도 받지 못하므로,
+  첫 토큰까지의 시간이 마지막 토큰까지의 시간이 됩니다.
+- escalation은 고정 전 모든 턴에서 판정 호출을 한 번씩 합니다. 고정되는 턴은 버리는 약한
+  호출의 비용도 치릅니다.
+- 버린 약한 턴이나 실행 모델 턴도 업스트림 쿼터는 이미 썼습니다. 클라이언트 자신의 답
+  디스패치이므로 `shunt.requests`에서 `caller="client"`로 셉니다.
+
+#### `type = "auto"`
+
+업스트림의 스테이지 라우터 프리셋입니다. `picker = "efficient_first"`와
+`confidence_threshold = 0.5`를 쓰고 나머지 스테이지 키는 모두 shunt 기본값입니다. `type`
+외에는 두 타깃만 받으므로, 다른 스테이지 키를 지정하려면 `type = "stage_router"`를 쓰세요.
+여기에는 `[models.router.classifier]`와 호출당 한도 키도 포함됩니다 — 프리셋에는 판정
+모델이 없으므로 `auto` 항목에 classifier 테이블을 두면 시작 오류입니다.
+
+```toml
+[[models]]
+id = "claude-quick"
+
+[models.router]
+type = "auto"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `auto` |
+| `capable_target` | ✅ 필수 | `stage_router`와 같습니다 |
+| `efficient_target` | ✅ 필수 | `stage_router`와 같습니다 |
+
+#### `type = "random"`
+
+타깃 둘 이상에 가중치를 둬 트래픽을 나눕니다. 카나리 배포용입니다. 기본값에서는 Claude
+Code 세션 하나가 같은 갈래에 머무릅니다.
+
+```toml
+[[models]]
+id = "claude-canary"
+
+[models.router]
+type = "random"
+targets = ["claude-sonnet-4-6", "gpt-5.6-terra"]
+weights = [9, 1]
+# seed = 0
+# affinity = "session"
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `random` |
+| `targets` | ✅ 필수 | 트래픽을 나눌 model id 목록 |
+| `weights` | 균등 | 타깃마다 0 이상의 가중치 하나. `0`은 그 타깃을 비활성화합니다. 각 가중치는 유한해야 하며 합계도 유한해야 합니다 — 합이 무한대로 넘치는 목록은 로드 시 거부됩니다 |
+| `seed` | `0` | `session` 친화도에서는 해시 솔트, `request` 친화도에서는 추첨 시드 |
+| `affinity` | `session` | `session`은 한 세션을 한 갈래에 묶고, `request`는 요청마다 추첨합니다 |
+
+`affinity = "session"`에서 갈래는 `sha256(seed ‖ model ‖ 세션 id)`를 가중치 범위로
+환산한 값입니다. 저장하는 것이 없으므로 재시작해도 갈래가 유지되고, 같은 설정을 읽은
+레플리카끼리도 동일합니다. 대신 `seed`, `targets`, `weights`를 바꾸면 갈래가 움직일 수
+있습니다. `x-claude-code-session-id`를 보내지 않은 요청은 한 갈래를 공유하는 대신 그
+요청만의 가중치 추첨을 새로 합니다. 세션을 보내지 않는 클라이언트에서도 90/10 분배가
+90/10으로 유지됩니다. `affinity = "request"`에서는 요청마다 추첨하며, `seed`를 지정하면
+추첨 순서를 재현할 수 있습니다.
+
+세션 친화도는 **접근 제어가 아니라 고정(stickiness)입니다.** 세션 id는 클라이언트가
+정하므로, id를 바꿔 가며 재시도하는 호출자는 원하는 갈래로 스스로를 몰아갈 수 있습니다.
+그래도 막는 것은 없습니다 — 모든 타깃이 그 호출자가 이름으로 직접 요청할 수 있는 공개
+model id이기 때문입니다. 접근 제어는 managed model 정책의 몫입니다.
+
+요청 본문이 없는 표면 — `GET /routes`, `/v1/models` 디스커버리, `shunt check` — 은 가중치가
+양수인 첫 번째 타깃을 보고합니다.
+
+#### `type = "noop"`
+
+업스트림을 전혀 호출하지 않고 응답합니다. 호출자가 쓴 모드 그대로 비어 있는 종료
+어시스턴트 메시지를 만들어 줍니다. `stream: true`에는 올바른 SSE 시퀀스(`message_start`,
+`stop_reason: "end_turn"`을 담은 `message_delta`, `message_stop`)를, 그렇지 않으면 Message
+JSON 객체 하나를 보냅니다. `count_tokens`는 `input_tokens: 0`으로 답합니다. 이 라우트도
+다른 라우트와 똑같이 인증을 거치므로 인증 구멍이 아닙니다 — 토큰을 전혀 쓰지 않고 인바운드
+경로 전체를 확인하는 클라이언트 연결 점검용입니다.
+
+```toml
+[[models]]
+id = "claude-noop"
+
+[models.router]
+type = "noop"
+```
+
+받는 키는 `type` 하나뿐입니다.
+
+#### `type = "prefill_router"`
+
+학습형 라우터입니다. 업스트림의 분류기가 가장 최근의 텍스트 사용자 턴을 채점해 항목의
+타깃 중 하나를 고르며, 업스트림 판정 모델을 호출하는 대신 이 프로세스 안에서 모델을
+돌립니다.
+
+**이 타입만은 빌드를 가립니다.** `prefill_router`는 `prefill-router` 카고 피처를 켰을
+때만 컴파일에 들어가고, 이 피처는 **기본으로 꺼져 있으며** 릴리스 워크플로가 켜는 일도
+없습니다. 그래서 릴리스 바이너리에도 Homebrew 설치본에도 들어 있지 않습니다. 소스에서
+빌드하세요.
+
+```sh
+cargo build --release --features prefill-router          # 대시보드가 필요하면 ,ui 를 붙입니다
+```
+
+아래 설정은 어느 빌드에서나 파싱됩니다. 다른 것은
+로드입니다. 피처가 없는 바이너리에서는 로드가 실패하므로, 설정한 알고리즘 없이 게이트웨이가
+떠 버리는 대신 `shunt check`가 이를 보고합니다. 이 피처 오류는 해당 테이블에 대한 다른 모든
+지적보다 먼저 보고되므로, 키 단위 규칙(빈 타깃, 비어 있는 `checkpoint`, 0 이하의
+`max_length`·`batch_size`)은 피처를 켠 빌드가 보고하는 것입니다.
+
+```text
+models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)
+```
+
+```toml
+[[models]]
+id = "claude-learned"
+
+[models.router]
+type = "prefill_router"
+targets = ["claude-sonnet-4-6", "claude-opus-4-8"]
+checkpoint = "/models/router.pt"
+# device = "cpu"
+# cache_dir = "/var/cache/huggingface"
+# max_length = 2048
+# batch_size = 32
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `prefill_router` |
+| `targets` | ✅ 필수 | 고를 대상 model id 목록. 체크포인트의 헤드 순서대로 적습니다 |
+| `checkpoint` | ✅ 필수 | 텐서만 담긴 라우터 체크포인트 경로. 상대 경로는 프로세스의 작업 디렉터리를 기준으로 해석됩니다 |
+| `device` | 자동 감지 | 라우터를 돌릴 torch 디바이스 — `cpu`, `cuda`, `cuda:0` |
+| `cache_dir` | — | 인코더와 토크나이저를 위한 Hugging Face 캐시 디렉터리 |
+| `max_length` | `2048` | 인코더 입력의 최대 토큰 길이. 그보다 긴 입력은 잘립니다. `0`보다 커야 하며, 지정하지 않으면 업스트림 기본값을 그대로 씁니다 |
+| `batch_size` | `32` | 인코더 forward 한 번에 넣는 프롬프트 최대 개수. `0`보다 커야 하며, 지정하지 않으면 업스트림 기본값을 그대로 씁니다 |
+
+**운영자가 직접 준비해야 하는 것.** 이 피처는 PyO3로 Python을 임베드하므로 빌드가
+libpython을 링크하고, 실행 중인 게이트웨이는 임베드한 인터프리터에서 `torch`,
+`transformers`, `numpy`, `accelerate`를 import할 수 있어야 합니다. 빌드할 때
+`PYO3_PYTHON`을 그 인터프리터(3.10 이상, 공유 libpython 포함)로 지정하세요. 지정하지 않으면
+PyO3가 `PATH`에서 처음 찾은 `python3`를 씁니다. 라우터 체크포인트도 필요합니다. Switchyard
+v0.3.0은 체크포인트도, 익스포터도, 인코더 애셋도 제공하지 않으므로 호환되는 체크포인트를
+구하거나 학습시키는 일은 운영자의 몫입니다. 둘 중 하나라도 없으면 게이트웨이는 기동을
+거부하고, 핫 리로드에서 같은 문제를 만나면 리로드를 거부해 돌아가던 설정을 그대로 둡니다.
+
+```text
+models entry <id> router type = "prefill_router" failed to load: <upstream error>
+```
+
+리로드는 라우터를 다시 만들고 세션별 친화도는 라우터 안에 있으므로, 리로드하면 각 세션이
+어느 타깃에 있었는지 잊습니다.
+
+**입장 심사가 먼저입니다.** 라우터는 `[server.auth]`와 gateway policy의 `availableModels`가 요청을
+통과시킨 뒤에만 구동됩니다. 인바운드 인증은 라우터가 고를 하나의 타깃이 아니라 엔트리가 이름 붙인
+모든 타깃을 기준으로 하므로, 타깃 중 하나라도 크리덴셜을 주입하면 호출자는 인증해야 합니다.
+반면 managed-model 정책은 요청된 id만 확인하므로, `availableModels`에는 이 id를 적을 뿐 내부
+타깃을 적지 않습니다. 따라서 두 관문 중 하나라도 거절한 호출자는 추론을 실행시키지 못하고,
+그가 보낸 세션 id에 친화도가 기록되지도 않습니다.
+
+앞 문장의 조건을 그대로 읽어야 합니다. 타깃이 *전부* 패스스루인 엔트리는 envelope 어디에도
+크리덴셜을 주입하지 않으므로, 인바운드 인증은 요구할 것이 없어 익명 호출자까지 그대로
+통과시키고, 그 호출자가 라우터를 구동합니다. 구동 자체를 보호하려면 크리덴셜을 주입하는
+타깃을 두십시오. 전부 패스스루인 엔트리는 `[server.auth]`로도 gateway 로그인으로도
+보호되지 않습니다.
+
+**턴을 어떻게 결정하는가.** 알고리즘에 넘기는 것은 `user`와 `assistant` 역할, 그리고
+`text`와 `tool_result` 블록뿐입니다. 알고리즘은 가장 최근의 텍스트 사용자 턴을 채점하고,
+블록이 전부 `tool_result`인 메시지는 새 사람의 턴이 아니라 툴 연속으로 봅니다. 세션 식별은
+`x-claude-code-session-id`에서, 위임된 자식이면 `x-claude-code-agent-id`도 함께 읽습니다.
+그래서 연속 요청은 추론을 다시 돌리지 않고 그 턴의 결정을 재사용합니다. 둘 다 보내지 않는
+호출자는 업스트림 규칙대로 첫 사용자 메시지의 해시로 돌아갑니다. 추론은 블로킹 워커에서
+항목당 한 번에 하나씩 실행됩니다. `count_tokens` 프로브도 같은 방식으로 결정되며, 연속
+요청일 때는 추론이 아니라 친화도 적중입니다.
+
+`x-gateway-route-source`와 `shunt.router.decisions{algorithm="prefill_router"}`의 `source`
+라벨은 셋 중 무엇이 일어났는지 알려 줍니다.
+
+| 소스 | 의미 |
+| :-- | :-- |
+| `prefill` | 라우터가 턴을 결정함 — 추론이거나 세션 친화도 적중 |
+| `prefill_fail_open` | 라우팅 호출이 실패해 기본 타깃으로 보냄. 업스트림 규칙대로 `targets`의 첫 항목입니다 |
+| `prefill_default` | 요청 본문이 없는 표면 — `/v1/models` 디스커버리, `GET /routes`, 모델 해석 — 은 채점할 턴이 없으므로 첫 번째 타깃을 보고합니다 |
+
+`GET /routes`는 해당 항목을 `algorithm: "prefill_router"`와 타깃 목록으로 보여 줍니다.
+`shunt.stage_router.*` 메트릭은 시그널 전용 라우터의 것으로 남고 prefill 행은 생기지
+않습니다.
+
+#### 검증
 
 타깃이 그 자체로 라우터인 경우, 빈 타깃, `(0.0, 1.0]`을 벗어난 문턱값,
 `recent_turn_window`가 `0`인 경우, 라우터 **id**가 `[1m]` 또는 `[1M]`으로 끝나는 경우, 어느 한쪽이
-라우터 테이블을 가진 중복 `[[models]]` id, 같은 항목이 `[models.upstream_model]`도
-선언한 경우는 시작 오류입니다. 맵이 없는 두 항목은 원래 같은 id를 공유할 수 있지만,
-라우터는 디스커버리 메타데이터가 아니라 라우팅 정책을 지정하므로 중복되면 하나의
-id에 두 정책이 남습니다. 타깃 id는
-라우팅이 매칭하는 방식과 동일하게 끝의 `[1m]` 또는 `[1M]` 힌트를 제거한 뒤 비교합니다. 다음
+라우터 테이블을 가진 중복 `[[models]]` id, 이 빌드가 구현하지 않은 `type`, 같은 항목이
+`[models.upstream_model]`도 선언한 경우는 시작 오류입니다. `prefill_router` 항목에서는 빈 `targets`,
+같은 타깃을 두 번 적은 경우, 빈 `checkpoint`, `0`인 `max_length`나 `batch_size`도 시작
+오류입니다. 이 검사들은 피처를 **켠** 빌드가 보고하는 것입니다. 피처가 없는 빌드는 그 검사에
+닿기 전에 빠진 cargo 피처를 알리며 항목을 거부하기 때문입니다. 중복 타깃은 다른 모든 타깃
+비교와 마찬가지로 끝의 `[1m]`/`[1M]` 힌트를 제거한 뒤 비교합니다. 맵이 없는 두 항목은 원래 같은
+id를 공유할 수 있지만, 라우터는 디스커버리 메타데이터가 아니라 라우팅 정책을 지정하므로
+중복되면 하나의 id에 두 정책이 남습니다. 타깃 id는 라우팅이 매칭하는 방식과 동일하게 끝의
+`[1m]` 또는 `[1M]` 힌트를 제거한 뒤 비교합니다. 그래서 자기 라우터를 가진 항목으로 해석되는
+타깃은 두 `type`이 무엇이든 거부되며, 이것이 해석을 한 홉으로 묶어 둡니다.
+[`[models.router.classifier]`](#modelsrouterclassifier-선택) 타깃도 같은 한 홉 규칙을
+따르며 검사가 두 가지 더 붙습니다. `classifier.base_threshold`는
+`confidence_threshold`와 똑같이 범위를 검사하고, 판정 타깃은 passthrough 라우트로
+해석되면 안 됩니다 — 실효 체인에 passthrough 업스트림이 들어 있는 타깃은 판정 호출에서
+호출자의 자격 증명이 제거된 뒤 실행할 것이 남지 않으므로 시작 오류입니다.
+`auth = "none"`은 허용됩니다. 자격 증명을 요구하지 않는 엔드포인트와 자격 증명이 사라진
+엔드포인트는 다릅니다. [호출당 한도](#호출당-한도) 여섯 개 중
+하나라도 `0`이면 해당 키를 알려 주는 시작 오류입니다. 다음
 네 가지는 로드를 실패시키지 않고 경고만 냅니다. 각각 운영자가 의도했을 법한 설정이기
 때문입니다 — 명시적 라우트와 매칭되지 않는 타깃(매칭되지 않는 다른 id와 마찬가지로
-`server.default_provider`로 해석됩니다), 같은 id로 해석되는 `capable_target`과
-`efficient_target`(두 티어를 의도적으로 한 모델로 합친 경우), `confidence_threshold`보다 낮은
-`deescalate_threshold`(비용을 우선하는 배포가 원할 수 있는, 내려가는 쪽을 더 쉽게 만든
-설정), 그리고 라우터 자신의 id를 지정한 `[[routes]]` 항목(해당 id의 목적지는 라우터가
-정하므로 조회되지 않습니다). id가 그저 그 접두사로 시작할 뿐인 `[[route_prefixes]]` 항목은
-경고하지 **않습니다** — 그 접두사에 해당하는 다른 id는 여전히 처리하기 때문입니다. 각 경고는 로드할 때마다 한 번씩 나오며,
-핫 리로드도 로드이므로 설정을 고치지 않으면 리로드할 때마다 다시 나옵니다.
+`server.default_provider`로 해석되며, 이제 모든 라우터 `type`에 적용됩니다), 같은 id로
+해석되는 `capable_target`과 `efficient_target`(두 티어를 의도적으로 한 모델로 합친 경우),
+`confidence_threshold`보다 낮은 `deescalate_threshold`(비용을 우선하는 배포가 원할 수 있는,
+내려가는 쪽을 더 쉽게 만든 설정), 그리고 라우터 자신의 id를 지정한 `[[routes]]` 항목(해당
+id의 목적지는 라우터가 정하므로 조회되지 않습니다). id가 그저 그 접두사로 시작할 뿐인
+`[[route_prefixes]]` 항목은 경고하지 **않습니다** — 그 접두사에 해당하는 다른 id는 여전히
+처리하기 때문입니다. 각 경고는 로드할 때마다 한 번씩 나오며, 핫 리로드도 로드이므로 설정을
+고치지 않으면 리로드할 때마다 다시 나옵니다.
+
+### `[models.subagents]` (선택)
+
+어떤 `[[models]]` 항목에도 붙일 수 있는 **위임된 작업** 전용 오버레이입니다 —
+`[models.upstream_model]` 맵을 가진 항목, `[models.router]` 테이블을 가진 항목, 맵이 없어
+`[[routes]]`로 해석되는 id 모두입니다. 그 id를 요청하는 `Task` 서브에이전트, 훅 에이전트,
+워크플로 서브에이전트는 오버레이의 타깃으로 우회됩니다. 부모 세션 자신의 턴은 이 테이블을
+전혀 보지 않으며, 오버레이가 없을 때와 똑같이 항목을 해석합니다. 이 테이블이 `router` 안이
+아니라 항목 위에 놓이는 것은 고정 항목에는 라우터 테이블이 없고, Switchyard의 "subagents를
+곁들인 passthrough"가 여기서는 바로 그 고정 항목이기 때문입니다.
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | 위의 고정 형태인 `passthrough`, 또는 판정 모델이 자식의 타깃을 고르는 [`llm_classifier`](#subagents-type--llm_classifier) |
+| `target` | ✅ 필수(`passthrough`) | `by_type`이 해당 에이전트 타입에 아무것도 지정하지 않았을 때 위임 턴이 가는 model id — 에이전트 타입 헤더가 전송되지 않으면 모든 위임 턴이 여기로 갑니다 |
+| `by_type` | `{}` | 에이전트 타입 → model id. `x-claude-code-agent-type`의 값 그대로를 키로 씁니다 |
+
+**무엇이 위임된 작업인가.** `x-claude-code-request-class`가 `subagent` 또는 `workflow`인
+요청, 그리고 그 헤더가 없을 때는 비어 있지 않은 `x-claude-code-agent-id`를 실은 요청입니다 —
+이 헤더는 힌트 게이트와 무관하게 Claude Code가 모든 위임 턴에 보냅니다. 클래스가 전송되면
+그것이 결정권을 갖습니다. 에이전트 id가 붙은 `main`은 메인 트래픽이고, `compaction`과
+`auxiliary`는 하네스 유지보수입니다 — 이 셋은 어느 것도 오버레이를 타지 않습니다. 따라서
+클래스와 타입 헤더가 게이트로 꺼져 있는 기본 배포에서는 모든 `Task` 자식이 `target`으로
+갑니다. `by_type`을 쓰려면 클라이언트가 `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`을 설정해야
+합니다.
+
+**`by_type` 키는** 대소문자까지 포함해 정확히 매칭됩니다. 내장 에이전트의 id는 그대로
+전달됩니다 — `Explore`, `Plan`, `general-purpose`, `claude`, 그리고 클라이언트가
+`CLAUDE_CODE_FORK_SUBAGENT=1`에서만 제공하는 `fork`입니다. `.claude/agents/`의 프로젝트
+에이전트는 `custom`으로 도착하며 자기 이름은 전송되지 않으므로, `custom`이 그 에이전트가
+매칭할 수 있는 유일한 키입니다. `teammate`는 Agent Teams 멤버를 가리키는 클라이언트의
+리터럴이며 아직 와이어에서 관측된 적은 없습니다. 비어 있거나 공백이 섞인 키는 시작
+오류입니다. 절대 매칭될 수 없기 때문입니다.
+
+**타깃은** 라우터 타깃과 동일한 한 홉 규칙을 따르는 평범한 공개 model id입니다. `target`과
+모든 `by_type` 값은 끝의 `[1m]`/`[1M]` 힌트를 제거한 뒤 자기 `[models.router]`나
+`[models.subagents]` 테이블을 가진 항목으로 해석되어서는 안 되며, 라우터 타깃도 이 오버레이를
+가진 항목으로 해석될 수 없습니다. 빈 타깃, `[1m]` 또는 `[1M]`으로 끝나는 오버레이 보유 id,
+어느 한쪽이 이 테이블을 가진 중복 `[[models]]` id는 시작 오류입니다. 명시적 라우트와
+매칭되지 않는 타깃은 라우터 타깃과 마찬가지로 로드 시점에 경고만 내고, 여전히
+`server.default_provider`로 해석됩니다.
+
+**상태 없음.** 타깃은 오직 설정과 요청 헤더만의 함수입니다 — 세션 핀도, 저장소도, 판정자
+호출도 없습니다. 라우터가 달린 id에서는 라우터가 돌기 전에 자식이 우회되므로, 자식의 턴은
+트랜스크립트를 상대로 채점되는 일이 없고 부모의 핀에도 닿지 않습니다. 우회된 턴은
+`x-gateway-routed-model`(타깃)과 `x-gateway-route-source`를 실어 보내며 — `by_type`이
+맞으면 `subagent_type`, `target` 폴백이면 `subagent` — `algorithm = "subagents"`로
+`shunt.router.decisions`에 집계됩니다. 요청이 없는 표면은 아무것도 해석하지 않습니다.
+`/v1/models` 디스커버리와 `shunt check`는 모델별 목적지 정보를 전혀 싣지 않고,
+`GET /routes`는 부모 자신의 `[[routes]]`/`[models.router]` 항목이 있을 때만 그것을 보여
+줍니다(`server.default_provider`에 맡겨진 id는 어느 배열에도 나오지 않습니다). 셋 중
+무엇도 우회된 타깃을 해석하지 않으며, 오버레이 자체가 `routers` 배열에 실리는 일도
+없습니다.
+
+#### subagents `type = "llm_classifier"`
+
+오버레이의 두 번째 형태입니다. 고정된 타깃 대신, 판정 모델이 위임된 작업을 읽고 그 일을
+맡을 그룹의 이름을 댑니다. 여기에는 `mode = "custom"`만 있고 — `mode = "capability"`는
+시작 오류입니다 — 키는 [위](#type--llm_classifier)에서 설명한 `custom` 모드의 것입니다.
+
+```toml
+[models.subagents]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+classify_trigger = "new_session"
+max_output_tokens = 64
+prompt = """
+위임된 작업에 맞는 타깃을 정확히 하나 고르세요.
+
+- 코드 리뷰, 비평, 감사, 정확성 분석에는 "capable"을 고르세요.
+- 구현, 조사, 설명, 그 밖의 위임 작업에는 "efficient"를 고르세요.
+
+응답 스키마에 맞는 JSON만 반환하세요.
+"""
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+`[models.router]` 형태와 다른 규칙이 셋 있습니다.
+
+- **`classify_trigger`의 기본값이 `new_session`이고**, `user_turn`은 거부됩니다. 위임된
+  자식은 하나의 작업이므로 타깃을 한 번 골라 끝까지 유지합니다. 사용자 턴마다 다시
+  판정하면 바뀔 수 없는 결정에 판정 호출을 계속 쓰게 됩니다.
+- **`message_hash_fallback`은 `false`여야 합니다.** 분류는 이미 (세션, 에이전트)로
+  키를 잡고 있으므로, 대신 첫 메시지를 해시하면 한 세션의 서로 다른 자식 둘이 같은 판정에
+  묶입니다.
+- **부모는 분류되지 않습니다.** 무엇이 위임된 작업인지는 위의 `passthrough` 형태와 정확히
+  같습니다. 그래서 부모의 턴, 에이전트 id가 붙은 `main` 턴, `compaction`과 `auxiliary`
+  클래스는 모두 이 테이블이 없는 것처럼 항목을 해석하고 판정 호출도 하지 않습니다.
+
+여섯 개 [호출당 한도](#호출당-한도)는 호출을 만드는 주체인 이 테이블에 놓습니다. 판정
+모델은 다른 곳과 같은 규칙을 지킵니다 — 한 홉, passthrough 라우트 금지, 그리고 호출자의
+자격 증명 슬롯은 하나도 함께 가지 않습니다. 위임된 턴이 판정 모델을 부를 수 있으므로 그런
+턴의 인바운드 인증은 오버레이의 타깃과 판정 모델까지 대상으로 삼습니다 — 인증하지 못한
+위임 턴은 판정 호출을 한 번도 만들지 않고 거부됩니다. `count_tokens` 프로브도 마찬가지로
+판정 호출 없이 `default_target` 그룹의 첫 모델로 응답합니다.
 
 ## `[sentry]` (선택)
 
@@ -502,9 +1306,14 @@ id에 두 정책이 남습니다. 타깃 id는
 
 ## 라우팅 우선순위
 
-일치하는 `[models.stage_router]` 항목 → 일치하는 `[models.upstream_model]` 항목 → 정확한 `[[routes]]` 일치 → `[[route_prefixes]]` 프리픽스 일치 → `server.default_provider`.
+위임된 턴에서는 일치하는 `[models.subagents]` 오버레이 → 일치하는 `[models.router]` 항목 → 일치하는 `[models.upstream_model]` 항목 → 정확한 `[[routes]]` 일치 → `[[route_prefixes]]` 프리픽스 일치 → `server.default_provider`.
 
-라우터가 가장 앞에 오는 이유는 `[[models]]` 항목 자체에서 일치하기 때문입니다. 라우터가
+오버레이가 가장 앞에 오며, 위임된 작업에만 적용됩니다. 오버레이가 붙은 id로 온 `Task` 자식
+요청은 그 항목의 라우터나 맵을 참조하기 전에 오버레이의 타깃으로 전환되고, 부모 자신의 턴과
+`compaction`·`auxiliary` 턴은 그 테이블이 없는 것처럼 항목을 해석합니다. 아래 사다리는 그런
+턴과 오버레이가 없는 모든 id가 해석해 내려가는 경로입니다.
+
+라우터가 그다음에 오는 이유는 `[[models]]` 항목 자체에서 일치하기 때문입니다. 라우터가
 붙은 id로 온 요청은 라우터가 응답하며, 라우터는 티어를 고른 뒤 **그 타깃**을 나머지 사다리로
 해석합니다. 따라서 `[[routes]]` 항목이 지정해야 하는 것은 라우터 id가 아니라 타깃입니다.
 라우터 id를 지정한 정확 일치 항목은 조회되지 않으며 로드 시점에 경고가 남습니다.

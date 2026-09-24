@@ -57,9 +57,29 @@ impl Adapter for CursorAdapter {
         _uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
+        // `max_bytes` is honoured on the two paths that materialise a whole
+        // upstream reply, and both of them are paths an internal call takes:
+        //
+        //  * an upstream *error* body, read with `text()` in a single shot, so
+        //    by the time `routing::serve`'s collector sees it the allocation
+        //    has already happened and bounding it afterwards bounds nothing;
+        //  * a successful *non-streaming* turn, which `aggregate_turn`
+        //    accumulates into one `String` before building the JSON body —
+        //    and that is the branch every judge call lands on, since
+        //    `routing::serve` strips `stream`.
+        //
+        // A client turn that asked for `stream` is relayed frame by frame and
+        // never materialised, so there the bound genuinely falls to that
+        // collector on the relayed body.
+        //
+        // `idle` bounds the error-body prefetch, which is a single whole-body
+        // read finished before `run_chain` returns. `aggregate_turn` does not
+        // take it: it reads the agent stream, which already runs under its
+        // own first-byte and idle timeouts.
+        bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
         let _ = headers;
-        Box::pin(async move { forward(state, route, body).await })
+        Box::pin(async move { forward(state, route, body, bounds).await })
     }
 }
 
@@ -67,6 +87,7 @@ async fn forward(
     state: AppState,
     route: Route,
     body: RequestBody,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request = body.json();
     let model = route.upstream_model.as_str();
@@ -129,11 +150,11 @@ async fn forward(
         .await
         .map_err(map_client_error)?;
     if !turn.status().is_success() {
-        return Err(map_upstream_error(turn.into_response()).await);
+        return Err(map_upstream_error(turn.into_response(), bounds).await);
     }
 
     if !want_stream {
-        return aggregate_turn(turn, &message_id, model).await;
+        return aggregate_turn(turn, &message_id, model, bounds.max_bytes).await;
     }
 
     let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
@@ -280,22 +301,57 @@ fn extract_cursor_tools(request: &Value) -> Vec<agent::AgentTool> {
 }
 
 /// Collect a full turn into a non-streaming Anthropic message JSON.
+///
+/// `response_byte_cap` bounds the reply this accumulates. This is the one
+/// success path that materialises a whole upstream reply — the streaming path
+/// relays frames and never holds them — and it is the path every internal
+/// `[models.router]` call takes, since `routing::serve` strips `stream`.
+/// Without the bound the only thing limiting the accumulated `String` is the
+/// judge's wall-clock deadline, so a chatty upstream could allocate freely
+/// until `judge_timeout_ms` instead of failing open at
+/// `judge_max_response_bytes`. `None` is the client path, byte for byte.
 async fn aggregate_turn(
     turn: CursorAgentTurn,
     message_id: &str,
     model: &str,
+    response_byte_cap: Option<usize>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let mut events = std::pin::pin!(turn.into_event_stream());
     let mut text = String::new();
     let mut tool_call: Option<(String, String, String)> = None;
+    // Counted across every accumulated piece rather than against `text.len()`
+    // alone, so a reply that is oversized in any retained tool-call field is
+    // refused on the same bound as one that is oversized in prose.
+    let mut accumulated = 0usize;
     while let Some(event) = events.next().await {
         match event.map_err(map_cursor_stream_error)? {
-            CursorStreamEvent::TextDelta { text: delta } => text.push_str(&delta),
+            CursorStreamEvent::TextDelta { text: delta } => {
+                // Checked *before* the push: checking afterwards is checking
+                // after the memory has already been spent, which is what the
+                // bound exists to prevent.
+                accumulated = accumulated.saturating_add(delta.len());
+                if let Some(too_large) = crate::adapters::over_cap(accumulated, response_byte_cap) {
+                    return Err(crate::adapters::too_large_error(too_large));
+                }
+                text.push_str(&delta);
+            }
             CursorStreamEvent::ToolCall {
                 id,
                 name,
                 input_json,
             } => {
+                // Every field this retains is upstream-controlled and lands in
+                // the JSON body below, so all three are charged. Billing
+                // `input_json` alone would leave `id` and `name` unbounded, and
+                // a tiny input beside a huge name would allocate the whole
+                // oversized reply before the collector could refuse it.
+                accumulated = accumulated
+                    .saturating_add(id.len())
+                    .saturating_add(name.len())
+                    .saturating_add(input_json.len());
+                if let Some(too_large) = crate::adapters::over_cap(accumulated, response_byte_cap) {
+                    return Err(crate::adapters::too_large_error(too_large));
+                }
                 tool_call = Some((id, name, input_json));
                 break;
             }
@@ -431,7 +487,17 @@ fn streaming_response(
         .into_response()
 }
 
-async fn map_upstream_error(upstream: reqwest::Response) -> AdapterError {
+/// Whether an upstream error body was already read (bounded internal call) or
+/// is still to be read inside the response stream (client call).
+enum Prefetched {
+    Ready(String),
+    Lazy(reqwest::Response),
+}
+
+async fn map_upstream_error(
+    upstream: reqwest::Response,
+    bounds: crate::adapters::ResponseBounds,
+) -> AdapterError {
     let status = upstream.status();
     let retry_after = upstream.headers().get("retry-after").cloned();
     let grpc_message = upstream
@@ -441,8 +507,51 @@ async fn map_upstream_error(upstream: reqwest::Response) -> AdapterError {
         .map(ToOwned::to_owned);
     let mapped_status = crate::model::responses::client_facing_status(status);
     let kind = crate::model::responses::anthropic_error_type(status);
+    // An error body is still an upstream-controlled body, so on an internal
+    // call it is read here — eagerly, before the response stream is built —
+    // rather than lazily inside it. Two reasons, and the second is the one
+    // that matters:
+    //
+    //  * reading it with `text()` would hand a judge's upstream an unbounded
+    //    allocation on the one path where the reply is never relayed;
+    //  * a refusal has to be able to *return*. Inside the stream the only
+    //    thing a crossed cap could do is yield a shorter body, leaving this
+    //    function's `failure: Some(UpstreamStatus)` intact — so an oversized
+    //    `429`/`5xx` would advance the failover chain and spend the cap again
+    //    at the next provider, and the judge would be recorded as
+    //    `upstream_error` rather than `oversized`.
+    //
+    // The idle gap is the same argument for time: a body that stalls inside
+    // the stream would hold a gated call until its wall-clock bound, and a
+    // stall there could not return the refusal that cuts the turn.
+    //
+    // [`ResponseBounds::default`](crate::adapters::ResponseBounds::default) is
+    // the client path and keeps the original lazy `text()` read, byte for
+    // byte.
+    let prefetched = if bounds == crate::adapters::ResponseBounds::default() {
+        Prefetched::Lazy(upstream)
+    } else {
+        match crate::adapters::collect_upstream_body(upstream, bounds.max_bytes, bounds.idle).await
+        {
+            Ok(bytes) => Prefetched::Ready(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
+                return crate::adapters::too_large_error(too_large)
+            }
+            Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
+                return crate::adapters::idle_error(idle)
+            }
+            // A transport error ends the body; the status and headers already
+            // read above are what describe the failure.
+            Err(crate::adapters::UpstreamBodyError::Transport(_)) => {
+                Prefetched::Ready(String::new())
+            }
+        }
+    };
     let stream = futures_stream::once(async move {
-        let text = upstream.text().await.unwrap_or_default();
+        let text = match prefetched {
+            Prefetched::Ready(text) => text,
+            Prefetched::Lazy(upstream) => upstream.text().await.unwrap_or_default(),
+        };
         let body: Option<Value> = serde_json::from_str(&text).ok();
         let parsed_message = body.as_ref().and_then(|value| {
             value
@@ -603,6 +712,20 @@ mod tests {
         frames
     }
 
+    /// One turn carrying several text deltas, so a bound on the accumulated
+    /// reply can be exercised with every individual delta under it.
+    fn multi_delta_turn_frames(deltas: &[String]) -> Vec<u8> {
+        let mut frames = Vec::new();
+        for delta in deltas {
+            frames.extend(connect_frame(&field_ld(
+                1,
+                &field_ld(1, &field_str(1, delta)),
+            )));
+        }
+        frames.extend_from_slice(&connect::encode_connect_frame(b"{}", connect::FLAG_END));
+        frames
+    }
+
     fn tool_call_turn_frames(name: &str, key: &str, value: &str) -> Vec<u8> {
         // AgentServerMessage(2) → ExecServerMessage.mcp_args(11) → McpArgs,
         // where args(2) is a map entry containing a protobuf string Value.
@@ -656,10 +779,139 @@ mod tests {
         serde_json::from_slice(&bytes).expect("response body should be JSON")
     }
 
+    /// An upstream error body is bounded on an internal call.
+    ///
+    /// `map_upstream_error` reads the body with a single `text()`, so the
+    /// allocation is complete before anything downstream can bound it — the
+    /// cap has to bite here or nowhere. Asserted on the *message* because the
+    /// whole point is that the oversized bytes are never held: with the cap
+    /// discarded, the 256 KiB payload is read in full and falls through to the
+    /// message as the upstream's own error text.
+    #[tokio::test]
+    async fn an_oversized_upstream_error_body_is_not_read_on_a_bounded_call() {
+        let huge = "Z".repeat(256 * 1024);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/e"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(huge.clone()))
+            .mount(&server)
+            .await;
+        let upstream = reqwest::Client::new()
+            .get(format!("{}/e", server.uri()))
+            .send()
+            .await
+            .expect("mock request should succeed");
+
+        let error = map_upstream_error(
+            upstream,
+            crate::adapters::ResponseBounds {
+                max_bytes: Some(1024),
+                idle: None,
+            },
+        )
+        .await;
+
+        assert!(
+            error.failure.is_none(),
+            "an oversized reply must terminate the chain, not advance it: a \
+             retryable status here would spend the cap again at the next \
+             provider; got {:?}",
+            error.failure
+        );
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyTooLarge>()
+                .is_some(),
+            "the refusal must carry the marker `routing::serve` reads back, so \
+             the judge is recorded as `oversized` rather than `upstream_error`"
+        );
+
+        let rendered = body_json(error).await.to_string();
+        assert!(
+            !rendered.contains("ZZZZ"),
+            "an oversized error body must not be read into the reply; got {} bytes",
+            rendered.len()
+        );
+    }
+
+    /// An upstream error body that stalls after its headers is cut at the idle
+    /// gap on a gated call.
+    ///
+    /// The prefetch finishes before `run_chain` returns, so without the gap a
+    /// refusal that sends part of its body and then goes silent would hold the
+    /// call until its wall-clock bound. The refusal it returns instead ends the
+    /// chain and carries the marker `routing::serve` maps to an idle cut.
+    ///
+    /// Non-vacuity: pass `None` for the idle gap to `collect_upstream_body` in
+    /// `map_upstream_error` and the read waits on the pending body, so the
+    /// outer timeout below fails the test.
+    #[tokio::test]
+    async fn a_stalled_upstream_error_body_is_cut_at_the_idle_gap() {
+        let chunks = futures_stream::iter([Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+            b"{\"error\":{\"message\":\"par",
+        ))])
+        .chain(futures_stream::pending());
+        let upstream = reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(500)
+                .body(reqwest::Body::wrap_stream(chunks))
+                .unwrap(),
+        );
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            map_upstream_error(
+                upstream,
+                crate::adapters::ResponseBounds {
+                    max_bytes: Some(1 << 20),
+                    idle: Some(std::time::Duration::from_millis(50)),
+                },
+            ),
+        )
+        .await
+        .expect("the stalled body is cut at the idle gap, not waited on");
+
+        assert!(
+            error.failure.is_none(),
+            "a stalled reply must terminate the chain, not advance it; got {:?}",
+            error.failure
+        );
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>()
+                .is_some(),
+            "the refusal must carry the marker `routing::serve` reads back as an \
+             idle cut"
+        );
+    }
+
+    /// The same call with no cap is the client path, and it is unchanged: the
+    /// upstream's text still reaches the message. Without this, the assertion
+    /// above would also pass if the body were dropped unconditionally.
+    #[tokio::test]
+    async fn an_unbounded_call_still_reads_the_upstream_error_body() {
+        let upstream = upstream_response(500, &[]).await;
+
+        let body = body_json(
+            map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await,
+        )
+        .await;
+        let rendered = body.to_string();
+
+        assert!(
+            rendered.contains("boom"),
+            "the client path still surfaces the upstream text; got: {rendered}"
+        );
+    }
+
     #[tokio::test]
     async fn upstream_error_maps_403_to_permission_error() {
         let upstream = upstream_response(403, &[]).await;
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         assert_eq!(error.response.status(), StatusCode::FORBIDDEN);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "permission_error");
@@ -668,7 +920,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_maps_529_to_overloaded_error() {
         let upstream = upstream_response(529, &[]).await;
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         assert_eq!(error.response.status().as_u16(), 529);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "overloaded_error");
@@ -677,7 +929,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_preserves_503_instead_of_bad_gateway() {
         let upstream = upstream_response(503, &[]).await;
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         assert_eq!(error.response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "api_error");
@@ -686,7 +938,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_maps_413_to_request_too_large() {
         let upstream = upstream_response(413, &[]).await;
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         assert_eq!(error.response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         let body = body_json(error).await;
         assert_eq!(body["error"]["type"], "request_too_large");
@@ -695,7 +947,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_error_preserves_retry_after_on_429() {
         let upstream = upstream_response(429, &[("retry-after", "3")]).await;
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.response.headers().get("retry-after").unwrap(), "3");
     }
@@ -718,7 +970,7 @@ mod tests {
             .send()
             .await
             .expect("mock request should succeed");
-        let error = map_upstream_error(upstream).await;
+        let error = map_upstream_error(upstream, crate::adapters::ResponseBounds::default()).await;
         let body = body_json(error).await;
         assert_eq!(
             body["error"]["message"],
@@ -1026,7 +1278,7 @@ mod tests {
     async fn aggregate_turn_builds_text_response() {
         let turn = turn_from_frames(text_turn_frames("hello")).await;
 
-        let (status, response) = aggregate_turn(turn, "msg_test", "cursor:test")
+        let (status, response) = aggregate_turn(turn, "msg_test", "cursor:test", None)
             .await
             .expect("turn should aggregate");
         let body = response_json(response).await;
@@ -1037,11 +1289,110 @@ mod tests {
         assert_eq!(body["content"][0]["text"], "hello");
     }
 
+    /// A successful non-streaming turn is bounded on an internal call.
+    ///
+    /// This is the branch every judge call takes — `routing::serve` strips
+    /// `stream`, and the Cursor adapter reads it defaulting to false — and
+    /// `aggregate_turn` materialises the whole reply into one `String`, so the
+    /// cap has to bite here or nowhere: by the time the relayed body reaches
+    /// `routing::serve`'s collector the allocation is already spent.
+    ///
+    /// The deltas are each *under* the cap and only cross it in sum, so a
+    /// per-delta check could not pass this for the wrong reason.
+    #[tokio::test]
+    async fn an_oversized_aggregated_turn_is_refused_on_a_bounded_call() {
+        let turn = turn_from_frames(multi_delta_turn_frames(&vec!["W".repeat(400); 8])).await;
+
+        let error = aggregate_turn(turn, "msg_test", "cursor:test", Some(1024))
+            .await
+            .expect_err("a reply past the cap is refused");
+
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyTooLarge>()
+                .is_some(),
+            "the refusal must carry the marker `routing::serve` reads back, so \
+             the judge resolves as `oversized` rather than `upstream_error`"
+        );
+        assert!(
+            error.failure.is_none(),
+            "an upstream that answered correctly and merely answered too much \
+             must not advance the failover chain; got {:?}",
+            error.failure
+        );
+    }
+
+    /// A tool call whose `name` alone is oversized while its arguments are
+    /// tiny. Charging `input_json` by itself left `id` and `name` unbounded,
+    /// so this turn aggregated freely: the cap must see every field the JSON
+    /// body below retains, not just the arguments.
+    #[tokio::test]
+    async fn an_oversized_tool_call_name_is_charged_against_the_cap() {
+        let turn = turn_from_frames(tool_call_turn_frames(&"N".repeat(2048), "k", "v")).await;
+
+        let error = aggregate_turn(turn, "msg_test", "cursor:test", Some(1024))
+            .await
+            .expect_err("an oversized tool-call name is refused like oversized prose");
+
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyTooLarge>()
+                .is_some(),
+            "the refusal must carry the marker `routing::serve` reads back"
+        );
+        assert!(
+            error.failure.is_none(),
+            "an oversized reply must not advance the failover chain; got {:?}",
+            error.failure
+        );
+    }
+
+    /// The same tool call under a cap it fits in still aggregates, so the
+    /// assertion above cannot pass by refusing every tool call.
+    #[tokio::test]
+    async fn a_tool_call_within_the_cap_still_aggregates() {
+        let turn = turn_from_frames(tool_call_turn_frames(&"N".repeat(2048), "k", "v")).await;
+
+        let (_, response) = aggregate_turn(turn, "msg_test", "cursor:test", Some(65536))
+            .await
+            .expect("a tool call inside the cap is aggregated");
+        let body = response_json(response).await;
+
+        assert_eq!(
+            body["content"][0]["type"].as_str(),
+            Some("tool_use"),
+            "the turn must still carry its tool call: {body}"
+        );
+    }
+
+    /// The same turn with no cap is the client path, and it is unchanged.
+    /// Without this, the assertion above would also pass if aggregation were
+    /// refused unconditionally.
+    #[tokio::test]
+    async fn an_unbounded_aggregated_turn_still_carries_the_whole_reply() {
+        let turn = turn_from_frames(multi_delta_turn_frames(&vec!["W".repeat(400); 8])).await;
+
+        let (_, response) = aggregate_turn(turn, "msg_test", "cursor:test", None)
+            .await
+            .expect("the client path aggregates the whole turn");
+        let body = response_json(response).await;
+
+        assert_eq!(
+            body["content"][0]["text"].as_str().map(str::len),
+            Some(3200),
+            "the client path is byte for byte what it was; got: {body}"
+        );
+    }
+
     #[tokio::test]
     async fn aggregate_turn_builds_tool_use_response() {
         let turn = turn_from_frames(tool_call_turn_frames("Read", "file_path", "/tmp/x")).await;
 
-        let (status, response) = aggregate_turn(turn, "msg_test", "cursor:test")
+        let (status, response) = aggregate_turn(turn, "msg_test", "cursor:test", None)
             .await
             .expect("turn should aggregate");
         let body = response_json(response).await;
@@ -1101,7 +1452,7 @@ mod tests {
     async fn aggregate_turn_ignores_reasoning_and_fills_empty_content() {
         let turn = turn_from_frames(reasoning_turn_frames("thinking")).await;
 
-        let (_, response) = aggregate_turn(turn, "msg_test", "cursor:test")
+        let (_, response) = aggregate_turn(turn, "msg_test", "cursor:test", None)
             .await
             .expect("turn should aggregate");
         let body = response_json(response).await;
@@ -1117,7 +1468,7 @@ mod tests {
     async fn aggregate_turn_maps_connect_error() {
         let turn = turn_from_frames(error_turn_frames("unauthenticated", "bad token")).await;
 
-        let error = aggregate_turn(turn, "msg_test", "cursor:test")
+        let error = aggregate_turn(turn, "msg_test", "cursor:test", None)
             .await
             .expect_err("Connect error should fail aggregation");
         let status = error.response.status();

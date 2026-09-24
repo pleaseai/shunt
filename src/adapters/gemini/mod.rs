@@ -36,8 +36,13 @@ impl Adapter for GeminiAdapter {
         uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
+        // Both bounds apply to the whole-body reads in `forward_single`: the
+        // error body read before `map_gemini_error` and the non-streaming
+        // success body. A streaming turn is relayed as it arrives, so its
+        // bounds fall to `routing::serve`'s collector on the relayed body.
+        bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
-        Box::pin(async move { forward(state, route, uri, headers, body).await })
+        Box::pin(async move { forward(state, route, uri, headers, body, bounds).await })
     }
 }
 
@@ -124,6 +129,336 @@ async fn forward(
     _uri: &Uri,
     _headers: &HeaderMap,
     body: RequestBody,
+    bounds: crate::adapters::ResponseBounds,
+) -> Result<(StatusCode, Response<Body>), AdapterError> {
+    let provider = state
+        .config
+        .provider(&route.provider)
+        .ok_or_else(|| map_gemini_error(StatusCode::INTERNAL_SERVER_ERROR, "unknown provider"))?;
+    if provider.auth != AuthMode::AntigravityOauth {
+        let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
+        return forward_single(&state, &route, body, credential, None, bounds).await;
+    }
+    let accounts = provider
+        .resolve_pool_accounts()
+        .await
+        .map_err(|error| map_gemini_error(StatusCode::SERVICE_UNAVAILABLE, &error))?;
+    if accounts.is_empty() {
+        let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
+        return forward_single(&state, &route, body, credential, None, bounds).await;
+    }
+    if accounts.iter().all(|account| account.disabled) {
+        return Err(map_gemini_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!(
+                "provider '{}' has {} account(s) but all are `disabled = true`; none are selectable",
+                route.provider,
+                accounts.len()
+            ),
+        ));
+    }
+    let order = state.accounts.select_order(
+        &route.provider,
+        &accounts,
+        None,
+        Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
+    );
+    let candidates = order.len();
+    let mut last_error = None;
+    for (position, index) in order.into_iter().enumerate() {
+        let account = &accounts[index];
+        let Some(admission) = state.accounts.admit_candidate(
+            &route.provider,
+            account,
+            state.config.storm_ramp_initial(),
+            position,
+            candidates,
+        ) else {
+            continue;
+        };
+        let refresh_lock = state.accounts.refresh_lock(&route.provider, account);
+        let credential = {
+            let _guard = refresh_lock.lock().await;
+            match crate::auth::resolve_antigravity_account(
+                account,
+                &state.http_client,
+                &provider.base_url,
+            )
+            .await
+            {
+                Ok(credential) => credential,
+                Err(error) => {
+                    state.accounts.cooldown(
+                        &route.provider,
+                        account,
+                        std::time::Duration::from_secs(5 * 60),
+                        "auth",
+                    );
+                    tracing::warn!(
+                        provider = %route.provider,
+                        account = %account.name,
+                        error = %error.message,
+                        "failed to resolve Antigravity OAuth account"
+                    );
+                    continue;
+                }
+            }
+        };
+        // Captured before `credential` is moved into `forward_single`, so a
+        // 401 (`FailoverAction::RefreshRetry`) has the rejected token to hand
+        // `force_refresh_antigravity_account`. `resolve_antigravity_account`
+        // only ever yields `AntigravityOauth`, so the `None` arm is
+        // unreachable today — but this is a request-handling path in a
+        // failover proxy, so degrade gracefully (log loudly, cool down and
+        // rotate) instead of panicking if a future refactor ever breaks that
+        // invariant.
+        let rejected_access_token = match &credential {
+            Credential::AntigravityOauth { access_token, .. } => Some(access_token.clone()),
+            _ => {
+                tracing::error!(
+                    provider = %route.provider,
+                    account = %account.name,
+                    "antigravity_oauth account resolved a non-OAuth credential"
+                );
+                None
+            }
+        };
+        match forward_single(
+            &state,
+            &route,
+            body.clone(),
+            credential,
+            Some(account),
+            bounds,
+        )
+        .await
+        {
+            Ok((status, mut response)) => {
+                state
+                    .accounts
+                    .mark_healthy(&route.provider, account, status.is_success());
+                state.accounts.clear_needs_relogin(&route.provider, account);
+                if let Ok(value) = HeaderValue::from_str(&account.name) {
+                    response.headers_mut().insert("x-shunt-account", value);
+                }
+                return Ok((status, crate::adapters::with_admission(response, admission)));
+            }
+            Err(error) => {
+                // The idle gap that cut this read is the caller's bound, not
+                // this account's fault: rotating would re-spend it against the
+                // next account and could replace the marker `routing::serve`
+                // reads with that account's error.
+                if error
+                    .response
+                    .extensions()
+                    .get::<crate::adapters::UpstreamBodyIdle>()
+                    .is_some()
+                {
+                    return Err(error);
+                }
+                let status = error.response.status();
+                // The empty `HeaderMap` here only feeds the Relay-vs-not
+                // decision, never the cooldown: `classify_antigravity`'s
+                // status-based branches (429/401/5xx/success) never consult
+                // headers, so this is provably the same decision real headers
+                // would produce. The real upstream headers already informed
+                // the cooldown call inside `forward_single` (Rotate/PauseSame)
+                // or will inform the refresh-retry handling below
+                // (RefreshRetry) — by the time an error reaches here, its
+                // headers were already discarded by `map_gemini_error`.
+                match crate::accounts::classify_antigravity(status, &HeaderMap::new()) {
+                    crate::accounts::FailoverAction::Relay => return Err(error),
+                    crate::accounts::FailoverAction::RefreshRetry => {
+                        let Some(rejected_access_token) = rejected_access_token else {
+                            state.accounts.cooldown(
+                                &route.provider,
+                                account,
+                                std::time::Duration::from_secs(30),
+                                "auth",
+                            );
+                            last_error = Some(error);
+                            continue;
+                        };
+                        let refreshed = {
+                            let _guard = refresh_lock.lock().await;
+                            crate::auth::force_refresh_antigravity_account(
+                                account,
+                                &state.http_client,
+                                &provider.base_url,
+                                &rejected_access_token,
+                            )
+                            .await
+                        };
+                        match refreshed {
+                            Ok(refreshed_credential) => {
+                                match forward_single(
+                                    &state,
+                                    &route,
+                                    body.clone(),
+                                    refreshed_credential,
+                                    Some(account),
+                                    bounds,
+                                )
+                                .await
+                                {
+                                    Ok((status, mut response)) => {
+                                        state.accounts.mark_healthy(
+                                            &route.provider,
+                                            account,
+                                            status.is_success(),
+                                        );
+                                        state
+                                            .accounts
+                                            .clear_needs_relogin(&route.provider, account);
+                                        if let Ok(value) = HeaderValue::from_str(&account.name) {
+                                            response.headers_mut().insert("x-shunt-account", value);
+                                        }
+                                        return Ok((
+                                            status,
+                                            crate::adapters::with_admission(response, admission),
+                                        ));
+                                    }
+                                    Err(retry_error) => {
+                                        // Same as above: the idle bound is
+                                        // the caller's, so it ends the pool
+                                        // walk rather than rotating.
+                                        if retry_error
+                                            .response
+                                            .extensions()
+                                            .get::<crate::adapters::UpstreamBodyIdle>()
+                                            .is_some()
+                                        {
+                                            return Err(retry_error);
+                                        }
+                                        let retry_status = retry_error.response.status();
+                                        if retry_status == StatusCode::UNAUTHORIZED {
+                                            // The refresh grant succeeded — the
+                                            // refresh token is alive — but the
+                                            // API still rejects the fresh
+                                            // access token: the account is
+                                            // genuinely de-authorized upstream,
+                                            // not momentarily unlucky.
+                                            state.accounts.cooldown(
+                                                &route.provider,
+                                                account,
+                                                std::time::Duration::from_secs(5 * 60),
+                                                "auth",
+                                            );
+                                            state.accounts.mark_needs_relogin(
+                                                &route.provider,
+                                                account,
+                                                crate::accounts::ReloginCause::ServedRequest,
+                                            );
+                                            last_error = Some(retry_error);
+                                        } else {
+                                            match crate::accounts::classify_antigravity(
+                                                retry_status,
+                                                &HeaderMap::new(),
+                                            ) {
+                                                crate::accounts::FailoverAction::Relay => {
+                                                    return Err(retry_error)
+                                                }
+                                                _ => {
+                                                    // Rotate/PauseSame already
+                                                    // cooled down with real
+                                                    // headers inside
+                                                    // forward_single.
+                                                    last_error = Some(retry_error);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(refresh_error) => {
+                                state.accounts.cooldown(
+                                    &route.provider,
+                                    account,
+                                    std::time::Duration::from_secs(5 * 60),
+                                    "auth",
+                                );
+                                if refresh_error.terminal {
+                                    state.accounts.mark_needs_relogin(
+                                        &route.provider,
+                                        account,
+                                        crate::accounts::ReloginCause::RefreshGrant,
+                                    );
+                                }
+                                tracing::warn!(
+                                    provider = %route.provider,
+                                    account = %account.name,
+                                    error = %refresh_error.error.message,
+                                    terminal = refresh_error.terminal,
+                                    "failed to force-refresh Antigravity OAuth account"
+                                );
+                                last_error = Some(refresh_error.error);
+                            }
+                        }
+                    }
+                    crate::accounts::FailoverAction::Rotate
+                    | crate::accounts::FailoverAction::PauseSame => {
+                        // Cooldown already applied inside forward_single using
+                        // the real upstream headers (Retry-After, etc.).
+                        last_error = Some(error);
+                    }
+                }
+            }
+        }
+    }
+    crate::metrics::record_pool_rotation(&route.provider, "exhausted");
+    Err(last_error.unwrap_or_else(|| {
+        map_gemini_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no Antigravity accounts are available",
+        )
+    }))
+}
+
+/// Cool a pooled Antigravity account down using the real upstream status and
+/// headers — honoring `Retry-After` on a 429 — rather than a post-hoc,
+/// headerless reclassification once the error has already been mapped for
+/// the client. Skipped for `Relay` (not an account failure) and
+/// `RefreshRetry` (a 401 gets its own force-refresh-then-cooldown handling in
+/// `forward`, since whether it even needs a cooldown depends on that retry's
+/// outcome).
+fn cooldown_for_antigravity_error(
+    state: &AppState,
+    route: &Route,
+    account: &crate::config::AccountConfig,
+    status: StatusCode,
+    headers: &HeaderMap,
+) {
+    match crate::accounts::classify_antigravity(status, headers) {
+        crate::accounts::FailoverAction::Relay | crate::accounts::FailoverAction::RefreshRetry => {}
+        crate::accounts::FailoverAction::Rotate | crate::accounts::FailoverAction::PauseSame => {
+            let cooldown = if status == StatusCode::TOO_MANY_REQUESTS {
+                crate::accounts::retry_after(headers)
+                    .unwrap_or(std::time::Duration::from_secs(60))
+                    .clamp(
+                        std::time::Duration::from_secs(1),
+                        std::time::Duration::from_secs(3600),
+                    )
+            } else {
+                std::time::Duration::from_secs(30)
+            };
+            state.accounts.cooldown(
+                &route.provider,
+                account,
+                cooldown,
+                crate::accounts::rotation_reason(status, headers),
+            );
+        }
+    }
+}
+
+async fn forward_single(
+    state: &AppState,
+    route: &Route,
+    body: RequestBody,
+    credential: Credential,
+    account: Option<&crate::config::AccountConfig>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, Response<Body>), AdapterError> {
     let provider = state
         .config
@@ -133,8 +468,6 @@ async fn forward(
             response: Box::new(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
             failure: None,
         })?;
-
-    let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
 
     let (access_token, project_id) = match credential {
         Credential::GoogleOauth {
@@ -246,7 +579,11 @@ async fn forward(
         (endpoint, inner_req)
     };
 
-    let policy = provider.retry.policy();
+    let policy = if account.is_some() {
+        crate::retry::RetryPolicy::DISABLED
+    } else {
+        provider.retry.policy()
+    };
     let http_client = state.http_client.clone();
     let payload_clone = payload.clone();
     let endpoint_clone = endpoint.clone();
@@ -285,6 +622,14 @@ async fn forward(
     })
     .await
     .map_err(|error| {
+        if let Some(account) = account {
+            state.accounts.cooldown(
+                &route.provider,
+                account,
+                std::time::Duration::from_secs(30),
+                "transport",
+            );
+        }
         error.into_adapter_error(|error| AdapterError {
             message: format!("network error calling Gemini backend: {error}"),
             response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
@@ -294,10 +639,35 @@ async fn forward(
 
     let status = response.status();
     if !status.is_success() {
-        let body_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "failed to read error response".to_string());
+        // Captured before the body read consumes `response` — `map_gemini_error`
+        // builds a fresh outbound response and carries no headers, so this is
+        // the only point past which the real upstream headers exist at all.
+        let response_headers = response.headers().clone();
+        // Under the same bounds as a success body: an error body is no more
+        // trusted than a good one, and on a bounded internal call it is read
+        // into the same memory — and read before `run_chain` returns, so a
+        // stall here is one `routing::serve`'s collector never sees.
+        let body_text =
+            match crate::adapters::collect_upstream_body(response, bounds.max_bytes, bounds.idle)
+                .await
+            {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
+                    return Err(crate::adapters::too_large_error(too_large))
+                }
+                // A refusal that stalls is cut exactly like a success that
+                // does: the gated collector would have cut either at the same
+                // gap.
+                Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
+                    return Err(crate::adapters::idle_error(idle))
+                }
+                Err(crate::adapters::UpstreamBodyError::Transport(_)) => {
+                    "failed to read error response".to_string()
+                }
+            };
+        if let Some(account) = account {
+            cooldown_for_antigravity_error(state, route, account, status, &response_headers);
+        }
         return Err(map_gemini_error(status, &body_text));
     }
 
@@ -375,11 +745,30 @@ async fn forward(
 
         Ok((StatusCode::OK, response_res))
     } else {
-        let full_text = response.text().await.map_err(|error| AdapterError {
-            message: format!("failed to read response body: {error}"),
-            response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
-            failure: None,
-        })?;
+        // Bounded for an internal call, `reqwest`'s own whole-body read for a
+        // client turn: this is the non-streaming branch, so the whole reply is
+        // materialised before it can be translated — and before `run_chain`
+        // returns, which is why the idle gap has to bite here rather than in
+        // `routing::serve`'s collector.
+        let full_text =
+            match crate::adapters::collect_upstream_body(response, bounds.max_bytes, bounds.idle)
+                .await
+            {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
+                    return Err(crate::adapters::too_large_error(too_large))
+                }
+                Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
+                    return Err(crate::adapters::idle_error(idle))
+                }
+                Err(crate::adapters::UpstreamBodyError::Transport(error)) => {
+                    return Err(crate::adapters::mark_body_broke(AdapterError {
+                        message: format!("failed to read response body: {error}"),
+                        response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
+                        failure: None,
+                    }))
+                }
+            };
 
         let parsed = serde_json::from_str::<Value>(&full_text).map_err(|error| AdapterError {
             message: format!("invalid JSON from Gemini backend: {error}"),

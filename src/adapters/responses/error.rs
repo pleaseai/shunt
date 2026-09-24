@@ -122,8 +122,11 @@ pub(super) fn own_error(message: String) -> AdapterError {
 /// status it was mapped against
 /// ([`crate::model::responses::AnthropicSseMachine::take_backend_error`]):
 /// `502` by default — SSE error events carry no upstream HTTP status to
-/// preserve — or `429` for an in-stream `rate_limit_exceeded`, so the client
-/// sees the same `rate_limit_error` envelope an HTTP 429 produces. Either way
+/// preserve — or the status the error `code` classifies to
+/// ([`crate::model::responses::backend_error_status`]: `429` for a throttle,
+/// `529` for an overload, `400` for a terminal policy refusal), or the `status`
+/// a Codex websocket wrapped error frame carries, so the client sees the same
+/// envelope that HTTP status produces. Either way
 /// the error is terminal (`failure: None`): the event arrived after the upstream
 /// accepted the turn with 2xx headers, and a post-acceptance failure is never
 /// replayed on the next upstream (`docs/upstreams-failover.md` §3 — the turn is

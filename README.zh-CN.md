@@ -1,5 +1,7 @@
 # shunt
 
+离线凭据导入：`shunt import opencodex --dry-run` 可预览兼容 API 密钥和 Cursor/Command Code 访问令牌。导出会创建新的私有快照，不修改现有设置，也不复制刷新令牌。参见[导入指南（英文）](docs/credential-import.md)。
+
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/pleaseai/shunt?utm_source=badge)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
@@ -89,7 +91,7 @@ shunt add upstream https://provider.example/docs --print | claude
 
 ## 提供方
 
-一个提供方可以是有序的 `[[upstreams]]` 条目，也可以是旧式 `[providers.<name>]` TOML 表（在 YAML 中，分别对应 sequence 或 mapping 中的条目）。两种适配器类型即可覆盖大多数上游：`kind = "anthropic"`（上游讲 Anthropic Messages；透传，可选择换用不同的密钥）和 `kind = "responses"`（上游讲 OpenAI Responses API；shunt 在 Anthropic Messages ⇄ Responses 之间转换，含流式传输）。第三种原生类型 `kind = "cursor"` 桥接 Cursor 的 ConnectRPC/protobuf AgentService，使 Cursor 订阅可通过同一套 Anthropic-Messages 接口访问。
+一个提供方可以是有序的 `[[upstreams]]` 条目，也可以是旧式 `[providers.<name>]` TOML 表（在 YAML 中，分别对应 sequence 或 mapping 中的条目）。两种适配器类型即可覆盖大多数上游：`kind = "anthropic"`（上游讲 Anthropic Messages；透传，可选择换用不同的密钥）和 `kind = "responses"`（上游讲 OpenAI Responses API；shunt 在 Anthropic Messages ⇄ Responses 之间转换，含流式传输，并且由于 Responses API 没有 `stop` 参数，`stop_sequences` 由网关侧模拟）。第三种原生类型 `kind = "cursor"` 桥接 Cursor 的 ConnectRPC/protobuf AgentService，使 Cursor 订阅可通过同一套 Anthropic-Messages 接口访问。
 
 有序上游支持跨提供方故障转移。声明顺序就是尝试顺序；模型的 `upstream_model` 映射选择参与的条目，并将其公开 id 映射到各后端的 id：
 
@@ -128,7 +130,7 @@ codex-fallback = "gpt-5.6-sol"
 | `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` —— Grok CLI 代理;复用 `~/.shunt/xai-auth.json`(使用 SuperGrok / X Premium+ 订阅执行 `shunt login xai`) |
 | `cursor` | `cursor` | Cursor OAuth | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
 | `gemini` | `gemini` | Google OAuth | `cloudcode-pa.googleapis.com` —— Google Code Assist 后端,复用 `~/.gemini/oauth_creds.json` |
-| `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` —— 通过 HTTP 访问的 Google Antigravity 后端,使用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |
+| `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` —— 通过 HTTP 访问的 Google Antigravity 后端,使用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`;或用 `shunt login antigravity --name` 在 `~/.shunt/accounts/antigravity` 下使用具名账号,通过 `accounts = [...]` 选择) |
 | `antigravity-cli` | `antigravity_cli` | 无(本地 CLI) | **已弃用。** 本地 `agy` 二进制 —— 通过子进程访问同一后端,已被上面的 `antigravity` 取代 |
 
 有序的 `[[upstreams]]` 条目还接受 `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode` 预设,它们会补齐对应后端的 `kind`、`base_url` 和默认认证。
@@ -189,7 +191,10 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 | :-- | :-- | :-- |
 | Anthropic 多账号池化 —— 粘性会话、配额感知轮换、预测性规避 | 拥有两个及以上账号的 `auth = "claude_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.sh/zh-cn/guides/anthropic-multi-account/) |
 | Codex 多账号池化 —— `x-codex-*` 窗口跟踪、慢启动爬坡、重新探测 | 拥有两个及以上账号的 `auth = "chatgpt_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.sh/zh-cn/guides/codex-multi-account/) |
+| 学习型 prefill 路由 (`type = "prefill_router"`) | 编译期选择启用 —— `cargo build --release --features prefill-router`(**默认关闭**;发布二进制和 Homebrew formula 都以 `--features ui` 构建,因此不包含它),此外还需要一个带 `type = "prefill_router"` 的 `[models.router]` 表、磁盘上的路由检查点,以及装有 `torch` 和 `transformers` 的 Python 环境 | [参考](https://shunt.sh/zh-cn/reference/configuration/#type--prefill_router) |
 | 入站 Codex 端点 —— 把 **Codex CLI** 指向 shunt 并纳入同一个池,还可按模型选择性路由 | `[server.codex_endpoint]` | [指南](https://shunt.sh/zh-cn/guides/inbound-codex-endpoint/) |
+| LLM 裁判路由 (`type = "llm_classifier"`、`type = "composite"`) —— 由裁判模型按 `classify_trigger` 逐轮挑选目标,其回复永远不会提供给客户端 | 带 `type = "llm_classifier"`(`mode = "capability"` 或 `"custom"`)或 `type = "composite"` 的 `[models.router]` 表,或 classifier 形态的 `[models.subagents]` 覆盖层 | [参考](https://shunt.sh/zh-cn/reference/configuration/#type--llm_classifier) |
+| 裁决已完成轮次的路由 (`mode = "escalation"`、`type = "advisor"`) —— 先生成回答并扣住,等裁判或审阅模型对完成的这一轮作出裁决后才发出;流式调用方会在裁决之后收到这一轮的重放 | 带 `type = "llm_classifier"` 加 `mode = "escalation"`,或带 `type = "advisor"` 的 `[models.router]` 表 | [参考](https://shunt.sh/zh-cn/reference/configuration/#type--advisor) |
 | Claude 应用网关登录 —— OAuth 设备流、managed settings、按用户策略 | 具备 `public_url`、不少于 32 字节的 JWT 密钥,以及静态用户或 `[server.gateway.oidc]` 的 `[server.gateway]` | [指南](https://shunt.sh/zh-cn/guides/gateway-login/) |
 | 网关遥测接收 —— 原样转发受管客户端的 OTLP | 已配置的 `[server.gateway]`,以及 `forward_to` 非空的 `[server.gateway.telemetry]` | [参考](https://shunt.sh/zh-cn/reference/configuration/#servergatewaytelemetry可选) |
 | 管理 Web 界面 —— 账号与用量看板、浏览器预配 | 手写 `[server.admin]` 并提供管理员凭据（`tokens_env`、`tokens_file` 或一条 `write_keys`；仅有一条 `read_keys` 也能让看板以只读方式启动 —— 可以登录并查看全部视图，但预配需要 write），**或者**用 `shunt dashboard setup` 一次性写入配置表并签发令牌 —— 但写入配置表和签发令牌仅发生在 `[server.admin]` 不存在时；若已存在，它会保留现有凭据，只补上缺失的 `[server.oauth_usage]`。看板本身由只有 `--features ui` 构建才会内嵌的前端包提供 —— 预构建的发布二进制和 Homebrew formula 已包含，普通的 `cargo build`/`cargo install` 则没有 | [指南](https://shunt.sh/zh-cn/guides/admin-remote-provisioning/) |
@@ -221,7 +226,7 @@ Claude Code 会把每一轮都发送到 Anthropic API。`shunt` 位于前面(通
 
 选择性由**每个请求上的 `model` id** 驱动,而 Claude Code 本来就允许你按上下文选择它:主会话的 `/model` 选择器、子 agent 定义的 `model:` frontmatter、面向所有子 agent 的 `CLAUDE_CODE_SUBAGENT_MODEL`,或用 `ANTHROPIC_CUSTOM_MODEL_OPTION` 向选择器添加一个自定义条目。因此“只分流这个 agent / 这个会话”是在 Claude Code 中决定的,而 shunt 只是遵从它收到的 model id —— 没有脆弱的按 agent 系统提示指纹识别。与全局模型替换代理不同,主会话可以留在 Claude 上,而只有你指名的模型才被分流。
 
-也可以让某一个 model id 自己做决定。[`[models.stage_router]`](https://shunt.sh/zh-cn/guides/stage-router/) 条目指定一个强力档位和一个高效档位,并根据对话最近的 **tool-result 元数据**(`tool_use.name` 与 `tool_result.is_error`,而非提示词文本)逐轮在两者之间选择。不配置路由器则行为不变。
+也可以让某一个 model id 自己做决定。[`[models.router]`](https://shunt.sh/zh-cn/guides/stage-router/) 条目用 `type` 键指定路由算法:`stage_router` 指定一个强力档位和一个高效档位,并根据对话最近的 **tool-result 元数据**(`tool_use.name` 与 `tool_result.is_error`,而非提示词文本)逐轮在两者之间选择;`auto` 是同一个路由器的上游预设;`random` 按权重把流量分到多个目标,并让同一个会话固定落在同一路;`noop` 返回一条空消息,用于冒烟测试;`prefill_router` 是一个读取最近一轮用户消息的学习型分类器,只有开启默认关闭的 `prefill-router` cargo feature 构建出的二进制才有它。还有两种类型把判断交给 **LLM 裁判**:[`llm_classifier`](https://shunt.sh/zh-cn/reference/configuration/#type--llm_classifier) 直接按裁判的结论路由,`mode = "capability"` 用裁判给出的解决概率在强力目标和高效目标之间二选一,`mode = "custom"` 则挑选由你自己的提示词和 JSON schema 指名的模型分组;[`composite`](https://shunt.sh/zh-cn/reference/configuration/#type--composite) 保留 `stage_router` 的信号评分不动,只让裁判决定信号无法判定时回落到哪个档位。另有两种类型在客户端看到之前裁决**已完成**的一轮:[`mode = "escalation"`](https://shunt.sh/zh-cn/reference/configuration/#mode--escalation) 的 `llm_classifier` 先提供弱目标的回答,裁判持续判定它陷入困境时,就把会话锁定到强目标;[`advisor`](https://shunt.sh/zh-cn/reference/configuration/#type--advisor) 让更强的审阅模型批准执行模型的收尾回合,或把它打回重做。这些回合会一直扣住到裁决出来再重放,所以第一个字节要等整轮结束才到达。`stage_router` 还可以额外配置一个可选的 [`[models.router.classifier]`](https://shunt.sh/zh-cn/reference/configuration/#modelsrouterclassifier可选) 表来指定裁判模型:它只在信号无法判定的轮次被咨询,永远不会被提供给客户端。何时咨询裁判由 `classify_trigger` 键决定(`every_request`、`user_turn`、`new_session`),`judge_*`/`gated_*`/`max_judge_calls` 这六个键为每一次内部调用设定上限。所有目标都是普通的公开 model id,各自保留自己的故障转移链、账号池和适配器(参见 [Switchyard 集成](https://shunt.sh/zh-cn/guides/switchyard/))。任何条目还可以带一张 [`[models.subagents]`](https://shunt.sh/zh-cn/reference/configuration/#modelssubagents可选) 覆盖层,把被委派的工作 —— `Task` 子 agent、hook agent、workflow 子 agent —— 送到另一个目标,还可以按 agent 类型细分(`by_type = { Explore = "claude-haiku-4-5" }`),而父会话仍去自己的目的地;`main`、压缩和辅助回合永远不会走它。这张覆盖层还有第二种形态 [`type = "llm_classifier"` 加 `mode = "custom"`](https://shunt.sh/zh-cn/reference/configuration/#subagents-type--llm_classifier):由裁判读过被委派的任务后,为每一对 (会话, agent) 挑一次子任务的目标,父会话则从不被分类。既不配置路由器也不配置 subagents 覆盖层,则行为不变。
 
 ## Claude Code 集成(官方接口)
 
@@ -233,6 +238,7 @@ Claude Code 在 `ANTHROPIC_BASE_URL` 后暴露了一个**一等公民的网关�
 
 - [添加自定义模型选项](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) —— `ANTHROPIC_CUSTOM_MODEL_OPTION` 会在不替换内置别名的前提下,向 `/model` 选择器添加一个经网关路由的条目;该 ID 不做校验,因此网关接受的任何字符串都可用。鉴于上面的发现约束,**这是选择非 Claude 模型的主要方式**(例如 `gpt-5.6-sol`)。
 - **工具搜索**(`ENABLE_TOOL_SEARCH`)—— Claude Code 会延迟加载 MCP/LSP 工具 schema,按需揭示,从而回收上下文。由于 shunt 不是 Anthropic 第一方主机,除非你主动开启,Claude Code 会保持其**关闭**。开启后延迟能否保留取决于上游而不只是设置:`claude*` 和 `anthropic/*` id 会逐字节保留该协议,其他 id 的 `defer_loading` 标记会被剥离(因为这些主机会拒绝),而 Responses 路径有自己的三态 `tool_search` 设置。参见[工具搜索](https://shunt.sh/zh-cn/guides/codex/#工具搜索)。
+- **auto 模式的服务端分类器**(`dangerous-tool-use-*`)—— auto 模式会免费请求 API 在服务端对每次工具使用进行分类。在 Anthropic 路由上,shunt 原样中继该请求及其判定。当上游无法作答时(翻译路由,或尚未确认接受该字段的 Anthropic 协议第三方),shunt 不是什么都不返回,而是逐个动作回复“无法评估”,于是客户端只在本地分类那一个动作,并在下一轮继续询问服务端,而不会在整个会话中放弃该功能。参见[故障排查](https://shunt.sh/zh-cn/reference/troubleshooting/)。
 
 **设计原则:** 做一个符合规范的 Anthropic-Messages 网关(`/v1/messages`、`/v1/models`、正确的头部与归属透传),按请求的 `model` id 路由,并为已映射的模型在 Anthropic Messages ⇄ OpenAI Responses API 之间做转换 —— 不使用会随 Claude Code 提示变更而失效的提示形状启发式。
 

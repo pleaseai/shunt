@@ -16,14 +16,15 @@ pub(crate) mod upstream;
 
 /// Builtin catalog captured live from `GET https://api.anthropic.com/v1/models`
 /// on 2026-07-28, in the API's own order (`created_at` descending, newest
-/// first).
+/// first). `claude-opus-5-5` and `claude-fable-5-1` were added from the same
+/// endpoint on 2026-09-23.
 ///
-/// The upstream list is **credential-scoped**: the same endpoint returned 11
-/// entries for an `x-api-key` caller, 10 for a Claude subscription OAuth bearer
-/// (no `claude-opus-4-1-20250805`), and the reference `claude gateway` 2.1.220
-/// serves a third 10-entry variant (no `claude-opus-4-5-20251101`). This table
-/// is the **superset** of all three, so no caller loses a model it can actually
-/// reach. The cost is that a caller may see an id its own credential is not
+/// The upstream list is **credential-scoped**: on 2026-07-28 the same endpoint
+/// returned 11 entries for an `x-api-key` caller, 10 for a Claude subscription
+/// OAuth bearer (no `claude-opus-4-1-20250805`), and the reference
+/// `claude gateway` 2.1.220 served a third 10-entry variant (no
+/// `claude-opus-4-5-20251101`). This table is the **superset** of all three,
+/// so no caller loses a model it can actually reach. The cost is that a caller may see an id its own credential is not
 /// entitled to; consistent with the existing stance, that stays a runtime error
 /// rather than an upstream entitlement probe at discovery time.
 ///
@@ -36,7 +37,7 @@ struct BuiltinModel {
     max_tokens: u64,
 }
 
-/// Expands one row per model so the table reads as data rather than eleven
+/// Expands one row per model so the table reads as data rather than thirteen
 /// repetitions of the same struct literal:
 /// `id => display_name, created_at, max_input_tokens, max_tokens;`
 macro_rules! builtin_models {
@@ -52,6 +53,8 @@ macro_rules! builtin_models {
 }
 
 const BUILTIN_MODELS: &[BuiltinModel] = builtin_models![
+    "claude-opus-5-5" => "Claude Opus 5.5", "2026-09-21T16:24:00Z", 1_000_000, 128_000;
+    "claude-fable-5-1" => "Claude Fable 5.1", "2026-08-28T00:00:00Z", 1_000_000, 128_000;
     "claude-opus-5" => "Claude Opus 5", "2026-07-24T00:00:00Z", 1_000_000, 128_000;
     "claude-sonnet-5" => "Claude Sonnet 5", "2026-06-29T00:00:00Z", 1_000_000, 128_000;
     "claude-fable-5" => "Claude Fable 5", "2026-06-07T00:00:00Z", 1_000_000, 128_000;
@@ -316,13 +319,17 @@ mod tests {
                         "codex".to_string(),
                         "gpt-5.2".to_string(),
                     )])),
+                    router: None,
                     stage_router: None,
+                    subagents: None,
                 },
                 ModelConfig {
                     id: "anthropic-sonnet-via-codex".to_string(),
                     display_name: None,
                     upstream_model: None,
+                    router: None,
                     stage_router: None,
+                    subagents: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -386,6 +393,8 @@ mod tests {
             body,
             json!({
                 "data": [
+                    {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-09-21T16:24:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
+                    {"type": "model", "id": "claude-fable-5-1", "display_name": "Claude Fable 5.1", "created_at": "2026-08-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5", "created_at": "2026-07-24T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5", "created_at": "2026-06-29T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-fable-5", "display_name": "Claude Fable 5", "created_at": "2026-06-07T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
@@ -399,7 +408,7 @@ mod tests {
                     {"type": "model", "id": "claude-opus-4-1-20250805", "display_name": "Claude Opus 4.1", "created_at": "2025-08-05T00:00:00Z", "max_input_tokens": 200000, "max_tokens": 32000}
                 ],
                 "has_more": false,
-                "first_id": "claude-opus-5",
+                "first_id": "claude-opus-5-5",
                 "last_id": "claude-opus-4-1-20250805"
             })
         );
@@ -413,13 +422,17 @@ mod tests {
                     id: "claude-opus-4-8".to_string(),
                     display_name: Some("Opus Curated".to_string()),
                     upstream_model: None,
+                    router: None,
                     stage_router: None,
+                    subagents: None,
                 },
                 ModelConfig {
                     id: "claude-custom-model".to_string(),
                     display_name: None,
                     upstream_model: None,
+                    router: None,
                     stage_router: None,
+                    subagents: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -438,6 +451,8 @@ mod tests {
                 "data": [
                     {"type": "model", "id": "claude-opus-4-8", "display_name": "Opus Curated"},
                     {"type": "model", "id": "claude-custom-model"},
+                    {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-09-21T16:24:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
+                    {"type": "model", "id": "claude-fable-5-1", "display_name": "Claude Fable 5.1", "created_at": "2026-08-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5", "created_at": "2026-07-24T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5", "created_at": "2026-06-29T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-fable-5", "display_name": "Claude Fable 5", "created_at": "2026-06-07T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
@@ -483,7 +498,9 @@ mod tests {
                 id: "claude-opus-5".to_string(),
                 display_name: Some("Opus Curated".to_string()),
                 upstream_model: None,
+                router: None,
                 stage_router: None,
+                subagents: None,
             }],
             ..crate::config::Config::default()
         };
@@ -528,7 +545,9 @@ mod tests {
                 id: "claude-existing-contract".to_string(),
                 display_name: Some("Existing Contract".to_string()),
                 upstream_model: None,
+                router: None,
                 stage_router: None,
+                subagents: None,
             }],
             ..crate::config::Config::default()
         };

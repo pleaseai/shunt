@@ -9,7 +9,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/` | 人类可读的落地页(版本 + 端点列表) |
 | `GET` | `/health` | 健康检查 —— `{"status":"ok","version":"x.y.z"}` |
 | `GET` | `/v1/models` | [模型发现](/zh-cn/guides/model-discovery/) —— 返回你的 `[[models]]` 条目 |
-| `GET` | `/routes` | shunt 原生路由发现 —— 逐字返回配置的 `[[routes]]` 表(model → provider/upstream_model/effort 映射,包括 claude 前缀的发现别名);区别于 `/v1/models`,后者提供更窄的 Anthropic 协议发现响应(`id`、`display_name` 以及上游模型元数据)。只要有一个 `[[models]]` 条目配置了[阶段路由器](/zh-cn/guides/stage-router/),响应就会多出一个 `routers` 数组,列出每个路由器的模型 id、两个档位的目标,以及没有信号做出决定时 picker 回退到的档位 |
+| `GET` | `/routes` | shunt 原生路由发现 —— 逐字返回配置的 `[[routes]]` 表(model → provider/upstream_model/effort 映射,包括 claude 前缀的发现别名);区别于 `/v1/models`,后者提供更窄的 Anthropic 协议发现响应(`id`、`display_name` 以及上游模型元数据)。只要有一个 `[[models]]` 条目配置了 `[models.router]` 表,响应就会多出一个 `routers` 数组,列出每个路由器的模型 id、`algorithm`(即配置的 `type`)以及它可以路由到的全部 `targets` id;配置了裁判的路由器还会给出 `judges`,即它只询问、从不提供的那些 id(没有时省略);[阶段路由器](/zh-cn/guides/stage-router/)和 `auto` 条目还会额外给出两个档位的目标,以及没有信号做出决定时 picker 回退到的档位 |
 | `POST` | `/v1/messages` | 推理 —— 按请求的 `model` id 路由 |
 | `POST` | `/v1/messages/count_tokens` | [Token 计数](/zh-cn/guides/effort-and-context/#token-计数count_tokens) |
 | `GET` | `/managed/settings` | 按网关 JWT 提供的 Claude Code managed settings;支持 `ETag`、`If-None-Match` 与 `304 Not Modified` |
@@ -26,7 +26,8 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/admin/api/session` | 管理 SPA 渲染前所需的三个会话级值：会话的 `csrf` 令牌、`expiry_buffer_ms`（`claude::auth::EXPIRY_BUFFER` 的毫秒值，即 setup token 失效的边界），以及 `access` —— 该会话认证所用的级别，取值 `read` 或 `write`，仪表盘据此决定是否呈现写操作。使用请求头凭据的调用方免除 CSRF，因此收到空的 `csrf`。该表面没有 CORS 层，跨源页面能发出请求却读不到响应，所以通过 `GET` 返回令牌是安全的 |
 | `GET` | `/admin/api/accounts` | Claude 账户存储元数据:名称、类型、过期时间和 UUID;绝不返回 token 材料 |
 | `GET` | `/admin/api/accounts/codex` | Codex 账户存储元数据:名称、过期时间和 ChatGPT 账户 ID;绝不返回 token 材料 |
-| `GET` | `/admin/api/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` provider 的池状态;每个 account 对象可能包含可选的 `plan` 字符串;文件中读取的值之后可能通过 profile 查询被修正为更精确的值;Codex 行包含已上报的 5h/7d 用量,`7d_oi` 没有对应的 Codex 字段;每个 account 还带有布尔字段 `needs_relogin`:凭据被终结性拒绝(`invalid_grant`)、根本不带刷新令牌,或轮换出的令牌对未能写入而丢失 —— 任何重试都无法恢复,只有运维人员重新登录才行。它与冷却字段**相互独立**上报 —— 冷却会自行到期,而该标记不会 —— 仪表盘的两个表格都会显示为 **needs re-login**,而不是配额暂停时的 `cooling`。仅存于内存:重启后清空,该账户的下一次终结性失败会重新置位。即使某个账户从未被任何 provider 表选中过,它也会被上报 —— 与 `has_state: false` 并列 —— 因为 admin 的 refresh 探测按存储名记录其判定。 |
+| `GET` | `/admin/api/accounts/antigravity` | Antigravity 账户存储元数据:名称、过期时间和邮箱(如果 Google 返回了);绝不返回 token 材料 |
+| `GET` | `/admin/api/pool` | `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` / `antigravity_oauth` provider 的池状态;每个 account 对象可能包含可选的 `plan` 字符串;文件中读取的值之后可能通过 profile 查询被修正为更精确的值;Codex 行包含已上报的 5h/7d 用量,`7d_oi` 没有对应的 Codex 字段;每个 account 还带有布尔字段 `needs_relogin`:凭据被终结性拒绝(`invalid_grant`)、根本不带刷新令牌,或轮换出的令牌对未能写入而丢失 —— 任何重试都无法恢复,只有运维人员重新登录才行。它与冷却字段**相互独立**上报 —— 冷却会自行到期,而该标记不会 —— 仪表盘的两个表格都会显示为 **needs re-login**,而不是配额暂停时的 `cooling`。仅存于内存:重启后清空,该账户的下一次终结性失败会重新置位。即使某个账户从未被任何 provider 表选中过,它也会被上报 —— 与 `has_state: false` 并列 —— 因为 admin 的 refresh 探测按存储名记录其判定。 |
 | `GET` | `/admin/api/routes` | 位于管理员凭据之后、可供仪表板使用的已解析路由表 —— 与上面 `GET /routes` 返回的响应体相同，且由同一快照构建，因此运维人员看到的表与客户端实际解析的表不会出现偏差。之所以单独注册而不是重定向，是为了让管理命名空间保有自己的认证：公开的 `/routes` 有意不做认证，若把此端点指向它，两者的认证就会被绑在一起。此端点要求管理员凭据，因此即使 `/routes` 保持开放，也不会扩大该凭据所保护的范围 |
 | `POST` | `/admin/api/accounts/claude` | 用 `{name, mode}` 开始 Claude 浏览器预配;`mode` 为 `oauth` 或 `setup_token`,省略时默认为 `setup_token`;返回 `{authorize_url}` |
 | `POST` | `/admin/api/accounts/claude/{name}/complete` | 用包含 `<code>#<state>` 的 `{code}` 完成 Claude 预配;存储账户并报告其是否生效 |
@@ -35,6 +36,10 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/admin/api/accounts/codex` | 用 `{name}` 开始 ChatGPT OAuth;返回 `{authorize_url}` |
 | `POST` | `/admin/api/accounts/codex/{name}/complete` | 用包含完整 localhost redirect URL 或 `<code>#<state>` 的 `{code}` 完成 Codex 预配 |
 | `DELETE` | `/admin/api/accounts/codex/{name}` | 删除指定 Codex 账户的存储文件 |
+| `POST` | `/admin/api/accounts/antigravity` | 用 `{name}` 开始 Antigravity OAuth;返回 `{authorize_url}` |
+| `POST` | `/admin/api/accounts/antigravity/{name}/complete` | 用包含完整 localhost redirect URL 或 `<code>#<state>` 的 `{code}` 完成 Antigravity 预配 |
+| `POST` | `/admin/api/accounts/antigravity/{name}/refresh` | 按需执行 Antigravity 账户的 refresh 授权,报告该登录是否仍然有效,与上面 Claude 的 refresh 路由是同一种探测 |
+| `DELETE` | `/admin/api/accounts/antigravity/{name}` | 删除指定 Antigravity 账户的存储文件 |
 | `GET` | `/admin/assets/{*path}` | 内嵌的管理 SPA 包文件,按扩展名对应的 `Content-Type` 返回,并附带 `X-Content-Type-Options: nosniff`。仅存在于使用 `--features ui` 构建的二进制中 |
 | `GET` | `/admin/{*path}` | `/admin` 挂载点下未匹配任何路由的路径所返回的 SPA 外壳,使客户端深链接在刷新后依然可用。仅存在于使用 `--features ui` 构建的二进制中 |
 | `POST` | `/backend-api/codex/responses` | 入站 Codex CLI 透传 —— 镜像真实 ChatGPT 后端路径 |

@@ -10,6 +10,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use switchyard_libsy::ToolSignals;
 
+use crate::config::ToolSemanticsConfig;
+
 use super::vocabulary::{classify, is_delegated_run, mutate_kind, MutateKind, ToolCategory};
 
 /// One completed tool call: an assistant `tool_use` joined to the `tool_result`
@@ -58,7 +60,16 @@ fn severity_of(name: &str) -> f32 {
 /// `recent_turn_window` counts assistant messages, not tool calls: one turn is
 /// an assistant message plus the user message answering it, so a turn that
 /// batches eight results still counts once.
-pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<ToolSignals> {
+///
+/// `semantics` is the operator's `[models.router.tool_semantics]` table, which
+/// classifies names the built-in vocabulary leaves as `Other`. It is additive:
+/// validation rejects any attempt to reclassify a built-in Observe/Mutate/Plan
+/// name, so passing an empty table reproduces the built-in behaviour exactly.
+pub(crate) fn extract(
+    messages: &Value,
+    recent_turn_window: usize,
+    semantics: &ToolSemanticsConfig,
+) -> Option<ToolSignals> {
     let messages = messages.as_array()?;
 
     // Pass 1 — walk backwards only as far as the window reaches, recording which
@@ -176,9 +187,9 @@ pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<Too
         // by the store — so `stage::decide` writes it over this default from
         // the `RouterContext` after extraction (ADR-0005 §11).
         //
-        // `new_count`/`recent_new_count` count calls to tools an operator put in
-        // libsy's `tool_semantics.new` category. shunt exposes no such config
-        // yet, so the category is empty and both counts are zero.
+        // `new_count`/`recent_new_count` are filled below from the operator's
+        // `[models.router.tool_semantics].new` list. They start at zero and stay
+        // there when no such list is configured, which is the common case.
         tests_passed: false,
         repeated_failure: false,
         compacted: false,
@@ -189,7 +200,7 @@ pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<Too
 
     for call in &completed {
         let name = name_of(&names, call);
-        let category = classify(name);
+        let category = classify(name, semantics);
         match category {
             ToolCategory::Observe => {
                 signals.read_count += 1;
@@ -209,6 +220,10 @@ pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<Too
                 signals.todowrite_count += 1;
                 signals.recent_todowrite_count += u32::from(call.recent);
             }
+            ToolCategory::New => {
+                signals.new_count += 1;
+                signals.recent_new_count += u32::from(call.recent);
+            }
             ToolCategory::Other => {}
         }
         // Severity is windowed so an error persists through the recovery turns
@@ -227,7 +242,7 @@ pub(crate) fn extract(messages: &Value, recent_turn_window: usize) -> Option<Too
     signals.pure_bash_streak = completed
         .iter()
         .rev()
-        .take_while(|call| classify(name_of(&names, call)) == ToolCategory::Other)
+        .take_while(|call| classify(name_of(&names, call), semantics) == ToolCategory::Other)
         .count() as u32;
 
     // Two consecutive failures at the end mean the session is not recovering,
@@ -289,7 +304,82 @@ mod tests {
     }
 
     fn extract_from(messages: Vec<Value>, window: usize) -> Option<ToolSignals> {
-        extract(&Value::Array(messages), window)
+        extract(
+            &Value::Array(messages),
+            window,
+            &ToolSemanticsConfig::default(),
+        )
+    }
+
+    fn extract_with(messages: Vec<Value>, semantics: &ToolSemanticsConfig) -> Option<ToolSignals> {
+        extract(&Value::Array(messages), 3, semantics)
+    }
+
+    /// An operator-declared `observe` name is counted as a read, so the scorer
+    /// sees investigation where it previously saw activity of unknown
+    /// character.
+    #[test]
+    fn an_operator_observe_name_counts_as_a_read() {
+        let semantics = ToolSemanticsConfig {
+            observe: vec!["mcp__jbcontext__code_search".to_string()],
+            ..ToolSemanticsConfig::default()
+        };
+        let messages = vec![
+            call("t1", "mcp__jbcontext__code_search"),
+            result("t1", false),
+        ];
+
+        let default = extract_from(messages.clone(), 3).expect("signals");
+        assert_eq!(default.read_count, 0, "an unlisted name is still unknown");
+        assert_eq!(default.pure_bash_streak, 1);
+
+        let listed = extract_with(messages, &semantics).expect("signals");
+        assert_eq!(listed.read_count, 1);
+        assert_eq!(listed.recent_read_count, 1);
+        assert_eq!(
+            listed.pure_bash_streak, 0,
+            "a classified call is no longer activity of unknown character"
+        );
+    }
+
+    /// An operator-declared `new` name reaches libsy's `new_count` pair, the
+    /// two `ToolSignals` fields nothing else in shunt fills.
+    #[test]
+    fn an_operator_new_name_counts_into_new_count() {
+        let semantics = ToolSemanticsConfig {
+            new: vec!["Bash".to_string()],
+            ..ToolSemanticsConfig::default()
+        };
+
+        let signals = extract_with(vec![call("t1", "Bash"), result("t1", false)], &semantics)
+            .expect("signals");
+
+        assert_eq!(signals.new_count, 1);
+        assert_eq!(signals.recent_new_count, 1);
+        assert_eq!(
+            signals.read_count + signals.write_count + signals.todowrite_count,
+            0,
+            "`new` favours neither tier"
+        );
+    }
+
+    /// A `mutate` name the operator declared has no sub-kind to read, so it is
+    /// counted as a whole-file write rather than an in-place edit.
+    #[test]
+    fn an_operator_mutate_name_counts_as_a_write() {
+        let semantics = ToolSemanticsConfig {
+            mutate: vec!["mcp__fs__apply".to_string()],
+            ..ToolSemanticsConfig::default()
+        };
+
+        let signals = extract_with(
+            vec![call("t1", "mcp__fs__apply"), result("t1", false)],
+            &semantics,
+        )
+        .expect("signals");
+
+        assert_eq!(signals.write_count, 1);
+        assert_eq!(signals.edit_count, 0);
     }
 
     #[test]

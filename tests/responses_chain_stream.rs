@@ -12,7 +12,8 @@ use reqwest::StatusCode;
 use shunt::{
     config::{
         AccountConfig, AccountSelection, AuthMap, Config, CountTokens, ModelConfig, ProviderKind,
-        RetryConfig, UpstreamAuth, UpstreamConfig,
+        RandomAffinity, RandomRouterConfig, RetryConfig, RouterConfig, UpstreamAuth,
+        UpstreamConfig,
     },
     server,
 };
@@ -111,7 +112,9 @@ fn chain_config(primary: (ProviderKind, String), fallback: (ProviderKind, String
             .into_iter()
             .collect(),
         ),
+        router: None,
         stage_router: None,
+        subagents: None,
     }];
     config
 }
@@ -183,6 +186,12 @@ fn refused_port_is_deterministically_refused() {
 }
 
 async fn stream_request(gateway: &TestGateway) -> reqwest::Response {
+    stream_request_for(gateway, "chain-test-model").await
+}
+
+/// The same streaming request against an arbitrary public model id, so a test
+/// can enter the chain through a `[models.router]` entry that resolves to it.
+async fn stream_request_for(gateway: &TestGateway, model: &str) -> reqwest::Response {
     // `no_proxy`: the refused-loopback assertions must fail at the transport
     // layer, never route through a system HTTP proxy that would turn the
     // refusal into a proxy response.
@@ -195,7 +204,7 @@ async fn stream_request(gateway: &TestGateway) -> reqwest::Response {
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "model": "chain-test-model",
+                "model": model,
                 "max_tokens": 16,
                 "stream": true,
                 "messages": [{ "role": "user", "content": "Reply with OK." }],
@@ -566,6 +575,72 @@ async fn a_healthy_primary_still_commits_exactly_one_message_start() {
     assert_eq!(count_event(&body, "message_start"), 1, "got:\n{body}");
     assert!(body.contains("from responses"), "got:\n{body}");
     assert_eq!(count_event(&body, "error"), 0, "got:\n{body}");
+    drop(gateway);
+    primary.verify().await;
+}
+
+/// A router-routed streaming turn carries the two router headers.
+///
+/// This path commits the SSE response before any upstream has won, so the
+/// upstream-naming headers are deliberately omitted — but the router pair is
+/// not winner-dependent: it reports what the `[models.router]` entry chose
+/// before the first attempt was made, and the reference documents it for every
+/// router type. Omitting it here would have made that claim false for exactly
+/// the streaming failover chains.
+#[tokio::test]
+async fn a_routed_streaming_chain_stamps_the_router_headers() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = common::env_lock().await;
+    let primary = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(RESPONSES_SSE, "text/event-stream"))
+        .expect(1)
+        .mount(&primary)
+        .await;
+
+    let refused = refused_base_url();
+    let mut config = chain_config(
+        (ProviderKind::Responses, primary.uri()),
+        (ProviderKind::Anthropic, refused.url.clone()),
+    );
+    // One target and one arm, so the assertion is about the stamp rather than
+    // about which way a weighted draw fell.
+    config.models.push(ModelConfig {
+        id: "chain-router".to_string(),
+        display_name: None,
+        upstream_model: None,
+        router: Some(RouterConfig::Random(RandomRouterConfig {
+            targets: vec!["chain-test-model".to_string()],
+            weights: None,
+            seed: None,
+            affinity: RandomAffinity::Request,
+        })),
+        stage_router: None,
+        subagents: None,
+    });
+    let gateway = start_gateway(config).await;
+    let response = stream_request_for(&gateway, "chain-router").await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers().clone();
+    assert_eq!(
+        headers["x-gateway-model"], "chain-router",
+        "the client-requested id is the router entry, whatever it resolved to"
+    );
+    assert_eq!(
+        headers["x-gateway-routed-model"], "chain-test-model",
+        "the committed streaming chain must report the target the router chose"
+    );
+    assert_eq!(
+        headers["x-gateway-route-source"], "random",
+        "and why it chose it"
+    );
+    // The turn itself still relays normally: the stamp is additive.
+    let body = response.text().await.unwrap();
+    assert_eq!(count_event(&body, "message_start"), 1, "got:\n{body}");
+    assert!(body.contains("from responses"), "got:\n{body}");
     drop(gateway);
     primary.verify().await;
 }

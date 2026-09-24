@@ -1,6 +1,7 @@
 # Content-aware stage router
 
-Engineering note for the opt-in `[models.stage_router]`, implementing
+Engineering note for the opt-in `[models.router]` `type = "stage_router"`,
+implementing
 [ADR-0004](../.please/docs/decisions/0004-content-aware-stage-router.md).
 Status: **implemented.** User-facing documentation lives in the
 [stage router guide](https://shunt.sh/guides/stage-router/), with the scorer's
@@ -9,26 +10,47 @@ provenance, the upstream benchmark results, and the scoring formula in
 the implementation record — what the code does, why, and what a change to it must
 not break. The `switchyard-libsy` dependency it scores through — how it is
 pinned, how to read its API, and how to bump it — is
-[`routing-algorithms.md`](routing-algorithms.md) §1.
+[`routing-algorithms.md`](routing-algorithms.md) §1, and the `[models.router]`
+discriminator this table now sits under — together with the other pure-lane
+types — is §3 of the same note. The table was spelled `[models.stage_router]`
+before that discriminator landed; that spelling is now a load error, and it
+never appeared in a release.
 
 ## 1. Scope
 
-A `[[models]]` entry carrying a `[models.stage_router]` table names two public
-model ids instead of one and picks between them per request from the
-conversation's recent tool-result history. Absent the table, nothing changes: the
-router arm is one `Option::is_none()` on the path that already scans
-`config.models`.
+A `[[models]]` entry whose `[models.router]` table declares
+`type = "stage_router"` names two public model ids instead of one and picks
+between them per request from the conversation's recent tool-result history.
+Absent a `[models.router]` table, nothing changes: the router arm is one
+`Option::is_none()` on the path that already scans `config.models` — the same
+check whatever the configured `type` is.
 
-Out of scope, deliberately: the LLM classifier, mid-turn escalation, and
+Out of scope, deliberately: mid-turn escalation and
 `[server.codex_endpoint]` (which uses its own routing table and never reaches
 `resolve_request_chain_value`). ADR-0004 records why for each.
+
+The LLM classifier is no longer among these. ADR-0004 Decision 2 ("Signals
+only. No LLM classifier, no escalation") excluded it, and ADR-0005 explicitly
+supersedes that decision: the driven lane runs a classifier as an internal call
+through the same failover chain, under the admission and per-call bounds
+described in [`routing-algorithms.md` §5](./routing-algorithms.md). This
+document remains the record of the **pure** `stage_router` selector — the
+signal extraction, hysteresis, and resolution below are what runs when no
+classifier is configured, and they are unchanged by the driven lane.
 
 ## 2. Module layout
 
 | File | Role |
 |---|---|
-| `src/config/stage_router.rs` | `StageRouterConfig`, `StageRouterPicker`, defaults |
-| `src/config.rs` | `ModelConfig.stage_router`, `validate_stage_router` |
+| `src/config/router.rs` | `RouterConfig`, the `[models.router]` `type` discriminator |
+| `src/config/router/stage.rs` | `StageRouterConfig`, `StageRouterPicker`, `ToolSemanticsConfig`, `HandoffNotesConfig`, defaults |
+| `src/config/router/random.rs` | `RandomRouterConfig`, `RandomAffinity` |
+| `src/config.rs` | `ModelConfig.router`, `validate_router` (per type) and `validate_stage_router` |
+| `src/routing/random.rs` | The `random` selector: session hash, weighted draw, per-router RNG |
+| `src/routing/handoff.rs` | `handoff_notes`: which note a decision earns, and the system-block append |
+| `src/routing/outcome.rs` | `RouterOutcome` / `RouteSource`, the per-type observability record |
+| `src/routing/stage/store/decide.rs` | Pin resolution, the capable hold, eviction, fingerprint |
+| `src/adapters/noop.rs` | The `noop` synthesized turn |
 | `src/routing/context.rs` | `RouterContext` — the `x-claude-code-*` request hints |
 | `src/routing/stage.rs` | `StageContext`, `select`, `decide`, tier → target |
 | `src/routing/stage/vocabulary.rs` | Claude Code tool names → categories |
@@ -53,8 +75,9 @@ Three things the pin changed for this subsystem:
 - `ToolSignals` gained `repeated_failure`, `tool_result_count`,
   `assistant_turn_count`, `new_count`, and `recent_new_count` (§3).
 - `DecisionSource::TestsPassed` is gone. Upstream dropped the hard
-  de-escalation shortcut; a passing test now only clears libsy's own capable
-  hold, which shunt does not use.
+  de-escalation shortcut; a passing test now only clears a capable hold, and
+  that clear can never fire here because the extractor leaves `tests_passed`
+  at `false` (§3).
 - `DecisionSource::CapableHold` is new — libsy's own hysteresis, which shunt
   treats as not-evidence for the same reason `Sticky` is not evidence (§4).
 
@@ -102,8 +125,9 @@ source:
   rule already covers that case through `severity`, on evidence this extractor
   does have.
 - `new_count`/`recent_new_count` count tools an operator placed in libsy's
-  `tool_semantics.new` category. shunt exposes no such config yet, so the
-  category is empty.
+  `tool_semantics.new` category, which `[models.router.tool_semantics]` now
+  configures (§3.1). Both stay at zero for a router that declares no `new`
+  list, which is every router that does not ask for one.
 
 `compacted` is no longer one of them. It does not come from the transcript at
 all: `stage::decide` takes it as an argument, set from the turn's
@@ -121,13 +145,25 @@ still lands on `no_signal`.
 (write-shaped). `Plan`: `TodoWrite`, `Task`, `EnterPlanMode`, `ExitPlanMode`.
 Everything else, `Bash`, `Skill`, `KillShell` and `mcp__*` included, is
 uncategorised, so it contributes through `pure_bash_streak` rather than through
-the `new` counter — that counter is fed by `tool_semantics.new`, which shunt
-does not configure yet.
+the `new` counter unless an operator names it in `tool_semantics` (below).
 
 Matching is `eq_ignore_ascii_case`. `Bash` stays uncategorised on purpose: only
 `input.command` separates `git status` from `rm -rf` from `cargo test`, and
 classifying command strings is a new fingerprinting surface with its own failure
-mode. A future `tool_semantics` override is the intended door, not a default.
+mode. The `tool_semantics` override is that door, and it is not a default.
+
+**The operator overlay.** `[models.router.tool_semantics]` takes four lists —
+`observe`, `mutate`, `plan`, and `new` — and they are applied *after* the table
+above, never instead of it. A name this table already classifies as observe,
+mutate, or plan is **rejected at load** rather than silently overridden (§6), so
+the overlay can only reach what the table leaves uncategorised: `Bash`, `Skill`,
+and the `mcp__*` server tools. A name placed in `mutate` is scored as a
+whole-file write, the `Write`-shaped grade, not the `Edit`-shaped one. `new` is
+the only one of the four that feeds a counter this extractor otherwise leaves at
+zero (§3).
+
+The four lists join the store fingerprint, so editing one drops that router's
+existing pins on the next load, exactly as editing a threshold does (§4).
 
 A failed `Task` scores severity 1.0 against 0.7 for anything else: it is a whole
 delegated subagent run collapsing, not one command failing. Both grades are
@@ -165,6 +201,7 @@ parent's.
 | Rejected before admission | Decided, not recorded |
 | Delegated turn (`Task` child, hook agent, workflow sub-agent) | Keyed and pinned apart from the parent; its own dwell, its own budget |
 | Turn carrying `x-claude-code-context-compacted` | Scored with `compacted`, and the flag is latched onto the pin it commits |
+| Within `capable_hold_turns` of a signal-driven escalation | Held on the capable tier; reported as source `capable_hold` |
 | Efficient → Capable | Immediate on any scorer-made decision |
 | Capable → Efficient | `dwell_turns >= min_dwell_turns` **and** confidence `>= deescalate_threshold` **and** a scorer-made decision |
 | `fall_open` / `no_signal` / `ambiguous` / `capable_hold` | Cannot move a pin in either direction |
@@ -180,9 +217,19 @@ confidence and a `None` is held rather than trusted
 
 `DecisionSource::CapableHold`, upstream's replacement, is not evidence either.
 It means an earlier escalation is being held on the capable tier — which is what
-`StageSource::Sticky` already means here — and only libsy's stateful
-`StageClassifier` stamps it, which shunt does not call: shunt calls `pick_tier`
-directly.
+`StageSource::Sticky` already means here.
+
+**`capable_hold_turns` is upstream's own hold key**, accepted with a **shunt default of `0`** so a config
+that does not ask for it pins exactly as it did before ADR-0005 (§2 of the ADR).
+Set to `N`, it holds the capable tier for `N` further turns after a
+signal-driven escalation. Those held turns report route source `capable_hold`,
+and a hold is *not* evidence: it cannot move a pin in either direction, for the
+same reason `Sticky` cannot. `count_tokens` probes neither set a hold nor
+consume one, which follows from their recording nothing at all.
+
+libsy's stateful `StageClassifier` clears a hold early on a passing test. That
+path is dead here by construction — the extractor never sets `tests_passed`
+(§3) — so a hold runs its full count or is superseded by a later escalation.
 
 `apply` takes the estimate as a **closure of one `bool`**, not as a value. The
 compaction latch is an input to scoring rather than a filter on it, and the
@@ -322,7 +369,37 @@ relax it without replacing it.
 
 Body-less entry points (`/routes`, discovery, the public `resolve_model`) pass no
 context and report the picker default, which is the right answer there: the tier
-the picker falls back to when no signal decides.
+the picker falls back to when no signal decides. The other pure-lane types answer
+the same surfaces the same way — `random` reports its first positive-weight
+target (`routing-algorithms.md` §3).
+
+### 5.1 Handoff notes
+
+`[models.router.handoff_notes]` appends one system block to the **forwarded**
+request on the turns a signal moves the tier, and to nothing else.
+`escalation_note` goes on a signal-driven escalation to the capable tier —
+sources `override` and `dimensions`, or every scorer-made decision once
+`only_on_wrong_signal_escalation = false`. `deescalation_note`, when it is set,
+goes on a scorer-driven hand-back to the efficient tier. A sticky turn, a
+`no_signal` turn, and a `count_tokens` probe carry no note.
+
+Neither does a turn that handed nothing over, which the route source cannot
+express on its own: a signal confirming the tier already pinned carries the same
+`dimensions` source as the signal that first earned it. `StageApplied.handed_off`
+carries the distinction — the tier moved off an *existing* pin — through
+`RouterOutcome` to `note_for`, which gates on it first. The first turn of a
+session is false for the same reason: it restarts dwell, but hands nothing over.
+
+The note is appended as a **new block at the end of the `system` array**. The
+Claude Code attribution block is the first element and is never edited
+(ADR-0005 §6); the note sits after it, so a client that reads its own
+attribution back finds it unchanged.
+
+The cost is a **prompt-cache miss on every toggle**: the system array is part of
+the cached prefix, so appending or dropping the suffix invalidates it — on top
+of the per-model prefix the tier flip itself already forfeits (§4.1). That is
+why the table is opt-in and why `only_on_wrong_signal_escalation` defaults to
+narrowing it to the escalations a signal actually drove.
 
 ## 6. Validation
 
@@ -331,8 +408,37 @@ self-targeting), a blank target, a threshold outside `(0.0, 1.0]` — written as
 `!(v > 0.0 && v <= 1.0)` so that `NaN`, which compares false against every bound,
 is rejected too — a `recent_turn_window` of `0`, and a router **id** containing
 `[1m]` (the check is on the entry's own id, not its targets). Declaring both
-`stage_router` and `upstream_model` on one entry is rejected separately, by
+`router` and `upstream_model` on one entry is rejected separately, by
 `StageRouterWithUpstreamMap`.
+
+**The one-hop rule is now stated over every router type.** Any target named by
+any `[models.router]` table — the two stage tiers, a `random` target — that
+resolves, after `strip_context_window_hint`, to a `[[models]]` entry must
+resolve to one carrying no `router` table. The predicate is the same one this
+section describes; what changed is only that it is quantified over the
+discriminator's types rather than over the stage tiers alone. A target naming no
+entry is not an error at all: it falls through the ladder and warns
+(`warn_router_targets_unresolvable`, below), which is now emitted for
+every router type.
+
+Two tables added by ADR-0005 PR 2 bring their own rejections:
+
+- **`tool_semantics`** — a name the built-in vocabulary already classifies as
+  observe, mutate, or plan (§3.1) is rejected rather than silently overridden,
+  and a blank name is rejected. The overlay exists for the categories the table
+  leaves open, so a config that tries to move `Read` out of `Observe` is a
+  mistake, not a policy.
+- **`handoff_notes`** — a note present but blank is rejected; the operator
+  either wants a block appended or does not want the key. The forwarded request
+  is not the place to discover that an empty string was meant as "off".
+
+A `type` naming an algorithm the driven lane owns — `llm_classifier`,
+`composite`, `advisor` — is a load error (an unknown `type`), not a silent
+fall-through to the stage router. `prefill_router` is a **known** type whose
+availability is decided at compile time: it parses in every build, and on a
+build without the `prefill-router` cargo feature — which is every release
+binary — the load error names that feature, ahead of any key-level complaint
+about the table ([`routing-algorithms.md`](routing-algorithms.md) §6).
 
 The router-targeting-a-router check compares the target **after**
 `strip_context_window_hint`, because that is what `resolve_chain` matches on. It
@@ -355,10 +461,10 @@ validates.
 
 | Warning | Why it is not an error |
 | :-- | :-- |
-| `warn_stage_router_targets_unresolvable` | Resolution always falls back to `server.default_provider`, so the target is reachable |
-| `warn_stage_router_identical_targets` | Both tiers flattened onto one model is degenerate, but a one-line way to test against restructuring the entry |
-| `warn_stage_router_threshold_inversion` | A cost-first deployment may genuinely want de-escalation to be the easier direction |
-| `warn_stage_router_shadows_exact_route` | A `[[routes]]` entry naming a router id is inert, not wrong — the router arm returns before that table is consulted |
+| `warn_router_targets_unresolvable` | Resolution always falls back to `server.default_provider`, so the target is reachable |
+| `warn_router_identical_targets` | Both tiers flattened onto one model is degenerate, but a one-line way to test against restructuring the entry |
+| `warn_router_threshold_inversion` | A cost-first deployment may genuinely want de-escalation to be the easier direction |
+| `warn_router_shadows_exact_route` | A `[[routes]]` entry naming a router id is inert, not wrong — the router arm returns before that table is consulted |
 
 "Load boundary" means **once per load, not once per process.** `reload::reload`
 calls `Config::load`, so a config left unfixed warns again on every hot reload.
@@ -367,20 +473,20 @@ often than `load` — `Config::load` calls it, `RuntimeState::from_config` calls
 again on each reload, and `shunt check` calls it — so warning from there would
 multiply each line per reload instead of emitting it once.
 
-`warn_stage_router_identical_targets` and
-`warn_stage_router_threshold_inversion` were settled together in issue #562,
+`warn_router_identical_targets` and
+`warn_router_threshold_inversion` were settled together in issue #562,
 over rejecting them: each rejects a configuration with a coherent operator
 intent, and the realistic failure is a typo, which a warning makes visible
-without taking the configuration away. `warn_stage_router_shadows_exact_route`
+without taking the configuration away. `warn_router_shadows_exact_route`
 follows the same reading — the shadowed entry is a leftover line, not a wrong
 one.
 
-`warn_stage_router_identical_targets` compares the two targets after
+`warn_router_identical_targets` compares the two targets after
 `strip_context_window_hint`, the same normalization `resolve_chain` applies, so
 `"m[1m]"` and `"m"` are recognized as the one destination they route to. It is
 **not** case-insensitive: routing matches ids with `==`, so ids differing only in
 case are genuinely different ids and warning about them would be wrong.
-`warn_stage_router_threshold_inversion` reads the *effective*
+`warn_router_threshold_inversion` reads the *effective*
 `deescalate_threshold`, so raising `confidence_threshold` past the `0.75` default
 warns even though only one key was written — that config inverts the design just
 as much. Equal thresholds are symmetric rather than inverted and stay silent.
@@ -393,14 +499,27 @@ tier served a turn or why. Three surfaces report it.
 
 **Response headers.** `x-gateway-routed-model` is the configured target the
 chosen tier routes to, and `x-gateway-route-source` is
-`StageSource::as_label`. Both are omitted for an id that carries no router —
-sent empty, a client could not tell "routed to the efficient tier" from "not
-router-routed". They sit beside the existing `x-gateway-upstream` /
+`StageSource::as_label`. Both are stamped for every router type, not only this
+one: `random` reports `random` for a fresh draw and `random_session` for a
+hash-pinned arm, `noop` reports `noop`, and `auto` reports the stage router's
+own labels because it *is* the stage router under a preset. A held turn reports
+`capable_hold` (§4). A turn the `[models.subagents]` overlay diverted reports
+`subagent_type` for a `by_type` hit and `subagent` for the `target` fallback
+(`routing-algorithms.md` §4). Both are omitted only when neither a router nor an
+overlay decided the turn — sent empty, a client could not tell "routed to the
+efficient tier" from "not routed at all". They sit beside the existing `x-gateway-upstream` /
 `x-gateway-model` / `x-gateway-upstream-model` trio; `x-gateway-routed-model`
 differs from `x-gateway-upstream-model` whenever the target maps its own
 `upstream_model`.
 
-**Metrics.** `shunt.stage_router.decisions` counts decisions by the router's
+**Metrics.** `shunt.router.decisions{model, algorithm, target, source}` counts a
+decision for **every** router type, including this one — `algorithm` is the
+configured `type` and `target` is the model id the decision resolved to, so one
+series answers "where did this router actually send traffic" across the whole
+discriminator. The two stage-specific counters below are unchanged and keep
+their own shape.
+
+`shunt.stage_router.decisions` counts decisions by the router's
 model id, tier, and source. That id is the one the router was matched on, so a
 client-side `[1m]` hint is already stripped from it — labelling by the raw
 request id would report one router as two series. `shunt.stage_router.flips` counts those that moved a
@@ -411,8 +530,11 @@ that just arrived there are the same row. Every label is a closed set, so the
 series count is bounded by the number of configured routers rather than by
 session count.
 
-**`GET /routes`.** Grows a `routers` array — `model`, `capable_target`,
-`efficient_target`, `default_tier`. A router's targets need not have
+**`GET /routes`.** Grows a `routers` array — `model`, `algorithm`, `targets`,
+and, for `stage_router` and `auto` only, `capable_target`, `efficient_target`,
+and `default_tier`. `algorithm` is the configured `type` and `targets` is every
+id the router can name, which is what makes the array readable for a type that
+has no two tiers to report. A router's targets need not have
 `[[routes]]` entries, so `data` alone is not guaranteed to name them; a target
 that does have one still appears there as itself. The field is omitted
 when no router is configured, so a deployment without one serves the
@@ -437,6 +559,10 @@ gateway has not decided.
 
 ## 8. What is not built
 
+`tool_semantics` is no longer among these: ADR-0005 PR 2 wired the four
+operator categories through `vocabulary::classify` (§3.1), so the `new` counter
+and the operator overlay are configured rather than merely reserved.
+
 No per-tier latency or token histogram. `record_proxied_request` and the stream
 metrics label by provider and by `Route.model`, and §5 re-stamps that to the id
 the client asked for — so two turns served by different tiers of one router land
@@ -457,11 +583,16 @@ without it the target builds, runs, and registers nothing.
 One local run, `--sample-count 200`, Apple silicon. CodSpeed owns regression
 detection; these are orders of magnitude, not a baseline to diff against.
 
-Two arms are newer than the table below and are measured separately in §9.2,
+Three arms are newer than the table below. Two are measured separately in §9.2,
 from their own run: `store_turn_new_child_at_capacity`, the child-budget twin
 of `store_turn_new_session_at_capacity` (§4's second budget), and
 `resolve_chain_routed_delegated`, the routed path driven with a `Task` child's
 headers, which is read against `resolve_chain_routed` rather than on its own.
+The third, `resolve_chain_random_session`, arrived with the
+`[models.router]` discriminator (ADR-0005 PR 2) and measures the hash-pinned
+`random` arm — a resolve that hashes the session id and reads no `messages` at
+all, so it is read against `resolve_chain_unrouted` rather than against the
+stage arms.
 `bench_support::resolve_chain` takes a `HeaderMap` so the delegated arm can send
 those hints, and `StageStore::turn` takes an `agent_id: Option<&str>` so the
 store arms can address either scope.
@@ -503,11 +634,14 @@ extraction is **7.4–11.0%** across the range. So the ceiling on optimizing §3
 roughly a tenth of a cost the gateway has already sunk by the time the router is
 consulted, which is why §3 is left as it stands (issue #553).
 
-**A request to a model with no `[models.stage_router]` table does not read
+**A request to a model with no `[models.router]` table does not read
 `messages` at all.** Both `resolve_chain_*` arms send the identical body naming
 the identical model id; the configs differ only in whether that id's `[[models]]`
 entry carries the table. `resolve_chain_unrouted` is flat at ~295 ns across an
-80× range of history length, with the tightest spread of any arm here. That
+80× range of history length, with the tightest spread of any arm here. The
+`[models.router]` discriminator does not change that: the arm is still one
+`Option` check on a field an unrouted entry does not have, whatever `type` the
+routed entries declare. That
 flatness is the property to protect: it is what makes the feature opt-in in cost
 as well as in behaviour, and any change that makes this row slope is a regression
 whatever it does to the routed rows. The routed arm additionally resolves its

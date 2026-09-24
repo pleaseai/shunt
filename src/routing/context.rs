@@ -82,13 +82,10 @@ pub(crate) struct RouterContext<'a> {
     pub agent_id: Option<&'a str>,
     /// `x-claude-code-request-class`, when sent and recognised.
     pub request_class: Option<RequestClass>,
-    /// `x-claude-code-agent-type`, as sent. Carried for the `[models.subagents]`
-    /// `by_type` map (ADR-0005 §11), which is a later PR in the §8 sequence;
-    /// nothing routes on it yet.
-    #[allow(
-        dead_code,
-        reason = "read by the `by_type` map in ADR-0005 §8 PR 3; carried now so the context is the §11 shape"
-    )]
+    /// `x-claude-code-agent-type`, as sent. The `[models.subagents]` `by_type`
+    /// key (ADR-0005 §11): matched against the map's keys byte-for-byte, so
+    /// `Explore` and `explore` are two types, and a project agent — sent as
+    /// `custom` with its name withheld — can match only `custom`.
     pub agent_type: Option<&'a str>,
     /// Whether this turn carries `x-claude-code-context-compacted`. The header
     /// is one-shot, so this is true on exactly one turn per compaction; the
@@ -161,6 +158,49 @@ impl<'a> RouterContext<'a> {
 
     fn non_blank_agent_id(&self) -> Option<&'a str> {
         self.agent_id.filter(|id| !id.trim().is_empty())
+    }
+}
+
+/// The correlation metadata libsy's algorithms key their session state on.
+///
+/// Shared by every driven lane — the learned `prefill_router`, the
+/// `llm_classifier`/`composite` routers, and the classifier-form
+/// `[models.subagents]` overlay — so all of them partition sessions the same
+/// way. libsy keys a root request on `session_id` and a child on
+/// `(session_id, agent_id)` when `is_subagent`, so a delegated turn keeps its
+/// own decision instead of replaying its parent's. A request carrying neither
+/// header falls back to upstream's own message-hash affinity — deliberately
+/// left as upstream's behaviour rather than overridden here.
+///
+/// Both delegation flags are set from [`RouterContext::is_delegated`].
+/// `is_subagent` is what the affinity key reads; `is_delegated_work` is what
+/// upstream's own sub-agent routing reads, and upstream computes it from raw
+/// harness signals shunt's clients do not send — so leaving it `false` on a
+/// turn shunt has already identified as a child would hand libsy a request
+/// that is a sub-agent by one field and not by the other.
+///
+/// Delegation is read through [`RouterContext::is_delegated`] and
+/// [`RouterContext::pin_agent_id`], the same predicates the stage router pins
+/// its turns with, rather than re-deriving it from the agent id here. The
+/// class header is authoritative when sent, so a `main` turn that carries an
+/// agent id is root traffic and must not be keyed as a child, and a
+/// `subagent`/`workflow` turn is delegated whether or not it sent an id; only
+/// when no class is sent — the default deployment, where the class is gated
+/// off and the agent id is not — does a non-blank agent id decide.
+pub(crate) fn libsy_metadata(headers: &HeaderMap) -> switchyard_protocol::Metadata {
+    let hints = RouterContext::from_headers(headers);
+    let text = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    switchyard_protocol::Metadata {
+        session_id: text(hints.session_id),
+        is_subagent: hints.is_delegated(),
+        is_delegated_work: hints.is_delegated(),
+        agent_id: text(hints.pin_agent_id()),
+        ..Default::default()
     }
 }
 

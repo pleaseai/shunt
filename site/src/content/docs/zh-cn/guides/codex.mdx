@@ -131,7 +131,7 @@ ChatGPT 账户后端**拒绝** `gpt-*-codex` slug(例如 `gpt-5.2-codex`),返回
 它只接受你账户的**实时授权** slug。权威目录(以及每个 slug 接受的
 推理级别)是 openai/codex 的
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)。
-当前 slug:`gpt-6-astra`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`(前沿)以及
+当前 slug:`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`(最新)、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`(前沿)以及
 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`。较老的账户可能只被授权使用
 较早的那些(一个免费账户会解析到 `gpt-5.5`)。shunt 会透出后端自身的错误
 `detail`,因此错误的 slug 会返回真实原因。
@@ -144,10 +144,10 @@ ChatGPT 账户后端**拒绝** `gpt-*-codex` slug(例如 `gpt-5.2-codex`),返回
 
 <Aside type="note" title="`Model not found <slug>` 是客户端版本门控,不是授权问题">
 
-一些 slug 带有 `minimal_client_version`(例如 `gpt-6-astra` 需要 ≥ 0.153.0)。当
+一些 slug 带有 `minimal_client_version`(例如 `gpt-6-astra` 需要 ≥ 0.153.0,`gpt-6-sol` 和 `gpt-6-luna` 需要 ≥ 0.155.0)。当
 请求的客户端身份缺失或过旧时,后端会应答 `Model not found <slug>`。
 shunt 通过发送固定的 Codex CLI 身份头(`originator: codex_cli_rs`、
-`user-agent`、`version`)来避免这一点,固定到 **openai/codex rust-v0.153.3**。见
+`user-agent`、`version`)来避免这一点,固定到 **openai/codex rust-v0.156.0**。见
 [openai/codex#31967](https://github.com/openai/codex/issues/31967)。
 
 </Aside>
@@ -207,7 +207,7 @@ model: gpt-5.6-sol        # 原为:sonnet(或缺省 → 继承)
 <Aside type="tip" title="现成的 agent">
 
 **[`shunt-codex` 插件](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-codex)**
-提供了面向 `gpt-5.6-sol` / `-terra` / `-luna` 的子 agent —— 在 `/plugin marketplace add pleaseai/shunt`
+提供了面向 `gpt-6-sol` / `-luna` 和 `gpt-5.6-sol` / `-terra` / `-luna` 的子 agent —— 在 `/plugin marketplace add pleaseai/shunt`
 之后用 `/plugin install shunt-codex@shunt` 安装。
 
 </Aside>
@@ -396,7 +396,7 @@ export ENABLE_TOOL_SEARCH=true
 
 - 上游必须是标准 OpenAI 或 ChatGPT/Codex 风格的 Responses 后端。xAI / Grok 路由始终保留 shim。
 - 路由到的模型必须是 **gpt-5.4 及以上**(`gpt-5.4`、`gpt-5.5`,或 `gpt-5.6` 系列)。精确 slug
-  `gpt-6-astra` 也符合条件。更早的 slug (`gpt-5.2` 及以下)无论 `tool_search` 如何设置都会保留 shim。
+  `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna` 也符合条件。更早的 slug (`gpt-5.2` 及以下)无论 `tool_search` 如何设置都会保留 shim。
 - Claude Code 一侧仍然需要 `ENABLE_TOOL_SEARCH=true` —— 这个标志只改变 shunt *如何* 把该功能转译到
   上游,不改变 Claude Code 是否延迟工具本身。
 

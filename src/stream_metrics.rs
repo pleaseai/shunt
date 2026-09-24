@@ -43,6 +43,15 @@ const MAX_ERROR_SOURCES: usize = 4;
 /// `message_stop` that follows it.
 pub(crate) const UPSTREAM_TRUNCATED_MARKER: &[u8] = b":shunt-upstream-truncated";
 
+/// The buffered counterpart of [`UPSTREAM_TRUNCATED_MARKER`]: a response
+/// extension `adapters::responses::http::json_response` sets when the single
+/// message it returns was synthesized from an upstream that ended before a
+/// real terminal/error event. A JSON body has no comment frame to carry the
+/// fact, and the synthesized message parses like a finished one, so a caller
+/// that must tell the two apart (the gated capture) reads it here.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UpstreamTruncated;
+
 /// Client-facing SSE protocol used to interpret terminal and usage events.
 #[derive(Clone, Copy, Debug)]
 pub enum Protocol {
@@ -775,6 +784,14 @@ fn update_tokens(tokens: &mut TokenUsage, usage: &Value, anthropic: bool) {
         set_u64(
             &mut tokens.cache_read,
             usage.pointer("/input_tokens_details/cached_tokens"),
+        );
+        // The Responses `cache_write_tokens` is the write-side twin of
+        // `cached_tokens` (openai/codex codex-rs/codex-api/src/sse/responses.rs);
+        // without it every Responses turn records cache_creation as absent,
+        // which skews any hit-rate aggregate built from the token counters.
+        set_u64(
+            &mut tokens.cache_creation,
+            usage.pointer("/input_tokens_details/cache_write_tokens"),
         );
     }
 }

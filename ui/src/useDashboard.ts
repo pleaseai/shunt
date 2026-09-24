@@ -5,6 +5,7 @@ import { API, readJson } from './api';
 import { useSession } from './session';
 import type {
   AccountRow,
+  AntigravityStoreAccount,
   ClaudeStoreAccount,
   CodexStoreAccount,
   ObservedAccount,
@@ -45,12 +46,14 @@ export interface Dashboard {
   observed: Loadable<Map<string, AccountRow[]>>;
   accounts: Loadable<ClaudeStoreAccount[]>;
   codexAccounts: Loadable<CodexStoreAccount[]>;
+  antigravityAccounts: Loadable<AntigravityStoreAccount[]>;
   pool: Loadable<PoolProvider[]>;
   /** `null` means the section is hidden: `[server.status]` is opt-in. */
   status: StatusSource[] | null;
   reloadObserved: () => Promise<void>;
   reloadAccounts: () => Promise<void>;
   reloadCodexAccounts: () => Promise<void>;
+  reloadAntigravityAccounts: () => Promise<void>;
   reloadPool: () => Promise<void>;
 }
 
@@ -76,9 +79,10 @@ export function useDashboard(): Dashboard {
     // and neither may discard the observations themselves. `readJson` reports a
     // failure rather than throwing, which is what keeps that true through
     // `Promise.all`.
-    const [pool, accounts] = await Promise.all([
+    const [pool, accounts, codexAccounts] = await Promise.all([
       readJson<{ providers?: PoolProvider[] }>(`${API}/pool`, ''),
       readJson<{ accounts?: ClaudeStoreAccount[] }>(`${API}/accounts`, ''),
+      readJson<{ accounts?: CodexStoreAccount[] }>(`${API}/accounts/codex`, ''),
     ]);
 
     return {
@@ -87,6 +91,7 @@ export function useDashboard(): Dashboard {
         observations,
         pool.ok ? pool.data : null,
         accounts.ok ? accounts.data : null,
+        codexAccounts.ok ? codexAccounts.data : null,
       ),
     };
   }, [hideObserved]);
@@ -111,6 +116,18 @@ export function useDashboard(): Dashboard {
       : { status: 'error', message: result.message };
   }, []);
 
+  const loadAntigravityAccounts = useCallback(async (): Promise<
+    Loadable<AntigravityStoreAccount[]>
+  > => {
+    const result = await readJson<{ accounts?: AntigravityStoreAccount[] }>(
+      `${API}/accounts/antigravity`,
+      'Failed to load Antigravity accounts',
+    );
+    return result.ok
+      ? { status: 'ready', data: result.data.accounts ?? [] }
+      : { status: 'error', message: result.message };
+  }, []);
+
   const loadPool = useCallback(async (): Promise<Loadable<PoolProvider[]>> => {
     const result = await readJson<{ providers?: PoolProvider[] }>(`${API}/pool`, 'Failed to load pool');
     return result.ok
@@ -121,6 +138,7 @@ export function useDashboard(): Dashboard {
   const [observed, reloadObserved] = useSequencedLoad(loadObserved);
   const [accounts, reloadAccounts] = useSequencedLoad(loadAccounts);
   const [codexAccounts, reloadCodexAccounts] = useSequencedLoad(loadCodexAccounts);
+  const [antigravityAccounts, reloadAntigravityAccounts] = useSequencedLoad(loadAntigravityAccounts);
   const [pool, reloadPool] = useSequencedLoad(loadPool);
 
   // `[server.status]` is opt-in and observation-only. Zero configured sources
@@ -132,23 +150,26 @@ export function useDashboard(): Dashboard {
     void reloadObserved();
     void reloadAccounts();
     void reloadCodexAccounts();
+    void reloadAntigravityAccounts();
     void reloadPool();
     void (async () => {
       const result = await readJson<{ sources?: StatusSource[] }>(`${API}/status`, '');
       const sources = result.ok ? (result.data.sources ?? []) : [];
       setStatus(sources.length ? sources : null);
     })();
-  }, [reloadObserved, reloadAccounts, reloadCodexAccounts, reloadPool]);
+  }, [reloadObserved, reloadAccounts, reloadCodexAccounts, reloadAntigravityAccounts, reloadPool]);
 
   return {
     observed,
     accounts,
     codexAccounts,
+    antigravityAccounts,
     pool,
     status,
     reloadObserved,
     reloadAccounts,
     reloadCodexAccounts,
+    reloadAntigravityAccounts,
     reloadPool,
   };
 }

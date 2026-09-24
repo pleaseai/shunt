@@ -2,3 +2,9 @@
 - [Blank env override shadows fallback](shunt-mod-blank-env-override.md) — `a ?? b` is the bug shape, `a?.trim() || b` the fix; recurring defect class (#568 then endpoint.ts).
 - [shunt mod typecheck boundary](shunt-mod-typecheck-boundary.md) — plugins/shunt typechecks everything but hooks/register.ts; verify that file against a real claude-code.d.ts.
 - [CSS layer fix verification](css-layer-fix-verification.md) — jsdom has no cascade layers; verify layering by brace depth in the built dist CSS.
+- [HeaderMap get vs append](headermap-get-vs-append.md) — outbound headers are appended; get()+insert() rewrites drop/miss repeated field lines.
+- [Judge byte-cap defect class](shunt-judge-byte-cap-class.md) — "it streams" is the false rationale; judge calls always take the buffered branch; refuse via too_large_error.
+- [SSE framing must be stream-stateful](sse-framing-must-be-stream-stateful.md) — classifying one chunk decides framing on where the network split; carry a remainder.
+- [Mirrored validation over-validates](mirrored-validation-over-validates.md) — config/router/validate.rs restates libsy's rules; a rule copied between forms refuses configs upstream accepts.
+- [Folded refusal loses its label](folded-refusal-loses-its-label.md) — libsy folds a refused CallModel into fall-open; the label needs its own request-local note or it reads `invalid_reply`.
+- [Pool loop idle marker](pool-loop-idle-marker.md) — adapter pool loops rotate on idle 502; body_idle() is on ForwardError; antigravity test needs kind=Antigravity.

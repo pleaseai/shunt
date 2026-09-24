@@ -44,8 +44,18 @@ shunt login antigravity
 ```
 
 This runs a Google authorization-code flow using Antigravity's own OAuth client and writes
-`~/.shunt/antigravity-auth.json`, which shunt reads and auto-refreshes. The flow asks for five
-scopes:
+`~/.shunt/antigravity-auth.json`, which shunt reads and auto-refreshes. For more than one Google
+account, log each in under a name instead:
+
+```bash
+shunt login antigravity --name <account-name>
+```
+
+A named login runs the same flow but stores the credential at
+`~/.shunt/accounts/antigravity/<account-name>.json` (0600, in a 0700 directory; override the
+store with `SHUNT_ANTIGRAVITY_ACCOUNTS_DIR`) instead of the singleton file, so the two never
+overwrite each other. `--long-lived` and `--mode` are rejected here, as with the other
+OAuth-only logins. The flow asks for five scopes:
 
 ```text
 https://www.googleapis.com/auth/cloud-platform
@@ -85,6 +95,12 @@ auth = "antigravity_oauth"
 
 Ordered `[[upstreams]]` replace shunt's built-in providers, so an explicit config must also declare
 the `anthropic` default it still falls back to (`server.default_provider` defaults to `anthropic`).
+
+`antigravity_oauth` is pool-capable, like `claude_oauth`, `chatgpt_oauth`, and `kimi_oauth`:
+select accounts with `auth = { mode = "antigravity_oauth", accounts = ["personal", "work"] }` (or
+a single `account = "..."`; the two are mutually exclusive), or omit both to scan the whole
+shunt-managed Antigravity account store. With no configured accounts and an empty store, the
+provider falls back to the singleton credential from step 1.
 
 The legacy `[providers.antigravity]` table form remains supported — but do not mix `[[upstreams]]`
 and `[providers.*]` in one file.
@@ -217,6 +233,15 @@ Two limits are worth knowing before you route production traffic:
 - **Tool results cannot carry rich media.** A `tool_result` whose content includes `image` or
   `document` blocks is rejected.
 
+## Account pools and failover
+
+Each pool attempt resolves its own credential — access token plus cached project id — and rebuilds
+the request (catalog lookup included) for that account, so a rotation never leaks one account's
+project into another's turn. A `429 RESOURCE_EXHAUSTED` cools that account down and tries the next
+one; a client error (4xx other than 401/429) is relayed without rotating. The response carries
+`x-shunt-account` naming the account that served it. If every account fails, the last upstream
+error is relayed, so the cause stays visible.
+
 ## Verify
 
 ```bash
@@ -234,7 +259,8 @@ Confirm the response's `x-gateway-upstream` header names `antigravity`, then
 <Aside type="note" title="Overrides">
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE` overrides the credential path (an empty value falls back to the
-default). An `antigravity_oauth` upstream is pinned to two hosts: the only non-loopback `base_url`
+default). `SHUNT_ANTIGRAVITY_ACCOUNTS_DIR` overrides the named-account store
+(`~/.shunt/accounts/antigravity`). An `antigravity_oauth` upstream is pinned to two hosts: the only non-loopback `base_url`
 it accepts is HTTPS on `daily-cloudcode-pa.googleapis.com` (the default) or on
 `cloudcode-pa.googleapis.com`, which is still accepted at validation so configs written against
 older docs keep loading — **no other `googleapis.com` host qualifies**, `daily-cloudcode-pa.sandbox.googleapis.com` included. A loopback
@@ -272,8 +298,9 @@ routed `antigravity` provider with no credential refuses to start:
 
 ```text
 provider `antigravity` is routed but has no credential. It is now the native HTTP upstream, not the
-local `agy` CLI. Run `shunt login antigravity` to authenticate it, or route to `antigravity-cli` to
-stay on the deprecated subprocess transport.
+local `agy` CLI. Run `shunt login antigravity` (or `shunt login antigravity --name <name>` for an
+account pool) to authenticate it, or route to `antigravity-cli` to stay on the deprecated
+subprocess transport.
 ```
 
 [`shunt check`](/reference/cli/#shunt-check) runs that same guard offline, so CI catches the

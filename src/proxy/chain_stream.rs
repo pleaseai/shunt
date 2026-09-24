@@ -350,6 +350,80 @@ pub(super) struct ChainStreamRequest {
     pub(super) body: RequestBody,
     pub(super) requested_model: String,
     pub(super) started_at: Instant,
+    /// What a `[models.router]` entry decided, if the requested id carries one.
+    /// Known before any upstream is contacted, so it is stamped on this path
+    /// even though the upstream-naming headers cannot be.
+    pub(super) router_stamp: Option<super::failover::OwnedRouterStamp>,
+    /// Wrap the committed stream in the client stream observer. `false` for a
+    /// gated capture, which the caller may never receive: the observer runs
+    /// when that turn is replayed, and the winner it needs travels on the
+    /// response as a [`ChainStreamWinner`] extension instead.
+    pub(super) observe_stream: bool,
+}
+
+/// Which upstream won an unobserved committed stream, filled in as the stream
+/// is consumed: read it after the body has been drained.
+#[derive(Clone)]
+pub(crate) struct ChainStreamWinner {
+    provider: std::sync::Arc<std::sync::Mutex<String>>,
+    model: std::sync::Arc<std::sync::Mutex<String>>,
+    refusal: RefusalSlot,
+}
+
+/// The refusal a committed stream relayed as its only frame because no route
+/// produced a turn — the chain ran out, or an attempt failed terminally before
+/// its headers: the client-facing status and error envelope the ordered loop
+/// would have answered with instead of a `200`.
+type RefusalSlot = std::sync::Arc<std::sync::Mutex<Option<(StatusCode, Value)>>>;
+
+/// Keep a refusal for an unobserved stream's reader; an observed stream is
+/// the live client's, which reads the `error` frame itself.
+fn record_refusal(slot: &RefusalSlot, observe_stream: bool, status: StatusCode, envelope: &Value) {
+    if !observe_stream {
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((status, envelope.clone()));
+    }
+}
+
+/// The status the ordered loop's client would see for a failed attempt.
+///
+/// A Responses route's relayed upstream status is the classification input;
+/// its adapter answers the client with [`client_facing_status`] of it (a status
+/// outside the passthrough set becomes `502`). A gateway-synthesized status,
+/// and every status on an Anthropic route, is already client-facing.
+///
+/// [`client_facing_status`]: crate::model::responses::client_facing_status
+fn client_status(adapter: AdapterKind, status: StatusCode, relayed: bool) -> StatusCode {
+    if relayed && adapter == AdapterKind::Responses {
+        crate::model::responses::client_facing_status(status)
+    } else {
+        status
+    }
+}
+
+impl ChainStreamWinner {
+    /// The winning `(provider, model)` as of now.
+    pub(crate) fn get(&self) -> (String, String) {
+        let read = |slot: &std::sync::Mutex<String>| {
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        };
+        (read(&self.provider), read(&self.model))
+    }
+
+    /// The chain's refusal when no route produced a stream, as of now.
+    ///
+    /// Set when the chain ran out or an attempt failed terminally before its
+    /// headers. A route that fails after it won the stream is a cut, not a
+    /// refusal, and leaves this `None`.
+    pub(crate) fn refusal(&self) -> Option<(StatusCode, Value)> {
+        self.refusal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 /// Drive the failover chain for a streaming turn and return the committed SSE
@@ -367,7 +441,14 @@ pub(super) async fn forward_chain_stream(
         body,
         requested_model,
         started_at,
+        router_stamp,
+        observe_stream,
     } = request;
+    // Read before the body moves into the chain: the committed stream's
+    // `message_delta` carries the auto-mode classifier's answer, which only a
+    // first-party relay produces (see `crate::proxy::safeguards`).
+    let requested_safeguards = crate::proxy::safeguards::requested_types(body.json());
+    let max_request_bytes = state.config.server.limits.max_request_bytes;
     let first_route = routes
         .first()
         .expect("route chains are non-empty after resolution");
@@ -404,6 +485,8 @@ pub(super) async fn forward_chain_stream(
     struct Remembered {
         envelope: LazyEnvelope,
         status: StatusCode,
+        /// What the ordered loop's client would see for `status`.
+        client_status: StatusCode,
         provider: String,
         model: String,
     }
@@ -414,6 +497,8 @@ pub(super) async fn forward_chain_stream(
     let closure_slot = winner_slot.clone();
     let winner_model_slot = std::sync::Arc::new(std::sync::Mutex::new(first_model.clone()));
     let closure_model_slot = winner_model_slot.clone();
+    let refusal_slot = RefusalSlot::default();
+    let closure_refusal = refusal_slot.clone();
     // One chain, one token estimate: the first opted-in attempt starts the
     // bounded blocking encode and later opted-in attempts reuse the same
     // compute (see `ChainEstimate`) instead of re-tokenizing the identical
@@ -444,6 +529,7 @@ pub(super) async fn forward_chain_stream(
             let request_span = request_span.clone();
             let winner_slot = closure_slot.clone();
             let winner_model_slot = closure_model_slot.clone();
+            let refusal_slot = closure_refusal.clone();
             let estimate_cache = estimate_cache.clone();
             async move {
                 let mut body = body;
@@ -534,14 +620,20 @@ pub(super) async fn forward_chain_stream(
                                 // failure when one was recorded, else the
                                 // synthesized 502 — mirroring the pre-commit
                                 // loop's preference and exhaustion arms.
-                                let (envelope, status, finish_provider, finish_model) =
-                                    match remembered {
+                                let (
+                                    envelope,
+                                    status,
+                                    refused_status,
+                                    finish_provider,
+                                    finish_model,
+                                ) = match remembered {
                                         Some(Remembered {
                                             envelope,
                                             status,
+                                            client_status,
                                             provider,
                                             model,
-                                        }) => (envelope, status, provider, model),
+                                        }) => (envelope, status, client_status, provider, model),
                                         None => (
                                             LazyEnvelope::Ready(
                                                 crate::error::error_body_value(
@@ -556,6 +648,7 @@ pub(super) async fn forward_chain_stream(
                                                 )
                                                 .await,
                                             ),
+                                            StatusCode::BAD_GATEWAY,
                                             StatusCode::BAD_GATEWAY,
                                             last_provider.clone(),
                                             last_model.clone(),
@@ -573,6 +666,12 @@ pub(super) async fn forward_chain_stream(
                                 }
                                 let envelope = envelope.resolve().await;
                                 crate::metrics::record_failover(&last_provider, "exhausted");
+                                record_refusal(
+                                    &refusal_slot,
+                                    observe_stream,
+                                    refused_status,
+                                    &envelope,
+                                );
                                 let frame = sse("error", &envelope);
                                 // The Sentry event is the stream observer's
                                 // (it parses the `error` frame this arm
@@ -694,6 +793,11 @@ pub(super) async fn forward_chain_stream(
                                                 remembered = Some(Remembered {
                                                     envelope,
                                                     status,
+                                                    client_status: client_status(
+                                                        route.adapter,
+                                                        status,
+                                                        true,
+                                                    ),
                                                     provider: provider.clone(),
                                                     model: model.clone(),
                                                 });
@@ -735,6 +839,12 @@ pub(super) async fn forward_chain_stream(
                                         *slot = model.clone();
                                     }
                                     let envelope = envelope.resolve().await;
+                                    record_refusal(
+                                        &refusal_slot,
+                                        observe_stream,
+                                        client_status(route.adapter, status, remember),
+                                        &envelope,
+                                    );
                                     let frame = sse("error", &envelope);
                                     // The Sentry event is the stream
                                     // observer's (it parses the `error`
@@ -764,18 +874,38 @@ pub(super) async fn forward_chain_stream(
         )))
         .expect("response builder uses valid status and headers")
         .into_response();
-    let mut response = stream_metrics::observe_response_with_slot(
-        response,
-        Protocol::Anthropic,
-        winner_slot,
-        winner_model_slot,
-        started_at,
-    );
+    let response =
+        crate::proxy::safeguards::synthesize(response, &requested_safeguards, max_request_bytes)
+            .await;
+    let mut response = if observe_stream {
+        stream_metrics::observe_response_with_slot(
+            response,
+            Protocol::Anthropic,
+            winner_slot,
+            winner_model_slot,
+            started_at,
+        )
+    } else {
+        let mut response = response;
+        response.extensions_mut().insert(ChainStreamWinner {
+            provider: winner_slot,
+            model: winner_model_slot,
+            refusal: refusal_slot,
+        });
+        response
+    };
     // `x-gateway-model` names the client-requested id and is correct
     // regardless of the winner; the upstream-naming headers are omitted on
     // this path — the winner is unknown at commit time, and stamping the
     // first route would contradict the header contract.
     super::failover::stamp_gateway_model_header(&mut response, &requested_model);
+    // The router pair is not winner-dependent: it reports what the router chose
+    // before any attempt was made, so omitting it here would have made the
+    // documented "stamped for every router type" false for exactly the
+    // streaming failover chains (#621 review).
+    if let Some(stamp) = router_stamp.as_ref() {
+        super::failover::stamp_router_headers(&mut response, stamp);
+    }
     Ok((StatusCode::OK, response))
 }
 

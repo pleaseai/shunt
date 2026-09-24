@@ -17,18 +17,20 @@ shunt 的[阶段路由器](/zh-cn/guides/stage-router/)并没有自造评分逻�
 ## shunt 引入了什么
 
 Switchyard 提供的是整套网关:代理服务器、provider 中立的协议、请求/响应翻译、
-LLM 裁判分类器、升级路由、子代理路由。shunt 本身就是网关,所以只取评分器一件,
-其余留下。
+LLM 裁判分类器、升级路由、子代理路由。shunt 本身就是网关,所以只取评分器、可选表背后
+的各种裁判类算法,以及仅在该边界使用的翻译编解码器,服务器本身留下。
 
 | Switchyard 组件 | 在 shunt 中 |
 | :-- | :-- |
 | `switchyard-libsy` 阶段评分器 | **使用** —— 固定在上游 `main` 的一个经过审阅的修订 |
 | `switchyard-protocol` | 作为 libsy 自身的依赖引入;shunt 不构造 `Request` |
-| `switchyard-translation` | **不使用** —— 与 shunt 的 `src/model/responses_request.rs` 正面重复 |
+| `switchyard-translation` | **仅用于路由边界** —— 裁判请求及其回复上的中立 ⇄ Anthropic 转换。Anthropic → Responses 的线上转换仍由 shunt 自己的 `src/model/responses_request.rs` 负责 |
 | `switchyard-server` | **不使用** —— shunt 自己就是服务器 |
-| LLM 分类器 / 裁判 | **不使用** —— 见[下文](#不在热路径上放-llm-裁判) |
-| 升级路由(回合中途) | **不使用** —— 与 shunt 的 post-2xx 不重放规则冲突 |
-| 交接备注、顾问门、子代理路由 | **不使用** |
+| LLM 分类器 / 裁判 | **按条目可选启用** —— `stage_router` 上的 [`[models.router.classifier]`](/zh-cn/guides/stage-router/#裁判回退),只在信号无法定夺的轮次被咨询;见[下文](#llm-裁判是按条目选择启用的) |
+| 升级路由 | **按条目可选启用** —— [`mode = "escalation"`](/zh-cn/reference/configuration/#mode--escalation)。弱目标的回合会被扣住直到裁判作出裁决,所以切换到强目标发生在发送任何响应头之前;见[下文](#读取已完成回合的两种裁判) |
+| 交接备注 | **使用** —— [`[models.router.handoff_notes]`](/zh-cn/reference/configuration/#modelsrouterhandoff_notes可选) |
+| 顾问门 | **按条目可选启用** —— [`type = "advisor"`](/zh-cn/reference/configuration/#type--advisor),执行模型的回合会被扣住直到审阅结束 |
+| 子代理路由 | **使用** —— [`[models.subagents]`](/zh-cn/reference/configuration/#modelssubagents可选) |
 
 整个耦合就是一次函数调用。shunt 从解析后的 Anthropic Messages 报文直接填充 libsy 的
 `ToolSignals` 结构体并调用 `pick_tier`;该结构体的每个字段都是 `pub`,中间不需要
@@ -41,6 +43,22 @@ pin**,只写 `rev`、不写 `branch` —— 与 shunt 的两个 `tungstenite` pi
 gate、composite 路由、子代理路由、tool semantics、handoff note —— 只存在于 `main`。
 核对 API 时请读 cargo 解析出的那份 checkout,既不是 registry 源码,也不是会移动的
 GitHub 默认分支。
+
+### 学习型 prefill 路由器
+
+从上游还引入了一块,但条件不同:给最近一轮用户消息打分再挑目标的学习型分类器
+`prefill_router`。只有开启默认关闭的 **`prefill-router` cargo feature** 构建出来的二进制
+才有它。
+
+原因在于这个 crate 本身。上游的 `crates/prefill-router` 通过 PyO3 内嵌 Python,所以构建会
+链接 libpython,运行时需要能 import `torch`、`transformers`、`numpy`、`accelerate` 的环境,
+以及磁盘上的一个路由检查点。上游也是出于同样的理由把它放在一个 cargo feature 后面。shunt 的
+发布流程从不开启这个 feature,因此**预编译的发布二进制和 Homebrew formula 里都没有它。**
+从源码 `cargo build --release --features prefill-router` 是拿到它的唯一办法;没有该 feature
+的二进制无法加载写了这个 type 的配置,并会给出说明原因的错误。
+
+键、前置条件和路由来源见配置参考中的
+[`type = "prefill_router"`](/zh-cn/reference/configuration/#type--prefill_router)。
 
 ## 基准结果
 
@@ -263,16 +281,71 @@ Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 
 固定项会被丢弃。该指纹以解构方式读取配置结构体而不是点号取字段,因此日后新增键时
 会编译失败,而不是让过期的固定项悄悄存活下来。
 
-### 不在热路径上放 LLM 裁判
+### 被委派的工作可以走另一个目标
+
+Switchyard 的 `subagents` 覆盖层在这里对应 `[models.subagents]`,它加在条目上而不是放进
+路由器表里 —— 直接指定目的地的条目根本没有路由器表,而上游的“带 subagents 的 passthrough”
+在这里恰好就是这样一个条目。请求该 id 的 `Task` 子任务、hook agent 或 workflow 子 agent
+会被分流到覆盖层的 `target`,或者分流到与它的 `x-claude-code-agent-type` 相匹配的 `by_type`
+条目;父级自己的回合从不会看到这张表。
+
+```toml
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6" }
+```
+
+shunt 额外补上的是对“被委派”的判读。上游只凭它自己的 `claude_lineage` 头部;shunt 先读
+`x-claude-code-request-class`(`subagent` 与 `workflow` 算被委派,`main` 即使随带一个 agent
+id 也不算,而 `compaction` 和 `auxiliary` 是框架自身的维护,永远不会走这张覆盖层),只有在
+该类别没有被发送时才回退到 agent id —— 而在默认的网关部署下,它确实不会被发送。`by_type`
+的键就是头部的字面值,大小写也算在内,项目 agent 会以 `custom` 到达,名字不会被发送。这张
+覆盖层不保存状态:被分流的子任务从不被评分、从不被固定,也从不推进父级的 dwell,它这一轮
+在 `x-gateway-route-source` 中报告 `subagent_type` 或 `subagent`。
+
+### LLM 裁判是按条目选择启用的
 
 当信号不足以定论时,libsy 返回
-`PickOutcome::ConsultClassifier { default_tier }`。shunt 把它当作答案,直接采用
-`default_tier`。拒绝裁判并不是在跟 API 对抗 —— 这*本身就是* API 文档化的 fall-open
-路径。
+`PickOutcome::ConsultClassifier { default_tier }`。没有配置 classifier 表的
+`stage_router` 把它当作答案,直接采用 `default_tier`,因此这条热路径上没有裁判:没有第二
+次模型调用、没有第二份凭据,并且在路由器最没把握的那些回合上不增加延迟。fall-open 并不是
+在跟 API 对抗 —— 这*本身就是* API 文档化的 fall-open 路径。这是默认行为,也是 pure 车道
+上每一个条目今天仍然的行为。
 
-换来的是:没有第二次模型调用、没有第二份凭据,并且在路由器最没把握的那些回合上不
-增加延迟。付出的是:在那些回合上裁判本可以挽回的准确率,而这正是上游"分类器辅助"
-配置所测到的实质组成部分。
+可以按条目重新启用,一共有四种形态:
+
+| 形态 | 裁判决定什么 |
+| :-- | :-- |
+| `stage_router` 上的 [`[models.router.classifier]`](/zh-cn/reference/configuration/#modelsrouterclassifier可选) | 只管信号无法定夺的轮次,其余仍由信号决定 |
+| [`type = "llm_classifier"`](/zh-cn/reference/configuration/#type--llm_classifier) | 整个回合。`mode = "capability"` 按解决概率在两个档位间选择,`mode = "custom"` 选择由你自己的提示词和 schema 指名的模型分组 |
+| [`type = "composite"`](/zh-cn/reference/configuration/#type--composite) | stage 路由器无法定夺时回落到哪个档位,评分本身不受影响 |
+| [带 `type = "llm_classifier"` 的 `[models.subagents]`](/zh-cn/reference/configuration/#subagents-type--llm_classifier) | 被委派的子任务去哪里,每对 (会话, agent) 只决定一次 |
+
+四者都能把裁判本可以挽回的准确率赚回来 —— 那正是上游“分类器辅助”配置所测到的实质组成
+部分 —— 代价是延迟,以及裁判目标自己的账号池配额。这笔代价付得多勤,由 `classify_trigger`
+键决定:每轮都判定,或每当用户开口时判定一次、并在其间的工具调用中沿用该结论,或整个会话
+只判定一次。裁判只在请求通过鉴权之后才会被咨询,`count_tokens` 探测上从不咨询,对同一对
+(会话, agent) 也不会超过 `max_judge_calls` 次。裁判的任何失败 —— 超时、`400`、无法解析
+的回复 —— 都不会让请求失败,而是回到算法自己的默认目标;每个需要判定的回合,裁判调用恰好
+只有一次。
+
+### 读取已完成回合的两种裁判
+
+上面这些形态都是在回合运行之前决定它去哪里。另有两种是在运行之后才决定。
+[`mode = "escalation"`](/zh-cn/reference/configuration/#mode--escalation) 先提供弱目标的回合,
+让裁判对已完成的工作作出裁决;连续 `confirmations` 次判定升档后,就把会话锁定到强目标。
+[`type = "advisor"`](/zh-cn/reference/configuration/#type--advisor) 让更强的审阅模型批准执行
+模型的收尾回合,或把它打回重做。
+
+两者裁决的都是已经存在的回合,所以 shunt 会把它扣住:上游响应先被缓冲、裁决,然后才回放给
+客户端 —— 逐字节,使用客户端请求的 id,按客户端请求的流式或非流式模式。这是 shunt“不缓冲
+流”这条规则唯一的例外,而且只覆盖这两种条目门控的回合,其他路由不受影响。
+
+正是因为把回合扣住,上游的设计才能留在 shunt 的 post-2xx 不重放规则之内。回放开始之前不会
+提交任何响应头,所以被丢弃的回合 —— 无论是被强目标取代,还是被 REDO 打回 —— 客户端从未见过。
+代价是延迟:被扣住的回合要等整轮结束才到达第一个字节,而 escalation 在锁定之前每一轮都要多
+一次裁判调用。路由来源以及被扣住的回合失败时会怎样,见[配置参考](/zh-cn/reference/configuration/#被扣住的回合escalation-与-advisor)。
 
 ### 路由目标就是普通的模型 id
 
@@ -288,8 +361,9 @@ Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 
 
 ### 不要求就不生效
 
-没有 `[models.stage_router]` 表时,路由器分支只是对一个现有部署并不具备的配置字段做
-一次 `Option` 检查。路由路径上没有任何变化。
+没有 `[models.router]` 表时,路由器分支只是对一个现有部署并不具备的配置字段做
+一次 `Option` 检查。路由路径上没有任何变化,而且无论带路由器的条目声明了哪个 `type`,
+这次检查的代价都一样。
 
 ## 集成的代价
 
@@ -310,6 +384,10 @@ Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 
 新增的直接依赖(`http`、`regex`、`uuid`)早已在 shunt 的依赖树里。是否被链接的结论在
 新 pin 上同样成立:release 二进制里 `jsonschema` 字符串仍是 0 处,`num-bigint` 符号
 仍是 0 个。
+
+为裁判边界引入 `switchyard-translation` 让锁文件多出三条:crate 本身,加上
+`async-stream` 和 `async-stream-impl`。`switchyard-protocol` 作为 libsy 自身的依赖,
+本来就已经在依赖树里。
 
 ## 署名
 

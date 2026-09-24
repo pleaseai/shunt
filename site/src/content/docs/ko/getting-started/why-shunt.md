@@ -26,7 +26,7 @@ Claude Code는 모든 턴을 Anthropic API로 보냅니다. `shunt`는 그 앞(`
 
 shunt는 받은 model id만 그대로 존중합니다. 취약한 에이전트별 시스템 프롬프트 지문 인식은 없습니다. 그 동일한 선택성이 shunt가 호출자가 누구인지 조사하지 않고도 개별 에이전트까지 도달합니다.
 
-model id 하나를 스스로 판단하게 만들 수도 있습니다. [스테이지 라우터](/ko/guides/stage-router/)는 강한 티어와 효율 티어를 지정하고, 대화의 최근 tool-result 메타데이터(`tool_use.name`과 `tool_result.is_error`이며 프롬프트 텍스트는 절대 아닙니다)로 턴마다 둘 중 하나를 고릅니다. 라우터를 설정하지 않으면 동작은 그대로입니다.
+model id 하나를 스스로 판단하게 만들 수도 있습니다. [스테이지 라우터](/ko/guides/stage-router/)는 강한 티어와 효율 티어를 지정하고, 대화의 최근 tool-result 메타데이터(`tool_use.name`과 `tool_result.is_error`이며 프롬프트 텍스트는 절대 아닙니다)로 턴마다 둘 중 하나를 고릅니다. 또 어떤 항목이든 [`[models.subagents]`](/ko/reference/configuration/#modelssubagents-선택) 오버레이를 실어 위임된 작업만 다른 타깃으로 보낼 수 있고, 부모 세션은 자기 목적지를 유지합니다. 둘 다 설정하지 않으면 동작은 그대로입니다.
 
 ## shunt가 구현하는 것
 

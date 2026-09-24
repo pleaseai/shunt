@@ -28,6 +28,9 @@ pub(super) struct RelayOptions {
     pub model: String,
     pub thinking_enabled: bool,
     pub tool_search_native: bool,
+    /// The client's Anthropic `stop_sequences`, emulated gateway-side because
+    /// the Responses API has no `stop` parameter (issue #605). Usually empty.
+    pub stop_sequences: Vec<String>,
 }
 
 impl RelayOptions {
@@ -37,6 +40,7 @@ impl RelayOptions {
     /// no relay call site touches the options after building the machine).
     pub(super) fn machine(self) -> AnthropicSseMachine {
         AnthropicSseMachine::new(self.model, self.thinking_enabled, self.tool_search_native)
+            .with_stop_sequences(self.stop_sequences)
     }
 }
 
@@ -44,7 +48,7 @@ impl RelayOptions {
 /// `forward` and threaded through each transport. `model` is intentionally
 /// absent — it is taken from the [`Route`] at relay time via
 /// [`TurnOptions::relay`], keeping these flags transport-agnostic.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct TurnOptions {
     /// The client asked for a streaming (SSE) response.
     pub client_wants_stream: bool,
@@ -52,6 +56,24 @@ pub(super) struct TurnOptions {
     pub thinking_enabled: bool,
     /// Native client-executed `tool_search` is enabled for this provider/model.
     pub tool_search_native: bool,
+    /// The client's Anthropic `stop_sequences` (issue #605), in request order.
+    /// Never forwarded upstream — the Responses API has no `stop` parameter —
+    /// but emulated by the SSE translation.
+    pub stop_sequences: Vec<String>,
+    /// Bounds on a whole-body read of the upstream reply, or
+    /// [`ResponseBounds::default`](crate::adapters::ResponseBounds::default)
+    /// for a client turn (which is byte-for-byte what it was).
+    ///
+    /// Only the non-streaming path buffers a whole reply, so only it consults
+    /// this. It matters because an internal `[models.router]` call is forced
+    /// non-streaming, which makes that path the one every judge or gated call
+    /// through a `kind = "responses"` target takes — and an unbounded read
+    /// there would let a judge allocate freely until the deadline instead of
+    /// failing open at `judge_max_response_bytes`, or let a gated turn whose
+    /// upstream stalls after its headers sit until `gated_max_duration_ms`.
+    /// The HTTP read honours both bounds; the websocket accumulation honours
+    /// only `max_bytes` so far (#667).
+    pub response_bounds: crate::adapters::ResponseBounds,
 }
 
 impl TurnOptions {
@@ -62,6 +84,7 @@ impl TurnOptions {
             model: route.model.clone(),
             thinking_enabled: self.thinking_enabled,
             tool_search_native: self.tool_search_native,
+            stop_sequences: self.stop_sequences.clone(),
         }
     }
 }

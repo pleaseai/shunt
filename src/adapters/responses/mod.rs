@@ -67,6 +67,14 @@ impl Adapter for ResponsesAdapter {
         _uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
+        // Honoured only on the non-streaming path, which is the one that
+        // buffers a whole upstream reply — and the one every internal call
+        // takes, since `routing::serve` forces `stream` off. A streaming turn
+        // relays instead of buffering, so its bounds fall to that collector.
+        // On the non-streaming path both bounds apply to the HTTP body read;
+        // the websocket accumulation honours `max_bytes` but not yet `idle`
+        // (#667).
+        bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
         // The session id keys the websocket connection pool (issue #32) so turns
         // of one Claude Code conversation reuse a live connection. Keep an owned
@@ -85,7 +93,15 @@ impl Adapter for ResponsesAdapter {
                 )
         });
         Box::pin(async move {
-            forward(state, route, pool_key, session_id.map(str::to_string), body).await
+            forward(
+                state,
+                route,
+                pool_key,
+                session_id.map(str::to_string),
+                body,
+                bounds,
+            )
+            .await
         })
     }
 }
@@ -96,8 +112,20 @@ async fn forward(
     pool_key: Option<String>,
     session_id: Option<String>,
     body: RequestBody,
+    response_bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request_json = body.json();
+    // The effective conversation id: the inbound session header when present,
+    // else the `metadata.user_id` session — the id the upstream session-id
+    // headers AND the body prompt_cache_key must carry. A metadata-only client
+    // still gets the affinity headers, without which the backend caches
+    // nothing (measured 2026-09-20). The connection-pool key stays
+    // header-derived (see `ResponsesAdapter::forward`); the account-pool
+    // sticky key follows the effective id, so sessionless turns now pin per
+    // conversation instead of rotating (the inbound endpoint's sticky-key
+    // rationale).
+    let session_id = session_id
+        .or_else(|| crate::model::responses_request::effective_session_id(request_json, None));
     let client_wants_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -124,22 +152,43 @@ async fn forward(
         tool_search_native,
         "resolved tool_search protocol"
     );
+    // The Responses API has no `stop` parameter (Chat Completions does; Responses
+    // does not), so `stop_sequences` is emulated gateway-side in the
+    // Responses->Anthropic SSE translation rather than forwarded upstream
+    // (issue #605). Kept in request order: ties on the match position break by it.
+    let stop_sequences: Vec<String> = request_json
+        .get("stop_sequences")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|sequence| !sequence.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     // Seed message_start's usage.input_tokens with a local tiktoken estimate of
     // the (already-parsed) request so Claude Code's per-subagent progress
     // tracker — which reads that first snapshot and never re-reads the merged
     // total — shows a live context figure for codex subagents instead of a stuck
     // 0. The Responses API only reports real usage at response.completed, by
     // which point message_start is long sent; the accurate total still lands in
-    // the terminal message_delta. Only streaming turns emit message_start, so
-    // non-streaming requests carry `None` and skip the work; gated on the
-    // provider's local-counting opt-in (the same CountTokens knob as the
-    // count_tokens endpoint). The CPU-bound tiktoken encode itself is deferred to
+    // the terminal message_delta. Gated on the provider's local-counting opt-in
+    // (the same CountTokens knob as the count_tokens endpoint). The CPU-bound tiktoken encode itself is deferred to
     // each transport, where it runs on the blocking pool overlapped with the
     // upstream round-trip rather than serially in front of it (see forward_http /
     // forward_websocket); the multi-upstream chain races it against each
     // attempt's dispatch (the pool's first poll via `pooled_first_poll`, the
     // non-pooled send via `send_classified_with_estimate`). See model/responses.rs.
-    let estimate_input = if client_wants_stream
+    //
+    // A non-streaming turn emits no `message_start` and would otherwise skip the
+    // work, but one carrying `stop_sequences` needs the estimate for a second
+    // reason: an emulated stop makes the upstream's own `response.completed`
+    // usage a no-op, so without a seed the final JSON reports `input_tokens: 0`
+    // for a non-empty prompt (issue #605). `final_json` falls back to the
+    // estimate exactly when no usage was observed, so seeding it here is enough.
+    let estimate_input = if (client_wants_stream || !stop_sequences.is_empty())
         && matches!(
             state
                 .config
@@ -156,12 +205,15 @@ async fn forward(
         client_wants_stream,
         thinking_enabled,
         tool_search_native,
+        stop_sequences,
+        response_bounds,
     };
     let upstream_body = Arc::new(translate_request_value(
         request_json,
         &route,
         flavor,
         tool_search_native,
+        session_id.as_deref(),
     ));
     tracing::debug!(
         provider = %route.provider,
@@ -308,7 +360,7 @@ async fn forward(
         let websocket_options = ForwardOptions {
             upstream_body: upstream_body.clone(),
             auth,
-            turn,
+            turn: turn.clone(),
             codex_quota_account: codex_quota_account.clone(),
             estimate_input: estimate_input.clone(),
             started_at: None,
@@ -317,6 +369,7 @@ async fn forward(
             &state,
             &route,
             pool_key.as_deref(),
+            session_id.as_deref(),
             websocket_options,
             websocket_credential.clone(),
         )
@@ -386,6 +439,10 @@ pub(crate) async fn chain_attempt(
         .filter(|session_id| !session_id.is_empty())
         .map(str::to_string);
     let request_json = body.json();
+    // The effective conversation id (see `forward`): metadata-only clients
+    // still get the upstream affinity headers and the matching body key.
+    let session_id = session_id
+        .or_else(|| crate::model::responses_request::effective_session_id(request_json, None));
     let thinking_enabled = request_json
         .pointer("/thinking/type")
         .and_then(Value::as_str)
@@ -394,16 +451,36 @@ pub(crate) async fn chain_attempt(
     let tool_search_native = state
         .config
         .native_tool_search(&route.provider, &route.upstream_model);
+    // See `forward`'s matching extraction: the Responses API has no `stop`
+    // parameter, so `stop_sequences` is emulated gateway-side rather than
+    // forwarded upstream (issue #605).
+    let stop_sequences = request_json
+        .get("stop_sequences")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|sequence| !sequence.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     let turn = TurnOptions {
         client_wants_stream: true,
         thinking_enabled,
         tool_search_native,
+        stop_sequences,
+        // This path is streaming by construction, so nothing here buffers a
+        // whole reply for the bounds to bound.
+        response_bounds: crate::adapters::ResponseBounds::default(),
     };
     let upstream_body = Arc::new(translate_request_value(
         request_json,
         route,
         flavor,
         tool_search_native,
+        session_id.as_deref(),
     ));
     let auth = state
         .config

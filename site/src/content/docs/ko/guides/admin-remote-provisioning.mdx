@@ -3,7 +3,7 @@ title: 관리자 & 원격 프로비저닝
 description: shunt의 관리자 웹 화면을 활성화해 Claude와 Codex 계정을 원격으로 프로비저닝하고 계정 풀 상태를 점검합니다.
 ---
 
-shunt는 업스트림 Claude와 Codex/ChatGPT 계정을 프로비저닝하고 `claude_oauth` 및 `chatgpt_oauth` 계정 풀의 상태를 볼 수 있는, 관리자 인증이 걸린 웹 화면을 노출할 수 있습니다. 이는 옵트인입니다: `[server.admin]`이 없으면 `/admin*` 라우트는 하나도 등록되지 않으며 shunt의 기본 HTTP 표면(surface)은 그대로입니다.
+shunt는 업스트림 Claude, Codex/ChatGPT, Antigravity 계정을 프로비저닝하고 `claude_oauth`, `chatgpt_oauth`, `antigravity_oauth` 계정 풀의 상태를 볼 수 있는, 관리자 인증이 걸린 웹 화면을 노출할 수 있습니다. 이는 옵트인입니다: `[server.admin]`이 없으면 `/admin*` 라우트는 하나도 등록되지 않으며 shunt의 기본 HTTP 표면(surface)은 그대로입니다.
 
 이 기능은 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/)의 스토어와 선택 동작 위에 구축됩니다. 브라우저 폼에서는 갱신 가능한 Full OAuth 계정 또는 1년짜리 추론 전용 setup token 계정을 만들 수 있습니다. 기존 Claude Code credential 파일 가져오기는 CLI 전용입니다.
 
@@ -61,9 +61,19 @@ shunt run
 
 `accounts`가 비어 있는 `chatgpt_oauth` 프로바이더(기본 `codex` 포함)는 다음 요청에서 새 계정을 발견합니다. 명시적 계정 목록을 쓰는 경우 이름만 있는 항목을 추가해야 합니다. `SHUNT_CODEX_TOKEN_URL`은 로컬 통합 테스트용 token endpoint override이며, 운영에서는 설정하지 마세요.
 
+## 브라우저에서 Antigravity 계정 프로비저닝
+
+1. **Add Antigravity account**에서 소문자 계정 이름을 입력하고 **Start Antigravity login**을 선택합니다.
+2. 인가 URL을 열고 대상 Google 계정으로 로그인한 뒤 접근을 승인합니다.
+3. 브라우저는 `http://localhost:51121/oauth-callback`으로 이동합니다. 로컬 페이지가 열리지 않는 것은 정상입니다.
+4. 브라우저 주소창의 **전체 URL**을 복사해 관리자 페이지에 붙여 넣고 **Complete Antigravity login**을 선택합니다. JSON API에서는 `<code>#<state>`도 사용할 수 있습니다.
+5. shunt가 code를 교환하고, Code Assist project를 해석한 뒤(실패해도 치명적이지 않으며 첫 요청에서 재시도됩니다), 비공개 계정 파일에 저장합니다.
+
+`accounts`가 비어 있는 `antigravity_oauth` 프로바이더(기본 `antigravity` 포함)는 다음 요청에서 새 계정을 발견합니다. 명시적 계정 목록을 쓰는 경우 이름만 있는 항목을 추가해야 합니다. Codex와 달리 Antigravity 표에는 **Refresh** 버튼도 있어, 저장된 refresh 그랜트를 즉시 실행해 로그인이 아직 살아 있는지 보고합니다. `SHUNT_ANTIGRAVITY_TOKEN_URL`은 로컬 통합 테스트용 token endpoint override이며, 운영에서는 설정하지 마세요.
+
 ## 풀 상태 점검
 
-대시보드는 `auth = "claude_oauth"` 또는 `auth = "chatgpt_oauth"`로 구성된 프로바이더의 계정 스토어 메타데이터와 현재 상태를 보여 줍니다. Claude 행에는 업스트림에서 관측한 쿼터 사용률이 상태·쿨다운 상태와 함께 표시됩니다. 업스트림이 리셋 시각을 보고한 경우 각 윈도우 셀에 리셋까지 남은 시간(예: `3d 4h`)도 함께 표시되며, 마우스를 올리면 절대 리셋 시각을 볼 수 있습니다. Codex 행에는 `x-codex-*` 응답 헤더로 보고된 5시간·7일 윈도우가 표시되며, 지원하지 않는 윈도우는 무시되고 Codex에는 대응 창이 없어 `7d_oi`는 `—`로 남습니다. Codex 사용량도 Claude 사용량과 똑같이 쿼터 인지 계정 선택에 반영됩니다(이슈 #195).
+대시보드는 `auth = "claude_oauth"`, `auth = "chatgpt_oauth"`, 또는 `auth = "antigravity_oauth"`로 구성된 프로바이더의 계정 스토어 메타데이터와 현재 상태를 보여 줍니다. Claude 행에는 업스트림에서 관측한 쿼터 사용률이 상태·쿨다운 상태와 함께 표시됩니다. 업스트림이 리셋 시각을 보고한 경우 각 윈도우 셀에 리셋까지 남은 시간(예: `3d 4h`)도 함께 표시되며, 마우스를 올리면 절대 리셋 시각을 볼 수 있습니다. Codex 행에는 `x-codex-*` 응답 헤더로 보고된 5시간·7일 윈도우가 표시되며, 지원하지 않는 윈도우는 무시되고 Codex에는 대응 창이 없어 `7d_oi`는 `—`로 남습니다. Codex 사용량도 Claude 사용량과 똑같이 쿼터 인지 계정 선택에 반영됩니다(이슈 #195).
 
 ### 죽은 자격 증명과 Refresh 버튼
 
@@ -75,7 +85,7 @@ shunt run
 
 계정 목록은 메타데이터만 노출합니다: 계정 이름, 자격 증명 종류(`setup_token` 또는 `imported`), 만료, UUID. 토큰 자체는 절대 반환하지 않습니다. shunt가 계정을 고를 때 쿼터 상태, 쿨다운, 모델 인지 주간 버킷을 어떻게 쓰는지는 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/#선택과-선제-로테이션)을 참고하세요.
 
-대시보드의 Claude 표는 이 만료 값을 자격 증명 종류에서 파생한 **Status**로 표시합니다. 원본 값은 약 8시간짜리 *access* token 만료라 종류에 따라 의미가 정반대이기 때문입니다. `imported` 계정은 refresh token을 갖고 있어 shunt가 필요할 때 갱신하므로 **Auto-refreshes**로 표시되며(원본 타임스탬프는 hover로 확인), 지난 날짜여도 정상입니다. `setup_token` 계정은 갱신 자체가 불가능하므로 1년 만료가 실제로 조치 대상입니다: 갱신 버퍼보다 많이 남아 있으면 **Valid until** + 날짜, 버퍼 안에 들어왔거나 날짜가 지났으면 danger 스타일의 **Expired**와 재로그인 안내가 표시됩니다. 버퍼는 라우팅이 적용하는 것과 같은 5분(`EXPIRY_BUFFER`)이라, 라우팅이 이미 refresh token 없음 경로로 실패시키는 구간을 대시보드가 사용 가능하다고 말하는 일은 없습니다. 각 행에는 **Re-login** 버튼도 있어서 위 추가 폼에 해당 계정의 이름과 로그인 방식을 채워 줍니다 — 기존 이름으로 일반 플로우를 완료하면 계정이 제자리에서 덮어써집니다. Codex 표에도 같은 **Status** 열이 있지만 조건 없이 적용됩니다. 그 store에는 갱신 불가 종류 자체가 없어서(저장 경로 두 곳 모두 refresh token을 요구합니다) shunt가 모든 Codex 계정을 갱신하며, 각 행은 **Auto-refreshes**로 표시되고 원본 타임스탬프는 마찬가지로 hover로 확인합니다. Codex 행에도 같은 **Re-login** 버튼이 있으며, 로그인 방식 선택만 없습니다 — 그 store로 들어가는 길은 ChatGPT OAuth 하나뿐입니다. 위쪽 사용량 표의 읽기 전용 행은 영향을 받지 않습니다. 그 자격 증명은 shunt가 아니라 소유한 provider 클라이언트가 갱신합니다. 여기의 행 동작은 모두 write 등급입니다. `read_keys` 로그인은 같은 표와 같은 **Status** 열을 보지만 행 동작 버튼과 계정 추가 폼은 렌더링되지 않습니다: 서버의 `require_write`가 그 변경을 거부하므로 대시보드가 애초에 제시하지 않습니다.
+대시보드의 Claude 표는 이 만료 값을 자격 증명 종류에서 파생한 **Status**로 표시합니다. 원본 값은 약 8시간짜리 *access* token 만료라 종류에 따라 의미가 정반대이기 때문입니다. `imported` 계정은 refresh token을 갖고 있어 shunt가 필요할 때 갱신하므로 **Auto-refreshes**로 표시되며(원본 타임스탬프는 hover로 확인), 지난 날짜여도 정상입니다. `setup_token` 계정은 갱신 자체가 불가능하므로 1년 만료가 실제로 조치 대상입니다: 갱신 버퍼보다 많이 남아 있으면 **Valid until** + 날짜, 버퍼 안에 들어왔거나 날짜가 지났으면 danger 스타일의 **Expired**와 재로그인 안내가 표시됩니다. 버퍼는 라우팅이 적용하는 것과 같은 5분(`EXPIRY_BUFFER`)이라, 라우팅이 이미 refresh token 없음 경로로 실패시키는 구간을 대시보드가 사용 가능하다고 말하는 일은 없습니다. 각 행에는 **Re-login** 버튼도 있어서 위 추가 폼에 해당 계정의 이름과 로그인 방식을 채워 줍니다 — 기존 이름으로 일반 플로우를 완료하면 계정이 제자리에서 덮어써집니다. Codex 표에도 같은 **Status** 열이 있지만 조건 없이 적용됩니다. 그 store에는 갱신 불가 종류 자체가 없어서(저장 경로 두 곳 모두 refresh token을 요구합니다) shunt가 모든 Codex 계정을 갱신하며, 각 행은 **Auto-refreshes**로 표시되고 원본 타임스탬프는 마찬가지로 hover로 확인합니다. Codex 행에도 같은 **Re-login** 버튼이 있으며, 로그인 방식 선택만 없습니다 — 그 store로 들어가는 길은 ChatGPT OAuth 하나뿐입니다. Antigravity 표도 마찬가지로 조건 없이 **Auto-refreshes**를 표시하며, **Re-login** 버튼에 더해 위에서 설명한 **Refresh** 버튼도 갖습니다. 위쪽 사용량 표의 읽기 전용 행은 영향을 받지 않습니다. 그 자격 증명은 shunt가 아니라 소유한 provider 클라이언트가 갱신합니다. 여기의 행 동작은 모두 write 등급입니다. `read_keys` 로그인은 같은 표와 같은 **Status** 열을 보지만 행 동작 버튼과 계정 추가 폼은 렌더링되지 않습니다: 서버의 `require_write`가 그 변경을 거부하므로 대시보드가 애초에 제시하지 않습니다.
 
 계정 metadata, 풀 상태, 프로비저닝, 또는 계정 제거에 API/curl로 접근하려면 구성된 헤더(기본 `x-shunt-admin-token`) 또는 `x-api-key`로 관리자 자격 증명을 보내고 — 두 슬롯 모두 관리자 라우트에서만 허용되며 추론 라우트에서는 허용되지 않습니다 — [HTTP 엔드포인트](/ko/reference/endpoints/)에 문서화된 JSON route를 사용하세요. 헤더로 인증된 요청은 브라우저 세션을 쓰지 않으며 CSRF 검사에서 제외됩니다. 프로비저닝을 시작할 때 `{ "name": "backup", "mode": "oauth" }` 또는 `{ "name": "backup", "mode": "setup_token" }`을 보내세요. `mode`를 생략하면 API 하위 호환을 위해 `setup_token`이 기본값입니다. 완료 호출의 업스트림 토큰 교환에는 서버 측 30초 제한이 있습니다. 이를 넘기면 shunt는 `502`와 함께 `Claude token exchange timed out`(Codex는 `Codex token exchange timed out`)을 응답하고 아무것도 저장하지 않습니다. 타임아웃이 나도 대기 중인 로그인은 남고 그 시도도 5회 제한에 포함되지만, 인가 코드는 업스트림에서 이미 소비되었을 수 있습니다. 같은 코드를 다시 보내지 말고 플로를 새로 시작해 새 코드를 받으세요.
 
@@ -99,7 +109,7 @@ shunt login claude --name primary --mode import
 shunt login claude --name ci --mode setup-token
 ```
 
-`--long-lived`는 `--mode setup-token`의 deprecated alias입니다. 관리자 화면은 Claude Full OAuth/setup-token과 Codex ChatGPT OAuth 프로비저닝을 지원합니다. 기존 credential 파일 import만 호스트 접근이 필요해 CLI 전용입니다.
+`--long-lived`는 `--mode setup-token`의 deprecated alias입니다. 관리자 화면은 Claude Full OAuth/setup-token, Codex ChatGPT OAuth, Antigravity OAuth 프로비저닝을 지원합니다. 기존 credential 파일 import만 호스트 접근이 필요해 CLI 전용입니다.
 
 
 

@@ -8,9 +8,14 @@ A `[[models]]` entry normally names one destination. A **stage router** names tw
 serves each turn. Errors, stalled investigation, and exploratory reading route
 up; routine production once the plan is settled stays down.
 
-This is opt-in and inert by default. Configure no `[models.stage_router]` table
-and shunt routes exactly as it did before: by the request's `model` id, and
-nothing else.
+It is one `type` of the entry's `[models.router]` table. The others are `auto`
+(this router under upstream's preset), `random` (a weighted, session-sticky
+split), and `noop` (an empty reply, for smoke tests); all four are documented in
+the [configuration reference](/reference/configuration/).
+
+This is opt-in and inert by default. Configure no `[models.router]` table and
+shunt routes exactly as it did before: by the request's `model` id, and nothing
+else.
 
 ## What it reads
 
@@ -40,6 +45,12 @@ a provider-neutral router:
 | Plan | `TodoWrite`, `Task`, `EnterPlanMode`, `ExitPlanMode` |
 | Uncategorised | everything else, including `Bash`, `Skill`, `KillShell`, and every `mcp__*` tool |
 
+You can categorise the uncategorised ones yourself with
+`[models.router.tool_semantics]` — four lists (`observe`, `mutate`, `plan`,
+`new`) applied *after* this table. They cannot reclassify a name the table
+already knows: putting `Read` in `mutate` is a startup error, not an override.
+Editing the lists drops that router's session pins on the next load.
+
 Every `Plan` call — `ExitPlanMode` included — counts as planning activity, which
 reads as exploration and pushes **up**, not down. One name gets more than its
 category: a failed `Task` is scored critical rather than merely hard, because it
@@ -60,8 +71,10 @@ reimplemented here. One saturated signal alone scores about `0.46` and cannot
 decide a turn; two corroborating signals reach about `0.76`.
 
 When the signals are inconclusive the scorer asks for an LLM judge. **shunt runs
-none** — it falls open to the picker's default instead, which keeps the hot path
-free of an extra model call and an extra credential.
+none by default** — it falls open to the picker's default instead, which keeps
+the hot path free of an extra model call and an extra credential.
+[The judge fallback](#the-judge-fallback) below is the opt-in that answers those
+turns with a judge after all, and only those turns.
 
 The full scoring formula, the published benchmark results behind it, and what
 shunt adds on top are in [Switchyard Integration](/guides/switchyard/).
@@ -89,6 +102,23 @@ So the two directions are deliberately unequal:
 
 A fall-open or a turn with no tool activity is the picker's default, not
 evidence, and cannot move a tier in either direction.
+
+`capable_hold_turns` (default `0`) holds the capable tier for a few more turns
+after a signal pushed it up, which is useful when the recovery itself is quiet
+enough to read as settled. A held turn reports the route source `capable_hold`
+and is not evidence either — it cannot move the pin.
+
+### Telling the incoming model why
+
+`[models.router.handoff_notes]` appends a short system block to the forwarded
+request on the turn a signal moves the tier — `escalation_note` on the way up,
+`deescalation_note` on the way down — so the arriving model is told it is taking
+over rather than starting fresh. Claude Code's attribution block is the first
+system block and is left alone; the note goes at the end.
+
+**Each toggle costs a prompt-cache miss**, because the system array is part of
+the cached prefix. That is on top of the per-model prefix the flip itself
+forfeits, which is why the table is off unless you ask for it.
 
 ## Session pinning
 
@@ -148,25 +178,33 @@ Two response headers report the decision, so you do not have to infer it:
 | Header | Value |
 | :-- | :-- |
 | `x-gateway-routed-model` | The target the router chose (`claude-opus-4-8`) |
-| `x-gateway-route-source` | Why (`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`) |
+| `x-gateway-route-source` | Why (`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`, `capable_hold`, `llm-classifier`) |
 
-Those five are the labels shunt emits today. The scorer defines three more —
-`ambiguous`, `llm-classifier`, and `capable_hold` — and none can reach a
-response: shunt reports an inconclusive turn as `fall_open`, runs no judge, and
-keeps its own session hysteresis instead of the scorer's.
+Six of those seven are signal labels. `llm-classifier` appears only on an entry
+that configures [the judge fallback](#the-judge-fallback) below, on a turn the
+judge decided; without one, an inconclusive turn still reports `fall_open` and
+runs no judge. The scorer defines one more label, `ambiguous`, which cannot
+reach a response. The other router types have labels of their own (`random`,
+`random_session`, `noop`), and so does the `[models.subagents]` overlay
+(`subagent_type` for a `by_type` hit, `subagent` for its `target` fallback).
 
-Both are absent for a model id that has no router, so "routed to the efficient
-tier" stays distinguishable from "not routed by a router at all". A
+Both are absent only when neither a router nor a `[models.subagents]` overlay
+decided the turn, so "routed to the efficient tier" stays distinguishable from
+"not routed at all". A
 `count_tokens` probe is left unstamped: on a session that is not yet pinned it
 scores its own one-turn-behind history, so its tier is not necessarily the tier
 of the turn it is measuring.
 
-`GET /routes` lists every configured router under `routers`, with both targets
-and the tier its picker falls back to when no signal decides. Two counters,
-`shunt.stage_router.decisions` and `shunt.stage_router.flips`, are exported when
-you enable metrics; flips are counted separately because a tier change is the
-expensive event, and the decision counter cannot distinguish a session that just
-moved from one that was already there.
+`GET /routes` lists every configured router under `routers`, with its
+`algorithm` and `targets`, and — for this type — both tier targets and the tier
+its picker falls back to when no signal decides. A router that configures a
+judge also lists it under `judges`. Three counters are exported when you enable
+metrics: `shunt.router.decisions`, which covers every router type, plus
+`shunt.stage_router.decisions` and `shunt.stage_router.flips` — and a fourth,
+`shunt.router.judge_calls`, once a judge is configured. Flips
+are counted separately because a tier change is the expensive event, and a
+decision counter cannot distinguish a session that just moved from one that was
+already there.
 
 ## Configure it
 
@@ -175,7 +213,8 @@ moved from one that was already there.
 id = "claude-auto"                     # must begin with claude/anthropic to reach /model
 display_name = "Auto (stage router)"
 
-[models.stage_router]
+[models.router]
+type = "stage_router"
 capable_target = "claude-opus-4-8"
 efficient_target = "claude-sonnet-4-6"
 # picker = "efficient_first"
@@ -184,6 +223,7 @@ efficient_target = "claude-sonnet-4-6"
 # min_dwell_turns = 3
 # deescalate_threshold = 0.75
 # session_ttl_seconds = 3600
+# capable_hold_turns = 0
 ```
 
 Both targets are ordinary public model ids, so each resolves through the normal
@@ -192,14 +232,77 @@ and `service_tier`. A target that is itself a router is a startup error, so
 resolution is one hop by construction.
 
 Every key is documented in the
-[configuration reference](/reference/configuration/). The design record, including
-what was deliberately left out, is
-[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md).
+[configuration reference](/reference/configuration/). The design record,
+including what was deliberately left out, is
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md);
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)
+is the record for the `[models.router]` discriminator and the rest of the
+algorithms.
+
+## The judge fallback
+
+The signals decide most turns, but not all of them. An optional
+[`[models.router.classifier]`](/reference/configuration/#modelsrouterclassifier-optional)
+table names a **judge** — a model asked which tier the turn needs, on the turns
+the signals leave undecided:
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"    # consulted, never served
+base_threshold = 0.5           # lowest p_solve that keeps a task on the efficient tier
+```
+
+Without the table nothing changes: an inconclusive turn falls open to the
+picker default, as it always has. With it, that same turn is put to the judge
+instead — but only that turn. A session whose pin already holds the turn is
+never judged, a `count_tokens` probe is never judged, and no judge call is made
+before the request has been authenticated.
+
+The judge is an ordinary public model id and runs on **its own route's**
+credential, never the caller's: the reserved `x-shunt-*` slots and `cookie`,
+`authorization`, `x-api-key`, and `anthropic-beta` are all stripped before the
+call goes out. That is why a judge target resolving to a **passthrough**
+upstream is a startup error — passthrough means *forward the caller's
+credential*, and the caller's credential is exactly what was just stripped, so
+there would be nothing left to send. A target with `auth = "none"` is fine:
+that mode means the endpoint needs no credential at all, so a local or
+self-hosted judge behind no auth is supported rather than an error.
+The call spends that target's own account-pool quota, so give the judge its own
+`[[models]]` entry.
+
+On the turns that put the question to a judge, admission ranges over the whole
+entry — the requested id plus both tier targets plus the judge, each with its
+full failover chain — so adding an injecting judge to an entry whose answer
+targets are all passthrough makes those turns require a client credential. An
+unauthenticated or policy-denied request makes zero judge calls. A turn that
+reaches no judge is gated by the chain it actually resolved, exactly as it was
+before the table existed: one the signals decided on their own, and one a
+[`[models.subagents]`](/reference/configuration/#modelssubagents-optional)
+overlay diverted before the router ran.
+
+Six keys on `[models.router]` bound every internal call: `judge_timeout_ms`
+(default `30000`, an end-to-end deadline covering headers *and* body),
+`judge_max_response_bytes` (`65536`), `max_judge_calls` per session (`8`), and
+the three `gated_*` keys, which bound only the held turns of an `escalation` or
+`advisor` entry and so bound nothing on a stage router.
+Crossing a bound cancels the upstream call.
+
+A judged turn reports `x-gateway-route-source: llm-classifier` and pins the
+session like any other decision. Every failure — a timeout, an oversized or
+unparseable reply, an upstream error, an exhausted budget — resolves as
+`fall_open`, so a judge that is down costs latency, never availability. Each
+call is counted by `shunt.router.judge_calls` with the outcome that resolved
+it.
 
 ## Limits
 
 - **No mid-turn escalation.** Once response headers are committed shunt does not
   replay a turn, so a tier chosen at the start of a turn serves all of it.
-- **No LLM judge.** Inconclusive signals fall open to the picker default.
+- **This judge decides a tier, nothing more.** The other judge-backed types have
+  their own tables: `llm_classifier`, `composite`, and `advisor` are configured
+  on `[models.router]` directly — see the
+  [configuration reference](/reference/configuration/#type--llm_classifier).
+  Only `llm_classifier`'s `mode = "escalation"` and `advisor` hold a turn back
+  until a verdict is in; this judge never does.
 - **Out of scope for `[server.codex_endpoint]`**, which uses its own routing
   table.

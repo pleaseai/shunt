@@ -169,7 +169,7 @@ codex login
 
 <Aside type="caution" title="モデルスラッグ">
 
-ChatGPT アカウントの Codex バックエンドは `gpt-*-codex` スラッグを**拒否**します — アカウントがライブで entitle されているスラッグのみを受け入れます。信頼できるカタログは openai/codex の [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) です。現在のスラッグは `gpt-6-astra`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`（フロンティア）と `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2` です。古いアカウントでは以前のものにしか entitle されていない場合があります。ルート内で `upstream_model` を使い、任意のエイリアスを entitle されたスラッグへマッピングしてください。
+ChatGPT アカウントの Codex バックエンドは `gpt-*-codex` スラッグを**拒否**します — アカウントがライブで entitle されているスラッグのみを受け入れます。信頼できるカタログは openai/codex の [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) です。現在のスラッグは `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`（最新）、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`（フロンティア）と `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2` です。古いアカウントでは以前のものにしか entitle されていない場合があります。ルート内で `upstream_model` を使い、任意のエイリアスを entitle されたスラッグへマッピングしてください。
 
 </Aside>
 
@@ -276,7 +276,7 @@ provider = "kimi"
 
 | プラグイン | モデル（各 1 エージェント） | プロバイダー |
 | :-- | :-- | :-- |
-| `shunt-codex` | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `codex`（ChatGPT サブスクリプション） |
+| `shunt-codex` | `gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `codex`（ChatGPT サブスクリプション） |
 | `shunt-xai` | `grok-4.6`、`grok-4.5`、`grok-build-0.1` | `xai`（API キー）または `grok`（サブスクリプション） |
 | `shunt-kimi` | `kimi-k3[1m]`、`kimi-k2.7-code` | `kimi` |
 | `shunt-deepseek` | `deepseek-v4-pro`、`deepseek-v4-flash` | `deepseek` |

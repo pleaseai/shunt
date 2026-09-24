@@ -426,7 +426,25 @@ where
                                             "a terminal item implies the producer is live"
                                         );
                                     };
-                                    spawn_terminal_drain(events);
+                                    // An emulated stop sequence (issue #605)
+                                    // means the upstream is still mid-turn and
+                                    // will keep generating text nobody will
+                                    // see: drop `events` outright so the byte
+                                    // stream is dropped and the upstream
+                                    // connection is aborted. Any other
+                                    // terminal (a real `response.completed`/
+                                    // `done`/`incomplete`, or a backend
+                                    // `error`/`response.failed`) means the
+                                    // upstream already finished, so keep
+                                    // draining it to EOF here so the
+                                    // connection still pools — aborting on an
+                                    // ordinary terminal would cost every
+                                    // normal turn its pooled connection.
+                                    if active.hit_stop_sequence() {
+                                        drop(events);
+                                    } else {
+                                        spawn_terminal_drain(events);
+                                    }
                                     return Some((
                                         Ok(Bytes::from(data)),
                                         (Producer::Done, Some(active), finished, map, None),
@@ -440,11 +458,19 @@ where
                             if active.is_stopped() {
                                 // Unreachable for the current maps (every
                                 // stopping event emits); drain for pooling
-                                // and end, defensively.
+                                // and end, defensively — except an emulated
+                                // stop sequence, which drops the events the
+                                // same way the reachable arm above does, so
+                                // the upstream is still aborted rather than
+                                // drained.
                                 let Producer::Live(events) = producer else {
                                     unreachable!("a live producer precedes its item");
                                 };
-                                spawn_terminal_drain(events);
+                                if active.hit_stop_sequence() {
+                                    drop(events);
+                                } else {
+                                    spawn_terminal_drain(events);
+                                }
                                 return None;
                             }
                             machine = Some(active);
@@ -597,6 +623,7 @@ mod tests {
             model: "gpt-5.2-codex".to_string(),
             thinking_enabled: false,
             tool_search_native: false,
+            stop_sequences: Vec::new(),
         }
         .machine()
         .with_input_estimate(0)

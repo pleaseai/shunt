@@ -126,6 +126,24 @@ pub(crate) struct StageSession {
     /// session reads it back into `ToolSignals::compacted`, and it clears with
     /// the pin: on TTL expiry, or when a reload invalidates the entry.
     pub(crate) compacted: bool,
+    /// Turns left on a `capable_hold_turns` window (ADR-0005 §6).
+    ///
+    /// Set by the turn that escalated on signal evidence and decremented by
+    /// each non-read-only turn that the hold covers; while it is non-zero the
+    /// pin stays on the capable tier whatever the estimate says. `0` — shunt's
+    /// default for the key — makes every read of this a no-op, which is what
+    /// keeps the shipped hysteresis (`min_dwell_turns` plus
+    /// `deescalate_threshold`) the only gate on a default deployment.
+    pub(crate) capable_hold_remaining: u32,
+    /// Judge calls this session has made under this pin (ADR-0005 §3).
+    ///
+    /// The per-session half of the bound set — `max_judge_calls` — and the one
+    /// that cannot live on the request, because the budget is exactly what a
+    /// *sequence* of turns spends. It accumulates on the pin rather than on a
+    /// side table so it clears with the pin: on TTL expiry and on a reload that
+    /// changes the table, a resumed session gets its budget back, which is the
+    /// same lifetime the compaction latch and the dwell count already have.
+    pub(crate) judge_calls: u32,
 }
 
 /// When an entry falls out of its own window, or `None` when the addition

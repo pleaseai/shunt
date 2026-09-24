@@ -2,11 +2,13 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 
 use crate::{
-    config::{Config, ProviderKind},
+    config::{Config, ProviderKind, RouterConfig},
     error::ShuntError,
 };
 
-use stage::StageContext;
+use context::RouterContext;
+use outcome::{RouteSource, RouterOutcome};
+use stage::{ConsultJudge, ConsultKind, StageContext};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdapterKind {
@@ -17,6 +19,12 @@ pub enum AdapterKind {
     /// Local `agy` subprocess execution. Deprecated alongside
     /// [`ProviderKind::AntigravityCli`].
     AntigravityCli,
+    /// `[models.router] type = "noop"`: answer without an upstream call.
+    ///
+    /// Reached only from the router arm of [`resolve_chain`], never from a
+    /// [`ProviderKind`] — there is no provider kind that maps to it, which is
+    /// why [`From<ProviderKind>`] has no arm for it.
+    Noop,
 }
 
 impl From<ProviderKind> for AdapterKind {
@@ -128,7 +136,8 @@ pub fn resolve_model(config: &Config, model: &str) -> Route {
 
 /// Resolve a model id to its failover chain, without a request to score.
 ///
-/// A `[models.stage_router]` entry reached this way reports its picker default,
+/// A stage or auto `[models.router]` entry reached this way reports its picker
+/// default,
 /// which is what a body-less surface should show: the tier the picker falls
 /// back to when no signal decides. Live requests go through [`resolve_request_chain_value`].
 pub fn resolve_model_chain(config: &Config, model: &str) -> Vec<Route> {
@@ -139,24 +148,141 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
     let model = strip_context_window_hint(model);
     for configured_model in &config.models {
         if configured_model.id == model {
-            if let Some(router) = configured_model.stage_router.as_ref() {
-                let target = stage::select(router, model, stage).tier.target(router);
+            // The delegated-work overlay, ahead of the entry's own router or
+            // map (ADR-0005 §5): a `Task` child requesting this id is diverted
+            // to the overlay's target and never reaches the arms below, so a
+            // router-backed parent id is not scored, pinned, or dwelt against
+            // by its children. The hints are read only when the entry carries
+            // the table, and only for a live request — the body-less surfaces
+            // have no headers and report the parent's destination, which is
+            // what the entry advertises.
+            if let (Some(overlay), Some(stage)) = (configured_model.subagents.as_ref(), stage) {
+                let hints = RouterContext::from_headers(stage.headers);
+                // The classifier form has no synchronous answer, so
+                // `subagents::select` declines it: the target comes from a
+                // judge call `proxy::failover` makes after admission. Until
+                // then the overlay's own fail-open group answers, which is
+                // also the final answer for a probe (ADR-0005 §3).
+                let diverted = subagents::select(overlay, &hints)
+                    .map(|(target, source)| (target, source, false))
+                    .or_else(|| {
+                        let classifier = overlay.classifier().filter(|_| hints.is_delegated())?;
+                        Some((
+                            classifier.fail_open_target(),
+                            RouteSource::DrivenDefault,
+                            true,
+                        ))
+                    });
+                if let Some((target, source, driven)) = diverted {
+                    stage.decided.set(Some(RouterOutcome {
+                        model: model.to_string(),
+                        target: target.to_string(),
+                        algorithm: overlay.algorithm(),
+                        source,
+                    }));
+                    if driven && !stage.read_only {
+                        stage.consult.set(Some(ConsultJudge {
+                            judge_calls_used: 0,
+                            kind: ConsultKind::Overlay,
+                        }));
+                    }
+                    // One hop, as for a router: validation rejects an overlay
+                    // target that carries a router or an overlay of its own.
+                    let mut routes = resolve_chain(config, target, None);
+                    for route in &mut routes {
+                        route.model = model.to_string();
+                    }
+                    return routes;
+                }
+            }
+            // One `Option` check for every unrouted id — the whole cost
+            // non-router traffic pays, and the property `resolve_chain_unrouted`
+            // benchmarks against its routed twin.
+            if let Some(router) = configured_model.router.as_ref() {
+                let (target, source) = match router {
+                    // `Auto` carries a pre-built stage table, so the preset form
+                    // costs the same per request as the explicit one.
+                    RouterConfig::StageRouter(_) | RouterConfig::Auto(_) => {
+                        let stage_config = router
+                            .stage()
+                            .expect("stage and auto both carry a stage table");
+                        let decision = stage::select(stage_config, model, stage);
+                        (
+                            decision.tier.target(stage_config),
+                            RouteSource::Stage(decision.tier, decision.source),
+                        )
+                    }
+                    RouterConfig::Random(random) => random::select(random, model, stage),
+                    RouterConfig::PrefillRouter(prefill) => {
+                        // Parked, not driven: the drive is inference plus an
+                        // affinity write, and neither may happen for a caller
+                        // who is about to be refused (issue #633). A live
+                        // request lands on the default target provisionally
+                        // and `proxy::failover` re-routes it once admitted.
+                        // A body-less resolution has no turn to score and
+                        // stays here — the same first target upstream picks
+                        // for a turn with no text user message.
+                        if let Some(stage) = stage {
+                            stage.drive_prefill.set(true);
+                        }
+                        (
+                            prefill.default_target().unwrap_or(model),
+                            RouteSource::PrefillDefault,
+                        )
+                    }
+                    // The driven lane's first pass. The judge call happens
+                    // after admission (ADR-0005 §3), so nothing here has a
+                    // verdict yet: the algorithm's own fail-open target is the
+                    // provisional answer, and `proxy::failover` re-resolves the
+                    // chain if a verdict moves it.
+                    //
+                    // `advisor` is the same shape: the executor it names is the
+                    // provisional answer, and the gated drive that may review
+                    // it runs only after admission.
+                    RouterConfig::LlmClassifier(_)
+                    | RouterConfig::Composite(_)
+                    | RouterConfig::Advisor(_) => {
+                        // A probe never consults (ADR-0005 §3): `count_tokens`
+                        // answers from the default target and makes zero judge
+                        // calls, and a body-less resolution has no context at
+                        // all to park the consultation on.
+                        if let Some(stage) = stage.filter(|stage| !stage.read_only) {
+                            stage.consult.set(Some(ConsultJudge {
+                                judge_calls_used: 0,
+                                kind: ConsultKind::Router,
+                            }));
+                        }
+                        (
+                            router.fail_open_target().unwrap_or(model),
+                            RouteSource::DrivenDefault,
+                        )
+                    }
+                    // A noop entry names no destination: it answers as itself.
+                    RouterConfig::Noop {} => (model, RouteSource::Noop),
+                };
+                if let Some(stage) = stage {
+                    // Parked for the observability surfaces, which read it only
+                    // after the request is admitted — the same boundary the pin
+                    // waits for, and for the same reason: a rejected request
+                    // neither pins nor counts. Stamped here rather than inside
+                    // each algorithm so a new type cannot ship unobservable.
+                    stage.decided.set(Some(RouterOutcome {
+                        model: model.to_string(),
+                        target: target.to_string(),
+                        algorithm: router.algorithm(),
+                        source,
+                    }));
+                }
+                if matches!(router, RouterConfig::Noop {}) {
+                    return vec![noop_route(model)];
+                }
                 // One hop only: config validation rejects a router whose target
                 // is itself a router, so the recursive call cannot re-enter this
-                // arm. That holds only while `validate_stage_router` compares
-                // targets through the same `strip_context_window_hint` applied
-                // at the top of this function — if the two normalizations drift,
-                // a `"<this model>[1m]"` target recurses without bound.
-                let mut routes = resolve_chain(config, target, None);
-                for route in &mut routes {
-                    // `Route.model` is the id reported back to the client, and
-                    // Claude Code records it to restore the model on `--resume`.
-                    // It must stay the id the caller asked for; the tier the
-                    // router picked travels upstream in `upstream_model` and
-                    // nowhere else (issue #172).
-                    route.model = model.to_string();
-                }
-                return routes;
+                // arm. That holds only while `validate_router` compares targets
+                // through the same `strip_context_window_hint` applied at the
+                // top of this function — if the two normalizations drift, a
+                // `"<this model>[1m]"` target recurses without bound.
+                return resolve_target_chain(config, target, model);
             }
             if let Some(upstream_models) = configured_model.upstream_model.as_ref() {
                 // Preserve the legacy single-map path even for a Config assembled
@@ -216,6 +342,47 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
     )]
 }
 
+/// Resolve one router-chosen id and re-stamp the chain with the advertised id.
+///
+/// `target` is resolved with `stage = None`, because a router target may not
+/// itself be a router (config validation's one-hop rule), so there is no second
+/// decision to make and nothing for a stage context to record.
+///
+/// `advertised` is the id the client asked for, written onto every
+/// [`Route::model`] in the chain. That field is what the adapter renders into
+/// `message_start.model`, and Claude Code records it to restore the model on
+/// `--resume`, so it must stay the requested id; the target the router picked
+/// travels upstream in `upstream_model` and nowhere else (issue #172).
+///
+/// Shared by the answer path above and by the judge step in
+/// `proxy::failover`, which re-resolves the chain after a verdict moves the
+/// tier: one function, so a judge-selected tier is re-stamped exactly as the
+/// scorer-selected one is.
+pub(crate) fn resolve_target_chain(config: &Config, target: &str, advertised: &str) -> Vec<Route> {
+    let mut routes = resolve_chain(config, target, None);
+    for route in &mut routes {
+        route.model = advertised.to_string();
+    }
+    routes
+}
+
+/// The route a `type = "noop"` entry resolves to.
+///
+/// `provider` is the literal `"noop"`, which names no `[providers.*]` entry, so
+/// every provider lookup on this route misses — deliberately: the adapter makes
+/// no upstream call and has nothing to look one up for. `is_passthrough_route`
+/// short-circuits on the adapter rather than the provider name for that reason.
+fn noop_route(model: &str) -> Route {
+    Route {
+        provider: "noop".to_string(),
+        adapter: AdapterKind::Noop,
+        model: model.to_string(),
+        upstream_model: model.to_string(),
+        effort: None,
+        service_tier: None,
+    }
+}
+
 fn route_for(
     config: &Config,
     provider: &str,
@@ -262,7 +429,9 @@ mod tests {
                 provider.to_string(),
                 upstream_model.to_string(),
             )])),
+            router: None,
             stage_router: None,
+            subagents: None,
         }
     }
 
@@ -383,7 +552,9 @@ mod tests {
                 id: "claude-route".to_string(),
                 display_name: None,
                 upstream_model: None,
+                router: None,
                 stage_router: None,
+                subagents: None,
             }],
             routes: vec![RouteConfig {
                 model: "claude-route".to_string(),
@@ -603,7 +774,9 @@ mod tests {
                     ("codex".into(), "gpt-codex".into()),
                     ("openai".into(), "gpt-openai".into()),
                 ])),
+                router: None,
                 stage_router: None,
+                subagents: None,
             }],
             ..Config::default()
         };
@@ -672,7 +845,9 @@ mod tests {
                     ("openai".into(), "gpt-openai".into()),
                     ("codex".into(), "gpt-codex".into()),
                 ])),
+                router: None,
                 stage_router: None,
+                subagents: None,
             }],
             ..Config::default()
         };
@@ -705,7 +880,16 @@ mod tests {
 }
 
 pub(crate) mod context;
+pub(crate) mod driven;
+pub(crate) mod envelope;
+pub(crate) mod handoff;
+pub(crate) mod judge;
+pub(crate) mod outcome;
+pub(crate) mod prefill;
+pub(crate) mod random;
+pub(crate) mod serve;
 pub(crate) mod stage;
+pub(crate) mod subagents;
 
 /// Stage-router resolution tests.
 ///
@@ -722,7 +906,7 @@ mod stage_router_tests {
     use serde_json::json;
 
     use crate::{
-        config::{Config, ModelConfig, StageRouterConfig, StageRouterPicker},
+        config::{Config, ModelConfig, RouterConfig, StageRouterConfig, StageRouterPicker},
         routing::stage::{StageContext, StageRouterStore},
     };
 
@@ -746,6 +930,29 @@ mod stage_router_tests {
             min_dwell_turns: 3,
             deescalate_threshold: None,
             session_ttl_seconds: 3600,
+            capable_hold_turns: 0,
+            tool_semantics: Default::default(),
+            handoff_notes: None,
+            classifier: None,
+            judge_timeout_ms: crate::config::DEFAULT_JUDGE_TIMEOUT_MS,
+            judge_max_response_bytes: crate::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+            gated_max_bytes: crate::config::DEFAULT_GATED_MAX_BYTES,
+            gated_idle_ms: crate::config::DEFAULT_GATED_IDLE_MS,
+            gated_max_duration_ms: crate::config::DEFAULT_GATED_MAX_DURATION_MS,
+            max_judge_calls: crate::config::DEFAULT_MAX_JUDGE_CALLS,
+        }
+    }
+
+    /// The two aliases the shared `config()` already declares, in the order the
+    /// checkpoint's heads would carry them.
+    fn prefill_router() -> crate::config::PrefillRouterConfig {
+        crate::config::PrefillRouterConfig {
+            targets: vec!["efficient-alias".to_string(), "capable-alias".to_string()],
+            checkpoint: std::path::PathBuf::from("router.pt"),
+            device: None,
+            cache_dir: None,
+            max_length: None,
+            batch_size: None,
         }
     }
 
@@ -757,7 +964,9 @@ mod stage_router_tests {
                 "codex".to_string(),
                 upstream_model.to_string(),
             )])),
+            router: None,
             stage_router: None,
+            subagents: None,
         }
     }
 
@@ -768,7 +977,9 @@ mod stage_router_tests {
                     id: ROUTER_ID.to_string(),
                     display_name: None,
                     upstream_model: None,
-                    stage_router: Some(router()),
+                    router: Some(RouterConfig::StageRouter(router())),
+                    stage_router: None,
+                    subagents: None,
                 },
                 mapped("capable-alias", "upstream-capable"),
                 mapped("efficient-alias", "upstream-efficient"),
@@ -808,6 +1019,8 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
+            consult: std::cell::Cell::new(None),
+            drive_prefill: std::cell::Cell::new(false),
         };
 
         let (routes, requested) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -840,6 +1053,8 @@ mod stage_router_tests {
             now: Instant::now(),
             pending: std::cell::Cell::new(None),
             decided: std::cell::Cell::new(None),
+            consult: std::cell::Cell::new(None),
+            drive_prefill: std::cell::Cell::new(false),
         };
 
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -861,12 +1076,244 @@ mod stage_router_tests {
         assert_eq!(route.upstream_model, "upstream-efficient");
         assert_eq!(route.model, ROUTER_ID);
 
-        config.models[0].stage_router = Some(StageRouterConfig {
+        config.models[0].router = Some(RouterConfig::StageRouter(StageRouterConfig {
             picker: StageRouterPicker::CapableFirst,
             ..router()
-        });
+        }));
         let route = resolve_model(&config, ROUTER_ID);
         assert_eq!(route.upstream_model, "upstream-capable");
+    }
+
+    /// `type = "auto"` is the stage router with upstream's preset, so it must
+    /// resolve through the identical path — including the re-stamp — rather
+    /// than through a second implementation.
+    #[test]
+    fn an_auto_entry_resolves_exactly_like_its_stage_preset() {
+        let auto: crate::config::AutoRouterConfig = serde_json::from_value(serde_json::json!({
+            "capable_target": "capable-alias",
+            "efficient_target": "efficient-alias",
+        }))
+        .expect("the preset parses");
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::Auto(auto));
+
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let context = StageContext {
+            store: &store,
+            request: &request,
+            headers: &session_headers(),
+            read_only: false,
+            now: Instant::now(),
+            pending: std::cell::Cell::new(None),
+            decided: std::cell::Cell::new(None),
+            consult: std::cell::Cell::new(None),
+            drive_prefill: std::cell::Cell::new(false),
+        };
+        let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("an auto-backed id resolves");
+
+        assert_eq!(routes[0].upstream_model, "upstream-capable");
+        assert_eq!(routes[0].model, ROUTER_ID);
+        let outcome = context.decided.take().expect("an outcome is stamped");
+        assert_eq!(outcome.algorithm, "auto");
+        assert_eq!(outcome.target, "capable-alias");
+
+        // And the body-less surface reports the preset's `efficient_first`
+        // default rather than the explicit table's picker by accident.
+        assert_eq!(
+            resolve_model(&config, ROUTER_ID).upstream_model,
+            "upstream-efficient"
+        );
+    }
+
+    /// A `random` entry resolves its chosen target through the ordinary ladder
+    /// and re-stamps the requested id, exactly as the stage router does.
+    #[test]
+    fn a_random_entry_resolves_its_target_and_restamps_the_requested_id() {
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::Random(crate::config::RandomRouterConfig {
+            // One enabled target, so the assertion is about resolution and
+            // not about which arm was drawn — the draw itself is pinned in
+            // `routing::random`'s own tests.
+            targets: vec!["efficient-alias".to_string(), "capable-alias".to_string()],
+            weights: Some(vec![1.0, 0.0]),
+            seed: Some(3),
+            affinity: crate::config::RandomAffinity::Session,
+        }));
+
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let context = StageContext {
+            store: &store,
+            request: &request,
+            headers: &session_headers(),
+            read_only: false,
+            now: Instant::now(),
+            pending: std::cell::Cell::new(None),
+            decided: std::cell::Cell::new(None),
+            consult: std::cell::Cell::new(None),
+            drive_prefill: std::cell::Cell::new(false),
+        };
+        let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("a random-backed id resolves");
+
+        assert_eq!(routes[0].upstream_model, "upstream-efficient");
+        assert_eq!(routes[0].model, ROUTER_ID);
+        assert_eq!(routes[0].provider, "codex");
+        let outcome = context.decided.take().expect("an outcome is stamped");
+        assert_eq!(outcome.algorithm, "random");
+        assert_eq!(outcome.source.as_label(), "random_session");
+        assert!(
+            context.pending.take().is_none(),
+            "a random router keeps no tier pin"
+        );
+    }
+
+    /// A `prefill_router` entry with nothing driven — a body-less
+    /// `resolve_model_chain`, discovery, `shunt check` — answers from its first
+    /// target, the same id upstream picks for a turn with no text user message.
+    ///
+    /// Built as a `Config` struct rather than loaded: `validate` refuses this
+    /// table outright in a build without the feature, and the property under
+    /// test is resolution, which is identical in both builds.
+    #[test]
+    fn a_body_less_prefill_resolution_takes_the_first_target() {
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::PrefillRouter(prefill_router()));
+
+        let routes = super::resolve_model_chain(&config, ROUTER_ID);
+
+        assert_eq!(routes[0].upstream_model, "upstream-efficient");
+        assert_eq!(
+            routes[0].model, ROUTER_ID,
+            "the client must be told the id it asked for"
+        );
+        assert_eq!(routes[0].provider, "codex");
+    }
+
+    /// A live request to a prefill entry is not driven during resolution: it
+    /// lands on the default target provisionally and parks the drive for
+    /// `proxy::failover` to run once the request is admitted (#633). Move the
+    /// drive back into this arm and the flag assertion below has nothing to
+    /// observe — the flag is what the admission gate keys on.
+    #[test]
+    fn a_live_prefill_resolution_parks_the_drive_on_the_default_target() {
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::PrefillRouter(prefill_router()));
+
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let headers = session_headers();
+        let context = live_context(&store, &request, &headers);
+
+        let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("a prefill-backed id resolves");
+
+        assert!(
+            context.drive_prefill.get(),
+            "a live prefill turn must park its drive for the admitted path"
+        );
+        assert_eq!(routes[0].upstream_model, "upstream-efficient");
+        assert_eq!(routes[0].model, ROUTER_ID);
+        let outcome = context.decided.take().expect("an outcome is stamped");
+        assert_eq!(outcome.algorithm, "prefill_router");
+        assert_eq!(outcome.source.as_label(), "prefill_default");
+    }
+
+    /// The admitted drive's answer wins: `reroute` moves the chain onto the
+    /// decided target and the outcome the observability surfaces read names
+    /// the algorithm and the source label.
+    #[test]
+    fn a_driven_prefill_decision_reroutes_to_the_target_it_names() {
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::PrefillRouter(prefill_router()));
+
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let headers = session_headers();
+        let context = live_context(&store, &request, &headers);
+        resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("a prefill-backed id resolves");
+        let mut outcome = context.decided.take().expect("an outcome is stamped");
+
+        let routes = super::prefill::reroute(
+            &config,
+            crate::routing::outcome::PrefillDecision {
+                target: "capable-alias".to_string(),
+                source: crate::routing::outcome::RouteSource::Prefill,
+            },
+            &mut outcome,
+        );
+
+        assert_eq!(routes[0].upstream_model, "upstream-capable");
+        assert_eq!(
+            routes[0].model, ROUTER_ID,
+            "the client must be told the id it asked for"
+        );
+        assert_eq!(outcome.algorithm, "prefill_router");
+        assert_eq!(outcome.target, "capable-alias");
+        assert_eq!(outcome.source.as_label(), "prefill");
+    }
+
+    /// An unrouted id and a stage entry never park a prefill drive: the flag
+    /// is set by the prefill arm alone, so the admission gate cannot widen to
+    /// the envelope for a turn that has no inference to guard.
+    #[test]
+    fn a_non_prefill_resolution_parks_no_drive() {
+        let config = config();
+        let store = StageRouterStore::new();
+        let request = erroring_request();
+        let headers = session_headers();
+        let context = live_context(&store, &request, &headers);
+
+        resolve_request_chain_value(&config, &request, Some(&context))
+            .expect("the stage-backed id resolves");
+
+        assert!(!context.drive_prefill.get());
+    }
+
+    fn live_context<'a>(
+        store: &'a StageRouterStore,
+        request: &'a serde_json::Value,
+        headers: &'a axum::http::HeaderMap,
+    ) -> StageContext<'a> {
+        StageContext {
+            store,
+            request,
+            headers,
+            read_only: false,
+            now: Instant::now(),
+            pending: std::cell::Cell::new(None),
+            decided: std::cell::Cell::new(None),
+            consult: std::cell::Cell::new(None),
+            drive_prefill: std::cell::Cell::new(false),
+        }
+    }
+
+    /// A `noop` entry answers as itself: no provider lookup, no target, and the
+    /// adapter that synthesizes the reply.
+    #[test]
+    fn a_noop_entry_resolves_to_the_noop_adapter() {
+        let mut config = config();
+        config.models[0].router = Some(RouterConfig::Noop {});
+
+        let routes = super::resolve_model_chain(&config, ROUTER_ID);
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].adapter, AdapterKind::Noop);
+        assert_eq!(routes[0].provider, "noop");
+        assert_eq!(routes[0].model, ROUTER_ID);
+        assert_eq!(routes[0].upstream_model, ROUTER_ID);
+        assert_eq!(routes[0].effort, None);
+        assert_eq!(routes[0].service_tier, None);
+
+        // A `[1m]` request lands on the same route with the bare id.
+        assert_eq!(
+            resolve_model(&config, "claude-auto[1m]").model,
+            ROUTER_ID,
+            "the hint is stripped before the router is looked up"
+        );
     }
 
     /// A `[1m]` request still names the bare id back to the client, exactly as a

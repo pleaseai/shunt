@@ -46,7 +46,16 @@ shunt login antigravity
 ```
 
 これは Antigravity 自身の OAuth クライアントを使う Google の authorization-code フローを実行し、shunt が
-読み込んで自動リフレッシュする `~/.shunt/antigravity-auth.json` を書き込みます。このフローは 5 つのスコープを
+読み込んで自動リフレッシュする `~/.shunt/antigravity-auth.json` を書き込みます。Google アカウントが複数ある場合は、名前を付けてそれぞれログインしてください:
+
+```bash
+shunt login antigravity --name <account-name>
+```
+
+名前付きログインは同じフローを実行しますが、シングルトンファイルの代わりに
+`~/.shunt/accounts/antigravity/<account-name>.json` に認証情報を保存します（0700 ディレクトリ内の
+0600。ストアは `SHUNT_ANTIGRAVITY_ACCOUNTS_DIR` で上書き可能）。両者が互いを上書きすることはありません。
+ここでは `--long-lived` と `--mode` は拒否されます。このフローは 5 つのスコープを
 要求します。
 
 ```text
@@ -87,6 +96,12 @@ auth = "antigravity_oauth"
 
 順序付きの `[[upstreams]]` は shunt の組み込みプロバイダーを置き換えるため、明示的な設定ではフォールバック先の
 `anthropic` デフォルトも宣言する必要があります（`server.default_provider` のデフォルトは `anthropic`）。
+
+`antigravity_oauth` は `claude_oauth`、`chatgpt_oauth`、`kimi_oauth` と同様にプール対応です。
+`auth = { mode = "antigravity_oauth", accounts = ["personal", "work"] }` でアカウントを選択してください
+（単一の `account = "..."` も可能で、両者の併用は不可）。両方を省略すると shunt 管理の Antigravity
+アカウントストア全体をスキャンします。設定されたアカウントがなくストアも空の場合は、手順 1 の
+シングルトン認証情報にフォールバックします。
 
 従来の `[providers.antigravity]` テーブル形式も引き続きサポートされます — ただし `[[upstreams]]` と
 `[providers.*]` を 1 つのファイルで混在させないでください。
@@ -213,6 +228,16 @@ Code Assist リクエストは、これらをいずれも送りません。
 - **ツール結果はリッチメディアを運べません。** `image` や `document` ブロックを含む内容の `tool_result` は
   拒否されます。
 
+## アカウントプールとフェイルオーバー
+
+プールの各試行は、そのアカウント専用の認証情報（アクセストークンとキャッシュされたプロジェクト ID）を
+解決し、そのアカウント向けにリクエストを再構築する（カタログ参照を含む）ため、ローテーションの過程で
+あるアカウントのプロジェクトが別のアカウントのリクエストに混ざることはありません。
+`429 RESOURCE_EXHAUSTED` はそのアカウントをクールダウンして次のアカウントを試します。クライアント
+エラー（401/429 以外の 4xx）はローテーションせずに中継します。応答には、処理したアカウント名を示す
+`x-shunt-account` が付きます。すべてのアカウントが失敗した場合は最後の upstream エラーを中継するので、
+原因が見えなくなることはありません。
+
 ## 検証
 
 ```bash
@@ -230,6 +255,8 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 <Aside type="note" title="オーバーライド">
 
 `SHUNT_ANTIGRAVITY_AUTH_FILE` は認証情報のパスを上書きします（空の値はデフォルトへフォールバックします）。
+`SHUNT_ANTIGRAVITY_ACCOUNTS_DIR` は名前付きアカウントのストア（`~/.shunt/accounts/antigravity`）を
+上書きします。
 `antigravity_oauth` の upstream は 2 つのホストに固定されます。受け入れられるループバック以外の `base_url`
 は `daily-cloudcode-pa.googleapis.com`（デフォルト）か、古いドキュメントに沿って書かれた設定が読み込め
 続けるよう検証では引き続き受け入れられる `cloudcode-pa.googleapis.com` への HTTPS だけです — `daily-cloudcode-pa.sandbox.googleapis.com` を含め、
@@ -268,8 +295,9 @@ Antigravity upstream に対して行います。候補が 1 つならそれが�
 
 ```text
 provider `antigravity` is routed but has no credential. It is now the native HTTP upstream, not the
-local `agy` CLI. Run `shunt login antigravity` to authenticate it, or route to `antigravity-cli` to
-stay on the deprecated subprocess transport.
+local `agy` CLI. Run `shunt login antigravity` (or `shunt login antigravity --name <name>` for an
+account pool) to authenticate it, or route to `antigravity-cli` to stay on the deprecated
+subprocess transport.
 ```
 
 [`shunt check`](/ja/reference/cli/#shunt-check) も同じガードをオフラインで実行するため、CI がロールアウト前に

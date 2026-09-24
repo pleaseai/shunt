@@ -3,6 +3,9 @@ use std::collections::{HashMap, HashSet};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
+
+use axum::http::HeaderValue;
 
 use crate::config::ResponsesFlavor;
 use crate::model::responses_schema;
@@ -111,6 +114,7 @@ pub fn translate_request(
     route: &Route,
     flavor: ResponsesFlavor,
     tool_search_native: bool,
+    session_id: Option<&str>,
 ) -> Result<Value, serde_json::Error> {
     let request: Value = serde_json::from_slice(body)?;
     Ok(translate_request_value(
@@ -118,6 +122,7 @@ pub fn translate_request(
         route,
         flavor,
         tool_search_native,
+        session_id,
     ))
 }
 
@@ -126,6 +131,7 @@ pub fn translate_request_value(
     route: &Route,
     flavor: ResponsesFlavor,
     tool_search_native: bool,
+    session_id: Option<&str>,
 ) -> Value {
     let tool_search = ToolSearchContext::from_request(request, tool_search_native);
     let mut out = Map::new();
@@ -196,7 +202,42 @@ pub fn translate_request_value(
     // so a route can override an inherited provider-level tier -- this is the
     // one place it is stripped; the literal string must never reach the wire.
     if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
-        out.insert("text".to_string(), json!({"verbosity": "medium"}));
+        let mut text = json!({"verbosity": "medium"});
+        // A judge target on a Responses provider: libsy's codec asks for a
+        // structured verdict as Anthropic's `output_config.format`, and the
+        // Responses equivalent is `text.format`. Without the translation the
+        // judge answers in prose and every verdict is unparseable — a
+        // `classifier_fail_open` on every turn, with no error to read.
+        //
+        // `strict: false` and a fixed `name`, because neither survives the
+        // Anthropic hop either: that codec emits `{"type": "json_schema",
+        // "schema": …}` and drops the packaged name and `strict` (the live
+        // capture, "Fact (c), re-captured"). Sending `strict: true` here would
+        // hold the Responses judge to a contract the Anthropic one is not,
+        // and the schemas carry `additionalProperties: false` already.
+        // Withheld on xai/grok for the reason the whole `text` object is:
+        // that API rejects it.
+        if let (Some("json_schema"), Some(schema)) = (
+            request
+                .pointer("/output_config/format/type")
+                .and_then(Value::as_str),
+            request
+                .pointer("/output_config/format/schema")
+                .filter(|schema| schema.is_object()),
+        ) {
+            if let Some(object) = text.as_object_mut() {
+                object.insert(
+                    "format".to_string(),
+                    json!({
+                        "type": "json_schema",
+                        "name": "verdict",
+                        "schema": schema.clone(),
+                        "strict": false,
+                    }),
+                );
+            }
+        }
+        out.insert("text".to_string(), text);
         if let Some(service_tier) = &route.service_tier {
             if service_tier != "default" {
                 out.insert("service_tier".to_string(), json!(service_tier));
@@ -213,7 +254,7 @@ pub fn translate_request_value(
             json!(["reasoning.encrypted_content"]),
         );
     }
-    if let Some(cache_key) = prompt_cache_key(request) {
+    if let Some(cache_key) = prompt_cache_key(request, session_id) {
         out.insert("prompt_cache_key".to_string(), json!(cache_key));
     }
     // Anthropic `max_tokens` caps output; the Responses equivalent is
@@ -231,12 +272,18 @@ pub fn translate_request_value(
     Value::Object(out)
 }
 
-/// A stable per-conversation key so the Responses backend routes every turn of a
-/// session to the same prompt cache (codex uses its thread_id here). Claude Code
-/// packs `{device_id, account_uuid, session_id}` as a JSON string in
-/// `metadata.user_id`; `session_id` is the per-conversation id. Falls back to a
-/// hash of the raw user_id, or nothing when the client sends no metadata.
-fn prompt_cache_key(request: &Value) -> Option<String> {
+/// The conversation id the upstream `session-id`/`thread-id` headers and the
+/// body `prompt_cache_key` share: the inbound `x-claude-code-session-id` header
+/// when the client sent one, else the `metadata.user_id` JSON `session_id`.
+/// Shared with the adapter so a metadata-only client still gets the affinity
+/// headers (the backend derives cache affinity from the header alone — a body
+/// key without the matching header caches nothing, measured 2026-09-20).
+pub(crate) fn effective_session_id(request: &Value, session_id: Option<&str>) -> Option<String> {
+    // The inbound header is always header-safe: hyper rejects invalid header
+    // values at parse time, so whatever reached the handler is valid.
+    if let Some(session_id) = session_id.filter(|session_id| !session_id.is_empty()) {
+        return Some(session_id.to_string());
+    }
     let user_id = request
         .pointer("/metadata/user_id")
         .and_then(Value::as_str)
@@ -246,13 +293,38 @@ fn prompt_cache_key(request: &Value) -> Option<String> {
             .get("session_id")
             .and_then(Value::as_str)
             .filter(|session| !session.is_empty())
+            // A JSON-decoded value can carry an escaped control character;
+            // it becomes the upstream affinity headers, and an invalid header
+            // value would fail the whole request. The hash fallback below is
+            // hex, always header-safe, and keeps header and key equal.
+            .filter(|session| HeaderValue::from_str(session).is_ok())
         {
-            return Some(format!("shunt-{session}"));
+            return Some(session.to_string());
         }
     }
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(user_id, &mut hasher);
-    Some(format!("shunt-{:016x}", std::hash::Hasher::finish(&hasher)))
+    Some(hashed_user_id(user_id))
+}
+
+/// A stable per-conversation key so the Responses backend routes every turn of a
+/// session to the same prompt cache. The real Codex CLI sends its raw session id
+/// here (`codex-rs` `core/src/client.rs`), and the backend derives cache affinity
+/// from the `session-id` request header — so the key must equal that header's
+/// value, and both come from the one derivation in [`effective_session_id`].
+fn prompt_cache_key(request: &Value, session_id: Option<&str>) -> Option<String> {
+    effective_session_id(request, session_id)
+}
+
+/// The stable fallback id for a `metadata.user_id` that is not a JSON blob
+/// carrying a header-safe `session_id`. A stable hash: `DefaultHasher`'s
+/// algorithm is not pinned across rustc releases, and a rotated fallback key
+/// silently forfeits one turn's cache. sha2 is already a dependency; 8 bytes
+/// suffice for a cache-namespace id.
+fn hashed_user_id(user_id: &str) -> String {
+    let digest = Sha256::digest(user_id.as_bytes());
+    format!(
+        "{:016x}",
+        u64::from_be_bytes(digest[..8].try_into().expect("sha256 digest is 32 bytes"))
+    )
 }
 
 /// Whether the client requested extended thinking. Gates reasoning round-tripping:
@@ -981,7 +1053,7 @@ fn effort(request: &Value, route: &Route) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{effort, input_items, ToolSearchContext};
+    use super::{effort, input_items, translate_request_value, ResponsesFlavor, ToolSearchContext};
     use crate::routing::{AdapterKind, Route};
 
     fn codex_route() -> Route {
@@ -1018,6 +1090,83 @@ mod tests {
         }
     }
 
+    /// A judge target on a Responses provider (ADR-0005 §8 PR 5). libsy asks
+    /// for the verdict as Anthropic's `output_config.format`; this is where
+    /// that becomes the Responses API's `text.format`.
+    ///
+    /// Non-vacuity: delete the `output_config.format` branch in
+    /// `translate_request_value` and the `format` assertions go red; send
+    /// `strict: true` and the last one does.
+    #[test]
+    fn maps_output_config_json_schema_to_text_format() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"target": {"type": "string"}},
+            "required": ["target"],
+            "additionalProperties": false,
+        });
+        let request = json!({
+            "messages": [],
+            "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        });
+
+        let out = translate_request_value(
+            &request,
+            &codex_route(),
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+        );
+
+        assert_eq!(out["text"]["format"]["type"], "json_schema");
+        assert_eq!(out["text"]["format"]["name"], "verdict");
+        assert_eq!(out["text"]["format"]["schema"], schema);
+        assert_eq!(out["text"]["format"]["strict"], json!(false));
+        assert_eq!(
+            out["text"]["verbosity"], "medium",
+            "the format merges into the existing text object rather than replacing it"
+        );
+    }
+
+    /// xAI rejects the whole `text` object, so the judge's schema is withheld
+    /// there exactly as `verbosity` is.
+    #[test]
+    fn withholds_the_judge_schema_on_the_xai_flavor() {
+        let request = json!({
+            "messages": [],
+            "output_config": {"format": {"type": "json_schema", "schema": {"type": "object"}}},
+        });
+
+        for flavor in [ResponsesFlavor::Xai, ResponsesFlavor::Grok] {
+            let out = translate_request_value(&request, &codex_route(), flavor, false, None);
+            assert!(out.get("text").is_none(), "flavor={flavor:?}");
+        }
+    }
+
+    /// A client body with no structured-output request is untouched: the
+    /// branch must not invent a `format` for ordinary traffic.
+    #[test]
+    fn leaves_text_format_alone_without_a_json_schema_request() {
+        for request in [
+            json!({"messages": []}),
+            json!({"output_config": {"effort": "high"}}),
+            json!({"output_config": {"format": {"type": "text"}}}),
+            json!({"output_config": {"format": {"type": "json_schema"}}}),
+        ] {
+            let out = translate_request_value(
+                &request,
+                &codex_route(),
+                ResponsesFlavor::Chatgpt,
+                false,
+                None,
+            );
+            assert!(
+                out["text"].get("format").is_none(),
+                "request={request}, out={out}"
+            );
+        }
+    }
+
     #[test]
     fn passes_max_effort_through_for_gpt_5_6() {
         // gpt-5.6* accept `max` natively, so it must not fold to xhigh.
@@ -1031,6 +1180,8 @@ mod tests {
         // gpt-6* accept `max` natively, so it must not fold to xhigh.
         let request = json!({"output_config": {"effort": "max"}});
         assert_eq!(effort(&request, &codex_route_model("gpt-6-astra")), "max");
+        assert_eq!(effort(&request, &codex_route_model("gpt-6-sol")), "max");
+        assert_eq!(effort(&request, &codex_route_model("gpt-6-luna")), "max");
         assert_eq!(effort(&request, &codex_route_model("gpt-6-pro")), "max");
     }
 

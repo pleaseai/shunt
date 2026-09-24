@@ -295,6 +295,7 @@ pub(crate) async fn exchange_code(
     let response = client
         .post(token_url)
         .header("content-type", "application/json")
+        .header("user-agent", auth::CLAUDE_CLI_USER_AGENT)
         .body(serde_json::to_vec(&body)?)
         .send()
         .await
@@ -680,6 +681,46 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(response.refresh_token.as_deref(), Some("oauth-refresh"));
+    }
+
+    /// The authorization-code exchange must present Claude Code's User-Agent for
+    /// the same Cloudflare reason as the refresh POST (see
+    /// [`auth::CLAUDE_CLI_USER_AGENT`]). Asserted against the recorded request
+    /// because wiremock's `header` matcher splits the value on commas.
+    #[tokio::test]
+    async fn oauth_exchange_sends_the_claude_cli_user_agent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "oauth-access",
+                "refresh_token": "oauth-refresh",
+                "expires_in": 3600
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = exchange_code(
+            &reqwest::Client::new(),
+            "oauth-code",
+            "oauth-state",
+            "oauth-verifier",
+            &format!("{}/token", server.uri()),
+            MANUAL_REDIRECT_URL,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.refresh_token.as_deref(), Some("oauth-refresh"));
+        let requests = server.received_requests().await.unwrap();
+        let user_agent = requests
+            .iter()
+            .find(|request| request.url.path() == "/token")
+            .and_then(|request| request.headers.get("user-agent"))
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(user_agent, Some(auth::CLAUDE_CLI_USER_AGENT));
+        server.verify().await;
     }
 
     #[tokio::test]

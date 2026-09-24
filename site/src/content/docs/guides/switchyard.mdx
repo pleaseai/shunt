@@ -20,18 +20,21 @@ how the algorithm decides a turn. If you only want to turn the feature on, the
 
 Switchyard ships a whole gateway: a proxy server, a provider-neutral protocol,
 request/response translation, an LLM-judge classifier, escalation, sub-agent
-routing. shunt already is a gateway, so it takes one piece — the scorer — and
-leaves the rest.
+routing. shunt already is a gateway, so it takes the scorer, the judge-backed
+algorithms behind opt-in tables, and the translation codec at that one
+boundary — and leaves the server.
 
 | Switchyard component | In shunt |
 | :-- | :-- |
 | `switchyard-libsy` stage scorer | **Yes** — pinned to a reviewed revision of upstream `main` |
 | `switchyard-protocol` | Pulled in as libsy's own dependency; shunt builds no `Request` |
-| `switchyard-translation` | **No** — it duplicates shunt's `src/model/responses_request.rs` head-on |
+| `switchyard-translation` | **At the routing boundary only** — neutral ⇄ Anthropic on the judge request and its reply. The Anthropic → Responses wire translation stays shunt's own `src/model/responses_request.rs` |
 | `switchyard-server` | **No** — shunt is the server |
-| LLM classifier / judge | **No** — see [below](#no-llm-judge-on-the-hot-path) |
-| Escalation routing (mid-turn) | **No** — collides with shunt's post-2xx no-replay rule |
-| Handoff notes, advisor gate, sub-agent routing | **No** |
+| LLM classifier / judge | **Opt-in per entry** — [`[models.router.classifier]`](/guides/stage-router/#the-judge-fallback) on a `stage_router`, consulted only on the turns the signals leave undecided; see [below](#the-llm-judge-is-opt-in-per-entry) |
+| Escalation routing | **Opt-in per entry** — [`mode = "escalation"`](/reference/configuration/#mode--escalation). The weak turn is held until the judge rules, so the switch to the strong target happens before any header is sent; see [below](#two-judges-read-the-finished-turn) |
+| Handoff notes | **Yes** — [`[models.router.handoff_notes]`](/reference/configuration/#modelsrouterhandoff_notes-optional) |
+| Advisor gate | **Opt-in per entry** — [`type = "advisor"`](/reference/configuration/#type--advisor), with the executor turn held until the review |
+| Sub-agent routing | **Yes** — [`[models.subagents]`](/reference/configuration/#modelssubagents-optional) |
 
 The whole coupling is one function call. shunt fills libsy's `ToolSignals`
 struct straight from the parsed Anthropic Messages body and calls `pick_tier`;
@@ -45,6 +48,27 @@ release, and `main` has diverged from it: the algorithms beyond stage scoring �
 the advisor gate, composite routing, sub-agent routing, tool semantics, handoff
 notes — exist only there. When checking the API, read the checkout cargo
 resolved, not the registry source and not GitHub's default branch, which moves.
+
+### The learned prefill router
+
+One more upstream piece is vendored, on its own terms: `prefill_router`, a
+learned classifier that scores the latest user turn and picks a target. It is
+available only from a build that opts into the **`prefill-router` cargo
+feature**, which is off by default.
+
+The reason is what the crate is. Upstream's `crates/prefill-router` embeds
+Python through PyO3, so building it links libpython and running it needs
+`torch`, `transformers`, `numpy`, and `accelerate` importable at run time,
+plus a router checkpoint on disk. Upstream gates it behind a cargo feature for
+the same reason. shunt's release workflow never enables the feature, so
+**prebuilt release binaries and the Homebrew formula do not have it** — a
+from-source `cargo build --release --features prefill-router` is the only way
+to get it, and a binary without it fails to load a config naming the type,
+with an error that says so.
+
+See [`type = "prefill_router"`](/reference/configuration/#type--prefill_router)
+in the configuration reference for the keys, the prerequisites, and the route
+sources.
 
 ## Benchmark results
 
@@ -297,17 +321,90 @@ editing one router drops only its own pins across a hot reload. That fingerprint
 destructures the config struct rather than dotting into it, so a key added later
 fails to compile instead of quietly letting stale pins outlive it.
 
-### No LLM judge on the hot path
+### Delegated work can take a different target
+
+Switchyard's `subagents` overlay carries over as `[models.subagents]`, on the
+entry rather than inside the router table — a fixed entry has no router table,
+and upstream's "passthrough with subagents" is exactly a fixed entry here. A
+`Task` child, a hook agent, or a workflow sub-agent requesting the id is
+diverted to the overlay's `target`, or to the `by_type` entry matching its
+`x-claude-code-agent-type`; the parent's own turns never see the table.
+
+```toml
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6" }
+```
+
+What shunt adds is the reading of "delegated". Upstream keys on its
+`claude_lineage` header alone; shunt reads `x-claude-code-request-class` first
+(`subagent` and `workflow` are delegated, `main` is not even when an agent id
+rides along, and `compaction` and `auxiliary` are harness maintenance that
+never takes the overlay) and falls back to the agent id only when the class is
+not sent — which, behind a default gateway deployment, it is not. `by_type`
+keys are the header's literal values, case included, and a project agent
+arrives as `custom` with its name withheld. The overlay is stateless: a
+diverted child is never scored, never pinned, and never advances its parent's
+dwell, and its turn reports `subagent_type` or `subagent` in
+`x-gateway-route-source`.
+
+### The LLM judge is opt-in, per entry
 
 When the signals are inconclusive, libsy returns
-`PickOutcome::ConsultClassifier { default_tier }`. shunt treats that as the
-answer and takes `default_tier`. Declining the judge is not fighting the API — it
-*is* the API's documented fall-open path.
+`PickOutcome::ConsultClassifier { default_tier }`. A `stage_router` with no
+classifier table treats that as the answer and takes `default_tier`, so its hot
+path carries no judge: no second model call, no second credential, and no added
+latency on the turns where the router is least sure. Falling open is not
+fighting the API — it *is* the API's documented fall-open path. That is the
+default, and it is what every entry on the pure lane still does.
 
-What that buys: no second model call, no second credential, and no added latency
-on the turns where the router is least sure. What it costs: shunt gives up the
-accuracy a judge would recover on those turns, which is a real part of what the
-upstream classifier-assisted configurations measured.
+An entry can opt back in, one entry at a time, in four shapes:
+
+| Shape | What the judge decides |
+| :-- | :-- |
+| [`[models.router.classifier]`](/reference/configuration/#modelsrouterclassifier-optional) on a `stage_router` | Only the turns the signals leave undecided; everything else stays signal-driven |
+| [`type = "llm_classifier"`](/reference/configuration/#type--llm_classifier) | The whole turn — a solve probability between two tiers in `mode = "capability"`, or a model group named by your own prompt and schema in `mode = "custom"` |
+| [`type = "composite"`](/reference/configuration/#type--composite) | The tier a stage router falls open to, leaving its scoring untouched |
+| [`[models.subagents]` with `type = "llm_classifier"`](/reference/configuration/#subagents-type--llm_classifier) | Where a delegated child goes, decided once per `(session, agent)` |
+
+All four recover the accuracy a judge buys — a real part of what the upstream
+classifier-assisted configurations measured — and pay for it in latency and in
+the judge target's own pool quota. A `classify_trigger` key decides how often
+that cost is paid: judge every turn, judge each new human user turn and hold the
+verdict across the tool calls between them, or judge once per session. The judge
+is consulted only after the request has been admitted, never on a `count_tokens`
+probe, and never more than `max_judge_calls` times for one `(session, agent)`.
+Every judge failure — a timeout, a `400`, an unparseable verdict — resolves to
+the algorithm's own default rather than failing the request, and exactly one
+judge call is made per consulted turn.
+
+### Two judges read the finished turn
+
+Every shape above decides where a turn goes before the turn runs. Two more
+decide afterwards.
+[`mode = "escalation"`](/reference/configuration/#mode--escalation) serves a
+weak target's turn and has a judge rule on the completed work; after
+`confirmations` consecutive escalate verdicts it latches the session onto a
+strong target. [`type = "advisor"`](/reference/configuration/#type--advisor) has
+a stronger reviewer approve an executor's terminal turn or send it back to redo
+the work.
+
+Both judge a turn that already exists, so shunt holds it. The upstream response
+is buffered, judged, and only then replayed to the client — byte for byte,
+under the id the client asked for, in the streaming or non-streaming mode it
+asked for. That is the one exception to shunt's rule against buffering a
+stream, and it covers only the turns these two entries gate. No other route
+changes.
+
+Holding the turn is what keeps upstream's design inside shunt's post-2xx
+no-replay rule. No response header is committed until the replay starts, so a
+discarded turn — replaced by the strong target, or sent back for REDO — was
+never seen by the client. The cost is latency: on a held turn the first byte
+arrives when the whole turn is done, and escalation adds a judge call per turn
+until it latches. The
+[configuration reference](/reference/configuration/#buffered-turns-escalation-and-advisor)
+lists the route sources and what happens when a held turn fails.
 
 ### The routed target is an ordinary model id
 
@@ -325,9 +422,10 @@ restoration keep working.
 
 ### Inert unless you ask for it
 
-Absent a `[models.stage_router]` table the router arm is a single
+Absent a `[models.router]` table the router arm is a single
 `Option` check on a config field existing deployments do not have. Nothing
-about the routing path changes.
+about the routing path changes — and the check costs the same whichever `type`
+the routed entries declare.
 
 ## What the integration cost
 
@@ -350,6 +448,10 @@ lock stayed at 445, because libsy's new direct dependencies there (`http`,
 `regex`, `uuid`) were already in shunt's tree. The linked-or-not result holds on
 the new pin too: the release binary still carries zero `jsonschema` strings and
 zero `num-bigint` symbols.
+
+Taking `switchyard-translation` for the judge boundary added three lock entries:
+the crate itself plus `async-stream` and `async-stream-impl`.
+`switchyard-protocol` was already in the tree as libsy's own dependency.
 
 ## Attribution
 

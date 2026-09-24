@@ -39,7 +39,7 @@ use super::auth::{
     diagnostic_body, write_stored, StoredAuth, TokenResponse, AUTH_URL, CALLBACK_PATH,
     CALLBACK_PORT, CLIENT_ID, CLIENT_SECRET, SCOPES, TOKEN_URL, USERINFO_URL,
 };
-use super::default_antigravity_auth_path;
+use super::{default_antigravity_auth_path, store};
 
 /// Bound on draining a rejected userinfo response body for the error message
 /// below. Separate from [`USERINFO_REQUEST_TIMEOUT`] because it bounds only
@@ -57,7 +57,7 @@ const USERINFO_BODY_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// flow and is left with no credential on disk. Timing out turns that into
 /// the failure `run` already degrades gracefully: the credential is written
 /// with `email: None`.
-const USERINFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const USERINFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Bound on the token exchange request and on reading its response.
 ///
@@ -114,6 +114,37 @@ struct UserInfo {
 /// (`main.rs`'s `antigravity` login arm mirrors the `cursor` one) since login
 /// must not require a fully valid gateway config.
 pub async fn run(base_url: &str) -> anyhow::Result<()> {
+    let stored = run_oauth(base_url).await?;
+    let path = default_antigravity_auth_path();
+    persist_stored(&path, &stored).await?;
+    report_login(&stored, &path);
+    Ok(())
+}
+
+/// `shunt login antigravity --name <account-name>`: the same OAuth flow as
+/// [`run`], persisted as a named account file (see [`super::store`]) so the
+/// account can be referenced from an Antigravity account pool. The singleton
+/// credential file is never written here.
+pub async fn run_named(base_url: &str, name: &str) -> anyhow::Result<()> {
+    store::validate_account_name(name)?;
+    let stored = run_oauth(base_url).await?;
+    let path = store::store_oauth_tokens(
+        name,
+        &stored.access_token,
+        &stored.refresh_token,
+        stored.expiry_date,
+        stored.email.as_deref(),
+        stored.project_id.as_deref(),
+    )
+    .with_context(|| format!("failed to write Antigravity credentials for account {name:?}"))?;
+    report_login(&stored, &path);
+    Ok(())
+}
+
+/// The shared browser flow: bind the callback, run the PKCE exchange, resolve
+/// the email and (best-effort) the Code Assist project, and return the record
+/// without persisting it.
+async fn run_oauth(base_url: &str) -> anyhow::Result<StoredAuth> {
     let client = reqwest::Client::new();
     let PkceChallenge {
         verifier,
@@ -196,8 +227,8 @@ pub async fn run(base_url: &str) -> anyhow::Result<()> {
     .await;
 
     let path = default_antigravity_auth_path();
-    let store = super::auth::AntigravityAuthStore::new(path.clone(), client.clone(), base_url);
-    match store.discover_project(&stored.access_token).await {
+    let auth_store = super::auth::AntigravityAuthStore::new(path, client.clone(), base_url);
+    match auth_store.discover_project(&stored.access_token).await {
         Ok(project_id) => stored.project_id = Some(project_id),
         Err(error) => {
             // Persist the credential regardless: discovery is retried on the
@@ -210,8 +241,13 @@ pub async fn run(base_url: &str) -> anyhow::Result<()> {
             );
         }
     }
+    Ok(stored)
+}
 
-    let write_path = path.clone();
+/// Write a completed login record to the singleton credential file under the
+/// same file lock the background refresher serializes against.
+async fn persist_stored(path: &std::path::Path, stored: &StoredAuth) -> anyhow::Result<()> {
+    let write_path = path.to_path_buf();
     let to_write = stored.clone();
     tokio::task::spawn_blocking(move || write_stored(&write_path, &to_write))
         .await
@@ -222,15 +258,17 @@ pub async fn run(base_url: &str) -> anyhow::Result<()> {
                 path.display()
             )
         })?;
+    Ok(())
+}
 
-    match email {
+fn report_login(stored: &StoredAuth, path: &std::path::Path) {
+    match &stored.email {
         Some(email) => println!(
             "Login successful for {email}. Credentials saved to {}",
             path.display()
         ),
         None => println!("Login successful. Credentials saved to {}", path.display()),
     }
-    Ok(())
 }
 
 pub(crate) fn build_auth_url(challenge: &str, state: &str, redirect_uri: &str) -> String {
@@ -250,7 +288,7 @@ pub(crate) fn build_auth_url(challenge: &str, state: &str, redirect_uri: &str) -
     url.to_string()
 }
 
-async fn exchange_code(
+pub(crate) async fn exchange_code(
     // The injected client follows redirects freely; this POST carries the
     // PKCE verifier and receives the refresh_token, so it goes through the
     // redirect-hardened `token_refresh_client()` instead — a permitted token
@@ -293,7 +331,7 @@ async fn exchange_code(
         .context("invalid JSON in the Antigravity token response")
 }
 
-async fn fetch_email(
+pub(crate) async fn fetch_email(
     client: &reqwest::Client,
     userinfo_url: &str,
     access_token: &str,
@@ -330,7 +368,7 @@ async fn fetch_email(
         .filter(|email| !email.is_empty()))
 }
 
-fn expiry_millis(expires_in: u64) -> Option<u64> {
+pub(crate) fn expiry_millis(expires_in: u64) -> Option<u64> {
     std::time::SystemTime::now()
         .checked_add(Duration::from_secs(expires_in))
         .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())

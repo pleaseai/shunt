@@ -13,6 +13,7 @@ use crate::{error::ShuntError, model::responses::anthropic_error_type, server::A
 
 pub(crate) mod chain_stream;
 pub(crate) mod failover;
+pub(crate) mod safeguards;
 
 pub async fn post(
     State(state): State<AppState>,
@@ -93,6 +94,63 @@ pub(crate) struct ForwardError {
     response: Box<axum::response::Response>,
 }
 
+impl ForwardError {
+    /// Build one from a message and an already-rendered response.
+    pub(crate) fn new(message: String, response: Box<axum::response::Response>) -> Self {
+        Self { message, response }
+    }
+
+    /// The status the client would have been answered with. Read by
+    /// `routing::serve`, which turns a failed internal call into a typed libsy
+    /// client error rather than relaying it.
+    pub(crate) fn status(&self) -> StatusCode {
+        self.response.status()
+    }
+
+    /// The gateway-side message, for the same conversion.
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// The byte cap an adapter refused the upstream body against, when that is
+    /// why this call failed.
+    ///
+    /// Read by `routing::serve`, which must report `oversized` rather than
+    /// `upstream_error` for a reply its own cap stopped — the label set on
+    /// `shunt.router.judge_calls` is closed, and folding the two together would
+    /// name the wrong operator key.
+    pub(crate) fn body_too_large(&self) -> Option<crate::adapters::UpstreamBodyTooLarge> {
+        self.response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyTooLarge>()
+            .copied()
+    }
+
+    /// Whether an adapter's whole-body read went silent past the call's idle
+    /// gap.
+    ///
+    /// Read by `routing::serve`, which cuts a gated turn at its idle bound
+    /// whether the stall happened inside the adapter or in its own collector.
+    pub(crate) fn body_idle(&self) -> bool {
+        self.response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyIdle>()
+            .is_some()
+    }
+
+    /// Whether an adapter's whole-body read of a successful reply broke after
+    /// the headers were committed.
+    ///
+    /// Read by `routing::serve`, where such a turn ended before its terminal
+    /// marker and is cut rather than reported as the upstream's own failure.
+    pub(crate) fn body_broke(&self) -> bool {
+        self.response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyBroke>()
+            .is_some()
+    }
+}
+
 impl IntoResponse for ForwardError {
     fn into_response(self) -> axum::response::Response {
         *self.response
@@ -103,7 +161,7 @@ pub(crate) fn is_count_tokens(uri: &Uri) -> bool {
     uri.path().ends_with("/count_tokens")
 }
 
-fn normalize_request_body(body: &mut crate::request::RequestBody) {
+pub(crate) fn normalize_request_body(body: &mut crate::request::RequestBody) {
     // Refresh the raw passthrough bytes only when a block was actually dropped.
     // The common case keeps the client's exact bytes and the already-parsed tree.
     body.mutate(normalize_empty_text_blocks);

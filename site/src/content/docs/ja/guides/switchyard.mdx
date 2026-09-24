@@ -20,18 +20,21 @@ shunt の[ステージルーター](/ja/guides/stage-router/)は独自のスコ�
 
 Switchyard はゲートウェイ一式を提供します。プロキシサーバー、プロバイダー中立の
 プロトコル、リクエスト／レスポンス変換、LLM ジャッジ分類器、エスカレーション、
-サブエージェントルーティング。shunt はすでにゲートウェイなので、スコアラー 1 つだけを
-取り込み、残りは置いてきます。
+サブエージェントルーティング。shunt はすでにゲートウェイなので、スコアラーと、オプトイン
+のテーブルの背後にあるジャッジ系のアルゴリズム、その境界でだけ使う翻訳コーデックを取り込み、
+サーバーは置いてきます。
 
 | Switchyard コンポーネント | shunt では |
 | :-- | :-- |
 | `switchyard-libsy` ステージスコアラー | **使用** — アップストリーム `main` のレビュー済みリビジョンに固定 |
 | `switchyard-protocol` | libsy の依存として入るのみ。shunt は `Request` を組み立てない |
-| `switchyard-translation` | **不使用** — shunt の `src/model/responses_request.rs` と真正面から重複 |
+| `switchyard-translation` | **ルーティング境界でのみ使用** — ジャッジのリクエストとその応答における中立 ⇄ Anthropic の変換。Anthropic → Responses のワイヤ変換は引き続き shunt 自身の `src/model/responses_request.rs` |
 | `switchyard-server` | **不使用** — shunt 自身がサーバー |
-| LLM 分類器／ジャッジ | **不使用** — [後述](#ホットパスに-llm-ジャッジを置かない)を参照 |
-| エスカレーションルーティング（ターン途中） | **不使用** — shunt の post-2xx 無再生ルールと衝突 |
-| ハンドオフノート、アドバイザーゲート、サブエージェントルーティング | **不使用** |
+| LLM 分類器／ジャッジ | **エントリ単位のオプトイン** — `stage_router` の [`[models.router.classifier]`](/ja/guides/stage-router/#ジャッジのフォールバック)。シグナルが決着させられなかったターンでのみ呼ばれる。[後述](#llm-ジャッジはエントリ単位のオプトイン)を参照 |
+| エスカレーションルーティング | **エントリ単位のオプトイン** — [`mode = "escalation"`](/ja/reference/configuration/#mode--escalation)。ジャッジが判断するまで効率側のターンを留め置くので、強力なターゲットへの切り替えはヘッダーを送る前に起きる。[後述](#完成したターンを読む-2-つのジャッジ)を参照 |
+| ハンドオフノート | **使用** — [`[models.router.handoff_notes]`](/ja/reference/configuration/#modelsrouterhandoff_notesオプション) |
+| アドバイザーゲート | **エントリ単位のオプトイン** — [`type = "advisor"`](/ja/reference/configuration/#type--advisor)。レビューが終わるまで実行モデルのターンを留め置く |
+| サブエージェントルーティング | **使用** — [`[models.subagents]`](/ja/reference/configuration/#modelssubagentsオプション) |
 
 結合点は関数呼び出し 1 つだけです。shunt はパース済みの Anthropic Messages ボディから
 libsy の `ToolSignals` 構造体を直接埋め、`pick_tier` を呼びます。その構造体の全
@@ -46,6 +49,26 @@ advisor gate、composite ルーティング、サブエージェントルーテ�
 handoff note — は `main` にしかありません。API を確認するときは、レジストリのソース
 でも動き続ける GitHub のデフォルトブランチでもなく、cargo が解決したチェックアウトを
 読んでください。
+
+### 学習済みプリフィルルーター
+
+アップストリームからもうひとつ、条件つきで取り込んでいるものがあります。直近のユーザー
+ターンを採点してターゲットを選ぶ学習済み分類器 `prefill_router` です。これは既定で無効な
+**`prefill-router` カーゴフィーチャー**を有効にしてビルドしたバイナリでのみ使えます。
+
+理由はそのクレートの中身です。アップストリームの `crates/prefill-router` は PyO3 で
+Python を埋め込むため、ビルドは libpython をリンクし、実行には `torch`、`transformers`、
+`numpy`、`accelerate` を import できる環境と、ディスク上のルーターチェックポイントが必要
+です。アップストリームも同じ理由でカーゴフィーチャーの後ろに置いています。shunt の
+リリースワークフローはこのフィーチャーを有効にしないので、**ビルド済みのリリース
+バイナリにも Homebrew formula にも入っていません。** ソースから
+`cargo build --release --features prefill-router` でビルドするのが唯一の方法で、
+フィーチャーのないバイナリはこの type を指定した設定をロードできず、そのことを伝える
+エラーを出します。
+
+キー、前提条件、ルートソースは設定リファレンスの
+[`type = "prefill_router"`](/ja/reference/configuration/#type--prefill_router) を
+参照してください。
 
 ## ベンチマーク結果
 
@@ -295,17 +318,87 @@ hard ではなく critical として採点されます。
 そのフィンガープリントは設定構造体をドット参照ではなく分解束縛で読むため、あとから
 キーが増えたときは、古いピンが黙って生き延びる代わりにコンパイルが壊れます。
 
-### ホットパスに LLM ジャッジを置かない
+### 委譲された作業は別のターゲットへ送れる
+
+Switchyard の `subagents` オーバーレイは `[models.subagents]` として引き継がれますが、
+置き場所はルーターテーブルの中ではなくエントリ側です — 固定エントリにはルーター
+テーブルが存在せず、アップストリームの「passthrough with subagents」はここではまさに
+固定エントリにあたるからです。その id を要求した `Task` の子、フックエージェント、
+ワークフローサブエージェントは、オーバーレイの `target`、あるいは自身の
+`x-claude-code-agent-type` に一致する `by_type` のエントリへ振り分けられます。親自身の
+ターンがこのテーブルを見ることはありません。
+
+```toml
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6" }
+```
+
+shunt が足しているのは「委譲された」の読み方です。アップストリームは自分の
+`claude_lineage` ヘッダーだけを見ますが、shunt はまず `x-claude-code-request-class` を
+読み（`subagent` と `workflow` は委譲、`main` はエージェント id が一緒に届いていても委譲
+ではなく、`compaction` と `auxiliary` はハーネスの保守作業なのでオーバーレイを使うことは
+ありません）、クラスが送られてこないときだけエージェント id にフォールバックします —
+そしてデフォルトのゲートウェイデプロイの背後では、クラスは送られてきません。`by_type`
+のキーはヘッダーのリテラル値そのもので、大文字小文字も含めて一致させます。プロジェクト
+エージェントは名前を伏せたまま `custom` として届きます。オーバーレイは状態を持ちません。
+振り分けられた子は採点されず、ピン留めもされず、親の dwell を進めることもありません。
+そのターンは `x-gateway-route-source` に `subagent_type` または `subagent` を報告します。
+
+### LLM ジャッジはエントリ単位のオプトイン
 
 シグナルが決め手を欠くとき、libsy は
-`PickOutcome::ConsultClassifier { default_tier }` を返します。shunt はそれを答えとして
-扱い、`default_tier` を採ります。ジャッジを断るのは API と戦うことではなく、API が
-文書化した fall-open の経路*そのもの*です。
+`PickOutcome::ConsultClassifier { default_tier }` を返します。classifier テーブルを
+持たない `stage_router` はそれを答えとして扱い、`default_tier` を採ります。だからその
+ホットパスにジャッジはありません — 2 回目のモデル呼び出しも、2 つ目の資格情報も、
+ルーターがもっとも自信のないターンで増えるレイテンシもありません。fall-open するのは
+API と戦うことではなく、API が文書化した fall-open の経路*そのもの*です。これが既定で
+あり、pure レーンのエントリは今もすべてこう振る舞います。
 
-得られるのは、2 回目のモデル呼び出しがないこと、2 つ目の資格情報がないこと、そして
-ルーターがもっとも自信のないターンでレイテンシが増えないことです。支払うのは、
-そうしたターンでジャッジが取り戻したはずの正解率であり、これはアップストリームの
-分類器併用構成が測ったものの実質的な一部です。
+エントリ単位で opt-in し直すことはできます。形は 4 つあります。
+
+| 形 | ジャッジが決めるもの |
+| :-- | :-- |
+| `stage_router` に置く [`[models.router.classifier]`](/ja/reference/configuration/#modelsrouterclassifierオプション) | シグナルで決着しなかったターンだけ。ほかは従来どおりシグナルが決めます |
+| [`type = "llm_classifier"`](/ja/reference/configuration/#type--llm_classifier) | ターン全体。`mode = "capability"` は解決確率で 2 つのティアから、`mode = "custom"` は自分で書いたプロンプトとスキーマが指すモデルグループから選びます |
+| [`type = "composite"`](/ja/reference/configuration/#type--composite) | ステージルーターが決着しなかったときに落ちるティア。採点自体には触れません |
+| [`type = "llm_classifier"` を使う `[models.subagents]`](/ja/reference/configuration/#subagents-type--llm_classifier) | 委譲された子の宛先。(セッション, エージェント) ごとに一度だけ決めます |
+
+4 つとも、ジャッジが取り戻す正解率を取り戻します — アップストリームの分類器併用構成が
+測ったものの実質的な一部です — 代わりにレイテンシと、ジャッジのターゲット自身のプールの
+クォータを支払います。そのコストをどれだけ頻繁に払うかは `classify_trigger` キーが
+決めます。毎ターン判定する、人間のユーザーターンごとに判定してその間のツール呼び出しでは
+判定を保持する、あるいはセッションに一度だけ判定する、の 3 つです。ジャッジが呼ばれるのは
+リクエストが認証を通ったあとだけで、`count_tokens` のプローブでは呼ばれず、1 つの
+(セッション, エージェント) につき `max_judge_calls` を超えて呼ばれることもありません。
+ジャッジの失敗は — タイムアウトでも `400` でもパースできない応答でも — リクエストを
+失敗させず、アルゴリズム自身の既定値に戻ります。そして判定するターン 1 回につき、
+ジャッジ呼び出しもちょうど 1 回です。
+
+### 完成したターンを読む 2 つのジャッジ
+
+ここまでの形はどれも、ターンが実行される前にその行き先を決めます。実行されたあとで決める
+形もさらに 2 つあります。[`mode = "escalation"`](/ja/reference/configuration/#mode--escalation)
+は効率側のターゲットのターンを提供しつつ、完成した作業をジャッジに判定させ、昇格の判定が
+`confirmations` 回続くとセッションを強力なターゲットに固定します。
+[`type = "advisor"`](/ja/reference/configuration/#type--advisor) は、より強力なレビュアーに
+実行モデルの締めくくりのターンを承認させるか、作業のやり直しを指示させます。
+
+どちらもすでに存在するターンを判定するので、shunt はそのターンを留め置きます。
+アップストリームの応答をバッファリングして判定し、それからはじめてクライアントに再生します
+— バイトどおりに、クライアントが要求した id で、クライアントが要求したストリーミングまたは
+非ストリーミングのモードで。これはストリームをバッファリングしないという shunt のルールの
+唯一の例外で、この 2 つのエントリがゲートするターンにだけ当てはまります。ほかのルートは
+変わりません。
+
+ターンを留め置くことで、アップストリームの設計が shunt の post-2xx 無再生ルールの内側に
+収まります。再生が始まるまで応答ヘッダーを確定しないので、捨てられたターン — 強力な
+ターゲットに置き換えられたものも、REDO で差し戻されたものも — をクライアントが見ることは
+ありません。代わりに支払うのはレイテンシです。留め置くターンでは最初のバイトがターン全体の
+完了後に届き、エスカレーションは固定されるまでターンごとにジャッジ呼び出しを 1 回加えます。
+ルートソースと、留め置いたターンが失敗したときの動作は
+[設定リファレンス](/ja/reference/configuration/#留め置くターン-escalation-と-advisor)にまとめてあります。
 
 ### ルーティング先は普通のモデル id
 
@@ -323,9 +416,10 @@ hard ではなく critical として採点されます。
 
 ### 頼まない限り不活性
 
-`[models.stage_router]` テーブルがなければ、ルーターの分岐は既存のデプロイが持って
+`[models.router]` テーブルがなければ、ルーターの分岐は既存のデプロイが持って
 いない設定フィールドに対する `Option` チェック 1 つです。ルーティング経路について
-変わるものはありません。
+変わるものはなく、ルーター付きのエントリがどの `type` を宣言していてもこのチェックの
+コストは同じです。
 
 ## 統合のコスト
 
@@ -347,6 +441,10 @@ hard ではなく critical として採点されます。
 445 のままです。向こうで libsy が新たに直接依存する `http`、`regex`、`uuid` は、すでに
 shunt のツリーにありました。リンクされるかどうかの結果も新しいピンでそのままです。
 リリースバイナリの `jsonschema` 文字列は 0 件、`num-bigint` シンボルも 0 件です。
+
+ジャッジの境界のために `switchyard-translation` を取り込んだことで、ロックのエントリは
+3 つ増えました。クレイト本体と `async-stream`、`async-stream-impl` です。
+`switchyard-protocol` は libsy 自身の依存としてすでにツリーにありました。
 
 ## クレジット
 

@@ -6,7 +6,7 @@ use crate::server::AppState;
 #[derive(Debug, Serialize)]
 pub struct RoutesResponse {
     pub data: Vec<RouteEntry>,
-    /// The `[[models]]` entries carrying a `[models.stage_router]` table.
+    /// The `[[models]]` entries carrying a `[models.router]` table.
     ///
     /// Omitted entirely when none is configured, so a deployment without a
     /// router serves the byte-identical response it served before routers
@@ -15,26 +15,48 @@ pub struct RoutesResponse {
     pub routers: Vec<RouterEntry>,
 }
 
-/// One configured stage router, as `/routes` reports it.
+/// One configured router, as `/routes` reports it.
 ///
-/// The tunables (`confidence_threshold`, dwell, TTL) are deliberately absent:
-/// this endpoint answers "where can a request go", and a client that needs the
-/// calibration reads the config. What it does report is the pair of ids the
+/// The tunables (`confidence_threshold`, dwell, TTL, weights) are deliberately
+/// absent: this endpoint answers "where can a request go", and a client that
+/// needs the calibration reads the config. What it does report is every id the
 /// router chooses between, because nothing else in this response is required
 /// to name them: a router's targets need not have `[[routes]]` entries of
 /// their own, though one that does still appears in `data` as itself.
+///
+/// The three stage fields stay `Option` with `skip_serializing_if` so a
+/// `random` or `noop` entry does not report a tier pair it does not have —
+/// a reader that finds `capable_target` present knows it is looking at a
+/// two-tier algorithm.
 #[derive(Debug, Serialize)]
 pub struct RouterEntry {
     /// The advertised id clients request.
     pub model: String,
-    pub capable_target: String,
-    pub efficient_target: String,
+    /// The `[models.router] type` that decides this id.
+    pub algorithm: String,
+    /// Every target the router can name, in declared order. `[capable,
+    /// efficient]` for a stage or auto entry, the configured list for a
+    /// `random` one, and empty for `noop`, which answers as itself.
+    pub targets: Vec<String>,
+    /// Every id this router *consults* and never serves — today the
+    /// `[models.router.classifier]` judge (ADR-0005 §7). Separate from
+    /// `targets` because a reader resolving "where can a request go" must not
+    /// find a judge there: no client turn is ever routed to one. Omitted
+    /// entirely when there is none, so an entry with no judge answers exactly
+    /// as it did before the key existed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub judges: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capable_target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub efficient_target: Option<String>,
     /// The tier `picker` falls back to when no signal decides a turn. A
     /// body-less caller resolving this id gets it for that reason, which is
     /// what makes it worth naming. It is not "where a session starts": a first
     /// turn that already carries decisive tool-result history is scored like
     /// any other and can land on the opposite tier.
-    pub default_tier: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_tier: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,200 +125,42 @@ pub(crate) fn snapshot(state: &AppState) -> RoutesResponse {
         .models
         .iter()
         .filter_map(|model| {
-            let router = model.stage_router.as_ref()?;
+            let router = model.router.as_ref()?;
+            let stage = router.stage();
             Some(RouterEntry {
                 model: model.id.clone(),
-                capable_target: router.capable_target.clone(),
-                efficient_target: router.efficient_target.clone(),
-                default_tier: match router.picker {
+                algorithm: router.algorithm().to_string(),
+                targets: deduplicated(router.targets()),
+                judges: deduplicated(router.judges()),
+                capable_target: stage.map(|stage| stage.capable_target.clone()),
+                efficient_target: stage.map(|stage| stage.efficient_target.clone()),
+                default_tier: stage.map(|stage| match stage.picker {
                     crate::config::StageRouterPicker::EfficientFirst => "efficient",
                     crate::config::StageRouterPicker::CapableFirst => "capable",
-                },
+                }),
             })
         })
         .collect();
     RoutesResponse { data, routers }
 }
 
-#[cfg(test)]
-mod tests {
-    use axum::extract::State;
-    use serde_json::json;
-
-    use crate::{
-        config::{ModelConfig, RouteConfig},
-        server::{self, AppState},
-    };
-
-    use super::get;
-
-    #[tokio::test]
-    async fn returns_configured_routes_with_optional_fields() {
-        let config = crate::config::Config {
-            routes: vec![
-                RouteConfig {
-                    model: "gpt-5.6-luna".to_string(),
-                    provider: "codex".to_string(),
-                    upstream_model: Some("gpt-5.6-luna".to_string()),
-                    effort: Some("high".to_string()),
-                    service_tier: Some("priority".to_string()),
-                },
-                RouteConfig {
-                    model: "gpt-5.2".to_string(),
-                    provider: "openai".to_string(),
-                    upstream_model: None,
-                    effort: None,
-                    service_tier: None,
-                },
-            ],
-            ..crate::config::Config::default()
-        };
-        let state = AppState::new(config, reqwest::Client::new()).unwrap();
-
-        let response = get(State(state)).await;
-        let body = serde_json::to_value(response.0).unwrap();
-
-        assert_eq!(
-            body,
-            json!({
-                "data": [
-                    {"model": "gpt-5.6-luna", "provider": "codex", "upstream_model": "gpt-5.6-luna", "effort": "high", "service_tier": "priority"},
-                    {"model": "gpt-5.2", "provider": "openai"}
-                ]
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn returns_empty_data_when_routes_are_unconfigured() {
-        let state =
-            AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
-
-        let response = get(State(state)).await;
-        let body = serde_json::to_value(response.0).unwrap();
-
-        assert_eq!(body, json!({"data": []}));
-    }
-
-    fn stage_router_model(id: &str, picker: crate::config::StageRouterPicker) -> ModelConfig {
-        ModelConfig {
-            id: id.to_string(),
-            display_name: Some("Auto".to_string()),
-            upstream_model: None,
-            stage_router: Some(crate::config::StageRouterConfig {
-                capable_target: "claude-opus-4-8".to_string(),
-                efficient_target: "claude-sonnet-4-6".to_string(),
-                picker,
-                confidence_threshold: crate::config::DEFAULT_CONFIDENCE_THRESHOLD,
-                recent_turn_window: 3,
-                min_dwell_turns: 3,
-                deescalate_threshold: None,
-                session_ttl_seconds: 3600,
-            }),
+/// The ids in declared order, with a repeat dropped.
+///
+/// A custom `llm_classifier` names the same model id under several groups —
+/// upstream's own example lists every answer model in `any` *and* in the group
+/// that selects it — so the raw enumeration repeats. `/routes` answers "where
+/// can a request go", and the same destination twice is not two places.
+/// Order is the declared one rather than sorted, because that is the order the
+/// operator wrote and the one every other algorithm's list already uses.
+fn deduplicated(ids: Vec<&str>) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::with_capacity(ids.len());
+    for id in ids {
+        if !seen.iter().any(|kept| kept == id) {
+            seen.push(id.to_string());
         }
     }
-
-    /// A configured router is reported with both destinations, because a
-    /// router's targets need not have `[[routes]]` entries of their own — so
-    /// `data` alone would not name them.
-    #[tokio::test]
-    async fn returns_configured_stage_routers() {
-        let config = crate::config::Config {
-            models: vec![
-                stage_router_model(
-                    "claude-auto",
-                    crate::config::StageRouterPicker::EfficientFirst,
-                ),
-                ModelConfig {
-                    id: "claude-plain".to_string(),
-                    display_name: None,
-                    upstream_model: None,
-                    stage_router: None,
-                },
-            ],
-            ..crate::config::Config::default()
-        };
-        let state = AppState::new(config, reqwest::Client::new()).unwrap();
-
-        let response = get(State(state)).await;
-        let body = serde_json::to_value(response.0).unwrap();
-
-        assert_eq!(
-            body,
-            json!({
-                "data": [],
-                "routers": [{
-                    "model": "claude-auto",
-                    "capable_target": "claude-opus-4-8",
-                    "efficient_target": "claude-sonnet-4-6",
-                    "default_tier": "efficient"
-                }]
-            }),
-            "a `[[models]]` entry without a router must not appear in `routers`"
-        );
-    }
-
-    /// `default_tier` tracks `picker`, so it cannot be read as a constant.
-    #[tokio::test]
-    async fn default_tier_follows_the_configured_picker() {
-        let config = crate::config::Config {
-            models: vec![stage_router_model(
-                "claude-auto",
-                crate::config::StageRouterPicker::CapableFirst,
-            )],
-            ..crate::config::Config::default()
-        };
-        let state = AppState::new(config, reqwest::Client::new()).unwrap();
-
-        let body = serde_json::to_value(get(State(state)).await.0).unwrap();
-        assert_eq!(body["routers"][0]["default_tier"], "capable");
-    }
-
-    #[test]
-    fn router_includes_get_routes_route() {
-        let (_router, _shared, _state) =
-            server::build_router(crate::config::Config::default()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn explicit_default_service_tier_is_distinguishable_from_unset() {
-        // Regression test for issue #301: an explicit route-level
-        // service_tier = "default" override must serialize distinctly from a
-        // route that never configured service_tier at all, so operators can
-        // tell "explicitly disabled" from "never configured" via discovery.
-        let config = crate::config::Config {
-            routes: vec![
-                RouteConfig {
-                    model: "gpt-5.6-sol".to_string(),
-                    provider: "codex".to_string(),
-                    upstream_model: None,
-                    effort: None,
-                    service_tier: Some("default".to_string()),
-                },
-                RouteConfig {
-                    model: "gpt-5.2".to_string(),
-                    provider: "openai".to_string(),
-                    upstream_model: None,
-                    effort: None,
-                    service_tier: None,
-                },
-            ],
-            ..crate::config::Config::default()
-        };
-        let config = config.validate().unwrap();
-        let state = AppState::new(config, reqwest::Client::new()).unwrap();
-
-        let response = get(State(state)).await;
-        let body = serde_json::to_value(response.0).unwrap();
-
-        assert_eq!(
-            body,
-            json!({
-                "data": [
-                    {"model": "gpt-5.6-sol", "provider": "codex", "service_tier": "default"},
-                    {"model": "gpt-5.2", "provider": "openai"}
-                ]
-            })
-        );
-    }
+    seen
 }
+
+#[cfg(test)]
+mod tests;

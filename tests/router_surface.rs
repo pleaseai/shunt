@@ -85,7 +85,7 @@ const BASE_PATHS: [(&str, &str); 7] = [
 /// method sets are unchanged by the move — the same handlers are registered at
 /// new paths — and `every_registered_method_set_matches_the_inventory` proves it
 /// against the live router rather than taking it on trust.
-const ADMIN_PATHS: [(&str, &str); 19] = [
+const ADMIN_PATHS: [(&str, &str); 23] = [
     ("/admin", "GET,HEAD"),
     // The same handler under the spelling a browser or proxy produces by
     // appending a slash. A `{*path}` segment cannot match the empty string, so
@@ -109,6 +109,10 @@ const ADMIN_PATHS: [(&str, &str); 19] = [
     ("/admin/api/accounts/codex", "GET,HEAD,POST"),
     ("/admin/api/accounts/codex/{name}/complete", "POST"),
     ("/admin/api/accounts/codex/{name}", "DELETE"),
+    ("/admin/api/accounts/antigravity", "GET,HEAD,POST"),
+    ("/admin/api/accounts/antigravity/{name}/complete", "POST"),
+    ("/admin/api/accounts/antigravity/{name}/refresh", "POST"),
+    ("/admin/api/accounts/antigravity/{name}", "DELETE"),
 ];
 
 /// The five routes `--features ui` adds inside the `/admin` mount, spelled as
@@ -681,14 +685,14 @@ fn the_source_scan_finds_every_literal_registration() {
         .iter()
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
-    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 19 admin plus
+    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 23 admin plus
     // the 5 UI routes, 7 gateway (its 3 OTLP paths come from `Signal::path()`),
     // 2 spend. The UI five are counted unconditionally: this scan reads source
     // text, and `#[cfg(feature = "ui")]` does not remove the `.route("…"`
     // literals from it.
     assert_eq!(
-        found, 42,
-        "the literal-path scan found {found} registrations, not 42; either a route was added or \
+        found, 46,
+        "the literal-path scan found {found} registrations, not 46; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }

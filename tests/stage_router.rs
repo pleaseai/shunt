@@ -1,4 +1,4 @@
-//! End-to-end coverage for the opt-in `[models.stage_router]`.
+//! End-to-end coverage for the opt-in `[models.router]` stage-router type.
 //!
 //! The unit tests under `src/routing/stage/` pin the scorer wiring and the
 //! hysteresis rules in isolation. These pin what a real request actually
@@ -22,8 +22,8 @@ use serde_json::{json, Value};
 use shunt::{
     config::{
         ApiKeyHeader, AuthMap, AuthMode, Config, CountTokens, InboundAuthConfig, ModelConfig,
-        ProviderKind, RetryConfig, StageRouterConfig, StageRouterPicker, UpstreamAuth,
-        UpstreamConfig,
+        ProviderKind, RetryConfig, RouterConfig, StageRouterConfig, StageRouterPicker,
+        UpstreamAuth, UpstreamConfig,
     },
     server,
 };
@@ -118,7 +118,9 @@ fn tier_alias(id: &str, upstream: &str, upstream_model: &str) -> ModelConfig {
             upstream.to_string(),
             upstream_model.to_string(),
         )])),
+        router: None,
         stage_router: None,
+        subagents: None,
     }
 }
 
@@ -143,7 +145,7 @@ fn router_config_with(
             id: ROUTER_ID.to_string(),
             display_name: None,
             upstream_model: None,
-            stage_router: Some(StageRouterConfig {
+            router: Some(RouterConfig::StageRouter(StageRouterConfig {
                 capable_target: "capable-alias".to_string(),
                 efficient_target: "efficient-alias".to_string(),
                 picker: StageRouterPicker::EfficientFirst,
@@ -154,7 +156,19 @@ fn router_config_with(
                 min_dwell_turns: 2,
                 deescalate_threshold: None,
                 session_ttl_seconds: 3600,
-            }),
+                capable_hold_turns: 0,
+                tool_semantics: Default::default(),
+                handoff_notes: None,
+                classifier: None,
+                judge_timeout_ms: shunt::config::DEFAULT_JUDGE_TIMEOUT_MS,
+                judge_max_response_bytes: shunt::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+                gated_max_bytes: shunt::config::DEFAULT_GATED_MAX_BYTES,
+                gated_idle_ms: shunt::config::DEFAULT_GATED_IDLE_MS,
+                gated_max_duration_ms: shunt::config::DEFAULT_GATED_MAX_DURATION_MS,
+                max_judge_calls: shunt::config::DEFAULT_MAX_JUDGE_CALLS,
+            })),
+            stage_router: None,
+            subagents: None,
         },
         tier_alias("capable-alias", "capable", CAPABLE_UPSTREAM_MODEL),
         tier_alias("efficient-alias", "efficient", EFFICIENT_UPSTREAM_MODEL),
@@ -484,7 +498,7 @@ async fn a_routed_response_names_the_tier_and_the_reason() {
     assert_eq!(response.headers()["x-gateway-route-source"], "override");
 }
 
-/// A model id with no `[models.stage_router]` table must not gain the headers:
+/// A model id with no `[models.router]` table must not gain the headers:
 /// a client has to be able to tell "routed to a tier" from "not router-routed".
 ///
 /// Non-vacuity: stamp the pair unconditionally — with an empty value, say —

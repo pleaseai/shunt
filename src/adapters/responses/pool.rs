@@ -946,10 +946,11 @@ pub(super) async fn forward_chatgpt_oauth(
                 &state,
                 &route,
                 account_pool_key.as_deref(),
+                session_id.as_deref(),
                 ForwardOptions {
                     upstream_body: upstream_body.clone(),
                     auth,
-                    turn,
+                    turn: turn.clone(),
                     codex_quota_account: Some(account.clone()),
                     // Each account attempt gets its own cheap Arc clone;
                     // forward_websocket spawns its own blocking encode from it,
@@ -1062,6 +1063,7 @@ pub(super) async fn forward_chatgpt_oauth(
                         turn.client_wants_stream,
                         turn.relay(&route),
                         input_tokens_estimate,
+                        turn.response_bounds,
                     )
                     .await?;
                     let response = crate::adapters::with_admission(
@@ -1141,6 +1143,7 @@ pub(super) async fn forward_chatgpt_oauth(
                                 turn.client_wants_stream,
                                 turn.relay(&route),
                                 input_tokens_estimate,
+                                turn.response_bounds,
                             )
                             .await?;
                             let response = crate::adapters::with_admission(
@@ -1185,6 +1188,7 @@ async fn relay_success(
     client_wants_stream: bool,
     relay: RelayOptions,
     input_tokens_estimate: u64,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<axum::response::Response, AdapterError> {
     if client_wants_stream {
         let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
@@ -1195,7 +1199,7 @@ async fn relay_success(
             keepalive,
         ))
     } else {
-        json_response(upstream, relay).await
+        json_response(upstream, relay, input_tokens_estimate, bounds).await
     }
 }
 
@@ -1204,10 +1208,11 @@ async fn relay_success(
 /// out because the pool loop has two success arms (first attempt and
 /// refresh retry) that must consume the same handle without awaiting it
 /// twice — `JoinHandle` is not `Clone`, so `.take()` leaves a torn-down `None`
-/// behind for whichever arm does not run. Non-streaming turns never seed
-/// `message_start`, so `estimate_handle` is always `None` here already
-/// (`forward`'s gate only produces `estimate_input`, and thus a spawned
-/// handle, for streaming turns), which naturally yields `0` below.
+/// behind for whichever arm does not run. A non-streaming turn seeds no
+/// `message_start`, so `forward`'s gate spawns a handle for one only when it
+/// carries `stop_sequences` — there the estimate is what keeps a stopped turn's
+/// final JSON from reporting `input_tokens: 0` (issue #605). Without either, the
+/// handle is `None` and this naturally yields `0` below.
 async fn take_estimate(estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>) -> u64 {
     match estimate_handle.take() {
         // Bounded like `forward_http`: the committed `message_start` must not
@@ -1288,7 +1293,11 @@ pub(super) async fn admit_and_resolve(
 /// [`CodexAuthStore::get_valid_chatgpt`] using the credential path and keep that
 /// auth-layer guard through atomic writeback. On failure the account is cooled
 /// down for 5 minutes and logged, and `None` signals the caller to rotate to the
-/// next account.
+/// next account. A *terminal* failure — the provider rejected the stored refresh
+/// grant, or there is none to send — also marks the account `needs_relogin`:
+/// this is the dominant steady state for a dead account (once its access token
+/// expires, the refresh is rejected here rather than after a 401), and without
+/// the mark it cycles through the cooldown forever reported as `Live` (#616).
 pub(super) async fn resolve_or_cooldown(
     state: &AppState,
     route: &Route,
@@ -1303,10 +1312,18 @@ pub(super) async fn resolve_or_cooldown(
                 Duration::from_secs(5 * 60),
                 "auth",
             );
+            if error.is_terminal() {
+                state.accounts.mark_needs_relogin(
+                    &route.provider,
+                    account,
+                    accounts::ReloginCause::RefreshGrant,
+                );
+            }
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
-                error = %error.message,
+                error = %error.detail,
+                terminal = error.is_terminal(),
                 "failed to resolve ChatGPT OAuth account"
             );
             None
@@ -1341,6 +1358,14 @@ pub(super) async fn force_refresh_or_cooldown(
             account,
             Duration::from_secs(5 * 60),
             "auth",
+        );
+        // A static credential cannot be refreshed, so a 401 here means it is
+        // expired or revoked — terminal by definition, with no grant left to
+        // retry. Mark it so the operator sees a dead account on the dashboard.
+        state.accounts.mark_needs_relogin(
+            &route.provider,
+            account,
+            accounts::ReloginCause::ServedRequest,
         );
         tracing::warn!(
             provider = %route.provider,
@@ -1391,10 +1416,22 @@ pub(super) async fn force_refresh_or_cooldown(
                 Duration::from_secs(5 * 60),
                 "auth",
             );
+            // The provider will never accept this refresh token again, so the
+            // 5-minute retry loop can only repeat the same rejected grant. A
+            // transient failure (5xx, network, timeout) must not set the mark —
+            // that would report a healthy account as dead on a momentary blip.
+            if error.is_terminal() {
+                state.accounts.mark_needs_relogin(
+                    &route.provider,
+                    account,
+                    accounts::ReloginCause::RefreshGrant,
+                );
+            }
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
-                error = %error.message,
+                error = %error.detail,
+                terminal = error.is_terminal(),
                 "failed to force-refresh ChatGPT OAuth account"
             );
             None
@@ -1479,6 +1516,13 @@ pub(super) fn classify_retry(
             account,
             Duration::from_secs(5 * 60),
             "auth",
+        );
+        // A live grant yielding a bearer the API still rejects means the
+        // account is de-authorized upstream, not momentarily unlucky.
+        state.accounts.mark_needs_relogin(
+            &route.provider,
+            account,
+            accounts::ReloginCause::ServedRequest,
         );
         tracing::warn!(
             provider = %route.provider,
@@ -1577,6 +1621,8 @@ mod tests {
                 client_wants_stream: stream,
                 thinking_enabled: false,
                 tool_search_native: false,
+                stop_sequences: Vec::new(),
+                response_bounds: crate::adapters::ResponseBounds::default(),
             },
             estimate_input: None,
         }

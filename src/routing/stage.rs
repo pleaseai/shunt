@@ -1,5 +1,5 @@
-//! Content-aware tier selection for a `[[models]]` entry carrying a
-//! `[models.stage_router]` table.
+//! Content-aware tier selection for a `[[models]]` entry whose
+//! `[models.router]` table is `type = "stage_router"` or `type = "auto"`.
 //!
 //! shunt extracts [`ToolSignals`] from the buffered Anthropic request
 //! ([`signals`]) using Claude Code's own tool names ([`vocabulary`]), then hands
@@ -8,13 +8,18 @@
 //! `tanh(0.5) ≈ 0.46` and so cannot decide alone, while two corroborating
 //! signals reach `tanh(1.0) ≈ 0.76`.
 //!
-//! Nothing here calls a model. libsy asks for an LLM judge when the signals are
-//! inconclusive; shunt declines and falls open to the picker's default instead,
-//! which keeps the hot path free of an extra request and an extra credential.
+//! Nothing here calls a model. What a configured judge changes is *who* calls
+//! one: when `[models.router.classifier]` names a judge, a turn the signals
+//! leave undecided parks a [`ConsultJudge`] on the request's
+//! [`StageContext`], and `proxy::failover` consults the judge through
+//! [`crate::routing::judge`] — after admission, never from here (ADR-0005 §3).
+//! Absent that table the scorer falls open to the picker's default exactly as
+//! before, which keeps the pure lane free of an extra request and an extra
+//! credential.
 
 pub(crate) mod signals;
 pub(crate) mod store;
-mod vocabulary;
+pub(crate) mod vocabulary;
 
 pub(crate) use store::StageRouterStore;
 
@@ -24,8 +29,9 @@ use axum::http::HeaderMap;
 use serde_json::Value;
 use switchyard_libsy::{pick_tier, DecisionSource, PickOutcome, PickerMode, Tier, ToolSignals};
 
-use crate::config::{StageRouterConfig, StageRouterPicker};
+use crate::config::{ClassifyTrigger, StageRouterConfig, StageRouterPicker};
 use crate::routing::context::RouterContext;
+use crate::routing::outcome::RouterOutcome;
 
 /// Which tier a request was routed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,13 +80,21 @@ impl StageSource {
     pub(crate) fn is_signal_evidence(self) -> bool {
         match self {
             Self::Scorer(DecisionSource::Override | DecisionSource::Dimensions) => true,
-            // `Ambiguous` is the scorer declining to decide, `FallOpen` is the
-            // picker's default standing in, `LlmClassifier` cannot occur because
-            // shunt runs no judge, and `CapableHold` is libsy's own hysteresis —
-            // an earlier escalation being held, which is what `Sticky` already
-            // means here — and cannot occur either, because only libsy's stateful
-            // `StageClassifier` stamps it and shunt calls `pick_tier` directly.
-            // None of the four is evidence.
+            // `Ambiguous` is the scorer declining to decide and `FallOpen` is
+            // the picker's default standing in. `LlmClassifier` *can* now occur
+            // — a configured `[models.router.classifier]` stamps it when a
+            // judge verdict decides the turn — and it is deliberately not
+            // evidence either: the verdict is not a signal, and it does not
+            // need to be evidence to take effect, because
+            // `StageRouterStore::resolve` writes an unpinned session's estimate
+            // regardless and the judge only ever runs on a turn that would
+            // otherwise have taken the picker default. `CapableHold` *can* also
+            // occur — `StageRouterStore::resolve` stamps it while a
+            // `capable_hold_turns` window is open — and it is deliberately not
+            // evidence: it is an earlier escalation being held, which is what
+            // `Sticky` already means here, and a held turn must not be read as
+            // a fresh signal that could move the pin it is holding. None of the
+            // four is evidence.
             Self::Scorer(
                 DecisionSource::Ambiguous
                 | DecisionSource::LlmClassifier
@@ -125,31 +139,6 @@ impl StageTier {
     }
 }
 
-/// What the router decided for one request, for observability only.
-///
-/// Nothing here steers routing — the chain is already resolved by the time this
-/// is read. It exists because the decision is otherwise invisible downstream:
-/// `Route.model` is deliberately re-stamped to the id the client asked for
-/// (issue #172), so neither the response nor the resolved chain says which tier
-/// served the turn or why.
-#[derive(Debug, Clone)]
-pub(crate) struct StageOutcome {
-    /// The configured model id that carries the router — the id
-    /// [`crate::routing::resolve_chain`] matched, so already past
-    /// `strip_context_window_hint`.
-    ///
-    /// Carried rather than re-derived at the reporting site: a client-side
-    /// `[1m]` suffix is stripped before the router is looked up and before the
-    /// session is keyed, so a counter labelled with the raw request id would
-    /// split one router's series in two and attribute one session's pin to
-    /// both halves.
-    pub model: String,
-    /// The configured model id the chosen tier routes to.
-    pub target: String,
-    pub tier: StageTier,
-    pub source: StageSource,
-}
-
 /// Everything a live request carries that a body-less caller does not.
 ///
 /// Held by reference for the length of one routing call; nothing here is stored.
@@ -174,33 +163,76 @@ pub(crate) struct StageContext<'a> {
     /// is admitted. Routing runs before inbound auth and the managed-model
     /// policy — those need the resolved chain — so writing it here would let a
     /// request that is about to be rejected pin, evict, or steer a session it
-    /// never proved it owns. [`StageContext::commit`] writes it once the
-    /// request is known to be served.
+    /// never proved it owns. The caller takes it and hands it to
+    /// [`StageRouterStore::commit`] once the request is known to be served —
+    /// and, on a driven entry, once the judge has had its say, so the pin
+    /// records the tier the turn was actually dispatched at.
     pub pending: Cell<Option<store::PendingPin>>,
     /// What the router decided, parked for the observability surfaces to read
     /// once the request is admitted. Set only when the requested id actually
-    /// carries a `[models.stage_router]` table.
-    pub decided: Cell<Option<StageOutcome>>,
+    /// carries a `[models.router]` table, by
+    /// [`crate::routing::resolve_chain`] — every algorithm stamps one, so the
+    /// two headers and the new counter do not have to know which ran.
+    pub decided: Cell<Option<RouterOutcome>>,
+    /// Set when this turn earns a judge consultation, parked for
+    /// `proxy::failover` to act on *after* admission (ADR-0005 §3).
+    ///
+    /// The same park-until-admitted protocol [`StageContext::pending`] uses,
+    /// and for a stronger reason: a pin is a write, a judge call is a model
+    /// call on a gateway-held credential and the judge target's pool quota. A
+    /// caller who is about to be rejected must spend neither.
+    pub consult: Cell<Option<ConsultJudge>>,
+    /// Set when the requested id is a `prefill_router` entry this turn
+    /// actually reached — not one a `[models.subagents]` overlay diverted
+    /// before the router ran — parked for `proxy::failover` to drive *after*
+    /// admission (issue #633).
+    ///
+    /// The same park-until-admitted protocol [`StageContext::consult`] uses,
+    /// and for the same two reasons in local form: the drive runs encoder
+    /// inference on a blocking worker, and upstream's algorithm writes its
+    /// session affinity as a side effect of deciding. A caller who is about
+    /// to be refused must spend neither — and must not be able to seed an
+    /// affinity for a session id it does not own. Resolution therefore lands
+    /// the turn on the entry's default target provisionally, and the admitted
+    /// drive re-routes it onto what the algorithm actually chose.
+    pub drive_prefill: Cell<bool>,
 }
 
-impl StageContext<'_> {
-    /// Write the pin this request earned. Called after inbound auth and the
-    /// managed-model policy have admitted it, and a no-op for every request
-    /// that earned none — a read-only `count_tokens` probe, a caller with no
-    /// session header, and any id the router never looked at.
+/// A judge consultation this turn earned, with the budget it must fit inside.
+///
+/// Carries the count rather than the remaining allowance so the comparison
+/// stays with the caller that also holds the [`crate::config::CallBounds`]:
+/// this type is decided inside routing, and routing does not read bounds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ConsultJudge {
+    /// Judge calls this session had already made when the turn read its pin.
     ///
-    /// Admission, not a successful upstream response, is the boundary: the tier
-    /// chosen here is the tier the turn was dispatched at, and an upstream 500
-    /// afterwards is not evidence that the choice was wrong.
-    ///
-    /// Returns the `(from, to)` tier change the write made, for the flip
-    /// counter. `None` for every request that wrote nothing, and for a write
-    /// that landed on the tier already pinned.
-    pub(crate) fn commit(&self) -> Option<(StageTier, StageTier)> {
-        self.pending
-            .replace(None)
-            .and_then(|pin| self.store.commit(pin, self.now))
-    }
+    /// The pure lane's budget rides the pin, which is why it is read here. The
+    /// driven kinds leave it `0` and read their own budget off the
+    /// [`DrivenEntry`](crate::routing::driven::DrivenEntry) instead: libsy owns
+    /// their session state, so there is no pin to have counted against.
+    pub judge_calls_used: u32,
+    /// Which consultation this is, and so which code path in
+    /// `proxy::failover` runs it and which envelope admission gates on.
+    pub kind: ConsultKind,
+}
+
+/// The three shapes a judge consultation takes (ADR-0005 §3, §5, §8 PR 5).
+///
+/// A discriminator rather than three separate `Cell`s on the context: at most
+/// one of them is ever set for a request — a delegated turn the overlay
+/// classifies never reaches the entry's own router — and one field is what
+/// makes that exclusivity a property of the type instead of an invariant three
+/// call sites have to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConsultKind {
+    /// A `[models.router.classifier]` on a `stage_router`/`auto` entry: the
+    /// signals left the turn undecided and a judge may move the tier.
+    StageClassifier,
+    /// A driven `[models.router]` — `llm_classifier` or `composite`.
+    Router,
+    /// A classifier-form `[models.subagents]` overlay on a delegated turn.
+    Overlay,
 }
 
 /// Resolve a router to the tier that serves this request.
@@ -233,20 +265,66 @@ pub(crate) fn select(
         context.now,
     );
     let (decision, pin) = (applied.decision, applied.pin);
-    // Parked for the observability surfaces, which read it only after the
-    // request is admitted — the same boundary the pin waits for, and for the
-    // same reason: a rejected request neither pins nor counts.
-    context.decided.set(Some(StageOutcome {
-        model: model.to_string(),
-        target: decision.tier.target(router).to_string(),
-        tier: decision.tier,
-        source: decision.source,
-    }));
     // Parked, not written: see [`StageContext::pending`]. Validation forbids a
     // router whose target is itself a router, so one request reaches this line
     // at most once and no earlier pin can be dropped here.
     context.pending.set(pin);
+    // A judge is consulted only on a turn that would otherwise land on the
+    // picker's default. `Scorer(FallOpen)` is exactly that turn: the scorer saw
+    // the signals and could not decide. A pinned session whose pin holds the
+    // turn reports `Sticky` instead and is not consulted — the session already
+    // has an answer, and paying for a second one every turn is what
+    // `max_judge_calls` would otherwise be spent on. A read-only probe never
+    // consults at all: ADR-0005 §3 requires `count_tokens` to resolve to the
+    // pin or the no-model-call decision, so it makes zero judge calls.
+    // `classify_trigger` narrows *when* a judge may be consulted, before the
+    // "the signals left this turn undecided" gate below. `new_session` is
+    // deliberately the same as `every_request` here: upstream's own note is
+    // that it has no effect on this route, and the session pin already does
+    // what it would — a pinned session reports `Sticky` and never reaches the
+    // fall-open turn a judge answers.
+    let trigger_allows = match router.classifier.as_ref().map(|c| c.classify_trigger) {
+        None => false,
+        Some(ClassifyTrigger::UserTurn) => latest_is_user_turn(messages),
+        Some(ClassifyTrigger::EveryRequest | ClassifyTrigger::NewSession) => true,
+    };
+    if trigger_allows
+        && decision.source == StageSource::Scorer(DecisionSource::FallOpen)
+        && !context.read_only
+    {
+        context.consult.set(Some(ConsultJudge {
+            judge_calls_used: applied.judge_calls_used,
+            kind: ConsultKind::StageClassifier,
+        }));
+    }
     decision
+}
+
+/// Whether the latest message is a **human** user turn.
+///
+/// Anthropic carries a tool result as a `role: "user"` message, so the role
+/// alone cannot tell a human turn from a tool continuation — libsy's own
+/// `is_user_turn` draws the line the same way, and this is shunt's copy of it
+/// over the undecoded Anthropic body. A `content` that is a plain string is a
+/// human turn by construction: a tool result is always a block.
+///
+/// `messages` absent, empty, or not an array answers `false`: there is no
+/// human turn in a body that carries no conversation, and a body-less surface
+/// must not consult a judge at all.
+fn latest_is_user_turn(messages: Option<&Value>) -> bool {
+    let Some(latest) = messages.and_then(Value::as_array).and_then(|m| m.last()) else {
+        return false;
+    };
+    if latest.get("role").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    match latest.get("content") {
+        Some(Value::String(_)) => true,
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .any(|block| block.get("type").and_then(Value::as_str) != Some("tool_result")),
+        _ => false,
+    }
 }
 
 /// Pick a tier for a request from its conversation so far.
@@ -277,8 +355,9 @@ pub(crate) fn decide(
         StageRouterPicker::CapableFirst => StageTier::Capable,
     };
 
-    let extracted =
-        messages.and_then(|messages| signals::extract(messages, router.recent_turn_window));
+    let extracted = messages.and_then(|messages| {
+        signals::extract(messages, router.recent_turn_window, &router.tool_semantics)
+    });
     let signals = match (extracted, compacted) {
         (Some(mut signals), _) => {
             signals.compacted = compacted;
@@ -308,9 +387,13 @@ pub(crate) fn decide(
             source: StageSource::Scorer(source),
             confidence,
         },
-        // The signals were too weak to decide and shunt runs no judge, so the
-        // picker's default takes the turn. This is libsy's documented fall-open
-        // path, not an error.
+        // The signals were too weak to decide, so the picker's default takes
+        // the turn. This is libsy's documented fall-open path, not an error.
+        // It is also the one outcome a configured `[models.router.classifier]`
+        // reopens: [`select`] parks a [`ConsultJudge`] on exactly this source,
+        // and the judge's verdict — if it arrives inside its bounds — replaces
+        // the default in `proxy::failover`. With no classifier configured the
+        // default stands, as it always has.
         //
         // The sub-threshold score libsy returns here is deliberately dropped:
         // `confidence` is documented as the scorer's confidence *in this tier*,

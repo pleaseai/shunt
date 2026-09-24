@@ -23,7 +23,7 @@
 //! * `resolve_chain_*` — the whole router-backed request path, and the control
 //!   it has to be read against. Both arms send the *same body* naming the *same
 //!   model id* through configs that differ only in whether that id's
-//!   `[[models]]` entry carries a `[models.stage_router]` table. That pair is
+//!   `[[models]]` entry carries a `[models.router]` table. That pair is
 //!   the "non-router traffic pays only one `Option::is_none()`" claim, which is
 //!   the assertion most worth protecting from regression.
 //!   `resolve_chain_routed_delegated` is the routed arm with a `Task` child's
@@ -38,6 +38,10 @@
 //!   visitor skips the duplicate-key rejection, and not the parse alone, which
 //!   would drop the linear copy the buffered request pays on the way in. Both
 //!   omissions shrink the denominator, and this arm exists only to be one.
+//! * `gated_terminal_scan` — ADR-0005 §3. The per-chunk read every streamed
+//!   escalation or advisor turn pays while it is retained: a ~100-frame
+//!   capture ending in `message_stop`, fed in network-sized chunks so the
+//!   carried partial frame is exercised.
 
 fn main() {
     #[cfg(feature = "bench")]
@@ -52,13 +56,18 @@ fn main() {
 #[cfg(feature = "bench")]
 mod bench {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Instant;
+    use std::{collections::BTreeMap, time::Instant};
 
     use axum::http::HeaderMap;
     use serde_json::{json, Value};
     use shunt::{
         bench_support::{self, StageStore, MAX_TRACKED_CHILD_PINS, MAX_TRACKED_SESSIONS},
-        config::{Config, ModelConfig, RouteConfig, StageRouterConfig, StageRouterPicker},
+        config::{
+            CapabilityClassifierConfig, Config, LlmClassifierConfig, ModelConfig,
+            PassthroughSubagentsConfig, RandomAffinity, RandomRouterConfig, RouteConfig,
+            RouterConfig, StageClassifierConfig, StageRouterConfig, StageRouterPicker,
+            SubagentsConfig,
+        },
     };
 
     /// Assistant turn counts. The top of the range is a long Claude Code
@@ -67,12 +76,14 @@ mod bench {
     const TURN_COUNTS: [usize; 4] = [10, 50, 200, 800];
 
     /// The one id both `resolve_chain_*` arms request. They must differ only by
-    /// whether its `[[models]]` entry carries a `[models.stage_router]` table:
+    /// whether its `[[models]]` entry carries a `[models.router]` table:
     /// two different ids would also differ in string length, in position within
     /// `config.models`, and in which lookup arm matches — none of which is the
     /// property under test.
     const ROUTER_MODEL: &str = "claude-auto";
     const EFFICIENT_TARGET: &str = "claude-sonnet-4-6";
+    /// The judge the driven arm consults but never serves.
+    const JUDGE_TARGET: &str = "claude-haiku-4-5";
 
     fn router() -> StageRouterConfig {
         StageRouterConfig {
@@ -84,10 +95,20 @@ mod bench {
             min_dwell_turns: 3,
             deescalate_threshold: None,
             session_ttl_seconds: 3600,
+            capable_hold_turns: 0,
+            tool_semantics: Default::default(),
+            handoff_notes: None,
+            classifier: None,
+            judge_timeout_ms: shunt::config::DEFAULT_JUDGE_TIMEOUT_MS,
+            judge_max_response_bytes: shunt::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+            gated_max_bytes: shunt::config::DEFAULT_GATED_MAX_BYTES,
+            gated_idle_ms: shunt::config::DEFAULT_GATED_IDLE_MS,
+            gated_max_duration_ms: shunt::config::DEFAULT_GATED_MAX_DURATION_MS,
+            max_judge_calls: shunt::config::DEFAULT_MAX_JUDGE_CALLS,
         }
     }
 
-    /// Two configs identical but for `stage_router`, so the `resolve_chain_*`
+    /// Two configs identical but for `router`, so the `resolve_chain_*`
     /// pair isolates the router and nothing else.
     ///
     /// `ROUTER_MODEL` carries a `[[routes]]` entry in both. The routed config
@@ -107,7 +128,9 @@ mod bench {
                 id: ROUTER_MODEL.to_string(),
                 display_name: Some("Auto (stage router)".to_string()),
                 upstream_model: None,
-                stage_router: with_router.then(router),
+                router: with_router.then(router).map(RouterConfig::StageRouter),
+                stage_router: None,
+                subagents: None,
             }],
             routes: vec![
                 route(ROUTER_MODEL),
@@ -302,7 +325,7 @@ mod bench {
     }
 
     /// The control for the arm above: the *identical* body and model id, against
-    /// a config whose only difference is the absent `[models.stage_router]`
+    /// a config whose only difference is the absent `[models.router]`
     /// table. The gap between the two is what non-router traffic does not pay.
     #[divan::bench(args = TURN_COUNTS)]
     fn resolve_chain_unrouted(bencher: divan::Bencher, turns: usize) {
@@ -317,6 +340,121 @@ mod bench {
                     .unwrap(),
             )
         });
+    }
+
+    /// A `random` router's config: the same two tier ids, split 9:1 and pinned
+    /// per session. Read against `resolve_chain_routed` — both are routed, and
+    /// the gap is what the hash costs versus scoring the transcript.
+    fn random_config() -> Config {
+        let route = |model: &str| RouteConfig {
+            model: model.to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        };
+        Config {
+            models: vec![ModelConfig {
+                id: ROUTER_MODEL.to_string(),
+                display_name: Some("Canary (random)".to_string()),
+                upstream_model: None,
+                router: Some(RouterConfig::Random(RandomRouterConfig {
+                    targets: vec![EFFICIENT_TARGET.to_string(), "claude-opus-4-8".to_string()],
+                    weights: Some(vec![9.0, 1.0]),
+                    seed: None,
+                    affinity: RandomAffinity::Session,
+                })),
+                stage_router: None,
+                subagents: None,
+            }],
+            routes: vec![
+                route(ROUTER_MODEL),
+                route(EFFICIENT_TARGET),
+                route("claude-opus-4-8"),
+            ],
+            ..Config::default()
+        }
+    }
+
+    /// The hash-pinned `random` path: no store read, no transcript scored, one
+    /// SHA-256 over three short inputs. Parameterized on turn count like its
+    /// neighbours so the flat curve is visible — the body is parsed either way,
+    /// but this router never walks it.
+    #[divan::bench(args = TURN_COUNTS)]
+    fn resolve_chain_random_session(bencher: divan::Bencher, turns: usize) {
+        let config = random_config();
+        let request = request(ROUTER_MODEL, turns);
+        let headers = session_headers();
+        let store = StageStore::new();
+        let now = Instant::now();
+        bencher.bench(|| {
+            divan::black_box(
+                bench_support::resolve_chain(&config, &store, &request, &headers, false, now)
+                    .unwrap(),
+            )
+        });
+    }
+
+    /// The dependency envelope a driven entry is admitted against (ADR-0005
+    /// §3). Read against `resolve_chain_routed`: the routed arm resolves one
+    /// chain, this resolves the entry's own plus one per target and judge, and
+    /// the gap is what moving admission off the decided chain costs.
+    ///
+    /// Parameterized on turn count like its neighbours even though the envelope
+    /// never reads the body — a flat curve is the point: admission does not
+    /// grow with the transcript.
+    #[divan::bench(args = TURN_COUNTS)]
+    fn dependency_envelope_driven(bencher: divan::Bencher, turns: usize) {
+        let config = driven_config();
+        let _ = turns;
+        bencher.bench(|| {
+            divan::black_box(bench_support::dependency_envelope(
+                &config,
+                divan::black_box(ROUTER_MODEL),
+            ))
+        });
+    }
+
+    /// What the driven `prefill_router` lane pays before it reaches libsy:
+    /// one walk of `messages`, allocating a neutral `Message` per turn.
+    ///
+    /// Parameterized on turn count like its neighbours, because that is the
+    /// axis the walk is linear in — the upstream algorithm then reads only the
+    /// latest text user turn out of it, which is the same asymmetry
+    /// `extract_signals` has.
+    ///
+    /// CodSpeed builds `--features bench` only, so this arm never runs there
+    /// and the number is a local one:
+    /// `cargo bench --features bench,prefill-router --bench stage_router`.
+    #[cfg(feature = "prefill-router")]
+    #[divan::bench(args = TURN_COUNTS)]
+    fn prefill_messages_from_body(bencher: divan::Bencher, turns: usize) {
+        let request = request(ROUTER_MODEL, turns);
+        let messages = &request["messages"];
+        bencher.bench(|| divan::black_box(shunt::bench_support::messages_from_body(messages)))
+    }
+
+    /// The `config(true)` stage router with a `[models.router.classifier]`
+    /// naming a third id, so the envelope has an answer pair *and* a judge.
+    fn driven_config() -> Config {
+        let mut config = config(true);
+        let stage = StageRouterConfig {
+            classifier: Some(StageClassifierConfig {
+                target: JUDGE_TARGET.to_string(),
+                base_threshold: 0.5,
+                classify_trigger: Default::default(),
+            }),
+            ..router()
+        };
+        config.models[0].router = Some(RouterConfig::StageRouter(stage));
+        config.routes.push(RouteConfig {
+            model: JUDGE_TARGET.to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        });
+        config
     }
 
     /// The routed arm again, as a `Task` child sends it: the same body, plus the
@@ -335,5 +473,141 @@ mod bench {
                     .unwrap(),
             )
         });
+    }
+
+    /// The same child's turn once the routed entry also carries a
+    /// `[models.subagents]` overlay (ADR-0005 §8 PR 3): the overlay diverts it
+    /// before the stage router runs, so the transcript is never scored and the
+    /// store is never read. Reads against `resolve_chain_routed_delegated` —
+    /// the gap is what the child stops paying — and should stay flat across
+    /// `turns`, as `resolve_chain_random_session` does.
+    #[divan::bench(args = TURN_COUNTS)]
+    fn resolve_chain_subagents_passthrough(bencher: divan::Bencher, turns: usize) {
+        let mut config = config(true);
+        config.models[0].subagents =
+            Some(SubagentsConfig::Passthrough(PassthroughSubagentsConfig {
+                target: EFFICIENT_TARGET.to_string(),
+                by_type: BTreeMap::from([("Explore".to_string(), EFFICIENT_TARGET.to_string())]),
+            }));
+        let request = request(ROUTER_MODEL, turns);
+        let headers = child_headers();
+        let store = StageStore::new();
+        let now = Instant::now();
+        bencher.bench(|| {
+            divan::black_box(
+                bench_support::resolve_chain(&config, &store, &request, &headers, false, now)
+                    .unwrap(),
+            )
+        });
+    }
+
+    /// A body-less resolution of an `llm_classifier` capability entry
+    /// (ADR-0005 §8 PR 5). `resolve_model_chain` is the path `/v1/models`
+    /// discovery, `GET /routes`, and `shunt check` take: there is no turn to
+    /// judge, so the driven entry answers from its fail-open target without
+    /// constructing an algorithm or reaching libsy at all.
+    ///
+    /// Read against `resolve_chain_unrouted`: both are one table lookup and one
+    /// chain resolution, and the gap is what naming a judge-backed type costs a
+    /// surface that never judges. Not parameterized on turn count, because
+    /// there is no body — which is the claim.
+    #[divan::bench]
+    fn resolve_model_chain_llm_classifier(bencher: divan::Bencher) {
+        let config = llm_classifier_config();
+        bencher.bench(|| {
+            divan::black_box(shunt::routing::resolve_model_chain(
+                &config,
+                divan::black_box(ROUTER_MODEL),
+            ))
+        });
+    }
+
+    /// A realistic streamed turn: `message_start`, a text block of ~95
+    /// `content_block_delta` frames, a `ping`, and the closing
+    /// `message_delta`/`message_stop` — the shape the scan exists to accept.
+    fn gated_capture() -> Vec<u8> {
+        let mut frames = vec![
+            (
+                "message_start",
+                json!({"type": "message_start", "message": {"id": "msg_1", "type": "message",
+                    "role": "assistant", "model": ROUTER_MODEL, "content": [],
+                    "stop_reason": null, "usage": {"input_tokens": 1200, "output_tokens": 1}}}),
+            ),
+            (
+                "content_block_start",
+                json!({"type": "content_block_start", "index": 0,
+                    "content_block": {"type": "text", "text": ""}}),
+            ),
+            ("ping", json!({"type": "ping"})),
+        ];
+        for word in 0..95 {
+            frames.push((
+                "content_block_delta",
+                json!({"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "text_delta", "text": format!("token {word} of the turn ")}}),
+            ));
+        }
+        frames.extend([
+            (
+                "content_block_stop",
+                json!({"type": "content_block_stop", "index": 0}),
+            ),
+            (
+                "message_delta",
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 380}}),
+            ),
+            ("message_stop", json!({"type": "message_stop"})),
+        ]);
+        frames
+            .into_iter()
+            .map(|(event, data)| format!("event: {event}\ndata: {data}\n\n"))
+            .collect::<String>()
+            .into_bytes()
+    }
+
+    /// The terminal-marker scan over one retained turn (ADR-0005 §3), fed in
+    /// 1 KiB chunks — roughly what a TLS record delivers — so frames straddle
+    /// chunk boundaries the way they do off the wire.
+    #[divan::bench]
+    fn gated_terminal_scan(bencher: divan::Bencher) {
+        let capture = gated_capture();
+        assert!(
+            bench_support::scan_is_terminal(capture.chunks(1024)),
+            "the capture must be a servable turn, or the arm measures the reject path"
+        );
+        bencher.bench(|| {
+            divan::black_box(bench_support::scan_is_terminal(
+                divan::black_box(&capture).chunks(1024),
+            ))
+        });
+    }
+
+    /// `config(true)`'s entry with its stage router replaced by a capability
+    /// classifier over the same two tier ids, plus the judge `driven_config`
+    /// already routes.
+    fn llm_classifier_config() -> Config {
+        let mut config = driven_config();
+        config.models[0].router = Some(RouterConfig::LlmClassifier(
+            LlmClassifierConfig::Capability(CapabilityClassifierConfig {
+                classifier_target: JUDGE_TARGET.to_string(),
+                strong_target: "claude-opus-4-8".to_string(),
+                weak_target: EFFICIENT_TARGET.to_string(),
+                base_threshold: 0.5,
+                threshold_step: 0.0,
+                prompt: None,
+                classify_trigger: Default::default(),
+                message_hash_fallback: false,
+                recent_turn_window: None,
+                max_output_tokens: shunt::config::DEFAULT_MAX_OUTPUT_TOKENS,
+                judge_timeout_ms: shunt::config::DEFAULT_JUDGE_TIMEOUT_MS,
+                judge_max_response_bytes: shunt::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+                gated_max_bytes: shunt::config::DEFAULT_GATED_MAX_BYTES,
+                gated_idle_ms: shunt::config::DEFAULT_GATED_IDLE_MS,
+                gated_max_duration_ms: shunt::config::DEFAULT_GATED_MAX_DURATION_MS,
+                max_judge_calls: shunt::config::DEFAULT_MAX_JUDGE_CALLS,
+            }),
+        ));
+        config
     }
 }

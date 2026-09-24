@@ -88,7 +88,9 @@ fn zen_config(mock_base_url: String) -> Config {
                 .into_iter()
                 .collect(),
         ),
+        router: None,
         stage_router: None,
+        subagents: None,
     }];
     // Point the preset's fixed zen base_url at the mock; everything else about
     // the preset (kind, auth, env, header) stays as shipped.

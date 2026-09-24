@@ -109,7 +109,7 @@ provider = "codex"
 
 <Aside type="caution" title="모델 슬러그 — `-codex` 금지">
 
-ChatGPT 계정 백엔드는 `gpt-*-codex` 슬러그(예: `gpt-5.2-codex`)를 `400`으로 **거부**합니다. 계정에 **실시간으로 부여된** 슬러그만 받아들입니다. 권위 있는 카탈로그(및 각 슬러그가 받아들이는 추론 레벨)는 openai/codex의 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)입니다. 현재 슬러그: `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`(프런티어)와 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`. 오래된 계정은 이전 슬러그만 부여받았을 수 있습니다(무료 계정은 `gpt-5.5`로 해석된 바 있습니다). shunt는 백엔드 자체의 오류 `detail`을 노출하므로, 잘못된 슬러그는 실제 이유를 반환합니다.
+ChatGPT 계정 백엔드는 `gpt-*-codex` 슬러그(예: `gpt-5.2-codex`)를 `400`으로 **거부**합니다. 계정에 **실시간으로 부여된** 슬러그만 받아들입니다. 권위 있는 카탈로그(및 각 슬러그가 받아들이는 추론 레벨)는 openai/codex의 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)입니다. 현재 슬러그: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`(최신), `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`(프런티어)와 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`. 오래된 계정은 이전 슬러그만 부여받았을 수 있습니다(무료 계정은 `gpt-5.5`로 해석된 바 있습니다). shunt는 백엔드 자체의 오류 `detail`을 노출하므로, 잘못된 슬러그는 실제 이유를 반환합니다.
 
 </Aside>
 
@@ -119,7 +119,7 @@ ChatGPT 계정 백엔드는 `gpt-*-codex` 슬러그(예: `gpt-5.2-codex`)를 `40
 
 <Aside type="note" title="`Model not found <slug>`는 자격이 아니라 클라이언트 버전 게이팅입니다">
 
-일부 슬러그는 `minimal_client_version`을 요구합니다(예: `gpt-6-astra`는 ≥ 0.153.0 필요). 요청의 클라이언트 신원이 없거나 너무 오래되면 백엔드는 `Model not found <slug>`를 반환합니다. shunt는 고정된 Codex CLI 신원 헤더(`originator: codex_cli_rs`, `user-agent`, `version`)를 **openai/codex rust-v0.153.3**에 고정하여 보내므로 이를 피합니다. [openai/codex#31967](https://github.com/openai/codex/issues/31967)을 참고하세요.
+일부 슬러그는 `minimal_client_version`을 요구합니다(예: `gpt-6-astra`는 ≥ 0.153.0, `gpt-6-sol`과 `gpt-6-luna`는 ≥ 0.155.0 필요). 요청의 클라이언트 신원이 없거나 너무 오래되면 백엔드는 `Model not found <slug>`를 반환합니다. shunt는 고정된 Codex CLI 신원 헤더(`originator: codex_cli_rs`, `user-agent`, `version`)를 **openai/codex rust-v0.156.0**에 고정하여 보내므로 이를 피합니다. [openai/codex#31967](https://github.com/openai/codex/issues/31967)을 참고하세요.
 
 </Aside>
 
@@ -165,7 +165,7 @@ model: gpt-5.6-sol        # 이전: sonnet (또는 없음 → 상속됨)
 
 <Aside type="tip" title="미리 만들어진 에이전트">
 
-[**`shunt-codex` 플러그인**](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-codex)은 `gpt-5.6-sol` / `-terra` / `-luna`용 서브에이전트를 제공합니다 — `/plugin marketplace add pleaseai/shunt` 후 `/plugin install shunt-codex@shunt`로 설치하세요.
+[**`shunt-codex` 플러그인**](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-codex)은 `gpt-6-sol` / `-luna`와 `gpt-5.6-sol` / `-terra` / `-luna`용 서브에이전트를 제공합니다 — `/plugin marketplace add pleaseai/shunt` 후 `/plugin install shunt-codex@shunt`로 설치하세요.
 
 </Aside>
 
@@ -342,7 +342,7 @@ Claude Code는 base URL이 퍼스트파티 Anthropic 호스트가 아니면 낙�
 - 업스트림은 스톡 OpenAI 또는 ChatGPT/Codex 계열 Responses 백엔드여야 합니다. xAI / Grok 라우트는
   항상 shim을 유지합니다.
 - 라우팅되는 모델은 **gpt-5.4 이상**(`gpt-5.4`, `gpt-5.5`, 또는 `gpt-5.6` 패밀리)이어야 합니다.
-  정확한 슬러그 `gpt-6-astra`도 대상입니다. 이전 슬러그(`gpt-5.2` 이하)는 `tool_search`와 무관하게
+  정확한 슬러그 `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`도 대상입니다. 이전 슬러그(`gpt-5.2` 이하)는 `tool_search`와 무관하게
   shim을 유지합니다.
 - Claude Code 쪽에서는 여전히 `ENABLE_TOOL_SEARCH=true`가 필요합니다 — 이 플래그는 shunt가 그 기능을
   업스트림으로 *어떻게* 변환하는지만 바꿀 뿐, Claude Code가 애초에 도구를 지연시키는지 여부는 바꾸지

@@ -4,6 +4,7 @@ import { vi } from 'vitest';
 import { App } from '../App';
 import type {
   AdminAccess,
+  AntigravityStoreAccount,
   ClaudeStoreAccount,
   CodexStoreAccount,
   ObservedAccount,
@@ -56,6 +57,7 @@ export interface Fixtures {
   pool?: PoolProvider[];
   accounts?: ClaudeStoreAccount[];
   codexAccounts?: CodexStoreAccount[];
+  antigravityAccounts?: AntigravityStoreAccount[];
   status?: StatusSource[];
 }
 
@@ -77,6 +79,8 @@ function defaultRoutes(fixtures: Fixtures): Routes {
     'GET /admin/api/pool': () => reply({ providers: fixtures.pool ?? [] }),
     'GET /admin/api/accounts': () => reply({ accounts: fixtures.accounts ?? [] }),
     'GET /admin/api/accounts/codex': () => reply({ accounts: fixtures.codexAccounts ?? [] }),
+    'GET /admin/api/accounts/antigravity': () =>
+      reply({ accounts: fixtures.antigravityAccounts ?? [] }),
     'GET /admin/api/status': () => reply({ sources: fixtures.status ?? [] }),
   };
 }

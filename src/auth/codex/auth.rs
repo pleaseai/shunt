@@ -16,10 +16,100 @@ use crate::auth::shared::{format_iso8601, is_token_valid_at, jwt_claims, write_a
 pub(crate) const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub(crate) const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 
+const TOKENS_MISSING: &str = "ChatGPT auth tokens missing; run codex login";
+const ACCOUNT_ID_MISSING: &str = "ChatGPT account id missing; run codex login";
+const INVALID_REFRESH_RESPONSE: &str = "invalid ChatGPT refresh response; run codex login";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatGptCred {
     pub access_token: String,
     pub account_id: String,
+}
+
+/// The OAuth error code the provider returns for a refresh token it will never
+/// accept again.
+const INVALID_GRANT: &str = "invalid_grant";
+
+/// Why a stored ChatGPT credential can no longer produce an access token
+/// without a fresh login. Mirrors `auth::claude::auth::TerminalRefresh`: the
+/// account pool has to tell a dead grant from a transient endpoint failure to
+/// decide whether to mark the account `needs_relogin` or just cool it down,
+/// and a typed marker cannot be broken by rewording a message (#616).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalRefresh {
+    /// The provider rejected the stored refresh token outright.
+    InvalidGrant,
+    /// The credential file carries no refresh token, so there is no grant left
+    /// to send. Fails during resolution, before any upstream request.
+    NoRefreshToken,
+    /// The provider rotated the token but the new pair never reached disk:
+    /// the access token failed validation, the write task did not complete,
+    /// or the file write failed. The grant already consumed the refresh token
+    /// on disk, so every later attempt replays a spent one. Only attached when
+    /// the response carried a *different* refresh token: a provider that omits
+    /// the field leaves the stored one live, so losing that writeback costs an
+    /// access token, not the account.
+    WritebackFailed,
+}
+
+impl std::fmt::Display for TerminalRefresh {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidGrant => INVALID_GRANT,
+            Self::NoRefreshToken => "no refresh token stored",
+            Self::WritebackFailed => "refreshed token could not be persisted",
+        })
+    }
+}
+
+/// A ChatGPT credential failure plus the two facts the account pool needs that
+/// a bare [`AdapterError`] cannot carry: whether the provider *terminally*
+/// rejected the stored grant, and the underlying cause. `auth_error` collapses
+/// every authentication failure to the constant `"authentication failed"`
+/// message and puts the real cause in a response body the pool discards on
+/// failover, so without this the pool can neither mark a dead account nor log
+/// why it failed. The Claude path carries the same pair in
+/// `auth::ClaudeResolveError`.
+#[derive(Debug)]
+pub struct ChatGptAuthError {
+    pub error: AdapterError,
+    /// `Some` when no retry can recover this credential — retrying after the
+    /// cooldown can only repeat the same failure.
+    pub terminal: Option<TerminalRefresh>,
+    /// The underlying cause, for server-side logging only.
+    pub detail: String,
+}
+
+impl ChatGptAuthError {
+    pub(crate) fn new(detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        Self {
+            error: auth_error(detail.clone()),
+            terminal: None,
+            detail,
+        }
+    }
+
+    fn terminal(kind: TerminalRefresh, detail: impl Into<String>) -> Self {
+        Self {
+            terminal: Some(kind),
+            ..Self::new(detail)
+        }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        self.terminal.is_some()
+    }
+}
+
+impl From<AdapterError> for ChatGptAuthError {
+    fn from(error: AdapterError) -> Self {
+        Self {
+            detail: error.message.clone(),
+            error,
+            terminal: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -102,11 +192,11 @@ impl CodexAuthStore {
         }
     }
 
-    pub async fn get_valid_chatgpt(&self) -> Result<ChatGptCred, AdapterError> {
+    pub async fn get_valid_chatgpt(&self) -> Result<ChatGptCred, ChatGptAuthError> {
         let auth = self.read_auth_off_thread().await?;
         let tokens = auth
             .tokens()
-            .ok_or_else(|| auth_error("ChatGPT auth tokens missing; run codex login"))?;
+            .ok_or_else(|| ChatGptAuthError::new(TOKENS_MISSING))?;
         if tokens.is_valid_at(SystemTime::now()) {
             return tokens.to_credential();
         }
@@ -119,7 +209,7 @@ impl CodexAuthStore {
         let auth = self.read_auth_off_thread().await?;
         let tokens = auth
             .tokens()
-            .ok_or_else(|| auth_error("ChatGPT auth tokens missing; run codex login"))?;
+            .ok_or_else(|| ChatGptAuthError::new(TOKENS_MISSING))?;
         if tokens.is_valid_at(SystemTime::now()) {
             return tokens.to_credential();
         }
@@ -132,13 +222,13 @@ impl CodexAuthStore {
     /// the account pool's `RefreshRetry` failover arm after an upstream 401 —
     /// the cached token may still look unexpired locally, but the backend has
     /// already rejected it, so the cache can't be trusted here.
-    pub async fn force_refresh(&self) -> Result<ChatGptCred, AdapterError> {
+    pub async fn force_refresh(&self) -> Result<ChatGptCred, ChatGptAuthError> {
         let path = self.normalized_auth_path().await?;
         let refreshing = refresh_lock_for(path).lock_owned().await;
         let auth = self.read_auth_off_thread().await?;
         let tokens = auth
             .tokens()
-            .ok_or_else(|| auth_error("ChatGPT auth tokens missing; run codex login"))?;
+            .ok_or_else(|| ChatGptAuthError::new(TOKENS_MISSING))?;
         self.refresh_and_write_back(tokens, refreshing).await
     }
 
@@ -149,13 +239,13 @@ impl CodexAuthStore {
     pub async fn force_refresh_if_access_token(
         &self,
         rejected_access_token: &str,
-    ) -> Result<ChatGptCred, AdapterError> {
+    ) -> Result<ChatGptCred, ChatGptAuthError> {
         let path = self.normalized_auth_path().await?;
         let refreshing = refresh_lock_for(path).lock_owned().await;
         let auth = self.read_auth_off_thread().await?;
         let tokens = auth
             .tokens()
-            .ok_or_else(|| auth_error("ChatGPT auth tokens missing; run codex login"))?;
+            .ok_or_else(|| ChatGptAuthError::new(TOKENS_MISSING))?;
         if tokens.access_token != rejected_access_token {
             return tokens.to_credential();
         }
@@ -166,11 +256,13 @@ impl CodexAuthStore {
         &self,
         tokens: TokenSet,
         refreshing: tokio::sync::OwnedMutexGuard<()>,
-    ) -> Result<ChatGptCred, AdapterError> {
-        let refresh_token = tokens
-            .refresh_token
-            .clone()
-            .ok_or_else(|| auth_error("ChatGPT refresh token missing; run codex login"))?;
+    ) -> Result<ChatGptCred, ChatGptAuthError> {
+        let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
+            ChatGptAuthError::terminal(
+                TerminalRefresh::NoRefreshToken,
+                "ChatGPT refresh token missing; run codex login",
+            )
+        })?;
 
         // The detached task owns both the single-flight guard and the critical
         // refresh + writeback sequence. Dropping the caller's future therefore
@@ -183,26 +275,44 @@ impl CodexAuthStore {
             let _refreshing = refreshing;
             let result = async {
                 let refreshed = refresh_tokens(&client, &token_url, &refresh_token).await?;
-                match refreshed.to_credential() {
-                    Ok(credential) => {
-                        tokio::task::spawn_blocking(move || {
-                            write_refreshed_auth(&path, refreshed)
-                        })
+                // Only a *rotated* refresh token makes a lost writeback terminal:
+                // the provider has already consumed the one on disk.
+                let rotated = refreshed
+                    .refresh_token
+                    .as_deref()
+                    .is_some_and(|token| token != refresh_token);
+                let persisted = async {
+                    let credential = refreshed.to_credential()?;
+                    tokio::task::spawn_blocking(move || write_refreshed_auth(&path, refreshed))
                         .await
                         .map_err(|error| {
-                            auth_error(format!("ChatGPT auth write task failed: {error}"))
-                        })
-                        .and_then(|result| {
-                            result.map_err(|error| {
-                                auth_error(format!(
-                                    "failed to update ChatGPT auth file: {error}"
-                                ))
-                            })
-                        })
-                        .map(|()| credential)
-                    }
-                    Err(error) => Err(error),
+                            ChatGptAuthError::new(format!(
+                                "ChatGPT auth write task failed: {error}"
+                            ))
+                        })?
+                        .map_err(|error| {
+                            ChatGptAuthError::new(format!(
+                                "failed to update ChatGPT auth file: {error}"
+                            ))
+                        })?;
+                    Ok::<_, ChatGptAuthError>(credential)
                 }
+                .await;
+                // Every failure past the refresh response -- a token that fails
+                // validation, a write task that did not complete, a file write
+                // that failed -- leaves the new pair unpersisted. When the
+                // provider also rotated the token, the one on disk is spent and
+                // no retry can recover it, so the whole tail is terminal.
+                persisted.map_err(|error| {
+                    if rotated {
+                        ChatGptAuthError {
+                            terminal: Some(TerminalRefresh::WritebackFailed),
+                            ..error
+                        }
+                    } else {
+                        error
+                    }
+                })
             }
             .await;
             if let Err(error) = &result {
@@ -212,14 +322,15 @@ impl CodexAuthStore {
                 // or writeback failure may also leave the stored token stale. Never
                 // log the token values themselves, only the error.
                 tracing::warn!(
-                    ?error,
+                    error = %error.detail,
+                    terminal = ?error.terminal,
                     "ChatGPT OAuth token refresh, validation, or writeback failed; stored refresh token may now be stale until re-login"
                 );
             }
             result
         })
         .await
-        .map_err(|error| auth_error(format!("ChatGPT refresh task failed: {error}")))?
+        .map_err(|error| ChatGptAuthError::new(format!("ChatGPT refresh task failed: {error}")))?
     }
 
     async fn normalized_auth_path(&self) -> Result<&PathBuf, AdapterError> {
@@ -348,7 +459,7 @@ async fn refresh_tokens(
     _client: &reqwest::Client,
     token_url: &str,
     refresh_token: &str,
-) -> Result<RefreshResponse, AdapterError> {
+) -> Result<RefreshResponse, ChatGptAuthError> {
     let response = crate::auth::shared::token_refresh_client()
         .post(token_url)
         .form(&[
@@ -358,20 +469,60 @@ async fn refresh_tokens(
         ])
         .send()
         .await
-        .map_err(|_| auth_error("failed to refresh ChatGPT auth; run codex login"))?;
-    if !response.status().is_success() {
-        return Err(auth_error(
-            "failed to refresh ChatGPT auth; run codex login",
-        ));
-    }
+        .map_err(|error| {
+            ChatGptAuthError::new(format!(
+                "failed to refresh ChatGPT auth: {}",
+                error.without_url()
+            ))
+        })?;
+    let status = response.status();
     let text = response
         .text()
         .await
-        .map_err(|_| auth_error("invalid ChatGPT refresh response; run codex login"))?;
+        .map_err(|_| ChatGptAuthError::new(INVALID_REFRESH_RESPONSE))?;
+    if !status.is_success() {
+        // Body before status: a 4xx on its own says nothing about whether the
+        // failure is permanent. Only the OAuth `error` code separates "this
+        // grant will never be accepted again" from "the endpoint is unhappy
+        // right now".
+        let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        if value.get("error").and_then(Value::as_str) == Some(INVALID_GRANT) {
+            return Err(ChatGptAuthError::terminal(
+                TerminalRefresh::InvalidGrant,
+                "ChatGPT rejected the stored refresh token (invalid_grant); it expired or was \
+                 revoked and no retry can recover it. Re-add the account from the admin \
+                 dashboard, or run `shunt login codex --name <account-name>` again",
+            ));
+        }
+        // The detail is logged server-side. Keep the parsed OAuth error code
+        // when the body carries one; otherwise a bounded, control-free excerpt,
+        // so an upstream or proxy body cannot split or inject log lines.
+        let detail = match value.get("error").and_then(Value::as_str) {
+            Some(code) => format!("oauth error `{}`", log_excerpt(code)),
+            None => log_excerpt(&text),
+        };
+        return Err(ChatGptAuthError::new(format!(
+            "failed to refresh ChatGPT auth ({status}): {detail}"
+        )));
+    }
     let value = serde_json::from_str::<Value>(&text)
-        .map_err(|_| auth_error("invalid ChatGPT refresh response; run codex login"))?;
-    parse_refresh_response(&value)
-        .ok_or_else(|| auth_error("invalid ChatGPT refresh response; run codex login"))
+        .map_err(|_| ChatGptAuthError::new(INVALID_REFRESH_RESPONSE))?;
+    parse_refresh_response(&value).ok_or_else(|| ChatGptAuthError::new(INVALID_REFRESH_RESPONSE))
+}
+
+/// The first 200 characters of an upstream body with every control character
+/// and Unicode line/paragraph separator replaced, for a single-line log field.
+/// `is_control` alone misses U+2028/U+2029, which a Unicode-aware viewer
+/// renders as a line break.
+fn log_excerpt(text: &str) -> String {
+    text.chars()
+        .take(200)
+        .map(|c| if breaks_line(c) { ' ' } else { c })
+        .collect()
+}
+
+fn breaks_line(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
 }
 
 fn read_auth_file(path: &Path) -> io::Result<AuthFile> {
@@ -415,22 +566,22 @@ impl TokenSet {
             .or_else(|| jwt_account_id(&self.access_token))
     }
 
-    fn to_credential(&self) -> Result<ChatGptCred, AdapterError> {
+    fn to_credential(&self) -> Result<ChatGptCred, ChatGptAuthError> {
         Ok(ChatGptCred {
             access_token: self.access_token.clone(),
             account_id: self
                 .account_id()
-                .ok_or_else(|| auth_error("ChatGPT account id missing; run codex login"))?,
+                .ok_or_else(|| ChatGptAuthError::new(ACCOUNT_ID_MISSING))?,
         })
     }
 }
 
 impl RefreshResponse {
-    fn to_credential(&self) -> Result<ChatGptCred, AdapterError> {
+    fn to_credential(&self) -> Result<ChatGptCred, ChatGptAuthError> {
         Ok(ChatGptCred {
             access_token: self.access_token.clone(),
             account_id: jwt_account_id(&self.access_token)
-                .ok_or_else(|| auth_error("ChatGPT account id missing; run codex login"))?,
+                .ok_or_else(|| ChatGptAuthError::new(ACCOUNT_ID_MISSING))?,
         })
     }
 }
@@ -1126,6 +1277,222 @@ mod tests {
         server.verify().await;
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn refresh_invalid_grant_is_terminal() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_string(r#"{"error":"invalid_grant"}"#),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let path = temp_auth_dir("invalid-grant").join("auth.json");
+        write_auth(&path, &token(1, Some("acct_dead")), "dead-refresh");
+        let store = CodexAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let error = store.get_valid_chatgpt().await.unwrap_err();
+
+        assert_eq!(error.terminal, Some(TerminalRefresh::InvalidGrant));
+        assert!(error.is_terminal());
+        assert!(
+            error.detail.contains("invalid_grant"),
+            "detail: {}",
+            error.detail
+        );
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn refresh_server_error_is_not_terminal() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let path = temp_auth_dir("refresh-503").join("auth.json");
+        write_auth(&path, &token(1, Some("acct_blip")), "live-refresh");
+        let store = CodexAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let error = store.get_valid_chatgpt().await.unwrap_err();
+
+        assert_eq!(error.terminal, None);
+        assert!(error.detail.contains("503"), "detail: {}", error.detail);
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn refresh_error_body_is_sanitized_before_logging() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // A proxy body with newlines and an ANSI escape must not reach the
+        // structured log as-is; only the OAuth error code is kept when present.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(502).set_body_string(
+                    "<html>\nbad gateway\x1b[31m injected=\"line\"\u{2028}</html>",
+                ),
+            )
+            .mount(&server)
+            .await;
+        let path = temp_auth_dir("refresh-sanitize").join("auth.json");
+        write_auth(&path, &token(1, Some("acct_proxy")), "live-refresh");
+        let store = CodexAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let error = store.get_valid_chatgpt().await.unwrap_err();
+
+        assert_eq!(error.terminal, None);
+        assert!(
+            !error.detail.chars().any(breaks_line),
+            "detail must be a single control-free line: {:?}",
+            error.detail
+        );
+        assert!(
+            error.detail.contains("bad gateway"),
+            "detail: {}",
+            error.detail
+        );
+
+        assert_eq!(
+            log_excerpt("{\"error\":\"temporarily_unavailable\"}").len(),
+            "{\"error\":\"temporarily_unavailable\"}".len()
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn rotated_refresh_with_invalid_access_token_is_terminal() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // The provider consumed `old-refresh` and rotated it, but the access
+        // token it returned carries no account id, so nothing is written back.
+        // The token on disk is now spent: no retry can recover this account.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": token(2_000_000_000, None),
+                "refresh_token": "rotated-refresh",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let path = temp_auth_dir("rotated-no-account").join("auth.json");
+        write_auth(&path, &token(1, Some("acct_rotating")), "old-refresh");
+        let store = CodexAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let error = store.get_valid_chatgpt().await.unwrap_err();
+
+        assert_eq!(error.terminal, Some(TerminalRefresh::WritebackFailed));
+        assert!(
+            error.detail.contains("account id missing"),
+            "detail: {}",
+            error.detail
+        );
+        let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            stored["tokens"]["refresh_token"], "old-refresh",
+            "an unvalidated pair must not be written back"
+        );
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn unrotated_refresh_with_invalid_access_token_is_not_terminal() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Same validation failure, but the provider echoed the stored refresh
+        // token: the grant on disk is still live, so the plain cooldown applies.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": token(2_000_000_000, None),
+                "refresh_token": "live-refresh",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let path = temp_auth_dir("unrotated-no-account").join("auth.json");
+        write_auth(&path, &token(1, Some("acct_steady")), "live-refresh");
+        let store = CodexAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let error = store.get_valid_chatgpt().await.unwrap_err();
+
+        assert_eq!(error.terminal, None);
+        assert!(
+            error.detail.contains("account id missing"),
+            "detail: {}",
+            error.detail
+        );
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn missing_refresh_token_is_terminal() {
+        // An expired access token with no refresh token stored: nothing can be
+        // sent to the provider, so this fails at resolution and is terminal.
+        let path = temp_auth_dir("no-refresh").join("auth.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            json!({
+                "auth_mode": "ChatGPT",
+                "tokens": { "access_token": token(1, Some("acct_expired")) }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let store = CodexAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            "http://127.0.0.1:9/token".to_string(),
+        );
+
+        let error = store.get_valid_chatgpt().await.unwrap_err();
+
+        assert_eq!(error.terminal, Some(TerminalRefresh::NoRefreshToken));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     // The redirect-hardening guard lives in `auth::shared::token_refresh_client`

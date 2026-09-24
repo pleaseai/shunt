@@ -437,13 +437,13 @@ Available presets:
 | `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 | `opencode` | `anthropic` | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, header `x_api_key` |
 
-A bare string such as `auth = "claude_oauth"` is shorthand for `auth = { mode = "claude_oauth" }`. `api_key` maps accept `env` (required unless the preset supplies it) and `header`; an omitted `header` keeps the default (`bearer`, or the `opencode` preset's `x_api_key`). `claude_oauth`, `chatgpt_oauth`, and `kimi_oauth` maps may select `account = "name"` or `accounts = [...]`, but not both. `accounts` accepts bare store-entry names and full account tables; an explicitly empty `accounts = []` is rejected, while omitting both scope fields scans the whole store. If the ChatGPT store is empty, `chatgpt_oauth` retains its `~/.codex/auth.json` fallback. `passthrough`, `xai_oauth`, `cursor_oauth`, and `antigravity_oauth` maps take only `mode`; unknown mode-specific keys are errors.
+A bare string such as `auth = "claude_oauth"` is shorthand for `auth = { mode = "claude_oauth" }`. `api_key` maps accept `env` (required unless the preset supplies it) and `header`; an omitted `header` keeps the default (`bearer`, or the `opencode` preset's `x_api_key`). `claude_oauth`, `chatgpt_oauth`, `kimi_oauth`, and `antigravity_oauth` maps may select `account = "name"` or `accounts = [...]`, but not both. `accounts` accepts bare store-entry names and full account tables; an explicitly empty `accounts = []` is rejected, while omitting both scope fields scans the whole store. If the ChatGPT store is empty, `chatgpt_oauth` retains its `~/.codex/auth.json` fallback; if the Antigravity store is empty and nothing is configured, `antigravity_oauth` falls back to `~/.shunt/antigravity-auth.json`. `passthrough`, `xai_oauth`, and `cursor_oauth` maps take only `mode`; unknown mode-specific keys are errors.
 
 Do not combine `[[upstreams]]` with `[providers.*]` in the config file: startup fails when both file-layer declaration forms are present. Environment variables may override individual fields by normalized upstream/provider name under either form, using `SHUNT_PROVIDERS__<name>__<field>`. Declare the ordered `[[upstreams]]` array in the config file rather than trying to synthesize the whole array with one environment variable. Legacy `[providers.<name>]` remains supported and is normalized to implicit name-sorted upstreams. Because that form has no declared failover order, it supports only zero- or one-entry model maps; use `[[upstreams]]` before adding multiple entries to a model map.
 
 ### Failover behavior
 
-For a multi-entry model map, shunt filters the declared upstream sequence to the names in the map. It advances after an upstream status `429`, `401`, `403`, `404`, or any `5xx`, and after a failure before upstream response headers arrive. Gateway-local errors that do not represent an upstream attempt, such as auth misconfiguration or adapter-owned validation/header construction errors, return immediately so failover does not mask the configuration problem. There is no failover after `2xx` headers have been returned, including a later streaming-body failure. The Responses adapter's streaming paths commit the response before any upstream byte; a chain of `Anthropic`/`Responses` elements without the websocket transport then runs its failover inside the committed stream — pre-header transport failures and advance-status errors retry the next upstream before the synthetic start goes out — while a route that cannot advance (a terminal non-2xx, or a non-SSE success body from an Anthropic-kind winner) surfaces the failure as one terminal SSE `error` event on the committed stream. The winner's relay ends at the terminal frame (`message_stop`, or a relayed `error` frame): a streaming-body failure before it becomes one terminal `error` event, one after it surfaces nowhere, and the still-open upstream drains detached under a bounded budget, so the client's stream completes at the turn — an appended `error` event to a completed response would corrupt it. A TTFB timeout is never advanced: the configured timeout is an answer, surfacing as a terminal `504 timeout_error` event. On that committed path the response carries only `content-type` and `x-gateway-model`: the winner-dependent headers `x-gateway-upstream` and `x-gateway-upstream-model` are omitted — the winner is unknown when the headers go out with the commit — and upstream response headers (request ids, `anthropic-ratelimit-*` quota metadata included) never reach the client, even from an Anthropic-kind winner, while `x-gateway-model` stays (it names the client-requested id); request metrics record every attempt with its classified status, and stream attribution follows the winner once the stream knows it.
+For a multi-entry model map, shunt filters the declared upstream sequence to the names in the map. It advances after an upstream status `429`, `401`, `403`, `404`, or any `5xx`, and after a failure before upstream response headers arrive. Gateway-local errors that do not represent an upstream attempt, such as auth misconfiguration or adapter-owned validation/header construction errors, return immediately so failover does not mask the configuration problem. There is no failover after `2xx` headers have been returned, including a later streaming-body failure. The Responses adapter's streaming paths commit the response before any upstream byte; a chain of `Anthropic`/`Responses` elements without the websocket transport then runs its failover inside the committed stream — pre-header transport failures and advance-status errors retry the next upstream before the synthetic start goes out — while a route that cannot advance (a terminal non-2xx, or a non-SSE success body from an Anthropic-kind winner) surfaces the failure as one terminal SSE `error` event on the committed stream. The winner's relay ends at the terminal frame (`message_stop`, or a relayed `error` frame): a streaming-body failure before it becomes one terminal `error` event, one after it surfaces nowhere, and the still-open upstream drains detached under a bounded budget, so the client's stream completes at the turn — an appended `error` event to a completed response would corrupt it. A TTFB timeout is never advanced: the configured timeout is an answer, surfacing as a terminal `504 timeout_error` event. On that committed path the response carries `content-type`, `x-gateway-model`, and — when a `[models.router]` entry routed the request or a `[models.subagents]` overlay diverted it — the router pair `x-gateway-routed-model`/`x-gateway-route-source`, decided before the first attempt and so independent of which upstream wins: the winner-dependent headers `x-gateway-upstream` and `x-gateway-upstream-model` are omitted — the winner is unknown when the headers go out with the commit — and upstream response headers (request ids, `anthropic-ratelimit-*` quota metadata included) never reach the client, even from an Anthropic-kind winner, while `x-gateway-model` stays (it names the client-requested id); request metrics record every attempt with its classified status, and stream attribution follows the winner once the stream knows it.
 
 When the chain is exhausted, shunt returns the best relayed failure with preference `429` → `401`/`403` → `404` → other `5xx`. Pre-header failures are not remembered as best failures. If no relayed response was remembered, shunt returns a `502 api_error` with `all upstreams failed (N attempted)`.
 
@@ -451,7 +451,7 @@ For a `passthrough` upstream, the client's own `authorization` / `x-api-key` is 
 
 Independent of origin, each retained slot is also checked by the value it actually holds: `authorization` and `x-api-key` are each cleared only when that slot's own value is shaped like a JWT shunt itself issued — three segments whose payload's `aud` claims `"shunt"`, whose `iss` claims this gateway's identity, or whose `shunt_token_use` claim is `"gateway-session"`, a dedicated marker that only shunt mints — or matches a configured `[server.auth]` client token. The JWT check is deliberately by shape, not by whether the token currently authenticates: an expired token, one minted by a sibling instance under a different `public_url`, or one that no longer verifies after a `jwt_secret` rotation is still shunt's own credential and is still cleared. The marker is an additional arm on that shape check, not a requirement: a token minted before the marker existed still matches by `aud`/`iss`, and `verify` does not require the marker either, so a token minted by an older shunt version still authenticates for as long as it remains within its TTL. An `apiKeyHelper` fills both slots with the same value, so either credential can land in either or both. A slot holding a genuine upstream credential is forwarded even when the other slot holds the gateway JWT or a static client token; only the gate-credential-bearing slot is cleared. `[server.auth] header` accepts any header name, including `authorization` itself; when it is set that way a client authenticates with a bare, unprefixed `Authorization: <token>`, so that slot is checked as a whole value as well as by its `Bearer` payload and such a token is never forwarded upstream. One caveat for that configuration: on inference requests shunt removes the configured header before routing, unconditionally, so that slot then carries nothing upstream — a caller's own credential in it is dropped too, not just a gate token. Keeping `header` at its dedicated `x-shunt-token` default avoids that collision.
 
-Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id) — except on the committed streaming chain path, where the response carries only `content-type` and `x-gateway-model` (the winner-dependent `x-gateway-upstream` and `x-gateway-upstream-model` are omitted and upstream response headers never reach the client). A response routed by a [stage router](/guides/stage-router/) additionally carries `x-gateway-routed-model` (the target its chosen tier routes to) and `x-gateway-route-source` (why that tier was chosen); both are omitted for a model id that configures no router. `count_tokens` uses only the first chain element, never fails over, and is left unstamped by the stage-router pair. `[server.codex_endpoint]` is pinned to its configured upstream for every model with no `[[server.codex_endpoint.routes]]` entry, and does not participate in this chain either way.
+Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id) — except on the committed streaming chain path, where the response carries `content-type`, `x-gateway-model`, and the router pair below when a router routed the request or an overlay diverted it (the winner-dependent `x-gateway-upstream` and `x-gateway-upstream-model` are omitted and upstream response headers never reach the client). A response routed by a [`[models.router]`](#modelsrouter-optional) entry additionally carries `x-gateway-routed-model` (the target the router chose) and `x-gateway-route-source` (why it was chosen) — for every router type, not only the [stage router](/guides/stage-router/). A delegated turn a [`[models.subagents]`](#modelssubagents-optional) overlay diverted carries the same pair, with `x-gateway-route-source` reading `subagent_type` or `subagent`; both are omitted only when neither a router nor an overlay decided the turn. `count_tokens` uses only the first chain element, never fails over, and is left unstamped by that pair. `[server.codex_endpoint]` is pinned to its configured upstream for every model with no `[[server.codex_endpoint.routes]]` entry, and does not participate in this chain either way.
 
 ### Migrating existing configurations
 
@@ -471,7 +471,7 @@ Each provider is a table under a name of your choosing. Built-ins (`anthropic`, 
 
 | Key | Values | Meaning |
 | :-- | :-- | :-- |
-| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` \| `antigravity_cli` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = the native Cursor ConnectRPC/protobuf AgentService adapter; `gemini` = Anthropic Messages translated to Gemini `generateContent`/`streamGenerateContent` on the Google Code Assist backend; `antigravity` = the Google Antigravity backend over HTTP, which speaks the same Code Assist protocol as `gemini` but authenticates with an Antigravity subscription token and identifies itself as `ideType: ANTIGRAVITY` during project discovery; `antigravity_cli` = **deprecated** — no upstream at all, running the local Antigravity CLI binary (`agy`) as a subprocess. Because `agy` resolves its own tool calls and no `tool_use` block can ever be returned, a request that asks for one — a non-empty `tools` array, or a `tool_choice` of `any` or `tool` — is refused with a `400 invalid_request_error` rather than silently answered as text. `tool_choice: none` (even alongside `tools`), `tool_choice: auto` with no tools, and an empty `tools: []` all oblige nothing and are accepted. |
+| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` \| `antigravity_cli` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API (the Responses API has no `stop` parameter, so `stop_sequences` is emulated gateway-side in the translation rather than silently dropped); `cursor` = the native Cursor ConnectRPC/protobuf AgentService adapter; `gemini` = Anthropic Messages translated to Gemini `generateContent`/`streamGenerateContent` on the Google Code Assist backend; `antigravity` = the Google Antigravity backend over HTTP, which speaks the same Code Assist protocol as `gemini` but authenticates with an Antigravity subscription token and identifies itself as `ideType: ANTIGRAVITY` during project discovery; `antigravity_cli` = **deprecated** — no upstream at all, running the local Antigravity CLI binary (`agy`) as a subprocess. Because `agy` resolves its own tool calls and no `tool_use` block can ever be returned, a request that asks for one — a non-empty `tools` array, or a `tool_choice` of `any` or `tool` — is refused with a `400 invalid_request_error` rather than silently answered as text. `tool_choice: none` (even alongside `tools`), `tool_choice: auto` with no tools, and an empty `tools: []` all oblige nothing and are accepted. |
 | `base_url` | URL | Upstream base; shunt appends the endpoint path. For `kind = "cursor"`, this is the login/token-refresh surface only; it does not select the agent/inference host. For `kind = "antigravity"`, credential-path project discovery (`loadCodeAssist`) also addresses this host when a stored credential has no cached project ID — not just inference — as does first-time onboarding (`onboardUser`), except on the production default host, which is onboarded through its own `daily-` control-plane host. When several Antigravity upstreams are configured, [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) runs that discovery against the one your routes select. |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `kimi_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough` forwards the client's own credential; `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `claude_oauth` selects from explicit Anthropic accounts; `kimi_oauth` selects from explicit Kimi Code accounts (`shunt login kimi`), valid only with `kind = "anthropic"` and a `kimi.com` `base_url`; `xai_oauth` reuses `~/.shunt/xai-auth.json` from `shunt login xai` (only sent to x.ai/grok.com hosts over HTTPS); `cursor_oauth` reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`); `google_oauth` reuses the gemini CLI login in `~/.gemini/oauth_creds.json` and is valid only with `kind = "gemini"`; `antigravity_oauth` reuses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`), is valid only with `kind = "antigravity"`, and is **not** interchangeable with `google_oauth` — Antigravity requests two scopes (`cclog`, `experimentsandconfigs`) a Gemini CLI token never carries; `none` sends no credential at all, for adapters with no upstream to authenticate against (`kind = "antigravity_cli"`). |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. Its own value can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)). |
@@ -480,7 +480,7 @@ Each provider is a table under a name of your choosing. Built-ins (`anthropic`, 
 | `effort` | `low` … `max` | Optional default reasoning effort (`responses` providers). Also applies to `kind = "antigravity"`, where it is appended to a bare `gemini-*` `upstream_model` as the catalog's effort suffix. |
 | `service_tier` | `fast` \| `priority` \| `flex` \| `default` | Optional default Codex "Fast" mode opt-in (`responses` providers) — sent as the Responses API `service_tier` field. `fast` normalizes to `priority`; `default` is a client-only sentinel that is never sent on the wire. Off by default. Withheld for the `xai`/`grok` flavors even when configured (xAI 400s on it). A route-level `service_tier` (including an explicit `default`) overrides this value — see below. See [Codex → Fast mode](/guides/codex/#fast-mode). |
 | `count_tokens` | `tiktoken` (default) \| `estimate` | `responses` and `cursor` providers: local tiktoken count vs. `501 not_supported` fallback ([details](/guides/effort-and-context/#token-counting-count_tokens)). |
-| `classifier_model` | model id | `anthropic` providers only. Upstream model for Claude Code's auto-mode permission classifier request, identified by its request shape alone — every other request keeps the model it asked for. A remap **within this provider**, never a route to another one: the classifier carries `stop_sequences`, which the Responses translation drops. Unset by default. See [Anthropic → Auto-mode classifier](/providers/anthropic/#auto-mode-classifier). |
+| `classifier_model` | model id | `anthropic` providers only. Upstream model for Claude Code's auto-mode permission classifier request, identified by its request shape alone — every other request keeps the model it asked for. A remap **within this provider**, never a route to another one — the key is accepted on `anthropic` upstreams only. Unset by default. See [Anthropic → Auto-mode classifier](/providers/anthropic/#auto-mode-classifier). |
 | `websocket` | `true` \| `false` (default) | Opt in to the Codex Responses WebSocket v2 transport (ChatGPT/Codex backend only; falls back to HTTP on any transport failure before the first event reaches the client, so it can never do worse than plain HTTP). |
 | `tool_search` | unset ("auto", default) \| `true` \| `false` | Use the native client-executed `tool_search` protocol for Claude Code's tool search on a GPT-5.4+ model, gated on flavor (non-xAI/Grok). Unset defaults to native only for known-good hosts — the ChatGPT/Codex backend and `api.openai.com` — and the text shim everywhere else, including custom OpenAI-compatible endpoints (LiteLLM, vLLM, OpenRouter, self-hosted). Set `true` to opt a verified custom endpoint into native, or `false` to always force the shim. See [Codex → Tool search](/guides/codex/#native-protocol). |
 | `request_compression` | `true` (default) \| `false` | zstd-compress the Responses **request** body (`content-encoding: zstd`, level 3), matching what the Codex CLI sends to the same backend. Effective only on the ChatGPT/Codex flavor (`auth = "chatgpt_oauth"`) — no other Responses upstream is verified to accept a compressed request body, so the flag is inert there. Set `false` to send plain JSON, e.g. behind a middlebox that mishandles compressed request bodies. |
@@ -578,7 +578,7 @@ The top-level `auto_include_builtin_models` key defaults to `true`. When enabled
 
 Discovered models come from the live upstream list when shunt can get one. It issues `GET /v1/models` against `server.default_provider` when it is Anthropic-kind, using that provider's authentication mode. With `auth = "passthrough"`, shunt forwards the caller's credential, so each caller sees the list that credential is entitled to — except a slot holding shunt's own `[server.gateway]` JWT or a configured `[server.auth]` client token rather than a real upstream credential, which is not forwarded. `authorization` and `x-api-key` are filtered independently, so a genuine credential in the other slot is still forwarded; discovery falls back to the builtin snapshot only when neither slot has a forwardable credential left. With `api_key`, shunt uses the configured key. With `claude_oauth`, it uses the first resolvable, non-disabled account from the same effective account set as inference, including store-scanned accounts in `account_scope` order. Discovery performs no pool selection, cooldown, or quota accounting. Those two gateway-owned modes therefore expose a shared credential-scoped catalog. shunt caches nothing. When the default provider is not Anthropic-kind, there is no credential, or the call fails or times out (2 s cap), shunt falls back to a builtin snapshot of the Claude catalog. Either way these ids need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
 
-A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. With ordered `[[upstreams]]`, the map may contain one or more `upstream = "backend-id"` pairs and resolves to a failover chain in `[[upstreams]]` declaration order. With legacy `[providers.*]`, it must contain exactly one pair because that form has no declared order. For that id the map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; each upstream's default `effort` applies to its chain element. An empty map, an empty or whitespace-only upstream name or backend id, an unknown upstream, a same-id `[[routes]]` entry, a mapped id ending in `[1m]` or `[1M]`, or a duplicate `[[models]]` id where either entry has a map is a startup error. Clients strip the context-window hint before matching, so including it in a mapped id would make that entry unreachable. Pure map-less duplicate ids retain their previous behavior, unless one of them carries a `[models.stage_router]` table — see below.
+A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. With ordered `[[upstreams]]`, the map may contain one or more `upstream = "backend-id"` pairs and resolves to a failover chain in `[[upstreams]]` declaration order. With legacy `[providers.*]`, it must contain exactly one pair because that form has no declared order. For that id the map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; each upstream's default `effort` applies to its chain element. An empty map, an empty or whitespace-only upstream name or backend id, an unknown upstream, a same-id `[[routes]]` entry, a mapped id ending in `[1m]` or `[1M]`, or a duplicate `[[models]]` id where either entry has a map is a startup error. Clients strip the context-window hint before matching, so including it in a mapped id would make that entry unreachable. Pure map-less duplicate ids retain their previous behavior, unless one of them carries a `[models.router]` table — see below.
 
 ```toml
 [[models]]
@@ -595,32 +595,72 @@ codex = "gpt-5.2"
 | `display_name` | — | Label shown in the `/model` picker |
 | `upstream_model` | — | Map from configured upstream names to backend model ids; ordered `[[upstreams]]` may produce a multi-entry failover chain, while legacy providers allow one entry |
 
-### `[models.stage_router]` (optional)
+### `[models.router]` (optional)
 
-Content-aware tier selection for one advertised id. Instead of naming a single
-destination, the entry names **two** — a capable tier and an efficient one — and
-lets the request's recent tool-result history pick between them per turn. Absent
-this table a `[[models]]` entry behaves exactly as it did before; configure no
-router anywhere and routing is unchanged.
+Per-request routing for one advertised id. Instead of naming a single
+destination, the entry carries a `[models.router]` table whose `type` key picks
+a routing algorithm, and the algorithm picks the destination. Absent this table
+and the [`[models.subagents]`](#modelssubagents-optional) overlay, a `[[models]]`
+entry behaves exactly as it did before; configure neither anywhere and routing
+is unchanged.
 
-Both targets are ordinary public model ids, so each resolves through the normal
-ladder and keeps its failover chain, account pool, adapter, `effort`, and
-`service_tier`. What the client is told it got stays the id it asked for — the
-tier travels upstream only. See the [stage router guide](/guides/stage-router/)
-for how the signals and the hysteresis work.
+`type` — rather than shunt's usual `kind` or `mode` — is a **deliberate
+exception to shunt's own naming convention**, and this is the one place the
+reference says so. The routing algorithms come from
+[NVIDIA-NeMo/Switchyard](https://github.com/NVIDIA-NeMo/Switchyard), and keeping
+its key name means its schema documentation and its `type` values transfer here
+unchanged instead of being translated twice.
+
+Every target named by any router is an ordinary public model id, so each
+resolves through the normal ladder and keeps its failover chain, account pool,
+adapter, `effort`, and `service_tier`. What the client is told it got stays the
+id it asked for — the chosen target travels upstream only.
+
+| `type` | Picks by | Reads the request body |
+| :-- | :-- | :-- |
+| `stage_router` | Recent tool-result metadata, per turn | Yes — `tool_use.name` and `tool_result.is_error` only |
+| `auto` | The same router under upstream's preset | Yes, as above |
+| `random` | A weighted draw, session-sticky by default | No |
+| `noop` | Nothing — answers with an empty message | No |
+| `prefill_router` | A learned classifier over the latest user turn (needs the `prefill-router` build) | Yes — the text of user turns |
+| `llm_classifier` | An LLM judge's verdict, per `classify_trigger`; in `mode = "escalation"`, a judge's ruling on the completed weak turn | Yes — the transcript, via the packaged or a custom prompt |
+| `composite` | An LLM judge sets the tier a stage router falls open to | Yes — the transcript for the judge, tool-result metadata for the signals |
+| `advisor` | One executor serves every turn; a stronger reviewer approves or sends back its terminal turns | Yes — the transcript, for the reviewer |
+
+Two shapes serve a turn while still deciding how to route it:
+`llm_classifier`'s [`mode = "escalation"`](#mode--escalation) and
+[`type = "advisor"`](#type--advisor). They hold the turn until the verdict is in
+and then serve it, so they are the only routes on which shunt buffers a
+response the client asked to stream — see
+[buffered turns](#buffered-turns-escalation-and-advisor). `prefill_router` is implemented but
+**gated at compile time**: it is available only from a build that opts into the
+`prefill-router` cargo feature, which is off by default — see
+[below](#type--prefill_router).
+
+`[models.router]` and `[models.upstream_model]` on the same entry are mutually
+exclusive.
+
+#### `type = "stage_router"`
+
+Content-aware tier selection. The entry names **two** targets — a capable tier
+and an efficient one — and lets the request's recent tool-result history pick
+between them per turn. See the [stage router guide](/guides/stage-router/) for
+how the signals and the hysteresis work.
 
 ```toml
 [[models]]
 id = "claude-auto"
 display_name = "Auto (stage router)"
 
-[models.stage_router]
+[models.router]
+type = "stage_router"
 capable_target = "claude-opus-4-8"
 efficient_target = "claude-sonnet-4-6"
 ```
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
+| `type` | ✅ required | `stage_router` |
 | `capable_target` | ✅ required | Model id for hard reasoning, investigation, and error recovery |
 | `efficient_target` | ✅ required | Model id for routine production once the plan is settled |
 | `picker` | `efficient_first` | Tier used when the signals are inconclusive. `efficient_first` or `capable_first` |
@@ -629,26 +669,844 @@ efficient_target = "claude-sonnet-4-6"
 | `min_dwell_turns` | `3` | Turns a tier is held before a de-escalation may fire; counted from the turn that chose it, so `0` and `1` both mean no dwell floor |
 | `deescalate_threshold` | `0.75` | Confidence required to move *down* a tier. The default sits above `confidence_threshold`'s, making the down direction the harder one, but the two are range-checked independently — a value below `confidence_threshold` is accepted, and warns at load |
 | `session_ttl_seconds` | `3600` | How long a quiet session's pinned tier survives |
+| `capable_hold_turns` | `0` | Turns the capable tier is held after a signal-driven escalation. Those turns report route source `capable_hold`, and a hold is not evidence — it cannot move a pinned tier in either direction. The default of `0` keeps pinning exactly as it was; upstream's own default is `2` |
+
+#### `[models.router.tool_semantics]` (optional)
+
+Four lists that extend shunt's built-in Claude Code tool vocabulary for one
+router. They are applied **after** the built-in table, never instead of it, so
+they reach only the names that table leaves uncategorised — `Bash`, `Skill`, and
+`mcp__*` server tools. Naming a tool the built-in table already classifies as
+observe, mutate, or plan (`Read`, `Edit`, `TodoWrite`, …) is a **startup
+error**. So is a name carrying whitespace (`" Read "`, `"some tool"`): names are
+matched exactly, so a padded one would match nothing at runtime.
+
+```toml
+[models.router.tool_semantics]
+observe = ["mcp__jbcontext__code_search"]
+mutate = []
+plan = []
+new = []
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `observe` | `[]` | Tool names that read without changing anything |
+| `mutate` | `[]` | Tool names that change state; scored as a whole-file write |
+| `plan` | `[]` | Tool names that plan or delegate |
+| `new` | `[]` | Tool names counted as newly introduced tools by the scorer |
+
+Editing any of the four drops that router's existing session pins on the next
+load, the same way editing a threshold does.
+
+#### `[models.router.handoff_notes]` (optional)
+
+A system block appended to the **forwarded** request on the turns a signal moves
+the tier, so the incoming model is told why it is taking over.
+
+```toml
+[models.router.handoff_notes]
+escalation_note = "the previous model was stalling; pick up the diagnosis"
+deescalation_note = "routine work resumes"
+only_on_wrong_signal_escalation = true
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `escalation_note` | — | Appended when a signal drives the turn up to the capable tier |
+| `deescalation_note` | — | Appended when the scorer hands work back down to the efficient tier |
+| `only_on_wrong_signal_escalation` | `true` | Restrict `escalation_note` to the signal-driven escalations (route sources `override` and `dimensions`). Set `false` to append it on every scorer-made escalation |
+
+The note is a new block at the **end** of the `system` array; Claude Code's
+attribution block is the first element and is never touched. Sticky turns,
+turns with no signal, and `count_tokens` probes carry no note — nor does a turn
+that hands nothing over: the first turn of a session, and a later signal that
+only re-confirms the tier already pinned. A blank note is a startup error.
+
+**Each toggle costs a prompt-cache miss.** The system array is part of the
+cached prefix, so appending or dropping the note invalidates it — on top of the
+per-model prefix a tier change already forfeits. That is why the table is
+opt-in, and why `only_on_wrong_signal_escalation` defaults to the narrower set.
+
+#### `[models.router.classifier]` (optional)
+
+An LLM **judge** for the turns the signals cannot decide. Adding this table
+moves the entry onto the driven lane: on a turn the scorer leaves undecided —
+one that would otherwise report route source `fall_open` — on a session no pin
+is holding, shunt consults the judge and routes on its verdict. It is accepted
+on `type = "stage_router"` only.
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `target` | ✅ required | Public model id of the judge. Consulted, never served — it never answers the client |
+| `base_threshold` | `0.5` | Lowest `p_solve` that keeps a supported task on the efficient tier, in `(0.0, 1.0]` |
+| `classify_trigger` | `every_request` | When the judge may be consulted. `every_request` allows it on any undecided turn, tool continuations included. `user_turn` allows it only when the latest message is a human user turn — `role: user` carrying at least one block that is not a `tool_result` — so a tool continuation rides the session's pin instead of paying a judge call. `new_session` behaves exactly as `every_request` here, as it does upstream: this router already holds its decision in shunt's own session pin |
+
+The judge target is an ordinary public model id held to the same one-hop rule
+as the tier targets, plus one more: it must not resolve to a **passthrough**
+route. `auth = "passthrough"` means *forward the caller's credential*, and the
+caller's credential is exactly what a judge call strips — so such a target
+arrives with nothing and is a startup error. Every other auth mode is accepted,
+including `auth = "none"`: that mode means the endpoint needs no credential at
+all, so a local or self-hosted judge behind no auth is a supported
+configuration, not an error. None of the caller's credential slots travel with it — the reserved
+`x-shunt-*` slots and `cookie`, `authorization`, `x-api-key`, and
+`anthropic-beta` are all removed. The call consumes that target's own account
+pool quota, which is why a judge should map its own `[[models]]` entry.
+
+A judged turn reports route source `llm-classifier` and pins the session like
+any other decision. A judge failure of any kind — a timeout, an oversized
+reply, an upstream error, an unparseable verdict, or an exhausted budget —
+resolves as `fall_open`, the picker default. The judge is never consulted on a
+`count_tokens` probe, and never before the request is admitted: on a turn that
+consults one, inbound auth ranges over the requested id plus every target and
+judge the entry can name, each with its whole failover chain, so a passthrough
+answer target with a credential-injecting judge requires the client credential,
+and an unauthenticated or policy-denied request makes zero judge calls. A turn
+that consults no judge is gated by the chain it actually resolved — one the
+signals decided on their own, and one a
+[`[models.subagents]`](#modelssubagents-optional) overlay diverted before the
+router ran.
+
+#### Per-call bounds
+
+Six keys bound every internal call an entry makes. They live on the table that
+makes those calls: `[models.router]` of any driven type — a `stage_router`
+carrying a `classifier`, `llm_classifier`, `composite`, or `advisor` — and a
+classifier-form [`[models.subagents]`](#modelssubagents-optional) overlay, which
+carries its own copy. Crossing one cancels the upstream call. Each must be at
+least `1`; a `0` is a startup error naming the key.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `judge_timeout_ms` | `30000` | End-to-end deadline on the non-streaming judge call — headers *and* body, so a `200` that then stalls is cut here rather than left hanging |
+| `judge_max_response_bytes` | `65536` | Largest judge reply collected; a larger one resolves as `fall_open` |
+| `gated_max_bytes` | `8388608` | Largest retained turn: its SSE frame bytes, or its JSON body |
+| `gated_idle_ms` | `60000` | Longest gap between completed content frames of a retained turn. SSE keep-alives (`event: ping` frames and `:` comment frames) do not reset it, and a frame split across chunks is reassembled before it is classified |
+| `gated_max_duration_ms` | `600000` | Wall-clock ceiling on a retained turn, headers and body |
+| `max_judge_calls` | `8` | Judge calls one session may make. The gated turn itself is not a judge call and is not counted |
+
+The three `gated_*` keys bound the **gated** turns of an
+[`escalation`](#mode--escalation) or [`advisor`](#type--advisor) entry — the
+turns shunt holds until a verdict is in. On every other entry there is no gated
+turn, and they bound nothing.
+
+#### `type = "llm_classifier"`
+
+An LLM **judge** decides the whole turn, rather than stepping in only where
+signals ran out. The entry names the judge, the destinations it may pick, and
+`mode` — which of three verdict shapes the judge produces. `capability` and
+`custom` are described here; `escalation` judges a completed turn instead and
+has [its own section](#mode--escalation).
+
+`mode` is **required**, which is a deliberate departure from the upstream
+schema, where it defaults to `capability`: the three modes route on different
+principles, and one of them (`escalation`) buffers the turn it serves, so an
+omitted `mode` must not silently pick one.
+
+**`mode = "capability"`** — the packaged judge returns a solve probability for
+the task. A probability at or above `base_threshold` keeps the turn on
+`weak_target`; below it, the turn goes to `strong_target`.
+
+```toml
+[[models]]
+id = "claude-judged"
+
+[models.router]
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+base_threshold = 0.5
+# threshold_step = 0.0
+# classify_trigger = "every_request"
+# message_hash_fallback = false
+# recent_turn_window = 3
+# max_output_tokens = 4096
+# prompt = "…"
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `llm_classifier` |
+| `mode` | ✅ required | `capability` |
+| `classifier_target` | ✅ required | Public model id of the judge. Consulted, never served |
+| `strong_target` | ✅ required | Model id for a task the judge is not confident about |
+| `weak_target` | ✅ required | Model id for a task the judge expects to be solved |
+| `base_threshold` | ✅ required | Lowest solve probability that still routes to `weak_target`, in `(0.0, 1.0]` |
+| `threshold_step` | `0.0` | Finite and non-negative; added once for an uncertain or unmatched verdict and twice for an unsupported one. `base_threshold + 2 × threshold_step` must be at most `1.0` |
+| `prompt` | packaged prompt | Replaces the packaged capability prompt. The schema is sent separately as structured-output configuration, so the prompt must not contain `{{RESPONSE_SCHEMA}}`, and must not be blank |
+
+**`mode = "custom"`** — you supply the prompt and the JSON Schema, and a JSON
+Pointer picks a **model group name** out of the verdict. The first model of that
+group serves the turn. `any` and `judge` are reserved and required; every other
+group name is yours, which is how one entry chooses between more than two
+models.
+
+```toml
+[models.router]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+prompt = "Select exactly one target for this turn. Return only JSON matching the response schema."
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `llm_classifier` |
+| `mode` | ✅ required | `custom` |
+| `models.any` | ✅ required | Every selectable destination. Every other answer group's targets must also appear here (`judge` is exempt); one that does not is a startup error |
+| `models.judge` | ✅ required | One or more ordered judge candidates. Consulted, never served |
+| `models.<name>` | — | A group you name; a verdict naming it selects the group's first model |
+| `default_target` | ✅ required | Group used when the judge returns no usable verdict. Any configured group except `judge`, and it must be non-empty |
+| `prompt` | ✅ required | Judge system prompt. Must be non-blank and must not contain `{{RESPONSE_SCHEMA}}` — the schema is sent separately |
+| `response_schema` | ✅ required | The inner JSON Schema as a TOML string. Must parse as a JSON object; shunt adds the provider wrapper |
+| `policy` | ✅ required | `{ type = "target_selector", selector = "…" }`, where `selector` is a JSON Pointer into the verdict, such as `/target` |
+
+Both modes share these, and the six [per-call bounds](#per-call-bounds):
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every turn, tool continuations included. `user_turn` judges each new human user turn and retains that target across the tool calls between them. `new_session` judges once and reuses that target for the session |
+| `message_hash_fallback` | `false` | Keys retention on the first user message, for clients that send no session id. Requires `classify_trigger = "new_session"`; setting it on another trigger is a startup error |
+| `recent_turn_window` | unset | When set, trailing turns the judge additionally sees. Must be at least `1` |
+| `max_output_tokens` | `4096` | Completion-token ceiling on the judge verdict. Must be at least `1` |
+
+**When the judge does not answer.** A judge call that fails in any way — a
+timeout, an oversized reply, an upstream error, a `400`, an unparseable
+verdict — produces no verdict, and the turn goes to the algorithm's own
+default: `strong_target` in `capability` mode, `default_target`'s first model in
+`custom` mode. Exactly **one** judge call is made per consulted turn, against
+the first judge candidate, so a failure is not retried down `models.judge`: the
+turn is answered, the route source is `classifier_fail_open`, and the client
+still gets its `200`.
+
+**Sessions live in the algorithm.** `classify_trigger` retention is upstream's
+state and is held inside the router instance, which shunt builds once per
+loaded configuration. A hot reload rebuilds it, so a reload forgets which target
+each session was holding — the same property `prefill_router` has.
+`max_judge_calls` is shunt's own and is counted per `(session, agent)`, so a
+delegated child spends its own budget rather than its parent's; a request
+carrying no session id is not tracked, so the bound applies per request for it.
+A turn whose budget is spent skips the judge and takes the fail-open target,
+recorded as judge-call outcome `budget_exhausted`.
+
+**Probes resolve without a judge.** A `count_tokens` request never consults one
+and is answered from the fail-open target, as are the surfaces with no request
+body — `GET /routes`, `/v1/models` discovery, and `shunt check` — which report
+it under route source `classifier_default`.
+
+Every target and every judge is an ordinary public model id under the same
+one-hop rule as the stage router's, and a judge must not resolve to a
+**passthrough** route for the reason given
+[above](#modelsrouterclassifier-optional): a judge call carries none of the
+caller's credentials, so a passthrough route has nothing to run on.
+
+#### `mode = "escalation"`
+
+The third `llm_classifier` mode starts each session on a weak target and has a
+judge read how the work is going. Each turn on a session that has not latched
+is made on `weak_target` and held. The judge then rules on the **completed**
+turn — the work the weak model actually did, not a prediction. A decline resets
+the escalate streak. An escalate verdict extends it. While the streak is below
+`confirmations`, the held weak turn is served. When it reaches `confirmations`,
+the session latches: that turn's weak answer is discarded and `strong_target`
+serves it, and every later turn of the session goes straight to
+`strong_target` with no judge call and no buffering.
+
+```toml
+[[models]]
+id = "claude-escalate"
+
+[models.router]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+# prompt = "…"
+# max_output_tokens = 4096
+
+[models.router.escalation]
+confirmations = 2
+# recent_turn_window = 28
+# window_message_chars = 500
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `llm_classifier` |
+| `mode` | ✅ required | `escalation` |
+| `classifier_target` | ✅ required | Public model id of the trajectory judge. Consulted, never served |
+| `strong_target` | ✅ required | Model id served once the session latches |
+| `weak_target` | ✅ required | Model id served before the latch. It may be the same id as `classifier_target` |
+| `prompt` | packaged prompt | Replaces the packaged trajectory-judge prompt |
+| `max_output_tokens` | `4096` | Completion-token ceiling on the judge verdict. Must be at least `1` |
+| `escalation.confirmations` | `2` | Consecutive escalate verdicts required to latch. Must be at least `1`. Above `1` needs a session id: without one every turn starts from zero and the session never latches |
+| `escalation.recent_turn_window` | `28` | Trailing messages shown to the judge. Must be at least `1` |
+| `escalation.window_message_chars` | `500` | Per-message character cap inside that window. Must be at least `50` |
+
+The `[models.router.escalation]` table is optional; leaving it out keeps the
+three defaults, which are upstream's benchmarked configuration. The six
+[per-call bounds](#per-call-bounds) go on `[models.router]`. A classifier-form
+[`[models.subagents]`](#modelssubagents-optional) overlay stays
+`mode = "custom"` only.
+
+`weak_target` may be a **passthrough** route, although `classifier_target` may
+not: the weak turn is the client's own answer, so it carries the caller's
+credential exactly as a live turn does. A `count_tokens` probe makes no judge
+call and no gated call, and answers from `weak_target`. Judge calls are counted
+by `shunt.router.judge_calls{algorithm="llm_classifier"}`.
+
+See [buffered turns](#buffered-turns-escalation-and-advisor) for how the held
+turn is served, what the client sees on each outcome, and what it costs.
+
+#### `type = "composite"`
+
+A judge sets the tier a stage router falls open to, and leaves the signal
+scoring alone. The stage table takes **no `picker`** — the classifier supplies
+that tier — so a `picker` key here is a startup error.
+
+```toml
+[[models]]
+id = "claude-composite"
+
+[models.router]
+type = "composite"
+
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[models.router.stage]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.5
+# recent_turn_window = 3
+# capable_hold_turns = 0
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `composite` |
+| `classifier.target` | ✅ required | Public model id of the tier judge. Consulted, never served |
+| `classifier.base_threshold` | ✅ required | Lowest `p_solve` that still routes to the efficient tier, in `(0.0, 1.0]` |
+| `classifier.classify_trigger` | ✅ required | `user_turn` re-picks the tier on each human user turn; `new_session` picks once and holds it. `every_request` is **rejected** here — a judge call per tool step is the cost this type exists to avoid |
+| `classifier.message_hash_fallback` | `false` | Retains the tier by hashing the first user message, for clients that send no session id |
+| `stage.capable_target` | ✅ required | Capable tier |
+| `stage.efficient_target` | ✅ required | Efficient tier |
+| `stage.confidence_threshold` | ✅ required | Corroboration a decisive signal needs, in `(0.0, 1.0]` |
+| `stage.recent_turn_window` | `3` | Trailing tool results the signals are computed over. Must be at least `1` |
+| `stage.capable_hold_turns` | `0` | Turns the capable tier is held after a signal-driven escalation; shunt's default is `0`, upstream's is `2` |
+| `stage.tool_semantics` | — | The same four lists as [`[models.router.tool_semantics]`](#modelsroutertool_semantics-optional), under the same rules |
+
+The six [per-call bounds](#per-call-bounds) go on `[models.router]`, not inside
+either sub-table. A turn the classifier cannot reach falls open to
+`stage.efficient_target`, which is upstream's rule and is also what a probe and
+a body-less surface report.
+
+Because the stage half is libsy's own stage route, its decisive turns keep the
+stage router's route sources rather than reporting as classifier decisions —
+so a composite's signal-driven turns read the same way a plain `stage_router`'s
+do.
+
+#### `type = "advisor"`
+
+One **executor** serves every client-visible turn. A stronger **advisor**
+reviews the executor's terminal turns — a plan before the work, or a claim that
+the task is done — before the client sees them. APPROVE releases the held turn.
+REDO discards it and sends the executor back to work with the advisor's plan.
+The advisor never serves a turn, so the client only ever sees executor output.
+
+```toml
+[[models]]
+id = "claude-reviewed"
+
+[models.router]
+type = "advisor"
+executor_target = "claude-sonnet-4-6"
+advisor_target = "claude-opus-4-8"
+gate_trigger = "no_tool_call"
+max_reviews = 1
+# gate_stall_turns = 0
+# gate_min_tool_results = 0
+# advisor_max_tokens = 2048
+# transcript_max_chars = 200000
+# fail_open = true
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `advisor` |
+| `executor_target` | ✅ required | Serves every client-visible turn |
+| `advisor_target` | ✅ required | Reviews gated turns. Never served |
+| `gate_trigger` | `no_tool_call` | What fires a review: `no_tool_call`, the executor's first turn that ends without a tool call, or `pattern` |
+| `gate_trigger_pattern` | unset | Regex for the `pattern` trigger, searched rather than anchored. Required and non-empty under `pattern`; setting it under `no_tool_call` is a startup error |
+| `max_reviews` | `1` | Reviews allowed per session. Must be at least `1`. A request without `x-claude-code-session-id` counts as a session of its own, so sessionless callers never share one budget |
+| `gate_stall_turns` | `0` | Reviews one turn as a mid-task checkpoint once the conversation carries this many assistant turns. `0` turns it off |
+| `gate_min_tool_results` | `0` | Tool results a conversation needs before a `no_tool_call` turn is reviewable |
+| `advisor_max_tokens` | `2048` | Output-token ceiling on each review. Must be at least `1` |
+| `advisor_temperature` | unset | Sampling temperature for reviews. Omitted from the review request when unset |
+| `transcript_max_chars` | `200000` | Cap on the transcript sent to the advisor; a longer one is trimmed from the middle. Must be at least `256` |
+| `fail_open` | `true` | When a review fails, serve the held turn. `false` fails the request with a `502` instead |
+| `reviewer_system_prompt` | packaged prompt | Replaces the APPROVE/REDO reviewer prompt |
+| `redo_feedback_prefix` | packaged prompt | Replaces the text placed in front of a REDO plan fed back to the executor |
+
+The six [per-call bounds](#per-call-bounds) go on `[models.router]`.
+
+**Which turns are held.** Whether a turn trips `gate_trigger` is known only once
+the turn is complete, so while the session still has review budget **every**
+executor turn is held, and the ones that do not trip the gate are served
+without a review. Once `max_reviews` is spent, or the advisor has failed three
+consults in the session (a failed consult refunds its review), the executor
+streams live with no buffering for the rest of the session.
+
+**REDO.** The held turn is discarded before any response header reaches the
+client. The discarded turn and the advisor's plan are appended to the
+conversation, and the executor is re-run. That re-run streams live.
+
+`executor_target` may be a **passthrough** route, although `advisor_target` may
+not, for the same reason as escalation's weak target. A `count_tokens` probe
+makes no review and no gated call, and answers from `executor_target`. Reviews
+are counted by `shunt.router.judge_calls{algorithm="advisor"}`, and `GET
+/routes` lists `advisor_target` under `judges`.
+
+#### Buffered turns: escalation and advisor
+
+A **gated** turn — escalation's weak turn before the latch, or an advisor
+executor turn while the session has review budget — is made first, held, and
+served only once the verdict is in. Every other turn on these entries, and every
+turn on every other route, streams exactly as before.
+
+**The caller's mode is kept.** A `stream: true` caller's gated call streams.
+Its SSE frames are retained as they arrive and, if the turn is served, replayed
+byte for byte. A `stream: false` caller's gated call is non-streaming, and the
+caller gets the single JSON message. The gate changes *when* the answer is
+sent, never its shape. The replayed `message_start.model` is the router's own
+id, not the executor's, on an Anthropic and an OpenAI Responses executor alike,
+so Claude Code's `/model` display and `--resume` see the id they asked for.
+Response headers are committed only when the replay starts.
+
+**Only a complete turn is served.** A held turn is servable only after its
+terminal marker: `message_stop` on a streaming call, or a complete body that
+parses as one message on a non-streaming call. A truncated `200` is never
+replayed. A turn ends at its `message_stop` frame, as the live stream does:
+nothing after it is replayed, and a connection that breaks or stays open after
+it does not cut the turn. Gated turns take the target's ordered failover chain.
+
+`x-gateway-route-source` — and the `source` label on
+`shunt.router.decisions` — says what happened:
+
+| Source | Entry | Meaning | Delivery |
+| :-- | :-- | :-- | :-- |
+| `escalation_weak` | escalation | The judge let the weak turn through: it declined, or the escalate streak is still below `confirmations` | Replayed |
+| `escalation_latch` | escalation | The session latched, on this turn or earlier, so the strong target served the turn | Live |
+| `escalation_fallback` | escalation | The weak turn failed or was cut before its terminal marker, so the strong target served the turn. The judge was not called | Live |
+| `classifier_fail_open` | escalation | The judge failed after a complete weak turn, so the weak turn was served | Replayed |
+| `advisor_approve` | advisor | The executor turn was reviewed and approved | Replayed |
+| `advisor_pass` | advisor | The executor turn was served without a review: it did not trip the gate — it ends in a tool call, for example — or no review could be reserved | Replayed |
+| `advisor_fail_open` | advisor | The review failed after a complete executor turn, so the turn was served | Replayed |
+| `advisor_redo` | advisor | The reviewer said REDO. The discarded turn was never sent; this is the executor's re-run | Live |
+| `advisor_exhausted` | advisor | The session's `max_reviews` is spent, or its advisor has failed three consults (a failed consult refunds `max_reviews`), so the executor streams with no buffering | Live |
+| `gated_error` | either | The gated turn could not be served — see below | Error |
+
+**When something fails:**
+
+| What fails | `escalation` | `advisor` |
+| :-- | :-- | :-- |
+| The gated turn crosses a `gated_*` bound, or ends before its terminal marker | Discarded before any header is sent; the strong target serves the turn live (`escalation_fallback`) | Discarded before any header is sent; the request fails with a gateway-owned `502` in the Anthropic error shape (`gated_error`). It is not a REDO and not a failover attempt: the upstream already answered `2xx` |
+| The gated call's upstream answers with an error status | Relayed to the client unchanged, as a live turn's would be (`gated_error`) | Relayed unchanged (`gated_error`) |
+| The judge or review fails after a complete turn — a timeout, an oversized or unparseable reply, an upstream error, or `max_judge_calls` spent | The weak turn is served (`classifier_fail_open`) | With `fail_open = true`, the executor turn is served (`advisor_fail_open`); with `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`) |
+
+**What it costs.** You opt into these per entry:
+
+- On a gated turn the client receives nothing until the whole turn is complete
+  and judged, so time to first token becomes time to last token.
+- Escalation makes a judge call on every turn before the latch. A turn that
+  latches also pays for the weak call it discards.
+- A discarded weak or executor turn still consumed its upstream's quota. It is
+  the client's own answer dispatch, so it counts as `caller="client"` in
+  `shunt.requests`.
+
+#### `type = "auto"`
+
+Upstream's stage-router preset: `picker = "efficient_first"` and
+`confidence_threshold = 0.5`, with every other stage key at its shunt default.
+Only the two targets are accepted beside `type`; set any other stage key and use
+`type = "stage_router"` instead. That includes `[models.router.classifier]` and
+the per-call bounds — the preset carries no judge, and a classifier table on an
+`auto` entry is a startup error.
+
+```toml
+[[models]]
+id = "claude-quick"
+
+[models.router]
+type = "auto"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `auto` |
+| `capable_target` | ✅ required | As for `stage_router` |
+| `efficient_target` | ✅ required | As for `stage_router` |
+
+#### `type = "random"`
+
+A weighted split across two or more targets — a canary aid. By default one
+Claude Code session stays on one arm.
+
+```toml
+[[models]]
+id = "claude-canary"
+
+[models.router]
+type = "random"
+targets = ["claude-sonnet-4-6", "gpt-5.6-terra"]
+weights = [9, 1]
+# seed = 0
+# affinity = "session"
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `random` |
+| `targets` | ✅ required | Model ids to split across |
+| `weights` | equal | One positive-or-zero weight per target; a weight of `0` disables that target. Each weight must be finite, and so must their sum — a list that overflows to infinity is rejected at load |
+| `seed` | `0` | Hash salt under `session` affinity; the draw seed under `request` affinity |
+| `affinity` | `session` | `session` keeps one session on one arm; `request` draws per request |
+
+Under `affinity = "session"` the arm is `sha256(seed ‖ model ‖ session id)`
+scaled into the weight range. Nothing is stored, so the arm survives restarts
+and is identical across replicas loading the same config — and changing `seed`,
+`targets`, or `weights` can move it. A request that sends no
+`x-claude-code-session-id` takes a fresh weighted draw instead of sharing one
+arm, so a 90/10 split stays 90/10 for clients that send no session. Under
+`affinity = "request"` every request draws, and a set `seed` makes the sequence
+reproducible.
+
+Session affinity is **stickiness, not access control.** The session id comes
+from the client, so a caller that retries ids can steer itself onto the arm it
+wants — which guards nothing, because every target is a public model id that
+same caller may simply ask for by name. Use the managed-model policy for access.
+
+Surfaces with no request body — `GET /routes`, `/v1/models` discovery, and
+`shunt check` — report the first target with a positive weight.
+
+#### `type = "noop"`
+
+Answers without calling any upstream: an empty terminal assistant message in the
+caller's own mode. For `stream: true` that is a valid SSE sequence
+(`message_start`, `message_delta` with `stop_reason: "end_turn"`,
+`message_stop`); otherwise one Message JSON object. `count_tokens` answers
+`input_tokens: 0`. The route is authenticated exactly like any other, so this is
+not an unauthenticated hole — it is a smoke test for client wiring that proves
+the inbound path end to end without spending a token.
+
+```toml
+[[models]]
+id = "claude-noop"
+
+[models.router]
+type = "noop"
+```
+
+`type` is the only key it accepts.
+
+#### `type = "prefill_router"`
+
+A learned router. Upstream's own classifier scores the latest text user turn
+and picks one of the entry's targets, running its model in this process rather
+than calling a judge upstream.
+
+**This one needs a build that has it.** `prefill_router` is compiled in only
+behind the `prefill-router` cargo feature, which is **off by default** and
+which the release workflow never enables — so no release binary and no
+Homebrew install has it. Build from source:
+
+```sh
+cargo build --release --features prefill-router          # add ,ui for the dashboard
+```
+
+The config below parses in every build. What differs is the load: on a binary
+without the feature the load fails, so `shunt check` reports it rather than the
+gateway starting without the algorithm it was configured for. That feature
+error comes ahead of every other complaint about the table, so the key-level
+rules (a blank target, an empty `checkpoint`, a non-positive `max_length` or
+`batch_size`) are what a build with the feature on reports.
+
+```text
+models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)
+```
+
+```toml
+[[models]]
+id = "claude-learned"
+
+[models.router]
+type = "prefill_router"
+targets = ["claude-sonnet-4-6", "claude-opus-4-8"]
+checkpoint = "/models/router.pt"
+# device = "cpu"
+# cache_dir = "/var/cache/huggingface"
+# max_length = 2048
+# batch_size = 32
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `prefill_router` |
+| `targets` | ✅ required | Model ids to choose between, in the checkpoint's head order |
+| `checkpoint` | ✅ required | Path to the tensor-only router checkpoint; a relative path resolves against the process working directory |
+| `device` | auto-detected | Torch device the router runs on — `cpu`, `cuda`, `cuda:0` |
+| `cache_dir` | — | Hugging Face cache directory for the encoder and its tokenizer |
+| `max_length` | `2048` | Maximum tokenized encoder input length; longer input is truncated. Must be greater than `0`. Unset leaves upstream's own default |
+| `batch_size` | `32` | Maximum prompts per encoder forward pass. Must be greater than `0`. Unset leaves upstream's own default |
+
+**What the operator has to supply.** The feature embeds Python through PyO3,
+so the build links libpython and the running gateway needs `torch`,
+`transformers`, `numpy`, and `accelerate` importable in the interpreter it
+embedded — set `PYO3_PYTHON` at build time to that interpreter (3.10 or newer,
+with a shared libpython) rather than letting PyO3 take the first `python3` on
+`PATH`. It also needs a router checkpoint: Switchyard v0.3.0 ships no
+checkpoint, exporter, or encoder assets, so obtaining or training a compatible
+one is the operator's job. When either is missing the gateway refuses to
+start, and a hot reload that hits the same problem is refused with the running
+config left in place:
+
+```text
+models entry <id> router type = "prefill_router" failed to load: <upstream error>
+```
+
+A reload rebuilds the router, and the per-session affinity lives inside it, so
+a reload forgets which target each session was on.
+
+**Admission comes first.** The router is driven only after `[server.auth]` and
+the gateway's managed-model policy have admitted the request. Inbound
+authentication ranges over every target the entry names rather than the one it
+will pick, so a caller must authenticate if any target injects a credential;
+the managed-model policy checks the requested id alone, so `availableModels`
+lists this id and never its private targets. A caller either gate refuses
+therefore triggers no inference and seeds no affinity for the session id it
+sent.
+
+Read the first half of that as the condition it is. An entry whose targets are
+*all* passthrough injects no credential anywhere in its envelope, so inbound
+authentication has nothing to demand and admits every caller — including an
+anonymous one, which then drives the router. If the drive itself is what you
+mean to protect, give the entry a credential-injecting target; neither
+`[server.auth]` nor gateway login gates an all-passthrough entry.
+
+**How a turn is decided.** Only `user` and `assistant` roles and only `text`
+and `tool_result` blocks are handed to the algorithm; it scores the latest text
+user turn, and treats a message whose blocks are all `tool_result` as a tool
+continuation rather than a new human turn. Session identity comes from
+`x-claude-code-session-id`, plus `x-claude-code-agent-id` for a delegated
+child, so a continuation reuses the turn's decision instead of re-running
+inference; a caller that sends neither falls back to upstream's hash of the
+first user message. Inference runs on a blocking worker, one prediction at a
+time per entry. `count_tokens` probes are decided the same way, and on a
+continuation that is an affinity hit rather than an inference.
+
+`x-gateway-route-source` — and the `source` label on
+`shunt.router.decisions{algorithm="prefill_router"}` — reports which of the
+three happened:
+
+| Source | Meaning |
+| :-- | :-- |
+| `prefill` | The router decided the turn, by inference or by session affinity |
+| `prefill_fail_open` | The routing call errored, so the request went to the default target: upstream's rule is the first entry in `targets` |
+| `prefill_default` | A surface with no request body — `/v1/models` discovery, `GET /routes`, model resolution — has no turn to score, so it reports the first target |
+
+`GET /routes` lists the entry with `algorithm: "prefill_router"` and its
+targets. The `shunt.stage_router.*` metrics stay the signal-only router's and
+never gain prefill rows.
+
+#### Validation
 
 A target that is itself a router, a blank target, a threshold outside
 `(0.0, 1.0]`, a `recent_turn_window` of `0`, a router **id** ending in `[1m]` or
-`[1M]`, a duplicate `[[models]]` id where either entry carries a router table, or the same
-entry also declaring `[models.upstream_model]` is a startup error. Two map-less
-entries may otherwise share an id, but a router names a routing policy rather
-than discovery metadata, so a duplicate would leave two policies for one id.
-Target ids are compared after the trailing `[1m]`/`[1M]` hint is stripped, the
-same way
-routing matches them. Four shapes warn instead of failing the load, each
-because it has a coherent operator intent: a target that matches no explicit
-route (it still resolves through `server.default_provider` like any other
-unmatched id), `capable_target` and `efficient_target` resolving to the same id
-(both tiers deliberately flattened onto one model), a `deescalate_threshold`
-below `confidence_threshold` (de-escalation made the easier direction, which a
-cost-first deployment may want), and a `[[routes]]` entry naming the router's
-own id (inert, since the router decides that id's destination). A
-`[[route_prefixes]]` entry the id merely starts with is **not** reported — it
-still serves every other id matching it. Each is emitted once per load — and a hot reload is a load, so a
-config left unfixed warns again on each one.
+`[1M]`, a duplicate `[[models]]` id where either entry carries a router table, a
+`type` this build does not implement, or the same entry also declaring
+`[models.upstream_model]` is a startup error. On a `prefill_router` entry an
+empty `targets`, the same target listed twice, a blank `checkpoint`, and a
+`max_length` or `batch_size` of `0` are startup errors too — those are what a
+build with the feature **on** reports, because a build without it refuses the
+entry by naming the missing cargo feature before any of them is reached; and
+repeated targets are compared after the trailing `[1m]`/`[1M]` hint is stripped
+like every other target comparison. Two map-less entries may otherwise
+share an id, but a router names a routing policy rather than discovery metadata,
+so a duplicate would leave two policies for one id. Target ids are compared
+after the trailing `[1m]`/`[1M]` hint is stripped, the same way routing matches
+them — so a target resolving to any entry that carries its own router is
+rejected whatever the two types are, which is what keeps resolution one hop. A
+[`[models.router.classifier]`](#modelsrouterclassifier-optional) target is held
+to that same one-hop rule and to two more checks:
+`classifier.base_threshold` is range-checked exactly like
+`confidence_threshold`, and the judge must not resolve to a passthrough route
+— a target whose effective chain contains a passthrough upstream is a startup
+error, because the caller's credential is stripped from a judge call and a
+passthrough route has nothing else to run on. `auth = "none"` is accepted: an
+endpoint that needs no credential is not the same as one whose credential went
+missing. Any of the
+six [per-call bounds](#per-call-bounds) set to `0` is a startup error naming
+the key.
+
+Four shapes warn instead of failing the load, each because it has a coherent
+operator intent: a target that matches no explicit route (it still resolves
+through `server.default_provider` like any other unmatched id, and this warning
+now covers every router type), `capable_target` and `efficient_target` resolving
+to the same id (both tiers deliberately flattened onto one model), a
+`deescalate_threshold` below `confidence_threshold` (de-escalation made the
+easier direction, which a cost-first deployment may want), and a `[[routes]]`
+entry naming the router's own id (inert, since the router decides that id's
+destination). A `[[route_prefixes]]` entry the id merely starts with is **not**
+reported — it still serves every other id matching it. Each is emitted once per
+load — and a hot reload is a load, so a config left unfixed warns again on each
+one.
+
+### `[models.subagents]` (optional)
+
+An overlay for **delegated work** on any `[[models]]` entry: one with a
+`[models.upstream_model]` map, one with a `[models.router]` table, or a map-less
+id that resolves through `[[routes]]`. A `Task` sub-agent, a hook agent, or a
+workflow sub-agent requesting the id is diverted to the overlay's target. The
+parent session's own turns never see the table and resolve the entry exactly as
+they did without it. The table sits on the entry rather than inside `router`
+because a fixed entry has no router table, and Switchyard's "passthrough with
+subagents" is exactly a fixed entry here.
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `passthrough`, the fixed form above, or [`llm_classifier`](#subagents-type--llm_classifier), where a judge picks the child's target |
+| `target` | ✅ required (`passthrough`) | Model id a delegated turn goes to when `by_type` names nothing for its agent type — and where every delegated turn goes when the agent-type header is not sent |
+| `by_type` | `{}` | Agent type → model id, keyed on the literal `x-claude-code-agent-type` value |
+
+**What counts as delegated work.** A request whose `x-claude-code-request-class`
+is `subagent` or `workflow`; when that header is absent, a request carrying a
+non-blank `x-claude-code-agent-id`, which Claude Code sends on every delegated
+turn regardless of the hint gate. The class is authoritative when sent: `main`
+with an agent id is main traffic, and `compaction` and `auxiliary` are harness
+maintenance — none of the three ever takes the overlay. So on a default
+deployment, where the class and type headers are gated off, every `Task` child
+takes `target`; `by_type` needs the client to set
+`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`.
+
+**`by_type` keys** are matched exactly, case included. A built-in agent's id
+travels verbatim — `Explore`, `Plan`, `general-purpose`, `claude`, and `fork`
+(which the client only offers under `CLAUDE_CODE_FORK_SUBAGENT=1`). A project
+agent from `.claude/agents/` arrives as `custom`; its own name is never sent, so
+`custom` is the only key it can match. `teammate` is the client's literal for an
+Agent Teams member and has not been observed on the wire. A blank key, or one
+carrying whitespace, is a startup error: it could never match.
+
+**Targets** are ordinary public model ids under the same one-hop rule as router
+targets: `target` and every `by_type` value must not resolve, after the trailing
+`[1m]`/`[1M]` hint is stripped, to an entry carrying its own `[models.router]` or
+`[models.subagents]` table — and a router target may not resolve to an entry
+carrying this overlay. A blank target, an overlaid id ending in `[1m]` or `[1M]`,
+and a duplicate `[[models]]` id where either entry carries the table are startup
+errors. A target matching no explicit route warns at load, as a router target
+does, and still resolves through `server.default_provider`.
+
+**No state.** The target is a function of the config and the request's headers
+alone: no session pin, no store, no judge call. On a router-backed id the child
+is diverted before the router runs, so a child's turns are never scored against
+the transcript and never touch the parent's pin. A diverted turn carries
+`x-gateway-routed-model` (the target) and `x-gateway-route-source` —
+`subagent_type` for a `by_type` hit, `subagent` for the `target` fallback — and
+is counted in `shunt.router.decisions` with `algorithm = "subagents"`. Surfaces
+with no request resolve nothing: `/v1/models` discovery and `shunt check` carry
+no per-model destination information at all, and `GET /routes` shows the
+parent's own `[[routes]]`/`[models.router]` entry only when one exists — an id
+left to `server.default_provider` appears in neither array. None of the three
+resolves the overlay's diverted target, and the overlay itself is never listed
+in the `routers` array.
+
+#### subagents `type = "llm_classifier"`
+
+The overlay's second form: instead of a fixed target, a judge reads the
+delegated task and names the group that serves it. Only `mode = "custom"`
+exists here — `mode = "capability"` is a startup error — and the keys are the
+`custom` mode's, described in full [above](#type--llm_classifier).
+
+```toml
+[models.subagents]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+classify_trigger = "new_session"
+max_output_tokens = 64
+prompt = """
+Select exactly one target for the delegated task.
+
+- Select "capable" for code review, critique, auditing, or correctness analysis.
+- Select "efficient" for implementation, research, explanation, and other delegated work.
+
+Return only JSON matching the response schema.
+"""
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+Three rules differ from the `[models.router]` form:
+
+- **`classify_trigger` defaults to `new_session`,** and `user_turn` is
+  rejected. A delegated child is one task, so its target is picked once and held
+  for the rest of it; re-judging per user turn would spend a judge call on a
+  decision that cannot change.
+- **`message_hash_fallback` must be `false`.** The classification is already
+  keyed on `(session, agent)`, so hashing the first message instead would key
+  two different children of one session onto one verdict.
+- **The parent is never classified.** What counts as delegated work is exactly
+  what it is for the `passthrough` form above, so a parent turn, a `main` turn
+  carrying an agent id, and the `compaction` and `auxiliary` classes all resolve
+  the entry as if the table were absent — and make no judge call.
+
+The six [per-call bounds](#per-call-bounds) go on this table, since it is the
+one making the calls. The judge is held to the same rules as any other:
+one hop, no passthrough route, and none of the caller's credential slots travel
+with the call. Because a delegated turn may consult it, inbound auth on such a
+turn ranges over the overlay's targets and judge as well — so a delegated turn
+that cannot authenticate is refused with zero judge calls. A `count_tokens`
+probe makes none either, and answers from `default_target`'s first model.
 
 ## `[sentry]` (optional)
 
@@ -687,9 +1545,15 @@ Extra headers on every OTLP request (e.g. a hosted-collector token). Merged unde
 
 ## Routing precedence
 
-A matching `[models.stage_router]` entry → a matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
+On a delegated turn, a matching `[models.subagents]` overlay → a matching `[models.router]` entry → a matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
 
-The router comes first because it is matched on the `[[models]]` entry itself: a
+The overlay comes first, and only for delegated work: a `Task` child's request
+for an overlaid id is diverted to the overlay's target before the entry's own
+router or map is consulted, while the parent's own turns — and `compaction` and
+`auxiliary` — resolve the entry as if the table were absent. Everything below is
+what they, and every id carrying no overlay, resolve through.
+
+The router comes next because it is matched on the `[[models]]` entry itself: a
 request for a router-backed id is answered by the router, which picks a tier and
 resolves **that target** through the rest of the ladder — so the target, not the
 router id, is what a `[[routes]]` entry should name. An exact entry naming the

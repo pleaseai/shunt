@@ -1,7 +1,23 @@
 ---
 title: CLI
-description: The shunt command line — run, check, init, add, token, gateway login, and provider login.
+description: The shunt command line — run, check, init, add, import, token, gateway login, and provider login.
 ---
+
+## `shunt import opencodex`
+
+Read compatible credentials offline into a new private snapshot. Existing settings, credential files and OpenCodex state are never overwritten. Preview first; a non-interactive export requires `--yes`.
+
+```bash
+shunt import opencodex --dry-run
+shunt import opencodex --provider cursor
+shunt import opencodex --from /path/to/copied-opencodex --yes
+```
+
+Imports the active API key for `anthropic`, `openai-chat` and `openai-responses` transports, plus the active Cursor or Command Code subscription access token (legacy and multi-account auth stores). Expired/invalid/unsupported records are skipped. Refresh tokens and Codex account pools are not copied; other subscriptions require a separate login.
+
+`--from` selects the source home (default: `OPENCODEX_HOME`, then `~/.opencodex`). Repeat `--provider` to select several providers; without it, all compatible active credentials are selected. `--output-dir` chooses the snapshot parent (default: `~/.shunt/imports`). Every export creates a unique directory (0700) and `credentials.env` (0600), preserving earlier snapshots. macOS/Linux export only.
+
+Source the printed file path before starting Shunt. Cursor uses `SHUNT_CURSOR_AUTH_TOKEN`. API keys and Command Code access tokens use `OPENAI_API_KEY`, `XAI_API_KEY`, `SHUNT_COMMANDCODE_API_KEY`, or `SHUNT_IMPORTED_<PROVIDER>_API_KEY` (uppercase, hyphens become underscores); match this variable in your existing `api_key_env`. No config or routing is generated. Snapshots are not refreshed; re-import when access tokens expire. Importing a key does not admit an unsupported provider such as OpenCode Go.
 
 ## `shunt run`
 
@@ -29,7 +45,7 @@ shunt check
 
 Reports specific errors: a bad bind address, an unknown provider in a route, a missing `api_key_env`, a bad `base_url`, a wrong adapter/auth combination.
 
-It also runs the same routed-Antigravity credential guard `shunt run` boots with: a config that routes to the native `antigravity` upstream with no credential stored fails the check and names [`shunt login antigravity`](#shunt-login-antigravity), instead of reporting `config ok` and then failing at startup. The check stays offline — it reads the routes and probes whether the credential file exists, never refreshing a token or contacting the backend. A config that merely declares the built-in `antigravity` provider without routing to it is unaffected, as is `kind = "antigravity_cli"` routing.
+It also runs the same routed-Antigravity credential guard `shunt run` boots with: a config that routes to the native `antigravity` upstream with no credential stored fails the check and names [`shunt login antigravity`](#shunt-login-antigravity), instead of reporting `config ok` and then failing at startup. The check stays offline — it reads the routes and probes whether a credential exists (the singleton file or any named-pool candidate), never refreshing a token or contacting the backend. A config that merely declares the built-in `antigravity` provider without routing to it is unaffected, as is `kind = "antigravity_cli"` routing.
 
 ## `shunt init`
 
@@ -220,7 +236,16 @@ Run Antigravity's Google authorization-code flow and save its refreshable creden
 
 ```bash
 shunt login antigravity
+shunt login antigravity --name <account-name>
 ```
+
+With `--name` the credential lands at `~/.shunt/accounts/antigravity/<account-name>.json` (0600, in
+a 0700 directory; `SHUNT_ANTIGRAVITY_ACCOUNTS_DIR` overrides the store) instead of the singleton
+file, so named logins never overwrite it. `--mode` and `--long-lived` are rejected, since
+Antigravity OAuth tokens are always refreshable; `--manual` is claude-only. Reference named
+accounts from a provider with `auth = { mode = "antigravity_oauth", accounts = [...] }`, or omit
+account selection to scan the whole store; with no configured accounts and an empty store the
+provider falls back to the singleton file.
 
 The browser callback uses the fixed loopback port **51121**, because that is the redirect URI
 registered for Antigravity's OAuth client — unlike shunt's other loopback logins it cannot fall back
@@ -299,5 +324,6 @@ For an Anthropic provider with `auth = "claude_oauth"`, an account can use a nam
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | Alternate shunt-managed Claude account-store directory |
 | `SHUNT_KIMI_ACCOUNTS_DIR` | Alternate shunt-managed Kimi Code account-store directory |
 | `SHUNT_ANTIGRAVITY_AUTH_FILE` | Alternate credential file for `shunt login antigravity` (default `~/.shunt/antigravity-auth.json`) |
+| `SHUNT_ANTIGRAVITY_ACCOUNTS_DIR` | Alternate shunt-managed Antigravity account-store directory |
 | Account-specific variable named by `token_env` | Setup token for an Anthropic `claude_oauth` pool entry; used verbatim |
 | `OPENAI_API_KEY` | Default key env for the `openai` provider (per-provider via `api_key_env`) |

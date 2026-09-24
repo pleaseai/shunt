@@ -192,6 +192,50 @@ async fn force_refresh_refreshes_a_still_valid_token() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+/// The refresh POST must present Claude Code's User-Agent. `platform.claude.com`
+/// sits behind Cloudflare, which answers a request with no browser-like signature
+/// with HTTP 403 error 1010 before the token endpoint sees it. Asserted against
+/// the recorded request rather than a `header` matcher because that matcher
+/// splits the value on commas, and this User-Agent carries one.
+#[tokio::test]
+async fn refresh_sends_the_claude_cli_user_agent() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let path = temp_credentials_path("refresh-user-agent");
+    write_credentials(&path, "expired-access", "old-refresh", 0);
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    );
+
+    let token = store.force_refresh().await.unwrap();
+
+    assert_eq!(token, "new-access");
+    let requests = server.received_requests().await.unwrap();
+    let user_agent = requests
+        .iter()
+        .find(|request| request.url.path() == "/token")
+        .and_then(|request| request.headers.get("user-agent"))
+        .and_then(|value| value.to_str().ok());
+    assert_eq!(user_agent, Some(CLAUDE_CLI_USER_AGENT));
+    server.verify().await;
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
 #[test]
 fn valid_when_beyond_expiry_buffer() {
     let now = UNIX_EPOCH + Duration::from_secs(1_000);

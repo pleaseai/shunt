@@ -7,7 +7,7 @@ name = "shunt-gateway"
 # unpublishable (issue #292). Remove this restriction with the pins once upstream
 # snapview/tungstenite-rs#426 ships in a crates.io release.
 publish = false
-version = "0.45.1"
+version = "0.49.1"
 edition = "2021"
 description = "Claude Code LLM gateway — an Anthropic Messages proxy that routes models to OpenAI/Codex and Anthropic-compatible backends"
 license = "MIT OR Apache-2.0"
@@ -34,6 +34,18 @@ path = "src/main.rs"
 # `ui/README.md`.
 ui = ["dep:rust-embed", "dep:mime_guess"]
 
+# Learned prefill routing (`[models.router] type = "prefill_router"`, ADR-0005
+# §6). Upstream's `prefill-router` crate embeds Python through `pyo3` with
+# `auto-initialize`, so the build links libpython and the router needs
+# torch/transformers importable at run time. Off by default and never enabled
+# by release.yml; a from-source build opts in with
+# `cargo build --features prefill-router` (see docs/routing-algorithms.md §5).
+# `switchyard-protocol` is not listed here: the routing boundary (ADR-0005 §3)
+# makes it non-optional, and `dep:` on a non-optional dependency is an error.
+# (main carries it as `optional = true`; this branch needs it in every build,
+# so the dependency stays non-optional and the feature drops the `dep:`.)
+prefill-router = ["dep:prefill-router"]
+
 # Expose `shunt::bench_support`, the facade `benches/stage_router.rs` needs to
 # reach the crate-private stage-router path (issue #554). Off by default so the
 # public API of a normal build is unchanged; `cargo bench --features bench`.
@@ -42,6 +54,9 @@ bench = []
 [dependencies]
 anyhow = "1"
 arc-swap = "1.9.2"
+# `switchyard_libsy::Algorithm` is an `#[async_trait]` trait, so hosting one
+# needs the same attribute macro on the impl.
+async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
 bytes = "1"
@@ -74,6 +89,12 @@ opentelemetry_sdk = "0.32"
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs", "http-proto", "reqwest-blocking-client", "reqwest-rustls-webpki-roots"] }
 opentelemetry-appender-tracing = "0.32"
 opentelemetry-semantic-conventions = "0.32"
+# `--features prefill-router` only: upstream's learned prefill router. Same git
+# source and exact rev as `switchyard-libsy` below, so the `Algorithm` trait it
+# implements is the one `switchyard_libsy::drive` consumes — two revs would be
+# two unrelated traits. It embeds Python via `pyo3` with `auto-initialize`, so
+# enabling the feature links libpython into the build.
+prefill-router = { git = "https://github.com/NVIDIA-NeMo/Switchyard", rev = "3ddea9d30174ad835cf505a93617ba251c8eb8dd", optional = true }
 prost = "0.13"
 rand = "0.9"
 regex-lite = "0.1"
@@ -114,10 +135,23 @@ sha2 = "0.10"
 #
 # A `rev` and no `branch` key, the same posture as the `tungstenite` pins below:
 # a bump is a reviewed diff, not something an unrelated `cargo update` can do.
-# shunt fills `ToolSignals` from the Anthropic request itself, so
-# `switchyard-translation` is deliberately NOT a dependency — it would duplicate
-# src/model/responses_request.rs.
+#
+# `switchyard-translation` and `switchyard-protocol` ride the same rev, and are
+# a dependency **of the routing boundary only** (ADR-0005 §3): neutral ⇄
+# Anthropic in both directions, on the judge request and on the judge's reply,
+# in `src/routing/serve.rs` and `src/routing/judge.rs`. The Anthropic → OpenAI
+# Responses *wire* translation stays shunt's own
+# (`src/model/responses_request.rs`) and is not routed through this crate — two
+# translators, two jobs. ADR-0004 rejected the crate because it would have
+# duplicated that wire path; at the routing boundary it duplicates nothing.
+#
+# Both stay **non-optional**: `--features prefill-router` also builds the
+# neutral `Request`/`Metadata`/`Message` types `switchyard_libsy::drive` takes
+# (libsy re-exports none of them), but the routing boundary above needs them in
+# every build, so gating them behind that feature would break the default one.
 switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard", rev = "3ddea9d30174ad835cf505a93617ba251c8eb8dd" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard", rev = "3ddea9d30174ad835cf505a93617ba251c8eb8dd" }
+switchyard-translation = { git = "https://github.com/NVIDIA-NeMo/Switchyard", rev = "3ddea9d30174ad835cf505a93617ba251c8eb8dd" }
 thiserror = "2"
 tiktoken-rs = "0.12.0"
 tokio = { version = "1", features = ["full"] }
@@ -149,6 +183,11 @@ zstd = { version = "0.13", default-features = false }
 libc = "0.2"
 
 [dev-dependencies]
+# `--features prefill-router` tests only: upstream's `Algorithm` trait is
+# declared with `#[async_trait]`, so a stub implementation has to be written
+# with the same macro. Unconditional here because a dev-dependency never
+# reaches a release binary.
+async-trait = "0.1"
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 hex = "0.4"
 libc = "0.2"

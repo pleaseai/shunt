@@ -1,0 +1,455 @@
+//! Byte, idle, and wall-clock fences for the bodies a driven router reads
+//! (ADR-0005 §3, issue #594).
+//!
+//! What this module guards is the half of a bound a `.send()`-style timeout
+//! cannot reach. An upstream that answers `200` and then stalls, or that keeps
+//! a stream alive with nothing but SSE keep-alive pings, has committed headers
+//! — so every deadline that stops at headers has already passed, and the call
+//! would hang for as long as the upstream cared to hold it. Both collectors
+//! here measure the **body**.
+//!
+//! [`collect_bounded`] is the judge side: one non-streaming reply, refused the
+//! moment it passes its cap rather than after it is buffered.
+//! [`bound_stream`] is the retained-turn side: the streaming body of a gated
+//! `escalation` weak turn or `advisor` executor turn
+//! ([`super::gated`]), which is held whole before any of it is served.
+
+use std::borrow::Cow;
+use std::time::Duration;
+
+use bytes::Bytes;
+use futures_util::{Stream, StreamExt};
+// `tokio::time::Instant`, not `std`'s: every deadline here is awaited through
+// `tokio::time`, and mixing the two clocks makes the bounds untestable under a
+// paused runtime clock — the std clock keeps advancing while tokio's does not.
+use tokio::time::Instant;
+
+/// A body that passed [`collect_bounded`]'s cap. Carries no partial body:
+/// the point of the cap is that the bytes past it are never held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Oversized {
+    /// The cap that was crossed, for the log line that reports it.
+    pub(crate) max_bytes: usize,
+}
+
+impl std::fmt::Display for Oversized {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "response body exceeded {} bytes", self.max_bytes)
+    }
+}
+
+impl std::error::Error for Oversized {}
+
+/// Why [`collect_bounded`] did not produce a whole body.
+#[derive(Debug)]
+pub(crate) enum CollectError {
+    /// The body passed `max_bytes`.
+    Oversized(Oversized),
+    /// The body stream failed part-way through. What had been read is a
+    /// truncated reply rather than the upstream's answer, so it is dropped
+    /// instead of returned.
+    Transport(axum::Error),
+}
+
+/// Read a whole body, refusing it the moment it passes `max_bytes`.
+///
+/// Stops *reading* on the crossing rather than buffering the body and checking
+/// afterwards: an unbounded reply is exactly the case the cap exists for, so
+/// collecting it first would spend the memory the bound is meant to deny.
+pub(crate) async fn collect_bounded(
+    body: axum::body::Body,
+    max_bytes: usize,
+) -> Result<Bytes, CollectError> {
+    let mut data = body.into_data_stream();
+    // Sized against the cap, but not *to* it: a judge reply is a few hundred
+    // bytes and `max_bytes` is the ceiling for the pathological one, so
+    // allocating the whole cap up front would spend 64 KiB on every call to
+    // save a dozen amortized grows on none of them.
+    let mut collected = Vec::with_capacity(max_bytes.min(4096));
+    let mut total = 0usize;
+    while let Some(chunk) = data.next().await {
+        // A transport error truncates the body, and the truncation is not
+        // the caller's to diagnose from the bytes. Returning what was read
+        // hands back a partial reply whose JSON parse fails, so the call is
+        // recorded as `invalid_reply` — the judge answered with something
+        // malformed — when what actually happened is that the connection
+        // broke. Carried out as its own variant so the caller names the fault
+        // that occurred; treating it as oversized would name the wrong bound.
+        let chunk = chunk.map_err(CollectError::Transport)?;
+        total = total.saturating_add(chunk.len());
+        if total > max_bytes {
+            return Err(CollectError::Oversized(Oversized { max_bytes }));
+        }
+        collected.extend_from_slice(&chunk);
+    }
+    Ok(Bytes::from(collected))
+}
+
+/// The three bounds a retained (gated) turn runs under (ADR-0005 §3), read
+/// from the entry's `gated_*` keys by [`super::gated`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatedBounds {
+    /// Bytes retained before the turn is discarded.
+    pub(crate) max_bytes: usize,
+    /// Gap allowed between two chunks that carry content.
+    pub(crate) idle: Duration,
+    /// Wall-clock ceiling, measured from the first poll.
+    pub(crate) max_duration: Duration,
+}
+
+/// Which bound a gated turn crossed. A closed set: each variant is a distinct
+/// operational failure an operator tunes with a distinct key, and collapsing
+/// them into one "bound exceeded" would leave the log naming no key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundExceeded {
+    /// `gated_max_bytes`.
+    MaxBytes,
+    /// `gated_idle_ms` elapsed with no content chunk.
+    Idle,
+    /// `gated_max_duration_ms` elapsed.
+    Duration,
+}
+
+impl std::fmt::Display for BoundExceeded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::MaxBytes => "gated_max_bytes",
+            Self::Idle => "gated_idle_ms",
+            Self::Duration => "gated_max_duration_ms",
+        })
+    }
+}
+
+/// Wrap a body stream in the three gated bounds, ending it with the bound it
+/// crossed.
+///
+/// Takes already-unwrapped chunks rather than a `Result` stream because
+/// [`BoundExceeded`] is deliberately closed: an upstream transport failure is
+/// not a bound the operator configured, and folding it in here would put a
+/// fourth, untunable reason behind a name that promises three. The caller ends
+/// the stream on a transport error before it reaches this wrapper.
+///
+/// The idle timer is **not reset by SSE ping frames**. A keep-alive is the
+/// upstream saying the socket is alive, not that the turn is progressing, so an
+/// endless ping stream is exactly what this bound is for; resetting on one
+/// would make the idle gap unreachable (ADR-0005 §3 names the endless-ping
+/// stall as a required test).
+///
+/// What refreshes the timer is a **completed content frame**, tracked across
+/// chunk boundaries: frames are reassembled from a carried remainder, so a
+/// stream that splits every `event: ping\n\n` mid-line is classified on the
+/// frames it actually sent rather than on whatever happened to land in one
+/// chunk. A chunk that completes no frame therefore refreshes nothing — a half
+/// arrived frame is not yet evidence of content, and treating it as such is
+/// precisely what lets a ping split in two disarm the bound. The consequence
+/// is that the idle gap measures the interval between *delivered* content
+/// frames, so a single frame must arrive in full inside it.
+pub(crate) fn bound_stream<S>(
+    stream: S,
+    gated: GatedBounds,
+) -> impl Stream<Item = Result<Bytes, BoundExceeded>>
+where
+    S: Stream<Item = Bytes> + Send + 'static,
+{
+    struct State<S> {
+        stream: std::pin::Pin<Box<S>>,
+        gated: GatedBounds,
+        /// Wall-clock origin, taken on the first poll rather than at
+        /// construction: the caller may build the wrapper before it is awaited,
+        /// and the bound is on the turn, not on the value's lifetime.
+        started_at: Option<Instant>,
+        /// When the idle gap runs out, refreshed only by a completed content
+        /// frame.
+        idle_deadline: Option<Instant>,
+        /// Bytes of a frame that arrived without its terminator, carried to the
+        /// next chunk. Without it a frame split mid-line is invisible to the
+        /// classifier on both halves. Bounded by `max_bytes` along with
+        /// everything else, since it can never hold more than the stream sent.
+        remainder: Vec<u8>,
+        total: usize,
+        finished: bool,
+    }
+
+    futures_util::stream::unfold(
+        State {
+            stream: Box::pin(stream),
+            gated,
+            started_at: None,
+            idle_deadline: None,
+            remainder: Vec::new(),
+            total: 0,
+            finished: false,
+        },
+        |mut state| async move {
+            if state.finished {
+                return None;
+            }
+            let now = Instant::now();
+            let started_at = *state.started_at.get_or_insert(now);
+            let idle_deadline = *state
+                .idle_deadline
+                .get_or_insert_with(|| now + state.gated.idle);
+            let hard_deadline = started_at + state.gated.max_duration;
+            // Whichever fence comes first decides how long this poll may wait,
+            // so a stream that never yields again still ends at the earlier of
+            // the two rather than at the idle gap alone.
+            let deadline = idle_deadline.min(hard_deadline);
+            let next = tokio::time::timeout_at(deadline, state.stream.next()).await;
+            let chunk = match next {
+                Ok(Some(chunk)) => chunk,
+                // The source ended on its own; no bound was crossed.
+                Ok(None) => return None,
+                Err(_) => {
+                    state.finished = true;
+                    let exceeded = if hard_deadline <= idle_deadline {
+                        BoundExceeded::Duration
+                    } else {
+                        BoundExceeded::Idle
+                    };
+                    return Some((Err(exceeded), state));
+                }
+            };
+            if Instant::now() >= hard_deadline {
+                state.finished = true;
+                return Some((Err(BoundExceeded::Duration), state));
+            }
+            state.total = state.total.saturating_add(chunk.len());
+            if state.total > state.gated.max_bytes {
+                state.finished = true;
+                return Some((Err(BoundExceeded::MaxBytes), state));
+            }
+            // Framing is decided on the stream, not on the chunk: the
+            // remainder carries a partial frame forward so the classifier sees
+            // whole frames however the upstream chose to split them.
+            state.remainder.extend_from_slice(&chunk);
+            let frames = take_complete_frames(&mut state.remainder);
+            if frames.iter().any(|frame| !is_ping_frame(frame)) {
+                state.idle_deadline = Some(Instant::now() + state.gated.idle);
+            }
+            Some((Ok(chunk), state))
+        },
+    )
+}
+
+/// Pull every **complete** SSE frame out of `buffer`, leaving a trailing
+/// partial frame behind for the next chunk to finish.
+///
+/// Stateful on purpose. A chunk boundary is the upstream's choice, not a
+/// framing event, so classifying a bare chunk decides the idle bound on where
+/// the network happened to split: `event: pin` + `g\n\n` and `event: ping\n` +
+/// `\n` are both a single ping frame, and neither half is one on its own.
+/// Carrying the remainder is what makes the two indistinguishable from the
+/// unsplit frame.
+///
+/// Line endings are normalized first. SSE terminates a line with CRLF, LF, or a
+/// bare CR, so the blank line that ends a frame is not always a literal `\n\n` —
+/// under CRLF it is `\r\n\r\n`, which contains no `\n\n` at all. Splitting the
+/// raw text would then collapse everything into one frame, and a ping arriving
+/// *beside* real content would read as a keep-alive and leave the idle bound
+/// armed against a stream that was making progress. The allocation is taken
+/// only when the buffer actually holds a `\r`, so an LF-only stream — every one
+/// shunt talks to today — copies nothing.
+///
+/// All of that runs on **bytes**, and the buffer is only ever decoded from the
+/// last blank line backwards. A chunk boundary falls wherever the network put
+/// it, so the remainder routinely ends mid-character; decoding the buffer to
+/// frame it would have to answer for that partial character, and both answers
+/// are wrong. Refusing to frame until it completes stalls every frame already
+/// in the buffer behind it, and decoding lossily writes a replacement
+/// character over the partial one — which is then carried forward, so the
+/// continuation bytes in the next chunk land after a character that can never
+/// be completed. Neither question arises here: `\r` and `\n` are ASCII, and no
+/// byte of a multi-byte UTF-8 character is, so scanning bytes cannot split
+/// one.
+///
+/// Shared with [`super::gated`]'s terminal-marker scan, so the frame a bound
+/// classifies and the frame the replay gate reads are cut by one rule.
+pub(super) fn take_complete_frames(buffer: &mut Vec<u8>) -> Vec<String> {
+    // A trailing CR is held back unread: it may be the first half of a CRLF
+    // whose LF is in the next chunk, and normalizing it now would invent a
+    // frame terminator the upstream never sent.
+    let held_cr = buffer.last() == Some(&b'\r');
+    let scan = &buffer[..buffer.len() - usize::from(held_cr)];
+    let normalized: Cow<'_, [u8]> = if scan.contains(&b'\r') {
+        Cow::Owned(normalize_line_endings(scan))
+    } else {
+        Cow::Borrowed(scan)
+    };
+    // Only what precedes the last blank line is complete; the rest is a frame
+    // still arriving.
+    let Some(terminator) = normalized.windows(2).rposition(|pair| pair == b"\n\n") else {
+        return Vec::new();
+    };
+    let end = terminator + 2;
+    // The decode reaches the complete frames and stops there. A malformed
+    // sequence inside one has no exact reading to preserve, and replacing it
+    // costs nothing that survives the call: these frames are classified and
+    // dropped, never written back to the buffer.
+    let frames: Vec<String> = String::from_utf8_lossy(&normalized[..end])
+        .split("\n\n")
+        .filter(|frame| !frame.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    let mut leftover = normalized[end..].to_vec();
+    if held_cr {
+        leftover.push(b'\r');
+    }
+    *buffer = leftover;
+    frames
+}
+
+/// How many leading bytes of `bytes` are its first complete frame: everything
+/// up to and including the first blank line, under [`take_complete_frames`]'
+/// own rule — LF, CRLF, and bare CR each end a line, and a trailing CR is held
+/// back — but measured on the raw bytes, so the frame can be cut from them
+/// unchanged. `None` while no frame has completed.
+pub(super) fn first_frame_len(bytes: &[u8]) -> Option<usize> {
+    let scan = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+    let (mut index, mut at_line_start) = (0, false);
+    while index < scan.len() {
+        let ending = match scan[index] {
+            b'\r' => 1 + usize::from(scan.get(index + 1) == Some(&b'\n')),
+            b'\n' => 1,
+            _ => 0,
+        };
+        if ending == 0 {
+            at_line_start = false;
+            index += 1;
+            continue;
+        }
+        index += ending;
+        // A line ending that opens its own line closes a blank one: the frame
+        // terminator.
+        if at_line_start {
+            return Some(index);
+        }
+        at_line_start = true;
+    }
+    None
+}
+
+/// CRLF and bare CR to LF, on bytes.
+///
+/// Byte-level for the reason [`take_complete_frames`] is: a partial multi-byte
+/// character at the end of the buffer is the normal case, not an error, and
+/// neither line ending can be part of one.
+pub(super) fn normalize_line_endings(scan: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(scan.len());
+    let mut index = 0;
+    while index < scan.len() {
+        if scan[index] == b'\r' {
+            out.push(b'\n');
+            // Consume the LF of a CRLF pair; a bare CR consumes only itself.
+            index += usize::from(scan.get(index + 1) == Some(&b'\n'));
+        } else {
+            out.push(scan[index]);
+        }
+        index += 1;
+    }
+    out
+}
+
+/// Whether one complete SSE frame is a keep-alive: an `event: ping` frame, or
+/// a frame of comment lines only (`: keep-alive`), the SSE spec's own
+/// keep-alive, which carries no event at all.
+///
+/// Frame-level, not substring-level: a frame counts as a ping only when its own
+/// `event:` line names `ping`, so a real `content_block_delta` whose text
+/// happens to mention the word does not disarm the idle bound.
+fn is_ping_frame(frame: &str) -> bool {
+    frame_event(frame) == Some("ping")
+        || frame
+            .lines()
+            .filter(|line| !line.is_empty())
+            .all(|line| line.starts_with(':'))
+}
+
+/// The name one complete SSE frame's own `event:` line declares, if any.
+///
+/// Read off the line, never searched for in the frame: a `data:` payload that
+/// merely mentions an event name is content, not that event.
+pub(super) fn frame_event(frame: &str) -> Option<&str> {
+    frame
+        .lines()
+        .find_map(|line| line.strip_prefix("event:"))
+        .map(str::trim)
+}
+
+/// Finds SSE frame boundaries in a body that is still growing, for an idle
+/// bound measured in completed content frames over a buffer the caller already
+/// holds whole ([`crate::adapters::collect_upstream_sse_body`]).
+///
+/// It keeps no copy of the body, only indices and two flags, and visits each
+/// byte once, on the call after it arrives. The framing is
+/// [`first_frame_len`]'s: LF, CRLF, and bare CR each end a line, a line ending
+/// that opens its own line ends the frame, and a CR is held unresolved until
+/// the next byte says whether it is half of a CRLF. Each completed frame is
+/// classified once with [`is_ping_frame`], after [`normalize_line_endings`] when
+/// it carries a CR, so the whole scan is linear in the body.
+#[derive(Debug, Default)]
+pub(crate) struct IncrementalFrameScanner {
+    /// How many leading bytes of the buffer have been visited.
+    scanned: usize,
+    /// Where the frame still arriving begins.
+    frame_start: usize,
+    /// Whether the last line ending opened a new line, so another one closes a
+    /// blank line — the frame terminator.
+    at_line_start: bool,
+    /// Whether the last byte visited was a CR whose line ending is not yet
+    /// resolved.
+    pending_cr: bool,
+}
+
+impl IncrementalFrameScanner {
+    /// Visit the bytes of `buffer` past the ones already seen; `buffer` is the
+    /// same body each call, only longer. `true` when those bytes completed at
+    /// least one frame that is neither blank nor a keep-alive.
+    pub(crate) fn feed(&mut self, buffer: &[u8]) -> bool {
+        let mut progressed = false;
+        let mut index = self.scanned;
+        while index < buffer.len() {
+            let byte = buffer[index];
+            if self.pending_cr {
+                self.pending_cr = false;
+                if byte == b'\n' {
+                    progressed |= self.line_ended(buffer, index + 1);
+                    index += 1;
+                    continue;
+                }
+                progressed |= self.line_ended(buffer, index);
+            }
+            match byte {
+                b'\r' => self.pending_cr = true,
+                b'\n' => progressed |= self.line_ended(buffer, index + 1),
+                _ => self.at_line_start = false,
+            }
+            index += 1;
+        }
+        self.scanned = buffer.len();
+        progressed
+    }
+
+    /// A line ending finished at `end`; `true` when it closed a content frame.
+    fn line_ended(&mut self, buffer: &[u8], end: usize) -> bool {
+        if !self.at_line_start {
+            self.at_line_start = true;
+            return false;
+        }
+        let frame = &buffer[self.frame_start..end];
+        self.frame_start = end;
+        self.at_line_start = false;
+        let normalized: Cow<'_, [u8]> = if frame.contains(&b'\r') {
+            Cow::Owned(normalize_line_endings(frame))
+        } else {
+            Cow::Borrowed(frame)
+        };
+        let frame = String::from_utf8_lossy(&normalized);
+        !frame.trim().is_empty() && !is_ping_frame(&frame)
+    }
+
+    /// How many bytes have been visited, for the tests' once-per-byte check.
+    #[cfg(test)]
+    pub(super) fn scanned(&self) -> usize {
+        self.scanned
+    }
+}

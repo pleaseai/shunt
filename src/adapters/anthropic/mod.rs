@@ -25,6 +25,7 @@ use crate::{
 mod auto_mode_classifier;
 mod deferral;
 mod model_rewrite;
+mod safeguards;
 mod thinking;
 
 pub struct AnthropicAdapter;
@@ -37,8 +38,9 @@ impl Adapter for AnthropicAdapter {
         uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
+        bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
-        Box::pin(async move { forward(state, route, uri, headers, body).await })
+        Box::pin(async move { forward(state, route, uri, headers, body, bounds).await })
     }
 }
 
@@ -48,6 +50,7 @@ async fn forward(
     uri: &Uri,
     headers: &HeaderMap,
     mut body: RequestBody,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let provider = state
         .config
@@ -66,14 +69,15 @@ async fn forward(
     }
     let route = route;
     if provider.auth == AuthMode::ClaudeOauth {
-        return forward_claude_oauth(state, route, uri, headers, body).await;
+        return forward_claude_oauth(state, route, uri, headers, body, bounds).await;
     }
     if provider.auth == AuthMode::KimiOauth {
-        return forward_kimi_oauth(state, route, uri, headers, body).await;
+        return forward_kimi_oauth(state, route, uri, headers, body, bounds).await;
     }
 
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
-    let request_headers = outbound_headers(headers, &credential);
+    let mut request_headers = outbound_headers(headers, &credential);
+    safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
     // Only a subscription-OAuth bearer faces the client-shape gate; an API-key
     // Anthropic-compatible provider keeps byte-for-byte passthrough except for
@@ -87,6 +91,7 @@ async fn forward(
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
     thinking::strip_foreign_thinking(&mut body);
     let body = body.into_raw();
     // Bounded transient retry (issue #48) for this single-credential path. Kept
@@ -133,7 +138,7 @@ async fn forward(
     // The non-pooled path builds its response exactly like the pooled path's
     // relay_response (header filtering, SSE keepalive, status passthrough), so
     // reuse it with no account attribution instead of duplicating that logic.
-    relay_response(&state, &route, upstream, None).await
+    relay_response(&state, &route, upstream, None, bounds).await
 }
 
 async fn forward_claude_oauth(
@@ -142,6 +147,7 @@ async fn forward_claude_oauth(
     uri: &Uri,
     headers: &HeaderMap,
     mut body: RequestBody,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let provider = state
         .config
@@ -194,6 +200,7 @@ async fn forward_claude_oauth(
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
     thinking::strip_foreign_thinking(&mut body);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
@@ -266,7 +273,8 @@ async fn forward_claude_oauth(
         };
         let mut request_body = base_body.clone();
         rewrite_account_uuid_request(&mut request_body, account_uuid);
-        let request_headers = outbound_headers(headers, &credential);
+        let mut request_headers = outbound_headers(headers, &credential);
+        safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
         // Gate on the bearer that actually goes out rather than on the pool's
         // shape. Every account here resolves to `Credential::ClaudeOauth`, but
         // the `token_env` branch of `resolve_claude_account` wraps whatever the
@@ -321,7 +329,7 @@ async fn forward_claude_oauth(
                     status.is_success(),
                     is_fable,
                 );
-                return relay_response(&state, &route, upstream, Some(&account.name))
+                return relay_response(&state, &route, upstream, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
                         (
@@ -421,7 +429,7 @@ async fn forward_claude_oauth(
                         "Claude OAuth throttle retry did not succeed; cooling down account"
                     );
                 }
-                return relay_response(&state, &route, retry, Some(&account.name))
+                return relay_response(&state, &route, retry, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
                         (
@@ -547,7 +555,8 @@ async fn forward_claude_oauth(
                     access_token,
                     account_uuid: account.uuid.clone(),
                 };
-                let retry_headers = outbound_headers(headers, &refreshed);
+                let mut retry_headers = outbound_headers(headers, &refreshed);
+                safeguards::strip_safeguard_betas(&mut retry_headers, &provider.base_url);
                 let Some(retry) = retry_upstream(
                     &state,
                     &route,
@@ -615,7 +624,7 @@ async fn forward_claude_oauth(
                             // alter routing.
                             state.accounts.clear_needs_relogin(&route.provider, account);
                         }
-                        return relay_response(&state, &route, retry, Some(&account.name))
+                        return relay_response(&state, &route, retry, Some(&account.name), bounds)
                             .await
                             .map(|(status, response)| {
                                 (
@@ -681,7 +690,7 @@ async fn forward_claude_oauth(
 
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
-        return relay_response(&state, &route, response, None).await;
+        return relay_response(&state, &route, response, None, bounds).await;
     }
 
     Err(AdapterError {
@@ -729,6 +738,7 @@ async fn forward_kimi_oauth(
     uri: &Uri,
     headers: &HeaderMap,
     mut body: RequestBody,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let provider = state
         .config
@@ -780,6 +790,7 @@ async fn forward_kimi_oauth(
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
     thinking::strip_foreign_thinking(&mut body);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
@@ -828,7 +839,8 @@ async fn forward_kimi_oauth(
                 }
             }
         };
-        let request_headers = outbound_headers(headers, &credential);
+        let mut request_headers = outbound_headers(headers, &credential);
+        safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
         let request_body = base_body.clone().into_raw();
 
         let upstream = match post_upstream(&state, &url, request_headers, request_body).await {
@@ -864,7 +876,7 @@ async fn forward_kimi_oauth(
                 state
                     .accounts
                     .mark_healthy(&route.provider, account, status.is_success());
-                return relay_response(&state, &route, upstream, Some(&account.name))
+                return relay_response(&state, &route, upstream, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
                         (
@@ -906,7 +918,7 @@ async fn forward_kimi_oauth(
 
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
-        return relay_response(&state, &route, response, None).await;
+        return relay_response(&state, &route, response, None, bounds).await;
     }
 
     Err(AdapterError {
@@ -1032,6 +1044,7 @@ async fn relay_response(
     route: &Route,
     upstream: reqwest::Response,
     account_name: Option<&str>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let status = upstream.status();
     let response_headers = headers::filtered(upstream.headers());
@@ -1066,7 +1079,19 @@ async fn relay_response(
     let body = if is_sse {
         // Keepalive pings apply only to SSE relays; the model rewrite scans just
         // the first frame and then passes through (a no-op when `alias` is None).
-        let stream = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias);
+        //
+        // The scan runs under the caller's cap when that is the smaller number.
+        // A judge target is not supposed to reach this branch at all —
+        // `routing::serve` strips `stream` — but a nonconforming upstream can
+        // answer `text/event-stream` anyway, and judge routes carry an alias,
+        // so without this a cap below 64 KiB would bound only the refusal in
+        // `collect_bounded` and not the buffering that precedes it.
+        let max_first_frame = model_rewrite::first_frame_ceiling(bounds.max_bytes);
+        let stream = model_rewrite::rewrite_first_model_stream(
+            upstream.bytes_stream(),
+            alias,
+            max_first_frame,
+        );
         Body::from_stream(keepalive::with_pings(
             stream,
             Duration::from_secs(state.config.server.sse_keepalive_seconds),
@@ -1075,9 +1100,40 @@ async fn relay_response(
         // Non-streaming JSON: the client asked for a buffered response, so
         // reading it whole to rewrite the top-level `model` respects the
         // "don't buffer SSE unless non-streaming" rule.
-        match upstream.bytes().await {
+        //
+        // `bounds` is what keeps that read from being unbounded on an internal
+        // call. A judge or gated target is an alias route by construction —
+        // `routing::resolve_target_chain` stamps the advertised router id onto
+        // `route.model` while `upstream_model` stays the target's own — so this
+        // is the branch every non-streaming internal reply takes, and reading
+        // it whole before any later cap is applied is spending the memory the
+        // cap exists to deny. The idle gap bites here for the same reason: this
+        // read finishes before `run_chain` returns, so a gated turn whose
+        // upstream commits its headers and stalls would otherwise wait out
+        // `gated_max_duration_ms` before `routing::serve`'s collector — and its
+        // idle timer — ever saw the body. The default on the client path keeps
+        // `reqwest`'s own `bytes()`.
+        match crate::adapters::collect_upstream_body(upstream, bounds.max_bytes, bounds.idle).await
+        {
             Ok(bytes) => Body::from(model_rewrite::rewrite_response_model(bytes, &alias)),
-            Err(error) => return Err(post_header_error(error)),
+            // A successful reply cut mid-body is a turn that ended before its
+            // terminal marker; a relayed refusal cut mid-body stays a refusal.
+            Err(crate::adapters::UpstreamBodyError::Transport(error)) => {
+                let error = post_header_error(error);
+                return Err(if status.is_success() {
+                    crate::adapters::mark_body_broke(error)
+                } else {
+                    error
+                });
+            }
+            Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
+                return Err(crate::adapters::too_large_error(too_large))
+            }
+            // A refusal that stalls is cut exactly like a success that does:
+            // the gated collector would have cut either at the same gap.
+            Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
+                return Err(crate::adapters::idle_error(idle))
+            }
         }
     } else {
         Body::from_stream(upstream.bytes_stream())
@@ -1402,13 +1458,15 @@ pub(crate) async fn chain_attempt(
             };
         }
     };
-    let request_headers = outbound_headers(headers, &credential);
+    let mut request_headers = outbound_headers(headers, &credential);
+    safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
     if oauth_client {
         auto_mode_classifier::restore_claude_code_identity(&mut body);
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
+    safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
     let body = bytes::Bytes::from(body.into_raw());
     let policy = provider.retry.policy();
     let url = upstream_url(state, route, uri);
@@ -1505,23 +1563,28 @@ pub(crate) async fn chain_attempt(
         };
     }
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
-    let frames = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias)
-        .map(|chunk| {
-            chunk.map_err(|error| {
-                // A pre-terminal mid-relay body failure becomes the terminal
-                // SSE error event (the chain records the failure), never a
-                // silently truncated stream; once the terminal frame has
-                // relayed, the chain ends the relay silently.
-                serde_json::json!({
-                    "type": "error",
-                    "error": {
-                        "type": "api_error",
-                        "message": error.without_url().to_string()
-                    }
-                })
+    let frames = model_rewrite::rewrite_first_model_stream(
+        upstream.bytes_stream(),
+        alias,
+        // The client streaming chain carries no cap of its own.
+        model_rewrite::first_frame_ceiling(None),
+    )
+    .map(|chunk| {
+        chunk.map_err(|error| {
+            // A pre-terminal mid-relay body failure becomes the terminal
+            // SSE error event (the chain records the failure), never a
+            // silently truncated stream; once the terminal frame has
+            // relayed, the chain ends the relay silently.
+            serde_json::json!({
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": error.without_url().to_string()
+                }
             })
         })
-        .boxed();
+    })
+    .boxed();
     crate::proxy::chain_stream::Attempt::Winner {
         headers_at,
         relay: crate::proxy::chain_stream::RelayBuild::Ready {
@@ -2344,5 +2407,53 @@ mod tests {
             "the envelope maps the 400, got {resolved:?}"
         );
         std::env::remove_var("SHUNT_CHAIN_STALLED_400_KEY");
+    }
+
+    /// An alias route's non-streaming `200` whose body breaks after its headers
+    /// is a turn cut before `message_stop`, and carries the marker
+    /// `routing::serve` reads back; a relayed refusal cut the same way does not.
+    #[tokio::test]
+    async fn a_broken_alias_body_is_marked_only_on_a_success() {
+        let state =
+            super::AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
+        let route = super::Route {
+            model: "alias".to_string(),
+            ..claude_route()
+        };
+        for (status, marked) in [(200, true), (500, false)] {
+            let chunks = futures_util::stream::iter([
+                Ok(bytes::Bytes::from_static(b"{\"id\":\"msg_1\"")),
+                Err(std::io::Error::other("connection reset")),
+            ]);
+            let upstream = reqwest::Response::from(
+                axum::http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(reqwest::Body::wrap_stream(chunks))
+                    .unwrap(),
+            );
+            let error = super::relay_response(
+                &state,
+                &route,
+                upstream,
+                None,
+                crate::adapters::ResponseBounds {
+                    max_bytes: Some(1 << 20),
+                    idle: None,
+                },
+            )
+            .await
+            .expect_err("a broken body is an error");
+            assert!(error.failure.is_none());
+            assert_eq!(
+                error
+                    .response
+                    .extensions()
+                    .get::<crate::adapters::UpstreamBodyBroke>()
+                    .is_some(),
+                marked,
+                "status {status}"
+            );
+        }
     }
 }

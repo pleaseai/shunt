@@ -112,7 +112,7 @@ provider = "codex"
 <Aside type="caution" title="モデルスラッグ — `-codex` は不可">
 
 ChatGPT アカウントのバックエンドは `gpt-*-codex` スラッグ（例 `gpt-5.2-codex`）を `400` で**拒否**します。アカウントが**ライブで entitle されている**スラッグのみを受け入れます。信頼できるカタログ（および各スラッグが受け入れる reasoning レベル）は openai/codex の
-[`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) です。現在のスラッグ: `gpt-6-astra`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`（フロンティア）と
+[`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) です。現在のスラッグ: `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`（最新）、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`（フロンティア）と
 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`。古いアカウントでは以前のものにしか entitle されていない場合があります（無料アカウントは `gpt-5.5` に解決されています）。shunt はバックエンド自身のエラー `detail` を表面化するため、間違ったスラッグは本当の理由を返します。
 
 </Aside>
@@ -123,7 +123,7 @@ ChatGPT アカウントのバックエンドは `gpt-*-codex` スラッグ（例
 
 <Aside type="note" title="`Model not found <slug>` は entitlement ではなくクライアントバージョンのゲーティング">
 
-一部のスラッグは `minimal_client_version` を持ちます（例 `gpt-6-astra` は ≥ 0.153.0 が必要）。リクエストのクライアント identity が欠落しているか古すぎる場合、バックエンドは `Model not found <slug>` と応答します。shunt は固定された Codex CLI の identity ヘッダー（`originator: codex_cli_rs`、`user-agent`、`version`）を **openai/codex rust-v0.153.3** に固定して送ることで、これを回避します。[openai/codex#31967](https://github.com/openai/codex/issues/31967) を参照してください。
+一部のスラッグは `minimal_client_version` を持ちます（例 `gpt-6-astra` は ≥ 0.153.0、`gpt-6-sol` と `gpt-6-luna` は ≥ 0.155.0 が必要）。リクエストのクライアント identity が欠落しているか古すぎる場合、バックエンドは `Model not found <slug>` と応答します。shunt は固定された Codex CLI の identity ヘッダー（`originator: codex_cli_rs`、`user-agent`、`version`）を **openai/codex rust-v0.156.0** に固定して送ることで、これを回避します。[openai/codex#31967](https://github.com/openai/codex/issues/31967) を参照してください。
 
 </Aside>
 
@@ -172,7 +172,7 @@ model: gpt-5.6-sol        # was: sonnet (or absent → inherited)
 <Aside type="tip" title="既製のエージェント">
 
 **[`shunt-codex` プラグイン](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-codex)** は
-`gpt-5.6-sol` / `-terra` / `-luna` 向けのサブエージェントを出荷しています — `/plugin marketplace add pleaseai/shunt` の後に
+`gpt-6-sol` / `-luna` と `gpt-5.6-sol` / `-terra` / `-luna` 向けのサブエージェントを出荷しています — `/plugin marketplace add pleaseai/shunt` の後に
 `/plugin install shunt-codex@shunt` でインストールします。
 
 </Aside>
@@ -359,7 +359,7 @@ API 自身の **ネイティブなクライアント実行 `tool_search`** プ�
 - アップストリームは標準の OpenAI または ChatGPT/Codex 系の Responses バックエンドである必要があります。
   xAI / Grok ルートは常にシムのままです。
 - ルーティング先のモデルは **gpt-5.4 以降**（`gpt-5.4`、`gpt-5.5`、または `gpt-5.6` ファミリー）である
-  必要があります。正確なスラッグ `gpt-6-astra` も対象です。それより前のスラッグ（`gpt-5.2` 以下）は
+  必要があります。正確なスラッグ `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna` も対象です。それより前のスラッグ（`gpt-5.2` 以下）は
   `tool_search` の値に関わらずシムのままです。
 - Claude Code 側で `ENABLE_TOOL_SEARCH=true` は引き続き必要です — このフラグは shunt がその機能をどう
   アップストリームへ変換するかだけを変えるもので、Claude Code がそもそもツールを遅延させるかどうかは

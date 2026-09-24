@@ -160,8 +160,11 @@ Non-streaming client: run the same machine but collect blocks instead of emittin
 `transformCodexToAnthropic`-equivalent JSON: `{id,type:"message",role:"assistant",model:<original>,content,stop_reason,stop_sequence:null,usage}`.
 Exception: if the machine recorded a backend error (the `error` / `response.failed` row above),
 return the mapped Anthropic error envelope as a gateway error instead of the collected message
-JSON (issue #113; see `m7-codex-websocket.md` §8) — `429` for an in-stream
-`rate_limit_exceeded`, else `502`; either way terminal, never replayed on the next upstream.
+JSON (issue #113; see `m7-codex-websocket.md` §8) — the status follows the error `code` per
+§8 (`429` for `rate_limit_exceeded` / `slow_down`, `529` for `server_is_overloaded`, `400` for
+`invalid_prompt` / `bio_policy` / `cyber_policy`, a wrapped frame's own non-2xx `status`, else
+`502`); either way terminal, never
+replayed on the next upstream.
 
 ## 7. Residual model-map concern
 
@@ -210,14 +213,26 @@ when it carries none.
 
 **In-stream backend errors.** A backend-sent `error` / `response.failed` event (§6) arrives on
 a `200 OK` stream, so there is no upstream status to preserve. `backend_error_status` picks the
-row from the error `code` instead: `rate_limit_exceeded` — the Codex backend's throttle code,
-which openai/codex (rust-v0.153+) classifies as its own `RateLimitExceeded` error — maps to the
-`429`/`rate_limit_error` row so Claude Code's own rate-limit handling sees the right type and
-status. Every other code maps to `api_error`/`502`. Both are terminal (`failure: None`): the
-event follows a 2xx acceptance, and a post-acceptance failure never re-enters the ordered
-failover chain (`upstreams-failover.md` §3 — the turn is not idempotent). Pool-account cooldown
-is likewise driven by HTTP status only (`pool.rs` `classify_first`); an in-stream throttle does
-not cool the account down.
+row from the error `code` instead, mirroring openai/codex rust-v0.156.0's SSE error
+classification (`codex-api/src/sse/responses.rs`):
+
+| Error `code` | Status | `error.type` | Upstream class |
+|---|---|---|---|
+| `rate_limit_exceeded`, `slow_down` | `429` | `rate_limit_error` | `RateLimitExceeded` (rust-v0.156.0 moved `slow_down` here from `ServerOverloaded`) |
+| `server_is_overloaded` | `529` | `overloaded_error` | `ServerOverloaded` (terminal upstream; see below) |
+| `invalid_prompt`, `bio_policy`, `cyber_policy` | `400` | `invalid_request_error` | `InvalidRequest` / `BioPolicy` / `CyberPolicy` (terminal, non-retryable) |
+| any other code, on an event carrying a top-level non-2xx `status` / `status_code` (the Codex WebSocket's wrapped HTTP-class error frame; not transport-gated, so an HTTP SSE error event from any Responses backend carrying one maps the same way) | that status, per the table above | per the table above | treated as an HTTP error with that status (`parse_wrapped_websocket_error_event`) |
+| anything else (e.g. `misalignment_policy_violation`, `server_error`, `insufficient_quota`) | `502` | `api_error` | — |
+
+The throttle row lets Claude Code's own rate-limit handling see the right type and status; the
+overload row maps by meaning to Anthropic's `529` (the Codex CLI does not auto-retry
+`ServerOverloaded`, but Claude Code backs off and retries a `529` exactly as it already did the
+`502` this code used to get); and the policy refusals land on a
+`4xx` so Claude Code does not retry them as it would a `5xx`. Every row is terminal
+(`failure: None`): the event follows a 2xx acceptance, and a post-acceptance failure never
+re-enters the ordered failover chain (`upstreams-failover.md` §3 — the turn is not
+idempotent). Pool-account cooldown is likewise driven by HTTP status only (`pool.rs`
+`classify_first`); an in-stream throttle or overload does not cool the account down.
 
 **Exception — misalignment steer.** A `misalignment_policy_violation` may carry
 `error.misalignment.steer.message` (openai/codex rust-v0.153+): a public, customer-facing
@@ -225,6 +240,66 @@ instruction on how the agent should proceed. Claude Code surfaces only the error
 `map_error_value` appends the steer to it (`{message}\n\n{steer}`). The sibling
 `detailed_explanation` / `error_type` fields are not forwarded — upstream treats them as
 sensitive and never persists them.
+
+## 8b. Emulated `stop_sequences` (issue #605)
+
+The Responses API has **no `stop` parameter** — Chat Completions does, Responses does not — so a
+client's Anthropic `stop_sequences` cannot be forwarded. Before #605 the field was simply never
+read, and every Responses upstream silently ignored it; Claude Code's auto-mode permission
+classifier sends `stop_sequences: ["</block>"]` / `["</severity>"]` and the trailing text past the
+stop broke its parser, costing a retry per classification.
+
+shunt emulates them inside the translation instead. `forward` reads the field once
+(`adapters/responses/mod.rs`), threads it through `TurnOptions` → `RelayOptions` →
+`AnthropicSseMachine::with_stop_sequences`, and **never** adds it to the upstream body.
+
+**Scanner** (`model/stop_sequences.rs`). Assistant text deltas only — reasoning summaries
+(`response.reasoning_summary_text.delta`) and tool-call arguments
+(`response.function_call_arguments.delta`) are never scanned, so a stop string inside a thinking
+block or a tool argument cannot end the turn. Each text delta is appended to a holdback, which is
+searched for the earliest occurrence of any stop sequence (earliest start byte wins; ties break by
+the client's order). Without a match, everything but the longest holdback suffix that is a *proper*
+prefix of some stop sequence is emitted immediately — so at most `max_len - 1` bytes are ever
+buffered and streaming is preserved, while a stop split across two deltas is still caught. Slicing
+only happens on `char` boundaries, so a multi-byte code point is never split.
+
+**Termination.** On a match the machine emits the text before it, closes the open block, and sends
+`message_delta` with `stop_reason: "stop_sequence"` and `stop_sequence: "<matched>"`, then
+`message_stop`; `stopped` makes every later event — `response.completed` included — a no-op. Text
+after the stop is neither streamed nor accumulated, so the non-streaming `final_json`
+reconstruction is truncated at exactly the same point and reports the same `stop_reason` /
+`stop_sequence`. A held-back prefix that never completes is ordinary output: `close_any` flushes it
+as a normal `text_delta` before the block's `content_block_stop`, on every path that closes a text
+block.
+
+**Abort.** Every transport but one drops the upstream the moment the stop fires: `sse_parse.rs`
+drops the `reqwest` byte stream with the final chunk (streaming HTTP), and `ws_stream.rs` drops
+the `CodexWsEvents` receiver (both websocket paths), which makes the codex_ws reader abandon the
+turn and evict the socket — correct, since a half-consumed turn must not be pooled. The exception
+is non-streaming HTTP: `json_response` reads the whole body with `upstream.text()` before the
+machine sees an event, so it truncates at the match like every other path but cannot cut the
+upstream short. That is the pre-existing shape of the non-streaming relay, not something the stop
+emulation introduced.
+
+Each transport keys the abort on the stop sequence specifically rather than on "the machine is
+stopped": on a *normally* completed turn the upstream is not mid-turn, and aborting it there would
+evict a healthy pooled socket (websocket) or close a connection reqwest could otherwise return to
+its idle pool (HTTP). So an ordinary terminal — `response.completed` / `response.done` /
+`response.incomplete`, or a backend error event — leaves the upstream to finish; on streaming HTTP
+the rest of the body goes to `spawn_terminal_drain`, a detached read bounded by
+`TERMINAL_DRAIN_BUDGET`, so the connection still returns to the idle pool. The trailing bytes
+translate to nothing, since `stopped` already makes every later event a no-op.
+
+**Usage caveat.** The stop makes every later event a no-op, so the upstream's `response.completed`
+usage is never applied — on the aborting transports it never arrives, and on non-streaming HTTP it
+is read but discarded. `usage_value`'s existing estimate substitution applies instead, so the turn
+reports the local input estimate and `output_tokens: 0`: in `message_delta.usage` when streaming,
+in the final JSON's `usage` when not. A non-streaming turn emits no `message_start` and normally
+skips the estimate altogether, so `forward` widens its gate to cover a request carrying
+`stop_sequences` — otherwise a stopped turn would report `input_tokens: 0` for a non-empty prompt.
+The estimate stays subject to the same `count_tokens = "tiktoken"` opt-in as every other path.
+Tokens the upstream generated between the match and the abort are still billed upstream —
+negligible for the short completions stop sequences are used for.
 
 ## 9. Test targets (M1)
 

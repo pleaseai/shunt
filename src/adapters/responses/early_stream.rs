@@ -515,6 +515,7 @@ pub(super) fn relay_opts() -> super::context::RelayOptions {
         model: "gpt-5.2-codex".to_string(),
         thinking_enabled: false,
         tool_search_native: false,
+        stop_sequences: Vec::new(),
     }
 }
 

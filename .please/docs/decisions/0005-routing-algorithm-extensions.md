@@ -76,7 +76,7 @@ cargo feature; there is no other shape.
 | Lane | Algorithms | Where it runs | Cost on the unrouted path |
 |---|---|---|---|
 | **Pure** | fixed, `stage_router` (signal-only), `random`, `auto`, `noop`, `subagents` passthrough form, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Inside `resolve_chain`, as today | One `Option` check; `resolve_chain_unrouted` stays flat |
-| **Driven** | `llm_classifier` (all modes), `stage_router.classifier`, `composite`, `advisor`, `subagents` classifier form, `prefill_router` | `libsy::drive` before dispatch, in `proxy::failover` | Zero: an entry without a driven router never constructs a driver |
+| **Driven** | `llm_classifier` (all modes), `stage_router.classifier`, `composite`, `advisor`, `subagents` classifier form, `prefill_router` | `libsy::drive` in `proxy::failover`, after admission against the entry's dependency envelope (§3) and before dispatch — *amended 2026-09-22, §9* | Zero: an entry without a driven router never constructs a driver |
 
 The pure lane keeps ADR-0004's code and benchmarks untouched. The driven lane
 is one call: `drive(algorithm, request, models, serve)` where `serve` is a
@@ -202,7 +202,10 @@ Three deliberate differences from upstream:
   `router.type = "stage_router"`, warned once per load as deprecated; both
   forms on one entry are rejected. Removing the alias is a public-key change
   and is not part of this ADR. `shunt add` and `shunt init` blueprints emit
-  the new form.
+  the new form. *Amended 2026-09-19 (PR 2): the alias was dropped before it
+  shipped — no release tag contains the table's commit — so
+  `[models.stage_router]` is rejected at load with an error naming the new
+  form, and there is no deprecation warning.*
 - **shunt's hysteresis keys stay** (`min_dwell_turns`, `deescalate_threshold`,
   `session_ttl_seconds`). Upstream's `capable_hold_turns` is accepted with a
   shunt default of `0` so existing pins behave as they do now; a
@@ -449,7 +452,7 @@ outcome}`. `GET /routes` `routers[]` gains `algorithm`, `targets`, and a
 |---|---|---|
 | 0 | libsy git pin at an immutable `rev` on upstream `main`, in the form the two `tungstenite` pins use (no `branch` key); fill the four new `ToolSignals` fields; handle `DecisionSource::CapableHold` | Behaviour-preserving; the `is_signal_evidence` match compiles with the new variant |
 | 1 | `RouterContext` with the §11 request hints (session, agent id, request class, agent type, compacted), agent-scoped pin key, child budget, compaction latch | Behaviour-preserving without the hints; child errors leave the parent pin untouched; child fan-out at capacity cannot evict an idle capable parent; a `context-compacted` turn escalates and the next turn of that session still reads `compacted = true` |
-| 2 | `[models.router]` discriminator, `stage_router` alias, `random`, `auto`, `noop`, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Old configs load unchanged with one deprecation warning; `resolve_chain_unrouted` bench flat; sessionless requests under `random` session affinity follow the configured weights rather than one shared arm |
+| 2 | `[models.router]` discriminator, `stage_router` alias, `random`, `auto`, `noop`, `tool_semantics`, `handoff_notes`, `capable_hold_turns` | Old configs load unchanged with one deprecation warning; `resolve_chain_unrouted` bench flat; sessionless requests under `random` session affinity follow the configured weights rather than one shared arm. *Amended 2026-09-19: no alias and no warning; a config writing `[models.stage_router]` fails to load with an error naming `[models.router]` (§9 Amendments)* |
 | 3 | `subagents` passthrough form with `by_type` | A `subagent`/`workflow` request routes to its `by_type` target, else `target`, with no store access; `main` with an agent id, `compaction`, and `auxiliary` never take the overlay |
 | 4 | Dependency envelope + admission before `drive`, internal `serve`, translation boundary, per-call bounds | Invalid credential and policy-denied model each produce zero judge calls (incl. passthrough answer + injecting judge, and a judge reached only by fall-through to `server.default_provider`); an unauthenticated `count_tokens` probe on a passthrough-answer + injecting-judge entry is answered with zero judge calls, including an unpinned probe with decisive signals; a judge call carries no inbound credential slot (reserved slots plus every `SHARED_SLOTS` name removed unconditionally, not a value match), and a judge target on a passthrough route is rejected at validation; a judge call appears as `caller = "router"` and consumes its target's pool quota; `200`-then-stall and endless-ping judges resolve as `fail_open` within the deadline |
 | 5 | Driven lane: `llm_classifier` capability + custom, `stage_router.classifier`, `composite`, `subagents` classifier form | Verdict parsed from a real Anthropic tool-use reply and from an OpenAI `json_schema` reply |
@@ -471,6 +474,60 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
 | libsy dependency | Git pin on upstream `main` at a reviewed revision; bumps are deliberate rev changes |
 | Discriminator key | `type`, as a documented exception to shunt's `kind`/`mode` convention (§2) |
 | `prefill_router` | Cargo feature `prefill-router`, off by default, absent from release binaries (§6) |
+
+#### Amendments
+
+- **2026-09-19 (PR 2) — the `[models.stage_router]` alias is dropped.** §2's
+  "stays valid as an alias" bullet and §8's PR 2 definition of done assumed a
+  deployed spelling to keep loading. No release tag contains the commit that
+  added `[models.stage_router]`, so there is none: the table is renamed
+  outright to `[models.router]`, a config still writing the old form fails to
+  load with an error naming the new one, and no deprecation warning exists.
+- **2026-09-21 (PR 3) — the route-source set gains `subagent_type`.** §7
+  names `subagent` alone for the overlay. The passthrough form reports
+  `subagent_type` for a `by_type` hit and `subagent` for the `target`
+  fallback — the split `random`/`random_session` already makes — so a header
+  or metric reader can tell which key decided. The overlay's `algorithm`
+  label is `subagents`.
+- **2026-09-22 (issue #633) — the driven lane runs after admission,
+  `prefill_router` included.** §1 placed `libsy::drive` "before dispatch"
+  without fixing its position relative to inbound auth, and PR 7 shipped
+  `prefill_router` with its drive ahead of `check_inbound_auth` — so with
+  `[server.auth]` configured an unauthenticated caller naming the id could run
+  local inference and seed an affinity for a session id it chose. Every driven
+  algorithm now admits first, against the entry's dependency envelope (§3),
+  and drives second; a live prefill turn resolves to the entry's default target
+  provisionally, parks the drive on the stage context the way a judge
+  consultation is parked, and is re-routed onto the decision once admitted.
+  For `prefill_router` the envelope gate covers `count_tokens` too, since that
+  lane drives probes; the judge lane's probe exemption stands because it never
+  drives them. The stage router's commit-after-admission pin is the precedent
+  (PR 4's "Notes for reviewers" named this reuse).
+- **2026-09-23 (PR 6, issue #596) — the replay-lane route sources, and how
+  the gated call is told apart.** §4 and §7 name three verdicts
+  (`escalation_latch`, `advisor_approve`, `advisor_redo`) as the labels "on a
+  replayed turn", but the pinned libsy algorithms produce more outcomes than
+  that, and two of the three are not replays at all: a latched escalation
+  serves the strong target live, and a REDO re-runs the executor live after
+  discarding the buffered turn. The closed set is therefore:
+  `escalation_weak` (the weak turn replayed after the judge let it through),
+  `escalation_latch` (the strong target, live, because the session latched),
+  `escalation_fallback` (the strong target, live, because the weak turn failed
+  or was cut before `message_stop`), `classifier_fail_open` on an escalation
+  entry (the judge failed after a complete weak turn, which is replayed),
+  `advisor_approve` (replayed after APPROVE), `advisor_pass` (replayed without
+  a review), `advisor_fail_open` (the review failed after a complete turn,
+  which is replayed), `advisor_redo` (the executor's live re-run after REDO),
+  `advisor_exhausted` (review budget spent; live, no buffering), and
+  `gated_error` (the gated turn could not be served: a nonterminal advisor
+  turn's `502`, `fail_open = false`, or a relayed upstream error). Every
+  replayed turn carries one of the replay labels, so a client can still tell
+  a replayed turn from a live one. The gated weak or executor call is
+  identified as the **first** `CallModel` of a drive — both pinned algorithms
+  make it before any judge or review call — rather than by target id, so
+  `weak_target` may equal `classifier_target` without upstream's
+  prompted-target restriction, and the gated call is not charged to
+  `max_judge_calls`, which bounds judge calls only.
 
 ### 10. Verification before code
 

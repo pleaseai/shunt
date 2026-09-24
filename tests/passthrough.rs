@@ -638,7 +638,9 @@ async fn model_upstream_map_routes_and_translates_request_end_to_end() {
             "openai".to_string(),
             "gpt-map-target".to_string(),
         )])),
+        router: None,
         stage_router: None,
+        subagents: None,
     });
     config.route_prefixes = vec![RoutePrefixConfig {
         prefix: "claude-".to_string(),

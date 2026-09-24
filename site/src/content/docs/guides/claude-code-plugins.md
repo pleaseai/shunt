@@ -106,7 +106,7 @@ These add subagents pinned to a model id that shunt routes to another provider. 
 
 | Plugin | Models | Setup |
 | ------ | ------ | ----- |
-| `shunt-codex` | GPT-5.6 Sol · Terra · Luna | [ChatGPT / Codex](/guides/codex/) |
+| `shunt-codex` | GPT-6 Sol · Luna, GPT-5.6 Sol · Terra · Luna | [ChatGPT / Codex](/guides/codex/) |
 | `shunt-xai` | Grok 4.6 · 4.5 · Build | [xAI / Grok](/guides/xai/) |
 | `shunt-kimi` | Kimi K2.7 Code · K3 | [Kimi](/providers/kimi/) |
 | `shunt-deepseek` | DeepSeek V4 Pro · Flash | [DeepSeek](/providers/deepseek/) |
