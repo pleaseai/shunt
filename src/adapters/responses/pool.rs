@@ -606,26 +606,28 @@ pub(super) fn pool_events_stream(
                             );
                             // No idle bound: a gated (`routing::serve`)
                             // call never takes this streaming arm.
-                            let outcome =
-                                match classify_first(&state, &route, account, upstream, None).await
-                                {
-                                    Ok(outcome) => outcome,
-                                    Err(error) => {
-                                        let envelope = adapter_error_envelope(error).await;
-                                        record(StatusCode::BAD_GATEWAY);
-                                        return Some((
-                                            Err(envelope),
-                                            (
-                                                Phase::Done,
-                                                order_iter,
-                                                http_body,
-                                                last_response,
-                                                reprobe,
-                                                attempt_started,
-                                            ),
-                                        ));
-                                    }
-                                };
+                            let outcome = match classify_first(
+                                &state, &route, account, upstream, None, false,
+                            )
+                            .await
+                            {
+                                Ok(outcome) => outcome,
+                                Err(error) => {
+                                    let envelope = adapter_error_envelope(error).await;
+                                    record(StatusCode::BAD_GATEWAY);
+                                    return Some((
+                                        Err(envelope),
+                                        (
+                                            Phase::Done,
+                                            order_iter,
+                                            http_body,
+                                            last_response,
+                                            reprobe,
+                                            attempt_started,
+                                        ),
+                                    ));
+                                }
+                            };
                             match outcome {
                                 FirstOutcome::Relay(upstream) => {
                                     let status = upstream.status();
@@ -753,27 +755,28 @@ pub(super) fn pool_events_stream(
                                         account,
                                         retry.headers(),
                                     );
-                                    let outcome =
-                                        match classify_retry(&state, &route, account, retry, None)
-                                            .await
-                                        {
-                                            Ok(outcome) => outcome,
-                                            Err(error) => {
-                                                let envelope = adapter_error_envelope(error).await;
-                                                record(StatusCode::BAD_GATEWAY);
-                                                return Some((
-                                                    Err(envelope),
-                                                    (
-                                                        Phase::Done,
-                                                        order_iter,
-                                                        http_body,
-                                                        last_response,
-                                                        reprobe,
-                                                        attempt_started,
-                                                    ),
-                                                ));
-                                            }
-                                        };
+                                    let outcome = match classify_retry(
+                                        &state, &route, account, retry, None, false,
+                                    )
+                                    .await
+                                    {
+                                        Ok(outcome) => outcome,
+                                        Err(error) => {
+                                            let envelope = adapter_error_envelope(error).await;
+                                            record(StatusCode::BAD_GATEWAY);
+                                            return Some((
+                                                Err(envelope),
+                                                (
+                                                    Phase::Done,
+                                                    order_iter,
+                                                    http_body,
+                                                    last_response,
+                                                    reprobe,
+                                                    attempt_started,
+                                                ),
+                                            ));
+                                        }
+                                    };
                                     match outcome {
                                         RetryOutcome::Relay(retry) => {
                                             let retry_status = retry.status();
@@ -1088,7 +1091,16 @@ pub(super) async fn forward_chatgpt_oauth(
         state
             .accounts
             .note_codex_quota(&route.provider, account, upstream.headers());
-        match classify_first(&state, &route, account, upstream, turn.response_bounds.idle).await? {
+        match classify_first(
+            &state,
+            &route,
+            account,
+            upstream,
+            turn.response_bounds.idle,
+            false,
+        )
+        .await?
+        {
             FirstOutcome::Relay(upstream) => {
                 // A non-401/429/5xx response means the account itself is fine,
                 // whether or not this particular request succeeded (mirrors the
@@ -1174,8 +1186,15 @@ pub(super) async fn forward_chatgpt_oauth(
                 state
                     .accounts
                     .note_codex_quota(&route.provider, account, retry.headers());
-                match classify_retry(&state, &route, account, retry, turn.response_bounds.idle)
-                    .await?
+                match classify_retry(
+                    &state,
+                    &route,
+                    account,
+                    retry,
+                    turn.response_bounds.idle,
+                    false,
+                )
+                .await?
                 {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
@@ -1487,47 +1506,93 @@ pub(super) async fn force_refresh_or_cooldown(
 /// The pool-rotation metric reason [`rotate_on_model_refusal`] records.
 const MODEL_NOT_SUPPORTED: &str = "model_not_supported";
 
-/// Buffer an upstream error body under the same bounds the Responses adapter's
-/// error envelope reads it with ([`crate::error::ERROR_ENVELOPE_BUDGET`] and
+/// Read the head of an upstream error body so it can be checked for a model
+/// refusal. The read is bounded like the Responses adapter's error envelope
+/// read ([`crate::error::ERROR_ENVELOPE_BUDGET`] and
 /// [`crate::error::ERROR_ENVELOPE_BYTES`]), plus the gated idle gap when the
-/// caller has one (`ResponseBounds::idle`, as `json_response` honours it), and
-/// return a rebuilt response carrying the same status, headers, and bytes,
-/// alongside those bytes. A read that trips the budget, the cap, or the
-/// transport falls back to the text the envelope read falls back to
-/// (`upstream returned {status}`), so the relayed error is what it would have
-/// been had the envelope read failed itself. Only an idle cut is an error: it
-/// is the caller's bound, carried back to `routing::serve` as its marker.
+/// caller has one (`ResponseBounds::idle`, as `json_response` honours it). The
+/// bytes are returned only when the whole body arrived within those bounds: a
+/// body that declares or passes the cap, trips the budget, or breaks is not a
+/// refusal, and is passed on unjudged. Only an idle cut is an error: it is the
+/// caller's bound, carried back to `routing::serve` as its marker.
+///
+/// What an unjudged body becomes depends on who relays it. `verbatim` (the
+/// inbound passthrough) replays every byte read followed by whatever the
+/// upstream has not sent yet — a declared-oversized body is not read at all —
+/// so the client gets the upstream's 400 exactly as it was sent. Otherwise the
+/// body is the text the envelope read falls back to (`upstream returned
+/// {status}`): the translating path would render that anyway, and handing it
+/// the unread remainder would restart the envelope read's budget, outside the
+/// idle gap, on a body that has already spent both.
 async fn buffer_error_body(
     upstream: reqwest::Response,
     idle: Option<Duration>,
-) -> Result<(reqwest::Response, bytes::Bytes), AdapterError> {
+    verbatim: bool,
+) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
+    let declared_oversized = upstream
+        .content_length()
+        .is_some_and(|length| length > crate::error::ERROR_ENVELOPE_BYTES as u64);
+    if declared_oversized && verbatim {
+        return Ok((upstream, None));
+    }
     let status = upstream.status();
     let version = upstream.version();
     let mut headers = upstream.headers().clone();
-    let read = tokio::time::timeout(
-        crate::error::ERROR_ENVELOPE_BUDGET,
-        crate::adapters::collect_upstream_body(
-            upstream,
-            Some(crate::error::ERROR_ENVELOPE_BYTES),
-            idle,
-        ),
-    )
-    .await;
-    let body = match read {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(crate::adapters::UpstreamBodyError::Idle(idle))) => {
-            return Err(crate::adapters::idle_error(idle));
+    let mut rest = upstream.bytes_stream();
+    let budget = tokio::time::Instant::now() + crate::error::ERROR_ENVELOPE_BUDGET;
+    let mut read = Vec::new();
+    let mut total = 0usize;
+    let complete = !declared_oversized
+        && loop {
+            let idle_deadline = idle.map(|idle| tokio::time::Instant::now() + idle);
+            let wait = idle_deadline.map_or(budget, |deadline| deadline.min(budget));
+            match tokio::time::timeout_at(wait, rest.next()).await {
+                Ok(None) => break true,
+                Ok(Some(Ok(chunk))) => {
+                    total = total.saturating_add(chunk.len());
+                    read.push(Ok(chunk));
+                    if total > crate::error::ERROR_ENVELOPE_BYTES {
+                        break false;
+                    }
+                }
+                Ok(Some(Err(error))) => {
+                    read.push(Err(error));
+                    break false;
+                }
+                Err(_) => match (idle, idle_deadline) {
+                    (Some(idle), Some(deadline)) if deadline < budget => {
+                        return Err(crate::adapters::idle_error(
+                            crate::adapters::UpstreamBodyIdle { idle },
+                        ));
+                    }
+                    _ => break false,
+                },
+            }
+        };
+    let (body, judged) = if complete {
+        let mut bytes = bytes::BytesMut::with_capacity(total);
+        for chunk in read.iter().flatten() {
+            bytes.extend_from_slice(chunk);
         }
-        _ => {
-            headers.remove(reqwest::header::CONTENT_LENGTH);
-            bytes::Bytes::from(format!("upstream returned {status}"))
-        }
+        let bytes = bytes.freeze();
+        (reqwest::Body::from(bytes.clone()), Some(bytes))
+    } else if verbatim {
+        (
+            reqwest::Body::wrap_stream(stream::iter(read).chain(rest)),
+            None,
+        )
+    } else {
+        headers.remove(reqwest::header::CONTENT_LENGTH);
+        (
+            reqwest::Body::from(format!("upstream returned {status}")),
+            None,
+        )
     };
-    let mut rebuilt = axum::http::Response::new(body.clone());
+    let mut rebuilt = axum::http::Response::new(body);
     *rebuilt.status_mut() = status;
     *rebuilt.version_mut() = version;
     *rebuilt.headers_mut() = headers;
-    Ok((reqwest::Response::from(rebuilt), body))
+    Ok((reqwest::Response::from(rebuilt), judged))
 }
 
 /// Check a relay-classified response for the per-account model refusal
@@ -1545,12 +1610,13 @@ async fn rotate_on_model_refusal(
     account: &AccountConfig,
     upstream: reqwest::Response,
     idle: Option<Duration>,
+    verbatim: bool,
 ) -> Result<(reqwest::Response, bool), AdapterError> {
     if upstream.status() != StatusCode::BAD_REQUEST {
         return Ok((upstream, false));
     }
-    let (upstream, body) = buffer_error_body(upstream, idle).await?;
-    if !accounts::is_codex_model_unsupported(upstream.status(), &body) {
+    let (upstream, body) = buffer_error_body(upstream, idle, verbatim).await?;
+    if !body.is_some_and(|body| accounts::is_codex_model_unsupported(upstream.status(), &body)) {
         return Ok((upstream, false));
     }
     state.accounts.cooldown_model(
@@ -1590,19 +1656,21 @@ pub(super) enum FirstOutcome {
 /// response its own way (a translating path splits success vs a non-failover 4xx;
 /// the passthrough relays verbatim). A 400 model refusal rotates instead
 /// ([`rotate_on_model_refusal`]); `idle` bounds that body read and its trip is
-/// the only `Err`.
+/// the only `Err`, and `verbatim` (the passthrough) keeps an unjudged 400's body
+/// intact rather than falling back ([`buffer_error_body`]).
 pub(super) async fn classify_first(
     state: &AppState,
     route: &Route,
     account: &AccountConfig,
     upstream: reqwest::Response,
     idle: Option<Duration>,
+    verbatim: bool,
 ) -> Result<FirstOutcome, AdapterError> {
     let status = upstream.status();
     match accounts::classify_codex(status, upstream.headers()) {
         FailoverAction::Relay => {
             let (upstream, rotate) =
-                rotate_on_model_refusal(state, route, account, upstream, idle).await?;
+                rotate_on_model_refusal(state, route, account, upstream, idle, verbatim).await?;
             Ok(if rotate {
                 FirstOutcome::Rotate(upstream)
             } else {
@@ -1653,6 +1721,7 @@ pub(super) async fn classify_retry(
     account: &AccountConfig,
     retry: reqwest::Response,
     idle: Option<Duration>,
+    verbatim: bool,
 ) -> Result<RetryOutcome, AdapterError> {
     let retry_status = retry.status();
     if retry_status == StatusCode::UNAUTHORIZED {
@@ -1679,7 +1748,7 @@ pub(super) async fn classify_retry(
     match accounts::classify_codex(retry_status, retry.headers()) {
         FailoverAction::Relay => {
             let (retry, rotate) =
-                rotate_on_model_refusal(state, route, account, retry, idle).await?;
+                rotate_on_model_refusal(state, route, account, retry, idle, verbatim).await?;
             Ok(if rotate {
                 RetryOutcome::Rotate(retry)
             } else {
@@ -2146,6 +2215,61 @@ mod tests {
             .await
             .expect("body is readable");
         assert!(String::from_utf8_lossy(&bytes).contains(invalid));
+    }
+
+    /// On the verbatim passthrough the refusal check reads only a bounded head
+    /// of a 400: a body past the cap is left unjudged and still relayed whole,
+    /// never replaced.
+    #[tokio::test]
+    async fn an_oversized_bad_request_is_relayed_whole_and_unjudged() {
+        let server = MockServer::start().await;
+        let body = format!(
+            r#"{{"detail":"{}"}}"#,
+            "x".repeat(crate::error::ERROR_ENVELOPE_BYTES + 1024)
+        );
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(body.clone()))
+            .mount(&server)
+            .await;
+        let upstream = reqwest::Client::new()
+            .post(server.uri())
+            .send()
+            .await
+            .expect("mock answers");
+        let (relayed, judged) = buffer_error_body(upstream, None, true)
+            .await
+            .expect("no idle bound");
+        assert!(judged.is_none(), "a body past the cap is not judged");
+        assert_eq!(relayed.status(), StatusCode::BAD_REQUEST);
+        let bytes = relayed.bytes().await.expect("body is readable");
+        assert_eq!(bytes, body.as_bytes(), "every upstream byte is relayed");
+    }
+
+    /// Positive twin: on the translating path an unjudged 400 falls back to the
+    /// envelope read's own text instead of handing it the unread remainder.
+    #[tokio::test]
+    async fn an_oversized_bad_request_falls_back_off_the_verbatim_path() {
+        let server = MockServer::start().await;
+        let body = format!(
+            r#"{{"detail":"{}"}}"#,
+            "x".repeat(crate::error::ERROR_ENVELOPE_BYTES + 1024)
+        );
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(body))
+            .mount(&server)
+            .await;
+        let upstream = reqwest::Client::new()
+            .post(server.uri())
+            .send()
+            .await
+            .expect("mock answers");
+        let (relayed, judged) = buffer_error_body(upstream, None, false)
+            .await
+            .expect("no idle bound");
+        assert!(judged.is_none(), "a body past the cap is not judged");
+        assert_eq!(relayed.status(), StatusCode::BAD_REQUEST);
+        let bytes = relayed.bytes().await.expect("body is readable");
+        assert_eq!(bytes, "upstream returned 400 Bad Request");
     }
 
     #[test]

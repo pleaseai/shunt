@@ -390,9 +390,9 @@ struct AccountHealth {
     /// (see [`is_codex_model_unsupported`]). Selection folds the entry for
     /// the requested model into [`governing_cooldown`], so other models on
     /// the account are unaffected. Expired entries are pruned on insert
-    /// ([`AccountPool::cooldown_model`]) because the key can be
-    /// client-supplied on the inbound passthrough; live entries are not
-    /// capped. Memory-only, like
+    /// ([`AccountPool::cooldown_model`]) and on every selection of the account
+    /// because the key can be client-supplied on the inbound passthrough;
+    /// live entries are not capped. Memory-only, like
     /// `cooldown_until`.
     model_cooldowns: HashMap<String, Instant>,
 }
@@ -779,6 +779,10 @@ impl AccountPool {
                 // each account's QuotaState just to assess it after release.
                 let assessment = assess_quota(&health.quota, account, is_fable, pool, unix_now);
                 let weekly_reset = governing_weekly_reset(&health.quota, is_fable);
+                // Prune expired per-model refusals here as well as on insert:
+                // the key can be client-supplied, so without a later refusal
+                // an expired entry would otherwise outlive its cooldown.
+                health.model_cooldowns.retain(|_, until| *until > now);
                 let cooldown_until = governing_cooldown(health, is_fable, model_key.as_deref());
                 snapshots.push((cooldown_until, assessment, weekly_reset));
             }
@@ -5997,9 +6001,27 @@ mod tests {
             Duration::from_secs(60),
             "model_not_supported",
         );
+        {
+            let entries = pool.entries.lock().unwrap();
+            let cooled = entries[&key].model_cooldowns.keys().collect::<Vec<_>>();
+            assert_eq!(cooled, vec!["gpt-z"]);
+        }
+
+        // Expired entries are also pruned by selection, with no later refusal:
+        // a selection for any model drops every lapsed per-model entry.
+        pool.cooldown_model(
+            "codex",
+            &accounts[sticky],
+            "gpt-z",
+            Duration::ZERO,
+            "model_not_supported",
+        );
+        pool.select_order("codex", &accounts, Some(session), Some("gpt-y"), None);
         let entries = pool.entries.lock().unwrap();
-        let cooled = entries[&key].model_cooldowns.keys().collect::<Vec<_>>();
-        assert_eq!(cooled, vec!["gpt-z"]);
+        assert!(
+            entries[&key].model_cooldowns.is_empty(),
+            "selection must prune expired model cooldowns"
+        );
     }
 
     #[test]

@@ -1724,3 +1724,163 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
 
     fs::remove_dir_all(&dir).ok();
 }
+
+/// The per-account model refusal ([`shunt::accounts::is_codex_model_unsupported`]).
+const MODEL_REFUSAL: &str = r#"{"detail":"The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."}"#;
+
+#[tokio::test]
+async fn model_refusal_rotates_to_next_account() {
+    // A first-attempt 400 model refusal is not the client's error: the passthrough
+    // rotates to the next account and relays its response verbatim.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-refusal-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-refusal-b");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_INBOUND_REFUSAL_A", &token_a);
+    vars.set("SHUNT_TEST_INBOUND_REFUSAL_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(MODEL_REFUSAL, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"ok":"b"}"#, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_INBOUND_REFUSAL_A"),
+            account("account-b", "SHUNT_TEST_INBOUND_REFUSAL_B"),
+        ],
+    ))
+    .await;
+
+    let session_id = session_id_for_account(0, 2);
+    let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    assert_eq!(response.text().await.unwrap(), r#"{"ok":"b"}"#);
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn model_refusal_after_refresh_rotates_to_next_account() {
+    // The refreshed retry is classified the same way: a model refusal there
+    // rotates to the next account instead of being relayed.
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-retryrefusal-stale");
+    let fresh = chatgpt_token(expires_at + 1, "acct-retryrefusal-fresh");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-retryrefusal-b");
+    vars.set("SHUNT_TEST_INBOUND_RETRYREFUSAL_B", &token_b);
+
+    let dir = unique_temp_dir("retryrefusal");
+    let store_path = dir.join("account-a.json");
+    write_store_file(&store_path, &stale, "refresh-token-a");
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .mount(&auth)
+        .await;
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired"}"#))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(MODEL_REFUSAL, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"ok":"b"}"#, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let session = session_id_for_account(0, 2);
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            store_account_at("account-a", &store_path),
+            account("account-b", "SHUNT_TEST_INBOUND_RETRYREFUSAL_B"),
+        ],
+    ))
+    .await;
+
+    let response = post_responses(&gateway, "/responses", Some(&session), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    assert_eq!(response.text().await.unwrap(), r#"{"ok":"b"}"#);
+    upstream.verify().await;
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn model_refusal_on_every_account_relays_the_refusal_verbatim() {
+    // Every account refuses the model: the pool exhausts and relays the last
+    // upstream refusal, status and body unchanged.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-allrefuse-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-allrefuse-b");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_INBOUND_ALLREFUSE_A", &token_a);
+    vars.set("SHUNT_TEST_INBOUND_ALLREFUSE_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(MODEL_REFUSAL, "application/json"))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_INBOUND_ALLREFUSE_A"),
+            account("account-b", "SHUNT_TEST_INBOUND_ALLREFUSE_B"),
+        ],
+    ))
+    .await;
+
+    let response = post_responses(&gateway, "/responses", None, None).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.text().await.unwrap(), MODEL_REFUSAL);
+    upstream.verify().await;
+}
