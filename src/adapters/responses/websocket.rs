@@ -698,11 +698,7 @@ mod tests {
                 StatusCode::TOO_MANY_REQUESTS,
                 "{data}"
             );
-            assert_eq!(
-                error.response.headers().get("retry-after").unwrap(),
-                expected,
-                "{data}"
-            );
+            assert_eq!(error.response.headers()["retry-after"], expected, "{data}");
         }
     }
 
