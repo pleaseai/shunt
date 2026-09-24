@@ -1,0 +1,31 @@
+src/routing/stage/store/budget_tests.rs
+  s_e9c7bce466358a::t_475f85d2ad7ecd 248-276,299-359
+  s_e9c7bce466358a::t_5b2fec9eac7410 277-298
+src/routing/stage/store/decide.rs
+  s_e9c7bce466358a::t_aa199fc1eef94c 254-256,264-270
+  s_e9c7bce466358a::t_fb0106cab40a7a 250-253,259-263,271
+  s_e9c7bce466358a::t_38f107b32fe3c8 16
+src/routing/driven/budget.rs
+  s_e9c7bce466358a::t_98b48e90fc5f43 291-294,298-299
+  s_e9c7bce466358a::t_764415e8aa349b 268-269
+  s_e9c7bce466358a::t_155bf85a1f627d 258-259,263-266
+  s_e9c7bce466358a::t_539afe850213e8 332-346
+docs/stage-router.md
+  s_e9c7bce466358a::t_533521899dcb96 271-274
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d20913f9e410a44ec90b0e16a25e160cc4c23441",
+  "prompts": {},
+  "sessions": {
+    "s_e9c7bce466358a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52c4e84c-87ad-4bd6-aebe-df807ab7e91c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
