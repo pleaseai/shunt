@@ -64,6 +64,8 @@ mod drive;
 pub(crate) mod gated;
 
 #[cfg(test)]
+mod budget_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
