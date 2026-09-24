@@ -245,6 +245,118 @@ fn a_reload_that_changes_the_table_restarts_the_budget() {
     );
 }
 
+/// `classify_trigger` is part of the table: a reload that changes only when the
+/// judge is consulted starts the count over like any other table change. Hash
+/// the classifier through a dotted read that skips the trigger and this goes
+/// red on the reloaded charge.
+#[test]
+fn a_reload_that_changes_only_the_trigger_restarts_the_budget() {
+    let store = StageRouterStore::new();
+    let before = judged(1);
+    let mut after = judged(1);
+    if let Some(classifier) = after.classifier.as_mut() {
+        classifier.classify_trigger = crate::config::ClassifyTrigger::UserTurn;
+    }
+    let now = Instant::now();
+
+    let spent = apply(&store, &before, &parent(), capable(), now);
+    assert!(charge(&store, &before, &spent, now));
+    let refused = apply(&store, &before, &parent(), capable(), now);
+    assert!(
+        !charge(&store, &before, &refused, now),
+        "the old table's budget is spent"
+    );
+
+    let reloaded = apply(&store, &after, &parent(), capable(), now);
+    assert!(
+        charge(&store, &after, &reloaded, now),
+        "a new trigger is a new table, so it counts from zero"
+    );
+}
+
+/// The positive twin: `new_session` consults exactly as `every_request` does on
+/// this route, so a reload that swaps one for the other is the same table and
+/// the spent budget stays spent. Hash the raw enum and this goes red.
+#[test]
+fn a_reload_to_an_equivalent_trigger_keeps_the_budget() {
+    let store = StageRouterStore::new();
+    let before = judged(1);
+    let mut after = judged(1);
+    if let Some(classifier) = after.classifier.as_mut() {
+        classifier.classify_trigger = crate::config::ClassifyTrigger::NewSession;
+    }
+    let now = Instant::now();
+
+    let spent = apply(&store, &before, &parent(), capable(), now);
+    assert!(charge(&store, &before, &spent, now));
+    let reloaded = apply(&store, &after, &parent(), capable(), now);
+    assert!(
+        !charge(&store, &after, &reloaded, now),
+        "new_session behaves as every_request here, so the budget is still spent"
+    );
+}
+
+/// A turn that started earlier but commits later must not rewind the window a
+/// later turn already advanced: turns finish out of order, and `commit` is
+/// handed the turn's start. Assign the touched window unconditionally in
+/// `JudgeBudget::touch` and the refusal below goes red — the count would read
+/// as expired a TTL after the *older* turn began.
+#[test]
+fn an_older_commit_does_not_rewind_the_budget_window() {
+    let store = StageRouterStore::new();
+    let router = judged(1);
+    let ttl = Duration::from_secs(router.session_ttl_seconds);
+    let start = Instant::now();
+    let late = start + ttl / 2;
+
+    let older = apply(&store, &router, &parent(), capable(), start);
+    let newer = apply(&store, &router, &parent(), capable(), late);
+    assert!(
+        charge(&store, &router, &newer, late),
+        "the newer turn's call"
+    );
+    store.commit(newer.pin.expect("a pin"), late);
+    // The slow, older turn finishes last and is superseded — but it was served.
+    store.commit(older.pin.expect("a pin"), start);
+
+    let after = start + ttl + Duration::from_secs(1);
+    let next = apply(&store, &router, &parent(), capable(), after);
+    assert!(
+        !charge(&store, &router, &next, after),
+        "the newer turn's window is still open, so the budget is still spent"
+    );
+}
+
+/// The charge half of the same rule: a reservation taken by a turn that started
+/// before one already charged keeps the later window. Take the reserving turn's
+/// window unconditionally in `try_charge_within` and the refusal goes red.
+#[test]
+fn an_older_charge_does_not_rewind_the_budget_window() {
+    let store = StageRouterStore::new();
+    let router = judged(2);
+    let ttl = Duration::from_secs(router.session_ttl_seconds);
+    let start = Instant::now();
+    let late = start + ttl / 2;
+
+    let older = apply(&store, &router, &parent(), capable(), start);
+    let newer = apply(&store, &router, &parent(), capable(), late);
+    assert!(
+        charge(&store, &router, &newer, late),
+        "the newer turn's call"
+    );
+    assert!(
+        charge(&store, &router, &older, start),
+        "the older turn's call lands second"
+    );
+
+    let after = start + ttl + Duration::from_secs(1);
+    let next = apply(&store, &router, &parent(), capable(), after);
+    assert!(
+        !charge(&store, &router, &next, after),
+        "both calls are inside the newer window, so a budget of two is spent"
+    );
+}
+
 /// Issue #649 on this lane: a delegated turn that sent no agent id draws on a
 /// budget of its own — shared by every such turn of the session, and bounded —
 /// rather than on its parent's, and a blank id is the same as none.

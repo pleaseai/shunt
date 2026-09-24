@@ -255,15 +255,18 @@ impl JudgeBudget {
         };
         let now = window.map(|window| window.now);
         let mut used = self.lock();
-        let spent = used
-            .get(key)
-            .filter(|spent| spent.is_live(now))
-            .map_or(0, |spent| spent.calls);
+        let live = used.get(key).filter(|spent| spent.is_live(now)).copied();
+        let spent = live.map_or(0, |spent| spent.calls);
         if spent >= max {
             return false;
         }
+        // Never backwards: a turn that started before one already charged
+        // here carries the earlier instant, and restarting the window from it
+        // would expire the count early.
+        let window = later(live.and_then(|spent| spent.window), window);
         // The driven lane has no window, so its recency comes from the clock.
-        let last = now.unwrap_or_else(Instant::now);
+        let at = now.unwrap_or_else(Instant::now);
+        let last = live.map_or(at, |spent| spent.last.max(at));
         // No class can hold `HARD_CAP` keys while the whole map holds fewer, so
         // the per-class count is only taken once the map is that large.
         if used.len() >= HARD_CAP && !used.contains_key(key) {
@@ -285,11 +288,15 @@ impl JudgeBudget {
     /// Only a count that exists and is still live moves: a session that has
     /// made no call has nothing here to keep alive, and an expired count must
     /// stay expired so the next charge starts it over.
+    ///
+    /// Never backwards: `window.now` is the turn's start, so a slow turn that
+    /// commits after a later one would otherwise move the window back to an
+    /// instant the count has already outlived and expire it early.
     pub(crate) fn touch(&self, key: &BudgetKey, window: Window) {
         if let Some(spent) = self.lock().get_mut(key) {
             if spent.is_live(Some(window.now)) {
-                spent.window = Some(window);
-                spent.last = window.now;
+                spent.window = later(spent.window, Some(window));
+                spent.last = spent.last.max(window.now);
             }
         }
     }
@@ -319,6 +326,21 @@ impl JudgeBudget {
     #[cfg(test)]
     pub(crate) const fn hard_cap() -> usize {
         HARD_CAP
+    }
+}
+
+/// `next`, unless `kept` started later: then `kept`'s start with `next`'s TTL.
+///
+/// A window only ever moves forward. `next` is always the caller's turn start,
+/// and turns do not finish in the order they started, so taking it blindly
+/// would let a slow turn rewind a window a later turn already advanced.
+fn later(kept: Option<Window>, next: Option<Window>) -> Option<Window> {
+    match (kept, next) {
+        (Some(kept), Some(next)) if kept.now > next.now => Some(Window {
+            now: kept.now,
+            ttl: next.ttl,
+        }),
+        _ => next,
     }
 }
 
