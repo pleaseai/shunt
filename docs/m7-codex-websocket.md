@@ -265,7 +265,15 @@ The issue frames this as "prewarm". Two separable things:
   on a hit it replaces `input` with the delta and inserts `previous_response_id`
   (+ the turn_state echo). `commit_or_fallback` then decides from that peeked event:
   a delivered event (`Ok`) commits to the WebSocket stream; a transport error or an
-  empty stream returns `Err` so `forward()` re-drives the turn over HTTP.
+  empty stream returns `Err` so `forward()` re-drives the turn over HTTP. So does a
+  first event that is the backend's wrapped HTTP-class error frame
+  (`{"type":"error","status":400,"error":{..},"headers":{..}}`, mirroring
+  openai/codex rust-v0.156.0's `map_wrapped_websocket_error_event`): a
+  `websocket_connection_limit_reached` code falls back as a pre-header transport
+  failure, and a non-2xx `status` / `status_code` is re-shaped exactly like a
+  refused handshake (`build_upstream_error` with that status and the frame's
+  `retry-after` header). The frame's other `headers` (the `x-codex-*` quota values)
+  are not recorded as quota observations.
 - The buffered first event is replayed ahead of the channel by both the streaming
   (`stream_events_response`) and non-streaming (`json_events_response`) drivers,
   which are otherwise the WebSocket analogs of the HTTP `stream_response` /
@@ -288,7 +296,8 @@ The issue frames this as "prewarm". Two separable things:
   (`m1-responses-translation.md` §8): an in-stream `rate_limit_exceeded` or
   `slow_down` is `429` `rate_limit_error`, `server_is_overloaded` is `529`
   `overloaded_error`, `invalid_prompt` / `bio_policy` / `cyber_policy` are `400`
-  `invalid_request_error`, and every other code is `502`; all are terminal and
+  `invalid_request_error`, any other code on a wrapped frame carrying a non-2xx
+  `status` / `status_code` takes that status, and everything else is `502`; all are terminal and
   never replay the turn on the next upstream. Symmetric with the transport-error handling
   above and shared by both the WebSocket and HTTP JSON paths.
 - **HTTP fallback.** Any websocket failure *before the first event reaches the

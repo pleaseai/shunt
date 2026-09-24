@@ -180,9 +180,9 @@ async fn open_ws_turn(
         tracing::info!("codex previous_response_id rejected; retrying with full input");
         let (events, _) = start_ws_turn(ctx, false).await?;
         let (first, events) = peek_first_event(events).await;
-        return commit_or_fallback(first, events);
+        return commit_or_fallback(first, events, ctx.auth);
     }
-    commit_or_fallback(first, events)
+    commit_or_fallback(first, events, ctx.auth)
 }
 
 /// Await the first event of a freshly opened turn, returning it alongside the
@@ -199,18 +199,72 @@ async fn peek_first_event(mut events: CodexWsEvents) -> (BufferedEvent, CodexWsE
 /// [`forward`] re-drive the turn over HTTP transparently — the send→first-event
 /// analogue of the pre-handshake fallback. Backend-sent error *events* (a rate
 /// limit, a content-policy refusal) arrive as `Ok` and are streamed through rather
-/// than retried; only genuine transport failures reach the `Err` arm here.
+/// than retried — except a first event that is a wrapped HTTP-class error
+/// ([`wrapped_first_event_error`]), which is re-shaped like a refused handshake.
 fn commit_or_fallback(
     first: BufferedEvent,
     events: CodexWsEvents,
+    auth: AuthMode,
 ) -> Result<(BufferedEvent, CodexWsEvents), AdapterError> {
     match first {
-        Some(Ok(event)) => Ok((Some(Ok(event)), events)),
+        Some(Ok(event)) => match wrapped_first_event_error(&event, auth) {
+            Some(error) => Err(error),
+            None => Ok((Some(Ok(event)), events)),
+        },
         Some(Err(error)) => Err(ws_transport_error(error)),
         None => Err(ws_before_headers_error(
             "codex websocket closed before any event".to_string(),
         )),
     }
+}
+
+/// Classify a peeked first event that is the Codex websocket's wrapped error
+/// frame, mirroring openai/codex rust-v0.156.0's
+/// `map_wrapped_websocket_error_event`. The backend delivers HTTP-class errors
+/// as `{"type":"error","status":400,"error":{..},"headers":{..}}` on the socket,
+/// and as the first event nothing has reached the client yet:
+///
+/// - `websocket_connection_limit_reached` is retryable upstream, so it becomes
+///   the same pre-header transport failure a dropped socket is.
+/// - A non-2xx `status` / `status_code` is handled exactly like a refused
+///   handshake ([`ws_connect_error`]): [`build_upstream_error`] with that status,
+///   the frame's `retry-after` header, and the frame itself as the body.
+///
+/// Any other event (including an error frame without a status) returns `None`
+/// and commits. The socket is never pooled either way: `error` is a terminal
+/// event that the connection reader evicts on.
+fn wrapped_first_event_error(event: &ResponseEvent, auth: AuthMode) -> Option<AdapterError> {
+    if event.event.as_deref() != Some("error") {
+        return None;
+    }
+    let data = &event.data;
+    if data.pointer("/error/code").and_then(Value::as_str)
+        == Some("websocket_connection_limit_reached")
+    {
+        return Some(ws_before_headers_error(
+            "codex websocket connection limit reached".to_string(),
+        ));
+    }
+    let status = crate::model::responses::wrapped_error_status(data)?;
+    let retry_after = data
+        .get("headers")
+        .and_then(Value::as_object)
+        .and_then(|headers| {
+            headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("retry-after"))
+        })
+        .and_then(|(_, value)| match value {
+            Value::String(value) => Some(value.clone()),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        });
+    Some(build_upstream_error(
+        status,
+        retry_after,
+        data.to_string(),
+        auth,
+    ))
 }
 
 /// Rewrite `frame_body` in place for a continuation turn: replace `input` with the
@@ -541,7 +595,7 @@ mod tests {
     /// send an event or a transport error before closing), so it is exercised here.
     #[test]
     fn commit_or_fallback_classifies_the_peeked_first_event() {
-        use super::{commit_or_fallback, CodexWsError, ResponseEvent};
+        use super::{commit_or_fallback, AuthMode, CodexWsError, ResponseEvent};
         use tokio::sync::mpsc;
 
         // A delivered first event commits: it is buffered for replay and the
@@ -551,8 +605,8 @@ mod tests {
             event: Some("response.created".to_string()),
             data: Value::Null,
         };
-        let (buffered, _events) =
-            commit_or_fallback(Some(Ok(event)), rx).expect("a delivered event commits");
+        let (buffered, _events) = commit_or_fallback(Some(Ok(event)), rx, AuthMode::ChatgptOauth)
+            .expect("a delivered event commits");
         assert!(
             matches!(buffered, Some(Ok(_))),
             "the first event is buffered for replay"
@@ -568,18 +622,118 @@ mod tests {
             previous_response_missing: false,
         };
         assert!(
-            commit_or_fallback(Some(Err(error)), rx).is_err(),
+            commit_or_fallback(Some(Err(error)), rx, AuthMode::ChatgptOauth).is_err(),
             "a pre-first-event transport error falls back to HTTP"
         );
 
         // An empty stream (channel closed before any event) also falls back and
         // carries the pre-header classification consumed by both fallback gates.
         let (_tx, rx) = mpsc::channel(16);
-        let error = commit_or_fallback(None, rx).expect_err("an empty stream falls back to HTTP");
+        let error = commit_or_fallback(None, rx, AuthMode::ChatgptOauth)
+            .expect_err("an empty stream falls back to HTTP");
         assert_eq!(
             error.failure,
             Some(crate::adapters::AdapterFailure::BeforeHeaders)
         );
+    }
+
+    /// Peek `data` as the first event of a turn through `commit_or_fallback`.
+    fn commit_first(data: Value) -> Result<super::BufferedEvent, crate::adapters::AdapterError> {
+        let (_tx, rx) = tokio::sync::mpsc::channel(16);
+        let event = super::ResponseEvent {
+            event: data["type"].as_str().map(str::to_string),
+            data,
+        };
+        super::commit_or_fallback(Some(Ok(event)), rx, super::AuthMode::ChatgptOauth)
+            .map(|(buffered, _events)| buffered)
+    }
+
+    /// A first-event wrapped error frame carrying a non-2xx `status` is re-shaped
+    /// like a refused handshake: the upstream status, `UpstreamStatus` failure,
+    /// and the frame's `error.message` — not a committed stream that ends in 502.
+    #[tokio::test]
+    async fn commit_or_fallback_reshapes_a_wrapped_status_error_frame() {
+        let message =
+            "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.";
+        let error = commit_first(json!({
+            "type": "error",
+            "status": 400,
+            "error": {"type": "invalid_request_error", "message": message}
+        }))
+        .expect_err("a wrapped 400 does not commit");
+        assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error.failure,
+            Some(crate::adapters::AdapterFailure::UpstreamStatus(
+                StatusCode::BAD_REQUEST
+            ))
+        );
+        let body = axum::body::to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["message"], message);
+    }
+
+    /// The frame's `headers` object carries `retry-after` (any case, string or
+    /// number) onto the re-shaped response, and `status_code` is read too.
+    #[test]
+    fn commit_or_fallback_carries_a_wrapped_frame_retry_after() {
+        for (data, expected) in [
+            (
+                json!({"type": "error", "status": 429, "headers": {"retry-after": "30"},
+                    "error": {"message": "slow"}}),
+                "30",
+            ),
+            (
+                json!({"type": "error", "status_code": 429, "headers": {"Retry-After": 7},
+                    "error": {"message": "slow"}}),
+                "7",
+            ),
+        ] {
+            let error = commit_first(data.clone()).expect_err("a wrapped 429 does not commit");
+            assert_eq!(
+                error.response.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{data}"
+            );
+            assert_eq!(
+                error.response.headers().get("retry-after").unwrap(),
+                expected,
+                "{data}"
+            );
+        }
+    }
+
+    /// `websocket_connection_limit_reached` is retryable upstream: it falls back
+    /// to HTTP as a pre-header failure, whatever status accompanies it.
+    #[test]
+    fn commit_or_fallback_falls_back_on_the_connection_limit() {
+        let error = commit_first(json!({
+            "type": "error",
+            "status": 429,
+            "error": {"code": "websocket_connection_limit_reached", "message": "limit"}
+        }))
+        .expect_err("the connection limit does not commit");
+        assert_eq!(
+            error.failure,
+            Some(crate::adapters::AdapterFailure::BeforeHeaders)
+        );
+    }
+
+    /// An error frame without a usable status (absent, 2xx, or non-numeric) is
+    /// an ordinary backend error event: it commits and streams, as before.
+    #[test]
+    fn commit_or_fallback_commits_an_error_frame_without_a_status() {
+        for data in [
+            json!({"type": "error", "error": {"code": "server_error", "message": "x"}}),
+            json!({"type": "error", "status": 200, "error": {"message": "x"}}),
+            json!({"type": "error", "status": "400", "error": {"message": "x"}}),
+        ] {
+            let buffered = commit_first(data.clone()).expect("commits");
+            assert!(matches!(buffered, Some(Ok(_))), "{data}");
+        }
     }
 
     #[test]

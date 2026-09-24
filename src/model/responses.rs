@@ -88,7 +88,8 @@ pub struct AnthropicSseMachine {
     /// Paired with the client-facing status the envelope was mapped against
     /// ([`backend_error_status`]): `429` for an in-stream `rate_limit_exceeded`
     /// or `slow_down`, `529` for `server_is_overloaded`, `400` for the
-    /// `invalid_prompt` / `bio_policy` / `cyber_policy` refusals, else `502`.
+    /// `invalid_prompt` / `bio_policy` / `cyber_policy` refusals, the frame's
+    /// own `status` for a Codex websocket wrapped error, else `502`.
     backend_error: Option<(StatusCode, Value)>,
     /// The client's Anthropic `stop_sequences`, emulated gateway-side because the
     /// Responses API has no `stop` parameter (issue #605). Empty — the common
@@ -1137,6 +1138,11 @@ fn error_code(value: &Value) -> &str {
 ///   `invalid_request_error`: upstream treats these as terminal, non-retryable
 ///   refusals (`InvalidRequest` / `BioPolicy` / `CyberPolicy`), so a 4xx stops
 ///   Claude Code from retrying them as it would a 5xx.
+/// - Any other code, when the event carries a top-level `status` (or
+///   `status_code`) that is a non-2xx HTTP status — the Codex websocket's
+///   wrapped HTTP-class error frame, mirroring rust-v0.156.0's
+///   `parse_wrapped_websocket_error_event` — → that status through
+///   [`client_facing_status`], exactly as the same HTTP status would map.
 /// - Anything else (including `misalignment_policy_violation`, `server_error`,
 ///   and quota codes such as `insufficient_quota`) → the `502` gateway error.
 ///
@@ -1154,8 +1160,25 @@ pub fn backend_error_status(value: &Value) -> StatusCode {
             OVERLOADED
         }
         "invalid_prompt" | "bio_policy" | "cyber_policy" => StatusCode::BAD_REQUEST,
-        _ => StatusCode::BAD_GATEWAY,
+        _ => wrapped_error_status(value)
+            .map(client_facing_status)
+            .unwrap_or(StatusCode::BAD_GATEWAY),
     }
+}
+
+/// The HTTP status a Codex websocket wrapped error frame carries, e.g.
+/// `{"type":"error","status":400,"error":{..}}`: the backend's way of delivering
+/// an HTTP-class error on the socket instead of as a response status. Read from
+/// the top-level `status` or `status_code` (openai/codex rust-v0.156.0 accepts
+/// both); `None` when absent, not an integer, not a valid status, or 2xx.
+pub fn wrapped_error_status(value: &Value) -> Option<StatusCode> {
+    value
+        .get("status")
+        .or_else(|| value.get("status_code"))
+        .and_then(Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok())
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .filter(|status| !status.is_success())
 }
 
 /// Append the backend's public steering instruction to a

@@ -391,13 +391,21 @@ async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
 /// or after a first event (streaming has begun, so a restart would duplicate
 /// output — the drop must surface as a clean error instead). `CompleteTurn`
 /// drops nothing: it streams a whole turn, including the backend's in-stream
-/// `codex.rate_limits` event.
+/// `codex.rate_limits` event. `WrappedRefusal` answers with the backend's
+/// wrapped HTTP-class `error` frame (`status: 400`) as the first event, and the
+/// HTTP half refuses the fallback with an HTTP 400 [`HTTP_REFUSAL_DETAIL`].
 #[derive(Clone, Copy)]
 enum WsDrop {
     BeforeFirstEvent,
     AfterFirstEvent,
     CompleteTurn,
+    WrappedRefusal,
 }
+
+/// The `detail` the HTTP half's refusal carries under [`WsDrop::WrappedRefusal`],
+/// distinct from the websocket frame's message so a test can tell which
+/// transport answered.
+const HTTP_REFUSAL_DETAIL: &str = "model not supported (HTTP fallback)";
 
 /// Build a codex-provider config with the websocket transport enabled, pointing
 /// both the websocket and HTTP paths at `base_url`.
@@ -475,7 +483,7 @@ async fn spawn_counted_dual_upstream(
                 tokio::spawn(serve_ws(socket, drop));
             } else {
                 hits.fetch_add(1, Ordering::SeqCst);
-                tokio::spawn(serve_http(socket));
+                tokio::spawn(serve_http(socket, drop));
             }
         }
     });
@@ -509,6 +517,13 @@ async fn serve_ws(socket: TcpStream, drop: WsDrop) {
         return;
     };
     let _ = ws.next().await; // the client's response.create frame
+    if let WsDrop::WrappedRefusal = drop {
+        let frame = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model not supported (websocket)"}}"#;
+        ws.send(Message::Text(frame.to_string().into()))
+            .await
+            .expect("mock upstream should send the wrapped error frame");
+        return;
+    }
     if let WsDrop::CompleteTurn = drop {
         for event in [
             r#"{"type":"response.created","response":{"id":"resp_ws"}}"#,
@@ -545,8 +560,19 @@ async fn serve_ws(socket: TcpStream, drop: WsDrop) {
 /// Answer an HTTP Responses `POST` with [`RESPONSES_SSE`]. Reads the full request
 /// first so the client's write completes before the reply (a `content-length`
 /// body lets the client finish reading before the socket closes).
-async fn serve_http(mut socket: TcpStream) {
+async fn serve_http(mut socket: TcpStream, drop: WsDrop) {
     drain_http_request(&mut socket).await;
+    if let WsDrop::WrappedRefusal = drop {
+        let body = serde_json::json!({"detail": HTTP_REFUSAL_DETAIL}).to_string();
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
+        let _ = socket.flush().await;
+        return;
+    }
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{}",
         RESPONSES_SSE.len(),
@@ -624,6 +650,45 @@ async fn websocket_drop_before_first_event_falls_back_to_http() {
         http_hits.load(Ordering::SeqCst),
         1,
         "the fallback POSTs the turn to the HTTP endpoint exactly once (no double-send)"
+    );
+
+    let _ = std::fs::remove_file(auth_path);
+}
+
+/// A pre-response refusal the backend wraps as an `error` frame with
+/// `status: 400` is re-shaped like a refused handshake rather than committed as
+/// a `502` stream: the turn falls back to HTTP, and the client receives that
+/// transport's `400 invalid_request_error` with its message.
+#[tokio::test]
+async fn websocket_wrapped_status_error_surfaces_the_refusal_status() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+
+    let (base_url, http_hits) = spawn_dual_upstream(WsDrop::WrappedRefusal).await;
+    let auth_path = write_fake_codex_auth(&mut vars);
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            r#"{"model":"codex-fallback-model","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error", "{body}");
+    assert_eq!(body["error"]["message"], HTTP_REFUSAL_DETAIL, "{body}");
+    assert_eq!(
+        http_hits.load(Ordering::SeqCst),
+        1,
+        "the wrapped refusal falls back to HTTP exactly once"
     );
 
     let _ = std::fs::remove_file(auth_path);

@@ -162,7 +162,8 @@ Exception: if the machine recorded a backend error (the `error` / `response.fail
 return the mapped Anthropic error envelope as a gateway error instead of the collected message
 JSON (issue #113; see `m7-codex-websocket.md` §8) — the status follows the error `code` per
 §8 (`429` for `rate_limit_exceeded` / `slow_down`, `529` for `server_is_overloaded`, `400` for
-`invalid_prompt` / `bio_policy` / `cyber_policy`, else `502`); either way terminal, never
+`invalid_prompt` / `bio_policy` / `cyber_policy`, a wrapped frame's own non-2xx `status`, else
+`502`); either way terminal, never
 replayed on the next upstream.
 
 ## 7. Residual model-map concern
@@ -220,6 +221,7 @@ classification (`codex-api/src/sse/responses.rs`):
 | `rate_limit_exceeded`, `slow_down` | `429` | `rate_limit_error` | `RateLimitExceeded` (rust-v0.156.0 moved `slow_down` here from `ServerOverloaded`) |
 | `server_is_overloaded` | `529` | `overloaded_error` | `ServerOverloaded` (terminal upstream; see below) |
 | `invalid_prompt`, `bio_policy`, `cyber_policy` | `400` | `invalid_request_error` | `InvalidRequest` / `BioPolicy` / `CyberPolicy` (terminal, non-retryable) |
+| any other code, on an event carrying a top-level non-2xx `status` / `status_code` (the Codex WebSocket's wrapped HTTP-class error frame) | that status, per the table above | per the table above | treated as an HTTP error with that status (`parse_wrapped_websocket_error_event`) |
 | anything else (e.g. `misalignment_policy_violation`, `server_error`, `insufficient_quota`) | `502` | `api_error` | — |
 
 The throttle row lets Claude Code's own rate-limit handling see the right type and status; the

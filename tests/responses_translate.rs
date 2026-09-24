@@ -1828,6 +1828,55 @@ fn classifies_slow_down_overload_and_policy_codes() {
 }
 
 #[test]
+fn classifies_a_wrapped_websocket_error_by_its_status() {
+    // The Codex websocket wraps HTTP-class errors as an `error` frame carrying a
+    // top-level `status` (or `status_code`); that status maps like the same HTTP
+    // status would. A known `code` still wins, and a missing, 2xx, or
+    // non-numeric status keeps the 502 default.
+    let cases = [
+        (
+            json!({"type": "error", "status": 400, "error": {"message": "unsupported"}}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"type": "error", "status_code": 429, "error": {"message": "slow"}}),
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
+        (
+            json!({"type": "error", "status": 500, "error": {"code": "invalid_prompt"}}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"type": "error", "error": {"message": "no status"}}),
+            StatusCode::BAD_GATEWAY,
+        ),
+        (
+            json!({"type": "error", "status": 200, "error": {"message": "ok?"}}),
+            StatusCode::BAD_GATEWAY,
+        ),
+        (
+            json!({"type": "error", "status": "400", "error": {"message": "text"}}),
+            StatusCode::BAD_GATEWAY,
+        ),
+    ];
+    for (data, expected) in &cases {
+        assert_eq!(backend_error_status(data), *expected, "{data}");
+    }
+
+    // The machine maps the envelope against the same status, so `error.type`
+    // agrees with it on the non-streaming path.
+    let fixture = format!("event: error\ndata: {}\n\n", cases[0].0);
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+    for event in parse_sse_events(&fixture) {
+        let _ = machine.apply(event);
+    }
+    let (status, backend_error) = machine.take_backend_error().expect("recorded");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(backend_error["error"]["type"], "invalid_request_error");
+    assert_eq!(backend_error["error"]["message"], "unsupported");
+}
+
+#[test]
 fn in_stream_message_rewrites_survive_status_classification() {
     // The steer and context-overflow rewrites key on the error code, not the
     // status: both codes stay on the 502 row and keep their rewritten messages.
