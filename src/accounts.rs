@@ -391,8 +391,10 @@ struct AccountHealth {
     /// the requested model into [`governing_cooldown`], so other models on
     /// the account are unaffected. Expired entries are pruned on insert
     /// ([`AccountPool::cooldown_model`]) and on every selection of the account
-    /// because the key can be client-supplied on the inbound passthrough;
-    /// live entries are not capped. Memory-only, like
+    /// because the key can be client-supplied on the inbound passthrough; for
+    /// the same reason live entries are capped at [`MAX_MODEL_COOLDOWNS`], and
+    /// a key longer than [`MAX_MODEL_COOLDOWN_KEY_BYTES`] is never stored.
+    /// Memory-only, like
     /// `cooldown_until`.
     model_cooldowns: HashMap<String, Instant>,
 }
@@ -1390,14 +1392,19 @@ impl AccountPool {
         let health = entries.entry(account_key(provider, account)).or_default();
         health.observed = true;
         health.enabled = !account.disabled;
-        // Prune on insert so expired refusals do not accumulate. This bounds
-        // the map only by the live refusals: on the inbound passthrough the
-        // key is client-supplied, so distinct refused models each hold an
-        // entry until their cooldown expires.
+        // Prune on insert so expired refusals do not accumulate. On the inbound
+        // passthrough the key is client-supplied, so the live refusals are
+        // bounded too: an overlong model is not recorded at all (the refusal
+        // still rotates; the account is merely re-tried for it), and a full
+        // map records no new model. Keeping the existing entries means a burst
+        // of bogus models cannot push out a genuine refusal recorded earlier.
         health.model_cooldowns.retain(|_, until| *until > now);
-        health
-            .model_cooldowns
-            .insert(model.to_ascii_lowercase(), now + duration);
+        let key = model.to_ascii_lowercase();
+        let fits = health.model_cooldowns.contains_key(&key)
+            || health.model_cooldowns.len() < MAX_MODEL_COOLDOWNS;
+        if model.len() <= MAX_MODEL_COOLDOWN_KEY_BYTES && fits {
+            health.model_cooldowns.insert(key, now + duration);
+        }
         drop(entries);
         crate::metrics::record_pool_rotation(provider, reason);
     }
@@ -3215,6 +3222,16 @@ pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverActio
 /// model hourly is cheap, and a shorter cooldown picks the model back up
 /// sooner than CLIProxyAPI's 12h once the gate lifts.
 pub const CODEX_MODEL_UNSUPPORTED_COOLDOWN: Duration = Duration::from_secs(60 * 60);
+
+/// Most live per-model cooldowns one account holds. A real pool is refused a
+/// handful of models at a time; the cap only matters when the inbound
+/// passthrough is fed distinct unsupported model strings, and then a full map
+/// records no new model until an entry expires.
+const MAX_MODEL_COOLDOWNS: usize = 64;
+
+/// Longest model string recorded as a per-model cooldown key. Real model ids
+/// are far shorter; a longer client-supplied string is not stored.
+const MAX_MODEL_COOLDOWN_KEY_BYTES: usize = 128;
 
 /// Whether a Codex/ChatGPT upstream response is the per-account model
 /// entitlement refusal: HTTP 400 whose message says the model "is not
@@ -6021,6 +6038,51 @@ mod tests {
         assert!(
             entries[&key].model_cooldowns.is_empty(),
             "selection must prune expired model cooldowns"
+        );
+    }
+
+    #[test]
+    fn model_cooldowns_are_bounded_for_client_supplied_models() {
+        let pool = AccountPool::new();
+        let account = account("a");
+        let key = account_key("codex", &account);
+        // A genuine refusal recorded first survives the burst that fills the map.
+        pool.cooldown_model(
+            "codex",
+            &account,
+            "gpt-real",
+            Duration::from_secs(60),
+            "model_not_supported",
+        );
+        for index in 0..MAX_MODEL_COOLDOWNS {
+            pool.cooldown_model(
+                "codex",
+                &account,
+                &format!("bogus-{index}"),
+                Duration::from_secs(60 + index as u64),
+                "model_not_supported",
+            );
+        }
+        pool.cooldown_model(
+            "codex",
+            &account,
+            &"x".repeat(MAX_MODEL_COOLDOWN_KEY_BYTES + 1),
+            Duration::from_secs(600),
+            "model_not_supported",
+        );
+        let entries = pool.entries.lock().unwrap();
+        let cooled = &entries[&key].model_cooldowns;
+        assert_eq!(cooled.len(), MAX_MODEL_COOLDOWNS, "live entries are capped");
+        assert!(cooled.contains_key("gpt-real"), "an earlier entry is kept");
+        assert!(
+            !cooled.contains_key(&format!("bogus-{}", MAX_MODEL_COOLDOWNS - 1)),
+            "a full map records no new model"
+        );
+        assert!(
+            cooled
+                .keys()
+                .all(|model| model.len() <= MAX_MODEL_COOLDOWN_KEY_BYTES),
+            "an overlong model is not stored"
         );
     }
 
