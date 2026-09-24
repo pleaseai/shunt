@@ -20,7 +20,7 @@ use switchyard_protocol::Request;
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 use crate::config::CallBounds;
-use crate::routing::context::libsy_metadata;
+use crate::routing::context::{libsy_metadata, RouterContext};
 use crate::routing::driven::{budget::JudgeBudget, DrivenEntry};
 use crate::routing::outcome::RouteSource;
 use crate::routing::serve::{judge_call, AdmittedContext, JudgeFailure};
@@ -35,6 +35,11 @@ pub(crate) struct DrivenDecision {
     pub source: RouteSource,
     /// The closed `outcome` label — `decided`, `retained`, `budget_exhausted`,
     /// or the [`JudgeFailure`] the call recorded.
+    ///
+    /// `budget_exhausted` whenever the drive asked for a call and
+    /// `max_judge_calls` refused it before any call was made — whatever target
+    /// libsy's cascade then closed on — so the series still tells a session's
+    /// ceiling apart from an ordinary fail-open (issue #648).
     pub judge_outcome: &'static str,
 }
 
@@ -51,21 +56,16 @@ pub(crate) async fn drive(
     headers: &HeaderMap,
 ) -> DrivenDecision {
     let metadata = libsy_metadata(headers);
-    let key = JudgeBudget::key(metadata.session_id.as_deref(), metadata.agent_id.as_deref());
-    // A fast path only: it keeps a turn whose budget is already spent from
-    // decoding a body and constructing a drive it cannot pay for. The
-    // reservation inside the call closure below is the authoritative one — this
-    // read and that write are separate critical sections, so this check alone
-    // could not bound anything, and the `budget_exhausted` label is recorded
-    // from both (see [`DriveNotes`]).
-    //
-    // Known limitation, tracked as #648: a drive that would have consulted
-    // no judge at all (the `new_session` and `user_turn` triggers replaying an
-    // affinity assignment) is rejected here too, so a session that has spent
-    // its budget loses the assignment it already paid for and falls open.
-    if entry.budget.used(key.as_ref()) >= entry.bounds.max_judge_calls {
-        return fail_open(entry, "budget_exhausted");
-    }
+    // Scoped by the same delegation rule the metadata above carries, so an
+    // agent-id-less delegated turn draws on a budget of its own rather than
+    // its parent's (issue #649).
+    let key = JudgeBudget::key_for(&RouterContext::from_headers(headers));
+    // No pre-drive `used() >= max` check: `max_judge_calls` bounds calls, not
+    // turns, and a drive that consults no judge — the `new_session` and
+    // `user_turn` triggers replaying an affinity assignment — costs nothing,
+    // so a spent session must still be able to replay what it paid for (issue
+    // #648). The reservation inside the call closure below is the whole bound,
+    // and it is taken only for a call libsy actually asks for.
 
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy::default();
@@ -126,19 +126,26 @@ pub(crate) async fn drive(
                     request_used,
                     bounds.max_judge_calls,
                 );
+                // Noted here, beside the reservation, rather than when the
+                // call's future is first polled: the record is of what the
+                // budget decided, and it decided now.
+                if reserved {
+                    notes.charge();
+                } else {
+                    notes.refuse_budget();
+                }
                 async move {
                     if !reserved {
                         // libsy folds a refused call into "no verdict" and
                         // closes its own cascade. Which target that lands on is
                         // the algorithm's to decide — the classifier forms
                         // close on their `default_target`, a composite on its
-                        // picker — so this refusal reports no destination of
-                        // its own, exactly as a judge that answered nothing
-                        // usable does. The note is what keeps the *label* from
-                        // being folded in too: without it the refusal would be
-                        // counted as `invalid_reply`, blaming the judge for a
-                        // call it was never asked to make.
-                        notes.refuse_budget();
+                        // retained tier or its picker — so this refusal reports
+                        // no destination of its own, exactly as a judge that
+                        // answered nothing usable does. The note is what keeps
+                        // the *label* from being folded in too: without it the
+                        // refusal would be counted as `invalid_reply`, blaming
+                        // the judge for a call it was never asked to make.
                         return call.respond(Err(LibsyError::AlgorithmError {
                             message: "max_judge_calls is spent for this session".to_string(),
                         }));
@@ -151,7 +158,7 @@ pub(crate) async fn drive(
     .await;
 
     let label = |fallback: &'static str| notes.label(fallback);
-    match outcome {
+    let decision = match outcome {
         Ok(Ok(outcome)) => decide(entry, &outcome, &label),
         // libsy folds a failed call into "no verdict" and answers from its own
         // default, so an `Err` here is the algorithm itself refusing to route
@@ -164,12 +171,27 @@ pub(crate) async fn drive(
             );
             fail_open(entry, label("invalid_reply"))
         }
-        Err(_) => fail_open(entry, "timeout"),
+        Err(_) => return fail_open(entry, "timeout"),
+    };
+    // The destination is libsy's: a refused call is folded into "no verdict"
+    // and the algorithm closes its own cascade, which for the classifier forms
+    // is the entry's fail-open target anyway and for a composite is the
+    // session's retained tier or the picker's default. Serving
+    // `entry.fail_open` instead would disagree with the state libsy just kept
+    // — a composite's user turn on `efficient_target` while its tool
+    // continuations replay the retained tier — so only the label is shunt's.
+    DrivenDecision {
+        judge_outcome: notes.exhausted().unwrap_or(decision.judge_outcome),
+        ..decision
     }
 }
 
 /// Reserve one judge call for this drive, against the session budget when the
 /// request carries a key and against `request_used` when it does not.
+///
+/// Called from inside libsy's call closure, synchronously, before the call's
+/// future is built — so the reservation is taken at dispatch and only for a
+/// call the algorithm actually asked for.
 ///
 /// A keyless request has nothing to accumulate under across turns, so the
 /// module docs on [`JudgeBudget`] give it a per-request allowance instead —
@@ -213,10 +235,17 @@ pub(super) fn drive_deadline(bounds: CallBounds) -> Duration {
 /// chaining algorithm's second `CallModel` on a budget down to one, or two
 /// turns of a session racing for the last one — would be reported as
 /// `invalid_reply` and never as `budget_exhausted`.
+///
+/// A third fact, `charged`, says whether any call got past the budget at all.
+/// A drive whose first call was refused made none, and *that* drive is what
+/// `budget_exhausted` names whatever libsy's cascade then reported — a
+/// composite that closes on a retained tier would otherwise record `retained`
+/// for a turn that wanted a judge and hit the ceiling.
 #[derive(Debug, Default)]
 pub(super) struct DriveNotes {
     failure: Mutex<Option<JudgeFailure>>,
     budget_refused: AtomicBool,
+    charged: AtomicBool,
 }
 
 impl DriveNotes {
@@ -228,6 +257,18 @@ impl DriveNotes {
     /// Note that `max_judge_calls` refused a call this drive asked for.
     pub(super) fn refuse_budget(&self) {
         self.budget_refused.store(true, Ordering::Relaxed);
+    }
+
+    /// Note that `max_judge_calls` admitted a call this drive asked for.
+    pub(super) fn charge(&self) {
+        self.charged.store(true, Ordering::Relaxed);
+    }
+
+    /// `Some("budget_exhausted")` when this drive asked for a call and the
+    /// budget refused it before any call was made.
+    pub(super) fn exhausted(&self) -> Option<&'static str> {
+        (self.budget_refused.load(Ordering::Relaxed) && !self.charged.load(Ordering::Relaxed))
+            .then_some("budget_exhausted")
     }
 
     /// `fallback`, unless this drive recorded something more specific: a failed

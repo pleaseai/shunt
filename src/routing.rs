@@ -182,7 +182,7 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                     }));
                     if driven && !stage.read_only {
                         stage.consult.set(Some(ConsultJudge {
-                            judge_calls_used: 0,
+                            budget: None,
                             kind: ConsultKind::Overlay,
                         }));
                     }
@@ -248,7 +248,7 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                         // all to park the consultation on.
                         if let Some(stage) = stage.filter(|stage| !stage.read_only) {
                             stage.consult.set(Some(ConsultJudge {
-                                judge_calls_used: 0,
+                                budget: None,
                                 kind: ConsultKind::Router,
                             }));
                         }

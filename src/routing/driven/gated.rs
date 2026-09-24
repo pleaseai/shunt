@@ -52,7 +52,7 @@ use super::drive::{reserve, DriveNotes};
 use super::{budget::JudgeBudget, DrivenEntry, GatedKind};
 use crate::config::CallBounds;
 use crate::error::ShuntError;
-use crate::routing::context::libsy_metadata;
+use crate::routing::context::{libsy_metadata, RouterContext};
 use crate::routing::outcome::RouteSource;
 use crate::routing::serve::gated::{
     gated_call, GatedCapture, GatedRequest, RetainedTurn, UpstreamFailure,
@@ -106,19 +106,21 @@ pub(crate) async fn drive_gated(
         .gated
         .expect("drive_gated runs only for a gated entry");
     let mut metadata = libsy_metadata(headers);
-    let key = JudgeBudget::key(metadata.session_id.as_deref(), metadata.agent_id.as_deref());
+    // Scoped as `super::drive` scopes it, so an agent-id-less delegated turn
+    // has a budget of its own rather than its parent's (issue #649).
+    let key = JudgeBudget::key_for(&RouterContext::from_headers(headers));
     if kind == GatedKind::Advisor {
         scope_sessionless_advisor(&mut metadata);
     }
-    // No pre-drive `budget.used() >= max` fast path here, unlike
-    // `super::drive`, and deliberately scoped to gated entries. Short-circuiting
-    // a spent session to the fail-open target would override the algorithm's
-    // own state: a latched escalation session would be sent back to the weak
-    // tier it had already been judged unfit for, and an advisor whose review
-    // budget is spent answers live anyway. The reservation in the call closure
-    // below still refuses every judge call past `max_judge_calls`, which libsy
-    // folds into its own fail-open. The ungated fast path's cost to an
-    // affinity replay is tracked as #648.
+    // No pre-drive `budget.used() >= max` check, by the rule every lane
+    // follows (issue #648): the budget is charged per judge call at dispatch,
+    // in the call closure below, and a turn that asks for none is never
+    // refused by it. Here that matters twice over — short-circuiting a spent
+    // session to the fail-open target would also override the algorithm's own
+    // state: a latched escalation session would be sent back to the weak tier
+    // it had already been judged unfit for, and an advisor whose review budget
+    // is spent answers live anyway. A judge call past `max_judge_calls` is
+    // refused there, and libsy folds it into its own fail-open.
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy::default();
     let decoded =
@@ -166,12 +168,17 @@ pub(crate) async fn drive_gated(
                         request_used,
                         bounds.max_judge_calls,
                     );
+                // Noted beside the reservation, as `super::drive` does.
+                match (first, reserved) {
+                    (true, _) => {}
+                    (false, true) => notes.charge(),
+                    (false, false) => notes.refuse_budget(),
+                }
                 async move {
                     if first {
                         return gated_call(gated, call, bounds, slot).await;
                     }
                     if !reserved {
-                        notes.refuse_budget();
                         return call.respond(Err(LibsyError::AlgorithmError {
                             message: "max_judge_calls is spent for this session".to_string(),
                         }));

@@ -487,6 +487,55 @@ async fn the_call_budget_is_spent_once_per_session() {
     efficient.verify().await;
 }
 
+/// Clause 10, concurrently (issue #634): the ceiling holds when one session's
+/// turns arrive together. The judge answers slowly, so every turn reaches the
+/// budget check while the first call is still in flight; a check that reads a
+/// snapshot and charges at commit lets each of them through, and the bound
+/// overshoots by up to N − 1. Exactly one call may reach the judge, and every
+/// turn is still served.
+#[tokio::test]
+async fn concurrent_turns_of_one_session_spend_the_budget_once() {
+    if !can_bind_loopback() {
+        return;
+    }
+    const TURNS: usize = 8;
+    let _env = env().await;
+    let capable = MockServer::start().await;
+    let efficient = MockServer::start().await;
+    let judge = MockServer::start().await;
+    // A judged turn and a budget-refused one both land on the picker's
+    // default, so the tier count is the same whichever of them each turn is.
+    tier_mock(EFFICIENT_UPSTREAM_MODEL, TURNS as u64)
+        .mount(&efficient)
+        .await;
+    // Slow enough that all turns are admitted before the first verdict lands,
+    // and well inside `judge_timeout_ms = 500`.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(verdict(0.9).set_delay(Duration::from_millis(300)))
+        .mount(&judge)
+        .await;
+    let gateway = start_gateway(driven_config(&capable, &efficient, judge.uri())).await;
+
+    let responses =
+        futures_util::future::join_all((0..TURNS).map(|_| post(&gateway, undecided_messages())))
+            .await;
+
+    let calls = judge
+        .received_requests()
+        .await
+        .expect("the judge records requests")
+        .len();
+    assert_eq!(
+        calls, 1,
+        "max_judge_calls = 1 bounds the session, not each of its {TURNS} concurrent turns"
+    );
+    for response in &responses {
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    efficient.verify().await;
+}
+
 /// Clause 8: `200`, then silence. Headers are committed, so a `.send()`
 /// deadline has already been satisfied when the hang begins.
 #[tokio::test]

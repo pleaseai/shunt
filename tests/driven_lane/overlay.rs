@@ -303,11 +303,13 @@ async fn the_budget_is_honoured_for_a_composite_entry() {
     let capable = MockServer::start().await;
     let efficient = MockServer::start().await;
     let judge = MockServer::start().await;
-    // p_solve under the threshold sends the judged turn to capable, while the
-    // composite falls open to its `stage.efficient_target` — so the two turns
-    // differ by destination as well as by header.
-    tier_mock(CAPABLE_UPSTREAM_MODEL, 1).mount(&capable).await;
-    tier_mock(EFFICIENT_UPSTREAM_MODEL, 1)
+    // p_solve under the threshold sends the judged turn to capable. The
+    // refused second turn is closed by libsy's own cascade, which keeps the
+    // tier the session last retained rather than dropping it to
+    // `stage.efficient_target` — so its tool continuations, which make no call
+    // and replay that tier, stay on it too (issue #648).
+    tier_mock(CAPABLE_UPSTREAM_MODEL, 2).mount(&capable).await;
+    tier_mock(EFFICIENT_UPSTREAM_MODEL, 0)
         .mount(&efficient)
         .await;
     judge_reply_mock(captured_capability_reply("upstream-judge-a", 0.1), 1)
@@ -325,8 +327,8 @@ async fn the_budget_is_honoured_for_a_composite_entry() {
     assert_eq!(first.status(), StatusCode::OK);
     assert_eq!(first.headers()["x-gateway-routed-model"], "capable-alias");
 
-    // A second human turn: the `user_turn` trigger would fire, but the budget
-    // is spent, so the drive never starts.
+    // A second human turn: the `user_turn` trigger fires, but the budget is
+    // spent, so the judge call the drive asks for is refused.
     let second = post(&gateway, user_turn()).await;
     assert_eq!(second.status(), StatusCode::OK);
     assert_eq!(
@@ -336,8 +338,8 @@ async fn the_budget_is_honoured_for_a_composite_entry() {
     );
     assert_eq!(
         second.headers()["x-gateway-routed-model"],
-        "efficient-alias",
-        "a composite falls open to its stage efficient_target"
+        "capable-alias",
+        "a composite keeps the tier it last retained"
     );
 
     capable.verify().await;
