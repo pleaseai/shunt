@@ -35,15 +35,19 @@
 //! a fresh pin, without the count riding on one. An expired count reads as
 //! zero and is overwritten by the next charge.
 //!
-//! **Eviction is a sweep then a `clear()`, not an LRU.** At [`HARD_CAP`]
-//! entries the expired ones are dropped first, and if that frees nothing the
-//! whole map is. That is deliberately the crudest policy that is still
-//! bounded: the value is a small counter whose worst case on eviction is one
-//! extra judge call for a session already in flight, so an insertion-ordered
-//! queue or a recency heap would buy accuracy nobody can spend at the cost of
-//! a second structure to keep consistent under the same lock. The cap is the
-//! property that matters — an unbounded map keyed by caller-supplied ids is a
-//! memory-growth surface a client controls.
+//! **Eviction is per class and least-recent first, never a `clear()`.** The
+//! parent threads and the delegated agents are capped separately, at
+//! [`HARD_CAP`] keys each — the two budgets the stage router's pins have — so
+//! a delegated fan-out can only ever evict delegated counts, never a parent's.
+//! When an unseen key arrives and its class is full, expired entries go first
+//! (windowed tables only); if the class is still full, its single least
+//! recently charged or touched entry is removed, and that key's count
+//! restarts from zero when it next charges. Eviction therefore resets only the
+//! most idle session's budget: clearing the map instead would hand every live
+//! session — including one that had spent `max_judge_calls` — its whole budget
+//! again. The cap is the property that matters — an unbounded map keyed by
+//! caller-supplied ids is a memory-growth surface a client controls — and the
+//! recency order is what keeps it from being a budget reset a client controls.
 //!
 //! **Sessionless requests are not tracked.** A request with no
 //! `x-claude-code-session-id` cannot be told from the next one, so counting it
@@ -64,7 +68,8 @@ use sha2::{Digest, Sha256};
 
 use crate::routing::context::RouterContext;
 
-/// Most `(session, agent)` pairs one table counts before it is swept.
+/// Most keys one table counts per class — parent threads, delegated agents —
+/// before the class's least recent entry is evicted.
 const HARD_CAP: usize = 4_096;
 
 /// The byte an agent-id-less delegated turn hashes in the agent position.
@@ -73,12 +78,19 @@ const HARD_CAP: usize = 4_096;
 /// to the same bytes, and neither can the parent, which hashes nothing there.
 const UNNAMED_DELEGATE: u8 = 0xFF;
 
-/// The digest a pair keys on: `sha256(session ‖ agent)`.
+/// The key a pair counts under: the digest `sha256(session ‖ agent)`, and
+/// whether the turn was delegated.
 ///
 /// The two are joined with a byte that cannot occur inside a header value, so
 /// `("ab", "c")` and `("a", "bc")` are different keys rather than the same
-/// concatenation.
-pub(crate) type BudgetKey = [u8; 32];
+/// concatenation. `delegated` is the eviction class: parents and delegated
+/// agents are capped apart, so it rides on the key rather than being re-derived
+/// from a digest that no longer holds the scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct BudgetKey {
+    digest: [u8; 32],
+    delegated: bool,
+}
 
 /// Whose budget a turn draws on, within one session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,11 +131,13 @@ pub(crate) struct Window {
     pub ttl: Duration,
 }
 
-/// One key's count, and the window it lives in (`None`: no clock).
+/// One key's count, the window it lives in (`None`: no clock), and when it
+/// was last charged or touched — the order eviction removes entries in.
 #[derive(Debug, Clone, Copy)]
 struct Spent {
     calls: u32,
     window: Option<Window>,
+    last: Instant,
 }
 
 impl Spent {
@@ -158,7 +172,9 @@ impl JudgeBudget {
     #[cfg(test)]
     pub(crate) fn key(session_id: Option<&str>, agent_id: Option<&str>) -> Option<BudgetKey> {
         let session = session_id.map(str::trim).filter(|id| !id.is_empty())?;
-        let scope = agent_id.map_or(BudgetScope::Parent, BudgetScope::Agent);
+        let scope = agent_id
+            .filter(|id| !id.trim().is_empty())
+            .map_or(BudgetScope::Parent, BudgetScope::Agent);
         Some(digest(Sha256::new(), session, scope))
     }
 
@@ -246,22 +262,19 @@ impl JudgeBudget {
         if spent >= max {
             return false;
         }
+        // The driven lane has no window, so its recency comes from the clock.
+        let last = now.unwrap_or_else(Instant::now);
+        // No class can hold `HARD_CAP` keys while the whole map holds fewer, so
+        // the per-class count is only taken once the map is that large.
         if used.len() >= HARD_CAP && !used.contains_key(key) {
-            // Documented above: the cap is the property, not the eviction
-            // order. Expired counts go first; if none had, everything does.
-            // Either way the new key is inserted after, so it survives.
-            if now.is_some() {
-                used.retain(|_, spent| spent.is_live(now));
-            }
-            if used.len() >= HARD_CAP {
-                used.clear();
-            }
+            make_room(&mut used, key.delegated, now);
         }
         used.insert(
             *key,
             Spent {
                 calls: spent + 1,
                 window,
+                last,
             },
         );
         true
@@ -276,6 +289,7 @@ impl JudgeBudget {
         if let Some(spent) = self.lock().get_mut(key) {
             if spent.is_live(Some(window.now)) {
                 spent.window = Some(window);
+                spent.last = window.now;
             }
         }
     }
@@ -308,6 +322,42 @@ impl JudgeBudget {
     }
 }
 
+/// Free one slot in `delegated`'s class if it is at [`HARD_CAP`], for an
+/// unseen key about to be inserted into it.
+///
+/// Expired counts go first (a windowed table only: `now` is `None` for the
+/// driven lane, whose counts never expire); if the class is still full, its
+/// least recently charged or touched entry goes. The map is never cleared, so
+/// no live count is reset but the most idle one of the inserting class.
+///
+/// The class count and the eviction scan are each O(n) in the map's size.
+/// That is acceptable because this runs only for an unseen key once the map
+/// holds at least [`HARD_CAP`] entries, and only on a judge-call charge that is
+/// immediately followed by the judge's network round trip, which dwarfs a walk
+/// over a few thousand entries.
+fn make_room(used: &mut HashMap<BudgetKey, Spent>, delegated: bool, now: Option<Instant>) {
+    let in_class = |used: &HashMap<BudgetKey, Spent>| {
+        used.keys().filter(|key| key.delegated == delegated).count()
+    };
+    if in_class(used) < HARD_CAP {
+        return;
+    }
+    if now.is_some() {
+        used.retain(|_, spent| spent.is_live(now));
+        if in_class(used) < HARD_CAP {
+            return;
+        }
+    }
+    let idlest = used
+        .iter()
+        .filter(|(key, _)| key.delegated == delegated)
+        .min_by_key(|(_, spent)| spent.last)
+        .map(|(key, _)| *key);
+    if let Some(idlest) = idlest {
+        used.remove(&idlest);
+    }
+}
+
 /// `session ‖ 0x00 ‖ agent`, appended to whatever `hasher` already holds.
 ///
 /// The parent hashes nothing in the agent position, a named agent its id, and
@@ -320,5 +370,8 @@ fn digest(mut hasher: Sha256, session: &str, scope: BudgetScope<'_>) -> BudgetKe
         BudgetScope::Agent(id) => hasher.update(id.as_bytes()),
         BudgetScope::UnnamedDelegate => hasher.update([UNNAMED_DELEGATE]),
     }
-    hasher.finalize().into()
+    BudgetKey {
+        digest: hasher.finalize().into(),
+        delegated: scope != BudgetScope::Parent,
+    }
 }

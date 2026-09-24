@@ -595,9 +595,11 @@ tier: it is not on the pin, so tier resolution, dwell, stickiness, and
 `stage_flip` accounting cannot see it. It keeps the lifetime the pin gave it,
 now independently of the pin: it expires after `session_ttl_seconds` without a
 served turn of that session (every served turn refreshes it) and resets when a
-reload changes the router table. The table holds at most 4096 keys; at the cap
-it drops expired keys first and then clears itself, which costs at worst one
-extra judge call for a session in flight. The parent thread and each delegated
+reload changes the router table. The table caps parents and delegated agents
+separately, at 4096 keys each; at the cap it drops expired keys first and then
+the least recently charged or served key of the same class, whose count
+restarts, so eviction resets only the most idle session's budget and a
+delegated fan-out cannot evict a parent's. The parent thread and each delegated
 agent id have their own budget; delegated turns with no non-blank agent id
 share one bucket per session (§7). A sessionless request still gets its one
 judge call. A turn whose judge call is refused takes the picker's default
@@ -1076,8 +1078,11 @@ PR 1 (§2). A delegated turn (`x-claude-code-request-class: subagent` or
 separate bucket per session, bounded by `max_judge_calls` like any other,
 rather than onto the parent's (issue #649): libsy retains no affinity for such
 a turn, so a fan-out of them could otherwise spend the parent's whole budget.
-The map lives with the entry, so a reload rebuilds it, and is capped at 4096
-keys, cleared whole at the cap. A request carrying no session id is not
+The map lives with the entry, so a reload rebuilds it. It caps parents and
+delegated agents separately, at 4096 keys each; at the cap it evicts the least
+recently charged key of the same class, whose count restarts, so eviction
+resets only the most idle session's budget and a delegated fan-out cannot
+evict a parent's. A request carrying no session id is not
 tracked at all: there is no key to accumulate under, so the bound applies per
 request for those callers.
 
