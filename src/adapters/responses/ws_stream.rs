@@ -127,7 +127,7 @@ pub(super) async fn json_events_response(
     // The websocket twin of `http::json_response`'s capped body read: this
     // collector builds a whole reply from a translated event stream, so the
     // `Adapter::forward` contract bounds it with `over_cap` rather than
-    // `collect_upstream_body`. Each event is charged its name and its payload
+    // `collect_upstream_sse_body`. Each event is charged its name and its payload
     // as compact JSON *before* the machine retains it — a measure of what this
     // collector holds, not of wire bytes: a frame is already received and
     // parsed (under the socket's 64 MiB message limit) before any count can

@@ -138,8 +138,11 @@ impl std::error::Error for UpstreamBodyIdle {}
 pub(crate) struct ResponseBounds {
     /// Refuse the body the moment it passes this many bytes.
     pub(crate) max_bytes: Option<usize>,
-    /// Refuse the body once this long passes with no chunk arriving, the first
-    /// wait after the headers included.
+    /// Refuse the body once this long passes with no progress, the first wait
+    /// after the headers included. Progress is any chunk for a plain body
+    /// ([`collect_upstream_body`]) and a completed non-ping SSE frame for an
+    /// event-stream body ([`collect_upstream_sse_body`]), so keep-alives alone
+    /// do not hold a stalled reply open.
     pub(crate) idle: Option<Duration>,
 }
 
@@ -168,10 +171,53 @@ pub(crate) enum UpstreamBodyError {
 /// included, the way `routing::serve`'s gated collector does: this read runs
 /// before the reply reaches that collector, so without it an upstream that
 /// commits its headers and stalls would sit until the call's wall-clock bound.
+///
+/// Any chunk is progress here, which is right for a plain body (JSON). An SSE
+/// body is read with [`collect_upstream_sse_body`] instead.
 pub(crate) async fn collect_upstream_body(
     upstream: reqwest::Response,
     cap: Option<usize>,
     idle: Option<Duration>,
+) -> Result<bytes::Bytes, UpstreamBodyError> {
+    collect_bounded_body(upstream, cap, idle, IdleProgress::Chunk).await
+}
+
+/// [`collect_upstream_body`] for a body that is an SSE stream, read whole — the
+/// Responses HTTP reply, which is SSE even for a non-streaming caller.
+///
+/// The idle gap is measured between completed *content* frames, as
+/// `routing::serve`'s gated collector measures it: a chunk refreshes it only
+/// when it completes at least one SSE frame that is not a keep-alive
+/// (`event: ping` or comment-only). An upstream that sends nothing but
+/// keep-alives faster than the gap is therefore still cut at the gap rather
+/// than at the call's wall-clock bound. Framing decides only that, and it
+/// scans the collected body in place — each byte once, with no second copy of
+/// a frame still arriving — so it adds neither memory against the cap nor a
+/// rescan per chunk. The body returned is every byte received, keep-alives
+/// included, and the cap counts every one of them.
+pub(crate) async fn collect_upstream_sse_body(
+    upstream: reqwest::Response,
+    cap: Option<usize>,
+    idle: Option<Duration>,
+) -> Result<bytes::Bytes, UpstreamBodyError> {
+    collect_bounded_body(upstream, cap, idle, IdleProgress::SseFrame).await
+}
+
+/// What refreshes a bounded read's idle deadline.
+#[derive(Clone, Copy)]
+enum IdleProgress {
+    /// Any chunk.
+    Chunk,
+    /// A chunk that completes at least one non-ping SSE frame.
+    SseFrame,
+}
+
+/// The one read loop behind both collectors; `progress` is the only difference.
+async fn collect_bounded_body(
+    upstream: reqwest::Response,
+    cap: Option<usize>,
+    idle: Option<Duration>,
+    progress: IdleProgress,
 ) -> Result<bytes::Bytes, UpstreamBodyError> {
     if cap.is_none() && idle.is_none() {
         return upstream.bytes().await.map_err(UpstreamBodyError::Transport);
@@ -208,9 +254,15 @@ pub(crate) async fn collect_upstream_body(
     let mut stream = upstream.bytes_stream();
     let mut collected: Vec<u8> = Vec::new();
     let mut total = 0usize;
+    // An absolute deadline, not a per-poll timeout: a chunk that is not
+    // progress must leave it where it was, which re-arming a timeout on every
+    // poll could not do.
+    let mut deadline = idle.map(|idle| tokio::time::Instant::now() + idle);
+    // Frame boundaries over `collected` itself: indices only, no second copy.
+    let mut frames = crate::routing::serve::bounds::IncrementalFrameScanner::default();
     loop {
-        let next = match idle {
-            Some(idle) => tokio::time::timeout(idle, stream.next())
+        let next = match idle.zip(deadline) {
+            Some((idle, deadline)) => tokio::time::timeout_at(deadline, stream.next())
                 .await
                 .map_err(|_| UpstreamBodyError::Idle(UpstreamBodyIdle { idle }))?,
             None => stream.next().await,
@@ -224,6 +276,15 @@ pub(crate) async fn collect_upstream_body(
             return Err(UpstreamBodyError::TooLarge(too_large));
         }
         collected.extend_from_slice(&chunk);
+        if let Some(idle) = idle {
+            let progressed = match progress {
+                IdleProgress::Chunk => true,
+                IdleProgress::SseFrame => frames.feed(&collected),
+            };
+            if progressed {
+                deadline = Some(tokio::time::Instant::now() + idle);
+            }
+        }
     }
     Ok(bytes::Bytes::from(collected))
 }
@@ -298,11 +359,13 @@ pub(crate) trait Adapter {
     /// the same cap.
     ///
     /// `idle` (`gated_idle_ms`, set only on gated calls) is honoured by every
-    /// single whole-body read, each of which goes through
-    /// [`collect_upstream_body`]: the Anthropic adapter's read for the alias
-    /// `model` rewrite, Gemini's error and non-streaming success bodies, the
-    /// Responses HTTP `json_response`, and Cursor's error-body prefetch in
-    /// `map_upstream_error`. The accumulations do not apply it yet (the
+    /// single whole-body read: through [`collect_upstream_body`] — any chunk
+    /// is progress — for the Anthropic adapter's read for the alias `model`
+    /// rewrite, Gemini's error and non-streaming success bodies, and Cursor's
+    /// error-body prefetch in `map_upstream_error`; and through
+    /// [`collect_upstream_sse_body`] — only a completed non-ping SSE frame is
+    /// progress, so keep-alives alone do not hold it open — for the Responses
+    /// HTTP `json_response`. The accumulations do not apply it yet (the
     /// Responses WebSocket `json_events_response`, Antigravity's
     /// `drain_non_streaming`; #667), so a stall there is bounded by the call's
     /// wall-clock bound (`gated_max_duration_ms`) rather than by the idle gap.

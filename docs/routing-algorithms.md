@@ -1378,7 +1378,7 @@ gated turn:
 | Key | Default | Bounds |
 | :-- | :-- | :-- |
 | `gated_max_bytes` | `8388608` | Retained SSE frame bytes, or the retained JSON body |
-| `gated_idle_ms` | `60000` | The gap between body chunks. On a streaming call only a completed content frame counts as progress (§5), so SSE `ping` frames do not reset it and an endless keep-alive stream cannot hold a gated turn open |
+| `gated_idle_ms` | `60000` | The gap between body chunks. On an SSE body — a streaming call, or a Responses upstream's reply, which is SSE even when read whole for a non-streaming call — only a completed content frame counts as progress (§5), so SSE `ping` frames do not reset it and an endless keep-alive stream cannot hold a gated turn open |
 | `gated_max_duration_ms` | `600000` | Wall clock across headers and body |
 
 Crossing a bound cancels the upstream call and refunds nothing: the upstream

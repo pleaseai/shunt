@@ -374,3 +374,82 @@ pub(super) fn frame_event(frame: &str) -> Option<&str> {
         .find_map(|line| line.strip_prefix("event:"))
         .map(str::trim)
 }
+
+/// Finds SSE frame boundaries in a body that is still growing, for an idle
+/// bound measured in completed content frames over a buffer the caller already
+/// holds whole ([`crate::adapters::collect_upstream_sse_body`]).
+///
+/// It keeps no copy of the body, only indices and two flags, and visits each
+/// byte once, on the call after it arrives. The framing is
+/// [`first_frame_len`]'s: LF, CRLF, and bare CR each end a line, a line ending
+/// that opens its own line ends the frame, and a CR is held unresolved until
+/// the next byte says whether it is half of a CRLF. Each completed frame is
+/// classified once with [`is_ping_frame`], after [`normalize_line_endings`] when
+/// it carries a CR, so the whole scan is linear in the body.
+#[derive(Debug, Default)]
+pub(crate) struct IncrementalFrameScanner {
+    /// How many leading bytes of the buffer have been visited.
+    scanned: usize,
+    /// Where the frame still arriving begins.
+    frame_start: usize,
+    /// Whether the last line ending opened a new line, so another one closes a
+    /// blank line — the frame terminator.
+    at_line_start: bool,
+    /// Whether the last byte visited was a CR whose line ending is not yet
+    /// resolved.
+    pending_cr: bool,
+}
+
+impl IncrementalFrameScanner {
+    /// Visit the bytes of `buffer` past the ones already seen; `buffer` is the
+    /// same body each call, only longer. `true` when those bytes completed at
+    /// least one frame that is neither blank nor a keep-alive.
+    pub(crate) fn feed(&mut self, buffer: &[u8]) -> bool {
+        let mut progressed = false;
+        let mut index = self.scanned;
+        while index < buffer.len() {
+            let byte = buffer[index];
+            if self.pending_cr {
+                self.pending_cr = false;
+                if byte == b'\n' {
+                    progressed |= self.line_ended(buffer, index + 1);
+                    index += 1;
+                    continue;
+                }
+                progressed |= self.line_ended(buffer, index);
+            }
+            match byte {
+                b'\r' => self.pending_cr = true,
+                b'\n' => progressed |= self.line_ended(buffer, index + 1),
+                _ => self.at_line_start = false,
+            }
+            index += 1;
+        }
+        self.scanned = buffer.len();
+        progressed
+    }
+
+    /// A line ending finished at `end`; `true` when it closed a content frame.
+    fn line_ended(&mut self, buffer: &[u8], end: usize) -> bool {
+        if !self.at_line_start {
+            self.at_line_start = true;
+            return false;
+        }
+        let frame = &buffer[self.frame_start..end];
+        self.frame_start = end;
+        self.at_line_start = false;
+        let normalized: Cow<'_, [u8]> = if frame.contains(&b'\r') {
+            Cow::Owned(normalize_line_endings(frame))
+        } else {
+            Cow::Borrowed(frame)
+        };
+        let frame = String::from_utf8_lossy(&normalized);
+        !frame.trim().is_empty() && !is_ping_frame(&frame)
+    }
+
+    /// How many bytes have been visited, for the tests' once-per-byte check.
+    #[cfg(test)]
+    pub(super) fn scanned(&self) -> usize {
+        self.scanned
+    }
+}

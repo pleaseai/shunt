@@ -19,7 +19,10 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_util::StreamExt;
 
-use super::bounds::{bound_stream, collect_bounded, BoundExceeded, CollectError, GatedBounds};
+use super::bounds::{
+    bound_stream, collect_bounded, BoundExceeded, CollectError, GatedBounds,
+    IncrementalFrameScanner,
+};
 
 fn gated(max_bytes: usize, idle_ms: u64, duration_ms: u64) -> GatedBounds {
     GatedBounds {
@@ -349,6 +352,79 @@ async fn a_stream_past_its_wall_clock_bound_reports_duration() {
     .collect()
     .await;
     assert_eq!(collected.last(), Some(&Err(BoundExceeded::Duration)));
+}
+
+/// Feed `chunks` to a fresh scanner as one growing buffer, returning what each
+/// feed reported.
+fn scan_chunks(chunks: &[&[u8]]) -> Vec<bool> {
+    let mut scanner = IncrementalFrameScanner::default();
+    let mut buffer = Vec::new();
+    chunks
+        .iter()
+        .map(|chunk| {
+            buffer.extend_from_slice(chunk);
+            scanner.feed(&buffer)
+        })
+        .collect()
+}
+
+/// A CRLF split between its CR and LF is one line ending, not two: the frame
+/// completes exactly once, when its blank line arrives. Non-vacuity: resolve a
+/// pending CR as a line ending of its own without swallowing the LF that
+/// follows it, and the first split closes a phantom blank line, so the second
+/// feed reports the frame early.
+#[test]
+fn a_crlf_split_across_feeds_completes_the_frame_once() {
+    assert_eq!(
+        scan_chunks(&[
+            b"event: response.created\r",
+            b"\ndata: {}\r",
+            b"\n\r",
+            b"\n",
+            b"event: response.completed",
+        ]),
+        [false, false, false, true, false]
+    );
+}
+
+#[test]
+fn a_crlf_keep_alive_is_a_ping() {
+    assert_eq!(scan_chunks(&[b": keep-alive\r\n\r\n"]), [false]);
+}
+
+#[test]
+fn a_bare_cr_ping_frame_is_a_ping() {
+    // The trailing CR resolves on the next byte, which is the next frame's.
+    assert_eq!(scan_chunks(&[b"event: ping\r\r", b"e"]), [false, false]);
+    // Its content twin shows the bare-CR frame does close there.
+    assert_eq!(scan_chunks(&[b"data: {}\r\r", b"e"]), [false, true]);
+}
+
+#[test]
+fn a_content_frame_beside_a_ping_in_one_chunk_is_progress() {
+    assert_eq!(
+        scan_chunks(&[b"event: ping\ndata: {}\n\nevent: content_block_delta\ndata: {}\n\n"]),
+        [true]
+    );
+}
+
+/// A frame arriving a byte at a time is found when its last byte lands, and
+/// every byte is visited once: `scanned` never runs ahead of or behind the
+/// buffer it was handed.
+#[test]
+fn a_frame_fed_a_byte_at_a_time_is_found_once_scanning_each_byte_once() {
+    let body = b"event: content_block_delta\r\ndata: {\"text\":\"hi\"}\r\n\r\n";
+    let mut scanner = IncrementalFrameScanner::default();
+    let mut buffer = Vec::new();
+    let mut completed_at = Vec::new();
+    for (index, byte) in body.iter().enumerate() {
+        buffer.push(*byte);
+        if scanner.feed(&buffer) {
+            completed_at.push(index);
+        }
+        assert_eq!(scanner.scanned(), buffer.len());
+    }
+    assert_eq!(completed_at, [body.len() - 1]);
 }
 
 /// The deployment the judge-call tests below run against: one provider that is
