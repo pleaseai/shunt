@@ -1,0 +1,39 @@
+docs/m1-responses-translation.md
+  s_d13d138929a1ab::t_742ef2bdd8bfac 165-166,224
+docs/m7-codex-websocket.md
+  s_d13d138929a1ab::t_742ef2bdd8bfac 268-276,299-300
+src/model/responses.rs
+  s_d13d138929a1ab::t_0f77899b9f3d67 91-92,1141-1145,1163-1165,1169-1181
+  s_d13d138929a1ab::t_90c34d4b7e785f 1182-1183
+src/adapters/responses/websocket.rs
+  s_d13d138929a1ab::t_dbf5d9058f2d82 598,625,632-633,640,642-655,658-737
+  s_d13d138929a1ab::t_5f0283a5ab583b 183,185,202-203,207,210-213,221-261
+  s_d13d138929a1ab::t_c9bf890308c88e 262-267,608-609,641,656-657
+  s_d13d138929a1ab::t_28180a33a5b3ea 268-269,738
+src/adapters/responses/error.rs
+  s_d13d138929a1ab::t_0f77899b9f3d67 127-129
+tests/responses_translate.rs
+  s_d13d138929a1ab::t_6c2a754640b9b1 1862-1863
+  s_d13d138929a1ab::t_84690f11d30ca7 1831-1861,1864-1878
+  s_d13d138929a1ab::t_ec59b2404d2380 1830
+tests/codex_websocket_fallback.rs
+  s_d13d138929a1ab::t_e2209b99705f27 678
+  s_d13d138929a1ab::t_5116b28ba926f4 394-396,402,405-409,486,520-526,563,565-575,658-677,679-691
+  s_d13d138929a1ab::t_0325f5ac91bd7f 692-696
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f716e32ec499dbbc772b9e3e499adf0aac3a86a5",
+  "prompts": {},
+  "sessions": {
+    "s_d13d138929a1ab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "868b058e-81fd-489c-ae96-efd57ab603d6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
