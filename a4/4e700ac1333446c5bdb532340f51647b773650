@@ -1,0 +1,25 @@
+docs/routing-algorithms.md
+  s_e9c7bce466358a::t_899599d4644cef 598-602,1081-1085
+src/routing/driven/budget.rs
+  s_e9c7bce466358a::t_37493e9a2e5571 38-50,71-72,81-82,86-93,134-135,140,175-177,265-268,270,277,292,325-360,373-376
+src/routing/driven/budget_tests.rs
+  s_e9c7bce466358a::t_662d1997edddfa 1-4,9-11,95-175
+src/routing/driven/tests.rs
+  s_e9c7bce466358a::t_0444347a8856bf 12-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a44e700ac1333446c5bdb532340f51647b773650",
+  "prompts": {},
+  "sessions": {
+    "s_e9c7bce466358a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52c4e84c-87ad-4bd6-aebe-df807ab7e91c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
