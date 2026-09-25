@@ -195,6 +195,27 @@ judge_timeout_ms = 500
 max_judge_calls = 1
 "#;
 
+/// [`CAPABILITY_ROUTER`] with `classify_trigger = "new_session"`, budgeted to
+/// one call per `(session, agent)` — the probe tests' entry (issue #647).
+///
+/// The verdict those tests reply with, `p_solve` 0.82, sends the session to
+/// the weak (`efficient-alias`) tier, which is *not* the entry's
+/// `fail_open_target()` (strong, `capable-alias`): that difference is what
+/// makes a probe resolving to the retained target observable apart from one
+/// resolving to the provisional default. One call, so a probe that charged the
+/// budget would exhaust it and the next real turn would fail open.
+pub(crate) const CAPABILITY_ROUTER_NEW_SESSION: &str = r#"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "judge-a"
+strong_target = "capable-alias"
+weak_target = "efficient-alias"
+base_threshold = 0.5
+judge_timeout_ms = 500
+classify_trigger = "new_session"
+max_judge_calls = 1
+"#;
+
 /// `mode = "custom"` with two judge candidates, so a failing first judge is
 /// observably *not* followed by a second call.
 pub(crate) const CUSTOM_ROUTER_TWO_JUDGES: &str = r#"

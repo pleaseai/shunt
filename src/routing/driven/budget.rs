@@ -92,6 +92,13 @@ pub(crate) struct BudgetKey {
     delegated: bool,
 }
 
+impl BudgetKey {
+    /// The eviction class this key is capped in: delegated agents or parents.
+    pub(super) fn is_delegated(&self) -> bool {
+        self.delegated
+    }
+}
+
 /// Whose budget a turn draws on, within one session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BudgetScope<'a> {
@@ -186,6 +193,21 @@ impl JudgeBudget {
             .map(str::trim)
             .filter(|id| !id.is_empty())?;
         Some(digest(Sha256::new(), session, BudgetScope::of(hints)))
+    }
+
+    /// The session's own key, whatever agent sent the turn: the parent's
+    /// digest for the session, or `None` for a sessionless request.
+    ///
+    /// Not a budget key — no budget counts a delegated turn on it. It is the
+    /// key [`super::retention`] holds an escalation latch under, because libsy
+    /// keeps that latch in session state keyed by the session id alone, so a
+    /// session's parent and its children share it.
+    pub(super) fn session_key(hints: &RouterContext<'_>) -> Option<BudgetKey> {
+        let session = hints
+            .session_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())?;
+        Some(digest(Sha256::new(), session, BudgetScope::Parent))
     }
 
     /// The key the stage router's shared table counts a turn under.

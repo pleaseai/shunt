@@ -145,6 +145,7 @@ fn context<'a>(
         decided: std::cell::Cell::new(None),
         consult: std::cell::Cell::new(None),
         drive_prefill: std::cell::Cell::new(false),
+        probe: std::cell::Cell::new(None),
     }
 }
 

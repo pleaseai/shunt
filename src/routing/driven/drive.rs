@@ -12,7 +12,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::http::HeaderMap;
 use switchyard_libsy::{drive as libsy_drive, DecisionSource, LibsyError, RoutingOutcome};
@@ -159,7 +159,25 @@ pub(crate) async fn drive(
 
     let label = |fallback: &'static str| notes.label(fallback);
     let decision = match outcome {
-        Ok(Ok(outcome)) => decide(entry, &outcome, &label),
+        Ok(Ok(outcome)) => {
+            let decision = decide(entry, &outcome, &label);
+            // The one write to the probe's shadow record (issue #647): only a
+            // completed drive, because only a completed drive wrote libsy's own
+            // state, and only when the served target is libsy's selection —
+            // `decide` substituting `fail_open` for a missing or out-of-set one
+            // says nothing about what the algorithm kept.
+            let selected_by_libsy = outcome
+                .selected_model_ids
+                .first()
+                .is_some_and(|id| id.as_str() == decision.target);
+            entry.retention.observe(
+                &RouterContext::from_headers(headers),
+                &decision,
+                selected_by_libsy,
+                Instant::now(),
+            );
+            decision
+        }
         // libsy folds a failed call into "no verdict" and answers from its own
         // default, so an `Err` here is the algorithm itself refusing to route
         // — no targets, or a construction it could not complete.

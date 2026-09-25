@@ -20,7 +20,12 @@
 //! `routing::driven::drive` ignore `entry.budget` and
 //! `the_budget_is_honoured_for_a_classifier_entry` goes red on the judge's
 //! call count; drop the `read_only` guard in `resolve_chain`'s driven arm and
-//! `a_count_tokens_probe_on_a_classifier_entry_makes_no_judge_call` goes red;
+//! `a_count_tokens_probe_on_a_classifier_entry_makes_no_judge_call` goes red,
+//! and so does `a_probe_leaves_the_next_real_turn_unchanged`; skip the
+//! retained-target lookup in `proxy::failover` and
+//! `a_count_tokens_probe_resolves_to_the_sessions_retained_target` goes red,
+//! while keying the retention record on anything but the session makes
+//! `a_probe_on_an_unclassified_session_takes_the_no_model_call_decision` red;
 //! return the classifier form from `routing::subagents::select` and
 //! `a_delegated_turn_is_classified_once_per_session_and_agent` goes red on the
 //! judge never being called.
@@ -33,6 +38,8 @@ mod judge_harness;
 mod budget;
 #[path = "driven_lane/overlay.rs"]
 mod overlay;
+#[path = "driven_lane/probe.rs"]
+mod probe;
 
 use reqwest::StatusCode;
 use serde_json::{json, Value};
