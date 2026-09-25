@@ -1091,7 +1091,7 @@ pub(crate) fn control_plane_metadata() -> Value {
 /// an unbounded body into memory and then write all of it into a `tracing`
 /// field. A few KiB is comfortably enough to eyeball the shape of an error
 /// response (JSON error bodies from these endpoints are far smaller).
-const DIAGNOSTIC_BODY_MAX_BYTES: usize = 4096;
+pub(super) const DIAGNOSTIC_BODY_MAX_BYTES: usize = 4096;
 
 /// Best-effort diagnostic read of a non-2xx response body for the `tracing::warn!`
 /// alongside it. An empty body, a read that errors mid-stream, and a read that

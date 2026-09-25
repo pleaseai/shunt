@@ -311,18 +311,14 @@ async fn fetch_catalog(
             // Drain through the shared helper rather than dropping the
             // response: the backend's own message is the only thing that
             // distinguishes a revoked scope from a relocated endpoint, and an
-            // undrained body strands the pooled connection.
-            //
-            // On a bounded call the drain waits no longer than the caller's
-            // idle gap. The status has already made this a recorded failure,
-            // and the body is only the diagnostic that explains it, so a
-            // backend that sends error headers and then stalls costs the call
-            // its gap rather than `CATALOG_FETCH_TIMEOUT`. The drain retains at
-            // most `DIAGNOSTIC_BODY_MAX_BYTES` whatever the call's cap.
-            let wait = bounds.idle.map_or(CATALOG_FETCH_TIMEOUT, |idle| {
-                idle.min(CATALOG_FETCH_TIMEOUT)
-            });
-            let body = super::auth::diagnostic_body(wait, response).await;
+            // undrained body strands the pooled connection. A bounded call
+            // reads it under its own bounds instead; see
+            // `bounded_diagnostic_body`.
+            let body = if bounds == crate::adapters::ResponseBounds::default() {
+                super::auth::diagnostic_body(CATALOG_FETCH_TIMEOUT, response).await
+            } else {
+                bounded_diagnostic_body(response, bounds).await
+            };
             return Err(FetchError::Failed(format!(
                 "backend answered {status}: {body}"
             )));
@@ -397,6 +393,57 @@ enum FetchError {
     Failed(String),
     /// The calling request's bound, not recorded.
     Refused(String),
+}
+
+/// A non-2xx catalog body read as the diagnostic
+/// [`super::auth::diagnostic_body`] reads for a client turn, but under the
+/// bounds of the internal call that triggered the fetch.
+///
+/// Each wait for the next chunk is timed with the call's idle gap, so a body
+/// that keeps arriving is read in full and one that stalls is cut. At most
+/// `max_bytes` is read (never more than the client path's diagnostic cap)
+/// before the read stops. The status has already made the fetch a recorded
+/// failure, so a cut only shortens the log line. The whole fetch still sits
+/// under [`CATALOG_FETCH_TIMEOUT`].
+async fn bounded_diagnostic_body(
+    mut response: reqwest::Response,
+    bounds: crate::adapters::ResponseBounds,
+) -> String {
+    let cap = bounds
+        .max_bytes
+        .map_or(super::auth::DIAGNOSTIC_BODY_MAX_BYTES, |max_bytes| {
+            max_bytes.min(super::auth::DIAGNOSTIC_BODY_MAX_BYTES)
+        });
+    let mut buf = Vec::new();
+    let cut = loop {
+        let next = match bounds.idle {
+            Some(idle) => match tokio::time::timeout(idle, response.chunk()).await {
+                Ok(next) => next,
+                Err(_) => break Some(format!("<no more body for {} ms>", idle.as_millis())),
+            },
+            None => response.chunk().await,
+        };
+        match next {
+            Ok(Some(chunk)) => {
+                // Split at the remaining budget, so the cap holds however the
+                // body is chunked on the wire.
+                let room = cap - buf.len();
+                if chunk.len() > room {
+                    buf.extend_from_slice(&chunk[..room]);
+                    break Some(format!("<truncated at {cap} bytes>"));
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            Ok(None) => break None,
+            Err(error) => break Some(format!("<error reading body: {error}>")),
+        }
+    };
+    let text = String::from_utf8_lossy(&buf);
+    match cut {
+        None if text.is_empty() => "<empty body>".to_string(),
+        None => text.into_owned(),
+        Some(note) => format!("{text}...{note}"),
+    }
 }
 
 /// Seed the cache so a test can exercise catalog-driven resolution without a
@@ -786,6 +833,95 @@ mod tests {
         );
         responder.abort();
         clear_for_test(&base_url);
+    }
+
+    /// The twin of the cut above: the idle gap is timed between chunks, not
+    /// over the whole error body, so a body that keeps arriving inside the gap
+    /// is read to its end even when the whole read takes several gaps.
+    ///
+    /// Non-vacuity: time the whole drain with the gap instead (hand
+    /// `diagnostic_body` the idle gap as its timeout) and the read is cut at
+    /// the first 250 ms, so the elapsed-time assertion goes red.
+    #[tokio::test]
+    async fn a_catalog_error_body_that_keeps_arriving_is_read_past_one_idle_gap() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const PIECES: usize = 6;
+        const PIECE: &[u8] = b"0123456789";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let responder = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            let head = format!(
+                "HTTP/1.1 503 Service Unavailable\r\ncontent-type: text/plain\r\n\
+                 content-length: {}\r\n\r\n",
+                PIECES * PIECE.len()
+            );
+            socket.write_all(head.as_bytes()).await.unwrap();
+            for _ in 0..PIECES {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                socket.write_all(PIECE).await.unwrap();
+                socket.flush().await.unwrap();
+            }
+            std::future::pending::<()>().await;
+        });
+        clear_for_test(&base_url);
+
+        let started = Instant::now();
+        let ids = catalog_ids(
+            &reqwest::Client::new(),
+            &base_url,
+            "token",
+            "",
+            crate::adapters::ResponseBounds {
+                max_bytes: None,
+                idle: Some(Duration::from_millis(250)),
+            },
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(ids.is_none());
+        assert!(
+            elapsed >= Duration::from_millis(550),
+            "read for only {elapsed:?}: a body still arriving was cut at one gap"
+        );
+        responder.abort();
+        clear_for_test(&base_url);
+    }
+
+    /// A bounded call reads at most its own `max_bytes` of an error body even
+    /// when that is under the client path's 4 KiB diagnostic cap, and a body
+    /// that fits is read whole with no truncation note.
+    ///
+    /// Non-vacuity: read it with `diagnostic_body` instead and the capped
+    /// result keeps all 4096 bytes, so the first assertion goes red.
+    #[tokio::test]
+    async fn a_bounded_error_body_diagnostic_reads_at_most_the_calling_requests_cap() {
+        let error_response = |body: String| {
+            reqwest::Response::from(
+                axum::http::Response::builder()
+                    .status(503)
+                    .body(body)
+                    .unwrap(),
+            )
+        };
+        let bounds = crate::adapters::ResponseBounds {
+            max_bytes: Some(64),
+            idle: Some(Duration::from_secs(5)),
+        };
+
+        let capped = bounded_diagnostic_body(error_response("x".repeat(4096)), bounds).await;
+        assert_eq!(capped.matches('x').count(), 64, "got {capped:?}");
+        assert!(
+            capped.ends_with("...<truncated at 64 bytes>"),
+            "got {capped:?}"
+        );
+
+        let whole = bounded_diagnostic_body(error_response("y".repeat(64)), bounds).await;
+        assert_eq!(whole, "y".repeat(64));
     }
 
     #[tokio::test]
