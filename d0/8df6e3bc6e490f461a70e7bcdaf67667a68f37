@@ -1,0 +1,62 @@
+tests/driven_lane/probe.rs
+  s_376ffb15c5d3b7::t_413d7a95489473 1-68,74-138,144-209
+  s_376ffb15c5d3b7::t_fc9c84c97ab895 69-73,139-143
+src/routing/subagents/resolve_tests.rs
+  s_376ffb15c5d3b7::t_7663f168848725 148
+src/routing/driven/gated.rs
+  s_376ffb15c5d3b7::t_c27fd0efb09f43 42,197-200,313,330-339
+src/routing/driven/drive.rs
+  s_376ffb15c5d3b7::t_c27fd0efb09f43 15,162-180
+src/routing.rs
+  s_376ffb15c5d3b7::t_c898fb5fab8cf9 164-167,185-187,250-258,261-262
+  s_376ffb15c5d3b7::t_7663f168848725 1033,1068,1123,1169,1304
+src/routing/random/tests.rs
+  s_376ffb15c5d3b7::t_7663f168848725 54
+src/routing/driven/retention_tests.rs
+  s_376ffb15c5d3b7::t_4d5c7b420ecf6c 14,18-29,59,95-99,116,123,151,205-210,258,278,283-287,291,293,295-299,302
+  s_376ffb15c5d3b7::t_8203d7cca0452b 1-13,15-17,30-58,60,77-78,89-94,105,110-115,117,135-150,152-155,160-162,167-179,190-204,211-212,217-223,229-231,236-241,247-257,259-277,279-282,288-290,292,294,300-301,303-306
+  s_376ffb15c5d3b7::t_fc9c84c97ab895 61-76,79-88,100-104,106-109,118-122,124-134,156-159,163-166,180-189,213-216,224-228,232-235,242-246
+src/routing/stage.rs
+  s_376ffb15c5d3b7::t_f56dd7df419cc0 199-209
+tests/driven_lane.rs
+  s_376ffb15c5d3b7::t_fc9c84c97ab895 23-28,41-42
+src/bench_support.rs
+  s_376ffb15c5d3b7::t_7663f168848725 159
+src/routing/driven/build.rs
+  s_376ffb15c5d3b7::t_c314003e6a587f 32,36,236,272,299-301,342,346-364
+  s_376ffb15c5d3b7::t_fc9c84c97ab895 33-34
+  s_376ffb15c5d3b7::t_c1636a165d52af 365
+src/routing/driven.rs
+  s_376ffb15c5d3b7::t_c314003e6a587f 65,70-71,76,81,86,89,120-122,150-156
+  s_376ffb15c5d3b7::t_11d481ffdbf907 157
+src/proxy/failover.rs
+  s_376ffb15c5d3b7::t_44c48212c75c2c 119-133,138-141,231-237
+  s_376ffb15c5d3b7::t_fc9c84c97ab895 134-137
+  s_376ffb15c5d3b7::t_7663f168848725 97
+src/routing/driven/budget.rs
+  s_376ffb15c5d3b7::t_5cedc4f1582151 95-101,198-211
+  s_376ffb15c5d3b7::t_407e967abe861c 212
+src/routing/driven/retention.rs
+  s_376ffb15c5d3b7::t_fd8a6b76381c4f 1-171,178-286
+  s_376ffb15c5d3b7::t_fc9c84c97ab895 172-177
+tests/judge_harness/driven.rs
+  s_376ffb15c5d3b7::t_ebebc48d2bad09 198-218
+src/routing/stage/tests.rs
+  s_376ffb15c5d3b7::t_7663f168848725 258
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d08df6e3bc6e490f461a70e7bcdaf67667a68f37",
+  "prompts": {},
+  "sessions": {
+    "s_376ffb15c5d3b7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bca400fe-b4f3-4ca6-ab46-98842ee4e29e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
