@@ -1111,17 +1111,54 @@ records it wherever that drive fails open.
 ### Probes
 
 `count_tokens` is `read_only` and never enters `drive`, exactly as on the stage
-router (§5). A probe on a driven entry resolves to the entry's `fail_open`
-target — the same default a no-verdict turn takes — with **zero judge calls**,
-and is gated and dispatched against that target's first route only. The same
-holds for a delegated probe against a classifier-form overlay: the overlay
-answers from its `default_target` group's first model, and the child is not
-classified by a request that is not a turn.
+router (§5). A probe on a driven entry makes **zero judge calls and zero gated
+calls**, charges no `max_judge_calls` budget, writes or refreshes nothing, and
+records no router or judge metric; it is gated and dispatched against its
+target's first route only. Until issue #647 that target was always the entry's
+`fail_open` target. It is now the **session's currently retained target** when
+one exists, and the algorithm's no-model-call decision (the old fail-open
+target) otherwise:
 
-The body-less surfaces behave the same way for the same reason: `GET /routes`,
-`/v1/models` discovery, and `shunt check` have no transcript to judge, so a
-driven entry reports its fail-open target there, under route source
-`classifier_default`.
+- `llm_classifier`, `capability` or `custom`, under `new_session` or
+  `user_turn`: the `(session, agent)`'s assignment — the target the session's
+  last real turn was served from. Under `user_turn` that is the held verdict
+  even when the probe's own last message is a new user turn, because a probe
+  cannot judge. `every_request` retains nothing, so the probe answers from the
+  fail-open target as before (capability: `strong_target`; custom:
+  `default_target`'s first model).
+- `composite`: the retained tier's target, else `stage.efficient_target` (the
+  picker default). A probe does not score signals.
+- `escalation`: `strong_target` when the session is latched — its last real
+  turn was served by the latch or by a confirmed escalation — else
+  `weak_target`. The latch is per session, shared by the session's delegated
+  children, and expires after an hour idle, as upstream's session state does.
+- `advisor`: always `executor_target`.
+- A delegated probe against a classifier-form `[models.subagents]` overlay
+  answers from that child's `(session, agent)` assignment, else from
+  `default_target`'s first model. The child is never classified by a request
+  that is not a turn.
+
+A probe with no `x-claude-code-session-id`, or a delegated probe with no agent
+id, has no retained target and takes the no-model-call decision — also under
+`message_hash_fallback`, because shunt does not key probes by message hash.
+
+The probe cannot simply drive with its calls refused. libsy keeps affinity,
+tiers, and the escalation latch private, and every completed drive writes them
+— it would latch even a fail-open default — so a probe that drove would move
+the session it measures. shunt therefore keeps a read-only per-entry record of
+each session's retained target, written only by admitted real turns and read
+only by probes. It is keyed by the same `sha256(session ‖ agent)` digest as the
+judge budget, bounded at 4096 keys per class (parent and delegated) with the
+least recent evicted, and rebuilt with the entry on reload, as libsy's own state
+is. One composite caveat: a turn a stage signal decides does not reveal the tier
+the judge set, so the record follows the retained tier on the next turn served
+from it.
+
+The body-less surfaces are unchanged: `GET /routes`, `/v1/models` discovery,
+and `shunt check` have no transcript to judge, so a driven entry reports
+its fail-open target there, under route source `classifier_default`. The pure
+lane (`stage_router`/`auto`, its judge included) and `prefill_router` are
+unchanged as well.
 
 ### Responses judge targets
 
@@ -1221,7 +1258,11 @@ ceiling), one focused test per clause:
 7. a `count_tokens` probe on a classifier entry makes no judge call;
 8. `max_judge_calls = 1` under `every_request` judges the first turn and answers
    the second from the budget-exhausted fail-open path; under `new_session`, a
-   spent budget still replays the assignment (issue #648).
+   spent budget still replays the assignment (issue #648);
+9. in `tests/driven_lane/probe.rs`, a `count_tokens` probe resolves to the
+   session's retained target, an unclassified session's probe takes the
+   no-model-call decision, and a probe leaves the next real turn unchanged
+   (issue #647).
 
 ### Not in this PR
 
@@ -1303,7 +1344,9 @@ passthrough**, because the gated turn is not an internal call. It is the answer
 dispatch of the selected target, so it establishes its own primary origin from
 that target's chain and carries the caller's credential exactly as a live turn
 does (ADR-0005 §3). A `count_tokens` probe never enters `drive`: it makes zero
-judge calls and zero gated calls, and answers from the weak or executor target.
+judge calls and zero gated calls. An `escalation` probe answers from
+`strong_target` while the session is latched and from `weak_target` otherwise;
+an `advisor` probe answers from `executor_target` (§7, Probes).
 
 The advisor's `max_reviews` budget and its failure cap are per session. The
 pinned `AdvisorGate` folds every request that carries no session id into one

@@ -699,9 +699,14 @@ source は `classifier_fail_open`、ジャッジ呼び出しの結果は `budget
 されます。classifier 形式の `[models.subagents]` オーバーレイも同じ動きをします。
 
 **プローブはジャッジなしで解決します。** `count_tokens` リクエストがジャッジを呼ぶことは
-なく、fail-open のターゲットで応答されます。リクエストボディのない面 — `GET /routes`、
-`/v1/models` ディスカバリー、`shunt check` — も同じで、これらはルートソース
-`classifier_default` として報告します。
+なく、`max_judge_calls` の予算も使わず、セッションの状態も変えません。`new_session` か
+`user_turn` では、セッションの直前のターンを提供したターゲットで応答されます — `user_turn`
+では、プローブの最後のメッセージが新しいユーザーターンであってもそうです。それ以外は
+fail-open のターゲットで応答されます。`every_request` のとき、まだ分類されていない
+セッションのとき、`x-claude-code-session-id` のないリクエストやエージェント id のない
+委譲リクエストのときがそうです（`message_hash_fallback` はプローブには適用されません）。
+リクエストボディのない面 — `GET /routes`、`/v1/models` ディスカバリー、`shunt check` —
+は fail-open のターゲットをルートソース `classifier_default` として報告します。
 
 ターゲットもジャッジも、ステージルーターと同じ 1 ホップ規則に従う通常の公開モデル id で、
 ジャッジは **passthrough** ルートに解決されてはいけません。理由は[上](#modelsrouterclassifierオプション)
@@ -759,8 +764,11 @@ confirmations = 2
 
 `classifier_target` と違い、`weak_target` は **passthrough** ルートでも構いません。効率側の
 ターンはクライアント自身の応答なので、ライブのターンとまったく同じように呼び出し元の資格情報
-を運びます。`count_tokens` プローブはジャッジ呼び出しも留め置く呼び出しも行わず、
-`weak_target` で応答します。ジャッジ呼び出しは
+を運びます。`count_tokens` プローブはジャッジ呼び出しも留め置く呼び出しも行いません。
+セッションが固定されているあいだは `strong_target` で、そうでなければ `weak_target` で
+応答します。直前のターンが固定によって、または確定した昇格によって提供されていれば
+固定されたセッションで、この固定はセッションの委譲された子と共有され、1 時間アイドルが
+続くと失効します。ジャッジ呼び出しは
 `shunt.router.judge_calls{algorithm="llm_classifier"}` で数えます。
 
 留め置いたターンをどう提供するか、結果ごとにクライアントに何が見えるか、コストがどれだけ
@@ -808,8 +816,10 @@ confidence_threshold = 0.5
 
 6 つの[呼び出しごとの上限](#呼び出しごとの上限)は、どちらのサブテーブルでもなく
 `[models.router]` に置きます。classifier が届かなかったターンは
-`stage.efficient_target` に fall-open します。これは上流の規則であり、プローブやボディの
-ない面が報告する値でもあります。`max_judge_calls` がジャッジ呼び出しを拒否したターンは、
+`stage.efficient_target` に fall-open します。これは上流の規則であり、ボディのない面が
+報告する値でもあります。`count_tokens` プローブはシグナルを採点せず、ジャッジも呼びません。
+セッションが保持したティアがあればそれで、なければ `stage.efficient_target` で応答します。
+`max_judge_calls` がジャッジ呼び出しを拒否したターンは、
 セッションが最後に保持したティアがあればそれを保ち、なければ picker のデフォルトの
 ティアへ行きます。そのため、ユーザーターンとそれに続くツールの継続ターンの
 あいだでティアが動くことはありません。ジャッジ呼び出しを必要としないターンは拒否されません。
@@ -876,7 +886,7 @@ max_reviews = 1
 
 `advisor_target` と違い、`executor_target` は **passthrough** ルートでも構いません。理由は
 escalation の効率側ターゲットと同じです。`count_tokens` プローブはレビューも留め置く呼び出しも
-行わず、`executor_target` で応答します。レビューは
+行わず、常に `executor_target` で応答します。レビューは
 `shunt.router.judge_calls{algorithm="advisor"}` で数え、`GET /routes` は `advisor_target` を
 `judges` に並べます。
 
@@ -1286,7 +1296,8 @@ policy = { type = "target_selector", selector = "/target" }
 そして呼び出し元の資格情報スロットはひとつも同行しません。委譲されたターンがジャッジを
 呼びうるため、そうしたターンのインバウンド認証はオーバーレイのターゲットとジャッジまで
 対象にします — 認証できない委譲ターンはジャッジ呼び出しを 1 回も行わずに拒否されます。
-`count_tokens` プローブも同様にジャッジ呼び出しなしで、`default_target` グループの最初の
+`count_tokens` プローブも同様にジャッジ呼び出しを行いません。その子の (セッション,
+エージェント) の割り当てがあればそれで、なければ `default_target` グループの最初の
 モデルで応答します。
 
 ## `[sentry]`(任意)

@@ -911,10 +911,16 @@ under route source `classifier_fail_open`, and is recorded as judge-call outcome
 `budget_exhausted`. The classifier-form `[models.subagents]` overlay behaves
 the same way.
 
-**Probes resolve without a judge.** A `count_tokens` request never consults one
-and is answered from the fail-open target, as are the surfaces with no request
-body — `GET /routes`, `/v1/models` discovery, and `shunt check` — which report
-it under route source `classifier_default`.
+**Probes resolve without a judge.** A `count_tokens` request never consults
+one, charges no `max_judge_calls` budget, and changes no session state. Under
+`new_session` or `user_turn` it is answered from the target the session's last
+turn was served from — under `user_turn` even when the probe's last message is
+a new user turn — and otherwise from the fail-open target: under
+`every_request`, for a session that has not been classified yet, and for a
+request with no `x-claude-code-session-id` or a delegated one with no agent id
+(`message_hash_fallback` does not apply to probes). The surfaces with no
+request body — `GET /routes`, `/v1/models` discovery, and `shunt check` —
+report the fail-open target under route source `classifier_default`.
 
 Every target and every judge is an ordinary public model id under the same
 one-hop rule as the stage router's, and a judge must not resolve to a
@@ -975,7 +981,10 @@ three defaults, which are upstream's benchmarked configuration. The six
 `weak_target` may be a **passthrough** route, although `classifier_target` may
 not: the weak turn is the client's own answer, so it carries the caller's
 credential exactly as a live turn does. A `count_tokens` probe makes no judge
-call and no gated call, and answers from `weak_target`. Judge calls are counted
+call and no gated call. It answers from `strong_target` while the session is
+latched — its last turn was served by the latch or by a confirmed escalation;
+the latch is shared by the session's delegated children and expires after an
+hour idle — and from `weak_target` otherwise. Judge calls are counted
 by `shunt.router.judge_calls{algorithm="llm_classifier"}`.
 
 See [buffered turns](#buffered-turns-escalation-and-advisor) for how the held
@@ -1023,9 +1032,11 @@ confidence_threshold = 0.5
 
 The six [per-call bounds](#per-call-bounds) go on `[models.router]`, not inside
 either sub-table. A turn the classifier cannot reach falls open to
-`stage.efficient_target`, which is upstream's rule and is also what a probe and
-a body-less surface report. A turn whose judge call `max_judge_calls` refuses
-keeps the session's last retained tier when it has one, or else takes the
+`stage.efficient_target`, which is upstream's rule and is also what a
+body-less surface reports. A `count_tokens` probe scores no signals and makes
+no judge call: it answers from the session's retained tier, or from
+`stage.efficient_target` when there is none. A turn whose judge call
+`max_judge_calls` refuses keeps the session's last retained tier when it has one, or else takes the
 picker's default tier, so the tier never moves between a user
 turn and its tool continuations; a turn that needs no judge call is never
 refused.
@@ -1092,9 +1103,9 @@ conversation, and the executor is re-run. That re-run streams live.
 
 `executor_target` may be a **passthrough** route, although `advisor_target` may
 not, for the same reason as escalation's weak target. A `count_tokens` probe
-makes no review and no gated call, and answers from `executor_target`. Reviews
-are counted by `shunt.router.judge_calls{algorithm="advisor"}`, and `GET
-/routes` lists `advisor_target` under `judges`.
+makes no review and no gated call, and always answers from `executor_target`.
+Reviews are counted by `shunt.router.judge_calls{algorithm="advisor"}`, and
+`GET /routes` lists `advisor_target` under `judges`.
 
 #### Buffered turns: escalation and advisor
 
@@ -1515,7 +1526,8 @@ one hop, no passthrough route, and none of the caller's credential slots travel
 with the call. Because a delegated turn may consult it, inbound auth on such a
 turn ranges over the overlay's targets and judge as well — so a delegated turn
 that cannot authenticate is refused with zero judge calls. A `count_tokens`
-probe makes none either, and answers from `default_target`'s first model.
+probe makes none either: it answers from the child's `(session, agent)`
+assignment when it has one, else from `default_target`'s first model.
 
 ## `[sentry]` (optional)
 
