@@ -1130,8 +1130,12 @@ target) otherwise:
   picker default). A probe does not score signals.
 - `escalation`: `strong_target` when the session is latched — its last real
   turn was served by the latch or by a confirmed escalation — else
-  `weak_target`. The latch is per session, shared by the session's delegated
-  children, and expires after an hour idle, as upstream's session state does.
+  `weak_target`. The latch is per session and shared by the session's delegated
+  children. A probe treats it as expired after an hour idle, the age at which
+  upstream's hourly sweep may drop the session's state. Upstream keeps it until
+  its next sweep, so for up to another hour a probe can answer from
+  `weak_target` while the next real turn replays the latch; that turn records
+  the latch again.
 - `advisor`: always `executor_target`.
 - A delegated probe against a classifier-form `[models.subagents]` overlay
   answers from that child's `(session, agent)` assignment, else from
@@ -1153,6 +1157,24 @@ least recent evicted, and rebuilt with the entry on reload, as libsy's own state
 is. One composite caveat: a turn a stage signal decides does not reveal the tier
 the judge set, so the record follows the retained tier on the next turn served
 from it.
+
+The record is a shadow of libsy's state, not a copy, and it can still differ
+from it in three bounded ways. Each affects only a probe's token count, never a
+real turn's routing:
+
+- **Eviction.** libsy caps affinity and composite tiers at 4096 identities in
+  total, evicts an arbitrary one, and expires neither. The record's per-class
+  least-recent rule cannot reproduce an arbitrary choice, so above that scale a
+  probe can name a target libsy has dropped, or miss one it kept. The identity's
+  next completed turn corrects it (for a composite, the next turn that reveals
+  the tier).
+- **Concurrent turns.** libsy writes its state under a per-session lock, and the
+  record is written after the drive returns. So two concurrent real turns of one
+  `(session, agent)` can land in the record in the opposite order, and the next
+  completed turn corrects it. Under `new_session` this is the first-turn race.
+- **Abandoned drives.** A drive shunt stops waiting for (a timeout, a client
+  that disconnects) after libsy has written its state records nothing. The next
+  completed turn records it.
 
 The body-less surfaces are unchanged: `GET /routes`, `/v1/models` discovery,
 and `shunt check` have no transcript to judge, so a driven entry reports

@@ -579,6 +579,16 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   probe, or a delegated probe with no agent id, has no retained target and
   takes the no-model-call decision, `message_hash_fallback` included. The
   body-less surfaces, the pure lane, and `prefill_router` are unchanged.
+  The record is a shadow, so it can differ from libsy's state in ways that are
+  bounded and corrected by the identity's next completed turn. Each affects a
+  probe's token count only:
+  - libsy caps affinity and tiers at 4096 identities in total with arbitrary
+    eviction, which a per-class least-recent rule cannot reproduce;
+  - two concurrent real turns of one `(session, agent)` can record in the
+    opposite order to libsy's writes;
+  - a drive abandoned after libsy wrote records nothing;
+  - libsy's hourly sweep can keep an idle latch up to about two hours, while a
+    probe treats it as expired after one.
 
 ### 10. Verification before code
 
