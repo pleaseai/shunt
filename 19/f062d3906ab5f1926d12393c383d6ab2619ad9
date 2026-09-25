@@ -1,0 +1,31 @@
+tests/judge_harness/driven.rs
+  s_6655d1eb96b5dc::t_8a6d4fdfeee170 316-342
+tests/driven_lane/probe.rs
+  s_6655d1eb96b5dc::t_8f2f0a07ee3a1b 31,34-43,46-50,58,65
+tests/driven_lane.rs
+  s_6655d1eb96b5dc::t_581b0fab8aa7fb 47-48
+  s_6655d1eb96b5dc::t_943478e88fcec6 29-32
+src/routing/driven/retention.rs
+  s_6655d1eb96b5dc::t_fd4b06bd0a06c7 131-157,164,213,235,249-251,253,262,269-270,293-298,303
+tests/driven_lane/probe_forms.rs
+  s_6655d1eb96b5dc::t_b15e2bff7be1ee 21-22
+  s_6655d1eb96b5dc::t_943478e88fcec6 53,72,164
+  s_6655d1eb96b5dc::t_5bea728df93a2d 37-38,134-136,183-194
+  s_6655d1eb96b5dc::t_bc385a76258e54 1-20,23-36,39-52,54-71,73-133,137-163,165-182,195-200
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "19f062d3906ab5f1926d12393c383d6ab2619ad9",
+  "prompts": {},
+  "sessions": {
+    "s_6655d1eb96b5dc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0773328d-e9ae-4a83-92f3-4b53e28d8106",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
