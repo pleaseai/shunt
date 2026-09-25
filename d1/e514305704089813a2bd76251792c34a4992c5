@@ -1,0 +1,47 @@
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_376ffb15c5d3b7::t_8a4f4e95e36953 672-678,778-779,840,1199
+  s_376ffb15c5d3b7::t_1b029934b23476 780-781
+  s_376ffb15c5d3b7::t_a917924d7d7682 731-733,1198
+site/src/content/docs/ja/guides/switchyard.mdx
+  s_376ffb15c5d3b7::t_71de28a912454d 373-374
+.please/docs/decisions/0005-routing-algorithm-extensions.md
+  s_376ffb15c5d3b7::t_700b3f50f0c739 551-581
+docs/routing-algorithms.md
+  s_376ffb15c5d3b7::t_60c9c42eeab92b 1262-1265
+  s_376ffb15c5d3b7::t_95cc3b14508a20 1261,1347-1349
+  s_376ffb15c5d3b7::t_07ba5dd188c6fa 1114-1118,1121-1157,1159-1161
+  s_376ffb15c5d3b7::t_47ea29dad9ea9e 1119-1120,1158
+site/src/content/docs/ja/reference/configuration.md
+  s_376ffb15c5d3b7::t_71de28a912454d 707
+  s_376ffb15c5d3b7::t_1201860e56a534 702-706,708-709,767-771,819-822,889,1299-1300
+site/src/content/docs/ko/reference/configuration.md
+  s_376ffb15c5d3b7::t_1b029934b23476 783-784
+  s_376ffb15c5d3b7::t_1201860e56a534 780-782
+  s_376ffb15c5d3b7::t_5aedf30f9b3229 714-722,831-833,898,1288-1289
+site/src/content/docs/reference/configuration.md
+  s_376ffb15c5d3b7::t_1b029934b23476 921-923,1038-1039
+  s_376ffb15c5d3b7::t_991d702fb5f740 920,1106-1108
+  s_376ffb15c5d3b7::t_6672009a90b919 914-919,984-987,1035-1037,1529-1530
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_376ffb15c5d3b7::t_8a4f4e95e36953 328-329
+site/src/content/docs/ko/guides/switchyard.mdx
+  s_376ffb15c5d3b7::t_1b029934b23476 356-357
+site/src/content/docs/guides/switchyard.mdx
+  s_376ffb15c5d3b7::t_38329c8b098571 377-378
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d1e514305704089813a2bd76251792c34a4992c5",
+  "prompts": {},
+  "sessions": {
+    "s_376ffb15c5d3b7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bca400fe-b4f3-4ca6-ab46-98842ee4e29e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
