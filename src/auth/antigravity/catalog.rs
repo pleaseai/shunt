@@ -312,7 +312,17 @@ async fn fetch_catalog(
             // response: the backend's own message is the only thing that
             // distinguishes a revoked scope from a relocated endpoint, and an
             // undrained body strands the pooled connection.
-            let body = super::auth::diagnostic_body(CATALOG_FETCH_TIMEOUT, response).await;
+            //
+            // On a bounded call the drain waits no longer than the caller's
+            // idle gap. The status has already made this a recorded failure,
+            // and the body is only the diagnostic that explains it, so a
+            // backend that sends error headers and then stalls costs the call
+            // its gap rather than `CATALOG_FETCH_TIMEOUT`. The drain retains at
+            // most `DIAGNOSTIC_BODY_MAX_BYTES` whatever the call's cap.
+            let wait = bounds.idle.map_or(CATALOG_FETCH_TIMEOUT, |idle| {
+                idle.min(CATALOG_FETCH_TIMEOUT)
+            });
+            let body = super::auth::diagnostic_body(wait, response).await;
             return Err(FetchError::Failed(format!(
                 "backend answered {status}: {body}"
             )));
@@ -711,6 +721,68 @@ mod tests {
                 ""
             )),
             "a cut is the caller's bound and leaves no cooldown behind"
+        );
+        responder.abort();
+        clear_for_test(&base_url);
+    }
+
+    /// The error-status twin: a catalog that answers a non-2xx status and then
+    /// stalls mid-body is cut at the calling request's idle gap too, not held
+    /// to `CATALOG_FETCH_TIMEOUT` while its diagnostic drains. Unlike the cut
+    /// above, the status is the backend's own failure, so it is recorded.
+    ///
+    /// Non-vacuity: drain the error body under `CATALOG_FETCH_TIMEOUT` again
+    /// and the call waits out the 5 s fetch timeout, so the elapsed-time
+    /// assertion goes red.
+    #[tokio::test]
+    async fn a_catalog_error_body_stalled_after_its_headers_is_cut_at_the_calling_requests_idle_gap(
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let responder = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\n\
+                      content-length: 4096\r\n\r\n{\"error\":",
+                )
+                .await
+                .unwrap();
+            // Held open, silent, until the test ends.
+            std::future::pending::<()>().await;
+        });
+        clear_for_test(&base_url);
+
+        let started = Instant::now();
+        let ids = catalog_ids(
+            &reqwest::Client::new(),
+            &base_url,
+            "token",
+            "",
+            crate::adapters::ResponseBounds {
+                max_bytes: None,
+                idle: Some(Duration::from_millis(200)),
+            },
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(ids.is_none());
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "cut after {elapsed:?}: the error body drained on toward CATALOG_FETCH_TIMEOUT"
+        );
+        assert!(
+            cache().contains_key(&cache_key(
+                &super::super::auth::inference_base_url(&base_url),
+                "token",
+                ""
+            )),
+            "an error status is the backend's failure and is recorded for the cooldown"
         );
         responder.abort();
         clear_for_test(&base_url);
