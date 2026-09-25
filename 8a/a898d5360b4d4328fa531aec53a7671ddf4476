@@ -1,0 +1,35 @@
+src/adapters/responses/ws_stream.rs
+  s_cc4d02d462a9d5::t_72d7ffda7b9ec0 437-570
+  s_cc4d02d462a9d5::t_c9159d6d84eb4a 290-297
+  s_cc4d02d462a9d5::t_4a92565617d33e 120-124,130,136-144,146-153,166-169,177-178,180-182,269,338,359,381,412,431,594,625,660
+  s_cc4d02d462a9d5::t_7fd6da009e9dc0 170-176,746-752,787-793
+  s_cc4d02d462a9d5::t_ec0d9a7c07fead 154-156
+src/adapters/responses/websocket.rs
+  s_cc4d02d462a9d5::t_c9159d6d84eb4a 112,172-174,177,180,186,194-213
+  s_cc4d02d462a9d5::t_fe65a1f59d1100 76
+src/adapters/responses/context.rs
+  s_cc4d02d462a9d5::t_0df406387df9ff 74
+src/adapters/responses/mod.rs
+  s_cc4d02d462a9d5::t_d31e8f8a9452f6 74-76
+tests/codex_websocket_gated.rs
+  s_cc4d02d462a9d5::t_183ae939a9841f 286-292,294-295
+  s_cc4d02d462a9d5::t_de4349483dd6cd 1-28,30-61,63-69,80-101,115-285,296-330
+  s_cc4d02d462a9d5::t_328a48e9d0ce99 29,70-79
+  s_cc4d02d462a9d5::t_63e1a541769933 62,102-114,293
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8aa898d5360b4d4328fa531aec53a7671ddf4476",
+  "prompts": {},
+  "sessions": {
+    "s_cc4d02d462a9d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "08b60360-9244-4b58-b1cc-8cb30f7a3935",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
