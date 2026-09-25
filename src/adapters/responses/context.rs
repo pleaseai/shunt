@@ -71,8 +71,7 @@ pub(super) struct TurnOptions {
     /// there would let a judge allocate freely until the deadline instead of
     /// failing open at `judge_max_response_bytes`, or let a gated turn whose
     /// upstream stalls after its headers sit until `gated_max_duration_ms`.
-    /// The HTTP read honours both bounds; the websocket accumulation honours
-    /// only `max_bytes` so far (#667).
+    /// The HTTP read and the websocket accumulation both honour both bounds.
     pub response_bounds: crate::adapters::ResponseBounds,
 }
 

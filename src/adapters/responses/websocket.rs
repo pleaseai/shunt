@@ -73,7 +73,7 @@ pub(super) async fn forward_websocket(
     let estimate_handle = estimate_input.map(|request| {
         tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
     });
-    let (buffered, events) = open_ws_turn(&ctx).await?;
+    let (buffered, events) = open_ws_turn(&ctx, turn.response_bounds.idle).await?;
     // Both branches consume it: the streaming arm seeds `message_start`, and a
     // non-streaming turn cut short by an emulated stop sequence needs it because
     // the stop makes the upstream's own usage a no-op (issue #605).
@@ -109,7 +109,7 @@ pub(super) async fn forward_websocket(
             events,
             turn.relay(route),
             input_tokens_estimate,
-            turn.response_bounds.max_bytes,
+            turn.response_bounds,
         )
         .await?;
         Ok((response.status(), response))
@@ -169,17 +169,21 @@ pub(super) type BufferedEvent = Option<Result<ResponseEvent, CodexWsError>>;
 /// surfaces as a clean error: an Anthropic `error` event for a streaming client
 /// ([`stream_events_response`]), a gateway error for a non-streaming one
 /// ([`json_events_response`]).
+///
+/// `idle` is the gated call's `gated_idle_ms` and `None` for every other turn;
+/// see [`peek_first_event`].
 async fn open_ws_turn(
     ctx: &WsTurnContext<'_>,
+    idle: Option<std::time::Duration>,
 ) -> Result<(BufferedEvent, CodexWsEvents), AdapterError> {
     let (events, used_continuation) = start_ws_turn(ctx, true).await?;
-    let (first, events) = peek_first_event(events).await;
+    let (first, events) = peek_first_event(events, idle).await?;
     // A rejected previous_response_id arrives before any output: retry once with
     // the full input on a fresh connection, then evaluate that stream instead.
     if used_continuation && matches!(&first, Some(Err(error)) if error.previous_response_missing) {
         tracing::info!("codex previous_response_id rejected; retrying with full input");
         let (events, _) = start_ws_turn(ctx, false).await?;
-        let (first, events) = peek_first_event(events).await;
+        let (first, events) = peek_first_event(events, idle).await?;
         return commit_or_fallback(first, events, ctx.auth);
     }
     commit_or_fallback(first, events, ctx.auth)
@@ -187,9 +191,26 @@ async fn open_ws_turn(
 
 /// Await the first event of a freshly opened turn, returning it alongside the
 /// still-live channel so it can be replayed before the remainder of the stream.
-async fn peek_first_event(mut events: CodexWsEvents) -> (BufferedEvent, CodexWsEvents) {
-    let first = events.recv().await;
-    (first, events)
+///
+/// With `idle` set, the wait is the gated call's first gap after the
+/// handshake — the twin of the first wait after the headers that
+/// `collect_upstream_sse_body` times on the HTTP path — and a backend that
+/// accepts the frame and then says nothing is cut there with the idle marker
+/// rather than held to the transport's own idle timeout. That is a cut, not an
+/// HTTP fallback: the bound belongs to the call, and re-driving the turn over
+/// HTTP would start it again against a gap already spent. Dropping `events`
+/// abandons the turn, so its socket is evicted rather than pooled.
+async fn peek_first_event(
+    mut events: CodexWsEvents,
+    idle: Option<std::time::Duration>,
+) -> Result<(BufferedEvent, CodexWsEvents), AdapterError> {
+    let first = match idle {
+        Some(idle) => tokio::time::timeout(idle, events.recv())
+            .await
+            .map_err(|_| crate::adapters::idle_error(crate::adapters::UpstreamBodyIdle { idle }))?,
+        None => events.recv().await,
+    };
+    Ok((first, events))
 }
 
 /// Decide, from the peeked first event, whether to commit to the websocket
