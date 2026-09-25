@@ -255,6 +255,7 @@ mod consult {
             decided: Cell::new(None),
             consult: Cell::new(None),
             drive_prefill: Cell::new(false),
+            probe: Cell::new(None),
         };
         let decision = select(router, "claude-auto", Some(&context));
         if let Some(pin) = context.pending.take() {

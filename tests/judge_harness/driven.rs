@@ -195,6 +195,27 @@ judge_timeout_ms = 500
 max_judge_calls = 1
 "#;
 
+/// [`CAPABILITY_ROUTER`] with `classify_trigger = "new_session"`, budgeted to
+/// one call per `(session, agent)` — the probe tests' entry (issue #647).
+///
+/// The verdict those tests reply with, `p_solve` 0.82, sends the session to
+/// the weak (`efficient-alias`) tier, which is *not* the entry's
+/// `fail_open_target()` (strong, `capable-alias`): that difference is what
+/// makes a probe resolving to the retained target observable apart from one
+/// resolving to the provisional default. One call, so a probe that charged the
+/// budget would exhaust it and the next real turn would fail open.
+pub(crate) const CAPABILITY_ROUTER_NEW_SESSION: &str = r#"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "judge-a"
+strong_target = "capable-alias"
+weak_target = "efficient-alias"
+base_threshold = 0.5
+judge_timeout_ms = 500
+classify_trigger = "new_session"
+max_judge_calls = 1
+"#;
+
 /// `mode = "custom"` with two judge candidates, so a failing first judge is
 /// observably *not* followed by a second call.
 pub(crate) const CUSTOM_ROUTER_TWO_JUDGES: &str = r#"
@@ -291,6 +312,33 @@ policy = { type = "target_selector", selector = "/target" }
 models = { judge = ["judge-a"], capable = ["capable-alias"], efficient = ["efficient-alias"], any = ["capable-alias", "efficient-alias"] }
 judge_timeout_ms = 500
 "#;
+
+/// `mode = "escalation"` over the two tiers, latching on the first `escalate`
+/// verdict (`confirmations = 1`), so one real turn is enough to move a session
+/// onto `strong_target` — the probe test's entry (issue #647). Its no-latch
+/// target, `weak_target`, is the other tier, so which upstream answers a probe
+/// says whether it read the latch.
+pub(crate) const ESCALATION_ROUTER: &str = r#"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge-a"
+strong_target = "capable-alias"
+weak_target = "efficient-alias"
+judge_timeout_ms = 500
+
+[escalation]
+confirmations = 1
+"#;
+
+/// The captured escalation verdict
+/// (`docs/notes/adr-0005-routing-live-captures.md`), in the same reply shape.
+pub(crate) fn captured_escalation_reply(upstream_model: &str, escalate: bool) -> ResponseTemplate {
+    let verdict = json!({
+        "escalate": escalate,
+        "reason": "same ImportError 4 times while editing unrelated config files instead of addressing the missing import",
+    });
+    anthropic_text_reply(upstream_model, &verdict.to_string())
+}
 
 /// The captured Anthropic reply shape
 /// (`docs/notes/adr-0005-routing-live-captures.md`, "Fact (c), re-captured"):

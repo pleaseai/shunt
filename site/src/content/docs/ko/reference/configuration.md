@@ -711,9 +711,15 @@ policy = { type = "target_selector", selector = "/target" }
 `classifier_fail_open`이며, 판정 호출 결과는 `budget_exhausted`로 기록됩니다.
 classifier 형태의 `[models.subagents]` 오버레이도 똑같이 동작합니다.
 
-**프로브는 판정 없이 해석됩니다.** `count_tokens` 요청은 판정 모델을 부르지 않고 fail-open
-타깃으로 응답합니다. 요청 본문이 없는 표면 — `GET /routes`, `/v1/models` 디스커버리,
-`shunt check` — 도 마찬가지이며, 이들은 라우트 소스 `classifier_default`로 보고합니다.
+**프로브는 판정 없이 해석됩니다.** `count_tokens` 요청은 판정 모델을 부르지 않고,
+`max_judge_calls` 예산을 쓰지 않으며, 세션 상태도 바꾸지 않습니다. `new_session`이나
+`user_turn`에서는 세션의 마지막 턴이 처리된 타깃으로 응답합니다 — `user_turn`에서는
+프로브의 마지막 메시지가 새 사용자 턴이어도 그렇습니다. 그 밖의 경우에는 fail-open
+타깃으로 응답합니다. `every_request`일 때, 아직 분류되지 않은 세션일 때,
+`x-claude-code-session-id`가 없는 요청이나 에이전트 id가 없는 위임 요청일 때가 그렇습니다
+(`message_hash_fallback`은 프로브에 적용되지 않습니다). 요청 본문이 없는 표면 —
+`GET /routes`, `/v1/models` 디스커버리, `shunt check` — 은 fail-open 타깃을 라우트 소스
+`classifier_default`로 보고합니다.
 
 타깃과 판정 모델은 모두 스테이지 라우터와 같은 한 홉 규칙을 지키는 평범한 공개 model
 id이고, 판정 모델은 **passthrough** 라우트로 해석되면 안 됩니다.
@@ -771,8 +777,11 @@ confirmations = 2
 
 `classifier_target`과 달리 `weak_target`은 **passthrough** 라우트여도 됩니다. 약한 턴은
 클라이언트 자신의 답이므로, 실시간 턴과 똑같이 호출자의 자격 증명을 싣습니다.
-`count_tokens` 프로브는 판정 호출도 보류된 호출도 만들지 않고 `weak_target`으로
-응답합니다. 판정 호출은 `shunt.router.judge_calls{algorithm="llm_classifier"}`로 셉니다.
+`count_tokens` 프로브는 판정 호출도 보류된 호출도 만들지 않습니다. 세션이 고정된
+동안에는 `strong_target`으로, 그렇지 않으면 `weak_target`으로 응답합니다. 마지막 턴이
+고정 상태로 처리되었거나 확정된 상향 전환으로 처리되었으면 고정된 세션이며, 이 고정은
+세션의 위임된 자식과 공유되고 한 시간 동안 유휴 상태면 만료됩니다. 판정 호출은
+`shunt.router.judge_calls{algorithm="llm_classifier"}`로 셉니다.
 
 보류된 턴을 어떻게 제공하는지, 결과마다 클라이언트가 무엇을 보는지, 비용이 얼마인지는
 [보류된 턴](#보류된-턴-escalation과-advisor)을 보세요.
@@ -819,7 +828,9 @@ confidence_threshold = 0.5
 
 여섯 개 [호출당 한도](#호출당-한도)는 두 하위 테이블이 아니라 `[models.router]`에
 놓습니다. classifier가 닿지 못한 턴은 `stage.efficient_target`으로 fall-open하며, 이는
-업스트림의 규칙이자 프로브와 본문 없는 표면이 보고하는 값이기도 합니다. `max_judge_calls`가
+업스트림의 규칙이자 본문 없는 표면이 보고하는 값이기도 합니다. `count_tokens` 프로브는
+신호를 채점하지 않고 판정 호출도 하지 않습니다. 세션이 보존한 티어가 있으면 그 티어로,
+없으면 `stage.efficient_target`으로 응답합니다. `max_judge_calls`가
 판정 호출을 거부한 턴은 세션이 마지막으로 보존한 티어가 있으면 그 티어를 유지하고, 없으면
 picker의 기본 티어로 갑니다. 그래서 사용자 턴과 그 뒤의 도구 후속 턴 사이에서
 티어가 바뀌지 않습니다. 판정 호출이 필요 없는 턴은 거부되지 않습니다.
@@ -884,7 +895,7 @@ max_reviews = 1
 
 `advisor_target`과 달리 `executor_target`은 **passthrough** 라우트여도 됩니다. 이유는
 escalation의 약한 타깃과 같습니다. `count_tokens` 프로브는 리뷰도 보류된 호출도 만들지
-않고 `executor_target`으로 응답합니다. 리뷰는
+않고 항상 `executor_target`으로 응답합니다. 리뷰는
 `shunt.router.judge_calls{algorithm="advisor"}`로 세고, `GET /routes`는
 `advisor_target`을 `judges` 아래에 나열합니다.
 
@@ -1274,7 +1285,8 @@ policy = { type = "target_selector", selector = "/target" }
 자격 증명 슬롯은 하나도 함께 가지 않습니다. 위임된 턴이 판정 모델을 부를 수 있으므로 그런
 턴의 인바운드 인증은 오버레이의 타깃과 판정 모델까지 대상으로 삼습니다 — 인증하지 못한
 위임 턴은 판정 호출을 한 번도 만들지 않고 거부됩니다. `count_tokens` 프로브도 마찬가지로
-판정 호출 없이 `default_target` 그룹의 첫 모델로 응답합니다.
+판정 호출을 하지 않습니다. 그 자식의 (세션, 에이전트) 배정이 있으면 그 배정으로, 없으면
+`default_target` 그룹의 첫 모델로 응답합니다.
 
 ## `[sentry]` (선택)
 

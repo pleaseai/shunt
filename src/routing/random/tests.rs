@@ -51,6 +51,7 @@ fn pick<'a>(
         decided: Cell::new(None),
         consult: Cell::new(None),
         drive_prefill: Cell::new(false),
+        probe: Cell::new(None),
     };
     select(router, "claude-canary", Some(&context))
 }

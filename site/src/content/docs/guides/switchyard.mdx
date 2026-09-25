@@ -374,7 +374,8 @@ the judge target's own pool quota. A `classify_trigger` key decides how often
 that cost is paid: judge every turn, judge each new human user turn and hold the
 verdict across the tool calls between them, or judge once per session. The judge
 is consulted only after the request has been admitted, never on a `count_tokens`
-probe, and never more than `max_judge_calls` times for one `(session, agent)` —
+probe — which answers from the target the session is already holding, if any —
+and never more than `max_judge_calls` times for one `(session, agent)` —
 a turn that replays a retained verdict makes no call and is never refused.
 Every judge failure — a timeout, a `400`, an unparseable verdict — resolves to
 the algorithm's own default rather than failing the request, and exactly one

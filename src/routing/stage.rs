@@ -196,6 +196,17 @@ pub(crate) struct StageContext<'a> {
     /// the turn on the entry's default target provisionally, and the admitted
     /// drive re-routes it onto what the algorithm actually chose.
     pub drive_prefill: Cell<bool>,
+    /// Set by [`crate::routing::resolve_chain`] when a read-only request — a
+    /// `count_tokens` probe — reaches a driven router or overlay arm, naming
+    /// which driven entry the probe resolves against (ADR-0005 §3, issue
+    /// #647).
+    ///
+    /// Taken by `proxy::failover` *before admission*, unlike
+    /// [`StageContext::consult`], because a probe is gated on the retained
+    /// target's first route and that target has to be known to gate on. The
+    /// lookup is a pure read of the entry's retention record: no drive, no
+    /// judge call, no write — nothing a refused caller could spend or seed.
+    pub probe: Cell<Option<ConsultKind>>,
 }
 
 /// A judge consultation this turn earned, with the budget it must fit inside.

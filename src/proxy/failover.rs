@@ -94,6 +94,7 @@ pub(super) async fn forward(
         decided: std::cell::Cell::new(None),
         consult: std::cell::Cell::new(None),
         drive_prefill: std::cell::Cell::new(false),
+        probe: std::cell::Cell::new(None),
     };
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json(), Some(&stage)).map_err(
@@ -115,6 +116,29 @@ pub(super) async fn forward(
     let driven = (!is_count_tokens(uri))
         .then(|| state.config.driven_stage(model_key))
         .flatten();
+    // A probe on a driven router or overlay resolves to the session's retained
+    // target — what the entry's real turns last observably left libsy holding
+    // — rather than to the provisional fail-open default `resolve_chain`
+    // answered with (ADR-0005 §3, issue #647). Read here, before admission and
+    // the first-route truncation below, because the probe is gated and
+    // dispatched against that target's first route. A pure read of the
+    // entry's shadow record: libsy's own state is never asked, since every
+    // completed drive writes it, so no drive runs, no judge is called, and
+    // nothing is written for a caller who may yet be refused.
+    let probe_retained = stage.probe.take().and_then(|kind| {
+        let entry = match kind {
+            routing::stage::ConsultKind::Router => state.driven_routers.router(model_key),
+            routing::stage::ConsultKind::Overlay => state.driven_routers.overlay(model_key),
+            routing::stage::ConsultKind::StageClassifier => None,
+        }?;
+        entry.retained(
+            &routing::context::RouterContext::from_headers(headers),
+            started_at,
+        )
+    });
+    if let Some(retained) = &probe_retained {
+        routes = routing::resolve_target_chain(&state.config, &retained.target, model_key);
+    }
     if is_count_tokens(uri) {
         // count_tokens answers from the first chain element only, so gate and
         // dispatch against just that element: a later credential-injecting
@@ -204,6 +228,13 @@ pub(super) async fn forward(
     // never served, so counting it would report traffic the gateway did not
     // carry. `None` for every request whose id carries no router.
     let mut router_outcome = stage.decided.take();
+    // Kept consistent with the retained target the probe was routed to. Never
+    // recorded — a probe is `read_only` — but the parked outcome should not
+    // name a destination the request was not sent to.
+    if let (Some(retained), Some(outcome)) = (probe_retained, router_outcome.as_mut()) {
+        outcome.target = retained.target;
+        outcome.source = retained.source;
+    }
     // `stage` borrows the parsed body, and the handoff note below mutates it.
     // Every output — the pin, the outcome, the consultation — has already been
     // taken, so the borrow has nothing left to serve; it also holds `Cell`s and

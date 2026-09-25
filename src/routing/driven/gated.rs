@@ -39,7 +39,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
@@ -194,7 +194,10 @@ pub(crate) async fn drive_gated(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
     match outcome {
-        Ok(Ok(outcome)) => decide(entry, kind, outcome, captured, notes),
+        Ok(Ok(outcome)) => {
+            let hints = RouterContext::from_headers(headers);
+            decide(entry, kind, outcome, captured, notes, &hints)
+        }
         Ok(Err(error)) => {
             // Labels only: the error can carry an upstream body, and this line
             // rides into every log sink the operator configured.
@@ -307,6 +310,7 @@ fn decide(
     outcome: RoutingOutcome,
     captured: Option<GatedCapture>,
     notes: &DriveNotes,
+    hints: &RouterContext<'_>,
 ) -> GatedDecision {
     let Some(selected) = outcome.selected_model_ids.first().map(ToString::to_string) else {
         return gateway_failure(entry, "gated routing selected no target");
@@ -323,6 +327,16 @@ fn decide(
         .and_then(|metadata| metadata.evidence.as_ref());
     let served_retained = outcome.response.is_some();
     let (source, reading) = read_evidence(kind, served_retained, evidence);
+    if kind == GatedKind::Escalation {
+        // Whether libsy's session state now holds the latch, for a probe to
+        // read without driving (issue #647): set by a latched replay or a
+        // confirmed escalation, cleared by every other completed outcome.
+        let latched = source == RouteSource::EscalationLatch
+            && matches!(reading, JudgeReading::Retained | JudgeReading::Decided);
+        entry
+            .retention
+            .observe_escalation(hints, latched, Instant::now());
+    }
     let judge_outcome = match reading {
         JudgeReading::Decided => Some("decided"),
         JudgeReading::Retained => Some("retained"),

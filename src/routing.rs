@@ -161,8 +161,10 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                 // The classifier form has no synchronous answer, so
                 // `subagents::select` declines it: the target comes from a
                 // judge call `proxy::failover` makes after admission. Until
-                // then the overlay's own fail-open group answers, which is
-                // also the final answer for a probe (ADR-0005 §3).
+                // then the overlay's own fail-open group answers. A probe
+                // (ADR-0005 §3) answers from the session's retained target
+                // when `proxy::failover` finds one, and otherwise from this
+                // provisional default.
                 let diverted = subagents::select(overlay, &hints)
                     .map(|(target, source)| (target, source, false))
                     .or_else(|| {
@@ -180,7 +182,9 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                         algorithm: overlay.algorithm(),
                         source,
                     }));
-                    if driven && !stage.read_only {
+                    if driven && stage.read_only {
+                        stage.probe.set(Some(ConsultKind::Overlay));
+                    } else if driven {
                         stage.consult.set(Some(ConsultJudge {
                             budget: None,
                             kind: ConsultKind::Overlay,
@@ -243,14 +247,19 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                     | RouterConfig::Composite(_)
                     | RouterConfig::Advisor(_) => {
                         // A probe never consults (ADR-0005 §3): `count_tokens`
-                        // answers from the default target and makes zero judge
-                        // calls, and a body-less resolution has no context at
-                        // all to park the consultation on.
-                        if let Some(stage) = stage.filter(|stage| !stage.read_only) {
-                            stage.consult.set(Some(ConsultJudge {
+                        // makes zero judge calls and answers from the session's
+                        // retained target when `proxy::failover` finds one, and
+                        // otherwise from this provisional default. A body-less
+                        // resolution has no context at all to park either on.
+                        match stage {
+                            Some(stage) if stage.read_only => {
+                                stage.probe.set(Some(ConsultKind::Router));
+                            }
+                            Some(stage) => stage.consult.set(Some(ConsultJudge {
                                 budget: None,
                                 kind: ConsultKind::Router,
-                            }));
+                            })),
+                            None => {}
                         }
                         (
                             router.fail_open_target().unwrap_or(model),
@@ -1021,6 +1030,7 @@ mod stage_router_tests {
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
             drive_prefill: std::cell::Cell::new(false),
+            probe: std::cell::Cell::new(None),
         };
 
         let (routes, requested) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -1055,6 +1065,7 @@ mod stage_router_tests {
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
             drive_prefill: std::cell::Cell::new(false),
+            probe: std::cell::Cell::new(None),
         };
 
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
@@ -1109,6 +1120,7 @@ mod stage_router_tests {
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
             drive_prefill: std::cell::Cell::new(false),
+            probe: std::cell::Cell::new(None),
         };
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
             .expect("an auto-backed id resolves");
@@ -1154,6 +1166,7 @@ mod stage_router_tests {
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
             drive_prefill: std::cell::Cell::new(false),
+            probe: std::cell::Cell::new(None),
         };
         let (routes, _) = resolve_request_chain_value(&config, &request, Some(&context))
             .expect("a random-backed id resolves");
@@ -1288,6 +1301,7 @@ mod stage_router_tests {
             decided: std::cell::Cell::new(None),
             consult: std::cell::Cell::new(None),
             drive_prefill: std::cell::Cell::new(false),
+            probe: std::cell::Cell::new(None),
         }
     }
 

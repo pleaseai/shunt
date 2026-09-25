@@ -669,9 +669,13 @@ policy = { type = "target_selector", selector = "/target" }
 `classifier_fail_open`,裁判调用结果记为 `budget_exhausted`。classifier 形式的
 `[models.subagents]` 覆盖层行为相同。
 
-**探测无需裁判即可解析。** `count_tokens` 请求从不咨询裁判,直接由 fail-open 目标作答;
-没有请求体的那些面 —— `GET /routes`、`/v1/models` 发现、`shunt check` —— 同理,它们以路由
-来源 `classifier_default` 报告该目标。
+**探测无需裁判即可解析。** `count_tokens` 请求从不咨询裁判,不消耗 `max_judge_calls`
+预算,也不改变任何会话状态。在 `new_session` 或 `user_turn` 下,它由会话上一轮所用的目标
+作答 —— 在 `user_turn` 下,即使探测的最后一条消息是新的用户回合也是如此;其余情况由
+fail-open 目标作答:`every_request` 下、会话尚未被分类时,以及请求没有
+`x-claude-code-session-id` 或被委派的请求没有 agent id 时(`message_hash_fallback` 不适用
+于探测)。没有请求体的那些面 —— `GET /routes`、`/v1/models` 发现、`shunt check` —— 以路由
+来源 `classifier_default` 报告 fail-open 目标。
 
 每一个目标和每一个裁判都是普通的公开 model id,受与阶段路由器相同的一跳规则约束;裁判也
 不能解析到 **passthrough** 路由,理由与[上文](#modelsrouterclassifier可选)相同 —— 裁判
@@ -724,7 +728,9 @@ confirmations = 2
 
 与 `classifier_target` 不同,`weak_target` 可以是 **passthrough** 路由:弱目标回合就是客户端
 自己的回答,所以它和实时回合一样携带调用方的凭证。`count_tokens` 探测既不调用裁判也不发起
-被扣住的调用,直接由 `weak_target` 作答。裁判调用计入
+被扣住的调用:会话处于锁定状态时由 `strong_target` 作答,否则由 `weak_target` 作答。会话
+上一轮由锁定或已确认的升档提供时即为锁定;锁定由会话的被委派子任务共享,空闲一小时后
+失效。裁判调用计入
 `shunt.router.judge_calls{algorithm="llm_classifier"}`。
 
 被扣住的回合如何提供、每种结果下客户端看到什么、要付出什么代价,见[被扣住的回合](#被扣住的回合escalation-与-advisor)。
@@ -769,9 +775,10 @@ confidence_threshold = 0.5
 | `stage.tool_semantics` | — | 与 [`[models.router.tool_semantics]`](#modelsroutertool_semantics可选) 相同的四张列表,规则也相同 |
 
 六个[每次调用的上限](#每次调用的上限)放在 `[models.router]` 上,而不是放进两张子表里。
-裁判够不到的回合回落到 `stage.efficient_target`,这既是上游的规则,也是探测和没有请求体
-的那些面所报告的值。裁判调用被 `max_judge_calls` 拒绝的回合,如果会话有上一次保留的档位就
-保持该档位,否则取 picker 的默认档位,因此档位不会在用户回合与其后的工具续接
+裁判够不到的回合回落到 `stage.efficient_target`,这既是上游的规则,也是没有请求体的那些面
+所报告的值。`count_tokens` 探测不给信号打分,也不调用裁判:会话有保留的档位就由该档位作答,
+否则由 `stage.efficient_target` 作答。裁判调用被 `max_judge_calls` 拒绝的回合,如果会话
+有上一次保留的档位就保持该档位,否则取 picker 的默认档位,因此档位不会在用户回合与其后的工具续接
 回合之间变动。不需要裁判调用的回合不会被拒绝。
 
 因为 stage 那一半就是 libsy 自己的 stage 路由,它定夺下来的回合仍然报告阶段路由器自己的
@@ -830,7 +837,7 @@ max_reviews = 1
 追加进对话,然后重新运行执行模型;这次重跑是实时流式返回的。
 
 与 `advisor_target` 不同,`executor_target` 可以是 **passthrough** 路由,理由与 escalation 的
-弱目标相同。`count_tokens` 探测既不发起审阅也不发起被扣住的调用,直接由 `executor_target`
+弱目标相同。`count_tokens` 探测既不发起审阅也不发起被扣住的调用,始终由 `executor_target`
 作答。审阅计入 `shunt.router.judge_calls{algorithm="advisor"}`,`GET /routes` 把
 `advisor_target` 列在 `judges` 下。
 
@@ -1188,7 +1195,8 @@ policy = { type = "target_selector", selector = "/target" }
 相同的约束:一跳、不能是 passthrough 路由,并且调用方的凭证槽位一个都不会随行。由于被
 委派的回合可能去问裁判,这类回合的入站鉴权也会把覆盖层的目标和裁判一并纳入 —— 无法通过
 鉴权的被委派回合会被拒绝,且一次裁判调用都不会发出。`count_tokens` 探测同样不会发出裁判
-调用,直接由 `default_target` 分组的第一个模型作答。
+调用:该子任务有 (会话, agent) 分配时就由该分配作答,否则由 `default_target` 分组的第一个
+模型作答。
 
 ## `[sentry]`(可选)
 

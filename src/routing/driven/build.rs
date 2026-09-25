@@ -29,10 +29,11 @@ use switchyard_libsy::{
 use switchyard_protocol::{Category, ModelId};
 
 use crate::config::{
-    AdvisorRouterConfig, CapabilityClassifierConfig, ClassifierPolicy, CompositeRouterConfig,
-    CustomClassifierConfig, LlmClassifierConfig as ShuntClassifierConfig, RouterConfig,
-    SubagentsClassifierConfig, ToolSemanticsConfig, DEFAULT_MAX_OUTPUT_TOKENS,
+    AdvisorRouterConfig, CapabilityClassifierConfig, ClassifierPolicy, ClassifyTrigger,
+    CompositeRouterConfig, CustomClassifierConfig, LlmClassifierConfig as ShuntClassifierConfig,
+    RouterConfig, SubagentsClassifierConfig, ToolSemanticsConfig, DEFAULT_MAX_OUTPUT_TOKENS,
 };
+use crate::routing::driven::retention::{Policy, Retention};
 use crate::routing::driven::{budget::JudgeBudget, DrivenEntry, GatedKind};
 
 /// Build the algorithm a driven `[models.router]` names and drop it, reporting
@@ -232,6 +233,7 @@ pub(super) fn router_entry(router: &RouterConfig) -> Result<Option<DrivenEntry>,
                 budget: JudgeBudget::new(),
                 tiers: None,
                 gated: classifier.is_gated().then_some(GatedKind::Escalation),
+                retention: Retention::new(classifier_policy(classifier)),
             }
         }
         RouterConfig::Composite(composite) => {
@@ -267,6 +269,7 @@ pub(super) fn router_entry(router: &RouterConfig) -> Result<Option<DrivenEntry>,
                 budget: JudgeBudget::new(),
                 tiers: Some((capable, efficient)),
                 gated: None,
+                retention: Retention::new(Policy::CompositeTier),
             }
         }
         RouterConfig::Advisor(advisor) => {
@@ -293,6 +296,9 @@ pub(super) fn router_entry(router: &RouterConfig) -> Result<Option<DrivenEntry>,
                 budget: JudgeBudget::new(),
                 tiers: None,
                 gated: Some(GatedKind::Advisor),
+                // An advisor retains no target between turns: it reviews the
+                // one it has just answered.
+                retention: Retention::new(Policy::None),
             }
         }
         _ => return Ok(None),
@@ -333,7 +339,28 @@ pub(super) fn overlay_entry(classifier: &SubagentsClassifierConfig) -> Result<Dr
         // An overlay is custom-only, and custom mode decides before any answer
         // is made — there is no turn for it to retain.
         gated: None,
+        retention: Retention::new(trigger_policy(custom.classify_trigger)),
     })
+}
+
+/// Which retained state a `[models.router] type = "llm_classifier"`'s
+/// outcomes reveal ([`Policy`]).
+fn classifier_policy(classifier: &ShuntClassifierConfig) -> Policy {
+    match classifier {
+        ShuntClassifierConfig::Escalation(escalation) => Policy::EscalationLatch {
+            strong: escalation.strong_target.clone(),
+        },
+        _ => trigger_policy(classifier.classify_trigger()),
+    }
+}
+
+/// Affinity for the two triggers libsy retains an assignment under, and
+/// nothing for `every_request`, which judges every turn afresh.
+fn trigger_policy(trigger: ClassifyTrigger) -> Policy {
+    match trigger {
+        ClassifyTrigger::NewSession | ClassifyTrigger::UserTurn => Policy::Affinity,
+        ClassifyTrigger::EveryRequest => Policy::None,
+    }
 }
 
 /// The ids a verdict may name, with the config keys that named them dropped:

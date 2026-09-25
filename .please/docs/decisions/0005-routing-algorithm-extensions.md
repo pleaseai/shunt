@@ -548,6 +548,47 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   driven call is closed by libsy's own cascade, which for a `composite` keeps
   the session's retained tier rather than `stage.efficient_target`; the
   `budget_exhausted` outcome still names every refusal.
+- **2026-09-25 (issue #647) — a probe reads the session's retained target
+  without driving.** §3 resolves a `count_tokens` probe to "the session's
+  current pin or, when no live pin exists, the algorithm's no-model-call
+  decision". The driven lane shipped only the second half: every probe on a
+  driven entry answered from its fail-open target, so a session held on
+  another target was measured against the wrong model. The probe still cannot
+  drive, even with its calls refused: libsy keeps affinity, composite tiers,
+  and the escalation latch private, and every completed drive writes them — it
+  would latch even a fail-open default — so a probe that drove would move the
+  session it measures. shunt therefore keeps a read-only per-entry record of
+  each session's retained target, written only by admitted real turns and read
+  only by probes, keyed by the judge budget's `sha256(session ‖ agent)` digest,
+  bounded at 4096 keys per class (parent and delegated) with the least recent
+  evicted, and rebuilt with the entry on reload, as libsy's own state is. A
+  probe still makes zero judge and gated calls, charges no `max_judge_calls`,
+  writes nothing, records no router or judge metric, and is gated and
+  dispatched against its target's first route only. Per form: `llm_classifier`
+  and the classifier-form overlay answer from the `(session, agent)`'s
+  assignment under `new_session` or `user_turn` — under `user_turn` even when
+  the probe's last message is a new user turn — and `every_request` retains
+  nothing; `composite` answers from the retained tier, else
+  `stage.efficient_target`, and scores no signals, and because a turn a stage
+  signal decides does not reveal the tier the judge set, the record follows
+  the retained tier on the next turn served from it; `escalation` answers
+  from `strong_target` while the session is latched (its last real turn was
+  served by the latch or a confirmed escalation; per session, shared by its
+  delegated children, expiring after an hour idle) and from `weak_target`
+  otherwise; `advisor` always answers from `executor_target`. A sessionless
+  probe, or a delegated probe with no agent id, has no retained target and
+  takes the no-model-call decision, `message_hash_fallback` included. The
+  body-less surfaces, the pure lane, and `prefill_router` are unchanged.
+  The record is a shadow, so it can differ from libsy's state in ways that are
+  bounded and corrected by the identity's next completed turn. Each affects a
+  probe's token count only:
+  - libsy caps affinity and tiers at 4096 identities in total with arbitrary
+    eviction, which a per-class least-recent rule cannot reproduce;
+  - two concurrent real turns of one `(session, agent)` can record in the
+    opposite order to libsy's writes;
+  - a drive abandoned after libsy wrote records nothing;
+  - libsy's hourly sweep can keep an idle latch up to about two hours, while a
+    probe treats it as expired after one.
 
 ### 10. Verification before code
 

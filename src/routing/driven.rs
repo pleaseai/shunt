@@ -62,24 +62,31 @@ pub(crate) mod budget;
 mod build;
 mod drive;
 pub(crate) mod gated;
+mod retention;
 
 #[cfg(test)]
 mod budget_tests;
+#[cfg(test)]
+mod retention_tests;
 #[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use switchyard_libsy::{Algorithm, RuntimeModels};
 
 use crate::config::{CallBounds, Config, ConfigError};
+use crate::routing::context::RouterContext;
 
 pub(crate) use build::{check_buildable, check_subagents_buildable};
 pub(crate) use drive::drive;
 pub(crate) use gated::{drive_gated, GatedDecision};
+pub(crate) use retention::Retained;
 
 use budget::JudgeBudget;
+use retention::Retention;
 
 /// One built driven entry: the algorithm, everything a drive needs that the
 /// algorithm does not hand back, and the per-`(session, agent)` call budget.
@@ -110,6 +117,9 @@ pub(crate) struct DrivenEntry {
     /// entry that decides before any answer is made — which is every PR 5
     /// form, and the reason those take [`drive`] unchanged.
     gated: Option<GatedKind>,
+    /// What each session's real turns have observably retained, for a
+    /// `count_tokens` probe to resolve against without driving (issue #647).
+    retention: Retention,
 }
 
 /// The two algorithms whose first model call is the caller's own turn,
@@ -136,6 +146,14 @@ impl DrivenEntry {
     /// rather than [`drive`].
     pub(crate) fn is_gated(&self) -> bool {
         self.gated.is_some()
+    }
+
+    /// The target a `count_tokens` probe on this turn's session resolves to,
+    /// or `None` when no live retained target exists and the no-model-call
+    /// decision answers (ADR-0005 §3). A pure read: it drives nothing, calls
+    /// no judge, and writes nothing.
+    pub(crate) fn retained(&self, hints: &RouterContext<'_>, now: Instant) -> Option<Retained> {
+        self.retention.held(hints, now)
     }
 }
 
