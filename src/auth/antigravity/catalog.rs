@@ -411,9 +411,8 @@ async fn bounded_diagnostic_body(
 ) -> String {
     let cap = bounds
         .max_bytes
-        .map_or(super::auth::DIAGNOSTIC_BODY_MAX_BYTES, |max_bytes| {
-            max_bytes.min(super::auth::DIAGNOSTIC_BODY_MAX_BYTES)
-        });
+        .unwrap_or(super::auth::DIAGNOSTIC_BODY_MAX_BYTES)
+        .min(super::auth::DIAGNOSTIC_BODY_MAX_BYTES);
     let mut buf = Vec::new();
     let cut = loop {
         let next = match bounds.idle {

@@ -284,14 +284,12 @@ async fn stalled_weak_turn_falls_back_at_the_idle_gap(stall: Stall) {
     let elapsed = started.elapsed();
 
     let status = response.status();
-    let route_source = response
-        .headers()
-        .get("x-gateway-route-source")
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
+    // Kept past the body read, so a wrong status is reported with its body
+    // before a missing header can panic.
+    let headers = response.headers().clone();
     let body: Value = response.json().await.unwrap();
     assert_eq!(status, StatusCode::OK, "got: {body}");
-    assert_eq!(route_source.as_deref(), Some("escalation_fallback"));
+    assert_eq!(headers["x-gateway-route-source"], "escalation_fallback");
     assert_eq!(body["content"][0]["text"], "STRONG", "got: {body}");
     assert!(
         elapsed < Duration::from_millis(4000),

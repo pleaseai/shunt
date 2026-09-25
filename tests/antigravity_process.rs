@@ -771,11 +771,8 @@ async fn a_gated_weak_turn_whose_cli_goes_silent_falls_back_to_strong_at_the_idl
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     assert_eq!(
-        response
-            .headers()
-            .get("x-gateway-route-source")
-            .and_then(|value| value.to_str().ok()),
-        Some("escalation_fallback")
+        response.headers()["x-gateway-route-source"],
+        "escalation_fallback"
     );
     let body: Value = response.json().await.unwrap();
     assert_eq!(body["content"][0]["text"], "STRONG", "got: {body}");
