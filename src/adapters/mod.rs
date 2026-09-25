@@ -131,9 +131,7 @@ impl std::error::Error for UpstreamBodyIdle {}
 ///
 /// [`ResponseBounds::default`] — both `None` — is every client turn, which is
 /// read exactly as it always was. Only `routing::serve`'s internal calls set
-/// either field; see [`Adapter::forward`] for which reads honour which — `idle`
-/// is honoured by every single whole-body read, not yet by the accumulations
-/// built from a translated event stream (#667).
+/// either field; see [`Adapter::forward`] for which reads honour which.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ResponseBounds {
     /// Refuse the body the moment it passes this many bytes.
@@ -356,7 +354,12 @@ pub(crate) trait Adapter {
     /// neither — one that relays every byte onward without holding it — has
     /// nothing to cap and ignores it; the bound then falls to
     /// `routing::serve`'s own collector, which reads the relayed stream under
-    /// the same cap.
+    /// the same cap. What a byte is depends on what the adapter receives: the
+    /// body as it arrived for a whole-body read, each event's name and
+    /// compact-JSON payload on the Responses WebSocket, `agy`'s stdout (one
+    /// byte per stripped newline included) on Antigravity, and the retained
+    /// text and tool-call fields on Cursor, whose protobuf framing is not
+    /// counted.
     ///
     /// `idle` (`gated_idle_ms`, set only on gated calls) is honoured by every
     /// single whole-body read: through [`collect_upstream_body`] — any chunk
@@ -365,10 +368,13 @@ pub(crate) trait Adapter {
     /// error-body prefetch in `map_upstream_error`; and through
     /// [`collect_upstream_sse_body`] — only a completed non-ping SSE frame is
     /// progress, so keep-alives alone do not hold it open — for the Responses
-    /// HTTP `json_response`. The accumulations do not apply it yet (the
-    /// Responses WebSocket `json_events_response`, Antigravity's
-    /// `drain_non_streaming`; #667), so a stall there is bounded by the call's
-    /// wall-clock bound (`gated_max_duration_ms`) rather than by the idle gap.
+    /// HTTP `json_response`. Two accumulations apply it between the pieces
+    /// they accumulate: the Responses WebSocket (the first-event peek in
+    /// `open_ws_turn`, then `json_events_response` — any event is progress)
+    /// and Antigravity's `drain_non_streaming` (a line whose translation
+    /// carries a non-ping frame is progress). Cursor's `aggregate_turn` does
+    /// not: its agent stream already ends a turn that goes quiet on its own
+    /// first-byte and idle timeouts (#667).
     fn forward<'a>(
         &'a self,
         state: AppState,

@@ -232,8 +232,10 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
                     // error-body prefetches) holds the reply, and an upstream that
                     // commits its headers and then stalls would hold that read — and
                     // this call — until `gated_max_duration`, with `collect_gated`'s
-                    // idle timer not yet started. The accumulations that do not yet
-                    // honour it (#667) leave the stall to the duration bound.
+                    // idle timer not yet started. The adapters that accumulate a reply
+                    // from events or lines (the Responses WebSocket, Antigravity) apply
+                    // it between them (#667); Cursor's agent stream ends a quiet turn on
+                    // its own timeouts.
                     response_bounds: crate::adapters::ResponseBounds {
                         max_bytes: Some(bounds.gated_max_bytes),
                         idle: Some(bounds.gated_idle),
