@@ -128,14 +128,40 @@ struct Held {
 #[derive(Debug)]
 pub(crate) struct Retention {
     policy: Policy,
-    held: Mutex<HashMap<BudgetKey, Held>>,
+    held: Mutex<Classes>,
+}
+
+/// The record's two classes, each capped at [`HARD_CAP`] on its own. Kept
+/// apart so a class's size is its map's length, not a scan of both.
+#[derive(Debug, Default)]
+struct Classes {
+    parents: HashMap<BudgetKey, Held>,
+    delegated: HashMap<BudgetKey, Held>,
+}
+
+impl Classes {
+    fn class(&self, key: &BudgetKey) -> &HashMap<BudgetKey, Held> {
+        if key.is_delegated() {
+            &self.delegated
+        } else {
+            &self.parents
+        }
+    }
+
+    fn class_mut(&mut self, key: &BudgetKey) -> &mut HashMap<BudgetKey, Held> {
+        if key.is_delegated() {
+            &mut self.delegated
+        } else {
+            &mut self.parents
+        }
+    }
 }
 
 impl Retention {
     pub(super) fn new(policy: Policy) -> Self {
         Self {
             policy,
-            held: Mutex::new(HashMap::new()),
+            held: Mutex::new(Classes::default()),
         }
     }
 
@@ -184,7 +210,7 @@ impl Retention {
         if latched {
             self.record(key, strong, now);
         } else {
-            self.lock().remove(&key);
+            self.lock().class_mut(&key).remove(&key);
         }
     }
 
@@ -206,7 +232,7 @@ impl Retention {
             ),
         };
         let held = self.lock();
-        let held = held.get(&key)?;
+        let held = held.class(&key).get(&key)?;
         if matches!(self.policy, Policy::EscalationLatch { .. })
             && now.saturating_duration_since(held.last_seen) > LATCH_IDLE_TTL
         {
@@ -220,11 +246,11 @@ impl Retention {
 
     fn record(&self, key: BudgetKey, target: &str, now: Instant) {
         let mut held = self.lock();
-        // No class can hold `HARD_CAP` keys while the whole map holds fewer.
-        if held.len() >= HARD_CAP && !held.contains_key(&key) {
-            make_room(&mut held, key.is_delegated());
+        let class = held.class_mut(&key);
+        if class.len() >= HARD_CAP && !class.contains_key(&key) {
+            evict_idlest(class);
         }
-        held.insert(
+        class.insert(
             key,
             Held {
                 target: target.to_string(),
@@ -233,14 +259,15 @@ impl Retention {
         );
     }
 
-    fn lock(&self) -> MutexGuard<'_, HashMap<BudgetKey, Held>> {
+    fn lock(&self) -> MutexGuard<'_, Classes> {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Entries currently held, for the unit tests.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
-        self.lock().len()
+        let held = self.lock();
+        held.parents.len() + held.delegated.len()
     }
 
     /// The cap, for the unit tests.
@@ -263,24 +290,16 @@ fn identity_key(hints: &RouterContext<'_>) -> Option<BudgetKey> {
     JudgeBudget::key_for(hints)
 }
 
-/// Free one slot in `delegated`'s class if it is at [`HARD_CAP`], by removing
-/// its least recently seen entry — `budget.rs`'s `make_room` without the
-/// expiry pass, since nothing here but a latch has a clock and an idle latch
-/// is exactly what this removes first.
-fn make_room(held: &mut HashMap<BudgetKey, Held>, delegated: bool) {
-    let in_class = held
-        .keys()
-        .filter(|key| key.is_delegated() == delegated)
-        .count();
-    if in_class < HARD_CAP {
-        return;
-    }
-    let idlest = held
+/// Free one slot in a full class by removing its least recently seen entry —
+/// `budget.rs`'s `make_room` without the expiry pass, since nothing here but a
+/// latch has a clock and an idle latch is exactly what this removes first.
+/// `record` inserts one key per call, so one removal keeps the class at the cap.
+fn evict_idlest(class: &mut HashMap<BudgetKey, Held>) {
+    let idlest = class
         .iter()
-        .filter(|(key, _)| key.is_delegated() == delegated)
         .min_by_key(|(_, entry)| entry.last_seen)
         .map(|(key, _)| *key);
     if let Some(idlest) = idlest {
-        held.remove(&idlest);
+        class.remove(&idlest);
     }
 }

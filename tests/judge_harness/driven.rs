@@ -313,6 +313,33 @@ models = { judge = ["judge-a"], capable = ["capable-alias"], efficient = ["effic
 judge_timeout_ms = 500
 "#;
 
+/// `mode = "escalation"` over the two tiers, latching on the first `escalate`
+/// verdict (`confirmations = 1`), so one real turn is enough to move a session
+/// onto `strong_target` — the probe test's entry (issue #647). Its no-latch
+/// target, `weak_target`, is the other tier, so which upstream answers a probe
+/// says whether it read the latch.
+pub(crate) const ESCALATION_ROUTER: &str = r#"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge-a"
+strong_target = "capable-alias"
+weak_target = "efficient-alias"
+judge_timeout_ms = 500
+
+[escalation]
+confirmations = 1
+"#;
+
+/// The captured escalation verdict
+/// (`docs/notes/adr-0005-routing-live-captures.md`), in the same reply shape.
+pub(crate) fn captured_escalation_reply(upstream_model: &str, escalate: bool) -> ResponseTemplate {
+    let verdict = json!({
+        "escalate": escalate,
+        "reason": "same ImportError 4 times while editing unrelated config files instead of addressing the missing import",
+    });
+    anthropic_text_reply(upstream_model, &verdict.to_string())
+}
+
 /// The captured Anthropic reply shape
 /// (`docs/notes/adr-0005-routing-live-captures.md`, "Fact (c), re-captured"):
 /// `stop_reason: end_turn` and a `content` array of exactly one `text` block

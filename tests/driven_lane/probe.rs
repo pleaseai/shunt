@@ -28,15 +28,26 @@ use super::judge_harness::{
 use super::{post, post_with, source, user_turn};
 
 /// A second session id, for a real turn that must not classify [`SESSION`].
-const OTHER_SESSION: &str = "0199a0f2-2f4b-7c3e-9d61-4f1a2b3c4d5f";
+pub(super) const OTHER_SESSION: &str = "0199a0f2-2f4b-7c3e-9d61-4f1a2b3c4d5f";
 
 /// One `count_tokens` probe on `session`.
-async fn probe(gateway: &TestGateway, session: &str) -> reqwest::Response {
-    client()
+pub(super) async fn probe(gateway: &TestGateway, session: &str) -> reqwest::Response {
+    probe_with(gateway, &[("x-claude-code-session-id", session)]).await
+}
+
+/// One `count_tokens` probe with whatever hint headers the test needs.
+pub(super) async fn probe_with(
+    gateway: &TestGateway,
+    headers: &[(&str, &str)],
+) -> reqwest::Response {
+    let mut request = client()
         .post(format!("{}/v1/messages/count_tokens", gateway.base_url))
         .header("content-type", "application/json")
-        .header("x-shunt-token", CLIENT_TOKEN)
-        .header("x-claude-code-session-id", session)
+        .header("x-shunt-token", CLIENT_TOKEN);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    request
         .body(json!({"model": ROUTER_ID, "messages": user_turn()}).to_string())
         .send()
         .await
@@ -44,14 +55,14 @@ async fn probe(gateway: &TestGateway, session: &str) -> reqwest::Response {
 }
 
 /// A `count_tokens` answer from one upstream, expected `expect` times.
-fn count_tokens_mock(expect: u64) -> Mock {
+pub(super) fn count_tokens_mock(expect: u64) -> Mock {
     Mock::given(method("POST"))
         .and(path("/v1/messages/count_tokens"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"input_tokens":7}"#))
         .expect(expect)
 }
 
-async fn assert_counted(response: reqwest::Response) {
+pub(super) async fn assert_counted(response: reqwest::Response) {
     assert_eq!(response.status(), StatusCode::OK);
     let counted: Value = response.json().await.unwrap();
     assert_eq!(counted["input_tokens"], 7);

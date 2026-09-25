@@ -26,6 +26,10 @@
 //! `a_count_tokens_probe_resolves_to_the_sessions_retained_target` goes red,
 //! while keying the retention record on anything but the session makes
 //! `a_probe_on_an_unclassified_session_takes_the_no_model_call_decision` red;
+//! return `None` from the `Affinity | CompositeTier` arm of `Retention::held`
+//! and the composite and overlay tests in `probe_forms.rs` go red on the
+//! upstream that answered the probe, from the `EscalationLatch` arm and the
+//! escalation test does;
 //! return the classifier form from `routing::subagents::select` and
 //! `a_delegated_turn_is_classified_once_per_session_and_agent` goes red on the
 //! judge never being called.
@@ -40,6 +44,8 @@ mod budget;
 mod overlay;
 #[path = "driven_lane/probe.rs"]
 mod probe;
+#[path = "driven_lane/probe_forms.rs"]
+mod probe_forms;
 
 use reqwest::StatusCode;
 use serde_json::{json, Value};
