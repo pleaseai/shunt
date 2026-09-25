@@ -195,11 +195,26 @@ fn cached(key: &str) -> Cached {
 /// and a different account never reads another's entry (see [`cache_key`]).
 /// The snapshot says whether it came from a fetch that just succeeded; a set
 /// served through a failure is `fresh: false`.
-pub async fn catalog_ids(
+///
+/// `bounds` are the bounds of the call that needs the catalog —
+/// [`ResponseBounds::default`] for a client turn, whose fetch is read exactly
+/// as it always was. An internal call (a `[models.router]` judge, a gated
+/// escalation or advisor turn) that finds the cache cold would otherwise read
+/// the control plane's reply unbounded before its own reply is ever asked
+/// for, so the fetch is read under that call's cap and idle gap. A reply that
+/// trips either is not the backend's failure but this call's bound, so it
+/// falls open like any failure — the stale set, or `None` — without being
+/// recorded: a cooldown written by one internal call would otherwise serve
+/// every client turn on the account a stale or missing catalog for the next
+/// [`CATALOG_FAILURE_COOLDOWN`].
+///
+/// [`ResponseBounds::default`]: crate::adapters::ResponseBounds::default
+pub(crate) async fn catalog_ids(
     client: &reqwest::Client,
     base_url: &str,
     access_token: &str,
     project_id: &str,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Option<CatalogSnapshot> {
     // Normalize here as well as at the call site: the cache key must not
     // depend on whether the caller resolved the host first, and production
@@ -221,8 +236,8 @@ pub async fn catalog_ids(
         Cached::Refetch(ids) => ids.or(stale),
     };
 
-    match fetch_catalog(client, &base_url, access_token).await {
-        Some(ids) => {
+    match fetch_catalog(client, &base_url, access_token, bounds).await {
+        Fetched::Ids(ids) => {
             let ids = Arc::new(ids);
             let mut cache = cache();
             evict_expired(&mut cache);
@@ -236,11 +251,15 @@ pub async fn catalog_ids(
             );
             Some(CatalogSnapshot { ids, fresh: true })
         }
+        // The caller's bound, not the backend's health: nothing is recorded,
+        // so the next caller — a client turn, or an internal call with room
+        // for the reply — still fetches.
+        Fetched::Refused => stale.map(|ids| CatalogSnapshot { ids, fresh: false }),
         // Keep the stale entry rather than evicting it: a backend blip must
         // not cost the next ten minutes' worth of requests their catalog too.
         // Record the failure all the same, so the next request inside the
         // cooldown is served from here instead of repeating the fetch.
-        None => {
+        Fetched::Failed => {
             let mut cache = cache();
             evict_expired(&mut cache);
             cache.insert(
@@ -256,11 +275,22 @@ pub async fn catalog_ids(
     }
 }
 
+/// How one catalog fetch ended.
+enum Fetched {
+    /// The account's catalog ids.
+    Ids(BTreeSet<String>),
+    /// The backend did not produce a usable catalog.
+    Failed,
+    /// The reply passed the calling request's byte cap or idle gap.
+    Refused,
+}
+
 async fn fetch_catalog(
     client: &reqwest::Client,
     base_url: &str,
     access_token: &str,
-) -> Option<BTreeSet<String>> {
+    bounds: crate::adapters::ResponseBounds,
+) -> Fetched {
     let url = format!("{base_url}/v1internal:fetchAvailableModels");
     // The catalog is account-scoped, so it is addressed exactly as inference
     // is: the subscription bearer plus the Antigravity client fingerprint.
@@ -272,7 +302,10 @@ async fn fetch_catalog(
         .json(&json!({}));
 
     let fetch = async {
-        let response = request.send().await.map_err(|error| error.to_string())?;
+        let response = request
+            .send()
+            .await
+            .map_err(|error| FetchError::Failed(error.to_string()))?;
         let status = response.status();
         if !status.is_success() {
             // Drain through the shared helper rather than dropping the
@@ -280,24 +313,48 @@ async fn fetch_catalog(
             // distinguishes a revoked scope from a relocated endpoint, and an
             // undrained body strands the pooled connection.
             let body = super::auth::diagnostic_body(CATALOG_FETCH_TIMEOUT, response).await;
-            return Err(format!("backend answered {status}: {body}"));
+            return Err(FetchError::Failed(format!(
+                "backend answered {status}: {body}"
+            )));
         }
-        response
-            .json::<Value>()
+        // Read whole under the calling request's bounds, then parsed: `json()`
+        // has no bound of its own. `(None, None)` is `bytes()` byte for byte.
+        let bytes = crate::adapters::collect_upstream_body(response, bounds.max_bytes, bounds.idle)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| match error {
+                crate::adapters::UpstreamBodyError::Transport(error) => {
+                    FetchError::Failed(error.to_string())
+                }
+                crate::adapters::UpstreamBodyError::TooLarge(too_large) => {
+                    FetchError::Refused(too_large.to_string())
+                }
+                crate::adapters::UpstreamBodyError::Idle(idle) => {
+                    FetchError::Refused(idle.to_string())
+                }
+            })?;
+        serde_json::from_slice::<Value>(&bytes)
+            .map_err(|error| FetchError::Failed(error.to_string()))
     };
 
     let body = match tokio::time::timeout(CATALOG_FETCH_TIMEOUT, fetch).await {
         Ok(Ok(body)) => body,
-        Ok(Err(error)) => {
+        Ok(Err(FetchError::Refused(error))) => {
+            tracing::warn!(
+                %url,
+                %error,
+                "antigravity model catalog discovery exceeded the calling request's bounds; \
+                 falling back to the model id shunt would have guessed without it"
+            );
+            return Fetched::Refused;
+        }
+        Ok(Err(FetchError::Failed(error))) => {
             tracing::warn!(
                 %url,
                 %error,
                 "antigravity model catalog discovery failed; falling back to the model id shunt \
                  would have guessed without it"
             );
-            return None;
+            return Fetched::Failed;
         }
         Err(_) => {
             tracing::warn!(
@@ -306,7 +363,7 @@ async fn fetch_catalog(
                 "antigravity model catalog discovery timed out; falling back to the model id \
                  shunt would have guessed without it"
             );
-            return None;
+            return Fetched::Failed;
         }
     };
 
@@ -316,12 +373,20 @@ async fn fetch_catalog(
             "antigravity model catalog response has no `models` object; falling back to the \
              model id shunt would have guessed without it"
         );
-        return None;
+        return Fetched::Failed;
     };
 
     // An empty object is a real answer, not a failure: it is cached like any
     // other, and the resolver treats "nothing matches" the same as no catalog.
-    Some(models.keys().cloned().collect())
+    Fetched::Ids(models.keys().cloned().collect())
+}
+
+/// Why a catalog read produced no body to parse.
+enum FetchError {
+    /// The backend's failure, recorded for the cooldown.
+    Failed(String),
+    /// The calling request's bound, not recorded.
+    Refused(String),
 }
 
 /// Seed the cache so a test can exercise catalog-driven resolution without a
@@ -370,6 +435,23 @@ mod tests {
 
     use super::*;
 
+    /// [`catalog_ids`] as a client turn calls it.
+    async fn catalog_ids_unbounded(
+        client: &reqwest::Client,
+        base_url: &str,
+        access_token: &str,
+        project_id: &str,
+    ) -> Option<CatalogSnapshot> {
+        catalog_ids(
+            client,
+            base_url,
+            access_token,
+            project_id,
+            crate::adapters::ResponseBounds::default(),
+        )
+        .await
+    }
+
     fn catalog_body(ids: &[&str]) -> Value {
         let models = ids
             .iter()
@@ -402,9 +484,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let ids = catalog_ids(&reqwest::Client::new(), &server.uri(), "catalog-token", "")
-            .await
-            .expect("a 200 catalog must resolve");
+        let ids =
+            catalog_ids_unbounded(&reqwest::Client::new(), &server.uri(), "catalog-token", "")
+                .await
+                .expect("a 200 catalog must resolve");
 
         assert_eq!(
             ids.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -431,10 +514,10 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let first = catalog_ids(&client, &server.uri(), "token", "")
+        let first = catalog_ids_unbounded(&client, &server.uri(), "token", "")
             .await
             .unwrap();
-        let second = catalog_ids(&client, &server.uri(), "token", "")
+        let second = catalog_ids_unbounded(&client, &server.uri(), "token", "")
             .await
             .unwrap();
 
@@ -459,7 +542,7 @@ mod tests {
         let client = reqwest::Client::new();
         clear_for_test(&server.uri());
         assert!(
-            catalog_ids(&client, &server.uri(), "token", "")
+            catalog_ids_unbounded(&client, &server.uri(), "token", "")
                 .await
                 .is_none(),
             "a first fetch that fails has no set to serve"
@@ -479,13 +562,158 @@ mod tests {
             entry.refreshed_at = Instant::now() - CATALOG_TTL - Duration::from_secs(1);
         }
 
-        let stale = catalog_ids(&client, &server.uri(), "token", "")
+        let stale = catalog_ids_unbounded(&client, &server.uri(), "token", "")
             .await
             .expect("a failed refresh must serve the last known good set");
 
         assert!(stale.contains("gemini-3.8-flash-tiered"));
         assert!(!stale.fresh, "a set served through a failure is not proof");
         clear_for_test(&server.uri());
+    }
+
+    /// A one-entry catalog padded to at least `bytes` of JSON.
+    fn padded_catalog_body(bytes: usize) -> Value {
+        let pad = "p".repeat(bytes);
+        json!({ "models": {
+            "gemini-3.8-flash-tiered": {"model": "MODEL_PLACEHOLDER_M322", "pad": pad}
+        }})
+    }
+
+    /// An internal call that finds the cache cold reads the catalog under its
+    /// own byte cap: a reply past the cap falls open to `None` rather than
+    /// being parsed, and — the cap being this call's bound, not the backend's
+    /// failure — nothing is recorded, so the next client turn on the account
+    /// still fetches and resolves the catalog (#637).
+    ///
+    /// Non-vacuity: pass `ResponseBounds::default()` to `fetch_catalog` and the
+    /// bounded call resolves the catalog; record `Refused` as `Failed` and the
+    /// client turn is served the cooldown's `None` without a second request.
+    #[tokio::test]
+    async fn a_catalog_over_the_calling_requests_cap_falls_open_without_a_cooldown() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:fetchAvailableModels"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(padded_catalog_body(4096)))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+        clear_for_test(&server.uri());
+
+        let bounded = catalog_ids(
+            &client,
+            &server.uri(),
+            "token",
+            "",
+            crate::adapters::ResponseBounds {
+                max_bytes: Some(1024),
+                idle: None,
+            },
+        )
+        .await;
+        assert!(bounded.is_none(), "a catalog past the cap is not parsed");
+
+        let client_turn = catalog_ids_unbounded(&client, &server.uri(), "token", "")
+            .await
+            .expect("the refusal left no cooldown behind");
+        assert!(client_turn.fresh);
+        assert!(client_turn.contains("gemini-3.8-flash-tiered"));
+
+        server.verify().await;
+        clear_for_test(&server.uri());
+    }
+
+    /// The twin: a catalog under the calling request's cap resolves exactly as
+    /// an unbounded one does, so the refusal above is the cap and not the
+    /// bounded read itself.
+    #[tokio::test]
+    async fn a_catalog_under_the_calling_requests_cap_resolves() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:fetchAvailableModels"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(padded_catalog_body(4096)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        clear_for_test(&server.uri());
+
+        let ids = catalog_ids(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "token",
+            "",
+            crate::adapters::ResponseBounds {
+                max_bytes: Some(64 * 1024),
+                idle: Some(Duration::from_secs(5)),
+            },
+        )
+        .await
+        .expect("a catalog within the bounds resolves");
+        assert!(ids.fresh);
+        assert!(ids.contains("gemini-3.8-flash-tiered"));
+
+        server.verify().await;
+        clear_for_test(&server.uri());
+    }
+
+    /// A control plane that commits its headers and then stalls is cut at the
+    /// calling request's idle gap rather than at `CATALOG_FETCH_TIMEOUT`, and
+    /// falls open the same way, recording nothing.
+    ///
+    /// Non-vacuity: pass `None` for the idle gap to `collect_upstream_body` in
+    /// `fetch_catalog` and the read waits out the 5 s fetch timeout, so the
+    /// elapsed-time assertion goes red.
+    #[tokio::test]
+    async fn a_catalog_stalled_after_its_headers_is_cut_at_the_calling_requests_idle_gap() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let responder = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                      content-length: 4096\r\n\r\n{\"models\":{\"gemini-",
+                )
+                .await
+                .unwrap();
+            // Held open, silent, until the test ends.
+            std::future::pending::<()>().await;
+        });
+        clear_for_test(&base_url);
+
+        let started = Instant::now();
+        let ids = catalog_ids(
+            &reqwest::Client::new(),
+            &base_url,
+            "token",
+            "",
+            crate::adapters::ResponseBounds {
+                max_bytes: None,
+                idle: Some(Duration::from_millis(200)),
+            },
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(ids.is_none());
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "cut after {elapsed:?}: the stall ran on toward CATALOG_FETCH_TIMEOUT"
+        );
+        assert!(
+            !cache().contains_key(&cache_key(
+                &super::super::auth::inference_base_url(&base_url),
+                "token",
+                ""
+            )),
+            "a cut is the caller's bound and leaves no cooldown behind"
+        );
+        responder.abort();
+        clear_for_test(&base_url);
     }
 
     #[tokio::test]
@@ -506,7 +734,7 @@ mod tests {
         let client = reqwest::Client::new();
         clear_for_test(&server.uri());
         for _ in 0..5 {
-            assert!(catalog_ids(&client, &server.uri(), "token", "")
+            assert!(catalog_ids_unbounded(&client, &server.uri(), "token", "")
                 .await
                 .is_none());
         }
@@ -538,7 +766,7 @@ mod tests {
         let fetches = (0..8).map(|_| {
             let client = client.clone();
             let uri = uri.clone();
-            async move { catalog_ids(&client, &uri, "token", "").await }
+            async move { catalog_ids_unbounded(&client, &uri, "token", "").await }
         });
         let results = futures_util::future::join_all(fetches).await;
 
@@ -562,7 +790,7 @@ mod tests {
 
         clear_for_test(&server.uri());
         assert!(
-            catalog_ids(&reqwest::Client::new(), &server.uri(), "token", "")
+            catalog_ids_unbounded(&reqwest::Client::new(), &server.uri(), "token", "")
                 .await
                 .is_none()
         );
@@ -594,7 +822,7 @@ mod tests {
             &["gemini-3.8-flash-medium"],
         );
 
-        let ids = catalog_ids(
+        let ids = catalog_ids_unbounded(
             &reqwest::Client::new(),
             &server.uri(),
             "new-account-token",
@@ -629,10 +857,10 @@ mod tests {
         let client = reqwest::Client::new();
         clear_for_test(&server.uri());
 
-        let first = catalog_ids(&client, &server.uri(), "token-before", "proj-same")
+        let first = catalog_ids_unbounded(&client, &server.uri(), "token-before", "proj-same")
             .await
             .unwrap();
-        let second = catalog_ids(&client, &server.uri(), "token-after", "proj-same")
+        let second = catalog_ids_unbounded(&client, &server.uri(), "token-after", "proj-same")
             .await
             .unwrap();
 
@@ -661,7 +889,7 @@ mod tests {
         let base = super::super::auth::inference_base_url(&server.uri());
         let old_key = cache_key(&base, "token", "proj-abandoned");
 
-        catalog_ids(&client, &server.uri(), "token", "proj-abandoned")
+        catalog_ids_unbounded(&client, &server.uri(), "token", "proj-abandoned")
             .await
             .unwrap();
         cache()
@@ -671,7 +899,7 @@ mod tests {
         assert!(slots_for_test().contains(&old_key), "the old slot exists");
 
         // The next insert under any key sweeps both maps.
-        catalog_ids(&client, &server.uri(), "token", "proj-current")
+        catalog_ids_unbounded(&client, &server.uri(), "token", "proj-current")
             .await
             .unwrap();
 

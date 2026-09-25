@@ -534,7 +534,9 @@ async fn forward_single(
         // `-tiered` forms of the same model; both exist in the wild and which
         // one an account is served changes over time. Discovery is cached and
         // fails open, so this costs at most one bounded request per account
-        // per TTL and never fails the client's request. It is skipped outright for
+        // per TTL and never fails the client's request. An internal call reads
+        // it under its own bounds, which a cold cache would otherwise let the
+        // control plane's reply escape (#637). It is skipped outright for
         // an id no catalog could reshape — only Gemini ids carry a tier — so a
         // Claude- or GPT-routed Antigravity provider never pays for it.
         let catalog = if antigravity_model_needs_catalog(&route.upstream_model) {
@@ -543,6 +545,7 @@ async fn forward_single(
                 &inference_base,
                 &access_token,
                 &project_id,
+                bounds,
             )
             .await
         } else {
