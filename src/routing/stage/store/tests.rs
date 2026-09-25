@@ -67,7 +67,7 @@ use super::*;
 use crate::config::StageRouterPicker;
 use switchyard_libsy::DecisionSource;
 
-const SESSION: &str = "0199a0f2-2f4b-7c3e-9d61-4f1a2b3c4d5e";
+pub(super) const SESSION: &str = "0199a0f2-2f4b-7c3e-9d61-4f1a2b3c4d5e";
 
 /// The scorer reason these tests construct by hand. Naming it through
 /// `StageSource` keeps the hand-built estimates on the same type the real
@@ -76,7 +76,7 @@ const SESSION: &str = "0199a0f2-2f4b-7c3e-9d61-4f1a2b3c4d5e";
 /// how the removal of libsy's `TestsPassed` surfaced.
 const DIMENSIONS: StageSource = StageSource::Scorer(DecisionSource::Dimensions);
 
-fn router() -> StageRouterConfig {
+pub(super) fn router() -> StageRouterConfig {
     StageRouterConfig {
         capable_target: "claude-opus-4-8".to_string(),
         efficient_target: "claude-sonnet-4-6".to_string(),
@@ -107,11 +107,11 @@ fn decision(tier: StageTier, source: StageSource, confidence: f64) -> StageDecis
     }
 }
 
-fn capable() -> StageDecision {
+pub(super) fn capable() -> StageDecision {
     decision(StageTier::Capable, DIMENSIONS, 0.76)
 }
 
-fn efficient(confidence: f64) -> StageDecision {
+pub(super) fn efficient(confidence: f64) -> StageDecision {
     decision(StageTier::Efficient, DIMENSIONS, confidence)
 }
 
@@ -811,115 +811,6 @@ fn an_in_order_commit_still_replaces_the_pin() {
         held.tier,
         StageTier::Capable,
         "the pin is still capable, so the second commit did not vanish"
-    );
-}
-
-/// The judge budget is a property of the pin, so it has to survive the
-/// decide/commit split: `apply` reports what the session had already spent and
-/// `commit` adds this turn's call to whatever the live entry holds. Stop
-/// charging in `commit` and the budget never rises, so `max_judge_calls` is
-/// unreachable and every turn of a session consults.
-#[test]
-fn judge_calls_accumulate_across_commits() {
-    let store = StageRouterStore::new();
-    let router = router();
-    let start = Instant::now();
-
-    let StageApplied {
-        pin,
-        judge_calls_used,
-        ..
-    } = store.apply_session(
-        "claude-auto",
-        Some(SESSION),
-        &router,
-        capable(),
-        false,
-        start,
-    );
-    assert_eq!(judge_calls_used, 0, "a first turn has spent nothing");
-    let mut pin = pin.expect("a session-bearing turn earns a pin");
-    pin.record_judge_call();
-    store.commit(pin, start);
-
-    let StageApplied {
-        pin,
-        judge_calls_used,
-        ..
-    } = store.apply_session(
-        "claude-auto",
-        Some(SESSION),
-        &router,
-        capable(),
-        false,
-        start + Duration::from_secs(1),
-    );
-    assert_eq!(judge_calls_used, 1, "the first turn's call is charged");
-    let mut pin = pin.expect("a session-bearing turn earns a pin");
-    pin.record_judge_call();
-    store.commit(pin, start + Duration::from_secs(1));
-
-    let StageApplied {
-        judge_calls_used, ..
-    } = store.apply_session(
-        "claude-auto",
-        Some(SESSION),
-        &router,
-        capable(),
-        false,
-        start + Duration::from_secs(2),
-    );
-    assert_eq!(judge_calls_used, 2, "calls add up rather than replacing");
-}
-
-/// A turn whose pin lost the supersession race made its judge call, but the pin
-/// it was made against is no longer the session's — and the surviving pin
-/// carries its own count. Charging it anyway would let two concurrent turns
-/// spend a one-call budget twice over.
-#[test]
-fn a_superseded_commit_does_not_charge_the_budget() {
-    let store = StageRouterStore::new();
-    let router = router();
-    let start = Instant::now();
-
-    let StageApplied { pin: older, .. } = store.apply_session(
-        "claude-auto",
-        Some(SESSION),
-        &router,
-        capable(),
-        false,
-        start,
-    );
-    let StageApplied { pin: newer, .. } = store.apply_session(
-        "claude-auto",
-        Some(SESSION),
-        &router,
-        capable(),
-        false,
-        start + Duration::from_secs(1),
-    );
-
-    let mut newer = newer.expect("the newer turn earns a pin");
-    newer.record_judge_call();
-    store.commit(newer, start);
-
-    let mut older = older.expect("the older turn earns a pin");
-    older.record_judge_call();
-    store.commit(older, start);
-
-    let StageApplied {
-        judge_calls_used, ..
-    } = store.apply_session(
-        "claude-auto",
-        Some(SESSION),
-        &router,
-        capable(),
-        false,
-        start + Duration::from_secs(2),
-    );
-    assert_eq!(
-        judge_calls_used, 1,
-        "only the surviving pin's call is charged"
     );
 }
 

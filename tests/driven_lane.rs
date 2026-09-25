@@ -29,6 +29,8 @@ mod common;
 mod judge_harness;
 
 // The rest of the definition of done, split only for the 500-line ceiling.
+#[path = "driven_lane/budget.rs"]
+mod budget;
 #[path = "driven_lane/overlay.rs"]
 mod overlay;
 

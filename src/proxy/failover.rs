@@ -221,14 +221,20 @@ pub(super) async fn forward(
         router_outcome.as_mut(),
     ) {
         let bounds = stage_cfg.bounds();
-        let verdict = if consult.judge_calls_used >= bounds.max_judge_calls {
-            // Checked before the call is charged, so the budget is a ceiling on
-            // calls made rather than on calls attempted.
+        // Reserved here, at dispatch, and the reservation is the check: one
+        // lock acquisition with no `.await` before the call, so concurrent turns
+        // of one session admit exactly as many calls as the budget has left.
+        // The count lives beside the pins, not on this turn's pending pin, so
+        // it publishes no tier and nothing refunds it if the pin later loses
+        // its `commit` race (issue #634). A refused turn made no call.
+        let reserved = state.stage_router.try_charge_judge(
+            consult.budget.as_ref(),
+            bounds.max_judge_calls,
+            started_at,
+        );
+        let verdict = if !reserved {
             routing::judge::JudgeOutcome::FailOpen("budget_exhausted")
         } else {
-            if let Some(pin) = pending.as_mut() {
-                pin.record_judge_call();
-            }
             // Cloned so the mint's borrow is of a local, leaving `outcome`
             // free to be rewritten by the verdict below.
             let router_id = outcome.model.clone();

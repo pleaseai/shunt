@@ -268,7 +268,10 @@ the new table necessarily holds the higher one.
 
 The fingerprint destructures `StageRouterConfig` rather than dotting into it, so a
 key added to the table later fails to compile in `fingerprint` instead of quietly
-letting stale pins outlive it.
+letting stale pins outlive it. `[models.router.classifier]` is destructured the
+same way, and its `classify_trigger` is hashed by what it does on this route:
+`user_turn` is a different table, while `new_session` and `every_request`
+consult identically here and hash alike.
 
 Capacity is **two budgets**, not one: `MAX_TRACKED_SESSIONS = 4096` for parent
 entries and `MAX_TRACKED_CHILD_PINS = 4096` for child ones, trimmed on insert —

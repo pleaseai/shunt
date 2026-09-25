@@ -228,7 +228,7 @@ base_threshold = 0.5           # 让任务留在高效档位的 p_solve 下限
 
 `[models.router]` 上的六个键为每一次内部调用设定上限:`judge_timeout_ms`(默认 `30000`,
 同时覆盖响应头*和*响应体的端到端期限)、`judge_max_response_bytes`(`65536`)、每个会话的
-`max_judge_calls`(`8`),以及三个 `gated_*` 键 —— 它们只约束 `escalation` 或 `advisor` 条目
+`max_judge_calls`(`8`,在裁判调用发出时扣减,因此并发回合也无法超出),以及三个 `gated_*` 键 —— 它们只约束 `escalation` 或 `advisor` 条目
 扣住的回合,所以在阶段路由器上不约束任何东西。越过上限会取消对应的上游调用。
 
 由裁判判定的轮次报告 `x-gateway-route-source: llm-classifier`,并和其他决策一样把会话

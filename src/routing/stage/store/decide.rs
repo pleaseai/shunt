@@ -13,7 +13,7 @@ use switchyard_libsy::DecisionSource;
 
 use super::entries::{Entries, PinScope, StageSession};
 use super::{StageDecision, StageSource, StageTier};
-use crate::config::StageRouterConfig;
+use crate::config::{ClassifyTrigger, StageClassifierConfig, StageRouterConfig};
 
 /// What [`resolve`] decided for one turn.
 pub(super) struct Resolved {
@@ -247,11 +247,28 @@ pub(super) fn fingerprint(router: &StageRouterConfig) -> u64 {
     // The judge's own inputs. A pin carries a judge budget, so a table that
     // adds, removes, or re-points a classifier — or moves a bound the judge
     // runs under — must not inherit a count spent under the old one. `f64`
-    // again through `to_bits`, and the six bounds are plain integers.
-    classifier.as_ref().map(|c| &c.target).hash(&mut hasher);
+    // again through `to_bits`, and the six bounds are plain integers. The
+    // classifier is destructured too, so a key added to it later fails to
+    // compile here: `classify_trigger` once slipped past a dotted read, and a
+    // reload that changed only when the judge is consulted kept the old count.
+    // The trigger is hashed by what it does on this route, as the de-escalation
+    // threshold is: `new_session` consults exactly as `every_request` does here
+    // (`stage::select`), so swapping one for the other is not a new table.
     classifier
         .as_ref()
-        .map(|c| c.base_threshold.to_bits())
+        .map(
+            |StageClassifierConfig {
+                 target,
+                 base_threshold,
+                 classify_trigger,
+             }| {
+                let user_turn_only = match classify_trigger {
+                    ClassifyTrigger::UserTurn => true,
+                    ClassifyTrigger::EveryRequest | ClassifyTrigger::NewSession => false,
+                };
+                (target, base_threshold.to_bits(), user_turn_only)
+            },
+        )
         .hash(&mut hasher);
     judge_timeout_ms.hash(&mut hasher);
     judge_max_response_bytes.hash(&mut hasher);

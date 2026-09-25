@@ -790,7 +790,7 @@ least `1`; a `0` is a startup error naming the key.
 | `gated_max_bytes` | `8388608` | Largest retained turn: its SSE frame bytes, or its JSON body |
 | `gated_idle_ms` | `60000` | Longest gap between completed content frames of a retained turn. SSE keep-alives (`event: ping` frames and `:` comment frames) do not reset it, and a frame split across chunks is reassembled before it is classified |
 | `gated_max_duration_ms` | `600000` | Wall-clock ceiling on a retained turn, headers and body |
-| `max_judge_calls` | `8` | Judge calls one session may make. The gated turn itself is not a judge call and is not counted |
+| `max_judge_calls` | `8` | Judge calls one session may make, counted when a call is sent and never refunded. Each delegated agent id has its own budget, and delegated turns with no agent id share one more per session. A turn that makes no judge call is never refused. The gated turn itself is not a judge call and is not counted |
 
 The three `gated_*` keys bound the **gated** turns of an
 [`escalation`](#mode--escalation) or [`advisor`](#type--advisor) entry — the
@@ -903,8 +903,13 @@ each session was holding — the same property `prefill_router` has.
 `max_judge_calls` is shunt's own and is counted per `(session, agent)`, so a
 delegated child spends its own budget rather than its parent's; a request
 carrying no session id is not tracked, so the bound applies per request for it.
-A turn whose budget is spent skips the judge and takes the fail-open target,
-recorded as judge-call outcome `budget_exhausted`.
+The budget is charged when a judge call is sent, so a turn that needs none —
+a `new_session` or `user_turn` replay of a retained assignment — is still
+served from that assignment after the budget is spent. A turn whose judge call
+is refused is closed like a failed judge call: it takes the default above,
+under route source `classifier_fail_open`, and is recorded as judge-call outcome
+`budget_exhausted`. The classifier-form `[models.subagents]` overlay behaves
+the same way.
 
 **Probes resolve without a judge.** A `count_tokens` request never consults one
 and is answered from the fail-open target, as are the surfaces with no request
@@ -1019,7 +1024,11 @@ confidence_threshold = 0.5
 The six [per-call bounds](#per-call-bounds) go on `[models.router]`, not inside
 either sub-table. A turn the classifier cannot reach falls open to
 `stage.efficient_target`, which is upstream's rule and is also what a probe and
-a body-less surface report.
+a body-less surface report. A turn whose judge call `max_judge_calls` refuses
+keeps the session's last retained tier when it has one, or else takes the
+picker's default tier, so the tier never moves between a user
+turn and its tool continuations; a turn that needs no judge call is never
+refused.
 
 Because the stage half is libsy's own stage route, its decisive turns keep the
 stage router's route sources rather than reporting as classifier decisions —

@@ -135,15 +135,6 @@ pub(crate) struct StageSession {
     /// keeps the shipped hysteresis (`min_dwell_turns` plus
     /// `deescalate_threshold`) the only gate on a default deployment.
     pub(crate) capable_hold_remaining: u32,
-    /// Judge calls this session has made under this pin (ADR-0005 §3).
-    ///
-    /// The per-session half of the bound set — `max_judge_calls` — and the one
-    /// that cannot live on the request, because the budget is exactly what a
-    /// *sequence* of turns spends. It accumulates on the pin rather than on a
-    /// side table so it clears with the pin: on TTL expiry and on a reload that
-    /// changes the table, a resumed session gets its budget back, which is the
-    /// same lifetime the compaction latch and the dwell count already have.
-    pub(crate) judge_calls: u32,
 }
 
 /// When an entry falls out of its own window, or `None` when the addition

@@ -282,7 +282,8 @@ overlay diverted before the router ran.
 
 Six keys on `[models.router]` bound every internal call: `judge_timeout_ms`
 (default `30000`, an end-to-end deadline covering headers *and* body),
-`judge_max_response_bytes` (`65536`), `max_judge_calls` per session (`8`), and
+`judge_max_response_bytes` (`65536`), `max_judge_calls` per session (`8`,
+charged when a judge call is sent, so concurrent turns cannot overshoot it), and
 the three `gated_*` keys, which bound only the held turns of an `escalation` or
 `advisor` entry and so bound nothing on a stage router.
 Crossing a bound cancels the upstream call.

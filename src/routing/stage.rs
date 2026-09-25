@@ -21,7 +21,7 @@ pub(crate) mod signals;
 pub(crate) mod store;
 pub(crate) mod vocabulary;
 
-pub(crate) use store::StageRouterStore;
+pub(crate) use store::{StageBudget, StageRouterStore};
 
 use std::{cell::Cell, time::Instant};
 
@@ -200,18 +200,19 @@ pub(crate) struct StageContext<'a> {
 
 /// A judge consultation this turn earned, with the budget it must fit inside.
 ///
-/// Carries the count rather than the remaining allowance so the comparison
-/// stays with the caller that also holds the [`crate::config::CallBounds`]:
-/// this type is decided inside routing, and routing does not read bounds.
+/// Carries where the call is counted rather than a count, so the reservation
+/// stays with the caller that also holds the [`crate::config::CallBounds`] and
+/// happens at the moment the call is dispatched: this type is decided inside
+/// routing, before admission, and routing neither reads bounds nor may spend a
+/// call for a caller that is about to be refused.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ConsultJudge {
-    /// Judge calls this session had already made when the turn read its pin.
-    ///
-    /// The pure lane's budget rides the pin, which is why it is read here. The
-    /// driven kinds leave it `0` and read their own budget off the
-    /// [`DrivenEntry`](crate::routing::driven::DrivenEntry) instead: libsy owns
-    /// their session state, so there is no pin to have counted against.
-    pub judge_calls_used: u32,
+    /// Where a [`ConsultKind::StageClassifier`] call is charged, in the
+    /// store's judge budget; `None` for a sessionless turn, which gets its one
+    /// call. The driven kinds leave it `None` and charge their own budget on
+    /// the [`DrivenEntry`](crate::routing::driven::DrivenEntry) instead: libsy
+    /// owns their session state, and they reserve per `CallModel`.
+    pub budget: Option<StageBudget>,
     /// Which consultation this is, and so which code path in
     /// `proxy::failover` runs it and which envelope admission gates on.
     pub kind: ConsultKind,
@@ -293,7 +294,7 @@ pub(crate) fn select(
         && !context.read_only
     {
         context.consult.set(Some(ConsultJudge {
-            judge_calls_used: applied.judge_calls_used,
+            budget: applied.judge_budget,
             kind: ConsultKind::StageClassifier,
         }));
     }

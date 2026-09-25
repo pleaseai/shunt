@@ -9,9 +9,9 @@
 //! `a_classifier_close_and_a_composite_fall_open_read_differently` goes red;
 //! delete the `entry.targets` membership check in `decide` and
 //! `a_verdict_outside_the_target_set_falls_open` goes red on the target as
-//! well as the outcome label; drop the `used.clear()` in
-//! `JudgeBudget::try_charge` and `the_budget_map_is_bounded` goes red on the
-//! map's size; drop that method's `>= max` early return and
+//! well as the outcome label; drop the `make_room` eviction in
+//! `JudgeBudget::try_charge_within` and `the_budget_map_is_bounded` goes red on
+//! the map's size; drop that method's `>= max` early return and
 //! `the_budget_refuses_a_key_that_is_at_its_cap` goes red on its second call.
 
 use switchyard_libsy::{DecisionSource, OutcomeMetadata, RoutingOutcome};
@@ -391,8 +391,9 @@ fn the_drive_deadline_covers_every_admissible_call() {
 }
 
 /// The cap is the property: an unbounded map keyed by caller-supplied ids is a
-/// memory-growth surface the client controls. The eviction *policy* is not
-/// asserted here — it is documented as arbitrary — only that the map never
+/// memory-growth surface the client controls. The eviction *policy* — least
+/// recent first, per class — is asserted in `budget_tests.rs`; this test pins
+/// only that the map never
 /// grows past the cap.
 #[test]
 fn the_budget_map_is_bounded() {
