@@ -26,6 +26,7 @@ fn snapshot(
         cooldown_fable_secs_remaining: None,
         priority: 100,
         disabled: false,
+        paused: false,
         headroom_secs: None,
         utilization_5h: util_5h,
         reset_5h,

@@ -47,8 +47,11 @@ use tower::ServiceExt;
 mod common;
 
 /// A method no route in the crate registers, so a response distinguishes
-/// "path exists" (`405`) from "path does not exist" (`404`).
-const UNREGISTERED_METHOD: Method = Method::PATCH;
+/// "path exists" (`405`) from "path does not exist" (`404`). `PATCH` no
+/// longer qualifies now that `/admin/api/pool` and
+/// `/admin/api/pool/{provider}/accounts/{account_ref}` register it (pool pause and
+/// reset-priority-sort runtime controls).
+const UNREGISTERED_METHOD: Method = Method::TRACE;
 
 /// Every `(path, allow)` pair the router registers with all optional surfaces
 /// enabled, grouped by the config table that gates it. This list **is** the
@@ -85,7 +88,7 @@ const BASE_PATHS: [(&str, &str); 7] = [
 /// method sets are unchanged by the move — the same handlers are registered at
 /// new paths — and `every_registered_method_set_matches_the_inventory` proves it
 /// against the live router rather than taking it on trust.
-const ADMIN_PATHS: [(&str, &str); 23] = [
+const ADMIN_PATHS: [(&str, &str); 24] = [
     ("/admin", "GET,HEAD"),
     // The same handler under the spelling a browser or proxy produces by
     // appending a slash. A `{*path}` segment cannot match the empty string, so
@@ -99,7 +102,10 @@ const ADMIN_PATHS: [(&str, &str); 23] = [
     ("/admin/api/session", "GET,HEAD"),
     ("/admin/api/accounts", "GET,HEAD"),
     ("/admin/api/observed", "GET,HEAD"),
-    ("/admin/api/pool", "GET,HEAD"),
+    // `PATCH` toggles the process-wide `sort_by_reset` runtime override
+    // (pool pause / reset-priority-sort admin controls).
+    ("/admin/api/pool", "GET,HEAD,PATCH"),
+    ("/admin/api/pool/{provider}/accounts/{account_ref}", "PATCH"),
     ("/admin/api/status", "GET,HEAD"),
     ("/admin/api/routes", "GET,HEAD"),
     ("/admin/api/accounts/claude", "POST"),
@@ -197,6 +203,8 @@ const USAGE_PATHS: [(&str, &str); 2] = [("/usage", "GET,HEAD"), ("/api/oauth/usa
 /// the inventory can be sent as a real request.
 fn probe_path(template: &str) -> String {
     template
+        .replace("{provider}", "anthropic")
+        .replace("{account_ref}", "acct-ref")
         .replace("{name}", "acct")
         .replace("{id}", "spl_1")
         .replace("{*path}", "probe")
@@ -685,14 +693,16 @@ fn the_source_scan_finds_every_literal_registration() {
         .iter()
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
-    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 23 admin plus
-    // the 5 UI routes, 7 gateway (its 3 OTLP paths come from `Signal::path()`),
-    // 2 spend. The UI five are counted unconditionally: this scan reads source
-    // text, and `#[cfg(feature = "ui")]` does not remove the `.route("…"`
-    // literals from it.
+    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 24 admin
+    // (`/admin/api/pool` merges its `PATCH` onto the existing `.route(` call,
+    // so only the new `/admin/api/pool/{provider}/accounts/{account_ref}` literal
+    // adds one) plus the 5 UI routes, 7 gateway (its 3 OTLP paths come from
+    // `Signal::path()`), 2 spend. The UI five are counted unconditionally:
+    // this scan reads source text, and `#[cfg(feature = "ui")]` does not
+    // remove the `.route("…"` literals from it.
     assert_eq!(
-        found, 46,
-        "the literal-path scan found {found} registrations, not 46; either a route was added or \
+        found, 47,
+        "the literal-path scan found {found} registrations, not 47; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }

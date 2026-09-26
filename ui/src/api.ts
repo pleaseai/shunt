@@ -111,3 +111,30 @@ export async function mutate(
   }
   return { ok: response.ok, message: errorMessage(payload), payload, answered };
 }
+
+export async function patchPoolAccount(
+  csrf: string,
+  provider: string,
+  accountRef: string,
+  paused: boolean
+): Promise<MutationResult> {
+  const path = `${API}/pool/${encodeURIComponent(provider)}/accounts/${encodeURIComponent(accountRef)}`;
+  return mutate(path, csrf, {
+    method: 'PATCH',
+    body: JSON.stringify({ paused }),
+  });
+}
+
+/**
+ * `[server.pool]` is process-wide, not per-provider, so this toggles the
+ * reset-priority sort for the whole pool at once.
+ */
+export async function patchPoolSortByReset(
+  csrf: string,
+  sortByReset: boolean
+): Promise<MutationResult> {
+  return mutate(`${API}/pool`, csrf, {
+    method: 'PATCH',
+    body: JSON.stringify({ sort_by_reset: sortByReset }),
+  });
+}

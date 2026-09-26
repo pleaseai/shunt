@@ -232,6 +232,7 @@ headers = { "x-api-key" = "..." }
 | `default_threshold_7d` | 未設定 | 共有の週次（`7d`）ウィンドウのソフトなデフォルト |
 | `default_threshold_fable` | 未設定 | fable 専用の週次（`7d_oi`）ウィンドウのソフトなデフォルト |
 | `burn_rate_avoidance` | `false` | ウィンドウのリセット前にソフトしきい値を使い切ると予測されるアカウントも回避する |
+| `sort_by_reset` | `false` | バーンレートのヘッドルームではなく、利用可能なアカウントをクォータのリセットが最も早い順(昇順、不明なリセットは最後)に並べ替える。`shunt.toml` を編集せずに、管理ダッシュボードまたは `PATCH /admin/api/pool` でランタイムに切り替え可能 — [プールアカウント制御](/ja/guides/pool-account-controls/)を参照 |
 | `usage_refresh_seconds` | 無効（`0`/未設定） | Claude `GET /api/oauth/usage` と Codex `GET /wham/usage` のポーリング間隔（秒）。60 未満の正の値は 60 秒の下限に切り上げられます |
 | `state_path` | 未設定 | プールのアカウント単位のクォータ状態を保存するファイル。再起動時に空のプールではなく、最後に観測された使用率からウォームスタートします。未設定で永続化は無効（デフォルト） |
 | `ramp_initial_concurrency` | 無効（`0`/未設定） | ストーム制御: トラフィックを受け始めたばかりのアカウントアイデンティティに対する初期の並行受け入れ許容量。`0` または未設定で受け入れゲーティングは無効 |

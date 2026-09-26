@@ -364,6 +364,7 @@ mod tests {
             cooldown_fable_secs_remaining: None,
             priority: 100,
             disabled: false,
+            paused: false,
             headroom_secs: None,
             utilization_5h: Some(0.4237),
             reset_5h: Some(reset_5h),

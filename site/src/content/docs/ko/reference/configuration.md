@@ -231,6 +231,7 @@ headers = { "x-api-key" = "..." }
 | `default_threshold_7d` | 미설정 | 공유 주간(`7d`) 창의 소프트 기본값 |
 | `default_threshold_fable` | 미설정 | fable 전용 주간(`7d_oi`) 창의 소프트 기본값 |
 | `burn_rate_avoidance` | `false` | 창이 리셋되기 전에 소프트 임계값을 소진할 것으로 예측되는 계정도 함께 회피 |
+| `sort_by_reset` | `false` | 번-레이트 헤드룸 대신 사용 가능한 계정을 쿼터 리셋이 가장 빠른 순(오름차순; 알 수 없는 리셋은 맨 뒤)으로 정렬. `shunt.toml`을 편집하지 않고 관리자 대시보드나 `PATCH /admin/api/pool`로 런타임에 토글 가능 — [풀 계정 제어](/ko/guides/pool-account-controls/) 참고 |
 | `usage_refresh_seconds` | 비활성(`0`/미설정) | Claude `GET /api/oauth/usage`와 Codex `GET /wham/usage`의 폴링 간격(초); 60 미만의 양수 값은 60초 하한으로 올림 |
 | `state_path` | 미설정 | 풀의 계정별 쿼터 상태를 저장할 파일; 재시작 시 빈 풀 대신 마지막으로 관측된 사용률에서 워밍업. 미설정이면 영속화 비활성(기본값) |
 | `ramp_initial_concurrency` | 비활성(`0`/미설정) | 폭주 제어: 방금 트래픽을 받기 시작한 계정 아이덴티티의 초기 동시 허용치. `0` 또는 미설정이면 허용 게이팅 비활성 |

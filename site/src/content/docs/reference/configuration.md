@@ -335,6 +335,7 @@ Quota-aware load-balancing tuning for the account pools — Claude (Anthropic) (
 | `default_threshold_7d` | unset | Soft default for the shared weekly (`7d`) window |
 | `default_threshold_fable` | unset | Soft default for the fable-only weekly (`7d_oi`) window |
 | `burn_rate_avoidance` | `false` | Also avoid accounts projected to exhaust a window's soft threshold before that window resets |
+| `sort_by_reset` | `false` | Rank available accounts by soonest quota reset (ascending; unknown resets sort last) instead of burn-rate headroom. Toggleable at runtime from the admin dashboard or `PATCH /admin/api/pool` without editing this file — see [Pausing a pool account](/guides/pool-account-controls/) |
 | `usage_refresh_seconds` | disabled (`0`/absent) | Poll interval, in seconds, for Claude `GET /api/oauth/usage` and Codex `GET /wham/usage`; a positive value below 60 is clamped up to a 60-second floor |
 | `state_path` | unset | File the pool's per-account quota state is persisted to, so a restart warm-starts from the last observed utilization instead of an empty pool. Absent disables persistence (the default) |
 | `ramp_initial_concurrency` | disabled (`0`/absent) | Storm control: initial concurrent-admission allowance for an account identity that just started taking traffic. `0` or absent disables admission gating |

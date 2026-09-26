@@ -232,6 +232,7 @@ headers = { "x-api-key" = "..." }
 | `default_threshold_7d` | 未设置 | 共享周(`7d`)窗口的软默认值 |
 | `default_threshold_fable` | 未设置 | 仅 fable 的周(`7d_oi`)窗口的软默认值 |
 | `burn_rate_avoidance` | `false` | 同时避开按预测会在窗口重置之前耗尽其软阈值的账户 |
+| `sort_by_reset` | `false` | 按配额重置时间最早排序(升序;未知重置排最后)可用账户,而不是按燃烧速率余量排序。可在不编辑 `shunt.toml` 的情况下,通过管理仪表盘或 `PATCH /admin/api/pool` 在运行时切换 —— 参见[账户池控制](/zh-cn/guides/pool-account-controls/) |
 | `usage_refresh_seconds` | 禁用(`0`/未设置) | Claude `GET /api/oauth/usage` 和 Codex `GET /wham/usage` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
 | `state_path` | 未设置 | 用于持久化池中按账户配额状态的文件;重启时从最后观测到的使用率热启动,而非从空池开始。未设置则禁用持久化(默认) |
 | `ramp_initial_concurrency` | 禁用(`0`/未设置) | 风暴控制:对刚开始承接流量的账户身份的初始并发准入额度。`0` 或未设置则禁用准入门控 |

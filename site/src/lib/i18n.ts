@@ -76,6 +76,7 @@ export const NAVIGATION: NavigationEntry[] = [
       { label: "Configuration", translations: { ko: "설정", ja: "設定", "zh-cn": "配置" }, slug: "guides/configuration" },
       { label: "Anthropic Multi-Account", translations: { ko: "Anthropic 멀티 계정", ja: "Anthropic マルチアカウント", "zh-cn": "Anthropic 多账户" }, slug: "guides/anthropic-multi-account" },
       { label: "Codex Multi-Account", translations: { ko: "Codex 멀티 계정", ja: "Codex マルチアカウント", "zh-cn": "Codex 多账户" }, slug: "guides/codex-multi-account" },
+      { label: "Pool Account Controls", translations: { ko: "풀 계정 제어", ja: "プールアカウント制御", "zh-cn": "账户池控制" }, slug: "guides/pool-account-controls" },
       { label: "Inbound Codex Endpoint", translations: { ko: "인바운드 Codex 엔드포인트", ja: "インバウンド Codex エンドポイント", "zh-cn": "入站 Codex 端点" }, slug: "guides/inbound-codex-endpoint" },
       { label: "Admin & Remote Provisioning", translations: { ko: "관리자 & 원격 프로비저닝", ja: "管理とリモートプロビジョニング", "zh-cn": "管理与远程预配" }, slug: "guides/admin-remote-provisioning" },
       { label: "Gateway Login", translations: { ko: "게이트웨이 로그인", ja: "ゲートウェイログイン", "zh-cn": "网关登录" }, slug: "guides/gateway-login" },
