@@ -2117,6 +2117,82 @@ fn chatgpt_always_requests_encrypted_reasoning() {
     }
 }
 
+#[test]
+fn chatgpt_defaults_parallel_tool_calls_to_true() {
+    // codex always sends parallel_tool_calls:true on the ChatGPT/Codex backend
+    // (non-lite models); a client that omits it still gets the canonical wire
+    // shape. A client-provided value wins, and other flavors stay client-driven.
+    let absent = translate_with_flavor(
+        json!({"messages": [{"role": "user", "content": "hi"}]}),
+        ResponsesFlavor::Chatgpt,
+    );
+    assert_eq!(absent["parallel_tool_calls"], json!(true));
+
+    let client_false = translate_with_flavor(
+        json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "parallel_tool_calls": false
+        }),
+        ResponsesFlavor::Chatgpt,
+    );
+    assert_eq!(client_false["parallel_tool_calls"], json!(false));
+
+    let openai = translate(json!({"messages": [{"role": "user", "content": "hi"}]}));
+    assert!(openai.get("parallel_tool_calls").is_none());
+}
+
+#[test]
+fn chatgpt_default_keeps_an_anthropic_parallel_tool_use_disable() {
+    // Anthropic spells the same switch `tool_choice.disable_parallel_tool_use`;
+    // the chatgpt default must not turn it back on.
+    let with_choice = |disable: bool| {
+        translate_with_flavor(
+            json!({
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+                "tool_choice": {"type": "auto", "disable_parallel_tool_use": disable}
+            }),
+            ResponsesFlavor::Chatgpt,
+        )
+    };
+    assert_eq!(with_choice(true)["parallel_tool_calls"], json!(false));
+    assert_eq!(with_choice(false)["parallel_tool_calls"], json!(true));
+}
+
+#[test]
+fn chatgpt_plain_request_matches_the_captured_body() {
+    // Captured translated body: the chatgpt-flavor wire shape for a plain
+    // request, pinned by equality so the serialized body is a recorded artifact
+    // (the punch-list verify line's second half).
+    let out = translate_with_flavor(
+        json!({
+            "model": "gpt-5.2-codex",
+            "system": [{"type": "text", "text": "Be terse"}],
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 1000
+        }),
+        ResponsesFlavor::Chatgpt,
+    );
+    assert_eq!(
+        out,
+        json!({
+            "model": "gpt-5.2-codex",
+            "instructions": "Be terse",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}]
+            }],
+            "parallel_tool_calls": true,
+            "reasoning": {"effort": "medium", "summary": "auto"},
+            "text": {"verbosity": "medium"},
+            "include": ["reasoning.encrypted_content"],
+            "store": false,
+            "stream": true
+        })
+    );
+}
+
 /// End-to-end: a reasoning item streams out as a thinking block whose signature
 /// carries the encrypted state, and feeding that block back yields a Responses
 /// `reasoning` input item — preserving chain-of-thought under store:false.

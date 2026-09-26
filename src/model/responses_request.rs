@@ -157,8 +157,17 @@ pub fn translate_request_value(
             out.insert("tool_choice".to_string(), tool_choice);
         }
     }
+    // The Codex CLI always sends `parallel_tool_calls: true` (non-lite models),
+    // so the chatgpt flavor defaults it to true when the client omits it,
+    // unless an Anthropic client turned the same switch off through
+    // `tool_choice.disable_parallel_tool_use`; every other flavor stays
+    // client-driven.
     if let Some(value) = request.get("parallel_tool_calls") {
         out.insert("parallel_tool_calls".to_string(), value.clone());
+    } else if flavor == ResponsesFlavor::Chatgpt {
+        let disabled =
+            request.pointer("/tool_choice/disable_parallel_tool_use") == Some(&Value::Bool(true));
+        out.insert("parallel_tool_calls".to_string(), json!(!disabled));
     }
     // Several grok models 400 on `reasoning.effort` even though they reason
     // natively, so on the xai flavor the reasoning dial stays opt-in: sent only
