@@ -582,8 +582,9 @@ async fn serve_http(mut socket: TcpStream, drop: WsDrop) {
     let _ = socket.flush().await;
 }
 
-/// Serve two complete turns per accepted socket and capture each request frame.
-/// A pooled metadata session uses one socket; the hash-fallback control uses two.
+/// Serve complete turns per accepted socket until Close and capture each
+/// request frame. A pooled metadata session uses one socket across two turns;
+/// the hash-fallback control uses two one-turn sockets.
 async fn spawn_recording_ws_upstream(
     expected_connections: usize,
 ) -> (
