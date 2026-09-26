@@ -121,9 +121,8 @@ struct WsTurnContext<'a> {
     ws_url: String,
     pool_key: Option<&'a str>,
     /// The inbound `x-claude-code-session-id` header, the conversation id that
-    /// becomes the `session-id`/`thread-id` handshake headers (the backend
-    /// derives prompt-cache affinity from it) and the body's
-    /// `prompt_cache_key`.
+    /// becomes the handshake session-identity headers (the backend derives prompt-cache
+    /// affinity from `session-id`) and the body's `prompt_cache_key`.
     session_id: Option<&'a str>,
     provider: &'a str,
     /// Shared, not borrowed: the `codex.rate_limits` tap outlives this context
@@ -466,6 +465,8 @@ fn websocket_headers(
             if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
                 set("session-id", session_id.to_string())?;
                 set("thread-id", session_id.to_string())?;
+                set("x-client-request-id", session_id.to_string())?;
+                set("x-codex-window-id", format!("{session_id}:0"))?;
             }
             // Deliberately not through `set`: every other header must fail the
             // turn on a malformed value, but the routing hint is built from the
@@ -791,6 +792,8 @@ mod tests {
             assert!(headers.get("originator").is_none());
             assert!(headers.get("session-id").is_none());
             assert!(headers.get("thread-id").is_none());
+            assert!(headers.get("x-client-request-id").is_none());
+            assert!(headers.get("x-codex-window-id").is_none());
             // Upstream suppresses the routing hint for api-key/bearer providers.
             assert!(headers.get("x-codex-routing-hint").is_none());
         }
@@ -819,6 +822,8 @@ mod tests {
         );
         assert_eq!(headers.get("session-id").unwrap(), "session-123");
         assert_eq!(headers.get("thread-id").unwrap(), "session-123");
+        assert_eq!(headers.get("x-client-request-id").unwrap(), "session-123");
+        assert_eq!(headers.get("x-codex-window-id").unwrap(), "session-123:0");
     }
 
     #[test]
@@ -890,6 +895,8 @@ mod tests {
         .expect("valid credential builds headers");
         assert!(headers.get("session-id").is_none());
         assert!(headers.get("thread-id").is_none());
+        assert!(headers.get("x-client-request-id").is_none());
+        assert!(headers.get("x-codex-window-id").is_none());
         assert_eq!(headers.get("originator").unwrap(), "codex_cli_rs");
     }
 
