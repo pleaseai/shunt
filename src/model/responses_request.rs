@@ -246,9 +246,10 @@ pub fn translate_request_value(
     }
     // With store:false the Responses backend forgets each turn's reasoning, so ask
     // for the encrypted reasoning blob and echo it back next turn (see input_items).
-    // Only when the client enabled extended thinking, which is what lets Claude Code
-    // round-trip the thinking blocks that carry the blob (see model/responses.rs).
-    if thinking_enabled(request) {
+    // The Codex CLI sends this unconditionally on the ChatGPT/Codex backend; the
+    // other flavors keep it gated on extended thinking, which is what lets Claude
+    // Code round-trip the thinking blocks that carry the blob (see model/responses.rs).
+    if thinking_enabled(request) || flavor == ResponsesFlavor::Chatgpt {
         out.insert(
             "include".to_string(),
             json!(["reasoning.encrypted_content"]),

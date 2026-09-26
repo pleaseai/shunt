@@ -421,8 +421,9 @@ impl AnthropicSseMachine {
     }
 
     /// Record the reasoning item's id; defer opening the thinking block until the
-    /// first summary delta (or `output_item.done` when there is encrypted content),
-    /// so a reasoning item with neither summary nor encrypted content emits nothing.
+    /// first summary delta (or `output_item.done` when there is something to
+    /// round-trip), so a reasoning item with no summary, no id, and no encrypted
+    /// content emits nothing.
     fn reasoning_added(&mut self, item: &Value) -> Vec<String> {
         if !self.thinking_enabled {
             return Vec::new();
@@ -500,9 +501,22 @@ impl AnthropicSseMachine {
             .get("encrypted_content")
             .and_then(Value::as_str)
             .unwrap_or("");
+        // Prefer the id captured at output_item.added; fall back to the id on
+        // this done event so the round-trip keeps a real reasoning-item id even
+        // if the added event was missed or carried none.
+        let id = self
+            .reasoning
+            .as_ref()
+            .map(|reasoning| reasoning.id.clone())
+            .filter(|id| !id.is_empty())
+            .or_else(|| item.get("id").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default();
         let is_open = self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Reasoning);
-        // Nothing to show (no summary streamed) and nothing to round-trip.
-        if !is_open && encrypted.is_empty() {
+        // Nothing to show (no summary streamed) and nothing to round-trip (no
+        // id). An empty encrypted_content is not a drop: the item still
+        // round-trips its id so the backend keeps its reasoning chain under
+        // store:false.
+        if !is_open && encrypted.is_empty() && id.is_empty() {
             self.reasoning = None;
             return Vec::new();
         }
@@ -511,17 +525,7 @@ impl AnthropicSseMachine {
             // Open an empty thinking block purely to carry the round-trip signature.
             out.extend(self.open_reasoning());
         }
-        if !encrypted.is_empty() {
-            // Prefer the id captured at output_item.added; fall back to the id on
-            // this done event so the round-trip keeps a real reasoning-item id even
-            // if the added event was missed or carried none.
-            let id = self
-                .reasoning
-                .as_ref()
-                .map(|reasoning| reasoning.id.clone())
-                .filter(|id| !id.is_empty())
-                .or_else(|| item.get("id").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or_default();
+        if !id.is_empty() || !encrypted.is_empty() {
             let signature = encode_reasoning_signature(&id, encrypted);
             if let Some(reasoning) = &mut self.reasoning {
                 reasoning.signature = Some(signature.clone());

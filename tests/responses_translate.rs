@@ -1098,7 +1098,7 @@ fn xai_sends_reasoning_without_summary_when_effort_configured() {
 }
 
 #[test]
-fn xai_includes_encrypted_reasoning_when_thinking_enabled() {
+fn xai_includes_encrypted_reasoning_only_when_thinking_enabled() {
     let body = serde_json::to_vec(&json!({
         "thinking": {"type": "enabled"},
         "messages": [{"role": "user", "content": "hi"}]
@@ -1115,6 +1115,21 @@ fn xai_includes_encrypted_reasoning_when_thinking_enabled() {
     .unwrap();
 
     assert_eq!(actual["include"], json!(["reasoning.encrypted_content"]));
+
+    // The always-on include is chatgpt-only: xAI keeps it gated on thinking.
+    let without = serde_json::to_vec(&json!({
+        "messages": [{"role": "user", "content": "hi"}]
+    }))
+    .unwrap();
+    let actual = translate_request(
+        &without,
+        &xai_route("grok-4.5"),
+        ResponsesFlavor::Xai,
+        false,
+        None,
+    )
+    .unwrap();
+    assert!(actual.get("include").is_none());
 }
 
 #[test]
@@ -2089,6 +2104,19 @@ fn includes_encrypted_reasoning_only_when_thinking_enabled() {
     assert!(without.get("include").is_none());
 }
 
+#[test]
+fn chatgpt_always_requests_encrypted_reasoning() {
+    // The Codex CLI sends include unconditionally on the ChatGPT/Codex backend,
+    // so thinking-off turns keep the reasoning round-trip.
+    for body in [
+        json!({"messages": [{"role": "user", "content": "hi"}]}),
+        json!({"thinking": {"type": "enabled"}, "messages": [{"role": "user", "content": "hi"}]}),
+    ] {
+        let out = translate_with_flavor(body, ResponsesFlavor::Chatgpt);
+        assert_eq!(out["include"], json!(["reasoning.encrypted_content"]));
+    }
+}
+
 /// End-to-end: a reasoning item streams out as a thinking block whose signature
 /// carries the encrypted state, and feeding that block back yields a Responses
 /// `reasoning` input item — preserving chain-of-thought under store:false.
@@ -2160,6 +2188,70 @@ fn streams_reasoning_as_thinking_block_and_round_trips() {
         .position(|i| i["type"] == "message" && i["role"] == "assistant")
         .unwrap();
     assert!(reasoning_pos < message_pos);
+}
+
+#[test]
+fn reasoning_without_encrypted_content_still_round_trips() {
+    // A reasoning item can arrive with no encrypted_content (and no summary).
+    // It still round-trips its id, so the next turn keeps the item instead of
+    // dropping it from the input.
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    let expected_signature = shunt::model::responses::encode_reasoning_signature("rs_1", "");
+    assert!(emitted.contains(&expected_signature));
+
+    let out = translate(json!({
+        "thinking": {"type": "enabled"},
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "", "signature": expected_signature}
+            ]}
+        ]
+    }));
+    let input = out["input"].as_array().unwrap();
+    let reasoning = input
+        .iter()
+        .find(|item| item["type"] == "reasoning")
+        .expect("reasoning input item kept");
+    assert_eq!(reasoning["id"], "rs_1");
+    assert_eq!(reasoning["encrypted_content"], "");
+}
+
+#[test]
+fn streamed_summary_without_encrypted_content_still_round_trips() {
+    // Same as above but the reasoning block is OPEN at done (a summary streamed).
+    // That half of the delta would silently lose its round-trip id if only the
+    // closed-block path were fixed.
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.reasoning_summary_text.delta\n",
+        "data: {\"delta\":\"Let me\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    let expected_signature = shunt::model::responses::encode_reasoning_signature("rs_1", "");
+    assert!(emitted.contains(&expected_signature));
+    assert!(emitted.contains("\"type\":\"signature_delta\""));
 }
 
 #[test]
