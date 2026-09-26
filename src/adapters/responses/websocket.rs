@@ -120,9 +120,10 @@ pub(super) async fn forward_websocket(
 struct WsTurnContext<'a> {
     ws_url: String,
     pool_key: Option<&'a str>,
-    /// The inbound `x-claude-code-session-id` header, the conversation id that
-    /// becomes the handshake session-identity headers (the backend derives prompt-cache
-    /// affinity from `session-id`) and the body's `prompt_cache_key`.
+    /// The effective conversation id (the inbound `x-claude-code-session-id`
+    /// header or a parsed metadata session), which becomes the handshake
+    /// session-identity headers (the backend derives prompt-cache affinity
+    /// from `session-id`) and the body's `prompt_cache_key`.
     session_id: Option<&'a str>,
     provider: &'a str,
     /// Shared, not borrowed: the `codex.rate_limits` tap outlives this context

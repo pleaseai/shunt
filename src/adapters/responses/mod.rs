@@ -31,7 +31,10 @@ use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{self, resolve_credential, Credential},
     config::{AuthMode, CountTokens},
-    model::responses::translate_request_value,
+    model::{
+        responses::translate_request_value,
+        responses_request::{effective_session_identity, EffectiveSessionId},
+    },
     request::RequestBody,
     routing::Route,
     server::AppState,
@@ -76,28 +79,32 @@ impl Adapter for ResponsesAdapter {
         // `idle` too.
         bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
-        // The session id keys the websocket connection pool (issue #32) so turns
-        // of one Claude Code conversation reuse a live connection. Keep an owned
-        // value because the adapter future may outlive the borrowed header map.
-        let session_id = headers
+        // Resolve the effective id once before the WebSocket pool decision. A
+        // parsed metadata session is conversation-scoped and may pool; the raw
+        // user-id hash still feeds affinity but stays one-shot.
+        let header_session_id = headers
             .get("x-claude-code-session-id")
             .and_then(|value| value.to_str().ok())
             .filter(|session_id| !session_id.is_empty());
-        let pool_key = session_id.map(|session_id| {
-            headers
-                .get("x-shunt-inbound-client")
-                .and_then(|value| value.to_str().ok())
-                .map_or_else(
-                    || session_id.to_string(),
-                    |client| format!("{client}:{session_id}"),
-                )
-        });
+        let identity = effective_session_identity(body.json(), header_session_id);
+        let pool_key = identity
+            .as_ref()
+            .and_then(EffectiveSessionId::websocket_pool_id)
+            .map(|session_id| {
+                headers
+                    .get("x-shunt-inbound-client")
+                    .and_then(|value| value.to_str().ok())
+                    .map_or_else(
+                        || session_id.to_string(),
+                        |client| format!("{client}:{session_id}"),
+                    )
+            });
         Box::pin(async move {
             forward(
                 state,
                 route,
                 pool_key,
-                session_id.map(str::to_string),
+                identity.map(EffectiveSessionId::into_string),
                 body,
                 bounds,
             )
@@ -115,15 +122,14 @@ async fn forward(
     response_bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request_json = body.json();
-    // The effective conversation id: the inbound session header when present,
-    // else the `metadata.user_id` session — the id the upstream session-id
-    // headers AND the body prompt_cache_key must carry. A metadata-only client
-    // still gets the affinity headers, without which the backend caches
-    // nothing (measured 2026-09-20). The connection-pool key stays
-    // header-derived (see `ResponsesAdapter::forward`); the account-pool
-    // sticky key follows the effective id, so sessionless turns now pin per
-    // conversation instead of rotating (the inbound endpoint's sticky-key
-    // rationale).
+    // The effective conversation id (see `ResponsesAdapter::forward`, where
+    // the pool key was already derived): the inbound session header when
+    // present, else the `metadata.user_id` session — the id the upstream
+    // session-id headers AND the body prompt_cache_key must carry. A
+    // metadata-only client still gets the affinity headers, without which the
+    // backend caches nothing (measured 2026-09-20). The account-pool sticky
+    // key follows the effective id, so sessionless turns pin per conversation
+    // instead of rotating (the inbound endpoint's sticky-key rationale).
     let session_id = session_id
         .or_else(|| crate::model::responses_request::effective_session_id(request_json, None));
     let client_wants_stream = request_json

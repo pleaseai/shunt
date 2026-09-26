@@ -23,7 +23,7 @@ use shunt::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use wiremock::{
@@ -582,6 +582,102 @@ async fn serve_http(mut socket: TcpStream, drop: WsDrop) {
     let _ = socket.flush().await;
 }
 
+/// Serve two complete turns per accepted socket and capture each request frame.
+/// A pooled metadata session uses one socket; the hash-fallback control uses two.
+async fn spawn_recording_ws_upstream(
+    expected_connections: usize,
+) -> (
+    String,
+    Arc<AtomicUsize>,
+    Arc<StdMutex<Vec<serde_json::Value>>>,
+    JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let frames = Arc::new(StdMutex::new(Vec::new()));
+    let server_accepted = Arc::clone(&accepted);
+    let server_frames = Arc::clone(&frames);
+    let server = tokio::spawn(async move {
+        let mut handlers = JoinSet::new();
+        for _ in 0..expected_connections {
+            let (socket, _) = listener.accept().await.unwrap();
+            server_accepted.fetch_add(1, Ordering::SeqCst);
+            let frames = Arc::clone(&server_frames);
+            handlers.spawn(async move {
+                let mut ws = tokio_tungstenite::accept_async_with_config(
+                    socket,
+                    Some(WebSocketConfig::default()),
+                )
+                .await
+                .unwrap();
+                while let Some(message) = ws.next().await {
+                    match message.unwrap() {
+                        Message::Text(frame) => {
+                            let frame: serde_json::Value =
+                                serde_json::from_str(frame.as_str()).unwrap();
+                            let turn = {
+                                let mut frames = frames.lock().unwrap();
+                                frames.push(frame);
+                                frames.len()
+                            };
+                            let response_id = format!("resp_{turn}");
+                            for event in [
+                                serde_json::json!({
+                                    "type": "response.created",
+                                    "response": {"id": response_id}
+                                }),
+                                serde_json::json!({
+                                    "type": "response.output_item.added",
+                                    "item": {"type": "message"}
+                                }),
+                                serde_json::json!({
+                                    "type": "response.output_text.delta",
+                                    "delta": "hello"
+                                }),
+                                serde_json::json!({"type": "response.output_text.done"}),
+                                serde_json::json!({
+                                    "type": "response.output_item.done",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "id": format!("msg_{turn}"),
+                                        "phase": "final_answer",
+                                        "status": "completed",
+                                        "content": [{
+                                            "type": "output_text",
+                                            "text": "hello",
+                                            "annotations": [],
+                                            "logprobs": []
+                                        }]
+                                    }
+                                }),
+                                serde_json::json!({
+                                    "type": "response.completed",
+                                    "response": {
+                                        "id": response_id,
+                                        "usage": {"input_tokens": 5, "output_tokens": 1}
+                                    }
+                                }),
+                            ] {
+                                ws.send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                        Message::Pong(_) => {}
+                        Message::Close(_) => break,
+                        other => panic!("unexpected frame: {other:?}"),
+                    }
+                }
+            });
+        }
+        while handlers.join_next().await.is_some() {}
+    });
+    (format!("http://{addr}"), accepted, frames, server)
+}
+
 /// Read an HTTP request's headers and `content-length` body off the socket, so
 /// the client finishes sending before the mock replies.
 async fn drain_http_request(socket: &mut TcpStream) {
@@ -922,6 +1018,117 @@ async fn websocket_pool_does_not_reprobe_restored_stale_account_on_http_fallback
     );
 
     fs::remove_dir_all(state_dir).ok();
+}
+
+fn conversation_body(user_id: &str, messages: serde_json::Value) -> String {
+    serde_json::json!({
+        "model": "codex-fallback-model",
+        "max_tokens": 16,
+        "stream": false,
+        "metadata": {"user_id": user_id},
+        "messages": messages
+    })
+    .to_string()
+}
+
+async fn send_turn(base_url: &str, body: String) -> (StatusCode, String) {
+    let response = reqwest::Client::new()
+        .post(format!("{base_url}/v1/messages"))
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    (status, body)
+}
+
+#[tokio::test]
+async fn metadata_session_reuses_websocket_but_hashed_user_id_does_not() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+    let auth_path = write_fake_codex_auth(&mut vars);
+
+    let first_messages = serde_json::json!([{"role": "user", "content": "hi"}]);
+    let second_messages = serde_json::json!([
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "bye"}
+    ]);
+
+    let metadata_id = r#"{"session_id":"meta-conversation"}"#;
+    let (base_url, metadata_accepts, metadata_frames, metadata_server) =
+        spawn_recording_ws_upstream(2).await;
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+    let (status, body) = send_turn(
+        &gateway.base_url,
+        conversation_body(metadata_id, first_messages.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first metadata turn failed: {body}");
+    let (status, body) = send_turn(
+        &gateway.base_url,
+        conversation_body(metadata_id, second_messages.clone()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "second metadata turn failed: {body}"
+    );
+    let frames = metadata_frames.lock().unwrap().clone();
+    assert_eq!(
+        metadata_accepts.load(Ordering::SeqCst),
+        1,
+        "metadata session must reuse one websocket"
+    );
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[1]["previous_response_id"], "resp_1");
+    assert_eq!(
+        frames[1]["input"],
+        serde_json::json!([{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "bye"}]
+        }])
+    );
+    drop(gateway);
+    metadata_server.abort();
+
+    let plain_user = "plain-user-for-pool-control";
+    let (base_url, hash_accepts, hash_frames, hash_server) = spawn_recording_ws_upstream(2).await;
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+    let (status, body) = send_turn(
+        &gateway.base_url,
+        conversation_body(plain_user, first_messages),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first hash turn failed: {body}");
+    let (status, body) = send_turn(
+        &gateway.base_url,
+        conversation_body(plain_user, second_messages),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "second hash turn failed: {body}");
+    let frames = hash_frames.lock().unwrap().clone();
+    assert_eq!(
+        hash_accepts.load(Ordering::SeqCst),
+        2,
+        "hashed user id must keep each websocket one-shot"
+    );
+    assert_eq!(frames.len(), 2);
+    assert!(frames[1].get("previous_response_id").is_none());
+    assert_eq!(frames[1]["input"].as_array().unwrap().len(), 3);
+    assert_eq!(frames[0]["prompt_cache_key"], "3834f31dbf734510");
+    assert_eq!(frames[1]["prompt_cache_key"], "3834f31dbf734510");
+    drop(gateway);
+    hash_server.abort();
+
+    let _ = std::fs::remove_file(auth_path);
 }
 
 /// The non-streaming analogue of the mid-stream drop: a `stream:false` client

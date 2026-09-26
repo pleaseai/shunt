@@ -10,8 +10,10 @@
 //! [`ResponseEvent`]s so the existing [`crate::model::responses::AnthropicSseMachine`]
 //! can translate them exactly as it does the HTTP SSE stream.
 //!
-//! Connections are pooled per `x-claude-code-session-id`, so turns of one
-//! conversation reuse an idle live socket instead of re-handshaking. If that
+//! Connections are pooled per the caller-supplied pool-safe effective
+//! conversation key (the `x-claude-code-session-id` header or a parsed
+//! metadata session id; the hashed user-id fallback never pools), so turns of
+//! one conversation reuse an idle live socket instead of re-handshaking. If that
 //! socket is already streaming a turn, the concurrent turn opens a dedicated
 //! one-shot connection rather than waiting; it deliberately carries no
 //! continuation, while the pooled socket keeps the session's continuation state.
@@ -259,7 +261,9 @@ impl Drop for PoolEntry {
     }
 }
 
-/// Process-global connection pool keyed by `x-claude-code-session-id`. A std
+/// Process-global connection pool keyed by the pool-safe effective
+/// conversation key (header or parsed metadata session; the hashed user-id
+/// fallback never reaches it). A std
 /// mutex guards only map lookups/inserts (never held across an await); each
 /// connection accepts at most one active turn, while contention uses an unpooled
 /// connection.

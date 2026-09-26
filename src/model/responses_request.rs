@@ -272,17 +272,44 @@ pub fn translate_request_value(
     Value::Object(out)
 }
 
-/// The conversation id the upstream `session-id`/`thread-id` headers and the
-/// body `prompt_cache_key` share: the inbound `x-claude-code-session-id` header
-/// when the client sent one, else the `metadata.user_id` JSON `session_id`.
-/// Shared with the adapter so a metadata-only client still gets the affinity
-/// headers (the backend derives cache affinity from the header alone — a body
-/// key without the matching header caches nothing, measured 2026-09-20).
-pub(crate) fn effective_session_id(request: &Value, session_id: Option<&str>) -> Option<String> {
+/// The source and value of the effective conversation identity shared by the
+/// upstream session headers and body `prompt_cache_key`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EffectiveSessionId {
+    Header(String),
+    MetadataSession(String),
+    HashedUserId(String),
+}
+
+impl EffectiveSessionId {
+    pub(crate) fn into_string(self) -> String {
+        match self {
+            Self::Header(value) | Self::MetadataSession(value) | Self::HashedUserId(value) => value,
+        }
+    }
+
+    /// Only conversation-scoped identities may reuse a WebSocket. The hash
+    /// fallback can represent every conversation belonging to one user.
+    pub(crate) fn websocket_pool_id(&self) -> Option<&str> {
+        match self {
+            Self::Header(value) | Self::MetadataSession(value) => Some(value),
+            Self::HashedUserId(_) => None,
+        }
+    }
+}
+
+/// Resolve the conversation identity from the inbound session header, then a
+/// `metadata.user_id` JSON `session_id`, then a stable hash of the raw user id.
+/// Metadata-only clients still get matching affinity headers and body keys; the
+/// provenance keeps the per-user hash out of the WebSocket connection pool.
+pub(crate) fn effective_session_identity(
+    request: &Value,
+    session_id: Option<&str>,
+) -> Option<EffectiveSessionId> {
     // The inbound header is always header-safe: hyper rejects invalid header
     // values at parse time, so whatever reached the handler is valid.
     if let Some(session_id) = session_id.filter(|session_id| !session_id.is_empty()) {
-        return Some(session_id.to_string());
+        return Some(EffectiveSessionId::Header(session_id.to_string()));
     }
     let user_id = request
         .pointer("/metadata/user_id")
@@ -299,10 +326,18 @@ pub(crate) fn effective_session_id(request: &Value, session_id: Option<&str>) ->
             // hex, always header-safe, and keeps header and key equal.
             .filter(|session| HeaderValue::from_str(session).is_ok())
         {
-            return Some(session.to_string());
+            return Some(EffectiveSessionId::MetadataSession(session.to_string()));
         }
     }
-    Some(hashed_user_id(user_id))
+    Some(EffectiveSessionId::HashedUserId(hashed_user_id(user_id)))
+}
+
+/// The value-only view of [`effective_session_identity`], for consumers that
+/// need the id string but no provenance (`prompt_cache_key`, the adapter's
+/// inner forward after the pool decision). The decision logic stays in one
+/// place; this only drops the variant.
+pub(crate) fn effective_session_id(request: &Value, session_id: Option<&str>) -> Option<String> {
+    effective_session_identity(request, session_id).map(EffectiveSessionId::into_string)
 }
 
 /// A stable per-conversation key so the Responses backend routes every turn of a
@@ -1053,7 +1088,10 @@ fn effort(request: &Value, route: &Route) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{effort, input_items, translate_request_value, ResponsesFlavor, ToolSearchContext};
+    use super::{
+        effective_session_identity, effort, input_items, translate_request_value,
+        EffectiveSessionId, ResponsesFlavor, ToolSearchContext,
+    };
     use crate::routing::{AdapterKind, Route};
 
     fn codex_route() -> Route {
@@ -1217,6 +1255,37 @@ mod tests {
         assert_eq!(items[1]["role"], "developer");
         assert_eq!(items[1]["content"][0]["type"], "input_text");
         assert_eq!(items[1]["content"][0]["text"], "SessionStart hook output");
+    }
+
+    /// Only conversation-scoped identities may pool a WebSocket: the header and
+    /// the parsed metadata session qualify, while the per-user hash fallback —
+    /// including the one an unsafe metadata session degrades to — stays
+    /// affinity-only.
+    #[test]
+    fn only_conversation_scoped_identities_pool_a_websocket() {
+        let header = effective_session_identity(&json!({}), Some("hdr")).unwrap();
+        assert_eq!(header.websocket_pool_id(), Some("hdr"));
+
+        let metadata = effective_session_identity(
+            &json!({"metadata": {"user_id": "{\"session_id\":\"meta_sess\"}"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(metadata.websocket_pool_id(), Some("meta_sess"));
+
+        let hashed =
+            effective_session_identity(&json!({"metadata": {"user_id": "plain-user"}}), None)
+                .unwrap();
+        assert!(matches!(hashed, EffectiveSessionId::HashedUserId(_)));
+        assert!(hashed.websocket_pool_id().is_none());
+
+        let unsafe_meta = effective_session_identity(
+            &json!({"metadata": {"user_id": "{\"session_id\":\"bad\\nid\"}"}}),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(unsafe_meta, EffectiveSessionId::HashedUserId(_)));
+        assert!(unsafe_meta.websocket_pool_id().is_none());
     }
 
     #[test]
