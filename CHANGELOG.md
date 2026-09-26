@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.50.0](https://github.com/pleaseai/shunt/compare/v0.49.1...v0.50.0) (2026-09-26)
+
+
+### Features
+
+* **accounts:** fail over and cool down a Codex account+model on "model is not supported" ([#676](https://github.com/pleaseai/shunt/issues/676)) ([dbbb7a5](https://github.com/pleaseai/shunt/commit/dbbb7a59be51147a15314b4d3be614edf84ee408))
+* **admin:** add hide_observed to keep host logins unread ([#610](https://github.com/pleaseai/shunt/issues/610)) ([5f32b34](https://github.com/pleaseai/shunt/commit/5f32b34ce9bf9699847783f5979e5a22d97c298e))
+
+
+### Bug Fixes
+
+* **adapters:** bound the remaining WebSocket and Antigravity accumulations on internal calls ([#688](https://github.com/pleaseai/shunt/issues/688)) ([e1ef6ab](https://github.com/pleaseai/shunt/commit/e1ef6ab6e23452e2b2bcc9bf21d06f3d6a6aac80))
+* **routing:** charge the judge budget per dispatched call, atomically and per delegated identity ([#685](https://github.com/pleaseai/shunt/issues/685)) ([9092a6e](https://github.com/pleaseai/shunt/commit/9092a6e8c38e6c47833934e3bf52233065905de6))
+* **routing:** resolve a count_tokens probe on a driven entry to the session's retained target ([#687](https://github.com/pleaseai/shunt/issues/687)) ([c8c8dc7](https://github.com/pleaseai/shunt/commit/c8c8dc75efbd49487a294a132665dc1d21284484))
+
 ## [0.49.1](https://github.com/pleaseai/shunt/compare/v0.49.0...v0.49.1) (2026-09-24)
 
 
