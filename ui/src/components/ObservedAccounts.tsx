@@ -65,7 +65,11 @@ function emptyUsageText(state: string): string {
 }
 
 function UsageCell({ row, state }: { row: AccountRow; state: string }): ReactElement {
-  const buckets = (row.observed?.quota_buckets ?? []).filter(
+  // Pool buckets first: for the 5h/7d windows the pool already takes priority
+  // over observations (`foldObservation` prefers the client's windows only
+  // where the pool has none), and Antigravity buckets exist solely on the pool
+  // side, so this is purely additive — no observed counterpart to displace.
+  const buckets = (row.quota_buckets ?? row.observed?.quota_buckets ?? []).filter(
     (bucket) => bucket.remaining !== null && bucket.remaining !== undefined,
   );
   if (buckets.length) {

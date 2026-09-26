@@ -9,6 +9,7 @@ pub mod auth;
 pub mod catalog;
 pub mod login;
 pub mod store;
+pub mod usage;
 pub mod version;
 
 /// shunt-owned Antigravity credential file: `$SHUNT_ANTIGRAVITY_AUTH_FILE`, else

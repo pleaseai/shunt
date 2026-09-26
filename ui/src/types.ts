@@ -66,6 +66,7 @@ export interface PoolAccount {
   reset_7d?: number | null;
   utilization_7d_oi?: number | null;
   reset_7d_oi?: number | null;
+  quota_buckets?: QuotaBucket[];
 }
 
 export interface PoolProvider {
@@ -120,4 +121,5 @@ export interface AccountRow {
   reset_7d?: number | null;
   utilization_7d_oi?: number | null;
   reset_7d_oi?: number | null;
+  quota_buckets?: QuotaBucket[];
 }

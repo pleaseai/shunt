@@ -312,7 +312,7 @@ process-lifetime state:
 | `GET` | `/admin/accounts` | JSON: Claude store metadata (name, kind, expiry, UUID — never the token) |
 | `GET` | `/admin/accounts/codex` | JSON: Codex store metadata (name, expiry, account ID — never the token) |
 | `GET` | `/admin/observed` | JSON: read-only observed Claude, Codex, Gemini, Kimi, Grok, and Cursor identity, state, and provider-native usage — never token material |
-| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state; account objects may include an optional `plan` string |
+| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth`/`antigravity_oauth` managed-pool state; account objects may include an optional `plan` string (`antigravity_oauth` accounts additionally carry a `quota_buckets` array containing the Gemini and Claude+GPT shared 5h/weekly windows from the `retrieveUserQuotaSummary` poll) |
 | `POST` | `/admin/accounts/claude` | `{name, mode}` → start Claude provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the Claude account |
 | `POST` | `/admin/accounts/claude/{name}/refresh` | Exercise an **imported** account's refresh grant now and report whether the login is still alive; returns the new `expires_at` and never token material. `400` for a `setup_token` account (no refresh grant exists) or a terminal verdict (`invalid_grant`, no stored refresh token, or a rotated pair that could not be persisted); `502` for a non-terminal failure |

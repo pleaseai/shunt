@@ -233,9 +233,10 @@ pub struct PoolConfig {
     /// Avoid an account projected to exhaust a soft threshold before reset.
     #[serde(default)]
     pub burn_rate_avoidance: bool,
-    /// Poll Claude's `/api/oauth/usage` and Codex's `/wham/usage` every N
-    /// seconds for refreshable accounts. Unset or `0` disables polling;
-    /// positive values below 60 are clamped to 60 seconds.
+    /// Poll Claude's `/api/oauth/usage`, Codex's `/wham/usage`, and
+    /// Antigravity's `retrieveUserQuotaSummary` every N seconds for refreshable
+    /// accounts. Unset or `0` disables polling; positive values below 60 are
+    /// clamped to 60 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_refresh_seconds: Option<u64>,
     /// Persist the pool's per-account quota state to this file so a restart

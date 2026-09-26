@@ -278,6 +278,21 @@ pub struct UsageSnapshot {
     pub seven_day_oi: Option<UsageWindow>,
 }
 
+/// One grouped model-family quota window from Google's Code Assist `retrieveUserQuotaSummary`
+/// RPC, as surfaced for an Antigravity pool account. The pool-side twin of
+/// `auth::observation::QuotaBucket` — kept separate since `accounts.rs` (pool)
+/// and `auth::observation` (local discovery) are intentionally independent
+/// modules with no existing coupling. The wire/JSON shape mirrors it so the
+/// frontend's existing bar-rendering code needs only a data-source change.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct QuotaBucketSnapshot {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_time: Option<String>,
+}
+
 impl UsageSnapshot {
     /// True when the fetch succeeded but reported no window at all. A usage
     /// poller must not call [`AccountPool::note_usage`] on an empty snapshot:
@@ -339,6 +354,11 @@ struct AccountHealth {
     cooldown_until: Option<Instant>,
     cooldown_until_fable: Option<Instant>,
     quota: QuotaState,
+    /// Latest grouped model-family quota windows from the Antigravity `retrieveUserQuotaSummary`
+    /// poll. Memory-only, like `cooldown_until`: re-fetched every poll tick
+    /// with no rotation logic depending on it, so it never enters `QuotaState`
+    /// (which `state_persist.rs` round-trips through the on-disk format).
+    quota_buckets: Vec<QuotaBucketSnapshot>,
     /// Latest configured selection state. Quota gauges exclude disabled accounts.
     enabled: bool,
     /// Whether the pool has processed at least one upstream response for this
@@ -430,6 +450,12 @@ pub struct AccountSnapshot {
     pub utilization_7d_oi: Option<f64>,
     pub reset_7d_oi: Option<u64>,
     pub status: Option<String>,
+    /// Grouped model-family quota windows from the Antigravity `retrieveUserQuotaSummary` poll,
+    /// when present. Omitted when empty. Unlike the 5h/7d utilization fields
+    /// above, these carry no account-wide window — each bucket names its own
+    /// model with its own remaining fraction and reset time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quota_buckets: Vec<QuotaBucketSnapshot>,
     /// The credential is dead and needs an operator re-login (see
     /// [`AccountHealth::needs_relogin`]). Reported alongside — not folded
     /// into — `available` and the cooldown fields, so the dashboard can tell
@@ -461,6 +487,7 @@ impl AccountSnapshot {
             utilization_7d_oi: None,
             reset_7d_oi: None,
             status: None,
+            quota_buckets: Vec::new(),
             needs_relogin,
         }
     }
@@ -1288,6 +1315,29 @@ impl AccountPool {
         self.mark_dirty();
     }
 
+    /// Apply one successfully polled Antigravity `retrieveUserQuotaSummary` response.
+    /// Google's response is a full authoritative snapshot on every call, so the
+    /// buckets wholesale replace whatever the previous tick recorded — no
+    /// partial-window reconciliation like Claude's per-window
+    /// overwrite-if-present or Codex's clear-flags dance.
+    ///
+    /// Display-only on purpose: this leaves `health.quota` (5h/7d/aggregate
+    /// status) untouched and records no utilization metric, so Antigravity
+    /// pool selection/rotation behavior is unchanged (it already ignores quota
+    /// for this family) — matching the `/admin/observed` display-only
+    /// precedent.
+    pub fn note_antigravity_usage(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        buckets: Vec<QuotaBucketSnapshot>,
+    ) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        let health = entries.entry(account_key(provider, account)).or_default();
+        health.observed = true;
+        health.quota_buckets = buckets;
+    }
+
     fn note_usage_inner(
         &self,
         provider: &str,
@@ -2037,6 +2087,7 @@ impl AccountPool {
                         utilization_7d_oi: health.quota.utilization_7d_oi,
                         reset_7d_oi: health.quota.reset_7d_oi,
                         status: health.quota.status.clone(),
+                        quota_buckets: health.quota_buckets.clone(),
                         // The entry's own mark *or* the side table's, because
                         // the set cannot always reach the entry: a verdict
                         // recorded with no uuid — the credential file carried no
@@ -8015,6 +8066,65 @@ mod tests {
         assert_eq!(
             crate::metrics::pool_utilization_value_for_tests(provider, "7d_oi"),
             Some(0.33)
+        );
+    }
+
+    #[test]
+    fn note_antigravity_usage_applies_buckets_and_replaces_wholesale() {
+        let pool = AccountPool::new();
+        let provider = "antigravity-usage-buckets";
+        let target = account("agy-target");
+        let sibling = account("agy-sibling");
+        pool.sync_enabled_accounts(provider, &[target.clone(), sibling.clone()]);
+
+        pool.note_antigravity_usage(
+            provider,
+            &target,
+            vec![
+                QuotaBucketSnapshot {
+                    label: "Gemini Models · 5h".to_string(),
+                    remaining: Some(0.7),
+                    reset_time: Some("2026-09-24T00:00:00Z".to_string()),
+                },
+                QuotaBucketSnapshot {
+                    label: "Claude + GPT Models · 5h".to_string(),
+                    remaining: Some(0.92),
+                    reset_time: None,
+                },
+            ],
+        );
+
+        let snaps = pool.snapshot(provider, &[target.clone(), sibling.clone()], None, None);
+        let target_snap = snaps.iter().find(|s| s.name == target.name).unwrap();
+        assert!(target_snap.has_state);
+        assert_eq!(target_snap.quota_buckets.len(), 2);
+        assert_eq!(target_snap.quota_buckets[0].label, "Gemini Models · 5h");
+        assert_eq!(target_snap.quota_buckets[0].remaining, Some(0.7));
+        // Display-only: the aggregate quota state is untouched, so selection
+        // behavior is unchanged.
+        assert_eq!(target_snap.utilization_5h, None);
+        assert_eq!(target_snap.utilization_7d, None);
+        assert!(!target_snap.near_quota);
+        let sibling_snap = snaps.iter().find(|s| s.name == sibling.name).unwrap();
+        assert!(!sibling_snap.has_state);
+        assert!(sibling_snap.quota_buckets.is_empty());
+
+        // A second poll fully replaces the first bucket list — Google's
+        // response is authoritative each call, so nothing merges.
+        pool.note_antigravity_usage(
+            provider,
+            &target,
+            vec![QuotaBucketSnapshot {
+                label: "Claude + GPT Models · weekly".to_string(),
+                remaining: Some(0.5),
+                reset_time: None,
+            }],
+        );
+        let snaps = pool.snapshot(provider, std::slice::from_ref(&target), None, None);
+        assert_eq!(snaps[0].quota_buckets.len(), 1);
+        assert_eq!(
+            snaps[0].quota_buckets[0].label,
+            "Claude + GPT Models · weekly"
         );
     }
 

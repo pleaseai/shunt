@@ -232,6 +232,18 @@ Antigravity는 Claude 모델도 제공하지만, shunt는 아직 그 모델들�
 `x-shunt-account` 헤더로 담깁니다. 모든 계정이 실패하면 마지막 업스트림 오류를 전달하므로 원인이
 가려지지 않습니다.
 
+## 사용량 보고
+
+`usage_refresh_seconds`를 설정하면 imported(갱신 가능) `antigravity_oauth` 계정마다 Code Assist
+`retrieveUserQuotaSummary` RPC를 폴링합니다. 프로덕션 `cloudcode-pa.googleapis.com` 설정은 추론 및
+모델 카탈로그 트래픽과 동일하게 Antigravity의 `daily-cloudcode-pa.googleapis.com` 제어 플레인으로
+정규화됩니다.
+
+응답은 모델별 독립 쿼터가 아니라 **Gemini Models**와 **Claude + GPT Models**라는 두 개의 공유
+모델-패밀리 쿼터 풀로 그룹화됩니다. 계정 플랜에서 제공되는 경우 각 그룹은 5시간 및 주간 윈도우를
+가지며, 각 윈도우에는 남은 비율과 리셋 시각이 포함됩니다. 대시보드는 카탈로그 모델마다 막대를 만들지
+않고 이 공유 윈도우를 표시합니다. 이 값은 표시 전용이며 풀 선택과 로테이션에는 사용되지 않습니다.
+
 ## 검증
 
 ```bash
