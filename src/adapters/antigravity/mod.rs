@@ -121,41 +121,67 @@ pub fn terminate_all_agy_groups() {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AntigravityAdapter;
 
+/// Why a bounded non-streaming drain stopped before the terminal event.
+#[derive(Debug)]
+enum DrainCut {
+    /// The CLI's output passed `max_bytes`.
+    TooLarge(crate::adapters::UpstreamBodyTooLarge),
+    /// The CLI produced no content for the `idle` gap.
+    Idle(crate::adapters::UpstreamBodyIdle),
+}
+
 /// Pump `agy`'s stdout into `translator` until its terminal event, bounding
-/// what the reply accumulates.
+/// what the drain reads.
 ///
 /// This is the non-streaming path, and it is the path every internal
 /// `[models.router]` call takes — `routing::serve` strips `stream`. The
 /// translated text is the whole body this path answers with, and the only
 /// other thing limiting it is [`HARD_TIMEOUT`]: a wall clock, not a byte
-/// count. Unbounded, a judge's CLI could therefore allocate freely for minutes
-/// instead of failing open at `judge_max_response_bytes`. `None` is the client
-/// path and never refuses.
+/// count or a gap. Unbounded, a judge's CLI could therefore allocate freely
+/// for minutes instead of failing open at `judge_max_response_bytes`, and a
+/// gated call's stalled CLI would sit until `gated_max_duration_ms` instead of
+/// being cut at `gated_idle_ms` (#667). [`ResponseBounds::default`] is the
+/// client path and never refuses.
+///
+/// `max_bytes` is charged every byte read from stdout, plus one per line for
+/// the newline the line split strips — the output as the CLI produced it,
+/// as a whole-body read charges the body as it arrived. The translated text is
+/// derived from those bytes and is never longer than them, so it is bounded
+/// too.
+///
+/// `idle` times every wait for more output, the first one after the spawn
+/// included, as `routing::serve`'s gated collector times the relayed stream.
+/// Progress is a line whose translation carries a content frame by that
+/// collector's own rule ([`IncrementalFrameScanner`]): a tool step, which
+/// translates to a `ping`, is a keep-alive there and is one here too.
 ///
 /// Generic over the reader so the bound can be exercised without spawning a
-/// process: what this has to get right is arithmetic over the accumulated
-/// text, not anything about the pipe it arrives on.
+/// process.
+///
+/// [`ResponseBounds::default`]: crate::adapters::ResponseBounds::default
+/// [`IncrementalFrameScanner`]: crate::routing::serve::bounds::IncrementalFrameScanner
 async fn drain_non_streaming<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     translator: &mut Translator,
-    response_byte_cap: Option<usize>,
-) -> Result<(), crate::adapters::UpstreamBodyTooLarge> {
+    bounds: crate::adapters::ResponseBounds,
+) -> Result<(), DrainCut> {
     let mut line = Vec::new();
-    while read_capped_line(reader, &mut line, response_byte_cap).await? {
+    let mut read = 0usize;
+    // An absolute deadline, as in `collect_bounded_body`: a line that is not
+    // progress must leave it where it was.
+    let mut deadline = bounds
+        .idle
+        .map(|idle| (idle, tokio::time::Instant::now() + idle));
+    while let Some(consumed) =
+        read_capped_line(reader, &mut line, read, bounds.max_bytes, deadline).await?
+    {
+        read = read.saturating_add(consumed);
         // Invalid UTF-8 ends the drain, exactly as `Lines::next_line`'s
         // `Err(InvalidData)` did before this read was bounded.
         let Ok(text) = std::str::from_utf8(&line) else {
             break;
         };
-        let _ = translator.on_line(text);
-        // Checked as the text grows rather than once the drain is over:
-        // checking afterwards is checking after the memory has already been
-        // spent, which is what the bound exists to prevent.
-        if let Some(too_large) =
-            crate::adapters::over_cap(translator.text().len(), response_byte_cap)
-        {
-            return Err(too_large);
-        }
+        let translated = translator.on_line(text);
         // Stop at the terminal event rather than reading to EOF. `agy` spawns
         // tool descendants that inherit stdout; one holding the pipe open
         // after the result would otherwise stall a finished turn until
@@ -165,74 +191,84 @@ async fn drain_non_streaming<R: tokio::io::AsyncBufRead + Unpin>(
         if translator.end().is_some() {
             break;
         }
+        if let Some((idle, at)) = deadline.as_mut() {
+            // Only scanned on a bounded call; the client path pays nothing.
+            if crate::routing::serve::bounds::IncrementalFrameScanner::default()
+                .feed(translated.as_bytes())
+            {
+                *at = tokio::time::Instant::now() + *idle;
+            }
+        }
     }
     Ok(())
 }
 
-/// Read one newline-terminated line into `line`, refusing it the moment it
-/// passes `max_bytes`.
+/// Read one newline-terminated line into `line`, refusing it the moment the
+/// drain's total passes `max_bytes` or the output goes silent past `deadline`.
 ///
 /// [`tokio::io::Lines`] cannot express this: `next_line` grows its `String`
 /// through the newline before it returns, so a single oversized event — one
 /// large `text_delta`, or a terminal `response` — spends the memory the judge
-/// cap exists to deny before anything can check it, and the accumulated-text
-/// check above then reports a limit that was already exceeded. It is the same
-/// reason [`drain_stderr`] reads fixed-size chunks.
+/// cap exists to deny before anything can check it. It is the same reason
+/// [`drain_stderr`] reads fixed-size chunks.
 ///
-/// The per-line budget is the whole cap rather than what is left of it: an
-/// event's JSON carries field names, quotes, and escapes on top of the text it
-/// contributes, so charging it against the remaining *text* budget would
-/// refuse replies that sit comfortably within the limit. Peak use is therefore
-/// about twice the cap — the line being read, plus the text kept — which is a
-/// bound, where the point is that the old path had none.
+/// `already` is what the drain has read before this line; the line is charged
+/// on top of it, terminator included, before its bytes are copied. Peak use is
+/// therefore the cap: the line being read plus the text kept from the lines
+/// before it, which is no longer than they were.
 ///
-/// Returns `false` at EOF, and on a read error, which ends the drain exactly
-/// as `next_line`'s `Err` did.
+/// Returns how many bytes the line consumed, terminator included, or `None` at
+/// EOF, and on a read error, which ends the drain exactly as `next_line`'s
+/// `Err` did.
 async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     line: &mut Vec<u8>,
+    already: usize,
     max_bytes: Option<usize>,
-) -> Result<bool, crate::adapters::UpstreamBodyTooLarge> {
+    deadline: Option<(Duration, tokio::time::Instant)>,
+) -> Result<Option<usize>, DrainCut> {
     line.clear();
+    let mut consumed_total = 0usize;
     loop {
         // `fill_buf` borrows the reader, so the consume count leaves the block
         // rather than being applied inside it.
         let (consumed, complete) = {
-            let available = match reader.fill_buf().await {
-                Ok(available) => available,
-                Err(_) => return Ok(false),
+            let filled = match deadline {
+                Some((idle, at)) => tokio::time::timeout_at(at, reader.fill_buf())
+                    .await
+                    .map_err(|_| DrainCut::Idle(crate::adapters::UpstreamBodyIdle { idle }))?,
+                None => reader.fill_buf().await,
+            };
+            let Ok(available) = filled else {
+                return Ok(None);
             };
             if available.is_empty() {
                 // EOF. A trailing line the child never terminated is still a
                 // line, and its bytes were charged as they were buffered.
-                return Ok(!line.is_empty());
+                return Ok((!line.is_empty()).then_some(consumed_total));
             }
-            match available.iter().position(|byte| *byte == b'\n') {
-                Some(index) => {
-                    // Charged before the copy, so the cap bounds the
-                    // allocation instead of reporting it afterwards.
-                    if let Some(too_large) =
-                        crate::adapters::over_cap(line.len() + index, max_bytes)
-                    {
-                        return Err(too_large);
-                    }
-                    line.extend_from_slice(&available[..index]);
-                    (index + 1, true)
-                }
-                None => {
-                    if let Some(too_large) =
-                        crate::adapters::over_cap(line.len() + available.len(), max_bytes)
-                    {
-                        return Err(too_large);
-                    }
-                    line.extend_from_slice(available);
-                    (available.len(), false)
-                }
+            let (take, consumed, complete) = match available.iter().position(|byte| *byte == b'\n')
+            {
+                Some(index) => (index, index + 1, true),
+                None => (available.len(), available.len(), false),
+            };
+            // Charged before the copy, so the cap bounds the allocation
+            // instead of reporting it afterwards.
+            if let Some(too_large) = crate::adapters::over_cap(
+                already
+                    .saturating_add(consumed_total)
+                    .saturating_add(consumed),
+                max_bytes,
+            ) {
+                return Err(DrainCut::TooLarge(too_large));
             }
+            line.extend_from_slice(&available[..take]);
+            (consumed, complete)
         };
         reader.consume(consumed);
+        consumed_total += consumed;
         if complete {
-            return Ok(true);
+            return Ok(Some(consumed_total));
         }
     }
 }
@@ -245,17 +281,15 @@ impl Adapter for AntigravityAdapter {
         _uri: &'a Uri,
         _headers: &'a HeaderMap,
         body: RequestBody,
-        // `max_bytes` is honoured on the non-streaming path, which is the one
-        // that accumulates a whole reply: the drain loop below feeds every `agy`
-        // line through the translator, whose text grows without bound until
-        // the terminal event. That is the branch every internal call takes,
-        // since `routing::serve` strips `stream`. A streaming turn relays its
-        // SSE frames onward and holds nothing, so its bound falls to that
-        // collector on the relayed body. `idle` is not applied here yet
-        // (#667).
+        // Both bounds are honoured on the non-streaming path, which is the
+        // one that accumulates a whole reply: the drain loop below feeds every
+        // `agy` line through the translator, whose text grows without bound
+        // until the terminal event (see `drain_non_streaming`). That is the
+        // branch every internal call takes, since `routing::serve` strips
+        // `stream`. A streaming turn relays its SSE frames onward and holds
+        // nothing, so its bounds fall to that collector on the relayed body.
         bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
-        let response_byte_cap = bounds.max_bytes;
         Box::pin(async move {
             let request = body.json();
             reject_caller_tools(request)?;
@@ -561,7 +595,7 @@ impl Adapter for AntigravityAdapter {
 
             let drained = tokio::time::timeout(
                 HARD_TIMEOUT,
-                drain_non_streaming(&mut reader, &mut translator, response_byte_cap),
+                drain_non_streaming(&mut reader, &mut translator, bounds),
             )
             .await;
             if drained.is_err() {
@@ -575,12 +609,16 @@ impl Adapter for AntigravityAdapter {
             }
             // An abandoned accumulation leaves the CLI running, so it is killed
             // here exactly as the timeout above does. Reported with the shared
-            // oversized marker rather than `agy_failure`, so `routing::serve`
-            // resolves the judge as `oversized` instead of as a failed upstream
-            // and does not advance the failover chain onto another provider.
-            if let Ok(Err(too_large)) = drained {
+            // markers rather than `agy_failure`, so `routing::serve` resolves a
+            // judge as `oversized` and cuts a gated turn at its bound instead
+            // of reading either as a failed upstream, and neither advances the
+            // failover chain onto another provider.
+            if let Ok(Err(cut)) = drained {
                 child.terminate().await;
-                return Err(crate::adapters::too_large_error(too_large));
+                return Err(match cut {
+                    DrainCut::TooLarge(too_large) => crate::adapters::too_large_error(too_large),
+                    DrainCut::Idle(idle) => crate::adapters::idle_error(idle),
+                });
             }
             // The loop above stops at the terminal result, so the common way
             // here is with the pipe still open and the child still alive; the
@@ -1141,8 +1179,20 @@ mod tests {
     ) -> (Translator, Option<UpstreamBodyTooLarge>) {
         let mut translator = Translator::new("agy-test-model", "msg_test");
         let mut reader = BufReader::new(transcript.as_bytes());
-        let outcome = drain_non_streaming(&mut reader, &mut translator, cap).await;
-        (translator, outcome.err())
+        let outcome = drain_non_streaming(
+            &mut reader,
+            &mut translator,
+            crate::adapters::ResponseBounds {
+                max_bytes: cap,
+                idle: None,
+            },
+        )
+        .await;
+        let refusal = outcome.err().map(|cut| match cut {
+            DrainCut::TooLarge(too_large) => too_large,
+            DrainCut::Idle(idle) => panic!("no idle bound was set, yet the drain was cut: {idle}"),
+        });
+        (translator, refusal)
     }
 
     /// A transcript whose deltas are each under the cap and only cross it in
@@ -1198,11 +1248,11 @@ mod tests {
     ///
     /// `oversized_transcript` above only crosses the cap in sum, so it passes
     /// even when one line may allocate without bound — which is exactly the
-    /// hole this covers. Non-vacuity lives in the `text()` assertion, not in
-    /// the refusal: restore the `Lines::next_line` read and a refusal is still
-    /// returned (the accumulated-text check catches it one step later), but
-    /// the whole 4 KiB line has been copied and translated by then, so
-    /// `text()` comes back holding it and this goes red.
+    /// hole this covers. Non-vacuity lives in the `text()` assertion: restore
+    /// the `Lines::next_line` read and charge each line after `on_line`, and a
+    /// refusal is still returned, but the whole 4 KiB line has been copied and
+    /// translated by then, so `text()` comes back holding it and this goes
+    /// red.
     #[tokio::test]
     async fn a_single_oversized_event_is_refused_before_it_is_translated() {
         let mut transcript = delta_line(&"W".repeat(4096));
@@ -1232,6 +1282,163 @@ mod tests {
             3200,
             "the client path is byte for byte what it was"
         );
+        assert!(matches!(translator.end(), Some(AgyEnd::Success)));
+    }
+
+    /// The twin of the refusal above with a cap: the same transcript under a
+    /// cap it fits is served whole. Without it, a drain that refused every
+    /// bounded call would pass the refusal test, and the unbounded twin above
+    /// could not tell, since it sets no cap at all.
+    #[tokio::test]
+    async fn a_bounded_drain_under_its_cap_still_carries_the_whole_reply() {
+        let transcript = oversized_transcript();
+        let (translator, refusal) = drain(&transcript, Some(transcript.len())).await;
+
+        assert!(refusal.is_none(), "a reply that fits is not refused");
+        assert_eq!(translator.text().len(), 3200);
+        assert!(matches!(translator.end(), Some(AgyEnd::Success)));
+    }
+
+    /// Every newline the line split strips is charged, so the cap counts the
+    /// output exactly as the CLI wrote it: a transcript of exactly `cap` bytes
+    /// is served, and one byte less of cap refuses it, although the lines
+    /// without their terminators would fit in either (#636).
+    ///
+    /// Non-vacuity: charge the line without its terminator (`index` instead of
+    /// `index + 1` in `read_capped_line`) and the second call is served.
+    #[tokio::test]
+    async fn the_drain_charges_each_stripped_newline() {
+        let transcript = oversized_transcript();
+        let lines = transcript.lines().count();
+        assert!(lines > 1);
+
+        let (_, refusal) = drain(&transcript, Some(transcript.len())).await;
+        assert!(refusal.is_none(), "exactly the cap is within it");
+
+        let (_, refusal) = drain(&transcript, Some(transcript.len() - 1)).await;
+        assert!(
+            refusal.is_some(),
+            "{} bytes without their {lines} newlines fit, but the output did not",
+            transcript.len() - lines
+        );
+    }
+
+    /// Drive the drain over a pipe the test writes into, under an idle gap.
+    async fn drain_idle(
+        idle: Duration,
+        writer_end: impl FnOnce(tokio::io::DuplexStream) -> tokio::task::JoinHandle<()>,
+    ) -> (Translator, Result<(), DrainCut>, Duration) {
+        let (reader, writer) = tokio::io::duplex(64 * 1024);
+        let feeder = writer_end(writer);
+        let mut translator = Translator::new("agy-test-model", "msg_test");
+        let mut reader = BufReader::new(reader);
+        let started = tokio::time::Instant::now();
+        let outcome = drain_non_streaming(
+            &mut reader,
+            &mut translator,
+            crate::adapters::ResponseBounds {
+                max_bytes: None,
+                idle: Some(idle),
+            },
+        )
+        .await;
+        let elapsed = started.elapsed();
+        feeder.abort();
+        (translator, outcome, elapsed)
+    }
+
+    /// Write `lines`, `gap` apart, then hold the pipe open.
+    fn feed(
+        lines: Vec<String>,
+        gap: Duration,
+    ) -> impl FnOnce(tokio::io::DuplexStream) -> tokio::task::JoinHandle<()> {
+        move |mut writer| {
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                for line in lines {
+                    tokio::time::sleep(gap).await;
+                    writer.write_all(line.as_bytes()).await.unwrap();
+                    writer.write_all(b"\n").await.unwrap();
+                }
+                // Stalled, not closed: the CLI is alive and silent.
+                std::future::pending::<()>().await;
+            })
+        }
+    }
+
+    fn tool_step_line() -> String {
+        json!({"event": "step_update", "step_update": {"step_type": "tool"}}).to_string()
+    }
+
+    /// A gated call whose CLI goes silent mid-turn is cut at the idle gap with
+    /// the marker `routing::serve` reads back as `Cut(Bound(Idle))`, rather than
+    /// running on to `HARD_TIMEOUT` (#667).
+    ///
+    /// Non-vacuity: read without the deadline in `read_capped_line` and the
+    /// drain waits on the silent pipe until the outer 60 s guard fires.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_cli_is_cut_at_the_idle_gap() {
+        let idle = Duration::from_millis(300);
+        let (translator, outcome, elapsed) = tokio::time::timeout(
+            Duration::from_secs(60),
+            drain_idle(
+                idle,
+                feed(
+                    vec![json!({"event": "init"}).to_string(), delta_line("partial")],
+                    Duration::from_millis(10),
+                ),
+            ),
+        )
+        .await
+        .expect("the idle gap cuts the stall");
+
+        assert!(
+            matches!(outcome, Err(DrainCut::Idle(cut)) if cut.idle == idle),
+            "got {outcome:?}"
+        );
+        assert_eq!(elapsed, Duration::from_millis(20) + idle);
+        assert_eq!(translator.text(), "partial");
+    }
+
+    /// Tool steps are keep-alives: they translate to `ping` frames, which the
+    /// gated collector does not count as progress, so a CLI that emits nothing
+    /// else is cut at the gap however steadily it steps.
+    ///
+    /// Non-vacuity: refresh the deadline on every line rather than on a
+    /// content frame and this drain is never cut.
+    #[tokio::test(start_paused = true)]
+    async fn tool_step_keepalives_do_not_hold_a_silent_turn_open() {
+        let idle = Duration::from_millis(300);
+        let mut lines = vec![delta_line("partial")];
+        lines.extend(std::iter::repeat_with(tool_step_line).take(50));
+        let (_, outcome, elapsed) = tokio::time::timeout(
+            Duration::from_secs(60),
+            drain_idle(idle, feed(lines, Duration::from_millis(100))),
+        )
+        .await
+        .expect("the idle gap cuts the stall");
+
+        assert!(matches!(outcome, Err(DrainCut::Idle(_))), "got {outcome:?}");
+        assert_eq!(elapsed, Duration::from_millis(100) + idle);
+    }
+
+    /// The twin: a CLI whose text keeps arriving inside the gap runs well past
+    /// it in total and is served, so the gap is measured between content lines
+    /// rather than from the spawn.
+    ///
+    /// Non-vacuity: stop refreshing the deadline and this turn is cut at
+    /// 300 ms, a third of the way through.
+    #[tokio::test(start_paused = true)]
+    async fn a_cli_producing_inside_the_idle_gap_is_served() {
+        let idle = Duration::from_millis(300);
+        let mut lines: Vec<String> = (0..5).map(|_| delta_line("more ")).collect();
+        lines.push(json!({"event": "result", "status": "SUCCESS"}).to_string());
+        let (translator, outcome, elapsed) =
+            drain_idle(idle, feed(lines, Duration::from_millis(200))).await;
+
+        assert!(outcome.is_ok(), "got {outcome:?}");
+        assert!(elapsed >= Duration::from_millis(1200));
+        assert_eq!(translator.text(), "more more more more more ");
         assert!(matches!(translator.end(), Some(AgyEnd::Success)));
     }
 

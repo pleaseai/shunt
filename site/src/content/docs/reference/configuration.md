@@ -797,6 +797,18 @@ The three `gated_*` keys bound the **gated** turns of an
 turns shunt holds until a verdict is in. On every other entry there is no gated
 turn, and they bound nothing.
 
+The byte and idle bounds also apply where an adapter builds a non-streaming
+reply itself, before shunt collects it, and what the byte bounds count follows
+what that adapter receives: the body as it arrived for Anthropic, Gemini, and
+Responses over HTTP; each event's type and payload as compact JSON on the Codex
+WebSocket; the CLI's stdout, line terminators included, on Antigravity; and the
+retained text and tool-call fields on Cursor. The idle gap is timed between
+WebSocket events, the first one included, and between Antigravity output lines
+that carry content, so a tool step alone does not reset it. A cold Antigravity
+model-catalog fetch made during one of these calls is read under the same
+bounds; a refused catalog falls back to the model id shunt would guess without
+one, and the next client turn fetches it again.
+
 #### `type = "llm_classifier"`
 
 An LLM **judge** decides the whole turn, rather than stepping in only where

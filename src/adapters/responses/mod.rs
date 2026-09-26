@@ -71,9 +71,9 @@ impl Adapter for ResponsesAdapter {
         // buffers a whole upstream reply — and the one every internal call
         // takes, since `routing::serve` forces `stream` off. A streaming turn
         // relays instead of buffering, so its bounds fall to that collector.
-        // On the non-streaming path both bounds apply to the HTTP body read;
-        // the websocket accumulation honours `max_bytes` but not yet `idle`
-        // (#667).
+        // On the non-streaming path both bounds apply to the HTTP body read
+        // and to the websocket accumulation, whose first-event peek honours
+        // `idle` too.
         bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
         // The session id keys the websocket connection pool (issue #32) so turns

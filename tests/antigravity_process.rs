@@ -166,6 +166,14 @@ case "$prompt" in
     printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"hello","usage":{"input_tokens":10,"output_tokens":3}}}'
     exit 0
     ;;
+  *MODE=stall*)
+    # Start a turn, then go silent with stdout still open: a live CLI that has
+    # stopped producing. `exec` so the adapter's group kill reaps the sleeper
+    # itself.
+    printf '%s\n' '{"event":"init","init":{"model":"gemini-3.1-pro"}}'
+    printf '%s\n' '{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"WEAK-PARTIAL"}}'
+    exec sleep 300
+    ;;
   *MODE=eof-hang*)
     printf '%s\n' '{"event":"init","init":{"model":"gemini-3.1-pro"}}'
     printf '%s\n' '{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"partial"}}'
@@ -624,4 +632,153 @@ async fn non_streaming_failure_reports_the_exit_status() {
         body.contains("stub diagnostic on stderr"),
         "the CLI's stderr must reach the caller: {body}"
     );
+}
+
+/// A gated escalation entry whose weak tier is the stub CLI and whose strong
+/// tier and never-consulted judge both answer at `strong` — the judge through
+/// its own non-passthrough provider, as a judge target must be — cut at a 300 ms idle gap well
+/// inside its 8 s duration bound.
+async fn start_gated_gateway(strong: &str) -> TestGateway {
+    let dir = stub_agy().parent().unwrap();
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let config_path = dir.join(format!(
+        "shunt-gated-{}.toml",
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[server]
+bind = "127.0.0.1:0"
+default_provider = "agy"
+
+[providers.agy]
+kind = "antigravity_cli"
+base_url = "http://localhost"
+auth = "none"
+
+[providers.strong]
+kind = "anthropic"
+base_url = "{strong}"
+auth = "passthrough"
+
+[[models]]
+id = "{GATED_MODEL}"
+[models.router]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge-alias"
+strong_target = "strong-alias"
+weak_target = "agy-alias"
+judge_timeout_ms = 300
+gated_idle_ms = 300
+gated_max_duration_ms = 8000
+
+[[models]]
+id = "agy-alias"
+upstream_model = {{ agy = "gemini-3.1-pro" }}
+
+[[models]]
+id = "strong-alias"
+upstream_model = {{ strong = "upstream-strong" }}
+
+[providers.judge]
+kind = "anthropic"
+base_url = "{strong}"
+auth = "none"
+
+[[models]]
+id = "judge-alias"
+upstream_model = {{ judge = "upstream-judge" }}
+"#
+        ),
+    )
+    .unwrap();
+
+    let mut config = Config::load(Some(&config_path)).expect("gated fixture config should load");
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _, _) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    TestGateway {
+        base_url: format!("http://{addr}"),
+        task,
+    }
+}
+
+/// The escalation entry [`start_gated_gateway`] serves.
+const GATED_MODEL: &str = "agy-gated";
+
+/// A gated non-streaming weak turn on Antigravity whose CLI starts answering
+/// and then goes silent with its pipe open is cut at `gated_idle_ms`, and
+/// escalation falls back to the strong tier — well before
+/// `gated_max_duration_ms`, and without ever consulting the judge (#667).
+///
+/// Non-vacuity: pass no idle gap to `drain_non_streaming` and the stall is
+/// cut only at the 8 s duration bound — the turn still falls back, but the
+/// elapsed-time assertion goes red.
+#[tokio::test]
+async fn a_gated_weak_turn_whose_cli_goes_silent_falls_back_to_strong_at_the_idle_gap() {
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    if !can_bind_loopback() {
+        return;
+    }
+    let strong = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "msg_strong",
+            "type": "message",
+            "role": "assistant",
+            "model": "upstream-strong",
+            "content": [{"type": "text", "text": "STRONG"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 1},
+        })))
+        // Once: the strong fallback. A judge call would be a second.
+        .expect(1)
+        .mount(&strong)
+        .await;
+    let gateway = start_gated_gateway(&strong.uri()).await;
+
+    let started = std::time::Instant::now();
+    let response = tokio::time::timeout(
+        REQUEST_GUARD,
+        reqwest::Client::new()
+            .post(format!("{}/v1/messages", gateway.base_url))
+            .json(&serde_json::json!({
+                "model": GATED_MODEL,
+                "max_tokens": 64,
+                "stream": false,
+                "messages": [{ "role": "user", "content": "MODE=stall now" }],
+            }))
+            .send(),
+    )
+    .await
+    .expect("the gated turn must finish within the guard")
+    .expect("request should reach the gateway");
+    let elapsed = started.elapsed();
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        response.headers()["x-gateway-route-source"],
+        "escalation_fallback"
+    );
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["content"][0]["text"], "STRONG", "got: {body}");
+    assert!(
+        elapsed < Duration::from_millis(4000),
+        "cut after {elapsed:?}: the stall ran on toward the 8000 ms duration bound"
+    );
+    strong.verify().await;
 }

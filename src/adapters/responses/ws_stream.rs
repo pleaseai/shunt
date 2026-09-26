@@ -117,23 +117,43 @@ pub(super) fn stream_events_response(
 /// request on `recv()`. This matches both the mid-stream *transport* error above
 /// and the streaming path, which emits the same error inline as an SSE `error`
 /// event.
+///
+/// `bounds` is [`ResponseBounds::default`] for every client turn, which is
+/// collected exactly as it always was; see the comments on each bound below.
+///
+/// [`ResponseBounds::default`]: crate::adapters::ResponseBounds::default
 pub(super) async fn json_events_response(
     buffered: BufferedEvent,
     mut events: CodexWsEvents,
     relay: RelayOptions,
     input_tokens_estimate: u64,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<axum::response::Response, AdapterError> {
     // The websocket twin of `http::json_response`'s capped body read: this
     // collector builds a whole reply from a translated event stream, so the
     // `Adapter::forward` contract bounds it with `over_cap` rather than
     // `collect_upstream_sse_body`. Each event is charged its name and its payload
-    // as compact JSON *before* the machine retains it — a measure of what this
-    // collector holds, not of wire bytes: a frame is already received and
-    // parsed (under the socket's 64 MiB message limit) before any count can
-    // run, so counting its raw length would move the refusal, not lower the
-    // peak. `None` is the client path and never refuses.
+    // as compact JSON *before* the machine retains it. Charging here, at the one
+    // place every event enters the machine, rather than at each slot the
+    // machine grows, means a slot added later is counted without anyone
+    // remembering to. The count is the event as the backend sent it, less the
+    // socket's own framing: a frame is already received and parsed (under the
+    // socket's 64 MiB message limit) before any count can run, so counting its
+    // raw length would move the refusal, not lower the peak. `None` is the
+    // client path, never refuses, and never serializes anything to count.
+    let response_byte_cap = bounds.max_bytes;
     let mut accumulated = 0usize;
+    // The websocket twin of `collect_upstream_sse_body`'s idle gap
+    // (`gated_idle_ms`, set only on gated calls): every wait for the next event
+    // is timed, and any event is progress, as any completed non-ping SSE frame
+    // is on the HTTP body — the socket carries no keep-alive events. An
+    // absolute deadline, as there, measured from when this collector starts:
+    // the first event was already peeked, under the same gap, by
+    // `open_ws_turn`. `None` is the client path, whose only gap bound stays the
+    // transport's own idle timeout.
+    let mut deadline = bounds
+        .idle
+        .map(|idle| (idle, tokio::time::Instant::now() + idle));
     // Seeded like every other path: an emulated stop sequence makes the
     // upstream's `response.completed` usage a no-op, and `final_json` falls back
     // to this estimate when no usage was observed, so without it a stopped turn
@@ -143,8 +163,23 @@ pub(super) async fn json_events_response(
     loop {
         let item = match buffered.take() {
             Some(item) => Some(item),
-            None => events.recv().await,
+            None => match deadline {
+                // Returning drops `events`, which the connection reader reads
+                // as an abandoned turn: it aborts it and evicts the socket
+                // rather than pooling one still mid-turn.
+                Some((idle, at)) => {
+                    tokio::time::timeout_at(at, events.recv())
+                        .await
+                        .map_err(|_| {
+                            crate::adapters::idle_error(crate::adapters::UpstreamBodyIdle { idle })
+                        })?
+                }
+                None => events.recv().await,
+            },
         };
+        if let (Some(Ok(_)), Some((idle, at))) = (&item, deadline.as_mut()) {
+            *at = tokio::time::Instant::now() + *idle;
+        }
         match item {
             Some(Ok(event)) => {
                 if response_byte_cap.is_some() {
@@ -231,6 +266,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use crate::adapters::responses::codex_ws::CodexWsError;
+    use crate::adapters::ResponseBounds;
     use crate::model::responses::ResponseEvent;
 
     use super::{json_events_response, stream_events_response, ws_error_sse, RelayOptions};
@@ -248,6 +284,14 @@ mod tests {
             thinking_enabled: false,
             tool_search_native: false,
             stop_sequences: sequences.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    /// Bounds with only a byte cap, as a judge call carries.
+    fn capped(max_bytes: usize) -> ResponseBounds {
+        ResponseBounds {
+            max_bytes: Some(max_bytes),
+            idle: None,
         }
     }
 
@@ -291,7 +335,7 @@ mod tests {
             .unwrap();
         drop(tx);
 
-        let error = json_events_response(None, rx, relay_opts(), 0, None)
+        let error = json_events_response(None, rx, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect_err("mid-stream transport error should stop failover");
         assert!(error.failure.is_none());
@@ -312,7 +356,7 @@ mod tests {
         tx.try_send(Ok(created_event())).unwrap();
         drop(tx);
 
-        let response = json_events_response(None, rx, relay_opts(), 0, None)
+        let response = json_events_response(None, rx, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect("a closed channel still builds a response");
         assert_eq!(response.status(), StatusCode::OK);
@@ -334,7 +378,7 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let response = json_events_response(None, rx, relay_opts(), 0, None)
+        let response = json_events_response(None, rx, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect("clean events should build a response");
         assert_eq!(response.status(), StatusCode::OK);
@@ -365,7 +409,7 @@ mod tests {
         // `tx` stays alive: the refusal must not wait for a channel close.
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            json_events_response(None, rx, relay_opts(), 0, Some(1024)),
+            json_events_response(None, rx, relay_opts(), 0, capped(1024)),
         )
         .await
         .expect("the cap refuses without waiting for channel close")
@@ -384,10 +428,144 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         turn(&tx);
         drop(tx);
-        let response = json_events_response(None, rx, relay_opts(), 0, Some(1 << 20))
+        let response = json_events_response(None, rx, relay_opts(), 0, capped(1 << 20))
             .await
             .expect("a reply under the cap is served");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// The cap is charged across events, not per event: a reply of deltas that
+    /// each fit under it is refused once their sum passes it, and the same
+    /// deltas under a cap they fit are served (#638).
+    ///
+    /// Every event here is well under the cap on its own, so a per-event check
+    /// cannot pass this for the wrong reason, which
+    /// `json_events_response_refuses_a_reply_over_the_byte_cap` above — one
+    /// 4 KiB delta against a 1 KiB cap — could.
+    ///
+    /// Non-vacuity: drop the `over_cap` check in `json_events_response` and the
+    /// first call returns a `200`.
+    #[tokio::test]
+    async fn json_events_response_refuses_a_reply_that_crosses_the_byte_cap_only_in_sum() {
+        const CAP: usize = 1024;
+        let delta = "x".repeat(300);
+        assert!(
+            "response.output_text.delta".len()
+                + serde_json::to_string(&text_delta_event(&delta).data)
+                    .unwrap()
+                    .len()
+                < CAP / 2,
+            "each event must fit under the cap on its own"
+        );
+        let turn = |tx: &mpsc::Sender<_>| {
+            tx.try_send(Ok(created_event())).unwrap();
+            for _ in 0..6 {
+                tx.try_send(Ok(text_delta_event(&delta))).unwrap();
+            }
+        };
+
+        let (tx, rx) = mpsc::channel(16);
+        turn(&tx);
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            json_events_response(None, rx, relay_opts(), 0, capped(CAP)),
+        )
+        .await
+        .expect("the cap refuses without waiting for channel close")
+        .expect_err("a reply over the cap in sum is refused");
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyTooLarge>()
+                .is_some_and(|too_large| too_large.max_bytes == CAP),
+            "the refusal carries the oversize marker"
+        );
+        assert!(error.failure.is_none(), "got {:?}", error.failure);
+        drop(tx);
+
+        let (tx, rx) = mpsc::channel(16);
+        turn(&tx);
+        drop(tx);
+        let response = json_events_response(None, rx, relay_opts(), 0, capped(4 * CAP))
+            .await
+            .expect("the same reply under a cap it fits is served");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Bounds with only an idle gap, as a gated call carries.
+    fn idle_bounded(idle: std::time::Duration) -> ResponseBounds {
+        ResponseBounds {
+            max_bytes: None,
+            idle: Some(idle),
+        }
+    }
+
+    /// A turn whose socket stays open but sends nothing more after its first
+    /// events is cut at the gated idle gap with the `UpstreamBodyIdle` marker
+    /// `routing::serve` reads back as `Cut(Bound(Idle))`, rather than waiting
+    /// on the transport's 300 s idle timeout (#667).
+    ///
+    /// Non-vacuity: `recv()` without the deadline in `json_events_response` and
+    /// the collector waits for a channel close that never comes, so the outer
+    /// timeout fires instead.
+    #[tokio::test(start_paused = true)]
+    async fn json_events_response_cuts_a_stall_between_events_at_the_idle_gap() {
+        let idle = std::time::Duration::from_millis(300);
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Ok(created_event())).unwrap();
+        tx.try_send(Ok(text_delta_event("partial"))).unwrap();
+        // `tx` stays alive: the upstream is stalled, not closed.
+        let started = tokio::time::Instant::now();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            json_events_response(None, rx, relay_opts(), 0, idle_bounded(idle)),
+        )
+        .await
+        .expect("the idle gap cuts the stall")
+        .expect_err("a stalled turn is not served");
+        assert_eq!(started.elapsed(), idle, "cut at the idle gap, not later");
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle { idle }),
+            "the cut carries the idle marker"
+        );
+        assert!(error.failure.is_none(), "got {:?}", error.failure);
+        drop(tx);
+    }
+
+    /// The twin: a turn whose events keep arriving inside the gap runs well
+    /// past it in total and is served, so the gap is measured between events
+    /// rather than from the start of the collection.
+    ///
+    /// Non-vacuity: stop refreshing the deadline on an event and this turn is
+    /// cut at 300 ms, a third of the way through.
+    #[tokio::test(start_paused = true)]
+    async fn json_events_response_serves_a_turn_whose_events_arrive_inside_the_idle_gap() {
+        let idle = std::time::Duration::from_millis(300);
+        let (tx, rx) = mpsc::channel(16);
+        tokio::spawn(async move {
+            tx.send(Ok(created_event())).await.unwrap();
+            for _ in 0..5 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tx.send(Ok(text_delta_event("more"))).await.unwrap();
+            }
+            tx.send(Ok(ResponseEvent {
+                event: Some("response.completed".to_string()),
+                data: json!({ "response": { "id": "resp_1" } }),
+            }))
+            .await
+            .unwrap();
+        });
+        let started = tokio::time::Instant::now();
+        let response = json_events_response(None, rx, relay_opts(), 0, idle_bounded(idle))
+            .await
+            .expect("a turn that keeps producing is served");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(started.elapsed() >= std::time::Duration::from_millis(1000));
     }
 
     /// A backend-sent error *event* (an `Ok` on the channel, distinct from a
@@ -413,7 +591,7 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let error = json_events_response(None, rx, relay_opts(), 0, None)
+        let error = json_events_response(None, rx, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect_err("backend error event should stop failover");
 
@@ -444,7 +622,7 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let error = json_events_response(None, rx, relay_opts(), 0, None)
+        let error = json_events_response(None, rx, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect_err("in-stream rate limit is an error");
 
@@ -479,7 +657,7 @@ mod tests {
 
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            json_events_response(None, rx, relay_opts(), 0, None),
+            json_events_response(None, rx, relay_opts(), 0, ResponseBounds::default()),
         )
         .await
         .expect("collector returns without waiting for channel close")
@@ -565,7 +743,13 @@ mod tests {
 
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            json_events_response(None, rx, relay_opts_with_stops(&["</block>"]), 0, None),
+            json_events_response(
+                None,
+                rx,
+                relay_opts_with_stops(&["</block>"]),
+                0,
+                ResponseBounds::default(),
+            ),
         )
         .await
         .expect("collector returns without waiting for channel close")
@@ -600,7 +784,13 @@ mod tests {
 
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            json_events_response(None, rx, relay_opts_with_stops(&["</block>"]), 19, None),
+            json_events_response(
+                None,
+                rx,
+                relay_opts_with_stops(&["</block>"]),
+                19,
+                ResponseBounds::default(),
+            ),
         )
         .await
         .expect("collector returns without waiting for channel close")
