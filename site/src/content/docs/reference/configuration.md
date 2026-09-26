@@ -621,6 +621,7 @@ id it asked for — the chosen target travels upstream only.
 | `stage_router` | Recent tool-result metadata, per turn | Yes — `tool_use.name` and `tool_result.is_error` only |
 | `auto` | The same router under upstream's preset | Yes, as above |
 | `random` | A weighted draw, session-sticky by default | No |
+| `conditional` | A composable rule match — time of day, header, model prefix, weekday | No — headers and the clock only |
 | `noop` | Nothing — answers with an empty message | No |
 | `prefill_router` | A learned classifier over the latest user turn (needs the `prefill-router` build) | Yes — the text of user turns |
 | `llm_classifier` | An LLM judge's verdict, per `classify_trigger`; in `mode = "escalation"`, a judge's ruling on the completed weak turn | Yes — the transcript, via the packaged or a custom prompt |
@@ -1242,6 +1243,78 @@ same caller may simply ask for by name. Use the managed-model policy for access.
 
 Surfaces with no request body — `GET /routes`, `/v1/models` discovery, and
 `shunt check` — report the first target with a positive weight.
+
+#### `type = "conditional"`
+
+Condition-based routing. The entry carries an ordered list of rules; the first
+rule whose conditions all hold picks the target. Absent a match, `default_target`
+answers. This is the router for **time- and metadata-driven cost routing** — for
+example sending traffic to a cheaper provider during the peak windows where
+another provider applies a surcharge.
+
+```toml
+[[models]]
+id = "claude-cost-optimized"
+
+[models.router]
+type = "conditional"
+utc_offset_hours = 8          # Asia/Shanghai
+default_target = "deepseek-chat"
+
+[[models.router.rules]]
+name = "offpeak-cheap"
+priority = 1
+target = "deepseek-chat"
+
+[models.router.rules.when]
+time_between = { start = "22:00", end = "08:00" }   # crosses midnight
+
+[[models.router.rules]]
+name = "peak-budget"
+priority = 2
+target = "glm-4-flash"
+
+[models.router.rules.when]
+time_between = { start = "08:00", end = "22:00" }
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `conditional` |
+| `rules` | ✅ required | One or more rules; at least one is required |
+| `default_target` | ✅ required | Public model id used when no rule matches |
+| `utc_offset_hours` | `0` (UTC) | Offset applied to the clock before time windows are tested; fractional values are accepted and the range is `[-12, 14]` |
+
+Each rule carries `name`, `target`, and an optional `priority` (lower is checked
+first; equal priorities keep declared order — the list is sorted once at load,
+never per request). The `when` table holds the conditions; **every present
+condition must hold** (logical AND), so an empty `when` is a catch-all and is
+rejected at load — a catch-all would shadow every later rule, and the catch-all
+an operator wants is `default_target`. Disjunction comes from the rule list
+itself: two rules with the same `target` are two ways to reach it, so the whole
+table reads as "this target when (A and B), or that target when (C and D), …".
+
+| `when` key | Matches | Notes |
+| :-- | :-- | :-- |
+| `time_between` | The clock is inside `{ start = "HH:MM", end = "HH:MM" }` | Start inclusive, end exclusive. A window whose end is at or before its start crosses midnight (`22:00`–`08:00`). Evaluated at `utc_offset_hours` |
+| `header` | A request header matches | `{ name, value, mode }`; `mode` is `equals` (default), `contains`, or `starts_with`. All comparisons are ASCII case-insensitive, and the header name is matched case-insensitively per RFC 9110 |
+| `model_starts_with` | The request's model id starts with the prefix | Compared after the client's `[1m]` context-window hint is stripped |
+| `days` | Today is one of `["mon", "tue", "wed", "thu", "fri", "sat", "sun"]` | Absent means every day; an empty list is rejected |
+
+A header-gated rule never matches a surface that resolves without a request —
+`GET /routes`, `/v1/models` discovery, and `shunt check` carry no headers, so
+they fall through to `default_target`. A live `count_tokens` probe, by contrast,
+does carry the caller's headers and so can match a header-gated rule, exactly as
+the turn it measures would. A time-gated rule is evaluated on every surface,
+including the body-less ones, because the clock is always available; the target
+a body-less surface reports is therefore the one the current time selects.
+
+Because a rule target is an ordinary public model id, the chosen target keeps
+its failover chain, account pool, adapter, `effort`, and `service_tier`, exactly
+as every other router's target does. Rule order is a **configuration-time
+decision**: the set is validated at boot (`utc_offset_hours` range, a non-blank
+header name and value, a non-blank model prefix, a non-empty `days`, a non-empty
+rule list, and no catch-all) so a typo fails `shunt check` rather than a turn.
 
 #### `type = "noop"`
 

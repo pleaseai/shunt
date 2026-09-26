@@ -14,7 +14,7 @@ use thiserror::Error;
 mod admin_keys;
 mod http_tuning;
 mod presets;
-mod router;
+pub(crate) mod router;
 mod secrets;
 mod session;
 mod spend;
@@ -27,15 +27,17 @@ pub use http_tuning::{
 };
 pub use presets::{provider_presets, ProviderPresetView};
 pub use router::{
-    AdvisorGateTrigger, AdvisorRouterConfig, AutoRouterConfig, CallBounds,
+    parse_hh_mm, AdvisorGateTrigger, AdvisorRouterConfig, AutoRouterConfig, CallBounds,
     CapabilityClassifierConfig, ClassifierPolicy, ClassifyTrigger, CompositeClassifierConfig,
-    CompositeRouterConfig, CompositeStageConfig, CompositeTrigger, CustomClassifierConfig,
-    EscalationClassifierConfig, EscalationJudgeTable, HandoffNotesConfig, LlmClassifierConfig,
-    PrefillRouterConfig, RandomAffinity, RandomRouterConfig, RouterConfig, StageClassifierConfig,
-    StageRouterConfig, StageRouterPicker, ToolSemanticsConfig, DEFAULT_BASE_THRESHOLD,
-    DEFAULT_CONFIDENCE_THRESHOLD, DEFAULT_DEESCALATE_THRESHOLD, DEFAULT_GATED_IDLE_MS,
-    DEFAULT_GATED_MAX_BYTES, DEFAULT_GATED_MAX_DURATION_MS, DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
-    DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_MAX_JUDGE_CALLS, DEFAULT_MAX_OUTPUT_TOKENS,
+    CompositeRouterConfig, CompositeStageConfig, CompositeTrigger, ConditionalRouterConfig,
+    ConditionalRule, CustomClassifierConfig, EscalationClassifierConfig, EscalationJudgeTable,
+    HandoffNotesConfig, HeaderMatch, HeaderMatchMode, LlmClassifierConfig, PrefillRouterConfig,
+    RandomAffinity, RandomRouterConfig, RouterConfig, StageClassifierConfig, StageRouterConfig,
+    StageRouterPicker, TimeBetween, ToolSemanticsConfig, Weekday, WhenCondition,
+    DEFAULT_BASE_THRESHOLD, DEFAULT_CONFIDENCE_THRESHOLD, DEFAULT_DEESCALATE_THRESHOLD,
+    DEFAULT_GATED_IDLE_MS, DEFAULT_GATED_MAX_BYTES, DEFAULT_GATED_MAX_DURATION_MS,
+    DEFAULT_JUDGE_MAX_RESPONSE_BYTES, DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_MAX_JUDGE_CALLS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
 };
 pub use secrets::Secret;
 pub use session::GatewaySessionConfig;
@@ -2221,6 +2223,106 @@ fn validate_random_router(model_id: &str, random: &RandomRouterConfig) -> Result
     Ok(())
 }
 
+/// Fail-closed checks for `[models.router] type = "conditional"`.
+///
+/// Every verdict here is checkable without a request: the offset range, each
+/// window's `HH:MM` shape, a non-blank header/model prefix, and a catch-all
+/// rule. A catch-all is rejected rather than warned because it would shadow
+/// every later rule under the first-match walk, which is almost never what an
+/// operator means — the catch-all they want is `default_target`.
+fn validate_conditional_router(
+    model_id: &str,
+    conditional: &ConditionalRouterConfig,
+) -> Result<(), ConfigError> {
+    if conditional.rules.is_empty() {
+        return Err(ConfigError::EmptyConditionalRules {
+            model: model_id.to_string(),
+        });
+    }
+    if let Some(offset) = conditional.utc_offset_hours {
+        // `!(finite && in range)` so NaN is rejected, matching the random
+        // weight check's reasoning.
+        if !(offset.is_finite() && (-12.0..=14.0).contains(&offset)) {
+            return Err(ConfigError::InvalidUtcOffset {
+                model: model_id.to_string(),
+                value: offset,
+            });
+        }
+    }
+    for (index, rule) in conditional.rules.iter().enumerate() {
+        let when = &rule.when;
+        if when.is_catch_all() {
+            return Err(ConfigError::ConditionalCatchAllRule {
+                model: model_id.to_string(),
+                index,
+                name: rule.name.clone(),
+            });
+        }
+        if let Some(header) = &when.header {
+            // The name is matched against inbound header names byte-for-byte
+            // (case-insensitively), so a padded or blank name can never match on
+            // the wire: it would pass a trim-based blank check and then silently
+            // never fire, sending its traffic to `default_target`. Reject
+            // anything but the name itself, mirroring the `by_type` rule in
+            // `validate_subagents`.
+            if header.name.trim() != header.name
+                || header.name.is_empty()
+                || header.value.is_empty()
+            {
+                return Err(ConfigError::BlankHeaderCondition {
+                    model: model_id.to_string(),
+                    index,
+                    name: rule.name.clone(),
+                });
+            }
+        }
+        if let Some(prefix) = &when.model_starts_with {
+            if prefix.is_empty() {
+                return Err(ConfigError::BlankModelPrefix {
+                    model: model_id.to_string(),
+                    index,
+                    name: rule.name.clone(),
+                });
+            }
+        }
+        if let Some(days) = &when.days {
+            if days.is_empty() {
+                // An empty day list can never match, so it is a rule that
+                // silently never fires. Reject it rather than let an operator
+                // wonder why their rule does nothing.
+                return Err(ConfigError::BlankDayFilter {
+                    model: model_id.to_string(),
+                    index,
+                    name: rule.name.clone(),
+                });
+            }
+        }
+        if let Some(window) = &when.time_between {
+            // The deserializer already rejects an out-of-range `HH:MM` for a
+            // parsed config; this catches a programmatically built one so the
+            // invariant `hour <= 23, minute <= 59` holds however the table was
+            // produced.
+            if window.start.0 > 23 || window.start.1 > 59 {
+                return Err(ConfigError::InvalidTimeBetween {
+                    model: model_id.to_string(),
+                    index,
+                    name: rule.name.clone(),
+                    field: "start",
+                });
+            }
+            if window.end.0 > 23 || window.end.1 > 59 {
+                return Err(ConfigError::InvalidTimeBetween {
+                    model: model_id.to_string(),
+                    index,
+                    name: rule.name.clone(),
+                    field: "end",
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Fail-closed checks for `[models.router] type = "prefill_router"`.
 ///
 /// Compiled in both builds for the reason `validate_router`'s call site gives.
@@ -2640,6 +2742,41 @@ pub enum ConfigError {
         "models entry {model} random router weights sum to a non-finite total; lower the weights so their sum stays within f64 range"
     )]
     RandomWeightTotal { model: String },
+    #[error("models entry {model} conditional router must declare at least one rule")]
+    EmptyConditionalRules { model: String },
+    #[error("models entry {model} conditional router rule {index} ({name:?}) has an empty time_between.{field}")]
+    InvalidTimeBetween {
+        model: String,
+        index: usize,
+        name: String,
+        field: &'static str,
+    },
+    #[error("models entry {model} conditional router rule {index} ({name:?}) has a header condition whose name is blank or padded with whitespace, or whose value is blank; the name is matched against inbound header names exactly, so neither can match")]
+    BlankHeaderCondition {
+        model: String,
+        index: usize,
+        name: String,
+    },
+    #[error("models entry {model} conditional router rule {index} ({name:?}) has a blank model_starts_with prefix")]
+    BlankModelPrefix {
+        model: String,
+        index: usize,
+        name: String,
+    },
+    #[error("models entry {model} conditional router rule {index} ({name:?}) is a catch-all (no conditions); it would shadow every later rule, so give it a condition or make it the default_target")]
+    ConditionalCatchAllRule {
+        model: String,
+        index: usize,
+        name: String,
+    },
+    #[error("models entry {model} conditional router utc_offset_hours {value} is out of range; use a value in [-12, 14]")]
+    InvalidUtcOffset { model: String, value: f64 },
+    #[error("models entry {model} conditional router rule {index} ({name:?}) has an empty days list, which can never match")]
+    BlankDayFilter {
+        model: String,
+        index: usize,
+        name: String,
+    },
     #[error("models entry {model} router tool_semantics.{category} contains an empty tool name")]
     EmptyToolSemanticsName {
         model: String,
@@ -3586,6 +3723,17 @@ impl Config {
         Ok(())
     }
 
+    /// Sorts every conditional router's rules into `priority` order (lower
+    /// first), stable so equal-priority rules keep their declared order. The
+    /// request path then walks the list directly; nothing re-sorts per request.
+    fn normalize_conditional_routers(&mut self) {
+        for model in &mut self.models {
+            if let Some(RouterConfig::Conditional(conditional)) = model.router.as_mut() {
+                conditional.rules.sort_by_key(|rule| rule.priority);
+            }
+        }
+    }
+
     /// Warns once at load when `[server.pool] reprobe_seconds` is a positive
     /// value below the 60-second floor `reprobe_interval` (accounts.rs)
     /// silently clamps up to. The effective interval is read on each HTTP
@@ -3690,6 +3838,10 @@ impl Config {
         // Runs after `normalize_upstreams` so it sees `self.providers` merged
         // from either declaration form ([[upstreams]] or [providers.*]).
         self.normalize_service_tiers()?;
+        // Sort each conditional router's rules into `priority` order here, once,
+        // so the request path's first-match walk needs no per-request sort. The
+        // sort is stable, so equal-priority rules keep their declared order.
+        self.normalize_conditional_routers();
         self.server.bind_addr()?;
         // `tokio::sync::Semaphore::new` panics above `MAX_PERMITS`, so an
         // out-of-range limit would pass `shunt check` and then abort at boot
@@ -4606,6 +4758,9 @@ impl Config {
             }
             RouterConfig::Composite(composite) => self.validate_composite(model_id, composite)?,
             RouterConfig::Advisor(advisor) => self.validate_advisor(model_id, advisor)?,
+            RouterConfig::Conditional(conditional) => {
+                validate_conditional_router(model_id, conditional)?
+            }
             _ => {}
         }
         // Last, and only after every key-level verdict: upstream's own

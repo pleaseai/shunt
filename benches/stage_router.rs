@@ -63,10 +63,11 @@ mod bench {
     use shunt::{
         bench_support::{self, StageStore, MAX_TRACKED_CHILD_PINS, MAX_TRACKED_SESSIONS},
         config::{
-            CapabilityClassifierConfig, Config, LlmClassifierConfig, ModelConfig,
+            CapabilityClassifierConfig, ConditionalRouterConfig, ConditionalRule, Config,
+            HeaderMatch, HeaderMatchMode, LlmClassifierConfig, ModelConfig,
             PassthroughSubagentsConfig, RandomAffinity, RandomRouterConfig, RouteConfig,
             RouterConfig, StageClassifierConfig, StageRouterConfig, StageRouterPicker,
-            SubagentsConfig,
+            SubagentsConfig, TimeBetween, WhenCondition,
         },
     };
 
@@ -383,6 +384,88 @@ mod bench {
     #[divan::bench(args = TURN_COUNTS)]
     fn resolve_chain_random_session(bencher: divan::Bencher, turns: usize) {
         let config = random_config();
+        let request = request(ROUTER_MODEL, turns);
+        let headers = session_headers();
+        let store = StageStore::new();
+        let now = Instant::now();
+        bencher.bench(|| {
+            divan::black_box(
+                bench_support::resolve_chain(&config, &store, &request, &headers, false, now)
+                    .unwrap(),
+            )
+        });
+    }
+
+    /// A `conditional` router's config: two rules over time and header, both
+    /// resolving to the same two tier ids. Read against `resolve_chain_unrouted`
+    /// — both read the body once for the model id and nothing else, so the gap
+    /// is one sorted-rule walk plus the clock read and the header lookup.
+    fn conditional_config() -> Config {
+        let route = |model: &str| RouteConfig {
+            model: model.to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        };
+        Config {
+            models: vec![ModelConfig {
+                id: ROUTER_MODEL.to_string(),
+                display_name: Some("Cost-optimized (conditional)".to_string()),
+                upstream_model: None,
+                router: Some(RouterConfig::Conditional(ConditionalRouterConfig {
+                    utc_offset_hours: Some(8.0),
+                    default_target: EFFICIENT_TARGET.to_string(),
+                    rules: vec![
+                        ConditionalRule {
+                            name: "peak-cheap".to_string(),
+                            priority: 1,
+                            target: EFFICIENT_TARGET.to_string(),
+                            when: WhenCondition {
+                                time_between: Some(TimeBetween {
+                                    start: (8, 0),
+                                    end: (22, 0),
+                                }),
+                                ..Default::default()
+                            },
+                        },
+                        ConditionalRule {
+                            name: "vip".to_string(),
+                            priority: 2,
+                            target: "claude-opus-4-8".to_string(),
+                            when: WhenCondition {
+                                header: Some(HeaderMatch {
+                                    name: "x-shunt-tier".to_string(),
+                                    value: "vip".to_string(),
+                                    mode: HeaderMatchMode::Equals,
+                                }),
+                                ..Default::default()
+                            },
+                        },
+                    ],
+                })),
+                stage_router: None,
+                subagents: None,
+            }],
+            routes: vec![
+                route(ROUTER_MODEL),
+                route(EFFICIENT_TARGET),
+                route("claude-opus-4-8"),
+            ],
+            ..Config::default()
+        }
+    }
+
+    /// The `conditional` path: one clock read, one sorted-rule walk, and a
+    /// header lookup only for the rules that name a header. Parameterized on turn
+    /// count like its neighbours: the curve tracks `resolve_chain_unrouted`,
+    /// since both pay the same `RoutingView` deserialization over the body. The
+    /// gap between them is the whole conditional stage — the clock read, the
+    /// rule walk, and any header lookup the matched rules name — not the walk
+    /// alone.
+    #[divan::bench(args = TURN_COUNTS)]
+    fn resolve_chain_conditional(bencher: divan::Bencher, turns: usize) {
+        let config = conditional_config();
         let request = request(ROUTER_MODEL, turns);
         let headers = session_headers();
         let store = StageStore::new();

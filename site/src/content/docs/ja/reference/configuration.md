@@ -419,6 +419,7 @@ shunt が通常使う `kind` や `mode` ではなく `type` を使うのは、**
 | `stage_router` | 直近の tool-result メタデータからターンごとに | 読む — `tool_use.name` と `tool_result.is_error` のみ |
 | `auto` | 同じルーターを上流のプリセットで | 同上 |
 | `random` | 重み付き抽選、既定ではセッション固定 | 読まない |
+| `conditional` | 合成可能なルール一致 — 時刻、ヘッダー、モデル接頭辞、曜日 | 読まない — ヘッダーと時計のみ |
 | `noop` | 選ばない — 空のメッセージを返す | 読まない |
 | `prefill_router` | 直近のユーザーターンを読む学習済み分類器（`prefill-router` ビルドが必要） | 読む — ユーザーターンのテキスト |
 | `llm_classifier` | LLM ジャッジの判定。いつ尋ねるかは `classify_trigger` が決めます。`mode = "escalation"` では、完成した効率側のターンに対するジャッジの判断 | 読む — パッケージのプロンプト、または自分で書いたプロンプトでトランスクリプトを読みます |
@@ -1022,6 +1023,75 @@ weights = [9, 1]
 
 リクエストボディのない面 — `GET /routes`、`/v1/models` ディスカバリ、`shunt check` — は、
 重みが正の最初のターゲットを報告します。
+
+#### `type = "conditional"`
+
+条件ベースのルーティングです。エントリは順序付きのルール一覧を持ち、すべての条件が
+成立する最初のルールがターゲットを決めます。どのルールも一致しない場合は
+`default_target` が応答します。**時刻とメタデータによるコストルーティング**向けの
+ルーターです —— たとえば、別のプロバイダが割増を課すピーク時間帯に、より安い
+プロバイダへトラフィックを振り分ける用途です。
+
+```toml
+[[models]]
+id = "claude-cost-optimized"
+
+[models.router]
+type = "conditional"
+utc_offset_hours = 8          # Asia/Shanghai
+default_target = "deepseek-chat"
+
+[[models.router.rules]]
+name = "offpeak-cheap"
+priority = 1
+target = "deepseek-chat"
+
+[models.router.rules.when]
+time_between = { start = "22:00", end = "08:00" }   # 深夜をまたぐ
+
+[[models.router.rules]]
+name = "peak-budget"
+priority = 2
+target = "glm-4-flash"
+
+[models.router.rules.when]
+time_between = { start = "08:00", end = "22:00" }
+```
+
+| キー | 既定値 | 意味 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必須 | `conditional` |
+| `rules` | ✅ 必須 | 1 つ以上のルール。少なくとも 1 つ必要 |
+| `default_target` | ✅ 必須 | どのルールも一致しない場合に使う公開モデル id |
+| `utc_offset_hours` | `0`(UTC)| 時刻ウィンドウを判定する前に時計へ適用するオフセット。小数可、範囲は `[-12, 14]` |
+
+各ルールは `name`、`target`、任意の `priority`(小さいほど先に判定。同順位は宣言順を保持 ——
+並べ替えはロード時に一度だけ行い、リクエストごとには行いません)を持ちます。条件は `when`
+テーブルに入り、**存在する条件はすべて成立する必要があります**(論理 AND)。したがって
+空の `when` はキャッチオールであり、ロード時に拒否されます —— キャッチオールは後続の
+すべてのルールを覆い隠してしまい、本当に必要なキャッチオールは `default_target` です。選言はルール一覧そのものから得られます。同じ `target` を持つ 2 つのルールは、そのターゲットへ至る 2 つの経路であり、テーブル全体は「(A かつ B) ならこのターゲット、または (C かつ D) ならあのターゲット、…」と読めます。
+
+| `when` のキー | 一致条件 | 備考 |
+| :-- | :-- | :-- |
+| `time_between` | 時計が `{ start = "HH:MM", end = "HH:MM" }` の内側 | 開始は含む、終了は含まない。終了が開始以前のウィンドウは深夜をまたぎます(`22:00`–`08:00`)。`utc_offset_hours` で評価 |
+| `header` | リクエストヘッダーが一致 | `{ name, value, mode }`。`mode` は `equals`(既定)、`contains`、`starts_with`。比較はすべて ASCII 大文字小文字を区別せず、ヘッダー名は RFC 9110 に従い大文字小文字を区別しません |
+| `model_starts_with` | リクエストのモデル id が接頭辞で始まる | クライアントの `[1m]` コンテキストウィンドウヒントを除去した後に比較 |
+| `days` | 今日が `["mon", "tue", "wed", "thu", "fri", "sat", "sun"]` のいずれか | 省略時は毎日。空のリストは拒否 |
+
+ヘッダーを条件とするルールは、リクエストを持たないサーフェスでは決して一致しません ——
+`GET /routes`、`/v1/models` ディスカバリ、`shunt check` はいずれも
+ヘッダーを持たないため、`default_target` にフォールスルーします。一方、ライブの
+`count_tokens` プローブは呼び出し元のヘッダーを実際に運ぶため、ヘッダー条件のルールに
+一致し得ます。一方、時刻を条件とする
+ルールはこれらのサーフェスでも評価されます。時計は常に利用できるため、リクエスト本文を
+持たないサーフェスが報告するターゲットは、現在時刻が選ぶものになります。
+
+ルールのターゲットは通常の公開モデル id なので、選ばれたターゲットは他のルーターの
+ターゲットと同様に、フェイルオーバーチェーン、アカウントプール、アダプター、`effort`、
+`service_tier` を保持します。ルールの順序は**設定時の決定**です。ルール集合は起動時に
+検証されるため(`utc_offset_hours` の範囲、空でないヘッダー名と値、空でないモデル接頭辞、
+空でない `days`、空でないルール一覧、キャッチオールの禁止)、タイポは 1 ターンではなく
+`shunt check` で失敗します。
 
 #### `type = "noop"`
 
