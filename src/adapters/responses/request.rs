@@ -142,6 +142,58 @@ pub(super) fn grok_identity_headers(request: reqwest::RequestBuilder) -> reqwest
         .header("x-grok-client-version", GROK_CLIENT_VERSION)
 }
 
+/// The four prompt-cache affinity headers the real Codex CLI sends with every
+/// request regardless of auth (`codex-rs`
+/// `codex-api/src/requests/headers.rs` `build_session_headers`, pinned by its
+/// api-key test): `session-id` and `thread-id` carry the conversation id, and
+/// the upstream derives prompt-cache affinity from the `session-id` header
+/// (`codex-rs` `core/src/client.rs` `responses_session_id`) — so its value must
+/// equal the body's `prompt_cache_key`, which derives from the same effective
+/// id. `x-client-request-id` and `x-codex-window-id` complete the set.
+///
+/// Sent only when a session id is available: a fabricated value is worse than
+/// omitting them. Each caller picks its own upstream gate (the ChatGPT backend,
+/// or the stock OpenAI host for api-key) and its own `accept` header.
+pub(super) fn session_affinity_headers(
+    request: reqwest::RequestBuilder,
+    session_id: Option<&str>,
+) -> reqwest::RequestBuilder {
+    match session_id.filter(|session_id| !session_id.is_empty()) {
+        Some(session_id) => request
+            .header("session-id", session_id)
+            .header("thread-id", session_id)
+            .header("x-client-request-id", session_id)
+            .header("x-codex-window-id", format!("{session_id}:0")),
+        None => request,
+    }
+}
+
+/// Redirect policy for the shared Responses HTTP client: a request chain that
+/// started on stock OpenAI must not carry its generated codex identity headers
+/// across hosts (reqwest strips only credentials on a host change; the policy
+/// sees the chain's URLs, never its headers, so the guard keys on the origin),
+/// so a cross-host 3xx stops at the hop and the redirect response relays to
+/// the client like any other upstream status. Same-host hops still follow,
+/// capped like reqwest's default.
+pub(crate) fn codex_identity_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let from_stock_openai = attempt
+            .previous()
+            .first()
+            .and_then(|url| url.host_str())
+            .is_some_and(crate::config::host_is_openai);
+        if from_stock_openai
+            && !crate::config::host_is_openai(attempt.url().host_str().unwrap_or_default())
+        {
+            attempt.stop()
+        } else if attempt.previous().len() > 10 {
+            attempt.error("too many redirects")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
 pub(super) fn request_builder(
     state: &AppState,
     route: &Route,
@@ -165,6 +217,12 @@ pub(super) fn request_builder(
         // api_key_header only governs the Anthropic passthrough adapter.
         Credential::ApiKey { value, .. } => {
             request = request.bearer_auth(value);
+            // Stock OpenAI is the one api-key Responses upstream codex sends its
+            // session-affinity headers to (pinned by codex-rs's api-key test);
+            // third-party OpenAI-compatible hosts and xAI keep them absent.
+            if state.config.is_openai_backend(&route.provider) {
+                request = session_affinity_headers(request, session_id);
+            }
         }
         Credential::ChatGptOAuth {
             access_token,
@@ -181,27 +239,13 @@ pub(super) fn request_builder(
             if let Some(hint) = routing_hint(route) {
                 request = request.header("x-codex-routing-hint", hint);
             }
-            // Session/identity headers the real Codex CLI sends alongside the
-            // client identity above (`codex-rs`
-            // `codex-api/src/requests/headers.rs` `build_session_headers`):
-            // `session-id` and `thread-id` carry the conversation id, and the
-            // ChatGPT backend derives prompt-cache affinity from the
-            // `session-id` header (`codex-rs` `core/src/client.rs`
-            // `responses_session_id`) — so its value must equal the body's
-            // `prompt_cache_key`, which prefers the same inbound
-            // `x-claude-code-session-id` header this parameter carries.
-            // `x-client-request-id` and `x-codex-window-id` complete the set
-            // (`codex-rs` `endpoint/responses.rs`, raine/claude-code-proxy).
-            // Only sent when a session id is available; xAI/OpenAI-compatible
-            // upstreams never reach this branch.
-            if let Some(session_id) = session_id.filter(|s| !s.is_empty()) {
-                request = request
-                    .header("accept", "text/event-stream")
-                    .header("session-id", session_id)
-                    .header("thread-id", session_id)
-                    .header("x-client-request-id", session_id)
-                    .header("x-codex-window-id", format!("{session_id}:0"));
+            // The ChatGPT backend derives prompt-cache affinity from the shared
+            // session headers; this branch is the only one that reaches it
+            // (xAI/OpenAI-compatible upstreams never do).
+            if session_id.is_some_and(|session_id| !session_id.is_empty()) {
+                request = request.header("accept", "text/event-stream");
             }
+            request = session_affinity_headers(request, session_id);
         }
         // xAI subscription OAuth: the subscription bearer plus the Grok-CLI
         // identity headers the CLI chat proxy expects (no ChatGPT/Codex
@@ -373,6 +417,70 @@ mod tests {
         .unwrap();
         assert_eq!(derived.len(), 16);
         assert!(derived.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// A cross-host 3xx from stock OpenAI must not carry the generated codex
+    /// identity headers onto the redirect target: the hardened policy stops at
+    /// the hop, the relay host sees nothing, and the 307 reaches shunt to be
+    /// relayed like any other upstream status.
+    #[tokio::test]
+    async fn a_cross_host_redirect_never_carries_the_identity_headers() {
+        use crate::config::ApiKeyHeader;
+        use wiremock::{
+            matchers::{header, method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+
+        let stock = MockServer::start().await;
+        let relay = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(header("session-id", "sess-redir"))
+            .respond_with(
+                ResponseTemplate::new(reqwest::StatusCode::TEMPORARY_REDIRECT)
+                    .insert_header("location", format!("{}/v1/responses", relay.uri())),
+            )
+            .expect(1)
+            .mount(&stock)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .redirect(crate::adapters::responses::request::codex_identity_redirect_policy())
+            .resolve("api.openai.com", *stock.address())
+            .build()
+            .unwrap();
+
+        let mut config = Config::default();
+        let openai = config.providers.get_mut("openai").unwrap();
+        openai.base_url = "http://api.openai.com/v1".to_string();
+        let state = AppState::new(config, client).unwrap();
+        let route = Route {
+            provider: "openai".to_string(),
+            adapter: AdapterKind::Responses,
+            model: "gpt-5.6-sol".to_string(),
+            upstream_model: "gpt-5.6-sol".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+        let credential = Credential::ApiKey {
+            value: "openai-key".to_string(),
+            header: ApiKeyHeader::Bearer,
+        };
+        let response = request_builder(&state, &route, credential, Some("sess-redir"))
+            .body("{}")
+            .send()
+            .await
+            .expect("the redirect stops at the hop and returns the 307");
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT,
+            "a refused cross-host hop returns the upstream redirect"
+        );
+        assert!(
+            relay.received_requests().await.unwrap().is_empty(),
+            "the generated identity headers must not follow a cross-host redirect"
+        );
+        stock.verify().await;
     }
 
     #[test]
@@ -666,6 +774,96 @@ mod tests {
         assert!(request.headers().get("thread-id").is_none());
         assert!(request.headers().get("x-client-request-id").is_none());
         assert!(request.headers().get("x-codex-window-id").is_none());
+    }
+
+    fn openai_api_key() -> Credential {
+        Credential::ApiKey {
+            value: "api-key".to_string(),
+            header: crate::config::ApiKeyHeader::Bearer,
+        }
+    }
+
+    fn openai_route() -> Route {
+        Route {
+            provider: "openai".to_string(),
+            ..codex_route()
+        }
+    }
+
+    #[test]
+    fn api_key_requests_to_stock_openai_carry_the_session_affinity_headers() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        let request = build_test_request(
+            &state,
+            &openai_route(),
+            openai_api_key(),
+            Some("session-123"),
+        );
+
+        // Stock OpenAI is the one api-key Responses upstream codex sends its
+        // session-affinity headers to; the values match the OAuth branch's.
+        assert_eq!(request.headers().get("session-id").unwrap(), "session-123");
+        assert_eq!(request.headers().get("thread-id").unwrap(), "session-123");
+        assert_eq!(
+            request.headers().get("x-client-request-id").unwrap(),
+            "session-123"
+        );
+        assert_eq!(
+            request.headers().get("x-codex-window-id").unwrap(),
+            "session-123:0"
+        );
+        assert!(request.headers().get("accept").is_none());
+    }
+
+    #[test]
+    fn api_key_requests_without_a_session_id_omit_the_affinity_headers() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        for session_id in [None, Some("")] {
+            let request = build_test_request(&state, &openai_route(), openai_api_key(), session_id);
+            assert!(request.headers().get("session-id").is_none());
+            assert!(request.headers().get("thread-id").is_none());
+            assert!(request.headers().get("x-client-request-id").is_none());
+            assert!(request.headers().get("x-codex-window-id").is_none());
+        }
+    }
+
+    #[test]
+    fn api_key_requests_to_xai_omit_the_affinity_headers() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        let request =
+            build_test_request(&state, &xai_route(), openai_api_key(), Some("session-123"));
+
+        assert!(request.headers().get("session-id").is_none());
+        assert!(request.headers().get("thread-id").is_none());
+        assert!(request.headers().get("x-client-request-id").is_none());
+        assert!(request.headers().get("x-codex-window-id").is_none());
+    }
+
+    #[test]
+    fn api_key_requests_off_the_stock_openai_host_omit_the_affinity_headers() {
+        // The stock-host gate is exact: a third-party relay and an openai.com
+        // subdomain both stay header-free, so widening the host predicate past
+        // `api.openai.com` exactly reddens this test.
+        for base_url in ["https://relay.example/v1", "https://chat.openai.com/v1"] {
+            let mut config = Config::default();
+            config.providers.get_mut("openai").unwrap().base_url = base_url.to_string();
+            let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+            let request = build_test_request(
+                &state,
+                &openai_route(),
+                openai_api_key(),
+                Some("session-123"),
+            );
+
+            assert!(request.headers().get("session-id").is_none());
+            assert!(request.headers().get("thread-id").is_none());
+            assert!(request.headers().get("x-client-request-id").is_none());
+            assert!(request.headers().get("x-codex-window-id").is_none());
+        }
     }
 
     #[test]

@@ -2029,7 +2029,9 @@ pub fn host_is_anthropic(host: &str) -> bool {
 /// Whether `host` is the stock OpenAI Responses API host, exactly
 /// (`api.openai.com`, no subdomains). Used by [`Config::native_tool_search`]
 /// to decide whether an "auto" (unset `tool_search`) provider may default to
-/// the native protocol. Unlike `host_is_xai`/`host_is_cursor`/
+/// the native protocol, by the api-key affinity gate in
+/// `adapters::responses::request`, and by the shared client's redirect
+/// policy. Unlike `host_is_xai`/`host_is_cursor`/
 /// `host_is_anthropic`, which widen to any subdomain to avoid leaking a
 /// subscription bearer off one operator's origin, this check is narrowed to
 /// the single documented Responses endpoint on purpose: other `openai.com`
@@ -2037,7 +2039,7 @@ pub fn host_is_anthropic(host: &str) -> bool {
 /// products with no guarantee they implement `tool_search` items the same
 /// way, so trusting the whole domain would risk silently promoting an
 /// unverified host to the native wire shape.
-fn host_is_openai(host: &str) -> bool {
+pub(crate) fn host_is_openai(host: &str) -> bool {
     host == "api.openai.com"
 }
 
@@ -5079,6 +5081,20 @@ impl Config {
         self.provider(provider)
             .map(|provider| provider.auth == AuthMode::ChatgptOauth)
             .unwrap_or(false)
+    }
+
+    /// Whether `provider` targets the stock OpenAI Responses host, exactly
+    /// (`api.openai.com`). Codex sends its session-affinity headers there under
+    /// api-key auth (`codex-rs` api-key test), so the api-key adapter branch
+    /// mirrors them on this host and nowhere else — a third-party
+    /// OpenAI-compatible host has no use for codex identity headers.
+    pub fn is_openai_backend(&self, provider: &str) -> bool {
+        self.provider(provider).is_some_and(|config| {
+            reqwest::Url::parse(&config.base_url)
+                .ok()
+                .and_then(|url| url.host_str().map(host_is_openai))
+                .unwrap_or(false)
+        })
     }
 
     /// The effective storm-control initial admission allowance

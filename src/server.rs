@@ -224,7 +224,10 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
     let state = AppState::from_shared(
         shared.clone(),
-        reqwest::Client::new(),
+        reqwest::Client::builder()
+            .redirect(crate::adapters::responses::request::codex_identity_redirect_policy())
+            .build()
+            .expect("build responses http client"),
         Arc::new(AccountPool::new()),
         Arc::new(StatusStore::new()),
         Arc::new(AdminStores::new()),

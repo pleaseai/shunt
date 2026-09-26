@@ -270,7 +270,7 @@ async fn forward(
     // mirrors the outbound Responses path's `{client}:{session_id}` pool key (see
     // `adapters/responses/mod.rs`). The raw `session_id` is still what the tracing
     // span records above; only the pool key is namespaced.
-    let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id);
+    let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id.clone());
 
     let (provider, result) = match matched {
         Some(route) => {
@@ -279,6 +279,7 @@ async fn forward(
                 route,
                 model.clone(),
                 pool_key,
+                session_id,
                 headers,
                 body,
                 resolved.decoded,
@@ -338,6 +339,7 @@ async fn dispatch_routed(
     route_config: CodexRouteConfig,
     model: String,
     pool_key: Option<String>,
+    session_id: Option<String>,
     mut headers: HeaderMap,
     body: Bytes,
     decoded: Option<Bytes>,
@@ -400,7 +402,7 @@ async fn dispatch_routed(
     let result = if chatgpt_backend {
         responses::forward_codex_inbound(state, route, pool_key, headers, body).await
     } else {
-        responses::forward_codex_routed(state, route, headers, body).await
+        responses::forward_codex_routed(state, route, headers, body, session_id).await
     };
     Ok((route_config.provider, result))
 }
