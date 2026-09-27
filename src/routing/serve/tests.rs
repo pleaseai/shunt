@@ -605,23 +605,19 @@ mod caller_attribution {
 /// [`super::bounds::collect_bounded`] ran on its output, so the cap bounded the
 /// parser's input and nothing else.
 ///
-/// The oracle is the outcome *label*, because a finite oversized body is
+/// The oracle is the outcome *label*, because a terminated oversized body is
 /// refused by the collector too and so cannot tell the two caps apart. This
-/// judge answers `200` and then streams for as long as anyone reads. Capped at
-/// the read, the call reports `oversized` in milliseconds, having taken a
-/// little over the cap. Uncapped, the adapter drains whatever the upstream
-/// sends and the call ends on whatever that drain produces — the deadline, or
-/// the abandoned connection — which is some other operator's key for an
-/// upstream that is not slow and did not fail.
+/// judge answers `200`, attempts complete chunk frames carrying one chunk more
+/// than the default `judge_max_response_bytes`, and deliberately omits the
+/// terminating zero chunk. Capped at
+/// the read, the call reports `oversized` in milliseconds and closes the
+/// unfinished response. Uncapped, the adapter waits for the missing terminator
+/// until the deadline and reports a different operator key.
 ///
 /// In-crate rather than in `tests/router_judge.rs` for the same reason
 /// [`caller_attribution`] is: it asserts on shunt's own view of the call rather
 /// than on what a client sees, and a fail-open looks identical from outside.
 mod oversized_reply {
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
     use std::time::{Duration, Instant};
 
     use axum::http::HeaderMap;
@@ -629,6 +625,7 @@ mod oversized_reply {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
+        sync::oneshot,
     };
 
     use crate::proxy::failover::InboundContext;
@@ -638,27 +635,23 @@ mod oversized_reply {
     use super::judge_fixture;
 
     const ROUTER_ID: &str = "claude-auto-oversized-reply";
-    /// A ceiling on the mock's own output, so a regression cannot turn this
-    /// test into a runaway writer. Far above `judge_max_response_bytes`
-    /// (64 KiB) and far below what an uncapped read would drain in two seconds.
-    const MOCK_WRITE_CEILING: usize = 4 * 1024 * 1024;
 
-    /// A judge that commits `200 application/json` and then streams a chunked
-    /// body that never ends.
+    const CHUNK: usize = 4096;
+    /// `judge_fixture::stage()` keeps the default reply cap, so this many
+    /// chunks cross it by exactly one.
+    const CHUNKS: usize = crate::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES / CHUNK + 1;
+
+    /// A judge that commits `200 application/json`, attempts `CHUNKS` complete
+    /// chunks, and leaves the chunked response unfinished.
     ///
-    /// A raw socket because no mock server can express "valid headers, then
-    /// more body than anyone asked for, forever" — and the endlessness is the
-    /// point: a finite oversized body is refused by the collector too, so it
-    /// could not tell the two caps apart.
-    ///
-    /// Returns the counter of bytes it managed to write, which is the second
-    /// half of the assertion: it is the memory the uncapped read would have
-    /// taken.
-    async fn endless_reply_judge() -> (String, Arc<AtomicUsize>) {
+    /// The bounded payload crosses the cap without a runaway producer.
+    /// Omitting the terminating zero chunk makes an uncapped reader wait for
+    /// the deadline, while the capped reader drops the body and closes the
+    /// connection.
+    async fn unfinished_reply_judge() -> (String, oneshot::Receiver<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let written = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&written);
+        let (closed, closed_rx) = oneshot::channel();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("the judge call connects");
             let mut buffer = [0u8; 8192];
@@ -666,28 +659,32 @@ mod oversized_reply {
             let _ = socket.read(&mut buffer).await;
             let head: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n";
             if socket.write_all(head).await.is_err() {
+                let _ = closed.send(());
                 return;
             }
-            // 4 KiB of chunk payload at a time: enough that the 64 KiB cap is
-            // crossed within the first handful, small enough that the writer
-            // notices a closed peer promptly.
-            let mut chunk = Vec::with_capacity(4096 + 8);
-            chunk.extend_from_slice(b"1000\r\n");
-            chunk.extend_from_slice(&[b'a'; 4096]);
+            let mut chunk = format!("{CHUNK:x}\r\n").into_bytes();
+            chunk.extend_from_slice(&[b'a'; CHUNK]);
             chunk.extend_from_slice(b"\r\n");
-            while counter.load(Ordering::Relaxed) < MOCK_WRITE_CEILING {
+            for _ in 0..CHUNKS {
                 if socket.write_all(&chunk).await.is_err() {
-                    break;
+                    let _ = closed.send(());
+                    return;
                 }
-                counter.fetch_add(4096, Ordering::Relaxed);
             }
+            loop {
+                match socket.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            let _ = closed.send(());
         });
-        (format!("http://{addr}"), written)
+        (format!("http://{addr}"), closed_rx)
     }
 
     #[tokio::test]
-    async fn an_endless_judge_reply_is_refused_at_the_cap_not_at_the_deadline() {
-        let (judge_url, written) = endless_reply_judge().await;
+    async fn an_unfinished_judge_reply_is_refused_at_the_cap_not_at_the_deadline() {
+        let (judge_url, closed) = unfinished_reply_judge().await;
         let stage = judge_fixture::stage();
         let state = judge_fixture::state(ROUTER_ID, judge_url, &stage);
         let classifier = stage
@@ -719,14 +716,10 @@ mod oversized_reply {
             elapsed < Duration::from_millis(2_000),
             "the refusal is the cap's, not the deadline's, but took {elapsed:?}"
         );
-        // The upstream never got to hand over more than a small multiple of the
-        // cap: whatever the socket buffers absorbed before the abandoned read
-        // closed the connection.
-        let written = written.load(Ordering::Relaxed);
-        assert!(
-            written < MOCK_WRITE_CEILING,
-            "the whole body was still being drained: the judge wrote {written} bytes"
-        );
+        tokio::time::timeout(Duration::from_secs(3), closed)
+            .await
+            .expect("the capped read closes the unfinished upstream response promptly")
+            .expect("the judge reports the peer close");
     }
 
     /// A judge that announces a body far over the cap and then sends none of
