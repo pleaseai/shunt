@@ -220,22 +220,31 @@ pub(super) fn session_affinity_headers(
 }
 
 /// Redirect policy for the shared Responses HTTP client: a request chain that
-/// started on stock OpenAI must not carry its generated codex identity headers
-/// across hosts (reqwest strips only credentials on a host change; the policy
-/// sees the chain's URLs, never its headers, so the guard keys on the origin),
-/// so a cross-host 3xx stops at the hop and the redirect response relays to
-/// the client like any other upstream status. Same-host hops still follow,
-/// capped like reqwest's default.
+/// started on a host that receives the generated codex identity headers —
+/// stock OpenAI on the api-key arm, the ChatGPT backend on the subscription
+/// OAuth arm — must not carry them across hosts (reqwest strips only
+/// credentials on a host change; the policy sees the chain's URLs, never its
+/// headers, so the guard keys on the origin and judges the hop against that
+/// origin's own domain predicate), so a cross-host 3xx stops at the hop and
+/// the redirect response relays to the client like any other upstream status.
+/// Same-host hops still follow, capped like reqwest's default. A loopback
+/// chatgpt-oauth origin passes config validation (the https and host checks
+/// skip loopback) and stays unguarded; it already holds the plaintext bearer
+/// by design, so the guard adds nothing there.
 pub(crate) fn codex_identity_redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
-        let from_stock_openai = attempt
-            .previous()
-            .first()
-            .and_then(|url| url.host_str())
-            .is_some_and(crate::config::host_is_openai);
-        if from_stock_openai
-            && !crate::config::host_is_openai(attempt.url().host_str().unwrap_or_default())
-        {
+        let origin = attempt.previous().first().and_then(|url| url.host_str());
+        let target = attempt.url().host_str().unwrap_or_default();
+        let crosses = match origin {
+            Some(origin) if crate::config::host_is_openai(origin) => {
+                !crate::config::host_is_openai(target)
+            }
+            Some(origin) if crate::config::host_is_chatgpt(origin) => {
+                !crate::config::host_is_chatgpt(target)
+            }
+            _ => false,
+        };
+        if crosses {
             attempt.stop()
         } else if attempt.previous().len() > 10 {
             attempt.error("too many redirects")
@@ -667,6 +676,94 @@ mod tests {
             "the generated identity headers must not follow a cross-host redirect"
         );
         stock.verify().await;
+    }
+
+    /// Same guard, subscription OAuth arm: a ChatGPT-backend turn carries the
+    /// account id on every request and the four codex identity headers
+    /// whenever a session id exists, so a cross-host 3xx from it stops at the
+    /// hop exactly like stock OpenAI's, while a same-domain hop still follows.
+    /// The policy is the unit here: the production client wiring in server.rs
+    /// is not driven through a 3xx by the suite, and a loopback chatgpt-oauth
+    /// origin would be unguarded anyway, so the origin host is pinned to the
+    /// mock with `resolve`.
+    #[tokio::test]
+    async fn a_cross_host_redirect_from_the_chatgpt_backend_never_carries_the_identity_headers() {
+        use wiremock::{
+            matchers::{header, method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+
+        let backend = MockServer::start().await;
+        let relay = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/backend-api/codex/responses"))
+            .and(header("session-id", "sess-redir"))
+            .respond_with(
+                ResponseTemplate::new(reqwest::StatusCode::TEMPORARY_REDIRECT).insert_header(
+                    "location",
+                    format!("{}/backend-api/codex/responses", relay.uri()),
+                ),
+            )
+            .expect(1)
+            .mount(&backend)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/backend-api/codex/follow"))
+            .and(header("session-id", "sess-follow"))
+            .respond_with(
+                ResponseTemplate::new(reqwest::StatusCode::TEMPORARY_REDIRECT).insert_header(
+                    "location",
+                    "http://chatgpt.com/backend-api/landed".to_string(),
+                ),
+            )
+            .expect(1)
+            .mount(&backend)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/backend-api/landed"))
+            .respond_with(ResponseTemplate::new(reqwest::StatusCode::OK))
+            .expect(1)
+            .mount(&backend)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .redirect(crate::adapters::responses::request::codex_identity_redirect_policy())
+            .resolve("chatgpt.com", *backend.address())
+            .build()
+            .unwrap();
+
+        let response = client
+            .post("http://chatgpt.com/backend-api/codex/responses")
+            .header("session-id", "sess-redir")
+            .header("thread-id", "sess-redir")
+            .header("chatgpt-account-id", "acct-redir")
+            .body("{}")
+            .send()
+            .await
+            .expect("the redirect stops at the hop and returns the 307");
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT,
+            "a refused cross-host hop returns the upstream redirect"
+        );
+        let followed = client
+            .post("http://chatgpt.com/backend-api/codex/follow")
+            .header("session-id", "sess-follow")
+            .header("chatgpt-account-id", "acct-follow")
+            .body("{}")
+            .send()
+            .await
+            .expect("the same-domain hop follows to the landing path");
+        assert_eq!(
+            followed.status(),
+            reqwest::StatusCode::OK,
+            "a same-domain hop follows to the landing path"
+        );
+        assert!(
+            relay.received_requests().await.unwrap().is_empty(),
+            "the identity headers and account id must not follow a cross-host redirect"
+        );
+        backend.verify().await;
     }
 
     #[test]
