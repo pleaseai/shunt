@@ -854,6 +854,7 @@ pub(super) fn pool_events_stream(
 pub(super) async fn forward_chatgpt_oauth(
     state: AppState,
     route: Route,
+    compact: bool,
     forward: PoolForward,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let PoolForward {
@@ -946,6 +947,7 @@ pub(super) async fn forward_chatgpt_oauth(
     let auth = AuthMode::ChatgptOauth;
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
+    let mut mark_pending = compact;
     let mut last_response: Option<reqwest::Response> = None;
     // The translated request is immutable across account attempts, so serialize
     // (and, on the ChatGPT backend, zstd-compress — issue #285) it at most once
@@ -991,8 +993,18 @@ pub(super) async fn forward_chatgpt_oauth(
             match forward_websocket(
                 &state,
                 &route,
-                account_pool_key.as_deref(),
-                session_id.as_deref(),
+                super::websocket::WsIdentity {
+                    pool_key: account_pool_key.as_deref(),
+                    window_key: pool_key.as_deref(),
+                    session_id: session_id.as_deref(),
+                    // The bump is once per TURN, on the first attempt that
+                    // actually reaches the websocket: an admission failure on
+                    // an earlier-ranked account must not drop the mark (the
+                    // committed single-route path has the same semantics),
+                    // and a failover attempt reads the already-advanced
+                    // window instead of bumping a second time.
+                    compact: mark_pending,
+                },
                 ForwardOptions {
                     upstream_body: upstream_body.clone(),
                     auth,
@@ -1030,6 +1042,10 @@ pub(super) async fn forward_chatgpt_oauth(
                 Err(error) => return Err(error),
             }
         }
+        // The mark has been offered to the first websocket attempt that ran;
+        // every later attempt reads the advanced window (or, if this attempt
+        // fell back to HTTP, the next account's websocket attempt does).
+        mark_pending = false;
 
         // Prepared once per turn and reused by every later attempt: cloning it
         // is a refcount bump, whereas re-preparing would re-serialize and
@@ -1816,6 +1832,392 @@ mod tests {
         }
     }
 
+    /// The pool path wires the window keys correctly end to end: the counter
+    /// keys on the unprefixed session key while the rotation evicts the
+    /// ACCOUNT-prefixed socket, so a compaction-marked turn always handshakes
+    /// with the advanced window id. The mock records each handshake's
+    /// `x-codex-window-id`; two marked turns must produce `sess-1:1` then
+    /// `sess-1:2` on two separate sockets (a surviving pooled socket would
+    /// mean the bump failed to rotate on this path).
+    #[tokio::test]
+    async fn pool_path_advances_the_window_and_rotates_the_socket() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        use tokio::net::TcpListener;
+        use tungstenite::handshake::server::Request;
+        use tungstenite::protocol::WebSocketConfig;
+        use tungstenite::Message;
+
+        use crate::adapters::responses::codex_ws::{
+            clear_pool_for_tests, pool_contains_for_tests, window_for, POOL_TEST_LOCK,
+        };
+        use futures_util::{SinkExt, StreamExt};
+
+        let _env = ENV_LOCK.lock().await;
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let windows: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let server_windows = windows.clone();
+        let server_accepts = accepts.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                server_accepts.fetch_add(1, Ordering::SeqCst);
+                let recorder = {
+                    let server_windows = server_windows.clone();
+                    #[allow(clippy::result_large_err)]
+                    move |request: &Request,
+                          response: tungstenite::handshake::server::Response|
+                          -> Result<
+                        tungstenite::handshake::server::Response,
+                        tungstenite::handshake::server::ErrorResponse,
+                    > {
+                        server_windows.lock().unwrap().push(
+                            request
+                                .headers()
+                                .get("x-codex-window-id")
+                                .map(|value| value.to_str().unwrap().to_string())
+                                .unwrap_or_default(),
+                        );
+                        Ok(response)
+                    }
+                };
+                let mut ws = tokio_tungstenite::accept_hdr_async_with_config(
+                    socket,
+                    recorder,
+                    Some(WebSocketConfig::default()),
+                )
+                .await
+                .unwrap();
+                while let Some(message) = ws.next().await {
+                    match message.unwrap() {
+                        Message::Text(_) => {
+                            for event in [
+                                r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                                r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                                r#"{"type":"response.completed","response":{}}"#,
+                            ] {
+                                ws.send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                        Message::Pong(_) => {}
+                        Message::Close(_) => break,
+                        other => panic!("unexpected frame: {other:?}"),
+                    }
+                }
+            }
+        });
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = format!("http://{addr}");
+        config.providers.get_mut("codex").unwrap().websocket = true;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let accounts = vec![pool_account("acc-a", "SHUNT_POOL_PROBE_A")];
+
+        for expected in ["sess-1:1", "sess-1:2"] {
+            let turn = pool_turn(accounts.clone(), false);
+            let (status, _response) = forward_chatgpt_oauth(
+                state.clone(),
+                pool_route(),
+                true,
+                PoolForward {
+                    pool_key: Some("sess-1".to_string()),
+                    session_id: Some("sess-1".to_string()),
+                    ..turn
+                },
+            )
+            .await
+            .expect("marked pool turn succeeds");
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                *windows.lock().unwrap().last().unwrap(),
+                expected,
+                "each marked turn handshakes with the advanced window"
+            );
+            let window_number: u64 = expected.rsplit(':').next().unwrap().parse().unwrap();
+            assert_eq!(
+                window_for("sess-1"),
+                window_number,
+                "the counter keys on the unprefixed session key, never the account key"
+            );
+            if window_number == 1 {
+                assert!(
+                    pool_contains_for_tests("acc-a::sess-1"),
+                    "the socket pools under the account-prefixed connection key"
+                );
+            }
+        }
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            2,
+            "each turn handshook afresh"
+        );
+        clear_pool_for_tests();
+        server.abort();
+    }
+
+    /// A compaction-marked turn bumps the counter ONCE per turn, never once
+    /// per account attempt: when the first account's WS handshake is refused
+    /// and its HTTP fallback dies, the failover to the second account must
+    /// handshake with the SAME advanced window, not bump again. The mock
+    /// serves three connections: A's refused WS upgrade, A's killed HTTP
+    /// fallback, B's recorded WS turn.
+    #[tokio::test]
+    async fn pool_path_bumps_once_across_a_failover() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tungstenite::handshake::server::Request;
+        use tungstenite::protocol::WebSocketConfig;
+        use tungstenite::Message;
+
+        use crate::adapters::responses::codex_ws::{
+            clear_pool_for_tests, window_for, POOL_TEST_LOCK,
+        };
+        use futures_util::{SinkExt, StreamExt};
+
+        let _env = ENV_LOCK.lock().await;
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let windows: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let server_windows = windows.clone();
+        let server_accepts = accepts.clone();
+        let server = tokio::spawn(async move {
+            // 1: A's WS handshake, refused with 429.
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 2048];
+            let _ = socket.read(&mut buffer).await;
+            socket
+                .write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            // 2: A's HTTP fallback, killed (a transport error rotates).
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+            // 3: B's WS turn, handshake recorded and turn served.
+            let (socket, _) = listener.accept().await.unwrap();
+            server_accepts.fetch_add(3, Ordering::SeqCst);
+            let recorder = {
+                let server_windows = server_windows.clone();
+                #[allow(clippy::result_large_err)]
+                move |request: &Request,
+                      response: tungstenite::handshake::server::Response|
+                      -> Result<
+                    tungstenite::handshake::server::Response,
+                    tungstenite::handshake::server::ErrorResponse,
+                > {
+                    server_windows.lock().unwrap().push(
+                        request
+                            .headers()
+                            .get("x-codex-window-id")
+                            .map(|value| value.to_str().unwrap().to_string())
+                            .unwrap_or_default(),
+                    );
+                    Ok(response)
+                }
+            };
+            let mut ws = tokio_tungstenite::accept_hdr_async_with_config(
+                socket,
+                recorder,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
+            while let Some(message) = ws.next().await {
+                match message.unwrap() {
+                    Message::Text(_) => {
+                        for event in [
+                            r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                            r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                            r#"{"type":"response.completed","response":{}}"#,
+                        ] {
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break,
+                    other => panic!("unexpected frame: {other:?}"),
+                }
+            }
+        });
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = format!("http://{addr}");
+        config.providers.get_mut("codex").unwrap().websocket = true;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let accounts = vec![
+            pool_account("acc-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("acc-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let turn = pool_turn(accounts, false);
+        let (status, _response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            true,
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                ..turn
+            },
+        )
+        .await
+        .expect("marked turn succeeds on the failover account");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            *windows.lock().unwrap().last().unwrap(),
+            "sess-1:1",
+            "the failover handshake carries the once-bumped window"
+        );
+        assert_eq!(
+            window_for("sess-1"),
+            1,
+            "one compaction mark bumps exactly once, across all attempts"
+        );
+        clear_pool_for_tests();
+        server.abort();
+    }
+
+    /// A marked turn whose first-ranked account fails admission must still
+    /// bump: the mark rides the first attempt that actually reaches the
+    /// websocket, matching the committed single-route path's semantics. The
+    /// mock accepts once — the cooled account never connects, the serving
+    /// account's handshake carries the advanced window.
+    #[tokio::test]
+    async fn pool_path_bumps_when_the_first_account_fails_admission() {
+        use std::sync::{Arc, Mutex};
+        use tokio::net::TcpListener;
+        use tungstenite::handshake::server::Request;
+        use tungstenite::protocol::WebSocketConfig;
+        use tungstenite::Message;
+
+        use crate::adapters::responses::codex_ws::{
+            clear_pool_for_tests, window_for, POOL_TEST_LOCK,
+        };
+        use futures_util::{SinkExt, StreamExt};
+
+        let _env = ENV_LOCK.lock().await;
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let windows: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let server_windows = windows.clone();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let recorder = {
+                let server_windows = server_windows.clone();
+                #[allow(clippy::result_large_err)]
+                move |request: &Request,
+                      response: tungstenite::handshake::server::Response|
+                      -> Result<
+                    tungstenite::handshake::server::Response,
+                    tungstenite::handshake::server::ErrorResponse,
+                > {
+                    server_windows.lock().unwrap().push(
+                        request
+                            .headers()
+                            .get("x-codex-window-id")
+                            .map(|value| value.to_str().unwrap().to_string())
+                            .unwrap_or_default(),
+                    );
+                    Ok(response)
+                }
+            };
+            let mut ws = tokio_tungstenite::accept_hdr_async_with_config(
+                socket,
+                recorder,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
+            while let Some(message) = ws.next().await {
+                match message.unwrap() {
+                    Message::Text(_) => {
+                        for event in [
+                            r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                            r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                            r#"{"type":"response.completed","response":{}}"#,
+                        ] {
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break,
+                    other => panic!("unexpected frame: {other:?}"),
+                }
+            }
+        });
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = format!("http://{addr}");
+        config.providers.get_mut("codex").unwrap().websocket = true;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let accounts = vec![
+            // A never-resolving credential fails admission deterministically:
+            // the token env name is guaranteed unset, so `resolve_or_cooldown`
+            // returns None and the loop rotates before any connect. Listed
+            // first, and NO cooldown: a cooldown would demote it in the
+            // selection order instead of failing its admission.
+            pool_account("acc-a", "SHUNT_POOL_PROBE_NEVER_SET_9F3A"),
+            pool_account("acc-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let turn = pool_turn(accounts, false);
+        let (status, _response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            true,
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                ..turn
+            },
+        )
+        .await
+        .expect("marked turn succeeds on the serving account");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            _response.headers().get("x-shunt-account").unwrap(),
+            "acc-b",
+            "account A failed admission, so B is the account that served"
+        );
+        assert_eq!(
+            *windows.lock().unwrap().last().unwrap(),
+            "sess-1:1",
+            "the serving account's handshake carries the advanced window"
+        );
+        assert_eq!(
+            window_for("sess-1"),
+            1,
+            "the mark bumps on the first attempt that actually runs"
+        );
+        clear_pool_for_tests();
+        server.abort();
+    }
+
     fn pool_state(base_url: String) -> AppState {
         let mut config = Config::default();
         config.providers.get_mut("codex").unwrap().base_url = base_url;
@@ -1874,7 +2276,7 @@ mod tests {
         let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
         let state = pool_state(server.uri());
         let (status, response) =
-            forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+            forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, true))
                 .await
                 .expect("streaming pool turn builds the response without upstream headers");
         assert_eq!(status, StatusCode::OK);
@@ -1920,9 +2322,10 @@ mod tests {
             pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
         ];
         let state = pool_state(server.uri());
-        let (_, response) = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
-            .await
-            .expect("pool turn succeeds on the second account");
+        let (_, response) =
+            forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, true))
+                .await
+                .expect("pool turn succeeds on the second account");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body is readable");
@@ -1960,7 +2363,7 @@ mod tests {
         let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
         let state = pool_state(server.uri());
         let (status, response) =
-            forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+            forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, true))
                 .await
                 .expect("pool turn commits and reports the failure in-stream");
         assert_eq!(status, StatusCode::OK);
@@ -1994,7 +2397,7 @@ mod tests {
             .await;
         let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
         let state = pool_state(server.uri());
-        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
+        let error = forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, false))
             .await
             .expect_err("non-streaming 429 stays an error response");
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -2048,6 +2451,7 @@ mod tests {
         let (status, response) = forward_chatgpt_oauth(
             state.clone(),
             pool_route(),
+            false,
             pool_turn(accounts.clone(), false),
         )
         .await
@@ -2118,9 +2522,10 @@ mod tests {
             pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
         ];
         let state = pool_state(server.uri());
-        let (_, response) = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
-            .await
-            .expect("pool turn commits");
+        let (_, response) =
+            forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, true))
+                .await
+                .expect("pool turn commits");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body is readable");
@@ -2158,7 +2563,7 @@ mod tests {
             pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
         ];
         let state = pool_state(server.uri());
-        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
+        let error = forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, false))
             .await
             .expect_err("an exhausted pool relays the refusal");
         assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
@@ -2198,7 +2603,7 @@ mod tests {
             pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
         ];
         let state = pool_state(server.uri());
-        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
+        let error = forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, false))
             .await
             .expect_err("a client 400 is relayed");
         assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
@@ -2632,7 +3037,7 @@ mod tests {
             "SHUNT_POOL_METRICS_PROBE",
         )];
         let (state, route) = pool_state_with_provider("pool-metrics-probe", server.uri());
-        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+        let (_, response) = forward_chatgpt_oauth(state, route, false, pool_turn(accounts, true))
             .await
             .expect("pool turn commits and relays");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -2671,7 +3076,7 @@ mod tests {
             "SHUNT_POOL_METRICS_FAIL_PROBE",
         )];
         let (state, route) = pool_state_with_provider("pool-metrics-fail-probe", server.uri());
-        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+        let (_, response) = forward_chatgpt_oauth(state, route, false, pool_turn(accounts, true))
             .await
             .expect("pool turn commits and reports the failure in-stream");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -2780,7 +3185,7 @@ mod tests {
         let state = AppState::new(config, reqwest::Client::new()).unwrap();
         let mut route = pool_route();
         route.provider = "pool-metrics-ttfb-probe".to_string();
-        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+        let (_, response) = forward_chatgpt_oauth(state, route, false, pool_turn(accounts, true))
             .await
             .expect("pool turn commits and reports the timeout in-stream");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -2845,7 +3250,7 @@ mod tests {
         let state = AppState::new(config, reqwest::Client::new()).unwrap();
         let mut route = pool_route();
         route.provider = "pool-metrics-refused-probe".to_string();
-        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+        let (_, response) = forward_chatgpt_oauth(state, route, false, pool_turn(accounts, true))
             .await
             .expect("pool turn commits and reports the exhaustion in-stream");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)

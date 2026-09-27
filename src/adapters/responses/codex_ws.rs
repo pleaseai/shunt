@@ -271,6 +271,78 @@ static POOL: LazyLock<Mutex<HashMap<String, Arc<PoolEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static LAST_POOL_SWEEP: LazyLock<Mutex<Instant>> = LazyLock::new(|| Mutex::new(Instant::now()));
 
+/// A per-session compaction-window counter, keyed by pool key. `last_touched`
+/// is the conversation's own liveness clock: the counter dies only when the
+/// CONVERSATION idles past [`POOL_IDLE_TTL`], never when its socket churns
+/// (a bump's rotation, capacity eviction) — and a compact turn's own stream
+/// cannot kill it, since the bump just touched it.
+struct WindowCounter {
+    value: u64,
+    last_touched: Instant,
+}
+
+/// Per-session compaction-window counters, keyed by pool key alongside
+/// [`POOL`]. Swept on the pool's cadence (see `pool_insert`), by the counter's
+/// own idle clock rather than by socket membership.
+static WINDOWS: LazyLock<Mutex<HashMap<String, WindowCounter>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Bump the compaction-window counter for `key`. A key with no recorded
+/// window starts at 1 — the mark that calls this is the conversation's first
+/// observed compaction, and 0 is the pre-compaction default. Counter-only:
+/// the socket rotation lives in [`window_for_turn`], which knows the
+/// connection's own pool key.
+pub(crate) fn advance_window(key: &str) -> u64 {
+    let now = Instant::now();
+    let mut windows = WINDOWS.lock().unwrap();
+    let slot = windows.entry(key.to_string()).or_insert(WindowCounter {
+        value: 0,
+        last_touched: now,
+    });
+    slot.value += 1;
+    slot.last_touched = now;
+    slot.value
+}
+
+/// The window id a non-compaction turn's fresh handshake carries: the
+/// conversation's current window, 0 before any compaction.
+pub(crate) fn window_for(key: &str) -> u64 {
+    let mut windows = WINDOWS.lock().unwrap();
+    let Some(counter) = windows.get_mut(key) else {
+        return 0;
+    };
+    // A read is conversation activity: refresh the liveness clock so the idle
+    // sweep keeps the window for an active conversation whose compactions are
+    // rarer than the idle TTL.
+    counter.last_touched = Instant::now();
+    counter.value
+}
+
+/// The window id a turn's handshake carries, with the rotation a bump implies.
+/// The counter keys on `window_key` — the unprefixed session key, stable
+/// across account rotation — while the eviction targets `evict_key`, the
+/// CONNECTION's own pool key: account-prefixed on the pool path, the same key
+/// on the committed path. A marked turn bumps and rotates; any other turn
+/// reads the current window; no pool key stays 0 (the HTTP transport does
+/// too, by design).
+pub(crate) fn window_for_turn(
+    window_key: Option<&str>,
+    evict_key: Option<&str>,
+    compact: bool,
+) -> u64 {
+    match (window_key, compact) {
+        (Some(key), true) => {
+            let next = advance_window(key);
+            if let Some(evict) = evict_key {
+                POOL.lock().unwrap().remove(evict);
+            }
+            next
+        }
+        (Some(key), false) => window_for(key),
+        (None, _) => 0,
+    }
+}
+
 fn pool_get(key: &str) -> Option<Arc<PoolEntry>> {
     POOL.lock().unwrap().get(key).cloned()
 }
@@ -297,6 +369,14 @@ fn pool_insert(key: String, entry: Arc<PoolEntry>) {
         // Sweep at most once per interval during ordinary churn, but always sweep
         // under capacity pressure before choosing an LRU victim.
         guard.retain(|_, entry| entry.conn.last_used_at.lock().unwrap().elapsed() < POOL_IDLE_TTL);
+        // The window counters sweep by their OWN idle clock, never by socket
+        // membership: a live conversation's counter must outlive its socket's
+        // churn (a bump's rotation, capacity eviction) and a compact turn's own
+        // stream (the socket only pools at clean completion).
+        WINDOWS
+            .lock()
+            .unwrap()
+            .retain(|_, counter| counter.last_touched.elapsed() < POOL_IDLE_TTL);
         *last_sweep = Instant::now();
     }
     drop(last_sweep);
@@ -318,6 +398,7 @@ fn pool_insert(key: String, entry: Arc<PoolEntry>) {
 #[cfg(test)]
 pub fn clear_pool_for_tests() {
     POOL.lock().unwrap().clear();
+    WINDOWS.lock().unwrap().clear();
     *LAST_POOL_SWEEP.lock().unwrap() = Instant::now();
 }
 
@@ -325,6 +406,12 @@ pub fn clear_pool_for_tests() {
 pub fn pool_contains_for_tests(key: &str) -> bool {
     POOL.lock().unwrap().contains_key(key)
 }
+
+/// Serializes every test that touches the process-global pool or window
+/// counters — the socket-pool tests here and the pool-path test in
+/// `pool.rs`, which clears and asserts the same maps.
+#[cfg(test)]
+pub(crate) static POOL_TEST_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
 
 /// A transport or upstream error surfaced by the websocket path. `status` and
 /// `retry_after` are populated from the HTTP upgrade response when the handshake
@@ -1218,11 +1305,6 @@ fn map_handshake_error(error: tungstenite::Error) -> CodexWsError {
 mod tests {
     use super::*;
 
-    /// Serializes tests that touch the process-global connection [`POOL`]. Each
-    /// clears the whole pool, so without this they would wipe each other's pooled
-    /// entries mid-test when run in parallel.
-    static POOL_TEST_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
-
     /// Convenience for the transport tests that don't exercise continuation:
     /// acquire a connection and stream a frame with no continuation recording.
     async fn open_simple(
@@ -1679,6 +1761,163 @@ mod tests {
 
         clear_pool_for_tests();
         server.abort();
+    }
+
+    /// A compaction bump evicts the pooled socket: the next turn handshakes
+    /// afresh (the mock accepts twice — a single-accept mock would refuse it),
+    /// and each bump advances the counter once per rotation.
+    #[tokio::test]
+    async fn advance_window_rotates_the_pooled_connection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let server_accepts = accepts.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (socket, _) = listener.accept().await.unwrap();
+                server_accepts.fetch_add(1, Ordering::SeqCst);
+                let mut ws = tokio_tungstenite::accept_async_with_config(
+                    socket,
+                    Some(WebSocketConfig::default()),
+                )
+                .await
+                .unwrap();
+                while let Some(message) = ws.next().await {
+                    match message.unwrap() {
+                        Message::Text(_) => {
+                            for event in [
+                                r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                                r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                                r#"{"type":"response.completed","response":{}}"#,
+                            ] {
+                                ws.send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                        Message::Pong(_) => {}
+                        Message::Close(_) => break,
+                        other => panic!("unexpected frame: {other:?}"),
+                    }
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
+
+        let turn = begin(&url, HeaderMap::new(), Some("session-1"), "codex")
+            .await
+            .expect("first turn connects");
+        let mut turn = turn.stream(&frame, RecordPlan::none()).await.unwrap();
+        drain(&mut turn).await;
+        assert!(
+            pool_contains_for_tests("session-1"),
+            "turn pools its connection"
+        );
+        assert!(
+            window_for_turn(Some("session-1"), Some("session-1"), true) == 1,
+            "first compaction bump"
+        );
+        assert!(
+            !pool_contains_for_tests("session-1"),
+            "bump evicts the socket"
+        );
+
+        let turn = begin(&url, HeaderMap::new(), Some("session-1"), "codex")
+            .await
+            .expect("second turn handshakes afresh");
+        let mut turn = turn.stream(&frame, RecordPlan::none()).await.unwrap();
+        drain(&mut turn).await;
+        assert!(
+            window_for_turn(Some("session-1"), Some("session-1"), true) == 2,
+            "second compaction bump"
+        );
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            2,
+            "each turn handshook on its own connection"
+        );
+
+        // A pool-path turn lives under the ACCOUNT-prefixed connection key
+        // while the counter keys on the unprefixed session key: the bump must
+        // still evict the socket wherever it lives.
+        let turn = begin(&url, HeaderMap::new(), Some("acct::session-1"), "codex")
+            .await
+            .expect("third turn pools under the account key");
+        let mut turn = turn.stream(&frame, RecordPlan::none()).await.unwrap();
+        drain(&mut turn).await;
+        assert!(pool_contains_for_tests("acct::session-1"));
+        assert!(
+            window_for_turn(Some("session-1"), Some("acct::session-1"), true) == 3,
+            "counter bumps on the session key"
+        );
+        assert!(
+            !pool_contains_for_tests("acct::session-1"),
+            "bump evicts the account-prefixed socket"
+        );
+
+        clear_pool_for_tests();
+        server.abort();
+    }
+
+    /// The counter starts at 1 on a key with no pooled connection (the mark
+    /// that calls it is the conversation's first observed compaction, 0 being
+    /// the pre-compaction default) and survives connection churn — the bump's
+    /// own rotation, idle TTL, capacity — so a later non-marked turn that
+    /// opens a fresh socket still handshakes with the current window id.
+    /// Under `POOL_TEST_LOCK`: the counters are process-global and this test
+    /// must not interleave with the rotation test's bumps.
+    #[tokio::test]
+    async fn advance_window_counter_starts_at_one_and_persists() {
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        assert_eq!(advance_window("session-1"), 1);
+        assert_eq!(window_for("session-1"), 1);
+        assert_eq!(advance_window("session-1"), 2);
+        assert_eq!(window_for("never-seen"), 0);
+        // The per-turn select: non-marked reads the current window, marked bumps,
+        // and an unpoolable session stays 0.
+        assert_eq!(
+            window_for_turn(Some("session-1"), Some("session-1"), false),
+            2
+        );
+        assert_eq!(
+            window_for_turn(Some("session-1"), Some("session-1"), true),
+            3
+        );
+        assert_eq!(window_for_turn(Some("session-1"), None, false), 3);
+        assert_eq!(window_for_turn(None, None, true), 0);
+        // A read is conversation activity: it refreshes the liveness clock, so
+        // an ACTIVE conversation whose compactions are rarer than the idle TTL
+        // never loses its window to the sweep.
+        WINDOWS
+            .lock()
+            .unwrap()
+            .get_mut("session-1")
+            .unwrap()
+            .last_touched = Instant::now() - POOL_IDLE_TTL - std::time::Duration::from_secs(1);
+        assert_eq!(window_for("session-1"), 3);
+        assert!(
+            WINDOWS
+                .lock()
+                .unwrap()
+                .get("session-1")
+                .unwrap()
+                .last_touched
+                .elapsed()
+                < std::time::Duration::from_secs(1),
+            "a read must refresh the counter's liveness clock"
+        );
+        clear_pool_for_tests();
     }
 
     /// Issue #248: a second turn already streaming on the pooled socket must not

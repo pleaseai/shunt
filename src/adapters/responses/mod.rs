@@ -36,6 +36,7 @@ use crate::{
         responses_request::{effective_session_identity, EffectiveSessionId},
     },
     request::RequestBody,
+    routing::context::RouterContext,
     routing::Route,
     server::AppState,
 };
@@ -61,6 +62,14 @@ use self::sse_parse::pool_relay_build;
 use self::websocket::forward_websocket;
 
 pub struct ResponsesAdapter;
+
+/// Whether this turn carries the client's one-shot post-compaction mark
+/// (`x-claude-code-context-compacted`, the first main turn after a compaction).
+/// Extracted so a test can pin that the websocket window key reads this hint
+/// rather than any neighbouring one (the agent id, the request class).
+fn compact_marked(headers: &HeaderMap) -> bool {
+    RouterContext::from_headers(headers).context_compacted
+}
 
 impl Adapter for ResponsesAdapter {
     fn forward<'a>(
@@ -99,12 +108,17 @@ impl Adapter for ResponsesAdapter {
                         |client| format!("{client}:{session_id}"),
                     )
             });
+        // The client marks the first main turn after a compaction with a
+        // one-shot `x-claude-code-context-compacted` header; the websocket path
+        // keys its window counter on it. The HTTP transport stays `:0`.
+        let compact = compact_marked(headers);
         Box::pin(async move {
             forward(
                 state,
                 route,
                 pool_key,
                 identity.map(EffectiveSessionId::into_string),
+                compact,
                 body,
                 bounds,
             )
@@ -118,6 +132,7 @@ async fn forward(
     route: Route,
     pool_key: Option<String>,
     session_id: Option<String>,
+    compact: bool,
     body: RequestBody,
     response_bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
@@ -307,6 +322,7 @@ async fn forward(
             return forward_chatgpt_oauth(
                 state,
                 route,
+                compact,
                 PoolForward {
                     pool_key,
                     session_id,
@@ -374,8 +390,12 @@ async fn forward(
         match forward_websocket(
             &state,
             &route,
-            pool_key.as_deref(),
-            session_id.as_deref(),
+            websocket::WsIdentity {
+                pool_key: pool_key.as_deref(),
+                window_key: pool_key.as_deref(),
+                session_id: session_id.as_deref(),
+                compact,
+            },
             websocket_options,
             websocket_credential.clone(),
         )
@@ -854,4 +874,41 @@ async fn winner_estimate(state: &AppState, route: &Route, request: &Arc<Value>) 
         .ok()
         .and_then(Result::ok)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    /// The window bump keys on the client's context-compacted hint, never on
+    /// a neighbouring hint: a delegated turn is not a compaction, and a bare
+    /// compaction mark with no other headers still is one.
+    #[test]
+    fn compact_marked_reads_only_the_context_compacted_hint() {
+        let none = HeaderMap::new();
+        assert!(!compact_marked(&none));
+
+        let mut delegated = HeaderMap::new();
+        delegated.insert(
+            "x-claude-code-request-class",
+            HeaderValue::from_static("subagent"),
+        );
+        delegated.insert("x-claude-code-agent-id", HeaderValue::from_static("a1"));
+        assert!(!compact_marked(&delegated));
+
+        let mut marked = HeaderMap::new();
+        marked.insert(
+            "x-claude-code-context-compacted",
+            HeaderValue::from_static("auto"),
+        );
+        assert!(compact_marked(&marked));
+
+        marked.insert(
+            "x-claude-code-request-class",
+            HeaderValue::from_static("main"),
+        );
+        marked.insert("x-claude-code-agent-id", HeaderValue::from_static("a1"));
+        assert!(compact_marked(&marked));
+    }
 }

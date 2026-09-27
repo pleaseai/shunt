@@ -24,6 +24,18 @@ use super::error::build_upstream_error;
 use super::request::{responses_url, routing_hint, CODEX_CLIENT_VERSION, CODEX_USER_AGENT};
 use super::ws_stream::{json_events_response, stream_events_response};
 
+/// The identity inputs for a turn's handshake headers: the connection pool
+/// key (account-prefixed on the pool path), the window-counter key (always
+/// the unprefixed session key — an account rotation must not reset the
+/// conversation's window), the effective session id, and whether this turn
+/// carries the client's one-shot post-compaction mark.
+pub(super) struct WsIdentity<'a> {
+    pub(super) pool_key: Option<&'a str>,
+    pub(super) window_key: Option<&'a str>,
+    pub(super) session_id: Option<&'a str>,
+    pub(super) compact: bool,
+}
+
 /// Drive a turn over the Codex Responses WebSocket v2 transport (issue #32).
 /// Reuses the session's pooled connection and, when the current input is an
 /// append-only extension of the previous turn, sends only the delta with
@@ -33,8 +45,7 @@ use super::ws_stream::{json_events_response, stream_events_response};
 pub(super) async fn forward_websocket(
     state: &AppState,
     route: &Route,
-    pool_key: Option<&str>,
-    session_id: Option<&str>,
+    identity: WsIdentity<'_>,
     forward: ForwardOptions,
     credential: Credential,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
@@ -46,9 +57,24 @@ pub(super) async fn forward_websocket(
         estimate_input,
         started_at: _,
     } = forward;
+    let WsIdentity {
+        pool_key,
+        window_key,
+        session_id,
+        compact,
+    } = identity;
     let pool_key = pool_key.filter(|key| !key.is_empty());
     let http_url = responses_url(&state.config, &route.provider);
     let ws_url = codex_ws::to_websocket_url(&http_url).map_err(ws_transport_error)?;
+    // The handshake's `x-codex-window-id` carries the conversation's compaction
+    // window: a turn the client marks as post-compaction (the one-shot
+    // `x-claude-code-context-compacted` header) bumps the counter and rotates
+    // the socket; every other turn reads the current window. The counter keys
+    // on the unprefixed session key (`window_key`) so an account rotation
+    // cannot reset it; the eviction targets the connection's own pool key
+    // (`pool_key`, account-prefixed on the pool path). The HTTP transport
+    // never advances and stays `:0` (request.rs).
+    let window = codex_ws::window_for_turn(window_key, pool_key, compact);
     let ctx = WsTurnContext {
         ws_url,
         pool_key,
@@ -61,6 +87,7 @@ pub(super) async fn forward_websocket(
         signature: codex_continuation::signature(&upstream_body),
         upstream_body,
         routing_hint: routing_hint(route),
+        window,
     };
     tracing::debug!(provider = %route.provider, ws_url = %ctx.ws_url, pool_key = pool_key.unwrap_or(""), "opening codex websocket");
 
@@ -142,6 +169,11 @@ struct WsTurnContext<'a> {
     /// builds it at connection time — and it is a routing *hint*, not a routing
     /// decision, so a stale one costs nothing.
     routing_hint: Option<HeaderValue>,
+    /// The compaction-window index the handshake's `x-codex-window-id` carries
+    /// (`{session}:{window}`). Computed once per turn in [`forward_websocket`]:
+    /// a compaction-marked turn bumps the pooled counter, every other turn
+    /// reads the current window, and an unpoolable session stays 0.
+    window: u64,
 }
 
 /// The first event, peeked off the stream before the websocket response is
@@ -335,6 +367,7 @@ async fn start_ws_turn(
         ctx.credential.clone(),
         ctx.routing_hint.as_ref(),
         ctx.session_id,
+        ctx.window,
     )?;
     let turn = codex_ws::begin(&ctx.ws_url, headers, ctx.pool_key, ctx.provider)
         .await
@@ -432,6 +465,7 @@ fn websocket_headers(
     credential: Credential,
     routing_hint: Option<&HeaderValue>,
     session_id: Option<&str>,
+    window: u64,
 ) -> Result<HeaderMap, AdapterError> {
     let mut headers = HeaderMap::new();
     // Set only on the ChatGPT OAuth arm; inserted after the match (see there).
@@ -463,11 +497,13 @@ fn websocket_headers(
             // Same session identity the HTTP transport sends: the backend
             // derives prompt-cache affinity from `session-id`, and its value
             // must equal the body's `prompt_cache_key` (see `request.rs`).
+            // The window id advances on compaction-marked turns (see
+            // `forward_websocket`); the HTTP transport stays `:0`.
             if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
                 set("session-id", session_id.to_string())?;
                 set("thread-id", session_id.to_string())?;
                 set("x-client-request-id", session_id.to_string())?;
-                set("x-codex-window-id", format!("{session_id}:0"))?;
+                set("x-codex-window-id", format!("{session_id}:{window}"))?;
             }
             // Deliberately not through `set`: every other header must fail the
             // turn on a malformed value, but the routing hint is built from the
@@ -780,7 +816,7 @@ mod tests {
             },
         ];
         for credential in cases {
-            let headers = websocket_headers(credential, Some(&hint()), Some("sess-1"))
+            let headers = websocket_headers(credential, Some(&hint()), Some("sess-1"), 0)
                 .expect("valid credential builds headers");
             assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
             assert!(headers
@@ -815,6 +851,7 @@ mod tests {
                 "model=gpt-5.6-sol;tier=priority",
             )),
             Some("session-123"),
+            0,
         )
         .expect("valid credential builds headers");
         assert_eq!(
@@ -870,6 +907,7 @@ mod tests {
                 },
                 routing_hint(&route).as_ref(),
                 None,
+                0,
             )
             .expect("an unusable model must not fail the handshake build");
             assert!(
@@ -879,6 +917,23 @@ mod tests {
             // Only the hint is dropped; the rest of the identity still goes out.
             assert_eq!(headers.get("originator").unwrap(), "codex_cli_rs");
         }
+    }
+
+    #[test]
+    fn websocket_handshake_carries_the_advanced_window_id() {
+        use super::{websocket_headers, Credential};
+
+        let headers = websocket_headers(
+            Credential::ChatGptOAuth {
+                access_token: "access-token".to_string(),
+                account_id: "account-id".to_string(),
+            },
+            None,
+            Some("session-123"),
+            1,
+        )
+        .expect("valid credential builds headers");
+        assert_eq!(headers.get("x-codex-window-id").unwrap(), "session-123:1");
     }
 
     #[test]
@@ -892,6 +947,7 @@ mod tests {
             },
             Some(&hint()),
             Some(""),
+            0,
         )
         .expect("valid credential builds headers");
         assert!(headers.get("session-id").is_none());
@@ -908,7 +964,7 @@ mod tests {
 
         // Passthrough is a misconfiguration on this transport: no credential is
         // attached, leaving the upstream to reject it.
-        let headers = websocket_headers(Credential::Passthrough, Some(&hint()), None).unwrap();
+        let headers = websocket_headers(Credential::Passthrough, Some(&hint()), None, 0).unwrap();
         assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
         assert!(headers.get("authorization").is_none());
         assert!(headers.get("x-codex-routing-hint").is_none());
@@ -930,6 +986,7 @@ mod tests {
             },
             Some(&hint()),
             None,
+            0,
         )
         .unwrap();
         assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
@@ -951,6 +1008,7 @@ mod tests {
             },
             Some(&hint()),
             None,
+            0,
         )
         .expect_err("a malformed header value is rejected");
         assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
