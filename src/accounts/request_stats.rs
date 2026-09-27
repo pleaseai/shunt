@@ -95,9 +95,8 @@ impl RequestStats {
     /// Mean time to response headers in milliseconds, or `None` before any
     /// attempt has received headers.
     pub(crate) fn mean_latency_ms(&self) -> Option<f64> {
-        (self.latency_samples > 0).then(|| {
-            self.latency_total.as_nanos() as f64 / self.latency_samples as f64 / 1_000_000.0
-        })
+        (self.latency_samples > 0)
+            .then(|| self.latency_total.as_secs_f64() * 1000.0 / self.latency_samples as f64)
     }
 }
 

@@ -2067,7 +2067,8 @@ impl AccountPool {
                     let entry = entries.get_mut(&key);
                     let requests = entry
                         .as_ref()
-                        .map_or_else(RequestStats::default, |health| health.requests);
+                        .map(|health| health.requests)
+                        .unwrap_or_default();
                     let Some(health) = entry.filter(|health| health.observed) else {
                         // Never selected, or selected but not yet answered (a default
                         // entry from `select_order`): report a clean, available slot —
