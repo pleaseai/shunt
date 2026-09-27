@@ -489,3 +489,57 @@ async fn singleton_still_serves_when_no_pool_exists() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Each upstream dispatch is one attempt on the admin pool counters: the
+/// quota-exhausted account records a failure and the account that served
+/// records a success. The catalog lookup ahead of each attempt is not an
+/// attempt.
+#[tokio::test]
+async fn failover_counts_one_attempt_against_each_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+
+    let backend = MockServer::start().await;
+    mount_backend(&backend, "token-a").await;
+
+    let dir = fresh_dir("counted");
+    let accounts_dir = dir.join("accounts");
+    std::fs::create_dir_all(&accounts_dir).unwrap();
+    write_account(&accounts_dir, "a", "token-a", "proj-a");
+    write_account(&accounts_dir, "b", "token-b", "proj-b");
+
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_ANTIGRAVITY_AUTH_FILE", dir.join("no-singleton.json"));
+
+    let (addr, gateway, state) = serve_with_state(config_with_base(&dir, &backend.uri())).await;
+    let response = post_message(addr).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers().get("x-shunt-account").unwrap(), "b");
+    response.bytes().await.unwrap();
+
+    // Keyed as `resolve_pool_accounts` keys a scanned store account.
+    let scanned = |name: &str| AccountConfig {
+        name: name.to_string(),
+        store_family: Some(shunt::accounts::StoreFamily::Antigravity),
+        store_entry: true,
+        ..Default::default()
+    };
+    let snapshots =
+        state
+            .accounts
+            .snapshot("antigravity", &[scanned("a"), scanned("b")], None, None);
+    let totals = |index: usize| {
+        (
+            snapshots[index].requests_attempted,
+            snapshots[index].requests_succeeded,
+            snapshots[index].requests_failed,
+        )
+    };
+    assert_eq!(totals(0), (1, 0, 1));
+    assert_eq!(totals(1), (1, 1, 0));
+
+    gateway.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}

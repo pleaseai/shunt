@@ -489,6 +489,29 @@ never inserts entries for accounts the pool has not yet seen (reported as
 refresh probe recorded by *store name* — see the side table below — because that
 is the one thing that can be known about an account the pool holds no entry for.
 
+Each row also carries the account's request counters since process start:
+`requests_attempted`, always the sum of `requests_succeeded` (a `2xx` status),
+`requests_failed` (any other status, or no response headers at all) and
+`requests_cancelled` (the send was dropped before it resolved: the client went
+away or a deadline cut it), and `mean_latency_ms`, the mean time from
+dispatch to response headers over the attempts that received headers (`null`
+until one has). One attempt is one proxied HTTP dispatch, a same-account retry
+included; control-plane calls on the account's credential (usage polls, model
+discovery, catalog lookups, token refreshes) are not attempts. The adapters
+record it where the account is already bound (`CountAttempt` in
+`src/accounts/request_stats.rs`, whose drop guard records a cancelled send),
+since the failover chain sees one result per provider, after any account
+rotation inside it. The totals live on the account's health entry under the
+existing `entries` lock and are never emitted to the metric sinks, which stay
+free of account identity. Like the cooldowns they are memory-only: a reload or
+store rescan keeps them, deleting the account through the admin API drops them,
+and a restart resets them. Rows that resolve to the same account identity share
+one set. They are reported on a `has_state: false` row too, because an attempt
+that timed out before any headers leaves no other trace. Attempts over the Codex
+WebSocket transport, served or failed, are not counted, since a WebSocket turn
+has no per-turn response headers to classify; an HTTP fallback after a failed
+WebSocket attempt is counted.
+
 ### `needs_relogin` — a dead credential, not a pause
 
 `needs_relogin` marks an account whose credential no operator-free retry can

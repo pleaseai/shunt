@@ -14,6 +14,12 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::config::{AccountConfig, PoolConfig};
 
+mod request_stats;
+
+pub use request_stats::AttemptOutcome;
+pub(crate) use request_stats::CountAttempt;
+use request_stats::RequestStats;
+
 /// Credential-store namespace. Stable account ids only coalesce inside their
 /// own store family, so a Claude UUID can never collide with a ChatGPT account id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -397,6 +403,9 @@ struct AccountHealth {
     /// Memory-only, like
     /// `cooldown_until`.
     model_cooldowns: HashMap<String, Instant>,
+    /// Upstream attempts against this identity, recorded by
+    /// [`AccountPool::note_attempt`]. Memory-only, like `cooldown_until`.
+    requests: RequestStats,
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
@@ -435,15 +444,33 @@ pub struct AccountSnapshot {
     /// into — `available` and the cooldown fields, so the dashboard can tell
     /// "cooling down, will retry" apart from "cooling down forever".
     pub needs_relogin: bool,
+    /// Upstream attempts against this account since the process started:
+    /// `requests_succeeded + requests_failed + requests_cancelled`. The five
+    /// request fields are reported whether or not `has_state` is set: an
+    /// attempt that timed out before any response headers leaves no other
+    /// trace on the account.
+    pub requests_attempted: u64,
+    /// Attempts answered with a `2xx` status.
+    pub requests_succeeded: u64,
+    /// Attempts answered with any other status, or that ended before any
+    /// response headers.
+    pub requests_failed: u64,
+    /// Attempts dropped before they resolved: the client went away or a
+    /// deadline above the adapter cut the send.
+    pub requests_cancelled: u64,
+    /// Mean time from dispatch to response headers in milliseconds, over the
+    /// attempts that received headers; `None` until one has.
+    pub mean_latency_ms: Option<f64>,
 }
 
 impl AccountSnapshot {
-    /// A clean slot for an account the pool has never selected. `needs_relogin`
+    /// A clean slot for an account the pool has not observed yet. `needs_relogin`
     /// is passed in rather than defaulted to `false`: the admin refresh probe
     /// records a terminal verdict by store name in the pool's side table, and
     /// such an account has no health entry to carry it (see
-    /// [`AccountPool::store_relogin`]).
-    fn unseen(account: &AccountConfig, needs_relogin: bool) -> Self {
+    /// [`AccountPool::store_relogin`]). `requests` is passed in because an
+    /// attempt can land before any response is observed.
+    fn unseen(account: &AccountConfig, needs_relogin: bool, requests: RequestStats) -> Self {
         Self {
             name: account.name.clone(),
             has_state: false,
@@ -462,6 +489,11 @@ impl AccountSnapshot {
             reset_7d_oi: None,
             status: None,
             needs_relogin,
+            requests_attempted: requests.attempted(),
+            requests_succeeded: requests.succeeded(),
+            requests_failed: requests.failed(),
+            requests_cancelled: requests.cancelled(),
+            mean_latency_ms: requests.mean_latency_ms(),
         }
     }
 }
@@ -1746,6 +1778,22 @@ impl AccountPool {
         }
     }
 
+    /// Record one upstream attempt against this account for the admin
+    /// snapshot. The adapters reach this through [`CountAttempt`], which times
+    /// the send; `request_stats` defines what one attempt is.
+    ///
+    /// Unlike [`Self::note_quota`] and [`Self::cooldown`], this never creates
+    /// an entry: selection has already created one for every candidate, so a
+    /// missing entry means the account was forgotten while the attempt was in
+    /// flight, and its outcome is discarded.
+    pub fn note_attempt(&self, provider: &str, account: &AccountConfig, outcome: AttemptOutcome) {
+        let key = account_key(provider, account);
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        if let Some(health) = entries.get_mut(&key) {
+            health.requests.record(outcome);
+        }
+    }
+
     /// Storm-control admission gate (issue #195): admit a request to this
     /// account identity only while its in-flight count is under the slow-start
     /// allowance. The allowance re-seeds to `initial` for an identity that has
@@ -1996,16 +2044,20 @@ impl AccountPool {
                                 account_uuid,
                             )
                         });
-                    let Some(health) = entries.get_mut(&key).filter(|health| health.observed)
-                    else {
+                    let entry = entries.get_mut(&key);
+                    let requests = entry
+                        .as_ref()
+                        .map_or_else(RequestStats::default, |health| health.requests);
+                    let Some(health) = entry.filter(|health| health.observed) else {
                         // Never selected, or selected but not yet answered (a default
                         // entry from `select_order`): report a clean, available slot —
                         // except for the one thing that can be known about an account
-                        // with no entry at all, the side table's verdict. `has_state`
+                        // with no entry at all, the side table's verdict, and the
+                        // attempts an unanswered entry has already counted. `has_state`
                         // stays `false`, which is still true and which both dashboard
                         // tables already read *after* `needs_relogin`, so the row
                         // renders "needs re-login" rather than "unseen".
-                        return AccountSnapshot::unseen(account, store_condemned);
+                        return AccountSnapshot::unseen(account, store_condemned, requests);
                     };
                     quota_expired |= expire_stale_quota(&mut health.quota, unix_now);
                     let quota = assess_quota(&health.quota, account, is_fable, pool, unix_now);
@@ -2056,6 +2108,11 @@ impl AccountPool {
                         // response on any row backed by that store account lifts
                         // it here as well.
                         needs_relogin: health.needs_relogin.is_some() || store_condemned,
+                        requests_attempted: requests.attempted(),
+                        requests_succeeded: requests.succeeded(),
+                        requests_failed: requests.failed(),
+                        requests_cancelled: requests.cancelled(),
+                        mean_latency_ms: requests.mean_latency_ms(),
                     }
                 })
                 .collect();

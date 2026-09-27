@@ -619,6 +619,47 @@ mod tests {
         assert_eq!(shared.load().config.server.default_provider, "openai");
     }
 
+    #[tokio::test]
+    async fn reload_keeps_pool_request_counters() {
+        let dir = temp_dir("pool-counters");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let (_router, shared, state) = build_router(Config::load(Some(&path)).unwrap()).unwrap();
+        let account = crate::config::AccountConfig {
+            name: "a".to_string(),
+            uuid: Some("a-uuid".to_string()),
+            ..Default::default()
+        };
+        state.accounts.select_order(
+            "anthropic",
+            std::slice::from_ref(&account),
+            None,
+            None,
+            None,
+        );
+        state.accounts.note_attempt(
+            "anthropic",
+            &account,
+            crate::accounts::AttemptOutcome::Headers {
+                status: StatusCode::OK,
+                latency: std::time::Duration::from_millis(100),
+            },
+        );
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"openai\"\n").unwrap();
+        reload(&shared, Some(&path)).expect("valid reload succeeds");
+
+        let reloaded = state.refreshed();
+        assert_eq!(reloaded.config.server.default_provider, "openai");
+        let snapshot = &reloaded
+            .accounts
+            .snapshot("anthropic", &[account], None, None)[0];
+        assert_eq!(snapshot.requests_attempted, 1);
+        assert_eq!(snapshot.requests_succeeded, 1);
+        assert_eq!(snapshot.mean_latency_ms, Some(100.0));
+    }
+
     #[test]
     fn reload_with_invalid_config_keeps_previous_state() {
         let dir = temp_dir("invalid");

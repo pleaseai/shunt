@@ -9,6 +9,7 @@ use futures_util::StreamExt;
 use serde_json::Value;
 
 use crate::{
+    accounts::CountAttempt,
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{
         antigravity::{auth::inference_base_url, catalog::catalog_ids},
@@ -599,7 +600,7 @@ async fn forward_single(
     let token = access_token.clone();
 
     let ttfb_ms = state.config.server.timeouts.upstream_ttfb_ms;
-    let response = crate::retry::send_with_retry(policy, &route.provider, || {
+    let send = crate::retry::send_with_retry(policy, &route.provider, || {
         let client = http_client.clone();
         let payload = payload_clone.clone();
         let endpoint = endpoint_clone.clone();
@@ -622,8 +623,17 @@ async fn forward_single(
 
             crate::upstream_timeout::wait(ttfb_ms, req.json(&payload).send()).await
         }
-    })
-    .await
+    });
+    let response = match account {
+        // One attempt per `send_with_retry` run holds only because a pool
+        // account's policy is `DISABLED` above; enabling pool retries would
+        // count several dispatches as one.
+        Some(account) => {
+            send.count_attempt(&state.accounts, &route.provider, account)
+                .await
+        }
+        None => send.await,
+    }
     .map_err(|error| {
         if let Some(account) = account {
             state.accounts.cooldown(

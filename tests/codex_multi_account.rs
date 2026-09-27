@@ -2236,3 +2236,96 @@ async fn transient_refresh_failure_does_not_mark_needs_relogin() {
 
     fs::remove_dir_all(&accounts_dir).ok();
 }
+
+/// One request over a pool whose first account is refused with a 401, is
+/// refreshed, and serves the retry. Returns that account's pool snapshot row.
+async fn refresh_retry_snapshot(tag: &str, streaming: bool) -> shunt::accounts::AccountSnapshot {
+    let mut vars = common::env_lock().await;
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-counted");
+    let fresh = chatgpt_token(expires_at + 1, "acct-counted");
+    let accounts_dir = unique_temp_dir(tag);
+    write_store_account(&accounts_dir, "account-a", &stale, "refresh-token-a");
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let upstream = MockServer::start().await;
+    status_mock(&stale, 401).expect(1).mount(&upstream).await;
+    sse_ok_mock(&fresh, "served after refresh")
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_CODEX_COUNTED_B"),
+    ))
+    .await;
+    let response = if streaming {
+        post_streaming_messages(&gateway, None).await
+    } else {
+        post_messages(&gateway, None).await
+    };
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("served after refresh"), "body: {body}");
+    upstream.verify().await;
+    auth.verify().await;
+
+    fs::remove_dir_all(&accounts_dir).ok();
+    gateway
+        .state
+        .accounts
+        .snapshot("codex", &[store_account("account-a")], None, None)
+        .remove(0)
+}
+
+/// Each upstream dispatch is one attempt on the admin pool counters: the 401
+/// and the refreshed retry are two attempts on one account, one failed and
+/// one served, both with headers.
+#[tokio::test]
+async fn buffered_refresh_retry_counts_two_attempts_on_one_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let snapshot = refresh_retry_snapshot("counted-buffered", false).await;
+    assert_eq!(
+        (
+            snapshot.requests_attempted,
+            snapshot.requests_succeeded,
+            snapshot.requests_failed
+        ),
+        (2, 1, 1)
+    );
+    assert!(snapshot.mean_latency_ms.is_some());
+}
+
+/// The committed-stream arm (`pool_events_stream`) counts the same two
+/// attempts as the buffered loop.
+#[tokio::test]
+async fn streaming_refresh_retry_counts_two_attempts_on_one_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let snapshot = refresh_retry_snapshot("counted-streaming", true).await;
+    assert_eq!(
+        (
+            snapshot.requests_attempted,
+            snapshot.requests_succeeded,
+            snapshot.requests_failed
+        ),
+        (2, 1, 1)
+    );
+    assert!(snapshot.mean_latency_ms.is_some());
+}

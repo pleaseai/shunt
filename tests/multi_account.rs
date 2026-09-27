@@ -2402,3 +2402,70 @@ async fn a_relayed_client_error_after_refresh_clears_a_stale_mark() {
 
     fs::remove_dir_all(&accounts_dir).ok();
 }
+
+/// Each upstream dispatch is one attempt on the admin pool counters: a
+/// headerless 429 is a generic throttle (`PauseSame`), so the pool waits out
+/// its `retry-after: 0` and retries the same account — the 429 counts as a
+/// failure, the retry's 200 as a success, and both received headers.
+#[tokio::test]
+async fn a_throttle_pause_retry_counts_as_a_second_attempt_on_the_same_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "counted-a"].concat();
+    let token_b = ["fake-oauth-", "counted-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_COUNTED_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_COUNTED_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"a"}"#))
+        .with_priority(2)
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let account_a = account("account-a", "SHUNT_TEST_MULTI_COUNTED_A", "uuid-counted-a");
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account("account-b", "SHUNT_TEST_MULTI_COUNTED_B", "uuid-counted-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+
+    let snapshot = &state
+        .accounts
+        .snapshot("anthropic", &[account_a], None, None)[0];
+    assert_eq!(
+        (
+            snapshot.requests_attempted,
+            snapshot.requests_succeeded,
+            snapshot.requests_failed
+        ),
+        (2, 1, 1)
+    );
+    assert!(
+        snapshot.mean_latency_ms.is_some(),
+        "both attempts received headers, so both are latency samples"
+    );
+    upstream.verify().await;
+}

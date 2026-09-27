@@ -89,6 +89,7 @@ impl Match for HeaderAbsent {
 
 struct TestGateway {
     base_url: String,
+    state: shunt::server::AppState,
     task: JoinHandle<()>,
 }
 
@@ -229,6 +230,7 @@ async fn start_gateway_with(mut config: Config) -> TestGateway {
     });
     TestGateway {
         base_url: format!("http://{addr}"),
+        state,
         task,
     }
 }
@@ -1883,4 +1885,81 @@ async fn model_refusal_on_every_account_relays_the_refusal_verbatim() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(response.text().await.unwrap(), MODEL_REFUSAL);
     upstream.verify().await;
+}
+
+/// Each upstream dispatch is one attempt on the admin pool counters: the 401
+/// and the refreshed retry of the passthrough are two attempts on one
+/// account, one failed and one served, both with headers.
+#[tokio::test]
+async fn refresh_retry_counts_two_attempts_on_one_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-counted");
+    let fresh = chatgpt_token(expires_at + 1, "acct-counted");
+
+    let dir = unique_temp_dir("counted");
+    let store_path = dir.join("account-a.json");
+    write_store_file(&store_path, &stale, "refresh-token-a");
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("{}", "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![store_account_at("account-a", &store_path)],
+    ))
+    .await;
+    let response = post_responses(&gateway, "/responses", None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+    auth.verify().await;
+
+    // Keyed by the account id `resolve_pool_accounts` reads off the
+    // credential file, as the pool keys it.
+    let resolved = AccountConfig {
+        uuid: Some("acct-counted".to_string()),
+        ..store_account_at("account-a", &store_path)
+    };
+    let snapshot = &gateway
+        .state
+        .accounts
+        .snapshot("codex", &[resolved], None, None)[0];
+    assert_eq!(
+        (
+            snapshot.requests_attempted,
+            snapshot.requests_succeeded,
+            snapshot.requests_failed
+        ),
+        (2, 1, 1)
+    );
+    assert!(snapshot.mean_latency_ms.is_some());
+
+    fs::remove_dir_all(&dir).ok();
 }

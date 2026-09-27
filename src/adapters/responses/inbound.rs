@@ -17,6 +17,7 @@ use axum::{
 };
 
 use crate::{
+    accounts::CountAttempt,
     adapters::AdapterError,
     auth::{self, resolve_credential, slots::ShuntCredentials, Credential},
     config::AccountConfig,
@@ -183,6 +184,7 @@ async fn forward_codex_passthrough(
             &passthrough_headers,
             &body,
         )
+        .count_attempt(&state.accounts, &route.provider, account)
         .await
         {
             Ok(response) => response,
@@ -248,6 +250,7 @@ async fn forward_codex_passthrough(
                     &passthrough_headers,
                     &body,
                 )
+                .count_attempt(&state.accounts, &route.provider, account)
                 .await
                 {
                     Ok(response) => response,

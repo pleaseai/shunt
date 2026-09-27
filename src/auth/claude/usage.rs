@@ -373,6 +373,11 @@ mod tests {
             reset_7d_oi: Some(reset_fable),
             status: None,
             needs_relogin: false,
+            requests_attempted: 0,
+            requests_succeeded: 0,
+            requests_failed: 0,
+            requests_cancelled: 0,
+            mean_latency_ms: None,
         };
 
         let wire = crate::oauth_usage::to_wire(

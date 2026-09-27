@@ -8,7 +8,7 @@ use axum::{
 use futures_util::StreamExt;
 
 use crate::{
-    accounts::{self, FailoverAction},
+    accounts::{self, CountAttempt, FailoverAction},
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{
         self, claude::auth::ClaudeAuthStore, resolve_claude_account_classified, resolve_credential,
@@ -286,13 +286,10 @@ async fn forward_claude_oauth(
         }
         let request_body = request_body.into_raw();
 
-        let upstream = match post_upstream(
-            &state,
-            &url,
-            request_headers.clone(),
-            request_body.clone(),
-        )
-        .await
+        let send = post_upstream(&state, &url, request_headers.clone(), request_body.clone());
+        let upstream = match send
+            .count_attempt(&state.accounts, &route.provider, account)
+            .await
         {
             Ok(response) => response,
             Err(error @ crate::upstream_timeout::SendError::Timeout) => {
@@ -843,7 +840,10 @@ async fn forward_kimi_oauth(
         safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
         let request_body = base_body.clone().into_raw();
 
-        let upstream = match post_upstream(&state, &url, request_headers, request_body).await {
+        let upstream = match post_upstream(&state, &url, request_headers, request_body)
+            .count_attempt(&state.accounts, &route.provider, account)
+            .await
+        {
             Ok(response) => response,
             Err(error @ crate::upstream_timeout::SendError::Timeout) => {
                 return Err(error.into_adapter_error(upstream_error));
@@ -998,7 +998,10 @@ async fn retry_upstream(
     body: Vec<u8>,
     fail_msg: &str,
 ) -> Result<Option<reqwest::Response>, AdapterError> {
-    match post_upstream(state, url, headers, body).await {
+    match post_upstream(state, url, headers, body)
+        .count_attempt(&state.accounts, &route.provider, account)
+        .await
+    {
         Ok(response) => {
             state
                 .accounts
