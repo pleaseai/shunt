@@ -121,6 +121,7 @@ pub(crate) trait CountAttempt<E>:
             provider,
             account,
             dispatched: Instant::now(),
+            forget_epoch: pool.forget_epoch(),
             resolved: false,
         };
         let sent = self.await;
@@ -144,21 +145,30 @@ struct InFlight<'a> {
     provider: &'a str,
     account: &'a AccountConfig,
     dispatched: Instant,
+    forget_epoch: u64,
     resolved: bool,
 }
 
 impl InFlight<'_> {
+    fn record(&self, outcome: AttemptOutcome) {
+        // The account was forgotten (and possibly re-selected) mid-flight: the
+        // entry under the key now is not the one the attempt dispatched
+        // against, so the outcome records against nothing.
+        if self.pool.forget_epoch() == self.forget_epoch {
+            self.pool.note_attempt(self.provider, self.account, outcome);
+        }
+    }
+
     fn resolve(mut self, outcome: AttemptOutcome) {
         self.resolved = true;
-        self.pool.note_attempt(self.provider, self.account, outcome);
+        self.record(outcome);
     }
 }
 
 impl Drop for InFlight<'_> {
     fn drop(&mut self) {
         if !self.resolved {
-            self.pool
-                .note_attempt(self.provider, self.account, AttemptOutcome::Cancelled);
+            self.record(AttemptOutcome::Cancelled);
         }
     }
 }
@@ -403,5 +413,68 @@ mod tests {
         assert_eq!(snapshot.requests_failed, 0);
         assert_eq!(snapshot.requests_cancelled, 1);
         assert_eq!(snapshot.mean_latency_ms, None);
+    }
+
+    /// An attempt whose account is forgotten mid-flight records against
+    /// nothing, even when the same identity is re-selected before the send
+    /// resolves: the recreated entry is not the one the attempt dispatched
+    /// against, and removal is meant to reset the totals.
+    #[tokio::test(start_paused = true)]
+    async fn an_attempt_dispatched_before_a_forget_lands_on_no_replacement() {
+        let a = account("a");
+        let pool = std::sync::Arc::new(selected(std::slice::from_ref(&a)));
+        let (release, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let driver = tokio::spawn({
+            let pool = pool.clone();
+            let a = a.clone();
+            async move {
+                let send = async move {
+                    let _ = release_rx.await;
+                    Err::<reqwest::Response, ()>(())
+                };
+                send.count_attempt(&pool, "anthropic", &a).await
+            }
+        });
+        // The dispatch (and its capture) ran before the forget below.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        pool.forget_identity(StoreFamily::Claude, "a-uuid", Some("a"));
+        pool.select_order("anthropic", std::slice::from_ref(&a), None, None, None);
+        let _ = release.send(());
+        let sent = driver.await.unwrap();
+        assert!(sent.is_err(), "the gated send answers Err");
+
+        let snapshot = &pool.snapshot("anthropic", std::slice::from_ref(&a), None, None)[0];
+        assert_eq!(snapshot.requests_attempted, 0);
+        assert_eq!(snapshot.requests_failed, 0);
+    }
+
+    /// The guard above only spans a forget: an attempt dispatched over a
+    /// stable entry records normally.
+    #[tokio::test(start_paused = true)]
+    async fn an_attempt_dispatched_over_a_stable_entry_still_records() {
+        let a = account("a");
+        let pool = std::sync::Arc::new(selected(std::slice::from_ref(&a)));
+        let (release, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let driver = tokio::spawn({
+            let pool = pool.clone();
+            let a = a.clone();
+            async move {
+                let send = async move {
+                    let _ = release_rx.await;
+                    Err::<reqwest::Response, ()>(())
+                };
+                send.count_attempt(&pool, "anthropic", &a).await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let _ = release.send(());
+        let sent = driver.await.unwrap();
+        assert!(sent.is_err(), "the gated send answers Err");
+
+        let snapshot = &pool.snapshot("anthropic", std::slice::from_ref(&a), None, None)[0];
+        assert_eq!(snapshot.requests_attempted, 1);
+        assert_eq!(snapshot.requests_failed, 1);
     }
 }

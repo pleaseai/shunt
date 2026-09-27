@@ -541,6 +541,12 @@ pub struct AccountPool {
     /// only pattern needed; `forget_identity` takes this one alone, after it has
     /// released `entries`, which is still consistent with that order.
     store_relogin: Mutex<HashSet<StoreAccountRef>>,
+    /// Bumped whenever `forget_identity` actually removes an entry. An
+    /// in-flight attempt captures the epoch at dispatch; recording checks it,
+    /// so an outcome can never land on an entry re-created for the same
+    /// identity after a forget — removal is meant to reset the totals, and a
+    /// recreated entry is not the one the attempt happened on.
+    forget_epoch: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -1785,13 +1791,23 @@ impl AccountPool {
     /// Unlike [`Self::note_quota`] and [`Self::cooldown`], this never creates
     /// an entry: selection has already created one for every candidate, so a
     /// missing entry means the account was forgotten while the attempt was in
-    /// flight, and its outcome is discarded.
+    /// flight, and its outcome is discarded. The same discard covers an entry
+    /// re-created for the identity after that forget: `CountAttempt` captures
+    /// [`Self::forget_epoch`] at dispatch and the record only lands while the
+    /// epoch is unchanged, so a delete-and-re-add mid-flight cannot hand the
+    /// old attempt's counters to the replacement entry.
     pub fn note_attempt(&self, provider: &str, account: &AccountConfig, outcome: AttemptOutcome) {
         let key = account_key(provider, account);
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         if let Some(health) = entries.get_mut(&key) {
             health.requests.record(outcome);
         }
+    }
+
+    /// The current forget epoch, captured by an in-flight attempt at dispatch
+    /// and re-checked when its outcome records.
+    pub(crate) fn forget_epoch(&self) -> u64 {
+        self.forget_epoch.load(Ordering::Relaxed)
     }
 
     /// Storm-control admission gate (issue #195): admit a request to this
@@ -1894,13 +1910,14 @@ impl AccountPool {
                     AccountStateIdentity::UpstreamInline { .. } => false,
                 }
         };
-        let removed_quota = {
+        let (removed_quota, removed_an_entry) = {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
+            let before = entries.len();
             let removed_quota = entries
                 .iter()
                 .any(|(key, health)| matches(key) && health.quota.has_signal());
             entries.retain(|key, _| !matches(key));
-            removed_quota
+            (removed_quota, before != entries.len())
         };
         self.refresh_locks
             .lock()
@@ -1938,6 +1955,9 @@ impl AccountPool {
             });
         if removed_quota {
             self.mark_dirty();
+        }
+        if removed_an_entry {
+            self.forget_epoch.fetch_add(1, Ordering::Relaxed);
         }
     }
 
