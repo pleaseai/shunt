@@ -22,6 +22,7 @@ use crate::{
 };
 
 use super::body::{prepare_body, PreparedBody};
+use super::codex_ws::KEY_COMPONENT_SEPARATOR;
 use super::context::{CredentialSource, ForwardOptions, PoolForward, RelayOptions, TurnOptions};
 use super::early_stream::{
     bounded_input_estimate, estimated_machine_factory, http_events_stream, parsed_events,
@@ -999,13 +1000,15 @@ pub(super) async fn forward_chatgpt_oauth(
             continue;
         };
 
-        // Prefixing the pool key with the account name is the key point of
-        // this integration: without it, two accounts serving the same client
-        // session could reuse (and leak turn state across) one another's
-        // pooled websocket connection.
+        // Keying the pooled connection per account (and per turn identity, via
+        // the composed pool key) is the key point of this integration: without
+        // it, two accounts serving the same client session could reuse (and
+        // leak turn state across) one another's pooled websocket connection.
+        // The separator is [`KEY_COMPONENT_SEPARATOR`], the same one the pool
+        // key's own components use, so the bump sweep's suffix stays exact.
         let account_pool_key = pool_key
             .as_deref()
-            .map(|key| format!("{}::{key}", account.name));
+            .map(|key| format!("{}{KEY_COMPONENT_SEPARATOR}{key}", account.name));
 
         if ws_enabled {
             match forward_websocket(
@@ -1971,7 +1974,7 @@ mod tests {
             );
             if window_number == 1 {
                 assert!(
-                    pool_contains_for_tests("acc-a::sess-1"),
+                    pool_contains_for_tests("acc-a\u{1f}sess-1"),
                     "the socket pools under the account-prefixed connection key"
                 );
             }
@@ -2235,6 +2238,137 @@ mod tests {
             1,
             "the mark bumps on the first attempt that actually runs"
         );
+        clear_pool_for_tests();
+        server.abort();
+    }
+
+    /// A compaction bump rotates the conversation's sockets under EVERY
+    /// account, not only the one serving the marked turn: a socket left
+    /// pooled on the pre-compaction window under another account is reused
+    /// the moment the sticky account changes (dbbb7a5's per-model cooldown is
+    /// one trigger). The mock serves two clean WS turns: turn 1 pools the
+    /// conversation under acc-b, turn 2 (marked, served by acc-a) must evict
+    /// acc-b's socket along with its own.
+    #[tokio::test]
+    async fn pool_path_bump_evicts_the_conversations_sockets_under_every_account() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+        use tungstenite::protocol::WebSocketConfig;
+        use tungstenite::Message;
+
+        use crate::adapters::responses::codex_ws::{
+            clear_pool_for_tests, pool_contains_for_tests, window_for, POOL_TEST_LOCK,
+        };
+        use futures_util::{SinkExt, StreamExt};
+
+        let _env = ENV_LOCK.lock().await;
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let server_accepts = accepts.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                server_accepts.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async_with_config(
+                        socket,
+                        Some(WebSocketConfig::default()),
+                    )
+                    .await
+                    .unwrap();
+                    while let Some(message) = ws.next().await {
+                        match message.unwrap() {
+                            Message::Text(_) => {
+                                for event in [
+                                    r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                                    r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                                    r#"{"type":"response.completed","response":{}}"#,
+                                ] {
+                                    ws.send(Message::Text(event.to_string().into()))
+                                        .await
+                                        .unwrap();
+                                }
+                            }
+                            Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                            Message::Pong(_) => {}
+                            Message::Close(_) => break,
+                            other => panic!("unexpected frame: {other:?}"),
+                        }
+                    }
+                });
+            }
+        });
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = format!("http://{addr}");
+        config.providers.get_mut("codex").unwrap().websocket = true;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        // Turn 1: only acc-b is resolvable, so it serves and pools the
+        // conversation's socket under acc-b.
+        let (status, response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            false,
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                ..pool_turn(vec![pool_account("acc-b", "SHUNT_POOL_PROBE_B")], false)
+            },
+        )
+        .await
+        .expect("turn 1 serves on acc-b");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            response.headers().get("x-shunt-account").unwrap(),
+            "acc-b",
+            "turn 1 is served by acc-b, the only resolvable account"
+        );
+        assert!(
+            pool_contains_for_tests("acc-b\u{1f}sess-1"),
+            "turn 1 pools the socket under acc-b"
+        );
+
+        // Turn 2: compaction-marked, served by acc-a (now resolvable, ranked
+        // first). The bump must evict acc-b's pre-compaction socket along
+        // with acc-a's own.
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let (status, _) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            true,
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                ..pool_turn(
+                    vec![
+                        pool_account("acc-a", "SHUNT_POOL_PROBE_A"),
+                        pool_account("acc-b", "SHUNT_POOL_PROBE_B"),
+                    ],
+                    false,
+                )
+            },
+        )
+        .await
+        .expect("marked turn serves on acc-a");
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            !pool_contains_for_tests("acc-b\u{1f}sess-1"),
+            "the bump evicts the conversation's socket under the OTHER account"
+        );
+        assert_eq!(window_for("sess-1"), 1, "one compaction mark bumps once");
+        assert!(
+            pool_contains_for_tests("acc-a\u{1f}sess-1"),
+            "the post-bump socket pools under the serving account"
+        );
+
         clear_pool_for_tests();
         server.abort();
     }

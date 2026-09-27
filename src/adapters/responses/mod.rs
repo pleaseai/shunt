@@ -96,18 +96,6 @@ impl Adapter for ResponsesAdapter {
             .and_then(|value| value.to_str().ok())
             .filter(|session_id| !session_id.is_empty());
         let identity = effective_session_identity(body.json(), header_session_id);
-        let pool_key = identity
-            .as_ref()
-            .and_then(EffectiveSessionId::websocket_pool_id)
-            .map(|session_id| {
-                headers
-                    .get("x-shunt-inbound-client")
-                    .and_then(|value| value.to_str().ok())
-                    .map_or_else(
-                        || session_id.to_string(),
-                        |client| format!("{client}:{session_id}"),
-                    )
-            });
         // The client marks the first main turn after a compaction with a
         // one-shot `x-claude-code-context-compacted` header; the websocket path
         // keys its window counter on it. The HTTP transport stays `:0`.
@@ -121,6 +109,26 @@ impl Adapter for ResponsesAdapter {
         let delegation = session_id.as_deref().and_then(|session_id| {
             crate::adapters::responses::request::codex_delegation(headers, session_id)
         });
+        // The connection pool keys on the turn's IDENTITY — one internal key
+        // per (client, session, agent) triple, joined by the unit separator
+        // so crafted header text can neither collide two conversations nor
+        // suffix-match another's key (see `compose_identity_key`). Poolability
+        // still follows the effective-id provenance — the hashed user-id
+        // fallback never pools.
+        let agent_id = delegation
+            .as_ref()
+            .map(|delegation| delegation.agent_id.as_str())
+            .unwrap_or("");
+        let pool_key = identity
+            .as_ref()
+            .and_then(EffectiveSessionId::websocket_pool_id)
+            .map(|session_id| {
+                let client = headers
+                    .get("x-shunt-inbound-client")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("");
+                codex_ws::compose_identity_key(client, session_id, agent_id)
+            });
         Box::pin(async move {
             forward(
                 state,

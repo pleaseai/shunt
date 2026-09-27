@@ -155,6 +155,10 @@ pub(crate) struct CodexDelegation {
     /// The subagent kind label: the client's agent-type hint when sent, else
     /// a stable literal (`codex` uses `Other(label)` for a Task child).
     pub(crate) subagent: String,
+    /// The raw agent id, for the internal identity key's own component (the
+    /// internal keys must not inherit the wire `::{agent}` concatenation —
+    /// see `compose_identity_key`).
+    pub(crate) agent_id: String,
 }
 
 /// The delegated-turn codex identity, derived from the effective session id
@@ -175,6 +179,7 @@ pub(crate) fn codex_delegation(headers: &HeaderMap, session_id: &str) -> Option<
             .filter(|agent_type| !agent_type.trim().is_empty())
             .unwrap_or("subagent")
             .to_string(),
+        agent_id: agent_id.to_string(),
     })
 }
 
@@ -188,10 +193,11 @@ pub(crate) fn codex_delegation(headers: &HeaderMap, session_id: &str) -> Option<
 /// id. `x-client-request-id` and `x-codex-window-id` complete the set.
 ///
 /// A delegated turn swaps `thread-id` for the child's derived id and adds the
-/// two subagent markers. Sent only when a session id is available: a
-/// fabricated value is worse than omitting them. Each caller picks its own
-/// upstream gate (the ChatGPT backend, or the stock OpenAI host for api-key)
-/// and its own `accept` header.
+/// two subagent markers, and the thread-derived ids (`x-client-request-id`,
+/// the window id's identity part) carry the child's too. Sent only when a
+/// session id is available: a fabricated value is worse than omitting them.
+/// Each caller picks its own upstream gate (the ChatGPT backend, or the stock
+/// OpenAI host for api-key) and its own `accept` header.
 pub(super) fn session_affinity_headers(
     request: reqwest::RequestBuilder,
     session_id: Option<&str>,
@@ -199,20 +205,23 @@ pub(super) fn session_affinity_headers(
 ) -> reqwest::RequestBuilder {
     match session_id.filter(|session_id| !session_id.is_empty()) {
         Some(session_id) => {
-            let (thread_id, mut request) = match delegation {
-                Some(delegation) => (
-                    delegation.thread_id.as_str(),
-                    request
-                        .header("x-codex-parent-thread-id", &delegation.parent_thread_id)
-                        .header("x-openai-subagent", &delegation.subagent),
-                ),
-                None => (session_id, request),
+            // The request id and the window id's identity part are
+            // thread-derived like codex's: the child's id on a delegated
+            // turn, the session's otherwise. The HTTP window value stays `:0`
+            // (the websocket handshake carries the counter's value).
+            let thread_id =
+                delegation.map_or(session_id, |delegation| delegation.thread_id.as_str());
+            let mut request = match delegation {
+                Some(delegation) => request
+                    .header("x-codex-parent-thread-id", &delegation.parent_thread_id)
+                    .header("x-openai-subagent", &delegation.subagent),
+                None => request,
             };
             request = request
                 .header("session-id", session_id)
                 .header("thread-id", thread_id)
-                .header("x-client-request-id", session_id)
-                .header("x-codex-window-id", format!("{session_id}:0"));
+                .header("x-client-request-id", thread_id)
+                .header("x-codex-window-id", format!("{thread_id}:0"));
             request
         }
         None => request,
@@ -459,7 +468,9 @@ mod tests {
         .expect("test request should build");
 
         // The child's derived thread id replaces the parent's, the two markers
-        // ride along, and the affinity trio keeps the parent identity.
+        // ride along, and every thread-derived id — request id and window id
+        // included — carries the child identity; only `session-id` (and the
+        // body's prompt cache key) stay the parent's.
         assert_eq!(request.headers().get("session-id").unwrap(), "session-123");
         assert_eq!(
             request.headers().get("thread-id").unwrap(),
@@ -475,12 +486,11 @@ mod tests {
         );
         assert_eq!(
             request.headers().get("x-client-request-id").unwrap(),
-            "session-123"
+            "session-123::agent-7"
         );
-        // The window id keeps the PARENT identity on a delegated turn.
         assert_eq!(
             request.headers().get("x-codex-window-id").unwrap(),
-            "session-123:0"
+            "session-123::agent-7:0"
         );
 
         // A non-delegated turn sends the pre-change header set: no markers,

@@ -10,10 +10,10 @@
 //! [`ResponseEvent`]s so the existing [`crate::model::responses::AnthropicSseMachine`]
 //! can translate them exactly as it does the HTTP SSE stream.
 //!
-//! Connections are pooled per the caller-supplied pool-safe effective
-//! conversation key (the `x-claude-code-session-id` header or a parsed
-//! metadata session id; the hashed user-id fallback never pools), so turns of
-//! one conversation reuse an idle live socket instead of re-handshaking. If that
+//! Connections are pooled per the caller-supplied pool-safe turn identity —
+//! the internal key [`compose_identity_key`] builds from the client, session
+//! and agent components; the hashed user-id fallback never pools — so turns of
+//! one thread reuse an idle live socket instead of re-handshaking. If that
 //! socket is already streaming a turn, the concurrent turn opens a dedicated
 //! one-shot connection rather than waiting; it deliberately carries no
 //! continuation, while the pooled socket keeps the session's continuation state.
@@ -261,9 +261,9 @@ impl Drop for PoolEntry {
     }
 }
 
-/// Process-global connection pool keyed by the pool-safe effective
-/// conversation key (header or parsed metadata session; the hashed user-id
-/// fallback never reaches it). A std
+/// Process-global connection pool keyed by the pool-safe turn identity (the
+/// composed key from [`compose_identity_key`]; the hashed user-id fallback
+/// never reaches it). A std
 /// mutex guards only map lookups/inserts (never held across an await); each
 /// connection accepts at most one active turn, while contention uses an unpooled
 /// connection.
@@ -287,11 +287,33 @@ struct WindowCounter {
 static WINDOWS: LazyLock<Mutex<HashMap<String, WindowCounter>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// The separator between the components of the internal identity keys (the
+/// connection-pool key and the window-counter key). The unit separator cannot
+/// occur in a component: client, session and agent values all arrive through
+/// `HeaderValue::to_str()`, which rejects control bytes, so a composed key
+/// splits back into its components in exactly one way. The wire headers keep
+/// codex's `:`/`::` grammar; only these internal strings compose. The account
+/// prefix is operator config text, not header text — trusted to hold the same
+/// property.
+pub(crate) const KEY_COMPONENT_SEPARATOR: char = '\u{1f}';
+
+/// The internal identity key for one conversation thread:
+/// `{client}{KEY_COMPONENT_SEPARATOR}{session}{KEY_COMPONENT_SEPARATOR}{agent}`,
+/// fixed arity — the agent component is empty for a non-delegated turn, the
+/// client component empty without `x-shunt-inbound-client`. Fixed arity is
+/// what makes the bump sweep exact (see `window_for_turn`): a tail
+/// `{KEY_COMPONENT_SEPARATOR}{key}` can only align with the same
+/// (client, session, agent) triple, so no other conversation's key — however
+/// its header text concatenates — can suffix-match it.
+pub(crate) fn compose_identity_key(client: &str, session: &str, agent: &str) -> String {
+    format!("{client}{KEY_COMPONENT_SEPARATOR}{session}{KEY_COMPONENT_SEPARATOR}{agent}")
+}
+
 /// Bump the compaction-window counter for `key`. A key with no recorded
 /// window starts at 1 — the mark that calls this is the conversation's first
 /// observed compaction, and 0 is the pre-compaction default. Counter-only:
-/// the socket rotation lives in [`window_for_turn`], which knows the
-/// connection's own pool key.
+/// the socket rotation lives in [`window_for_turn`], which sweeps the
+/// conversation's pooled sockets.
 pub(crate) fn advance_window(key: &str) -> u64 {
     let now = Instant::now();
     let mut windows = WINDOWS.lock().unwrap();
@@ -319,23 +341,25 @@ pub(crate) fn window_for(key: &str) -> u64 {
 }
 
 /// The window id a turn's handshake carries, with the rotation a bump implies.
-/// The counter keys on `window_key` — the unprefixed session key, stable
-/// across account rotation — while the eviction targets `evict_key`, the
-/// CONNECTION's own pool key: account-prefixed on the pool path, the same key
-/// on the committed path. A marked turn bumps and rotates; any other turn
-/// reads the current window; no pool key stays 0 (the HTTP transport does
-/// too, by design).
-pub(crate) fn window_for_turn(
-    window_key: Option<&str>,
-    evict_key: Option<&str>,
-    compact: bool,
-) -> u64 {
+/// The counter keys on `window_key` — the turn's composed identity key, stable
+/// across account rotation — while the bump sweeps every pooled socket of that
+/// conversation: the committed path pools under `window_key` itself and the
+/// account pool under `{account}{sep}{window_key}`, so a bump that removed
+/// only the current connection's key would leave a pre-compaction socket
+/// pooled under another account, reused the moment the sticky account
+/// changes. The sweep is exact because no component of a key contains
+/// [`KEY_COMPONENT_SEPARATOR`]: a tail `{sep}{key}` can only align with the
+/// same (client, session, agent) triple. A marked turn bumps and rotates; any
+/// other turn reads the current window; no pool key stays 0 (the HTTP
+/// transport does too, by design).
+pub(crate) fn window_for_turn(window_key: Option<&str>, compact: bool) -> u64 {
     match (window_key, compact) {
         (Some(key), true) => {
             let next = advance_window(key);
-            if let Some(evict) = evict_key {
-                POOL.lock().unwrap().remove(evict);
-            }
+            let prefixed_tail = format!("{KEY_COMPONENT_SEPARATOR}{key}");
+            POOL.lock().unwrap().retain(|pool_key, _| {
+                pool_key.as_str() != key && !pool_key.ends_with(&prefixed_tail)
+            });
             next
         }
         (Some(key), false) => window_for(key),
@@ -1317,6 +1341,36 @@ mod tests {
         turn.stream(frame, RecordPlan::none()).await
     }
 
+    /// The composed identity keys keep the reviewer's two constructed
+    /// collisions apart, and the bump sweep's tail matches only the same
+    /// (client, session, agent) triple. Expected values hand-computed from
+    /// the separator's definition.
+    #[test]
+    fn identity_keys_separate_components_unambiguously() {
+        // N2's pair: session `s::t` with no agent vs session `s` with agent
+        // `t` — identical under `::` concatenation, distinct here.
+        assert_eq!(compose_identity_key("", "s::t", ""), "\u{1f}s::t\u{1f}");
+        assert_eq!(compose_identity_key("", "s", "t"), "\u{1f}s\u{1f}t");
+        assert_ne!(
+            compose_identity_key("", "s::t", ""),
+            compose_identity_key("", "s", "t")
+        );
+        // N1's pair: B = session `x`, agent `::s`, account-prefixed. B's key
+        // does NOT end with the sweep tail of A = session `s`, no agent
+        // (A's tail is `\u{1f}\u{1f}s\u{1f}`; B's key ends `\u{1f}::s`).
+        let a_key = compose_identity_key("", "s", "");
+        let b_key = format!(
+            "account-0{KEY_COMPONENT_SEPARATOR}{}",
+            compose_identity_key("", "x", "::s")
+        );
+        assert_eq!(b_key, "account-0\u{1f}\u{1f}x\u{1f}::s");
+        assert!(!b_key.ends_with(&format!("{KEY_COMPONENT_SEPARATOR}{a_key}")));
+        // The same triple under another account DOES end with the tail: the
+        // sweep evicts the conversation's socket under every account.
+        assert!(format!("account-1{KEY_COMPONENT_SEPARATOR}{a_key}")
+            .ends_with(&format!("{KEY_COMPONENT_SEPARATOR}{a_key}")));
+    }
+
     #[test]
     fn rewrites_https_to_wss() {
         assert_eq!(
@@ -1824,7 +1878,7 @@ mod tests {
             "turn pools its connection"
         );
         assert!(
-            window_for_turn(Some("session-1"), Some("session-1"), true) == 1,
+            window_for_turn(Some("session-1"), true) == 1,
             "first compaction bump"
         );
         assert!(
@@ -1838,7 +1892,7 @@ mod tests {
         let mut turn = turn.stream(&frame, RecordPlan::none()).await.unwrap();
         drain(&mut turn).await;
         assert!(
-            window_for_turn(Some("session-1"), Some("session-1"), true) == 2,
+            window_for_turn(Some("session-1"), true) == 2,
             "second compaction bump"
         );
         assert_eq!(
@@ -1850,18 +1904,18 @@ mod tests {
         // A pool-path turn lives under the ACCOUNT-prefixed connection key
         // while the counter keys on the unprefixed session key: the bump must
         // still evict the socket wherever it lives.
-        let turn = begin(&url, HeaderMap::new(), Some("acct::session-1"), "codex")
+        let turn = begin(&url, HeaderMap::new(), Some("acct\u{1f}session-1"), "codex")
             .await
             .expect("third turn pools under the account key");
         let mut turn = turn.stream(&frame, RecordPlan::none()).await.unwrap();
         drain(&mut turn).await;
-        assert!(pool_contains_for_tests("acct::session-1"));
+        assert!(pool_contains_for_tests("acct\u{1f}session-1"));
         assert!(
-            window_for_turn(Some("session-1"), Some("acct::session-1"), true) == 3,
+            window_for_turn(Some("session-1"), true) == 3,
             "counter bumps on the session key"
         );
         assert!(
-            !pool_contains_for_tests("acct::session-1"),
+            !pool_contains_for_tests("acct\u{1f}session-1"),
             "bump evicts the account-prefixed socket"
         );
 
@@ -1886,16 +1940,10 @@ mod tests {
         assert_eq!(window_for("never-seen"), 0);
         // The per-turn select: non-marked reads the current window, marked bumps,
         // and an unpoolable session stays 0.
-        assert_eq!(
-            window_for_turn(Some("session-1"), Some("session-1"), false),
-            2
-        );
-        assert_eq!(
-            window_for_turn(Some("session-1"), Some("session-1"), true),
-            3
-        );
-        assert_eq!(window_for_turn(Some("session-1"), None, false), 3);
-        assert_eq!(window_for_turn(None, None, true), 0);
+        assert_eq!(window_for_turn(Some("session-1"), false), 2);
+        assert_eq!(window_for_turn(Some("session-1"), true), 3);
+        assert_eq!(window_for_turn(Some("session-1"), false), 3);
+        assert_eq!(window_for_turn(None, true), 0);
         // A read is conversation activity: it refreshes the liveness clock, so
         // an ACTIVE conversation whose compactions are rarer than the idle TTL
         // never loses its window to the sweep.

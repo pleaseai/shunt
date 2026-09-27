@@ -679,6 +679,94 @@ async fn spawn_recording_ws_upstream(
     (format!("http://{addr}"), accepted, frames, server)
 }
 
+/// Serve complete turns per accepted socket until Close and record each
+/// connection's codex identity handshake headers. Like
+/// [`spawn_recording_ws_upstream`] but capturing the upgrade request's
+/// headers, so a test can pin which thread identity each pooled socket was
+/// opened under.
+async fn spawn_handshake_recording_ws_upstream(
+    expected_connections: usize,
+) -> (
+    String,
+    Arc<AtomicUsize>,
+    Arc<StdMutex<Vec<serde_json::Value>>>,
+    JoinHandle<()>,
+) {
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+
+    const IDENTITY_HEADERS: &[&str] = &[
+        "session-id",
+        "thread-id",
+        "x-client-request-id",
+        "x-codex-window-id",
+        "x-codex-parent-thread-id",
+        "x-openai-subagent",
+    ];
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let handshakes = Arc::new(StdMutex::new(Vec::new()));
+    let server_accepted = Arc::clone(&accepted);
+    let server_handshakes = Arc::clone(&handshakes);
+    let server = tokio::spawn(async move {
+        let mut handlers = JoinSet::new();
+        for _ in 0..expected_connections {
+            let (socket, _) = listener.accept().await.unwrap();
+            server_accepted.fetch_add(1, Ordering::SeqCst);
+            let handshakes = Arc::clone(&server_handshakes);
+            handlers.spawn(async move {
+                let recorder = {
+                    let handshakes = Arc::clone(&handshakes);
+                    #[allow(clippy::result_large_err)]
+                    move |request: &Request, response: Response| -> Result<Response, tungstenite::handshake::server::ErrorResponse> {
+                        let mut recorded = serde_json::Map::new();
+                        for name in IDENTITY_HEADERS {
+                            if let Some(value) = request
+                                .headers()
+                                .get(*name)
+                                .and_then(|value| value.to_str().ok())
+                            {
+                                recorded.insert((*name).to_string(), serde_json::json!(value));
+                            }
+                        }
+                        handshakes.lock().unwrap().push(serde_json::Value::Object(recorded));
+                        Ok(response)
+                    }
+                };
+                let mut ws = tokio_tungstenite::accept_hdr_async_with_config(
+                    socket,
+                    recorder,
+                    Some(WebSocketConfig::default()),
+                )
+                .await
+                .unwrap();
+                while let Some(message) = ws.next().await {
+                    match message.unwrap() {
+                        Message::Text(_) => {
+                            for event in [
+                                r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                                r#"{"type":"response.output_text.delta","delta":"hello"}"#,
+                                r#"{"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":1}}}"#,
+                            ] {
+                                ws.send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                        Message::Pong(_) => {}
+                        Message::Close(_) => break,
+                        other => panic!("unexpected frame: {other:?}"),
+                    }
+                }
+            });
+        }
+        while handlers.join_next().await.is_some() {}
+    });
+    (format!("http://{addr}"), accepted, handshakes, server)
+}
+
 /// Read an HTTP request's headers and `content-length` body off the socket, so
 /// the client finishes sending before the mock replies.
 async fn drain_http_request(socket: &mut TcpStream) {
@@ -1171,4 +1259,231 @@ async fn websocket_drop_after_first_event_json_surfaces_gateway_error() {
     );
 
     let _ = std::fs::remove_file(auth_path);
+}
+
+/// A delegated (Task child) turn must pool its websocket under the CHILD's
+/// identity and the parent's next turn must open its own: per-turn identity
+/// rides the handshake, so one shared pool key would send the parent's turn
+/// under the child's `thread-id` and subagent markers (or, once the child's
+/// socket expires, every later parent turn under them). Two turns — the child
+/// then the parent — must produce two handshakes, the child's carrying the
+/// `{session}::{agent}` identities.
+#[tokio::test]
+async fn delegated_turn_pools_its_own_websocket_and_the_parent_never_rides_it() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+    let auth_path = write_fake_codex_auth(&mut vars);
+
+    let (base_url, accepts, handshakes, server) = spawn_handshake_recording_ws_upstream(2).await;
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+
+    let body = serde_json::json!({
+        "model": "codex-fallback-model",
+        "max_tokens": 16,
+        "stream": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    })
+    .to_string();
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[
+            ("x-claude-code-session-id", "sess-1"),
+            ("x-claude-code-agent-id", "agent-7"),
+            ("x-claude-code-agent-type", "Explore"),
+        ],
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "child turn failed: {body}");
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[("x-claude-code-session-id", "sess-1")],
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "parent turn failed: {body}");
+
+    assert_eq!(
+        accepts.load(Ordering::SeqCst),
+        2,
+        "the parent turn must not ride the child's pooled websocket"
+    );
+    let handshakes = handshakes.lock().unwrap().clone();
+    let child = &handshakes[0];
+    assert_eq!(child["session-id"], "sess-1");
+    assert_eq!(child["thread-id"], "sess-1::agent-7");
+    assert_eq!(child["x-codex-parent-thread-id"], "sess-1");
+    assert_eq!(child["x-openai-subagent"], "Explore");
+    assert_eq!(child["x-client-request-id"], "sess-1::agent-7");
+    assert_eq!(child["x-codex-window-id"], "sess-1::agent-7:0");
+    let parent = &handshakes[1];
+    assert_eq!(parent["session-id"], "sess-1");
+    assert_eq!(parent["thread-id"], "sess-1");
+    assert_eq!(parent["x-client-request-id"], "sess-1");
+    assert_eq!(parent["x-codex-window-id"], "sess-1:0");
+    assert!(
+        parent.get("x-codex-parent-thread-id").is_none()
+            && parent.get("x-openai-subagent").is_none(),
+        "the parent's socket must not carry a child identity"
+    );
+
+    drop(gateway);
+    server.abort();
+    let _ = std::fs::remove_file(auth_path);
+}
+
+async fn post_messages(
+    base_url: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (StatusCode, String) {
+    let mut request = reqwest::Client::new()
+        .post(format!("{base_url}/v1/messages"))
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.body(body.to_string()).send().await.unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    (status, text)
+}
+
+/// Two DISTINCT conversations whose identity text concatenates to the same
+/// `:`-joined string — session `s::t` with no agent, and session `s` with
+/// agent `t` — must not share a pooled websocket: one internal key per
+/// (client, session, agent) triple, so the second turn opens its own socket
+/// and handshakes under its own identity instead of riding the first
+/// conversation's.
+#[tokio::test]
+async fn distinct_conversations_never_share_a_pool_key_even_when_their_text_concatenates() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+    let auth_path = write_fake_codex_auth(&mut vars);
+
+    let (base_url, accepts, handshakes, server) = spawn_handshake_recording_ws_upstream(2).await;
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+
+    let body = serde_json::json!({
+        "model": "codex-fallback-model",
+        "max_tokens": 16,
+        "stream": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    })
+    .to_string();
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[("x-claude-code-session-id", "s::t")],
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first conversation failed: {body}");
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[
+            ("x-claude-code-session-id", "s"),
+            ("x-claude-code-agent-id", "t"),
+        ],
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "second conversation failed: {body}");
+
+    assert_eq!(
+        accepts.load(Ordering::SeqCst),
+        2,
+        "the two conversations must pool under distinct keys"
+    );
+    let handshakes = handshakes.lock().unwrap().clone();
+    let first = &handshakes[0];
+    assert_eq!(first["session-id"], "s::t");
+    assert_eq!(first["thread-id"], "s::t");
+    assert_eq!(first["x-client-request-id"], "s::t");
+    assert_eq!(first["x-codex-window-id"], "s::t:0");
+    assert!(
+        first.get("x-codex-parent-thread-id").is_none() && first.get("x-openai-subagent").is_none(),
+        "the first conversation is not delegated"
+    );
+    let second = &handshakes[1];
+    assert_eq!(second["session-id"], "s");
+    assert_eq!(second["thread-id"], "s::t");
+    assert_eq!(second["x-codex-parent-thread-id"], "s");
+    assert_eq!(second["x-openai-subagent"], "subagent");
+    assert_eq!(second["x-client-request-id"], "s::t");
+    assert_eq!(second["x-codex-window-id"], "s::t:0");
+
+    drop(gateway);
+    server.abort();
+    let _ = std::fs::remove_file(auth_path);
+}
+
+/// The bump's sweep must match pool keys by identity, not by text suffix: a
+/// conversation whose crafted session/agent text embeds another conversation's
+/// window key (`acct-0::<x>::::<s>` ends with `::<s>`) must survive that
+/// conversation's compaction bump. Three turns: B pools its socket, A's
+/// marked turn bumps, B's next turn must still ride B's own socket (2
+/// handshakes total, not 3).
+#[tokio::test]
+async fn a_bump_does_not_evict_a_socket_whose_key_text_ends_with_the_window_key() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+
+    let token = fake_jwt(4_000_000_000);
+    vars.set("SHUNT_POOL_N1_TOKEN", &token);
+    let (base_url, accepts, handshakes, server) = spawn_handshake_recording_ws_upstream(3).await;
+    let gateway = start_gateway_with(pooled_codex_ws_config(
+        base_url,
+        ["SHUNT_POOL_N1_TOKEN", "SHUNT_POOL_N1_NEVER_SET"],
+    ))
+    .await;
+
+    let body = serde_json::json!({
+        "model": "codex-fallback-model",
+        "max_tokens": 16,
+        "stream": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    })
+    .to_string();
+    let b_headers = [
+        ("x-claude-code-session-id", "x"),
+        ("x-claude-code-agent-id", "::s"),
+    ];
+    // Turn 1: conversation B (session `x`, agent `::s`) pools its socket.
+    let (status, body) = post_messages(&gateway.base_url, &b_headers, &body).await;
+    assert_eq!(status, StatusCode::OK, "B's first turn failed: {body}");
+    // Turn 2: conversation A (session `s`) carries the compaction mark.
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[
+            ("x-claude-code-session-id", "s"),
+            ("x-claude-code-context-compacted", "auto"),
+        ],
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "A's marked turn failed: {body}");
+    // Turn 3: B again — its socket must have survived A's bump.
+    let (status, body) = post_messages(&gateway.base_url, &b_headers, &body).await;
+    assert_eq!(status, StatusCode::OK, "B's second turn failed: {body}");
+
+    assert_eq!(
+        accepts.load(Ordering::SeqCst),
+        2,
+        "A's bump must not evict B's pooled socket"
+    );
+    let handshakes = handshakes.lock().unwrap().clone();
+    assert_eq!(handshakes[0]["thread-id"], "x::::s", "B's own thread id");
+    assert_eq!(handshakes[1]["thread-id"], "s", "A's own thread id");
+
+    drop(gateway);
+    server.abort();
 }

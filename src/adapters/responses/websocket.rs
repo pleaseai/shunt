@@ -25,8 +25,9 @@ use super::request::{responses_url, routing_hint, CODEX_CLIENT_VERSION, CODEX_US
 use super::ws_stream::{json_events_response, stream_events_response};
 
 /// The identity inputs for a turn's handshake headers: the connection pool
-/// key (account-prefixed on the pool path), the window-counter key (always
-/// the unprefixed session key — an account rotation must not reset the
+/// key (the turn's thread scope — the child's on a delegated turn — and
+/// account-prefixed on the pool path), the window-counter key (the same scope
+/// unprefixed by the account, so an account rotation cannot reset the
 /// conversation's window), the effective session id, whether this turn
 /// carries the client's one-shot post-compaction mark, and the delegated-turn
 /// subagent identity (child thread id + markers) when the turn is a child's.
@@ -73,11 +74,12 @@ pub(super) async fn forward_websocket(
     // window: a turn the client marks as post-compaction (the one-shot
     // `x-claude-code-context-compacted` header) bumps the counter and rotates
     // the socket; every other turn reads the current window. The counter keys
-    // on the unprefixed session key (`window_key`) so an account rotation
-    // cannot reset it; the eviction targets the connection's own pool key
-    // (`pool_key`, account-prefixed on the pool path). The HTTP transport
-    // never advances and stays `:0` (request.rs).
-    let window = codex_ws::window_for_turn(window_key, pool_key, compact);
+    // on `window_key` — the turn's thread scope (the child's on a delegated
+    // turn), unprefixed by the account name so an account rotation cannot
+    // reset it — and the bump sweeps the conversation's sockets under every
+    // account, not just this attempt's (see `window_for_turn`). The HTTP
+    // transport never advances and stays `:0` (request.rs).
+    let window = codex_ws::window_for_turn(window_key, compact);
     let ctx = WsTurnContext {
         ws_url,
         pool_key,
@@ -93,7 +95,16 @@ pub(super) async fn forward_websocket(
         window,
         delegation,
     };
-    tracing::debug!(provider = %route.provider, ws_url = %ctx.ws_url, pool_key = pool_key.unwrap_or(""), "opening codex websocket");
+    // The internal key composes with a control-byte separator; render it with
+    // `:` so the log line stays readable.
+    tracing::debug!(
+        provider = %route.provider,
+        ws_url = %ctx.ws_url,
+        pool_key = pool_key
+            .unwrap_or("")
+            .replace(codex_ws::KEY_COMPONENT_SEPARATOR, ":"),
+        "opening codex websocket"
+    );
 
     // Overlap the CPU-bound tiktoken encode with the websocket connect (same
     // rationale as forward_http); its result is only consumed once the event
@@ -510,8 +521,13 @@ fn websocket_headers(
             // The window id advances on compaction-marked turns (see
             // `forward_websocket`); the HTTP transport stays `:0`.
             // A delegated turn swaps `thread-id` for the child's derived id
-            // and adds the two subagent markers.
+            // and adds the two subagent markers, and every thread-derived id
+            // — `x-client-request-id` and the window id's identity part —
+            // carries the child's, exactly as codex builds them from its
+            // thread metadata.
             if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
+                let thread_id =
+                    delegation.map_or(session_id, |delegation| delegation.thread_id.as_str());
                 set("session-id", session_id.to_string())?;
                 match delegation {
                     Some(delegation) => {
@@ -524,8 +540,8 @@ fn websocket_headers(
                     }
                     None => set("thread-id", session_id.to_string())?,
                 }
-                set("x-client-request-id", session_id.to_string())?;
-                set("x-codex-window-id", format!("{session_id}:{window}"))?;
+                set("x-client-request-id", thread_id.to_string())?;
+                set("x-codex-window-id", format!("{thread_id}:{window}"))?;
             }
             // Deliberately not through `set`: every other header must fail the
             // turn on a malformed value, but the routing hint is built from the
@@ -978,6 +994,7 @@ mod tests {
                 thread_id: "session-123::agent-7".to_string(),
                 parent_thread_id: "session-123".to_string(),
                 subagent: "Explore".to_string(),
+                agent_id: "agent-7".to_string(),
             }),
         )
         .expect("valid credential builds headers");
@@ -988,8 +1005,16 @@ mod tests {
             "session-123"
         );
         assert_eq!(headers.get("x-openai-subagent").unwrap(), "Explore");
-        // The window id keeps the PARENT identity on a delegated turn.
-        assert_eq!(headers.get("x-codex-window-id").unwrap(), "session-123:0");
+        // Every thread-derived id — request id and window id included —
+        // carries the child identity; only `session-id` stays the parent's.
+        assert_eq!(
+            headers.get("x-client-request-id").unwrap(),
+            "session-123::agent-7"
+        );
+        assert_eq!(
+            headers.get("x-codex-window-id").unwrap(),
+            "session-123::agent-7:0"
+        );
     }
 
     #[test]
