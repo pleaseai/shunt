@@ -88,6 +88,9 @@ pub(super) struct PoolStreamContext {
     pub(super) route: Route,
     pub(super) auth: AuthMode,
     pub(super) session_id: Option<String>,
+    /// The delegated-turn subagent identity for the chatgpt arm's headers;
+    /// `None` for a non-delegated turn.
+    pub(super) delegation: Option<super::request::CodexDelegation>,
     pub(super) upstream_body: std::sync::Arc<Value>,
     pub(super) accounts_config: std::sync::Arc<Vec<AccountConfig>>,
     pub(super) order: Vec<usize>,
@@ -116,6 +119,9 @@ pub(super) struct PoolStreamContext {
 /// translation inputs.
 pub(super) struct PoolForwardStream {
     pub session_id: Option<String>,
+    /// The delegated-turn subagent identity, derived once at the adapter from
+    /// the inbound headers; `None` for a non-delegated turn.
+    pub delegation: Option<super::request::CodexDelegation>,
     pub upstream_body: std::sync::Arc<Value>,
     pub turn: TurnOptions,
     pub estimate_input: Option<std::sync::Arc<Value>>,
@@ -138,6 +144,7 @@ pub(super) async fn forward_chatgpt_oauth_stream(
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let PoolForwardStream {
         session_id,
+        delegation,
         upstream_body,
         turn,
         estimate_input,
@@ -156,6 +163,7 @@ pub(super) async fn forward_chatgpt_oauth_stream(
             .unwrap_or(crate::retry::RetryPolicy::DISABLED),
         credential: None,
         session_id: session_id.clone(),
+        delegation: delegation.clone(),
         upstream_body: upstream_body.clone(),
         auth: AuthMode::ChatgptOauth,
         codex_quota_account: None,
@@ -203,6 +211,7 @@ pub(super) fn pool_or_single_events(
         state: AppState,
         route: Route,
         session_id: Option<String>,
+        delegation: Option<super::request::CodexDelegation>,
         upstream_body: std::sync::Arc<Value>,
         single: HttpSendContext,
         single_credential: CredentialSource,
@@ -218,6 +227,7 @@ pub(super) fn pool_or_single_events(
             state,
             route,
             session_id,
+            delegation: single.delegation.clone(),
             upstream_body,
             single,
             single_credential,
@@ -231,6 +241,7 @@ pub(super) fn pool_or_single_events(
                         state,
                         route,
                         session_id,
+                        delegation,
                         upstream_body,
                         single,
                         single_credential,
@@ -293,6 +304,7 @@ pub(super) fn pool_or_single_events(
                             route,
                             auth: AuthMode::ChatgptOauth,
                             session_id,
+                            delegation,
                             upstream_body,
                             accounts_config,
                             order,
@@ -331,6 +343,7 @@ pub(super) fn pool_events_stream(
         route,
         auth,
         session_id,
+        delegation,
         upstream_body,
         accounts_config,
         order,
@@ -364,6 +377,7 @@ pub(super) fn pool_events_stream(
             let route = route.clone();
             let accounts_config = accounts_config.clone();
             let session_id = session_id.clone();
+            let delegation = delegation.clone();
             let upstream_body = upstream_body.clone();
             async move {
                 let mut phase = phase;
@@ -550,6 +564,7 @@ pub(super) fn pool_events_stream(
                                 &route,
                                 credential.clone(),
                                 session_id.as_deref(),
+                                delegation.as_ref(),
                                 body.clone(),
                             )
                             .await
@@ -697,6 +712,7 @@ pub(super) fn pool_events_stream(
                                         &route,
                                         retry_credential,
                                         session_id.as_deref(),
+                                        delegation.as_ref(),
                                         body.clone(),
                                     )
                                     .await
@@ -860,6 +876,7 @@ pub(super) async fn forward_chatgpt_oauth(
     let PoolForward {
         pool_key,
         session_id,
+        delegation,
         upstream_body,
         accounts_config,
         turn,
@@ -906,6 +923,7 @@ pub(super) async fn forward_chatgpt_oauth(
             route: route.clone(),
             auth: AuthMode::ChatgptOauth,
             session_id,
+            delegation,
             upstream_body: upstream_body.clone(),
             accounts_config: std::sync::Arc::new(accounts_config),
             order,
@@ -997,6 +1015,7 @@ pub(super) async fn forward_chatgpt_oauth(
                     pool_key: account_pool_key.as_deref(),
                     window_key: pool_key.as_deref(),
                     session_id: session_id.as_deref(),
+                    delegation: delegation.as_ref(),
                     // The bump is once per TURN, on the first attempt that
                     // actually reaches the websocket: an admission failure on
                     // an earlier-ranked account must not drop the mark (the
@@ -1079,6 +1098,7 @@ pub(super) async fn forward_chatgpt_oauth(
             &route,
             credential.clone(),
             session_id.as_deref(),
+            delegation.as_ref(),
             body.clone(),
         )
         .await
@@ -1172,6 +1192,7 @@ pub(super) async fn forward_chatgpt_oauth(
                     &route,
                     retry_credential,
                     session_id.as_deref(),
+                    delegation.as_ref(),
                     body.clone(),
                 )
                 .await
@@ -2239,6 +2260,7 @@ mod tests {
         PoolForward {
             pool_key: None,
             session_id: None,
+            delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             accounts_config: accounts,
             turn: TurnOptions {
@@ -3130,6 +3152,7 @@ mod tests {
             route: route.clone(),
             auth: AuthMode::ChatgptOauth,
             session_id: None,
+            delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             accounts_config: std::sync::Arc::new(accounts),
             order,
@@ -3280,6 +3303,7 @@ mod tests {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: AuthMode::ChatgptOauth,
             codex_quota_account: None,
@@ -3320,6 +3344,7 @@ mod tests {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: AuthMode::ChatgptOauth,
             codex_quota_account: None,
@@ -3373,6 +3398,7 @@ mod tests {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: AuthMode::ApiKey,
             codex_quota_account: None,
@@ -3434,6 +3460,7 @@ mod tests {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: AuthMode::ChatgptOauth,
             codex_quota_account: None,

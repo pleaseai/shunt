@@ -1,7 +1,7 @@
 //! Build the upstream Responses HTTP request (URL, auth, identity headers) and
 //! resolve the per-provider Responses endpoint.
 
-use axum::http::HeaderValue;
+use axum::http::{HeaderMap, HeaderValue};
 
 use crate::{auth::Credential, routing::Route, server::AppState};
 
@@ -142,6 +142,42 @@ pub(super) fn grok_identity_headers(request: reqwest::RequestBuilder) -> reqwest
         .header("x-grok-client-version", GROK_CLIENT_VERSION)
 }
 
+/// The codex identity a DELEGATED turn's chatgpt-flavor headers carry: codex
+/// gives each subagent its own thread id, echoes the parent's, and labels the
+/// subagent kind (`codex-rs` `responses_metadata.rs`). A non-delegated turn
+/// has none of it — `None` means the plain session headers, exactly as before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodexDelegation {
+    /// The thread-id to send in place of the session id (`{session}::{agent}`).
+    pub(crate) thread_id: String,
+    /// The parent session's thread id (the effective session id).
+    pub(crate) parent_thread_id: String,
+    /// The subagent kind label: the client's agent-type hint when sent, else
+    /// a stable literal (`codex` uses `Other(label)` for a Task child).
+    pub(crate) subagent: String,
+}
+
+/// The delegated-turn codex identity, derived from the effective session id
+/// and the client's gateway hints. `None` for a non-delegated turn, and for a
+/// delegated turn that sent no agent id — that turn shares the parent scope
+/// and gets the plain parent headers.
+pub(crate) fn codex_delegation(headers: &HeaderMap, session_id: &str) -> Option<CodexDelegation> {
+    let hints = crate::routing::context::RouterContext::from_headers(headers);
+    if !hints.is_delegated() {
+        return None;
+    }
+    let agent_id = hints.pin_agent_id()?;
+    Some(CodexDelegation {
+        thread_id: format!("{session_id}::{agent_id}"),
+        parent_thread_id: session_id.to_string(),
+        subagent: hints
+            .agent_type
+            .filter(|agent_type| !agent_type.trim().is_empty())
+            .unwrap_or("subagent")
+            .to_string(),
+    })
+}
+
 /// The four prompt-cache affinity headers the real Codex CLI sends with every
 /// request regardless of auth (`codex-rs`
 /// `codex-api/src/requests/headers.rs` `build_session_headers`, pinned by its
@@ -151,19 +187,34 @@ pub(super) fn grok_identity_headers(request: reqwest::RequestBuilder) -> reqwest
 /// equal the body's `prompt_cache_key`, which derives from the same effective
 /// id. `x-client-request-id` and `x-codex-window-id` complete the set.
 ///
-/// Sent only when a session id is available: a fabricated value is worse than
-/// omitting them. Each caller picks its own upstream gate (the ChatGPT backend,
-/// or the stock OpenAI host for api-key) and its own `accept` header.
+/// A delegated turn swaps `thread-id` for the child's derived id and adds the
+/// two subagent markers. Sent only when a session id is available: a
+/// fabricated value is worse than omitting them. Each caller picks its own
+/// upstream gate (the ChatGPT backend, or the stock OpenAI host for api-key)
+/// and its own `accept` header.
 pub(super) fn session_affinity_headers(
     request: reqwest::RequestBuilder,
     session_id: Option<&str>,
+    delegation: Option<&CodexDelegation>,
 ) -> reqwest::RequestBuilder {
     match session_id.filter(|session_id| !session_id.is_empty()) {
-        Some(session_id) => request
-            .header("session-id", session_id)
-            .header("thread-id", session_id)
-            .header("x-client-request-id", session_id)
-            .header("x-codex-window-id", format!("{session_id}:0")),
+        Some(session_id) => {
+            let (thread_id, mut request) = match delegation {
+                Some(delegation) => (
+                    delegation.thread_id.as_str(),
+                    request
+                        .header("x-codex-parent-thread-id", &delegation.parent_thread_id)
+                        .header("x-openai-subagent", &delegation.subagent),
+                ),
+                None => (session_id, request),
+            };
+            request = request
+                .header("session-id", session_id)
+                .header("thread-id", thread_id)
+                .header("x-client-request-id", session_id)
+                .header("x-codex-window-id", format!("{session_id}:0"));
+            request
+        }
         None => request,
     }
 }
@@ -199,6 +250,7 @@ pub(super) fn request_builder(
     route: &Route,
     credential: Credential,
     session_id: Option<&str>,
+    delegation: Option<&CodexDelegation>,
 ) -> reqwest::RequestBuilder {
     let mut request = state
         .http_client
@@ -221,7 +273,9 @@ pub(super) fn request_builder(
             // session-affinity headers to (pinned by codex-rs's api-key test);
             // third-party OpenAI-compatible hosts and xAI keep them absent.
             if state.config.is_openai_backend(&route.provider) {
-                request = session_affinity_headers(request, session_id);
+                // Stock OpenAI gets the four affinity headers and nothing more:
+                // the subagent markers are a codex-backend shape.
+                request = session_affinity_headers(request, session_id, None);
             }
         }
         Credential::ChatGptOAuth {
@@ -245,7 +299,7 @@ pub(super) fn request_builder(
             if session_id.is_some_and(|session_id| !session_id.is_empty()) {
                 request = request.header("accept", "text/event-stream");
             }
-            request = session_affinity_headers(request, session_id);
+            request = session_affinity_headers(request, session_id, delegation);
         }
         // xAI subscription OAuth: the subscription bearer plus the Grok-CLI
         // identity headers the CLI chat proxy expects (no ChatGPT/Codex
@@ -299,7 +353,7 @@ fn build_test_request(
     credential: Credential,
     session_id: Option<&str>,
 ) -> reqwest::Request {
-    request_builder(state, route, credential, session_id)
+    request_builder(state, route, credential, session_id, None)
         .body("{}")
         .build()
         .expect("test request should build")
@@ -307,6 +361,136 @@ fn build_test_request(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_delegation_derives_only_for_a_child_turn() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-claude-code-session-id",
+            HeaderValue::from_static("sess-1"),
+        );
+        headers.insert(
+            "x-claude-code-agent-id",
+            HeaderValue::from_static("agent-7"),
+        );
+        headers.insert(
+            "x-claude-code-agent-type",
+            HeaderValue::from_static("Explore"),
+        );
+        let delegation = codex_delegation(&headers, "sess-1").expect("a child turn delegates");
+        assert_eq!(delegation.thread_id, "sess-1::agent-7");
+        assert_eq!(delegation.parent_thread_id, "sess-1");
+        assert_eq!(delegation.subagent, "Explore");
+
+        // The class is authoritative in the positive direction too: a
+        // `subagent` class with an agent id is a child.
+        let mut classed = HeaderMap::new();
+        classed.insert(
+            "x-claude-code-request-class",
+            HeaderValue::from_static("subagent"),
+        );
+        classed.insert(
+            "x-claude-code-agent-id",
+            HeaderValue::from_static("agent-7"),
+        );
+        let delegation =
+            codex_delegation(&classed, "sess-1").expect("a subagent-class turn delegates");
+        assert_eq!(delegation.thread_id, "sess-1::agent-7");
+
+        // No agent id -> the turn shares the parent scope, plain headers.
+        let mut plain = HeaderMap::new();
+        plain.insert(
+            "x-claude-code-session-id",
+            HeaderValue::from_static("sess-1"),
+        );
+        assert_eq!(codex_delegation(&plain, "sess-1"), None);
+
+        // The class is authoritative: `main` with an agent id is not a child.
+        let mut main = HeaderMap::new();
+        main.insert(
+            "x-claude-code-request-class",
+            HeaderValue::from_static("main"),
+        );
+        main.insert(
+            "x-claude-code-agent-id",
+            HeaderValue::from_static("agent-7"),
+        );
+        assert_eq!(codex_delegation(&main, "sess-1"), None);
+
+        // No agent-type hint -> the stable literal, codex's Other(label) analog.
+        let mut untyped = HeaderMap::new();
+        untyped.insert(
+            "x-claude-code-agent-id",
+            HeaderValue::from_static("agent-7"),
+        );
+        assert_eq!(
+            codex_delegation(&untyped, "sess-1").unwrap().subagent,
+            "subagent"
+        );
+    }
+
+    #[test]
+    fn delegated_turns_carry_the_child_thread_and_subagent_markers() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-claude-code-agent-id",
+            HeaderValue::from_static("agent-7"),
+        );
+        let delegation = codex_delegation(&headers, "session-123").expect("a child turn delegates");
+
+        let request = request_builder(
+            &state,
+            &codex_route(),
+            codex_oauth(),
+            Some("session-123"),
+            Some(&delegation),
+        )
+        .body("{}")
+        .build()
+        .expect("test request should build");
+
+        // The child's derived thread id replaces the parent's, the two markers
+        // ride along, and the affinity trio keeps the parent identity.
+        assert_eq!(request.headers().get("session-id").unwrap(), "session-123");
+        assert_eq!(
+            request.headers().get("thread-id").unwrap(),
+            "session-123::agent-7"
+        );
+        assert_eq!(
+            request.headers().get("x-codex-parent-thread-id").unwrap(),
+            "session-123"
+        );
+        assert_eq!(
+            request.headers().get("x-openai-subagent").unwrap(),
+            "subagent"
+        );
+        assert_eq!(
+            request.headers().get("x-client-request-id").unwrap(),
+            "session-123"
+        );
+        // The window id keeps the PARENT identity on a delegated turn.
+        assert_eq!(
+            request.headers().get("x-codex-window-id").unwrap(),
+            "session-123:0"
+        );
+
+        // A non-delegated turn sends the pre-change header set: no markers,
+        // and thread-id stays the parent's.
+        let plain = request_builder(
+            &state,
+            &codex_route(),
+            codex_oauth(),
+            Some("session-123"),
+            None,
+        )
+        .body("{}")
+        .build()
+        .expect("test request should build");
+        assert_eq!(plain.headers().get("thread-id").unwrap(), "session-123");
+        assert!(plain.headers().get("x-codex-parent-thread-id").is_none());
+        assert!(plain.headers().get("x-openai-subagent").is_none());
+    }
+
     use crate::{
         auth::Credential,
         config::{Config, ResponsesFlavor},
@@ -314,7 +498,9 @@ mod tests {
         server::AppState,
     };
 
-    use super::{build_test_request, request_builder, responses_url};
+    use axum::http::{HeaderMap, HeaderValue};
+
+    use super::{build_test_request, codex_delegation, request_builder, responses_url};
 
     fn codex_route() -> Route {
         Route {
@@ -466,7 +652,7 @@ mod tests {
             value: "openai-key".to_string(),
             header: ApiKeyHeader::Bearer,
         };
-        let response = request_builder(&state, &route, credential, Some("sess-redir"))
+        let response = request_builder(&state, &route, credential, Some("sess-redir"), None)
             .body("{}")
             .send()
             .await
@@ -709,6 +895,7 @@ mod tests {
             &client_model_route("gpt-5\n-sol"),
             codex_oauth(),
             None,
+            None,
         )
         .body("{}")
         .build()
@@ -812,6 +999,37 @@ mod tests {
         assert_eq!(
             request.headers().get("x-codex-window-id").unwrap(),
             "session-123:0"
+        );
+        // The subagent markers are a codex-backend shape; stock OpenAI never
+        // carries them, delegated turn or not.
+        assert!(request.headers().get("x-codex-parent-thread-id").is_none());
+        assert!(request.headers().get("x-openai-subagent").is_none());
+        // Even handed a delegation, the api-key arm ignores it.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-claude-code-agent-id",
+            HeaderValue::from_static("agent-7"),
+        );
+        let delegation = codex_delegation(&headers, "session-123").unwrap();
+        let delegated = request_builder(
+            &state,
+            &openai_route(),
+            openai_api_key(),
+            Some("session-123"),
+            Some(&delegation),
+        )
+        .body("{}")
+        .build()
+        .expect("test request should build");
+        assert!(delegated
+            .headers()
+            .get("x-codex-parent-thread-id")
+            .is_none());
+        assert!(delegated.headers().get("x-openai-subagent").is_none());
+        assert_eq!(
+            delegated.headers().get("thread-id").unwrap(),
+            "session-123",
+            "no child split on stock OpenAI"
         );
         assert!(request.headers().get("accept").is_none());
     }

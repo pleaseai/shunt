@@ -191,6 +191,7 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
                 &context.route,
                 credential.clone(),
                 context.session_id.as_deref(),
+                context.delegation.as_ref(),
                 body.clone(),
             )
         },
@@ -337,6 +338,9 @@ pub(super) struct HttpSendContext {
     /// stream before the send.
     pub(super) credential: Option<Credential>,
     pub(super) session_id: Option<String>,
+    /// The delegated-turn subagent identity for the chatgpt arm's headers;
+    /// `None` for a non-delegated turn.
+    pub(super) delegation: Option<super::request::CodexDelegation>,
     /// The raw translated request; prepared (zstd admission + blocking-pool
     /// work) at send time inside the committed stream, so compression load
     /// cannot delay the committed response.

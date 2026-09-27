@@ -19,6 +19,8 @@ use crate::{
     routing::Route,
 };
 
+use super::request::CodexDelegation;
+
 /// How to translate an upstream Responses stream back into Anthropic form:
 /// exactly `AnthropicSseMachine::new`'s arguments. Passed as one unit through
 /// every relay path (streaming SSE and collected JSON) so the model name and the
@@ -147,6 +149,9 @@ pub(super) struct ForwardOptions {
 pub(super) struct PoolForward {
     pub pool_key: Option<String>,
     pub session_id: Option<String>,
+    /// The delegated-turn subagent identity, derived once at the adapter from
+    /// the inbound headers; `None` for a non-delegated turn.
+    pub delegation: Option<CodexDelegation>,
     pub upstream_body: Arc<Value>,
     pub accounts_config: Vec<AccountConfig>,
     pub turn: TurnOptions,

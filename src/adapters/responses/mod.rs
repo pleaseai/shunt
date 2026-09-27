@@ -112,13 +112,25 @@ impl Adapter for ResponsesAdapter {
         // one-shot `x-claude-code-context-compacted` header; the websocket path
         // keys its window counter on it. The HTTP transport stays `:0`.
         let compact = compact_marked(headers);
+        // A delegated turn's codex identity: a per-child thread id plus the two
+        // subagent markers (see request::codex_delegation). Derived from the
+        // same string the session headers carry — every effective-id
+        // provenance, the hashed user-id fallback included — so the headers
+        // and the derived identity can never diverge on one turn.
+        let session_id = identity.clone().map(EffectiveSessionId::into_string);
+        let delegation = session_id.as_deref().and_then(|session_id| {
+            crate::adapters::responses::request::codex_delegation(headers, session_id)
+        });
         Box::pin(async move {
             forward(
                 state,
                 route,
                 pool_key,
-                identity.map(EffectiveSessionId::into_string),
-                compact,
+                session_id,
+                TurnHints {
+                    compact,
+                    delegation,
+                },
                 body,
                 bounds,
             )
@@ -127,12 +139,21 @@ impl Adapter for ResponsesAdapter {
     }
 }
 
+/// The header-derived turn marks: the client's one-shot post-compaction hint
+/// (keys the websocket window counter) and the delegated-turn subagent
+/// identity (child thread id + markers). Derived once per turn; every
+/// transport reads from the same instance.
+struct TurnHints {
+    compact: bool,
+    delegation: Option<crate::adapters::responses::request::CodexDelegation>,
+}
+
 async fn forward(
     state: AppState,
     route: Route,
     pool_key: Option<String>,
     session_id: Option<String>,
-    compact: bool,
+    hints: TurnHints,
     body: RequestBody,
     response_bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
@@ -294,6 +315,7 @@ async fn forward(
                 route,
                 PoolForwardStream {
                     session_id,
+                    delegation: hints.delegation,
                     upstream_body,
                     turn,
                     estimate_input,
@@ -322,10 +344,11 @@ async fn forward(
             return forward_chatgpt_oauth(
                 state,
                 route,
-                compact,
+                hints.compact,
                 PoolForward {
                     pool_key,
                     session_id,
+                    delegation: hints.delegation,
                     upstream_body,
                     accounts_config: accounts,
                     turn,
@@ -394,7 +417,8 @@ async fn forward(
                 pool_key: pool_key.as_deref(),
                 window_key: pool_key.as_deref(),
                 session_id: session_id.as_deref(),
-                compact,
+                compact: hints.compact,
+                delegation: hints.delegation.as_ref(),
             },
             websocket_options,
             websocket_credential.clone(),
@@ -426,6 +450,7 @@ async fn forward(
         forward_options,
         credential,
         session_id.as_deref(),
+        hints.delegation.as_ref(),
     )
     .await
 }
@@ -469,6 +494,11 @@ pub(crate) async fn chain_attempt(
     // still get the upstream affinity headers and the matching body key.
     let session_id = session_id
         .or_else(|| crate::model::responses_request::effective_session_id(request_json, None));
+    // Derived once here and shared by the pool context and the send context:
+    // two derivations are a drift hazard when one site is edited later.
+    let delegation = session_id.as_deref().and_then(|session_id| {
+        crate::adapters::responses::request::codex_delegation(headers, session_id)
+    });
     let thinking_enabled = request_json
         .pointer("/thinking/type")
         .and_then(Value::as_str)
@@ -579,6 +609,7 @@ pub(crate) async fn chain_attempt(
                 ramp_initial: state.config.storm_ramp_initial(),
                 record_metrics: false,
                 started_at: None,
+                delegation: delegation.clone(),
             });
             // Race the machine build — which awaits the bounded token
             // estimate — against the pool's first poll so account admission,
@@ -715,7 +746,8 @@ pub(crate) async fn chain_attempt(
         route: route.clone(),
         policy,
         credential: Some(credential),
-        session_id,
+        session_id: session_id.clone(),
+        delegation: delegation.clone(),
         upstream_body: upstream_body.clone(),
         auth,
         codex_quota_account,

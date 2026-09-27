@@ -42,12 +42,15 @@ pub(super) async fn http_send(
     route: &Route,
     credential: Credential,
     session_id: Option<&str>,
+    delegation: Option<&super::request::CodexDelegation>,
     body: PreparedBody,
 ) -> Result<reqwest::Response, crate::upstream_timeout::SendError<reqwest::Error>> {
     crate::upstream_timeout::wait(
         state.config.server.timeouts.upstream_ttfb_ms,
-        body.attach(request_builder(state, route, credential, session_id))
-            .send(),
+        body.attach(request_builder(
+            state, route, credential, session_id, delegation,
+        ))
+        .send(),
     )
     .await
 }
@@ -71,6 +74,7 @@ pub(super) async fn forward_http(
     forward: ForwardOptions,
     credential: CredentialSource,
     session_id: Option<&str>,
+    delegation: Option<&super::request::CodexDelegation>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let ForwardOptions {
         upstream_body,
@@ -104,6 +108,7 @@ pub(super) async fn forward_http(
                 policy,
                 credential: None,
                 session_id: session_id.map(str::to_string),
+                delegation: delegation.cloned(),
                 upstream_body: upstream_body.clone(),
                 auth,
                 codex_quota_account: None,
@@ -145,7 +150,16 @@ pub(super) async fn forward_http(
         policy,
         &route.provider,
         crate::retry::RetrySafety::NonIdempotentPost,
-        || http_send(state, route, credential.clone(), session_id, body.clone()),
+        || {
+            http_send(
+                state,
+                route,
+                credential.clone(),
+                session_id,
+                delegation,
+                body.clone(),
+            )
+        },
     )
     .await
     .map_err(|error| {
@@ -713,9 +727,10 @@ mod tests {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
         });
-        let (status, response) = forward_http(&state, &codex_route(), forward, credential, None)
-            .await
-            .expect("forward_http builds the response without upstream headers");
+        let (status, response) =
+            forward_http(&state, &codex_route(), forward, credential, None, None)
+                .await
+                .expect("forward_http builds the response without upstream headers");
         assert_eq!(status, StatusCode::OK);
         use futures_util::StreamExt;
         let mut body = response.into_body().into_data_stream();
@@ -779,7 +794,7 @@ mod tests {
             value: "probe".to_string(),
             header: crate::config::ApiKeyHeader::Bearer,
         });
-        let (status, response) = forward_http(&state, &route, forward, credential, None)
+        let (status, response) = forward_http(&state, &route, forward, credential, None, None)
             .await
             .expect("forward_http builds the committed response");
         assert_eq!(status, StatusCode::OK);

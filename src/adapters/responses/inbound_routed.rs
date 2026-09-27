@@ -125,7 +125,7 @@ fn routed_request(
     // affinity from the codex session headers, so generate them here (the
     // allowlist never forwarded the client's own) and nowhere else.
     if api_key && state.config.is_openai_backend(&route.provider) {
-        session_affinity_headers(request, session_id)
+        session_affinity_headers(request, session_id, None)
     } else {
         request
     }
