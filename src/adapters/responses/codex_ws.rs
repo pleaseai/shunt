@@ -281,9 +281,9 @@ static LAST_POOL_SWEEP: LazyLock<Mutex<Instant>> = LazyLock::new(|| Mutex::new(I
 
 /// A per-session compaction-window counter, keyed by pool key. `last_touched`
 /// orders LRU eviction only — it is never an expiry: the counter leaves the
-/// map solely when the map is at [`MAX_WINDOW_ENTRIES`] and it is the stalest
-/// entry, so a conversation's window survives any idle gap and any amount of
-/// socket churn.
+/// map solely when the map is at [`MAX_WINDOW_ENTRIES`], it is the stalest
+/// entry, and its key is not the one being bumped, so a conversation's window
+/// survives any idle gap and any amount of socket churn.
 struct WindowCounter {
     value: u64,
     last_touched: Instant,
@@ -329,8 +329,11 @@ pub(crate) fn advance_window(key: &str) -> u64 {
     // Capacity is the only eviction: the round-0 ask was a count cap, and an
     // idle-based expiry would reset a compacted conversation's window after a
     // long turn gap — the divergence class F4 exists to fix. `last_touched`
-    // orders the LRU victim below, never an expiry.
-    if windows.len() >= MAX_WINDOW_ENTRIES {
+    // orders the LRU victim below, never an expiry. A bump of an existing
+    // counter never evicts: its own last_touched is its previous bump, so at
+    // a full map the stalest entry can be the very key being bumped, and
+    // dropping it (or a stalest neighbour) would reset a live window.
+    if windows.len() >= MAX_WINDOW_ENTRIES && !windows.contains_key(key) {
         // Evict the least recently touched counter. `HashMap` iteration order
         // is unspecified, so `keys().next()` would drop an arbitrary (possibly
         // active) entry instead of the stalest one.
@@ -421,7 +424,9 @@ fn pool_insert(key: String, entry: Arc<PoolEntry>) {
         *last_sweep = Instant::now();
     }
     drop(last_sweep);
-    if guard.len() >= MAX_POOL_ENTRIES {
+    // A replacement insert (the cold-start race's second connect) reuses its
+    // slot: trimming on its behalf would drop a live bystander connection.
+    if guard.len() >= MAX_POOL_ENTRIES && !guard.contains_key(&key) {
         // Evict the least recently used connection. `HashMap` iteration order is
         // unspecified, so `keys().next()` would drop an arbitrary (possibly active)
         // entry instead of the stalest one.
@@ -1410,6 +1415,34 @@ mod tests {
         );
         assert_eq!(len, CAP, "the trim trims, and the newest entry survives");
         assert_eq!(window_for("cap-final"), 1);
+        clear_pool_for_tests();
+    }
+
+    /// Bumping an EXISTING counter at a full map must not evict: the stalest
+    /// entry can be the very key being bumped (a long-lived conversation's
+    /// counter idles between compactions), and dropping it would reset a live
+    /// window to 1 instead of advancing it.
+    #[tokio::test]
+    async fn an_existing_window_survives_a_bump_at_capacity() {
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        for _ in 0..6 {
+            advance_window("cap-kept");
+        }
+        for i in 0..MAX_WINDOW_ENTRIES - 1 {
+            advance_window(&format!("cap-fill-{i}"));
+        }
+        assert_eq!(WINDOWS.lock().unwrap().len(), MAX_WINDOW_ENTRIES);
+        assert_eq!(
+            advance_window("cap-kept"),
+            7,
+            "the bump advances the existing counter in place"
+        );
+        assert_eq!(WINDOWS.lock().unwrap().len(), MAX_WINDOW_ENTRIES);
+        assert!(
+            WINDOWS.lock().unwrap().contains_key("cap-fill-0"),
+            "the bump of an existing key evicts no bystander"
+        );
         clear_pool_for_tests();
     }
 
@@ -2614,6 +2647,85 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), server)
             .await
             .expect("both cold-start sockets close during cleanup")
+            .unwrap();
+    }
+
+    /// Re-pooling a key the pool already holds (the other end of the
+    /// cold-start race) must not evict a bystander: the replacement reuses
+    /// its slot, so trimming on its behalf would drop a live connection the
+    /// race cannot reclaim.
+    #[tokio::test]
+    async fn replacing_a_pooled_connection_spares_the_lru_bystander() {
+        use tokio::net::TcpListener;
+        use tokio::task::JoinSet;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut handlers = JoinSet::new();
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                handlers.spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async_with_config(
+                        socket,
+                        Some(WebSocketConfig::default()),
+                    )
+                    .await
+                    .unwrap();
+                    while let Some(message) = ws.next().await {
+                        match message {
+                            Ok(Message::Ping(data)) => {
+                                ws.send(Message::Pong(data)).await.unwrap();
+                            }
+                            Ok(Message::Close(_)) | Err(_) => break,
+                            Ok(_) => {}
+                        }
+                    }
+                });
+            }
+            while let Some(result) = handlers.join_next().await {
+                result.unwrap();
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let victim = begin(&url, HeaderMap::new(), Some("lru-victim"), "codex")
+            .await
+            .expect("victim connection opens");
+        let filler = begin(&url, HeaderMap::new(), Some("lru-filler"), "codex")
+            .await
+            .expect("filler connection opens");
+        *victim.conn.last_used_at.lock().unwrap() = Instant::now() - Duration::from_secs(1);
+
+        pool_insert(
+            "lru-victim".to_string(),
+            PoolEntry::new(victim.conn.clone()),
+        );
+        for i in 0..MAX_POOL_ENTRIES - 2 {
+            pool_insert(format!("lru-fill-{i}"), PoolEntry::new(filler.conn.clone()));
+        }
+        pool_insert(
+            "lru-replace".to_string(),
+            PoolEntry::new(filler.conn.clone()),
+        );
+        assert_eq!(POOL.lock().unwrap().len(), MAX_POOL_ENTRIES);
+        pool_insert(
+            "lru-replace".to_string(),
+            PoolEntry::new(filler.conn.clone()),
+        );
+        assert!(
+            POOL.lock().unwrap().contains_key("lru-victim"),
+            "a replacement insert must not evict the stalest bystander"
+        );
+
+        clear_pool_for_tests();
+        drop(victim);
+        drop(filler);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("both lru-bystander sockets close during cleanup")
             .unwrap();
     }
 
